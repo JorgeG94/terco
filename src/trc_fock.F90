@@ -123,7 +123,7 @@ contains
       allocate (one(b%nshell))
       one = 1.0_dp
 
-      call build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+      call build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, thresh, &
                        pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))

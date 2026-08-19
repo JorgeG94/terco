@@ -67,7 +67,7 @@ program bench_binwater
 
    call tables_init(); call cart_init(); call boys_init()
 
-   call build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, &
+   call build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, THRESH, &
                     pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
    call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, &
                         hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, nhpp)

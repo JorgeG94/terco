@@ -171,7 +171,7 @@ contains
          return
       end if
 
-      call build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, &
+      call build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, 1.0e-30_dp, &
                        pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
 
       ! Schwarz bounds, then the binned pair container.  No quartet list.
