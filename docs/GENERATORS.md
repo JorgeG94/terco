@@ -198,29 +198,62 @@ leaves most of the win on the table.
 
 ## Porting the directives to OpenMP
 
-`tools/acc_to_omp.py` converts the OpenACC directives to OpenMP, and CI runs
-the converted tree through the same validation. Two things about it are worth
-knowing before relying on it.
+There are two scripts and they run in a fixed order:
 
-**Atomics are recognised and deliberately not translated.** OpenMP forbids an
-`atomic` inside a `PURE` procedure; OpenACC allows it. A procedure called from
-`do concurrent` must be pure, so the digestion routines — which is where all
-512 atomics live — cannot have theirs translated while they stay pure. Left
-alone, the directive is an inert comment under an OpenMP compiler, which is
-correct wherever `do concurrent` runs serially, and still live under an
-OpenACC one. Neutralising it to a comment instead would be wrong under
-`-stdpar=multicore`, where the loop really is threaded.
+```sh
+python3 tools/dc_to_omp.py  --target cpu --write src
+python3 tools/acc_to_omp.py --target cpu --translate-atomics --write src
+```
 
-**The converter does not touch `do concurrent`, so this is a host port and not
-an offload port.** A genuine OpenMP-target version of terco is a larger
-change than a directive rewrite: the launches would become
-`!$omp target teams distribute parallel do` rather than `do concurrent`, and
-the device routines would drop `pure` and carry `!$omp declare target`
-instead — at which point the atomics translate cleanly, because the purity
-constraint that blocked them was only there to satisfy `do concurrent`. That
-is a coherent second backend rather than a conversion of this one.
+1. **`dc_to_omp.py`** rewrites `do concurrent` as OpenMP worksharing, maps
+   `local(...)` to `private(...)`, and **strips `pure`** from every procedure
+   that ends up holding a worksharing directive or an atomic — cascading to
+   their pure callers, since a pure procedure may only call pure ones.
+2. **`acc_to_omp.py`** then translates the data directives and, with
+   `--translate-atomics`, the atomics. That flag is only legal *after* step 1,
+   because OpenMP forbids an atomic in a `PURE` procedure and OpenACC does not.
 
-## Oracle discipline
+Reversing the two produces source that does not compile. CI runs both, builds
+the result, and validates it **on four threads**.
+
+### Three traps this port walked into, all of them silent
+
+**A `do concurrent` that does not name what it assigns becomes a race.** The
+standard privatises a scalar assigned before it is read, so omitting
+`local(...)` is correct as written — and the moment the construct becomes
+`!$omp parallel do`, whose default is *shared*, that scalar is one variable
+torn between every thread. `fock_all_nosym` had exactly one such loop and it
+was wrong after conversion while everything else passed.
+`tools/dc_locality_lint.py` now refuses one, and CI runs it.
+
+**A directive behind a preprocessor macro is invisible to a line-based scan.**
+
+```fortran
+#define FG_ATOMIC !$acc atomic update
+```
+
+does not begin with `!$acc`, so the converter never saw it, and every use of
+the macro expanded to OpenACC in a tree that was otherwise OpenMP. Under a
+compiler without `-acc` that is an inert comment — for an *atomic*, a silent
+race. `acc_to_omp.py` now transforms the replacement text of a `#define` too.
+
+**A race is invisible on one thread.** Both of the above passed at
+`OMP_NUM_THREADS=1` and failed at 8, with the enumerated digestion disagreeing
+with the folded one by a factor of 0.94 on a symmetric density — where the two
+are the same operator by construction. That is why the CI job sets a thread
+count rather than trusting the runner's default, and why `check_nosym` exists
+at all.
+
+### What this port is, and is not
+
+`--target cpu` gives host multicore. A genuine **offload** port would use
+`--target gpu`, which emits `!$omp target teams distribute parallel do` — the
+same scripts, and untested here because validating it needs a machine with
+both a GPU and an OpenMP-offload toolchain. The pieces are in place: the
+purity that blocked the atomics is removed by step 1, and the device routines
+carry `!$omp declare target` from `!$acc routine seq`.
+
+## Oracle discipline## Oracle discipline
 
 A new comparison harness is untested code like any other.
 

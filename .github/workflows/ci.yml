@@ -122,6 +122,14 @@ jobs:
       - name: Install LAPACK
         run: sudo apt-get update && sudo apt-get install -y liblapack-dev libblas-dev
 
+      # A `do concurrent` that assigns a scalar without naming it is correct
+      # as written -- the standard privatises it -- and becomes a data race
+      # the moment the construct is rewritten as `!$omp parallel do`, whose
+      # default is shared. That is invisible until conversion, so it is
+      # checked before conversion.
+      - name: Locality lint
+        run: python3 tools/dc_locality_lint.py src
+
       - name: Converter unit tests
         run: |
           pip install pytest
@@ -131,11 +139,29 @@ jobs:
       # the same answers, not merely something that parses. Converting to the
       # host OpenMP target and running the same validation is what makes that
       # a real check rather than a syntax exercise.
+      # The FULL port, in the order it has to happen:
+      #
+      #   1. dc_to_omp rewrites `do concurrent` as OpenMP worksharing and
+      #      strips `pure` from every procedure that ends up holding a
+      #      worksharing directive or an atomic -- cascading to their pure
+      #      callers, since a pure procedure may only call pure ones.
+      #   2. acc_to_omp then translates the data directives AND the atomics,
+      #      which is only legal because step 1 removed the purity that
+      #      forbade them.
+      #
+      # Reversing the two produces source that does not compile.
       - name: Convert to OpenMP and validate
         run: |
-          python3 tools/acc_to_omp.py --target cpu --write src
+          python3 tools/dc_to_omp.py --target cpu --write src
+          python3 tools/acc_to_omp.py --target cpu --translate-atomics --write src
           git diff --stat -- src | tail -1
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF \
-                -S . -B build-omp
+                -DCMAKE_Fortran_FLAGS=-fopenmp -S . -B build-omp
           cmake --build build-omp --parallel
-          ctest --test-dir build-omp --output-on-failure --no-tests=error
+          # THREADS ARE THE POINT. The conversion turns constructs whose
+          # locality the standard guaranteed into ones where OpenMP's default
+          # is shared, so the failure mode is a race -- and a race is invisible
+          # on one thread. Running this suite single-threaded would have passed
+          # while the enumerated Fock digestion was silently wrong.
+          OMP_NUM_THREADS=4 ctest --test-dir build-omp --output-on-failure \
+            --no-tests=error

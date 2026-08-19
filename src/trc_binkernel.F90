@@ -537,7 +537,20 @@ contains
       integer(kind=8) :: gt
       integer :: lo, hi, mid, seg, t
 
-      do concurrent(gt=1:nwork)
+      ! `local()` is NOT optional here, and the reason is worth stating.
+      !
+      ! `do concurrent` privatises a scalar assigned before it is read, so
+      ! this loop is correct without it. But the OpenMP port converts the
+      ! construct to `!$omp parallel do`, where the default is SHARED -- and
+      ! then `lo`, `hi`, `mid`, `seg` and `t` are one set of variables torn
+      ! between every thread. That is a race, and it showed up as this
+      ! routine disagreeing with the folded digestion on a symmetric density
+      ! after conversion, which is exactly the failure `check_nosym` exists
+      ! to catch.
+      !
+      ! `tools/dc_locality_lint.py` now refuses a `do concurrent` that
+      ! assigns a scalar it has not named.
+      do concurrent(gt=1:nwork) local(lo, hi, mid, seg, t)
          lo = 1; hi = nseg
          do while (lo < hi)
             mid = (lo + hi + 1)/2

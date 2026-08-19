@@ -22,6 +22,9 @@ Head substitutions:
                                    be pure. Inert under OpenMP, live under
                                    OpenACC, correct either way.
   !$acc&  (continuation)        →  !$omp&
+  #define X !$acc ...            →  #define X !$omp ...   (a directive behind a
+                                   macro is invisible to a line-based scan, and
+                                   an unconverted ATOMIC is a silent race)
 
 Clause translations (applied across the directive block — head + continuations):
   copyin(  → map(to:
@@ -378,6 +381,9 @@ def cleanup_omp_block(block: list[str], stats: Counter) -> list[str]:
     return new_lines
 
 
+TRANSLATE_ATOMICS = False
+
+
 def transform_cpu_block(block: list[str], joined: str, head_kind: str | None,
                         stats: Counter) -> list[str]:
     """CPU (multicore host) variant of a directive block.
@@ -394,6 +400,11 @@ def transform_cpu_block(block: list[str], joined: str, head_kind: str | None,
     if head_kind == "atomic":
         # Untranslated on purpose -- see HEAD_PATTERNS. Not dropped either:
         # dropping it would race under `-stdpar=multicore`.
+        if TRANSLATE_ATOMICS:
+            joined = re.sub(r"!\$acc\s+atomic\b", "!$omp atomic",
+                            joined, count=1, flags=re.IGNORECASE)
+            stats["atomic"] += 1
+            return joined.splitlines(keepends=True)
         stats["atomic_left_as_is"] += 1
         return block
 
@@ -491,6 +502,14 @@ def transform_block(block: list[str], stats: Counter, warnings: list[str],
         if pat.search(joined):
             if repl is None:
                 # Recognised, deliberately untranslated -- see HEAD_PATTERNS.
+                # `--translate-atomics` overrides that, and is only correct
+                # once dc_to_omp.py has stripped `pure` from the procedures
+                # holding them.
+                if name == "atomic" and TRANSLATE_ATOMICS:
+                    joined = re.sub(r"!\$acc\s+atomic\b", "!$omp atomic",
+                                    joined, count=1, flags=re.IGNORECASE)
+                    stats["atomic"] += 1
+                    return joined.splitlines(keepends=True)
                 stats[name + "_left_as_is"] += 1
                 return block
             joined = pat.sub(repl, joined, count=1)
@@ -636,6 +655,45 @@ def dedup_declare_target(lines: list[str]) -> tuple[list[str], int]:
     return out, removed
 
 
+#: A directive hidden in a preprocessor macro's replacement text.
+#:
+#: `#define FG_ATOMIC !$acc atomic update` does not start with `!$acc`, so the
+#: block collector below never sees it -- and every use of the macro then
+#: expands to an OpenACC directive in a tree that is otherwise OpenMP. Under a
+#: compiler with no `-acc` that is an inert comment, which for an ATOMIC means
+#: a silent data race.
+#:
+#: That is not hypothetical: it made the enumerated Fock digestion disagree
+#: with the folded one at eight threads and agree perfectly at one.
+DEFINE_DIR_RE = re.compile(r"^(\s*#\s*define\s+\w+\s+)(!\$acc\b.*)$",
+                           re.IGNORECASE)
+
+
+def transform_define(line: str, stats: Counter, target: str) -> str:
+    """Apply the head substitutions to the body of a `#define`."""
+    m = DEFINE_DIR_RE.match(line.rstrip("\n"))
+    if not m:
+        return line
+    head, body = m.group(1), m.group(2)
+    for pat, repl, name in HEAD_PATTERNS:
+        if not pat.search(body):
+            continue
+        if repl is None:
+            if name == "atomic" and TRANSLATE_ATOMICS:
+                body = re.sub(r"!\$acc\s+atomic\b", "!$omp atomic", body,
+                              count=1, flags=re.IGNORECASE)
+                stats["define_atomic"] += 1
+                break
+            stats["define_" + name + "_left_as_is"] += 1
+            return line
+        body = pat.sub(repl, body, count=1)
+        stats["define_" + name] += 1
+        break
+    else:
+        return line
+    return head + body + ("\n" if line.endswith("\n") else "")
+
+
 def process_file(path: Path, write: bool, stats: Counter, warnings: list[str],
                  target: str = "gpu") -> int:
     text = path.read_text()
@@ -660,6 +718,12 @@ def process_file(path: Path, write: bool, stats: Counter, warnings: list[str],
                 changed += len(block)
             out.extend(new_block)
             i = last + 1
+        elif DEFINE_DIR_RE.match(line):
+            new_line = transform_define(line, stats, target)
+            if new_line != line:
+                changed += 1
+            out.append(new_line)
+            i += 1
         else:
             out.append(line)
             i += 1
@@ -711,6 +775,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true", help="apply in place (default: dry-run)")
     ap.add_argument(
+        "--translate-atomics", action="store_true",
+        help="also convert !$acc atomic to !$omp atomic. ONLY correct after "
+             "dc_to_omp.py has stripped `pure` from the procedures holding "
+             "them -- OpenMP forbids an atomic in a pure procedure.")
+    ap.add_argument(
         "--target", choices=["gpu", "cpu"], default="gpu",
         help="gpu (default): !$omp target teams distribute parallel do + map() "
              "data directives. cpu: !$omp parallel do (host multicore); all "
@@ -721,6 +790,8 @@ def main() -> int:
              "core). Files are independent; output order is unchanged.")
     ap.add_argument("paths", nargs="*", default=["src"])
     args = ap.parse_args()
+    global TRANSLATE_ATOMICS
+    TRANSLATE_ATOMICS = args.translate_atomics
 
     roots = [Path(p) for p in args.paths]
     for r in roots:
@@ -744,7 +815,8 @@ def main() -> int:
 
     print()
     print("=== conversion counts ===")
-    order = ("atomic_left_as_is",
+    order = ("atomic", "atomic_left_as_is",
+             "define_atomic", "define_atomic_left_as_is",
              "enter_data", "exit_data", "data", "end_data", "update",
              "parallel_loop", "end_parallel_loop", "host_data", "end_host_data",
              "declare", "set_device", "routine_seq",
