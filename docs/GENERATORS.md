@@ -253,7 +253,7 @@ both a GPU and an OpenMP-offload toolchain. The pieces are in place: the
 purity that blocked the atomics is removed by step 1, and the device routines
 carry `!$omp declare target` from `!$acc routine seq`.
 
-## Oracle discipline## Oracle discipline
+## Oracle discipline
 
 A new comparison harness is untested code like any other.
 
