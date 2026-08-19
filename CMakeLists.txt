@@ -1,0 +1,179 @@
+cmake_minimum_required(VERSION 3.28)
+
+project(
+  "TERCO"
+  LANGUAGES Fortran
+  VERSION 0.1.0
+  DESCRIPTION "GPU Gaussian integrals in standard Fortran")
+set(project_name terco)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+include(GNUInstallDirs)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
+# Named for the project, not `print_status`: PIC ships a module by that name
+# and does `include(print_status)` itself. With terco's module path searched
+# first, a shared name means PIC includes OURS and then cannot find its own
+# function.
+include(terco_print_status)
+
+# ---------------------------------------------------------------------------
+# Options
+# ---------------------------------------------------------------------------
+
+#
+# The four-centre angular momentum ceiling.
+#
+# Not a preference. The four-centre kernels are generated one per (la,lb,lc,ld)
+# class, so the count goes as L^4: LMAX=1 is 16 classes, LMAX=2 is 81 and
+# (dd|dd) alone is twenty thousand lines. f would need both a larger Boys table
+# -- BOYS_MMAX caps la+lb+lc+ld at 8 and (ff|ff) needs 12 -- and an answer to
+# compile time.
+#
+# 2 is the shipped configuration and the one whose generated sources are in the
+# repository. Anything else is regenerated into the build tree, which needs
+# Python 3.
+#
+set(TERCO_LMAX
+    "2"
+    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d)")
+set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2)
+
+set(TERCO_GPU_ARCH
+    "cc70"
+    CACHE STRING "Target GPU architecture, as nvfortran spells it (cc70, cc80, ...)")
+
+option(TERCO_ENABLE_TESTING "Build the correctness checks" ON)
+option(TERCO_REGENERATE
+       "Regenerate the committed kernels in-tree rather than using them" OFF)
+option(TERCO_BUILD_SHARED
+       "Build a shared library, for host codes built with another compiler" OFF)
+
+#
+# Only NVHPC produces GPU code here. The library is `do concurrent` plus
+# OpenACC data directives and atomics, and `-stdpar=gpu` is what turns the
+# first into device kernels. Refused rather than silently built for the host,
+# because a CPU build of this library is not a smaller version of it -- it is
+# a different thing that happens to give the same numbers very slowly.
+#
+if(NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+  message(
+    FATAL_ERROR
+      "terco requires the NVHPC Fortran compiler (found "
+      "'${CMAKE_Fortran_COMPILER_ID}'). Configure with "
+      "-DCMAKE_Fortran_COMPILER=nvfortran.")
+endif()
+
+add_subdirectory(cmake)
+
+#
+# PIC, for one thing: `sort_index` on 64-bit Morton codes, to order the shell
+# pairs inside each bin spatially. See `sort_bins_spatially` in
+# `src/trc_bins.F90` for why that ordering is worth a sort.
+#
+# PIC carries these sorts precisely because the Fortran stdlib does not build
+# with the NVIDIA compilers, which is the situation terco is permanently in.
+#
+find_package("pic" REQUIRED)
+
+set(main_lib terco)
+if(TERCO_BUILD_SHARED)
+  add_library(${main_lib} SHARED)
+else()
+  add_library(${main_lib} STATIC)
+endif()
+add_library(terco::${project_name} ALIAS ${main_lib})
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+#
+# TRC_FOCK6 folds the eight-fold permutational symmetry into six atomic
+# updates per quartet; TRC_PERCLASS launches one kernel per angular-momentum
+# class so ptxas budgets registers for that class rather than the worst one.
+# Both are measured wins and neither is optional in practice, so they are
+# definitions rather than options -- an option nobody should turn off is a
+# configuration that nobody tests.
+#
+target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
+                                               TRC_FOCK6 TRC_PERCLASS)
+
+#
+# The unrolled VRR/HRR go into the SHARED kernel only, and only at LMAX<=1.
+#
+# That kernel holds two copies of the recurrence, so unrolling it at LMAX=2
+# puts twice the entire per-class kernel set into one translation unit and
+# nvfortran does not finish. Under TRC_PERCLASS the shared kernel carries only
+# the non-symmetric Fock build, while every SCF quartet goes through a
+# per-class kernel that is unaffected -- so the 2.4x the unroll is worth there
+# buys nothing an SCF can see.
+#
+if(TERCO_LMAX LESS_EQUAL 1)
+  target_compile_definitions(${main_lib} PRIVATE TRC_UNROLL_VRR TRC_UNROLL_HRR)
+endif()
+
+add_subdirectory(src)
+
+target_link_libraries(${main_lib} PUBLIC pic::pic)
+
+set_target_properties(${main_lib} PROPERTIES Fortran_MODULE_DIRECTORY
+                                             ${CMAKE_BINARY_DIR}/modules)
+target_include_directories(
+  ${main_lib} PUBLIC $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/modules>
+                     $<INSTALL_INTERFACE:include/terco>)
+
+if(TERCO_ENABLE_TESTING)
+  enable_testing()
+  add_subdirectory(test)
+endif()
+
+# ---------------------------------------------------------------------------
+# Install and export
+# ---------------------------------------------------------------------------
+
+install(
+  TARGETS ${main_lib}
+  EXPORT tercoTargets
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  INCLUDES
+  DESTINATION include/terco)
+
+install(
+  DIRECTORY ${CMAKE_BINARY_DIR}/modules/
+  DESTINATION include/terco
+  FILES_MATCHING
+  PATTERN "*.mod")
+
+#
+# The C ABI's Fortran declaration ships as SOURCE, not as a module.
+#
+# A consumer built with another compiler cannot read terco's `.mod` files, so
+# it compiles this one file itself and gets the interfaces from the same
+# declaration terco's own tests use. Shipping a `.mod` instead would work for
+# NVHPC callers only, which are the ones that do not need it.
+#
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/trc_c_interfaces.f90
+        DESTINATION include/terco)
+
+install(
+  EXPORT tercoTargets
+  FILE tercoTargets.cmake
+  NAMESPACE terco::
+  DESTINATION lib/cmake/terco)
+
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tercoConfig.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/tercoConfig.cmake"
+  INSTALL_DESTINATION lib/cmake/terco)
+
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/tercoConfigVersion.cmake"
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY AnyNewerVersion)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/tercoConfig.cmake"
+              "${CMAKE_CURRENT_BINARY_DIR}/tercoConfigVersion.cmake"
+        DESTINATION lib/cmake/terco)
+
+print_terco_summary()

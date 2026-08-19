@@ -1,0 +1,44 @@
+name = "terco"
+version = "0.1.0"
+license = "MIT"
+author = "JorgeG94"
+maintainer = "jorgegalvez1694@gmail.com"
+copyright = "Copyright 2026, Jorge Luis Galvez Vallejo"
+description = "GPU Gaussian integrals in standard Fortran: do concurrent, OpenACC, no CUDA"
+homepage = "https://github.com/JorgeG94/terco"
+
+# fpm builds the SHIPPED configuration and only that one.
+#
+# fpm cannot run a code generator, and roughly nine tenths of this library is
+# generated. So `src/generated` holds one committed set -- TRC_LMAX=2, through
+# d -- and that is what fpm compiles. Any other angular momentum ceiling needs
+# the generators, which means the CMake build. See docs/GENERATORS.md.
+#
+# The GPU flags are NOT here, because fpm has no way to make them conditional
+# on the compiler and they are meaningless to anything but nvfortran. Build
+# with them on the command line:
+#
+#   fpm build --compiler nvfortran \
+#     --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate -Mpreprocess \
+#             -DTRC_LMAX=2 -DTRC_FOCK6 -DTRC_PERCLASS"
+#
+# Without -stdpar=gpu this compiles to a correct and very slow CPU library.
+
+[preprocess]
+[preprocess.cpp]
+suffixes = ["F90", "f90"]
+
+[library]
+source-dir = "src"
+type = "static"
+
+[build]
+auto-executables = false
+auto-tests = false
+module-naming = false
+
+[install]
+library = true
+
+[dependencies]
+pic = { git = "https://github.com/JorgeG94/pic", tag = "v0.6.0" }

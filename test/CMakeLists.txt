@@ -1,0 +1,162 @@
+#
+# The checks.
+#
+# Every one compares against something outside terco -- libfint through a
+# recorded oracle, pyscf, or another of terco's own paths that must agree by
+# construction. None of them assert a number this library produced and then
+# froze, because that tests only that nothing changed.
+#
+# They run on the GPU, so they cannot run in CI on a machine without one.
+# `CUDA_VISIBLE_DEVICES=0` pins them to one device: terco is single-GPU today,
+# and a four-GPU machine otherwise reports timings that are not what they look
+# like.
+#
+
+#
+# The test programs supply their own basis. terco ships no basis set -- a
+# consumer passes exponents and coefficients -- so the tests have to build one,
+# and they may as well share the code.
+#
+set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6 TRC_PERCLASS)
+
+add_library(terco_test_basis STATIC trc_test_basis.F90)
+target_compile_definitions(terco_test_basis PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(terco_test_basis PUBLIC ${main_lib})
+set_target_properties(terco_test_basis PROPERTIES Fortran_MODULE_DIRECTORY
+                                                  ${CMAKE_BINARY_DIR}/modules)
+
+#
+# The library's definitions are PRIVATE -- TRC_FOCK6 and TRC_PERCLASS are
+# implementation choices and no consumer should need them. A test can, though:
+# `check_binfock` compares against a raw oracle and has to know whether the
+# digestion folded the eight-fold symmetry into six updates or enumerated it,
+# because the two return different things to combine.
+#
+# Passing them here rather than making them PUBLIC keeps that knowledge where
+# it belongs. Getting this wrong is not a build failure -- the test compiles,
+# runs, takes the unfolded branch and reports a worst error of 5e+01 as though
+# the kernels were broken.
+#
+function(terco_add_check name source)
+  cmake_parse_arguments(ARG "NEEDS_BASIS" "" "ARGS" ${ARGN})
+  add_executable(${name} ${source})
+  target_compile_definitions(${name} PRIVATE ${TERCO_TEST_DEFS})
+  target_link_libraries(${name} PRIVATE ${main_lib})
+  if(ARG_NEEDS_BASIS)
+    target_link_libraries(${name} PRIVATE terco_test_basis)
+  endif()
+  target_include_directories(${name} PRIVATE ${CMAKE_BINARY_DIR}/modules)
+  add_test(NAME terco/${name} COMMAND ${name} ${ARG_ARGS})
+  # The oracles are read by relative path, so the tests run from test/.
+  set_tests_properties(
+    terco/${name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+endfunction()
+
+#
+# Correctness with NOTHING external: closed forms and identities.
+#
+# Runs first because it is the one that can run anywhere. The oracle-backed
+# checks below are stronger evidence -- an independent implementation catches
+# a shared misunderstanding that an identity cannot -- but they need a 6 MB
+# recorded file, and pyscf, and someone with neither should still be able to
+# tell whether this library works.
+#
+terco_add_check(check_selftest check_selftest.F90)
+
+# Four-centre integrals and the Fock digestion, against libfint's own numbers
+# recorded in reference.dat.
+terco_add_check(check_binfock check_binfock.F90)
+
+# The public API end to end: overlap, kinetic, nuclear attraction, the two- and
+# three-centre Coulomb integrals, and the multipoles, all against libfint.
+terco_add_check(check_api check_api.F90)
+
+# The one-electron kernels on their own, block by block, against libfint.
+#
+# There is deliberately no separate density-fitting check here: `check_df.F90`
+# called the two- and three-centre dispatchers directly and went stale when
+# they started taking pre-computed primitive-pair data instead of raw shells.
+# `check_api` compares the same integrals against the same oracle through the
+# public API, which is the only way a consumer can reach them anyway.
+terco_add_check(check_1e check_1e.F90)
+
+#
+# The folded and enumerated digestions, on a symmetric density.
+#
+# They must agree for ANY symmetric density -- that is the premise of having
+# two of them -- so this is a control rather than a comparison. It exists
+# because they did NOT agree at LMAX=2 for a month, and nothing was looking:
+# under TRC_PERCLASS only the non-symmetric build reaches the shared kernel,
+# so every other check passes without executing a line of it.
+#
+terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
+
+#
+# Cartesian multipoles through the octupole. The Fortran half writes a binary
+# dump; `mult_ref.py` compares all 39 components against pyscf and refuses to
+# judge any of them until the overlap agrees first.
+#
+terco_add_check(check_mult check_mult.F90)
+
+#
+# The pyscf comparison is registered only if pyscf is actually importable.
+#
+# terco does not depend on pyscf and neither should its test suite: a missing
+# optional oracle should not turn the suite red, because a red suite that is
+# always red stops being read. `check_mult` above already validates the
+# multipole kernels against libfint through `check_api`; this adds an
+# independent second opinion when one is available.
+#
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import numpy, pyscf"
+    RESULT_VARIABLE _pyscf_rc
+    OUTPUT_QUIET ERROR_QUIET)
+  if(_pyscf_rc EQUAL 0)
+    add_test(NAME terco/check_mult_vs_pyscf
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mult_ref.py)
+    set_tests_properties(
+      terco/check_mult_vs_pyscf
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
+                 terco/check_mult)
+  else()
+    message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
+  endif()
+endif()
+
+#
+# A complete RHF through the public API, and the makeEFP pathway on top of it.
+#
+# These need LAPACK and terco does not -- the eigenproblem is the CALLER's
+# half of the contract. terco's own contract is: given a density, return a
+# Fock matrix; given a basis, return one-electron matrices. Everything above
+# that, including the diagonalisation and DIIS, stays with whoever is driving.
+#
+find_package(LAPACK REQUIRED)
+
+add_executable(scf_rhf scf_rhf.F90)
+target_compile_definitions(scf_rhf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rhf PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_rhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+
+add_executable(demo_makefp demo_makefp.F90)
+target_compile_definitions(demo_makefp PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(demo_makefp PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(demo_makefp PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/demo_makefp COMMAND demo_makefp water.xyz)
+set_tests_properties(
+  terco/demo_makefp PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                               ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# Benchmarks are built but not registered as tests: a timing is not a pass.
+add_executable(bench_binwater bench_binwater.F90)
+target_compile_definitions(bench_binwater PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_binwater PRIVATE ${main_lib})
+add_executable(bench_many bench_many.F90)
+target_compile_definitions(bench_many PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_many PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many)
+  target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
+endforeach()

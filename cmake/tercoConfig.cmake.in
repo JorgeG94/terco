@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/tercoTargets.cmake")
+
+#
+# The C ABI declaration, for a consumer built with another compiler.
+#
+# terco is nvfortran; a gfortran or ifx host cannot read its `.mod` files and
+# has to go through the `bind(c)` layer. `TERCO_C_INTERFACES` points at the one
+# source file that declares it, so the consumer compiles that rather than
+# writing its own interface block -- a copy of a contract, kept in step by
+# hand, that still compiles and still links when it drifts.
+#
+set(TERCO_C_INTERFACES "${PACKAGE_PREFIX_DIR}/include/terco/trc_c_interfaces.f90")
