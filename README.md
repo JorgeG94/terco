@@ -1,18 +1,36 @@
 # terco
 
-**Gaussian integrals on the GPU, in standard Fortran.**
+```
+Adjective, from Spanish: Stubborn
+```
 
-**Every parallel loop is a `do concurrent`.** OpenACC remains for the three
-things the standard has no way to say: device residency under separate memory,
-`routine seq` on the device helpers, and the atomic updates in the Fock
-digestion — where a quartet scatters into six overlapping blocks and Fortran
-offers no atomic. No CUDA, no kernels in another language, and no directive
-choosing a launch geometry. The name is Spanish for *stubborn*, which is roughly the argument
-being made: that a modern Fortran compiler can be driven to competitive GPU
-integral throughput without leaving the language.
+Terco is a project born out of my stubborness and refusal to accept that something
+cannot be done in plain old Fortran. The idea is simple: `do concurrent` is
+standard Fortran and exposes parallelism nicely via a defined contract. 
 
-It runs on **sm_70 and up**, which matters more than it sounds — the obvious
-alternatives on this hardware do not.
+Question: can we evaluate ERIs on the GPU just using do concurrent and 
+have good performance? 
+
+The question was partially answered by Melisa Alkan and collaborators
+who used OpenMP target and do concurrent to parallelize the ERIs inside
+GAMESS. See the [first paper](https://pubs.aip.org/aip/jcp/article/161/8/082501/3309322), 
+the [second paper](https://pubs.aip.org/aip/jcp/article/164/21/214118/3393751) 
+by Daniel del Angel who tested it for F functions, but limited himself to OpenMP target.
+
+However, the algorithm used to evaluate the integrals relied on the more 
+traditional per-shell-quartet approach which can quickly hit a bottleneck 
+by starving the GPU a bit of work. Thus, I adopted here the batching idea
+of preparing batches of shell pairs and distributing them to the device. 
+
+
+Thus I think this is a novel-ish implementation which ended up being 
+quite nice to work with and extend. 
+
+The idea is simple, we use OpenACC to map the data between the host and 
+the device (this wouldn't be needed in a unified memory environment), and 
+rely exclusively on do concurrent to do the parallelization of the quartets. 
+
+
 
 ---
 
@@ -56,9 +74,17 @@ before anything expensive is built.
 
 ## Building
 
-terco requires **NVHPC**. `-stdpar=gpu` is the whole mechanism — it is what
-turns `do concurrent` into device kernels — so a build with any other compiler
-is refused rather than silently producing a slow CPU library.
+The **GPU** build requires **NVHPC**. `-stdpar=gpu` is the whole mechanism —
+it is what turns `do concurrent` into device kernels — so `TERCO_ENABLE_GPU=ON`
+with any other compiler is refused rather than silently producing a slow CPU
+library.
+
+A **host** build (`-DTERCO_ENABLE_GPU=OFF`) works with **gfortran 15 or
+newer**, ifx, or nvfortran. gfortran 15 is a floor rather than a preference:
+`do concurrent` locality specifiers are Fortran 2018 and landed there. The host
+build is not a fallback to run production on — it is how the library is
+validated without a GPU, and it must give the same integrals, because a number
+that depends on the offload model is a bug in the offload model.
 
 ### CMake
 
@@ -146,11 +172,7 @@ rc = trc_eri_create(hbas, 1.0e-10_dp, heri)
 rc = trc_fock(heri, hbas, d, g, 1.0d0, 1.0d0, 1)
 ```
 
-> **If a host built with `-fopenmp` dies at startup with `libgomp: TODO`**, the
-> `acc_register_library` shim is missing from the library. NVHPC's OpenACC
-> runtime carries a weak undefined reference to that symbol; GNU libgomp
-> defines it as a stub that aborts. `src/trc_acc_shim.F90` exists for exactly
-> this and must be linked in.
+This hasn't been tested thoroughly so be wary! 
 
 ---
 
@@ -194,19 +216,6 @@ system had a contracted shell, and pyscf renormalises contracted shells where
 the reference did not. An oracle gets validated on a quantity you already trust
 before it is allowed to convict anything.
 
-### In a real code
-
-mqc's `MAKEFP` runs end to end through terco and produces an `.efp` matching its
-libcint path: identical RHF energy, 14 of 17 sections agreeing to the file's
-printed precision, and the three that differ differing by **orbital phase
-only** — which the EFP2 dimer energy confirms is inert to 1e-12 Hartree in all
-five components, exchange repulsion and charge transfer included.
-
-`test/demo_makefp.F90` is the same pathway standalone. On benzene it finds 24
-expansion points, localises 15 valence orbitals into 6 C–C σ + 6 C–H σ + 3 π,
-and returns `α = (68.87, 68.85, 18.32)` — the in-plane pair degenerate and the
-out-of-plane component four times smaller. Nothing in the program knows what
-benzene is.
 
 ---
 

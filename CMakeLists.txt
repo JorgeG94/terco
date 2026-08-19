@@ -49,18 +49,25 @@ option(TERCO_BUILD_SHARED
        "Build a shared library, for host codes built with another compiler" OFF)
 
 #
-# Only NVHPC produces GPU code here. The library is `do concurrent` plus
-# OpenACC data directives and atomics, and `-stdpar=gpu` is what turns the
-# first into device kernels. Refused rather than silently built for the host,
-# because a CPU build of this library is not a smaller version of it -- it is
-# a different thing that happens to give the same numbers very slowly.
+# The GPU build needs NVHPC: `-stdpar=gpu` is what turns `do concurrent` into
+# device kernels, and no other compiler does that today.
 #
-if(NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+# A CPU build is still worth having, and not as a fallback anyone should run
+# production on. It is the only configuration a CI runner without a GPU can
+# compile and VALIDATE, and validating on the host is what makes a green CI
+# mean something: `do concurrent` is serial there, the OpenACC directives are
+# inert comments, and the integrals must come out the same. A number that
+# depends on the offload model is a bug in the offload model.
+#
+option(TERCO_ENABLE_GPU "Offload with -stdpar=gpu (needs NVHPC)" ON)
+
+if(TERCO_ENABLE_GPU AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
   message(
     FATAL_ERROR
-      "terco requires the NVHPC Fortran compiler (found "
+      "TERCO_ENABLE_GPU=ON requires the NVHPC Fortran compiler (found "
       "'${CMAKE_Fortran_COMPILER_ID}'). Configure with "
-      "-DCMAKE_Fortran_COMPILER=nvfortran.")
+      "-DCMAKE_Fortran_COMPILER=nvfortran, or -DTERCO_ENABLE_GPU=OFF for a "
+      "host build.")
 endif()
 
 add_subdirectory(cmake)
@@ -73,6 +80,15 @@ add_subdirectory(cmake)
 # PIC carries these sorts precisely because the Fortran stdlib does not build
 # with the NVIDIA compilers, which is the situation terco is permanently in.
 #
+#
+# PIC's own tests are not terco's business. Fetched with them on, `ctest` here
+# runs them too -- and three of them fail under `-fopenmp` on the host for
+# reasons that have nothing to do with integrals, which would leave this
+# project's CI red over a dependency's logger.
+#
+set(PIC_ENABLE_TESTING
+    OFF
+    CACHE BOOL "" FORCE)
 find_package("pic" REQUIRED)
 
 set(main_lib terco)

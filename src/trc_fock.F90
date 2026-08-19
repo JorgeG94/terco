@@ -450,10 +450,9 @@ contains
       integer :: ij, i, j, a, c, ni, nj
       real(dp) :: m
 
-      ! `local()` rather than an OpenACC `private()`. Everything assigned in
-      ! the body has to be named: a variable left shared here is not a
-      ! performance problem, it is a race, and this one writes the screening
-      ! bound that decides which quartets are computed at all.
+      ! Every per-iteration scalar named. This one writes the screening bound
+      ! that decides which quartets are computed at all, so stating the
+      ! locality rather than leaving it to be inferred is worth the line.
       do concurrent(j=1:nshell, i=1:nshell) local(ni, nj, m, a, c)
          ni = (sh_l(i) + 1)*(sh_l(i) + 2)/2
          nj = (sh_l(j) + 1)*(sh_l(j) + 2)/2

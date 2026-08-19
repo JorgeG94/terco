@@ -1,0 +1,141 @@
+name: ci
+
+# WHAT CI CAN AND CANNOT CHECK HERE
+#
+# terco's reason for existing is GPU code, and no GitHub runner has a GPU. So
+# CI cannot measure it and does not try.
+#
+# What it CAN do is the thing that actually catches regressions: build for the
+# host and run the whole validation suite. On the host `do concurrent` is an
+# ordinary loop and every OpenACC directive is an inert comment, so the
+# integrals must come out identical. A number that depends on the offload
+# model is a bug in the offload model, and this is where that shows up.
+#
+# The GPU build is left to a developer with a card, and to the checks in
+# `test/` that report their own tolerances.
+
+on:
+  push:
+  pull_request:
+  # Weekly, to catch toolchain drift with no code change. Scheduled runs fire
+  # only on the default branch.
+  schedule:
+    - cron: '0 12 * * 3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  host-build:
+    name: host ${{ matrix.toolchain.compiler }}-${{ matrix.toolchain.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # gfortran 15 is the FLOOR, not a preference: `do concurrent`
+        # locality specifiers (`local()`, Fortran 2018) landed there, and the
+        # kernels use them.
+        toolchain:
+          - {compiler: gcc, version: 15}
+          - {compiler: intel, version: '2025.0'}
+          - {compiler: nvidia-hpc, version: 'latest'}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1.9.0
+        id: setup-fortran
+        with:
+          compiler: ${{ matrix.toolchain.compiler }}
+          version: ${{ matrix.toolchain.version }}
+
+      - name: Install LAPACK
+        run: sudo apt-get update && sudo apt-get install -y liblapack-dev libblas-dev
+
+      # TERCO_ENABLE_GPU=OFF is the whole point of this job: it is the only
+      # configuration a runner without a GPU can both compile and validate.
+      - name: Configure
+        run: >-
+          cmake -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DTERCO_ENABLE_GPU=OFF
+          -S . -B build
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Show the failure verbosely
+        if: failure()
+        run: cmake --build build --verbose --parallel 1
+
+      - name: Validate
+        run: >-
+          ctest --test-dir build --output-on-failure --parallel
+          --no-tests=error
+
+  generators:
+    name: generated sources are up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # `src/generated` is committed so that fpm -- which cannot run a code
+      # generator -- has something to build. Committed generated code drifts
+      # from its generator silently, and a stale generated file in this project
+      # is a WRONG NUMBER rather than a build failure: see the stale-include
+      # trap in docs/GENERATORS.md. So regenerate and require no diff.
+      - name: Regenerate
+        run: |
+          python3 scripts/gen_perclass.py --lmax 2 --split src/generated
+          python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
+          python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
+          python3 scripts/gen_df.py --lmax 2 -o src/generated/trc_df_kernels.F90
+
+      - name: Require no diff
+        run: |
+          if ! git diff --quiet -- src/generated; then
+            echo "::error::src/generated is out of date with scripts/."
+            echo "Run the commands in the 'Regenerate' step and commit the result."
+            git diff --stat -- src/generated
+            exit 1
+          fi
+
+  openmp-port:
+    name: OpenACC to OpenMP conversion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install LAPACK
+        run: sudo apt-get update && sudo apt-get install -y liblapack-dev libblas-dev
+
+      - name: Converter unit tests
+        run: |
+          pip install pytest
+          python3 -m pytest tools/test_acc_to_omp.py -q
+
+      # The conversion has to keep producing something that COMPILES and gives
+      # the same answers, not merely something that parses. Converting to the
+      # host OpenMP target and running the same validation is what makes that
+      # a real check rather than a syntax exercise.
+      - name: Convert to OpenMP and validate
+        run: |
+          python3 tools/acc_to_omp.py --target cpu --write src
+          git diff --stat -- src | tail -1
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF \
+                -S . -B build-omp
+          cmake --build build-omp --parallel
+          ctest --test-dir build-omp --output-on-failure --no-tests=error

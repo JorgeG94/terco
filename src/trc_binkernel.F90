@@ -365,14 +365,22 @@ contains
       real(dp) :: qcut
 
       nk = 0
-      ! `reduce()` is the Fortran 2023 locality specifier, so the counting
-      ! loop needs no directive either. It is the one place terco reduces
-      ! across a device loop, and it is a count rather than a sum of results
-      ! -- so if a compiler gets it wrong the symptom is a wrong work
-      ! estimate, not a wrong integral.
-      do concurrent(gt=1:nwork) &
-         local(lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl, qcut) &
-         reduce(+:nk)
+      !
+      ! THE ONE PLACE A DIRECTIVE CARRIES A LOOP.
+      !
+      ! `do concurrent` gained `reduce()` in Fortran 2023, which is exactly
+      ! what this wants -- but gfortran did not take locality specifiers until
+      ! 15 and `reduce` later still, and terco is meant to build on the host
+      ! with whatever a CI runner has. A reduction is the one thing the
+      ! portable subset of the language cannot say, so it is said here instead
+      ! and nowhere else.
+      !
+      ! Worth keeping in proportion: this counts kept quartets for a work
+      ! estimate. It is not on the path any integral takes.
+      !
+      !$acc parallel loop reduction(+:nk) default(present) &
+      !$acc   private(lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl, qcut)
+      do gt = 1, nwork
          lo = 1; hi = nseg
          do while (lo < hi)
             mid = (lo + hi + 1)/2
@@ -479,6 +487,14 @@ contains
       ! digestion, where a quartet scatters into six overlapping blocks and
       ! the standard has no atomic to offer.
       !
+      ! `local()` names every per-iteration scalar explicitly. A scalar
+      ! assigned before it is read is privatised without one, so this is not
+      ! load-bearing -- it is the difference between the compiler inferring
+      ! the intent and the source stating it, and the second is what someone
+      ! reading this in a year needs.
+      !
+      ! Fortran 2018, and gfortran took it in 15, which is this project's
+      ! minimum for that reason among others.
       do concurrent(gt=1:nwork) local(lo, hi, mid, seg, t)
          lo = 1; hi = nseg
          do while (lo < hi)

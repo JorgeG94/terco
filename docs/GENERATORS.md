@@ -196,6 +196,30 @@ leaves most of the win on the table.
 
 ---
 
+## Porting the directives to OpenMP
+
+`tools/acc_to_omp.py` converts the OpenACC directives to OpenMP, and CI runs
+the converted tree through the same validation. Two things about it are worth
+knowing before relying on it.
+
+**Atomics are recognised and deliberately not translated.** OpenMP forbids an
+`atomic` inside a `PURE` procedure; OpenACC allows it. A procedure called from
+`do concurrent` must be pure, so the digestion routines — which is where all
+512 atomics live — cannot have theirs translated while they stay pure. Left
+alone, the directive is an inert comment under an OpenMP compiler, which is
+correct wherever `do concurrent` runs serially, and still live under an
+OpenACC one. Neutralising it to a comment instead would be wrong under
+`-stdpar=multicore`, where the loop really is threaded.
+
+**The converter does not touch `do concurrent`, so this is a host port and not
+an offload port.** A genuine OpenMP-target version of terco is a larger
+change than a directive rewrite: the launches would become
+`!$omp target teams distribute parallel do` rather than `do concurrent`, and
+the device routines would drop `pure` and carry `!$omp declare target`
+instead — at which point the atomics translate cleanly, because the purity
+constraint that blocked them was only there to satisfy `do concurrent`. That
+is a coherent second backend rather than a conversion of this one.
+
 ## Oracle discipline
 
 A new comparison harness is untested code like any other.
