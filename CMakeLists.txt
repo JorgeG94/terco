@@ -73,6 +73,22 @@ endif()
 add_subdirectory(cmake)
 
 #
+# BEFORE anything creates a target, PIC included.
+#
+# CMake reads this when a target is CREATED, to initialise that target's
+# POSITION_INDEPENDENT_CODE property -- so setting it after `find_package(pic)`
+# leaves PIC's static library built without -fPIC, and linking it into a shared
+# libterco.so then fails:
+#
+#     relocation R_X86_64_32 against `.rodata' can not be used when making a
+#     shared object; recompile with -fPIC
+#
+# Which only shows up with TERCO_BUILD_SHARED=ON, i.e. exactly the
+# configuration a host code built with another compiler needs.
+#
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+#
 # PIC, for one thing: `sort_index` on 64-bit Morton codes, to order the shell
 # pairs inside each bin spatially. See `sort_bins_spatially` in
 # `src/trc_bins.F90` for why that ordering is worth a sort.
@@ -98,8 +114,6 @@ else()
   add_library(${main_lib} STATIC)
 endif()
 add_library(terco::${project_name} ALIAS ${main_lib})
-
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 #
 # TRC_FOCK6 folds the eight-fold permutational symmetry into six atomic
