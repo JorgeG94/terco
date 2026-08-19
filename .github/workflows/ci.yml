@@ -70,7 +70,7 @@ jobs:
           -S . -B build
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel 2
 
       - name: Show the failure verbosely
         if: failure()
@@ -78,7 +78,7 @@ jobs:
 
       - name: Validate
         run: >-
-          ctest --test-dir build --output-on-failure --parallel
+          ctest --test-dir build --output-on-failure --parallel 2
           --no-tests=error
 
   generators:
@@ -157,7 +157,7 @@ jobs:
           git diff --stat -- src | tail -1
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF \
                 -DCMAKE_Fortran_FLAGS=-fopenmp -S . -B build-omp
-          cmake --build build-omp --parallel
+          cmake --build build-omp --parallel 2
           # THREADS ARE THE POINT. The conversion turns constructs whose
           # locality the standard guaranteed into ones where OpenMP's default
           # is shared, so the failure mode is a race -- and a race is invisible
