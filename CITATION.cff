@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: >-
+  If you use terco, please cite the paper below, which describes the GPU
+  Hartree-Fock work several of its design decisions follow.
+title: terco
+abstract: >-
+  Gaussian integrals on the GPU in standard Fortran: do concurrent for the
+  parallelism, OpenACC only for device residency and the atomic updates the
+  standard cannot express.
+authors:
+  - family-names: "Galvez Vallejo"
+    given-names: "Jorge Luis"
+license: MIT
+repository-code: "https://github.com/JorgeG94/terco"
+references:
+  - type: article
+    title: >-
+      High-performance GPU-accelerated evaluation of electron repulsion
+      integrals
+    authors:
+      - family-names: "Galvez Vallejo"
+        given-names: "Jorge Luis"
+      - family-names: "Barca"
+        given-names: "Giuseppe M. J."
+      - family-names: "Gordon"
+        given-names: "Mark S."
+    journal: "Molecular Physics"
+    year: 2022
+    month: 8
+    start: "e2112987"
+    issn: "0026-8976"
+    doi: "10.1080/00268976.2022.2112987"
+    url: "https://www.tandfonline.com/doi/full/10.1080/00268976.2022.2112987"

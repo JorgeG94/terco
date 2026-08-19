@@ -18,6 +18,11 @@
 ! parameter arrays this size.  A plain module array with an initialiser is
 ! fine and is what gamess-libERI settled on for the same reason.
 !
+!
+! [1] J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
+!     "High-performance GPU-accelerated evaluation of electron repulsion
+!     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
+!
 module trc_boys
    implicit none
    private

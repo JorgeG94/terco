@@ -13,7 +13,9 @@
 ! materialised either -- which is what removed the last large host allocation.
 !
 !
-! [1] is the reference in README.md; see its `References` section.
+! [1] J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
+!     "High-performance GPU-accelerated evaluation of electron repulsion
+!     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
 !
 module trc_binkernel
    use trc_boys, only: dp, boys_eval, BOYS_MMAX

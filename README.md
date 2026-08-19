@@ -225,25 +225,42 @@ worst class across all of them.
 
 ## References
 
-Several design decisions here — the shell-pair binning by angular momentum and
-contraction depth, the pre-screen before binning, the folded six-update
-digestion, and the per-order Boys interpolation — follow the GPU Hartree–Fock
-work described in:
+Several design decisions here follow the GPU Hartree–Fock work in **[1]** — the
+shell-pair binning by angular momentum and contraction depth, the pre-screen
+before binning, the folded six-update digestion, and the per-order Boys
+interpolation. The sources cite it as `[1]` where it is relevant.
 
-> **[1]** J. L. Gálvez Vallejo *et al.*, *Molecular Physics*.
-> *(full citation to be completed — see the note in the repository history)*
+> **[1]** J. L. Gálvez Vallejo, G. M. J. Barca and M. S. Gordon,
+> *High-performance GPU-accelerated evaluation of electron repulsion integrals*,
+> **Molecular Physics** (2022), e2112987.
+> [doi:10.1080/00268976.2022.2112987](https://doi.org/10.1080/00268976.2022.2112987)
 
-The source cites this as `[1]` wherever it is relevant, rather than naming a
-codebase that is not public.
+<details>
+<summary>BibTeX</summary>
 
-Comparisons and validation targets used during development that **are** open
-source, and can be reproduced: [GAMESS
-libERI](https://github.com/gamess-libERI), [libcint], [pyscf] and
-[gpu4pyscf].
+```bibtex
+@article{galvez_vallejo_high-performance_2022,
+  title   = {High-performance {GPU}-accelerated evaluation of electron repulsion integrals},
+  author  = {Galvez Vallejo, Jorge Luis and Barca, Giuseppe M. J. and Gordon, Mark S.},
+  journal = {Molecular Physics},
+  year    = {2022},
+  month   = aug,
+  pages   = {e2112987},
+  issn    = {0026-8976, 1362-3028},
+  doi     = {10.1080/00268976.2022.2112987},
+  url     = {https://www.tandfonline.com/doi/full/10.1080/00268976.2022.2112987},
+}
+```
+
+</details>
+
+Validation and comparison targets used during development, all open source and
+all reproducible: [libcint], [pyscf], [gpu4pyscf], and [GAMESS libERI].
 
 [libcint]: https://github.com/sunqm/libcint
 [pyscf]: https://github.com/pyscf/pyscf
 [gpu4pyscf]: https://github.com/pyscf/gpu4pyscf
+[GAMESS libERI]: https://github.com/gms-bbg/gms_libERI
 
 ## Licence
 
