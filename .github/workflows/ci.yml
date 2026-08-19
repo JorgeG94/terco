@@ -81,6 +81,44 @@ jobs:
           ctest --test-dir build --output-on-failure --parallel 2
           --no-tests=error
 
+  fpm-build:
+    name: fpm (gcc 15)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same floor as host-build: `local()` locality specifiers need 15.
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1.9.0
+        id: setup-fortran
+        with:
+          compiler: gcc
+          version: 15
+
+      # Not fortran-lang/setup-fpm: v5 cannot fetch fpm at all. The release
+      # binary is one curl and is pinned, so a bad fpm release cannot turn this
+      # job red without a commit here.
+      - name: Install fpm
+        run: |
+          curl -sSL -o "$HOME/fpm" \
+            https://github.com/fortran-lang/fpm/releases/download/v0.13.0/fpm-0.13.0-linux-x86_64-gcc-12
+          chmod +x "$HOME/fpm"
+          echo "$HOME" >> "$GITHUB_PATH"
+
+      - name: fpm versioning
+        run: fpm --version
+
+      # The fpm build exists so that `fpm install terco` works for someone who
+      # does not want CMake. It compiles the COMMITTED kernels in
+      # `src/generated` -- fpm cannot run the generators -- so this checks that
+      # shipped configuration and nothing else. The generators job next door is
+      # what keeps those files honest.
+      #
+      # No GPU flags: without `-stdpar=gpu` this is a correct, slow CPU
+      # library, which is exactly what a runner can check.
+      - name: fpm build
+        run: fpm build --compiler gfortran --profile release
+
   generators:
     name: generated sources are up to date
     runs-on: ubuntu-latest
