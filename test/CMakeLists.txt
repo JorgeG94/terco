@@ -93,6 +93,18 @@ terco_add_check(check_1e check_1e.F90)
 terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
 
 #
+# The same comparison with f functions, which is the only test that exercises
+# the hybrid dispatch: at LMAX=3 with the unrolled set generated at 2, `fock`
+# splits the work between the two paths and `fock_nosym` does not, so they
+# agree only if the split is exact.
+#
+# Registered at every ceiling and skipped from inside when the build cannot
+# reach l = 3, so it never silently stops testing anything: a build that CAN
+# run it always does.
+#
+terco_add_check(check_nosym_f check_nosym.F90 NEEDS_BASIS ARGS water.xyz 3)
+
+#
 # Cartesian multipoles through the octupole. The Fortran half writes a binary
 # dump; `mult_ref.py` compares all 39 components against pyscf and refuses to
 # judge any of them until the overlap agrees first.

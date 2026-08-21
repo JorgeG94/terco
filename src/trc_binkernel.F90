@@ -1417,6 +1417,44 @@ contains
 #define FG_ATOMIC !$acc atomic update
 #endif
 
+#if defined(TRC_FOCK6)
+         !
+         ! The SAME six updates the per-class kernels make, and they were
+         ! missing here.
+         !
+         ! This is the generic HRR branch, compiled only when TRC_UNROLL_HRR is
+         ! off -- every build at LMAX >= 2 -- and under TRC_PERCLASS nothing
+         ! reached it, because every SCF quartet went to an unrolled per-class
+         ! kernel instead. So it had no folded digestion at all: it wrote
+         ! unfolded J into jmat and K into kmat while its caller, compiled for
+         ! FOCK6, read jmat as the finished G. check_nosym catches it in one
+         ! line, but only in a TERCO_PERCLASS=OFF build, and none was run.
+         !
+         ! Reachable today only with -DTERCO_PERCLASS=OFF, which is why it
+         ! stayed broken: no default build runs it, and no CI job configures
+         ! that way. A kernel nothing executes is a kernel nothing checks.
+         !
+         sc = vv
+         if (.not. dij) sc = sc*0.5_dp
+         if (.not. dkl) sc = sc*0.5_dp
+         if (.not. dpq) sc = sc*0.5_dp
+         do dn = 1, ndens
+            FG_ATOMIC
+            jmat(dn, mu, nu) = jmat(dn, mu, nu) &
+                               + 4.0_dp*jfac*sc*dmat(dn, lam, sig)
+            FG_ATOMIC
+            jmat(dn, lam, sig) = jmat(dn, lam, sig) &
+                                 + 4.0_dp*jfac*sc*dmat(dn, mu, nu)
+            FG_ATOMIC
+            jmat(dn, mu, lam) = jmat(dn, mu, lam) - kfac*sc*dmat(dn, nu, sig)
+            FG_ATOMIC
+            jmat(dn, mu, sig) = jmat(dn, mu, sig) - kfac*sc*dmat(dn, nu, lam)
+            FG_ATOMIC
+            jmat(dn, nu, lam) = jmat(dn, nu, lam) - kfac*sc*dmat(dn, mu, sig)
+            FG_ATOMIC
+            jmat(dn, nu, sig) = jmat(dn, nu, sig) - kfac*sc*dmat(dn, mu, lam)
+         end do
+#else
          !
          ! ONE UPDATE PER DENSITY. These references carried two subscripts
          ! against rank-three arrays -- `jmat(mu, nu)` on
@@ -1482,6 +1520,7 @@ contains
                end if
             end if
          end do
+#endif
 #endif
       end do
       end do
