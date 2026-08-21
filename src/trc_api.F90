@@ -39,6 +39,7 @@
 !
 module trc_api
    use trc_boys, only: dp, boys_init
+   use trc_tables, only: LMAX
    use trc_1e_kernels, only: one_e_dispatch, ONE_E_LMAX
    use trc_mult_kernels, only: multipole_dispatch, TRC_NMULT, MULT_LMAX
    use trc_df_kernels, only: df_2c_dispatch, df_3c_dispatch, &
@@ -72,6 +73,33 @@ module trc_api
    !
    integer, parameter, public :: TRC_MAXL = &
       max(ONE_E_LMAX, max(DF_LMAX, DF_LMAX_AUX))
+
+   !
+   ! COMPILE-TIME ASSERTION: the one-electron kernels must reach as high as the
+   ! four-centre ones.
+   !
+   ! "The two do not have to agree" above is true only in the direction where
+   ! 1e is HIGHER. The other direction is not a limitation, it is a wrong
+   ! answer: a build whose four-centre path outranks ONE_E_LMAX accepts a basis
+   ! it cannot do one-electron integrals for, and builds H from whatever
+   ! one_e_dispatch returns for a key it has no case for. That is a converged
+   ! SCF on a wrong Hamiltonian, with no diagnostic anywhere.
+   !
+   ! It holds today because both ceilings are 2. It is asserted so that raising
+   ! one without the other stops the build instead of the science.
+   !
+   ! Against trc_tables' LMAX and not the TRC_LMAX preprocessor symbol: CMake
+   ! defines TRC_LMAX and fpm does not, so referring to it here compiles under
+   ! one build system and not the other. trc_tables already carries the
+   ! `#ifndef TRC_LMAX / #define TRC_LMAX 2` default and exports the result as
+   ! a parameter, which is the value both builds actually use.
+   !
+   ! Division rather than a zero-size array because a negative extent is legal
+   ! Fortran and silently gives an empty array, whereas 1/0 in a constant
+   ! expression is a hard error in gfortran, ifx and nvfortran alike.
+   !
+   integer, parameter, private :: ASSERT_1E_COVERS_ERI = &
+      1/merge(1, 0, ONE_E_LMAX >= LMAX)
    !! Largest Cartesian block a shell pair can produce here. Fixed at compile
    !! time because `do concurrent` locals must be, and because an in-kernel
    !! allocate would stall the device.

@@ -24,6 +24,8 @@ module trc_1e_kernels
    integer, parameter :: TRC_NMULT = 3 + 9 + 27
 
    integer, parameter :: ONE_E_LMAX = 2
+   !! Dispatch radix, FIXED and independent of ONE_E_LMAX -- see gen_1e.py.
+   integer, parameter :: ONE_E_RADIX = 11
    real(dp), parameter :: PI = 3.14159265358979323846_dp
 
 contains
@@ -2069,25 +2071,38 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(out) :: sout(*), tout(*), vout(*)
-      select case (la*(2 + 1) + lb)
+      select case (la*ONE_E_RADIX + lb)
       case (0); call one_e_00(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
       case (1); call one_e_01(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
       case (2); call one_e_02(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (3); call one_e_10(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (11); call one_e_10(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (4); call one_e_11(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (12); call one_e_11(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (5); call one_e_12(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (13); call one_e_12(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (6); call one_e_20(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (22); call one_e_20(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (7); call one_e_21(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (23); call one_e_21(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (8); call one_e_22(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (24); call one_e_22(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
+      case default
+         !! No kernel for this class -- ONE_E_LMAX is below the basis. A
+         !! sentinel rather than silence: these are intent(out) on assumed-size
+         !! dummies, so doing nothing hands back the caller's stale buffer as
+         !! an overlap matrix, and an SCF converges happily on it. huge() and
+         !! not a NaN because this is device code under -fast, where the first
+         !! min/max launders a NaN into a bound.
+         !!
+         !! trc_basis refuses such a basis on the host before any of this runs;
+         !! this arm is the backstop for a path that skipped that check.
+         sout(1) = huge(1.0_dp)
+         tout(1) = huge(1.0_dp)
+         vout(1) = huge(1.0_dp)
       end select
    end subroutine one_e_dispatch
 

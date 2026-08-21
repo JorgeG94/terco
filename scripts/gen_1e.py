@@ -42,6 +42,22 @@ USAGE
 
 import argparse
 
+# FIXED, and not lmax + 1.
+#
+# The dispatch key was la*(ONE_E_LMAX + 1) + lb, which encodes the ceiling it
+# was generated at. At ONE_E_LMAX = 2 the keys 0..8 happen to be unique, so
+# nothing is wrong today -- but the moment the ceiling rises the encoding
+# COLLIDES rather than merely missing: at a radix of 3, (s|f) keys to 3 and so
+# does (p|s), so an f shell would not fall through to nothing. It would run the
+# (p|s) kernel and return a plausible, wrong overlap.
+#
+# That is worse than the four-centre version of this bug, which dispatched a
+# wrong kernel only across a rebuild. This one is wrong within a single
+# consistent build.
+#
+# 11 matches CLASS_RADIX in gen_perclass.py, which had the same bug.
+ONE_E_RADIX = 11
+
 
 def cart(l):
     """(nx,ny,nz) for one shell, libcint order."""
@@ -417,6 +433,8 @@ module trc_mult_kernels
    public :: multipole_dispatch, TRC_NMULT, MULT_LMAX
 
    integer, parameter :: MULT_LMAX = {L}
+   !! Dispatch radix, FIXED and independent of MULT_LMAX -- see gen_1e.py.
+   integer, parameter :: ONE_E_RADIX = __RADIX__
    !! 3 dipole + 9 quadrupole + 27 octupole
    integer, parameter :: TRC_NMULT = 39
 
@@ -492,16 +510,24 @@ contains
       real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
       real(dp), intent(in)  :: ra(3), rb(3), orig(3)
       real(dp), intent(out) :: mout(*)
-      select case (la*({L} + 1) + lb)""")
+      select case (la*ONE_E_RADIX + lb)""")
     for la, lb in names:
-        parts.append(f"""      case ({la*(L + 1) + lb}); call mult_{la}{lb}(nprim_a, nprim_b, ea, ca, eb, cb, &
+        parts.append(f"""      case ({la*ONE_E_RADIX + lb}); call mult_{la}{lb}(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)""")
-    parts.append("""      end select
+    parts.append("""      case default
+         !! No kernel for this class. A sentinel rather than silence: `mout`
+         !! is intent(out) on an assumed-size dummy, so doing nothing returns
+         !! whatever the caller's buffer held. huge() and not a NaN because
+         !! this is device code under -fast, where a NaN is laundered into a
+         !! bound by the first min/max it meets.
+         mout(1) = huge(1.0_dp)
+      end select
    end subroutine multipole_dispatch
 
 end module trc_mult_kernels
 """)
     txt = "\n".join(parts).replace("PI_", "3.14159265358979323846_dp")
+    txt = txt.replace("__RADIX__", str(ONE_E_RADIX))
     with open(path, "w") as fh:
         fh.write(txt)
     print(f"wrote {path}: {len(names)} classes, {txt.count(chr(10))} lines")
@@ -551,6 +577,8 @@ module trc_1e_kernels
    integer, parameter :: TRC_NMULT = 3 + 9 + 27
 
    integer, parameter :: ONE_E_LMAX = {L}
+   !! Dispatch radix, FIXED and independent of ONE_E_LMAX -- see gen_1e.py.
+   integer, parameter :: ONE_E_RADIX = __RADIX__
    real(dp), parameter :: PI = 3.14159265358979323846_dp
 
 contains
@@ -574,18 +602,31 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(out) :: sout(*), tout(*), vout(*)
-      select case (la*({L} + 1) + lb)""")
+      select case (la*ONE_E_RADIX + lb)""")
     for la, lb in names:
         parts.append(
-            f"""      case ({la*(L + 1) + lb}); call one_e_{la}{lb}(nprim_a, nprim_b, ea, ca, eb, cb, &
+            f"""      case ({la*ONE_E_RADIX + lb}); call one_e_{la}{lb}(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)""")
-    parts.append("""      end select
+    parts.append("""      case default
+         !! No kernel for this class -- ONE_E_LMAX is below the basis. A
+         !! sentinel rather than silence: these are intent(out) on assumed-size
+         !! dummies, so doing nothing hands back the caller's stale buffer as
+         !! an overlap matrix, and an SCF converges happily on it. huge() and
+         !! not a NaN because this is device code under -fast, where the first
+         !! min/max launders a NaN into a bound.
+         !!
+         !! trc_basis refuses such a basis on the host before any of this runs;
+         !! this arm is the backstop for a path that skipped that check.
+         sout(1) = huge(1.0_dp)
+         tout(1) = huge(1.0_dp)
+         vout(1) = huge(1.0_dp)
+      end select
    end subroutine one_e_dispatch
 
 end module trc_1e_kernels
 """)
 
-    txt = "\n".join(parts)
+    txt = "\n".join(parts).replace("__RADIX__", str(ONE_E_RADIX))
     with open(args.output, "w") as fh:
         fh.write(txt)
     print(f"wrote {args.output}: {len(names)} classes, {txt.count(chr(10))} lines")

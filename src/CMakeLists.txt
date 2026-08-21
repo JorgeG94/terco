@@ -66,21 +66,24 @@ if(_regen)
 
   # One-electron, multipoles and density fitting carry angular momentum on two
   # or three centres rather than four, so they grow as L^2 or L^3 and can
-  # afford a higher ceiling than the four-centre kernels. Fixed at 2 here
-  # because that is what the shipped set was built with; raising it is a
-  # one-line change and a longer compile.
-  execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax 2
+  # afford the same ceiling as the four-centre kernels for far less compile.
+  #
+  # They follow TERCO_LMAX rather than a literal, because a one-electron path
+  # that stops below the four-centre one is not a limitation -- it is a wrong
+  # Fock matrix. H would be built from whatever one_e_dispatch returns for a
+  # key it has no case for, and an SCF converges on that without complaint.
+  execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX}
                           -o ${_gen_dir}/trc_1e_kernels.F90 RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_1e.py failed (${_rc})")
   endif()
   execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax 2 --multipole
+    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX} --multipole
             ${_gen_dir}/trc_mult_kernels.F90 RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_1e.py --multipole failed (${_rc})")
   endif()
-  execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax 2
+  execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${TERCO_LMAX}
                           -o ${_gen_dir}/trc_df_kernels.F90 RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_df.py failed (${_rc})")

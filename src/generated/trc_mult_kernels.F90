@@ -20,6 +20,8 @@ module trc_mult_kernels
    public :: multipole_dispatch, TRC_NMULT, MULT_LMAX
 
    integer, parameter :: MULT_LMAX = 2
+   !! Dispatch radix, FIXED and independent of MULT_LMAX -- see gen_1e.py.
+   integer, parameter :: ONE_E_RADIX = 11
    !! 3 dipole + 9 quadrupole + 27 octupole
    integer, parameter :: TRC_NMULT = 39
 
@@ -5914,25 +5916,32 @@ contains
       real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
       real(dp), intent(in)  :: ra(3), rb(3), orig(3)
       real(dp), intent(out) :: mout(*)
-      select case (la*(2 + 1) + lb)
+      select case (la*ONE_E_RADIX + lb)
       case (0); call mult_00(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
       case (1); call mult_01(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
       case (2); call mult_02(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (3); call mult_10(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (11); call mult_10(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (4); call mult_11(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (12); call mult_11(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (5); call mult_12(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (13); call mult_12(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (6); call mult_20(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (22); call mult_20(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (7); call mult_21(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (23); call mult_21(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (8); call mult_22(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (24); call mult_22(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
+      case default
+         !! No kernel for this class. A sentinel rather than silence: `mout`
+         !! is intent(out) on an assumed-size dummy, so doing nothing returns
+         !! whatever the caller's buffer held. huge() and not a NaN because
+         !! this is device code under -fast, where a NaN is laundered into a
+         !! bound by the first min/max it meets.
+         mout(1) = huge(1.0_dp)
       end select
    end subroutine multipole_dispatch
 
