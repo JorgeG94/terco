@@ -199,41 +199,41 @@ contains
                   if (bi >= BOYS_NGRID) bi = BOYS_NGRID - 1
                   bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
                   bx2 = 2.0_dp*bx
-                  bbase = bi*54
-                  bj = bbase + 0
-                  b1 = boys_table(bj + 6)
+                  bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
+                  bj = bbase + 0*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
                   b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
                   f(0) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 6
-                  b1 = boys_table(bj + 6)
+                  bj = bbase + 1*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
                   b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
                   f(1) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 12
-                  b1 = boys_table(bj + 6)
+                  bj = bbase + 2*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
                   b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
                   f(2) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 18
-                  b1 = boys_table(bj + 6)
+                  bj = bbase + 3*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
                   b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
                   f(3) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 24
-                  b1 = boys_table(bj + 6)
+                  bj = bbase + 4*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
                   b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0

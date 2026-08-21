@@ -26,6 +26,15 @@ a module boundary and 1.58x faster inlined, so nothing here is allowed to
 become a call.
 """
 
+#: Radix for the dispatch key. FIXED, not LMAX+1.
+#:
+#: The key used to be ((la*(LMAX+1)+lb)*(LMAX+1)+lc)*(LMAX+1)+ld, which encodes
+#: LMAX -- so a dispatcher generated at one LMAX and compiled at another still
+#: BUILDS and dispatches the wrong kernel. A wrong number, not a build failure.
+#: A fixed radix makes the key mean the same thing at every LMAX; 11 covers
+#: l <= 10, far past anything that will ever be generated.
+CLASS_RADIX = 11
+
 import argparse
 import re
 import importlib.util
@@ -95,11 +104,16 @@ def emit_boys(m):
     w("                  bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV"
       " - 1.0_dp")
     w("                  bx2 = 2.0_dp*bx")
-    w(f"                  bbase = bi*{(8 + 1)*(5 + 1)}")
+    # SYMBOLIC, not a baked literal. This used to emit bi*54, which is
+    # (BOYS_MMAX+1)*(BOYS_NCHEB+1) evaluated at MMAX=8 -- so regenerating the
+    # Boys table at a different MMAX silently changed the table's stride while
+    # every kernel kept indexing with the old one. It compiled, and it gave
+    # wrong numbers.
+    w("                  bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)")
     for k in range(m + 1):
-        w(f"                  bj = bbase + {k*6}")
+        w(f"                  bj = bbase + {k}*(BOYS_NCHEB + 1)")
         # Clenshaw, degree 5: c_j sits at boys_table(bj + j + 1)
-        w("                  b1 = boys_table(bj + 6)")
+        w("                  b1 = boys_table(bj + BOYS_NCHEB + 1)")
         w("                  b2 = 0.0_dp")
         for jj in (5, 4, 3, 2):
             w(f"                  b0 = bx2*b1 - b2 + boys_table(bj + {jj});"
@@ -514,6 +528,13 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
 """
 
 
+def _radix(txt):
+    """Fill the radix placeholder. A placeholder rather than an f-string
+    field because this block is emitted from two templates, one f-string
+    and one plain, and a brace works in only one of them."""
+    return txt.replace("__RADIX__", str(CLASS_RADIX))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lmax", type=int, default=1)
@@ -557,7 +578,13 @@ module trc_pc_kernels
    use trc_tables, only: LMAX
    implicit none
    private
-   public :: pc_dispatch
+   public :: pc_dispatch, CLASS_RADIX
+
+   !> Radix of the dispatch key, FIXED so it does not encode LMAX.
+   !> The caller in trc_binkernel imports this rather than repeating the
+   !> literal, because a key formed two ways that disagree dispatches the
+   !> wrong kernel and still builds.
+   integer, parameter :: CLASS_RADIX = __RADIX__
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -589,7 +616,7 @@ contains
                                     for ln in vrr.split("\n"))
                     vrr += f"\n               cur = {(la + lb + lc + ld) % 2}"
                     hrr = gh.emit_class(la, lb, lc, ld, idx_h)
-                    key = ((la*(L + 1) + lb)*(L + 1) + lc)*(L + 1) + ld
+                    key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld
                     names.append((key, f"{la}{lb}{lc}{ld}"))
                     body = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
                     pieces.append((f"{la}{lb}{lc}{ld}", body))
@@ -659,7 +686,13 @@ module trc_pc_kernels
 """ + "\n".join(use_lines) + """
    implicit none
    private
-   public :: pc_dispatch
+   public :: pc_dispatch, CLASS_RADIX
+
+   !> Radix of the dispatch key, FIXED so it does not encode LMAX.
+   !> The caller in trc_binkernel imports this rather than repeating the
+   !> literal, because a key formed two ways that disagree dispatches the
+   !> wrong kernel and still builds.
+   integer, parameter :: CLASS_RADIX = __RADIX__
 
 contains
 """]
@@ -667,12 +700,12 @@ contains
                         txt.index("end module trc_pc_kernels")])
         disp.append("end module trc_pc_kernels\n")
         with open(os.path.join(args.split, "trc_pc_kernels.F90"), "w") as fh:
-            fh.write("\n".join(disp))
+            fh.write(_radix("\n".join(disp)))
         print(f"wrote {len(names)} class modules + dispatcher into "
               f"{args.split}")
         return
 
-    open(args.output, "w").write(txt)
+    open(args.output, "w").write(_radix(txt))
     print(f"wrote {args.output}: {len(names)} kernels, {txt.count(chr(10))} lines")
 
 

@@ -195,9 +195,9 @@ contains
                   if (bi >= BOYS_NGRID) bi = BOYS_NGRID - 1
                   bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
                   bx2 = 2.0_dp*bx
-                  bbase = bi*54
-                  bj = bbase + 0
-                  b1 = boys_table(bj + 6)
+                  bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
+                  bj = bbase + 0*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
                   b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0

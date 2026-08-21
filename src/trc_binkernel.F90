@@ -24,7 +24,7 @@ module trc_binkernel
                          ncum_of, ncart_of
    use trc_bins, only: pair_bins_t, SMAX
 #ifdef TRC_PERCLASS
-   use trc_pc_kernels, only: pc_dispatch
+   use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
 #endif
    implicit none
    private
@@ -261,8 +261,8 @@ contains
          integer(kind=8) :: o2
          allocate (ord(nseg), ckey(nseg))
          do a2 = 1, nseg
-            ckey(a2) = ((sLA(a2)*(LMAX + 1) + sLB(a2))*(LMAX + 1) &
-                        + sLC(a2))*(LMAX + 1) + sLD(a2)
+            ckey(a2) = ((sLA(a2)*CLASS_RADIX + sLB(a2))*CLASS_RADIX &
+                        + sLC(a2))*CLASS_RADIX + sLD(a2)
             ord(a2) = a2
          end do
          ! insertion sort on the class key; nseg is small (hundreds)
@@ -287,15 +287,15 @@ contains
          do while (c0 <= nseg)
             c1 = c0
             do while (c1 < nseg)
-               if (((sLA(c1 + 1)*(LMAX + 1) + sLB(c1 + 1))*(LMAX + 1) &
-                    + sLC(c1 + 1))*(LMAX + 1) + sLD(c1 + 1) /= &
-                   ((sLA(c0)*(LMAX + 1) + sLB(c0))*(LMAX + 1) &
-                    + sLC(c0))*(LMAX + 1) + sLD(c0)) exit
+               if (((sLA(c1 + 1)*CLASS_RADIX + sLB(c1 + 1))*CLASS_RADIX &
+                    + sLC(c1 + 1))*CLASS_RADIX + sLD(c1 + 1) /= &
+                   ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
+                    + sLC(c0))*CLASS_RADIX + sLD(c0)) exit
                c1 = c1 + 1
             end do
             nl = nl + 1
-            call pc_dispatch(((sLA(c0)*(LMAX + 1) + sLB(c0))*(LMAX + 1) &
-                              + sLC(c0))*(LMAX + 1) + sLD(c0), &
+            call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
+                              + sLC(c0))*CLASS_RADIX + sLD(c0), &
                              c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)

@@ -89,7 +89,13 @@ module trc_pc_kernels
    use trc_pc_k2222, only: pc2222
    implicit none
    private
-   public :: pc_dispatch
+   public :: pc_dispatch, CLASS_RADIX
+
+   !> Radix of the dispatch key, FIXED so it does not encode LMAX.
+   !> The caller in trc_binkernel imports this rather than repeating the
+   !> literal, because a key formed two ways that disagree dispatches the
+   !> wrong kernel and still builds.
+   integer, parameter :: CLASS_RADIX = 11
 
 contains
 
@@ -126,238 +132,238 @@ contains
       case (2); call pc0002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (3); call pc0010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (11); call pc0010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (4); call pc0011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (12); call pc0011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (5); call pc0012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (13); call pc0012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (6); call pc0020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (22); call pc0020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (7); call pc0021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (23); call pc0021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (8); call pc0022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (24); call pc0022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (9); call pc0100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (121); call pc0100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (10); call pc0101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (122); call pc0101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (11); call pc0102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (123); call pc0102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (12); call pc0110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (132); call pc0110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (13); call pc0111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (133); call pc0111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (14); call pc0112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (134); call pc0112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (15); call pc0120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (143); call pc0120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (16); call pc0121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (144); call pc0121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (17); call pc0122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (145); call pc0122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (18); call pc0200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (242); call pc0200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (19); call pc0201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (243); call pc0201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (20); call pc0202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (244); call pc0202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (21); call pc0210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (253); call pc0210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (22); call pc0211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (254); call pc0211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (23); call pc0212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (255); call pc0212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (24); call pc0220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (264); call pc0220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (25); call pc0221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (265); call pc0221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (26); call pc0222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (266); call pc0222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (27); call pc1000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1331); call pc1000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (28); call pc1001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1332); call pc1001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (29); call pc1002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1333); call pc1002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (30); call pc1010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1342); call pc1010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (31); call pc1011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1343); call pc1011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (32); call pc1012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1344); call pc1012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (33); call pc1020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1353); call pc1020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (34); call pc1021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1354); call pc1021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (35); call pc1022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1355); call pc1022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (36); call pc1100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1452); call pc1100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (37); call pc1101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1453); call pc1101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (38); call pc1102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1454); call pc1102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (39); call pc1110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1463); call pc1110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (40); call pc1111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1464); call pc1111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (41); call pc1112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1465); call pc1112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (42); call pc1120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1474); call pc1120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (43); call pc1121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1475); call pc1121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (44); call pc1122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1476); call pc1122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (45); call pc1200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1573); call pc1200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (46); call pc1201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1574); call pc1201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (47); call pc1202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1575); call pc1202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (48); call pc1210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1584); call pc1210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (49); call pc1211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1585); call pc1211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (50); call pc1212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1586); call pc1212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (51); call pc1220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1595); call pc1220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (52); call pc1221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1596); call pc1221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (53); call pc1222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (1597); call pc1222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (54); call pc2000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2662); call pc2000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (55); call pc2001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2663); call pc2001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (56); call pc2002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2664); call pc2002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (57); call pc2010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2673); call pc2010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (58); call pc2011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2674); call pc2011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (59); call pc2012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2675); call pc2012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (60); call pc2020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2684); call pc2020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (61); call pc2021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2685); call pc2021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (62); call pc2022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2686); call pc2022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (63); call pc2100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2783); call pc2100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (64); call pc2101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2784); call pc2101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (65); call pc2102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2785); call pc2102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (66); call pc2110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2794); call pc2110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (67); call pc2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2795); call pc2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (68); call pc2112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2796); call pc2112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (69); call pc2120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2805); call pc2120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (70); call pc2121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2806); call pc2121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (71); call pc2122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2807); call pc2122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (72); call pc2200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2904); call pc2200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (73); call pc2201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2905); call pc2201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (74); call pc2202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2906); call pc2202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (75); call pc2210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2915); call pc2210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (76); call pc2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2916); call pc2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (77); call pc2212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2917); call pc2212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (78); call pc2220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2926); call pc2220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (79); call pc2221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2927); call pc2221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
-      case (80); call pc2222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2928); call pc2222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
       end select
