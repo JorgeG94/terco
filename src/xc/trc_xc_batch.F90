@@ -242,31 +242,16 @@ contains
       ! What the integrator's density screening is built on: with these,
       ! max |D_uv| chi_u chi_v over a batch is bounded without evaluating a
       ! single point, and a batch the density cannot reach is skipped by
-      ! both kernels. Computed here, once per grid, by collocating every
-      ! batch's local basis at every one of its points on the host -- the
-      ! cost of one point-kernel pass, paid once rather than per SCF step.
+      ! both kernels. Computed once per grid, on the device, one thread per
+      ! batch walking its own points -- so the maximum is a plain running
+      ! max with no atomics -- with the basis handed over as flat arrays the
+      ! way the integrator does it. Four seconds of host time on cholesterol
+      ! before this ran anywhere else.
       !
-      block
-         real(dp) :: cs(NCART_MAX), gs(3, NCART_MAX), d(3)
-         integer :: g, m, nc, kk
-         this%b_amax = 0.0_dp
-         do ib = 1, nb
-            do g = this%b_off(ib), this%b_off(ib + 1) - 1
-               kk = this%b_aooff(ib)
-               do k = this%b_shoff(ib), this%b_shoff(ib + 1) - 1
-                  ish = this%b_sh(k)
-                  d = this%r(:, g) - b%sh_r(:, ish)
-                  call shell_collocate(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:b%sh_np(ish), ish), &
-                                       b%sh_c(1:b%sh_np(ish), ish), d, cs, gs)
-                  nc = ncart(b%sh_l(ish))
-                  do m = 1, nc
-                     this%b_amax(kk) = max(this%b_amax(kk), abs(cs(m)))
-                     kk = kk + 1
-                  end do
-               end do
-            end do
-         end do
-      end block
+      this%b_amax = 0.0_dp
+      call batch_maxima(nb, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, npts, this%r, &
+                        this%b_off, this%b_shoff, size(this%b_sh), this%b_sh, this%b_aooff, &
+                        size(this%b_ao), this%b_amax)
 
    contains
 
@@ -292,6 +277,51 @@ contains
       end subroutine grow_stack
 
    end subroutine xcgrid_build
+
+   subroutine batch_maxima(nb, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+                           b_off, b_shoff, nbsh, b_sh, b_aooff, nbao, b_amax)
+      integer, intent(in) :: nb, maxnp, nshell, npts, nbsh, nbao
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
+      integer, intent(in) :: b_off(nb + 1), b_shoff(nb + 1), b_sh(nbsh), b_aooff(nb + 1)
+      real(dp), intent(inout) :: b_amax(nbao)
+      integer :: ib
+
+      !$acc data copyin(sh_l, sh_np, sh_e, sh_c, sh_r, r, b_off, b_shoff, b_sh, b_aooff) copy(b_amax)
+      do concurrent(ib=1:nb)
+         call batch_maxima_body(ib, nb, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+                                b_off, b_shoff, nbsh, b_sh, b_aooff, nbao, b_amax)
+      end do
+      !$acc end data
+   end subroutine batch_maxima
+
+   pure subroutine batch_maxima_body(ib, nb, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+                                     b_off, b_shoff, nbsh, b_sh, b_aooff, nbao, b_amax)
+      !$acc routine seq
+      integer, intent(in) :: ib, nb, maxnp, nshell, npts, nbsh, nbao
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
+      integer, intent(in) :: b_off(nb + 1), b_shoff(nb + 1), b_sh(nbsh), b_aooff(nb + 1)
+      real(dp), intent(inout) :: b_amax(nbao)
+      real(dp) :: cs(NCART_MAX), gs(3, NCART_MAX), d(3)
+      integer :: g, k, ish, kk, m, nc
+
+      do g = b_off(ib), b_off(ib + 1) - 1
+         kk = b_aooff(ib)
+         do k = b_shoff(ib), b_shoff(ib + 1) - 1
+            ish = b_sh(k)
+            d(1) = r(1, g) - sh_r(1, ish)
+            d(2) = r(2, g) - sh_r(2, ish)
+            d(3) = r(3, g) - sh_r(3, ish)
+            call shell_collocate(sh_l(ish), sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
+            nc = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
+            do m = 1, nc
+               b_amax(kk) = max(b_amax(kk), abs(cs(m)))
+               kk = kk + 1
+            end do
+         end do
+      end do
+   end subroutine batch_maxima_body
 
    subroutine xcgrid_to_device(this)
       class(trc_xc_grid_t), intent(inout) :: this

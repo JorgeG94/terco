@@ -61,10 +61,13 @@ program bench_xc
    call bas%to_device()
    nao = bas%nao
 
+   t0 = wall()
    call build_dft_grid(at_r, z, grid, err, level=level)
+   t1 = wall()
    if (err%has_error()) then
       print '(a)', 'bench_xc: grid failed: '//err%get_message(); stop 1
    end if
+   print '(a,f8.3,a)', '  grid build (Lebedev, radial, partition) ', t1 - t0, ' s'
    t0 = wall()
    call xg%build(grid%n_points, grid%coords, grid%weights, bas, max_pts=max_pts)
    call xg%to_device()
@@ -102,7 +105,7 @@ program bench_xc
    end do
    print '(a,f9.4,a,f9.4,a,f9.4,a,i0,a,i0,a)', '  per call: points ', sp/reps, ' s   pairs ', sq/reps, &
       ' s   total (best) ', tmin, ' s   (', nsk, ' of ', xg%nbatch, ' batches screened out)'
-   print '(a,f12.8,a,f14.10,a,f14.10)', '  E_xc(PBE) ', exc, '   N ', nelec, '   Tr(DS) ', trds
+   print '(a,f16.8,a,f14.8,a,f14.8)', '  E_xc(PBE) ', exc, '   N ', nelec, '   Tr(DS) ', trds
 
    call xg%release(); call grid%destroy(); call bas%release()
 

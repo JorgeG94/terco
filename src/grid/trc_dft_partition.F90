@@ -86,12 +86,23 @@ contains
    end function partition_scheme_name
 
    subroutine becke_partition_weights(points, atom_coords, atomic_numbers, owner, &
-                                      scheme, adjust, weights, error, nu_max)
+                                      scheme, adjust, weights, error, nu_max, budget)
       !! Partition weight at each grid point, for the atom that owns it
       !!
       !! The returned weight is w_owner(r): the fraction of the integrand at
       !! that point assigned to the atom whose atomic grid produced it. Multiply
       !! it by the point's radial and angular weight to get its contribution.
+      !!
+      !! ON THE DEVICE. Every point is independent and the work per point is
+      !! O(active atoms squared), which on a 74-atom molecule was seventeen
+      !! seconds of one host thread before the first kernel ran. The loop is
+      !! a `do concurrent` over points with the body in a `routine seq`
+      !! procedure, terco's pattern. What made that awkward was the per-point
+      !! scratch sized by the atom count -- distances, cell functions, the
+      !! active list -- which a device thread cannot allocate. It lives in
+      !! device arrays of (n_atoms, chunk) instead, and the points are
+      !! processed chunk by chunk under `budget` doubles of scratch, so the
+      !! atom count is bounded by memory and not by a parameter.
       real(dp), intent(in) :: points(:, :)       !! (3, n_points), Bohr
       real(dp), intent(in) :: atom_coords(:, :)  !! (3, n_atoms), Bohr
       integer, intent(in) :: atomic_numbers(:)   !! Z per atom, for the radii
@@ -104,17 +115,20 @@ contains
       !! is already at or beyond this value is left out of the pair loop for
       !! that point: with Becke's cutoff its cell function is then below
       !! 1e-9 relative, with Stratmann's it is exactly zero past 0.64. The
-      !! loop is O(active^2) per point instead of O(n_atoms^2), which is
-      !! what makes a 283-atom grid build in seconds rather than minutes.
-      !! Pass a value >= 1 for no screening; check_grid measures the
-      !! difference. Default PARTITION_NU_MAX.
+      !! loop is O(active^2) per point instead of O(n_atoms^2). Pass a value
+      !! >= 1 for no screening; check_grid measures the difference. Default
+      !! PARTITION_NU_MAX, or STRATMANN_A under that scheme.
       real(dp), intent(in), optional :: nu_max
+      !! Scratch budget in doubles, default 2^26 (512 MB): sets how many
+      !! points a chunk holds, 2^26 / (3 n_atoms).
+      integer(kind=8), intent(in), optional :: budget
 
-      real(dp), allocatable :: shift(:, :), inv_distance(:, :), cell(:), atom_r(:), r_min(:)
-      integer, allocatable :: active(:)
-      logical, allocatable :: is_active(:)
-      integer :: n_atoms, n_points, i, j, k, ia, ja, n_active, own, n
-      real(dp) :: mu, nu, s, total, numax, r_inner
+      real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
+      real(dp), allocatable :: atom_r(:, :), cell(:, :)
+      integer, allocatable :: active(:, :), mark(:, :)
+      integer :: n_atoms, n_points, i, j, k0, n, chunk, g
+      integer(kind=8) :: cap
+      real(dp) :: numax
 
       n_atoms = size(atom_coords, 2)
       n_points = size(points, 2)
@@ -148,9 +162,11 @@ contains
       ! screening is exact and nothing tighter buys anything.
       if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
       if (present(nu_max)) numax = nu_max
-      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms))
-      allocate (cell(n_atoms), atom_r(n_atoms), active(n_atoms), is_active(n_atoms), r_min(n_atoms))
+      cap = 67108864_8
+      if (present(budget)) cap = max(budget, int(3*n_atoms, 8))
+      chunk = int(min(int(n_points, 8), max(1_8, cap/int(3*n_atoms, 8))))
 
+      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
       call size_adjustment(atomic_numbers, adjust, shift)
 
       ! 1/R_AB, precomputed: it is the same for every point.
@@ -173,95 +189,127 @@ contains
          end do
       end do
 
-      is_active = .false.
-      do k = 1, n_points
-         own = owner(k)
-         do i = 1, n_atoms
-            atom_r(i) = norm2(points(:, k) - atom_coords(:, i))
+      ! Point index FIRST: consecutive threads are consecutive points, and
+      ! this is what makes their reads of the same atom's entry adjacent.
+      allocate (atom_r(chunk, n_atoms), cell(chunk, n_atoms), active(chunk, n_atoms), mark(chunk, n_atoms))
+      mark = 0
+      !$acc data copyin(points, atom_coords, owner, shift, inv_distance, r_min, mark) &
+      !$acc      create(atom_r, cell, active) copyout(weights)
+      do k0 = 1, n_points, chunk
+         n = min(chunk, n_points - k0 + 1)
+         do concurrent(g=1:n)
+            call partition_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
+                                 shift, inv_distance, r_min, scheme, adjust, numax, &
+                                 atom_r, cell, active, mark, weights)
          end do
-         if (scheme == PARTITION_STRATMANN .and. adjust == ADJUST_NONE) then
-            r_inner = 0.5_dp*(1.0_dp - STRATMANN_A)*r_min(own)
-            if (atom_r(own) < r_inner) then
-               weights(k) = 1.0_dp
-               cycle
-            end if
+      end do
+      !$acc end data
+   end subroutine becke_partition_weights
+
+   !
+   ! One point's partition weight, into weights(k), using row g of the
+   ! scratch. The atoms this point can see are first those not cut off
+   ! against its owner, then any atom not cut off against one of THOSE,
+   ! because an atom with a negligible cell of its own can still carry a
+   ! factor of order one on a neighbour's cell (water: the far hydrogen is
+   ! cut off against the oxygen and multiplies the near hydrogen's cell by
+   ! 0.97). An atom cut off against every kept atom has a cell below
+   ! s(nu_max) and a factor within s(nu_max) of one on all of them. `mark`
+   ! is a membership mask, left all-zero on exit for the next point.
+   !
+   pure subroutine partition_point(k, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
+                                   shift, inv_distance, r_min, scheme, adjust, numax, &
+                                   atom_r, cell, active, mark, weights)
+      !$acc routine seq
+      integer, intent(in) :: k, g, n_atoms, n_points, chunk, scheme, adjust
+      real(dp), intent(in) :: points(3, n_points), atom_coords(3, n_atoms)
+      integer, intent(in) :: owner(n_points)
+      real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms)
+      real(dp), intent(in) :: numax
+      real(dp), intent(inout) :: atom_r(chunk, n_atoms), cell(chunk, n_atoms)
+      integer, intent(inout) :: active(chunk, n_atoms), mark(chunk, n_atoms)
+      real(dp), intent(inout) :: weights(n_points)
+      integer :: own, i, j, ia, ja, n_active, n1
+      real(dp) :: mu, nu, s, total, r_inner, dx, dy, dz
+
+      own = owner(k)
+      do i = 1, n_atoms
+         dx = points(1, k) - atom_coords(1, i)
+         dy = points(2, k) - atom_coords(2, i)
+         dz = points(3, k) - atom_coords(3, i)
+         atom_r(g, i) = sqrt(dx*dx + dy*dy + dz*dz)
+      end do
+      if (scheme == PARTITION_STRATMANN .and. adjust == ADJUST_NONE) then
+         r_inner = 0.5_dp*(1.0_dp - STRATMANN_A)*r_min(own)
+         if (atom_r(g, own) < r_inner) then
+            weights(k) = 1.0_dp
+            return
          end if
+      end if
 
-         ! The atoms this point can see. First those not cut off against
-         ! its owner; then any atom not cut off against one of THOSE, because
-         ! an atom with a negligible cell of its own can still carry a factor
-         ! of order one on a neighbour's cell (water: the far hydrogen is cut
-         ! off against the oxygen and multiplies the near hydrogen's cell by
-         ! 0.97). An atom cut off against every kept atom has a cell below
-         ! s(nu_max) and a factor within s(nu_max) of one on all of them.
-         n_active = 1
-         active(1) = own
-         is_active(own) = .true.
-         do i = 1, n_atoms
-            if (i == own) cycle
-            mu = (atom_r(i) - atom_r(own))*inv_distance(i, own)
-            nu = mu + shift(i, own)*(1.0_dp - mu*mu)
-            if (nu < numax) then
-               n_active = n_active + 1
-               active(n_active) = i
-               is_active(i) = .true.
-            end if
-         end do
-         n = n_active
-         do i = 1, n_atoms
-            if (is_active(i)) cycle
-            do ja = 2, n
-               j = active(ja)
-               mu = (atom_r(i) - atom_r(j))*inv_distance(i, j)
-               nu = mu + shift(i, j)*(1.0_dp - mu*mu)
-               if (nu < numax) then
-                  n_active = n_active + 1
-                  active(n_active) = i
-                  is_active(i) = .true.
-                  exit
-               end if
-            end do
-         end do
-
-         cell = 1.0_dp
-         do ia = 1, n_active
-            i = active(ia)
-            do ja = ia + 1, n_active
-               j = active(ja)
-               mu = (atom_r(i) - atom_r(j))*inv_distance(i, j)
-               nu = mu + shift(i, j)*(1.0_dp - mu*mu)
-
-               if (scheme == PARTITION_BECKE) then
-                  s = becke_cutoff(nu)
-               else
-                  s = stratmann_cutoff(nu)
-               end if
-
-               ! s is the fraction going to i; the complement goes to j. Doing
-               ! both here halves the work and keeps the pair symmetric by
-               ! construction, so the weights cannot fail to sum to 1 through
-               ! an asymmetry in nu.
-               cell(i) = cell(i)*s
-               cell(j) = cell(j)*(1.0_dp - s)
-            end do
-         end do
-
-         total = 0.0_dp
-         do ia = 1, n_active
-            total = total + cell(active(ia))
-         end do
-         do ia = 1, n_active
-            is_active(active(ia)) = .false.
-         end do
-         if (total > 0.0_dp) then
-            weights(k) = cell(own)/total
-         else
-            ! Every cell function underflowed, which happens only absurdly far
-            ! from the molecule where the integrand is zero anyway.
-            weights(k) = 0.0_dp
+      n_active = 1
+      active(g, 1) = own
+      mark(g, own) = 1
+      do i = 1, n_atoms
+         if (i == own) cycle
+         mu = (atom_r(g, i) - atom_r(g, own))*inv_distance(i, own)
+         nu = mu + shift(i, own)*(1.0_dp - mu*mu)
+         if (nu < numax) then
+            n_active = n_active + 1
+            active(g, n_active) = i
+            mark(g, i) = 1
          end if
       end do
-   end subroutine becke_partition_weights
+      n1 = n_active
+      do i = 1, n_atoms
+         if (mark(g, i) == 1) cycle
+         do ja = 2, n1
+            j = active(g, ja)
+            mu = (atom_r(g, i) - atom_r(g, j))*inv_distance(i, j)
+            nu = mu + shift(i, j)*(1.0_dp - mu*mu)
+            if (nu < numax) then
+               n_active = n_active + 1
+               active(g, n_active) = i
+               mark(g, i) = 1
+               exit
+            end if
+         end do
+      end do
+
+      do ia = 1, n_active
+         cell(g, active(g, ia)) = 1.0_dp
+      end do
+      do ia = 1, n_active
+         i = active(g, ia)
+         do ja = ia + 1, n_active
+            j = active(g, ja)
+            mu = (atom_r(g, i) - atom_r(g, j))*inv_distance(i, j)
+            nu = mu + shift(i, j)*(1.0_dp - mu*mu)
+            if (scheme == PARTITION_BECKE) then
+               s = becke_cutoff(nu)
+            else
+               s = stratmann_cutoff(nu)
+            end if
+            ! s is the fraction going to i; the complement goes to j. Doing
+            ! both here keeps the pair symmetric by construction.
+            cell(g, i) = cell(g, i)*s
+            cell(g, j) = cell(g, j)*(1.0_dp - s)
+         end do
+      end do
+
+      total = 0.0_dp
+      do ia = 1, n_active
+         total = total + cell(g, active(g, ia))
+         mark(g, active(g, ia)) = 0
+      end do
+      if (total > 0.0_dp) then
+         weights(k) = cell(g, own)/total
+      else
+         ! Every cell function underflowed, which happens only absurdly far
+         ! from the molecule where the integrand is zero anyway.
+         weights(k) = 0.0_dp
+      end if
+   end subroutine partition_point
 
    subroutine becke_partition_derivatives(points, atom_coords, atomic_numbers, owner, &
                                           scheme, adjust, dweights, error)
@@ -474,6 +522,7 @@ contains
 
    pure function becke_cutoff(nu) result(s)
       !! Becke's smooth cutoff: three iterations of p(x) = x(3 - x^2)/2
+      !$acc routine seq
       real(dp), intent(in) :: nu
       real(dp) :: s
       real(dp) :: f
@@ -487,6 +536,7 @@ contains
 
    pure function stratmann_cutoff(mu) result(s)
       !! Stratmann's cutoff, exactly 1 or 0 outside |mu| >= a
+      !$acc routine seq
       real(dp), intent(in) :: mu
       real(dp) :: s
       real(dp) :: z, z2
