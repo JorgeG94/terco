@@ -36,7 +36,6 @@ type = "static"
 auto-executables = false
 auto-tests = false
 module-naming = false
-link = ["lapack", "blas"]   # the SCF driver, see CMakeLists.txt
 
 [install]
 library = true
@@ -44,3 +43,4 @@ library = true
 
 [dependencies]
 pic = { git = "https://github.com/JorgeG94/pic", tag = "v0.6.0" }
+pic-blas = { git = "https://github.com/JorgeG94/pic-blas", tag = "v0.3.1" }

@@ -143,13 +143,20 @@ endif()
 add_subdirectory(src)
 
 #
-# LAPACK, for the SCF driver (src/trc_scf.F90): the DIIS system and, once
-# per geometry, the orthogonaliser are host LAPACK in every build, and under
-# a host build the eigenproblem and the products are LAPACK and BLAS too.
-# The GPU build does those on the device; -cudalib is in cmake/.
+# pic-blas, for the SCF driver (src/trc_scf.F90): the orthogonaliser and the
+# core guess go through its explicit-interface wrappers in every build, and
+# under a host build so do the eigenproblem, the products and the dot
+# products of the iteration. The GPU build does those on the device;
+# -cudalib is in cmake/. The DIIS system is solved in terco itself, the way
+# metalquicha does it, and needs neither.
 #
-find_package(LAPACK REQUIRED)
-target_link_libraries(${main_lib} PUBLIC pic::pic LAPACK::LAPACK)
+# pic-blas's switch is the unprefixed ENABLE_TESTING; terco's own is
+# TERCO_ENABLE_TESTING, so forcing this off costs nothing here.
+set(ENABLE_TESTING
+    OFF
+    CACHE BOOL "" FORCE)
+find_package("pic-blas" REQUIRED)
+target_link_libraries(${main_lib} PUBLIC pic::pic pic-blas::pic-blas)
 
 set_target_properties(${main_lib} PROPERTIES Fortran_MODULE_DIRECTORY
                                              ${CMAKE_BINARY_DIR}/modules)

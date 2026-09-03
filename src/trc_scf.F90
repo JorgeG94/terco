@@ -29,7 +29,13 @@
 ! A few damped steps from the guess, then Pulay's DIIS on the commutator
 ! FDS - SDF in the orthogonal basis, per spin with one set of coefficients
 ! for both. Converged when the energy change and the RMS density change
-! are both below their thresholds.
+! are both below their thresholds. The DIIS system is at most eleven by
+! eleven and is solved here by pivoted elimination, as metalquicha's
+! mqc_diis does, with the error block scaled to order one against the
+! constraint border first: near convergence the overlaps are 1e-16 and an
+! unscaled elimination makes the weights noise, which shows not as a
+! blow-up but as a density that drifts from the fixed point while the
+! energy sits flat.
 !
 ! UNRESTRICTED
 ! ------------
@@ -50,6 +56,8 @@ module trc_scf_driver
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
+   use pic_types, only: default_int
+   use pic_lapack_interfaces, only: pic_syev
    implicit none
    private
 
@@ -103,12 +111,12 @@ contains
       type(trc_scf_result_t), intent(out) :: res
       real(dp), intent(in), optional :: dguess(:, :, :)
 
-      integer :: nao, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m, info
+      integer :: nao, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
+      logical :: ok
       real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :), hcore(:, :), x(:, :)
       real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :), dtot(:, :), jmat(:, :)
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :), w3(:, :), bmat(:, :), rhs(:)
-      integer, allocatable :: ipiv(:)
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(dft_grid_t) :: grid
@@ -141,7 +149,7 @@ contains
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
       allocate (w1(nao, nao), w2(nao, nao), w3(nao, nao))
-      allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1), ipiv(opts%ndiis + 1))
+      allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
 
       ! --- once per geometry, on the host ------------------------------------
@@ -274,10 +282,8 @@ contains
                   bmat(j, i) = bmat(i, j)
                end do
             end do
-            rhs = 0.0_dp
-            rhs(m) = -1.0_dp
-            call dgesv(m, 1, bmat, opts%ndiis + 1, ipiv, rhs, opts%ndiis + 1, info)
-            if (info == 0) then
+            call solve_diis(m, bmat(1:m, 1:m), rhs(1:m), ok)
+            if (ok) then
                do concurrent(i=1:nao, j=1:nao, s=1:nspin)
                   fock(i, j, s) = 0.0_dp
                end do
@@ -344,15 +350,12 @@ contains
       subroutine guess_from(h, nocc_s)
          real(dp), intent(in) :: h(nao, nao)
          integer, intent(in) :: nocc_s
-         real(dp), allocatable :: fp(:, :), c(:, :), e(:), work(:)
-         integer :: lw, inf
-         allocate (fp(nao, nao), c(nao, nao), e(nao), work(1))
+         real(dp), allocatable :: fp(:, :), c(:, :), e(:)
+         integer(default_int) :: inf
+         allocate (fp(nao, nao), c(nao, nao), e(nao))
          fp = matmul(transpose(x), matmul(h, x))
-         call dsyev('V', 'U', nao, fp, nao, e, work, -1, inf)
-         lw = int(work(1))
-         deallocate (work); allocate (work(lw))
-         call dsyev('V', 'U', nao, fp, nao, e, work, lw, inf)
-         if (inf /= 0) error stop "trc_scf: dsyev failed on the core guess"
+         call pic_syev(fp, e, 'V', 'U', inf)
+         if (inf /= 0) error stop "trc_scf: pic_syev failed on the core guess"
          c = matmul(x, fp)
          if (nocc_s > 0) then
             res%dmat(:, :, s) = occ*matmul(c(:, 1:nocc_s), transpose(c(:, 1:nocc_s)))
@@ -381,19 +384,61 @@ contains
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n)
       real(dp), intent(out) :: x(n, n)
-      real(dp), allocatable :: u(:, :), w(:), work(:)
-      integer :: info, lwork, k
-      allocate (u(n, n), w(n), work(1))
+      real(dp), allocatable :: u(:, :), w(:)
+      integer(default_int) :: info
+      integer :: k
+      allocate (u(n, n), w(n))
       u = s
-      call dsyev('V', 'U', n, u, n, w, work, -1, info)
-      lwork = int(work(1))
-      deallocate (work); allocate (work(lwork))
-      call dsyev('V', 'U', n, u, n, w, work, lwork, info)
-      if (info /= 0) error stop "trc_scf: dsyev failed on the overlap"
+      call pic_syev(u, w, 'V', 'U', info)
+      if (info /= 0) error stop "trc_scf: pic_syev failed on the overlap"
       do k = 1, n
          u(:, k) = u(:, k)/sqrt(sqrt(w(k)))
       end do
       x = matmul(u, transpose(u))
    end subroutine sym_orthog
+
+   !
+   ! The DIIS system B c = (0, ..., 0, -1), pivoted elimination on the host,
+   ! with the error block scaled to O(1) against the -1 border first. The
+   ! weights are invariant under that scaling; only the Lagrange multiplier
+   ! moves, and nothing reads it. `ok` is false on a pivot below 1e-14, in
+   ! which case the caller keeps the unextrapolated Fock matrix.
+   !
+   subroutine solve_diis(m, b, c, ok)
+      integer, intent(in) :: m
+      real(dp), intent(in) :: b(m, m)
+      real(dp), intent(out) :: c(m)
+      logical, intent(out) :: ok
+      real(dp), allocatable :: a(:, :)
+      real(dp) :: scale, pivot, factor
+      integer :: i, j, p
+      allocate (a(m, m + 1))
+      a(:, 1:m) = b
+      a(:, m + 1) = 0.0_dp
+      a(m, m + 1) = -1.0_dp
+      scale = maxval(abs(b(1:m - 1, 1:m - 1)))
+      if (scale > 0.0_dp) a(1:m - 1, 1:m - 1) = a(1:m - 1, 1:m - 1)/scale
+      ok = .true.
+      c = 0.0_dp
+      do i = 1, m
+         p = i
+         do j = i + 1, m
+            if (abs(a(j, i)) > abs(a(p, i))) p = j
+         end do
+         if (p /= i) a([i, p], :) = a([p, i], :)
+         pivot = a(i, i)
+         if (abs(pivot) < 1.0e-14_dp) then
+            ok = .false.
+            return
+         end if
+         do j = i + 1, m
+            factor = a(j, i)/pivot
+            a(j, :) = a(j, :) - factor*a(i, :)
+         end do
+      end do
+      do i = m, 1, -1
+         c(i) = (a(i, m + 1) - sum(a(i, i + 1:m)*c(i + 1:m)))/a(i, i)
+      end do
+   end subroutine solve_diis
 
 end module trc_scf_driver

@@ -10,18 +10,23 @@
 ! OpenACC through `host_data use_device` on arrays the caller has already
 ! put on the device.
 !
-! Under a host build the same calls are LAPACK and BLAS on the same arrays,
+! Under a host build the same calls go to pic-blas on the same arrays,
 ! which are then simply host arrays, and the directives are comments. One
 ! source, two builds, the same numbers to rounding -- which is how every
 ! terco driver is arranged, and the reason a CI runner without a GPU can
-! still validate the SCF.
+! still validate the SCF. pic-blas rather than raw BLAS because its
+! wrappers carry explicit interfaces: nothing in terco is called through
+! an implicit one.
 !
-! Every array argument is ASSUMED-SIZE and must be present on the device in
-! the OpenACC build. A host array passed here under -acc is a segfault, not
-! a wrong number, and that is by design: it cannot pass silently.
+! Every array argument must be present on the device in the OpenACC build.
+! A host array passed here under -acc is a segfault, not a wrong number,
+! and that is by design: it cannot pass silently.
 !
 module trc_linalg
    use trc_boys, only: dp
+   use pic_types, only: default_int
+   use pic_blas_interfaces, only: pic_gemm, pic_dot
+   use pic_lapack_interfaces, only: pic_syev
 #ifdef _OPENACC
    use cublas
    use cusolverdn
@@ -108,18 +113,33 @@ contains
       character, intent(in) :: ta, tb
       integer, intent(in) :: m, n, k, lda, ldb, ldc
       real(dp), intent(in) :: alpha, beta
-      real(dp), intent(in) :: a(*), b(*)
-      real(dp), intent(inout) :: c(*)
+      real(dp), intent(in) :: a(lda, *), b(ldb, *)
+      real(dp), intent(inout) :: c(ldc, *)
+      logical :: tra, trb
+      tra = ta == 'T' .or. ta == 't'
+      trb = tb == 'T' .or. tb == 't'
 #ifdef _OPENACC
-      integer :: st, oa, ob
-      oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, ta == 'T' .or. ta == 't')
-      ob = merge(CUBLAS_OP_T, CUBLAS_OP_N, tb == 'T' .or. tb == 't')
-      !$acc host_data use_device(a, b, c)
-      st = cublasDgemm_v2(this%hb, oa, ob, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
-      !$acc end host_data
-      if (st /= 0) error stop "trc_linalg: cublasDgemm failed"
+      block
+         integer :: st, oa, ob
+         oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
+         ob = merge(CUBLAS_OP_T, CUBLAS_OP_N, trb)
+         !$acc host_data use_device(a, b, c)
+         st = cublasDgemm_v2(this%hb, oa, ob, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+         !$acc end host_data
+         if (st /= 0) error stop "trc_linalg: cublasDgemm failed"
+      end block
 #else
-      call dgemm(ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+      ! op(A) is m x k and op(B) is k x n; the stored block of a transposed
+      ! operand has those extents the other way round.
+      if (.not. tra .and. .not. trb) then
+         call pic_gemm(a(1:m, 1:k), b(1:k, 1:n), c(1:m, 1:n), 'N', 'N', alpha, beta)
+      else if (tra .and. .not. trb) then
+         call pic_gemm(a(1:k, 1:m), b(1:k, 1:n), c(1:m, 1:n), 'T', 'N', alpha, beta)
+      else if (.not. tra .and. trb) then
+         call pic_gemm(a(1:m, 1:k), b(1:n, 1:k), c(1:m, 1:n), 'N', 'T', alpha, beta)
+      else
+         call pic_gemm(a(1:k, 1:m), b(1:n, 1:k), c(1:m, 1:n), 'T', 'T', alpha, beta)
+      end if
 #endif
    end subroutine linalg_gemm
 
@@ -128,7 +148,7 @@ contains
    subroutine linalg_syev(this, n, a, lda, w)
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
-      real(dp), intent(inout) :: a(*)
+      real(dp), intent(inout) :: a(lda, *)
       real(dp), intent(out) :: w(*)
 #ifdef _OPENACC
       integer :: st, info
@@ -143,14 +163,9 @@ contains
       info = this%devinfo
       if (info /= 0) error stop "trc_linalg: cusolverDnDsyevd did not converge"
 #else
-      real(dp), allocatable :: work(:)
-      real(dp) :: query(1)
-      integer :: info, lwork
-      call dsyev('V', 'U', n, a, lda, w, query, -1, info)
-      lwork = int(query(1))
-      allocate (work(lwork))
-      call dsyev('V', 'U', n, a, lda, w, work, lwork, info)
-      if (info /= 0) error stop "trc_linalg: dsyev failed"
+      integer(default_int) :: info
+      call pic_syev(a(1:n, 1:n), w(1:n), 'V', 'U', info)
+      if (info /= 0) error stop "trc_linalg: pic_syev failed"
 #endif
    end subroutine linalg_syev
 
@@ -167,8 +182,7 @@ contains
       !$acc end host_data
       if (st /= 0) error stop "trc_linalg: cublasDdot failed"
 #else
-      real(dp), external :: ddot
-      r = ddot(n, x, 1, y, 1)
+      r = pic_dot(x(1:n), y(1:n))
 #endif
    end function linalg_dot
 
