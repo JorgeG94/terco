@@ -77,6 +77,21 @@ terco_add_check(check_xc check_xc.F90)
 # water integrating to the atom count.
 terco_add_check(check_grid check_grid.F90)
 
+#
+# Basis functions on grid points: the numerical overlap against trc_1e's
+# analytic one, and the batched, screened evaluation against the unscreened
+# one. It also writes ao_probe.bin for the pyscf comparison registered
+# further down.
+#
+terco_add_check(check_ao check_ao.F90)
+
+#
+# The integrator from a fixed density: the electron count against Tr(DS),
+# independence of the chunking, symmetry of V_xc -- and xc_probe.bin for
+# the same-grid pyscf comparison of E_xc and V_xc registered further down.
+#
+terco_add_check(check_xc_energy check_xc_energy.F90)
+
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
@@ -146,6 +161,20 @@ if(Python3_FOUND)
       terco/check_mult_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
                  terco/check_mult)
+    # Basis function values and gradients, elementwise against eval_ao.
+    add_test(NAME terco/check_ao_vs_pyscf
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ao_ref.py)
+    set_tests_properties(
+      terco/check_ao_vs_pyscf
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
+                 terco/check_ao)
+    # E_xc and V_xc on the same grid and density, six functionals.
+    add_test(NAME terco/check_xc_energy_vs_pyscf
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/xc_energy_ref.py)
+    set_tests_properties(
+      terco/check_xc_energy_vs_pyscf
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
+                 terco/check_xc_energy)
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()
@@ -166,6 +195,27 @@ target_compile_definitions(scf_rhf PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(scf_rhf PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
 target_include_directories(scf_rhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
 
+#
+# The same, as Kohn-Sham: SVWN, PBE, BLYP and B3LYP through the XC
+# integrator, on water in 6-31G uncontracted to primitives. Writes rks_probe.bin
+# for the same-grid pyscf comparison registered above.
+#
+add_executable(scf_rks scf_rks.F90)
+target_compile_definitions(scf_rks PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rks PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_rks PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_rks COMMAND scf_rks)
+set_tests_properties(
+  terco/scf_rks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                           ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_rks_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rks_ref.py)
+  set_tests_properties(
+    terco/scf_rks_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                      DEPENDS terco/scf_rks)
+endif()
+
 add_executable(demo_makefp demo_makefp.F90)
 target_compile_definitions(demo_makefp PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(demo_makefp PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
@@ -182,6 +232,9 @@ target_link_libraries(bench_binwater PRIVATE ${main_lib})
 add_executable(bench_many bench_many.F90)
 target_compile_definitions(bench_many PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_many PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many)
+add_executable(bench_xc bench_xc.F90)
+target_compile_definitions(bench_xc PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_xc PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many bench_xc)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()

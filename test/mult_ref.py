@@ -24,7 +24,8 @@ r2 = mol.intor('int1e_rr_cart').reshape(9, nao, nao)
 r3 = mol.intor('int1e_rrr_cart').reshape(27, nao, nao)
 ref = np.concatenate([r1, r2, r3], axis=0)          # 39, nao, nao
 
-f = open('test/mult_probe.bin', 'rb')
+import os
+f = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mult_probe.bin'), 'rb')
 n, nm = np.fromfile(f, dtype=np.int64, count=2)
 ts = np.fromfile(f, dtype=np.float64, count=n*n).reshape(n, n, order='F')
 tm = np.fromfile(f, dtype=np.float64, count=n*n*nm).reshape(n, n, nm, order='F')

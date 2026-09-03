@@ -48,25 +48,33 @@ contains
    end subroutine read_xyz
 
    !> 6-31G for H, C, N, O. Same values as bench_binwater, from the BSE JSON.
-   subroutine build_631g(nat, z, r, nsh, l, np, e, c, sr, mnp)
+   !> `uncontracted` makes every primitive its own shell with coefficient
+   !> one -- what pyscf's gto.uncontract does -- so that a comparison of
+   !> total energies is not spoilt by pyscf renormalising contracted shells
+   !> and terco not.
+   subroutine build_631g(nat, z, r, nsh, l, np, e, c, sr, mnp, uncontracted)
       integer,  intent(in)  :: nat, z(nat)
       real(dp), intent(in)  :: r(3, nat)
       integer,  intent(out) :: nsh, mnp
       integer,  allocatable, intent(out) :: l(:), np(:)
       real(dp), allocatable, intent(out) :: e(:, :), c(:, :), sr(:, :)
+      logical, intent(in), optional :: uncontracted
 
       integer :: i, k
       real(dp) :: e6(6), c6(6), e3(3), cs3(3), cp3(3), e1(1)
+      logical :: unc
 
+      unc = .false.
+      if (present(uncontracted)) unc = uncontracted
       nsh = 0
       do i = 1, nat
          if (z(i) > 2) then
-            nsh = nsh + 5
+            nsh = nsh + merge(14, 5, unc)
          else
-            nsh = nsh + 2
+            nsh = nsh + merge(4, 2, unc)
          end if
       end do
-      mnp = 6
+      mnp = merge(1, 6, unc)
       allocate (l(nsh), np(nsh), e(mnp, nsh), c(mnp, nsh), sr(3, nsh))
       e = 0.0_dp; c = 0.0_dp
       k = 0
@@ -75,9 +83,9 @@ contains
          case (1)
             call put(k, 0, 3, [18.7311370_dp, 2.8253944_dp, 0.6401217_dp], &
                      [0.0334946_dp, 0.2347270_dp, 0.8137573_dp], r(:, i), &
-                     l, np, e, c, sr, mnp)
+                     l, np, e, c, sr, mnp, unc)
             call put(k, 0, 1, [0.1612778_dp], [1.0_dp], r(:, i), &
-                     l, np, e, c, sr, mnp)
+                     l, np, e, c, sr, mnp, unc)
             cycle
          case (6)
             e6 = [3047.5248800_dp, 457.3695180_dp, 103.9486850_dp, &
@@ -109,11 +117,11 @@ contains
          case default
             print '(a,i0)', '  no 6-31G for Z = ', z(i); stop 1
          end select
-         call put(k, 0, 6, e6, c6, r(:, i), l, np, e, c, sr, mnp)
-         call put(k, 0, 3, e3, cs3, r(:, i), l, np, e, c, sr, mnp)
-         call put(k, 1, 3, e3, cp3, r(:, i), l, np, e, c, sr, mnp)
-         call put(k, 0, 1, e1, [1.0_dp], r(:, i), l, np, e, c, sr, mnp)
-         call put(k, 1, 1, e1, [1.0_dp], r(:, i), l, np, e, c, sr, mnp)
+         call put(k, 0, 6, e6, c6, r(:, i), l, np, e, c, sr, mnp, unc)
+         call put(k, 0, 3, e3, cs3, r(:, i), l, np, e, c, sr, mnp, unc)
+         call put(k, 1, 3, e3, cp3, r(:, i), l, np, e, c, sr, mnp, unc)
+         call put(k, 0, 1, e1, [1.0_dp], r(:, i), l, np, e, c, sr, mnp, unc)
+         call put(k, 1, 1, e1, [1.0_dp], r(:, i), l, np, e, c, sr, mnp, unc)
       end do
    end subroutine build_631g
 
@@ -152,7 +160,7 @@ contains
       end do
    end subroutine build_aux
 
-   subroutine put(k, ll, n, ex, co, rr, l, np, e, c, sr, mnp)
+   subroutine put(k, ll, n, ex, co, rr, l, np, e, c, sr, mnp, uncontracted)
       integer,  intent(inout) :: k
       integer,  intent(in)    :: ll, n, mnp
       real(dp), intent(in)    :: ex(:), co(:), rr(3)
@@ -160,7 +168,19 @@ contains
       ! explicit shape, not `e(mnp, :)`: Fortran forbids mixing a fixed
       ! extent with an assumed one in the same dummy
       real(dp), intent(inout) :: e(mnp, size(l)), c(mnp, size(l)), sr(3, size(l))
+      logical, intent(in), optional :: uncontracted
       integer :: q
+      if (present(uncontracted)) then
+         if (uncontracted) then
+            do q = 1, n
+               k = k + 1
+               l(k) = ll; np(k) = 1; sr(:, k) = rr
+               e(1, k) = ex(q)
+               c(1, k) = gto_norm(ll, ex(q))
+            end do
+            return
+         end if
+      end if
       k = k + 1
       l(k) = ll; np(k) = n; sr(:, k) = rr
       do q = 1, n
