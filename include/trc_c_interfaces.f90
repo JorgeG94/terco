@@ -51,6 +51,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_ERR_NULL        = 1
    integer(c_int), parameter :: TRC_ERR_BADARG      = 2
    integer(c_int), parameter :: TRC_ERR_UNSUPPORTED = 3
+   integer(c_int), parameter :: TRC_ERR_NOCONV      = 4   !! the SCF ran out of iterations
 
    interface
 
@@ -179,6 +180,24 @@ module trc_c_interfaces
          real(c_double), value :: jfac, kfac
          integer(c_int), value :: dscreen
       end function trc_fock
+
+      !> The whole SCF, HF or Kohn-Sham, R or U. `functional` NUL-terminated
+      !> (empty for HF); `dguess` NULL or a (nao,nao,nspin) density; `dmat`
+      !> (nao,nao,nspin) and `eps` (nao,nspin) out, nspin = 2 iff nalpha /= nbeta.
+      !> TRC_ERR_NOCONV means the last iterate is in the outputs.
+      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, &
+            conv_energy, conv_density, max_iter, dguess, energy, e_xc, dmat, eps, &
+            niter) bind(c)
+         import :: c_int, c_double, c_ptr, c_char
+         type(c_ptr), value :: basis
+         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter
+         character(kind=c_char), intent(in) :: functional(*)
+         real(c_double), value :: conv_energy, conv_density
+         type(c_ptr), value :: dguess
+         real(c_double), intent(out) :: energy, e_xc
+         real(c_double), intent(out) :: dmat(*), eps(*)
+         integer(c_int), intent(out) :: niter
+      end function trc_scf
 
       !> N densities against one pass over the integrals.
       !> `(ndens, nao, nao)`, density index FIRST -- see the header.

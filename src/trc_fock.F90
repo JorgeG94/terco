@@ -42,7 +42,7 @@
 ! vhf = (raw + raw^T)/8. Both factors are applied here; neither is the
 ! caller's business.
 !
-module trc_fock
+module trc_eri
    use trc_boys, only: dp, boys_init
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
@@ -584,4 +584,4 @@ contains
       this%nbas = 0; this%nao = 0; this%nhpp = 0
    end subroutine eri_release
 
-end module trc_fock
+end module trc_eri

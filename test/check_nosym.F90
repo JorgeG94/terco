@@ -24,7 +24,7 @@
 program check_nosym
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t
-   use trc_fock, only: trc_eri_t
+   use trc_eri, only: trc_eri_t
    use trc_tables, only: LMAX
    use trc_test_basis, only: read_xyz, build_631g, build_aux
    implicit none

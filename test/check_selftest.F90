@@ -42,7 +42,7 @@ program check_selftest
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
-   use trc_fock, only: trc_eri_t
+   use trc_eri, only: trc_eri_t
    implicit none
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp

@@ -34,7 +34,8 @@ module trc_capi
    use trc_api, only: trc_basis_t, trc_pairlist_t, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
-   use trc_fock, only: trc_eri_t
+   use trc_eri, only: trc_eri_t
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    implicit none
    private
 
@@ -44,13 +45,23 @@ module trc_capi
    public :: trc_compute_1e, trc_compute_df2c, trc_compute_df3c
    public :: trc_compute_multipoles, trc_multipole_count
    public :: trc_eri_create, trc_eri_destroy
-   public :: trc_fock, trc_fock_many, trc_fock_nosym
+   ! A binding label is a global identifier, and so is a module name, and
+   ! the standard forbids the two to coincide. The modules behind the
+   ! `trc_fock` and `trc_scf` entries are therefore named trc_eri and
+   ! trc_scf_driver: with a module called trc_fock in scope, gfortran folded
+   ! every call into that module onto the `trc_fock` label and the entry
+   ! called itself until the stack ran out, which nvfortran happened to
+   ! tolerate. The Fortran function names are capi_* for the same reason;
+   ! the C symbols are the ABI and are unchanged.
+   public :: capi_fock, trc_fock_many, trc_fock_nosym
+   public :: capi_scf
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
    integer(c_int), parameter, public :: TRC_ERR_NULL      = 1
    integer(c_int), parameter, public :: TRC_ERR_BADARG    = 2
    integer(c_int), parameter, public :: TRC_ERR_UNSUPPORTED = 3
+   integer(c_int), parameter, public :: TRC_ERR_NOCONV = 4   !! the SCF ran out of iterations
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -412,7 +423,7 @@ contains
    ! Hartree-Fock passes 1 and 1. Making them mandatory at the boundary also
    ! means a Kohn-Sham caller cannot forget them and silently get HF.
    !
-   function trc_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen) &
+   function capi_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen) &
       result(status) bind(c, name="trc_fock")
       type(c_ptr), value :: eri, basis
       real(c_double), intent(in)  :: dmat(*)
@@ -438,7 +449,7 @@ contains
       call fock_shaped(bb%b, eb%e, n, dmat, gmat, real(jfac, dp), &
                        real(kfac, dp), dscreen /= 0)
       status = TRC_OK
-   end function trc_fock
+   end function capi_fock
 
    !
    ! NO COPY. `dmat` and `gmat` arrive as assumed-size, and handing an
@@ -552,5 +563,88 @@ contains
       logical, intent(in) :: dscreen
       call e%fock_nosym(b, d, g, density_screen=dscreen)
    end subroutine fock_nosym_shaped
+
+
+   !
+   ! The whole SCF: Hartree-Fock when `functional` is empty, Kohn-Sham
+   ! otherwise; restricted when nalpha == nbeta, unrestricted otherwise, so
+   ! `nspin` is 1 or 2 accordingly and the caller sizes `dmat` and `eps` as
+   ! (nao, nao, nspin) and (nao, nspin). `dguess` may be NULL for the core
+   ! guess, or point at a (nao, nao, nspin) density -- for a restricted
+   ! case the total density, for an unrestricted one alpha then beta.
+   !
+   ! `functional` is a NUL-terminated C string; names are the ones
+   ! trc_xc_functional knows. `grid_level` is 0 to 9 in metalquicha's sense.
+   ! A non-converged SCF returns TRC_ERR_NOCONV with the last energy and
+   ! density filled in, so the caller can decide what that is worth.
+   !
+   function capi_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
+                     conv_density, max_iter, dguess, energy, e_xc, dmat, eps, &
+                     niter) result(status) bind(c, name="trc_scf")
+      type(c_ptr), value :: basis
+      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter
+      character(kind=c_char), intent(in) :: functional(*)
+      real(c_double), value :: conv_energy, conv_density
+      type(c_ptr), value :: dguess
+      real(c_double), intent(out) :: energy, e_xc
+      real(c_double), intent(out) :: dmat(*), eps(*)
+      integer(c_int), intent(out) :: niter
+      integer(c_int) :: status
+      type(basis_box), pointer :: bb
+      type(trc_scf_options_t) :: opts
+      type(trc_scf_result_t) :: res
+      real(c_double), pointer :: dg(:, :, :)
+      integer :: n, nspin, i, s, k
+
+      status = TRC_ERR_NULL
+      energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
+      if (.not. c_associated(basis)) return
+      call c_f_pointer(basis, bb)
+      n = bb%b%nao
+      status = TRC_ERR_BADARG
+      if (nalpha < 0 .or. nbeta < 0 .or. nalpha + nbeta > 2*n) return
+      if (grid_level < 0 .or. max_iter < 1) return
+      nspin = merge(2, 1, nalpha /= nbeta)
+
+      opts%functional = ""
+      do i = 1, len(opts%functional)
+         if (functional(i) == c_null_char) exit
+         opts%functional(i:i) = functional(i)
+      end do
+      opts%grid_level = int(grid_level)
+      opts%conv_energy = real(conv_energy, dp)
+      opts%conv_density = real(conv_density, dp)
+      opts%max_iter = int(max_iter)
+
+      if (c_associated(dguess)) then
+         call c_f_pointer(dguess, dg, [n, n, nspin])
+         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=real(dg, dp))
+      else
+         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res)
+      end if
+      if (len_trim(res%message) > 0 .and. res%iterations == 0) then
+         status = TRC_ERR_UNSUPPORTED   ! an unknown functional, or a grid that would not build
+         return
+      end if
+
+      energy = real(res%energy, c_double)
+      e_xc = real(res%e_xc, c_double)
+      niter = int(res%iterations, c_int)
+      k = 0
+      do s = 1, nspin
+         do i = 1, n*n
+            k = k + 1
+            dmat(k) = real(res%dmat(mod(i - 1, n) + 1, (i - 1)/n + 1, s), c_double)
+         end do
+      end do
+      k = 0
+      do s = 1, nspin
+         do i = 1, n
+            k = k + 1
+            eps(k) = real(res%eps(i, s), c_double)
+         end do
+      end do
+      status = merge(TRC_OK, TRC_ERR_NOCONV, res%converged)
+   end function capi_scf
 
 end module trc_capi

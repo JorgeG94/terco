@@ -1,0 +1,399 @@
+!
+! The SCF: a basis and an electron count in, a converged energy and
+! density out, with every matrix resident on the device.
+!
+! terco's contract used to stop at the matrices -- give me a density, get
+! a Fock matrix -- and the iteration was the caller's. This module is the
+! other half of that contract, so a host code can hand over a basis and a
+! guess and receive a result: Hartree-Fock, or Kohn-Sham with any of the
+! functionals in trc_xc_functional, restricted or unrestricted.
+!
+! WHAT CROSSES THE BUS
+! --------------------
+! Per iteration: two energies, a norm, and a DIIS matrix of at most ten by
+! ten. The density, the Fock matrices, the orbitals, the DIIS history and
+! the orthogonaliser are put on the device once and stay there; the Fock
+! build is the resident driver, the XC integrator finds its density already
+! present, and the products, the commutator and the eigenproblem are
+! trc_linalg, which is cuBLAS and cuSOLVER under the OpenACC build. That
+! is the design metalquicha's device SCF settled on after measuring host
+! LAPACK plus copies at three times the cost of the GPU Fock build, and it
+! is followed here rather than rediscovered.
+!
+! Under a host build the same source runs on host arrays with LAPACK, and
+! the numbers agree to rounding; that is what makes the host suite a test
+! of this module.
+!
+! THE ITERATION
+! -------------
+! A few damped steps from the guess, then Pulay's DIIS on the commutator
+! FDS - SDF in the orthogonal basis, per spin with one set of coefficients
+! for both. Converged when the energy change and the RMS density change
+! are both below their thresholds.
+!
+! UNRESTRICTED
+! ------------
+! F_s = H + J[D_a + D_b] - a_x K[D_s] + V_xc,s. The Fock driver returns
+! j J[D] - k K[D]/2 for a density it takes to be a total, so J comes from
+! one call on D_a + D_b with k = 0, and -a_x K[D_s] from one call on 2 D_s
+! with j = 0 and k = a_x. Three builds per iteration where the restricted
+! case needs one; a batched build over the three densities is the obvious
+! improvement and is not done here.
+!
+module trc_scf_driver
+   use trc_boys, only: dp
+   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
+   use trc_eri, only: trc_eri_t
+   use trc_error, only: error_t
+   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_xc_batch, only: trc_xc_grid_t
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
+   use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
+   use trc_linalg, only: trc_linalg_t
+   implicit none
+   private
+
+   public :: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+
+   type :: trc_scf_options_t
+      character(len=16) :: functional = ""   !! empty is Hartree-Fock
+      logical :: unrestricted = .false.      !! forced; an open shell is unrestricted regardless
+      real(dp) :: conv_energy = 1.0e-10_dp
+      real(dp) :: conv_density = 1.0e-7_dp   !! RMS change per element
+      integer :: max_iter = 100
+      integer :: ndiis = 10
+      integer :: ndamp = 4                   !! damped steps before DIIS
+      real(dp) :: eri_thresh = 1.0e-12_dp
+      integer :: grid_level = 3
+      integer :: grid_max_pts = 512
+      real(dp) :: rho_tol = XC_RHO_TOL
+      logical :: verbose = .false.
+   end type trc_scf_options_t
+
+   type :: trc_scf_result_t
+      logical :: converged = .false.
+      integer :: iterations = 0
+      integer :: nspin = 1
+      real(dp) :: energy = 0.0_dp      !! total
+      real(dp) :: e_nuc = 0.0_dp
+      real(dp) :: e_one = 0.0_dp       !! Tr(D H)
+      real(dp) :: e_two = 0.0_dp       !! Coulomb and exact exchange
+      real(dp) :: e_xc = 0.0_dp
+      real(dp) :: nelec_grid = 0.0_dp  !! what the grid integrated the density to
+      real(dp), allocatable :: dmat(:, :, :)   !! (nao, nao, nspin); restricted holds the total
+      real(dp), allocatable :: cmo(:, :, :)    !! (nao, nao, nspin) orbitals
+      real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
+      real(dp), allocatable :: grid_r(:, :)    !! (3, npts) the grid used, for a same-grid comparison
+      real(dp), allocatable :: grid_w(:)
+      character(len=256) :: message = ""
+   end type trc_scf_result_t
+
+contains
+
+   !
+   ! Run the SCF. `nalpha` and `nbeta` are the electron counts; the case is
+   ! restricted when they are equal and `unrestricted` is not forced. The
+   ! basis must already be on the device. `dguess` is (nao, nao, nspin) in
+   ! the result's convention; without it the guess is the core Hamiltonian.
+   !
+   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nalpha, nbeta
+      type(trc_scf_options_t), intent(in) :: opts
+      type(trc_scf_result_t), intent(out) :: res
+      real(dp), intent(in), optional :: dguess(:, :, :)
+
+      integer :: nao, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m, info
+      real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :), hcore(:, :), x(:, :)
+      real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :), dtot(:, :), jmat(:, :)
+      real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
+      real(dp), allocatable :: w1(:, :), w2(:, :), w3(:, :), bmat(:, :), rhs(:)
+      integer, allocatable :: ipiv(:)
+      type(trc_pairlist_t) :: pl
+      type(trc_eri_t) :: eri
+      type(dft_grid_t) :: grid
+      type(trc_xc_grid_t) :: xg
+      type(trc_xc_functional_t) :: func
+      type(trc_linalg_t) :: la
+      type(error_t) :: err
+      logical :: dft
+      real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ
+
+      nao = b%nao
+      n2 = nao*nao
+      dft = len_trim(opts%functional) > 0
+      exx = 1.0_dp
+      if (dft) then
+         if (.not. xc_functional_by_name(opts%functional, func)) then
+            res%message = "trc_scf: unknown functional "//trim(opts%functional)
+            return
+         end if
+         exx = func%exx
+      end if
+      nspin = 1
+      if (nalpha /= nbeta .or. opts%unrestricted) nspin = 2
+      nocc = [nalpha, nbeta]
+      occ = merge(2.0_dp, 1.0_dp, nspin == 1)
+      res%nspin = nspin
+
+      allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao), hcore(nao, nao), x(nao, nao))
+      allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin), dtot(nao, nao), jmat(nao, nao))
+      allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
+      allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
+      allocate (w1(nao, nao), w2(nao, nao), w3(nao, nao))
+      allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1), ipiv(opts%ndiis + 1))
+      allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
+
+      ! --- once per geometry, on the host ------------------------------------
+      call pl%build(b, opts%eri_thresh)
+      call pl%to_device()
+      call trc_1e(b, pl, smat, tmat, vmat)
+      hcore = tmat + vmat
+      call eri%build(b, opts%eri_thresh)
+      res%e_nuc = nuclear_repulsion(b)
+      call sym_orthog(nao, smat, x)
+
+      if (dft) then
+         call build_dft_grid(b%at_r, nint(b%at_z), grid, err, level=opts%grid_level)
+         if (err%has_error()) then
+            res%message = "trc_scf: "//err%get_message()
+            call eri%release(); call pl%release()
+            return
+         end if
+         call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=opts%grid_max_pts)
+         call xg%to_device()
+         res%grid_r = grid%coords
+         res%grid_w = grid%weights
+      end if
+
+      ! --- the guess, on the host, then everything goes up -------------------
+      if (present(dguess)) then
+         res%dmat = dguess
+      else
+         do s = 1, nspin
+            call guess_from(hcore, nocc(s))
+         end do
+      end if
+      res%cmo = 0.0_dp; res%eps = 0.0_dp
+      fock = 0.0_dp; gmat = 0.0_dp; vxc = 0.0_dp; dold = 0.0_dp; errv = 0.0_dp
+      fstore = 0.0_dp; estore = 0.0_dp; dtot = 0.0_dp; jmat = 0.0_dp
+      w1 = 0.0_dp; w2 = 0.0_dp; w3 = 0.0_dp
+
+      call la%init(nao)
+      !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
+      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3)
+
+      eold = 0.0_dp
+      ndiis_used = 0
+      exc = 0.0_dp; ngrid = 0.0_dp
+      if (opts%verbose) print '(a)', "   it        E(total)            dE          RMS(D)"
+      do it = 1, opts%max_iter
+         ! --- two-electron part, resident ------------------------------------
+         if (nspin == 1) then
+            call eri%fock_resident(b, res%dmat(:, :, 1), gmat(:, :, 1), k_scale=exx)
+         else
+            do concurrent(i=1:nao, j=1:nao)
+               dtot(i, j) = res%dmat(i, j, 1) + res%dmat(i, j, 2)
+            end do
+            call eri%fock_resident(b, dtot, jmat, k_scale=0.0_dp)
+            do s = 1, 2
+               if (exx /= 0.0_dp) then
+                  do concurrent(i=1:nao, j=1:nao)
+                     w1(i, j) = 2.0_dp*res%dmat(i, j, s)
+                  end do
+                  call eri%fock_resident(b, w1, gmat(:, :, s), j_scale=0.0_dp, k_scale=exx)
+                  do concurrent(i=1:nao, j=1:nao)
+                     gmat(i, j, s) = gmat(i, j, s) + jmat(i, j)
+                  end do
+               else
+                  do concurrent(i=1:nao, j=1:nao)
+                     gmat(i, j, s) = jmat(i, j)
+                  end do
+               end if
+            end do
+         end if
+         ! --- exchange-correlation: finds its density present ----------------
+         if (dft) then
+            if (nspin == 1) then
+               call trc_xc_rks(b, xg, func, res%dmat(:, :, 1), vxc(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol)
+            else
+               call trc_xc_uks(b, xg, func, res%dmat, vxc, exc, ngrid, rho_tol=opts%rho_tol)
+            end if
+         end if
+         ! --- energy at this density -----------------------------------------
+         e1 = 0.0_dp; e2 = 0.0_dp
+         do s = 1, nspin
+            e1 = e1 + la%dot(n2, res%dmat(:, :, s), hcore)
+            e2 = e2 + 0.5_dp*la%dot(n2, res%dmat(:, :, s), gmat(:, :, s))
+         end do
+         etot = e1 + e2 + exc + res%e_nuc
+         ! --- Fock and its commutator, per spin ------------------------------
+         do s = 1, nspin
+            if (dft) then
+               do concurrent(i=1:nao, j=1:nao)
+                  fock(i, j, s) = hcore(i, j) + gmat(i, j, s) + vxc(i, j, s)
+               end do
+            else
+               do concurrent(i=1:nao, j=1:nao)
+                  fock(i, j, s) = hcore(i, j) + gmat(i, j, s)
+               end do
+            end if
+            ! w2 = F D S - S D F
+            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+            call la%gemm('N', 'N', nao, nao, nao, -1.0_dp, w1, nao, fock(:, :, s), nao, 1.0_dp, w2, nao)
+            ! errv = X^T w2 X
+            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, w2, nao, x, nao, 0.0_dp, w1, nao)
+            call la%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, errv(:, :, s), nao)
+         end do
+         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+            dold(i, j, s) = res%dmat(i, j, s)
+         end do
+         ! --- DIIS -----------------------------------------------------------
+         if (it > opts%ndamp) then
+            if (ndiis_used < opts%ndiis) then
+               ndiis_used = ndiis_used + 1
+            else
+               do concurrent(i=1:nao, j=1:nao, s=1:nspin, k=1:opts%ndiis - 1)
+                  fstore(i, j, s, k) = fstore(i, j, s, k + 1)
+                  estore(i, j, s, k) = estore(i, j, s, k + 1)
+               end do
+            end if
+            k = ndiis_used
+            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+               fstore(i, j, s, k) = fock(i, j, s)
+               estore(i, j, s, k) = errv(i, j, s)
+            end do
+            m = ndiis_used + 1
+            bmat = -1.0_dp
+            bmat(m, m) = 0.0_dp
+            do j = 1, ndiis_used
+               do i = 1, j
+                  bmat(i, j) = la%dot(n2*nspin, estore(:, :, :, i), estore(:, :, :, j))
+                  bmat(j, i) = bmat(i, j)
+               end do
+            end do
+            rhs = 0.0_dp
+            rhs(m) = -1.0_dp
+            call dgesv(m, 1, bmat, opts%ndiis + 1, ipiv, rhs, opts%ndiis + 1, info)
+            if (info == 0) then
+               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                  fock(i, j, s) = 0.0_dp
+               end do
+               do k = 1, ndiis_used
+                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                     fock(i, j, s) = fock(i, j, s) + rhs(k)*fstore(i, j, s, k)
+                  end do
+               end do
+            end if
+         end if
+         ! --- diagonalise, per spin, and the new density ---------------------
+         do s = 1, nspin
+            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, x, nao, 0.0_dp, w1, nao)
+            call la%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, w2, nao)
+            call la%syev(nao, w2, nao, res%eps(:, s))
+            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, w2, nao, 0.0_dp, res%cmo(:, :, s), nao)
+            if (nocc(s) > 0) then
+               call la%gemm('N', 'T', nao, nao, nocc(s), occ, res%cmo(:, :, s), nao, res%cmo(:, :, s), nao, &
+                            0.0_dp, res%dmat(:, :, s), nao)
+            else
+               do concurrent(i=1:nao, j=1:nao)
+                  res%dmat(i, j, s) = 0.0_dp
+               end do
+            end if
+         end do
+         if (it <= opts%ndamp) then
+            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+               res%dmat(i, j, s) = 0.5_dp*(res%dmat(i, j, s) + dold(i, j, s))
+            end do
+         end if
+         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+            errv(i, j, s) = res%dmat(i, j, s) - dold(i, j, s)
+         end do
+         drms = sqrt(la%dot(n2*nspin, errv, errv))/real(nao, dp)
+         if (opts%verbose) print '(i5,f22.12,es14.4,es14.4)', it, etot, etot - eold, drms
+         res%iterations = it
+         if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. drms < opts%conv_density) then
+            res%converged = .true.
+            exit
+         end if
+         eold = etot
+      end do
+
+      ! The density the energy was evaluated at, and the orbitals that made it.
+      !$acc update self(dold, res%cmo, res%eps)
+      !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
+      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3)
+      res%dmat = dold
+      res%energy = etot
+      res%e_one = e1
+      res%e_two = e2
+      res%e_xc = exc
+      res%nelec_grid = ngrid
+      if (.not. res%converged) res%message = "trc_scf: not converged"
+      call la%release()
+      call eri%release(); call pl%release()
+      if (dft) then
+         call xg%release(); call grid%destroy()
+      end if
+
+   contains
+
+      ! Core guess for one spin, on the host, into res%dmat(:,:,s).
+      subroutine guess_from(h, nocc_s)
+         real(dp), intent(in) :: h(nao, nao)
+         integer, intent(in) :: nocc_s
+         real(dp), allocatable :: fp(:, :), c(:, :), e(:), work(:)
+         integer :: lw, inf
+         allocate (fp(nao, nao), c(nao, nao), e(nao), work(1))
+         fp = matmul(transpose(x), matmul(h, x))
+         call dsyev('V', 'U', nao, fp, nao, e, work, -1, inf)
+         lw = int(work(1))
+         deallocate (work); allocate (work(lw))
+         call dsyev('V', 'U', nao, fp, nao, e, work, lw, inf)
+         if (inf /= 0) error stop "trc_scf: dsyev failed on the core guess"
+         c = matmul(x, fp)
+         if (nocc_s > 0) then
+            res%dmat(:, :, s) = occ*matmul(c(:, 1:nocc_s), transpose(c(:, 1:nocc_s)))
+         else
+            res%dmat(:, :, s) = 0.0_dp
+         end if
+      end subroutine guess_from
+
+   end subroutine trc_scf_run
+
+   real(dp) function nuclear_repulsion(b) result(e)
+      type(trc_basis_t), intent(in) :: b
+      integer :: a, c
+      e = 0.0_dp
+      do a = 1, b%natm
+         do c = a + 1, b%natm
+            e = e + b%at_z(a)*b%at_z(c)/norm2(b%at_r(:, a) - b%at_r(:, c))
+         end do
+      end do
+   end function nuclear_repulsion
+
+   ! X = S^(-1/2), symmetric orthogonalisation. Once per geometry, on the
+   ! host: it is where near-null modes would be filtered, and it is not
+   ! per iteration.
+   subroutine sym_orthog(n, s, x)
+      integer, intent(in) :: n
+      real(dp), intent(in) :: s(n, n)
+      real(dp), intent(out) :: x(n, n)
+      real(dp), allocatable :: u(:, :), w(:), work(:)
+      integer :: info, lwork, k
+      allocate (u(n, n), w(n), work(1))
+      u = s
+      call dsyev('V', 'U', n, u, n, w, work, -1, info)
+      lwork = int(work(1))
+      deallocate (work); allocate (work(lwork))
+      call dsyev('V', 'U', n, u, n, w, work, lwork, info)
+      if (info /= 0) error stop "trc_scf: dsyev failed on the overlap"
+      do k = 1, n
+         u(:, k) = u(:, k)/sqrt(sqrt(w(k)))
+      end do
+      x = matmul(u, transpose(u))
+   end subroutine sym_orthog
+
+end module trc_scf_driver

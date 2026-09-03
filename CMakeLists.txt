@@ -142,7 +142,14 @@ endif()
 
 add_subdirectory(src)
 
-target_link_libraries(${main_lib} PUBLIC pic::pic)
+#
+# LAPACK, for the SCF driver (src/trc_scf.F90): the DIIS system and, once
+# per geometry, the orthogonaliser are host LAPACK in every build, and under
+# a host build the eigenproblem and the products are LAPACK and BLAS too.
+# The GPU build does those on the device; -cudalib is in cmake/.
+#
+find_package(LAPACK REQUIRED)
+target_link_libraries(${main_lib} PUBLIC pic::pic LAPACK::LAPACK)
 
 set_target_properties(${main_lib} PROPERTIES Fortran_MODULE_DIRECTORY
                                              ${CMAKE_BINARY_DIR}/modules)

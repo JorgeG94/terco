@@ -196,9 +196,10 @@ target_link_libraries(scf_rhf PRIVATE ${main_lib} terco_test_basis LAPACK::LAPAC
 target_include_directories(scf_rhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
 
 #
-# The same, as Kohn-Sham: SVWN, PBE, BLYP and B3LYP through the XC
-# integrator, on water in 6-31G uncontracted to primitives. Writes rks_probe.bin
-# for the same-grid pyscf comparison registered above.
+# The library's own SCF driver, resident on the device: water RHF and four
+# functionals restricted, the OH radical UHF and PBE unrestricted, in 6-31G
+# uncontracted to primitives. Writes rks_probe.bin for the same-grid pyscf
+# comparison registered above.
 #
 add_executable(scf_rks scf_rks.F90)
 target_compile_definitions(scf_rks PRIVATE ${TERCO_TEST_DEFS})

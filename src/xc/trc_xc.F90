@@ -212,6 +212,10 @@ contains
       end do
 
       !$acc data copyin(dmat, kid, coef, active) copy(vxc)
+      ! A caller that keeps vxc resident (the SCF) has its device copy
+      ! untouched by the host zeroing above; the accumulation must start
+      ! from zero there too. Inside the region vxc is present either way.
+      !$acc update device(vxc)
       b0 = 1
       do while (b0 <= xg%nbatch)
          ! The chunk: as many batches as the budget holds, and at least one.
