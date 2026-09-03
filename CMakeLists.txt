@@ -45,8 +45,17 @@ set(TERCO_GPU_ARCH
 option(TERCO_ENABLE_TESTING "Build the correctness checks" ON)
 option(TERCO_REGENERATE
        "Regenerate the committed kernels in-tree rather than using them" OFF)
+#
+# Shared by default. The one consumer that matters, metalquicha, is built
+# with gfortran and reaches terco through the C ABI, and a static libterco
+# from nvfortran cannot be linked by another compiler: its device code, the
+# OpenACC runtime and now cuBLAS and cuSOLVER all expect nvfortran's own
+# link step. A shared library takes that step once, here, with the rpath
+# baked in, and hands the consumer an ordinary .so with a C symbol table.
+# OFF is for terco's own tests and nvfortran consumers, where either works.
+#
 option(TERCO_BUILD_SHARED
-       "Build a shared library, for host codes built with another compiler" OFF)
+       "Build a shared library, for host codes built with another compiler" ON)
 
 #
 # The GPU build needs NVHPC: `-stdpar=gpu` is what turns `do concurrent` into
