@@ -22,6 +22,24 @@ target_sources(
           trc_capi.F90       # the bind(c) skin
           trc_acc_shim.F90)  # see the file: this one is not optional
 
+# --- the molecular quadrature -------------------------------------------------
+#
+# Lebedev spheres, the Treutler-Ahlrichs radial mesh, NWChem-style pruning,
+# Becke and Stratmann partitions, and the assembled grid. Lifted from
+# metalquicha's src/methods with the module prefix renamed and nothing else,
+# plus the minimal error type they report through.
+#
+target_sources(
+  ${main_lib}
+  PRIVATE grid/trc_error.F90
+          grid/trc_lebedev_data.F90
+          grid/trc_lebedev.F90
+          grid/trc_dft_radial_data.F90
+          grid/trc_dft_radial.F90
+          grid/trc_dft_partition.F90
+          grid/trc_dft_prune.F90
+          grid/trc_dft_grid.F90)
+
 # --- exchange-correlation ---------------------------------------------------
 #
 # The XC functionals. One hand-written helper module and, per functional

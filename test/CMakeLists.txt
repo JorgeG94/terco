@@ -72,6 +72,11 @@ terco_add_check(check_selftest check_selftest.F90)
 #
 terco_add_check(check_xc check_xc.F90)
 
+# The quadrature against closed forms: Lebedev moments, the partition of
+# unity, an exact radial Gaussian, and sums of Gaussians and Slaters over
+# water integrating to the atom count.
+terco_add_check(check_grid check_grid.F90)
+
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
