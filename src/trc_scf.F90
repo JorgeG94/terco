@@ -58,6 +58,7 @@ module trc_scf_driver
    use trc_linalg, only: trc_linalg_t
    use pic_types, only: default_int
    use pic_lapack_interfaces, only: pic_syev
+   use pic_mpi_lib, only: comm_t, bcast
    implicit none
    private
 
@@ -65,12 +66,26 @@ module trc_scf_driver
 
    type :: trc_scf_options_t
       character(len=16) :: functional = ""   !! empty is Hartree-Fock
+      !! Starting orbitals when no density is given: "gwh" (Wolfsberg-Helmholz
+      !! over the overlap and the core Hamiltonian, the default) or "core".
+      !! The core guess is hopeless past a few atoms -- cholesterol starts
+      !! 660 hartree high and never recovers -- and GWH costs nothing.
+      character(len=8) :: guess = "gwh"
       logical :: unrestricted = .false.      !! forced; an open shell is unrestricted regardless
       real(dp) :: conv_energy = 1.0e-10_dp
       real(dp) :: conv_density = 1.0e-7_dp   !! RMS change per element
       integer :: max_iter = 100
       integer :: ndiis = 10
-      integer :: ndamp = 4                   !! damped steps before DIIS
+      integer :: ndamp = 4                   !! damped steps before DIIS, at least
+      !! DIIS also waits until the largest commutator element is below this;
+      !! extrapolating from a wild guess wanders, damping does not.
+      real(dp) :: diis_start = 0.5_dp
+      real(dp) :: damp = 0.3_dp              !! weight of the new density while damping
+      !! Level shift on the virtual space while DIIS is off, in hartree.
+      !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
+      !! its answer and a damped Roothaan step alone throws it 300 hartree
+      !! away; raising the virtuals keeps the occupied space from collapsing.
+      real(dp) :: level_shift = 1.0_dp
       real(dp) :: eri_thresh = 1.0e-12_dp
       integer :: grid_level = 3
       integer :: grid_max_pts = 512
@@ -104,12 +119,18 @@ contains
    ! basis must already be on the device. `dguess` is (nao, nao, nspin) in
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
-   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess)
+   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess, comm)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: opts
       type(trc_scf_result_t), intent(out) :: res
       real(dp), intent(in), optional :: dguess(:, :, :)
+      !! Ranks. Every rank runs the same iteration on the same matrices;
+      !! the quartets are split across them and the Fock matrix summed
+      !! back, so the density stays identical everywhere. Bind devices
+      !! first (trc_bind_device). The XC integration is not split yet:
+      !! every rank does all of it.
+      type(comm_t), intent(in), optional :: comm
 
       integer :: nao, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
       logical :: ok
@@ -124,11 +145,13 @@ contains
       type(trc_xc_functional_t) :: func
       type(trc_linalg_t) :: la
       type(error_t) :: err
-      logical :: dft
-      real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ
+      logical :: dft, talk, diis_on
+      real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ, errmax
 
       nao = b%nao
       n2 = nao*nao
+      talk = opts%verbose
+      if (present(comm)) talk = talk .and. comm%rank() == 0
       dft = len_trim(opts%functional) > 0
       exx = 1.0_dp
       if (dft) then
@@ -157,7 +180,11 @@ contains
       call pl%to_device()
       call trc_1e(b, pl, smat, tmat, vmat)
       hcore = tmat + vmat
-      call eri%build(b, opts%eri_thresh)
+      if (present(comm)) then
+         call eri%build(b, opts%eri_thresh, comm)
+      else
+         call eri%build(b, opts%eri_thresh)
+      end if
       res%e_nuc = nuclear_repulsion(b)
       call sym_orthog(nao, smat, x)
 
@@ -177,9 +204,20 @@ contains
       ! --- the guess, on the host, then everything goes up -------------------
       if (present(dguess)) then
          res%dmat = dguess
-      else
+      else if (opts%guess == "core") then
          do s = 1, nspin
             call guess_from(hcore, nocc(s))
+         end do
+      else
+         ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
+         do j = 1, nao
+            do i = 1, nao
+               w1(i, j) = 0.875_dp*smat(i, j)*(hcore(i, i) + hcore(j, j))
+            end do
+            w1(j, j) = hcore(j, j)
+         end do
+         do s = 1, nspin
+            call guess_from(w1, nocc(s))
          end do
       end if
       res%cmo = 0.0_dp; res%eps = 0.0_dp
@@ -193,8 +231,9 @@ contains
 
       eold = 0.0_dp
       ndiis_used = 0
+      diis_on = .false.
       exc = 0.0_dp; ngrid = 0.0_dp
-      if (opts%verbose) print '(a)', "   it        E(total)            dE          RMS(D)"
+      if (talk) print '(a)', "   it        E(total)            dE          RMS(D)"
       do it = 1, opts%max_iter
          ! --- two-electron part, resident ------------------------------------
          if (nspin == 1) then
@@ -258,8 +297,22 @@ contains
          do concurrent(i=1:nao, j=1:nao, s=1:nspin)
             dold(i, j, s) = res%dmat(i, j, s)
          end do
-         ! --- DIIS -----------------------------------------------------------
-         if (it > opts%ndamp) then
+         ! --- DIIS, once the commutator is small enough to extrapolate from --
+         if (.not. diis_on .and. it > opts%ndamp) then
+            errmax = sqrt(la%dot(n2*nspin, errv, errv))
+            diis_on = errmax < opts%diis_start
+         end if
+         ! --- level shift while DIIS is off: F += mu (S - S D S / occ) --------
+         if (.not. diis_on .and. opts%level_shift > 0.0_dp) then
+            do s = 1, nspin
+               call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+               call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+               do concurrent(i=1:nao, j=1:nao)
+                  fock(i, j, s) = fock(i, j, s) + opts%level_shift*(smat(i, j) - w2(i, j)/occ)
+               end do
+            end do
+         end if
+         if (diis_on) then
             if (ndiis_used < opts%ndiis) then
                ndiis_used = ndiis_used + 1
             else
@@ -309,16 +362,27 @@ contains
                end do
             end if
          end do
-         if (it <= opts%ndamp) then
+         if (.not. diis_on) then
             do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-               res%dmat(i, j, s) = 0.5_dp*(res%dmat(i, j, s) + dold(i, j, s))
+               res%dmat(i, j, s) = opts%damp*res%dmat(i, j, s) + (1.0_dp - opts%damp)*dold(i, j, s)
             end do
+         end if
+         ! Every rank must hold the same density to the bit. The Fock sum is
+         ! broadcast already; the XC potential is accumulated with atomics
+         ! whose order differs per rank, 1e-13 in the energy on water, and a
+         ! difference that small compounds through a diverging iteration.
+         if (present(comm)) then
+            if (comm%size() > 1) then
+               !$acc update self(res%dmat)
+               call bcast_flat(comm, res%dmat, n2*nspin)
+               !$acc update device(res%dmat)
+            end if
          end if
          do concurrent(i=1:nao, j=1:nao, s=1:nspin)
             errv(i, j, s) = res%dmat(i, j, s) - dold(i, j, s)
          end do
          drms = sqrt(la%dot(n2*nspin, errv, errv))/real(nao, dp)
-         if (opts%verbose) print '(i5,f22.12,es14.4,es14.4)', it, etot, etot - eold, drms
+         if (talk) print '(i5,f22.12,es14.4,es14.4)', it, etot, etot - eold, drms
          res%iterations = it
          if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. drms < opts%conv_density) then
             res%converged = .true.
@@ -365,6 +429,14 @@ contains
       end subroutine guess_from
 
    end subroutine trc_scf_run
+
+   ! Broadcast rank 0's copy of a contiguous array of any rank.
+   subroutine bcast_flat(comm, g, n)
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: g(n)
+      call bcast(comm, g, n, 0)
+   end subroutine bcast_flat
 
    real(dp) function nuclear_repulsion(b) result(e)
       type(trc_basis_t), intent(in) :: b

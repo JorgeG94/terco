@@ -48,6 +48,7 @@ module trc_api
    private
    public :: trc_basis_t, trc_pairlist_t
    public :: trc_1e, trc_multipoles, trc_df_2c, trc_df_3c
+   public :: trc_bind_device
    public :: TRC_NMULT
 
    ! libcint's packed layout, so a caller can pass its arrays straight in.
@@ -189,6 +190,32 @@ contains
       integer, intent(in) :: l
       ncart = (l + 1)*(l + 2)/2
    end function ncart
+
+   !
+   ! One device per rank: rank r takes device r modulo the number of
+   ! devices. Call it right after MPI is up and BEFORE any basis, pair list
+   ! or grid goes to the device -- those land on whichever device is current
+   ! at the time. Under a host build there is nothing to bind. Returns the
+   ! device chosen, -1 on a host build.
+   !
+   function trc_bind_device(rank) result(dev)
+#ifdef _OPENACC
+      use openacc, only: acc_set_device_num, acc_get_num_devices, acc_device_nvidia
+#endif
+      integer, intent(in) :: rank
+      integer :: dev
+      dev = -1
+#ifdef _OPENACC
+      block
+         integer :: ndev
+         ndev = acc_get_num_devices(acc_device_nvidia)
+         if (ndev > 0) then
+            dev = mod(rank, ndev)
+            call acc_set_device_num(dev, acc_device_nvidia)
+         end if
+      end block
+#endif
+   end function trc_bind_device
 
    !
    ! libcint applies this per shell OUTSIDE `env`, so a container built from

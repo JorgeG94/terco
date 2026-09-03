@@ -27,7 +27,7 @@ contains
    subroutine pc2122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                      ndens, dmat, jmat)
+                      ndens, dmat, jmat, rank, nranks)
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
       integer(kind=8), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
@@ -46,7 +46,8 @@ contains
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
-      integer(kind=8) :: gt
+      integer, intent(in) :: rank, nranks
+      integer(kind=8) :: g0, g1, nr, i
       !
       ! LAUNCH GEOMETRY.  `do concurrent` gives nvfortran the whole say, and it
       ! picks 128 threads per block.  Handing the block size back to the
@@ -56,8 +57,16 @@ contains
       ! it.  Per-class kernels are what recover the occupancy anyway -- ptxas
       ! budgets registers for one (la,lb,lc,ld) instead of for the worst class.
       !
-      do concurrent(gt=sOff(lo) + 1:sOff(hi + 1))
-         call pci2122(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      ! RANKS.  The work list is sorted, so rank r of n taking every n-th item
+      ! from r is a static split that balances by construction, and every
+      ! rank walks the same list -- the reduction of the result across ranks
+      ! happens in the Fock driver, not here.  One rank is rank 0 of 1.
+      g0 = sOff(lo) + 1 + rank
+      g1 = sOff(hi + 1)
+      nr = 0
+      if (g1 >= g0) nr = (g1 - g0)/nranks + 1
+      do concurrent(i=1:nr)
+         call pci2122(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
       end do

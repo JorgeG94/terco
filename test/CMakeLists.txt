@@ -217,6 +217,41 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
                                       DEPENDS terco/scf_rks)
 endif()
 
+#
+# The SCF over ranks. Built in every configuration -- pic-mpi's serial
+# backend makes it rank 0 of 1 -- and registered on one, two and four ranks
+# when MPI is on, each run asserting the single-rank energies. No
+# CUDA_VISIBLE_DEVICES here: the point is one card per rank.
+#
+add_executable(scf_mpi scf_mpi.F90)
+target_compile_definitions(scf_mpi PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_mpi PRIVATE ${main_lib} terco_test_basis)
+target_include_directories(scf_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
+if(TERCO_ENABLE_MPI)
+  # The launcher beside the compiler wrapper, not the first mpiexec on PATH:
+  # an executable linked against NVHPC's OpenMPI launched by another
+  # OpenMPI's mpiexec fails at load with an undefined MPI symbol, because
+  # the launcher points it at the wrong runtime.
+  get_filename_component(_mpi_bindir "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+  if(EXISTS "${_mpi_bindir}/mpiexec")
+    set(_mpiexec "${_mpi_bindir}/mpiexec")
+    set(_npflag "-np")
+  else()
+    find_package(MPI REQUIRED COMPONENTS Fortran)
+    set(_mpiexec "${MPIEXEC_EXECUTABLE}")
+    set(_npflag "${MPIEXEC_NUMPROC_FLAG}")
+  endif()
+  foreach(np 1 2 4)
+    add_test(NAME terco/scf_mpi_np${np}
+             COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:scf_mpi>)
+    set_tests_properties(terco/scf_mpi_np${np} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  endforeach()
+else()
+  add_test(NAME terco/scf_mpi COMMAND scf_mpi)
+  set_tests_properties(terco/scf_mpi PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+endif()
+
 add_executable(demo_makefp demo_makefp.F90)
 target_compile_definitions(demo_makefp PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(demo_makefp PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)

@@ -43,6 +43,13 @@ set(TERCO_GPU_ARCH
     CACHE STRING "Target GPU architecture, as nvfortran spells it (cc70, cc80, ...)")
 
 option(TERCO_ENABLE_TESTING "Build the correctness checks" ON)
+#
+# Ranks. The Fock build splits the sorted quartet list across ranks -- every
+# nranks-th item from the rank -- and sums the result; one device per rank.
+# OFF builds pic-mpi's single-rank backend behind the same API, so the code
+# is identical either way and a build without MPI is rank 0 of 1.
+#
+option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" OFF)
 option(TERCO_REGENERATE
        "Regenerate the committed kernels in-tree rather than using them" OFF)
 #
@@ -183,8 +190,16 @@ find_package("pic-blas" REQUIRED)
 # libterco.so; an installed consumer links nothing else and the export set
 # must not name targets that are not installed. terco's own tests, which
 # `use pic_types`, get them through this build interface.
+set(PIC_ENABLE_MPI
+    ${TERCO_ENABLE_MPI}
+    CACHE BOOL "" FORCE)
+set(PIC_USE_LEGACY_MPI
+    OFF
+    CACHE BOOL "" FORCE)
+find_package("pic-mpi" REQUIRED)
 target_link_libraries(${main_lib} PUBLIC $<BUILD_INTERFACE:pic::pic>
-                                         $<BUILD_INTERFACE:pic-blas::pic-blas>)
+                                         $<BUILD_INTERFACE:pic-blas::pic-blas>
+                                         $<BUILD_INTERFACE:pic-mpi::pic-mpi>)
 
 set_target_properties(${main_lib} PROPERTIES Fortran_MODULE_DIRECTORY
                                              ${CMAKE_BINARY_DIR}/modules)
