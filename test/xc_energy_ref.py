@@ -37,6 +37,13 @@ for k in range(nfunc):
     exc, nelec = np.fromfile(f, dtype=np.float64, count=2)
     vxc = np.fromfile(f, dtype=np.float64, count=n*n).reshape(n, n, order='F')
     results.append((exc, nelec, vxc))
+# The spin-polarised section: two densities, then per functional.
+dm2 = np.fromfile(f, dtype=np.float64, count=2*n*n).reshape(n, n, 2, order='F')
+uks = []
+for k in range(nfunc):
+    exc, nelec = np.fromfile(f, dtype=np.float64, count=2)
+    vxc = np.fromfile(f, dtype=np.float64, count=2*n*n).reshape(n, n, 2, order='F')
+    uks.append((exc, nelec, vxc))
 f.close()
 print(f'  nao   terco {n}   pyscf {nao}      points {npts}')
 if n != nao:
@@ -59,7 +66,18 @@ for k, name in enumerate(NAMES[:nfunc]):
     bad += not ok
     print(f'  {name:7s} E_xc terco {exc_t:18.12f} pyscf {exc_p:18.12f}  |dE| {de:.2e}  '
           f'|dN| {dn:.2e}  max|dV| {dv:.2e}  {"OK" if ok else "MISMATCH"}')
-print(f'\n  functionals disagreeing: {bad} / {nfunc}')
+print('  spin-polarised:')
+for k, name in enumerate(NAMES[:nfunc]):
+    exc_t, nelec_t, vxc_t = uks[k]
+    nelec_p, exc_p, vxc_p = ni.nr_uks(mol, grids, PYSCF[name], (dm2[:, :, 0], dm2[:, :, 1]))
+    de = abs(exc_t - exc_p)
+    dn = abs(nelec_t - nelec_p.sum())
+    dv = max(np.abs(vxc_t[:, :, 0] - vxc_p[0]).max(), np.abs(vxc_t[:, :, 1] - vxc_p[1]).max())
+    ok = de < 1e-9 and dn < 1e-9 and dv < 1e-9
+    bad += not ok
+    print(f'  {name:7s} E_xc terco {exc_t:18.12f} pyscf {exc_p:18.12f}  |dE| {de:.2e}  '
+          f'|dN| {dn:.2e}  max|dV| {dv:.2e}  {"OK" if ok else "MISMATCH"}')
+print(f'\n  functionals disagreeing: {bad} / {2*nfunc}')
 if bad:
     raise SystemExit(1)
 print('  RESULT: PASS')

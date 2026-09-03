@@ -15,17 +15,17 @@
 !
 module trc_xc_functional
    use trc_boys, only: dp
-   use trc_xc_slater_exchange, only: slater_exchange_exc_vxc_unpolar
-   use trc_xc_vwn, only: vwn_exc_vxc_unpolar
-   use trc_xc_vwn_rpa, only: vwn_rpa_exc_vxc_unpolar
-   use trc_xc_pbe_x, only: pbe_x_exc_vxc_unpolar
-   use trc_xc_pbe_c, only: pbe_c_exc_vxc_unpolar
-   use trc_xc_b88, only: b88_exc_vxc_unpolar
-   use trc_xc_lyp, only: lyp_exc_vxc_unpolar
+   use trc_xc_slater_exchange, only: slater_exchange_exc_vxc_unpolar, slater_exchange_exc_vxc_polar
+   use trc_xc_vwn, only: vwn_exc_vxc_unpolar, vwn_exc_vxc_polar
+   use trc_xc_vwn_rpa, only: vwn_rpa_exc_vxc_unpolar, vwn_rpa_exc_vxc_polar
+   use trc_xc_pbe_x, only: pbe_x_exc_vxc_unpolar, pbe_x_exc_vxc_polar
+   use trc_xc_pbe_c, only: pbe_c_exc_vxc_unpolar, pbe_c_exc_vxc_polar
+   use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar
+   use trc_xc_lyp, only: lyp_exc_vxc_unpolar, lyp_exc_vxc_polar
    implicit none
    private
 
-   public :: trc_xc_functional_t, xc_eval_point, xc_functional_by_name
+   public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name
    public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    public :: XC_K_SLATER, XC_K_VWN, XC_K_VWN_RPA, XC_K_PBE_X, XC_K_PBE_C, XC_K_B88, XC_K_LYP
 
@@ -77,6 +77,43 @@ contains
          vsigma = vsigma + coef(k)*vs
       end do
    end subroutine xc_eval_point
+
+   !
+   ! The same for a spin-polarised density: two densities, three gradient
+   ! invariants (aa, ab, bb), and the derivatives with respect to each.
+   ! `eps` is still per particle of the TOTAL density.
+   !
+   pure subroutine xc_eval_point_polar(nk, kid, coef, rho_a, rho_b, s_aa, s_ab, s_bb, &
+                                       eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb)
+      !$acc routine seq
+      integer, intent(in) :: nk, kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS), rho_a, rho_b, s_aa, s_ab, s_bb
+      real(dp), intent(out) :: eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb
+      real(dp) :: e, va, vb, saa, sab, sbb
+      integer :: k
+
+      eps = 0.0_dp; vrho_a = 0.0_dp; vrho_b = 0.0_dp
+      vs_aa = 0.0_dp; vs_ab = 0.0_dp; vs_bb = 0.0_dp
+      do k = 1, nk
+         saa = 0.0_dp; sab = 0.0_dp; sbb = 0.0_dp
+         select case (kid(k))
+         case (XC_K_SLATER); call slater_exchange_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_VWN); call vwn_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_VWN_RPA); call vwn_rpa_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_PBE_X); call pbe_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
+         case (XC_K_PBE_C); call pbe_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
+         case (XC_K_B88); call b88_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
+         case (XC_K_LYP); call lyp_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
+         case default; e = 0.0_dp; va = 0.0_dp; vb = 0.0_dp
+         end select
+         eps = eps + coef(k)*e
+         vrho_a = vrho_a + coef(k)*va
+         vrho_b = vrho_b + coef(k)*vb
+         vs_aa = vs_aa + coef(k)*saa
+         vs_ab = vs_ab + coef(k)*sab
+         vs_bb = vs_bb + coef(k)*sbb
+      end do
+   end subroutine xc_eval_point_polar
 
    !
    ! libxc's compositions. Names are case-insensitive.

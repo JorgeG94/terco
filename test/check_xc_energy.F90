@@ -36,7 +36,7 @@ program check_xc_energy
    use trc_dft_prune, only: PRUNE_NONE
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
-   use trc_xc, only: trc_xc_rks
+   use trc_xc, only: trc_xc_rks, trc_xc_uks
    implicit none
 
    integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 6
@@ -47,6 +47,8 @@ program check_xc_energy
    real(dp) :: at_z(NATM), at_r(3, NATM), seed, exc, nelec, exc2, nelec2, trds
    integer(kind=8) :: lcg
    real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), c(:, :), dmat(:, :), vxc(:, :), vxc2(:, :)
+   real(dp), allocatable :: cb(:, :), dm2(:, :, :), vx2(:, :, :), vx3(:, :, :)
+   real(dp) :: exc3, nelec3, trds2
    type(trc_basis_t) :: b
    type(trc_pairlist_t) :: pl
    type(dft_grid_t) :: grid
@@ -134,6 +136,47 @@ program check_xc_energy
                   max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
       call report(maxval(abs(vxc - transpose(vxc))) < 1.0e-13_dp*maxval(abs(vxc)), &
                   trim(names(ifn))//": V_xc symmetric", maxval(abs(vxc - transpose(vxc)))/maxval(abs(vxc)))
+   end do
+
+   ! --- spin-polarised: two independent PSD densities ---------------------
+   !
+   ! Beta gets three occupied columns to alpha's four, so the two spins
+   ! differ everywhere and every cross term is exercised. First the
+   ! identity: UKS with alpha = beta = D/2 must reproduce RKS on D exactly,
+   ! energy and both potentials. Then the same-grid pyscf comparison.
+   !
+   allocate (cb(nao, NOCC - 1), dm2(nao, nao, 2), vx2(nao, nao, 2), vx3(nao, nao, 2))
+   do j = 1, NOCC - 1
+      do i = 1, nao
+         lcg = mod(25214903917_8*lcg + 11_8, 281474976710656_8)
+         seed = real(lcg, dp)/281474976710656.0_dp
+         cb(i, j) = 0.2_dp*(seed - 0.5_dp)
+      end do
+   end do
+   dm2(:, :, 1) = matmul(c, transpose(c))
+   dm2(:, :, 2) = matmul(cb, transpose(cb))
+   trds2 = sum(dm2(:, :, 1)*s) + sum(dm2(:, :, 2)*s)
+   write (unit) dm2
+   do ifn = 1, NFUNC
+      if (.not. xc_functional_by_name(names(ifn), func)) stop 1
+      call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec)
+      vx3(:, :, 1) = 0.5_dp*dmat; vx3(:, :, 2) = 0.5_dp*dmat
+      call trc_xc_uks(b, xg, func, vx3, vx2, exc2, nelec2)
+      call report(abs(exc - exc2) < 1.0e-12_dp*abs(exc) .and. &
+                  maxval(abs(vx2(:, :, 1) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)) .and. &
+                  maxval(abs(vx2(:, :, 2) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)), &
+                  trim(names(ifn))//": UKS at D/2, D/2 reproduces RKS", &
+                  max(abs(exc - exc2)/abs(exc), maxval(abs(vx2(:, :, 1) - vxc))/maxval(abs(vxc))))
+      call trc_xc_uks(b, xg, func, dm2, vx2, exc3, nelec3)
+      call trc_xc_uks(b, xg, func, dm2, vx3, exc2, nelec2, budget=1_8)
+      write (unit) exc3, nelec3
+      write (unit) vx2
+      print '(a,a8,a,f18.12,a,f14.10)', "  ", names(ifn), "  E_xc(UKS) = ", exc3, "   N = ", nelec3
+      call report(abs(nelec3 - trds2)/trds2 < 1.0e-7_dp, trim(names(ifn))//": UKS sum w rho vs Tr(DS), relative", &
+                  abs(nelec3 - trds2)/trds2)
+      call report(abs(exc3 - exc2) < 1.0e-13_dp*abs(exc3) .and. maxval(abs(vx2 - vx3)) < 1.0e-13_dp*maxval(abs(vx2)), &
+                  trim(names(ifn))//": UKS independent of chunking", &
+                  max(abs(exc3 - exc2)/abs(exc3), maxval(abs(vx2 - vx3))/maxval(abs(vx2))))
    end do
    close (unit)
 
