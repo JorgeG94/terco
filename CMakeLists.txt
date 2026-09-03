@@ -143,11 +143,25 @@ endif()
 add_subdirectory(src)
 
 #
+# cuSOLVER and cuBLAS, for the SCF's eigenproblem and products
+# (src/trc_linalg.F90). A LINK option on terco's own target, PUBLIC so that
+# anything linking libterco with nvfortran gets it too -- and NOT in
+# CMAKE_Fortran_FLAGS, where it reached every target in the tree: pic's own
+# `app`, fetched as a dependency, was then asked to link CUDA math libraries
+# it has no use for, and failed wherever the NVHPC install lacks them for
+# the driver's CUDA version. The NVHPC modules the source `use`s come from
+# the compiler's include path and need nothing at compile time.
+#
+if(TERCO_ENABLE_GPU)
+  target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
+endif()
+
+#
 # pic-blas, for the SCF driver (src/trc_scf.F90): the orthogonaliser and the
 # core guess go through its explicit-interface wrappers in every build, and
 # under a host build so do the eigenproblem, the products and the dot
 # products of the iteration. The GPU build does those on the device;
-# -cudalib is in cmake/. The DIIS system is solved in terco itself, the way
+# -cudalib is a link option on the target, above. The DIIS system is solved in terco itself, the way
 # metalquicha does it, and needs neither.
 #
 # pic-blas's switch is the unprefixed ENABLE_TESTING; terco's own is

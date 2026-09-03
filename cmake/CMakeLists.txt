@@ -21,10 +21,8 @@ endif()
 #   -Mpreprocess  the sources are .F90 and select on TRC_LMAX.
 #
 if(TERCO_ENABLE_GPU)
-  # -cudalib: the SCF's eigenproblem and products are cuSOLVER and cuBLAS
-  # (src/trc_linalg.F90), reached from OpenACC through the NVHPC modules.
   set(TERCO_FLAGS
-      "-stdpar=gpu -acc -gpu=${TERCO_GPU_ARCH},mem:separate -Mpreprocess -traceback -cudalib=cublas,cusolver")
+      "-stdpar=gpu -acc -gpu=${TERCO_GPU_ARCH},mem:separate -Mpreprocess -traceback")
 else()
   #
   # Host build. No `-acc`, so every OpenACC directive is an inert comment, and
