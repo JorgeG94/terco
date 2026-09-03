@@ -131,7 +131,7 @@ program link_gfortran
       integer(c_int) :: niter
       allocate (d_lib(nao, nao), eps_lib(nao))
       rc = trc_scf(hbas, int(nocc, c_int), int(nocc, c_int), c_null_char, 3_c_int, &
-                   1.0e-10_c_double, 1.0e-7_c_double, 100_c_int, c_null_ptr, &
+                   1.0e-10_c_double, 1.0e-7_c_double, 100_c_int, c_null_ptr, 0_c_int, &
                    e_lib, e_xc, d_lib, eps_lib, niter)
       call must(rc, 'trc_scf (HF)')
       print '(a,f18.10,a,i0,a)', '    trc_scf RHF  ', e_lib, '   (', niter, ' iterations)'
@@ -140,7 +140,7 @@ program link_gfortran
          stop 1
       end if
       rc = trc_scf(hbas, int(nocc, c_int), int(nocc, c_int), 'pbe'//c_null_char, 3_c_int, &
-                   1.0e-10_c_double, 1.0e-7_c_double, 100_c_int, c_null_ptr, &
+                   1.0e-10_c_double, 1.0e-7_c_double, 100_c_int, c_null_ptr, 0_c_int, &
                    e_lib, e_xc, d_lib, eps_lib, niter)
       call must(rc, 'trc_scf (PBE)')
       print '(a,f18.10,a,f16.10,a,i0,a)', '    trc_scf PBE  ', e_lib, '   E_xc ', e_xc, '   (', niter, ' iterations)'

@@ -179,7 +179,12 @@ set(ENABLE_TESTING
     OFF
     CACHE BOOL "" FORCE)
 find_package("pic-blas" REQUIRED)
-target_link_libraries(${main_lib} PUBLIC pic::pic pic-blas::pic-blas)
+# Build-interface only. pic and pic-blas are static and end up inside
+# libterco.so; an installed consumer links nothing else and the export set
+# must not name targets that are not installed. terco's own tests, which
+# `use pic_types`, get them through this build interface.
+target_link_libraries(${main_lib} PUBLIC $<BUILD_INTERFACE:pic::pic>
+                                         $<BUILD_INTERFACE:pic-blas::pic-blas>)
 
 set_target_properties(${main_lib} PROPERTIES Fortran_MODULE_DIRECTORY
                                              ${CMAKE_BINARY_DIR}/modules)
@@ -204,11 +209,16 @@ install(
   INCLUDES
   DESTINATION include/terco)
 
+# terco's own modules only. The modules/ directory is shared with the
+# fetched dependencies, whose .mod files are theirs to ship; and the test
+# helper's module is not part of the library.
 install(
   DIRECTORY ${CMAKE_BINARY_DIR}/modules/
   DESTINATION include/terco
   FILES_MATCHING
-  PATTERN "*.mod")
+  PATTERN "trc_test_basis.mod" EXCLUDE
+  PATTERN "trc_*.mod"
+  PATTERN "bit_repro*.mod")
 
 #
 # The C ABI's Fortran declaration ships as SOURCE, not as a module.

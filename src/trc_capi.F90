@@ -575,14 +575,17 @@ contains
    !
    ! `functional` is a NUL-terminated C string; names are the ones
    ! trc_xc_functional knows. `grid_level` is 0 to 9 in metalquicha's sense.
+   ! `verbose` non-zero prints one line per iteration -- energy, its change
+   ! and the RMS density change -- to standard output, since the iteration
+   ! is otherwise invisible to a caller that only sees the final energy.
    ! A non-converged SCF returns TRC_ERR_NOCONV with the last energy and
    ! density filled in, so the caller can decide what that is worth.
    !
    function capi_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
-                     conv_density, max_iter, dguess, energy, e_xc, dmat, eps, &
+                     conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                      niter) result(status) bind(c, name="trc_scf")
       type(c_ptr), value :: basis
-      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter
+      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
       character(kind=c_char), intent(in) :: functional(*)
       real(c_double), value :: conv_energy, conv_density
       type(c_ptr), value :: dguess
@@ -615,6 +618,7 @@ contains
       opts%conv_energy = real(conv_energy, dp)
       opts%conv_density = real(conv_density, dp)
       opts%max_iter = int(max_iter)
+      opts%verbose = verbose /= 0
 
       if (c_associated(dguess)) then
          call c_f_pointer(dguess, dg, [n, n, nspin])

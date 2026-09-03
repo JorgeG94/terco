@@ -182,15 +182,16 @@ module trc_c_interfaces
       end function trc_fock
 
       !> The whole SCF, HF or Kohn-Sham, R or U. `functional` NUL-terminated
-      !> (empty for HF); `dguess` NULL or a (nao,nao,nspin) density; `dmat`
-      !> (nao,nao,nspin) and `eps` (nao,nspin) out, nspin = 2 iff nalpha /= nbeta.
+      !> (empty for HF); `dguess` NULL or a (nao,nao,nspin) density; `verbose`
+      !> non-zero prints one line per iteration; `dmat` (nao,nao,nspin) and
+      !> `eps` (nao,nspin) out, nspin = 2 iff nalpha /= nbeta.
       !> TRC_ERR_NOCONV means the last iterate is in the outputs.
       integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, &
-            conv_energy, conv_density, max_iter, dguess, energy, e_xc, dmat, eps, &
+            conv_energy, conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
             niter) bind(c)
          import :: c_int, c_double, c_ptr, c_char
          type(c_ptr), value :: basis
-         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter
+         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
          character(kind=c_char), intent(in) :: functional(*)
          real(c_double), value :: conv_energy, conv_density
          type(c_ptr), value :: dguess
