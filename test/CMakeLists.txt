@@ -64,6 +64,14 @@ endfunction()
 #
 terco_add_check(check_selftest check_selftest.F90)
 
+#
+# The translated XC kernels against libxc, through the values `xc_ref.py`
+# recorded in reference_xc.dat. Every derivative to second order, both spin
+# cases, eleven decades of density. Needs no GPU and no pyscf to run; pyscf
+# only to regenerate the reference.
+#
+terco_add_check(check_xc check_xc.F90)
+
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)

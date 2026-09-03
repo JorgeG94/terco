@@ -22,6 +22,27 @@ target_sources(
           trc_capi.F90       # the bind(c) skin
           trc_acc_shim.F90)  # see the file: this one is not optional
 
+# --- exchange-correlation ---------------------------------------------------
+#
+# The XC functionals. One hand-written helper module and, per functional
+# kernel, one module TRANSLATED from ExchCXX's Maple-generated C++ by
+# tools/exchcxx_to_fortran.py. Translated rather than generated: the source
+# is another project's checkout, so the output is committed and the tool is
+# rerun by hand when a kernel is added. See src/xc/trc_xc_util.F90.
+#
+target_sources(
+  ${main_lib}
+  PRIVATE xc/bit_repro.f90          # bit-reproducible exp/log/pow/erfc/cbrt, vendored
+          xc/bit_repro_helpers.f90  # its submodule
+          xc/trc_xc_util.F90
+          xc/trc_xc_slater_exchange.F90
+          xc/trc_xc_vwn.F90
+          xc/trc_xc_vwn_rpa.F90
+          xc/trc_xc_pbe_x.F90
+          xc/trc_xc_pbe_c.F90
+          xc/trc_xc_b88.F90
+          xc/trc_xc_lyp.F90)
+
 # `trc_binkernel.F90` textually includes the quartet body rather than calling
 # it. NVHPC will not inline an `!$acc routine seq` across a module boundary --
 # `v` has to be materialised in memory to cross the call and 35 kB of spill
