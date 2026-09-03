@@ -106,7 +106,9 @@ For **one-electron, multipole and density-fitting** kernels, momentum sits on
 two or three centres, so they grow as `L²` or `L³` and f or g is affordable.
 They are generated at `--lmax 2` only because that is what the shipped set was
 built with. The two ceilings are deliberately independent — a fitting basis
-normally outranks the orbital basis.
+normally outranks the orbital basis, which is why `gen_df.py` defaults the
+auxiliary ceiling to one above the orbital one (`--lmax 2` gives f on the
+auxiliary shell, the shipped set) unless `--lmax-aux` says otherwise.
 
 ---
 
