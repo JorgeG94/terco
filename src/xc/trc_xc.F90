@@ -50,6 +50,20 @@
 ! per chunk. Blocking is designed in rather than retrofitted: retrofitting
 ! it is the coupled-cluster lesson metalquicha already paid for.
 !
+! DENSITY SCREENING
+! -----------------
+! Before the chunk loop, every batch is bounded: with m_u the largest
+! value of local function u on the batch (recorded at batching time),
+!
+!     rho on the batch  <=  sum_uv |D_uv| m_u m_v
+!
+! and a batch whose bound is below `rho_tol` is skipped by both kernels
+! and takes no storage. This is what turns the cost from every batch
+! against every nearby function into every batch against the density
+! that reaches it, and on a large molecule it is the difference in
+! scaling rather than in constant. It costs one small matrix-vector per
+! batch on the host per call.
+!
 ! WHAT RUNS ON THE HOST
 ! ---------------------
 ! The sums for E_xc and the electron count. `do concurrent` has no portable
@@ -67,7 +81,12 @@ module trc_xc
    implicit none
    private
 
-   public :: trc_xc_rks, trc_xc_uks
+   public :: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
+
+   !> A batch whose bound on rho is below this is skipped. The functionals'
+   !> own density thresholds are 1e-12 to 1e-32; check_xc_energy measures
+   !> what this value costs against an unscreened evaluation.
+   real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
 
 contains
 
@@ -78,7 +97,7 @@ contains
    ! gradients take three times as much again. The default is 8M doubles,
    ! 256 MB with the gradients.
    !
-   subroutine trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs)
+   subroutine trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -90,21 +109,29 @@ contains
       !! concurrent` under -stdpar returns when the device is done, so the
       !! clock around it is the kernel's.
       real(dp), intent(out), optional :: t_points, t_pairs
-      real(dp) :: tp, tq
+      !! Density screening threshold on the per-batch bound of rho; zero
+      !! screens nothing. Default XC_RHO_TOL.
+      real(dp), intent(in), optional :: rho_tol
+      integer, intent(out), optional :: n_skipped   !! batches the screening removed
+      real(dp) :: tp, tq, rtol
       integer(kind=8) :: cap
+      integer :: nsk
 
       cap = 8388608_8
       if (present(budget)) cap = max(budget, 1_8)
-      call xc_drive(b, xg, func, 1, dmat, vxc, exc, nelec, cap, tp, tq)
+      rtol = XC_RHO_TOL
+      if (present(rho_tol)) rtol = rho_tol
+      call xc_drive(b, xg, func, 1, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk)
       if (present(t_points)) t_points = tp
       if (present(t_pairs)) t_pairs = tq
+      if (present(n_skipped)) n_skipped = nsk
    end subroutine trc_xc_rks
 
    !
    ! The same for a spin-polarised density: D(:,:,1) is alpha, D(:,:,2)
    ! beta, and the potentials come back in the same slots.
    !
-   subroutine trc_xc_uks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs)
+   subroutine trc_xc_uks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -113,17 +140,23 @@ contains
       real(dp), intent(out) :: exc, nelec
       integer(kind=8), intent(in), optional :: budget
       real(dp), intent(out), optional :: t_points, t_pairs
-      real(dp) :: tp, tq
+      real(dp), intent(in), optional :: rho_tol
+      integer, intent(out), optional :: n_skipped
+      real(dp) :: tp, tq, rtol
       integer(kind=8) :: cap
+      integer :: nsk
 
       cap = 8388608_8
       if (present(budget)) cap = max(budget, 1_8)
-      call xc_drive(b, xg, func, 2, dmat, vxc, exc, nelec, cap, tp, tq)
+      rtol = XC_RHO_TOL
+      if (present(rho_tol)) rtol = rho_tol
+      call xc_drive(b, xg, func, 2, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk)
       if (present(t_points)) t_points = tp
       if (present(t_pairs)) t_pairs = tq
+      if (present(n_skipped)) n_skipped = nsk
    end subroutine trc_xc_uks
 
-   subroutine xc_drive(b, xg, func, nspin, dmat, vxc, exc, nelec, cap, t_points, t_pairs)
+   subroutine xc_drive(b, xg, func, nspin, dmat, vxc, exc, nelec, cap, rho_tol, t_points, t_pairs, n_skipped)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -132,10 +165,13 @@ contains
       real(dp), intent(out) :: vxc(b%nao, b%nao, nspin)
       real(dp), intent(out) :: exc, nelec, t_points, t_pairs
       integer(kind=8), intent(in) :: cap
+      real(dp), intent(in) :: rho_tol
+      integer, intent(out) :: n_skipped
 
       integer(kind=8) :: need, nchi
-      integer :: b0, b1, ib, nloc, npb, np, p0, npairs
-      integer, allocatable :: c_off(:), pr_off(:)
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, u, v, s, au, av
+      integer, allocatable :: c_off(:), pr_off(:), active(:)
+      real(dp) :: bound, su
       real(dp), allocatable :: chi(:), gchi(:, :), zg(:, :), zv(:, :, :), eg(:), ng(:)
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
@@ -150,16 +186,39 @@ contains
       t_pairs = 0.0_dp
       if (xg%npts == 0) return
 
-      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1), active(xg%nbatch))
 
-      !$acc data copyin(dmat, kid, coef) copy(vxc)
+      ! Density screening: bound rho on each batch and drop what cannot reach.
+      n_skipped = 0
+      do ib = 1, xg%nbatch
+         bound = 0.0_dp
+         do s = 1, nspin
+            do u = xg%b_aooff(ib), xg%b_aooff(ib + 1) - 1
+               au = xg%b_ao(u)
+               su = 0.0_dp
+               do v = xg%b_aooff(ib), xg%b_aooff(ib + 1) - 1
+                  av = xg%b_ao(v)
+                  su = su + abs(dmat(av, au, s))*xg%b_amax(v)
+               end do
+               bound = bound + su*xg%b_amax(u)
+            end do
+         end do
+         if (bound > rho_tol) then
+            active(ib) = 1
+         else
+            active(ib) = 0
+            n_skipped = n_skipped + 1
+         end if
+      end do
+
+      !$acc data copyin(dmat, kid, coef, active) copy(vxc)
       b0 = 1
       do while (b0 <= xg%nbatch)
          ! The chunk: as many batches as the budget holds, and at least one.
          need = 0
          b1 = b0 - 1
          do ib = b0, xg%nbatch
-            nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+            nloc = (xg%b_aooff(ib + 1) - xg%b_aooff(ib))*active(ib)
             npb = xg%b_off(ib + 1) - xg%b_off(ib)
             if (need + int(nloc, 8)*int(npb, 8) > cap .and. ib > b0) exit
             need = need + int(nloc, 8)*int(npb, 8)
@@ -172,7 +231,7 @@ contains
          c_off(b0) = 0
          pr_off(b0) = 0
          do ib = b0, b1
-            nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+            nloc = (xg%b_aooff(ib + 1) - xg%b_aooff(ib))*active(ib)
             npb = xg%b_off(ib + 1) - xg%b_off(ib)
             c_off(ib + 1) = c_off(ib) + nloc*npb
             pr_off(ib + 1) = pr_off(ib) + nloc*nloc
@@ -185,7 +244,7 @@ contains
          t0 = wall()
          call xc_points(np, p0, nspin, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
                         b%nao, dmat, xg%npts, xg%r, xg%w, xg%batch_of, xg%b_off, xg%b_shoff, &
-                        size(xg%b_sh), xg%b_sh, xg%b_aooff, size(xg%b_ao), xg%b_ao, c_off, &
+                        size(xg%b_sh), xg%b_sh, xg%b_aooff, size(xg%b_ao), xg%b_ao, c_off, active, &
                         xg%nbatch, func%nk, kid, coef, nchi, chi, gchi, zg, zv, eg, ng)
          t1 = wall()
 
@@ -218,13 +277,13 @@ contains
    !
    subroutine xc_points(np, p0, nspin, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, nao, dmat, &
                         npts, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_aooff, nbao, b_ao, &
-                        c_off, nbatch, nk, kid, coef, nchi, chi, gchi, zg, zv, eg, ng)
+                        c_off, active, nbatch, nk, kid, coef, nchi, chi, gchi, zg, zv, eg, ng)
       integer, intent(in) :: np, p0, nspin, maxnp, nshell, nao, npts, nbsh, nbao, nbatch, nk
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
       real(dp), intent(in) :: dmat(nao, nao, nspin), r(3, npts), w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh)
-      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), c_off(nbatch + 1)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), c_off(nbatch + 1), active(nbatch)
       integer, intent(in) :: kid(XC_MAX_KERNELS)
       real(dp), intent(in) :: coef(XC_MAX_KERNELS)
       integer(kind=8), intent(in) :: nchi
@@ -232,24 +291,27 @@ contains
       real(dp), intent(out) :: zg(nspin, np), zv(3, nspin, np), eg(np), ng(np)
       integer :: g
 
+      ! Nothing but the call in the body: a branch with array syntax here
+      ! cost the point kernel a factor of ten on the device, because the
+      ! compiler took the zeroing as an inner loop to parallelise.
       do concurrent(g=1:np)
          call xc_point_body(p0 + g - 1, nspin, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, nao, dmat, &
                             npts, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_aooff, nbao, b_ao, &
-                            c_off, nbatch, nk, kid, coef, nchi, chi, gchi, &
+                            c_off, active, nbatch, nk, kid, coef, nchi, chi, gchi, &
                             zg(1, g), zv(1, 1, g), eg(g), ng(g))
       end do
    end subroutine xc_points
 
    pure subroutine xc_point_body(gg, nspin, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, nao, dmat, &
                                  npts, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_aooff, nbao, b_ao, &
-                                 c_off, nbatch, nk, kid, coef, nchi, chi, gchi, zg, zv, eg, ng)
+                                 c_off, active, nbatch, nk, kid, coef, nchi, chi, gchi, zg, zv, eg, ng)
       !$acc routine seq
       integer, intent(in) :: gg, nspin, maxnp, nshell, nao, npts, nbsh, nbao, nbatch, nk
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
       real(dp), intent(in) :: dmat(nao, nao, nspin), r(3, npts), w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh)
-      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), c_off(nbatch + 1)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), c_off(nbatch + 1), active(nbatch)
       integer, intent(in) :: kid(XC_MAX_KERNELS)
       real(dp), intent(in) :: coef(XC_MAX_KERNELS)
       integer(kind=8), intent(in) :: nchi
@@ -261,6 +323,13 @@ contains
       real(dp) :: sigma, eps, vrho, vsigma, s_aa, s_ab, s_bb, va, vb, v_aa, v_ab, v_bb
 
       ib = batch_of(gg)
+      eg = 0.0_dp
+      ng = 0.0_dp
+      do s = 1, nspin
+         zg(s) = 0.0_dp
+         zv(1, s) = 0.0_dp; zv(2, s) = 0.0_dp; zv(3, s) = 0.0_dp
+      end do
+      if (active(ib) == 0) return
       nloc = b_aooff(ib + 1) - b_aooff(ib)
       off = c_off(ib) + (gg - b_off(ib))*nloc
       wg = w(gg)

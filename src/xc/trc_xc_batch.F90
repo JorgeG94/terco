@@ -28,6 +28,7 @@
 module trc_xc_batch
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
+   use trc_collocation, only: shell_collocate, NCART_MAX
    implicit none
    private
 
@@ -43,6 +44,7 @@ module trc_xc_batch
       integer, allocatable :: b_sh(:)
       integer, allocatable :: b_aooff(:)    !! (nbatch+1): its AOs are b_ao(b_aooff(b) .. b_aooff(b+1)-1)
       integer, allocatable :: b_ao(:)
+      real(dp), allocatable :: b_amax(:)    !! parallel to b_ao: max |chi| of that function over the batch
       logical :: on_device = .false.
    contains
       procedure :: build => xcgrid_build
@@ -218,6 +220,7 @@ contains
          this%max_nloc = max(this%max_nloc, nao_b)
       end do
       allocate (this%b_sh(this%b_shoff(nb + 1) - 1), this%b_ao(this%b_aooff(nb + 1) - 1))
+      allocate (this%b_amax(this%b_aooff(nb + 1) - 1))
       do ib = 1, nb
          sh_in_batch = this%b_shoff(ib)
          k = this%b_aooff(ib)
@@ -232,6 +235,38 @@ contains
             end if
          end do
       end do
+
+
+      ! --- 4. the largest value of every local function on its batch --------
+      !
+      ! What the integrator's density screening is built on: with these,
+      ! max |D_uv| chi_u chi_v over a batch is bounded without evaluating a
+      ! single point, and a batch the density cannot reach is skipped by
+      ! both kernels. Computed here, once per grid, by collocating every
+      ! batch's local basis at every one of its points on the host -- the
+      ! cost of one point-kernel pass, paid once rather than per SCF step.
+      !
+      block
+         real(dp) :: cs(NCART_MAX), gs(3, NCART_MAX), d(3)
+         integer :: g, m, nc, kk
+         this%b_amax = 0.0_dp
+         do ib = 1, nb
+            do g = this%b_off(ib), this%b_off(ib + 1) - 1
+               kk = this%b_aooff(ib)
+               do k = this%b_shoff(ib), this%b_shoff(ib + 1) - 1
+                  ish = this%b_sh(k)
+                  d = this%r(:, g) - b%sh_r(:, ish)
+                  call shell_collocate(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:b%sh_np(ish), ish), &
+                                       b%sh_c(1:b%sh_np(ish), ish), d, cs, gs)
+                  nc = ncart(b%sh_l(ish))
+                  do m = 1, nc
+                     this%b_amax(kk) = max(this%b_amax(kk), abs(cs(m)))
+                     kk = kk + 1
+                  end do
+               end do
+            end do
+         end do
+      end block
 
    contains
 
@@ -283,6 +318,7 @@ contains
       if (allocated(this%b_sh)) deallocate (this%b_sh)
       if (allocated(this%b_aooff)) deallocate (this%b_aooff)
       if (allocated(this%b_ao)) deallocate (this%b_ao)
+      if (allocated(this%b_amax)) deallocate (this%b_amax)
       this%npts = 0; this%nbatch = 0; this%max_nloc = 0
    end subroutine xcgrid_release
 

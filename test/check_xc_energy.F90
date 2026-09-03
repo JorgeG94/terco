@@ -49,6 +49,7 @@ program check_xc_energy
    real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), c(:, :), dmat(:, :), vxc(:, :), vxc2(:, :)
    real(dp), allocatable :: cb(:, :), dm2(:, :, :), vx2(:, :, :), vx3(:, :, :)
    real(dp) :: exc3, nelec3, trds2
+   integer :: nsk
    type(trc_basis_t) :: b
    type(trc_pairlist_t) :: pl
    type(dft_grid_t) :: grid
@@ -120,7 +121,13 @@ program check_xc_energy
          print '(a)', "check_xc_energy: unknown functional "//trim(names(ifn))
          stop 1
       end if
-      call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec)
+      call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, n_skipped=nsk)
+      ! Density screening off entirely: what the default threshold costs.
+      call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, rho_tol=0.0_dp)
+      call report(abs(exc - exc2) < 1.0e-10_dp*abs(exc) .and. maxval(abs(vxc - vxc2)) < 1.0e-10_dp*maxval(abs(vxc)), &
+                  trim(names(ifn))//": density screening vs none", &
+                  max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
+      if (ifn == 1) print '(a,i0,a,i0,a)', "  density screening skips ", nsk, " of ", xg%nbatch, " batches"
       ! Chunk boundaries everywhere: one batch per chunk.
       call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, budget=1_8)
       write (unit) exc, nelec

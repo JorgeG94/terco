@@ -34,6 +34,7 @@ program bench_xc
    type(trc_xc_functional_t) :: func
    type(error_t) :: err
    real(dp) :: exc, nelec, seed, t0, t1, tp, tq, sp, sq, tmin
+   integer :: nsk
    integer(kind=8) :: lcg
    logical :: ok
 
@@ -94,13 +95,13 @@ program bench_xc
    sp = 0.0_dp; sq = 0.0_dp; tmin = huge(1.0_dp)
    do r = 1, reps + 1
       t0 = wall()
-      call trc_xc_rks(bas, xg, func, dmat, vxc, exc, nelec, t_points=tp, t_pairs=tq)
+      call trc_xc_rks(bas, xg, func, dmat, vxc, exc, nelec, t_points=tp, t_pairs=tq, n_skipped=nsk)
       t1 = wall()
       if (r == 1) cycle   ! warm-up: first launches, allocations
       sp = sp + tp; sq = sq + tq; tmin = min(tmin, t1 - t0)
    end do
-   print '(a,f9.4,a,f9.4,a,f9.4,a)', '  per call: points ', sp/reps, ' s   pairs ', sq/reps, &
-      ' s   total (best) ', tmin, ' s'
+   print '(a,f9.4,a,f9.4,a,f9.4,a,i0,a,i0,a)', '  per call: points ', sp/reps, ' s   pairs ', sq/reps, &
+      ' s   total (best) ', tmin, ' s   (', nsk, ' of ', xg%nbatch, ' batches screened out)'
    print '(a,f12.8,a,f14.10,a,f14.10)', '  E_xc(PBE) ', exc, '   N ', nelec, '   Tr(DS) ', trds
 
    call xg%release(); call grid%destroy(); call bas%release()
