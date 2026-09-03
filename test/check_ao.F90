@@ -88,8 +88,8 @@ program check_ao
    lcg = 37_8
    do k = 1, NPROBE
       do i = 1, 3
-         lcg = mod(25214903917_8*lcg + 11_8, 281474976710656_8)
-         seed = real(lcg, dp)/281474976710656.0_dp
+         lcg = mod(48271_8*lcg, 2147483647_8)
+         seed = real(lcg, dp)/2147483647.0_dp
          probe(i, k) = -3.0_dp + 7.0_dp*seed
       end do
    end do

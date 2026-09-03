@@ -87,8 +87,8 @@ program check_xc_energy
    lcg = 61_8
    do j = 1, NOCC
       do i = 1, nao
-         lcg = mod(25214903917_8*lcg + 11_8, 281474976710656_8)
-         seed = real(lcg, dp)/281474976710656.0_dp
+         lcg = mod(48271_8*lcg, 2147483647_8)
+         seed = real(lcg, dp)/2147483647.0_dp
          c(i, j) = 0.16_dp*(seed - 0.5_dp)
       end do
    end do
@@ -155,8 +155,8 @@ program check_xc_energy
    allocate (cb(nao, NOCC - 1), dm2(nao, nao, 2), vx2(nao, nao, 2), vx3(nao, nao, 2))
    do j = 1, NOCC - 1
       do i = 1, nao
-         lcg = mod(25214903917_8*lcg + 11_8, 281474976710656_8)
-         seed = real(lcg, dp)/281474976710656.0_dp
+         lcg = mod(48271_8*lcg, 2147483647_8)
+         seed = real(lcg, dp)/2147483647.0_dp
          cb(i, j) = 0.2_dp*(seed - 0.5_dp)
       end do
    end do

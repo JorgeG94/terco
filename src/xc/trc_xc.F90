@@ -414,7 +414,19 @@ contains
       integer :: t, au, av
       real(dp) :: acc_a, acc_b
 
+      ! Two batches can share a global (u, v), so iterations write the same
+      ! element: on the device the atomic makes that correct, but it is not
+      ! what `do concurrent` promises, and a host compiler that takes the
+      ! promise at its word -- ifx does -- reorders the read-modify-writes
+      ! and the matrix comes out wrong while the energy, from the other
+      ! kernel, is exact. So the concurrent form only under OpenACC, where
+      ! the atomic exists; a plain loop otherwise. terco's Fock digestion
+      ! is arranged the same way.
+#ifdef _OPENACC
       do concurrent(t=1:npairs) local(au, av, acc_a, acc_b)
+#else
+      do t = 1, npairs
+#endif
          call xc_pair_body(t, b0, b1, np, p0, nspin, b_off, b_aooff, nbao, b_ao, c_off, pr_off, nbatch, &
                            nchi, chi, gchi, zg, zv, au, av, acc_a, acc_b)
          !$acc atomic update
