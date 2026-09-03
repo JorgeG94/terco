@@ -128,8 +128,7 @@ contains
       !! Ranks. Every rank runs the same iteration on the same matrices;
       !! the quartets are split across them and the Fock matrix summed
       !! back, so the density stays identical everywhere. Bind devices
-      !! first (trc_bind_device). The XC integration is not split yet:
-      !! every rank does all of it.
+      !! first (trc_bind_device). The XC batches are split across ranks too.
       type(comm_t), intent(in), optional :: comm
 
       integer :: nao, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
@@ -147,6 +146,7 @@ contains
       type(error_t) :: err
       logical :: dft, talk, diis_on
       real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ, errmax
+      real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
 
       nao = b%nao
       n2 = nao*nao
@@ -175,6 +175,9 @@ contains
       allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
 
+      t_setup = 0.0_dp; t_grid = 0.0_dp; t_fock = 0.0_dp; t_xc = 0.0_dp; t_rest = 0.0_dp
+      tx_pts = 0.0_dp; tx_prs = 0.0_dp
+      tw0 = wall()
       ! --- once per geometry, on the host ------------------------------------
       call pl%build(b, opts%eri_thresh)
       call pl%to_device()
@@ -187,8 +190,10 @@ contains
       end if
       res%e_nuc = nuclear_repulsion(b)
       call sym_orthog(nao, smat, x)
+      t_setup = wall() - tw0
 
       if (dft) then
+         tw0 = wall()
          call build_dft_grid(b%at_r, nint(b%at_z), grid, err, level=opts%grid_level)
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
@@ -199,6 +204,7 @@ contains
          call xg%to_device()
          res%grid_r = grid%coords
          res%grid_w = grid%weights
+         t_grid = wall() - tw0
       end if
 
       ! --- the guess, on the host, then everything goes up -------------------
@@ -235,6 +241,7 @@ contains
       exc = 0.0_dp; ngrid = 0.0_dp
       if (talk) print '(a)', "   it        E(total)            dE          RMS(D)"
       do it = 1, opts%max_iter
+         tw0 = wall()
          ! --- two-electron part, resident ------------------------------------
          if (nspin == 1) then
             call eri%fock_resident(b, res%dmat(:, :, 1), gmat(:, :, 1), k_scale=exx)
@@ -259,14 +266,21 @@ contains
                end if
             end do
          end if
+         tw1 = wall()
+         t_fock = t_fock + (tw1 - tw0)
          ! --- exchange-correlation: finds its density present ----------------
          if (dft) then
             if (nspin == 1) then
-               call trc_xc_rks(b, xg, func, res%dmat(:, :, 1), vxc(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol)
+               call trc_xc_rks(b, xg, func, res%dmat(:, :, 1), vxc(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol, &
+                               comm=comm, t_points=tp1, t_pairs=tq1)
             else
-               call trc_xc_uks(b, xg, func, res%dmat, vxc, exc, ngrid, rho_tol=opts%rho_tol)
+               call trc_xc_uks(b, xg, func, res%dmat, vxc, exc, ngrid, rho_tol=opts%rho_tol, &
+                               comm=comm, t_points=tp1, t_pairs=tq1)
             end if
+            tx_pts = tx_pts + tp1; tx_prs = tx_prs + tq1
          end if
+         tw0 = wall()
+         t_xc = t_xc + (tw0 - tw1)
          ! --- energy at this density -----------------------------------------
          e1 = 0.0_dp; e2 = 0.0_dp
          do s = 1, nspin
@@ -382,6 +396,7 @@ contains
             errv(i, j, s) = res%dmat(i, j, s) - dold(i, j, s)
          end do
          drms = sqrt(la%dot(n2*nspin, errv, errv))/real(nao, dp)
+         t_rest = t_rest + (wall() - tw0)
          if (talk) print '(i5,f22.12,es14.4,es14.4)', it, etot, etot - eold, drms
          res%iterations = it
          if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. drms < opts%conv_density) then
@@ -402,6 +417,10 @@ contains
       res%e_xc = exc
       res%nelec_grid = ngrid
       if (.not. res%converged) res%message = "trc_scf: not converged"
+      if (talk) then
+         print '(a)', "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis"
+         print '(a,7f10.3)', "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+      end if
       call la%release()
       call eri%release(); call pl%release()
       if (dft) then
@@ -409,6 +428,13 @@ contains
       end if
 
    contains
+
+      function wall() result(t)
+         real(dp) :: t
+         integer(kind=8) :: cc, rate
+         call system_clock(cc, rate)
+         t = real(cc, dp)/real(rate, dp)
+      end function wall
 
       ! Core guess for one spin, on the host, into res%dmat(:,:,s).
       subroutine guess_from(h, nocc_s)

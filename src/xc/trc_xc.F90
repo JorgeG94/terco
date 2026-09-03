@@ -64,6 +64,18 @@
 ! scaling rather than in constant. It costs one small matrix-vector per
 ! batch on the host per call.
 !
+! RANKS
+! -----
+! With a communicator the batches are split across ranks: sorted by their
+! cost -- points times local functions times (4 + local functions), the
+! point kernel plus the pair kernel -- and dealt round-robin, so each rank
+! carries the same work to within one batch. A batch another rank owns is
+! simply inactive here, the same flag the density screening uses, so the
+! kernels never see it and it takes no storage. Afterwards V, E_xc and the
+! electron count are summed across ranks, and V is broadcast from rank 0
+! so every rank holds the identical matrix: an allreduce does not promise
+! the same bits everywhere and the pair kernel's atomics do not either.
+!
 ! WHAT RUNS ON THE HOST
 ! ---------------------
 ! The sums for E_xc and the electron count. `do concurrent` has no portable
@@ -78,6 +90,7 @@ module trc_xc
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, XC_MAX_KERNELS
    use trc_collocation, only: shell_collocate, NCART_MAX
+   use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
 
@@ -97,7 +110,7 @@ contains
    ! gradients take three times as much again. The default is 8M doubles,
    ! 256 MB with the gradients.
    !
-   subroutine trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped)
+   subroutine trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped, comm)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -113,6 +126,7 @@ contains
       !! screens nothing. Default XC_RHO_TOL.
       real(dp), intent(in), optional :: rho_tol
       integer, intent(out), optional :: n_skipped   !! batches the screening removed
+      type(comm_t), intent(in), optional :: comm     !! split the batches over its ranks
       real(dp) :: tp, tq, rtol
       integer(kind=8) :: cap
       integer :: nsk
@@ -121,7 +135,7 @@ contains
       if (present(budget)) cap = max(budget, 1_8)
       rtol = XC_RHO_TOL
       if (present(rho_tol)) rtol = rho_tol
-      call xc_drive(b, xg, func, 1, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk)
+      call xc_drive(b, xg, func, 1, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk, comm)
       if (present(t_points)) t_points = tp
       if (present(t_pairs)) t_pairs = tq
       if (present(n_skipped)) n_skipped = nsk
@@ -131,7 +145,7 @@ contains
    ! The same for a spin-polarised density: D(:,:,1) is alpha, D(:,:,2)
    ! beta, and the potentials come back in the same slots.
    !
-   subroutine trc_xc_uks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped)
+   subroutine trc_xc_uks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped, comm)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -142,6 +156,7 @@ contains
       real(dp), intent(out), optional :: t_points, t_pairs
       real(dp), intent(in), optional :: rho_tol
       integer, intent(out), optional :: n_skipped
+      type(comm_t), intent(in), optional :: comm
       real(dp) :: tp, tq, rtol
       integer(kind=8) :: cap
       integer :: nsk
@@ -150,13 +165,13 @@ contains
       if (present(budget)) cap = max(budget, 1_8)
       rtol = XC_RHO_TOL
       if (present(rho_tol)) rtol = rho_tol
-      call xc_drive(b, xg, func, 2, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk)
+      call xc_drive(b, xg, func, 2, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk, comm)
       if (present(t_points)) t_points = tp
       if (present(t_pairs)) t_pairs = tq
       if (present(n_skipped)) n_skipped = nsk
    end subroutine trc_xc_uks
 
-   subroutine xc_drive(b, xg, func, nspin, dmat, vxc, exc, nelec, cap, rho_tol, t_points, t_pairs, n_skipped)
+   subroutine xc_drive(b, xg, func, nspin, dmat, vxc, exc, nelec, cap, rho_tol, t_points, t_pairs, n_skipped, comm)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -167,11 +182,14 @@ contains
       integer(kind=8), intent(in) :: cap
       real(dp), intent(in) :: rho_tol
       integer, intent(out) :: n_skipped
+      type(comm_t), intent(in), optional :: comm
 
       integer(kind=8) :: need, nchi
-      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, u, v, s, au, av
-      integer, allocatable :: c_off(:), pr_off(:), active(:)
-      real(dp) :: bound, su
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, rank, nranks, k
+      integer, allocatable :: c_off(:), pr_off(:), active(:), order(:)
+      real(dp), allocatable :: cost(:)
+      real(dp) :: es(2)
+      logical :: split
       real(dp), allocatable :: chi(:), gchi(:, :), zg(:, :), zv(:, :, :), eg(:), ng(:)
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
@@ -188,30 +206,36 @@ contains
 
       allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1), active(xg%nbatch))
 
-      ! Density screening: bound rho on each batch and drop what cannot reach.
-      n_skipped = 0
-      do ib = 1, xg%nbatch
-         bound = 0.0_dp
-         do s = 1, nspin
-            do u = xg%b_aooff(ib), xg%b_aooff(ib + 1) - 1
-               au = xg%b_ao(u)
-               su = 0.0_dp
-               do v = xg%b_aooff(ib), xg%b_aooff(ib + 1) - 1
-                  av = xg%b_ao(v)
-                  su = su + abs(dmat(av, au, s))*xg%b_amax(v)
-               end do
-               bound = bound + su*xg%b_amax(u)
-            end do
+      ! Ranks: cost-sorted round-robin ownership. A batch another rank owns
+      ! starts inactive here and is never even bounded.
+      rank = 0; nranks = 1; split = .false.
+      if (present(comm)) then
+         rank = comm%rank(); nranks = comm%size(); split = nranks > 1
+      end if
+      active = 1
+      if (split) then
+         allocate (cost(xg%nbatch), order(xg%nbatch))
+         do ib = 1, xg%nbatch
+            nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+            npb = xg%b_off(ib + 1) - xg%b_off(ib)
+            cost(ib) = real(npb, dp)*real(nloc, dp)*real(4 + nloc, dp)
+            order(ib) = ib
          end do
-         if (bound > rho_tol) then
-            active(ib) = 1
-         else
-            active(ib) = 0
-            n_skipped = n_skipped + 1
-         end if
-      end do
+         call sort_desc(xg%nbatch, cost, order)
+         do k = 1, xg%nbatch
+            if (mod(k - 1, nranks) /= rank) active(order(k)) = 0
+         end do
+      end if
 
-      !$acc data copyin(dmat, kid, coef, active) copy(vxc)
+      !$acc data copyin(dmat, kid, coef) copy(active, vxc)
+      ! Density screening: bound rho on each owned batch, on the device where
+      ! the density is, and drop what cannot reach the tolerance.
+      call xc_screen(xg%nbatch, nspin, b%nao, dmat, xg%b_aooff, size(xg%b_ao), xg%b_ao, xg%b_amax, &
+                     rho_tol, active)
+      !$acc update self(active)
+      ! What the screen removed, not what the other ranks own.
+      n_skipped = count(active == 0) - (xg%nbatch - n_owned(xg%nbatch, rank, nranks))
+
       ! A caller that keeps vxc resident (the SCF) has its device copy
       ! untouched by the host zeroing above; the accumulation must start
       ! from zero there too. Inside the region vxc is present either way.
@@ -267,7 +291,93 @@ contains
          b0 = b1 + 1
       end do
       !$acc end data
+
+      ! Across ranks: sum, then rank 0's copy everywhere. A resident caller's
+      ! V lives on the device and the data region above did not bring it
+      ! back, so fetch it, reduce on the host, and put the result back.
+      if (split) then
+         !$acc update self(vxc) if_present
+         call sum_ranks(comm, vxc, b%nao*b%nao*nspin)
+         !$acc update device(vxc) if_present
+         es = [exc, nelec]
+         call sum_ranks(comm, es, 2)
+         exc = es(1); nelec = es(2)
+      end if
    end subroutine xc_drive
+
+   ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
+   subroutine sum_ranks(comm, g, n)
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: g(n)
+      call allreduce(comm, g, op=MPI_SUM)
+      call bcast(comm, g, n, 0)
+   end subroutine sum_ranks
+
+   ! Batches a rank owns under the round-robin: the k with mod(k-1,nranks)=rank.
+   pure integer function n_owned(nbatch, rank, nranks) result(n)
+      integer, intent(in) :: nbatch, rank, nranks
+      n = nbatch/nranks
+      if (mod(nbatch, nranks) > rank) n = n + 1
+   end function n_owned
+
+   !
+   ! Density screen: one thread per batch bounds |rho| on it through the
+   ! stored per-function maxima and clears its flag if the bound is under
+   ! the tolerance. A batch already inactive (another rank's) is skipped.
+   !
+   subroutine xc_screen(nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, active)
+      integer, intent(in) :: nbatch, nspin, nao, nbao
+      real(dp), intent(in) :: dmat(nao, nao, nspin), b_amax(nbao), rho_tol
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao)
+      integer, intent(inout) :: active(nbatch)
+      integer :: ib
+      do concurrent(ib=1:nbatch)
+         call xc_screen_body(ib, nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, active(ib))
+      end do
+   end subroutine xc_screen
+
+   pure subroutine xc_screen_body(ib, nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, flag)
+      !$acc routine seq
+      integer, intent(in) :: ib, nbatch, nspin, nao, nbao
+      real(dp), intent(in) :: dmat(nao, nao, nspin), b_amax(nbao), rho_tol
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao)
+      integer, intent(inout) :: flag
+      integer :: s, u, v, au, av
+      real(dp) :: bound, su
+      if (flag == 0) return
+      bound = 0.0_dp
+      do s = 1, nspin
+         do u = b_aooff(ib), b_aooff(ib + 1) - 1
+            au = b_ao(u)
+            su = 0.0_dp
+            do v = b_aooff(ib), b_aooff(ib + 1) - 1
+               av = b_ao(v)
+               su = su + abs(dmat(av, au, s))*b_amax(v)
+            end do
+            bound = bound + su*b_amax(u)
+         end do
+      end do
+      if (bound <= rho_tol) flag = 0
+   end subroutine xc_screen_body
+
+   ! Insertion sort of `order` by descending `cost`; a few thousand batches.
+   subroutine sort_desc(n, cost, order)
+      integer, intent(in) :: n
+      real(dp), intent(in) :: cost(n)
+      integer, intent(inout) :: order(n)
+      integer :: i, j, t
+      do i = 2, n
+         t = order(i)
+         j = i - 1
+         do while (j >= 1)
+            if (cost(order(j)) >= cost(t)) exit
+            order(j + 1) = order(j)
+            j = j - 1
+         end do
+         order(j + 1) = t
+      end do
+   end subroutine sort_desc
 
    function wall() result(t)
       real(dp) :: t

@@ -328,7 +328,7 @@ contains
       if (this%on_device .or. this%npts == 0) return
       !$acc enter data copyin(this)
       !$acc enter data copyin(this%r, this%w, this%batch_of, this%b_off, &
-      !$acc                   this%b_shoff, this%b_sh, this%b_aooff, this%b_ao)
+      !$acc                   this%b_shoff, this%b_sh, this%b_aooff, this%b_ao, this%b_amax)
       this%on_device = .true.
    end subroutine xcgrid_to_device
 
@@ -336,7 +336,7 @@ contains
       class(trc_xc_grid_t), intent(inout) :: this
       if (this%on_device) then
          !$acc exit data delete(this%r, this%w, this%batch_of, this%b_off, &
-         !$acc                  this%b_shoff, this%b_sh, this%b_aooff, this%b_ao)
+         !$acc                  this%b_shoff, this%b_sh, this%b_aooff, this%b_ao, this%b_amax)
          !$acc exit data delete(this)
          this%on_device = .false.
       end if
