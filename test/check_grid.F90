@@ -30,6 +30,7 @@ program check_grid
                                 ADJUST_TREUTLER, ADJUST_NONE
    use trc_dft_prune, only: PRUNE_NONE
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, grid_level_radial, grid_level_angular
+   use trc_test_basis, only: read_xyz
    implicit none
 
    real(dp), parameter :: PI = 3.14159265358979323846264338327950288_dp
@@ -40,6 +41,7 @@ program check_grid
    call radial_checks()
    call partition_checks()
    call grid_checks()
+   call screening_checks()
 
    if (nfail == 0) then
       print '(a)', "check_grid: all checks passed"
@@ -256,6 +258,61 @@ contains
       call build_dft_grid(coords(:, 1:2), [8], grid, err)
       call report(err%has_error(), "grid: mismatched atom arrays are refused")
    end subroutine grid_checks
+
+   !
+   ! The partition's neighbour screening against the unscreened loop, on a
+   ! molecule big enough for it to matter: gly10, 73 atoms. Both the weights
+   ! themselves and an integral over them. The unscreened build is the
+   ! O(n_atoms^2)-per-point loop this screening replaces, and the numbers
+   ! here are what the default threshold costs.
+   !
+   subroutine screening_checks()
+      integer :: nat, k, n
+      integer, allocatable :: z(:)
+      real(dp), allocatable :: coords(:, :), w_full(:), p_full(:)
+      type(dft_grid_t) :: grid
+      type(error_t) :: err
+      real(dp) :: dmax, rmax, t0, t1, t2, g_scr, g_full, wscale
+      integer(kind=8) :: cc, rate
+
+      call read_xyz('gly10.xyz', nat, z, coords)
+      call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+      call build_dft_grid(coords, z, grid, err, level=3)
+      call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+      if (err%has_error()) then
+         call report(.false., "screening: gly10 grid builds")
+         return
+      end if
+      n = grid%n_points
+      allocate (w_full(n), p_full(n))
+      call becke_partition_weights(grid%coords, coords, z, grid%atom, grid%scheme, grid%adjust, &
+                                   p_full, err, nu_max=2.0_dp)
+      call system_clock(cc, rate); t2 = real(cc, dp)/real(rate, dp)
+      w_full = grid%quad_weights*p_full
+      dmax = maxval(abs(grid%weights - w_full))
+      wscale = maxval(abs(w_full))
+      rmax = 0.0_dp
+      do k = 1, n
+         if (abs(w_full(k)) > 1.0e-10_dp*wscale) rmax = max(rmax, abs(grid%weights(k) - w_full(k))/abs(w_full(k)))
+      end do
+      g_scr = integrate_gaussians(grid, coords, 1.3_dp)
+      g_full = 0.0_dp
+      block
+         type(dft_grid_t) :: g2
+         g2 = grid
+         g2%weights = w_full
+         g_full = integrate_gaussians(g2, coords, 1.3_dp)
+      end block
+      print '(a,i0,a,i0,a,f7.2,a,f7.2,a)', "screening: gly10, ", nat, " atoms, ", n, " points; grid build ", &
+         t1 - t0, " s screened, partition alone ", t2 - t1, " s unscreened"
+      call report(dmax < 1.0e-8_dp*wscale, "screening: max |dw| / max w", dmax/wscale)
+      call report(rmax < 1.0e-6_dp, "screening: max relative dw on weights above 1e-10", rmax)
+      call report(abs(g_scr - g_full) < 1.0e-9_dp*real(nat, dp), "screening: Gaussian sum, screened vs full", &
+                  abs(g_scr - g_full))
+      call report(abs(g_scr - real(nat, dp))/real(nat, dp) < 1.0e-6_dp, "screening: Gaussian sum vs atom count", &
+                  abs(g_scr - real(nat, dp))/real(nat, dp))
+      call grid%destroy()
+   end subroutine screening_checks
 
    function integrate_gaussians(grid, coords, alpha) result(total)
       type(dft_grid_t), intent(in) :: grid

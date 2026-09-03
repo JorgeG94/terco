@@ -75,7 +75,7 @@ terco_add_check(check_xc check_xc.F90)
 # The quadrature against closed forms: Lebedev moments, the partition of
 # unity, an exact radial Gaussian, and sums of Gaussians and Slaters over
 # water integrating to the atom count.
-terco_add_check(check_grid check_grid.F90)
+terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
 
 #
 # Basis functions on grid points: the numerical overlap against trc_1e's

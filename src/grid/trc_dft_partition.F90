@@ -41,6 +41,12 @@ module trc_dft_partition
    public :: becke_partition_weights
    public :: becke_partition_derivatives
    public :: partition_scheme_name
+   public :: PARTITION_NU_MAX
+
+   !> Screening threshold on the cutoff argument against the owner; see
+   !> becke_partition_weights. Becke's s(0.95) is 1e-9; a cell function is a
+   !> product of such factors, so a dropped atom's cell is at most that.
+   real(dp), parameter :: PARTITION_NU_MAX = 0.95_dp
 
    !> Cutoff profile
    integer, parameter :: PARTITION_BECKE = 1     !! Three iterations of p(x), smooth everywhere
@@ -80,7 +86,7 @@ contains
    end function partition_scheme_name
 
    subroutine becke_partition_weights(points, atom_coords, atomic_numbers, owner, &
-                                      scheme, adjust, weights, error)
+                                      scheme, adjust, weights, error, nu_max)
       !! Partition weight at each grid point, for the atom that owns it
       !!
       !! The returned weight is w_owner(r): the fraction of the integrand at
@@ -94,10 +100,21 @@ contains
       integer, intent(in) :: adjust              !! ADJUST_NONE, _BECKE or _TREUTLER
       real(dp), intent(out) :: weights(:)        !! (n_points)
       type(error_t), intent(inout) :: error
+      !! Screening. An atom whose cutoff argument against the point's owner
+      !! is already at or beyond this value is left out of the pair loop for
+      !! that point: with Becke's cutoff its cell function is then below
+      !! 1e-9 relative, with Stratmann's it is exactly zero past 0.64. The
+      !! loop is O(active^2) per point instead of O(n_atoms^2), which is
+      !! what makes a 283-atom grid build in seconds rather than minutes.
+      !! Pass a value >= 1 for no screening; check_grid measures the
+      !! difference. Default PARTITION_NU_MAX.
+      real(dp), intent(in), optional :: nu_max
 
-      real(dp), allocatable :: shift(:, :), inv_distance(:, :), cell(:), atom_r(:)
-      integer :: n_atoms, n_points, i, j, k
-      real(dp) :: mu, nu, s, total
+      real(dp), allocatable :: shift(:, :), inv_distance(:, :), cell(:), atom_r(:), r_min(:)
+      integer, allocatable :: active(:)
+      logical, allocatable :: is_active(:)
+      integer :: n_atoms, n_points, i, j, k, ia, ja, n_active, own, n
+      real(dp) :: mu, nu, s, total, numax, r_inner
 
       n_atoms = size(atom_coords, 2)
       n_points = size(points, 2)
@@ -126,8 +143,13 @@ contains
          return
       end if
 
+      numax = PARTITION_NU_MAX
+      ! Stratmann's cutoff is exactly zero from STRATMANN_A on, so there the
+      ! screening is exact and nothing tighter buys anything.
+      if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
+      if (present(nu_max)) numax = nu_max
       allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms))
-      allocate (cell(n_atoms), atom_r(n_atoms))
+      allocate (cell(n_atoms), atom_r(n_atoms), active(n_atoms), is_active(n_atoms), r_min(n_atoms))
 
       call size_adjustment(atomic_numbers, adjust, shift)
 
@@ -141,14 +163,71 @@ contains
          end do
       end do
 
+      ! Nearest neighbour of each atom, for Stratmann's inner sphere: a point
+      ! closer to its owner than (1 - a)/2 of that distance has mu <= -a
+      ! against every other atom, and the weight is exactly one.
+      r_min = huge(1.0_dp)
+      do i = 1, n_atoms
+         do j = 1, n_atoms
+            if (i /= j) r_min(i) = min(r_min(i), 1.0_dp/inv_distance(i, j))
+         end do
+      end do
+
+      is_active = .false.
       do k = 1, n_points
+         own = owner(k)
          do i = 1, n_atoms
             atom_r(i) = norm2(points(:, k) - atom_coords(:, i))
          end do
+         if (scheme == PARTITION_STRATMANN .and. adjust == ADJUST_NONE) then
+            r_inner = 0.5_dp*(1.0_dp - STRATMANN_A)*r_min(own)
+            if (atom_r(own) < r_inner) then
+               weights(k) = 1.0_dp
+               cycle
+            end if
+         end if
+
+         ! The atoms this point can see. First those not cut off against
+         ! its owner; then any atom not cut off against one of THOSE, because
+         ! an atom with a negligible cell of its own can still carry a factor
+         ! of order one on a neighbour's cell (water: the far hydrogen is cut
+         ! off against the oxygen and multiplies the near hydrogen's cell by
+         ! 0.97). An atom cut off against every kept atom has a cell below
+         ! s(nu_max) and a factor within s(nu_max) of one on all of them.
+         n_active = 1
+         active(1) = own
+         is_active(own) = .true.
+         do i = 1, n_atoms
+            if (i == own) cycle
+            mu = (atom_r(i) - atom_r(own))*inv_distance(i, own)
+            nu = mu + shift(i, own)*(1.0_dp - mu*mu)
+            if (nu < numax) then
+               n_active = n_active + 1
+               active(n_active) = i
+               is_active(i) = .true.
+            end if
+         end do
+         n = n_active
+         do i = 1, n_atoms
+            if (is_active(i)) cycle
+            do ja = 2, n
+               j = active(ja)
+               mu = (atom_r(i) - atom_r(j))*inv_distance(i, j)
+               nu = mu + shift(i, j)*(1.0_dp - mu*mu)
+               if (nu < numax) then
+                  n_active = n_active + 1
+                  active(n_active) = i
+                  is_active(i) = .true.
+                  exit
+               end if
+            end do
+         end do
 
          cell = 1.0_dp
-         do i = 1, n_atoms
-            do j = i + 1, n_atoms
+         do ia = 1, n_active
+            i = active(ia)
+            do ja = ia + 1, n_active
+               j = active(ja)
                mu = (atom_r(i) - atom_r(j))*inv_distance(i, j)
                nu = mu + shift(i, j)*(1.0_dp - mu*mu)
 
@@ -167,9 +246,15 @@ contains
             end do
          end do
 
-         total = sum(cell)
+         total = 0.0_dp
+         do ia = 1, n_active
+            total = total + cell(active(ia))
+         end do
+         do ia = 1, n_active
+            is_active(active(ia)) = .false.
+         end do
          if (total > 0.0_dp) then
-            weights(k) = cell(owner(k))/total
+            weights(k) = cell(own)/total
          else
             ! Every cell function underflowed, which happens only absurdly far
             ! from the molecule where the integrand is zero anyway.
