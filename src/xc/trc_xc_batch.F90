@@ -44,6 +44,7 @@ module trc_xc_batch
       integer, allocatable :: b_sh(:)
       integer, allocatable :: b_aooff(:)    !! (nbatch+1): its AOs are b_ao(b_aooff(b) .. b_aooff(b+1)-1)
       integer, allocatable :: b_ao(:)
+      integer :: n_dropped = 0               !! points below w_tol, left out of npts
       real(dp), allocatable :: b_amax(:)    !! parallel to b_ao: max |chi| of that function over the batch
       logical :: on_device = .false.
    contains
@@ -109,38 +110,53 @@ contains
    ! is far below the grid's own, and check_xc_energy measures it against
    ! the unscreened evaluation rather than assuming.
    !
-   subroutine xcgrid_build(this, npts, coords, weights, b, max_pts, tol)
+   subroutine xcgrid_build(this, npts, coords, weights, b, max_pts, tol, w_tol)
       class(trc_xc_grid_t), intent(inout) :: this
       integer, intent(in) :: npts
       real(dp), intent(in) :: coords(3, npts), weights(npts)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in), optional :: max_pts
       real(dp), intent(in), optional :: tol
+      !! A point whose |weight| is below this is dropped before batching:
+      !! after the partition a sizeable fraction of the grid carries
+      !! nothing (Stocks and Barca drop 15-20% at 2e-15). Default 2e-15;
+      !! pass 0 to keep every point.
+      real(dp), intent(in), optional :: w_tol
 
       integer :: maxp, i, j, k, lo, hi, axis, top, nb, ib, ish, nsh_b, nao_b
       integer :: sh_in_batch
       integer, allocatable :: idx(:), st_lo(:), st_hi(:), b_lo(:), b_hi(:)
       real(dp), allocatable :: rcut(:), bmin(:, :), bmax(:, :)
       real(dp) :: lo3(3), hi3(3), mid, d2, dd
-      real(dp) :: eps_tol
+      real(dp) :: eps_tol, wtol
+      integer :: n
 
       call this%release()
       maxp = 512
       if (present(max_pts)) maxp = max(1, max_pts)
       eps_tol = 1.0e-10_dp
       if (present(tol)) eps_tol = tol
-      this%npts = npts
-      if (npts == 0) return
+      wtol = 2.0e-15_dp
+      if (present(w_tol)) wtol = w_tol
+
+      ! --- 0. the points that carry anything --------------------------------
+      allocate (idx(npts))
+      n = 0
+      do i = 1, npts
+         if (abs(weights(i)) < wtol) cycle
+         n = n + 1
+         idx(n) = i
+      end do
+      this%npts = n
+      this%n_dropped = npts - n
+      if (n == 0) return
 
       ! --- 1. spatial batches, by recursive midpoint bisection ---------------
-      allocate (idx(npts), st_lo(64), st_hi(64))
-      allocate (b_lo(npts), b_hi(npts))   ! at most npts batches
-      do i = 1, npts
-         idx(i) = i
-      end do
+      allocate (st_lo(64), st_hi(64))
+      allocate (b_lo(n), b_hi(n))   ! at most n batches
       nb = 0
       top = 1
-      st_lo(1) = 1; st_hi(1) = npts
+      st_lo(1) = 1; st_hi(1) = n
       do while (top > 0)
          lo = st_lo(top); hi = st_hi(top); top = top - 1
          if (hi - lo + 1 <= maxp) then
@@ -174,7 +190,7 @@ contains
       end do
       this%nbatch = nb
 
-      allocate (this%r(3, npts), this%w(npts), this%batch_of(npts), this%b_off(nb + 1))
+      allocate (this%r(3, n), this%w(n), this%batch_of(n), this%b_off(nb + 1))
       k = 0
       do ib = 1, nb
          this%b_off(ib) = k + 1
@@ -185,7 +201,7 @@ contains
             this%batch_of(k) = ib
          end do
       end do
-      this%b_off(nb + 1) = npts + 1
+      this%b_off(nb + 1) = n + 1
 
       ! --- 2. shell cutoff radii --------------------------------------------
       allocate (rcut(b%nshell))
@@ -249,7 +265,7 @@ contains
       ! before this ran anywhere else.
       !
       this%b_amax = 0.0_dp
-      call batch_maxima(nb, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, npts, this%r, &
+      call batch_maxima(nb, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, n, this%r, &
                         this%b_off, this%b_shoff, size(this%b_sh), this%b_sh, this%b_aooff, &
                         size(this%b_ao), this%b_amax)
 
