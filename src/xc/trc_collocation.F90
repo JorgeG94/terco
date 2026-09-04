@@ -36,6 +36,7 @@ module trc_collocation
    ! exponentials dominate.
    integer, parameter :: XC_LMAX = 4
    integer, parameter :: NCART_MAX = (XC_LMAX + 1)*(XC_LMAX + 2)/2
+   real(dp), parameter :: COLLOCATE_EXP_MAX = 34.5_dp   !! exp(-34.5) = 1e-15: a primitive past this is skipped
 
 contains
 
@@ -53,6 +54,13 @@ contains
       rad = 0.0_dp
       drad = 0.0_dp
       do p = 1, np
+         ! The exponential is the cost of this kernel; a primitive whose
+         ! argument is past COLLOCATE_EXP_MAX is below 1e-15 of its
+         ! coefficient and is not evaluated (Stocks and Barca, Algorithm 2).
+         ! The batch cutoff already keeps every shell here within 1e-10 of
+         ! something, so most primitives pass; the diffuse tail of a
+         ! contraction is what this skips.
+         if (e(p)*r2 > COLLOCATE_EXP_MAX) cycle
          ex = c(p)*exp(-e(p)*r2)
          rad = rad + ex
          drad = drad - 2.0_dp*e(p)*ex
