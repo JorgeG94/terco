@@ -82,6 +82,49 @@ program scf_mpi
       if (.not. res%converged .or. emax - emin > 1.0e-12_dp) ok = .false.
       if (trim(xyz) == 'water.xyz' .and. abs(e(ic) - ref) > 1.0e-8_dp) ok = .false.
    end do
+
+   ! The same two runs through the C entry mqc uses, trc_scf_mpi, handed the
+   ! world communicator's Fortran handle. It binds the device itself and
+   ! must land on the energies above on every rank.
+   block
+      use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
+      use trc_c_interfaces, only: trc_basis_create, trc_basis_destroy, trc_scf_mpi, TRC_OK
+#ifdef TERCO_HAVE_MPI
+      use mpi_f08, only: MPI_COMM_WORLD
+#endif
+      integer(c_int) :: fcomm, rc, niter, nocc
+      integer(c_int), allocatable :: lc(:), npc(:)
+      real(c_double), allocatable :: zat(:), d_lib(:, :), eps_lib(:)
+      real(c_double) :: e_lib, e_xc, e_c(2)
+      type(c_ptr) :: hbas
+      integer :: nao
+#ifdef TERCO_HAVE_MPI
+      fcomm = MPI_COMM_WORLD%mpi_val
+#else
+      fcomm = 0
+#endif
+      allocate (zat(natm), lc(nsh), npc(nsh))
+      zat = real(at_z, c_double); lc = int(sh_l, c_int); npc = int(sh_np, c_int)
+      rc = trc_basis_create(int(nsh, c_int), int(maxnp, c_int), lc, npc, sh_e, sh_c, sh_r, &
+                            int(natm, c_int), zat, at_r, hbas)
+      if (rc /= TRC_OK) ok = .false.
+      nao = bas%nao
+      nocc = int(nint(sum(at_z))/2, c_int)
+      allocate (d_lib(nao, nao), eps_lib(nao))
+      rc = trc_scf_mpi(fcomm, hbas, nocc, nocc, c_null_char, 3_c_int, 1.0e-10_c_double, 1.0e-7_c_double, &
+                       100_c_int, c_null_ptr, 0_c_int, e_lib, e_xc, d_lib, eps_lib, niter)
+      if (rc /= TRC_OK) ok = .false.
+      e_c(1) = e_lib
+      rc = trc_scf_mpi(fcomm, hbas, nocc, nocc, 'pbe'//c_null_char, 3_c_int, 1.0e-10_c_double, 1.0e-7_c_double, &
+                       100_c_int, c_null_ptr, 0_c_int, e_lib, e_xc, d_lib, eps_lib, niter)
+      if (rc /= TRC_OK) ok = .false.
+      e_c(2) = e_lib
+      rc = trc_basis_destroy(hbas)
+      if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "scf_mpi: trc_scf_mpi vs driver  rhf ", &
+         abs(e_c(1) - e(1)), "  pbe ", abs(e_c(2) - e(2))
+      if (any(abs(e_c - e) > 1.0e-10_dp)) ok = .false.
+   end block
+
    call bas%release()
    if (comm%rank() == 0) print '(a)', merge("scf_mpi: PASS", "scf_mpi: FAIL", ok)
    call pic_mpi_finalize()

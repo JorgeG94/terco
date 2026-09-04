@@ -31,11 +31,12 @@
 module trc_capi
    use, intrinsic :: iso_c_binding
    use trc_boys, only: dp
-   use trc_api, only: trc_basis_t, trc_pairlist_t, &
+   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use pic_mpi_lib, only: comm_t, comm_world
    implicit none
    private
 
@@ -593,6 +594,70 @@ contains
       real(c_double), intent(out) :: dmat(*), eps(*)
       integer(c_int), intent(out) :: niter
       integer(c_int) :: status
+      status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
+                         max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter)
+   end function capi_scf
+
+   !
+   ! The same SCF run collectively by every rank of a communicator: the
+   ! Fock build, the XC batches and the grid partition are split across
+   ! the ranks and every rank returns the identical result. `fcomm` is the
+   ! Fortran handle of the communicator (MPI_Comm_c2f from C, or the
+   ! integer a Fortran caller holds), and every rank of it must call this
+   ! together. Each rank binds the device numbered by its rank, modulo the
+   ! devices present, before anything else -- the caller does not.
+   !
+   ! Only the world communicator is accepted for now: pic-mpi builds its
+   ! communicator object by duplicating MPI_COMM_WORLD, and terco has no
+   ! way to wrap an arbitrary handle. Any other handle is
+   ! TRC_ERR_UNSUPPORTED. In a build without MPI the handle is ignored and
+   ! this is trc_scf on one rank.
+   !
+   function capi_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, &
+                         conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
+                         niter) result(status) bind(c, name="trc_scf_mpi")
+#ifdef TERCO_HAVE_MPI
+      use mpi_f08, only: MPI_COMM_WORLD
+#endif
+      integer(c_int), value :: fcomm
+      type(c_ptr), value :: basis
+      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
+      character(kind=c_char), intent(in) :: functional(*)
+      real(c_double), value :: conv_energy, conv_density
+      type(c_ptr), value :: dguess
+      real(c_double), intent(out) :: energy, e_xc
+      real(c_double), intent(out) :: dmat(*), eps(*)
+      integer(c_int), intent(out) :: niter
+      integer(c_int) :: status
+      type(comm_t) :: comm
+      integer :: dev
+#ifdef TERCO_HAVE_MPI
+      if (fcomm /= MPI_COMM_WORLD%mpi_val) then
+         status = TRC_ERR_UNSUPPORTED
+         energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
+         return
+      end if
+#endif
+      comm = comm_world()
+      dev = trc_bind_device(comm%rank())
+      status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
+                         max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter, comm)
+      call comm%finalize()
+   end function capi_scf_mpi
+
+   function scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
+                      conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
+                      niter, comm) result(status)
+      type(c_ptr), value :: basis
+      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
+      character(kind=c_char), intent(in) :: functional(*)
+      real(c_double), value :: conv_energy, conv_density
+      type(c_ptr), value :: dguess
+      real(c_double), intent(out) :: energy, e_xc
+      real(c_double), intent(out) :: dmat(*), eps(*)
+      integer(c_int), intent(out) :: niter
+      type(comm_t), intent(in), optional :: comm
+      integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: res
@@ -622,9 +687,9 @@ contains
 
       if (c_associated(dguess)) then
          call c_f_pointer(dguess, dg, [n, n, nspin])
-         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=real(dg, dp))
+         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=real(dg, dp), comm=comm)
       else
-         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res)
+         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, comm=comm)
       end if
       if (len_trim(res%message) > 0 .and. res%iterations == 0) then
          status = TRC_ERR_UNSUPPORTED   ! an unknown functional, or a grid that would not build
@@ -649,6 +714,6 @@ contains
          end do
       end do
       status = merge(TRC_OK, TRC_ERR_NOCONV, res%converged)
-   end function capi_scf
+   end function scf_entry
 
 end module trc_capi

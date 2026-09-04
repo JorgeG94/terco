@@ -200,6 +200,26 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: niter
       end function trc_scf
 
+      !> trc_scf run collectively by every rank of the communicator whose
+      !> Fortran handle is `fcomm` (MPI_Comm_c2f from C); only the world
+      !> communicator is accepted, anything else is TRC_ERR_UNSUPPORTED.
+      !> Every rank binds its own device and returns the identical result.
+      !> Without MPI in the build the handle is ignored.
+      integer(c_int) function trc_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, &
+            conv_energy, conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
+            niter) bind(c)
+         import :: c_int, c_double, c_ptr, c_char
+         integer(c_int), value :: fcomm
+         type(c_ptr), value :: basis
+         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
+         character(kind=c_char), intent(in) :: functional(*)
+         real(c_double), value :: conv_energy, conv_density
+         type(c_ptr), value :: dguess
+         real(c_double), intent(out) :: energy, e_xc
+         real(c_double), intent(out) :: dmat(*), eps(*)
+         integer(c_int), intent(out) :: niter
+      end function trc_scf_mpi
+
       !> N densities against one pass over the integrals.
       !> `(ndens, nao, nao)`, density index FIRST -- see the header.
       integer(c_int) function trc_fock_many(eri, basis, ndens, dmats, gmats, &

@@ -18,6 +18,9 @@
 # and they may as well share the code.
 #
 set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6 TRC_PERCLASS)
+if(TERCO_ENABLE_MPI)
+  list(APPEND TERCO_TEST_DEFS TERCO_HAVE_MPI)
+endif()
 
 add_library(terco_test_basis STATIC trc_test_basis.F90)
 target_compile_definitions(terco_test_basis PRIVATE ${TERCO_TEST_DEFS})
@@ -223,7 +226,7 @@ endif()
 # when MPI is on, each run asserting the single-rank energies. No
 # CUDA_VISIBLE_DEVICES here: the point is one card per rank.
 #
-add_executable(scf_mpi scf_mpi.F90)
+add_executable(scf_mpi scf_mpi.F90 ${PROJECT_SOURCE_DIR}/include/trc_c_interfaces.f90)
 target_compile_definitions(scf_mpi PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(scf_mpi PRIVATE ${main_lib} terco_test_basis)
 target_include_directories(scf_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
