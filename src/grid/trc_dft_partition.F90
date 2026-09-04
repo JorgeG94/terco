@@ -86,7 +86,7 @@ contains
    end function partition_scheme_name
 
    subroutine becke_partition_weights(points, atom_coords, atomic_numbers, owner, &
-                                      scheme, adjust, weights, error, nu_max, budget)
+                                      scheme, adjust, weights, error, nu_max, budget, first, last)
       !! Partition weight at each grid point, for the atom that owns it
       !!
       !! The returned weight is w_owner(r): the fraction of the integrand at
@@ -122,11 +122,15 @@ contains
       !! Scratch budget in doubles, default 2^26 (512 MB): sets how many
       !! points a chunk holds, 2^26 / (3 n_atoms).
       integer(kind=8), intent(in), optional :: budget
+      !! Only the points first..last are partitioned; every other weight is
+      !! returned as zero, so a caller holding one block per rank can sum
+      !! the arrays and have the whole grid. Default all of them.
+      integer, intent(in), optional :: first, last
 
       real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
       real(dp), allocatable :: atom_r(:, :), cell(:, :)
       integer, allocatable :: active(:, :), mark(:, :)
-      integer :: n_atoms, n_points, i, j, k0, n, chunk, g
+      integer :: n_atoms, n_points, i, j, k0, n, chunk, g, k_lo, k_hi
       integer(kind=8) :: cap
       real(dp) :: numax
 
@@ -150,10 +154,15 @@ contains
          return
       end if
 
+      k_lo = 1; k_hi = n_points
+      if (present(first)) k_lo = max(first, 1)
+      if (present(last)) k_hi = min(last, n_points)
+      weights = 0.0_dp
+
       ! A single atom owns everything, and the pair loop below would leave the
       ! product empty. Short-circuit rather than special-case inside the loop.
       if (n_atoms == 1) then
-         weights = 1.0_dp
+         weights(k_lo:k_hi) = 1.0_dp
          return
       end if
 
@@ -193,10 +202,13 @@ contains
       ! this is what makes their reads of the same atom's entry adjacent.
       allocate (atom_r(chunk, n_atoms), cell(chunk, n_atoms), active(chunk, n_atoms), mark(chunk, n_atoms))
       mark = 0
+      ! Only the block this call writes is on the device: a copyout of the
+      ! whole array would bring back uninitialised device memory for the
+      ! rest, over the zeros set above.
       !$acc data copyin(points, atom_coords, owner, shift, inv_distance, r_min, mark) &
-      !$acc      create(atom_r, cell, active) copyout(weights)
-      do k0 = 1, n_points, chunk
-         n = min(chunk, n_points - k0 + 1)
+      !$acc      create(atom_r, cell, active) copyout(weights(k_lo:k_hi))
+      do k0 = k_lo, k_hi, chunk
+         n = min(chunk, k_hi - k0 + 1)
          do concurrent(g=1:n)
             call partition_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                  shift, inv_distance, r_min, scheme, adjust, numax, &

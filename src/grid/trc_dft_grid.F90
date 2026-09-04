@@ -31,7 +31,7 @@ module trc_dft_grid
    real(dp), parameter :: PI = 3.14159265358979323846264338327950288_dp
 
    public :: dft_grid_t
-   public :: build_dft_grid
+   public :: build_dft_grid, build_dft_grid_block
    public :: grid_level_radial, grid_level_angular
    public :: MIN_GRID_LEVEL, MAX_GRID_LEVEL, DEFAULT_GRID_LEVEL
    public :: DEFAULT_PRUNE
@@ -146,6 +146,39 @@ contains
 
    subroutine build_dft_grid(atom_coords, atomic_numbers, grid, error, &
                              level, scheme, adjust, n_radial, n_angular, prune)
+      !! Build the molecular grid: see `build_grid` for the arguments.
+      !!
+      !! A separate entry from `build_dft_grid_block`, with this interface
+      !! unchanged, because nvfortran 26.5 crashes compiling a caller that
+      !! passes an expression actual with keyword optionals to a version
+      !! carrying the two rank arguments (check_xc_energy did).
+      real(dp), intent(in) :: atom_coords(:, :)
+      integer, intent(in) :: atomic_numbers(:)
+      type(dft_grid_t), intent(out) :: grid
+      type(error_t), intent(inout) :: error
+      integer, intent(in), optional :: level, scheme, adjust, n_radial, n_angular, prune
+      call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune)
+   end subroutine build_dft_grid
+
+   subroutine build_dft_grid_block(atom_coords, atomic_numbers, grid, error, my_rank, n_ranks, &
+                                   level, scheme, adjust, n_radial, n_angular, prune)
+      !! Build the molecular grid with this rank partitioning only its block
+      !! of the points: the partition is the expensive part of the build,
+      !! and the same on every rank. The returned `weights` are zero outside
+      !! the block, so the caller sums them across ranks; the quadrature
+      !! weights are complete regardless.
+      real(dp), intent(in) :: atom_coords(:, :)
+      integer, intent(in) :: atomic_numbers(:)
+      type(dft_grid_t), intent(out) :: grid
+      type(error_t), intent(inout) :: error
+      integer, intent(in) :: my_rank, n_ranks
+      integer, intent(in), optional :: level, scheme, adjust, n_radial, n_angular, prune
+      call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune, &
+                      my_rank, n_ranks)
+   end subroutine build_dft_grid_block
+
+   subroutine build_grid(atom_coords, atomic_numbers, grid, error, &
+                         level, scheme, adjust, n_radial, n_angular, prune, my_rank, n_ranks)
       !! Build the molecular grid
       !!
       !! `level` picks per-element sizes from the standard tables. `n_radial`
@@ -162,6 +195,8 @@ contains
       integer, intent(in), optional :: n_radial   !! Override, all atoms
       integer, intent(in), optional :: n_angular  !! Override, all atoms
       integer, intent(in), optional :: prune      !! PRUNE_NONE or PRUNE_NWCHEM
+      !! With both given, only this rank's block of the points is partitioned.
+      integer, intent(in), optional :: my_rank, n_ranks
 
       real(dp), allocatable :: r(:), dr(:), sphere(:, :), w_ang(:)
       integer, allocatable :: shell_order(:)
@@ -255,8 +290,8 @@ contains
       grid%adjust = used_adjust
       allocate (grid%numbers(n_atoms), source=atomic_numbers)
 
-      call apply_partition(grid, atom_coords, atomic_numbers, used_scheme, used_adjust, error)
-   end subroutine build_dft_grid
+      call apply_partition(grid, atom_coords, atomic_numbers, used_scheme, used_adjust, error, my_rank, n_ranks)
+   end subroutine build_grid
 
    pure subroutine atom_sizes(atomic_number, level, n_radial, n_angular, nr, na)
       !! Radial and angular counts for one atom, honouring any override
@@ -273,19 +308,29 @@ contains
       end if
    end subroutine atom_sizes
 
-   subroutine apply_partition(grid, atom_coords, atomic_numbers, scheme, adjust, error)
+   subroutine apply_partition(grid, atom_coords, atomic_numbers, scheme, adjust, error, my_rank, n_ranks)
       !! Multiply the product weights by the Becke cell weights
       type(dft_grid_t), intent(inout) :: grid
       real(dp), intent(in) :: atom_coords(:, :)
       integer, intent(in) :: atomic_numbers(:)
       integer, intent(in) :: scheme, adjust
       type(error_t), intent(inout) :: error
+      integer, intent(in), optional :: my_rank, n_ranks
 
       real(dp), allocatable :: cell(:)
+      integer :: k_lo, k_hi
 
       allocate (cell(grid%n_points))
-      call becke_partition_weights(grid%coords, atom_coords, atomic_numbers, &
-                                   grid%atom, scheme, adjust, cell, error)
+      if (present(my_rank) .and. present(n_ranks)) then
+         ! Contiguous blocks: the chunks inside are contiguous too.
+         k_lo = int((int(grid%n_points, 8)*my_rank)/n_ranks) + 1
+         k_hi = int((int(grid%n_points, 8)*(my_rank + 1))/n_ranks)
+         call becke_partition_weights(grid%coords, atom_coords, atomic_numbers, &
+                                      grid%atom, scheme, adjust, cell, error, first=k_lo, last=k_hi)
+      else
+         call becke_partition_weights(grid%coords, atom_coords, atomic_numbers, &
+                                      grid%atom, scheme, adjust, cell, error)
+      end if
       if (error%has_error()) return
 
       ! Before, not after: this is the quadrature weight on its own.

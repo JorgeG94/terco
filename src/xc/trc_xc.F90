@@ -532,11 +532,10 @@ contains
       ! kernel, is exact. So the concurrent form only under OpenACC, where
       ! the atomic exists; a plain loop otherwise. terco's Fock digestion
       ! is arranged the same way.
+      ! Two complete loops rather than one with its header under #ifdef:
+      ! the locality lint reads the source before the preprocessor does.
 #ifdef _OPENACC
       do concurrent(t=1:npairs) local(au, av, acc_a, acc_b)
-#else
-      do t = 1, npairs
-#endif
          call xc_pair_body(t, b0, b1, np, p0, nspin, b_off, b_aooff, nbao, b_ao, c_off, pr_off, nbatch, &
                            nchi, chi, gchi, zg, zv, au, av, acc_a, acc_b)
          !$acc atomic update
@@ -546,6 +545,14 @@ contains
             vxc(au, av, 2) = vxc(au, av, 2) + acc_b
          end if
       end do
+#else
+      do t = 1, npairs
+         call xc_pair_body(t, b0, b1, np, p0, nspin, b_off, b_aooff, nbao, b_ao, c_off, pr_off, nbatch, &
+                           nchi, chi, gchi, zg, zv, au, av, acc_a, acc_b)
+         vxc(au, av, 1) = vxc(au, av, 1) + acc_a
+         if (nspin == 2) vxc(au, av, 2) = vxc(au, av, 2) + acc_b
+      end do
+#endif
    end subroutine xc_potential
 
    pure subroutine xc_pair_body(t, b0, b1, np, p0, nspin, b_off, b_aooff, nbao, b_ao, c_off, pr_off, nbatch, &

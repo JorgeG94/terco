@@ -51,14 +51,14 @@ module trc_scf_driver
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
    use pic_types, only: default_int
    use pic_lapack_interfaces, only: pic_syev
-   use pic_mpi_lib, only: comm_t, bcast
+   use pic_mpi_lib, only: comm_t, bcast, allreduce, MPI_SUM
    implicit none
    private
 
@@ -194,11 +194,21 @@ contains
 
       if (dft) then
          tw0 = wall()
-         call build_dft_grid(b%at_r, nint(b%at_z), grid, err, level=opts%grid_level)
+         ! The partition is split over the ranks; the summed cell weights are
+         ! then rank 0's everywhere, as every reduced quantity is.
+         if (present(comm)) then
+            call build_dft_grid_block(b%at_r, nint(b%at_z), grid, err, comm%rank(), comm%size(), &
+                                      level=opts%grid_level)
+         else
+            call build_dft_grid(b%at_r, nint(b%at_z), grid, err, level=opts%grid_level)
+         end if
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
             call eri%release(); call pl%release()
             return
+         end if
+         if (present(comm)) then
+            if (comm%size() > 1) call sum_flat(comm, grid%weights, grid%n_points)
          end if
          call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=opts%grid_max_pts)
          call xg%to_device()
@@ -455,6 +465,15 @@ contains
       end subroutine guess_from
 
    end subroutine trc_scf_run
+
+   ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
+   subroutine sum_flat(comm, g, n)
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: g(n)
+      call allreduce(comm, g, op=MPI_SUM)
+      call bcast(comm, g, n, 0)
+   end subroutine sum_flat
 
    ! Broadcast rank 0's copy of a contiguous array of any rank.
    subroutine bcast_flat(comm, g, n)
