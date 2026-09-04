@@ -116,34 +116,11 @@ program check_xc_energy
 
    print '(a,i0,a,i0,a,i0)', "check_xc_energy: ", grid%n_points, " points, ", xg%nbatch, &
       " batches, Tr(DS) = ", nint(trds)
-   do ifn = 1, NFUNC
-      if (.not. xc_functional_by_name(names(ifn), func)) then
-         print '(a)', "check_xc_energy: unknown functional "//trim(names(ifn))
-         stop 1
-      end if
-      call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, n_skipped=nsk)
-      ! Density screening off entirely: what the default threshold costs.
-      call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, rho_tol=0.0_dp)
-      call report(abs(exc - exc2) < 1.0e-10_dp*abs(exc) .and. maxval(abs(vxc - vxc2)) < 1.0e-10_dp*maxval(abs(vxc)), &
-                  trim(names(ifn))//": density screening vs none", &
-                  max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
-      if (ifn == 1) print '(a,i0,a,i0,a)', "  density screening skips ", nsk, " of ", xg%nbatch, " batches"
-      ! Chunk boundaries everywhere: one batch per chunk.
-      call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, budget=1_8)
-      write (unit) exc, nelec
-      write (unit) vxc
-      print '(a,a8,a,f18.12,a,f14.10)', "  ", names(ifn), "  E_xc = ", exc, "   N = ", nelec
-      ! Relative: the grid's accuracy per electron, and rounding per unit of
-      ! energy and potential.
-      call report(abs(nelec - trds)/trds < 1.0e-7_dp, trim(names(ifn))//": sum w rho vs Tr(DS), relative", &
-                  abs(nelec - trds)/trds)
-      call report(abs(exc - exc2) < 1.0e-13_dp*abs(exc) .and. &
-                  maxval(abs(vxc - vxc2)) < 1.0e-13_dp*maxval(abs(vxc)), &
-                  trim(names(ifn))//": independent of chunking", &
-                  max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
-      call report(maxval(abs(vxc - transpose(vxc))) < 1.0e-13_dp*maxval(abs(vxc)), &
-                  trim(names(ifn))//": V_xc symmetric", maxval(abs(vxc - transpose(vxc)))/maxval(abs(vxc)))
-   end do
+   ! The two loops below are internal procedures, not for structure:
+   ! nvfortran 26.5's front end segfaults (fort1/fort2) on a program unit
+   ! with eight calls to trc_xc_rks/uks, and is fine with seven. Split,
+   ! each unit has fewer; the checks are unchanged.
+   call rks_checks()
 
    ! --- spin-polarised: two independent PSD densities ---------------------
    !
@@ -164,27 +141,7 @@ program check_xc_energy
    dm2(:, :, 2) = matmul(cb, transpose(cb))
    trds2 = sum(dm2(:, :, 1)*s) + sum(dm2(:, :, 2)*s)
    write (unit) dm2
-   do ifn = 1, NFUNC
-      if (.not. xc_functional_by_name(names(ifn), func)) stop 1
-      call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec)
-      vx3(:, :, 1) = 0.5_dp*dmat; vx3(:, :, 2) = 0.5_dp*dmat
-      call trc_xc_uks(b, xg, func, vx3, vx2, exc2, nelec2)
-      call report(abs(exc - exc2) < 1.0e-12_dp*abs(exc) .and. &
-                  maxval(abs(vx2(:, :, 1) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)) .and. &
-                  maxval(abs(vx2(:, :, 2) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)), &
-                  trim(names(ifn))//": UKS at D/2, D/2 reproduces RKS", &
-                  max(abs(exc - exc2)/abs(exc), maxval(abs(vx2(:, :, 1) - vxc))/maxval(abs(vxc))))
-      call trc_xc_uks(b, xg, func, dm2, vx2, exc3, nelec3)
-      call trc_xc_uks(b, xg, func, dm2, vx3, exc2, nelec2, budget=1_8)
-      write (unit) exc3, nelec3
-      write (unit) vx2
-      print '(a,a8,a,f18.12,a,f14.10)', "  ", names(ifn), "  E_xc(UKS) = ", exc3, "   N = ", nelec3
-      call report(abs(nelec3 - trds2)/trds2 < 1.0e-7_dp, trim(names(ifn))//": UKS sum w rho vs Tr(DS), relative", &
-                  abs(nelec3 - trds2)/trds2)
-      call report(abs(exc3 - exc2) < 1.0e-13_dp*abs(exc3) .and. maxval(abs(vx2 - vx3)) < 1.0e-13_dp*maxval(abs(vx2)), &
-                  trim(names(ifn))//": UKS independent of chunking", &
-                  max(abs(exc3 - exc2)/abs(exc3), maxval(abs(vx2 - vx3))/maxval(abs(vx2))))
-   end do
+   call uks_checks()
    close (unit)
 
    call xg%release(); call grid%destroy(); call pl%release(); call b%release()
@@ -195,6 +152,62 @@ program check_xc_energy
    print '(a)', "check_xc_energy: internal checks passed; run xc_energy_ref.py for the pyscf comparison"
 
 contains
+
+   subroutine rks_checks()
+      do ifn = 1, NFUNC
+         if (.not. xc_functional_by_name(names(ifn), func)) then
+            print '(a)', "check_xc_energy: unknown functional "//trim(names(ifn))
+            stop 1
+         end if
+         call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, n_skipped=nsk)
+         ! Density screening off entirely: what the default threshold costs.
+         call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, rho_tol=0.0_dp)
+         call report(abs(exc - exc2) < 1.0e-10_dp*abs(exc) .and. maxval(abs(vxc - vxc2)) < 1.0e-10_dp*maxval(abs(vxc)), &
+                     trim(names(ifn))//": density screening vs none", &
+                     max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
+         if (ifn == 1) print '(a,i0,a,i0,a)', "  density screening skips ", nsk, " of ", xg%nbatch, " batches"
+         ! Chunk boundaries everywhere: one batch per chunk.
+         call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, budget=1_8)
+         write (unit) exc, nelec
+         write (unit) vxc
+         print '(a,a8,a,f18.12,a,f14.10)', "  ", names(ifn), "  E_xc = ", exc, "   N = ", nelec
+         ! Relative: the grid's accuracy per electron, and rounding per unit of
+         ! energy and potential.
+         call report(abs(nelec - trds)/trds < 1.0e-7_dp, trim(names(ifn))//": sum w rho vs Tr(DS), relative", &
+                     abs(nelec - trds)/trds)
+         call report(abs(exc - exc2) < 1.0e-13_dp*abs(exc) .and. &
+                     maxval(abs(vxc - vxc2)) < 1.0e-13_dp*maxval(abs(vxc)), &
+                     trim(names(ifn))//": independent of chunking", &
+                     max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
+         call report(maxval(abs(vxc - transpose(vxc))) < 1.0e-13_dp*maxval(abs(vxc)), &
+                     trim(names(ifn))//": V_xc symmetric", maxval(abs(vxc - transpose(vxc)))/maxval(abs(vxc)))
+      end do
+   end subroutine rks_checks
+
+   subroutine uks_checks()
+      do ifn = 1, NFUNC
+         if (.not. xc_functional_by_name(names(ifn), func)) stop 1
+         call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec)
+         vx3(:, :, 1) = 0.5_dp*dmat; vx3(:, :, 2) = 0.5_dp*dmat
+         call trc_xc_uks(b, xg, func, vx3, vx2, exc2, nelec2)
+         call report(abs(exc - exc2) < 1.0e-12_dp*abs(exc) .and. &
+                     maxval(abs(vx2(:, :, 1) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)) .and. &
+                     maxval(abs(vx2(:, :, 2) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)), &
+                     trim(names(ifn))//": UKS at D/2, D/2 reproduces RKS", &
+                     max(abs(exc - exc2)/abs(exc), maxval(abs(vx2(:, :, 1) - vxc))/maxval(abs(vxc))))
+         call trc_xc_uks(b, xg, func, dm2, vx2, exc3, nelec3)
+         call trc_xc_uks(b, xg, func, dm2, vx3, exc2, nelec2, budget=1_8)
+         write (unit) exc3, nelec3
+         write (unit) vx2
+         print '(a,a8,a,f18.12,a,f14.10)', "  ", names(ifn), "  E_xc(UKS) = ", exc3, "   N = ", nelec3
+         call report(abs(nelec3 - trds2)/trds2 < 1.0e-7_dp, trim(names(ifn))//": UKS sum w rho vs Tr(DS), relative", &
+                     abs(nelec3 - trds2)/trds2)
+         call report(abs(exc3 - exc2) < 1.0e-13_dp*abs(exc3) .and. maxval(abs(vx2 - vx3)) < 1.0e-13_dp*maxval(abs(vx2)), &
+                     trim(names(ifn))//": UKS independent of chunking", &
+                     max(abs(exc3 - exc2)/abs(exc3), maxval(abs(vx2 - vx3))/maxval(abs(vx2))))
+      end do
+   end subroutine uks_checks
+
 
    subroutine report(ok, what, value)
       logical, intent(in) :: ok

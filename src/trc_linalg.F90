@@ -51,6 +51,7 @@ module trc_linalg
       procedure :: init => linalg_init
       procedure :: release => linalg_release
       procedure :: gemm => linalg_gemm
+      procedure :: gemm_strided => linalg_gemm_strided
       procedure :: syev => linalg_syev
       procedure :: dot => linalg_dot
    end type trc_linalg_t
@@ -142,6 +143,45 @@ contains
       end if
 #endif
    end subroutine linalg_gemm
+
+   ! `count` GEMMs of one shape at once: matrix i of A starts at a(1 + (i-1) sa),
+   ! likewise B and C. cublasDgemmStridedBatched on the device; a loop of
+   ! pic_gemm on the host. The flat dummies are what lets a caller hand in
+   ! the start of a tile inside a larger array.
+   subroutine linalg_gemm_strided(this, ta, tb, m, n, k, alpha, a, lda, sa, b, ldb, sb, beta, c, ldc, sc, count)
+      class(trc_linalg_t), intent(in) :: this
+      character, intent(in) :: ta, tb
+      integer, intent(in) :: m, n, k, lda, ldb, ldc, count
+      integer(kind=8), intent(in) :: sa, sb, sc
+      real(dp), intent(in) :: alpha, beta
+      real(dp), intent(in) :: a(*), b(*)
+      real(dp), intent(inout) :: c(*)
+      logical :: tra, trb
+      tra = ta == 'T' .or. ta == 't'
+      trb = tb == 'T' .or. tb == 't'
+      if (count < 1) return
+#ifdef _OPENACC
+      block
+         integer :: st, oa, ob
+         oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
+         ob = merge(CUBLAS_OP_T, CUBLAS_OP_N, trb)
+         !$acc host_data use_device(a, b, c)
+         st = cublasDgemmStridedBatched(this%hb, oa, ob, m, n, k, alpha, a, lda, sa, b, ldb, sb, &
+                                        beta, c, ldc, sc, count)
+         !$acc end host_data
+         if (st /= 0) error stop "trc_linalg: cublasDgemmStridedBatched failed"
+      end block
+#else
+      block
+         integer :: i
+         integer(kind=8) :: oa, ob, oc
+         do i = 1, count
+            oa = int(i - 1, 8)*sa; ob = int(i - 1, 8)*sb; oc = int(i - 1, 8)*sc
+            call this%gemm(ta, tb, m, n, k, alpha, a(oa + 1), lda, b(ob + 1), ldb, beta, c(oc + 1), ldc)
+         end do
+      end block
+#endif
+   end subroutine linalg_gemm_strided
 
    ! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
    ! the eigenvalues ascending. Upper triangle is read.

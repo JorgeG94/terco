@@ -282,10 +282,10 @@ contains
          if (dft) then
             if (nspin == 1) then
                call trc_xc_rks(b, xg, func, res%dmat(:, :, 1), vxc(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol, &
-                               comm=comm, t_points=tp1, t_pairs=tq1)
+                               comm=comm, t_points=tp1, t_pairs=tq1, la=la)
             else
                call trc_xc_uks(b, xg, func, res%dmat, vxc, exc, ngrid, rho_tol=opts%rho_tol, &
-                               comm=comm, t_points=tp1, t_pairs=tq1)
+                               comm=comm, t_points=tp1, t_pairs=tq1, la=la)
             end if
             tx_pts = tx_pts + tp1; tx_prs = tx_prs + tq1
          end if
