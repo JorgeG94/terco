@@ -202,9 +202,10 @@ module trc_c_interfaces
 
       !> trc_scf run collectively by every rank of the communicator whose
       !> Fortran handle is `fcomm` (MPI_Comm_c2f from C); only the world
-      !> communicator is accepted, anything else is TRC_ERR_UNSUPPORTED.
-      !> Every rank binds its own device and returns the identical result.
-      !> Without MPI in the build the handle is ignored.
+      !> communicator is accepted, anything else is TRC_ERR_UNSUPPORTED, and
+      !> -1 runs on one rank as trc_scf does. Every rank binds its own device
+      !> and returns the identical result. Without MPI in the build any
+      !> handle but -1 means the single rank there is.
       integer(c_int) function trc_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, &
             conv_energy, conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
             niter) bind(c)
@@ -219,6 +220,20 @@ module trc_c_interfaces
          real(c_double), intent(out) :: dmat(*), eps(*)
          integer(c_int), intent(out) :: niter
       end function trc_scf_mpi
+
+      !> RI-MP2 on the orbitals of the last trc_scf/trc_scf_mpi on `basis`
+      !> (restricted only), with `aux` the auxiliary basis, `nfrozen` frozen
+      !> doubly occupied orbitals, `aux_block` the depth of the three-index
+      !> tensor held at once (0: all). E_os and E_ss separately; MP2 is the
+      !> sum. `fcomm` -1 runs on one rank; the world communicator's Fortran
+      !> handle splits the occupied orbitals over its ranks.
+      integer(c_int) function trc_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) bind(c)
+         import :: c_int, c_double, c_ptr
+         integer(c_int), value :: fcomm
+         type(c_ptr), value :: basis, aux
+         integer(c_int), value :: nfrozen, aux_block
+         real(c_double), intent(out) :: e_os, e_ss
+      end function trc_rimp2
 
       !> N densities against one pass over the integrals.
       !> `(ndens, nao, nao)`, density index FIRST -- see the header.

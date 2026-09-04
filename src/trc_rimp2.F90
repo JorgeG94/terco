@@ -36,7 +36,10 @@
 ! hold the whole of B, which bounds the system size at what one device
 ! holds, nocc x nvir x naux doubles.
 !
-module trc_rimp2
+! Module trc_rimp2_driver, not trc_rimp2: the C entry is bound to the
+! symbol trc_rimp2, and a binding label may not equal a module name
+! (F2018 19.2); gfortran silently resolves the call to the wrong thing.
+module trc_rimp2_driver
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_linalg, only: trc_linalg_t
@@ -214,4 +217,4 @@ contains
       end do
    end subroutine pair_energy_body
 
-end module trc_rimp2
+end module trc_rimp2_driver

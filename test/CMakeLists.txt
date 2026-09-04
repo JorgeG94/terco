@@ -221,7 +221,7 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
 endif()
 
 # RI-MP2 on the RHF reference, against pyscf's DF-MP2 on the same sets.
-add_executable(scf_rimp2 scf_rimp2.F90)
+add_executable(scf_rimp2 scf_rimp2.F90 ${PROJECT_SOURCE_DIR}/include/trc_c_interfaces.f90)
 target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
 target_include_directories(scf_rimp2 PRIVATE ${CMAKE_BINARY_DIR}/modules)

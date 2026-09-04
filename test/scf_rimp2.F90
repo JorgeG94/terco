@@ -11,7 +11,7 @@ program scf_rimp2
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_rimp2, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_test_basis, only: read_xyz, build_631g, build_aux
    implicit none
 
@@ -56,6 +56,45 @@ program scf_rimp2
    end if
    ok = res%converged .and. len_trim(mp%message) == 0
    if (abs(mp%e_corr - mp2%e_corr) > 1.0e-13_dp .or. abs(mp%e_os - mp2%e_os) > 1.0e-13_dp) ok = .false.
+
+   ! The same through the C entries mqc uses: trc_scf_mpi then trc_rimp2 on
+   ! the orbitals it kept, collectively when there are ranks.
+   block
+      use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
+      use trc_c_interfaces, only: trc_basis_create, trc_basis_destroy, trc_scf_mpi, trc_rimp2, TRC_OK
+#ifdef TERCO_HAVE_MPI
+      use mpi_f08, only: MPI_COMM_WORLD
+#endif
+      integer(c_int) :: fcomm, rc, niter
+      integer(c_int), allocatable :: lc(:), npc(:), lca(:), npca(:)
+      real(c_double), allocatable :: zat(:), d_lib(:, :), eps_lib(:)
+      real(c_double) :: e_lib, e_xc, c_os, c_ss
+      type(c_ptr) :: hbas, haux
+      fcomm = -1
+#ifdef TERCO_HAVE_MPI
+      if (comm%size() > 1) fcomm = MPI_COMM_WORLD%mpi_val
+#endif
+      allocate (zat(natm), lc(nsh), npc(nsh), lca(nsha), npca(nsha))
+      zat = real(at_z, c_double); lc = int(sh_l, c_int); npc = int(sh_np, c_int)
+      lca = int(ax_l, c_int); npca = int(ax_np, c_int)
+      rc = trc_basis_create(int(nsh, c_int), int(maxnp, c_int), lc, npc, sh_e, sh_c, sh_r, &
+                            int(natm, c_int), zat, at_r, hbas)
+      if (rc /= TRC_OK) ok = .false.
+      rc = trc_basis_create(int(nsha, c_int), int(maxnpa, c_int), lca, npca, ax_e, ax_c, ax_r, &
+                            int(natm, c_int), zat, at_r, haux)
+      if (rc /= TRC_OK) ok = .false.
+      allocate (d_lib(bas%nao, bas%nao), eps_lib(bas%nao))
+      rc = trc_scf_mpi(fcomm, hbas, int(nocc, c_int), int(nocc, c_int), c_null_char, 3_c_int, &
+                       1.0e-12_c_double, 1.0e-9_c_double, 100_c_int, c_null_ptr, 0_c_int, &
+                       e_lib, e_xc, d_lib, eps_lib, niter)
+      if (rc /= TRC_OK) ok = .false.
+      rc = trc_rimp2(fcomm, hbas, haux, 0_c_int, 20_c_int, c_os, c_ss)
+      if (rc /= TRC_OK) ok = .false.
+      if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "  C entries vs driver:  E_RHF ", abs(e_lib - res%energy), &
+         "   E_corr ", abs(c_os + c_ss - mp%e_corr)
+      if (abs(e_lib - res%energy) > 1.0e-10_dp .or. abs(c_os + c_ss - mp%e_corr) > 1.0e-10_dp) ok = .false.
+      rc = trc_basis_destroy(haux); rc = trc_basis_destroy(hbas)
+   end block
 
    if (comm%rank() == 0) then
       print '(a,i0,a,i0,a,i0)', "scf_rimp2: nao ", bas%nao, "  naux ", aux%nao, "  ranks ", comm%size()

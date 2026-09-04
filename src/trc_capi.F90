@@ -37,6 +37,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use pic_mpi_lib, only: comm_t, comm_world
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    implicit none
    private
 
@@ -67,6 +68,12 @@ module trc_capi
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
       type(trc_basis_t) :: b
+      ! The orbitals of the last trc_scf on this basis, kept for a
+      ! correlated step that follows: trc_scf hands the caller a density and
+      ! eigenvalues, not orbitals, and its signature is not changing under
+      ! callers already written to it.
+      real(dp), allocatable :: cmo(:, :, :), eps(:, :)
+      integer :: nalpha = -1, nbeta = -1
    end type basis_box
 
    type :: pairs_box
@@ -610,8 +617,8 @@ contains
    ! Only the world communicator is accepted for now: pic-mpi builds its
    ! communicator object by duplicating MPI_COMM_WORLD, and terco has no
    ! way to wrap an arbitrary handle. Any other handle is
-   ! TRC_ERR_UNSUPPORTED. In a build without MPI the handle is ignored and
-   ! this is trc_scf on one rank.
+   ! TRC_ERR_UNSUPPORTED, except -1, which is trc_scf on one rank in any
+   ! build. In a build without MPI every other handle is the single rank.
    !
    function capi_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, &
                          conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
@@ -631,6 +638,12 @@ contains
       integer(c_int) :: status
       type(comm_t) :: comm
       integer :: dev
+      if (fcomm == -1) then
+         ! One rank, no communicator: trc_scf.
+         status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
+                            max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter)
+         return
+      end if
 #ifdef TERCO_HAVE_MPI
       if (fcomm /= MPI_COMM_WORLD%mpi_val) then
          status = TRC_ERR_UNSUPPORTED
@@ -644,6 +657,76 @@ contains
                          max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter, comm)
       call comm%finalize()
    end function capi_scf_mpi
+
+   !
+   ! RI-MP2 on the orbitals of the last trc_scf (or trc_scf_mpi) on
+   ! `basis`, which must have been restricted. `aux` is the auxiliary basis,
+   ! made like any other through trc_basis_create*; `nfrozen` doubly
+   ! occupied orbitals are left out of the correlation; `aux_block` bounds
+   ! the depth of the three-index tensor held at once (0 for all of it).
+   ! E_os and E_ss come back separately: MP2 is their sum, SCS and SOS are
+   ! weights on them. With `fcomm` the world communicator's Fortran handle
+   ! the occupied orbitals are split over its ranks and every rank gets the
+   ! same numbers; pass any value in a build without MPI, or run on one
+   ! rank with fcomm = -1 in any build.
+   !
+   function capi_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) &
+      result(status) bind(c, name="trc_rimp2")
+#ifdef TERCO_HAVE_MPI
+      use mpi_f08, only: MPI_COMM_WORLD
+#endif
+      integer(c_int), value :: fcomm
+      type(c_ptr), value :: basis, aux
+      integer(c_int), value :: nfrozen, aux_block
+      real(c_double), intent(out) :: e_os, e_ss
+      integer(c_int) :: status
+      type(basis_box), pointer :: bb, ab
+      type(trc_pairlist_t) :: pl
+      type(trc_rimp2_result_t) :: res
+      type(comm_t) :: comm
+      integer :: dev, nblk
+      logical :: collective
+
+      e_os = 0.0_c_double; e_ss = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(basis) .or. .not. c_associated(aux)) return
+      call c_f_pointer(basis, bb)
+      call c_f_pointer(aux, ab)
+      status = TRC_ERR_BADARG
+      if (.not. allocated(bb%cmo)) return           ! no SCF on this basis yet
+      if (bb%nalpha /= bb%nbeta) return             ! restricted reference only
+      if (nfrozen < 0 .or. nfrozen >= bb%nalpha) return
+      collective = fcomm /= -1
+#ifdef TERCO_HAVE_MPI
+      if (collective .and. fcomm /= MPI_COMM_WORLD%mpi_val) then
+         status = TRC_ERR_UNSUPPORTED
+         return
+      end if
+#endif
+      nblk = int(aux_block)
+      if (nblk <= 0) nblk = ab%b%nao
+      if (.not. ab%b%on_device) call ab%b%to_device()
+      call pl%build(bb%b, 1.0e-12_dp)
+      call pl%to_device()
+      if (collective) then
+         comm = comm_world()
+         dev = trc_bind_device(comm%rank())
+         call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
+                            nfrozen=int(nfrozen), aux_block=nblk, comm=comm)
+         call comm%finalize()
+      else
+         call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
+                            nfrozen=int(nfrozen), aux_block=nblk)
+      end if
+      call pl%release()
+      if (len_trim(res%message) > 0) then
+         status = TRC_ERR_UNSUPPORTED
+         return
+      end if
+      e_os = real(res%e_os, c_double)
+      e_ss = real(res%e_ss, c_double)
+      status = TRC_OK
+   end function capi_rimp2
 
    function scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
                       conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
@@ -713,6 +796,11 @@ contains
             eps(k) = real(res%eps(i, s), c_double)
          end do
       end do
+      ! Keep the orbitals for a correlated step; the copies above are done.
+      if (allocated(bb%cmo)) deallocate (bb%cmo, bb%eps)
+      call move_alloc(res%cmo, bb%cmo)
+      call move_alloc(res%eps, bb%eps)
+      bb%nalpha = int(nalpha); bb%nbeta = int(nbeta)
       status = merge(TRC_OK, TRC_ERR_NOCONV, res%converged)
    end function scf_entry
 
