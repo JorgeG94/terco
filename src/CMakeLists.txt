@@ -21,6 +21,7 @@ target_sources(
           trc_fock.F90       # the four-centre Fock builds
           trc_linalg.F90     # dense linear algebra on device-resident matrices
           trc_scf.F90        # the SCF: HF and Kohn-Sham, R and U, resident
+          trc_rimp2.F90      # RI-MP2 on the RHF reference, resident
           trc_capi.F90       # the bind(c) skin
           trc_acc_shim.F90)  # see the file: this one is not optional
 

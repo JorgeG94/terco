@@ -220,6 +220,23 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
                                       DEPENDS terco/scf_rks)
 endif()
 
+# RI-MP2 on the RHF reference, against pyscf's DF-MP2 on the same sets.
+add_executable(scf_rimp2 scf_rimp2.F90)
+target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_rimp2 PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_rimp2 COMMAND scf_rimp2)
+set_tests_properties(
+  terco/scf_rimp2 PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_rimp2_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rimp2_ref.py)
+  set_tests_properties(
+    terco/scf_rimp2_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                        DEPENDS terco/scf_rimp2)
+endif()
+
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks

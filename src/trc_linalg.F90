@@ -52,6 +52,8 @@ module trc_linalg
       procedure :: release => linalg_release
       procedure :: gemm => linalg_gemm
       procedure :: gemm_strided => linalg_gemm_strided
+      procedure :: potrf => linalg_potrf
+      procedure :: trsm => linalg_trsm
       procedure :: syev => linalg_syev
       procedure :: dot => linalg_dot
    end type trc_linalg_t
@@ -182,6 +184,79 @@ contains
       end block
 #endif
    end subroutine linalg_gemm_strided
+
+   ! Cholesky factor of a symmetric positive definite A: the lower triangle
+   ! is overwritten with L, A = L L^T. The upper triangle is left as it was.
+   subroutine linalg_potrf(this, n, a, lda)
+      class(trc_linalg_t), intent(inout) :: this
+      integer, intent(in) :: n, lda
+      real(dp), intent(inout) :: a(lda, *)
+#ifdef _OPENACC
+      integer :: st, lw, info
+      real(dp), allocatable :: work(:)
+      !$acc host_data use_device(a)
+      st = cusolverDnDpotrf_bufferSize(this%hs, CUBLAS_FILL_MODE_LOWER, n, a, lda, lw)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDpotrf_bufferSize failed"
+      allocate (work(max(lw, 1)))
+      !$acc data create(work)
+      !$acc host_data use_device(a, work, this%devinfo)
+      st = cusolverDnDpotrf(this%hs, CUBLAS_FILL_MODE_LOWER, n, a, lda, work, lw, this%devinfo)
+      !$acc end host_data
+      !$acc end data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDpotrf failed"
+      !$acc update self(this%devinfo)
+      info = this%devinfo
+      if (info /= 0) error stop "trc_linalg: cusolverDnDpotrf: matrix not positive definite"
+#else
+      integer :: info
+      interface
+         subroutine dpotrf(uplo, n, a, lda, info)
+            import :: dp
+            character, intent(in) :: uplo
+            integer, intent(in) :: n, lda
+            real(dp), intent(inout) :: a(lda, *)
+            integer, intent(out) :: info
+         end subroutine dpotrf
+      end interface
+      call dpotrf('L', n, a, lda, info)
+      if (info /= 0) error stop "trc_linalg: dpotrf: matrix not positive definite"
+#endif
+   end subroutine linalg_potrf
+
+   ! Triangular solve: op(A) X = alpha B ('L') or X op(A) = alpha B ('R'),
+   ! A lower ('L') or upper ('U') triangular, op 'N' or 'T', unit diagonal
+   ! never. B (m x n) is overwritten with X.
+   subroutine linalg_trsm(this, side, uplo, trans, m, n, alpha, a, lda, b, ldb)
+      class(trc_linalg_t), intent(in) :: this
+      character, intent(in) :: side, uplo, trans
+      integer, intent(in) :: m, n, lda, ldb
+      real(dp), intent(in) :: alpha
+      real(dp), intent(in) :: a(lda, *)
+      real(dp), intent(inout) :: b(ldb, *)
+#ifdef _OPENACC
+      integer :: st, cs, cu, ct
+      cs = merge(CUBLAS_SIDE_RIGHT, CUBLAS_SIDE_LEFT, side == 'R' .or. side == 'r')
+      cu = merge(CUBLAS_FILL_MODE_UPPER, CUBLAS_FILL_MODE_LOWER, uplo == 'U' .or. uplo == 'u')
+      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == 'T' .or. trans == 't')
+      !$acc host_data use_device(a, b)
+      st = cublasDtrsm_v2(this%hb, cs, cu, ct, CUBLAS_DIAG_NON_UNIT, m, n, alpha, a, lda, b, ldb)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cublasDtrsm failed"
+#else
+      interface
+         subroutine dtrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb)
+            import :: dp
+            character, intent(in) :: side, uplo, transa, diag
+            integer, intent(in) :: m, n, lda, ldb
+            real(dp), intent(in) :: alpha
+            real(dp), intent(in) :: a(lda, *)
+            real(dp), intent(inout) :: b(ldb, *)
+         end subroutine dtrsm
+      end interface
+      call dtrsm(side, uplo, trans, 'N', m, n, alpha, a, lda, b, ldb)
+#endif
+   end subroutine linalg_trsm
 
    ! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
    ! the eigenvalues ascending. Upper triangle is read.
