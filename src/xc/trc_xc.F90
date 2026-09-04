@@ -210,7 +210,8 @@ contains
 
       integer(kind=8) :: need, nchi, sa, sb, sc
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, rank, nranks, k, s, nb, k0, k1, cnt, mp, ml
-      integer, allocatable :: c_off(:), pr_off(:), active(:), order(:), npp(:), nlp(:), ord(:), pb_off(:)
+      integer, allocatable :: c_off(:), pr_off(:), active(:), order(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
+      integer :: nwork
       real(dp), allocatable :: cost(:)
       real(dp) :: es(2)
       logical :: split
@@ -296,7 +297,7 @@ contains
          np = xg%b_off(b1 + 1) - p0
          nb = b1 - b0 + 1
          ! Storage order: by padded shape, so equal shapes are contiguous.
-         allocate (ord(nb), pb_off(nb + 1))
+         allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
          do k = 1, nb
             ord(k) = b0 + k - 1
          end do
@@ -304,7 +305,9 @@ contains
          ! Offsets in storage order: tiles (point fastest), and (u,v) pairs.
          need = 0
          npairs = 0
+         nwork = 0
          pb_off(1) = 0
+         wk_off(1) = 0
          do k = 1, nb
             ib = ord(k)
             c_off(ib) = int(need)
@@ -312,20 +315,24 @@ contains
             need = need + int(npp(ib), 8)*int(nlp(ib), 8)
             npairs = npairs + nlp(ib)*nlp(ib)
             pb_off(k + 1) = npairs
+            ! Collocation work items: (shell, point) of every active batch,
+            ! point fastest, so a warp holds one shell at consecutive points.
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))*active(ib)
+            wk_off(k + 1) = nwork
          end do
 
          allocate (chi(nchi), gchi(nchi, 3), xt(nchi, nspin), zt(nchi, nspin))
          allocate (dloc(max(npairs, 1), nspin), vloc(max(npairs, 1), nspin), eg(np), ng(np))
-         !$acc enter data create(chi, gchi, xt, zt, dloc, vloc, eg, ng) copyin(c_off, pr_off, ord, pb_off)
+         !$acc enter data create(chi, gchi, xt, zt, dloc, vloc, eg, ng) copyin(c_off, pr_off, ord, pb_off, wk_off)
 
          t0 = wall()
          ! Padding rows and columns must be zero, not whatever the allocation
          ! held: a NaN there would poison the GEMM. chi feeds both GEMMs, Z
          ! the second; X, D_b and V_b are written in full.
          call xc_zero(nchi, nspin, chi, zt)
-         call xc_collocate(np, p0, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                           xg%npts, xg%r, xg%batch_of, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, &
-                           xg%b_aooff, c_off, npp, active, xg%nbatch, nchi, chi, gchi)
+         call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                           c_off, npp, xg%nbatch, nchi, chi, gchi)
          call xc_gather(npairs, nb, ord, pb_off, nspin, b%nao, dmat, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
                         nlp, xg%nbatch, dloc)
          ! X_b = chi_b D_b: one strided-batched GEMM per run of equal shape.
@@ -382,8 +389,8 @@ contains
          t_points = t_points + (t1 - t0)
          t_pairs = t_pairs + (t2 - t1)
 
-         !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, eg, ng, c_off, pr_off, ord, pb_off)
-         deallocate (chi, gchi, xt, zt, dloc, vloc, eg, ng, ord, pb_off)
+         !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, eg, ng, c_off, pr_off, ord, pb_off, wk_off)
+         deallocate (chi, gchi, xt, zt, dloc, vloc, eg, ng, ord, pb_off, wk_off)
          b0 = b1 + 1
       end do
       if (.not. present(la)) call la_own%release()
@@ -545,62 +552,67 @@ contains
    end subroutine xc_zero
 
    !
-   ! Kernel 1: collocation -- one thread per point, writing its row of the
-   ! batch's tiles. Tile layout is (points, functions), point fastest, so
-   ! consecutive threads write consecutive addresses and the tile is the
-   ! (npp x nlp) column-major matrix the GEMMs read.
+   ! Kernel 1: collocation -- one thread per (shell, point), Algorithm 2 of
+   ! Stocks and Barca. Work item t maps to a stored batch, then a shell of
+   ! its local list and a point of its box, point fastest: the threads of a
+   ! warp evaluate one shell -- one l, one contraction, no divergence -- at
+   ! consecutive points, and write consecutive tile addresses. Tile layout
+   ! is (points, functions), point fastest, the (npp x nlp) column-major
+   ! matrix the GEMMs read.
    !
-   subroutine xc_collocate(np, p0, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, batch_of, &
-                           b_off, b_shoff, nbsh, b_sh, b_aooff, c_off, npp, active, nbatch, nchi, chi, gchi)
-      integer, intent(in) :: np, p0, maxnp, nshell, npts, nbsh, nbatch
+   subroutine xc_collocate(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+                           b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
+      integer, intent(in) :: nwork, nb, maxnp, nshell, npts, nbsh, nbatch
+      integer, intent(in) :: ord(nb), wk_off(nb + 1)
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
-      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh)
-      integer, intent(in) :: b_aooff(nbatch + 1), c_off(nbatch + 1), npp(nbatch), active(nbatch)
+      integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch)
       integer(kind=8), intent(in) :: nchi
       real(dp), intent(inout) :: chi(nchi), gchi(nchi, 3)
-      integer :: g
+      integer :: t
 
-      do concurrent(g=1:np)
-         call xc_collocate_body(p0 + g - 1, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, batch_of, &
-                                b_off, b_shoff, nbsh, b_sh, b_aooff, c_off, npp, active, nbatch, nchi, chi, gchi)
+      do concurrent(t=1:nwork)
+         call xc_collocate_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+                                b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
       end do
    end subroutine xc_collocate
 
-   pure subroutine xc_collocate_body(gg, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, batch_of, &
-                                     b_off, b_shoff, nbsh, b_sh, b_aooff, c_off, npp, active, nbatch, nchi, chi, gchi)
+   pure subroutine xc_collocate_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+                                     b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
       !$acc routine seq
-      integer, intent(in) :: gg, maxnp, nshell, npts, nbsh, nbatch
+      integer, intent(in) :: t, nb, maxnp, nshell, npts, nbsh, nbatch
+      integer, intent(in) :: ord(nb), wk_off(nb + 1)
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
-      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh)
-      integer, intent(in) :: b_aooff(nbatch + 1), c_off(nbatch + 1), npp(nbatch), active(nbatch)
+      integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch)
       integer(kind=8), intent(in) :: nchi
       real(dp), intent(inout) :: chi(nchi), gchi(nchi, 3)
-      integer :: ib, ld, off, iao, k, ish, m, nc, l
+      integer :: k, ib, tt, npb, ks, gl, gg, ish, l, nc, m, ld, off, iao
       real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX)
 
-      ib = batch_of(gg)
-      if (active(ib) == 0) return
+      call pair_batch(t, nb, wk_off, k, tt)
+      ib = ord(k)
+      npb = b_off(ib + 1) - b_off(ib)
+      ks = tt/npb
+      gl = tt - ks*npb
+      gg = b_off(ib) + gl
+      ish = b_sh(b_shoff(ib) + ks)
+      iao = b_shao(b_shoff(ib) + ks)
+      l = sh_l(ish)
+      d(1) = r(1, gg) - sh_r(1, ish)
+      d(2) = r(2, gg) - sh_r(2, ish)
+      d(3) = r(3, gg) - sh_r(3, ish)
+      call shell_collocate(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
+      nc = (l + 1)*(l + 2)/2
       ld = npp(ib)
-      ! Row gg - b_off(ib) of the tile; column u sits at (u-1)*ld.
-      off = c_off(ib) + (gg - b_off(ib)) + 1
-      iao = 0
-      do k = b_shoff(ib), b_shoff(ib + 1) - 1
-         ish = b_sh(k)
-         l = sh_l(ish)
-         d(1) = r(1, gg) - sh_r(1, ish)
-         d(2) = r(2, gg) - sh_r(2, ish)
-         d(3) = r(3, gg) - sh_r(3, ish)
-         call shell_collocate(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
-         nc = (l + 1)*(l + 2)/2
-         do m = 1, nc
-            chi(off + (iao + m - 1)*ld) = cs(m)
-            gchi(off + (iao + m - 1)*ld, 1) = gs(1, m)
-            gchi(off + (iao + m - 1)*ld, 2) = gs(2, m)
-            gchi(off + (iao + m - 1)*ld, 3) = gs(3, m)
-         end do
-         iao = iao + nc
+      off = c_off(ib) + gl + 1
+      do m = 1, nc
+         chi(off + (iao + m - 1)*ld) = cs(m)
+         gchi(off + (iao + m - 1)*ld, 1) = gs(1, m)
+         gchi(off + (iao + m - 1)*ld, 2) = gs(2, m)
+         gchi(off + (iao + m - 1)*ld, 3) = gs(3, m)
       end do
    end subroutine xc_collocate_body
 

@@ -42,6 +42,7 @@ module trc_xc_batch
       integer, allocatable :: b_off(:)      !! (nbatch+1): batch b is points b_off(b) .. b_off(b+1)-1
       integer, allocatable :: b_shoff(:)    !! (nbatch+1): its shells are b_sh(b_shoff(b) .. b_shoff(b+1)-1)
       integer, allocatable :: b_sh(:)
+      integer, allocatable :: b_shao(:)     !! parallel to b_sh: the shell's first function within the batch's local basis, 0-based
       integer, allocatable :: b_aooff(:)    !! (nbatch+1): its AOs are b_ao(b_aooff(b) .. b_aooff(b+1)-1)
       integer, allocatable :: b_ao(:)
       integer :: n_dropped = 0               !! points below w_tol, left out of npts
@@ -235,7 +236,8 @@ contains
          this%b_aooff(ib + 1) = this%b_aooff(ib) + nao_b
          this%max_nloc = max(this%max_nloc, nao_b)
       end do
-      allocate (this%b_sh(this%b_shoff(nb + 1) - 1), this%b_ao(this%b_aooff(nb + 1) - 1))
+      allocate (this%b_sh(this%b_shoff(nb + 1) - 1), this%b_shao(this%b_shoff(nb + 1) - 1))
+      allocate (this%b_ao(this%b_aooff(nb + 1) - 1))
       allocate (this%b_amax(this%b_aooff(nb + 1) - 1))
       do ib = 1, nb
          sh_in_batch = this%b_shoff(ib)
@@ -243,6 +245,7 @@ contains
          do ish = 1, b%nshell
             if (reaches(ish, ib)) then
                this%b_sh(sh_in_batch) = ish
+               this%b_shao(sh_in_batch) = k - this%b_aooff(ib)
                sh_in_batch = sh_in_batch + 1
                do i = 0, ncart(b%sh_l(ish)) - 1
                   this%b_ao(k) = b%sh_ao(ish) + i
@@ -344,7 +347,7 @@ contains
       if (this%on_device .or. this%npts == 0) return
       !$acc enter data copyin(this)
       !$acc enter data copyin(this%r, this%w, this%batch_of, this%b_off, &
-      !$acc                   this%b_shoff, this%b_sh, this%b_aooff, this%b_ao, this%b_amax)
+      !$acc                   this%b_shoff, this%b_sh, this%b_shao, this%b_aooff, this%b_ao, this%b_amax)
       this%on_device = .true.
    end subroutine xcgrid_to_device
 
@@ -352,7 +355,7 @@ contains
       class(trc_xc_grid_t), intent(inout) :: this
       if (this%on_device) then
          !$acc exit data delete(this%r, this%w, this%batch_of, this%b_off, &
-         !$acc                  this%b_shoff, this%b_sh, this%b_aooff, this%b_ao, this%b_amax)
+         !$acc                  this%b_shoff, this%b_sh, this%b_shao, this%b_aooff, this%b_ao, this%b_amax)
          !$acc exit data delete(this)
          this%on_device = .false.
       end if
@@ -362,6 +365,7 @@ contains
       if (allocated(this%b_off)) deallocate (this%b_off)
       if (allocated(this%b_shoff)) deallocate (this%b_shoff)
       if (allocated(this%b_sh)) deallocate (this%b_sh)
+      if (allocated(this%b_shao)) deallocate (this%b_shao)
       if (allocated(this%b_aooff)) deallocate (this%b_aooff)
       if (allocated(this%b_ao)) deallocate (this%b_ao)
       if (allocated(this%b_amax)) deallocate (this%b_amax)
