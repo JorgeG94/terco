@@ -71,6 +71,8 @@ program scf_sad
       if (.not. (r0%converged .and. r1%converged)) ok = .false.
       if (abs(r0%energy - r1%energy) > 1.0e-8_dp) ok = .false.
       if (r1%iterations > r0%iterations) ok = .false.
+      ! The check an energy cannot make: the guess must carry the electrons.
+      if (abs(sum(dguess*smat) - 2.0_dp*nocc) > 1.0e-6_dp) ok = .false.
       call bas%release()
       deallocate (dguess, dg3, smat, tmat, vmat); call pl%release()
    end do

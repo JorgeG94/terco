@@ -22,14 +22,17 @@
 ! whose size does not match the basis's count for that element is refused,
 ! since a mismatch means a different basis and a silently wrong start.
 !
-! CONVENTION. mqc's density is in libcint's basis, whose Cartesian s and p
-! functions are unit-normalised. terco's are those functions times
-! common_fac_sp -- 1/sqrt(4 pi) for s, sqrt(3/4 pi) for p, 1 from d up --
-! folded into the coefficients at build time, so terco's S_ii is 1/(4 pi)
-! for an s function. Energies cannot see a basis-function scale; a density
-! can. A block is therefore divided by common_fac_sp(l_i) common_fac_sp(l_j)
-! on the way in, and Tr(D S) comes out at the electron count: it came out
-! at 1.43 for water before this was understood.
+! CONVENTION. mqc normalises every Cartesian function so that its first
+! component (x^l) has unit self-overlap in the spherical sense; terco's
+! functions are those times sqrt((2l+1)/(4 pi)) -- the libcint common
+! factor 1/sqrt(4 pi) for s and sqrt(3/(4 pi)) for p, folded into the
+! coefficients at build time, and for d up the same rule where mqc's
+! S_xx,xx is 4 pi/5 against terco's 1. Energies cannot see a function's
+! scale; a density can. A block element is therefore divided by
+! f(l_i) f(l_j) with f(l) = sqrt((2l+1)/(4 pi)) on the way in, and Tr(D S)
+! comes out at the electron count: it came out at 1.43 for water before
+! the s and p factors were understood, and at 10.0046 for cc-pVDZ before
+! the d one was, each time with every energy check passing.
 !
 module trc_guess_json
    use trc_boys, only: dp
@@ -40,6 +43,8 @@ module trc_guess_json
    private
 
    public :: trc_guess_from_json
+
+   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
 contains
 
@@ -73,7 +78,7 @@ contains
          ia = atom_of(b, ish)
          n = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
          nfun(ia) = nfun(ia) + n
-         fac(b%sh_ao(ish):b%sh_ao(ish) + n - 1) = common_fac_sp(b%sh_l(ish))
+         fac(b%sh_ao(ish):b%sh_ao(ish) + n - 1) = sqrt(real(2*b%sh_l(ish) + 1, dp)/(4.0_dp*PI))
       end do
       first(1) = 1
       do ia = 2, b%natm
@@ -125,15 +130,6 @@ contains
       call json%destroy()
       if (error%has_error() .and. allocated(dguess)) deallocate (dguess)
    end subroutine trc_guess_from_json
-
-   pure real(dp) function common_fac_sp(l)
-      integer, intent(in) :: l
-      select case (l)
-      case (0); common_fac_sp = 0.282094791773878143_dp
-      case (1); common_fac_sp = 0.488602511902919921_dp
-      case default; common_fac_sp = 1.0_dp
-      end select
-   end function common_fac_sp
 
    integer function atom_of(b, ish)
       type(trc_basis_t), intent(in) :: b
