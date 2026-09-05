@@ -37,7 +37,7 @@
 ! per quartet rather than per primitive pair.
 !
 module trc_hgp
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX
+   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: LCMAX, NCUM, cidx, cnx, cny, cnz, cll, &
                          cdir, cdn1, cdn2, cf2, ncum_of, ncart_of
@@ -50,6 +50,8 @@ module trc_hgp
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
 contains
+
+#include "inc/trc_boys_eval.inc"
 
    !
    ! Primitive-pair data for HGP.  Differs from the MMD builder: no Hermite E

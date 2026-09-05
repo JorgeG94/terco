@@ -17,15 +17,21 @@ module trc_mult_kernels
    use trc_boys, only: dp
    implicit none
    private
-   public :: multipole_dispatch, TRC_NMULT, MULT_LMAX
+   public :: multipole_dispatch, mult_driver, TRC_NMULT, MULT_LMAX
 
    integer, parameter :: MULT_LMAX = 2
+   !! Largest Cartesian block a shell pair produces here; the driver's
+   !! per-item buffer is this size because `do concurrent` locals are fixed.
+   integer, parameter :: NC_MAX = (MULT_LMAX + 1)*(MULT_LMAX + 2)/2
+   integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
    !! Dispatch radix, FIXED and independent of MULT_LMAX -- see gen_1e.py.
    integer, parameter :: ONE_E_RADIX = 11
    !! 3 dipole + 9 quadrupole + 27 octupole
    integer, parameter :: TRC_NMULT = 39
 
 contains
+
+#include "inc/trc_mult_driver.inc"
 
 
    pure subroutine mult_00(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &

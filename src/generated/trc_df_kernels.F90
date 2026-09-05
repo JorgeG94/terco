@@ -13,15 +13,24 @@
 ! fitting wants the tensor.
 !
 module trc_df_kernels
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX
+   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none
    private
-   public :: df_2c_dispatch, df_3c_dispatch, DF_LMAX, DF_LMAX_AUX
+   public :: df_2c_dispatch, df_3c_dispatch, df_2c_driver, df_3c_driver, DF_LMAX, DF_LMAX_AUX
 
    integer, parameter :: DF_LMAX = 2, DF_LMAX_AUX = 3
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
+   !! Largest Cartesian blocks the drivers' per-item buffers must hold;
+   !! fixed because `do concurrent` locals are.
+   integer, parameter :: NC_MAX = (max(DF_LMAX, DF_LMAX_AUX) + 1)*(max(DF_LMAX, DF_LMAX_AUX) + 2)/2
+   integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
+   integer, parameter :: NBLK3_MAX = NC_MAX*NC_MAX*NC_MAX
 
 contains
+
+#include "inc/trc_boys_eval.inc"
+#include "inc/trc_df_2c_driver.inc"
+#include "inc/trc_df_3c_driver.inc"
 
 
    !> (a|c) class (00|0) -- 1 VRR statements after the sieve.

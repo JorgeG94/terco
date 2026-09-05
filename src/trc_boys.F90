@@ -17476,55 +17476,9 @@ contains
       !$acc update device(boys_table)
    end subroutine boys_init
 
-   !
-   ! F_0..F_m(t) into f(0:m), for any m <= BOYS_MMAX.
-   !
-   ! Pure and side-effect free so it can be called from a device kernel.
-   ! Marked `!$acc routine seq` because stdpar only auto-inlines within a
-   ! translation unit and this is called across a module boundary.
-   !
-   pure subroutine boys_eval(m, t, f)
-      !$acc routine seq
-      integer,  intent(in)  :: m
-      real(dp), intent(in)  :: t
-      real(dp), intent(out) :: f(0:)
-      integer  :: i, k, j, jj, base
-      real(dp) :: x, x2, b0, b1, b2, et, tt
-
-      if (t >= BOYS_TMAX) then
-         ! Large T.  Needs erf regardless, and is rare enough not to matter.
-         tt = sqrt(t)
-         f(0) = 0.88622692545275801365_dp*erf(tt)/tt
-         et = exp(-t)
-         do k = 1, m
-            f(k) = (real(2*k - 1, dp)*f(k - 1) - et)*(0.5_dp/t)
-         end do
-         return
-      end if
-
-      !
-      ! Degree-5 Chebyshev, evaluated per order by Clenshaw recurrence.
-      !
-      ! Direct per order -- no downward recurrence, so no division and no
-      ! exp(-T).  This is the structure used in [1] -- one interpolator per
-      ! order, at a degree that keeps the whole table inside L2.
-      !
-      i = int(t*BOYS_DTINV)
-      if (i >= BOYS_NGRID) i = BOYS_NGRID - 1
-      ! map the interval onto [-1, 1]
-      x = 2.0_dp*(t - real(i, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
-      x2 = 2.0_dp*x
-      base = i*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
-
-      do k = 0, m
-         j = base + k*(BOYS_NCHEB + 1)
-         b1 = 0.0_dp; b2 = 0.0_dp
-         do jj = BOYS_NCHEB, 1, -1
-            b0 = x2*b1 - b2 + boys_table(j + jj + 1)
-            b2 = b1; b1 = b0
-         end do
-         f(k) = x*b1 - b2 + boys_table(j + 1)
-      end do
-   end subroutine boys_eval
+   ! boys_eval lives in src/inc/trc_boys_eval.inc, included here for the
+   ! host and in every kernel module that calls it on the device -- see the
+   ! note at the top of that file.
+#include "inc/trc_boys_eval.inc"
 
 end module trc_boys

@@ -18,7 +18,7 @@
 !     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
 !
 module trc_binkernel
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX
+   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
@@ -64,6 +64,8 @@ module trc_binkernel
 
 
 contains
+
+#include "inc/trc_boys_eval.inc"
 
    !
    ! LOCAL COPIES of trc_hgp's comp/binom/powi.
