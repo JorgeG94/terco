@@ -221,9 +221,16 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
 endif()
 
 # RI-MP2 on the RHF reference, against pyscf's DF-MP2 on the same sets.
-add_executable(scf_rimp2 scf_rimp2.F90 ${PROJECT_SOURCE_DIR}/include/trc_c_interfaces.f90)
+# The shipped C-interface declarations, compiled once: two targets compiling
+# the same source both write trc_c_interfaces.mod, and Ninja refuses that.
+add_library(terco_c_interfaces STATIC ${PROJECT_SOURCE_DIR}/include/trc_c_interfaces.f90)
+set_target_properties(terco_c_interfaces PROPERTIES Fortran_MODULE_DIRECTORY
+                                                    ${CMAKE_CURRENT_BINARY_DIR}/c_interfaces)
+target_include_directories(terco_c_interfaces INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/c_interfaces)
+
+add_executable(scf_rimp2 scf_rimp2.F90)
 target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
 target_include_directories(scf_rimp2 PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_rimp2 COMMAND scf_rimp2)
 set_tests_properties(
@@ -243,9 +250,9 @@ endif()
 # when MPI is on, each run asserting the single-rank energies. No
 # CUDA_VISIBLE_DEVICES here: the point is one card per rank.
 #
-add_executable(scf_mpi scf_mpi.F90 ${PROJECT_SOURCE_DIR}/include/trc_c_interfaces.f90)
+add_executable(scf_mpi scf_mpi.F90)
 target_compile_definitions(scf_mpi PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_mpi PRIVATE ${main_lib} terco_test_basis)
+target_link_libraries(scf_mpi PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
 target_include_directories(scf_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
 if(TERCO_ENABLE_MPI)
   # The launcher beside the compiler wrapper, not the first mpiexec on PATH:
