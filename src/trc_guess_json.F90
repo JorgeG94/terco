@@ -22,17 +22,17 @@
 ! whose size does not match the basis's count for that element is refused,
 ! since a mismatch means a different basis and a silently wrong start.
 !
-! CONVENTION. mqc normalises every Cartesian function so that its first
-! component (x^l) has unit self-overlap in the spherical sense; terco's
-! functions are those times sqrt((2l+1)/(4 pi)) -- the libcint common
-! factor 1/sqrt(4 pi) for s and sqrt(3/(4 pi)) for p, folded into the
-! coefficients at build time, and for d up the same rule where mqc's
-! S_xx,xx is 4 pi/5 against terco's 1. Energies cannot see a function's
-! scale; a density can. A block element is therefore divided by
-! f(l_i) f(l_j) with f(l) = sqrt((2l+1)/(4 pi)) on the way in, and Tr(D S)
-! comes out at the electron count: it came out at 1.43 for water before
-! the s and p factors were understood, and at 10.0046 for cc-pVDZ before
-! the d one was, each time with every energy check passing.
+! CONVENTION. The two codes scale a Cartesian function x^l e^{-a r^2}
+! differently, and neither is uniform in l on its own. terco folds
+! libcint's common factor into the coefficients, so its S_ii is 1/(4 pi)
+! for s, 3/(4 pi) for p, and 1 from d up. mqc's S_ii is 1 for s and p,
+! 4 pi/5 for d, 4 pi/7 for f (measured, both of them). The RATIO is what
+! matters here and it is 4 pi/(2l+1) for every l, so a block element is
+! divided by f(l_i) f(l_j) with f(l) = sqrt((2l+1)/(4 pi)) on the way in.
+! Energies cannot see a function's scale; a density can: Tr(D S) came out
+! at 1.43 electrons for water before the s and p factors were understood,
+! and at 10.0046 for cc-pVDZ before the d one was, with every energy check
+! passing both times. That is why scf_sad integrates the guess against S.
 !
 module trc_guess_json
    use trc_boys, only: dp
