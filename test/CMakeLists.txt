@@ -18,6 +18,9 @@
 # and they may as well share the code.
 #
 set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6 TRC_PERCLASS)
+if(TERCO_ENABLE_MPI)
+  list(APPEND TERCO_TEST_DEFS TERCO_HAVE_MPI)
+endif()
 
 add_library(terco_test_basis STATIC trc_test_basis.F90)
 target_compile_definitions(terco_test_basis PRIVATE ${TERCO_TEST_DEFS})
@@ -63,6 +66,34 @@ endfunction()
 # tell whether this library works.
 #
 terco_add_check(check_selftest check_selftest.F90)
+
+#
+# The translated XC kernels against libxc, through the values `xc_ref.py`
+# recorded in reference_xc.dat. Every derivative to second order, both spin
+# cases, eleven decades of density. Needs no GPU and no pyscf to run; pyscf
+# only to regenerate the reference.
+#
+terco_add_check(check_xc check_xc.F90)
+
+# The quadrature against closed forms: Lebedev moments, the partition of
+# unity, an exact radial Gaussian, and sums of Gaussians and Slaters over
+# water integrating to the atom count.
+terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
+
+#
+# Basis functions on grid points: the numerical overlap against trc_1e's
+# analytic one, and the batched, screened evaluation against the unscreened
+# one. It also writes ao_probe.bin for the pyscf comparison registered
+# further down.
+#
+terco_add_check(check_ao check_ao.F90)
+
+#
+# The integrator from a fixed density: the electron count against Tr(DS),
+# independence of the chunking, symmetry of V_xc -- and xc_probe.bin for
+# the same-grid pyscf comparison of E_xc and V_xc registered further down.
+#
+terco_add_check(check_xc_energy check_xc_energy.F90)
 
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
@@ -133,6 +164,20 @@ if(Python3_FOUND)
       terco/check_mult_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
                  terco/check_mult)
+    # Basis function values and gradients, elementwise against eval_ao.
+    add_test(NAME terco/check_ao_vs_pyscf
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ao_ref.py)
+    set_tests_properties(
+      terco/check_ao_vs_pyscf
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
+                 terco/check_ao)
+    # E_xc and V_xc on the same grid and density, six functionals.
+    add_test(NAME terco/check_xc_energy_vs_pyscf
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/xc_energy_ref.py)
+    set_tests_properties(
+      terco/check_xc_energy_vs_pyscf
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
+                 terco/check_xc_energy)
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()
@@ -153,6 +198,114 @@ target_compile_definitions(scf_rhf PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(scf_rhf PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
 target_include_directories(scf_rhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
 
+#
+# The library's own SCF driver, resident on the device: water RHF and four
+# functionals restricted, the OH radical UHF and PBE unrestricted, in 6-31G
+# uncontracted to primitives. Writes rks_probe.bin for the same-grid pyscf
+# comparison registered above.
+#
+add_executable(scf_rks scf_rks.F90)
+target_compile_definitions(scf_rks PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rks PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_rks PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_rks COMMAND scf_rks)
+set_tests_properties(
+  terco/scf_rks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                           ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_rks_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rks_ref.py)
+  set_tests_properties(
+    terco/scf_rks_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                      DEPENDS terco/scf_rks)
+endif()
+
+# The SAD guess read from mqc's JSON blocks, against terco's own start.
+add_executable(scf_sad scf_sad.F90)
+target_compile_definitions(scf_sad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_sad PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_sad PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_sad COMMAND scf_sad)
+set_tests_properties(
+  terco/scf_sad PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                           ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# RI-MP2 on the RHF reference, against pyscf's DF-MP2 on the same sets.
+# The shipped C-interface declarations, compiled once: two targets compiling
+# the same source both write trc_c_interfaces.mod, and Ninja refuses that.
+add_library(terco_c_interfaces STATIC ${PROJECT_SOURCE_DIR}/include/trc_c_interfaces.f90)
+set_target_properties(terco_c_interfaces PROPERTIES Fortran_MODULE_DIRECTORY
+                                                    ${CMAKE_CURRENT_BINARY_DIR}/c_interfaces)
+target_include_directories(terco_c_interfaces INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/c_interfaces)
+
+add_executable(scf_rimp2 scf_rimp2.F90)
+target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
+target_include_directories(scf_rimp2 PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_rimp2 COMMAND scf_rimp2)
+set_tests_properties(
+  terco/scf_rimp2 PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_rimp2_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rimp2_ref.py)
+  set_tests_properties(
+    terco/scf_rimp2_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                        DEPENDS terco/scf_rimp2)
+endif()
+
+# The same with both sets from MolSSI BSE JSON, the files mqc ships: cc-pVDZ
+# in its Cartesian form with cc-pVDZ-RI, general contractions split per
+# column as the mqc bridge splits them.
+add_test(NAME terco/scf_rimp2_ccpvdz
+         COMMAND scf_rimp2 water.xyz basis_sets/cc-pvdz.json basis_sets/cc-pvdz-rifit.json
+                 rimp2_ccpvdz_probe.bin)
+set_tests_properties(
+  terco/scf_rimp2_ccpvdz PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_rimp2_ccpvdz_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rimp2_ref.py rimp2_ccpvdz_probe.bin)
+  set_tests_properties(
+    terco/scf_rimp2_ccpvdz_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                               DEPENDS terco/scf_rimp2_ccpvdz)
+endif()
+
+#
+# The SCF over ranks. Built in every configuration -- pic-mpi's serial
+# backend makes it rank 0 of 1 -- and registered on one, two and four ranks
+# when MPI is on, each run asserting the single-rank energies. No
+# CUDA_VISIBLE_DEVICES here: the point is one card per rank.
+#
+add_executable(scf_mpi scf_mpi.F90)
+target_compile_definitions(scf_mpi PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_mpi PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_include_directories(scf_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
+if(TERCO_ENABLE_MPI)
+  # The launcher beside the compiler wrapper, not the first mpiexec on PATH:
+  # an executable linked against NVHPC's OpenMPI launched by another
+  # OpenMPI's mpiexec fails at load with an undefined MPI symbol, because
+  # the launcher points it at the wrong runtime.
+  get_filename_component(_mpi_bindir "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+  if(EXISTS "${_mpi_bindir}/mpiexec")
+    set(_mpiexec "${_mpi_bindir}/mpiexec")
+    set(_npflag "-np")
+  else()
+    find_package(MPI REQUIRED COMPONENTS Fortran)
+    set(_mpiexec "${MPIEXEC_EXECUTABLE}")
+    set(_npflag "${MPIEXEC_NUMPROC_FLAG}")
+  endif()
+  foreach(np 1 2 4)
+    add_test(NAME terco/scf_mpi_np${np}
+             COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:scf_mpi>)
+    set_tests_properties(terco/scf_mpi_np${np} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  endforeach()
+else()
+  add_test(NAME terco/scf_mpi COMMAND scf_mpi)
+  set_tests_properties(terco/scf_mpi PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+endif()
+
 add_executable(demo_makefp demo_makefp.F90)
 target_compile_definitions(demo_makefp PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(demo_makefp PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
@@ -169,6 +322,9 @@ target_link_libraries(bench_binwater PRIVATE ${main_lib})
 add_executable(bench_many bench_many.F90)
 target_compile_definitions(bench_many PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_many PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many)
+add_executable(bench_xc bench_xc.F90)
+target_compile_definitions(bench_xc PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_xc PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many bench_xc)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()

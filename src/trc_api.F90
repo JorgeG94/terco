@@ -48,6 +48,7 @@ module trc_api
    private
    public :: trc_basis_t, trc_pairlist_t
    public :: trc_1e, trc_multipoles, trc_df_2c, trc_df_3c
+   public :: trc_bind_device
    public :: TRC_NMULT
 
    ! libcint's packed layout, so a caller can pass its arrays straight in.
@@ -129,6 +130,7 @@ module trc_api
       !! that has a basis set has these; only a caller that already links
       !! libcint has `atm`/`bas`/`env`.
       procedure :: build        => basis_build
+      procedure :: subset       => basis_subset
       procedure :: from_libcint => basis_from_libcint
       procedure :: to_device    => basis_to_device
       procedure :: release      => basis_release
@@ -189,6 +191,32 @@ contains
       integer, intent(in) :: l
       ncart = (l + 1)*(l + 2)/2
    end function ncart
+
+   !
+   ! One device per rank: rank r takes device r modulo the number of
+   ! devices. Call it right after MPI is up and BEFORE any basis, pair list
+   ! or grid goes to the device -- those land on whichever device is current
+   ! at the time. Under a host build there is nothing to bind. Returns the
+   ! device chosen, -1 on a host build.
+   !
+   function trc_bind_device(rank) result(dev)
+#ifdef _OPENACC
+      use openacc, only: acc_set_device_num, acc_get_num_devices, acc_device_nvidia
+#endif
+      integer, intent(in) :: rank
+      integer :: dev
+      dev = -1
+#ifdef _OPENACC
+      block
+         integer :: ndev
+         ndev = acc_get_num_devices(acc_device_nvidia)
+         if (ndev > 0) then
+            dev = mod(rank, ndev)
+            call acc_set_device_num(dev, acc_device_nvidia)
+         end if
+      end block
+#endif
+   end function trc_bind_device
 
    !
    ! libcint applies this per shell OUTSIDE `env`, so a container built from
@@ -260,6 +288,40 @@ contains
    ! `build`, so there is one implementation of the import rules (notably the
    ! common_fac_sp folding) rather than two that can drift.
    !
+   !
+   ! Shells s0..s1 of this basis as a basis of their own, functions
+   ! renumbered from 1, atoms kept. Copied field by field: the stored
+   ! coefficients already carry common_fac_sp, and rebuilding from them
+   ! through `build` would fold it in a second time -- which is exactly
+   ! what happened to the first RI-MP2 auxiliary block, and the third time
+   ! this factor has bitten. Host side only; the caller moves it.
+   !
+   subroutine basis_subset(this, s0, s1, out)
+      class(trc_basis_t), intent(in) :: this
+      integer, intent(in) :: s0, s1
+      type(trc_basis_t), intent(out) :: out
+      integer :: i, n
+      n = s1 - s0 + 1
+      out%nshell = n
+      out%natm = this%natm
+      out%maxnp = this%maxnp
+      allocate (out%sh_l(n), out%sh_np(n), out%sh_ao(n))
+      allocate (out%sh_e(this%maxnp, n), out%sh_c(this%maxnp, n), out%sh_r(3, n))
+      allocate (out%at_z(this%natm), out%at_r(3, this%natm))
+      out%sh_l = this%sh_l(s0:s1)
+      out%sh_np = this%sh_np(s0:s1)
+      out%sh_e = this%sh_e(:, s0:s1)
+      out%sh_c = this%sh_c(:, s0:s1)
+      out%sh_r = this%sh_r(:, s0:s1)
+      out%at_z = this%at_z
+      out%at_r = this%at_r
+      out%nao = 0
+      do i = 1, n
+         out%sh_ao(i) = out%nao + 1
+         out%nao = out%nao + ncart(out%sh_l(i))
+      end do
+   end subroutine basis_subset
+
    subroutine basis_from_libcint(this, atm, natm, bas, nshell, env)
       class(trc_basis_t), intent(inout) :: this
       integer,  intent(in) :: natm, nshell

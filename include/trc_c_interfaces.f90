@@ -45,20 +45,21 @@ module trc_c_interfaces
    implicit none
    public
 
-   !> Zero is success; everything else is a reason. A library that stops the
-   !> process on bad input is unusable inside someone else's SCF.
+   ! Zero is success; everything else is a reason. A library that stops the
+   ! process on bad input is unusable inside someone else's SCF.
    integer(c_int), parameter :: TRC_OK              = 0
    integer(c_int), parameter :: TRC_ERR_NULL        = 1
    integer(c_int), parameter :: TRC_ERR_BADARG      = 2
    integer(c_int), parameter :: TRC_ERR_UNSUPPORTED = 3
+   integer(c_int), parameter :: TRC_ERR_NOCONV      = 4   !! the SCF ran out of iterations
 
    interface
 
       ! --- basis ------------------------------------------------------------
 
-      !> Build a basis from flat per-shell arrays.
       integer(c_int) function trc_basis_create(nshell, maxnp, l, nprim, exps, &
             coefs, centres, natm, zatm, ratm, handle) bind(c)
+         !! Build a basis from flat per-shell arrays.
          import :: c_int, c_double, c_ptr
          integer(c_int), value :: nshell, maxnp, natm
          integer(c_int), intent(in) :: l(*), nprim(*)
@@ -67,13 +68,13 @@ module trc_c_interfaces
          type(c_ptr), intent(out) :: handle
       end function trc_basis_create
 
-      !> Build a basis from libcint's packed `atm`/`bas`/`env`.
-      !>
-      !> CARTESIAN ONLY -- pass `cartesian = 1`. A spherical basis is refused
-      !> with TRC_ERR_UNSUPPORTED rather than reinterpreted, because
-      !> reinterpreting it gives wrong numbers instead of an error.
       integer(c_int) function trc_basis_create_libcint(atm, natm, bas, nshell, &
             env, nenv, cartesian, handle) bind(c)
+         !! Build a basis from libcint's packed `atm`/`bas`/`env`.
+         !!
+         !! CARTESIAN ONLY -- pass `cartesian = 1`. A spherical basis is refused
+         !! with TRC_ERR_UNSUPPORTED rather than reinterpreted, because
+         !! reinterpreting it gives wrong numbers instead of an error.
          import :: c_int, c_double, c_ptr
          integer(c_int), value :: natm, nshell, nenv, cartesian
          integer(c_int), intent(in) :: atm(*), bas(*)
@@ -87,9 +88,9 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: nao
       end function trc_basis_nao
 
-      !> Highest angular momentum present, so a caller can decide to fall back
-      !> before building anything expensive. The four-centre kernels stop at d.
       integer(c_int) function trc_basis_maxl(handle, maxl) bind(c)
+         !! Highest angular momentum present, so a caller can decide to fall back
+         !! before building anything expensive. The four-centre kernels stop at d.
          import :: c_int, c_ptr
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: maxl
@@ -122,24 +123,24 @@ module trc_c_interfaces
 
       ! --- one electron -----------------------------------------------------
 
-      !> Overlap, kinetic and nuclear attraction, `nao*nao` each.
       integer(c_int) function trc_compute_1e(basis, pairs, smat, tmat, vmat) &
             bind(c)
+         !! Overlap, kinetic and nuclear attraction, `nao*nao` each.
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: basis, pairs
          real(c_double), intent(out) :: smat(*), tmat(*), vmat(*)
       end function trc_compute_1e
 
-      !> Number of Cartesian multipole components, so a caller sizes its
-      !> buffer from the library rather than hardcoding it.
       integer(c_int) function trc_multipole_count() bind(c)
+         !! Number of Cartesian multipole components, so a caller sizes its
+         !! buffer from the library rather than hardcoding it.
          import :: c_int
       end function trc_multipole_count
 
-      !> Multipoles through the octupole about `origin`, `nao*nao*count`,
-      !> component index slowest.
       integer(c_int) function trc_compute_multipoles(basis, pairs, origin, &
             mmat) bind(c)
+         !! Multipoles through the octupole about `origin`, `nao*nao*count`,
+         !! component index slowest.
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: basis, pairs
          real(c_double), intent(in) :: origin(*)
@@ -148,10 +149,10 @@ module trc_c_interfaces
 
       ! --- four-centre ------------------------------------------------------
 
-      !> The per-geometry ERI object: Schwarz bounds, binned pair list and
-      !> primitive-pair tables. Expensive to build and meant to be reused by
-      !> every Fock build; one per SCF iteration defeats the purpose.
       integer(c_int) function trc_eri_create(basis, thresh, handle) bind(c)
+         !! The per-geometry ERI object: Schwarz bounds, binned pair list and
+         !! primitive-pair tables. Expensive to build and meant to be reused by
+         !! every Fock build; one per SCF iteration defeats the purpose.
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: basis
          real(c_double), value :: thresh
@@ -163,15 +164,15 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
       end function trc_eri_destroy
 
-      !> `g = jfac*J - kfac*K/2` for one density.
-      !>
-      !> `dscreen` nonzero weights the Schwarz bound by the density, which is
-      !> what an SCF wants. A COUPLED-PERTURBED SOLVE MUST PASS ZERO: its
-      !> density is a trial vector driven towards zero, so a density-keyed
-      !> screen tightens as the solve proceeds and the operator stops being
-      !> the same linear map between matvecs.
       integer(c_int) function trc_fock(eri, basis, dmat, gmat, jfac, kfac, &
             dscreen) bind(c)
+         !! `g = jfac*J - kfac*K/2` for one density.
+         !!
+         !! `dscreen` nonzero weights the Schwarz bound by the density, which is
+         !! what an SCF wants. A COUPLED-PERTURBED SOLVE MUST PASS ZERO: its
+         !! density is a trial vector driven towards zero, so a density-keyed
+         !! screen tightens as the solve proceeds and the operator stops being
+         !! the same linear map between matvecs.
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: eri, basis
          real(c_double), intent(in) :: dmat(*)
@@ -180,10 +181,64 @@ module trc_c_interfaces
          integer(c_int), value :: dscreen
       end function trc_fock
 
-      !> N densities against one pass over the integrals.
-      !> `(ndens, nao, nao)`, density index FIRST -- see the header.
+      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, &
+            conv_energy, conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
+            niter) bind(c)
+         !! The whole SCF, HF or Kohn-Sham, R or U. `functional` NUL-terminated
+         !! (empty for HF); `dguess` NULL or a (nao,nao,nspin) density; `verbose`
+         !! non-zero prints one line per iteration; `dmat` (nao,nao,nspin) and
+         !! `eps` (nao,nspin) out, nspin = 2 iff nalpha /= nbeta.
+         !! TRC_ERR_NOCONV means the last iterate is in the outputs.
+         import :: c_int, c_double, c_ptr, c_char
+         type(c_ptr), value :: basis
+         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
+         character(kind=c_char), intent(in) :: functional(*)
+         real(c_double), value :: conv_energy, conv_density
+         type(c_ptr), value :: dguess
+         real(c_double), intent(out) :: energy, e_xc
+         real(c_double), intent(out) :: dmat(*), eps(*)
+         integer(c_int), intent(out) :: niter
+      end function trc_scf
+
+      integer(c_int) function trc_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, &
+            conv_energy, conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
+            niter) bind(c)
+         !! trc_scf run collectively by every rank of the communicator whose
+         !! Fortran handle is `fcomm` (MPI_Comm_c2f from C); only the world
+         !! communicator is accepted, anything else is TRC_ERR_UNSUPPORTED, and
+         !! -1 runs on one rank as trc_scf does. Every rank binds its own device
+         !! and returns the identical result. Without MPI in the build any
+         !! handle but -1 means the single rank there is.
+         import :: c_int, c_double, c_ptr, c_char
+         integer(c_int), value :: fcomm
+         type(c_ptr), value :: basis
+         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
+         character(kind=c_char), intent(in) :: functional(*)
+         real(c_double), value :: conv_energy, conv_density
+         type(c_ptr), value :: dguess
+         real(c_double), intent(out) :: energy, e_xc
+         real(c_double), intent(out) :: dmat(*), eps(*)
+         integer(c_int), intent(out) :: niter
+      end function trc_scf_mpi
+
+      integer(c_int) function trc_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) bind(c)
+         !! RI-MP2 on the orbitals of the last trc_scf/trc_scf_mpi on `basis`
+         !! (restricted only), with `aux` the auxiliary basis, `nfrozen` frozen
+         !! doubly occupied orbitals, `aux_block` the depth of the three-index
+         !! tensor held at once (0: all). E_os and E_ss separately; MP2 is the
+         !! sum. `fcomm` -1 runs on one rank; the world communicator's Fortran
+         !! handle splits the occupied orbitals over its ranks.
+         import :: c_int, c_double, c_ptr
+         integer(c_int), value :: fcomm
+         type(c_ptr), value :: basis, aux
+         integer(c_int), value :: nfrozen, aux_block
+         real(c_double), intent(out) :: e_os, e_ss
+      end function trc_rimp2
+
       integer(c_int) function trc_fock_many(eri, basis, ndens, dmats, gmats, &
             jfac, kfac, dscreen) bind(c)
+         !! N densities against one pass over the integrals.
+         !! `(ndens, nao, nao)`, density index FIRST -- see the header.
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: eri, basis
          integer(c_int), value :: ndens, dscreen
@@ -192,14 +247,14 @@ module trc_c_interfaces
          real(c_double), value :: jfac, kfac
       end function trc_fock_many
 
-      !> The same build for a density that is NOT symmetric.
-      !>
-      !> A separate name rather than a flag on `trc_fock`: the folded
-      !> eight-fold digestion assumes D(mu,nu) = D(nu,mu), and feeding it an
-      !> antisymmetric response density gives a plausible wrong answer with no
-      !> diagnostic. Two names cannot be confused by accident.
       integer(c_int) function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) &
             bind(c)
+         !! The same build for a density that is NOT symmetric.
+         !!
+         !! A separate name rather than a flag on `trc_fock`: the folded
+         !! eight-fold digestion assumes D(mu,nu) = D(nu,mu), and feeding it an
+         !! antisymmetric response density gives a plausible wrong answer with no
+         !! diagnostic. Two names cannot be confused by accident.
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: eri, basis
          real(c_double), intent(in) :: dmat(*)

@@ -70,6 +70,33 @@ def fort(x):
     return s + "_dp"
 
 
+LINES_PER_DATA = 250   # 3 values a line: 750 values, 1500 tokens per statement
+
+
+def emit_data(flat, name):
+    """The table as DATA statements, never as one array constructor.
+
+    One constructor of 51840 values is a single statement of over 100000
+    tokens, and ifx stops at 41000 ("Statement too long"). It is also over
+    17000 continuation lines where the standard promises 255. DATA
+    statements of 250 lines each keep both limits with room to spare, and
+    are the same static initialisation of the same module variable: the
+    bits in the array are identical, and `!$acc declare create` plus the
+    `update device` in boys_init are unchanged.
+    """
+    out = []
+    per = 3*LINES_PER_DATA
+    for start in range(0, len(flat), per):
+        chunk = flat[start:start + per]
+        lines = []
+        for k in range(0, len(chunk), 3):
+            lines.append("      " + ", ".join(fort(v) for v in chunk[k:k + 3])
+                         + ("," if k + 3 < len(chunk) else ""))
+        out.append(f"   data {name}({start + 1}:{start + len(chunk)}) / &\n"
+                   + " &\n".join(lines) + " &\n      /\n")
+    return "".join(out)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mmax", type=int, default=8,
@@ -94,11 +121,7 @@ def main():
         if (i + 1) % 120 == 0:
             print(f"    interval {i + 1}/{NGRID}")
 
-    lines = []
-    for k in range(0, len(flat), 3):
-        lines.append("      " + ", ".join(fort(v) for v in flat[k:k + 3])
-                     + ("," if k + 3 < len(flat) else ""))
-    body = " &\n".join(lines)
+    body = emit_data(flat, "boys_table")
 
     src = f'''!
 ! Boys function F_m(T) = int_0^1 u^(2m) exp(-T u^2) du.
@@ -151,7 +174,7 @@ module trc_boys
     tail = old[old.index("   !$acc declare create(boys_table)"):]
     tail = tail.replace("boys_table(51840)", f"boys_table({len(flat)})")
 
-    body_decl = f"   real(dp), public :: boys_table({len(flat)}) = (/ &\n{body} &\n      /)\n"
+    body_decl = f"   real(dp), public :: boys_table({len(flat)})\n{body}"
     pathlib.Path(args.output).write_text(src + TABLE_COMMENT + body_decl + tail)
     print(f"  {args.output}: mmax={MMAX}, {len(flat)} coefficients")
 

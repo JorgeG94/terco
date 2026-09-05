@@ -43,10 +43,26 @@ set(TERCO_GPU_ARCH
     CACHE STRING "Target GPU architecture, as nvfortran spells it (cc70, cc80, ...)")
 
 option(TERCO_ENABLE_TESTING "Build the correctness checks" ON)
+#
+# Ranks. The Fock build splits the sorted quartet list across ranks -- every
+# nranks-th item from the rank -- and sums the result; one device per rank.
+# OFF builds pic-mpi's single-rank backend behind the same API, so the code
+# is identical either way and a build without MPI is rank 0 of 1.
+#
+option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" OFF)
 option(TERCO_REGENERATE
        "Regenerate the committed kernels in-tree rather than using them" OFF)
+#
+# Shared by default. The one consumer that matters, metalquicha, is built
+# with gfortran and reaches terco through the C ABI, and a static libterco
+# from nvfortran cannot be linked by another compiler: its device code, the
+# OpenACC runtime and now cuBLAS and cuSOLVER all expect nvfortran's own
+# link step. A shared library takes that step once, here, with the rpath
+# baked in, and hands the consumer an ordinary .so with a C symbol table.
+# OFF is for terco's own tests and nvfortran consumers, where either works.
+#
 option(TERCO_BUILD_SHARED
-       "Build a shared library, for host codes built with another compiler" OFF)
+       "Build a shared library, for host codes built with another compiler" ON)
 
 #
 # The GPU build needs NVHPC: `-stdpar=gpu` is what turns `do concurrent` into
@@ -142,7 +158,58 @@ endif()
 
 add_subdirectory(src)
 
-target_link_libraries(${main_lib} PUBLIC pic::pic)
+#
+# cuSOLVER and cuBLAS, for the SCF's eigenproblem and products
+# (src/trc_linalg.F90). A LINK option on terco's own target, PUBLIC so that
+# anything linking libterco with nvfortran gets it too -- and NOT in
+# CMAKE_Fortran_FLAGS, where it reached every target in the tree: pic's own
+# `app`, fetched as a dependency, was then asked to link CUDA math libraries
+# it has no use for, and failed wherever the NVHPC install lacks them for
+# the driver's CUDA version. The NVHPC modules the source `use`s come from
+# the compiler's include path and need nothing at compile time.
+#
+if(TERCO_ENABLE_GPU)
+  target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
+endif()
+
+#
+# pic-blas, for the SCF driver (src/trc_scf.F90): the orthogonaliser and the
+# core guess go through its explicit-interface wrappers in every build, and
+# under a host build so do the eigenproblem, the products and the dot
+# products of the iteration. The GPU build does those on the device;
+# -cudalib is a link option on the target, above. The DIIS system is solved in terco itself, the way
+# metalquicha does it, and needs neither.
+#
+# pic-blas's switch is the unprefixed ENABLE_TESTING; terco's own is
+# TERCO_ENABLE_TESTING, so forcing this off costs nothing here.
+set(ENABLE_TESTING
+    OFF
+    CACHE BOOL "" FORCE)
+find_package("pic-blas" REQUIRED)
+# Build-interface only. pic and pic-blas are static and end up inside
+# libterco.so; an installed consumer links nothing else and the export set
+# must not name targets that are not installed. terco's own tests, which
+# `use pic_types`, get them through this build interface.
+set(PIC_ENABLE_MPI
+    ${TERCO_ENABLE_MPI}
+    CACHE BOOL "" FORCE)
+set(PIC_USE_LEGACY_MPI
+    OFF
+    CACHE BOOL "" FORCE)
+find_package("pic-mpi" REQUIRED)
+find_package("jsonfortran" REQUIRED)
+if(DEFINED TERCO_HOST_NVHPC_OPTIONS)
+  target_compile_options(${main_lib} PRIVATE ${TERCO_HOST_NVHPC_OPTIONS})
+endif()
+if(TERCO_ENABLE_MPI)
+  # The C entry that takes a communicator handle checks it against
+  # MPI_COMM_WORLD, which needs mpi_f08; without MPI it ignores the handle.
+  target_compile_definitions(${main_lib} PRIVATE TERCO_HAVE_MPI)
+endif()
+target_link_libraries(${main_lib} PUBLIC $<BUILD_INTERFACE:pic::pic>
+                                         $<BUILD_INTERFACE:pic-blas::pic-blas>
+                                         $<BUILD_INTERFACE:pic-mpi::pic-mpi>
+                                         $<BUILD_INTERFACE:jsonfortran::jsonfortran>)
 
 set_target_properties(${main_lib} PROPERTIES Fortran_MODULE_DIRECTORY
                                              ${CMAKE_BINARY_DIR}/modules)
@@ -167,11 +234,16 @@ install(
   INCLUDES
   DESTINATION include/terco)
 
+# terco's own modules only. The modules/ directory is shared with the
+# fetched dependencies, whose .mod files are theirs to ship; and the test
+# helper's module is not part of the library.
 install(
   DIRECTORY ${CMAKE_BINARY_DIR}/modules/
   DESTINATION include/terco
   FILES_MATCHING
-  PATTERN "*.mod")
+  PATTERN "trc_test_basis.mod" EXCLUDE
+  PATTERN "trc_*.mod"
+  PATTERN "bit_repro*.mod")
 
 #
 # The C ABI's Fortran declaration ships as SOURCE, not as a module.

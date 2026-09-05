@@ -65,7 +65,10 @@ refuses:
   is refused rather than silently reinterpreted, because reinterpreting it
   gives wrong numbers instead of an error.
 - **Range separation.** No erf-attenuated kernel.
-- **More than one GPU.**
+- **More than one GPU for the XC integration.** The Fock build splits over
+  MPI ranks with one device each (`TERCO_ENABLE_MPI`, `trc_bind_device`, a
+  communicator to `eri%build` or `trc_scf_run`); the exchange-correlation
+  integration still runs whole on every rank.
 
 A host code is expected to check before it commits: `trc_basis_maxl` answers
 before anything expensive is built.
@@ -100,8 +103,9 @@ ctest --test-dir build --output-on-failure
 |---|---|---|
 | `TERCO_LMAX` | `2` | four-centre ceiling. Anything but 2 regenerates the kernels (needs Python 3) |
 | `TERCO_GPU_ARCH` | `cc70` | as nvfortran spells it |
-| `TERCO_BUILD_SHARED` | `OFF` | build `libterco.so`, for a host built with another compiler |
+| `TERCO_BUILD_SHARED` | `ON` | `libterco.so`, which a host built with another compiler can link; `OFF` for a static library |
 | `TERCO_REGENERATE` | `OFF` | refresh the committed kernels in-tree |
+| `TERCO_ENABLE_MPI` | `OFF` | split the Fock build over MPI ranks, one device each; `OFF` is the same code on pic-mpi's single-rank backend |
 | `TERCO_ENABLE_TESTING` | `ON` | |
 
 Consume it with `find_package(terco)` and link `terco::terco`.
@@ -155,7 +159,7 @@ and the batch stops paying past N = 4.
 ### From another compiler
 
 A gfortran or ifx host cannot read nvfortran's `.mod` files, so it goes through
-the C ABI. Build `libterco.so` with `TERCO_BUILD_SHARED=ON` — nvfortran links
+the C ABI. `libterco.so` is the default build — nvfortran links
 it, so it carries the NVHPC and OpenACC runtimes as its own `DT_NEEDED` and the
 host's link line needs nothing but `-lterco`.
 

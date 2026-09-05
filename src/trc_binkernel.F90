@@ -127,7 +127,7 @@ contains
    subroutine fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_dens, &
                         jfac, kfac, nosym, dsh, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                        ndens, dmat, jmat, kmat, nlaunch, nwork, nkept)
+                        ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in)    :: nbas, npp, nao
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
@@ -146,6 +146,9 @@ contains
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
+      !! This rank's share of the sorted work list: every nranks-th item from
+      !! rank. The caller reduces the result across ranks.
+      integer,  intent(in)    :: rank, nranks
       integer,  intent(out)   :: nlaunch
       integer(kind=8), intent(out) :: nwork
       !! Diagnostic: how many of `nwork` actually survive the in-kernel
@@ -239,7 +242,7 @@ contains
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, &
                              nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                             ndens, dmat, jmat, kmat)
+                             ndens, dmat, jmat, kmat, rank, nranks)
          nlaunch = 1
          !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
          deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
@@ -298,7 +301,7 @@ contains
                               + sLC(c0))*CLASS_RADIX + sLD(c0), &
                              c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
+                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, rank, nranks)
             c0 = c1 + 1
          end do
          nlaunch = nl
@@ -312,7 +315,7 @@ contains
       !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
       call fock_all(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                     b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                    pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat)
+                    pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
       !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
 
       deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
@@ -454,8 +457,8 @@ contains
    !
    subroutine fock_all(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                        npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat)
-      integer,  intent(in)    :: nseg, npair, nbas, npp, nao
+                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
+      integer,  intent(in)    :: nseg, npair, nbas, npp, nao, rank, nranks
       integer(kind=8), intent(in) :: nwork
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
@@ -471,7 +474,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-      integer(kind=8) :: gt
+      integer(kind=8) :: gt, nr, i
       integer :: lo, hi, mid, seg, t
 
       !
@@ -495,7 +498,11 @@ contains
       !
       ! Fortran 2018, and gfortran took it in 15, which is this project's
       ! minimum for that reason among others.
-      do concurrent(gt=1:nwork) local(lo, hi, mid, seg, t)
+      ! This rank's stride through the sorted list; see the per-class kernels.
+      nr = 0
+      if (nwork >= rank + 1) nr = (nwork - rank - 1)/nranks + 1
+      do concurrent(i=1:nr) local(gt, lo, hi, mid, seg, t)
+         gt = rank + 1 + (i - 1)*nranks
          lo = 1; hi = nseg
          do while (lo < hi)
             mid = (lo + hi + 1)/2
@@ -519,8 +526,8 @@ contains
                              npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, &
                              nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                             ndens, dmat, jmat, kmat)
-      integer,  intent(in)    :: nseg, npair, nbas, npp, nao, ndens
+                             ndens, dmat, jmat, kmat, rank, nranks)
+      integer,  intent(in)    :: nseg, npair, nbas, npp, nao, ndens, rank, nranks
       integer(kind=8), intent(in) :: nwork
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
@@ -534,7 +541,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-      integer(kind=8) :: gt
+      integer(kind=8) :: gt, nr, i
       integer :: lo, hi, mid, seg, t
 
       ! `local()` is NOT optional here, and the reason is worth stating.
@@ -550,7 +557,10 @@ contains
       !
       ! `tools/dc_locality_lint.py` now refuses a `do concurrent` that
       ! assigns a scalar it has not named.
-      do concurrent(gt=1:nwork) local(lo, hi, mid, seg, t)
+      nr = 0
+      if (nwork >= rank + 1) nr = (nwork - rank - 1)/nranks + 1
+      do concurrent(i=1:nr) local(gt, lo, hi, mid, seg, t)
+         gt = rank + 1 + (i - 1)*nranks
          lo = 1; hi = nseg
          do while (lo < hi)
             mid = (lo + hi + 1)/2

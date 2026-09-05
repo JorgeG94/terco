@@ -15,10 +15,15 @@ macro("my_fetch_package" package url)
     set(FETCHCONTENT_QUIET FALSE)
   endif()
 
+  # EXCLUDE_FROM_ALL: a dependency is built for terco to link, not shipped.
+  # Without it every fetched project installs into terco's prefix -- its
+  # library, its demo executable, its CMake helpers, and the whole shared
+  # modules/ directory once more under its own include/<name>.
   FetchContent_Declare(
     "${_pkg_lc}"
     GIT_REPOSITORY "${url}"
-    GIT_TAG "${_git_ref}")
+    GIT_TAG "${_git_ref}"
+    EXCLUDE_FROM_ALL)
   FetchContent_MakeAvailable("${_pkg_lc}")
 
   # Only create the imported interface if the target doesn't already exist This

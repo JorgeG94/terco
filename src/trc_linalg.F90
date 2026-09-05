@@ -1,0 +1,304 @@
+!
+! Dense linear algebra on matrices that live on the device.
+!
+! The SCF keeps its nao x nao matrices resident across iterations, and a
+! Fock build on the device is worth much less if the diagonalisation drags
+! them back every step: metalquicha measured 0.33 s of Fock against 0.92 s
+! of host LAPACK plus copies at 832 functions, and the ratio only worsens
+! with size since the eigenproblem is cubic. So the eigenproblem, the
+! products and the dot products are cuSOLVER and cuBLAS here, reached from
+! OpenACC through `host_data use_device` on arrays the caller has already
+! put on the device.
+!
+! Under a host build the same calls go to pic-blas on the same arrays,
+! which are then simply host arrays, and the directives are comments. One
+! source, two builds, the same numbers to rounding -- which is how every
+! terco driver is arranged, and the reason a CI runner without a GPU can
+! still validate the SCF. pic-blas rather than raw BLAS because its
+! wrappers carry explicit interfaces: nothing in terco is called through
+! an implicit one.
+!
+! Every array argument must be present on the device in the OpenACC build.
+! A host array passed here under -acc is a segfault, not a wrong number,
+! and that is by design: it cannot pass silently.
+!
+module trc_linalg
+   use trc_boys, only: dp
+   use pic_types, only: default_int
+   use pic_blas_interfaces, only: pic_gemm, pic_dot
+   use pic_lapack_interfaces, only: pic_syev
+#ifdef _OPENACC
+   use cublas
+   use cusolverdn
+   use openacc, only: acc_get_cuda_stream, acc_async_sync
+#endif
+   implicit none
+   private
+
+   public :: trc_linalg_t
+
+   type :: trc_linalg_t
+      integer :: n = 0
+      logical :: ready = .false.
+#ifdef _OPENACC
+      type(cublasHandle) :: hb
+      type(cusolverDnHandle) :: hs
+      real(dp), allocatable :: dwork(:)
+      integer :: lwork = 0
+      integer :: devinfo = 0
+#endif
+   contains
+      procedure :: init => linalg_init
+      procedure :: release => linalg_release
+      procedure :: gemm => linalg_gemm
+      procedure :: gemm_strided => linalg_gemm_strided
+      procedure :: potrf => linalg_potrf
+      procedure :: trsm => linalg_trsm
+      procedure :: syev => linalg_syev
+      procedure :: dot => linalg_dot
+   end type trc_linalg_t
+
+contains
+
+   !
+   ! Handles, the solver's workspace for an n x n eigenproblem, and the
+   ! library streams set to the OpenACC synchronous queue so a kernel that
+   ! wrote a matrix has finished before cuBLAS reads it.
+   !
+   subroutine linalg_init(this, n)
+      class(trc_linalg_t), intent(inout) :: this
+      integer, intent(in) :: n
+#ifdef _OPENACC
+      real(dp), allocatable :: a(:, :), w(:)
+      integer :: st
+#endif
+      call this%release()
+      this%n = n
+#ifdef _OPENACC
+      st = cublasCreate(this%hb)
+      if (st /= 0) error stop "trc_linalg: cublasCreate failed"
+      st = cusolverDnCreate(this%hs)
+      if (st /= 0) error stop "trc_linalg: cusolverDnCreate failed"
+      st = cublasSetStream(this%hb, acc_get_cuda_stream(acc_async_sync))
+      st = cusolverDnSetStream(this%hs, acc_get_cuda_stream(acc_async_sync))
+      allocate (a(n, n), w(n))
+      !$acc enter data create(a, w)
+      !$acc host_data use_device(a, w)
+      st = cusolverDnDsyevd_bufferSize(this%hs, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, &
+                                       n, a, n, w, this%lwork)
+      !$acc end host_data
+      !$acc exit data delete(a, w)
+      if (st /= 0) error stop "trc_linalg: cusolverDnDsyevd_bufferSize failed"
+      allocate (this%dwork(max(this%lwork, 1)))
+      !$acc enter data create(this%dwork, this%devinfo)
+#endif
+      this%ready = .true.
+   end subroutine linalg_init
+
+   subroutine linalg_release(this)
+      class(trc_linalg_t), intent(inout) :: this
+#ifdef _OPENACC
+      integer :: st
+      if (this%ready) then
+         !$acc exit data delete(this%dwork, this%devinfo)
+         deallocate (this%dwork)
+         st = cublasDestroy(this%hb)
+         st = cusolverDnDestroy(this%hs)
+      end if
+#endif
+      this%ready = .false.
+      this%n = 0
+   end subroutine linalg_release
+
+   ! C = alpha op(A) op(B) + beta C, with 'N' or 'T' for each operand.
+   subroutine linalg_gemm(this, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+      class(trc_linalg_t), intent(in) :: this
+      character, intent(in) :: ta, tb
+      integer, intent(in) :: m, n, k, lda, ldb, ldc
+      real(dp), intent(in) :: alpha, beta
+      real(dp), intent(in) :: a(lda, *), b(ldb, *)
+      real(dp), intent(inout) :: c(ldc, *)
+      logical :: tra, trb
+      tra = ta == 'T' .or. ta == 't'
+      trb = tb == 'T' .or. tb == 't'
+#ifdef _OPENACC
+      block
+         integer :: st, oa, ob
+         oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
+         ob = merge(CUBLAS_OP_T, CUBLAS_OP_N, trb)
+         !$acc host_data use_device(a, b, c)
+         st = cublasDgemm_v2(this%hb, oa, ob, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+         !$acc end host_data
+         if (st /= 0) error stop "trc_linalg: cublasDgemm failed"
+      end block
+#else
+      ! op(A) is m x k and op(B) is k x n; the stored block of a transposed
+      ! operand has those extents the other way round.
+      if (.not. tra .and. .not. trb) then
+         call pic_gemm(a(1:m, 1:k), b(1:k, 1:n), c(1:m, 1:n), 'N', 'N', alpha, beta)
+      else if (tra .and. .not. trb) then
+         call pic_gemm(a(1:k, 1:m), b(1:k, 1:n), c(1:m, 1:n), 'T', 'N', alpha, beta)
+      else if (.not. tra .and. trb) then
+         call pic_gemm(a(1:m, 1:k), b(1:n, 1:k), c(1:m, 1:n), 'N', 'T', alpha, beta)
+      else
+         call pic_gemm(a(1:k, 1:m), b(1:n, 1:k), c(1:m, 1:n), 'T', 'T', alpha, beta)
+      end if
+#endif
+   end subroutine linalg_gemm
+
+   ! `count` GEMMs of one shape at once: matrix i of A starts at a(1 + (i-1) sa),
+   ! likewise B and C. cublasDgemmStridedBatched on the device; a loop of
+   ! pic_gemm on the host. The flat dummies are what lets a caller hand in
+   ! the start of a tile inside a larger array.
+   subroutine linalg_gemm_strided(this, ta, tb, m, n, k, alpha, a, lda, sa, b, ldb, sb, beta, c, ldc, sc, count)
+      class(trc_linalg_t), intent(in) :: this
+      character, intent(in) :: ta, tb
+      integer, intent(in) :: m, n, k, lda, ldb, ldc, count
+      integer(kind=8), intent(in) :: sa, sb, sc
+      real(dp), intent(in) :: alpha, beta
+      real(dp), intent(in) :: a(*), b(*)
+      real(dp), intent(inout) :: c(*)
+      logical :: tra, trb
+      tra = ta == 'T' .or. ta == 't'
+      trb = tb == 'T' .or. tb == 't'
+      if (count < 1) return
+#ifdef _OPENACC
+      block
+         integer :: st, oa, ob
+         oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
+         ob = merge(CUBLAS_OP_T, CUBLAS_OP_N, trb)
+         !$acc host_data use_device(a, b, c)
+         st = cublasDgemmStridedBatched(this%hb, oa, ob, m, n, k, alpha, a, lda, sa, b, ldb, sb, &
+                                        beta, c, ldc, sc, count)
+         !$acc end host_data
+         if (st /= 0) error stop "trc_linalg: cublasDgemmStridedBatched failed"
+      end block
+#else
+      block
+         integer :: i
+         integer(kind=8) :: oa, ob, oc
+         do i = 1, count
+            oa = int(i - 1, 8)*sa; ob = int(i - 1, 8)*sb; oc = int(i - 1, 8)*sc
+            call this%gemm(ta, tb, m, n, k, alpha, a(oa + 1), lda, b(ob + 1), ldb, beta, c(oc + 1), ldc)
+         end do
+      end block
+#endif
+   end subroutine linalg_gemm_strided
+
+   ! Cholesky factor of a symmetric positive definite A: the lower triangle
+   ! is overwritten with L, A = L L^T. The upper triangle is left as it was.
+   subroutine linalg_potrf(this, n, a, lda)
+      class(trc_linalg_t), intent(inout) :: this
+      integer, intent(in) :: n, lda
+      real(dp), intent(inout) :: a(lda, *)
+#ifdef _OPENACC
+      integer :: st, lw, info
+      real(dp), allocatable :: work(:)
+      !$acc host_data use_device(a)
+      st = cusolverDnDpotrf_bufferSize(this%hs, CUBLAS_FILL_MODE_LOWER, n, a, lda, lw)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDpotrf_bufferSize failed"
+      allocate (work(max(lw, 1)))
+      !$acc data create(work)
+      !$acc host_data use_device(a, work, this%devinfo)
+      st = cusolverDnDpotrf(this%hs, CUBLAS_FILL_MODE_LOWER, n, a, lda, work, lw, this%devinfo)
+      !$acc end host_data
+      !$acc end data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDpotrf failed"
+      !$acc update self(this%devinfo)
+      info = this%devinfo
+      if (info /= 0) error stop "trc_linalg: cusolverDnDpotrf: matrix not positive definite"
+#else
+      integer :: info
+      interface
+         subroutine dpotrf(uplo, n, a, lda, info)
+            import :: dp
+            character, intent(in) :: uplo
+            integer, intent(in) :: n, lda
+            real(dp), intent(inout) :: a(lda, *)
+            integer, intent(out) :: info
+         end subroutine dpotrf
+      end interface
+      call dpotrf('L', n, a, lda, info)
+      if (info /= 0) error stop "trc_linalg: dpotrf: matrix not positive definite"
+#endif
+   end subroutine linalg_potrf
+
+   ! Triangular solve: op(A) X = alpha B ('L') or X op(A) = alpha B ('R'),
+   ! A lower ('L') or upper ('U') triangular, op 'N' or 'T', unit diagonal
+   ! never. B (m x n) is overwritten with X.
+   subroutine linalg_trsm(this, side, uplo, trans, m, n, alpha, a, lda, b, ldb)
+      class(trc_linalg_t), intent(in) :: this
+      character, intent(in) :: side, uplo, trans
+      integer, intent(in) :: m, n, lda, ldb
+      real(dp), intent(in) :: alpha
+      real(dp), intent(in) :: a(lda, *)
+      real(dp), intent(inout) :: b(ldb, *)
+#ifdef _OPENACC
+      integer :: st, cs, cu, ct
+      cs = merge(CUBLAS_SIDE_RIGHT, CUBLAS_SIDE_LEFT, side == 'R' .or. side == 'r')
+      cu = merge(CUBLAS_FILL_MODE_UPPER, CUBLAS_FILL_MODE_LOWER, uplo == 'U' .or. uplo == 'u')
+      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == 'T' .or. trans == 't')
+      !$acc host_data use_device(a, b)
+      st = cublasDtrsm_v2(this%hb, cs, cu, ct, CUBLAS_DIAG_NON_UNIT, m, n, alpha, a, lda, b, ldb)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cublasDtrsm failed"
+#else
+      interface
+         subroutine dtrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb)
+            import :: dp
+            character, intent(in) :: side, uplo, transa, diag
+            integer, intent(in) :: m, n, lda, ldb
+            real(dp), intent(in) :: alpha
+            real(dp), intent(in) :: a(lda, *)
+            real(dp), intent(inout) :: b(ldb, *)
+         end subroutine dtrsm
+      end interface
+      call dtrsm(side, uplo, trans, 'N', m, n, alpha, a, lda, b, ldb)
+#endif
+   end subroutine linalg_trsm
+
+   ! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
+   ! the eigenvalues ascending. Upper triangle is read.
+   subroutine linalg_syev(this, n, a, lda, w)
+      class(trc_linalg_t), intent(inout) :: this
+      integer, intent(in) :: n, lda
+      real(dp), intent(inout) :: a(lda, *)
+      real(dp), intent(out) :: w(*)
+#ifdef _OPENACC
+      integer :: st, info
+      if (n > this%n) error stop "trc_linalg: eigenproblem larger than the workspace"
+      !$acc host_data use_device(a, w, this%dwork, this%devinfo)
+      st = cusolverDnDsyevd(this%hs, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, n, a, lda, w, &
+                            this%dwork, this%lwork, this%devinfo)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDsyevd failed"
+      ! Non-convergence is reported through the device int, not the status.
+      !$acc update self(this%devinfo)
+      info = this%devinfo
+      if (info /= 0) error stop "trc_linalg: cusolverDnDsyevd did not converge"
+#else
+      integer(default_int) :: info
+      call pic_syev(a(1:n, 1:n), w(1:n), 'V', 'U', info)
+      if (info /= 0) error stop "trc_linalg: pic_syev failed"
+#endif
+   end subroutine linalg_syev
+
+   ! x . y over n elements, returned to the host.
+   function linalg_dot(this, n, x, y) result(r)
+      class(trc_linalg_t), intent(in) :: this
+      integer, intent(in) :: n
+      real(dp), intent(in) :: x(*), y(*)
+      real(dp) :: r
+#ifdef _OPENACC
+      integer :: st
+      !$acc host_data use_device(x, y)
+      st = cublasDdot_v2(this%hb, n, x, 1, y, 1, r)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cublasDdot failed"
+#else
+      r = pic_dot(x(1:n), y(1:n))
+#endif
+   end function linalg_dot
+
+end module trc_linalg

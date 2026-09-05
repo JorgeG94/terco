@@ -19,8 +19,56 @@ target_sources(
           trc_binkernel.F90  # the shared quartet kernel and the digestion
           trc_api.F90        # basis, pair list, 1e, multipoles, DF
           trc_fock.F90       # the four-centre Fock builds
+          trc_linalg.F90     # dense linear algebra on device-resident matrices
+          trc_scf.F90        # the SCF: HF and Kohn-Sham, R and U, resident
+          trc_rimp2.F90      # RI-MP2 on the RHF reference, resident
+          trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
+          trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
           trc_capi.F90       # the bind(c) skin
           trc_acc_shim.F90)  # see the file: this one is not optional
+
+# --- the molecular quadrature -------------------------------------------------
+#
+# Lebedev spheres, the Treutler-Ahlrichs radial mesh, NWChem-style pruning,
+# Becke and Stratmann partitions, and the assembled grid. Lifted from
+# metalquicha's src/methods with the module prefix renamed and nothing else,
+# plus the minimal error type they report through.
+#
+target_sources(
+  ${main_lib}
+  PRIVATE grid/trc_error.F90
+          grid/trc_lebedev_data.F90
+          grid/trc_lebedev.F90
+          grid/trc_dft_radial_data.F90
+          grid/trc_dft_radial.F90
+          grid/trc_dft_partition.F90
+          grid/trc_dft_prune.F90
+          grid/trc_dft_grid.F90)
+
+# --- exchange-correlation ---------------------------------------------------
+#
+# The XC functionals. One hand-written helper module and, per functional
+# kernel, one module TRANSLATED from ExchCXX's Maple-generated C++ by
+# tools/exchcxx_to_fortran.py. Translated rather than generated: the source
+# is another project's checkout, so the output is committed and the tool is
+# rerun by hand when a kernel is added. See src/xc/trc_xc_util.F90.
+#
+target_sources(
+  ${main_lib}
+  PRIVATE xc/bit_repro.f90          # bit-reproducible exp/log/pow/erfc/cbrt, vendored
+          xc/bit_repro_helpers.f90  # its submodule
+          xc/trc_xc_util.F90
+          xc/trc_xc_slater_exchange.F90
+          xc/trc_xc_vwn.F90
+          xc/trc_xc_vwn_rpa.F90
+          xc/trc_xc_pbe_x.F90
+          xc/trc_xc_pbe_c.F90
+          xc/trc_xc_b88.F90
+          xc/trc_xc_lyp.F90
+          xc/trc_xc_functional.F90  # compositions, and the per-point dispatch
+          xc/trc_collocation.F90    # basis functions and gradients at a point
+          xc/trc_xc_batch.F90       # the grid, batched and screened
+          xc/trc_xc.F90)            # the integrator: E_xc and V_xc
 
 # `trc_binkernel.F90` textually includes the quartet body rather than calling
 # it. NVHPC will not inline an `!$acc routine seq` across a module boundary --

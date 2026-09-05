@@ -194,7 +194,7 @@ contains
       call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, 1.0e-30_dp, .false., &
                      1.0_dp, 1.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                     1, dmat, jmat, kmat, nlaunch, nwork)
+                     1, dmat, jmat, kmat, 0, 1, nlaunch, nwork)
       !$acc update self(jmat, kmat)
       !$acc exit data delete(sh_l, ao_off, dmat, dsh, bins%sp_i, bins%sp_j, bins%sp_q, bins, &
       !$acc                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, jmat, kmat)

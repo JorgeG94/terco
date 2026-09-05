@@ -123,6 +123,28 @@ program link_gfortran
    print '(a,3f14.8)',  '    dipole <r>   ', -sum(d*mm(:, :, 1)), &
                                              -sum(d*mm(:, :, 2)), &
                                              -sum(d*mm(:, :, 3))
+   ! The same SCF through the library's own driver, across the same ABI.
+   ! It must land on the energy the loop above found, and PBE must converge.
+   block
+      real(c_double) :: e_lib, e_xc
+      real(c_double), allocatable :: d_lib(:, :), eps_lib(:)
+      integer(c_int) :: niter
+      allocate (d_lib(nao, nao), eps_lib(nao))
+      rc = trc_scf(hbas, int(nocc, c_int), int(nocc, c_int), c_null_char, 3_c_int, &
+                   1.0e-10_c_double, 1.0e-7_c_double, 100_c_int, c_null_ptr, 0_c_int, &
+                   e_lib, e_xc, d_lib, eps_lib, niter)
+      call must(rc, 'trc_scf (HF)')
+      print '(a,f18.10,a,i0,a)', '    trc_scf RHF  ', e_lib, '   (', niter, ' iterations)'
+      if (abs(e_lib - escf) > 1.0e-8_dp) then
+         print '(a)', '    RESULT: FAIL (trc_scf disagrees with the loop above)'
+         stop 1
+      end if
+      rc = trc_scf(hbas, int(nocc, c_int), int(nocc, c_int), 'pbe'//c_null_char, 3_c_int, &
+                   1.0e-10_c_double, 1.0e-7_c_double, 100_c_int, c_null_ptr, 0_c_int, &
+                   e_lib, e_xc, d_lib, eps_lib, niter)
+      call must(rc, 'trc_scf (PBE)')
+      print '(a,f18.10,a,f16.10,a,i0,a)', '    trc_scf PBE  ', e_lib, '   E_xc ', e_xc, '   (', niter, ' iterations)'
+   end block
    if (abs(escf + 75.983974469890_dp) < 1.0e-8_dp) then
       print '(a)', '    RESULT: PASS (matches the native build and pyscf)'
    else

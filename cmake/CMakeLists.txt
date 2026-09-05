@@ -34,7 +34,17 @@ else()
   # standard Fortran.
   #
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+    # -Mnovect: nvfortran 26.5's vectoriser miscompiles an unrolled loop in
+    # the (sd|..) four-centre kernels at -O2 and above ON THE HOST -- NaN in
+    # the Fock matrix for any basis with d shells and long contractions
+    # (cc-pVDZ water: 169 of them; -O1, -Mnovect or -Mnounroll all clean,
+    # gfortran clean at every level). The device build compiles those loops
+    # for the GPU and is unaffected, and this host build exists to check
+    # numbers, not to be fast.
     set(TERCO_FLAGS "-Mpreprocess -traceback")
+    # As a target option, not here: CMake's own Release flags (-fast -O3)
+    # come after these and -fast switches the vectoriser back on.
+    set(TERCO_HOST_NVHPC_OPTIONS "-Mnovect" PARENT_SCOPE)
   elseif(CMAKE_Fortran_COMPILER_ID MATCHES "GNU")
     set(TERCO_FLAGS "-cpp -ffree-line-length-none -fbacktrace")
   elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel|IntelLLVM")

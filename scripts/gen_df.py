@@ -247,11 +247,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lmax", type=int, default=2,
                     help="max l on the orbital (bra) shells")
-    ap.add_argument("--lmax-aux", type=int, default=2,
-                    help="max l on the auxiliary shell")
+    # Default one above the orbital ceiling: a fitting basis normally
+    # outranks the orbital basis by one, and the shipped set (--lmax 2) was
+    # built with f on the auxiliary shell. CI and CMake regenerate with
+    # --lmax alone, so the default IS the shipped configuration; a default
+    # of 2 here once made CI's regeneration disagree with the committed
+    # kernels by nine thousand lines while nothing was actually wrong.
+    ap.add_argument("--lmax-aux", type=int, default=None,
+                    help="max l on the auxiliary shell (default: lmax + 1)")
     ap.add_argument("-o", "--output", default="src/trc_df_kernels.F90")
     args = ap.parse_args()
-    L, LA = args.lmax, args.lmax_aux
+    L = args.lmax
+    LA = args.lmax_aux if args.lmax_aux is not None else L + 1
 
     parts = [f"""!
 ! Two- and three-centre Coulomb integrals for density fitting.
@@ -280,7 +287,11 @@ contains
 """]
 
     two, three = [], []
-    for la in range(L + 1):
+    # Both sides of (a|c) are auxiliary shells: the metric (P|Q) needs the
+    # bra up to LA as well, and a missing (f|f) case left the block unset and
+    # the metric indefinite the first time an RI set with f functions was
+    # tried.
+    for la in range(LA + 1):
         for lc in range(LA + 1):
             parts.append(emit_class(la, 0, lc, three=False))
             two.append((la, lc))

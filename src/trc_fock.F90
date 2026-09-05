@@ -42,7 +42,7 @@
 ! vhf = (raw + raw^T)/8. Both factors are applied here; neither is the
 ! caller's business.
 !
-module trc_fock
+module trc_eri
    use trc_boys, only: dp, boys_init
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
@@ -50,6 +50,7 @@ module trc_fock
    use trc_hgp, only: build_pairs_hgp
    use trc_screen, only: schwarz_bounds
    use trc_bins, only: pair_bins_t, build_binned_pairs
+   use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use trc_binkernel, only: fock_bins
    use trc_api, only: trc_basis_t
    implicit none
@@ -70,6 +71,12 @@ module trc_fock
       logical :: on_device = .false.
       integer :: nlaunch = 0
       integer(kind=8) :: nwork = 0
+      !! Ranks. Every rank builds the same bins and takes every nranks-th
+      !! item of the sorted work list from its rank; the Fock matrix is then
+      !! summed across ranks. One rank is rank 0 of 1 and no communicator.
+      type(comm_t) :: comm
+      integer :: rank = 0, nranks = 1
+      logical :: distributed = .false.
    contains
       procedure :: build   => eri_build
       procedure :: fock      => eri_fock
@@ -90,16 +97,26 @@ contains
    ! the HGP primitive pairs the kernels read. The MMD set is discarded once
    ! the bounds exist.
    !
-   subroutine eri_build(this, b, thresh)
+   subroutine eri_build(this, b, thresh, comm)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
+      !! Ranks to split the quartets over. Bind each rank to its device
+      !! (trc_bind_device) BEFORE any object goes to the device.
+      type(comm_t), intent(in), optional :: comm
 
       integer :: npp, i
       integer,  allocatable :: pp_off(:), pp_n(:)
       real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       real(dp), allocatable :: qs(:), one(:)
 
+      this%rank = 0; this%nranks = 1; this%distributed = .false.
+      if (present(comm)) then
+         this%comm = comm
+         this%rank = comm%rank()
+         this%nranks = comm%size()
+         this%distributed = this%nranks > 1
+      end if
       call this%release()
       ! All three, not just Boys. The Schwarz bounds go through the MMD path,
       ! which reads the Hermite and Cartesian index tables; without them the
@@ -219,7 +236,7 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%nlaunch, this%nwork)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -247,9 +264,30 @@ contains
             end do
          end do
       end if
+      ! hcore, if it was added, is on every rank: sum the two-electron part only.
+      if (this%distributed) then
+         if (present(hcore)) gmat = gmat - hcore
+         call sum_ranks(this, gmat, n*n)
+         if (present(hcore)) gmat = gmat + hcore
+      end if
 
       deallocate (jmat, kmat, dwork)
    end subroutine eri_fock
+
+   !> Sum a matrix over the ranks, in place, every rank receiving the total.
+   !>
+   !> Then rank 0's copy is broadcast. An allreduce is not obliged to leave
+   !> the same bits on every rank -- 1e-13 apart in practice -- and an SCF
+   !> iterated from bit-different matrices on different ranks drifts apart,
+   !> slowly when it converges and catastrophically when it does not. The
+   !> broadcast costs one more nao^2 message and makes the ranks identical.
+   subroutine sum_ranks(this, g, n)
+      class(trc_eri_t), intent(in) :: this
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: g(n)
+      call allreduce(this%comm, g, op=MPI_SUM)
+      call bcast(this%comm, g, n, 0)
+   end subroutine sum_ranks
 
    !
    ! Largest |D| in each shell-pair block, for the in-kernel density screen.
@@ -314,7 +352,7 @@ contains
                      jfac, kfac, .true., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%nlaunch, this%nwork)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -325,6 +363,7 @@ contains
             gmat(i, j) = jfac*jmat(1, i, j) - 0.5_dp*kfac*kmat(1, i, j)
          end do
       end do
+      if (this%distributed) call sum_ranks(this, gmat, n*n)
 
       deallocate (jmat, kmat, dwork)
    end subroutine eri_fock_nosym
@@ -405,7 +444,7 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%nlaunch, this%nwork)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
 
       ! Fold on the device, straight into the caller's resident result.
@@ -417,6 +456,12 @@ contains
       end do
 
       !$acc exit data delete(jmat, kmat, dwork)
+      ! Resident on every rank; the sum goes through the host for now.
+      if (this%distributed) then
+         !$acc update self(gmat)
+         call sum_ranks(this, gmat, n*n)
+         !$acc update device(gmat)
+      end if
       deallocate (jmat, kmat, dwork)
    end subroutine eri_fock_resident
 
@@ -545,7 +590,7 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     ndens, dwork, jmat, kmat, this%nlaunch, this%nwork)
+                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -558,6 +603,7 @@ contains
          end do
       end do
 
+      if (this%distributed) call sum_ranks(this, gmats, ndens*n*n)
       deallocate (jmat, kmat, dwork)
    end subroutine eri_fock_many
 
@@ -584,4 +630,4 @@ contains
       this%nbas = 0; this%nao = 0; this%nhpp = 0
    end subroutine eri_release
 
-end module trc_fock
+end module trc_eri

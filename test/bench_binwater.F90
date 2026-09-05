@@ -143,7 +143,7 @@ program bench_binwater
    call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
                      1.0_dp, 1.0_dp, .false., dsh, &
                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                  1, dmat, jmat, kmat, nlaunch, nwork, nkept)
+                  1, dmat, jmat, kmat, 0, 1, nlaunch, nwork, nkept)
    !$acc wait
    jmat = 0.0_dp; kmat = 0.0_dp
    !$acc update device(jmat, kmat)
@@ -173,7 +173,7 @@ program bench_binwater
       call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
                      1.0_dp, 1.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                     1, dmat, jmat, kmat, nlaunch, nwork)
+                     1, dmat, jmat, kmat, 0, 1, nlaunch, nwork)
       !$acc wait
       call tick(t1)
       t = t1 - t0
