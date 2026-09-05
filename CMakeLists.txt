@@ -198,6 +198,9 @@ set(PIC_USE_LEGACY_MPI
     CACHE BOOL "" FORCE)
 find_package("pic-mpi" REQUIRED)
 find_package("jsonfortran" REQUIRED)
+if(DEFINED TERCO_HOST_NVHPC_OPTIONS)
+  target_compile_options(${main_lib} PRIVATE ${TERCO_HOST_NVHPC_OPTIONS})
+endif()
 if(TERCO_ENABLE_MPI)
   # The C entry that takes a communicator handle checks it against
   # MPI_COMM_WORLD, which needs mpi_f08; without MPI it ignores the handle.
