@@ -14,6 +14,7 @@ program scf_rimp2
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_test_basis, only: read_xyz, build_631g, build_aux
    use trc_basis_json, only: trc_basis_from_json
+   use trc_guess_json, only: trc_guess_from_json
    use trc_error, only: error_t
    implicit none
 
@@ -29,22 +30,25 @@ program scf_rimp2
    type(comm_t) :: comm
    type(error_t) :: err
    logical :: ok
-   character(len=256) :: xyz, bas_json, aux_json, probe
+   character(len=256) :: xyz, bas_json, aux_json, probe, guess_json
+   real(dp), allocatable :: dguess(:, :), dg3(:, :, :)
 
    call pic_mpi_init()
    comm = comm_world()
    dev = trc_bind_device(comm%rank())
 
-   ! Arguments: xyz [basis.json aux.json [probe]]. Without files, primitive
-   ! 6-31G and the synthetic auxiliary ladder; with them, both sets from
-   ! MolSSI BSE JSON through trc_basis_json, which is how mqc's sets arrive.
-   xyz = 'water.xyz'; bas_json = ''; aux_json = ''; probe = 'rimp2_probe.bin'
+   ! Arguments: xyz [basis.json aux.json [probe [sad.json]]]. Without files,
+   ! primitive 6-31G and the synthetic auxiliary ladder; with them, both sets
+   ! from MolSSI BSE JSON through trc_basis_json, which is how mqc's sets
+   ! arrive, and optionally mqc's SAD guess to start from.
+   xyz = 'water.xyz'; bas_json = ''; aux_json = ''; probe = 'rimp2_probe.bin'; guess_json = ''
    if (command_argument_count() >= 1) call get_command_argument(1, xyz)
    if (command_argument_count() >= 3) then
       call get_command_argument(2, bas_json)
       call get_command_argument(3, aux_json)
    end if
    if (command_argument_count() >= 4) call get_command_argument(4, probe)
+   if (command_argument_count() >= 5) call get_command_argument(5, guess_json)
 
    call read_xyz(trim(xyz), natm, zint, at_r)
    allocate (at_z(natm)); at_z = real(zint, dp)
@@ -56,6 +60,14 @@ program scf_rimp2
          stop 1
       end if
       call unpack_basis(bas, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
+      if (len_trim(guess_json) > 0) then
+         call trc_guess_from_json(trim(guess_json), bas, zint, dguess, err)
+         if (err%has_error()) then
+            print '(a)', "scf_rimp2: "//err%get_message()
+            stop 1
+         end if
+         allocate (dg3(bas%nao, bas%nao, 1)); dg3(:, :, 1) = dguess
+      end if
       call unpack_basis(aux, nsha, ax_l, ax_np, ax_e, ax_c, ax_r, maxnpa)
    else
       call build_631g(natm, zint, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp, uncontracted=.true.)
@@ -80,11 +92,19 @@ program scf_rimp2
       opts%verbose = st == 0
    end block
    if (comm%size() > 1) then
-      call trc_scf_run(bas, nocc, nocc, opts, res, comm=comm)
+      if (allocated(dg3)) then
+         call trc_scf_run(bas, nocc, nocc, opts, res, dguess=dg3, comm=comm)
+      else
+         call trc_scf_run(bas, nocc, nocc, opts, res, comm=comm)
+      end if
       call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, comm=comm, verbose=opts%verbose)
       call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20, comm=comm)
    else
-      call trc_scf_run(bas, nocc, nocc, opts, res)
+      if (allocated(dg3)) then
+         call trc_scf_run(bas, nocc, nocc, opts, res, dguess=dg3)
+      else
+         call trc_scf_run(bas, nocc, nocc, opts, res)
+      end if
       call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, verbose=opts%verbose)
       call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20)
    end if
