@@ -250,7 +250,7 @@ contains
       real(dp), intent(in) :: sh_r(3, nshell)
       real(dp), intent(in) :: at_z(natm), at_r(3, natm)
 
-      integer :: i, k
+      integer :: i, k, n
 
       call this%release()
       call boys_init()
@@ -273,10 +273,25 @@ contains
          this%sh_l(i)  = sh_l(i)
          this%sh_np(i) = sh_np(i)
          this%sh_r(:, i) = sh_r(:, i)
+         ! Primitives with a zero coefficient are dropped here, once. A
+         ! general-contraction table lists every exponent of the block under
+         ! every column, so the uncontracted column of a cc-pVDZ carbon s
+         ! arrives with eight dead primitives out of nine; kept, they cost
+         ! the quartet loops their full price for nothing -- four times the
+         ! (ss|ss) work on that basis.
+         n = 0
          do k = 1, sh_np(i)
-            this%sh_e(k, i) = sh_e(k, i)
-            this%sh_c(k, i) = sh_c(k, i)*common_fac_sp(sh_l(i))
+            if (sh_c(k, i) == 0.0_dp) cycle
+            n = n + 1
+            this%sh_e(n, i) = sh_e(k, i)
+            this%sh_c(n, i) = sh_c(k, i)*common_fac_sp(sh_l(i))
          end do
+         if (n == 0) then
+            n = sh_np(i)
+            this%sh_e(1:n, i) = sh_e(1:n, i)
+            this%sh_c(1:n, i) = 0.0_dp
+         end if
+         this%sh_np(i) = n
          this%sh_ao(i) = this%nao + 1
          this%nao = this%nao + ncart(sh_l(i))
       end do
