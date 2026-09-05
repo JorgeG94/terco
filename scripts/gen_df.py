@@ -287,7 +287,11 @@ contains
 """]
 
     two, three = [], []
-    for la in range(L + 1):
+    # Both sides of (a|c) are auxiliary shells: the metric (P|Q) needs the
+    # bra up to LA as well, and a missing (f|f) case left the block unset and
+    # the metric indefinite the first time an RI set with f functions was
+    # tried.
+    for la in range(LA + 1):
         for lc in range(LA + 1):
             parts.append(emit_class(la, 0, lc, three=False))
             two.append((la, lc))

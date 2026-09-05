@@ -197,6 +197,7 @@ set(PIC_USE_LEGACY_MPI
     OFF
     CACHE BOOL "" FORCE)
 find_package("pic-mpi" REQUIRED)
+find_package("jsonfortran" REQUIRED)
 if(TERCO_ENABLE_MPI)
   # The C entry that takes a communicator handle checks it against
   # MPI_COMM_WORLD, which needs mpi_f08; without MPI it ignores the handle.
@@ -204,7 +205,8 @@ if(TERCO_ENABLE_MPI)
 endif()
 target_link_libraries(${main_lib} PUBLIC $<BUILD_INTERFACE:pic::pic>
                                          $<BUILD_INTERFACE:pic-blas::pic-blas>
-                                         $<BUILD_INTERFACE:pic-mpi::pic-mpi>)
+                                         $<BUILD_INTERFACE:pic-mpi::pic-mpi>
+                                         $<BUILD_INTERFACE:jsonfortran::jsonfortran>)
 
 set_target_properties(${main_lib} PROPERTIES Fortran_MODULE_DIRECTORY
                                              ${CMAKE_BINARY_DIR}/modules)

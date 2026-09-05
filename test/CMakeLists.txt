@@ -244,6 +244,23 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
                                         DEPENDS terco/scf_rimp2)
 endif()
 
+# The same with both sets from MolSSI BSE JSON, the files mqc ships: cc-pVDZ
+# in its Cartesian form with cc-pVDZ-RI, general contractions split per
+# column as the mqc bridge splits them.
+add_test(NAME terco/scf_rimp2_ccpvdz
+         COMMAND scf_rimp2 water.xyz basis_sets/cc-pvdz.json basis_sets/cc-pvdz-rifit.json
+                 rimp2_ccpvdz_probe.bin)
+set_tests_properties(
+  terco/scf_rimp2_ccpvdz PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_rimp2_ccpvdz_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rimp2_ref.py rimp2_ccpvdz_probe.bin)
+  set_tests_properties(
+    terco/scf_rimp2_ccpvdz_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                               DEPENDS terco/scf_rimp2_ccpvdz)
+endif()
+
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks

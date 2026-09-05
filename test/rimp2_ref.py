@@ -11,17 +11,21 @@ import os
 import numpy as np
 from pyscf import gto, scf, mp, df
 SYMBOL = {1: 'H', 6: 'C', 7: 'N', 8: 'O'}
+import sys
 here = os.path.dirname(os.path.abspath(__file__))
-f = open(os.path.join(here, 'rimp2_probe.bin'), 'rb')
+probe = sys.argv[1] if len(sys.argv) > 1 else 'rimp2_probe.bin'
+f = open(os.path.join(here, probe), 'rb')
 n, natm, nsh, nsha, nocc = (int(v) for v in np.fromfile(f, dtype=np.int64, count=5))
 z = np.fromfile(f, dtype=np.float64, count=natm)
 r = np.fromfile(f, dtype=np.float64, count=3*natm).reshape(3, natm, order='F').T
 def shells(count):
+    """(atom, l, [[e, c], ...]) per shell, raw coefficients for pyscf to normalise."""
     out = []
     for _ in range(count):
-        a, l = np.fromfile(f, dtype=np.int64, count=2)
-        e = np.fromfile(f, dtype=np.float64, count=1)[0]
-        out.append((int(a), int(l), float(e)))
+        a, l, n = (int(v) for v in np.fromfile(f, dtype=np.int64, count=3))
+        e = np.fromfile(f, dtype=np.float64, count=n)
+        c = np.fromfile(f, dtype=np.float64, count=n)
+        out.append((a, l, [[float(x), float(y)] for x, y in zip(e, c)]))
     return out
 ao = shells(nsh)
 ax = shells(nsha)
@@ -31,8 +35,8 @@ atoms, bas, auxbas = [], {}, {}
 for a in range(natm):
     lab = f'{SYMBOL[int(round(z[a]))]}{a + 1}'
     atoms.append([lab, tuple(r[a])])
-    bas[lab] = [[l, [e, 1.0]] for (aa, l, e) in ao if aa == a + 1]
-    auxbas[lab] = [[l, [e, 1.0]] for (aa, l, e) in ax if aa == a + 1]
+    bas[lab] = [[l] + prims for (aa, l, prims) in ao if aa == a + 1]
+    auxbas[lab] = [[l] + prims for (aa, l, prims) in ax if aa == a + 1]
 mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Bohr')
 assert mol.nao_nr() == n, (mol.nao_nr(), n)
 mf = scf.RHF(mol)

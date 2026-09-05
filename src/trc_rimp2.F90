@@ -42,6 +42,7 @@
 module trc_rimp2_driver
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
+   use trc_df_kernels, only: DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
@@ -93,6 +94,11 @@ contains
       res%naux = naux; res%nocc = no; res%nvir = nv
       if (no < 1 .or. nv < 1) then
          res%message = "trc_rimp2: nothing to correlate"
+         return
+      end if
+      if (maxval(aux%sh_l) > DF_LMAX_AUX) then
+         res%message = "trc_rimp2: the auxiliary basis carries angular momentum above what the "// &
+                       "density-fitting kernels were generated for (see gen_df.py --lmax-aux)"
          return
       end if
       nblk = naux
