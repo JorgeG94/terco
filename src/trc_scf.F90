@@ -248,6 +248,11 @@ contains
       ndiis_used = 0
       diis_on = .false.
       exc = 0.0_dp; ngrid = 0.0_dp
+      ! What the SCF is actually running on. Two callers can hand over the
+      ! same molecule and basis name and different shells -- one had a
+      ! reader that kept dead primitives -- and that only shows here.
+      if (talk) print '(a,i0,a,i0,a,i0,a,i0)', "   basis: ", nao, " functions, ", b%nshell, &
+         " shells, ", sum(b%sh_np), " primitives, max ", maxval(b%sh_np)
       if (talk) print '(a)', "   it        E(total)            dE          RMS(D)"
       do it = 1, opts%max_iter
          tw0 = wall()
