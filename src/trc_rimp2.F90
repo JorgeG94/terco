@@ -66,7 +66,7 @@ contains
    ! `pl` is the orbital basis's pair list. `la` optional, made here if
    ! absent; `comm` optional, one rank without it.
    !
-   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm)
+   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm, verbose)
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       integer, intent(in) :: nocc
@@ -75,7 +75,10 @@ contains
       integer, intent(in), optional :: nfrozen, aux_block
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(comm_t), intent(in), optional :: comm
+      logical, intent(in), optional :: verbose   !! one line per step with its wall time, rank 0
 
+      real(dp) :: tw0, tw1, t_int, t_tr
+      logical :: talk
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: blk
@@ -114,11 +117,16 @@ contains
          lp => la_own
       end if
 
+      talk = .false.
+      if (present(verbose)) talk = verbose .and. rank == 0
+      tw0 = wall()
       ! --- 1. the metric and its Cholesky factor ---------------------------
       allocate (jm(naux, naux))
       !$acc enter data create(jm)
       call trc_df_2c(aux, jm)
       call lp%potrf(naux, jm, naux)
+      if (talk) print '(a,i0,a,f8.2,a)', "  rimp2: metric (", naux, ") and Cholesky ", wall() - tw0, " s"
+      t_int = 0.0_dp; t_tr = 0.0_dp
 
       ! --- 3. (ia|P) for every P, a block of auxiliary shells at a time ----
       allocate (cocc(nao, no), cvir(nao, nv), x(nov, naux), tmp(no, nao))
@@ -139,20 +147,28 @@ contains
          call blk%to_device()
          allocate (tens(nao, nao, np))
          !$acc enter data create(tens)
+         tw1 = wall()
          call trc_df_3c(b, pl, blk, tens)
+         t_int = t_int + (wall() - tw1)
+         tw1 = wall()
          do q = 1, np
             ! tmp = C_occ^T T_q  (no x nao), then X(:, P) = (C_vir^T tmp^T) = (nv x no), a fastest
             call lp%gemm('T', 'N', no, nao, nao, 1.0_dp, cocc, nao, tens(1, 1, q), nao, 0.0_dp, tmp, no)
             call lp%gemm('T', 'T', nv, no, nao, 1.0_dp, cvir, nao, tmp, no, 0.0_dp, x(1, p0 + q - 1), nv)
          end do
+         t_tr = t_tr + (wall() - tw1)
          !$acc exit data delete(tens)
          deallocate (tens)
          call blk%release()
          s0 = s1 + 1
       end do
+      if (talk) print '(a,f8.2,a,f8.2,a)', "  rimp2: (mu nu|P) ", t_int, " s, transform to (ia|P) ", t_tr, " s"
+      tw1 = wall()
 
       ! --- 4. B = X L^-T: solve B L^T = X from the right ---------------------
       call lp%trsm('R', 'L', 'T', nov, naux, 1.0_dp, jm, naux, x, nov)
+      if (talk) print '(a,f8.2,a)', "  rimp2: B = X L^-T ", wall() - tw1, " s"
+      tw1 = wall()
 
       ! --- 5. the pair energies, one occupied i at a time ------------------
       allocate (ki(nv, nov), part(2*nov), eo(no), ev(nv))
@@ -175,11 +191,19 @@ contains
          call bcast(comm, es, 2, 0)
          e_os = es(1); e_ss = es(2)
       end if
+      if (talk) print '(a,f8.2,a,f8.2,a)', "  rimp2: pair energies ", wall() - tw1, " s;  total ", wall() - tw0, " s"
       res%e_os = e_os
       res%e_ss = e_ss
       res%e_corr = e_os + e_ss
       if (.not. present(la)) call la_own%release()
    end subroutine trc_rimp2_run
+
+   function wall() result(t)
+      real(dp) :: t
+      integer(kind=8) :: cc, rate
+      call system_clock(cc, rate)
+      t = real(cc, dp)/real(rate, dp)
+   end function wall
 
    pure integer function ncart(l)
       integer, intent(in) :: l

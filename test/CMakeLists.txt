@@ -220,6 +220,16 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
                                       DEPENDS terco/scf_rks)
 endif()
 
+# The SAD guess read from mqc's JSON blocks, against terco's own start.
+add_executable(scf_sad scf_sad.F90)
+target_compile_definitions(scf_sad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_sad PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_sad PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_sad COMMAND scf_sad)
+set_tests_properties(
+  terco/scf_sad PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                           ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 # RI-MP2 on the RHF reference, against pyscf's DF-MP2 on the same sets.
 # The shipped C-interface declarations, compiled once: two targets compiling
 # the same source both write trc_c_interfaces.mod, and Ninja refuses that.

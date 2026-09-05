@@ -71,13 +71,21 @@ program scf_rimp2
    nocc = nint(sum(at_z))/2
    opts%conv_energy = 1.0e-12_dp
    opts%conv_density = 1.0e-9_dp
+   ! TERCO_VERBOSE in the environment: the SCF iterations and the RI-MP2
+   ! steps with their times.
+   block
+      character(len=8) :: env
+      integer :: st
+      call get_environment_variable("TERCO_VERBOSE", env, status=st)
+      opts%verbose = st == 0
+   end block
    if (comm%size() > 1) then
       call trc_scf_run(bas, nocc, nocc, opts, res, comm=comm)
-      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, comm=comm)
+      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, comm=comm, verbose=opts%verbose)
       call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20, comm=comm)
    else
       call trc_scf_run(bas, nocc, nocc, opts, res)
-      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp)
+      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, verbose=opts%verbose)
       call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20)
    end if
    ok = res%converged .and. len_trim(mp%message) == 0
@@ -112,8 +120,8 @@ program scf_rimp2
       if (rc /= TRC_OK) ok = .false.
       allocate (d_lib(bas%nao, bas%nao), eps_lib(bas%nao))
       rc = trc_scf_mpi(fcomm, hbas, int(nocc, c_int), int(nocc, c_int), c_null_char, 3_c_int, &
-                       1.0e-12_c_double, 1.0e-9_c_double, 100_c_int, c_null_ptr, 0_c_int, &
-                       e_lib, e_xc, d_lib, eps_lib, niter)
+                       real(opts%conv_energy, c_double), real(opts%conv_density, c_double), 100_c_int, &
+                       c_null_ptr, 0_c_int, e_lib, e_xc, d_lib, eps_lib, niter)
       if (rc /= TRC_OK) ok = .false.
       rc = trc_rimp2(fcomm, hbas, haux, 0_c_int, 20_c_int, c_os, c_ss)
       if (rc /= TRC_OK) ok = .false.

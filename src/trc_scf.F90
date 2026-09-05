@@ -57,7 +57,6 @@ module trc_scf_driver
    use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
    use pic_types, only: default_int
-   use pic_lapack_interfaces, only: pic_syev
    use pic_mpi_lib, only: comm_t, bcast, allreduce, MPI_SUM
    implicit none
    private
@@ -189,7 +188,8 @@ contains
          call eri%build(b, opts%eri_thresh)
       end if
       res%e_nuc = nuclear_repulsion(b)
-      call sym_orthog(nao, smat, x)
+      call la%init(nao)
+      call sym_orthog(la, nao, smat, x)
       t_setup = wall() - tw0
 
       if (dft) then
@@ -241,7 +241,6 @@ contains
       fstore = 0.0_dp; estore = 0.0_dp; dtot = 0.0_dp; jmat = 0.0_dp
       w1 = 0.0_dp; w2 = 0.0_dp; w3 = 0.0_dp
 
-      call la%init(nao)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3)
 
@@ -446,23 +445,36 @@ contains
          t = real(cc, dp)/real(rate, dp)
       end function wall
 
-      ! Core guess for one spin, on the host, into res%dmat(:,:,s).
+      ! Guess for one spin from a Fock-like h, into res%dmat(:,:,s): the
+      ! eigenproblem and the products on the device, the result copied back
+      ! for the resident copy made below.
       subroutine guess_from(h, nocc_s)
          real(dp), intent(in) :: h(nao, nao)
          integer, intent(in) :: nocc_s
-         real(dp), allocatable :: fp(:, :), c(:, :), e(:)
-         integer(default_int) :: inf
-         allocate (fp(nao, nao), c(nao, nao), e(nao))
-         fp = matmul(transpose(x), matmul(h, x))
-         call pic_syev(fp, e, 'V', 'U', inf)
-         if (inf /= 0) error stop "trc_scf: pic_syev failed on the core guess"
-         c = matmul(x, fp)
+         real(dp), allocatable :: fp(:, :), c(:, :), t(:, :), e(:), d(:, :)
+         allocate (fp(nao, nao), c(nao, nao), t(nao, nao), e(nao), d(nao, nao))
+         !$acc data copyin(h, x) create(fp, c, t, e) copyout(d)
+         call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, h, nao, x, nao, 0.0_dp, t, nao)
+         call la%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
+         call la%syev(nao, fp, nao, e)
+         call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, c, nao)
          if (nocc_s > 0) then
-            res%dmat(:, :, s) = occ*matmul(c(:, 1:nocc_s), transpose(c(:, 1:nocc_s)))
+            call la%gemm('N', 'T', nao, nao, nocc_s, occ, c, nao, c, nao, 0.0_dp, d, nao)
          else
-            res%dmat(:, :, s) = 0.0_dp
+            call zero_dev(nao, d)
          end if
+         !$acc end data
+         res%dmat(:, :, s) = d
       end subroutine guess_from
+
+      subroutine zero_dev(n, a)
+         integer, intent(in) :: n
+         real(dp), intent(inout) :: a(n, n)
+         integer :: i, j
+         do concurrent(i=1:n, j=1:n)
+            a(i, j) = 0.0_dp
+         end do
+      end subroutine zero_dev
 
    end subroutine trc_scf_run
 
@@ -497,21 +509,26 @@ contains
    ! X = S^(-1/2), symmetric orthogonalisation. Once per geometry, on the
    ! host: it is where near-null modes would be filtered, and it is not
    ! per iteration.
-   subroutine sym_orthog(n, s, x)
+   subroutine sym_orthog(la, n, s, x)
+      type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n)
       real(dp), intent(out) :: x(n, n)
       real(dp), allocatable :: u(:, :), w(:)
-      integer(default_int) :: info
-      integer :: k
+      integer :: i, k
       allocate (u(n, n), w(n))
       u = s
-      call pic_syev(u, w, 'V', 'U', info)
-      if (info /= 0) error stop "trc_scf: pic_syev failed on the overlap"
-      do k = 1, n
-         u(:, k) = u(:, k)/sqrt(sqrt(w(k)))
+      !$acc data copy(u) create(w) copyout(x)
+      call la%syev(n, u, n, w)
+      !$acc update self(w)
+      if (w(1) <= 0.0_dp) error stop "trc_scf: the overlap is not positive definite"
+      ! Columns scaled by w^-1/4 on the device, then X = U U^T.
+      !$acc update device(w)
+      do concurrent(i=1:n, k=1:n)
+         u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
       end do
-      x = matmul(u, transpose(u))
+      call la%gemm('N', 'T', n, n, n, 1.0_dp, u, n, u, n, 0.0_dp, x, n)
+      !$acc end data
    end subroutine sym_orthog
 
    !

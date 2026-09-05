@@ -22,6 +22,15 @@
 ! whose size does not match the basis's count for that element is refused,
 ! since a mismatch means a different basis and a silently wrong start.
 !
+! CONVENTION. mqc's density is in libcint's basis, whose Cartesian s and p
+! functions are unit-normalised. terco's are those functions times
+! common_fac_sp -- 1/sqrt(4 pi) for s, sqrt(3/4 pi) for p, 1 from d up --
+! folded into the coefficients at build time, so terco's S_ii is 1/(4 pi)
+! for an s function. Energies cannot see a basis-function scale; a density
+! can. A block is therefore divided by common_fac_sp(l_i) common_fac_sp(l_j)
+! on the way in, and Tr(D S) comes out at the electron count: it came out
+! at 1.43 for water before this was understood.
+!
 module trc_guess_json
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
@@ -49,19 +58,22 @@ contains
 
       type(json_file) :: json
       character(len=:), allocatable :: key
-      real(dp), allocatable :: blk(:)
+      real(dp), allocatable :: blk(:), fac(:)
       integer, allocatable :: nfun(:), first(:)
       integer :: ia, ish, n, k, i, j
       logical :: found
       character(len=16) :: buf
 
       ! Functions per atom and where each atom's block starts, from the
-      ! shell centres: shells are built atom by atom in atom order.
-      allocate (nfun(b%natm), first(b%natm))
+      ! shell centres: shells are built atom by atom in atom order. And the
+      ! scale of every function, for the convention above.
+      allocate (nfun(b%natm), first(b%natm), fac(b%nao))
       nfun = 0
       do ish = 1, b%nshell
          ia = atom_of(b, ish)
-         nfun(ia) = nfun(ia) + (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
+         n = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
+         nfun(ia) = nfun(ia) + n
+         fac(b%sh_ao(ish):b%sh_ao(ish) + n - 1) = common_fac_sp(b%sh_l(ish))
       end do
       first(1) = 1
       do ia = 2, b%natm
@@ -105,13 +117,23 @@ contains
          do j = 1, n
             do i = 1, n
                k = k + 1
-               dguess(first(ia) + i - 1, first(ia) + j - 1) = blk(k)
+               dguess(first(ia) + i - 1, first(ia) + j - 1) = &
+                  blk(k)/(fac(first(ia) + i - 1)*fac(first(ia) + j - 1))
             end do
          end do
       end do
       call json%destroy()
       if (error%has_error() .and. allocated(dguess)) deallocate (dguess)
    end subroutine trc_guess_from_json
+
+   pure real(dp) function common_fac_sp(l)
+      integer, intent(in) :: l
+      select case (l)
+      case (0); common_fac_sp = 0.282094791773878143_dp
+      case (1); common_fac_sp = 0.488602511902919921_dp
+      case default; common_fac_sp = 1.0_dp
+      end select
+   end function common_fac_sp
 
    integer function atom_of(b, ish)
       type(trc_basis_t), intent(in) :: b
