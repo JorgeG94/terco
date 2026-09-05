@@ -22,7 +22,7 @@ module trc_binkernel
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
-   use trc_bins, only: pair_bins_t, SMAX
+   use trc_bins, only: pair_bins_t, SMAX, ps_view_t, fold_dsh
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
 #endif
@@ -127,7 +127,7 @@ contains
    subroutine fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_dens, &
                         jfac, kfac, nosym, dsh, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                        ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept)
+                        ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept, ps)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in)    :: nbas, npp, nao
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
@@ -155,6 +155,12 @@ contains
       !! Schwarz and density tests.  Costs a separate cheap pass, so it is
       !! optional and off in the timed path.
       integer(kind=8), intent(out), optional :: nkept
+      !! The primitive-shell view: with it, under TRC_PERCLASS and for a
+      !! symmetric density, the per-class kernels run over primitive-shell
+      !! pairs and contract per column combination. Without it, or for the
+      !! enumerated (nosym) kernel, the contracted view is used.
+      type(ps_view_t), intent(inout), optional :: ps
+      logical :: use_ps
 
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
       integer(kind=8) :: nt
@@ -163,6 +169,15 @@ contains
       logical, allocatable :: sD(:)
       integer(kind=8), allocatable :: sOff(:)
 
+      use_ps = .false.
+#ifdef TRC_PERCLASS
+      if (present(ps)) use_ps = (ps%nps > 0) .and. .not. nosym
+#endif
+      if (use_ps) then
+         call fock_bins_ps(ps, nbas, dsh, nao, thresh, jfac, kfac, use_dens, ndens, dmat, jmat, rank, nranks, &
+                           nlaunch, nwork, nkept)
+         return
+      end if
       smax_keep = int(-log10(thresh))
 
       ! --- pass 1: count admitted bin pairs ---
@@ -262,6 +277,24 @@ contains
          integer :: a2, b2, t2, c0, c1, nl
          logical :: l2
          integer(kind=8) :: o2
+         ! Without a primitive-shell view the kernels get the trivial one:
+         ! one column per shell, unit coefficients (the contracted pair data
+         ! already carries them), the shell's own AO offset.
+         integer, allocatable :: t_np(:), t_ncol(:), t_soff(:), t_coff(:), t_ki(:)
+         real(dp), allocatable :: t_coef(:)
+         integer :: ncoef1, i1
+         allocate (t_np(nbas), t_ncol(nbas), t_soff(nbas), t_coff(nbas))
+         ncoef1 = 0
+         do i1 = 1, nbas
+            t_np(i1) = nint(sqrt(real(pp_n((i1 - 1)*nbas + i1), dp)))
+            t_ncol(i1) = 1
+            t_soff(i1) = i1 - 1
+            t_coff(i1) = ncoef1
+            ncoef1 = ncoef1 + t_np(i1)
+         end do
+         allocate (t_coef(max(ncoef1, 1)), t_ki(npp))
+         t_coef = 1.0_dp; t_ki = 1
+         !$acc enter data copyin(t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
          allocate (ord(nseg), ckey(nseg))
          do a2 = 1, nseg
             ckey(a2) = ((sLA(a2)*CLASS_RADIX + sLB(a2))*CLASS_RADIX &
@@ -301,12 +334,14 @@ contains
                               + sLC(c0))*CLASS_RADIX + sLD(c0), &
                              c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, rank, nranks)
+                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, t_ki, t_ki, &
+                             nbas, ncoef1, t_np, t_ncol, t_soff, t_coff, ao_off, t_coef, .false., &
+                             ndens, dmat, jmat, rank, nranks)
             c0 = c1 + 1
          end do
          nlaunch = nl
-         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
-         deallocate (ord, ckey)
+         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
+         deallocate (ord, ckey, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
       end block
       deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
       return
@@ -352,6 +387,121 @@ contains
    ! exists so the effect of density screening is a measured number rather
    ! than an inference from wall-clock.
    !
+#ifdef TRC_PERCLASS
+   !
+   ! The per-class launch over the primitive-shell view. The density screen
+   ! is folded to primitive shells first (dsh is current on the device at
+   ! every call). Segments are bin pairs of ps%pbins, admitted by the size
+   ! test; the bin-level density test is left to the per-quartet one in the
+   ! kernel, which reads dshp. Sorted by class and launched a class at a
+   ! time through pc_dispatch, which also carries the column tables.
+   !
+   subroutine fock_bins_ps(ps, nbas, dsh, nao, thresh, jfac, kfac, use_dens, ndens, dmat, jmat, rank, nranks, &
+                           nlaunch, nwork, nkept)
+      type(ps_view_t), intent(inout) :: ps
+      integer, intent(in) :: nbas, nao, ndens, rank, nranks
+      real(dp), intent(in) :: dsh(nbas, nbas)
+      real(dp), intent(in) :: thresh, jfac, kfac
+      logical, intent(in) :: use_dens
+      real(dp), intent(in) :: dmat(ndens, nao, nao)
+      real(dp), intent(inout) :: jmat(ndens, nao, nao)
+      integer, intent(out) :: nlaunch
+      integer(kind=8), intent(out) :: nwork
+      integer(kind=8), intent(out), optional :: nkept
+      integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is, a2, b2, t2, c0, c1, nl
+      integer(kind=8) :: nt
+      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sLA(:), sLB(:), sLC(:), sLD(:), ord(:), ckey(:)
+      logical, allocatable :: sD(:), sG(:), tG(:)
+      integer, allocatable :: tk(:)
+      integer(kind=8), allocatable :: sOff(:)
+
+      if (use_dens) call fold_dsh(ps, nbas, dsh)
+      smax_keep = int(-log10(thresh))
+      nseg = 0
+      do ia = 1, ps%pbins%nlive
+         ka = ps%pbins%live(ia)
+         do ib = 1, ia
+            kb = ps%pbins%live(ib)
+            if (ps%pbins%bin_s(ka) + ps%pbins%bin_s(kb) > smax_keep) cycle
+            if (ps%pbins%bin_cnt(ka) == 0 .or. ps%pbins%bin_cnt(kb) == 0) cycle
+            nseg = nseg + 1
+         end do
+      end do
+      nlaunch = 0; nwork = 0
+      if (present(nkept)) nkept = 0
+      if (nseg == 0) return
+      allocate (sA(nseg), sB(nseg), sOA(nseg), sOB(nseg), sNB(nseg), sD(nseg), sG(nseg))
+      allocate (sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg), sOff(nseg + 1))
+      is = 0; sOff(1) = 0
+      do ia = 1, ps%pbins%nlive
+         ka = ps%pbins%live(ia)
+         nA = ps%pbins%bin_cnt(ka)
+         do ib = 1, ia
+            kb = ps%pbins%live(ib)
+            if (ps%pbins%bin_s(ka) + ps%pbins%bin_s(kb) > smax_keep) cycle
+            nB = ps%pbins%bin_cnt(kb)
+            if (nA == 0 .or. nB == 0) cycle
+            is = is + 1
+            sA(is) = nA; sNB(is) = nB
+            sOA(is) = ps%pbins%bin_off(ka); sOB(is) = ps%pbins%bin_off(kb)
+            sD(is) = (ka == kb)
+            sG(is) = (ps%pbins%bin_g(ka) == 1 .or. ps%pbins%bin_g(kb) == 1)
+            sLA(is) = ps%pbins%bin_la(ka); sLB(is) = ps%pbins%bin_lb(ka)
+            sLC(is) = ps%pbins%bin_la(kb); sLD(is) = ps%pbins%bin_lb(kb)
+            if (ka == kb) then
+               nt = int(nA, 8)*int(nA + 1, 8)/2
+            else
+               nt = int(nA, 8)*int(nB, 8)
+            end if
+            sOff(is + 1) = sOff(is) + nt
+         end do
+      end do
+      nwork = sOff(nseg + 1)
+      allocate (ord(nseg), ckey(nseg))
+      do a2 = 1, nseg
+         ckey(a2) = 2*(((sLA(a2)*CLASS_RADIX + sLB(a2))*CLASS_RADIX + sLC(a2))*CLASS_RADIX + sLD(a2))
+         if (sG(a2)) ckey(a2) = ckey(a2) + 1
+         ord(a2) = a2
+      end do
+      do a2 = 2, nseg
+         t2 = ord(a2)
+         b2 = a2 - 1
+         do while (b2 >= 1)
+            if (ckey(ord(b2)) <= ckey(t2)) exit
+            ord(b2 + 1) = ord(b2); b2 = b2 - 1
+         end do
+         ord(b2 + 1) = t2
+      end do
+      call permute_segments(nseg, ord, sA, sNB, sOA, sOB, sD, sOff, sLA, sLB, sLC, sLD)
+      tG = sG(ord); sG = tG
+      tk = ckey(ord); ckey = tk
+      if (present(nkept)) call count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, ps%pbins%npair, &
+                                          ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, ps%dshp, ps%nps, nkept)
+      !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
+      nl = 0
+      c0 = 1
+      do while (c0 <= nseg)
+         c1 = c0
+         do while (c1 < nseg)
+            if (ckey(c1 + 1) /= ckey(c0)) exit
+            c1 = c1 + 1
+         end do
+         nl = nl + 1
+         call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX + sLC(c0))*CLASS_RADIX + sLD(c0), &
+                          c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                          ps%pbins%npair, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, jfac, kfac, ps%dshp, &
+                          ps%nps, ps%npp, nao, ps%ps_l, ps%ps_ao1, &
+                          ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, &
+                          ps%ncoltot, ps%ncoef, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_coef, sG(c0), &
+                          ndens, dmat, jmat, rank, nranks)
+         c0 = c1 + 1
+      end do
+      nlaunch = nl
+      !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
+      deallocate (sA, sB, sOA, sOB, sNB, sD, sG, sOff, sLA, sLB, sLC, sLD, ord, ckey)
+   end subroutine fock_bins_ps
+#endif
+
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
                          npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, nkept)
       integer,  intent(in) :: nseg, npair, nbas

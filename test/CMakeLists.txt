@@ -98,6 +98,7 @@ terco_add_check(check_xc_energy check_xc_energy.F90)
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
+terco_add_check(check_gc check_gc.F90 NEEDS_BASIS)
 
 # The public API end to end: overlap, kinetic, nuclear attraction, the two- and
 # three-centre Coulomb integrals, and the multipoles, all against libfint.

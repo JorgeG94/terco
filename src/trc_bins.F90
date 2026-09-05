@@ -51,6 +51,7 @@ module trc_bins
    private
 
    public :: SMAX, bin_key, build_binned_pairs, pair_bins_t, bin_dmax
+   public :: ps_view_t, PS_NCOL_MAX, ps_release, fold_dsh
 
    integer, parameter :: SMAX = 9    !! deepest size bucket, following [1]
    integer, parameter :: KCAP = 64   !! largest contraction degree binned exactly
@@ -64,12 +65,101 @@ module trc_bins
       integer, allocatable :: bin_cnt(:)           !! pairs in bin b
       integer, allocatable :: bin_s(:)             !! size index of bin b
       integer, allocatable :: bin_la(:), bin_lb(:) !! type of bin b
+      integer, allocatable :: bin_g(:)             !! 1 if a pair of bin b has a general side
       integer, allocatable :: live(:)              !! indices of non-empty bins
       integer :: nlive = 0
       real(dp), allocatable :: bin_dm(:)           !! largest |D| block over a bin's pairs
    end type pair_bins_t
 
+   !
+   ! GENERAL CONTRACTION: the primitive-shell view of a basis.
+   !
+   ! A basis arrives one shell per coefficient column, so cc-pVDZ oxygen's
+   ! nine s primitives appear three times over with three coefficient
+   ! vectors. Every four-centre kernel that takes those as separate shells
+   ! evaluates the 9^4 primitive quartets 3^4 times. Here shells sharing a
+   ! centre, an angular momentum and an exponent list are one PRIMITIVE
+   ! SHELL with a coefficient matrix (np x ncol), at most PS_NCOL_MAX
+   ! columns per primitive shell (a longer contraction is split, which only
+   ! costs the kernel a repeat). The pair list, the Schwarz bins and the
+   ! per-class kernels run over primitive shells; the kernels accumulate the
+   ! contracted VRR block per column combination and digest each one into
+   ! the Fock matrix under the contracted shell's function offsets.
+   !
+   ! For a segmented basis (6-31G) every primitive shell has one column and
+   ! the view is the shell list itself.
+   !
+   integer, parameter :: PS_NCOL_MAX = 4
+
+   type :: ps_view_t
+      integer :: nps = 0, ncoltot = 0, ncoef = 0, npp = 0
+      integer, allocatable :: ps_l(:), ps_np(:), ps_ncol(:)
+      integer, allocatable :: ps_soff(:)     !! first column of primitive shell p is col ps_soff(p)+1
+      integer, allocatable :: ps_coff(:)     !! its coefficients start at ps_coef(ps_coff(p)+1), column-major (np, ncol)
+      integer, allocatable :: col_ao(:)      !! first AO of each column (its contracted shell)
+      integer, allocatable :: col_sh(:)      !! the contracted shell of each column
+      integer, allocatable :: ps_ao1(:)      !! first AO of column 1, per primitive shell
+      real(dp), allocatable :: ps_coef(:)
+      !! primitive pairs over primitive shells: the geometry only, K_ab folded in,
+      !! no coefficients -- those come from ps_coef per column in the kernel
+      integer, allocatable :: pp_off(:), pp_n(:)
+      real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_ra(:, :), pp_rb(:, :), pp_c(:)
+      real(dp), allocatable :: pp_cs(:)      !! pp_c with the first column's coefficients folded in
+      integer,  allocatable :: pp_ki(:), pp_kj(:) !! primitive index within each shell, per pair
+      type(pair_bins_t) :: pbins             !! Schwarz bins over primitive-shell pairs
+      real(dp), allocatable :: dshp(:, :)    !! density screen folded to primitive shells (max over columns)
+      logical :: on_device = .false.
+   end type ps_view_t
+
+
 contains
+
+   !
+   ! The density screen folded to primitive shells: the largest block over
+   ! the column pairs, so the kernel's test stays a bound. Runs where dsh is
+   ! current, which by the time it is called is the device.
+   !
+   subroutine fold_dsh(ps, nbas, dsh)
+      type(ps_view_t), intent(inout) :: ps
+      integer, intent(in) :: nbas
+      real(dp), intent(in) :: dsh(nbas, nbas)
+      integer :: a, c
+      do concurrent(c=1:ps%nps, a=1:ps%nps)
+         call fold_dsh_body(a, c, ps%nps, ps%ncoltot, ps%ps_ncol, ps%ps_soff, ps%col_sh, nbas, dsh, ps%dshp)
+      end do
+   end subroutine fold_dsh
+
+   pure subroutine fold_dsh_body(a, c, nps, ncoltot, ps_ncol, ps_soff, col_sh, nbas, dsh, dshp)
+      !$acc routine seq
+      integer, intent(in) :: a, c, nps, ncoltot, nbas
+      integer, intent(in) :: ps_ncol(nps), ps_soff(nps), col_sh(ncoltot)
+      real(dp), intent(in) :: dsh(nbas, nbas)
+      real(dp), intent(inout) :: dshp(nps, nps)
+      integer :: ia, ib
+      real(dp) :: m
+      m = 0.0_dp
+      do ia = 1, ps_ncol(a)
+         do ib = 1, ps_ncol(c)
+            m = max(m, dsh(col_sh(ps_soff(a) + ia), col_sh(ps_soff(c) + ib)))
+         end do
+      end do
+      dshp(a, c) = m
+   end subroutine fold_dsh_body
+
+   subroutine ps_release(ps)
+      type(ps_view_t), intent(inout) :: ps
+      if (ps%on_device) then
+         !$acc exit data delete(ps%ps_l, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_ao1, &
+         !$acc                  ps%col_sh, ps%ps_coef, ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, &
+         !$acc                  ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, ps%pbins, ps%dshp)
+         ps%on_device = .false.
+      end if
+      if (allocated(ps%ps_l)) deallocate (ps%ps_l, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%col_sh, ps%ps_ao1, &
+                                          ps%ps_coef)
+      if (allocated(ps%pp_off)) deallocate (ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj)
+      if (allocated(ps%dshp)) deallocate (ps%dshp)
+      ps%nps = 0; ps%ncoltot = 0; ps%ncoef = 0; ps%npp = 0
+   end subroutine ps_release
 
    !
    ! Bin identity is (type, size), and TYPE CARRIES THE CONTRACTION DEGREE as
@@ -81,9 +171,15 @@ contains
    ! counts within one warp, which is the same divergence the class sort fixed
    ! at the quartet level, reappearing one loop deeper.
    !
-   pure integer function bin_key(la, lb, kab, s)
-      integer, intent(in) :: la, lb, kab, s
-      bin_key = ((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s + 1
+   !
+   ! `g` separates the pairs with a generally contracted side from the rest:
+   ! a segment is then either all single-column, and goes to the scalar
+   ! kernel, or all multi-column, and goes to the blocked one -- no launch
+   ! carries both, so neither pays the other's registers or divergence.
+   !
+   pure integer function bin_key(la, lb, kab, s, g)
+      integer, intent(in) :: la, lb, kab, s, g
+      bin_key = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*2 + g + 1
    end function bin_key
 
    !
@@ -92,20 +188,21 @@ contains
    ! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
    ! pairs, against the 586M quartets the old path enumerated.
    !
-   subroutine build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b)
+   subroutine build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(nbas), sh_np(nbas)
       real(dp), intent(in)  :: sh_r(3, nbas)      !! shell centres, for the intra-bin sort
       real(dp), intent(in)  :: q(:)               !! Schwarz bound, canonical pair index
       real(dp), intent(in)  :: thresh
       type(pair_bins_t), intent(out) :: b
+      logical,  intent(in), optional :: sh_g(nbas)  !! shell has more than one column
 
-      integer :: nb, i, j, s, k, p, n, key
+      integer :: nb, i, j, s, k, p, n, key, gg
       integer, allocatable :: cnt(:), pos(:), keyv(:), ti(:), tj(:)
       real(dp), allocatable :: tq(:)
       real(dp) :: qq, qmax
 
-      nb = (LMAX + 1)*(LMAX + 1)*(KCAP + 1)*(SMAX + 1) + 1
+      nb = 2*(LMAX + 1)*(LMAX + 1)*(KCAP + 1)*(SMAX + 1) + 1
       allocate (cnt(nb), pos(nb))
       cnt = 0
 
@@ -131,7 +228,11 @@ contains
             qq = q(i*(i - 1)/2 + j)
             if (qq*qmax <= thresh) cycle
             s = size_index(qq)
-            key = bin_key(sh_l(i), sh_l(j), sh_np(i)*sh_np(j), s)
+            gg = 0
+            if (present(sh_g)) then
+               if (sh_g(i) .or. sh_g(j)) gg = 1
+            end if
+            key = bin_key(sh_l(i), sh_l(j), sh_np(i)*sh_np(j), s, gg)
             cnt(key) = cnt(key) + 1
             n = n + 1
          end do
@@ -140,7 +241,7 @@ contains
       b%nbin = nb
       b%npair = n
       allocate (b%sp_i(n), b%sp_j(n), b%sp_q(n))
-      allocate (b%bin_off(nb), b%bin_cnt(nb), b%bin_s(nb), b%bin_la(nb), b%bin_lb(nb))
+      allocate (b%bin_off(nb), b%bin_cnt(nb), b%bin_s(nb), b%bin_la(nb), b%bin_lb(nb), b%bin_g(nb))
       b%bin_cnt = cnt
 
       b%bin_off(1) = 0
@@ -155,7 +256,11 @@ contains
             qq = q(i*(i - 1)/2 + j)
             if (qq*qmax <= thresh) cycle
             s = size_index(qq)
-            key = bin_key(sh_l(i), sh_l(j), sh_np(i)*sh_np(j), s)
+            gg = 0
+            if (present(sh_g)) then
+               if (sh_g(i) .or. sh_g(j)) gg = 1
+            end if
+            key = bin_key(sh_l(i), sh_l(j), sh_np(i)*sh_np(j), s, gg)
             pos(key) = pos(key) + 1
             b%sp_i(pos(key)) = i
             b%sp_j(pos(key)) = j
@@ -168,13 +273,15 @@ contains
 #endif
 
       ! bin metadata and the live list
-      b%bin_s = -1; b%bin_la = -1; b%bin_lb = -1
+      b%bin_s = -1; b%bin_la = -1; b%bin_lb = -1; b%bin_g = 0
       do i = 0, LMAX
          do j = 0, LMAX
             do k = 0, KCAP
                do s = 0, SMAX
-                  key = bin_key(i, j, k, s)
-                  b%bin_la(key) = i; b%bin_lb(key) = j; b%bin_s(key) = s
+                  do gg = 0, 1
+                     key = bin_key(i, j, k, s, gg)
+                     b%bin_la(key) = i; b%bin_lb(key) = j; b%bin_s(key) = s; b%bin_g(key) = gg
+                  end do
                end do
             end do
          end do

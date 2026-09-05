@@ -34,6 +34,9 @@ become a call.
 #: A fixed radix makes the key mean the same thing at every LMAX; 11 covers
 #: l <= 10, far past anything that will ever be generated.
 CLASS_RADIX = 11
+#: Columns per primitive shell the kernels' coefficient scratch allows; must
+#: match PS_NCOL_MAX in trc_bins.F90, which splits longer contractions.
+PS_NCOL_MAX = 4
 
 import argparse
 import re
@@ -69,6 +72,22 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, n
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
       real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
       real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
+      !! pp_c with the first column's coefficients folded in: what the
+      !! scalar kernel multiplies, so a segmented basis pays nothing.
+      real(dp), intent(in)    :: pp_cs(npp)
+      !! primitive index of each pair's two primitives within their shells
+      integer,  intent(in)    :: pp_ki(npp), pp_kj(npp)
+      !! GENERAL CONTRACTION: nbas here counts PRIMITIVE shells; sh_l is
+      !! theirs, ao_off is the first column's AO offset (the scalar kernel's
+      !! only use of it; the blocked one reads the column table), and dsh
+      !! is the screen folded to primitive shells. ps_coef holds each
+      !! primitive shell's (np x ncol) coefficient matrix column-major from
+      !! ps_coff(p)+1; column c of primitive shell p starts at AO
+      !! col_ao(ps_soff(p)+c).
+      integer,  intent(in)    :: ncoltot, ncoef
+      integer,  intent(in)    :: ps_np(nbas), ps_ncol(nbas), ps_soff(nbas), ps_coff(nbas)
+      integer,  intent(in)    :: col_ao(ncoltot)
+      real(dp), intent(in)    :: ps_coef(ncoef)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)"""
@@ -192,7 +211,7 @@ def sieve_vrr(vrr_body, hrr_body, fin):
     return "\n".join(out)
 
 
-def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
+def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     lab, lcd = la + lb, lc + ld
     lt = lab + lcd
     nca, ncc = gv.ncum(lab), gv.ncum(lcd)
@@ -200,6 +219,46 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     nc, nd = (lc + 1)*(lc + 2)//2, (ld + 1)*(ld + 2)//2
     nv = nca*ncc
     tag = f"{la}{lb}{lc}{ld}"
+    # Column combinations accumulated at once: the VRR block per
+    # combination costs nv doubles of registers, so the chunk shrinks with
+    # the class; a quartet with more combinations than this repeats its
+    # primitive loops per chunk.
+    # Every loop over the chunk has this CONSTANT bound, with zero weights
+    # past the live combinations: a runtime bound put g into local memory
+    # and cost 80x per primitive quartet. 16 doubles of block per chunk at
+    # most on the small classes, one combination at a time on the large.
+    # Column pairs accumulated per block on each side: NCAB x NCCD
+    # combinations at once, constant bounds, so the block stays in
+    # registers; a quartet with more column pairs repeats its primitive
+    # loops per block. A single-column quartet takes the scalar path.
+    # Sixteen doubles of accumulator at most: (ss|sp) at 4 x 4 x 4 went to
+    # 255 registers with 624 bytes of spill, and ran slower than segmented.
+    ncab = 4 if nv <= 1 else (2 if nv <= 4 else 1)
+    # The block accumulation is written out with literal indices so the
+    # accumulator is provably register-resident; a loop over (qab, qcd) is
+    # left to the unroller's judgement, which it lost on this kernel.
+    acc_zero = "".join(
+        f"            do x = 1, {nv}\n               g(x, {a}, {c}) = 0.0_dp\n            end do\n"
+        for c in range(1, ncab + 1) for a in range(1, ncab + 1))
+    cab_fill = "".join(
+        f"               cab({a}) = wta({a})*ps_coef(offa({a}) + ki)*ps_coef(offb({a}) + kj)\n"
+        for a in range(1, ncab + 1))
+    ccd_fill = "".join(
+        f"                  ccd({c}) = wtc({c})*ps_coef(offc({c}) + kk)*ps_coef(offd({c}) + kl)\n"
+        for c in range(1, ncab + 1))
+    t_zero = "".join(
+        f"               do x = 1, {nv}\n                  tc(x, {c}) = 0.0_dp\n               end do\n"
+        for c in range(1, ncab + 1))
+    t_add = "".join(
+        f"                  do x = 1, {nv}\n                     tc(x, {c}) = tc(x, {c}) + ccd({c})*v(x, cur)\n                  end do\n"
+        for c in range(1, ncab + 1))
+    g_add = "".join(
+        f"               do x = 1, {nv}\n                  g(x, {a}, {c}) = g(x, {a}, {c}) + cab({a})*tc(x, {c})\n               end do\n"
+        for c in range(1, ncab + 1) for a in range(1, ncab + 1))
+    acc_copy = "".join(
+        f"            do x = 1, {nv}\n               gl(x, {a}, {c}) = g(x, {a}, {c})\n            end do\n"
+        for c in range(1, ncab + 1) for a in range(1, ncab + 1))
+    hrr_body = re.sub(r"\bg\(", "g1(", hrr_body)
 
     return f"""
    !> ({la}{lb}|{lc}{ld}) driver.  The `do concurrent` lives here and the
@@ -208,7 +267,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
    !> emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
    subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
                       ndens, dmat, jmat, rank, nranks)
 {PROLOGUE}
       integer, intent(in) :: rank, nranks
@@ -233,13 +292,13 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
       do concurrent(i=1:nr)
          call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat)
+                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat)
       end do
    end subroutine pc{tag}
 
    pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(kind=8), intent(in) :: gt
@@ -258,8 +317,13 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
       real(dp) :: f(0:BOYS_MMAX)
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
-      real(dp) :: v({nv}, 0:1), g({nv}), vbuf({na*nb*nc*nd})
-      real(dp) :: wq
+      real(dp) :: v({nv}, 0:1), g({nv}, {ncab}, {ncab}), gl({nv}, {ncab}, {ncab}), g1({nv}), vbuf({na*nb*nc*nd})
+      real(dp) :: wq, w, wab
+      integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd, ab0, cd0, nab_c, ncd_c, qab, qcd
+      integer  :: ki, kj, kk, kl, kpl, kql, ia2, ib2, ic2, id2, iabc, icdc
+      logical  :: same_ab, same_cd, same_pair
+      real(dp) :: cab({ncab}), ccd({ncab}), wta({ncab}), wtc({ncab}), tc({nv}, {ncab})
+      integer  :: offa({ncab}), offb({ncab}), offc({ncab}), offd({ncab})
       real(dp) :: jab({na*nb}), jcd({nc*nd}), kac({na*nc})
       real(dp) :: kad({na*nd}), kbc({nb*nc}), kbd({nb*nd})
       real(dp) :: dab({na*nb}), dcd({nc*nd}), dac({na*nc})
@@ -308,57 +372,16 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
                       dsh(si, sk), dsh(si, sl), &
                       dsh(sj, sk), dsh(sj, sl)) <= thresh) return
 
-         dij = (si /= sj); dkl = (sk /= sl)
-         dpq = (.not. sD(seg)) .or. (iab /= icd)
+         same_ab = (si == sj); same_cd = (sk == sl)
+         same_pair = sD(seg) .and. (iab == icd)
 
          keyab = (si - 1)*nbas + sj
          keycd = (sk - 1)*nbas + sl
          offab = pp_off(keyab); nab = pp_n(keyab)
          offcd = pp_off(keycd); ncd = pp_n(keycd)
+         nca = ps_ncol(si); ncb = ps_ncol(sj); nccl = ps_ncol(sk); ncdl = ps_ncol(sl)
+         npi = ps_np(si); npj = ps_np(sj); npk = ps_np(sk); npl = ps_np(sl)
 
-         do x = 1, {nv}
-            g(x) = 0.0_dp
-         end do
-
-         do kp = offab + 1, offab + nab
-            zeta = pp_p(kp)
-            do kq = offcd + 1, offcd + ncd
-               eta = pp_p(kq)
-               zpe = zeta + eta
-               rho = zeta*eta/zpe
-               pqx = pp_r(kp, 1) - pp_r(kq, 1)
-               pqy = pp_r(kp, 2) - pp_r(kq, 2)
-               pqz = pp_r(kp, 3) - pp_r(kq, 3)
-               pax = pp_r(kp, 1) - pp_ra(kp, 1)
-               pay = pp_r(kp, 2) - pp_ra(kp, 2)
-               paz = pp_r(kp, 3) - pp_ra(kp, 3)
-               qcx = pp_r(kq, 1) - pp_ra(kq, 1)
-               qcy = pp_r(kq, 2) - pp_ra(kq, 2)
-               qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-               wc = (zeta*pp_r(kp, 1) + eta*pp_r(kq, 1))/zpe
-               wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-               wc = (zeta*pp_r(kp, 2) + eta*pp_r(kq, 2))/zpe
-               wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-               wc = (zeta*pp_r(kp, 3) + eta*pp_r(kq, 3))/zpe
-               wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
-               tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
-
-{emit_boys(lt)}
-
-               oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-               rz = rho/zeta; re = rho/eta
-               pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
-
-{vrr_body}
-
-               do x = 1, {nv}
-                  g(x) = g(x) + v(x, cur)
-               end do
-            end do
-         end do
-
-         mui = ao_off(si); nuj = ao_off(sj)
-         lamk = ao_off(sk); sigl = ao_off(sl)
          abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)
          aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)
          abz = pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3)
@@ -366,6 +389,148 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
          cdy = pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2)
          cdz = pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3)
 
+         ! GENERAL CONTRACTION. The column pairs of (ab) and of (cd) are
+         ! taken in blocks of NCAB x NCCD; per block the primitive loops run
+         ! once and the VRR block is accumulated per combination, weighted by
+         ! the two column-pair coefficient products, with constant loop
+         ! bounds so it stays in registers. A single-column quartet -- every
+         ! quartet of a segmented basis -- takes the scalar path, which is the
+         ! kernel as it was with the coefficients read from the tables.
+         ncab = nca*ncb; nccd = nccl*ncdl
+         do ab0 = 1, ncab, {ncab}
+         do cd0 = 1, nccd, {ncab}
+         nab_c = min({ncab}, ncab - ab0 + 1)
+         ncd_c = min({ncab}, nccd - cd0 + 1)
+         if (ncab*nccd == 1) then
+            do x = 1, {nv}
+               g1(x) = 0.0_dp
+            end do
+            do kp = offab + 1, offab + nab
+               zeta = pp_p(kp)
+               kpl = kp - offab - 1
+               ki = kpl/npj + 1
+               kj = kpl - (ki - 1)*npj + 1
+               wab = ps_coef(ps_coff(si) + ki)*ps_coef(ps_coff(sj) + kj)
+               do kq = offcd + 1, offcd + ncd
+                  eta = pp_p(kq)
+                  kql = kq - offcd - 1
+                  kk = kql/npl + 1
+                  kl = kql - (kk - 1)*npl + 1
+                  w = wab*ps_coef(ps_coff(sk) + kk)*ps_coef(ps_coff(sl) + kl)
+                  zpe = zeta + eta
+                  rho = zeta*eta/zpe
+                  pqx = pp_r(kp, 1) - pp_r(kq, 1)
+                  pqy = pp_r(kp, 2) - pp_r(kq, 2)
+                  pqz = pp_r(kp, 3) - pp_r(kq, 3)
+                  pax = pp_r(kp, 1) - pp_ra(kp, 1)
+                  pay = pp_r(kp, 2) - pp_ra(kp, 2)
+                  paz = pp_r(kp, 3) - pp_ra(kp, 3)
+                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
+                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
+                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
+                  wc = (zeta*pp_r(kp, 1) + eta*pp_r(kq, 1))/zpe
+                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
+                  wc = (zeta*pp_r(kp, 2) + eta*pp_r(kq, 2))/zpe
+                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
+                  wc = (zeta*pp_r(kp, 3) + eta*pp_r(kq, 3))/zpe
+                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+
+   {emit_boys(lt)}
+
+                  oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
+                  rz = rho/zeta; re = rho/eta
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+
+   {vrr_body}
+                  do x = 1, {nv}
+                     g1(x) = g1(x) + w*v(x, cur)
+                  end do
+               end do
+            end do
+            do x = 1, {nv}
+               gl(x, 1, 1) = g1(x)
+            end do
+         else
+{acc_zero}            ! The column-pair coefficient offsets of this block, decoded once
+            ! per block and not per primitive: the integer divisions were
+            ! most of the primitive loop. A slot past the live combinations
+            ! reads column 1 with a zero weight, so there is no branch.
+            do qab = 1, {ncab}
+               iabc = min(ab0 + qab - 1, ncab)
+               ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+               offa(qab) = ps_coff(si) + (ia2 - 1)*npi
+               offb(qab) = ps_coff(sj) + (ib2 - 1)*npj
+               wta(qab) = merge(1.0_dp, 0.0_dp, ab0 + qab - 1 <= ncab)
+               icdc = min(cd0 + qab - 1, nccd)
+               ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+               offc(qab) = ps_coff(sk) + (ic2 - 1)*npk
+               offd(qab) = ps_coff(sl) + (id2 - 1)*npl
+               wtc(qab) = merge(1.0_dp, 0.0_dp, cd0 + qab - 1 <= nccd)
+            end do
+            do kp = offab + 1, offab + nab
+               zeta = pp_p(kp)
+               ki = pp_ki(kp); kj = pp_kj(kp)
+{cab_fill}{t_zero}               do kq = offcd + 1, offcd + ncd
+                  eta = pp_p(kq)
+                  kk = pp_ki(kq); kl = pp_kj(kq)
+{ccd_fill}                  zpe = zeta + eta
+                  rho = zeta*eta/zpe
+                  pqx = pp_r(kp, 1) - pp_r(kq, 1)
+                  pqy = pp_r(kp, 2) - pp_r(kq, 2)
+                  pqz = pp_r(kp, 3) - pp_r(kq, 3)
+                  pax = pp_r(kp, 1) - pp_ra(kp, 1)
+                  pay = pp_r(kp, 2) - pp_ra(kp, 2)
+                  paz = pp_r(kp, 3) - pp_ra(kp, 3)
+                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
+                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
+                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
+                  wc = (zeta*pp_r(kp, 1) + eta*pp_r(kq, 1))/zpe
+                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
+                  wc = (zeta*pp_r(kp, 2) + eta*pp_r(kq, 2))/zpe
+                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
+                  wc = (zeta*pp_r(kp, 3) + eta*pp_r(kq, 3))/zpe
+                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+
+   {emit_boys(lt)}
+
+                  oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
+                  rz = rho/zeta; re = rho/eta
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+
+   {vrr_body}
+                  ! cd side first: NCAB FMAs per primitive quartet, and the
+                  ! NCAB x NCAB block only once per bra primitive.
+{t_add}               end do
+{g_add}            end do
+            ! To local memory once: the per-combination read below has a
+            ! runtime index and must not touch the register copy.
+{acc_copy}         end if
+
+         do qcd = 1, ncd_c
+         do qab = 1, nab_c
+         iabc = ab0 + qab - 1
+         icdc = cd0 + qcd - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         if (same_ab .and. ia2 < ib2) cycle
+         if (same_cd .and. ic2 < id2) cycle
+         if (same_pair .and. iabc < icdc) cycle
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, {nv}
+            g1(x) = gl(x, qab, qcd)
+         end do
+
+         ! --- HRR ---
 {hrr_body}
 
 #ifdef TRC_NO_DIGEST
@@ -533,8 +698,92 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
 
          end do   ! idens
 #endif
+         end do   ! qab
+         end do   ! qcd
+         end do   ! cd0
+         end do   ! ab0
    end subroutine pci{tag}
 """
+
+
+def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
+    """Two kernels per class from one template.
+
+    The BLOCK kernel takes the multi-column segments: its VRR block is
+    accumulated per column combination.  The SCALAR kernel takes the
+    single-column segments and is the kernel as it was before general
+    contraction -- one accumulator, the pair coefficients folded into
+    pp_cs, no column decode -- so a segmented basis, and every segmented
+    part of a general one, runs exactly the code it ran before.  They are
+    separate routines so ptxas budgets registers for each on its own and no
+    warp carries both paths."""
+    tag = f"{la}{lb}{lc}{ld}"
+    txt = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body)
+
+    m1 = "         if (ncab*nccd == 1) then\n"
+    i1 = txt.index(m1)
+    i2 = txt.index("\n         else\n            do x = 1, ", i1) + 1
+    m3 = "         end if\n\n         do qcd = 1, ncd_c\n"
+    i3 = txt.index(m3)
+    scalar_prims = txt[i1 + len(m1):i2]
+    block = txt[:i1] + txt[i2 + len("         else\n"):i3] + txt[i3 + len("         end if\n"):]
+
+    # --- scalar item: head, one accumulator, folded coefficients, no decode
+    ihead = txt.index("      ! locate the segment")
+    igc = txt.index("         ! GENERAL CONTRACTION.")
+    head = txt[ihead:igc]
+    prims = scalar_prims
+    for drop in ("               kpl = kp - offab - 1\n",
+                 "               ki = kpl/npj + 1\n",
+                 "               kj = kpl - (ki - 1)*npj + 1\n",
+                 "               wab = ps_coef(ps_coff(si) + ki)*ps_coef(ps_coff(sj) + kj)\n",
+                 "                  kql = kq - offcd - 1\n",
+                 "                  kk = kql/npl + 1\n",
+                 "                  kl = kql - (kk - 1)*npl + 1\n",
+                 "                  w = wab*ps_coef(ps_coff(sk) + kk)*ps_coef(ps_coff(sl) + kl)\n"):
+        assert prims.count(drop) == 1, drop
+        prims = prims.replace(drop, "")
+    prims = prims.replace("*pp_c(kp)*pp_c(kq)", "*pp_cs(kp)*pp_cs(kq)")
+    prims = prims.replace("g1(x) = g1(x) + w*v(x, cur)", "g1(x) = g1(x) + v(x, cur)")
+    igl = prims.rfind("            do x = 1, ")   # the gl copy, last loop
+    assert igl > 0 and "gl(x, 1, 1) = g1(x)" in prims[igl:]
+    prims = prims[:igl]
+    ihrr = txt.index("         ! --- HRR ---\n")
+    idig = txt.index("#ifdef TRC_NO_DIGEST")
+    iend = txt.index("         end do   ! qab\n")
+    hrr_and_digest = txt[ihrr:iend]
+    decode = """         ! Single column on every side: the canonical enumeration and the
+         ! degeneracy weights are the pair-level ones.
+         dij = .not. same_ab
+         dkl = .not. same_cd
+         dpq = .not. same_pair
+         mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
+
+"""
+    idecl0 = txt.index("      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl\n")
+    decls = txt[idecl0:ihead]
+    decls = re.sub(r"      real\(dp\) :: v\((\d+), 0:1\), g\(.*?\), gl\(.*?\), g1\((\d+)\), vbuf\((\d+)\)\n",
+                   r"      real(dp) :: v(\1, 0:1), g1(\2), vbuf(\3)\n", decls)
+    decls = re.sub(r"      real\(dp\) :: cab\(\d+\), ccd\(\d+\).*\n", "", decls)
+    decls = re.sub(r"      integer  :: offa\(.*\n", "", decls)
+    decls = decls.replace("      real(dp) :: wq, w, wab\n", "      real(dp) :: wq\n")
+    decls = decls.replace("      integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd, ab0, cd0, nab_c, ncd_c, qab, qcd\n", "")
+    decls = decls.replace("      integer  :: ki, kj, kk, kl, kpl, kql, ia2, ib2, ic2, id2, iabc, icdc\n", "")
+    head = head.replace("         nca = ps_ncol(si); ncb = ps_ncol(sj); nccl = ps_ncol(sk); ncdl = ps_ncol(sl)\n", "")
+    head = head.replace("         npi = ps_np(si); npj = ps_np(sj); npk = ps_np(sk); npl = ps_np(sl)\n", "")
+
+    isig = txt.index("   pure subroutine pci" + tag + "(")
+    sig = txt[isig:idecl0].replace("pci" + tag, "pcsi" + tag)
+    scalar_item = (sig + decls + head + prims + decode + hrr_and_digest
+                   + "   end subroutine pcsi" + tag + "\n")
+
+    # --- scalar driver: the block driver with the names swapped
+    idrv = txt.index("   subroutine pc" + tag + "(")
+    idrv_end = txt.index("   end subroutine pc" + tag + "\n") + len("   end subroutine pc" + tag + "\n")
+    drv = txt[idrv:idrv_end].replace("pci" + tag, "pcsi" + tag).replace("pc" + tag, "pcs" + tag)
+    drv = drv.replace("driver.  The `do concurrent`", "SCALAR driver.  The `do concurrent`")
+
+    return block + "\n" + drv + "\n" + scalar_item
 
 
 def _radix(txt):
@@ -634,17 +883,27 @@ contains
     out.append(f"""
    subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, general, &
                           ndens, dmat, jmat, rank, nranks)
       integer, intent(in) :: key
 {PROLOGUE}
+      !! .true. sends the segments to the blocked kernel: every quartet in
+      !! them has a multi-column side.  .false. is the scalar kernel.
+      logical, intent(in) :: general
       integer, intent(in) :: rank, nranks
+      if (general) then
       select case (key)""")
     for key, tag in names:
         out.append(f"""      case ({key}); call pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, rank, nranks)""")
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat, rank, nranks)""")
+    out.append("      end select\n      else\n      select case (key)")
+    for key, tag in names:
+        out.append(f"""      case ({key}); call pcs{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat, rank, nranks)""")
     out.append("""      end select
+      end if
    end subroutine pc_dispatch
 
 end module trc_pc_kernels
@@ -676,7 +935,7 @@ module {mod}
    use trc_tables, only: LMAX
    implicit none
    private
-   public :: pc{tag}
+   public :: pc{tag}, pcs{tag}
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -684,7 +943,7 @@ contains
 {body}
 end module {mod}
 """)
-            use_lines.append(f"   use {mod}, only: pc{tag}")
+            use_lines.append(f"   use {mod}, only: pc{tag}, pcs{tag}")
         disp = [f"""!
 ! Kernel dispatcher for the per-class modules.
 !
