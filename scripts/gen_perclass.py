@@ -129,15 +129,26 @@ def emit_boys(m):
     # every kernel kept indexing with the old one. It compiled, and it gave
     # wrong numbers.
     w("                  bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)")
-    for k in range(m + 1):
-        w(f"                  bj = bbase + {k}*(BOYS_NCHEB + 1)")
-        # Clenshaw, degree 5: c_j sits at boys_table(bj + j + 1)
-        w("                  b1 = boys_table(bj + BOYS_NCHEB + 1)")
-        w("                  b2 = 0.0_dp")
-        for jj in (5, 4, 3, 2):
-            w(f"                  b0 = bx2*b1 - b2 + boys_table(bj + {jj});"
-              f" b2 = b1; b1 = b0")
-        w(f"                  f({k}) = bx*b1 - b2 + boys_table(bj + 1)")
+    # The TOP order only is interpolated; the rest come by downward
+    # recurrence, F_{k} = (2T F_{k+1} + exp(-T)) / (2k+1). One exp and one
+    # reciprocal per primitive quartet against six scattered table loads per
+    # order: Nsight Compute had the light classes saturated on L1 with the
+    # Boys table about 40% of the traffic, and every thread lands on its own
+    # interval so those loads never coalesce. Downward is also the stable
+    # direction, and it is what gmshpc does.
+    w(f"                  bj = bbase + {m}*(BOYS_NCHEB + 1)")
+    # Clenshaw, degree 5: c_j sits at boys_table(bj + j + 1)
+    w("                  b1 = boys_table(bj + BOYS_NCHEB + 1)")
+    w("                  b2 = 0.0_dp")
+    for jj in (5, 4, 3, 2):
+        w(f"                  b0 = bx2*b1 - b2 + boys_table(bj + {jj});"
+          f" b2 = b1; b1 = b0")
+    w(f"                  f({m}) = bx*b1 - b2 + boys_table(bj + 1)")
+    if m > 0:
+        w("                  bet = exp(-tval)")
+        w("                  btt = 2.0_dp*tval")
+        for k in range(m - 1, -1, -1):
+            w(f"                  f({k}) = (btt*f({k + 1}) + bet)*({1.0/(2*k + 1)!r}_dp)")
     w("               end if")
     return "\n".join(o)
 

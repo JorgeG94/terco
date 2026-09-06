@@ -290,46 +290,6 @@ contains
                   bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
                   bx2 = 2.0_dp*bx
                   bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
-                  bj = bbase + 0*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(0) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 1*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(1) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 2*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(2) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 3*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(3) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 4*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(4) = bx*b1 - b2 + boys_table(bj + 1)
                   bj = bbase + 5*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
@@ -338,6 +298,13 @@ contains
                   b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
                   f(5) = bx*b1 - b2 + boys_table(bj + 1)
+                  bet = exp(-tval)
+                  btt = 2.0_dp*tval
+                  f(4) = (btt*f(5) + bet)*(0.1111111111111111_dp)
+                  f(3) = (btt*f(4) + bet)*(0.14285714285714285_dp)
+                  f(2) = (btt*f(3) + bet)*(0.2_dp)
+                  f(1) = (btt*f(2) + bet)*(0.3333333333333333_dp)
+                  f(0) = (btt*f(1) + bet)*(1.0_dp)
                end if
 
                   oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
@@ -2589,46 +2556,6 @@ contains
                   bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
                   bx2 = 2.0_dp*bx
                   bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
-                  bj = bbase + 0*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(0) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 1*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(1) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 2*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(2) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 3*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(3) = bx*b1 - b2 + boys_table(bj + 1)
-                  bj = bbase + 4*(BOYS_NCHEB + 1)
-                  b1 = boys_table(bj + BOYS_NCHEB + 1)
-                  b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
-                  f(4) = bx*b1 - b2 + boys_table(bj + 1)
                   bj = bbase + 5*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
@@ -2637,6 +2564,13 @@ contains
                   b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
                   b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
                   f(5) = bx*b1 - b2 + boys_table(bj + 1)
+                  bet = exp(-tval)
+                  btt = 2.0_dp*tval
+                  f(4) = (btt*f(5) + bet)*(0.1111111111111111_dp)
+                  f(3) = (btt*f(4) + bet)*(0.14285714285714285_dp)
+                  f(2) = (btt*f(3) + bet)*(0.2_dp)
+                  f(1) = (btt*f(2) + bet)*(0.3333333333333333_dp)
+                  f(0) = (btt*f(1) + bet)*(1.0_dp)
                end if
 
                   oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
