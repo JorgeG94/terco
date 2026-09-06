@@ -1484,11 +1484,11 @@ contains
       call pl%to_device()
       if (collective) then
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
-                            nfrozen=nfrozen, aux_block=nblk, comm=comm)
+                            nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose)
          call comm%finalize()
       else
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
-                            nfrozen=nfrozen, aux_block=nblk)
+                            nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose)
       end if
       call pl%release()
       cx%e_os = res%e_os; cx%e_ss = res%e_ss
