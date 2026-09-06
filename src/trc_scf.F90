@@ -82,12 +82,27 @@ module trc_scf_driver
       !! between 1e-7 and 1e-6. PySCF stops on the gradient norm at
       !! sqrt(conv_tol) for the same reason.
       real(dp) :: conv_diis = 1.0e-5_dp
+      !! FRACTIONAL OCCUPATIONS, for the free-atom runs behind the SAD guess.
+      !! Restricted, spin-averaged: each iteration the orbitals are filled by
+      !! aufbau on their own eigenvalues with `nelec_frac` electrons, and the
+      !! degenerate set at the frontier shares what is left evenly, so the
+      !! atom comes out spherical (carbon: 2/3 of an electron in each p).
+      !! `nalpha`/`nbeta` are ignored for the count when this is on.
+      logical :: frac_occ = .false.
+      real(dp) :: nelec_frac = 0.0_dp
       integer :: max_iter = 100
       integer :: ndiis = 10
-      integer :: ndamp = 4                   !! damped steps before DIIS, at least
+      !! The damped start, -1 meaning "by spin": a closed shell goes to DIIS
+      !! from the first iteration -- damping only delayed it until the
+      !! commutator fell under `diis_start`, which took cholesterol from 29
+      !! iterations to 51 and water from 10 to 19 -- while an open shell
+      !! keeps four damped steps and a 0.5 start, because UHF on the OH
+      !! radical from GWH oscillates for a hundred iterations without them.
+      !! Any value >= 0 here, or a finite `diis_start`, is taken as given.
+      integer :: ndamp = -1                  !! damped steps before DIIS, at least
       !! DIIS also waits until the largest commutator element is below this;
       !! extrapolating from a wild guess wanders, damping does not.
-      real(dp) :: diis_start = 0.5_dp
+      real(dp) :: diis_start = -1.0_dp     !! commutator norm below which DIIS may start; -1 by spin
       real(dp) :: damp = 0.3_dp              !! weight of the new density while damping
       !! Level shift on the virtual space while DIIS is off, in hartree.
       !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
@@ -154,6 +169,9 @@ contains
       type(error_t) :: err
       logical :: dft, talk, diis_on
       real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ, errmax
+      real(dp), allocatable :: ofrac(:)
+      integer :: nfrac, ndamp
+      real(dp) :: diis_start
       real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
 
       nao = b%nao
@@ -170,16 +188,22 @@ contains
          exx = func%exx
       end if
       nspin = 1
-      if (nalpha /= nbeta .or. opts%unrestricted) nspin = 2
+      if ((nalpha /= nbeta .or. opts%unrestricted) .and. .not. opts%frac_occ) nspin = 2
       nocc = [nalpha, nbeta]
+      if (opts%frac_occ) nocc = int(opts%nelec_frac/2.0_dp)   ! the guess fills whole orbitals; the loop refills
       occ = merge(2.0_dp, 1.0_dp, nspin == 1)
       res%nspin = nspin
+      ndamp = opts%ndamp
+      if (ndamp < 0) ndamp = merge(4, 0, nspin == 2)
+      diis_start = opts%diis_start
+      if (diis_start < 0.0_dp) diis_start = merge(0.5_dp, huge(1.0_dp), nspin == 2)
 
       allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao), hcore(nao, nao), x(nao, nao))
       allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin), dtot(nao, nao), jmat(nao, nao))
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
       allocate (w1(nao, nao), w2(nao, nao), w3(nao, nao))
+      allocate (ofrac(nao)); ofrac = 0.0_dp
       allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
 
@@ -250,6 +274,7 @@ contains
       fstore = 0.0_dp; estore = 0.0_dp; dtot = 0.0_dp; jmat = 0.0_dp
       w1 = 0.0_dp; w2 = 0.0_dp; w3 = 0.0_dp
 
+      !$acc enter data copyin(ofrac)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3)
 
@@ -336,7 +361,7 @@ contains
          end do
          ! --- DIIS, once the commutator is small enough to extrapolate from --
          errmax = sqrt(la%dot(n2*nspin, errv, errv))
-         if (.not. diis_on .and. it > opts%ndamp) diis_on = errmax < opts%diis_start
+         if (.not. diis_on .and. it > ndamp) diis_on = errmax < diis_start
          ! --- level shift while DIIS is off: F += mu (S - S D S / occ) --------
          if (.not. diis_on .and. opts%level_shift > 0.0_dp) then
             do s = 1, nspin
@@ -388,7 +413,16 @@ contains
             call la%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, w2, nao)
             call la%syev(nao, w2, nao, res%eps(:, s))
             call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, w2, nao, 0.0_dp, res%cmo(:, :, s), nao)
-            if (nocc(s) > 0) then
+            if (opts%frac_occ) then
+               ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
+               !$acc update self(res%eps(:, s))
+               call frac_occupations(nao, res%eps(:, s), opts%nelec_frac, ofrac, nfrac)
+               !$acc update device(ofrac)
+               do concurrent(i=1:nao, j=1:nao)
+                  w1(i, j) = res%cmo(i, j, s)*sqrt(ofrac(j))
+               end do
+               call la%gemm('N', 'T', nao, nao, nfrac, 1.0_dp, w1, nao, w1, nao, 0.0_dp, res%dmat(:, :, s), nao)
+            else if (nocc(s) > 0) then
                call la%gemm('N', 'T', nao, nao, nocc(s), occ, res%cmo(:, :, s), nao, res%cmo(:, :, s), nao, &
                             0.0_dp, res%dmat(:, :, s), nao)
             else
@@ -429,6 +463,7 @@ contains
 
       ! The density the energy was evaluated at, and the orbitals that made it.
       !$acc update self(dold, res%cmo, res%eps)
+      !$acc exit data delete(ofrac)
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3)
       res%dmat = dold
@@ -478,6 +513,43 @@ contains
          !$acc end data
          res%dmat(:, :, s) = d
       end subroutine guess_from
+
+      pure subroutine frac_occupations(n, eps, nelec, o, nocc_out)
+         !! Aufbau over the eigenvalues, two per orbital, the frontier's
+         !! degenerate set (within FRAC_TOL) sharing the remainder evenly.
+         !! `nocc_out` is the last orbital with any occupation, for the GEMM.
+         integer, intent(in) :: n
+         real(dp), intent(in) :: eps(n), nelec
+         real(dp), intent(out) :: o(n)
+         integer, intent(out) :: nocc_out
+         real(dp), parameter :: FRAC_TOL = 1.0e-3_dp
+         integer :: nfull, i, g0, g1, ninside
+         real(dp) :: rem, ef, share
+         nfull = int(nelec/2.0_dp)
+         rem = nelec - 2.0_dp*real(nfull, dp)
+         o = 0.0_dp
+         if (nfull > 0) o(1:min(nfull, n)) = 2.0_dp
+         nocc_out = min(nfull, n)
+         if (nfull >= n) return
+         ! the frontier: the first not-full orbital when electrons are left,
+         ! else the last full one (an open shell of even count, carbon 2p^2)
+         if (rem > 0.0_dp .or. nfull == 0) then
+            ef = eps(nfull + 1)
+         else
+            ef = eps(nfull)
+         end if
+         g0 = n + 1; g1 = 0
+         do i = 1, n
+            if (abs(eps(i) - ef) < FRAC_TOL) then
+               g0 = min(g0, i); g1 = max(g1, i)
+            end if
+         end do
+         if (g1 < g0) return
+         ninside = count([(i <= nfull, i=g0, g1)])
+         share = (2.0_dp*real(ninside, dp) + rem)/real(g1 - g0 + 1, dp)
+         o(g0:g1) = share
+         nocc_out = g1
+      end subroutine frac_occupations
 
       subroutine zero_dev(n, a)
          integer, intent(in) :: n

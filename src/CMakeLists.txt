@@ -24,6 +24,7 @@ target_sources(
           trc_rimp2.F90      # RI-MP2 on the RHF reference, resident
           trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
+          trc_sad.F90 # the SAD guess built here, one atomic SCF per element
           trc_capi.F90       # the bind(c) skin
           trc_acc_shim.F90)  # see the file: this one is not optional
 

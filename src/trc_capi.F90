@@ -36,6 +36,9 @@ module trc_capi
                         TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_sad, only: trc_sad_build
+   use trc_error, only: error_t
    use pic_mpi_lib, only: comm_t, comm_world
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    implicit none
@@ -56,6 +59,12 @@ module trc_capi
    ! tolerate. The Fortran function names are capi_* for the same reason;
    ! the C symbols are the ABI and are unchanged.
    public :: capi_fock, trc_fock_many, trc_fock_nosym
+   public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
+             trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, &
+             trc_set_convergence, trc_set_screening, trc_set_guess, trc_set_comm, trc_set_verbose, &
+             trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
+             trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
+             trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: capi_scf
 
    ! Status codes. Zero is success; everything else is a reason.
@@ -64,6 +73,10 @@ module trc_capi
    integer(c_int), parameter, public :: TRC_ERR_BADARG    = 2
    integer(c_int), parameter, public :: TRC_ERR_UNSUPPORTED = 3
    integer(c_int), parameter, public :: TRC_ERR_NOCONV = 4   !! the SCF ran out of iterations
+   integer(c_int), parameter, public :: TRC_ERR_STATE = 5    !! called before what it needs was set
+   ! Guess kinds for trc_set_guess.
+   integer(c_int), parameter, public :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
+                                        TRC_GUESS_GIVEN = 3
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -83,6 +96,38 @@ module trc_capi
    type :: eri_box
       type(trc_eri_t) :: e
    end type eri_box
+
+   !
+   ! THE CONTEXT. One handle for a whole calculation: the molecule, the
+   ! basis and the auxiliary basis, every setting, the guess, the
+   ! communicator, and after a run its results. Set up in steps, in any
+   ! order, then run. The basis and ERI objects inside are the same boxes the
+   ! three-handle entries use, so the Fock family can borrow them through
+   ! trc_context_basis / trc_context_eri without a second copy.
+   !
+   type :: context_box
+      ! molecule
+      integer :: natm = 0, charge = 0, multiplicity = 1
+      real(dp), allocatable :: at_z(:), at_r(:, :)
+      logical :: have_mol = .false.
+      ! bases; `bb` also keeps the last SCF's orbitals, as the old entries do
+      type(basis_box) :: bb, ab
+      logical :: have_basis = .false., have_aux = .false.
+      ! settings
+      type(trc_scf_options_t) :: opts
+      integer :: guess_kind = TRC_GUESS_SAD
+      real(dp), allocatable :: dguess(:, :, :)
+      integer :: fcomm = -1
+      integer :: nfrozen = -1, aux_block = 256
+      ! the ERI context, only if something borrows it
+      type(eri_box), allocatable :: eb
+      ! results
+      type(trc_scf_result_t) :: res
+      integer :: nalpha = 0, nbeta = 0
+      logical :: scf_ok = .false., rimp2_ok = .false.
+      real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
+      character(len=256) :: message = ""
+   end type context_box
 
 contains
 
@@ -803,5 +848,799 @@ contains
       bb%nalpha = int(nalpha); bb%nbeta = int(nbeta)
       status = merge(TRC_OK, TRC_ERR_NOCONV, res%converged)
    end function scf_entry
+
+
+   ! ======================================================================
+   ! The context surface
+   ! ======================================================================
+
+   function trc_create(handle) result(status) bind(c, name="trc_create")
+      type(c_ptr), intent(out) :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      allocate (cx)
+      handle = c_loc(cx)
+      status = TRC_OK
+   end function trc_create
+
+   function trc_destroy(handle) result(status) bind(c, name="trc_destroy")
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      call drop_eri(cx)
+      if (cx%have_basis) call cx%bb%b%release()
+      if (cx%have_aux) call cx%ab%b%release()
+      deallocate (cx)
+      status = TRC_OK
+   end function trc_destroy
+
+   subroutine drop_eri(cx)
+      type(context_box), intent(inout) :: cx
+      if (allocated(cx%eb)) then
+         call cx%eb%e%release()
+         deallocate (cx%eb)
+      end if
+   end subroutine drop_eri
+
+   subroutine invalidate_runs(cx)
+      !! A setting the results depended on changed.
+      type(context_box), intent(inout) :: cx
+      cx%scf_ok = .false.; cx%rimp2_ok = .false.
+      cx%message = ""
+   end subroutine invalidate_runs
+
+   function trc_set_molecule(handle, natm, z, xyz, charge, multiplicity) result(status) &
+      bind(c, name="trc_set_molecule")
+      !! Atoms in Bohr, nuclear charges as doubles, atom-major coordinates.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm, charge, multiplicity
+      real(c_double), intent(in) :: z(*), xyz(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (natm <= 0 .or. multiplicity < 1) return
+      if (allocated(cx%at_z)) deallocate (cx%at_z, cx%at_r)
+      allocate (cx%at_z(natm), cx%at_r(3, natm))
+      do i = 1, natm
+         cx%at_z(i) = real(z(i), dp)
+         cx%at_r(:, i) = real(xyz(3*i - 2:3*i), dp)
+      end do
+      cx%natm = int(natm); cx%charge = int(charge); cx%multiplicity = int(multiplicity)
+      cx%have_mol = .true.
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_molecule
+
+   subroutine take_basis(cx, aux, b)
+      !! Move a freshly built basis into the context, then to the device.
+      !! The copy goes up, not `b`: the device present-table is keyed on
+      !! host addresses, and a basis moved up before being assigned leaves
+      !! the context's arrays at addresses the table has never seen.
+      type(context_box), intent(inout) :: cx
+      logical, intent(in) :: aux
+      type(trc_basis_t), intent(inout) :: b
+      if (aux) then
+         ! A new auxiliary basis touches the correlated step only; the SCF
+         ! stands, which is how a driver sets it after the SCF has run.
+         if (cx%have_aux) call cx%ab%b%release()
+         cx%ab%b = b
+         call cx%ab%b%to_device()
+         cx%have_aux = .true.
+         cx%rimp2_ok = .false.
+         call b%release()
+         return
+      else
+         if (cx%have_basis) call cx%bb%b%release()
+         cx%bb%b = b
+         call cx%bb%b%to_device()
+         if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
+         cx%have_basis = .true.
+         call drop_eri(cx)
+      end if
+      call b%release()
+      call invalidate_runs(cx)
+   end subroutine take_basis
+
+   function basis_libcint(handle, aux, atm, natm, bas, nshell, env, nenv, cartesian) result(status)
+      type(c_ptr), value :: handle
+      logical, intent(in) :: aux
+      integer(c_int), value :: natm, nshell, nenv, cartesian
+      integer(c_int), intent(in) :: atm(*), bas(*)
+      real(c_double), intent(in) :: env(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_basis_t) :: b
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (natm <= 0 .or. nshell <= 0 .or. nenv <= 0) return
+      if (cartesian == 0) then
+         status = TRC_ERR_UNSUPPORTED
+         return
+      end if
+      call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
+      call take_basis(cx, aux, b)
+      status = TRC_OK
+   end function basis_libcint
+
+   function trc_set_basis_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
+      bind(c, name="trc_set_basis_libcint")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm, nshell, nenv, cartesian
+      integer(c_int), intent(in) :: atm(*), bas(*)
+      real(c_double), intent(in) :: env(*)
+      integer(c_int) :: status
+      status = basis_libcint(handle, .false., atm, natm, bas, nshell, env, nenv, cartesian)
+   end function trc_set_basis_libcint
+
+   function trc_set_aux_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
+      bind(c, name="trc_set_aux_libcint")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm, nshell, nenv, cartesian
+      integer(c_int), intent(in) :: atm(*), bas(*)
+      real(c_double), intent(in) :: env(*)
+      integer(c_int) :: status
+      status = basis_libcint(handle, .true., atm, natm, bas, nshell, env, nenv, cartesian)
+   end function trc_set_aux_libcint
+
+   function basis_arrays(handle, aux, nshell, maxnp, l, nprim, exps, coefs, centres) result(status)
+      !! Needs the molecule first: the nuclei come from it.
+      type(c_ptr), value :: handle
+      logical, intent(in) :: aux
+      integer(c_int), value :: nshell, maxnp
+      integer(c_int), intent(in) :: l(*), nprim(*)
+      real(c_double), intent(in) :: exps(*), coefs(*), centres(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_basis_t) :: b
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) return
+      status = TRC_ERR_BADARG
+      if (nshell <= 0 .or. maxnp <= 0) return
+      do i = 1, nshell
+         if (nprim(i) < 1 .or. nprim(i) > maxnp .or. l(i) < 0) return
+      end do
+      call b%build(int(nshell), int(l(1:nshell)), int(nprim(1:nshell)), &
+                   real(reshape(exps(1:maxnp*nshell), [int(maxnp), int(nshell)]), dp), &
+                   real(reshape(coefs(1:maxnp*nshell), [int(maxnp), int(nshell)]), dp), &
+                   real(reshape(centres(1:3*nshell), [3, int(nshell)]), dp), &
+                   cx%natm, cx%at_z, cx%at_r, int(maxnp))
+      call take_basis(cx, aux, b)
+      status = TRC_OK
+   end function basis_arrays
+
+   function trc_set_basis_arrays(handle, nshell, maxnp, l, nprim, exps, coefs, centres) result(status) &
+      bind(c, name="trc_set_basis_arrays")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: nshell, maxnp
+      integer(c_int), intent(in) :: l(*), nprim(*)
+      real(c_double), intent(in) :: exps(*), coefs(*), centres(*)
+      integer(c_int) :: status
+      status = basis_arrays(handle, .false., nshell, maxnp, l, nprim, exps, coefs, centres)
+   end function trc_set_basis_arrays
+
+   function trc_set_aux_arrays(handle, nshell, maxnp, l, nprim, exps, coefs, centres) result(status) &
+      bind(c, name="trc_set_aux_arrays")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: nshell, maxnp
+      integer(c_int), intent(in) :: l(*), nprim(*)
+      real(c_double), intent(in) :: exps(*), coefs(*), centres(*)
+      integer(c_int) :: status
+      status = basis_arrays(handle, .true., nshell, maxnp, l, nprim, exps, coefs, centres)
+   end function trc_set_aux_arrays
+
+   function basis_json(handle, aux, path) result(status)
+      !! A MolSSI BSE JSON file, read for the molecule already set.
+      type(c_ptr), value :: handle
+      logical, intent(in) :: aux
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_basis_t) :: b
+      type(error_t) :: err
+      character(len=1024) :: fpath
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) return
+      fpath = ""
+      do i = 1, len(fpath)
+         if (path(i) == c_null_char) exit
+         fpath(i:i) = path(i)
+      end do
+      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err)
+      if (err%has_error()) then
+         cx%message = err%get_message()
+         status = TRC_ERR_BADARG
+         return
+      end if
+      call take_basis(cx, aux, b)
+      status = TRC_OK
+   end function basis_json
+
+   function trc_set_basis_json(handle, path) result(status) bind(c, name="trc_set_basis_json")
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      status = basis_json(handle, .false., path)
+   end function trc_set_basis_json
+
+   function trc_set_aux_json(handle, path) result(status) bind(c, name="trc_set_aux_json")
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      status = basis_json(handle, .true., path)
+   end function trc_set_aux_json
+
+   function trc_set_method(handle, functional, grid_level) result(status) bind(c, name="trc_set_method")
+      !! An empty functional name is Hartree-Fock.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: functional(*)
+      integer(c_int), value :: grid_level
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (grid_level < 0) return
+      cx%opts%functional = ""
+      do i = 1, len(cx%opts%functional)
+         if (functional(i) == c_null_char) exit
+         cx%opts%functional(i:i) = functional(i)
+      end do
+      cx%opts%grid_level = int(grid_level)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_method
+
+   function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) result(status) &
+      bind(c, name="trc_set_convergence")
+      type(c_ptr), value :: handle
+      real(c_double), value :: conv_energy, conv_diis
+      integer(c_int), value :: max_iter, ndiis
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (conv_energy <= 0.0_c_double .or. conv_diis <= 0.0_c_double .or. max_iter < 1 .or. ndiis < 1) return
+      cx%opts%conv_energy = real(conv_energy, dp)
+      cx%opts%conv_diis = real(conv_diis, dp)
+      cx%opts%max_iter = int(max_iter)
+      cx%opts%ndiis = int(ndiis)
+      status = TRC_OK
+   end function trc_set_convergence
+
+   function trc_set_screening(handle, thresh) result(status) bind(c, name="trc_set_screening")
+      type(c_ptr), value :: handle
+      real(c_double), value :: thresh
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (thresh <= 0.0_c_double) return
+      cx%opts%eri_thresh = real(thresh, dp)
+      call drop_eri(cx)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_screening
+
+   function trc_set_guess(handle, kind, dguess, nspin) result(status) bind(c, name="trc_set_guess")
+      !! `kind` one of TRC_GUESS_*. For TRC_GUESS_GIVEN, `dguess` is
+      !! (nao, nao, nspin) column-major and is COPIED here; the caller's array
+      !! is free afterwards. The basis must be set first for that copy.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: kind, nspin
+      type(c_ptr), value :: dguess
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      real(c_double), pointer :: dg(:, :, :)
+      integer :: n
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_GIVEN) return
+      if (allocated(cx%dguess)) deallocate (cx%dguess)
+      if (kind == TRC_GUESS_GIVEN) then
+         if (.not. c_associated(dguess) .or. nspin < 1 .or. nspin > 2) return
+         status = TRC_ERR_STATE
+         if (.not. cx%have_basis) return
+         n = cx%bb%b%nao
+         call c_f_pointer(dguess, dg, [n, n, int(nspin)])
+         allocate (cx%dguess(n, n, nspin))
+         cx%dguess = real(dg, dp)
+      end if
+      cx%guess_kind = int(kind)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_guess
+
+   function trc_set_comm(handle, fcomm) result(status) bind(c, name="trc_set_comm")
+      !! A Fortran communicator handle; -1 means one rank. MPI_COMM_WORLD only.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: fcomm
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%fcomm = int(fcomm)
+      status = TRC_OK
+   end function trc_set_comm
+
+   function trc_set_verbose(handle, level) result(status) bind(c, name="trc_set_verbose")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: level
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%opts%verbose = level > 0
+      status = TRC_OK
+   end function trc_set_verbose
+
+   function trc_set_rimp2(handle, nfrozen, aux_block) result(status) bind(c, name="trc_set_rimp2")
+      !! `nfrozen` -1 counts the core from the elements; `aux_block` <= 0 is
+      !! the whole auxiliary basis at once.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: nfrozen, aux_block
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%nfrozen = int(nfrozen); cx%aux_block = int(aux_block)
+      cx%rimp2_ok = .false.
+      status = TRC_OK
+   end function trc_set_rimp2
+
+   subroutine world_comm(cx, comm, ok, status)
+      !! The communicator a run splits over, if the context names one.
+#ifdef TERCO_HAVE_MPI
+      use mpi_f08, only: MPI_COMM_WORLD
+#endif
+      type(context_box), intent(in) :: cx
+      type(comm_t), intent(out) :: comm
+      logical, intent(out) :: ok
+      integer(c_int), intent(out) :: status
+      integer :: dev
+      ok = .false.; status = TRC_OK
+      if (cx%fcomm == -1) return
+#ifdef TERCO_HAVE_MPI
+      if (cx%fcomm /= MPI_COMM_WORLD%mpi_val) then
+         status = TRC_ERR_UNSUPPORTED
+         return
+      end if
+#endif
+      comm = comm_world()
+      dev = trc_bind_device(comm%rank())
+      ok = .true.
+   end subroutine world_comm
+
+   function trc_run_scf(handle) result(status) bind(c, name="trc_run_scf")
+      !! Needs the molecule and the basis. Builds the guess it was asked for,
+      !! runs, keeps everything in the context.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_scf_options_t) :: opts
+      type(comm_t) :: comm
+      type(error_t) :: err
+      real(dp), allocatable :: dsad(:, :), dg(:, :, :)
+      integer :: nelec, nunp, nalpha, nbeta, nspin, n
+      logical :: collective
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%scf_ok = .false.; cx%rimp2_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. (cx%have_mol .and. cx%have_basis)) then
+         cx%message = "trc_run_scf: set the molecule and the basis first"
+         return
+      end if
+      n = cx%bb%b%nao
+      nelec = nint(sum(cx%at_z)) - cx%charge
+      nunp = cx%multiplicity - 1
+      status = TRC_ERR_BADARG
+      if (nelec < 0 .or. nunp > nelec .or. mod(nelec - nunp, 2) /= 0) then
+         cx%message = "trc_run_scf: charge and multiplicity do not fit the electron count"
+         return
+      end if
+      nalpha = (nelec + nunp)/2; nbeta = nelec - nalpha
+      if (nalpha > n) then
+         cx%message = "trc_run_scf: more electrons than functions"
+         return
+      end if
+      nspin = merge(2, 1, nalpha /= nbeta .or. cx%opts%unrestricted)
+      opts = cx%opts
+      select case (cx%guess_kind)
+      case (TRC_GUESS_CORE)
+         opts%guess = "core"
+      case (TRC_GUESS_GWH)
+         opts%guess = "gwh"
+      case (TRC_GUESS_SAD)
+         call trc_sad_build(cx%bb%b, dsad, err, verbose=cx%opts%verbose)
+         if (err%has_error()) then
+            cx%message = err%get_message()
+            return
+         end if
+         allocate (dg(n, n, nspin))
+         if (nspin == 1) then
+            dg(:, :, 1) = dsad
+         else
+            dg(:, :, 1) = 0.5_dp*dsad; dg(:, :, 2) = 0.5_dp*dsad
+         end if
+      case (TRC_GUESS_GIVEN)
+         if (.not. allocated(cx%dguess)) then
+            cx%message = "trc_run_scf: guess GIVEN but no density was given"
+            status = TRC_ERR_STATE
+            return
+         end if
+         if (size(cx%dguess, 3) /= nspin) then
+            cx%message = "trc_run_scf: the given density has the wrong spin count for this molecule"
+            return
+         end if
+         dg = cx%dguess
+      end select
+      call world_comm(cx, comm, collective, status)
+      if (status /= TRC_OK) return
+      if (allocated(dg)) then
+         if (collective) then
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm)
+         else
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg)
+         end if
+      else
+         if (collective) then
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm)
+         else
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res)
+         end if
+      end if
+      if (collective) call comm%finalize()
+      cx%message = cx%res%message
+      if (len_trim(cx%res%message) > 0 .and. cx%res%iterations == 0) then
+         status = TRC_ERR_UNSUPPORTED
+         return
+      end if
+      ! the orbitals, where the old RI-MP2 entry also looks for them
+      if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
+      allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
+      cx%bb%cmo = cx%res%cmo; cx%bb%eps = cx%res%eps
+      cx%bb%nalpha = nalpha; cx%bb%nbeta = nbeta
+      cx%nalpha = nalpha; cx%nbeta = nbeta
+      cx%scf_ok = .true.
+      status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
+   end function trc_run_scf
+
+   pure integer function core_orbitals(z)
+      !! Frozen-core orbitals for one element, by period.
+      real(dp), intent(in) :: z
+      integer :: iz
+      iz = nint(z)
+      if (iz <= 2) then
+         core_orbitals = 0
+      else if (iz <= 10) then
+         core_orbitals = 1
+      else if (iz <= 18) then
+         core_orbitals = 5
+      else if (iz <= 36) then
+         core_orbitals = 9
+      else if (iz <= 54) then
+         core_orbitals = 18
+      else
+         core_orbitals = 27
+      end if
+   end function core_orbitals
+
+   function trc_run_rimp2(handle) result(status) bind(c, name="trc_run_rimp2")
+      !! Needs a converged closed-shell SCF in the context and an auxiliary basis.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_pairlist_t) :: pl
+      type(trc_rimp2_result_t) :: res
+      type(comm_t) :: comm
+      integer :: nfrozen, nblk, i
+      logical :: collective
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%rimp2_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_run_rimp2: run the SCF first"
+         return
+      end if
+      if (.not. cx%have_aux) then
+         cx%message = "trc_run_rimp2: no auxiliary basis was set"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%res%nspin /= 1 .or. cx%nalpha /= cx%nbeta) then
+         cx%message = "trc_run_rimp2: restricted closed-shell reference only"
+         return
+      end if
+      nfrozen = cx%nfrozen
+      if (nfrozen < 0) then
+         nfrozen = 0
+         do i = 1, cx%natm
+            nfrozen = nfrozen + core_orbitals(cx%at_z(i))
+         end do
+      end if
+      status = TRC_ERR_BADARG
+      if (nfrozen >= cx%nalpha) then
+         cx%message = "trc_run_rimp2: every occupied orbital is frozen"
+         return
+      end if
+      nblk = cx%aux_block
+      if (nblk <= 0) nblk = cx%ab%b%nao
+      call world_comm(cx, comm, collective, status)
+      if (status /= TRC_OK) return
+      call pl%build(cx%bb%b, cx%opts%eri_thresh)
+      call pl%to_device()
+      if (collective) then
+         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+                            nfrozen=nfrozen, aux_block=nblk, comm=comm)
+         call comm%finalize()
+      else
+         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+                            nfrozen=nfrozen, aux_block=nblk)
+      end if
+      call pl%release()
+      cx%e_os = res%e_os; cx%e_ss = res%e_ss
+      cx%rimp2_ok = .true.
+      status = TRC_OK
+   end function trc_run_rimp2
+
+   ! ---- read back ---------------------------------------------------------
+
+   function trc_nao(handle, nao) result(status) bind(c, name="trc_nao")
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nao
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      nao = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_basis) return
+      nao = int(cx%bb%b%nao, c_int)
+      status = TRC_OK
+   end function trc_nao
+
+   function trc_nspin(handle, nspin) result(status) bind(c, name="trc_nspin")
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nspin
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      nspin = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      nspin = int(cx%res%nspin, c_int)
+      status = TRC_OK
+   end function trc_nspin
+
+   function trc_energy(handle, energy) result(status) bind(c, name="trc_energy")
+      !! The SCF total, plus the RI-MP2 correlation if that ran.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: energy
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      energy = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      energy = real(cx%res%energy, c_double)
+      if (cx%rimp2_ok) energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      status = TRC_OK
+   end function trc_energy
+
+   function trc_energy_parts(handle, e_nuc, e_one, e_two, e_xc) result(status) bind(c, name="trc_energy_parts")
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: e_nuc, e_one, e_two, e_xc
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      e_nuc = 0.0_c_double; e_one = 0.0_c_double; e_two = 0.0_c_double; e_xc = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      e_nuc = real(cx%res%e_nuc, c_double); e_one = real(cx%res%e_one, c_double)
+      e_two = real(cx%res%e_two, c_double); e_xc = real(cx%res%e_xc, c_double)
+      status = TRC_OK
+   end function trc_energy_parts
+
+   function trc_converged(handle, flag) result(status) bind(c, name="trc_converged")
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: flag
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      flag = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      flag = merge(1_c_int, 0_c_int, cx%res%converged)
+      status = TRC_OK
+   end function trc_converged
+
+   function trc_iterations(handle, niter) result(status) bind(c, name="trc_iterations")
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: niter
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      niter = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      niter = int(cx%res%iterations, c_int)
+      status = TRC_OK
+   end function trc_iterations
+
+   function trc_density(handle, dmat) result(status) bind(c, name="trc_density")
+      !! (nao, nao, nspin), column-major; restricted holds the total.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: dmat(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: n, ns
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      n = cx%bb%b%nao; ns = cx%res%nspin
+      dmat(1:n*n*ns) = real(reshape(cx%res%dmat, [n*n*ns]), c_double)
+      status = TRC_OK
+   end function trc_density
+
+   function trc_mo_coefficients(handle, cmo) result(status) bind(c, name="trc_mo_coefficients")
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: cmo(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: n, ns
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      n = cx%bb%b%nao; ns = cx%res%nspin
+      cmo(1:n*n*ns) = real(reshape(cx%res%cmo, [n*n*ns]), c_double)
+      status = TRC_OK
+   end function trc_mo_coefficients
+
+   function trc_mo_energies(handle, eps) result(status) bind(c, name="trc_mo_energies")
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: eps(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: n, ns
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      n = cx%bb%b%nao; ns = cx%res%nspin
+      eps(1:n*ns) = real(reshape(cx%res%eps, [n*ns]), c_double)
+      status = TRC_OK
+   end function trc_mo_energies
+
+   function trc_rimp2_energy(handle, e_os, e_ss) result(status) bind(c, name="trc_rimp2_energy")
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: e_os, e_ss
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      e_os = 0.0_c_double; e_ss = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%rimp2_ok) return
+      e_os = real(cx%e_os, c_double); e_ss = real(cx%e_ss, c_double)
+      status = TRC_OK
+   end function trc_rimp2_energy
+
+   function trc_message(handle, buf, buflen) result(status) bind(c, name="trc_message")
+      !! The last message, NUL-terminated into `buf` of `buflen` chars.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: i, n
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      n = min(len_trim(cx%message), int(buflen) - 1)
+      do i = 1, n
+         buf(i) = cx%message(i:i)
+      end do
+      if (buflen > 0) buf(n + 1) = c_null_char
+      status = TRC_OK
+   end function trc_message
+
+   ! ---- borrowed handles for the Fock family ------------------------------
+
+   function trc_context_basis(handle, basis) result(status) bind(c, name="trc_context_basis")
+      !! The basis handle inside the context: BORROWED, never destroyed by
+      !! the caller, valid until the context is destroyed or the basis reset.
+      type(c_ptr), value :: handle
+      type(c_ptr), intent(out) :: basis
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      basis = c_null_ptr
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_basis) return
+      basis = c_loc(cx%bb)
+      status = TRC_OK
+   end function trc_context_basis
+
+   function trc_context_eri(handle, eri) result(status) bind(c, name="trc_context_eri")
+      !! The ERI context at the context's screening threshold, built on first
+      !! use. BORROWED, as trc_context_basis.
+      type(c_ptr), value :: handle
+      type(c_ptr), intent(out) :: eri
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(comm_t) :: comm
+      logical :: collective
+      eri = c_null_ptr
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_basis) return
+      if (.not. allocated(cx%eb)) then
+         allocate (cx%eb)
+         call world_comm(cx, comm, collective, status)
+         if (status /= TRC_OK) then
+            deallocate (cx%eb)
+            return
+         end if
+         if (collective) then
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm)
+         else
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh)
+         end if
+      end if
+      eri = c_loc(cx%eb)
+      status = TRC_OK
+   end function trc_context_eri
 
 end module trc_capi
