@@ -72,7 +72,16 @@ module trc_scf_driver
       character(len=8) :: guess = "gwh"
       logical :: unrestricted = .false.      !! forced; an open shell is unrestricted regardless
       real(dp) :: conv_energy = 1.0e-10_dp
-      real(dp) :: conv_density = 1.0e-7_dp   !! RMS change per element
+      real(dp) :: conv_density = 1.0e-7_dp   !! RMS change per element, printed; no longer gates
+      !! Frobenius norm of the orthogonalised commutator X^T (FDS - SDF) X,
+      !! the DIIS error, below which the SCF is converged once the energy
+      !! change is too. The density change was the gate before, and on
+      !! cholesterol/PBE it sat at the noise floor of the quadrature and the
+      !! integral screen: energy converged to 1e-11 by iteration 40, then 37
+      !! more iterations waiting for an RMS change under 1e-7 that wandered
+      !! between 1e-7 and 1e-6. PySCF stops on the gradient norm at
+      !! sqrt(conv_tol) for the same reason.
+      real(dp) :: conv_diis = 1.0e-5_dp
       integer :: max_iter = 100
       integer :: ndiis = 10
       integer :: ndamp = 4                   !! damped steps before DIIS, at least
@@ -253,7 +262,7 @@ contains
       ! reader that kept dead primitives -- and that only shows here.
       if (talk) print '(a,i0,a,i0,a,i0,a,i0)', "   basis: ", nao, " functions, ", b%nshell, &
          " shells, ", sum(b%sh_np), " primitives, max ", maxval(b%sh_np)
-      if (talk) print '(a)', "   it        E(total)            dE          RMS(D)"
+      if (talk) print '(a)', "   it        E(total)            dE          RMS(D)      |FDS-SDF|"
       do it = 1, opts%max_iter
          tw0 = wall()
          ! --- two-electron part, resident ------------------------------------
@@ -326,10 +335,8 @@ contains
             dold(i, j, s) = res%dmat(i, j, s)
          end do
          ! --- DIIS, once the commutator is small enough to extrapolate from --
-         if (.not. diis_on .and. it > opts%ndamp) then
-            errmax = sqrt(la%dot(n2*nspin, errv, errv))
-            diis_on = errmax < opts%diis_start
-         end if
+         errmax = sqrt(la%dot(n2*nspin, errv, errv))
+         if (.not. diis_on .and. it > opts%ndamp) diis_on = errmax < opts%diis_start
          ! --- level shift while DIIS is off: F += mu (S - S D S / occ) --------
          if (.not. diis_on .and. opts%level_shift > 0.0_dp) then
             do s = 1, nspin
@@ -411,9 +418,9 @@ contains
          end do
          drms = sqrt(la%dot(n2*nspin, errv, errv))/real(nao, dp)
          t_rest = t_rest + (wall() - tw0)
-         if (talk) print '(i5,f22.12,es14.4,es14.4)', it, etot, etot - eold, drms
+         if (talk) print '(i5,f22.12,es14.4,es14.4,es14.4)', it, etot, etot - eold, drms, errmax
          res%iterations = it
-         if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. drms < opts%conv_density) then
+         if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. errmax < opts%conv_diis) then
             res%converged = .true.
             exit
          end if
