@@ -40,7 +40,7 @@ contains
       type(trc_basis_t) :: ab
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: res
-      integer :: ia, ish, ncached, k, a0, a1, z, nz, nel
+      integer :: ia, ish, ncached, k, a0, a1, z, nz, nel, na, nb
       logical :: talk
 
       talk = .false.
@@ -77,6 +77,7 @@ contains
       opts%functional = ""
       opts%guess = "core"
       opts%frac_occ = .true.
+      opts%unrestricted = .true.
       opts%conv_energy = 1.0e-8_dp
       opts%conv_diis = 1.0e-5_dp
       opts%max_iter = 100
@@ -103,7 +104,8 @@ contains
             call ab%to_device()
             nel = z
             opts%nelec_frac = real(nel, dp)
-            call trc_scf_run(ab, nel/2, nel/2, opts, res)
+            call hund_split(z, na, nb)
+            call trc_scf_run(ab, na, nb, opts, res)
             if (.not. res%converged) then
                call error%set(ERROR_VALIDATION, "trc_sad: the atomic SCF for Z = "//itoa(z)//" did not converge: "// &
                               trim(res%message))
@@ -115,13 +117,39 @@ contains
             ncached = ncached + 1
             cache_z(ncached) = z; cache_n(ncached) = nz
             allocate (cache(ncached)%d(nz, nz))
-            cache(ncached)%d = res%dmat(:, :, 1)
+            cache(ncached)%d = res%dmat(:, :, 1) + res%dmat(:, :, 2)
             call ab%release()
             k = ncached
          end if
          dguess(a0:a1, a0:a1) = cache(k)%d
       end do
    end subroutine trc_sad_build
+
+   pure subroutine hund_split(z, na, nb)
+      !! Alpha and beta counts of the free atom's ground state: closed shells
+      !! paired, the open subshell filled by Hund's rule, one spin first.
+      !! Subshell order and capacities are the aufbau ones; the spread over
+      !! the degenerate frontier is what keeps the atom spherical.
+      integer, intent(in) :: z
+      integer, intent(out) :: na, nb
+      integer, parameter :: cap(19) = [2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 14, 10, 6]
+      integer :: left, i, half, part
+      left = z; na = 0; nb = 0
+      do i = 1, size(cap)
+         if (left <= 0) exit
+         part = min(left, cap(i))
+         half = cap(i)/2
+         if (part <= half) then
+            na = na + part
+         else
+            na = na + half
+            nb = nb + (part - half)
+         end if
+         left = left - part
+      end do
+      ! whatever is beyond the table, paired
+      na = na + (left + 1)/2; nb = nb + left/2
+   end subroutine hund_split
 
    pure integer function ncart(l)
       integer, intent(in) :: l

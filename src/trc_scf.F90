@@ -83,11 +83,14 @@ module trc_scf_driver
       !! sqrt(conv_tol) for the same reason.
       real(dp) :: conv_diis = 1.0e-5_dp
       !! FRACTIONAL OCCUPATIONS, for the free-atom runs behind the SAD guess.
-      !! Restricted, spin-averaged: each iteration the orbitals are filled by
-      !! aufbau on their own eigenvalues with `nelec_frac` electrons, and the
-      !! degenerate set at the frontier shares what is left evenly, so the
-      !! atom comes out spherical (carbon: 2/3 of an electron in each p).
-      !! `nalpha`/`nbeta` are ignored for the count when this is on.
+      !! Each iteration the orbitals of a spin channel are filled by aufbau on
+      !! their own eigenvalues, and the degenerate set at the frontier shares
+      !! what is left evenly, so the atom comes out spherical. Restricted
+      !! (`unrestricted` off) fills `nelec_frac` electrons two per orbital;
+      !! unrestricted fills `nalpha` and `nbeta` one per orbital in their own
+      !! channels, a proper spin-polarised atom (carbon: two alpha thirds in
+      !! each p, no beta p). `nalpha`/`nbeta` are ignored for the count only
+      !! in the restricted case.
       logical :: frac_occ = .false.
       real(dp) :: nelec_frac = 0.0_dp
       integer :: max_iter = 100
@@ -188,9 +191,9 @@ contains
          exx = func%exx
       end if
       nspin = 1
-      if ((nalpha /= nbeta .or. opts%unrestricted) .and. .not. opts%frac_occ) nspin = 2
+      if ((nalpha /= nbeta .or. opts%unrestricted) .and. .not. (opts%frac_occ .and. .not. opts%unrestricted)) nspin = 2
       nocc = [nalpha, nbeta]
-      if (opts%frac_occ) nocc = int(opts%nelec_frac/2.0_dp)   ! the guess fills whole orbitals; the loop refills
+      if (opts%frac_occ .and. nspin == 1) nocc = int(opts%nelec_frac/2.0_dp)   ! the guess fills whole orbitals; the loop refills
       occ = merge(2.0_dp, 1.0_dp, nspin == 1)
       res%nspin = nspin
       ndamp = opts%ndamp
@@ -376,9 +379,18 @@ contains
             if (ndiis_used < opts%ndiis) then
                ndiis_used = ndiis_used + 1
             else
-               do concurrent(i=1:nao, j=1:nao, s=1:nspin, k=1:opts%ndiis - 1)
-                  fstore(i, j, s, k) = fstore(i, j, s, k + 1)
-                  estore(i, j, s, k) = estore(i, j, s, k + 1)
+               ! Slot by slot, IN ORDER: slot k reads slot k+1 and slot k+1 is
+               ! written next, so the slot loop carries a dependence. It was a
+               ! `do concurrent` over k as well, and on the device that let a
+               ! slot be overwritten before it was read: the history went
+               ! wrong exactly when the subspace filled, and the commutator
+               ! climbed for eight iterations on cholesterol before DIIS
+               ! recovered. The host ran the loop in order and never saw it.
+               do k = 1, opts%ndiis - 1
+                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                     fstore(i, j, s, k) = fstore(i, j, s, k + 1)
+                     estore(i, j, s, k) = estore(i, j, s, k + 1)
+                  end do
                end do
             end if
             k = ndiis_used
@@ -416,7 +428,11 @@ contains
             if (opts%frac_occ) then
                ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
                !$acc update self(res%eps(:, s))
-               call frac_occupations(nao, res%eps(:, s), opts%nelec_frac, ofrac, nfrac)
+               if (nspin == 1) then
+                  call frac_occupations(nao, res%eps(:, s), opts%nelec_frac, 2.0_dp, ofrac, nfrac)
+               else
+                  call frac_occupations(nao, res%eps(:, s), real(nocc(s), dp), 1.0_dp, ofrac, nfrac)
+               end if
                !$acc update device(ofrac)
                do concurrent(i=1:nao, j=1:nao)
                   w1(i, j) = res%cmo(i, j, s)*sqrt(ofrac(j))
@@ -514,21 +530,22 @@ contains
          res%dmat(:, :, s) = d
       end subroutine guess_from
 
-      pure subroutine frac_occupations(n, eps, nelec, o, nocc_out)
-         !! Aufbau over the eigenvalues, two per orbital, the frontier's
-         !! degenerate set (within FRAC_TOL) sharing the remainder evenly.
-         !! `nocc_out` is the last orbital with any occupation, for the GEMM.
+      pure subroutine frac_occupations(n, eps, nelec, omax, o, nocc_out)
+         !! Aufbau over the eigenvalues, `omax` per orbital (2 restricted, 1 per
+         !! spin channel), the frontier's degenerate set (within FRAC_TOL)
+         !! sharing the remainder evenly. `nocc_out` is the last orbital with
+         !! any occupation, for the GEMM.
          integer, intent(in) :: n
-         real(dp), intent(in) :: eps(n), nelec
+         real(dp), intent(in) :: eps(n), nelec, omax
          real(dp), intent(out) :: o(n)
          integer, intent(out) :: nocc_out
          real(dp), parameter :: FRAC_TOL = 1.0e-3_dp
          integer :: nfull, i, g0, g1, ninside
          real(dp) :: rem, ef, share
-         nfull = int(nelec/2.0_dp)
-         rem = nelec - 2.0_dp*real(nfull, dp)
+         nfull = int(nelec/omax)
+         rem = nelec - omax*real(nfull, dp)
          o = 0.0_dp
-         if (nfull > 0) o(1:min(nfull, n)) = 2.0_dp
+         if (nfull > 0) o(1:min(nfull, n)) = omax
          nocc_out = min(nfull, n)
          if (nfull >= n) return
          ! the frontier: the first not-full orbital when electrons are left,
@@ -546,7 +563,7 @@ contains
          end do
          if (g1 < g0) return
          ninside = count([(i <= nfull, i=g0, g1)])
-         share = (2.0_dp*real(ninside, dp) + rem)/real(g1 - g0 + 1, dp)
+         share = (omax*real(ninside, dp) + rem)/real(g1 - g0 + 1, dp)
          o(g0:g1) = share
          nocc_out = g1
       end subroutine frac_occupations
