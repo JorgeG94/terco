@@ -42,6 +42,22 @@ set(TERCO_GPU_ARCH
     "cc70"
     CACHE STRING "Target GPU architecture, as nvfortran spells it (cc70, cc80, ...)")
 
+#
+# The CUDA version the device code is built for, and with it the directory
+# `-cudalib` takes cuBLAS and cuSOLVER from: nvfortran resolves
+# `-cudalib=cublas,cusolver` to `$NVHPC_ROOT/math_libs/<version>/lib64`, and
+# when its default version -- the driver's, or NVHPC_CUDA_HOME's -- has no
+# such directory, the link fails with "cannot find -lcusolver" and no path
+# named. Perlmutter's NVHPC 26.5 defaults to CUDA 13.2 and ships the math
+# libraries for other versions. Empty leaves the compiler's default; a
+# version, spelled as `ls $NVHPC_ROOT/math_libs` shows it (12.4, 12.9),
+# becomes `-gpu=...,cudaX.Y`, which selects code generation and the math
+# libraries together, so the two cannot disagree.
+#
+set(TERCO_CUDA_VERSION
+    ""
+    CACHE STRING "CUDA version to build against (empty: nvfortran's default), e.g. 12.9")
+
 option(TERCO_ENABLE_TESTING "Build the correctness checks" ON)
 #
 # Ranks. The Fock build splits the sorted quartet list across ranks -- every
