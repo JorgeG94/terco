@@ -59,6 +59,12 @@ program context_scf
    rc = trc_set_basis_json(h, 'basis_sets/cc-pvdz.json'//c_null_char)
    call expect(rc == TRC_ERR_STATE, "basis before molecule is STATE")
    rc = trc_run_rimp2(h);                   call expect(rc == TRC_ERR_STATE, "rimp2 before scf is STATE")
+   rc = trc_message(h, msg, 256_c_int);     call expect(rc == TRC_OK .and. msg(1) /= c_null_char, "a refusal leaves a message")
+   rc = trc_set_method(h, 'pbe99'//c_null_char, 3_c_int)
+   call expect(rc /= TRC_OK, "an unknown functional is refused at the setter")
+   rc = trc_message(h, msg, 256_c_int);     call expect(index(transfer(msg, repeat(' ', 256)), 'pbe99') > 0, "and named")
+   rc = trc_set_method(h, ''//c_null_char, -1_c_int)
+   call expect(rc /= TRC_OK, "a negative grid level is refused")
 
    ! --- the same calculation through the handle ----------------------------
    rc = trc_set_molecule(h, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)

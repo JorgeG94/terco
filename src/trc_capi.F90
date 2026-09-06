@@ -39,6 +39,7 @@ module trc_capi
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build
    use trc_error, only: error_t
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use pic_mpi_lib, only: comm_t, comm_world
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    implicit none
@@ -885,6 +886,21 @@ contains
       end if
    end subroutine drop_eri
 
+   subroutine refuse(cx, why)
+      !! What a setter would not take, and what it takes instead: the reason
+      !! lives in the context so trc_message answers "what do I change?"
+      !! whichever driver asked.
+      type(context_box), intent(inout) :: cx
+      character(len=*), intent(in) :: why
+      cx%message = why
+   end subroutine refuse
+
+   pure function itoa(i) result(t)
+      integer, intent(in) :: i
+      character(len=16) :: t
+      write (t, '(i0)') i
+   end function itoa
+
    subroutine invalidate_runs(cx)
       !! A setting the results depended on changed.
       type(context_box), intent(inout) :: cx
@@ -905,7 +921,15 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (natm <= 0 .or. multiplicity < 1) return
+      if (natm <= 0) then
+         call refuse(cx, "trc_set_molecule: natm must be positive, got "//trim(itoa(int(natm))))
+         return
+      end if
+      if (multiplicity < 1) then
+         call refuse(cx, "trc_set_molecule: multiplicity is 2S+1 and must be at least 1, got "// &
+                     trim(itoa(int(multiplicity))))
+         return
+      end if
       if (allocated(cx%at_z)) deallocate (cx%at_z, cx%at_r)
       allocate (cx%at_z(natm), cx%at_r(3, natm))
       do i = 1, natm
@@ -961,9 +985,14 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (natm <= 0 .or. nshell <= 0 .or. nenv <= 0) return
+      if (natm <= 0 .or. nshell <= 0 .or. nenv <= 0) then
+         call refuse(cx, "trc_set_basis_libcint: natm, nshell and nenv must all be positive")
+         return
+      end if
       if (cartesian == 0) then
          status = TRC_ERR_UNSUPPORTED
+         call refuse(cx, "trc_set_basis_libcint: terco builds every shell Cartesian; pass cartesian = 1 "// &
+                     "and a Cartesian basis, a spherical one is not reinterpreted")
          return
       end if
       call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
@@ -1006,11 +1035,21 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
-      if (.not. cx%have_mol) return
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_basis_arrays: set the molecule first; the shells need its nuclei")
+         return
+      end if
       status = TRC_ERR_BADARG
-      if (nshell <= 0 .or. maxnp <= 0) return
+      if (nshell <= 0 .or. maxnp <= 0) then
+         call refuse(cx, "trc_set_basis_arrays: nshell and maxnp must be positive")
+         return
+      end if
       do i = 1, nshell
-         if (nprim(i) < 1 .or. nprim(i) > maxnp .or. l(i) < 0) return
+         if (nprim(i) < 1 .or. nprim(i) > maxnp .or. l(i) < 0) then
+            call refuse(cx, "trc_set_basis_arrays: shell "//trim(itoa(i))//" has nprim "// &
+                        trim(itoa(int(nprim(i))))//" (1..maxnp) or l "//trim(itoa(int(l(i))))//" (>= 0)")
+            return
+         end if
       end do
       call b%build(int(nshell), int(l(1:nshell)), int(nprim(1:nshell)), &
                    real(reshape(exps(1:maxnp*nshell), [int(maxnp), int(nshell)]), dp), &
@@ -1056,7 +1095,10 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
-      if (.not. cx%have_mol) return
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_basis_json: set the molecule first; the file is read for its elements")
+         return
+      end if
       fpath = ""
       do i = 1, len(fpath)
          if (path(i) == c_null_char) exit
@@ -1093,17 +1135,32 @@ contains
       integer(c_int), value :: grid_level
       integer(c_int) :: status
       type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
       integer :: i
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (grid_level < 0) return
+      if (grid_level < 0) then
+         call refuse(cx, "trc_set_method: grid_level "//trim(itoa(int(grid_level)))// &
+                     " -- terco builds its grids by level, 0 upward; it has no explicit point counts")
+         return
+      end if
       cx%opts%functional = ""
       do i = 1, len(cx%opts%functional)
          if (functional(i) == c_null_char) exit
          cx%opts%functional(i:i) = functional(i)
       end do
+      if (len_trim(cx%opts%functional) > 0) then
+         if (.not. xc_functional_by_name(cx%opts%functional, func)) then
+            status = TRC_ERR_UNSUPPORTED
+            call refuse(cx, "trc_set_method: unknown functional '"//trim(cx%opts%functional)// &
+                        "'; terco has lda_x (slater), svwn, svwn_rpa, pbe, blyp, pbe0, b3lyp, b3lyp5, "// &
+                        "or an empty name for Hartree-Fock")
+            cx%opts%functional = ""
+            return
+         end if
+      end if
       cx%opts%grid_level = int(grid_level)
       call invalidate_runs(cx)
       status = TRC_OK
@@ -1120,7 +1177,18 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (conv_energy <= 0.0_c_double .or. conv_diis <= 0.0_c_double .or. max_iter < 1 .or. ndiis < 1) return
+      if (conv_energy <= 0.0_c_double) then
+         call refuse(cx, "trc_set_convergence: conv_energy must be positive"); return
+      end if
+      if (conv_diis <= 0.0_c_double) then
+         call refuse(cx, "trc_set_convergence: conv_diis must be positive (the commutator norm gate)"); return
+      end if
+      if (max_iter < 1) then
+         call refuse(cx, "trc_set_convergence: max_iter must be at least 1, got "//trim(itoa(int(max_iter)))); return
+      end if
+      if (ndiis < 1) then
+         call refuse(cx, "trc_set_convergence: ndiis must be at least 1, got "//trim(itoa(int(ndiis)))); return
+      end if
       cx%opts%conv_energy = real(conv_energy, dp)
       cx%opts%conv_diis = real(conv_diis, dp)
       cx%opts%max_iter = int(max_iter)
@@ -1137,7 +1205,10 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (thresh <= 0.0_c_double) return
+      if (thresh <= 0.0_c_double) then
+         call refuse(cx, "trc_set_screening: the threshold must be positive; 1e-12 is the default")
+         return
+      end if
       cx%opts%eri_thresh = real(thresh, dp)
       call drop_eri(cx)
       call invalidate_runs(cx)
@@ -1159,12 +1230,23 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_GIVEN) return
+      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_GIVEN) then
+         call refuse(cx, "trc_set_guess: kind "//trim(itoa(int(kind)))//" -- 0 core, 1 GWH, 2 SAD, 3 given")
+         return
+      end if
       if (allocated(cx%dguess)) deallocate (cx%dguess)
       if (kind == TRC_GUESS_GIVEN) then
-         if (.not. c_associated(dguess) .or. nspin < 1 .or. nspin > 2) return
+         if (.not. c_associated(dguess)) then
+            call refuse(cx, "trc_set_guess: kind 3 (given) needs a density pointer"); return
+         end if
+         if (nspin < 1 .or. nspin > 2) then
+            call refuse(cx, "trc_set_guess: nspin must be 1 or 2, got "//trim(itoa(int(nspin)))); return
+         end if
          status = TRC_ERR_STATE
-         if (.not. cx%have_basis) return
+         if (.not. cx%have_basis) then
+            call refuse(cx, "trc_set_guess: set the basis before giving a density; its size comes from there")
+            return
+         end if
          n = cx%bb%b%nao
          call c_f_pointer(dguess, dg, [n, n, int(nspin)])
          allocate (cx%dguess(n, n, nspin))
