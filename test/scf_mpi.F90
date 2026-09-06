@@ -123,6 +123,32 @@ program scf_mpi
       if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "scf_mpi: trc_scf_mpi vs driver  rhf ", &
          abs(e_c(1) - e(1)), "  pbe ", abs(e_c(2) - e(2))
       if (any(abs(e_c - e) > 1.0e-10_dp)) ok = .false.
+      ! The same two runs through the context, split over the same ranks. GWH
+      ! as the guess, which is what the driver above started from.
+      block
+         use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_arrays, &
+                                     trc_set_guess, trc_set_comm, trc_set_method, trc_run_scf, trc_energy, &
+                                     TRC_GUESS_GWH
+         type(c_ptr) :: h
+         real(c_double) :: e_h(2)
+         rc = trc_create(h)
+         if (rc == TRC_OK) rc = trc_set_molecule(h, int(natm, c_int), zat, reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+         if (rc == TRC_OK) rc = trc_set_basis_arrays(h, int(nsh, c_int), int(maxnp, c_int), lc, npc, &
+                                                     reshape(sh_e, [size(sh_e)]), reshape(sh_c, [size(sh_c)]), &
+                                                     reshape(sh_r, [size(sh_r)]))
+         if (rc == TRC_OK) rc = trc_set_guess(h, TRC_GUESS_GWH, c_null_ptr, 1_c_int)
+         if (rc == TRC_OK) rc = trc_set_comm(h, fcomm)
+         if (rc == TRC_OK) rc = trc_run_scf(h)
+         if (rc == TRC_OK) rc = trc_energy(h, e_h(1))
+         if (rc == TRC_OK) rc = trc_set_method(h, 'pbe'//c_null_char, 3_c_int)
+         if (rc == TRC_OK) rc = trc_run_scf(h)
+         if (rc == TRC_OK) rc = trc_energy(h, e_h(2))
+         if (rc /= TRC_OK) ok = .false.
+         rc = trc_destroy(h)
+         if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "scf_mpi: context vs driver      rhf ", &
+            abs(e_h(1) - e(1)), "  pbe ", abs(e_h(2) - e(2))
+         if (any(abs(e_h - e) > 1.0e-10_dp)) ok = .false.
+      end block
    end block
 
    call bas%release()

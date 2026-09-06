@@ -147,7 +147,9 @@ program scf_rimp2
       if (rc /= TRC_OK) ok = .false.
       if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "  C entries vs driver:  E_RHF ", abs(e_lib - res%energy), &
          "   E_corr ", abs(c_os + c_ss - mp%e_corr)
-      if (abs(e_lib - res%energy) > 1.0e-10_dp .or. abs(c_os + c_ss - mp%e_corr) > 1.0e-10_dp) ok = .false.
+      ! Two SCFs converged separately, then two RI-MP2s over their orbitals:
+      ! the atomic accumulation order alone puts ~1e-10 between them.
+      if (abs(e_lib - res%energy) > 1.0e-10_dp .or. abs(c_os + c_ss - mp%e_corr) > 1.0e-9_dp) ok = .false.
       rc = trc_basis_destroy(haux); rc = trc_basis_destroy(hbas)
    end block
 

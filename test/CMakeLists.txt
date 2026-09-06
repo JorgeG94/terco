@@ -99,6 +99,7 @@ terco_add_check(check_xc_energy check_xc_energy.F90)
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
 terco_add_check(check_gc check_gc.F90 NEEDS_BASIS)
+terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
 
 # The public API end to end: overlap, kinetic, nuclear attraction, the two- and
 # three-centre Coulomb integrals, and the multipoles, all against libfint.
@@ -242,6 +243,15 @@ target_include_directories(terco_c_interfaces INTERFACE ${CMAKE_CURRENT_BINARY_D
 add_executable(scf_rimp2 scf_rimp2.F90)
 target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
+
+# The context surface against the Fortran drivers, through the compiled
+# interface declarations like scf_rimp2.
+add_executable(context_scf context_scf.F90)
+target_compile_definitions(context_scf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(context_scf PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
+add_test(NAME terco/context_scf COMMAND context_scf)
+set_tests_properties(terco/context_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 target_include_directories(scf_rimp2 PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_rimp2 COMMAND scf_rimp2)
 set_tests_properties(
