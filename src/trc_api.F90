@@ -40,10 +40,9 @@
 module trc_api
    use trc_boys, only: dp, boys_init
    use trc_tables, only: LMAX
-   use trc_1e_kernels, only: one_e_dispatch, ONE_E_LMAX
-   use trc_mult_kernels, only: multipole_dispatch, TRC_NMULT, MULT_LMAX
-   use trc_df_kernels, only: df_2c_dispatch, df_3c_dispatch, &
-                               DF_LMAX, DF_LMAX_AUX
+   use trc_1e_kernels, only: one_e_driver, ONE_E_LMAX
+   use trc_mult_kernels, only: mult_driver, TRC_NMULT, MULT_LMAX
+   use trc_df_kernels, only: df_2c_driver, df_3c_driver, DF_LMAX, DF_LMAX_AUX
    implicit none
    private
    public :: trc_basis_t, trc_pairlist_t
@@ -101,12 +100,10 @@ module trc_api
    !
    integer, parameter, private :: ASSERT_1E_COVERS_ERI = &
       1/merge(1, 0, ONE_E_LMAX >= LMAX)
-   !! Largest Cartesian block a shell pair can produce here. Fixed at compile
-   !! time because `do concurrent` locals must be, and because an in-kernel
-   !! allocate would stall the device.
-   integer, parameter :: NC_MAX = (TRC_MAXL + 1)*(TRC_MAXL + 2)/2
-   integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
-   integer, parameter :: NBLK3_MAX = NC_MAX*NC_MAX*NC_MAX
+   ! The 1e, multipole and DF drivers and their per-item routines live in
+   ! the four *_driver.inc files under src/inc, included into the kernel modules they dispatch
+   ! into: called from here they crossed a module boundary, and stdpar only
+   ! inlines within a translation unit.
    real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    !
@@ -250,7 +247,7 @@ contains
       real(dp), intent(in) :: sh_r(3, nshell)
       real(dp), intent(in) :: at_z(natm), at_r(3, natm)
 
-      integer :: i, k
+      integer :: i, k, n
 
       call this%release()
       call boys_init()
@@ -273,10 +270,25 @@ contains
          this%sh_l(i)  = sh_l(i)
          this%sh_np(i) = sh_np(i)
          this%sh_r(:, i) = sh_r(:, i)
+         ! Primitives with a zero coefficient are dropped here, once. A
+         ! general-contraction table lists every exponent of the block under
+         ! every column, so the uncontracted column of a cc-pVDZ carbon s
+         ! arrives with eight dead primitives out of nine; kept, they cost
+         ! the quartet loops their full price for nothing -- four times the
+         ! (ss|ss) work on that basis.
+         n = 0
          do k = 1, sh_np(i)
-            this%sh_e(k, i) = sh_e(k, i)
-            this%sh_c(k, i) = sh_c(k, i)*common_fac_sp(sh_l(i))
+            if (sh_c(k, i) == 0.0_dp) cycle
+            n = n + 1
+            this%sh_e(n, i) = sh_e(k, i)
+            this%sh_c(n, i) = sh_c(k, i)*common_fac_sp(sh_l(i))
          end do
+         if (n == 0) then
+            n = sh_np(i)
+            this%sh_e(1:n, i) = sh_e(1:n, i)
+            this%sh_c(1:n, i) = 0.0_dp
+         end if
+         this%sh_np(i) = n
          this%sh_ao(i) = this%nao + 1
          this%nao = this%nao + ncart(sh_l(i))
       end do
@@ -548,76 +560,6 @@ contains
                        b%sh_e, b%sh_c, b%sh_r, p%npair, p%p_i, p%p_j, orig, mmat)
    end subroutine trc_multipoles
 
-   subroutine mult_driver(nshell, nao, maxnp, sh_l, sh_np, sh_ao, &
-                          sh_e, sh_c, sh_r, npair, p_i, p_j, orig, mmat)
-      integer,  intent(in)  :: nshell, nao, maxnp, npair
-      integer,  intent(in)  :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in)  :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
-      real(dp), intent(in)  :: sh_r(3, nshell), orig(3)
-      integer,  intent(in)  :: p_i(npair), p_j(npair)
-      real(dp), intent(out) :: mmat(nao, nao, TRC_NMULT)
-
-      integer :: ij, i, j, k
-
-      ! `do concurrent` rather than an OpenACC parallel loop. The arrays are
-      ! already device-resident, so the standard construct is enough and the
-      ! directive was only ever spelling out what it already says.
-      do concurrent(k=1:TRC_NMULT, j=1:nao, i=1:nao)
-         mmat(i, j, k) = 0.0_dp
-      end do
-
-      do concurrent(ij = 1:npair)
-         call mult_item(p_i(ij), p_j(ij), nshell, nao, maxnp, sh_l, sh_np, &
-                        sh_ao, sh_e, sh_c, sh_r, orig, mmat)
-      end do
-   end subroutine mult_driver
-
-   pure subroutine mult_item(ii, jj, nshell, nao, maxnp, sh_l, sh_np, sh_ao, &
-                             sh_e, sh_c, sh_r, orig, mmat)
-      !$acc routine seq
-      integer,  intent(in)    :: ii, jj, nshell, nao, maxnp
-      integer,  intent(in)    :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
-      real(dp), intent(in)    :: sh_r(3, nshell), orig(3)
-      real(dp), intent(inout) :: mmat(nao, nao, TRC_NMULT)
-
-      integer  :: li, lj, ni, nj, a, c, mu, nu, k, ic
-      !
-      ! ONE DIMENSION, INDEXED BY HAND. The generated kernel declares its
-      ! output `mout(ni*nj, 39)` with the ACTUAL block size of its class,
-      ! and reaches this routine through a `mout(*)` dummy -- so it writes
-      ! component ic starting at (ic-1)*ni*nj. Declaring the buffer here as
-      ! `mblk(NBLK_MAX, TRC_NMULT)` reads it back with stride NBLK_MAX
-      ! instead, which agrees only for the one class whose block happens to
-      ! be NBLK_MAX and silently scrambles every other one. That bug cost a
-      ! day: the dipole x component is the first ni*nj elements and so came
-      ! out right, which made it look like an ordering problem in the
-      ! generator rather than a stride mismatch here.
-      !
-      real(dp) :: mblk(NBLK_MAX*TRC_NMULT)
-
-      li = sh_l(ii); lj = sh_l(jj)
-      ni = (li + 1)*(li + 2)/2
-      nj = (lj + 1)*(lj + 2)/2
-      call multipole_dispatch(li, lj, sh_np(ii), sh_np(jj), &
-                              sh_e(:, ii), sh_c(:, ii), &
-                              sh_e(:, jj), sh_c(:, jj), &
-                              sh_r(:, ii), sh_r(:, jj), orig, mblk)
-      k = 0
-      do c = 0, nj - 1
-         nu = sh_ao(jj) + c
-         do a = 0, ni - 1
-            mu = sh_ao(ii) + a
-            k = k + 1
-            do ic = 1, TRC_NMULT
-               ! the multipole matrices are symmetric: the operator is
-               ! multiplicative and carries no derivative
-               mmat(mu, nu, ic) = mblk(k + (ic - 1)*ni*nj)
-               mmat(nu, mu, ic) = mblk(k + (ic - 1)*ni*nj)
-            end do
-         end do
-      end do
-   end subroutine mult_item
 
    !> Overlap, kinetic and nuclear attraction, all three at once.
    subroutine trc_1e(b, p, smat, tmat, vmat)
@@ -636,87 +578,6 @@ contains
    ! declared first. An assumed-shape dummy makes nvfortran walk a descriptor
    ! per launch; reaching through b%component inside the loop does the same.
    !
-   subroutine one_e_driver(nshell, nao, natm, maxnp, sh_l, sh_np, sh_ao, &
-                           sh_e, sh_c, sh_r, at_z, at_r, &
-                           npair, p_i, p_j, smat, tmat, vmat)
-      integer,  intent(in)  :: nshell, nao, natm, maxnp, npair
-      integer,  intent(in)  :: p_i(npair), p_j(npair)
-      integer,  intent(in)  :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in)  :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
-      real(dp), intent(in)  :: sh_r(3, nshell)
-      real(dp), intent(in)  :: at_z(natm), at_r(3, natm)
-      real(dp), intent(out) :: smat(nao, nao), tmat(nao, nao), vmat(nao, nao)
-
-      integer :: ij, i, j
-
-      ! `do concurrent` rather than an OpenACC parallel loop. The arrays are
-      ! already device-resident, so the standard construct is enough and the
-      ! directive was only ever spelling out what it already says.
-      do concurrent(j=1:nao, i=1:nao)
-         smat(i, j) = 0.0_dp
-         tmat(i, j) = 0.0_dp
-         vmat(i, j) = 0.0_dp
-      end do
-
-      ! One thread per SURVIVING shell pair. The list is lower-triangular and
-      ! these matrices are symmetric, so each thread writes its block and the
-      ! transpose -- which is why the earlier full-square version existed. The
-      ! pair list changes the arithmetic: with screening, walking the square
-      ! costs a factor of two on top of computing pairs that are known to be
-      ! negligible.
-      !
-      ! The body lives in a `pure` item routine rather than inline, for two
-      ! reasons: nvfortran rejects a BLOCK construct inside `do concurrent`,
-      ! and declaring the scratch alongside the loop would make it SHARED
-      ! across threads -- the failure that silently corrupted the four-centre
-      ! per-class kernels once already.
-      do concurrent(ij = 1:npair)
-         call one_e_item(p_i(ij), p_j(ij), nshell, nao, natm, maxnp, sh_l, &
-                         sh_np, sh_ao, sh_e, sh_c, sh_r, at_z, at_r, &
-                         smat, tmat, vmat)
-      end do
-   end subroutine one_e_driver
-
-   pure subroutine one_e_item(ii, jj, nshell, nao, natm, maxnp, sh_l, sh_np, &
-                              sh_ao, sh_e, sh_c, sh_r, at_z, at_r, &
-                              smat, tmat, vmat)
-      !$acc routine seq
-      integer,  intent(in)    :: ii, jj, nshell, nao, natm, maxnp
-      integer,  intent(in)    :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
-      real(dp), intent(in)    :: sh_r(3, nshell)
-      real(dp), intent(in)    :: at_z(natm), at_r(3, natm)
-      real(dp), intent(inout) :: smat(nao, nao), tmat(nao, nao), vmat(nao, nao)
-
-      integer  :: li, lj, ni, nj, a, c, mu, nu, k
-      real(dp) :: sblk(NBLK_MAX), tblk(NBLK_MAX), vblk(NBLK_MAX)
-
-      li = sh_l(ii); lj = sh_l(jj)
-      ni = (li + 1)*(li + 2)/2
-      nj = (lj + 1)*(lj + 2)/2
-      call one_e_dispatch(li, lj, sh_np(ii), sh_np(jj), &
-                          sh_e(:, ii), sh_c(:, ii), &
-                          sh_e(:, jj), sh_c(:, jj), &
-                          sh_r(:, ii), sh_r(:, jj), &
-                          natm, at_z, at_r, sblk, tblk, vblk)
-      k = 0
-      do c = 0, nj - 1
-         nu = sh_ao(jj) + c
-         do a = 0, ni - 1
-            mu = sh_ao(ii) + a
-            k = k + 1
-            smat(mu, nu) = sblk(k)
-            tmat(mu, nu) = tblk(k)
-            vmat(mu, nu) = vblk(k)
-            ! symmetric counterpart; on the diagonal block (ii == jj) this
-            ! rewrites the same element with the same value, which is why it
-            ! needs no guard
-            smat(nu, mu) = sblk(k)
-            tmat(nu, mu) = tblk(k)
-            vmat(nu, mu) = vblk(k)
-         end do
-      end do
-   end subroutine one_e_item
 
    !> (P|Q) over an auxiliary basis.
    subroutine trc_df_2c(aux, jmat)
@@ -726,59 +587,6 @@ contains
                         aux%sh_ao, aux%sh_e, aux%sh_c, aux%sh_r, jmat)
    end subroutine trc_df_2c
 
-   subroutine df_2c_driver(nshell, nao, maxnp, sh_l, sh_np, sh_ao, &
-                           sh_e, sh_c, sh_r, jmat)
-      integer,  intent(in)  :: nshell, nao, maxnp
-      integer,  intent(in)  :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in)  :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
-      real(dp), intent(in)  :: sh_r(3, nshell)
-      real(dp), intent(out) :: jmat(nao, nao)
-
-      integer :: ij, i, j
-
-      ! `do concurrent` rather than an OpenACC parallel loop. The arrays are
-      ! already device-resident, so the standard construct is enough and the
-      ! directive was only ever spelling out what it already says.
-      do concurrent(j=1:nao, i=1:nao)
-         jmat(i, j) = 0.0_dp
-      end do
-
-      do concurrent(ij = 0:nshell*nshell - 1)
-         call df_2c_item(ij, nshell, nao, maxnp, sh_l, sh_np, sh_ao, &
-                         sh_e, sh_c, sh_r, jmat)
-      end do
-   end subroutine df_2c_driver
-
-   pure subroutine df_2c_item(ij, nshell, nao, maxnp, sh_l, sh_np, sh_ao, &
-                              sh_e, sh_c, sh_r, jmat)
-      !$acc routine seq
-      integer,  intent(in)    :: ij, nshell, nao, maxnp
-      integer,  intent(in)    :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
-      real(dp), intent(in)    :: sh_r(3, nshell)
-      real(dp), intent(inout) :: jmat(nao, nao)
-
-      integer  :: ii, jj, li, lj, ni, nj, a, c, mu, nu, k
-      real(dp) :: blk(NBLK_MAX)
-
-      ii = ij/nshell + 1
-      jj = mod(ij, nshell) + 1
-      li = sh_l(ii); lj = sh_l(jj)
-      ni = (li + 1)*(li + 2)/2
-      nj = (lj + 1)*(lj + 2)/2
-      call df_2c_dispatch(li, lj, sh_np(ii), sh_e(:, ii), sh_c(:, ii), &
-                          sh_r(:, ii), sh_np(jj), sh_e(:, jj), &
-                          sh_c(:, jj), sh_r(:, jj), blk)
-      k = 0
-      do c = 0, nj - 1
-         nu = sh_ao(jj) + c
-         do a = 0, ni - 1
-            mu = sh_ao(ii) + a
-            k = k + 1
-            jmat(mu, nu) = blk(k)
-         end do
-      end do
-   end subroutine df_2c_item
 
    !> (mu nu|P), the three-index tensor density fitting is built on.
    subroutine trc_df_3c(b, p, aux, tens)
@@ -792,98 +600,5 @@ contains
                         aux%sh_ao, aux%sh_e, aux%sh_c, aux%sh_r, tens)
    end subroutine trc_df_3c
 
-   subroutine df_3c_driver(nsh, nao, mnp, sh_l, sh_ao, sh_r, &
-                           npair, npp, p_i, p_j, pp_off, pp_n, &
-                           pp_z, pp_k, pp_p, pp_a, &
-                           nsx, nax, mnx, ax_l, ax_np, ax_ao, ax_e, ax_c, ax_r, &
-                           tens)
-      integer,  intent(in)  :: nsh, nao, mnp, npair, npp, nsx, nax, mnx
-      integer,  intent(in)  :: sh_l(nsh), sh_ao(nsh)
-      real(dp), intent(in)  :: sh_r(3, nsh)
-      integer,  intent(in)  :: p_i(npair), p_j(npair)
-      integer,  intent(in)  :: pp_off(npair), pp_n(npair)
-      real(dp), intent(in)  :: pp_z(npp), pp_k(npp), pp_p(3, npp), pp_a(3, npp)
-      integer,  intent(in)  :: ax_l(nsx), ax_np(nsx), ax_ao(nsx)
-      real(dp), intent(in)  :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
-      real(dp), intent(out) :: tens(nao, nao, nax)
-
-      integer(kind=8) :: t
-      integer :: i, j, k
-
-      ! `do concurrent` rather than an OpenACC parallel loop. The arrays are
-      ! already device-resident, so the standard construct is enough and the
-      ! directive was only ever spelling out what it already says.
-      do concurrent(k=1:nax, j=1:nao, i=1:nao)
-         tens(i, j, k) = 0.0_dp
-      end do
-
-      ! One thread per (SURVIVING shell pair, auxiliary shell). The pair index
-      ! runs fastest so that neighbouring threads share the auxiliary shell,
-      ! and therefore its primitive data, across a warp.
-      do concurrent(t = 0:int(npair, 8)*nsx - 1)
-         call df_3c_item(t, nsh, nao, sh_l, sh_ao, sh_r, npair, npp, &
-                         p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
-                         nsx, nax, mnx, ax_l, ax_np, ax_ao, ax_e, ax_c, ax_r, &
-                         tens)
-      end do
-   end subroutine df_3c_driver
-
-   pure subroutine df_3c_item(t, nsh, nao, sh_l, sh_ao, sh_r, npair, npp, &
-                              p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
-                              nsx, nax, mnx, ax_l, ax_np, ax_ao, ax_e, ax_c, &
-                              ax_r, tens)
-      !$acc routine seq
-      integer(kind=8), intent(in) :: t
-      integer,  intent(in)    :: nsh, nao, npair, npp, nsx, nax, mnx
-      integer,  intent(in)    :: sh_l(nsh), sh_ao(nsh)
-      real(dp), intent(in)    :: sh_r(3, nsh)
-      integer,  intent(in)    :: p_i(npair), p_j(npair)
-      integer,  intent(in)    :: pp_off(npair), pp_n(npair)
-      real(dp), intent(in)    :: pp_z(npp), pp_k(npp)
-      real(dp), intent(in)    :: pp_p(3, npp), pp_a(3, npp)
-      integer,  intent(in)    :: ax_l(nsx), ax_np(nsx), ax_ao(nsx)
-      real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
-      real(dp), intent(inout) :: tens(nao, nao, nax)
-
-      integer :: ip, kk, ii, jj, li, lj, lk, ni, nj, nk
-      integer :: a, c, e, mu, nu, pq, m, o
-      real(dp) :: blk(NBLK3_MAX), abx, aby, abz
-
-      ip = int(mod(t, int(npair, 8))) + 1
-      kk = int(t/npair) + 1
-      ii = p_i(ip); jj = p_j(ip)
-      li = sh_l(ii); lj = sh_l(jj); lk = ax_l(kk)
-      ni = (li + 1)*(li + 2)/2
-      nj = (lj + 1)*(lj + 2)/2
-      nk = (lk + 1)*(lk + 2)/2
-      abx = sh_r(1, ii) - sh_r(1, jj)
-      aby = sh_r(2, ii) - sh_r(2, jj)
-      abz = sh_r(3, ii) - sh_r(3, jj)
-      o = pp_off(ip)
-
-      call df_3c_dispatch(li, lj, lk, pp_n(ip), &
-                          pp_z(o + 1:o + pp_n(ip)), pp_k(o + 1:o + pp_n(ip)), &
-                          pp_p(:, o + 1:o + pp_n(ip)), &
-                          pp_a(:, o + 1:o + pp_n(ip)), &
-                          abx, aby, abz, &
-                          ax_np(kk), ax_e(:, kk), ax_c(:, kk), ax_r(:, kk), blk)
-
-      ! The pair list is lower-triangular in (ii, jj), and (mu nu|P) is
-      ! symmetric in mu <-> nu, so each thread fills both. On a diagonal
-      ! shell pair the second write repeats the first with the same value.
-      m = 0
-      do e = 0, nk - 1
-         pq = ax_ao(kk) + e
-         do c = 0, nj - 1
-            nu = sh_ao(jj) + c
-            do a = 0, ni - 1
-               mu = sh_ao(ii) + a
-               m = m + 1
-               tens(mu, nu, pq) = blk(m)
-               tens(nu, mu, pq) = blk(m)
-            end do
-         end do
-      end do
-   end subroutine df_3c_item
 
 end module trc_api

@@ -15,10 +15,10 @@
 ! them. See the module docstring of scripts/gen_1e.py.
 !
 module trc_1e_kernels
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX
+   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none
    private
-   public :: one_e_dispatch, ONE_E_LMAX, TRC_NMULT
+   public :: one_e_dispatch, one_e_driver, ONE_E_LMAX, TRC_NMULT
 
    !! Dipole + quadrupole + octupole, full Cartesian tensors.
    integer, parameter :: TRC_NMULT = 3 + 9 + 27
@@ -27,8 +27,15 @@ module trc_1e_kernels
    !! Dispatch radix, FIXED and independent of ONE_E_LMAX -- see gen_1e.py.
    integer, parameter :: ONE_E_RADIX = 11
    real(dp), parameter :: PI = 3.14159265358979323846_dp
+   !! Largest Cartesian block a shell pair produces here; the driver's
+   !! per-item buffers are this size because `do concurrent` locals are fixed.
+   integer, parameter :: NC_MAX = (ONE_E_LMAX + 1)*(ONE_E_LMAX + 2)/2
+   integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
 
 contains
+
+#include "inc/trc_boys_eval.inc"
+#include "inc/trc_1e_driver.inc"
 
 
    !> (0|0) one-electron block: overlap, kinetic, nuclear attraction.

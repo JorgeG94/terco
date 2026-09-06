@@ -32,7 +32,7 @@
 ! the work list by class and size per class.  Left until it is measured.
 !
 module trc_batch
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX
+   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX, LTOT, NHERM_MAX, NHERM_PAIR, nherm, tables_init, &
                            hidx, hdir, hm1, hm2, hcf, nherm_of, &
                            ht, hu, hv, hsgn, hshift
@@ -49,6 +49,8 @@ module trc_batch
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp   !! 2*pi^(5/2)
 
 contains
+
+#include "inc/trc_boys_eval.inc"
 
    pure integer function ncart(l)
       !$acc routine seq
