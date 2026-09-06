@@ -1601,13 +1601,17 @@ contains
       type(c_ptr), intent(out) :: basis
       integer(c_int) :: status
       type(context_box), pointer :: cx
+      type(basis_box), pointer :: bp
       basis = c_null_ptr
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%have_basis) return
-      basis = c_loc(cx%bb)
+      ! Through a pointer: a component of the box has no TARGET attribute of
+      ! its own, and c_loc of it is what nvfortran warns about.
+      bp => cx%bb
+      basis = c_loc(bp)
       status = TRC_OK
    end function trc_context_basis
 
@@ -1618,6 +1622,7 @@ contains
       type(c_ptr), intent(out) :: eri
       integer(c_int) :: status
       type(context_box), pointer :: cx
+      type(eri_box), pointer :: ep
       type(comm_t) :: comm
       logical :: collective
       eri = c_null_ptr
@@ -1639,7 +1644,8 @@ contains
             call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh)
          end if
       end if
-      eri = c_loc(cx%eb)
+      ep => cx%eb
+      eri = c_loc(ep)
       status = TRC_OK
    end function trc_context_eri
 

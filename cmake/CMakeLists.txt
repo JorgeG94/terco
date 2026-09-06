@@ -21,8 +21,11 @@ endif()
 #   -Mpreprocess  the sources are .F90 and select on TRC_LMAX.
 #
 if(TERCO_ENABLE_GPU)
-  set(TERCO_FLAGS
-      "-stdpar=gpu -acc -gpu=${TERCO_GPU_ARCH},mem:separate -Mpreprocess -traceback")
+  set(TERCO_GPU_OPTS "${TERCO_GPU_ARCH},mem:separate")
+  if(TERCO_CUDA_VERSION)
+    set(TERCO_GPU_OPTS "${TERCO_GPU_OPTS},cuda${TERCO_CUDA_VERSION}")
+  endif()
+  set(TERCO_FLAGS "-stdpar=gpu -acc -gpu=${TERCO_GPU_OPTS} -Mpreprocess -traceback")
 else()
   #
   # Host build. No `-acc`, so every OpenACC directive is an inert comment, and
