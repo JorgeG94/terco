@@ -81,6 +81,10 @@ program context_scf
    rc = trc_density(h, dlib); rc = trc_mo_energies(h, elib)
    call expect(maxval(abs(dlib(:, :, 1) - ref%dmat(:, :, 1))) < 1.0e-8_dp, "density matches")
    call expect(maxval(abs(elib(:, 1) - ref%eps(:, 1))) < 1.0e-8_dp, "orbital energies match")
+   ! the auxiliary basis set AFTER the SCF must leave the SCF standing: that
+   ! is the order a driver naturally uses
+   rc = trc_set_aux_json(h, 'basis_sets/cc-pvdz-rifit.json'//c_null_char);   call expect(rc == TRC_OK, "aux after scf")
+   rc = trc_converged(h, flag);             call expect(rc == TRC_OK .and. flag == 1, "SCF survives a new aux basis")
    rc = trc_run_rimp2(h);                   call expect(rc == TRC_OK, "run_rimp2")
    rc = trc_rimp2_energy(h, e_os, e_ss)
    print '(a,f20.12,a,f20.12,a,es9.2)', "context_scf: E_corr handle ", e_os + e_ss, "  driver ", mp2%e_os + mp2%e_ss, &

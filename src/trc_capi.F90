@@ -927,10 +927,15 @@ contains
       logical, intent(in) :: aux
       type(trc_basis_t), intent(inout) :: b
       if (aux) then
+         ! A new auxiliary basis touches the correlated step only; the SCF
+         ! stands, which is how a driver sets it after the SCF has run.
          if (cx%have_aux) call cx%ab%b%release()
          cx%ab%b = b
          call cx%ab%b%to_device()
          cx%have_aux = .true.
+         cx%rimp2_ok = .false.
+         call b%release()
+         return
       else
          if (cx%have_basis) call cx%bb%b%release()
          cx%bb%b = b
