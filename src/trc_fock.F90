@@ -216,7 +216,7 @@ contains
       !$acc                   this%ps%col_ao, this%ps%col_sh, this%ps%ps_coef, this%ps%pp_off, this%ps%pp_n, &
       !$acc                   this%ps%pp_p, this%ps%pp_r, this%ps%pp_ra, this%ps%pp_rb, this%ps%pp_c, this%ps%pp_cs, this%ps%pp_ki, this%ps%pp_kj, &
       !$acc                   this%ps%pbins, this%ps%pbins%sp_i, this%ps%pbins%sp_j, this%ps%pbins%sp_q, &
-      !$acc                   this%ps%dshp)
+      !$acc                   this%ps%dshp, this%ps%q_col)
       this%ps%on_device = .true.
       end if
       this%on_device = .true.
@@ -785,6 +785,7 @@ contains
          end do
       end do
       call build_binned_pairs(nps, ps%ps_l, ps%ps_np, ps_r(:, 1:nps), qps, thresh, ps%pbins, gen, ps%pp_n)
+      ps%q_col = qs
       allocate (ps%dshp(nps, nps))
       ps%dshp = huge(1.0_dp)*1.0e-30_dp
    end subroutine build_ps_view

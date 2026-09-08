@@ -108,6 +108,11 @@ module trc_bins
       integer,  allocatable :: pp_ki(:), pp_kj(:) !! primitive index within each shell, per pair
       type(pair_bins_t) :: pbins             !! Schwarz bins over primitive-shell pairs
       real(dp), allocatable :: dshp(:, :)    !! density screen folded to primitive shells (max over columns)
+      !> Schwarz bounds at CONTRACTED shell resolution, canonical pair
+      !> index. dshp and the primitive-shell bounds are maxima over the
+      !> merged columns; this is what lets a kernel test one column
+      !> combination on its own bound rather than on that maximum.
+      real(dp), allocatable :: q_col(:)
       logical :: on_device = .false.
    end type ps_view_t
 
@@ -123,11 +128,22 @@ contains
       type(ps_view_t), intent(inout) :: ps
       integer, intent(in) :: nbas
       real(dp), intent(in) :: dsh(nbas, nbas)
-      integer :: a, c
-      do concurrent(c=1:ps%nps, a=1:ps%nps)
-         call fold_dsh_body(a, c, ps%nps, ps%ncoltot, ps%ps_ncol, ps%ps_soff, ps%col_sh, nbas, dsh, ps%dshp)
-      end do
+      ! The components go in as arguments: a `ps%x` inside the loop makes
+      ! the compiler map the whole derived type, of which only the arrays
+      ! are on the device, and the runtime refuses it as partially present.
+      call fold_dsh_arrays(ps%nps, ps%ncoltot, ps%ps_ncol, ps%ps_soff, ps%col_sh, nbas, dsh, ps%dshp)
    end subroutine fold_dsh
+
+   subroutine fold_dsh_arrays(nps, ncoltot, ps_ncol, ps_soff, col_sh, nbas, dsh, dshp)
+      integer, intent(in) :: nps, ncoltot, nbas
+      integer, intent(in) :: ps_ncol(nps), ps_soff(nps), col_sh(ncoltot)
+      real(dp), intent(in) :: dsh(nbas, nbas)
+      real(dp), intent(inout) :: dshp(nps, nps)
+      integer :: a, c
+      do concurrent(c=1:nps, a=1:nps)
+         call fold_dsh_body(a, c, nps, ncoltot, ps_ncol, ps_soff, col_sh, nbas, dsh, dshp)
+      end do
+   end subroutine fold_dsh_arrays
 
    pure subroutine fold_dsh_body(a, c, nps, ncoltot, ps_ncol, ps_soff, col_sh, nbas, dsh, dshp)
       !$acc routine seq
@@ -149,11 +165,13 @@ contains
    subroutine ps_release(ps)
       type(ps_view_t), intent(inout) :: ps
       if (ps%on_device) then
+         !$acc exit data delete(ps%q_col)
          !$acc exit data delete(ps%ps_l, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_ao1, &
          !$acc                  ps%col_sh, ps%ps_coef, ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, &
          !$acc                  ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, ps%pbins, ps%dshp)
          ps%on_device = .false.
       end if
+      if (allocated(ps%q_col)) deallocate (ps%q_col)
       if (allocated(ps%ps_l)) deallocate (ps%ps_l, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%col_sh, ps%ps_ao1, &
                                           ps%ps_coef)
       if (allocated(ps%pp_off)) deallocate (ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj)

@@ -26,7 +26,7 @@ contains
    !> emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
    subroutine pc0000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat, rank, nranks)
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
       integer(kind=8), intent(in) :: sOff(nseg + 1)
@@ -58,6 +58,15 @@ contains
       integer,  intent(in)    :: ncoltot, ncoef
       integer,  intent(in)    :: ps_np(nbas), ps_ncol(nbas), ps_soff(nbas), ps_coff(nbas)
       integer,  intent(in)    :: col_ao(ncoltot)
+      !! Column slot -> CONTRACTED shell, and the Schwarz and density
+      !! screens at that resolution. Merging the columns of a general
+      !! contraction into one primitive shell makes every bound the
+      !! maximum over the columns, so the quartet test above admits what
+      !! the segmented path rejects; these let each column combination be
+      !! tested on its own bound before it is evaluated or digested.
+      !! On the segmented path nqc is 1 and none of this is read.
+      integer,  intent(in)    :: col_sh(ncoltot), nshc, nqc
+      real(dp), intent(in)    :: q_col(nqc), dsh_c(nshc, nshc)
       real(dp), intent(in)    :: ps_coef(ncoef)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
@@ -84,13 +93,13 @@ contains
       do concurrent(i=1:nr)
          call pci0000(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat)
+                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, ndens, dmat, jmat)
       end do
    end subroutine pc0000
 
    pure subroutine pci0000(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(kind=8), intent(in) :: gt
@@ -124,6 +133,15 @@ contains
       integer,  intent(in)    :: ncoltot, ncoef
       integer,  intent(in)    :: ps_np(nbas), ps_ncol(nbas), ps_soff(nbas), ps_coff(nbas)
       integer,  intent(in)    :: col_ao(ncoltot)
+      !! Column slot -> CONTRACTED shell, and the Schwarz and density
+      !! screens at that resolution. Merging the columns of a general
+      !! contraction into one primitive shell makes every bound the
+      !! maximum over the columns, so the quartet test above admits what
+      !! the segmented path rejects; these let each column combination be
+      !! tested on its own bound before it is evaluated or digested.
+      !! On the segmented path nqc is 1 and none of this is read.
+      integer,  intent(in)    :: col_sh(ncoltot), nshc, nqc
+      real(dp), intent(in)    :: q_col(nqc), dsh_c(nshc, nshc)
       real(dp), intent(in)    :: ps_coef(ncoef)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
@@ -134,7 +152,7 @@ contains
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
-      logical :: dij, dkl, dpq
+      logical :: dij, dkl, dpq, ok
       real(dp) :: zeta, eta, zpe, rho, tval, pref, wc
       real(dp) :: pqx, pqy, pqz, pax, pay, paz, qcx, qcy, qcz
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
@@ -143,12 +161,12 @@ contains
       real(dp) :: f(0:BOYS_MMAX)
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
-      real(dp) :: v(1, 0:1), g(1, 4, 4), gl(1, 4, 4), g1(1), vbuf(1)
-      real(dp) :: wq, w, wab
+      real(dp) :: v(1, 0:1), g(1, 4, 4), g1(1), vbuf(1)
+      real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd, ab0, cd0, nab_c, ncd_c, qab, qcd
       integer  :: ki, kj, kk, kl, kpl, kql, ia2, ib2, ic2, id2, iabc, icdc
       logical  :: same_ab, same_cd, same_pair
-      real(dp) :: cab(4), ccd(4), wta(4), wtc(4), tc(1, 4)
+      real(dp) :: cab(4), ccd(4), wta(4), wtc(4), w2(4, 4)
       integer  :: offa(4), offb(4), offc(4), offd(4)
       real(dp) :: jab(1), jcd(1), kac(1)
       real(dp) :: kad(1), kbc(1), kbd(1)
@@ -311,6 +329,18 @@ contains
                offd(qab) = ps_coff(sl) + (id2 - 1)*npl
                wtc(qab) = merge(1.0_dp, 0.0_dp, cd0 + qab - 1 <= nccd)
             end do
+            ! Nothing in this chunk can contribute: skip it whole, which
+            ! is the only place the shared VRR can be skipped at all.
+            if (nqc > 1) then
+               qchunk = 0.0_dp
+               do qab = 1, nab_c
+               do qcd = 1, ncd_c
+                  qchunk = max(qchunk, &
+                     cb0000(ab0 + qab - 1, cd0 + qcd - 1, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c))
+               end do
+               end do
+               if (qchunk <= thresh) cycle
+            end if
             do kp = offab + 1, offab + nab
                zeta = pp_p(kp)
                ki = pp_ki(kp); kj = pp_kj(kp)
@@ -318,18 +348,7 @@ contains
                cab(2) = wta(2)*ps_coef(offa(2) + ki)*ps_coef(offb(2) + kj)
                cab(3) = wta(3)*ps_coef(offa(3) + ki)*ps_coef(offb(3) + kj)
                cab(4) = wta(4)*ps_coef(offa(4) + ki)*ps_coef(offb(4) + kj)
-               do x = 1, 1
-                  tc(x, 1) = 0.0_dp
-               end do
-               do x = 1, 1
-                  tc(x, 2) = 0.0_dp
-               end do
-               do x = 1, 1
-                  tc(x, 3) = 0.0_dp
-               end do
-               do x = 1, 1
-                  tc(x, 4) = 0.0_dp
-               end do
+               cabmax = max(abs(cab(1)), abs(cab(2)), abs(cab(3)), abs(cab(4)))
                do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
                   kk = pp_ki(kq); kl = pp_kj(kq)
@@ -337,7 +356,20 @@ contains
                   ccd(2) = wtc(2)*ps_coef(offc(2) + kk)*ps_coef(offd(2) + kl)
                   ccd(3) = wtc(3)*ps_coef(offc(3) + kk)*ps_coef(offd(3) + kl)
                   ccd(4) = wtc(4)*ps_coef(offc(4) + kk)*ps_coef(offd(4) + kl)
+                  ccdmax = max(abs(ccd(1)), abs(ccd(2)), abs(ccd(3)), abs(ccd(4)))
                   zpe = zeta + eta
+                  !
+                  ! PRIMITIVE-QUARTET PRESCREEN. The pair factor on this
+                  ! path carries no contraction coefficients -- they are
+                  ! applied per column combination -- so the bound takes the
+                  ! largest of them on each side. Without it this kernel
+                  ! evaluated every primitive quartet in the pair list while
+                  ! the scalar one skipped two thirds of them on cc-pVDZ,
+                  ! which is most of why the primitive-shell view measured
+                  ! slower than the path it was meant to beat.
+                  !
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+                  if (abs(pref)*cabmax*ccdmax <= pcut) cycle
                   rho = zeta*eta/zpe
                   pqx = pp_r(kp, 1) - pp_r(kq, 1)
                   pqy = pp_r(kp, 2) - pp_r(kq, 2)
@@ -378,146 +410,105 @@ contains
 
                   oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
                   rz = rho/zeta; re = rho/eta
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
 
                ! --- level m = 0 ---
             v(1,0) = pref*f(0)
                cur = 0
-                  ! cd side first: NCAB FMAs per primitive quartet, and the
-                  ! NCAB x NCAB block only once per bra primitive.
+                  w2(1, 1) = cab(1)*ccd(1)
+                  w2(2, 1) = cab(2)*ccd(1)
+                  w2(3, 1) = cab(3)*ccd(1)
+                  w2(4, 1) = cab(4)*ccd(1)
+                  w2(1, 2) = cab(1)*ccd(2)
+                  w2(2, 2) = cab(2)*ccd(2)
+                  w2(3, 2) = cab(3)*ccd(2)
+                  w2(4, 2) = cab(4)*ccd(2)
+                  w2(1, 3) = cab(1)*ccd(3)
+                  w2(2, 3) = cab(2)*ccd(3)
+                  w2(3, 3) = cab(3)*ccd(3)
+                  w2(4, 3) = cab(4)*ccd(3)
+                  w2(1, 4) = cab(1)*ccd(4)
+                  w2(2, 4) = cab(2)*ccd(4)
+                  w2(3, 4) = cab(3)*ccd(4)
+                  w2(4, 4) = cab(4)*ccd(4)
                   do x = 1, 1
-                     tc(x, 1) = tc(x, 1) + ccd(1)*v(x, cur)
+                     g(x, 1, 1) = g(x, 1, 1) + w2(1, 1)*v(x, cur)
                   end do
                   do x = 1, 1
-                     tc(x, 2) = tc(x, 2) + ccd(2)*v(x, cur)
+                     g(x, 2, 1) = g(x, 2, 1) + w2(2, 1)*v(x, cur)
                   end do
                   do x = 1, 1
-                     tc(x, 3) = tc(x, 3) + ccd(3)*v(x, cur)
+                     g(x, 3, 1) = g(x, 3, 1) + w2(3, 1)*v(x, cur)
                   end do
                   do x = 1, 1
-                     tc(x, 4) = tc(x, 4) + ccd(4)*v(x, cur)
+                     g(x, 4, 1) = g(x, 4, 1) + w2(4, 1)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 1, 2) = g(x, 1, 2) + w2(1, 2)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 2, 2) = g(x, 2, 2) + w2(2, 2)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 3, 2) = g(x, 3, 2) + w2(3, 2)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 4, 2) = g(x, 4, 2) + w2(4, 2)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 1, 3) = g(x, 1, 3) + w2(1, 3)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 2, 3) = g(x, 2, 3) + w2(2, 3)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 3, 3) = g(x, 3, 3) + w2(3, 3)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 4, 3) = g(x, 4, 3) + w2(4, 3)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 1, 4) = g(x, 1, 4) + w2(1, 4)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 2, 4) = g(x, 2, 4) + w2(2, 4)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 3, 4) = g(x, 3, 4) + w2(3, 4)*v(x, cur)
+                  end do
+                  do x = 1, 1
+                     g(x, 4, 4) = g(x, 4, 4) + w2(4, 4)*v(x, cur)
                   end do
                end do
-               do x = 1, 1
-                  g(x, 1, 1) = g(x, 1, 1) + cab(1)*tc(x, 1)
-               end do
-               do x = 1, 1
-                  g(x, 2, 1) = g(x, 2, 1) + cab(2)*tc(x, 1)
-               end do
-               do x = 1, 1
-                  g(x, 3, 1) = g(x, 3, 1) + cab(3)*tc(x, 1)
-               end do
-               do x = 1, 1
-                  g(x, 4, 1) = g(x, 4, 1) + cab(4)*tc(x, 1)
-               end do
-               do x = 1, 1
-                  g(x, 1, 2) = g(x, 1, 2) + cab(1)*tc(x, 2)
-               end do
-               do x = 1, 1
-                  g(x, 2, 2) = g(x, 2, 2) + cab(2)*tc(x, 2)
-               end do
-               do x = 1, 1
-                  g(x, 3, 2) = g(x, 3, 2) + cab(3)*tc(x, 2)
-               end do
-               do x = 1, 1
-                  g(x, 4, 2) = g(x, 4, 2) + cab(4)*tc(x, 2)
-               end do
-               do x = 1, 1
-                  g(x, 1, 3) = g(x, 1, 3) + cab(1)*tc(x, 3)
-               end do
-               do x = 1, 1
-                  g(x, 2, 3) = g(x, 2, 3) + cab(2)*tc(x, 3)
-               end do
-               do x = 1, 1
-                  g(x, 3, 3) = g(x, 3, 3) + cab(3)*tc(x, 3)
-               end do
-               do x = 1, 1
-                  g(x, 4, 3) = g(x, 4, 3) + cab(4)*tc(x, 3)
-               end do
-               do x = 1, 1
-                  g(x, 1, 4) = g(x, 1, 4) + cab(1)*tc(x, 4)
-               end do
-               do x = 1, 1
-                  g(x, 2, 4) = g(x, 2, 4) + cab(2)*tc(x, 4)
-               end do
-               do x = 1, 1
-                  g(x, 3, 4) = g(x, 3, 4) + cab(3)*tc(x, 4)
-               end do
-               do x = 1, 1
-                  g(x, 4, 4) = g(x, 4, 4) + cab(4)*tc(x, 4)
-               end do
-            end do
-            ! To local memory once: the per-combination read below has a
-            ! runtime index and must not touch the register copy.
-            do x = 1, 1
-               gl(x, 1, 1) = g(x, 1, 1)
-            end do
-            do x = 1, 1
-               gl(x, 2, 1) = g(x, 2, 1)
-            end do
-            do x = 1, 1
-               gl(x, 3, 1) = g(x, 3, 1)
-            end do
-            do x = 1, 1
-               gl(x, 4, 1) = g(x, 4, 1)
-            end do
-            do x = 1, 1
-               gl(x, 1, 2) = g(x, 1, 2)
-            end do
-            do x = 1, 1
-               gl(x, 2, 2) = g(x, 2, 2)
-            end do
-            do x = 1, 1
-               gl(x, 3, 2) = g(x, 3, 2)
-            end do
-            do x = 1, 1
-               gl(x, 4, 2) = g(x, 4, 2)
-            end do
-            do x = 1, 1
-               gl(x, 1, 3) = g(x, 1, 3)
-            end do
-            do x = 1, 1
-               gl(x, 2, 3) = g(x, 2, 3)
-            end do
-            do x = 1, 1
-               gl(x, 3, 3) = g(x, 3, 3)
-            end do
-            do x = 1, 1
-               gl(x, 4, 3) = g(x, 4, 3)
-            end do
-            do x = 1, 1
-               gl(x, 1, 4) = g(x, 1, 4)
-            end do
-            do x = 1, 1
-               gl(x, 2, 4) = g(x, 2, 4)
-            end do
-            do x = 1, 1
-               gl(x, 3, 4) = g(x, 3, 4)
-            end do
-            do x = 1, 1
-               gl(x, 4, 4) = g(x, 4, 4)
             end do
 
-         do qcd = 1, ncd_c
-         do qab = 1, nab_c
-         iabc = ab0 + qab - 1
-         icdc = cd0 + qcd - 1
+         ! === combinations, unrolled at literal column pairs ===
+         if (1 <= nab_c .and. 1 <= ncd_c) then
+         iabc = ab0 + 1 - 1
+         icdc = cd0 + 1 - 1
          ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
          ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
          ! Only the canonical contracted quartets, as the contracted path
          ! enumerated them: the column pairs of one primitive shell in one
          ! order, and the two column pairs of one primitive-shell pair in one
          ! order.
-         if (same_ab .and. ia2 < ib2) cycle
-         if (same_cd .and. ic2 < id2) cycle
-         if (same_pair .and. iabc < icdc) cycle
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
          dij = .not. (same_ab .and. ia2 == ib2)
          dkl = .not. (same_cd .and. ic2 == id2)
          dpq = .not. (same_pair .and. iabc == icdc)
          mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
          lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
          do x = 1, 1
-            g1(x) = gl(x, qab, qcd)
+            g1(x) = g(x, 1, 1)
          end do
 
          ! --- HRR ---
@@ -688,15 +679,3023 @@ contains
 
          end do   ! idens
 #endif
-         end do   ! qab
-         end do   ! qcd
+         end if
+         end if
+         if (2 <= nab_c .and. 1 <= ncd_c) then
+         iabc = ab0 + 2 - 1
+         icdc = cd0 + 1 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 2, 1)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (3 <= nab_c .and. 1 <= ncd_c) then
+         iabc = ab0 + 3 - 1
+         icdc = cd0 + 1 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 3, 1)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (4 <= nab_c .and. 1 <= ncd_c) then
+         iabc = ab0 + 4 - 1
+         icdc = cd0 + 1 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 4, 1)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (1 <= nab_c .and. 2 <= ncd_c) then
+         iabc = ab0 + 1 - 1
+         icdc = cd0 + 2 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 1, 2)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (2 <= nab_c .and. 2 <= ncd_c) then
+         iabc = ab0 + 2 - 1
+         icdc = cd0 + 2 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 2, 2)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (3 <= nab_c .and. 2 <= ncd_c) then
+         iabc = ab0 + 3 - 1
+         icdc = cd0 + 2 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 3, 2)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (4 <= nab_c .and. 2 <= ncd_c) then
+         iabc = ab0 + 4 - 1
+         icdc = cd0 + 2 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 4, 2)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (1 <= nab_c .and. 3 <= ncd_c) then
+         iabc = ab0 + 1 - 1
+         icdc = cd0 + 3 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 1, 3)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (2 <= nab_c .and. 3 <= ncd_c) then
+         iabc = ab0 + 2 - 1
+         icdc = cd0 + 3 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 2, 3)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (3 <= nab_c .and. 3 <= ncd_c) then
+         iabc = ab0 + 3 - 1
+         icdc = cd0 + 3 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 3, 3)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (4 <= nab_c .and. 3 <= ncd_c) then
+         iabc = ab0 + 4 - 1
+         icdc = cd0 + 3 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 4, 3)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (1 <= nab_c .and. 4 <= ncd_c) then
+         iabc = ab0 + 1 - 1
+         icdc = cd0 + 4 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 1, 4)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (2 <= nab_c .and. 4 <= ncd_c) then
+         iabc = ab0 + 2 - 1
+         icdc = cd0 + 4 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 2, 4)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (3 <= nab_c .and. 4 <= ncd_c) then
+         iabc = ab0 + 3 - 1
+         icdc = cd0 + 4 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 3, 4)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
+         if (4 <= nab_c .and. 4 <= ncd_c) then
+         iabc = ab0 + 4 - 1
+         icdc = cd0 + 4 - 1
+         ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+         ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
+         ! Only the canonical contracted quartets, as the contracted path
+         ! enumerated them: the column pairs of one primitive shell in one
+         ! order, and the two column pairs of one primitive-shell pair in one
+         ! order.
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb0000(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (ok) then
+         dij = .not. (same_ab .and. ia2 == ib2)
+         dkl = .not. (same_cd .and. ic2 == id2)
+         dpq = .not. (same_pair .and. iabc == icdc)
+         mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
+         lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
+         do x = 1, 1
+            g1(x) = g(x, 4, 4)
+         end do
+
+         ! --- HRR ---
+         vbuf(1) = g1(1)
+
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 1
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 0
+            do ia = 0, 0
+               dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 1*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               dac(1 + ia + 1*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               dad(1 + ia + 1*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 1*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               dbc(1 + ib + 1*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 1*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               dbd(1 + ib + 1*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 1*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 0
+         do ic = 0, 0
+         do ib = 0, 0
+         do ia = 0, 0
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 1*id)
+            jcd(1 + ic + 1*id) = jcd(1 + ic + 1*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 1*ib)
+            kac(1 + ia + 1*ic) = kac(1 + ia + 1*ic) &
+                                    - kfac*sc*dbd(1 + ib + 1*id)
+            kad(1 + ia + 1*id) = kad(1 + ia + 1*id) &
+                                    - kfac*sc*dbc(1 + ib + 1*ic)
+            kbc(1 + ib + 1*ic) = kbc(1 + ib + 1*ic) &
+                                    - kfac*sc*dad(1 + ia + 1*id)
+            kbd(1 + ib + 1*id) = kbd(1 + ib + 1*id) &
+                                    - kfac*sc*dac(1 + ia + 1*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 1*ib)
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 0
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ia = 0, 0
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 1*id)
+            end do
+         end do
+         do ic = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 1*ic)
+            end do
+         end do
+         do id = 0, 0
+            do ib = 0, 0
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 1*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end if
+         end if
          end do   ! cd0
          end do   ! ab0
    end subroutine pci0000
 
+   !> Schwarz times the density blocks for ONE column combination, at
+   !> CONTRACTED resolution: the same test the quartet gets, sharpened from
+   !> the merged maximum over the columns to the columns actually being
+   !> evaluated. A module procedure rather than a contained one because
+   !> `!$acc routine` cannot capture host-subprogram data, and in the same
+   !> module as its caller so it inlines.
+   pure real(dp) function cb0000(iab_, icd_, nca, nccl, si, sj, sk, sl, &
+                                  nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) result(qb)
+      !$acc routine seq
+      integer,  intent(in) :: iab_, icd_, nca, nccl, si, sj, sk, sl, nbas, ncoltot, nshc, nqc
+      integer,  intent(in) :: ps_soff(nbas), col_sh(ncoltot)
+      real(dp), intent(in) :: q_col(nqc), dsh_c(nshc, nshc)
+      integer :: a_, b_, c_, d_, ja, jb, jc, jd
+      a_ = mod(iab_ - 1, nca) + 1; b_ = (iab_ - 1)/nca + 1
+      c_ = mod(icd_ - 1, nccl) + 1; d_ = (icd_ - 1)/nccl + 1
+      ja = col_sh(ps_soff(si) + a_); jb = col_sh(ps_soff(sj) + b_)
+      jc = col_sh(ps_soff(sk) + c_); jd = col_sh(ps_soff(sl) + d_)
+      qb = q_col(max(ja, jb)*(max(ja, jb) - 1)/2 + min(ja, jb)) &
+           *q_col(max(jc, jd)*(max(jc, jd) - 1)/2 + min(jc, jd))
+      qb = qb*max(4.0_dp*dsh_c(ja, jb), 4.0_dp*dsh_c(jc, jd), &
+                  dsh_c(ja, jc), dsh_c(ja, jd), dsh_c(jb, jc), dsh_c(jb, jd))
+   end function cb0000
+
    subroutine pcs0000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat, rank, nranks)
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
       integer(kind=8), intent(in) :: sOff(nseg + 1)
@@ -728,6 +3727,15 @@ contains
       integer,  intent(in)    :: ncoltot, ncoef
       integer,  intent(in)    :: ps_np(nbas), ps_ncol(nbas), ps_soff(nbas), ps_coff(nbas)
       integer,  intent(in)    :: col_ao(ncoltot)
+      !! Column slot -> CONTRACTED shell, and the Schwarz and density
+      !! screens at that resolution. Merging the columns of a general
+      !! contraction into one primitive shell makes every bound the
+      !! maximum over the columns, so the quartet test above admits what
+      !! the segmented path rejects; these let each column combination be
+      !! tested on its own bound before it is evaluated or digested.
+      !! On the segmented path nqc is 1 and none of this is read.
+      integer,  intent(in)    :: col_sh(ncoltot), nshc, nqc
+      real(dp), intent(in)    :: q_col(nqc), dsh_c(nshc, nshc)
       real(dp), intent(in)    :: ps_coef(ncoef)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
@@ -754,13 +3762,13 @@ contains
       do concurrent(i=1:nr)
          call pcsi0000(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat)
+                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, ndens, dmat, jmat)
       end do
    end subroutine pcs0000
 
    pure subroutine pcsi0000(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(kind=8), intent(in) :: gt
@@ -794,6 +3802,15 @@ contains
       integer,  intent(in)    :: ncoltot, ncoef
       integer,  intent(in)    :: ps_np(nbas), ps_ncol(nbas), ps_soff(nbas), ps_coff(nbas)
       integer,  intent(in)    :: col_ao(ncoltot)
+      !! Column slot -> CONTRACTED shell, and the Schwarz and density
+      !! screens at that resolution. Merging the columns of a general
+      !! contraction into one primitive shell makes every bound the
+      !! maximum over the columns, so the quartet test above admits what
+      !! the segmented path rejects; these let each column combination be
+      !! tested on its own bound before it is evaluated or digested.
+      !! On the segmented path nqc is 1 and none of this is read.
+      integer,  intent(in)    :: col_sh(ncoltot), nshc, nqc
+      real(dp), intent(in)    :: q_col(nqc), dsh_c(nshc, nshc)
       real(dp), intent(in)    :: ps_coef(ncoef)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
@@ -814,7 +3831,7 @@ contains
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v(1, 0:1), g1(1), vbuf(1)
-      real(dp) :: wq
+      real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       logical  :: same_ab, same_cd, same_pair
       real(dp) :: jab(1), jcd(1), kac(1)
       real(dp) :: kad(1), kbc(1), kbd(1)

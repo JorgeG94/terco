@@ -101,7 +101,7 @@ module trc_pg_kernels
    private
    public :: pg_init, pg_dispatch
 
-   integer, parameter :: PG_T = 64
+   integer, parameter :: PG_T = 32
    !> The Boys table, held by CUDA Fortran rather than reached through
    !> OpenACC: `declare create` module data has no `host_data` handle.
    real(dp), device, allocatable :: boys_d(:)

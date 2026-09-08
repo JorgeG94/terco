@@ -16,8 +16,9 @@ module trc_pg_k1210
    public :: pg1210
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
-   integer, parameter :: PG_T = 64, PG_XC = 32, PG_NTC = 8, PG_NG = 32
-   integer, parameter :: PG_NCC = 16, PG_NCAB = 16, PG_GB = 38
+   integer, parameter :: PG_T = 32, PG_GB = 32
+   !> ket columns per chunk, bra columns per chunk, owned entries per lane
+   integer, parameter :: CDC = 1, ABC = 16, NTC = 80
 
 contains
 
@@ -44,16 +45,16 @@ contains
       real(dp), device :: dmat(ndens, nao, nao)
       real(dp), device :: jmat(ndens, nao, nao)
 
-      real(dp), shared :: Vs(PG_XC, PG_T), Ws(PG_T, PG_NCC), Gs(80, PG_GB)
+      real(dp), shared :: Gs(80, PG_GB)
       integer(kind=8) :: gt
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
       real(dp) :: qcut, pcut
       integer :: keyab, keycd, offab, offcd, nab, ncd
-      integer :: kp, kq, kq0, d, x, x0, xc, cur, ia, ib, ic, id, idx, idens
+      integer :: kp, kq, kq0, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
       logical :: dij, dkl, dpq, have, ok
-      real(dp) :: zeta, eta, zpe, rho, tval, pref, wc, wmax, acc, aold
+      real(dp) :: zeta, eta, zpe, rho, tval, pref, wc, wmax, acc, aold, val
       real(dp) :: pqx, pqy, pqz, pax, pay, paz, qcx, qcy, qcz
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
       real(dp) :: oo2z, oo2e, oo2ze, rz, re, sc, vv
@@ -62,13 +63,13 @@ contains
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v(80, 0:1), g1(80), vbuf(54)
+      real(dp) :: tcl(NTC), wcol(CDC), gown(NTC), cabl
       real(dp) :: wq
       integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd
       integer  :: ki, kj, kk, kl, ia2, ib2, ic2, id2, iabc, icdc
       logical  :: same_ab, same_cd, same_pair
-      integer  :: tau, cdc, ncdc, ntc, ntcl, abc, nabc, ab0, cd0, a, c, j, e, l, ncomb, cb0, nbt, combo
-      real(dp) :: cab(PG_NCAB), tcown(PG_NTC), gown(PG_NG)
-      integer  :: offa(PG_NCAB), offb(PG_NCAB), offc(PG_NCC), offd(PG_NCC)
+      integer  :: tau, ncdc, nabc, ab0, cd0, a, c, j, ncomb, cb0, nbt, combo
+      integer  :: offal, offbl, offc(CDC), offd(CDC)
       real(dp) :: jab(18), jcd(3), kac(9)
       real(dp) :: kad(3), kbc(18), kbd(6)
       real(dp) :: dab(18), dcd(3), dac(9)
@@ -77,7 +78,7 @@ contains
       tau = threadIdx%x
       gt = g0 + int(blockIdx%x - 1, 8)*int(nranks, 8)
       if (gt > gend) return
-         ! locate the segment (every thread alike)
+         ! locate the segment (every lane alike)
          p = lo; q = hi
          do while (p < q)
             mid = (p + q + 1)/2
@@ -159,55 +160,129 @@ contains
 
 
          ncab = nca*ncb; nccd = nccl*ncdl
-         !
-         ! COLUMN GRID CHUNKS, to the register budget: a thread owns at most
-         ! PG_NTC ket-contracted entries and PG_NG bra-folded ones. Most
-         ! classes fit in one pass; the rest repeat the primitive loops per
-         ! chunk, which is still far fewer VRR evaluations than one per
-         ! column combination.
-         !
-         cdc = max(1, min(nccd, (PG_NTC*PG_T)/80))
-         ntcl = (80*cdc + PG_T - 1)/PG_T
-         abc = max(1, min(ncab, PG_NG/ntcl))
          cur = 0
-         do cd0 = 1, nccd, cdc
-            ncdc = min(cdc, nccd - cd0 + 1)
-            ntc = 80*ncdc
-            ntcl = (ntc + PG_T - 1)/PG_T
-            do c = 1, ncdc
-               icdc = cd0 + c - 1
+         !
+         ! COLUMN GRID in chunks of ABC x CDC. A lane accumulates its own
+         ! quartets' ket-contracted block in registers over the ket loop;
+         ! the sum across the warp's lanes is taken once per bra pair, by
+         ! shuffles, and the owner folds the bra columns in. Neither needs
+         ! shared memory or a barrier. A class whose grid exceeds a chunk
+         ! repeats its primitive loops per chunk, still far fewer VRR
+         ! evaluations than one per column combination.
+         !
+         do cd0 = 1, nccd, CDC
+            ncdc = min(CDC, nccd - cd0 + 1)
+            do c = 1, CDC
+               icdc = min(cd0 + c - 1, nccd)
                ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
                offc(c) = ps_coff(sk) + (ic2 - 1)*npk
                offd(c) = ps_coff(sl) + (id2 - 1)*npl
             end do
-            do ab0 = 1, ncab, abc
-               nabc = min(abc, ncab - ab0 + 1)
-               do a = 1, nabc
-                  iabc = ab0 + a - 1
-                  ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
-                  offa(a) = ps_coff(si) + (ia2 - 1)*npi
-                  offb(a) = ps_coff(sj) + (ib2 - 1)*npj
-               end do
-               do j = 1, PG_NG
+            do ab0 = 1, ncab, ABC
+               nabc = min(ABC, ncab - ab0 + 1)
+               ! Lane a owns bra column a of the chunk: its coefficient
+               ! offsets, its weight per bra pair, and its slice of g.
+               iabc = min(ab0 + tau - 1, ncab)
+               ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+               offal = ps_coff(si) + (ia2 - 1)*npi
+               offbl = ps_coff(sj) + (ib2 - 1)*npj
+               do j = 1, NTC
                   gown(j) = 0.0_dp
                end do
 
                do kp = offab + 1, offab + nab
                   zeta = pp_p(kp)
                   ki = pp_ki(kp); kj = pp_kj(kp)
-                  wmax = 0.0_dp
-                  do a = 1, nabc
-                     cab(a) = ps_coef(offa(a) + ki)*ps_coef(offb(a) + kj)
-                     wmax = max(wmax, abs(cab(a)))
-                  end do
-                  do j = 1, PG_NTC
-                     tcown(j) = 0.0_dp
-                  end do
+                  cabl = 0.0_dp
+                  if (tau <= nabc) cabl = ps_coef(offal + ki)*ps_coef(offbl + kj)
+                  wmax = abs(cabl)
+                  wmax = max(wmax, __shfl_xor(wmax, 16))
+                  wmax = max(wmax, __shfl_xor(wmax, 8))
+                  wmax = max(wmax, __shfl_xor(wmax, 4))
+                  wmax = max(wmax, __shfl_xor(wmax, 2))
+                  wmax = max(wmax, __shfl_xor(wmax, 1))
+                     tcl(1) = 0.0_dp
+                     tcl(2) = 0.0_dp
+                     tcl(3) = 0.0_dp
+                     tcl(4) = 0.0_dp
+                     tcl(5) = 0.0_dp
+                     tcl(6) = 0.0_dp
+                     tcl(7) = 0.0_dp
+                     tcl(8) = 0.0_dp
+                     tcl(9) = 0.0_dp
+                     tcl(10) = 0.0_dp
+                     tcl(11) = 0.0_dp
+                     tcl(12) = 0.0_dp
+                     tcl(13) = 0.0_dp
+                     tcl(14) = 0.0_dp
+                     tcl(15) = 0.0_dp
+                     tcl(16) = 0.0_dp
+                     tcl(17) = 0.0_dp
+                     tcl(18) = 0.0_dp
+                     tcl(19) = 0.0_dp
+                     tcl(20) = 0.0_dp
+                     tcl(21) = 0.0_dp
+                     tcl(22) = 0.0_dp
+                     tcl(23) = 0.0_dp
+                     tcl(24) = 0.0_dp
+                     tcl(25) = 0.0_dp
+                     tcl(26) = 0.0_dp
+                     tcl(27) = 0.0_dp
+                     tcl(28) = 0.0_dp
+                     tcl(29) = 0.0_dp
+                     tcl(30) = 0.0_dp
+                     tcl(31) = 0.0_dp
+                     tcl(32) = 0.0_dp
+                     tcl(33) = 0.0_dp
+                     tcl(34) = 0.0_dp
+                     tcl(35) = 0.0_dp
+                     tcl(36) = 0.0_dp
+                     tcl(37) = 0.0_dp
+                     tcl(38) = 0.0_dp
+                     tcl(39) = 0.0_dp
+                     tcl(40) = 0.0_dp
+                     tcl(41) = 0.0_dp
+                     tcl(42) = 0.0_dp
+                     tcl(43) = 0.0_dp
+                     tcl(44) = 0.0_dp
+                     tcl(45) = 0.0_dp
+                     tcl(46) = 0.0_dp
+                     tcl(47) = 0.0_dp
+                     tcl(48) = 0.0_dp
+                     tcl(49) = 0.0_dp
+                     tcl(50) = 0.0_dp
+                     tcl(51) = 0.0_dp
+                     tcl(52) = 0.0_dp
+                     tcl(53) = 0.0_dp
+                     tcl(54) = 0.0_dp
+                     tcl(55) = 0.0_dp
+                     tcl(56) = 0.0_dp
+                     tcl(57) = 0.0_dp
+                     tcl(58) = 0.0_dp
+                     tcl(59) = 0.0_dp
+                     tcl(60) = 0.0_dp
+                     tcl(61) = 0.0_dp
+                     tcl(62) = 0.0_dp
+                     tcl(63) = 0.0_dp
+                     tcl(64) = 0.0_dp
+                     tcl(65) = 0.0_dp
+                     tcl(66) = 0.0_dp
+                     tcl(67) = 0.0_dp
+                     tcl(68) = 0.0_dp
+                     tcl(69) = 0.0_dp
+                     tcl(70) = 0.0_dp
+                     tcl(71) = 0.0_dp
+                     tcl(72) = 0.0_dp
+                     tcl(73) = 0.0_dp
+                     tcl(74) = 0.0_dp
+                     tcl(75) = 0.0_dp
+                     tcl(76) = 0.0_dp
+                     tcl(77) = 0.0_dp
+                     tcl(78) = 0.0_dp
+                     tcl(79) = 0.0_dp
+                     tcl(80) = 0.0_dp
 
                   do kq0 = offcd + 1, offcd + ncd, PG_T
-                     ! The previous chunk's reduction reads Ws; nobody may
-                     ! overwrite a row until every thread is past it.
-                     call syncthreads()
                      kq = kq0 + tau - 1
                      have = kq <= offcd + ncd
                      if (have) then
@@ -215,19 +290,15 @@ contains
                         kk = pp_ki(kq); kl = pp_kj(kq)
                         zpe = zeta + eta
                         pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
-                     else
-                        eta = 1.0_dp; kk = 1; kl = 1; zpe = 1.0_dp; pref = 0.0_dp
+                        acc = 0.0_dp
+                        do c = 1, CDC
+                           wc = ps_coef(offc(c) + kk)*ps_coef(offd(c) + kl)
+                           if (c > ncdc) wc = 0.0_dp
+                           wcol(c) = wc
+                           acc = max(acc, abs(wc))
+                        end do
+                        if (abs(pref)*wmax*acc <= pcut) have = .false.
                      end if
-                     ! ket column weights of this lane's pair, and the
-                     ! prescreen on the largest weight either side can give.
-                     acc = 0.0_dp
-                     do c = 1, ncdc
-                        wc = ps_coef(offc(c) + kk)*ps_coef(offd(c) + kl)
-                        if (.not. have) wc = 0.0_dp
-                        Ws(tau, c) = wc
-                        acc = max(acc, abs(wc))
-                     end do
-                     if (abs(pref)*wmax*acc <= pcut) have = .false.
                      if (have) then
                         rho = zeta*eta/zpe
                         pqx = pp_r(kp, 1) - pp_r(kq, 1)
@@ -439,70 +510,674 @@ contains
             v(80,0) = qcz*v(20,0) + wqz*v(20,1) &
                + 3.0_dp*oo2ze*v(10,1)
                cur = 0
+                        tcl(1) = tcl(1) + wcol(1)*v(1, 0)
+                        tcl(2) = tcl(2) + wcol(1)*v(2, 0)
+                        tcl(3) = tcl(3) + wcol(1)*v(3, 0)
+                        tcl(4) = tcl(4) + wcol(1)*v(4, 0)
+                        tcl(5) = tcl(5) + wcol(1)*v(5, 0)
+                        tcl(6) = tcl(6) + wcol(1)*v(6, 0)
+                        tcl(7) = tcl(7) + wcol(1)*v(7, 0)
+                        tcl(8) = tcl(8) + wcol(1)*v(8, 0)
+                        tcl(9) = tcl(9) + wcol(1)*v(9, 0)
+                        tcl(10) = tcl(10) + wcol(1)*v(10, 0)
+                        tcl(11) = tcl(11) + wcol(1)*v(11, 0)
+                        tcl(12) = tcl(12) + wcol(1)*v(12, 0)
+                        tcl(13) = tcl(13) + wcol(1)*v(13, 0)
+                        tcl(14) = tcl(14) + wcol(1)*v(14, 0)
+                        tcl(15) = tcl(15) + wcol(1)*v(15, 0)
+                        tcl(16) = tcl(16) + wcol(1)*v(16, 0)
+                        tcl(17) = tcl(17) + wcol(1)*v(17, 0)
+                        tcl(18) = tcl(18) + wcol(1)*v(18, 0)
+                        tcl(19) = tcl(19) + wcol(1)*v(19, 0)
+                        tcl(20) = tcl(20) + wcol(1)*v(20, 0)
+                        tcl(21) = tcl(21) + wcol(1)*v(21, 0)
+                        tcl(22) = tcl(22) + wcol(1)*v(22, 0)
+                        tcl(23) = tcl(23) + wcol(1)*v(23, 0)
+                        tcl(24) = tcl(24) + wcol(1)*v(24, 0)
+                        tcl(25) = tcl(25) + wcol(1)*v(25, 0)
+                        tcl(26) = tcl(26) + wcol(1)*v(26, 0)
+                        tcl(27) = tcl(27) + wcol(1)*v(27, 0)
+                        tcl(28) = tcl(28) + wcol(1)*v(28, 0)
+                        tcl(29) = tcl(29) + wcol(1)*v(29, 0)
+                        tcl(30) = tcl(30) + wcol(1)*v(30, 0)
+                        tcl(31) = tcl(31) + wcol(1)*v(31, 0)
+                        tcl(32) = tcl(32) + wcol(1)*v(32, 0)
+                        tcl(33) = tcl(33) + wcol(1)*v(33, 0)
+                        tcl(34) = tcl(34) + wcol(1)*v(34, 0)
+                        tcl(35) = tcl(35) + wcol(1)*v(35, 0)
+                        tcl(36) = tcl(36) + wcol(1)*v(36, 0)
+                        tcl(37) = tcl(37) + wcol(1)*v(37, 0)
+                        tcl(38) = tcl(38) + wcol(1)*v(38, 0)
+                        tcl(39) = tcl(39) + wcol(1)*v(39, 0)
+                        tcl(40) = tcl(40) + wcol(1)*v(40, 0)
+                        tcl(41) = tcl(41) + wcol(1)*v(41, 0)
+                        tcl(42) = tcl(42) + wcol(1)*v(42, 0)
+                        tcl(43) = tcl(43) + wcol(1)*v(43, 0)
+                        tcl(44) = tcl(44) + wcol(1)*v(44, 0)
+                        tcl(45) = tcl(45) + wcol(1)*v(45, 0)
+                        tcl(46) = tcl(46) + wcol(1)*v(46, 0)
+                        tcl(47) = tcl(47) + wcol(1)*v(47, 0)
+                        tcl(48) = tcl(48) + wcol(1)*v(48, 0)
+                        tcl(49) = tcl(49) + wcol(1)*v(49, 0)
+                        tcl(50) = tcl(50) + wcol(1)*v(50, 0)
+                        tcl(51) = tcl(51) + wcol(1)*v(51, 0)
+                        tcl(52) = tcl(52) + wcol(1)*v(52, 0)
+                        tcl(53) = tcl(53) + wcol(1)*v(53, 0)
+                        tcl(54) = tcl(54) + wcol(1)*v(54, 0)
+                        tcl(55) = tcl(55) + wcol(1)*v(55, 0)
+                        tcl(56) = tcl(56) + wcol(1)*v(56, 0)
+                        tcl(57) = tcl(57) + wcol(1)*v(57, 0)
+                        tcl(58) = tcl(58) + wcol(1)*v(58, 0)
+                        tcl(59) = tcl(59) + wcol(1)*v(59, 0)
+                        tcl(60) = tcl(60) + wcol(1)*v(60, 0)
+                        tcl(61) = tcl(61) + wcol(1)*v(61, 0)
+                        tcl(62) = tcl(62) + wcol(1)*v(62, 0)
+                        tcl(63) = tcl(63) + wcol(1)*v(63, 0)
+                        tcl(64) = tcl(64) + wcol(1)*v(64, 0)
+                        tcl(65) = tcl(65) + wcol(1)*v(65, 0)
+                        tcl(66) = tcl(66) + wcol(1)*v(66, 0)
+                        tcl(67) = tcl(67) + wcol(1)*v(67, 0)
+                        tcl(68) = tcl(68) + wcol(1)*v(68, 0)
+                        tcl(69) = tcl(69) + wcol(1)*v(69, 0)
+                        tcl(70) = tcl(70) + wcol(1)*v(70, 0)
+                        tcl(71) = tcl(71) + wcol(1)*v(71, 0)
+                        tcl(72) = tcl(72) + wcol(1)*v(72, 0)
+                        tcl(73) = tcl(73) + wcol(1)*v(73, 0)
+                        tcl(74) = tcl(74) + wcol(1)*v(74, 0)
+                        tcl(75) = tcl(75) + wcol(1)*v(75, 0)
+                        tcl(76) = tcl(76) + wcol(1)*v(76, 0)
+                        tcl(77) = tcl(77) + wcol(1)*v(77, 0)
+                        tcl(78) = tcl(78) + wcol(1)*v(78, 0)
+                        tcl(79) = tcl(79) + wcol(1)*v(79, 0)
+                        tcl(80) = tcl(80) + wcol(1)*v(80, 0)
                      end if
-
-                     ! KET CONTRACTION ACROSS THE LANES: tc(x, c) += sum over
-                     ! the chunk's pairs of W(pair, c) v(x), staged through
-                     ! shared memory PG_XC components at a time.
-                     do x0 = 1, 80, PG_XC
-                        xc = min(PG_XC, 80 - x0 + 1)
-                        call syncthreads()
-                        do x = 1, xc
-                           if (have) then
-                              Vs(x, tau) = v(x0 + x - 1, cur)
-                           else
-                              Vs(x, tau) = 0.0_dp
-                           end if
-                        end do
-                        call syncthreads()
-                        do j = 1, ntcl
-                           e = tau + (j - 1)*PG_T
-                           if (e > ntc) exit
-                           x = mod(e - 1, 80) + 1
-                           c = (e - 1)/80 + 1
-                           if (x >= x0 .and. x < x0 + xc) then
-                              acc = 0.0_dp
-                              do l = 1, PG_T
-                                 acc = acc + Vs(x - x0 + 1, l)*Ws(l, c)
-                              end do
-                              tcown(j) = tcown(j) + acc
-                           end if
-                        end do
-                     end do
                   end do   ! kq0
 
-                  ! BRA FOLD, by the owners: g(x, a, c) += c_a c_b tc(x, c).
-                  do j = 1, ntcl
-                     e = tau + (j - 1)*PG_T
-                     if (e > ntc) exit
-                     do a = 1, nabc
-                        gown(j + (a - 1)*ntcl) = gown(j + (a - 1)*ntcl) + cab(a)*tcown(j)
-                     end do
-                  end do
+                  ! WARP REDUCTION, once per bra pair, and the bra fold.
+                  if (1 <= ncdc) then
+                  val = tcl(1)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(1) = gown(1) + cabl*val
+                  val = tcl(2)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(2) = gown(2) + cabl*val
+                  val = tcl(3)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(3) = gown(3) + cabl*val
+                  val = tcl(4)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(4) = gown(4) + cabl*val
+                  val = tcl(5)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(5) = gown(5) + cabl*val
+                  val = tcl(6)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(6) = gown(6) + cabl*val
+                  val = tcl(7)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(7) = gown(7) + cabl*val
+                  val = tcl(8)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(8) = gown(8) + cabl*val
+                  val = tcl(9)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(9) = gown(9) + cabl*val
+                  val = tcl(10)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(10) = gown(10) + cabl*val
+                  val = tcl(11)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(11) = gown(11) + cabl*val
+                  val = tcl(12)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(12) = gown(12) + cabl*val
+                  val = tcl(13)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(13) = gown(13) + cabl*val
+                  val = tcl(14)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(14) = gown(14) + cabl*val
+                  val = tcl(15)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(15) = gown(15) + cabl*val
+                  val = tcl(16)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(16) = gown(16) + cabl*val
+                  val = tcl(17)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(17) = gown(17) + cabl*val
+                  val = tcl(18)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(18) = gown(18) + cabl*val
+                  val = tcl(19)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(19) = gown(19) + cabl*val
+                  val = tcl(20)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(20) = gown(20) + cabl*val
+                  val = tcl(21)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(21) = gown(21) + cabl*val
+                  val = tcl(22)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(22) = gown(22) + cabl*val
+                  val = tcl(23)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(23) = gown(23) + cabl*val
+                  val = tcl(24)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(24) = gown(24) + cabl*val
+                  val = tcl(25)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(25) = gown(25) + cabl*val
+                  val = tcl(26)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(26) = gown(26) + cabl*val
+                  val = tcl(27)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(27) = gown(27) + cabl*val
+                  val = tcl(28)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(28) = gown(28) + cabl*val
+                  val = tcl(29)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(29) = gown(29) + cabl*val
+                  val = tcl(30)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(30) = gown(30) + cabl*val
+                  val = tcl(31)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(31) = gown(31) + cabl*val
+                  val = tcl(32)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(32) = gown(32) + cabl*val
+                  val = tcl(33)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(33) = gown(33) + cabl*val
+                  val = tcl(34)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(34) = gown(34) + cabl*val
+                  val = tcl(35)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(35) = gown(35) + cabl*val
+                  val = tcl(36)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(36) = gown(36) + cabl*val
+                  val = tcl(37)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(37) = gown(37) + cabl*val
+                  val = tcl(38)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(38) = gown(38) + cabl*val
+                  val = tcl(39)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(39) = gown(39) + cabl*val
+                  val = tcl(40)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(40) = gown(40) + cabl*val
+                  val = tcl(41)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(41) = gown(41) + cabl*val
+                  val = tcl(42)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(42) = gown(42) + cabl*val
+                  val = tcl(43)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(43) = gown(43) + cabl*val
+                  val = tcl(44)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(44) = gown(44) + cabl*val
+                  val = tcl(45)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(45) = gown(45) + cabl*val
+                  val = tcl(46)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(46) = gown(46) + cabl*val
+                  val = tcl(47)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(47) = gown(47) + cabl*val
+                  val = tcl(48)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(48) = gown(48) + cabl*val
+                  val = tcl(49)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(49) = gown(49) + cabl*val
+                  val = tcl(50)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(50) = gown(50) + cabl*val
+                  val = tcl(51)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(51) = gown(51) + cabl*val
+                  val = tcl(52)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(52) = gown(52) + cabl*val
+                  val = tcl(53)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(53) = gown(53) + cabl*val
+                  val = tcl(54)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(54) = gown(54) + cabl*val
+                  val = tcl(55)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(55) = gown(55) + cabl*val
+                  val = tcl(56)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(56) = gown(56) + cabl*val
+                  val = tcl(57)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(57) = gown(57) + cabl*val
+                  val = tcl(58)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(58) = gown(58) + cabl*val
+                  val = tcl(59)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(59) = gown(59) + cabl*val
+                  val = tcl(60)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(60) = gown(60) + cabl*val
+                  val = tcl(61)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(61) = gown(61) + cabl*val
+                  val = tcl(62)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(62) = gown(62) + cabl*val
+                  val = tcl(63)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(63) = gown(63) + cabl*val
+                  val = tcl(64)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(64) = gown(64) + cabl*val
+                  val = tcl(65)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(65) = gown(65) + cabl*val
+                  val = tcl(66)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(66) = gown(66) + cabl*val
+                  val = tcl(67)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(67) = gown(67) + cabl*val
+                  val = tcl(68)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(68) = gown(68) + cabl*val
+                  val = tcl(69)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(69) = gown(69) + cabl*val
+                  val = tcl(70)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(70) = gown(70) + cabl*val
+                  val = tcl(71)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(71) = gown(71) + cabl*val
+                  val = tcl(72)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(72) = gown(72) + cabl*val
+                  val = tcl(73)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(73) = gown(73) + cabl*val
+                  val = tcl(74)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(74) = gown(74) + cabl*val
+                  val = tcl(75)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(75) = gown(75) + cabl*val
+                  val = tcl(76)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(76) = gown(76) + cabl*val
+                  val = tcl(77)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(77) = gown(77) + cabl*val
+                  val = tcl(78)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(78) = gown(78) + cabl*val
+                  val = tcl(79)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(79) = gown(79) + cabl*val
+                  val = tcl(80)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(80) = gown(80) + cabl*val
+                  end if
                end do   ! kp
 
                !
-               ! DIGESTION, one thread per column combination of the chunk,
+               ! DIGESTION, one lane per column combination of the chunk,
                ! in batches of PG_GB: the owners scatter into shared memory,
-               ! the thread takes its column and runs the HRR and the folded
+               ! the lane takes its column and runs the HRR and the folded
                ! digestion exactly as the do concurrent kernels do.
                !
                ncomb = nabc*ncdc
                do cb0 = 1, ncomb, PG_GB
                   nbt = min(PG_GB, ncomb - cb0 + 1)
                   call syncthreads()
-                  do j = 1, ntcl
-                     e = tau + (j - 1)*PG_T
-                     if (e > ntc) exit
-                     x = mod(e - 1, 80) + 1
-                     c = (e - 1)/80 + 1
-                     do a = 1, nabc
-                        combo = a + (c - 1)*nabc
+                  if (tau <= nabc) then
+                     do c = 1, ncdc
+                        combo = tau + (c - 1)*nabc
                         if (combo >= cb0 .and. combo < cb0 + nbt) then
-                           Gs(x, combo - cb0 + 1) = gown(j + (a - 1)*ntcl)
+                           do x = 1, 80
+                              Gs(x, combo - cb0 + 1) = gown(x + (c - 1)*80)
+                           end do
                         end if
                      end do
-                  end do
+                  end if
                   call syncthreads()
                   if (tau <= nbt) then
                      combo = cb0 + tau - 1

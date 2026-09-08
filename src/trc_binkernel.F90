@@ -286,7 +286,8 @@ contains
          ! Without a primitive-shell view the kernels get the trivial one:
          ! one column per shell, unit coefficients (the contracted pair data
          ! already carries them), the shell's own AO offset.
-         integer, allocatable :: t_np(:), t_ncol(:), t_soff(:), t_coff(:), t_ki(:)
+         integer, allocatable :: t_np(:), t_ncol(:), t_soff(:), t_coff(:), t_ki(:), t_sh(:)
+         real(dp), allocatable :: q_dummy(:)
          real(dp), allocatable :: t_coef(:)
          integer :: ncoef1, i1
          allocate (t_np(nbas), t_ncol(nbas), t_soff(nbas), t_coff(nbas))
@@ -302,9 +303,16 @@ contains
             t_coff(i1) = ncoef1
             ncoef1 = ncoef1 + t_np(i1)
          end do
-         allocate (t_coef(max(ncoef1, 1)), t_ki(npp))
+         allocate (t_coef(max(ncoef1, 1)), t_ki(npp), t_sh(nbas), q_dummy(1))
          t_coef = 1.0_dp; t_ki = 1
-         !$acc enter data copyin(t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
+         ! One column per shell, so a column IS its shell and there is no
+         ! merged maximum to sharpen: nqc = 1 turns the per-combination
+         ! test off and q_dummy is never read.
+         do i1 = 1, nbas
+            t_sh(i1) = i1
+         end do
+         q_dummy = 0.0_dp
+         !$acc enter data copyin(t_np, t_ncol, t_soff, t_coff, t_coef, t_ki, t_sh, q_dummy)
          allocate (ord(nseg), ckey(nseg))
          do a2 = 1, nseg
             ckey(a2) = ((sLA(a2)*CLASS_RADIX + sLB(a2))*CLASS_RADIX &
@@ -345,13 +353,14 @@ contains
                              c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, t_ki, t_ki, &
-                             nbas, ncoef1, t_np, t_ncol, t_soff, t_coff, ao_off, t_coef, .false., &
+                             nbas, ncoef1, t_np, t_ncol, t_soff, t_coff, ao_off, t_coef, &
+                             t_sh, nbas, 1, q_dummy, dsh, .false., &
                              ndens, dmat, jmat, rank, nranks)
             c0 = c1 + 1
          end do
          nlaunch = nl
-         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
-         deallocate (ord, ckey, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
+         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki, t_sh, q_dummy)
+         deallocate (ord, ckey, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki, t_sh, q_dummy)
       end block
       deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
       return
@@ -532,7 +541,8 @@ contains
                           ps%pbins%npair, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, jfac, kfac, ps%dshp, &
                           ps%nps, ps%npp, nao, ps%ps_l, ps%ps_ao1, &
                           ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, &
-                          ps%ncoltot, ps%ncoef, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_coef, sG(c0), &
+                          ps%ncoltot, ps%ncoef, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_coef, &
+                          ps%col_sh, nbas, size(ps%q_col), ps%q_col, dsh, sG(c0), &
                           ndens, dmat, jmat, rank, nranks)
 #ifdef TRC_CUDAF
          end if

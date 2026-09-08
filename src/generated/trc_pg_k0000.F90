@@ -16,8 +16,9 @@ module trc_pg_k0000
    public :: pg0000
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
-   integer, parameter :: PG_T = 64, PG_XC = 32, PG_NTC = 8, PG_NG = 32
-   integer, parameter :: PG_NCC = 16, PG_NCAB = 16, PG_GB = 64
+   integer, parameter :: PG_T = 32, PG_GB = 32
+   !> ket columns per chunk, bra columns per chunk, owned entries per lane
+   integer, parameter :: CDC = 4, ABC = 16, NTC = 4
 
 contains
 
@@ -44,16 +45,16 @@ contains
       real(dp), device :: dmat(ndens, nao, nao)
       real(dp), device :: jmat(ndens, nao, nao)
 
-      real(dp), shared :: Vs(PG_XC, PG_T), Ws(PG_T, PG_NCC), Gs(1, PG_GB)
+      real(dp), shared :: Gs(1, PG_GB)
       integer(kind=8) :: gt
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
       real(dp) :: qcut, pcut
       integer :: keyab, keycd, offab, offcd, nab, ncd
-      integer :: kp, kq, kq0, d, x, x0, xc, cur, ia, ib, ic, id, idx, idens
+      integer :: kp, kq, kq0, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
       logical :: dij, dkl, dpq, have, ok
-      real(dp) :: zeta, eta, zpe, rho, tval, pref, wc, wmax, acc, aold
+      real(dp) :: zeta, eta, zpe, rho, tval, pref, wc, wmax, acc, aold, val
       real(dp) :: pqx, pqy, pqz, pax, pay, paz, qcx, qcy, qcz
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
       real(dp) :: oo2z, oo2e, oo2ze, rz, re, sc, vv
@@ -62,13 +63,13 @@ contains
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v(1, 0:1), g1(1), vbuf(1)
+      real(dp) :: tcl(NTC), wcol(CDC), gown(NTC), cabl
       real(dp) :: wq
       integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd
       integer  :: ki, kj, kk, kl, ia2, ib2, ic2, id2, iabc, icdc
       logical  :: same_ab, same_cd, same_pair
-      integer  :: tau, cdc, ncdc, ntc, ntcl, abc, nabc, ab0, cd0, a, c, j, e, l, ncomb, cb0, nbt, combo
-      real(dp) :: cab(PG_NCAB), tcown(PG_NTC), gown(PG_NG)
-      integer  :: offa(PG_NCAB), offb(PG_NCAB), offc(PG_NCC), offd(PG_NCC)
+      integer  :: tau, ncdc, nabc, ab0, cd0, a, c, j, ncomb, cb0, nbt, combo
+      integer  :: offal, offbl, offc(CDC), offd(CDC)
       real(dp) :: jab(1), jcd(1), kac(1)
       real(dp) :: kad(1), kbc(1), kbd(1)
       real(dp) :: dab(1), dcd(1), dac(1)
@@ -77,7 +78,7 @@ contains
       tau = threadIdx%x
       gt = g0 + int(blockIdx%x - 1, 8)*int(nranks, 8)
       if (gt > gend) return
-         ! locate the segment (every thread alike)
+         ! locate the segment (every lane alike)
          p = lo; q = hi
          do while (p < q)
             mid = (p + q + 1)/2
@@ -159,55 +160,53 @@ contains
 
 
          ncab = nca*ncb; nccd = nccl*ncdl
-         !
-         ! COLUMN GRID CHUNKS, to the register budget: a thread owns at most
-         ! PG_NTC ket-contracted entries and PG_NG bra-folded ones. Most
-         ! classes fit in one pass; the rest repeat the primitive loops per
-         ! chunk, which is still far fewer VRR evaluations than one per
-         ! column combination.
-         !
-         cdc = max(1, min(nccd, (PG_NTC*PG_T)/1))
-         ntcl = (1*cdc + PG_T - 1)/PG_T
-         abc = max(1, min(ncab, PG_NG/ntcl))
          cur = 0
-         do cd0 = 1, nccd, cdc
-            ncdc = min(cdc, nccd - cd0 + 1)
-            ntc = 1*ncdc
-            ntcl = (ntc + PG_T - 1)/PG_T
-            do c = 1, ncdc
-               icdc = cd0 + c - 1
+         !
+         ! COLUMN GRID in chunks of ABC x CDC. A lane accumulates its own
+         ! quartets' ket-contracted block in registers over the ket loop;
+         ! the sum across the warp's lanes is taken once per bra pair, by
+         ! shuffles, and the owner folds the bra columns in. Neither needs
+         ! shared memory or a barrier. A class whose grid exceeds a chunk
+         ! repeats its primitive loops per chunk, still far fewer VRR
+         ! evaluations than one per column combination.
+         !
+         do cd0 = 1, nccd, CDC
+            ncdc = min(CDC, nccd - cd0 + 1)
+            do c = 1, CDC
+               icdc = min(cd0 + c - 1, nccd)
                ic2 = mod(icdc - 1, nccl) + 1; id2 = (icdc - 1)/nccl + 1
                offc(c) = ps_coff(sk) + (ic2 - 1)*npk
                offd(c) = ps_coff(sl) + (id2 - 1)*npl
             end do
-            do ab0 = 1, ncab, abc
-               nabc = min(abc, ncab - ab0 + 1)
-               do a = 1, nabc
-                  iabc = ab0 + a - 1
-                  ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
-                  offa(a) = ps_coff(si) + (ia2 - 1)*npi
-                  offb(a) = ps_coff(sj) + (ib2 - 1)*npj
-               end do
-               do j = 1, PG_NG
+            do ab0 = 1, ncab, ABC
+               nabc = min(ABC, ncab - ab0 + 1)
+               ! Lane a owns bra column a of the chunk: its coefficient
+               ! offsets, its weight per bra pair, and its slice of g.
+               iabc = min(ab0 + tau - 1, ncab)
+               ia2 = mod(iabc - 1, nca) + 1; ib2 = (iabc - 1)/nca + 1
+               offal = ps_coff(si) + (ia2 - 1)*npi
+               offbl = ps_coff(sj) + (ib2 - 1)*npj
+               do j = 1, NTC
                   gown(j) = 0.0_dp
                end do
 
                do kp = offab + 1, offab + nab
                   zeta = pp_p(kp)
                   ki = pp_ki(kp); kj = pp_kj(kp)
-                  wmax = 0.0_dp
-                  do a = 1, nabc
-                     cab(a) = ps_coef(offa(a) + ki)*ps_coef(offb(a) + kj)
-                     wmax = max(wmax, abs(cab(a)))
-                  end do
-                  do j = 1, PG_NTC
-                     tcown(j) = 0.0_dp
-                  end do
+                  cabl = 0.0_dp
+                  if (tau <= nabc) cabl = ps_coef(offal + ki)*ps_coef(offbl + kj)
+                  wmax = abs(cabl)
+                  wmax = max(wmax, __shfl_xor(wmax, 16))
+                  wmax = max(wmax, __shfl_xor(wmax, 8))
+                  wmax = max(wmax, __shfl_xor(wmax, 4))
+                  wmax = max(wmax, __shfl_xor(wmax, 2))
+                  wmax = max(wmax, __shfl_xor(wmax, 1))
+                     tcl(1) = 0.0_dp
+                     tcl(2) = 0.0_dp
+                     tcl(3) = 0.0_dp
+                     tcl(4) = 0.0_dp
 
                   do kq0 = offcd + 1, offcd + ncd, PG_T
-                     ! The previous chunk's reduction reads Ws; nobody may
-                     ! overwrite a row until every thread is past it.
-                     call syncthreads()
                      kq = kq0 + tau - 1
                      have = kq <= offcd + ncd
                      if (have) then
@@ -215,19 +214,15 @@ contains
                         kk = pp_ki(kq); kl = pp_kj(kq)
                         zpe = zeta + eta
                         pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
-                     else
-                        eta = 1.0_dp; kk = 1; kl = 1; zpe = 1.0_dp; pref = 0.0_dp
+                        acc = 0.0_dp
+                        do c = 1, CDC
+                           wc = ps_coef(offc(c) + kk)*ps_coef(offd(c) + kl)
+                           if (c > ncdc) wc = 0.0_dp
+                           wcol(c) = wc
+                           acc = max(acc, abs(wc))
+                        end do
+                        if (abs(pref)*wmax*acc <= pcut) have = .false.
                      end if
-                     ! ket column weights of this lane's pair, and the
-                     ! prescreen on the largest weight either side can give.
-                     acc = 0.0_dp
-                     do c = 1, ncdc
-                        wc = ps_coef(offc(c) + kk)*ps_coef(offd(c) + kl)
-                        if (.not. have) wc = 0.0_dp
-                        Ws(tau, c) = wc
-                        acc = max(acc, abs(wc))
-                     end do
-                     if (abs(pref)*wmax*acc <= pcut) have = .false.
                      if (have) then
                         rho = zeta*eta/zpe
                         pqx = pp_r(kp, 1) - pp_r(kq, 1)
@@ -272,70 +267,72 @@ contains
             ! --- level m = 0 ---
             v(1,0) = pref*f(0)
                cur = 0
+                        tcl(1) = tcl(1) + wcol(1)*v(1, 0)
+                        tcl(2) = tcl(2) + wcol(2)*v(1, 0)
+                        tcl(3) = tcl(3) + wcol(3)*v(1, 0)
+                        tcl(4) = tcl(4) + wcol(4)*v(1, 0)
                      end if
-
-                     ! KET CONTRACTION ACROSS THE LANES: tc(x, c) += sum over
-                     ! the chunk's pairs of W(pair, c) v(x), staged through
-                     ! shared memory PG_XC components at a time.
-                     do x0 = 1, 1, PG_XC
-                        xc = min(PG_XC, 1 - x0 + 1)
-                        call syncthreads()
-                        do x = 1, xc
-                           if (have) then
-                              Vs(x, tau) = v(x0 + x - 1, cur)
-                           else
-                              Vs(x, tau) = 0.0_dp
-                           end if
-                        end do
-                        call syncthreads()
-                        do j = 1, ntcl
-                           e = tau + (j - 1)*PG_T
-                           if (e > ntc) exit
-                           x = mod(e - 1, 1) + 1
-                           c = (e - 1)/1 + 1
-                           if (x >= x0 .and. x < x0 + xc) then
-                              acc = 0.0_dp
-                              do l = 1, PG_T
-                                 acc = acc + Vs(x - x0 + 1, l)*Ws(l, c)
-                              end do
-                              tcown(j) = tcown(j) + acc
-                           end if
-                        end do
-                     end do
                   end do   ! kq0
 
-                  ! BRA FOLD, by the owners: g(x, a, c) += c_a c_b tc(x, c).
-                  do j = 1, ntcl
-                     e = tau + (j - 1)*PG_T
-                     if (e > ntc) exit
-                     do a = 1, nabc
-                        gown(j + (a - 1)*ntcl) = gown(j + (a - 1)*ntcl) + cab(a)*tcown(j)
-                     end do
-                  end do
+                  ! WARP REDUCTION, once per bra pair, and the bra fold.
+                  if (1 <= ncdc) then
+                  val = tcl(1)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(1) = gown(1) + cabl*val
+                  end if
+                  if (2 <= ncdc) then
+                  val = tcl(2)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(2) = gown(2) + cabl*val
+                  end if
+                  if (3 <= ncdc) then
+                  val = tcl(3)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(3) = gown(3) + cabl*val
+                  end if
+                  if (4 <= ncdc) then
+                  val = tcl(4)
+                  val = val + __shfl_xor(val, 16)
+                  val = val + __shfl_xor(val, 8)
+                  val = val + __shfl_xor(val, 4)
+                  val = val + __shfl_xor(val, 2)
+                  val = val + __shfl_xor(val, 1)
+                  gown(4) = gown(4) + cabl*val
+                  end if
                end do   ! kp
 
                !
-               ! DIGESTION, one thread per column combination of the chunk,
+               ! DIGESTION, one lane per column combination of the chunk,
                ! in batches of PG_GB: the owners scatter into shared memory,
-               ! the thread takes its column and runs the HRR and the folded
+               ! the lane takes its column and runs the HRR and the folded
                ! digestion exactly as the do concurrent kernels do.
                !
                ncomb = nabc*ncdc
                do cb0 = 1, ncomb, PG_GB
                   nbt = min(PG_GB, ncomb - cb0 + 1)
                   call syncthreads()
-                  do j = 1, ntcl
-                     e = tau + (j - 1)*PG_T
-                     if (e > ntc) exit
-                     x = mod(e - 1, 1) + 1
-                     c = (e - 1)/1 + 1
-                     do a = 1, nabc
-                        combo = a + (c - 1)*nabc
+                  if (tau <= nabc) then
+                     do c = 1, ncdc
+                        combo = tau + (c - 1)*nabc
                         if (combo >= cb0 .and. combo < cb0 + nbt) then
-                           Gs(x, combo - cb0 + 1) = gown(j + (a - 1)*ntcl)
+                           do x = 1, 1
+                              Gs(x, combo - cb0 + 1) = gown(x + (c - 1)*1)
+                           end do
                         end if
                      end do
-                  end do
+                  end if
                   call syncthreads()
                   if (tau <= nbt) then
                      combo = cb0 + tau - 1
