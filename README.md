@@ -272,12 +272,128 @@ all reproducible: [libcint], [pyscf], [gpu4pyscf], and [GAMESS libERI].
 
 Additional related references:
 
-- https://pubs.aip.org/aip/jcp/article-abstract/161/8/082501/3309322/LibERI-A-portable-and-performant-multi-GPU?redirectedFrom=fulltext
-- https://pubs.aip.org/aip/jcp/article/164/21/214118/3393751?casa_token=doBwBEbj8DcAAAAA:V6QE0PQws7ANKTiG_mpzLS7NKy0yoXktxJkQt80zEy5nLXOmXP3IbDpsZtv96oA2Flnr21FnLQ
-- https://ieeexplore.ieee.org/abstract/document/10820783
-- https://onlinelibrary.wiley.com/doi/full/10.1002/cpe.8244
-- https://link.springer.com/chapter/10.1007/978-3-030-85262-7_6
-- https://pubs.acs.org/jpcafh/article-abstract/123/39/8460/1333557/An-Accurate-Quantum-Based-Approach-to-Explicit?redirectedFrom=fulltext
+> **[2]** M. Alkan, B. Q. Pham, D. Del Angel Cruz, J. R. Hammond,
+> T. A. Barnes and M. S. Gordon,
+> *LibERI—A portable and performant multi-GPU accelerated library for electron repulsion integrals via OpenMP offloading and standard language parallelism*,
+> **The Journal of Chemical Physics** **161** (2024), 082501.
+> [doi:10.1063/5.0215352](https://doi.org/10.1063/5.0215352)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@article{alkan_liberi_2024,
+  title   = {LibERI---A portable and performant multi-GPU accelerated library for electron repulsion integrals via OpenMP offloading and standard language parallelism},
+  author  = {Alkan, Melisa and Pham, Bao Quoc and Del Angel Cruz, Daniel and Hammond, Jeff R. and Barnes, Taylor A. and Gordon, Mark S.},
+  journal = {The Journal of Chemical Physics},
+  volume  = {161},
+  number  = {8},
+  pages   = {082501},
+  year    = {2024},
+  doi     = {10.1063/5.0215352},
+  url     = {https://pubs.aip.org/aip/jcp/article-abstract/161/8/082501/3309322/LibERI-A-portable-and-performant-multi-GPU?redirectedFrom=fulltext},
+}
+```
+
+</details>
+
+> **[3]** **The Journal of Chemical Physics** **164**, 214118.
+> [link](https://pubs.aip.org/aip/jcp/article/164/21/214118/3393751)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@misc{jcp_164_214118,
+  title = {The Journal of Chemical Physics 164, 214118},
+  url   = {https://pubs.aip.org/aip/jcp/article/164/21/214118/3393751},
+  note  = {Article page for JCP 164(21):214118},
+}
+```
+
+</details>
+
+> **[4]** IEEE Xplore document 10820783.
+> [link](https://ieeexplore.ieee.org/abstract/document/10820783)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@misc{ieee_xplore_10820783,
+  title = {IEEE Xplore document 10820783},
+  url   = {https://ieeexplore.ieee.org/abstract/document/10820783},
+  note  = {Accessed 2026-09-08},
+}
+```
+
+</details>
+
+> **[5]** Wiley article with DOI `10.1002/cpe.8244`.
+> [doi:10.1002/cpe.8244](https://doi.org/10.1002/cpe.8244)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@article{cpe_8244,
+  title   = {Concurrency and Computation: Practice and Experience article cpe.8244},
+  journal = {Concurrency and Computation: Practice and Experience},
+  doi     = {10.1002/cpe.8244},
+  url     = {https://onlinelibrary.wiley.com/doi/full/10.1002/cpe.8244},
+}
+```
+
+</details>
+
+> **[6]** B. Chapman, B. Pham, C. Yang, C. Daley, C. Bertoni, D. Kulkarni,
+> D. Oryspayev, E. D’Azevedo, J. Doerfert, K. Zhou, K. Ravikumar,
+> M. Gordon, M. Del Ben, M. Lin, M. Alkan, M. Kruse, O. Hernandez,
+> P. K. Yeung, P. Lin, P. Xu, S. Pophale, T. Sattasathuchana, V. Kale,
+> W. Huhn and Y. H. He,
+> *Outcomes of OpenMP Hackathon: OpenMP Application Experiences with the Offloading Model (Part II)*,
+> In: S. McIntosh-Smith, B. R. de Supinski, J. Klinkenberg (eds.),
+> **OpenMP: Enabling Massive Node-Level Parallelism** (2021).
+> [doi:10.1007/978-3-030-85262-7_6](https://doi.org/10.1007/978-3-030-85262-7_6)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@incollection{chapman_openmp_hackathon_2021,
+  author    = {Chapman, Barbara and Pham, Bao and Yang, C. and Daley, C. and Bertoni, C. and Kulkarni, D. and Oryspayev, D. and D'Azevedo, E. and Doerfert, J. and Zhou, K. and Ravikumar, K. and Gordon, M. and Del Ben, M. and Lin, M. and Alkan, M. and Kruse, M. and Hernandez, O. and Yeung, P. K. and Lin, P. and Xu, P. and Pophale, S. and Sattasathuchana, T. and Kale, V. and Huhn, W. and He, Y. H.},
+  title     = {Outcomes of OpenMP Hackathon: OpenMP Application Experiences with the Offloading Model (Part II)},
+  booktitle = {OpenMP: Enabling Massive Node-Level Parallelism},
+  year      = {2021},
+  doi       = {10.1007/978-3-030-85262-7_6},
+  url       = {https://link.springer.com/chapter/10.1007/978-3-030-85262-7_6},
+}
+```
+
+</details>
+
+> **[7]** T. Sattasathuchana, P. Xu and M. S. Gordon,
+> *An Accurate Quantum-Based Approach to Explicit Solvent Effects: Interfacing the General Effective Fragment Potential Method with Ab Initio Electronic Structure Theory*,
+> **J. Phys. Chem. A** **123** (2019), 8460-8475.
+> [link](https://pubs.acs.org/jpcafh/article-abstract/123/39/8460/1333557/An-Accurate-Quantum-Based-Approach-to-Explicit?redirectedFrom=fulltext)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@article{sattasathuchana_xu_gordon_jpca_2019,
+  author  = {Sattasathuchana, Tosaporn and Xu, Peng and Gordon, Mark S.},
+  title   = {An Accurate Quantum-Based Approach to Explicit Solvent Effects: Interfacing the General Effective Fragment Potential Method with Ab Initio Electronic Structure Theory},
+  journal = {J. Phys. Chem. A},
+  volume  = {123},
+  number  = {39},
+  pages   = {8460-8475},
+  year    = {2019},
+  url     = {https://pubs.acs.org/jpcafh/article-abstract/123/39/8460/1333557/An-Accurate-Quantum-Based-Approach-to-Explicit?redirectedFrom=fulltext},
+}
+```
+
+</details>
 
 [libcint]: https://github.com/sunqm/libcint
 [pyscf]: https://github.com/pyscf/pyscf
