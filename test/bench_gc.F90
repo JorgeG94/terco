@@ -57,7 +57,7 @@ program bench_gc
    call tick(t0)
    call e1%build(b, thr, general=.false.)
    call tick(t1); tb1 = t1 - t0
-   call e1%fock_resident(b, d, g1, k_scale=1.0_dp)   ! warm up
+   call e1%fock_resident(b, d, g1, k_scale=1.0_dp, count_survivors=.true.)   ! warm up, and count
    call tick(t0)
    do r = 1, reps
       call e1%fock_resident(b, d, g1, k_scale=1.0_dp)
@@ -67,7 +67,7 @@ program bench_gc
    call tick(t0)
    call e2%build(b, thr, general=.true.)
    call tick(t1); tb2 = t1 - t0
-   call e2%fock_resident(b, d, g2, k_scale=1.0_dp)
+   call e2%fock_resident(b, d, g2, k_scale=1.0_dp, count_survivors=.true.)
    call tick(t0)
    do r = 1, reps
       call e2%fock_resident(b, d, g2, k_scale=1.0_dp)
@@ -76,10 +76,10 @@ program bench_gc
 
    !$acc update self(g1, g2)
    worst = maxval(abs(g1 - g2))
-   print '(a,f8.3,a,f9.3,a,i0,a,i0)', '  segmented : build ', tb1, ' s   fock ', tf1, &
-      ' s   launches ', e1%nlaunch, '   Mquartets enumerated ', int(e1%nwork/1000000_8)
-   print '(a,f8.3,a,f9.3,a,i0,a,i0)', '  general   : build ', tb2, ' s   fock ', tf2, &
-      ' s   launches ', e2%nlaunch, '   Mquartets enumerated ', int(e2%nwork/1000000_8)
+   print '(a,f8.3,a,f9.3,a,i0,a,i0,a,i0)', '  segmented : build ', tb1, ' s   fock ', tf1, &
+      ' s   launches ', e1%nlaunch, '   Mquartets enum ', int(e1%nwork/1000000_8), ' kept ', int(e1%nkept/1000000_8)
+   print '(a,f8.3,a,f9.3,a,i0,a,i0,a,i0)', '  general   : build ', tb2, ' s   fock ', tf2, &
+      ' s   launches ', e2%nlaunch, '   Mquartets enum ', int(e2%nwork/1000000_8), ' kept ', int(e2%nkept/1000000_8)
    print '(a,es10.2,a,es10.2)', '  worst |G_seg - G_gen| ', worst, '  scale ', maxval(abs(g1))
 contains
    subroutine tick(t)

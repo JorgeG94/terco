@@ -509,9 +509,12 @@ contains
       call permute_segments(nseg, ord, sA, sNB, sOA, sOB, sD, sOff, sLA, sLB, sLC, sLD)
       tG = sG(ord); sG = tG
       tk = ckey(ord); ckey = tk
+      ! After the descriptors are on the device, not before: count_kept
+      ! reads sOff there. Nothing passed nkept until now, so the order was
+      ! never exercised.
+      !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
       if (present(nkept)) call count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, ps%pbins%npair, &
                                           ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, ps%dshp, ps%nps, nkept)
-      !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
       nl = 0
       c0 = 1
       do while (c0 <= nseg)

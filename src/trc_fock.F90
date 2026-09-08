@@ -74,6 +74,13 @@ module trc_eri
       integer,  allocatable :: sh_l(:), ao_off(:)
       logical :: on_device = .false.
       integer :: nlaunch = 0
+      !> Quartets that survive both screens in the last resident build,
+      !> filled only when asked: it costs a full extra enumeration pass.
+      integer(kind=8) :: nkept = 0
+      !> Quartets that survive both screens in the last build, counted only
+      !> when fock_resident is asked for it. Diagnostic: it costs a full
+      !> extra enumeration pass.
+      integer(kind=8) :: nkept = 0
       integer(kind=8) :: nwork = 0
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then
@@ -448,7 +455,7 @@ contains
    ! by hoisting them into the object; it is the next thing to do here.
    !
    subroutine eri_fock_resident(this, b, dmat, gmat, k_scale, j_scale, &
-                                density_screen)
+                                density_screen, count_survivors)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       !! Both must already be present on the device.
@@ -458,6 +465,9 @@ contains
       !> Weight the Schwarz bound by the density before screening (default
       !> true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
       logical, intent(in), optional :: density_screen
+      !! Also count the quartets that survive screening, into this%nkept.
+      !! A full extra pass over the work list, so it is opt-in.
+      logical, intent(in), optional :: count_survivors
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       integer :: n, i, j
@@ -493,6 +503,17 @@ contains
          end do
       end if
 
+      if (present(count_survivors)) then
+         if (count_survivors) then
+            call fock_bins(this%bins, this%nbas, this%nhpp, n, this%sh_l, &
+                           this%ao_off, this%thresh, .false., &
+                           jfac, kfac, .false., this%dsh, &
+                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                           this%hp_ra, this%hp_rb, this%hp_c, &
+                           1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
+                           nkept=this%nkept, ps=this%ps)
+         end if
+      end if
       call fock_bins(this%bins, this%nbas, this%nhpp, n, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, .false., this%dsh, &
