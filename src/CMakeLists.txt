@@ -107,7 +107,7 @@ if(_regen)
   # LMAX=2 a single module is a gigabyte of NVVM that does not finish.
   execute_process(
     COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py --lmax
-            ${TERCO_LMAX} --split ${_gen_dir}
+            ${TERCO_LMAX} --split ${_gen_dir} --cuda
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_perclass.py failed (${_rc})")
@@ -164,3 +164,15 @@ endif()
 list(LENGTH _generated _ngen)
 message(STATUS "terco: ${_ngen} generated kernel modules from ${_gen_dir}")
 target_sources(${main_lib} PRIVATE ${_generated})
+# The CUDA Fortran kernels are generated alongside the do concurrent ones and
+# guarded on TRC_CUDAF, so without the option they compile to empty modules
+# and need nothing; with it they -- and only they -- are compiled as CUDA
+# Fortran.
+if(TERCO_ENABLE_CUDA_FORTRAN)
+  file(GLOB _cudaf CONFIGURE_DEPENDS "${_gen_dir}/trc_pg_*.F90")
+  # TARGET_DIRECTORY: the library is defined one level up, and a source
+  # property set here would otherwise bind only to targets of this directory.
+  set_source_files_properties(${_cudaf} TARGET_DIRECTORY ${main_lib} PROPERTIES COMPILE_OPTIONS "-cuda")
+  list(LENGTH _cudaf _ncudaf)
+  message(STATUS "terco: ${_ncudaf} of them CUDA Fortran (TERCO_ENABLE_CUDA_FORTRAN)")
+endif()

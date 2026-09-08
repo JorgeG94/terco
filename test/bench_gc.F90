@@ -50,7 +50,7 @@ program bench_gc
    !$acc enter data copyin(d) create(g1, g2)
 
    call tick(t0)
-   call e1%build(b, 1.0e-10_dp)
+   call e1%build(b, 1.0e-10_dp, general=.false.)
    call tick(t1); tb1 = t1 - t0
    call e1%fock_resident(b, d, g1, k_scale=1.0_dp)   ! warm up
    call tick(t0)

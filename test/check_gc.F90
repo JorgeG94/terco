@@ -11,6 +11,7 @@ program check_gc
    use trc_test_basis, only: read_xyz
    implicit none
    integer :: natm, n, i, j, dev
+   character(len=256) :: xyzfile, basfile
    integer, allocatable :: zint(:)
    real(dp), allocatable :: at_r(:, :), d(:, :), g1(:, :), g2(:, :)
    real(dp) :: worst
@@ -19,8 +20,11 @@ program check_gc
    type(error_t) :: err
 
    dev = trc_bind_device(0)
-   call read_xyz('water.xyz', natm, zint, at_r)
-   call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, b, err)
+   xyzfile = 'water.xyz'; basfile = 'basis_sets/cc-pvdz.json'
+   if (command_argument_count() >= 1) call get_command_argument(1, xyzfile)
+   if (command_argument_count() >= 2) call get_command_argument(2, basfile)
+   call read_xyz(trim(xyzfile), natm, zint, at_r)
+   call trc_basis_from_json(trim(basfile), natm, zint, at_r, b, err)
    if (err%has_error()) error stop 'check_gc: basis'
    call b%to_device()
    n = b%nao
@@ -31,7 +35,7 @@ program check_gc
       end do
    end do
    !$acc enter data copyin(d) create(g1, g2)
-   call e1%build(b, 1.0e-12_dp)
+   call e1%build(b, 1.0e-12_dp, general=.false.)
    call e1%fock_resident(b, d, g1, k_scale=1.0_dp)
    call e2%build(b, 1.0e-12_dp, general=.true.)
    call e2%fock_resident(b, d, g2, k_scale=1.0_dp)

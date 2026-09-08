@@ -50,6 +50,9 @@ module trc_eri
    use trc_hgp, only: build_pairs_hgp
    use trc_screen, only: schwarz_bounds
    use trc_bins, only: pair_bins_t, build_binned_pairs, ps_view_t, PS_NCOL_MAX, ps_release
+#ifdef TRC_CUDAF
+   use trc_pg_kernels, only: pg_init
+#endif
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use trc_binkernel, only: fock_bins
    use trc_api, only: trc_basis_t
@@ -120,6 +123,7 @@ contains
       real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       real(dp), allocatable :: qs(:), one(:)
       integer,  allocatable :: hp_ki(:), hp_kj(:)
+      logical :: want_general
 
       this%rank = 0; this%nranks = 1; this%distributed = .false.
       if (present(comm)) then
@@ -178,7 +182,27 @@ contains
 
       this%ps%nps = 0
       if (present(general)) then
-         if (general) call build_ps_view(b, qs, thresh, this%ps)
+         ! An explicit answer is honoured either way: the tests compare the
+         ! two paths on the same basis and need to pick.
+         want_general = general
+      else
+         want_general = .false.
+#ifdef TRC_CUDAF
+         ! With the cooperative kernels built in, a basis with a general
+         ! contraction takes the primitive-shell view without being asked. A
+         ! segmented basis gains nothing from the view, so it is dropped
+         ! again below and the scalar path runs as it always did.
+         want_general = .true.
+#endif
+      end if
+#ifdef TRC_CUDAF
+      call pg_init()
+#endif
+      if (want_general) then
+         call build_ps_view(b, qs, thresh, this%ps)
+         if (.not. present(general)) then
+            if (all(this%ps%ps_ncol == 1)) call ps_release(this%ps)
+         end if
       end if
       deallocate (qs, one)
 
