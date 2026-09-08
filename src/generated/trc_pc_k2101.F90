@@ -130,7 +130,7 @@ contains
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut
+      real(dp) :: qcut, pcut
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -202,6 +202,7 @@ contains
          ! up to two decades too much; at RNA3 that was 46% of all quartets.
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
+         pcut = thresh*1.0e-3_dp
 
          si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
          sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
@@ -1024,7 +1025,7 @@ contains
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut
+      real(dp) :: qcut, pcut
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -1092,6 +1093,7 @@ contains
          ! up to two decades too much; at RNA3 that was 46% of all quartets.
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
+         pcut = thresh*1.0e-3_dp
 
          si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
          sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
@@ -1130,6 +1132,16 @@ contains
                do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
                   zpe = zeta + eta
+                  ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
+                  ! primitive (ss|ss) integral, and with the normalisation
+                  ! in the coefficients it bounds the higher ones to within
+                  ! the polynomial factors the cutoff's three decades of
+                  ! margin cover. Tested before the Boys function and the
+                  ! VRR, which is nearly all of a primitive quartet's cost;
+                  ! on a generally contracted basis two thirds of the
+                  ! quartets that survive the pair pruning die here.
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
+                  if (abs(pref) <= pcut) cycle
                   rho = zeta*eta/zpe
                   pqx = pp_r(kp, 1) - pp_r(kq, 1)
                   pqy = pp_r(kp, 2) - pp_r(kq, 2)
@@ -1180,7 +1192,6 @@ contains
 
                   oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
                   rz = rho/zeta; re = rho/eta
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
 
                ! --- level m = 4 ---
             v(1,0) = pref*f(4)

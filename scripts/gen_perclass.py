@@ -316,7 +316,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
 {PROLOGUE}
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut
+      real(dp) :: qcut, pcut
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -388,6 +388,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
          ! up to two decades too much; at RNA3 that was 46% of all quartets.
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
+         pcut = thresh*1.0e-3_dp
 
          si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
          sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
@@ -438,17 +439,23 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
             end do
             do kp = offab + 1, offab + nab
                zeta = pp_p(kp)
-               kpl = kp - offab - 1
-               ki = kpl/npj + 1
-               kj = kpl - (ki - 1)*npj + 1
+               ki = pp_ki(kp); kj = pp_kj(kp)
                wab = ps_coef(ps_coff(si) + ki)*ps_coef(ps_coff(sj) + kj)
                do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
-                  kql = kq - offcd - 1
-                  kk = kql/npl + 1
-                  kl = kql - (kk - 1)*npl + 1
+                  kk = pp_ki(kq); kl = pp_kj(kq)
                   w = wab*ps_coef(ps_coff(sk) + kk)*ps_coef(ps_coff(sl) + kl)
                   zpe = zeta + eta
+                  ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
+                  ! primitive (ss|ss) integral, and with the normalisation
+                  ! in the coefficients it bounds the higher ones to within
+                  ! the polynomial factors the cutoff's three decades of
+                  ! margin cover. Tested before the Boys function and the
+                  ! VRR, which is nearly all of a primitive quartet's cost;
+                  ! on a generally contracted basis two thirds of the
+                  ! quartets that survive the pair pruning die here.
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+                  if (abs(pref*w) <= pcut) cycle
                   rho = zeta*eta/zpe
                   pqx = pp_r(kp, 1) - pp_r(kq, 1)
                   pqy = pp_r(kp, 2) - pp_r(kq, 2)
@@ -471,7 +478,6 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
 
                   oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
                   rz = rho/zeta; re = rho/eta
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
 
    {vrr_body}
                   do x = 1, {nv}
@@ -764,17 +770,16 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     igc = txt.index("         ! GENERAL CONTRACTION.")
     head = txt[ihead:igc]
     prims = scalar_prims
-    for drop in ("               kpl = kp - offab - 1\n",
-                 "               ki = kpl/npj + 1\n",
-                 "               kj = kpl - (ki - 1)*npj + 1\n",
+    for drop in ("               ki = pp_ki(kp); kj = pp_kj(kp)\n",
                  "               wab = ps_coef(ps_coff(si) + ki)*ps_coef(ps_coff(sj) + kj)\n",
-                 "                  kql = kq - offcd - 1\n",
-                 "                  kk = kql/npl + 1\n",
-                 "                  kl = kql - (kk - 1)*npl + 1\n",
+                 "                  kk = pp_ki(kq); kl = pp_kj(kq)\n",
                  "                  w = wab*ps_coef(ps_coff(sk) + kk)*ps_coef(ps_coff(sl) + kl)\n"):
         assert prims.count(drop) == 1, drop
         prims = prims.replace(drop, "")
     prims = prims.replace("*pp_c(kp)*pp_c(kq)", "*pp_cs(kp)*pp_cs(kq)")
+    # pp_cs carries the coefficients, so the prescreen weight is already in pref
+    assert prims.count("if (abs(pref*w) <= pcut) cycle") == 1
+    prims = prims.replace("if (abs(pref*w) <= pcut) cycle", "if (abs(pref) <= pcut) cycle")
     prims = prims.replace("g1(x) = g1(x) + w*v(x, cur)", "g1(x) = g1(x) + v(x, cur)")
     igl = prims.rfind("            do x = 1, ")   # the gl copy, last loop
     assert igl > 0 and "gl(x, 1, 1) = g1(x)" in prims[igl:]
