@@ -270,6 +270,15 @@ interpolation. The sources cite it as `[1]` where it is relevant.
 Validation and comparison targets used during development, all open source and
 all reproducible: [libcint], [pyscf], [gpu4pyscf], and [GAMESS libERI].
 
+Additional related references:
+
+- https://pubs.aip.org/aip/jcp/article-abstract/161/8/082501/3309322/LibERI-A-portable-and-performant-multi-GPU?redirectedFrom=fulltext
+- https://pubs.aip.org/aip/jcp/article/164/21/214118/3393751?casa_token=doBwBEbj8DcAAAAA:V6QE0PQws7ANKTiG_mpzLS7NKy0yoXktxJkQt80zEy5nLXOmXP3IbDpsZtv96oA2Flnr21FnLQ
+- https://ieeexplore.ieee.org/abstract/document/10820783
+- https://onlinelibrary.wiley.com/doi/full/10.1002/cpe.8244
+- https://link.springer.com/chapter/10.1007/978-3-030-85262-7_6
+- https://pubs.acs.org/jpcafh/article-abstract/123/39/8460/1333557/An-Accurate-Quantum-Based-Approach-to-Explicit?redirectedFrom=fulltext
+
 [libcint]: https://github.com/sunqm/libcint
 [pyscf]: https://github.com/pyscf/pyscf
 [gpu4pyscf]: https://github.com/pyscf/gpu4pyscf
