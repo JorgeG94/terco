@@ -92,8 +92,8 @@ contains
       integer,  allocatable, intent(out) :: pp_ki(:), pp_kj(:)  !! primitive of each shell a kept pair came from
       integer,  intent(out) :: npp
 
-      integer  :: i, j, ki, kj, key, k, d
-      real(dp) :: a, b, p, mu, ab2
+      integer  :: i, j, ki, kj, key, k, d, k1, k2, kb
+      real(dp) :: a, b, p, mu, ab2, ukey, ubest
       real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp  ! sqrt(2) pi^(5/4)
       logical, allocatable :: keep(:, :, :)
 
@@ -156,6 +156,50 @@ contains
             end do
          end do
       end do
+
+      ! ORDER EACH SHELL PAIR'S PRIMITIVE PAIRS BY |c|/p, LARGEST FIRST.
+      !
+      ! The kernel bounds a primitive quartet by
+      !     2 pi^2.5 |c_p| |c_q| / (zeta eta sqrt(zeta + eta))
+      !       <= 2 pi^2.5 (|c_p|/zeta) (|c_q|/eta) / sqrt(zeta),
+      ! and with the ket pairs in this order the bound falls monotonically
+      ! along the ket loop, so the loop can EXIT at the first quartet below
+      ! the cutoff rather than test and skip each one. That distinction is
+      ! the whole point on a GPU: a skipped iteration still costs a warp the
+      ! iteration, a shortened loop does not. Selection sort, in place, on
+      ! at most a few hundred entries per shell pair.
+      !
+      do i = 1, nbas
+         do j = 1, nbas
+            key = (i - 1)*nbas + j
+            do k1 = pp_off(key) + 1, pp_off(key) + pp_n(key) - 1
+               kb = k1
+               ubest = abs(camp(pp_ki(k1), i)*camp(pp_kj(k1), j)*pp_c(k1))/pp_p(k1)
+               do k2 = k1 + 1, pp_off(key) + pp_n(key)
+                  ukey = abs(camp(pp_ki(k2), i)*camp(pp_kj(k2), j)*pp_c(k2))/pp_p(k2)
+                  if (ukey > ubest) then
+                     ubest = ukey; kb = k2
+                  end if
+               end do
+               if (kb /= k1) call swap_pair(k1, kb)
+            end do
+         end do
+      end do
+   contains
+      subroutine swap_pair(x, y)
+         integer, intent(in) :: x, y
+         real(dp) :: t
+         integer :: it, dd
+         t = pp_p(x); pp_p(x) = pp_p(y); pp_p(y) = t
+         t = pp_c(x); pp_c(x) = pp_c(y); pp_c(y) = t
+         do dd = 1, 3
+            t = pp_r(x, dd); pp_r(x, dd) = pp_r(y, dd); pp_r(y, dd) = t
+            t = pp_ra(x, dd); pp_ra(x, dd) = pp_ra(y, dd); pp_ra(y, dd) = t
+            t = pp_rb(x, dd); pp_rb(x, dd) = pp_rb(y, dd); pp_rb(y, dd) = t
+         end do
+         it = pp_ki(x); pp_ki(x) = pp_ki(y); pp_ki(y) = it
+         it = pp_kj(x); pp_kj(x) = pp_kj(y); pp_kj(y) = it
+      end subroutine swap_pair
    end subroutine build_pairs_hgp
 
    subroutine hgp_batch(lo, hi, nq, nbas, npp, nout, &

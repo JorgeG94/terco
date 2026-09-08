@@ -130,7 +130,7 @@ contains
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut, pcut
+      real(dp) :: qcut, pcut, bnd
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -878,7 +878,7 @@ contains
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut, pcut
+      real(dp) :: qcut, pcut, bnd
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -982,6 +982,8 @@ contains
             end do
             do kp = offab + 1, offab + nab
                zeta = pp_p(kp)
+               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
                do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
                   zpe = zeta + eta
@@ -994,6 +996,7 @@ contains
                   ! on a generally contracted basis two thirds of the
                   ! quartets that survive the pair pruning die here.
                   pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
+                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
                   if (abs(pref) <= pcut) cycle
                   rho = zeta*eta/zpe
                   pqx = pp_r(kp, 1) - pp_r(kq, 1)

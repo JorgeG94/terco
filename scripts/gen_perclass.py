@@ -55,6 +55,7 @@ def _load(name, path):
 HERE = os.path.dirname(os.path.abspath(__file__))
 gv = _load("gv", os.path.join(HERE, "gen_vrr.py"))
 gh = _load("gh", os.path.join(HERE, "gen_hrr.py"))
+gc = _load("gc", os.path.join(HERE, "gen_cuda.py"))
 
 
 PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
@@ -316,7 +317,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
 {PROLOGUE}
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut, pcut
+      real(dp) :: qcut, pcut, bnd
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -779,7 +780,18 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     prims = prims.replace("*pp_c(kp)*pp_c(kq)", "*pp_cs(kp)*pp_cs(kq)")
     # pp_cs carries the coefficients, so the prescreen weight is already in pref
     assert prims.count("if (abs(pref*w) <= pcut) cycle") == 1
-    prims = prims.replace("if (abs(pref*w) <= pcut) cycle", "if (abs(pref) <= pcut) cycle")
+    # The pairs are sorted by |c|/p descending (build_pairs_hgp), so the
+    # bound 2 pi^2.5 (|c_p|/zeta)(|c_q|/eta)/sqrt(zeta) falls along the ket
+    # loop: EXIT at the first failure, and skip a bra primitive whose best
+    # ket already fails. Exact pref is still tested for the rare quartet
+    # the loose bound admits.
+    prims = prims.replace("if (abs(pref*w) <= pcut) cycle",
+                          "if (bnd*abs(pp_cs(kq))/eta <= pcut) exit\n"
+                          "                  if (abs(pref) <= pcut) cycle")
+    prims = prims.replace("               zeta = pp_p(kp)\n",
+                          "               zeta = pp_p(kp)\n"
+                          "               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))\n"
+                          "               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle\n", 1)
     prims = prims.replace("g1(x) = g1(x) + w*v(x, cur)", "g1(x) = g1(x) + v(x, cur)")
     igl = prims.rfind("            do x = 1, ")   # the gl copy, last loop
     assert igl > 0 and "gl(x, 1, 1) = g1(x)" in prims[igl:]
@@ -843,6 +855,12 @@ def main():
                          "files satisfy, while pc_dispatch is host code "
                          "launching kernels and may cross modules freely.")
     ap.add_argument("-o", "--output", default="src/trc_pc_kernels.F90")
+    ap.add_argument("--cuda", action="store_true",
+                    help="also emit the CUDA Fortran cooperative kernels "
+                         "(trc_pg_k<tag>.F90 and trc_pg_kernels.F90) for "
+                         "generally contracted shells; --split only. They "
+                         "are guarded on TRC_CUDAF and compile to empty "
+                         "modules without it.")
     args = ap.parse_args()
     L = args.lmax
 
@@ -850,6 +868,7 @@ def main():
     idx_h = gh.cart_cum(4*L)
 
     pieces = []
+    cuda_pieces = []
     out = [f"""!
 ! One kernel per angular-momentum class: unrolled VRR, unrolled HRR, six-atomic
 ! folded Fock, and no `select case` in sight.
@@ -914,6 +933,11 @@ contains
                     names.append((key, f"{la}{lb}{lc}{ld}"))
                     body = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
                     pieces.append((f"{la}{lb}{lc}{ld}", body))
+                    if args.cuda:
+                        cuda_pieces.append((key, f"{la}{lb}{lc}{ld}",
+                                            gc.emit_class(la, lb, lc, ld, vrr, hrr,
+                                                          _emit_block(la, lb, lc, ld, idx_h, vrr, hrr),
+                                                          gv.ncum, L)))
                     out.append(body)
 
     out.append(f"""
@@ -1006,8 +1030,14 @@ contains
         disp.append("end module trc_pc_kernels\n")
         with open(os.path.join(args.split, "trc_pc_kernels.F90"), "w") as fh:
             fh.write(_radix("\n".join(disp)))
+        if args.cuda:
+            for key, tag, text in cuda_pieces:
+                with open(os.path.join(args.split, f"trc_pg_k{tag}.F90"), "w") as fh:
+                    fh.write(text)
+            with open(os.path.join(args.split, "trc_pg_kernels.F90"), "w") as fh:
+                fh.write(gc.emit_dispatch([(k, t) for k, t, _ in cuda_pieces], L))
         print(f"wrote {len(names)} class modules + dispatcher into "
-              f"{args.split}")
+              f"{args.split}" + (f", plus {len(cuda_pieces)} CUDA Fortran kernels" if args.cuda else ""))
         return
 
     open(args.output, "w").write(_radix(txt))
