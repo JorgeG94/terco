@@ -188,7 +188,7 @@ contains
    ! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
    ! pairs, against the 586M quartets the old path enumerated.
    !
-   subroutine build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g)
+   subroutine build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g, pp_n)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(nbas), sh_np(nbas)
       real(dp), intent(in)  :: sh_r(3, nbas)      !! shell centres, for the intra-bin sort
@@ -196,6 +196,11 @@ contains
       real(dp), intent(in)  :: thresh
       type(pair_bins_t), intent(out) :: b
       logical,  intent(in), optional :: sh_g(nbas)  !! shell has more than one column
+      !> Primitive pairs actually kept per shell pair, rectangular key
+      !> (i-1)*nbas+j. The contraction degree the bin key sorts on is
+      !> this, not sh_np(i)*sh_np(j): after pruning the two differ, and
+      !> it is the kept count that sets the kernel's trip count.
+      integer,  intent(in), optional :: pp_n(:)
 
       integer :: nb, i, j, s, k, p, n, key, gg
       integer, allocatable :: cnt(:), pos(:), keyv(:), ti(:), tj(:)
@@ -232,7 +237,7 @@ contains
             if (present(sh_g)) then
                if (sh_g(i) .or. sh_g(j)) gg = 1
             end if
-            key = bin_key(sh_l(i), sh_l(j), sh_np(i)*sh_np(j), s, gg)
+            key = bin_key(sh_l(i), sh_l(j), kab_of(i, j), s, gg)
             cnt(key) = cnt(key) + 1
             n = n + 1
          end do
@@ -260,7 +265,7 @@ contains
             if (present(sh_g)) then
                if (sh_g(i) .or. sh_g(j)) gg = 1
             end if
-            key = bin_key(sh_l(i), sh_l(j), sh_np(i)*sh_np(j), s, gg)
+            key = bin_key(sh_l(i), sh_l(j), kab_of(i, j), s, gg)
             pos(key) = pos(key) + 1
             b%sp_i(pos(key)) = i
             b%sp_j(pos(key)) = j
@@ -297,6 +302,16 @@ contains
       end do
 
       deallocate (cnt, pos)
+
+   contains
+      pure integer function kab_of(i, j)
+         integer, intent(in) :: i, j
+         if (present(pp_n)) then
+            kab_of = pp_n((i - 1)*nbas + j)
+         else
+            kab_of = sh_np(i)*sh_np(j)
+         end if
+      end function kab_of
    end subroutine build_binned_pairs
 
    !

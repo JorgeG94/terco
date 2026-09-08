@@ -288,7 +288,11 @@ contains
          allocate (t_np(nbas), t_ncol(nbas), t_soff(nbas), t_coff(nbas))
          ncoef1 = 0
          do i1 = 1, nbas
-            t_np(i1) = nint(sqrt(real(pp_n((i1 - 1)*nbas + i1), dp)))
+            ! One coefficient slot per shell is all the trivial view reads:
+            ! t_ki is 1 everywhere, so the kernel only touches the first
+            ! slot. (This used to recover np from the diagonal pair's count,
+            ! which is no longer np^2 once primitive pairs are pruned.)
+            t_np(i1) = 1
             t_ncol(i1) = 1
             t_soff(i1) = i1 - 1
             t_coff(i1) = ncoef1

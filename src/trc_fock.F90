@@ -119,6 +119,7 @@ contains
       integer,  allocatable :: pp_off(:), pp_n(:)
       real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       real(dp), allocatable :: qs(:), one(:)
+      integer,  allocatable :: hp_ki(:), hp_kj(:)
 
       this%rank = 0; this%nranks = 1; this%distributed = .false.
       if (present(comm)) then
@@ -158,12 +159,19 @@ contains
                           pp_c, pp_e, qs)
       deallocate (pp_off, pp_n, pp_p, pp_r, pp_c, pp_e)
 
-      call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
-                              this%bins)
-
+      ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
+      ! the prune judges by. The cutoff sits three orders below the
+      ! screening threshold, as the pair prefilter in build_pairs does.
       call build_pairs_hgp(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                           one, this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                           this%hp_ra, this%hp_rb, this%hp_c, this%nhpp)
+                           one, b%sh_c, thresh*1.0e-3_dp, &
+                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                           this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp)
+      ! The contracted kernels fold the coefficients into hp_c and never
+      ! ask which primitive a pair came from.
+      deallocate (hp_ki, hp_kj)
+
+      call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                              this%bins, pp_n=this%hp_n)
 
       allocate (this%dsh(b%nshell, b%nshell))
       this%dsh = huge(1.0_dp)*1.0e-30_dp
@@ -643,7 +651,7 @@ contains
       real(dp), intent(in) :: thresh
       type(ps_view_t), intent(out) :: ps
       integer, allocatable :: ps_of(:), col_of(:), ps_np(:), ps_ncol(:), ps_first(:)
-      real(dp), allocatable :: ps_e(:, :), ps_r(:, :), ones(:, :), cf(:), qps(:)
+      real(dp), allocatable :: ps_e(:, :), ps_r(:, :), ones(:, :), cf(:), qps(:), camp(:, :)
       integer :: is, p, nps, k, np, ia, ib, ic, a, c, sa, sb, ncoef, ncol
       logical, allocatable :: gen(:)
       real(dp) :: qm
@@ -701,24 +709,31 @@ contains
 
       ! Primitive pairs over primitive shells: unit coefficients and unit
       ! common factor, both of which live in ps_coef now.
-      allocate (ones(b%maxnp, nps), cf(nps))
-      ones = 1.0_dp; cf = 1.0_dp
+      ! The prune judges a primitive by the largest coefficient any column
+      ! gives it, since the kernel may apply any of them.
+      allocate (ones(b%maxnp, nps), cf(nps), camp(b%maxnp, nps))
+      ones = 1.0_dp; cf = 1.0_dp; camp = 0.0_dp
+      do p = 1, nps
+         do c = 1, ps_ncol(p)
+            do k = 1, ps_np(p)
+               camp(k, p) = max(camp(k, p), abs(ps%ps_coef(ps%ps_coff(p) + (c - 1)*ps_np(p) + k)))
+            end do
+         end do
+      end do
       call build_pairs_hgp(nps, ps%ps_l, ps%ps_np, ps_e(:, 1:nps), ones, ps_r(:, 1:nps), cf, &
-                           ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%npp)
+                           camp, thresh*1.0e-3_dp, &
+                           ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, &
+                           ps%pp_ki, ps%pp_kj, ps%npp)
 
       ! The scalar kernel wants the first column's coefficients folded into
       ! the pair factor, as the contracted build had them; it only ever
       ! sees pairs whose two shells have one column, so that is exact there.
-      allocate (ps%pp_cs(ps%npp), ps%pp_ki(ps%npp), ps%pp_kj(ps%npp), gen(nps))
+      allocate (ps%pp_cs(ps%npp), gen(nps))
       do a = 1, nps
          do c = 1, nps
-            k = ps%pp_off((a - 1)*nps + c)
-            do ia = 1, ps_np(a)
-               do ic = 1, ps_np(c)
-                  k = k + 1
-                  ps%pp_cs(k) = ps%pp_c(k)*ps%ps_coef(ps%ps_coff(a) + ia)*ps%ps_coef(ps%ps_coff(c) + ic)
-                  ps%pp_ki(k) = ia; ps%pp_kj(k) = ic
-               end do
+            do k = ps%pp_off((a - 1)*nps + c) + 1, ps%pp_off((a - 1)*nps + c) + ps%pp_n((a - 1)*nps + c)
+               ia = ps%pp_ki(k); ic = ps%pp_kj(k)
+               ps%pp_cs(k) = ps%pp_c(k)*ps%ps_coef(ps%ps_coff(a) + ia)*ps%ps_coef(ps%ps_coff(c) + ic)
             end do
          end do
       end do
@@ -745,7 +760,7 @@ contains
             qps(a*(a - 1)/2 + c) = qm
          end do
       end do
-      call build_binned_pairs(nps, ps%ps_l, ps%ps_np, ps_r(:, 1:nps), qps, thresh, ps%pbins, gen)
+      call build_binned_pairs(nps, ps%ps_l, ps%ps_np, ps_r(:, 1:nps), qps, thresh, ps%pbins, gen, ps%pp_n)
       allocate (ps%dshp(nps, nps))
       ps%dshp = huge(1.0_dp)*1.0e-30_dp
    end subroutine build_ps_view

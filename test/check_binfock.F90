@@ -106,7 +106,7 @@ contains
 
       integer, allocatable :: sh_l(:), sh_np(:), ao_off(:)
       real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
-      integer, allocatable :: pp_off(:), pp_n(:)
+      integer, allocatable :: pp_off(:), pp_n(:), hp_ki(:), hp_kj(:)
       real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       integer, allocatable :: q_i(:), q_j(:), q_k(:), q_l(:), q_off(:)
       real(dp), allocatable :: out(:), rscr(:, :)
@@ -177,9 +177,9 @@ contains
       ! Schwarz bounds, then the binned pair container.  No quartet list.
       allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
       call schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
-      call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins)
-      call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, &
-                           hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, nhpp)
+      call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, 1.0e-33_dp, &
+                           hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
+      call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins, pp_n=hp_n)
       print '(a,i0,a,i0,a,i0)', '  system ', isys, ': shell pairs ', bins%npair, &
          '   live bins ', bins%nlive
 
