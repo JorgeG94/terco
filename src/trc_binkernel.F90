@@ -385,6 +385,16 @@ contains
    ! Using the two that are known keeps this a bin-level test; it is therefore
    ! a partial screen, and deliberately conservative.
    !
+   ! NOT ARMED, and it cannot be as written: bin_dm(k) bounds the density
+   ! blocks of pairs WITHIN bin k, which bounds the Coulomb terms D_ab and
+   ! D_cd but says nothing about D_ac, D_ad, D_bc, D_bd -- the exchange
+   ! blocks, between a shell of the bra pair and a shell of the ket pair.
+   ! Arming it on this bound drops real exchange contributions: measured on
+   ! the 123-atom silica slice in cc-pVDZ, the third SCF energy moved by
+   ! 0.5 Hartree. A sound bin-level test would need the largest density
+   ! block between the two bins' shell sets, which is not a per-bin
+   ! quantity. The per-quartet test in the kernel, which reads dsh for all
+   ! six blocks, is the one that screens on the density.
    pure logical function dens_reject(b, ka, kb, thresh)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in) :: ka, kb

@@ -16,7 +16,7 @@ program bench_gc
    integer :: natm, n, i, j, dev, reps, r
    integer, allocatable :: zint(:)
    real(dp), allocatable :: at_r(:, :), d(:, :), g1(:, :), g2(:, :)
-   real(dp) :: worst, t0, t1, tb1, tb2, tf1, tf2
+   real(dp) :: worst, t0, t1, tb1, tb2, tf1, tf2, thr
    type(trc_basis_t) :: b
    type(trc_eri_t) :: e1, e2
    type(error_t) :: err
@@ -31,6 +31,10 @@ program bench_gc
    if (command_argument_count() >= 3) then
       call get_command_argument(3, arg); read (arg, *) reps
    end if
+   thr = 1.0e-10_dp
+   if (command_argument_count() >= 4) then
+      call get_command_argument(4, arg); read (arg, *) thr
+   end if
 
    dev = trc_bind_device(0)
    call read_xyz(trim(xyzfile), natm, zint, at_r)
@@ -40,6 +44,7 @@ program bench_gc
    end if
    call b%to_device()
    n = b%nao
+   print '(a,es9.2)', '  thresh     ', thr
    print '(a,i0,a,i0,a,i0,a,i0)', '  atoms ', natm, '  shells ', b%nshell, '  nao ', n, '  maxnp ', b%maxnp
    allocate (d(n, n), g1(n, n), g2(n, n))
    do j = 1, n
@@ -50,7 +55,7 @@ program bench_gc
    !$acc enter data copyin(d) create(g1, g2)
 
    call tick(t0)
-   call e1%build(b, 1.0e-10_dp, general=.false.)
+   call e1%build(b, thr, general=.false.)
    call tick(t1); tb1 = t1 - t0
    call e1%fock_resident(b, d, g1, k_scale=1.0_dp)   ! warm up
    call tick(t0)
@@ -60,7 +65,7 @@ program bench_gc
    call tick(t1); tf1 = (t1 - t0)/reps
 
    call tick(t0)
-   call e2%build(b, 1.0e-10_dp, general=.true.)
+   call e2%build(b, thr, general=.true.)
    call tick(t1); tb2 = t1 - t0
    call e2%fock_resident(b, d, g2, k_scale=1.0_dp)
    call tick(t0)
@@ -71,8 +76,10 @@ program bench_gc
 
    !$acc update self(g1, g2)
    worst = maxval(abs(g1 - g2))
-   print '(a,f8.3,a,f9.3,a,i0)', '  segmented : build ', tb1, ' s   fock ', tf1, ' s   launches ', e1%nlaunch
-   print '(a,f8.3,a,f9.3,a,i0)', '  general   : build ', tb2, ' s   fock ', tf2, ' s   launches ', e2%nlaunch
+   print '(a,f8.3,a,f9.3,a,i0,a,i0)', '  segmented : build ', tb1, ' s   fock ', tf1, &
+      ' s   launches ', e1%nlaunch, '   Mquartets enumerated ', int(e1%nwork/1000000_8)
+   print '(a,f8.3,a,f9.3,a,i0,a,i0)', '  general   : build ', tb2, ' s   fock ', tf2, &
+      ' s   launches ', e2%nlaunch, '   Mquartets enumerated ', int(e2%nwork/1000000_8)
    print '(a,es10.2,a,es10.2)', '  worst |G_seg - G_gen| ', worst, '  scale ', maxval(abs(g1))
 contains
    subroutine tick(t)
