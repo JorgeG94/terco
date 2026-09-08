@@ -241,27 +241,143 @@ worst class across all of them.
 Several design decisions here follow the GPU Hartree–Fock work in **[1]** — the
 shell-pair binning by angular momentum and contraction depth, the pre-screen
 before binning, the folded six-update digestion, and the per-order Boys
-interpolation. The sources cite it as `[1]` where it is relevant.
+interpolation. The sources cite it as `[1]` where it is relevant. The rest is
+the surrounding literature on GPU integral evaluation and on offloading GAMESS,
+which is where the conventions and the comparison points come from.
 
-> **[1]** J. L. Gálvez Vallejo, G. M. J. Barca and M. S. Gordon,
+> **[1]** J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
 > *High-performance GPU-accelerated evaluation of electron repulsion integrals*,
-> **Molecular Physics** (2022), e2112987.
+> **Molecular Physics** **121** (2022), e2112987.
 > [doi:10.1080/00268976.2022.2112987](https://doi.org/10.1080/00268976.2022.2112987)
 
+> **[2]** D. Del Angel Cruz, J. L. Galvez Vallejo and M. S. Gordon,
+> *Electron repulsion integral evaluation over f-type functions on GPUs via
+> OpenMP offloading*,
+> **The Journal of Chemical Physics** **164** (2026), 214118.
+> [doi:10.1063/5.0334077](https://doi.org/10.1063/5.0334077)
+
+> **[3]** M. Alkan, B. Q. Pham, D. Del Angel Cruz, J. R. Hammond, T. A. Barnes
+> and M. S. Gordon,
+> *LibERI — A portable and performant multi-GPU accelerated library for electron
+> repulsion integrals via OpenMP offloading and standard language parallelism*,
+> **The Journal of Chemical Physics** **161** (2024), 082501.
+> [doi:10.1063/5.0215352](https://doi.org/10.1063/5.0215352)
+
+> **[4]** T. Sattasathuchana, P. Xu, D. Oryspayev, C. Bertoni, L. B. Roskop and
+> M. S. Gordon,
+> *Performance portability of electron repulsion integrals and their related
+> methods across peta to exascale architectures*,
+> in **SC24-W: Workshops of the International Conference for High Performance
+> Computing, Networking, Storage and Analysis**, IEEE (2024), 1943–1954.
+> [doi:10.1109/SCW63240.2024.00244](https://doi.org/10.1109/SCW63240.2024.00244)
+
+> **[5]** M. Sosonkina, G. Mateescu, P. Xu, T. Sattasathuchana, B. Pham,
+> M. S. Gordon and S. S. Leang,
+> *Runtime performance of a GAMESS quantum chemistry application offloaded to
+> GPUs*,
+> **Concurrency and Computation: Practice and Experience** **36** (2024), e8244.
+> [doi:10.1002/cpe.8244](https://doi.org/10.1002/cpe.8244)
+
+> **[6]** B. Chapman, B. Pham, C. Yang, C. Daley, C. Bertoni, D. Kulkarni,
+> D. Oryspayev, E. D'Azevedo, J. Doerfert, K. Zhou, K. Ravikumar, M. Gordon,
+> M. Del Ben, M. Lin, M. Alkan, M. Kruse, O. Hernandez, P. K. Yeung, P. Lin,
+> P. Xu, S. Pophale, T. Sattasathuchana, V. Kale, W. Huhn and Y. He,
+> *Outcomes of OpenMP hackathon: OpenMP application experiences with the
+> offloading model (Part II)*,
+> in **OpenMP: Enabling Massive Node-Level Parallelism**, edited by
+> S. McIntosh-Smith, B. R. de Supinski and J. Klinkenberg, Lecture Notes in
+> Computer Science **12870**, Springer (2021), 81–95.
+> [doi:10.1007/978-3-030-85262-7_6](https://doi.org/10.1007/978-3-030-85262-7_6)
+
+> **[7]** T. Sattasathuchana, P. Xu and M. S. Gordon,
+> *An accurate quantum-based approach to explicit solvent effects: interfacing
+> the general effective fragment potential method with ab initio electronic
+> structure theory*,
+> **The Journal of Physical Chemistry A** **123** (2019), 8460–8475.
+> [doi:10.1021/acs.jpca.9b05801](https://doi.org/10.1021/acs.jpca.9b05801)
+
 <details>
-<summary>BibTeX</summary>
+<summary>BibTeX for all of the above</summary>
 
 ```bibtex
 @article{galvez_vallejo_high-performance_2022,
-  title   = {High-performance {GPU}-accelerated evaluation of electron repulsion integrals},
   author  = {Galvez Vallejo, Jorge Luis and Barca, Giuseppe M. J. and Gordon, Mark S.},
+  title   = {High-performance {GPU}-accelerated evaluation of electron repulsion integrals},
   journal = {Molecular Physics},
-  year    = {2022},
-  month   = aug,
+  volume  = {121},
+  number  = {9--10},
   pages   = {e2112987},
-  issn    = {0026-8976, 1362-3028},
+  year    = {2022},
+  issn    = {0026-8976},
   doi     = {10.1080/00268976.2022.2112987},
-  url     = {https://www.tandfonline.com/doi/full/10.1080/00268976.2022.2112987},
+}
+
+@article{del_angel_cruz_f_type_2026,
+  author  = {Del Angel Cruz, Daniel and Galvez Vallejo, Jorge L. and Gordon, Mark S.},
+  title   = {Electron repulsion integral evaluation over f-type functions on {GPUs} via {OpenMP} offloading},
+  journal = {The Journal of Chemical Physics},
+  volume  = {164},
+  number  = {21},
+  pages   = {214118},
+  year    = {2026},
+  doi     = {10.1063/5.0334077},
+}
+
+@article{alkan_liberi_2024,
+  author  = {Alkan, Melisa and Pham, Buu Q. and Del Angel Cruz, Daniel and Hammond, Jeff R. and Barnes, Taylor A. and Gordon, Mark S.},
+  title   = {{LibERI}---A portable and performant multi-{GPU} accelerated library for electron repulsion integrals via {OpenMP} offloading and standard language parallelism},
+  journal = {The Journal of Chemical Physics},
+  volume  = {161},
+  number  = {8},
+  pages   = {082501},
+  year    = {2024},
+  doi     = {10.1063/5.0215352},
+}
+
+@inproceedings{sattasathuchana_performance_portability_2024,
+  author    = {Sattasathuchana, Tosaporn and Xu, Peng and Oryspayev, Dossay and Bertoni, Colleen and Roskop, Luke B. and Gordon, Mark S.},
+  title     = {Performance {Portability} of {Electron} {Repulsion} {Integrals} and {Their} {Related} {Methods} across {Peta} to {Exascale} {Architectures}},
+  booktitle = {SC24-W: Workshops of the International Conference for High Performance Computing, Networking, Storage and Analysis},
+  publisher = {IEEE},
+  pages     = {1943--1954},
+  year      = {2024},
+  doi       = {10.1109/SCW63240.2024.00244},
+}
+
+@article{sosonkina_runtime_2024,
+  author  = {Sosonkina, Masha and Mateescu, Gabriel and Xu, Peng and Sattasathuchana, Tosaporn and Pham, Buu and Gordon, Mark S. and Leang, Sarom S.},
+  title   = {Runtime performance of a {GAMESS} quantum chemistry application offloaded to {GPUs}},
+  journal = {Concurrency and Computation: Practice and Experience},
+  volume  = {36},
+  number  = {23},
+  pages   = {e8244},
+  year    = {2024},
+  doi     = {10.1002/cpe.8244},
+}
+
+@incollection{chapman_openmp_hackathon_2021,
+  author    = {Chapman, Barbara and Pham, Buu and Yang, Charlene and Daley, Christopher and Bertoni, Colleen and Kulkarni, Dhruva and Oryspayev, Dossay and D'Azevedo, Ed and Doerfert, Johannes and Zhou, Keren and Ravikumar, Kiran and Gordon, Mark and Del Ben, Mauro and Lin, Meifeng and Alkan, Melisa and Kruse, Michael and Hernandez, Oscar and Yeung, P. K. and Lin, Paul and Xu, Peng and Pophale, Swaroop and Sattasathuchana, Tosaporn and Kale, Vivek and Huhn, William and He, Yun},
+  title     = {Outcomes of {OpenMP} {Hackathon}: {OpenMP} {Application} {Experiences} with the {Offloading} {Model} ({Part} {II})},
+  booktitle = {OpenMP: Enabling Massive Node-Level Parallelism},
+  editor    = {McIntosh-Smith, Simon and de Supinski, Bronis R. and Klinkenberg, Jannis},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {12870},
+  publisher = {Springer International Publishing},
+  pages     = {81--95},
+  year      = {2021},
+  isbn      = {978-3-030-85261-0},
+  doi       = {10.1007/978-3-030-85262-7_6},
+}
+
+@article{sattasathuchana_gefp_2019,
+  author  = {Sattasathuchana, Tosaporn and Xu, Peng and Gordon, Mark S.},
+  title   = {An {Accurate} {Quantum}-{Based} {Approach} to {Explicit} {Solvent} {Effects}: {Interfacing} the {General} {Effective} {Fragment} {Potential} {Method} with \emph{Ab Initio} {Electronic} {Structure} {Theory}},
+  journal = {The Journal of Physical Chemistry A},
+  volume  = {123},
+  number  = {39},
+  pages   = {8460--8475},
+  year    = {2019},
+  doi     = {10.1021/acs.jpca.9b05801},
 }
 ```
 
@@ -269,131 +385,6 @@ interpolation. The sources cite it as `[1]` where it is relevant.
 
 Validation and comparison targets used during development, all open source and
 all reproducible: [libcint], [pyscf], [gpu4pyscf], and [GAMESS libERI].
-
-Additional related references:
-
-> **[2]** M. Alkan, B. Q. Pham, D. Del Angel Cruz, J. R. Hammond,
-> T. A. Barnes and M. S. Gordon,
-> *LibERI—A portable and performant multi-GPU accelerated library for electron repulsion integrals via OpenMP offloading and standard language parallelism*,
-> **The Journal of Chemical Physics** **161** (2024), 082501.
-> [doi:10.1063/5.0215352](https://doi.org/10.1063/5.0215352)
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@article{alkan_liberi_2024,
-  title   = {LibERI---A portable and performant multi-GPU accelerated library for electron repulsion integrals via OpenMP offloading and standard language parallelism},
-  author  = {Alkan, Melisa and Pham, Bao Quoc and Del Angel Cruz, Daniel and Hammond, Jeff R. and Barnes, Taylor A. and Gordon, Mark S.},
-  journal = {The Journal of Chemical Physics},
-  volume  = {161},
-  number  = {8},
-  pages   = {082501},
-  year    = {2024},
-  doi     = {10.1063/5.0215352},
-  url     = {https://pubs.aip.org/aip/jcp/article-abstract/161/8/082501/3309322/LibERI-A-portable-and-performant-multi-GPU?redirectedFrom=fulltext},
-}
-```
-
-</details>
-
-> **[3]** **The Journal of Chemical Physics** **164**, 214118.
-> [link](https://pubs.aip.org/aip/jcp/article/164/21/214118/3393751)
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@misc{jcp_164_214118,
-  title = {The Journal of Chemical Physics 164, 214118},
-  url   = {https://pubs.aip.org/aip/jcp/article/164/21/214118/3393751},
-  note  = {Article page for JCP 164(21):214118},
-}
-```
-
-</details>
-
-> **[4]** IEEE Xplore document 10820783.
-> [link](https://ieeexplore.ieee.org/abstract/document/10820783)
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@misc{ieee_xplore_10820783,
-  title = {IEEE Xplore document 10820783},
-  url   = {https://ieeexplore.ieee.org/abstract/document/10820783},
-  note  = {Accessed 2026-09-08},
-}
-```
-
-</details>
-
-> **[5]** Wiley article with DOI `10.1002/cpe.8244`.
-> [doi:10.1002/cpe.8244](https://doi.org/10.1002/cpe.8244)
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@article{cpe_8244,
-  title   = {Concurrency and Computation: Practice and Experience article cpe.8244},
-  journal = {Concurrency and Computation: Practice and Experience},
-  doi     = {10.1002/cpe.8244},
-  url     = {https://onlinelibrary.wiley.com/doi/full/10.1002/cpe.8244},
-}
-```
-
-</details>
-
-> **[6]** B. Chapman, B. Pham, C. Yang, C. Daley, C. Bertoni, D. Kulkarni,
-> D. Oryspayev, E. D’Azevedo, J. Doerfert, K. Zhou, K. Ravikumar,
-> M. Gordon, M. Del Ben, M. Lin, M. Alkan, M. Kruse, O. Hernandez,
-> P. K. Yeung, P. Lin, P. Xu, S. Pophale, T. Sattasathuchana, V. Kale,
-> W. Huhn and Y. H. He,
-> *Outcomes of OpenMP Hackathon: OpenMP Application Experiences with the Offloading Model (Part II)*,
-> In: S. McIntosh-Smith, B. R. de Supinski, J. Klinkenberg (eds.),
-> **OpenMP: Enabling Massive Node-Level Parallelism** (2021).
-> [doi:10.1007/978-3-030-85262-7_6](https://doi.org/10.1007/978-3-030-85262-7_6)
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@incollection{chapman_openmp_hackathon_2021,
-  author    = {Chapman, Barbara and Pham, Bao and Yang, C. and Daley, C. and Bertoni, C. and Kulkarni, D. and Oryspayev, D. and D'Azevedo, E. and Doerfert, J. and Zhou, K. and Ravikumar, K. and Gordon, M. and Del Ben, M. and Lin, M. and Alkan, M. and Kruse, M. and Hernandez, O. and Yeung, P. K. and Lin, P. and Xu, P. and Pophale, S. and Sattasathuchana, T. and Kale, V. and Huhn, W. and He, Y. H.},
-  title     = {Outcomes of OpenMP Hackathon: OpenMP Application Experiences with the Offloading Model (Part II)},
-  booktitle = {OpenMP: Enabling Massive Node-Level Parallelism},
-  year      = {2021},
-  doi       = {10.1007/978-3-030-85262-7_6},
-  url       = {https://link.springer.com/chapter/10.1007/978-3-030-85262-7_6},
-}
-```
-
-</details>
-
-> **[7]** T. Sattasathuchana, P. Xu and M. S. Gordon,
-> *An Accurate Quantum-Based Approach to Explicit Solvent Effects: Interfacing the General Effective Fragment Potential Method with Ab Initio Electronic Structure Theory*,
-> **J. Phys. Chem. A** **123** (2019), 8460-8475.
-> [link](https://pubs.acs.org/jpcafh/article-abstract/123/39/8460/1333557/An-Accurate-Quantum-Based-Approach-to-Explicit?redirectedFrom=fulltext)
-
-<details>
-<summary>BibTeX</summary>
-
-```bibtex
-@article{sattasathuchana_xu_gordon_jpca_2019,
-  author  = {Sattasathuchana, Tosaporn and Xu, Peng and Gordon, Mark S.},
-  title   = {An Accurate Quantum-Based Approach to Explicit Solvent Effects: Interfacing the General Effective Fragment Potential Method with Ab Initio Electronic Structure Theory},
-  journal = {J. Phys. Chem. A},
-  volume  = {123},
-  number  = {39},
-  pages   = {8460-8475},
-  year    = {2019},
-  url     = {https://pubs.acs.org/jpcafh/article-abstract/123/39/8460/1333557/An-Accurate-Quantum-Based-Approach-to-Explicit?redirectedFrom=fulltext},
-}
-```
-
-</details>
 
 [libcint]: https://github.com/sunqm/libcint
 [pyscf]: https://github.com/pyscf/pyscf
