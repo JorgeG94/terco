@@ -25,6 +25,10 @@ module trc_binkernel
    use trc_bins, only: pair_bins_t, SMAX, ps_view_t, fold_dsh
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
+#ifdef TRC_CUDAF
+   use, intrinsic :: iso_c_binding, only: c_loc
+   use trc_pg_kernels, only: pg_dispatch
+#endif
 #endif
    implicit none
    private
@@ -404,24 +408,29 @@ contains
    !
    subroutine fock_bins_ps(ps, nbas, dsh, nao, thresh, jfac, kfac, use_dens, ndens, dmat, jmat, rank, nranks, &
                            nlaunch, nwork, nkept)
-      type(ps_view_t), intent(inout) :: ps
+      type(ps_view_t), intent(inout), target :: ps
       integer, intent(in) :: nbas, nao, ndens, rank, nranks
       real(dp), intent(in) :: dsh(nbas, nbas)
       real(dp), intent(in) :: thresh, jfac, kfac
       logical, intent(in) :: use_dens
-      real(dp), intent(in) :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: jmat(ndens, nao, nao)
+      real(dp), intent(in), target :: dmat(ndens, nao, nao)
+      real(dp), intent(inout), target :: jmat(ndens, nao, nao)
       integer, intent(out) :: nlaunch
       integer(kind=8), intent(out) :: nwork
       integer(kind=8), intent(out), optional :: nkept
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is, a2, b2, t2, c0, c1, nl
-      integer(kind=8) :: nt
-      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sLA(:), sLB(:), sLC(:), sLD(:), ord(:), ckey(:)
-      logical, allocatable :: sD(:), sG(:), tG(:)
+      integer(kind=8) :: nt, h_lo, h_hi1
+      integer, allocatable, target :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sLA(:), sLB(:), sLC(:), sLD(:), ord(:), ckey(:)
+      logical, allocatable, target :: sD(:), sG(:), tG(:)
       integer, allocatable :: tk(:)
-      integer(kind=8), allocatable :: sOff(:)
+      integer(kind=8), allocatable, target :: sOff(:)
 
-      if (use_dens) call fold_dsh(ps, nbas, dsh)
+      ! The per-quartet density screen in the kernels reads dshp, so it has
+      ! to be current whether or not the bin-level density test is asked
+      ! for. Folding only under use_dens -- which no caller sets -- left
+      ! dshp at its build-time floor and the general path screening on the
+      ! density not at all.
+      call fold_dsh(ps, nbas, dsh)
       smax_keep = int(-log10(thresh))
       nseg = 0
       do ia = 1, ps%pbins%nlive
@@ -493,6 +502,31 @@ contains
             c1 = c1 + 1
          end do
          nl = nl + 1
+#ifdef TRC_CUDAF
+         if (sG(c0)) then
+            ! A general run goes to the cooperative CUDA Fortran kernel.
+            ! Everything it reads is OpenACC-resident, so host_data hands
+            ! over the device addresses; the two sOff entries the launch
+            ! geometry needs are read on the host BEFORE the region, where
+            ! the name still means the host copy.
+            h_lo = sOff(c0); h_hi1 = sOff(c1 + 1)
+            !$acc host_data use_device(sOff, sA, sNB, sOA, sOB, sD, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, &
+            !$acc                      ps%dshp, ps%ps_l, ps%ps_ao1, ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, &
+            !$acc                      ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, ps%ps_np, ps%ps_ncol, &
+            !$acc                      ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_coef, dmat, jmat)
+            call pg_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX + sLC(c0))*CLASS_RADIX + sLD(c0), &
+                             c0, c1, nseg, rank, nranks, ps%pbins%npair, ps%nps, ps%npp, nao, ps%ncoltot, ps%ncoef, &
+                             ndens, thresh, jfac, kfac, &
+                             c_loc(sOff), c_loc(sA), c_loc(sNB), c_loc(sOA), c_loc(sOB), c_loc(sD), &
+                             c_loc(ps%pbins%sp_i), c_loc(ps%pbins%sp_j), c_loc(ps%pbins%sp_q), &
+                             c_loc(ps%dshp), c_loc(ps%ps_l), c_loc(ps%ps_ao1), &
+                             c_loc(ps%pp_off), c_loc(ps%pp_n), c_loc(ps%pp_p), c_loc(ps%pp_r), c_loc(ps%pp_ra), &
+                             c_loc(ps%pp_rb), c_loc(ps%pp_c), c_loc(ps%pp_cs), c_loc(ps%pp_ki), c_loc(ps%pp_kj), &
+                             c_loc(ps%ps_np), c_loc(ps%ps_ncol), c_loc(ps%ps_soff), c_loc(ps%ps_coff), &
+                             c_loc(ps%col_ao), c_loc(ps%ps_coef), c_loc(dmat), c_loc(jmat), h_lo, h_hi1)
+            !$acc end host_data
+         else
+#endif
          call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX + sLC(c0))*CLASS_RADIX + sLD(c0), &
                           c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           ps%pbins%npair, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, jfac, kfac, ps%dshp, &
@@ -500,6 +534,9 @@ contains
                           ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, &
                           ps%ncoltot, ps%ncoef, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_coef, sG(c0), &
                           ndens, dmat, jmat, rank, nranks)
+#ifdef TRC_CUDAF
+         end if
+#endif
          c0 = c1 + 1
       end do
       nlaunch = nl
