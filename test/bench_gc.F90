@@ -11,12 +11,13 @@ program bench_gc
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
+   use trc_binkernel, only: trc_set_prim_margin
    implicit none
    character(len=256) :: xyzfile, basfile, arg
    integer :: natm, n, i, j, dev, reps, r
    integer, allocatable :: zint(:)
    real(dp), allocatable :: at_r(:, :), d(:, :), g1(:, :), g2(:, :)
-   real(dp) :: worst, t0, t1, tb1, tb2, tf1, tf2, thr
+   real(dp) :: worst, t0, t1, tb1, tb2, tf1, tf2, thr, pmargin
    type(trc_basis_t) :: b
    type(trc_eri_t) :: e1, e2
    type(error_t) :: err
@@ -34,6 +35,12 @@ program bench_gc
    thr = 1.0e-10_dp
    if (command_argument_count() >= 4) then
       call get_command_argument(4, arg); read (arg, *) thr
+   end if
+
+   if (command_argument_count() >= 5) then
+      call get_command_argument(5, arg); read (arg, *) pmargin
+      call trc_set_prim_margin(pmargin)
+      print '(a,es9.2)', '  prim margin', pmargin
    end if
 
    dev = trc_bind_device(0)

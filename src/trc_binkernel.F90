@@ -33,6 +33,15 @@ module trc_binkernel
    implicit none
    private
 
+   !> Fraction of the integral threshold at which a PRIMITIVE quartet is
+   !> abandoned before the Boys function. The prefactor bounds the (ss|ss)
+   !> primitive integral exactly and the higher classes only up to the
+   !> polynomial factors of the recurrences, so the margin is empirical: a
+   !> thousandfold was the original guess and nothing had measured what
+   !> tightening it costs. This makes that measurable.
+   real(dp), protected, public :: TRC_PRIM_MARGIN = 1.0e-3_dp
+
+   public :: trc_set_prim_margin
    public :: fock_bins
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
@@ -68,6 +77,11 @@ module trc_binkernel
 
 
 contains
+
+   subroutine trc_set_prim_margin(f)
+      real(dp), intent(in) :: f
+      if (f > 0.0_dp) TRC_PRIM_MARGIN = f
+   end subroutine trc_set_prim_margin
 
 #include "inc/trc_boys_eval.inc"
 
@@ -351,7 +365,7 @@ contains
             call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                               + sLC(c0))*CLASS_RADIX + sLD(c0), &
                              c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, t_ki, t_ki, &
                              nbas, ncoef1, t_np, t_ncol, t_soff, t_coff, ao_off, t_coef, &
                              t_sh, nbas, 1, q_dummy, dsh, .false., &
@@ -551,7 +565,7 @@ contains
 #endif
          call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX + sLC(c0))*CLASS_RADIX + sLD(c0), &
                           c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          ps%pbins%npair, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, jfac, kfac, ps%dshp, &
+                          ps%pbins%npair, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, ps%dshp, &
                           ps%nps, ps%npp, nao, ps%ps_l, ps%ps_ao1, &
                           ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, &
                           ps%ncoltot, ps%ncoef, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_coef, &

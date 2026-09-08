@@ -8,6 +8,7 @@
 ! rule requires; the dispatcher is host code and may cross modules.
 !
 module trc_pc_k0002
+   use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
@@ -25,15 +26,21 @@ contains
    !> Declaring them alongside the loop makes them shared -- the compiler then
    !> emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
    subroutine pc0002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat, rank, nranks)
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      !! Cutoff for the primitive-quartet prescreen: a primitive quartet
+      !! whose prefactor cannot reach this is skipped before the Boys
+      !! function. It is a fraction of `thresh`, and a runtime argument
+      !! rather than a literal so the fraction can be measured against the
+      !! energy it costs instead of guessed once.
+      real(dp), intent(in)    :: pcut
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
@@ -72,7 +79,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer, intent(in) :: rank, nranks
-      integer(kind=8) :: g0, g1, nr, i
+      integer(int64) :: g0, g1, nr, i
       !
       ! LAUNCH GEOMETRY.  `do concurrent` gives nvfortran the whole say, and it
       ! picks 128 threads per block.  Handing the block size back to the
@@ -92,23 +99,29 @@ contains
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
          call pci0002(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, ndens, dmat, jmat)
       end do
    end subroutine pc0002
 
    pure subroutine pci0002(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat)
       !$acc routine seq
-      integer(kind=8), intent(in) :: gt
+      integer(int64), intent(in) :: gt
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      !! Cutoff for the primitive-quartet prescreen: a primitive quartet
+      !! whose prefactor cannot reach this is skipped before the Boys
+      !! function. It is a fraction of `thresh`, and a runtime argument
+      !! rather than a literal so the fraction can be measured against the
+      !! energy it costs instead of guessed once.
+      real(dp), intent(in)    :: pcut
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
@@ -147,8 +160,8 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
-      integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut, pcut, bnd
+      integer(int64) :: nsa, u, kx
+      real(dp) :: qcut, bnd
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -197,9 +210,9 @@ contains
          ! On a symmetric segment the pairs are enumerated column by column,
          ! iab >= icd, with the same closed form inverted.
          if (sD(seg)) then
-            nsa = int(sA(seg), 8)
-            u = int(t - 1, 8)
-            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, 8)
+            nsa = int(sA(seg), int64)
+            u = int(t - 1, int64)
+            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
             if (kx < 0) kx = 0
             do while (kx > 0)
                if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
@@ -220,7 +233,6 @@ contains
          ! up to two decades too much; at RNA3 that was 46% of all quartets.
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
-         pcut = thresh*1.0e-3_dp
 
          si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
          sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
@@ -1323,15 +1335,21 @@ contains
    end function cb0002
 
    subroutine pcs0002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat, rank, nranks)
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      !! Cutoff for the primitive-quartet prescreen: a primitive quartet
+      !! whose prefactor cannot reach this is skipped before the Boys
+      !! function. It is a fraction of `thresh`, and a runtime argument
+      !! rather than a literal so the fraction can be measured against the
+      !! energy it costs instead of guessed once.
+      real(dp), intent(in)    :: pcut
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
@@ -1370,7 +1388,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer, intent(in) :: rank, nranks
-      integer(kind=8) :: g0, g1, nr, i
+      integer(int64) :: g0, g1, nr, i
       !
       ! LAUNCH GEOMETRY.  `do concurrent` gives nvfortran the whole say, and it
       ! picks 128 threads per block.  Handing the block size back to the
@@ -1390,23 +1408,29 @@ contains
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
          call pcsi0002(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, ndens, dmat, jmat)
       end do
    end subroutine pcs0002
 
    pure subroutine pcsi0002(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
                       ndens, dmat, jmat)
       !$acc routine seq
-      integer(kind=8), intent(in) :: gt
+      integer(int64), intent(in) :: gt
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      !! Cutoff for the primitive-quartet prescreen: a primitive quartet
+      !! whose prefactor cannot reach this is skipped before the Boys
+      !! function. It is a fraction of `thresh`, and a runtime argument
+      !! rather than a literal so the fraction can be measured against the
+      !! energy it costs instead of guessed once.
+      real(dp), intent(in)    :: pcut
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
@@ -1445,8 +1469,8 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
-      integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut, pcut, bnd
+      integer(int64) :: nsa, u, kx
+      real(dp) :: qcut, bnd
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
@@ -1491,9 +1515,9 @@ contains
          ! On a symmetric segment the pairs are enumerated column by column,
          ! iab >= icd, with the same closed form inverted.
          if (sD(seg)) then
-            nsa = int(sA(seg), 8)
-            u = int(t - 1, 8)
-            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, 8)
+            nsa = int(sA(seg), int64)
+            u = int(t - 1, int64)
+            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
             if (kx < 0) kx = 0
             do while (kx > 0)
                if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
@@ -1514,7 +1538,6 @@ contains
          ! up to two decades too much; at RNA3 that was 46% of all quartets.
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
-         pcut = thresh*1.0e-3_dp
 
          si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
          sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)

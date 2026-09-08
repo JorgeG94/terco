@@ -127,16 +127,16 @@ contains
       type(c_ptr), intent(in) :: p_pp_c, p_pp_cs, p_pp_ki, p_pp_kj, p_ps_np, p_ps_ncol, p_ps_soff, p_ps_coff
       type(c_ptr), intent(in) :: p_col_ao, p_ps_coef, p_dmat, p_jmat
       !> sOff(lo) and sOff(hi+1) on the host: the launch geometry.
-      integer(kind=8), intent(in) :: h_sOff_lo, h_sOff_hi1
+      integer(int64), intent(in) :: h_sOff_lo, h_sOff_hi1
 
-      integer(kind=8), device, pointer :: sOff(:)
+      integer(int64), device, pointer :: sOff(:)
       integer,  device, pointer :: sA(:), sNB(:), sOA(:), sOB(:), sp_i(:), sp_j(:), sh_l(:), ao_off(:)
       logical,  device, pointer :: sD(:)
       real(dp), device, pointer :: sp_q(:), dsh(:, :), pp_p(:), pp_r(:, :), pp_ra(:, :), pp_rb(:, :)
       real(dp), device, pointer :: pp_c(:), pp_cs(:), ps_coef(:), dmat(:, :, :), jmat(:, :, :)
       integer,  device, pointer :: pp_off(:), pp_n(:), pp_ki(:), pp_kj(:)
       integer,  device, pointer :: ps_np(:), ps_ncol(:), ps_soff(:), ps_coff(:), col_ao(:)
-      integer(kind=8) :: g0, gend, nr
+      integer(int64) :: g0, gend, nr
       integer :: grid
       integer(kind=cuda_stream_kind) :: strm
       type(c_devptr) :: dp0

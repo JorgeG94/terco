@@ -9,6 +9,7 @@
 !
 module trc_pg_k0111
 #ifdef TRC_CUDAF
+   use, intrinsic :: iso_fortran_env, only: int64
    use cudafor
    use trc_boys, only: dp, BOYS_MMAX, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none
@@ -24,9 +25,9 @@ contains
 
    attributes(global) subroutine pg0111(g0, gend, nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, boys_d, ndens, dmat, jmat)
       integer, value :: nranks, lo, hi, nseg, npair, nbas, npp, nao, ncoltot, ncoef, ndens
-      integer(kind=8), value :: g0, gend
+      integer(int64), value :: g0, gend
       real(dp), value :: thresh, jfac, kfac
-      integer(kind=8), device :: sOff(nseg + 1)
+      integer(int64), device :: sOff(nseg + 1)
       integer,  device :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  device :: sD(nseg)
       integer,  device :: sp_i(npair), sp_j(npair)
@@ -46,9 +47,9 @@ contains
       real(dp), device :: jmat(ndens, nao, nao)
 
       real(dp), shared :: Gs(40, PG_GB)
-      integer(kind=8) :: gt
+      integer(int64) :: gt
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
-      integer(kind=8) :: nsa, u, kx
+      integer(int64) :: nsa, u, kx
       real(dp) :: qcut, pcut
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, kq0, d, x, cur, ia, ib, ic, id, idx, idens
@@ -76,8 +77,9 @@ contains
       real(dp) :: dad(3), dbc(9), dbd(9)
 
       tau = threadIdx%x
-      gt = g0 + int(blockIdx%x - 1, 8)*int(nranks, 8)
+      gt = g0 + int(blockIdx%x - 1, int64)*int(nranks, int64)
       if (gt > gend) return
+      pcut = thresh*1.0e-3_dp
          ! locate the segment (every lane alike)
          p = lo; q = hi
          do while (p < q)
@@ -102,9 +104,9 @@ contains
          ! On a symmetric segment the pairs are enumerated column by column,
          ! iab >= icd, with the same closed form inverted.
          if (sD(seg)) then
-            nsa = int(sA(seg), 8)
-            u = int(t - 1, 8)
-            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, 8)
+            nsa = int(sA(seg), int64)
+            u = int(t - 1, int64)
+            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
             if (kx < 0) kx = 0
             do while (kx > 0)
                if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
@@ -125,7 +127,6 @@ contains
          ! up to two decades too much; at RNA3 that was 46% of all quartets.
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
-         pcut = thresh*1.0e-3_dp
 
          si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
          sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
