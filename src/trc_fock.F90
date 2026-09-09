@@ -108,7 +108,7 @@ contains
    ! the HGP primitive pairs the kernels read. The MMD set is discarded once
    ! the bounds exist.
    !
-   subroutine eri_build(this, b, thresh, comm, general)
+   subroutine eri_build(this, b, thresh, comm, general, batch_res)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -124,6 +124,8 @@ contains
       !! not inferred -- see the commit that added it. The segmented path
       !! with dead primitives dropped at `build` is what made cc-pVDZ fast.
       logical, intent(in), optional :: general
+      !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
+      integer, intent(in), optional :: batch_res
 
       integer :: npp, i
       integer,  allocatable :: pp_off(:), pp_n(:)
@@ -131,6 +133,7 @@ contains
       real(dp), allocatable :: qs(:), one(:)
       integer,  allocatable :: hp_ki(:), hp_kj(:)
       logical :: want_general
+      integer :: bres
 
       this%rank = 0; this%nranks = 1; this%distributed = .false.
       if (present(comm)) then
@@ -139,6 +142,9 @@ contains
          this%nranks = comm%size()
          this%distributed = this%nranks > 1
       end if
+      bres = 1
+      if (present(batch_res)) bres = batch_res
+
       call this%release()
       ! All three, not just Boys. The Schwarz bounds go through the MMD path,
       ! which reads the Hermite and Cartesian index tables; without them the
@@ -182,7 +188,7 @@ contains
       deallocate (hp_ki, hp_kj)
 
       call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
-                              this%bins, pp_n=this%hp_n)
+                              this%bins, pp_n=this%hp_n, res=bres)
 
       allocate (this%dsh(b%nshell, b%nshell))
       this%dsh = huge(1.0_dp)*1.0e-30_dp
@@ -206,7 +212,7 @@ contains
       call pg_init()
 #endif
       if (want_general) then
-         call build_ps_view(b, qs, thresh, this%ps)
+         call build_ps_view(b, qs, thresh, this%ps, bres)
          if (.not. present(general)) then
             if (all(this%ps%ps_ncol == 1)) call ps_release(this%ps)
          end if
@@ -690,11 +696,12 @@ contains
    ! column pairs, which is what makes the kernel's per-quartet test still a
    ! bound.
    !
-   subroutine build_ps_view(b, qs, thresh, ps)
+   subroutine build_ps_view(b, qs, thresh, ps, bres)
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: qs(:)        !! contracted Schwarz bounds, canonical index
       real(dp), intent(in) :: thresh
       type(ps_view_t), intent(out) :: ps
+      integer, intent(in) :: bres
       integer, allocatable :: ps_of(:), col_of(:), ps_np(:), ps_ncol(:), ps_first(:)
       real(dp), allocatable :: ps_e(:, :), ps_r(:, :), ones(:, :), cf(:), qps(:), camp(:, :)
       integer :: is, p, nps, k, np, ia, ib, ic, a, c, sa, sb, ncoef, ncol
@@ -805,7 +812,7 @@ contains
             qps(a*(a - 1)/2 + c) = qm
          end do
       end do
-      call build_binned_pairs(nps, ps%ps_l, ps%ps_np, ps_r(:, 1:nps), qps, thresh, ps%pbins, gen, ps%pp_n)
+      call build_binned_pairs(nps, ps%ps_l, ps%ps_np, ps_r(:, 1:nps), qps, thresh, ps%pbins, gen, ps%pp_n, res=bres)
       ps%q_col = qs
       allocate (ps%dshp(nps, nps))
       ps%dshp = huge(1.0_dp)*1.0e-30_dp

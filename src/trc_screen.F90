@@ -64,48 +64,92 @@ contains
       real(dp), intent(in)  :: pp_e(npp, *)
       real(dp), intent(out) :: q(nbas*(nbas + 1)/2)
 
-      integer, allocatable :: d_i(:), d_j(:), d_k(:), d_l(:), d_off(:)
-      real(dp), allocatable :: out(:), rscr(:, :)
-      integer :: npair, i, j, n, nout, nb, m, na
+      integer, allocatable :: d_i(:), d_j(:), d_k(:), d_l(:), d_off(:), d_q(:)
+      real(dp), allocatable :: out(:), rscr(:, :), qc(:)
+      integer :: npair, i, j, n, nout, nb, m, na, nlive, c0, c1, nc, key
       real(dp) :: vmax
+      integer, parameter :: CHUNK = 8192
 
+      !
+      ! ONLY THE PAIRS THAT HAVE PRIMITIVES, AND ONLY A CHUNK AT A TIME.
+      !
+      ! This used to enumerate every one of the nbas(nbas+1)/2 pairs and
+      ! allocate `out` and a Hermite scratch of npair x 2*NHERM_MAX for all
+      ! of them at once, zero both on the HOST and let them cross the bus:
+      ! on a 123-atom slice in cc-pVDZ that is 200 thousand pairs and half
+      ! a gigabyte of scratch, for a result that is one number per pair.
+      ! Pairs whose primitives were all dropped contribute nothing and are
+      ! skipped outright; the rest go in chunks, with the scratch created on
+      ! the device and never copied, and the reduction to q done there too,
+      ! so only the bound itself comes back.
+      !
       npair = nbas*(nbas + 1)/2
-      allocate (d_i(npair), d_j(npair), d_k(npair), d_l(npair), d_off(npair))
-
-      n = 0; nout = 0
+      q = 0.0_dp
+      allocate (d_i(npair), d_j(npair), d_k(npair), d_l(npair), d_off(npair), d_q(npair))
+      nlive = 0
       do i = 1, nbas
          do j = 1, i
-            n = n + 1
-            d_i(n) = i; d_j(n) = j; d_k(n) = i; d_l(n) = j
-            d_off(n) = nout
-            nb = ncart(sh_l(i))*ncart(sh_l(j))
-            nout = nout + nb*nb
+            key = (i - 1)*nbas + j
+            if (pp_n(key) == 0) cycle
+            nlive = nlive + 1
+            d_i(nlive) = i; d_j(nlive) = j; d_k(nlive) = i; d_l(nlive) = j
+            d_q(nlive) = pair_index(i, j)
          end do
       end do
-
-      allocate (out(nout), rscr(npair, 2*NHERM_MAX))
-      out = 0.0_dp; rscr = 0.0_dp
-
-      !$acc enter data copyin(d_i, d_j, d_k, d_l, d_off) create(rscr) copyin(out)
-      call eri_batch(1, npair, npair, npair, nbas, npp, nout, &
-                     d_i, d_j, d_k, d_l, d_off, sh_l, &
-                     pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
-      !$acc update self(out)
-      !$acc exit data delete(d_i, d_j, d_k, d_l, d_off, rscr, out)
-
-      do n = 1, npair
-         na = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
-         vmax = 0.0_dp
-         ! the diagonal elements (ab|ab) are what the Cauchy-Schwarz bound
-         ! needs; taking the max over the whole block is a valid (looser)
-         ! bound and avoids the strided walk
-         do m = 1, na*na
-            vmax = max(vmax, abs(out(d_off(n) + m)))
-         end do
-         q(pair_index(d_i(n), d_j(n))) = sqrt(vmax)
+      if (nlive == 0) then
+         deallocate (d_i, d_j, d_k, d_l, d_off, d_q)
+         return
+      end if
+      nout = 0
+      do n = 1, min(nlive, CHUNK)
+         nout = max(nout, ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n))))
       end do
+      nb = 0
+      do n = 1, nlive
+         nb = max(nb, ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n))))
+      end do
+      nout = min(nlive, CHUNK)*nb*nb
+      allocate (out(nout), rscr(min(nlive, CHUNK), 2*NHERM_MAX), qc(min(nlive, CHUNK)))
 
-      deallocate (d_i, d_j, d_k, d_l, d_off, out, rscr)
+      !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, rscr, out, qc)
+      do c0 = 1, nlive, CHUNK
+         c1 = min(c0 + CHUNK - 1, nlive)
+         nc = c1 - c0 + 1
+         ! Offsets for this chunk, uniform blocks of nb*nb so the host does
+         ! not have to walk the class list to find them again. Written at
+         ! the GLOBAL pair index, because the kernel indexes q_off by the
+         ! quartet's own index and not by its position in the chunk.
+         do n = c0, c1
+            d_off(n) = (n - c0)*nb*nb
+         end do
+         !$acc update device(d_off(c0:c1))
+         ! The kernel accumulates into `out`, so it starts at zero -- on the
+         ! device, where it lives, rather than on the host as it used to.
+         do concurrent(m = 1:nc*nb*nb)
+            out(m) = 0.0_dp
+         end do
+         call eri_batch(c0, c1, nc, nlive, nbas, npp, nc*nb*nb, &
+                        d_i, d_j, d_k, d_l, d_off, sh_l, &
+                        pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
+         ! The diagonal elements (ab|ab) are what Cauchy-Schwarz needs; the
+         ! max over the block is a valid, looser bound and avoids the
+         ! strided walk. Reduced here so `out` never leaves the device.
+         do concurrent(n = 1:nc) local(na, m, vmax)
+            na = ncart(sh_l(d_i(c0 + n - 1)))*ncart(sh_l(d_j(c0 + n - 1)))
+            vmax = 0.0_dp
+            do m = 1, na*na
+               vmax = max(vmax, abs(out((n - 1)*nb*nb + m)))
+            end do
+            qc(n) = sqrt(vmax)
+         end do
+         !$acc update self(qc(1:nc))
+         do n = 1, nc
+            q(d_q(c0 + n - 1)) = qc(n)
+         end do
+      end do
+      !$acc exit data delete(d_i, d_j, d_k, d_l, d_off, sh_l, rscr, out, qc)
+
+      deallocate (d_i, d_j, d_k, d_l, d_off, d_q, out, rscr, qc)
    end subroutine schwarz_bounds
 
    !
