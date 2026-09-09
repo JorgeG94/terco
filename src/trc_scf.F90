@@ -595,7 +595,16 @@ contains
          ! timed on it flatters the code by about three times. Set
          ! TRC_DUMP_DENSITY to a path and the density leaving iteration 2 is
          ! written there, in the stream format read_density already reads.
-         if (it == 2) call dump_density(nao, res%dmat(:, :, 1))
+         if (it == 2) then
+            ! The density lives on the DEVICE -- every update to it since the
+            ! guess was a gemm up there -- so the host copy is the SAD guess
+            ! until it is pulled back. Dumping without this wrote a
+            ! block-diagonal atomic density and called it iteration 2, which
+            ! screens about three times harder than anything real and made
+            ! every benchmark built on the file flattering and wrong.
+            !$acc update self(res%dmat)
+            call dump_density(nao, res%dmat(:, :, 1))
+         end if
          if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. errmax < opts%conv_diis) then
             res%converged = .true.
             exit
