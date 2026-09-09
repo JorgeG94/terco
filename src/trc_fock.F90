@@ -54,6 +54,7 @@ module trc_eri
    use trc_binkernel, only: fock_bins
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
+                             DECON_CUTOFF_DEFAULT, &
                              decon_expand_host, decon_fold_host
    implicit none
    private
@@ -153,7 +154,11 @@ contains
       !
       bt_env = ' '
       call get_environment_variable('TRC_NO_DECONTRACT', bt_env)
-      if (len_trim(bt_env) == 0) call decontract_basis(b, this%pb, this%dec)
+      if (len_trim(bt_env) == 0) then
+         ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
+         ! uses, so the rule can be swept without a rebuild.
+         call decontract_basis(b, this%pb, this%dec, cutoff=decon_cutoff())
+      end if
       if (this%dec%active) then
          ! The transform runs inside `fock_resident`, where everything is
          ! device-resident; the maps have to be up there with it.
@@ -176,6 +181,20 @@ contains
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
+   !> Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
+   !> unless TRC_DECON_CUTOFF says otherwise.
+   real(dp) function decon_cutoff()
+      character(len=32) :: e
+      integer :: ios
+      e = ' '
+      call get_environment_variable('TRC_DECON_CUTOFF', e)
+      decon_cutoff = DECON_CUTOFF_DEFAULT
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) decon_cutoff
+         if (ios /= 0) decon_cutoff = DECON_CUTOFF_DEFAULT
+      end if
+   end function decon_cutoff
+
    subroutine build_structures(this, b, thresh, bres)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
