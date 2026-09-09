@@ -68,7 +68,12 @@ contains
       real(dp), allocatable :: out(:), rscr(:, :), qc(:)
       integer :: npair, i, j, n, nout, nb, m, na, nlive, c0, c1, nc, key
       real(dp) :: vmax
-      integer, parameter :: CHUNK = 8192
+      ! One thread per shell pair, so the chunk IS the launch width. At 8192
+      ! a V100 ran a fraction of one wave and this routine cost more than the
+      ! Fock build it exists to accelerate. The scratch is 2*NHERM_MAX doubles
+      ! per pair, about 2.6 kB, so 65536 pairs is ~170 MB -- affordable, and
+      ! four launches instead of twenty-five.
+      integer, parameter :: CHUNK = 65536
 
       !
       ! ONLY THE PAIRS THAT HAVE PRIMITIVES, AND ONLY A CHUNK AT A TIME.
@@ -96,19 +101,33 @@ contains
             d_q(nlive) = pair_index(i, j)
          end do
       end do
+      ! Longest first. The cost of a pair is the square of its primitive-pair
+      ! count, which on a general contraction spans four orders of magnitude
+      ! within one launch; leaving them in shell order puts the 20000-quartet
+      ! silicon pairs at random points and every wave waits on its slowest
+      ! thread. This is a partial sort by bucket, not a full one -- the order
+      ! inside a bucket does not matter and n log n on 200000 pairs would show.
+      call order_by_work(nlive, nbas, pp_n, d_i, d_j, d_k, d_l, d_q)
       if (nlive == 0) then
          deallocate (d_i, d_j, d_k, d_l, d_off, d_q)
          return
       end if
+      ! Each pair takes only the room its own block needs. A uniform slot of
+      ! the largest block in the molecule -- 36x36 for a d pair -- gives an
+      ! (ss) pair 1296 doubles for the one it uses, and the zeroing alone
+      ! then moves gigabytes: it took this routine from 10 s to 30 s on the
+      ! silica slice before the sizes were made per-pair.
       nout = 0
-      do n = 1, min(nlive, CHUNK)
-         nout = max(nout, ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n))))
+      m = 0
+      do c0 = 1, nlive, CHUNK
+         c1 = min(c0 + CHUNK - 1, nlive)
+         m = 0
+         do n = c0, c1
+            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            m = m + nb*nb
+         end do
+         nout = max(nout, m)
       end do
-      nb = 0
-      do n = 1, nlive
-         nb = max(nb, ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n))))
-      end do
-      nout = min(nlive, CHUNK)*nb*nb
       allocate (out(nout), rscr(min(nlive, CHUNK), 2*NHERM_MAX), qc(min(nlive, CHUNK)))
 
       !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, rscr, out, qc)
@@ -119,26 +138,29 @@ contains
          ! not have to walk the class list to find them again. Written at
          ! the GLOBAL pair index, because the kernel indexes q_off by the
          ! quartet's own index and not by its position in the chunk.
+         m = 0
          do n = c0, c1
-            d_off(n) = (n - c0)*nb*nb
+            d_off(n) = m
+            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            m = m + nb*nb
          end do
          !$acc update device(d_off(c0:c1))
          ! The kernel accumulates into `out`, so it starts at zero -- on the
          ! device, where it lives, rather than on the host as it used to.
-         do concurrent(m = 1:nc*nb*nb)
-            out(m) = 0.0_dp
+         do concurrent(na = 1:m)
+            out(na) = 0.0_dp
          end do
-         call eri_batch(c0, c1, nc, nlive, nbas, npp, nc*nb*nb, &
+         call eri_batch(c0, c1, nc, nlive, nbas, npp, m, &
                         d_i, d_j, d_k, d_l, d_off, sh_l, &
                         pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
          ! The diagonal elements (ab|ab) are what Cauchy-Schwarz needs; the
          ! max over the block is a valid, looser bound and avoids the
          ! strided walk. Reduced here so `out` never leaves the device.
-         do concurrent(n = 1:nc) local(na, m, vmax)
+         do concurrent(n = 1:nc) local(na, nb, vmax)
             na = ncart(sh_l(d_i(c0 + n - 1)))*ncart(sh_l(d_j(c0 + n - 1)))
             vmax = 0.0_dp
-            do m = 1, na*na
-               vmax = max(vmax, abs(out((n - 1)*nb*nb + m)))
+            do nb = 1, na*na
+               vmax = max(vmax, abs(out(d_off(c0 + n - 1) + nb)))
             end do
             qc(n) = sqrt(vmax)
          end do
@@ -151,6 +173,50 @@ contains
 
       deallocate (d_i, d_j, d_k, d_l, d_off, d_q, out, rscr, qc)
    end subroutine schwarz_bounds
+
+   !
+   ! Reorder the live diagonal pairs so the expensive ones come first.
+   !
+   ! Bucketed by the power of two of the primitive-pair count, descending.
+   ! That is enough: the point is to keep a launch from ending on one long
+   ! thread, not to sort exactly.
+   !
+   subroutine order_by_work(nlive, nbas, pp_n, d_i, d_j, d_k, d_l, d_q)
+      integer, intent(in)    :: nlive, nbas
+      integer, intent(in)    :: pp_n(nbas*nbas)
+      integer, intent(inout) :: d_i(*), d_j(*), d_k(*), d_l(*), d_q(*)
+
+      integer, parameter :: NB = 32
+      integer :: cnt(NB), start(NB), n, b, p, key
+      integer, allocatable :: bkt(:), si(:), sj(:), sq(:)
+
+      allocate (bkt(nlive), si(nlive), sj(nlive), sq(nlive))
+      cnt = 0
+      do n = 1, nlive
+         key = (d_i(n) - 1)*nbas + d_j(n)
+         p = pp_n(key)
+         b = 1
+         do while (p > 1 .and. b < NB)
+            p = p/2; b = b + 1
+         end do
+         bkt(n) = NB + 1 - b          ! largest count first
+         cnt(bkt(n)) = cnt(bkt(n)) + 1
+      end do
+      start(1) = 1
+      do b = 2, NB
+         start(b) = start(b - 1) + cnt(b - 1)
+      end do
+      do n = 1, nlive
+         b = bkt(n)
+         si(start(b)) = d_i(n); sj(start(b)) = d_j(n); sq(start(b)) = d_q(n)
+         start(b) = start(b) + 1
+      end do
+      do n = 1, nlive
+         d_i(n) = si(n); d_j(n) = sj(n); d_k(n) = si(n); d_l(n) = sj(n)
+         d_q(n) = sq(n)
+      end do
+      deallocate (bkt, si, sj, sq)
+   end subroutine order_by_work
 
    !
    ! Largest |D| over each shell pair's block.  Recomputed whenever D changes.

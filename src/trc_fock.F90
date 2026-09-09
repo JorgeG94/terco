@@ -134,6 +134,12 @@ contains
       integer,  allocatable :: hp_ki(:), hp_kj(:)
       logical :: want_general
       integer :: bres
+      ! Stage timing, printed only when TRC_BUILD_TIMING is set. `build` is
+      ! four routines with very different costs and no way to tell from the
+      ! outside which one is the slow one.
+      logical :: btime
+      integer :: bt_c0, bt_c1, bt_rate
+      character(len=8) :: bt_env
 
       this%rank = 0; this%nranks = 1; this%distributed = .false.
       if (present(comm)) then
@@ -144,6 +150,11 @@ contains
       end if
       bres = 1
       if (present(batch_res)) bres = batch_res
+
+      bt_env = ' '
+      call get_environment_variable('TRC_BUILD_TIMING', bt_env)
+      btime = len_trim(bt_env) > 0
+      call system_clock(bt_c0, bt_rate)
 
       call this%release()
       ! All three, not just Boys. The Schwarz bounds go through the MMD path,
@@ -170,10 +181,22 @@ contains
 
       call build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, thresh, &
                        pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'build_pairs       ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
       call schwarz_bounds(b%nshell, npp, b%sh_l, pp_off, pp_n, pp_p, pp_r, &
                           pp_c, pp_e, qs)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'schwarz_bounds    ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
       deallocate (pp_off, pp_n, pp_p, pp_r, pp_c, pp_e)
 
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
@@ -183,12 +206,24 @@ contains
                            one, b%sh_c, thresh*1.0e-3_dp, &
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                            this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'build_pairs_hgp   ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
       ! The contracted kernels fold the coefficients into hp_c and never
       ! ask which primitive a pair came from.
       deallocate (hp_ki, hp_kj)
 
       call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                               this%bins, pp_n=this%hp_n, res=bres)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'build_binned_pairs', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
 
       allocate (this%dsh(b%nshell, b%nshell))
       this%dsh = huge(1.0_dp)*1.0e-30_dp
@@ -218,6 +253,12 @@ contains
          end if
       end if
       deallocate (qs, one)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'ps_view           ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
 
       !$acc enter data copyin(this%sh_l, this%ao_off, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
