@@ -76,6 +76,28 @@ contains
 
    !> The one-time pair ordering, off unless asked for. See the comment at
    !> its call site for what it costs and buys.
+   !> TRC_LAUNCH_CAP caps the quartets in one launch; 0 (default) is one
+   !> launch per angular-momentum class.
+   integer(kind=8) function launch_cap()
+      character(len=32) :: e
+      integer :: ios
+      e = ' '
+      call get_environment_variable('TRC_LAUNCH_CAP', e)
+      launch_cap = 0_8
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) launch_cap
+         if (ios /= 0) launch_cap = 0_8
+      end if
+   end function launch_cap
+
+   !> TRC_SEG_STATS=1 prints the segment shape of each Fock build.
+   logical function seg_stats_on()
+      character(len=8) :: e
+      e = ' '
+      call get_environment_variable('TRC_SEG_STATS', e)
+      seg_stats_on = len_trim(e) > 0
+   end function seg_stats_on
+
    logical function bin_sort_on()
       character(len=8) :: v
       call get_environment_variable("TRC_BIN_SORT", v)
@@ -277,6 +299,28 @@ contains
 
       nwork = sOff(nseg + 1)
       nlaunch = 1
+      ! Segment shape, for comparing this against a batching scheme that caps
+      ! its batches (gmshpc: 2560 shell pairs per bra batch). A segment here
+      ! is one admitted bin pair and is homogeneous by construction -- same
+      ! four angular momenta, same contraction degree, same magnitude bucket
+      ! -- so what matters is how big they are and how much of a warp
+      ! straddles a boundary.
+      if (seg_stats_on()) then
+         block
+            integer :: q, nsmall
+            integer(kind=8) :: mn, mx, sz
+            mn = huge(0_8); mx = 0_8; nsmall = 0
+            do q = 1, nseg
+               sz = sOff(q + 1) - sOff(q)
+               mn = min(mn, sz); mx = max(mx, sz)
+               if (sz < 32) nsmall = nsmall + 1
+            end do
+            print '(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)', &
+               '  [seg] nseg ', nseg, '  work ', nwork, '  min ', mn, '  max ', mx, &
+               '  mean ', real(nwork, dp)/max(nseg, 1), '  <32 ', nsmall, &
+               '  boundary warps ', 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), '% of threads'
+         end block
+      end if
       if (nwork == 0) return
 
       if (nosym) then
@@ -305,6 +349,7 @@ contains
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl
+         integer(kind=8) :: lcap
          logical :: l2
          integer(kind=8) :: o2
          ! The trivial primitive-shell view used to be built here -- eight
@@ -340,6 +385,37 @@ contains
                                              b%sp_q, thresh, dsh, nbas, nkept)
          nl = 0
          c0 = 1
+         ! Quartets per launch. Zero (the default) is one launch per class,
+         ! however much work that is; a cap splits a class at segment
+         ! boundaries.
+         !
+         ! gmshpc and EXESS cap a bra batch at 2560 SHELL PAIRS and launch
+         ! per batch pair, so a launch of theirs covers bra x ket = 2560^2 =
+         ! 6.5M quartets. That is the number to compare against, not 2560.
+         ! Swept on the 123-atom silica slice, Fock seconds:
+         !
+         !   cap        launches   cc-pVDZ   6-31G*
+         !   none (0)         21     5.257    2.874
+         !   6553600         396     5.257    2.869     <- their granularity
+         !   3000000         703     5.266    2.888
+         !   1000000        1402     5.333
+         !    100000        3953     5.569
+         !     10000        7027     5.844
+         !
+         ! So at their batch size we are already at the same throughput, to
+         ! three digits, and the flat region runs from 21 launches to about
+         ! 400. Only below ~1M quartets a launch does it cost anything, and
+         ! then it is 1-11%, not the 12x an early note claimed -- that
+         ! measurement was taken on a contracted basis, where work per
+         ! quartet was wildly uneven, and at 2200 items a launch, which is
+         ! 1.3% of one wave on a V100. It measured starvation, not batching.
+         !
+         ! The reason a cap cannot WIN here is that batching buys throughput
+         ! by keeping many kernels in flight at once, and `do concurrent`
+         ! gives no way to overlap launches. One launch at a time makes a
+         ! larger launch weakly better. Kept as a knob so the claim stays
+         ! measured.
+         lcap = launch_cap()
          do while (c0 <= nseg)
             c1 = c0
             do while (c1 < nseg)
@@ -347,6 +423,7 @@ contains
                     + sLC(c1 + 1))*CLASS_RADIX + sLD(c1 + 1) /= &
                    ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                     + sLC(c0))*CLASS_RADIX + sLD(c0)) exit
+               if (lcap > 0 .and. sOff(c1 + 2) - sOff(c0) > lcap) exit
                c1 = c1 + 1
             end do
             nl = nl + 1
