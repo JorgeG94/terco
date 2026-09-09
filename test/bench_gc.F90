@@ -81,7 +81,7 @@ program bench_gc
    !$acc enter data copyin(d) create(g1, g2, gref)
 
    call tick(t0)
-   call e1%build(b, thr, general=.false., batch_res=bres)
+   call e1%build(b, thr, batch_res=bres)
    call tick(t1); tb1 = t1 - t0
    call e1%fock_resident(b, d, g1, k_scale=1.0_dp, count_survivors=.true.)   ! warm up, and count
    call tick(t0)
@@ -91,7 +91,7 @@ program bench_gc
    call tick(t1); tf1 = (t1 - t0)/reps
 
    call tick(t0)
-   call e2%build(b, thr, general=.true., batch_res=bres)
+   call e2%build(b, thr, batch_res=bres)
    call tick(t1); tb2 = t1 - t0
    call e2%fock_resident(b, d, g2, k_scale=1.0_dp, count_survivors=.true.)
    call tick(t0)

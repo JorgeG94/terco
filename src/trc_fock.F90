@@ -49,10 +49,7 @@ module trc_eri
    use trc_batch, only: build_pairs
    use trc_hgp, only: build_pairs_hgp
    use trc_screen, only: schwarz_bounds
-   use trc_bins, only: pair_bins_t, build_binned_pairs, ps_view_t, PS_NCOL_MAX, ps_release
-#ifdef TRC_CUDAF
-   use trc_pg_kernels, only: pg_init
-#endif
+   use trc_bins, only: pair_bins_t, build_binned_pairs
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use trc_binkernel, only: fock_bins
    use trc_api, only: trc_basis_t
@@ -66,7 +63,6 @@ module trc_eri
       real(dp) :: thresh = 1.0e-10_dp
       integer :: nbas = 0, nao = 0, nhpp = 0
       type(pair_bins_t) :: bins
-      type(ps_view_t) :: ps               !! the primitive-shell view, for the per-class kernels
       !! HGP primitive-pair data: what the kernels actually read.
       integer,  allocatable :: hp_off(:), hp_n(:)
       real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :)
@@ -116,22 +112,13 @@ contains
    ! the HGP primitive pairs the kernels read. The MMD set is discarded once
    ! the bounds exist.
    !
-   subroutine eri_build(this, b, thresh, comm, general, batch_res)
+   subroutine eri_build(this, b, thresh, comm, batch_res)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
       !! Ranks to split the quartets over. Bind each rank to its device
       !! (trc_bind_device) BEFORE any object goes to the device.
       type(comm_t), intent(in), optional :: comm
-      !! Run the per-class kernels over the primitive-shell view, with the
-      !! columns of a general contraction sharing their primitive loops.
-      !! OFF by default: on cholesterol/cc-pVDZ the view does a third of the
-      !! primitive quartets of the segmented path and still takes longer,
-      !! because the blocked kernel runs each one several times slower
-      !! (occupancy, and one thread per primitive-shell quartet). Measured,
-      !! not inferred -- see the commit that added it. The segmented path
-      !! with dead primitives dropped at `build` is what made cc-pVDZ fast.
-      logical, intent(in), optional :: general
       !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
       integer, intent(in), optional :: batch_res
 
@@ -180,28 +167,26 @@ contains
          this%dec%on_device = .true.
       end if
       if (this%dec%active) then
-         call build_structures(this, this%pb, thresh, bres, general)
+         call build_structures(this, this%pb, thresh, bres)
       else
-         call build_structures(this, b, thresh, bres, general)
+         call build_structures(this, b, thresh, bres)
       end if
    end subroutine eri_build
 
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
-   subroutine build_structures(this, b, thresh, bres, general)
+   subroutine build_structures(this, b, thresh, bres)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bres
-      logical, intent(in), optional :: general
 
       integer :: npp, i
       integer,  allocatable :: pp_off(:), pp_n(:)
       real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       real(dp), allocatable :: qs(:), one(:)
       integer,  allocatable :: hp_ki(:), hp_kj(:)
-      logical :: want_general
       ! Stage timing, printed only when TRC_BUILD_TIMING is set. `build` is
       ! four routines with very different costs and no way to tell from the
       ! outside which one is the slow one.
@@ -284,51 +269,13 @@ contains
       allocate (this%dsh(b%nshell, b%nshell))
       this%dsh = huge(1.0_dp)*1.0e-30_dp
 
-      this%ps%nps = 0
-      if (present(general)) then
-         ! An explicit answer is honoured either way: the tests compare the
-         ! two paths on the same basis and need to pick.
-         want_general = general
-      else
-         want_general = .false.
-#ifdef TRC_CUDAF
-         ! With the cooperative kernels built in, a basis with a general
-         ! contraction takes the primitive-shell view without being asked. A
-         ! segmented basis gains nothing from the view, so it is dropped
-         ! again below and the scalar path runs as it always did.
-         want_general = .true.
-#endif
-      end if
-#ifdef TRC_CUDAF
-      call pg_init()
-#endif
-      if (want_general) then
-         call build_ps_view(b, qs, thresh, this%ps, bres)
-         if (.not. present(general)) then
-            if (all(this%ps%ps_ncol == 1)) call ps_release(this%ps)
-         end if
-      end if
       deallocate (qs, one)
-      if (btime) then
-         call system_clock(bt_c1)
-         print '(a,a,f9.3,a)', '  [build] ', 'ps_view           ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
-         bt_c0 = bt_c1
-      end if
-
 
       !$acc enter data copyin(this%sh_l, this%ao_off, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
       !$acc                   this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
-      if (this%ps%nps > 0) then
-      !$acc enter data copyin(this%ps%ps_l, this%ps%ps_np, this%ps%ps_ncol, this%ps%ps_soff, this%ps%ps_coff, this%ps%ps_ao1, &
-      !$acc                   this%ps%col_ao, this%ps%col_sh, this%ps%ps_coef, this%ps%pp_off, this%ps%pp_n, &
-      !$acc                   this%ps%pp_p, this%ps%pp_r, this%ps%pp_ra, this%ps%pp_rb, this%ps%pp_c, this%ps%pp_cs, this%ps%pp_ki, this%ps%pp_kj, &
-      !$acc                   this%ps%pbins, this%ps%pbins%sp_i, this%ps%pbins%sp_j, this%ps%pbins%sp_q, &
-      !$acc                   this%ps%dshp, this%ps%q_col)
-      this%ps%on_device = .true.
-      end if
       this%on_device = .true.
    end subroutine build_structures
 
@@ -411,7 +358,7 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -546,7 +493,7 @@ contains
                      jfac, kfac, .true., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -666,7 +613,7 @@ contains
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                            this%hp_ra, this%hp_rb, this%hp_c, &
                            1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
-                           nkept=this%nkept, ps=this%ps)
+                           nkept=this%nkept)
          end if
       end if
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
@@ -674,7 +621,7 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
 
       ! Fold on the device, straight into the caller's resident result.
@@ -849,7 +796,7 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -875,136 +822,6 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock_many
 
-   !
-   ! The primitive-shell view of `b`: shells sharing a centre, l and exponent
-   ! list become one primitive shell with several coefficient columns (at
-   ! most PS_NCOL_MAX; more are split). Pairs, Schwarz bounds and bins over
-   ! those; the bound of a primitive-shell pair is the largest over its
-   ! column pairs, which is what makes the kernel's per-quartet test still a
-   ! bound.
-   !
-   subroutine build_ps_view(b, qs, thresh, ps, bres)
-      type(trc_basis_t), intent(in) :: b
-      real(dp), intent(in) :: qs(:)        !! contracted Schwarz bounds, canonical index
-      real(dp), intent(in) :: thresh
-      type(ps_view_t), intent(out) :: ps
-      integer, intent(in) :: bres
-      integer, allocatable :: ps_of(:), col_of(:), ps_np(:), ps_ncol(:), ps_first(:)
-      real(dp), allocatable :: ps_e(:, :), ps_r(:, :), ones(:, :), cf(:), qps(:), camp(:, :)
-      integer :: is, p, nps, k, np, ia, ib, ic, a, c, sa, sb, ncoef, ncol
-      logical, allocatable :: gen(:)
-      real(dp) :: qm
-
-      allocate (ps_of(b%nshell), col_of(b%nshell), ps_np(b%nshell), ps_ncol(b%nshell), ps_first(b%nshell))
-      allocate (ps_e(b%maxnp, b%nshell), ps_r(3, b%nshell))
-      nps = 0
-      do is = 1, b%nshell
-         np = b%sh_np(is)
-         ps_of(is) = 0
-         do p = 1, nps
-            if (ps_ncol(p) >= PS_NCOL_MAX) cycle
-            if (b%sh_l(ps_first(p)) /= b%sh_l(is) .or. ps_np(p) /= np) cycle
-            if (any(abs(ps_r(:, p) - b%sh_r(:, is)) > 1.0e-12_dp)) cycle
-            if (any(abs(ps_e(1:np, p) - b%sh_e(1:np, is)) > 1.0e-12_dp*max(1.0_dp, abs(ps_e(1:np, p))))) cycle
-            ps_of(is) = p
-            exit
-         end do
-         if (ps_of(is) == 0) then
-            nps = nps + 1
-            ps_of(is) = nps
-            ps_first(nps) = is
-            ps_np(nps) = np
-            ps_ncol(nps) = 0
-            ps_e(:, nps) = 0.0_dp
-            ps_e(1:np, nps) = b%sh_e(1:np, is)
-            ps_r(:, nps) = b%sh_r(:, is)
-         end if
-         ps_ncol(ps_of(is)) = ps_ncol(ps_of(is)) + 1
-         col_of(is) = ps_ncol(ps_of(is))
-      end do
-
-      ps%nps = nps
-      allocate (ps%ps_l(nps), ps%ps_np(nps), ps%ps_ncol(nps), ps%ps_soff(nps), ps%ps_coff(nps))
-      ps%ps_np = ps_np(1:nps)
-      ps%ps_ncol = ps_ncol(1:nps)
-      ncol = 0; ncoef = 0
-      do p = 1, nps
-         ps%ps_l(p) = b%sh_l(ps_first(p))
-         ps%ps_soff(p) = ncol
-         ps%ps_coff(p) = ncoef
-         ncol = ncol + ps_ncol(p)
-         ncoef = ncoef + ps_np(p)*ps_ncol(p)
-      end do
-      ps%ncoltot = ncol; ps%ncoef = ncoef
-      allocate (ps%col_ao(ncol), ps%col_sh(ncol), ps%ps_coef(ncoef), ps%ps_ao1(nps))
-      do is = 1, b%nshell
-         p = ps_of(is); c = col_of(is)
-         ps%col_ao(ps%ps_soff(p) + c) = b%sh_ao(is)
-         ps%col_sh(ps%ps_soff(p) + c) = is
-         do k = 1, ps_np(p)
-            ps%ps_coef(ps%ps_coff(p) + (c - 1)*ps_np(p) + k) = b%sh_c(k, is)
-         end do
-      end do
-
-      ! Primitive pairs over primitive shells: unit coefficients and unit
-      ! common factor, both of which live in ps_coef now.
-      ! The prune judges a primitive by the largest coefficient any column
-      ! gives it, since the kernel may apply any of them.
-      allocate (ones(b%maxnp, nps), cf(nps), camp(b%maxnp, nps))
-      ones = 1.0_dp; cf = 1.0_dp; camp = 0.0_dp
-      do p = 1, nps
-         do c = 1, ps_ncol(p)
-            do k = 1, ps_np(p)
-               camp(k, p) = max(camp(k, p), abs(ps%ps_coef(ps%ps_coff(p) + (c - 1)*ps_np(p) + k)))
-            end do
-         end do
-      end do
-      call build_pairs_hgp(nps, ps%ps_l, ps%ps_np, ps_e(:, 1:nps), ones, ps_r(:, 1:nps), cf, &
-                           camp, thresh*1.0e-3_dp, &
-                           ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, &
-                           ps%pp_ki, ps%pp_kj, ps%npp)
-
-      ! The scalar kernel wants the first column's coefficients folded into
-      ! the pair factor, as the contracted build had them; it only ever
-      ! sees pairs whose two shells have one column, so that is exact there.
-      allocate (ps%pp_cs(ps%npp), gen(nps))
-      do a = 1, nps
-         do c = 1, nps
-            do k = ps%pp_off((a - 1)*nps + c) + 1, ps%pp_off((a - 1)*nps + c) + ps%pp_n((a - 1)*nps + c)
-               ia = ps%pp_ki(k); ic = ps%pp_kj(k)
-               ps%pp_cs(k) = ps%pp_c(k)*ps%ps_coef(ps%ps_coff(a) + ia)*ps%ps_coef(ps%ps_coff(c) + ic)
-            end do
-         end do
-      end do
-      gen = ps_ncol(1:nps) > 1
-      ! The scalar kernel reads its AO offsets through this, one load per
-      ! shell as the contracted path had it, not two through the column table.
-      do p = 1, nps
-         ps%ps_ao1(p) = ps%col_ao(ps%ps_soff(p) + 1)
-      end do
-
-      ! Schwarz per primitive-shell pair: the largest contracted bound over
-      ! its column pairs.
-      allocate (qps(nps*(nps + 1)/2))
-      do a = 1, nps
-         do c = 1, a
-            qm = 0.0_dp
-            do ia = 1, ps_ncol(a)
-               sa = ps%col_sh(ps%ps_soff(a) + ia)
-               do ib = 1, ps_ncol(c)
-                  sb = ps%col_sh(ps%ps_soff(c) + ib)
-                  qm = max(qm, qs(max(sa, sb)*(max(sa, sb) - 1)/2 + min(sa, sb)))
-               end do
-            end do
-            qps(a*(a - 1)/2 + c) = qm
-         end do
-      end do
-      call build_binned_pairs(nps, ps%ps_l, ps%ps_np, ps_r(:, 1:nps), qps, thresh, ps%pbins, gen, ps%pp_n, res=bres)
-      ps%q_col = qs
-      allocate (ps%dshp(nps, nps))
-      ps%dshp = huge(1.0_dp)*1.0e-30_dp
-   end subroutine build_ps_view
-
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this
       if (this%on_device) then
@@ -1015,7 +832,6 @@ contains
          !$acc                  this%hp_ra, this%hp_rb, this%hp_c)
          this%on_device = .false.
       end if
-      call ps_release(this%ps)
       if (allocated(this%hp_off)) deallocate (this%hp_off)
       if (allocated(this%hp_n))   deallocate (this%hp_n)
       if (allocated(this%hp_p))   deallocate (this%hp_p)

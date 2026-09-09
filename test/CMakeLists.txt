@@ -98,20 +98,14 @@ terco_add_check(check_xc_energy check_xc_energy.F90)
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
-# Both of these compare the blocked (primitive-shell) kernel against the
-# scalar one on a GENERALLY CONTRACTED basis. `eri_build` now splits such a
-# basis before it builds anything, which leaves every shell single-column and
-# the blocked kernel with nothing to share -- the two paths would collapse
-# onto each other and the comparison would be vacuous. TRC_NO_DECONTRACT=1
-# keeps the contraction intact so the blocked kernel is still exercised.
-terco_add_check(check_gc check_gc.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
-set_tests_properties(terco/check_gc PROPERTIES
-                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TRC_NO_DECONTRACT=1")
-# Second row: twelve s primitives under three contractions, 144 primitive
-# pairs on a shell pair, the case the cooperative kernel exists for.
-add_test(NAME terco/check_gc_si COMMAND check_gc sih4.xyz basis_sets/cc-pvdz.json)
-set_tests_properties(terco/check_gc_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TRC_NO_DECONTRACT=1")
+# The decontraction transform against an external answer: C^T S_p C = S and
+# C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
+terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
+# Second row: twelve silicon s primitives under four contraction columns, the
+# case the whole exercise exists for.
+add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
+set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
 
 # The public API end to end: overlap, kinetic, nuclear attraction, the two- and

@@ -55,7 +55,6 @@ def _load(name, path):
 HERE = os.path.dirname(os.path.abspath(__file__))
 gv = _load("gv", os.path.join(HERE, "gen_vrr.py"))
 gh = _load("gh", os.path.join(HERE, "gen_hrr.py"))
-gc = _load("gc", os.path.join(HERE, "gen_cuda.py"))
 
 
 PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
@@ -82,28 +81,6 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, n
       !! pp_c with the first column's coefficients folded in: what the
       !! scalar kernel multiplies, so a segmented basis pays nothing.
       real(dp), intent(in)    :: pp_cs(npp)
-      !! primitive index of each pair's two primitives within their shells
-      integer,  intent(in)    :: pp_ki(npp), pp_kj(npp)
-      !! GENERAL CONTRACTION: nbas here counts PRIMITIVE shells; sh_l is
-      !! theirs, ao_off is the first column's AO offset (the scalar kernel's
-      !! only use of it; the blocked one reads the column table), and dsh
-      !! is the screen folded to primitive shells. ps_coef holds each
-      !! primitive shell's (np x ncol) coefficient matrix column-major from
-      !! ps_coff(p)+1; column c of primitive shell p starts at AO
-      !! col_ao(ps_soff(p)+c).
-      integer,  intent(in)    :: ncoltot, ncoef
-      integer,  intent(in)    :: ps_np(nbas), ps_ncol(nbas), ps_soff(nbas), ps_coff(nbas)
-      integer,  intent(in)    :: col_ao(ncoltot)
-      !! Column slot -> CONTRACTED shell, and the Schwarz and density
-      !! screens at that resolution. Merging the columns of a general
-      !! contraction into one primitive shell makes every bound the
-      !! maximum over the columns, so the quartet test above admits what
-      !! the segmented path rejects; these let each column combination be
-      !! tested on its own bound before it is evaluated or digested.
-      !! On the segmented path nqc is 1 and none of this is read.
-      integer,  intent(in)    :: col_sh(ncoltot), nshc, nqc
-      real(dp), intent(in)    :: q_col(nqc), dsh_c(nshc, nshc)
-      real(dp), intent(in)    :: ps_coef(ncoef)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)"""
@@ -352,7 +329,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
    !> emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
    subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
                       ndens, dmat, jmat, rank, nranks)
 {PROLOGUE}
       integer, intent(in) :: rank, nranks
@@ -377,13 +354,13 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
       do concurrent(i=1:nr)
          call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, ndens, dmat, jmat)
+                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
       end do
    end subroutine pc{tag}
 
    pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(int64), intent(in) :: gt
@@ -917,16 +894,22 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
 
 
 def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
-    """Two kernels per class from one template.
+    """The scalar kernel for one class.
 
-    The BLOCK kernel takes the multi-column segments: its VRR block is
-    accumulated per column combination.  The SCALAR kernel takes the
-    single-column segments and is the kernel as it was before general
-    contraction -- one accumulator, the pair coefficients folded into
-    pp_cs, no column decode -- so a segmented basis, and every segmented
-    part of a general one, runs exactly the code it ran before.  They are
-    separate routines so ptxas budgets registers for each on its own and no
-    warp carries both paths."""
+    One accumulator, the pair coefficients folded into pp_cs, no column
+    decode. It is still SLICED OUT of the block template below, because that
+    template is where the VRR, HRR and digestion are written and there is no
+    reason to keep two copies of them -- but the block kernel itself is no
+    longer emitted.
+
+    It used to be. The blocked kernel accumulated its VRR block per column
+    combination so the columns of a general contraction could share it, and
+    was the answer to cc-pVDZ costing five times 6-31G*. `trc_decontract`
+    is a better answer: it splits the contraction before anything is built,
+    which leaves every shell single-column and the blocked kernel with
+    nothing to share. Emitting it cost 162 subroutines of the 324 here and
+    roughly half the compile time of this library for code that production
+    could no longer reach."""
     tag = f"{la}{lb}{lc}{ld}"
     txt = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body)
     # The scalar kernel is sliced out of the LOOP form: its markers are
@@ -944,7 +927,6 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
         m3 = "         end if\n\n         do qcd = 1, ncd_c\n"
     i3 = txt.index(m3)
     scalar_prims = txt_l[i1 + len(m1):i2]
-    block = txt[:i1] + txt[i2 + len("         else\n"):i3] + txt[i3 + len("         end if\n"):]
 
     # --- scalar item: head, one accumulator, folded coefficients, no decode
     ihead = txt_l.index("      ! locate the segment")
@@ -1012,7 +994,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     drv = txt_l[idrv:idrv_end].replace("pci" + tag, "pcsi" + tag).replace("pc" + tag, "pcs" + tag)
     drv = drv.replace("driver.  The `do concurrent`", "SCALAR driver.  The `do concurrent`")
 
-    return block + "\n" + drv + "\n" + scalar_item
+    return drv + "\n" + scalar_item
 
 
 def _radix(txt):
@@ -1036,12 +1018,6 @@ def main():
                          "files satisfy, while pc_dispatch is host code "
                          "launching kernels and may cross modules freely.")
     ap.add_argument("-o", "--output", default="src/trc_pc_kernels.F90")
-    ap.add_argument("--cuda", action="store_true",
-                    help="also emit the CUDA Fortran cooperative kernels "
-                         "(trc_pg_k<tag>.F90 and trc_pg_kernels.F90) for "
-                         "generally contracted shells; --split only. They "
-                         "are guarded on TRC_CUDAF and compile to empty "
-                         "modules without it.")
     args = ap.parse_args()
     L = args.lmax
 
@@ -1049,7 +1025,6 @@ def main():
     idx_h = gh.cart_cum(4*L)
 
     pieces = []
-    cuda_pieces = []
     out = [f"""!
 ! One kernel per angular-momentum class: unrolled VRR, unrolled HRR, six-atomic
 ! folded Fock, and no `select case` in sight.
@@ -1115,37 +1090,22 @@ contains
                     names.append((key, f"{la}{lb}{lc}{ld}"))
                     body = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
                     pieces.append((f"{la}{lb}{lc}{ld}", body))
-                    if args.cuda:
-                        cuda_pieces.append((key, f"{la}{lb}{lc}{ld}",
-                                            gc.emit_class(la, lb, lc, ld, vrr, hrr,
-                                                          _emit_block(la, lb, lc, ld, idx_h, vrr, hrr, unroll=False),
-                                                          gv.ncum, L)))
                     out.append(body)
 
     out.append(f"""
    subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, general, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
                           ndens, dmat, jmat, rank, nranks)
       integer, intent(in) :: key
 {PROLOGUE}
-      !! .true. sends the segments to the blocked kernel: every quartet in
-      !! them has a multi-column side.  .false. is the scalar kernel.
-      logical, intent(in) :: general
       integer, intent(in) :: rank, nranks
-      if (general) then
       select case (key)""")
-    for key, tag in names:
-        out.append(f"""      case ({key}); call pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, ndens, dmat, jmat, rank, nranks)""")
-    out.append("      end select\n      else\n      select case (key)")
     for key, tag in names:
         out.append(f"""      case ({key}); call pcs{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, col_sh, nshc, nqc, q_col, dsh_c, ndens, dmat, jmat, rank, nranks)""")
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)""")
     out.append("""      end select
-      end if
    end subroutine pc_dispatch
 
 end module trc_pc_kernels
@@ -1178,7 +1138,7 @@ module {mod}
    use trc_tables, only: LMAX
    implicit none
    private
-   public :: pc{tag}, pcs{tag}
+   public :: pcs{tag}
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -1186,7 +1146,7 @@ contains
 {body}
 end module {mod}
 """)
-            use_lines.append(f"   use {mod}, only: pc{tag}, pcs{tag}")
+            use_lines.append(f"   use {mod}, only: pcs{tag}")
         disp = [f"""!
 ! Kernel dispatcher for the per-class modules.
 !
@@ -1214,14 +1174,7 @@ contains
         disp.append("end module trc_pc_kernels\n")
         with open(os.path.join(args.split, "trc_pc_kernels.F90"), "w") as fh:
             fh.write(_radix("\n".join(disp)))
-        if args.cuda:
-            for key, tag, text in cuda_pieces:
-                with open(os.path.join(args.split, f"trc_pg_k{tag}.F90"), "w") as fh:
-                    fh.write(text)
-            with open(os.path.join(args.split, "trc_pg_kernels.F90"), "w") as fh:
-                fh.write(gc.emit_dispatch([(k, t) for k, t, _ in cuda_pieces], L))
-        print(f"wrote {len(names)} class modules + dispatcher into "
-              f"{args.split}" + (f", plus {len(cuda_pieces)} CUDA Fortran kernels" if args.cuda else ""))
+        print(f"wrote {len(names)} class modules + dispatcher into {args.split}")
         return
 
     open(args.output, "w").write(_radix(txt))

@@ -51,7 +51,6 @@ module trc_bins
    private
 
    public :: SMAX, bin_key, build_binned_pairs, pair_bins_t, bin_dmax, sort_bins_by_weight
-   public :: ps_view_t, PS_NCOL_MAX, ps_release, fold_dsh
 
    !
    ! BATCH MAGNITUDES. A pair's size bucket is the decade of its Schwarz
@@ -92,113 +91,7 @@ module trc_bins
       real(dp), allocatable :: bin_dm(:)           !! largest |D| block over a bin's pairs
    end type pair_bins_t
 
-   !
-   ! GENERAL CONTRACTION: the primitive-shell view of a basis.
-   !
-   ! A basis arrives one shell per coefficient column, so cc-pVDZ oxygen's
-   ! nine s primitives appear three times over with three coefficient
-   ! vectors. Every four-centre kernel that takes those as separate shells
-   ! evaluates the 9^4 primitive quartets 3^4 times. Here shells sharing a
-   ! centre, an angular momentum and an exponent list are one PRIMITIVE
-   ! SHELL with a coefficient matrix (np x ncol), at most PS_NCOL_MAX
-   ! columns per primitive shell (a longer contraction is split, which only
-   ! costs the kernel a repeat). The pair list, the Schwarz bins and the
-   ! per-class kernels run over primitive shells; the kernels accumulate the
-   ! contracted VRR block per column combination and digest each one into
-   ! the Fock matrix under the contracted shell's function offsets.
-   !
-   ! For a segmented basis (6-31G) every primitive shell has one column and
-   ! the view is the shell list itself.
-   !
-   integer, parameter :: PS_NCOL_MAX = 4
-
-   type :: ps_view_t
-      integer :: nps = 0, ncoltot = 0, ncoef = 0, npp = 0
-      integer, allocatable :: ps_l(:), ps_np(:), ps_ncol(:)
-      integer, allocatable :: ps_soff(:)     !! first column of primitive shell p is col ps_soff(p)+1
-      integer, allocatable :: ps_coff(:)     !! its coefficients start at ps_coef(ps_coff(p)+1), column-major (np, ncol)
-      integer, allocatable :: col_ao(:)      !! first AO of each column (its contracted shell)
-      integer, allocatable :: col_sh(:)      !! the contracted shell of each column
-      integer, allocatable :: ps_ao1(:)      !! first AO of column 1, per primitive shell
-      real(dp), allocatable :: ps_coef(:)
-      !! primitive pairs over primitive shells: the geometry only, K_ab folded in,
-      !! no coefficients -- those come from ps_coef per column in the kernel
-      integer, allocatable :: pp_off(:), pp_n(:)
-      real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_ra(:, :), pp_rb(:, :), pp_c(:)
-      real(dp), allocatable :: pp_cs(:)      !! pp_c with the first column's coefficients folded in
-      integer,  allocatable :: pp_ki(:), pp_kj(:) !! primitive index within each shell, per pair
-      type(pair_bins_t) :: pbins             !! Schwarz bins over primitive-shell pairs
-      real(dp), allocatable :: dshp(:, :)    !! density screen folded to primitive shells (max over columns)
-      !> Schwarz bounds at CONTRACTED shell resolution, canonical pair
-      !> index. dshp and the primitive-shell bounds are maxima over the
-      !> merged columns; this is what lets a kernel test one column
-      !> combination on its own bound rather than on that maximum.
-      real(dp), allocatable :: q_col(:)
-      logical :: on_device = .false.
-   end type ps_view_t
-
-
 contains
-
-   !
-   ! The density screen folded to primitive shells: the largest block over
-   ! the column pairs, so the kernel's test stays a bound. Runs where dsh is
-   ! current, which by the time it is called is the device.
-   !
-   subroutine fold_dsh(ps, nbas, dsh)
-      type(ps_view_t), intent(inout) :: ps
-      integer, intent(in) :: nbas
-      real(dp), intent(in) :: dsh(nbas, nbas)
-      ! The components go in as arguments: a `ps%x` inside the loop makes
-      ! the compiler map the whole derived type, of which only the arrays
-      ! are on the device, and the runtime refuses it as partially present.
-      call fold_dsh_arrays(ps%nps, ps%ncoltot, ps%ps_ncol, ps%ps_soff, ps%col_sh, nbas, dsh, ps%dshp)
-   end subroutine fold_dsh
-
-   subroutine fold_dsh_arrays(nps, ncoltot, ps_ncol, ps_soff, col_sh, nbas, dsh, dshp)
-      integer, intent(in) :: nps, ncoltot, nbas
-      integer, intent(in) :: ps_ncol(nps), ps_soff(nps), col_sh(ncoltot)
-      real(dp), intent(in) :: dsh(nbas, nbas)
-      real(dp), intent(inout) :: dshp(nps, nps)
-      integer :: a, c
-      do concurrent(c=1:nps, a=1:nps)
-         call fold_dsh_body(a, c, nps, ncoltot, ps_ncol, ps_soff, col_sh, nbas, dsh, dshp)
-      end do
-   end subroutine fold_dsh_arrays
-
-   pure subroutine fold_dsh_body(a, c, nps, ncoltot, ps_ncol, ps_soff, col_sh, nbas, dsh, dshp)
-      !$acc routine seq
-      integer, intent(in) :: a, c, nps, ncoltot, nbas
-      integer, intent(in) :: ps_ncol(nps), ps_soff(nps), col_sh(ncoltot)
-      real(dp), intent(in) :: dsh(nbas, nbas)
-      real(dp), intent(inout) :: dshp(nps, nps)
-      integer :: ia, ib
-      real(dp) :: m
-      m = 0.0_dp
-      do ia = 1, ps_ncol(a)
-         do ib = 1, ps_ncol(c)
-            m = max(m, dsh(col_sh(ps_soff(a) + ia), col_sh(ps_soff(c) + ib)))
-         end do
-      end do
-      dshp(a, c) = m
-   end subroutine fold_dsh_body
-
-   subroutine ps_release(ps)
-      type(ps_view_t), intent(inout) :: ps
-      if (ps%on_device) then
-         !$acc exit data delete(ps%q_col)
-         !$acc exit data delete(ps%ps_l, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_ao1, &
-         !$acc                  ps%col_sh, ps%ps_coef, ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, &
-         !$acc                  ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, ps%pbins, ps%dshp)
-         ps%on_device = .false.
-      end if
-      if (allocated(ps%q_col)) deallocate (ps%q_col)
-      if (allocated(ps%ps_l)) deallocate (ps%ps_l, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%col_sh, ps%ps_ao1, &
-                                          ps%ps_coef)
-      if (allocated(ps%pp_off)) deallocate (ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj)
-      if (allocated(ps%dshp)) deallocate (ps%dshp)
-      ps%nps = 0; ps%ncoltot = 0; ps%ncoef = 0; ps%npp = 0
-   end subroutine ps_release
 
    !
    ! Bin identity is (type, size), and TYPE CARRIES THE CONTRACTION DEGREE as

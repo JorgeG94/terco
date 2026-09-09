@@ -93,22 +93,6 @@ option(TERCO_BUILD_SHARED
 #
 option(TERCO_ENABLE_GPU "Offload with -stdpar=gpu (needs NVHPC)" ON)
 #
-# The one kernel family that is not plain `do concurrent`. A generally
-# contracted shell (cc-pVDZ: twelve silicon s primitives under three
-# contractions) needs its primitive VRR block shared across the column
-# combinations, and that takes threads that cooperate through shared
-# memory, which `do concurrent` cannot express. With this ON the general
-# segments go to CUDA Fortran kernels (src/generated/trc_pg_*.F90) launched
-# on OpenACC's stream with device addresses from `host_data use_device`;
-# every other kernel, and every other configuration, is unchanged. NVIDIA
-# only, by construction; OFF keeps the portable build the only build.
-#
-option(TERCO_ENABLE_CUDA_FORTRAN
-       "Cooperative CUDA Fortran kernels for generally contracted shells (needs NVHPC and TERCO_ENABLE_GPU)" OFF)
-if(TERCO_ENABLE_CUDA_FORTRAN AND NOT TERCO_ENABLE_GPU)
-  message(FATAL_ERROR "TERCO_ENABLE_CUDA_FORTRAN=ON needs TERCO_ENABLE_GPU=ON")
-endif()
-
 if(TERCO_ENABLE_GPU AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
   message(
     FATAL_ERROR
@@ -173,16 +157,6 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 #
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
                                                TRC_FOCK6 TRC_PERCLASS)
-if(TERCO_ENABLE_CUDA_FORTRAN)
-  # TRC_CUDAF opens the CUDA Fortran sources (guarded to empty modules
-  # otherwise) and the launch branch in trc_binkernel. `-cuda` goes on the
-  # link so the CUDA Fortran runtime is pulled in; on the compile it goes
-  # only on the sources that need it (src/CMakeLists.txt), since it changes
-  # how the cuBLAS module interfaces resolve for trc_linalg.
-  target_compile_definitions(${main_lib} PRIVATE TRC_CUDAF)
-  target_link_options(${main_lib} PUBLIC -cuda)
-endif()
-
 #
 # The unrolled VRR/HRR go into the SHARED kernel only, and only at LMAX<=1.
 #
