@@ -47,6 +47,7 @@
 ! improvement and is not done here.
 !
 module trc_scf_driver
+   use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
@@ -94,6 +95,11 @@ module trc_scf_driver
       logical :: frac_occ = .false.
       real(dp) :: nelec_frac = 0.0_dp
       integer :: max_iter = 100
+      !> Shell-pair batch resolution: buckets per decade of Schwarz bound
+      !> when the pairs are binned. 1 is decades, which is what this always
+      !> did; higher values make the pre-launch screen finer, at more and
+      !> smaller batches. Settable through trc_set_batching.
+      integer :: batch_res = 1
       !> Rebuild the two-electron matrix from the DENSITY DIFFERENCE rather
       !> than the density, accumulating onto the last one. G is linear in D,
       !> so this is exact arithmetic; what it buys is screening, because the
@@ -152,6 +158,37 @@ module trc_scf_driver
    end type trc_scf_result_t
 
 contains
+
+   !> The density at a chosen iteration, written where a benchmark can read
+   !> it back. Off unless TRC_DUMP_DENSITY names a file. Stream format:
+   !> an 8-byte nao, then the matrix, which is what the test readers expect.
+   subroutine dump_density(nao, d)
+      integer, intent(in) :: nao
+      real(dp), intent(in) :: d(nao, nao)
+      character(len=512) :: path
+      integer :: u, ios
+      integer(int64) :: prev
+      call get_environment_variable("TRC_DUMP_DENSITY", path)
+      if (len_trim(path) == 0) return
+      ! The atomic SCFs of a SAD guess come through here too, and would
+      ! overwrite the molecular density with a 5x5 one. Keep the largest.
+      open (newunit=u, file=trim(path), access='stream', form='unformatted', &
+            status='old', iostat=ios)
+      if (ios == 0) then
+         read (u, iostat=ios) prev
+         close (u)
+         if (ios == 0) then
+            if (prev >= int(nao, int64)) return
+         end if
+      end if
+      open (newunit=u, file=trim(path), access='stream', form='unformatted', &
+            status='replace', iostat=ios)
+      if (ios /= 0) return
+      write (u) int(nao, int64)
+      write (u) d
+      close (u)
+      print '(a,a,a,i0,a)', "   [density dumped to ", trim(path), ", nao ", nao, "]"
+   end subroutine dump_density
 
    !> Experiment hook for the incremental build, so its effect can be
    !> measured through a driver that does not expose the option yet.
@@ -276,9 +313,9 @@ contains
       call trc_1e(b, pl, smat, tmat, vmat)
       hcore = tmat + vmat
       if (present(comm)) then
-         call eri%build(b, eri_thresh_env(opts%eri_thresh), comm)
+         call eri%build(b, eri_thresh_env(opts%eri_thresh), comm, batch_res=opts%batch_res)
       else
-         call eri%build(b, eri_thresh_env(opts%eri_thresh))
+         call eri%build(b, eri_thresh_env(opts%eri_thresh), batch_res=opts%batch_res)
       end if
       res%e_nuc = nuclear_repulsion(b)
       call la%init(nao)
@@ -552,6 +589,13 @@ contains
          t_rest = t_rest + (wall() - tw0)
          if (talk) print '(i5,f22.12,es14.4,es14.4,es14.4)', it, etot, etot - eold, drms, errmax
          res%iterations = it
+         ! A real density, on the way past, for the benchmarks. The model
+         ! density bench_gc invents is small and banded, so it screens far
+         ! harder than anything an SCF actually meets, and a Fock build
+         ! timed on it flatters the code by about three times. Set
+         ! TRC_DUMP_DENSITY to a path and the density leaving iteration 2 is
+         ! written there, in the stream format read_density already reads.
+         if (it == 2) call dump_density(nao, res%dmat(:, :, 1))
          if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. errmax < opts%conv_diis) then
             res%converged = .true.
             exit

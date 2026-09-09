@@ -22,7 +22,7 @@ module trc_binkernel
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
-   use trc_bins, only: pair_bins_t, SMAX, ps_view_t, fold_dsh
+   use trc_bins, only: pair_bins_t, SMAX, ps_view_t, fold_dsh, sort_bins_by_weight
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
 #ifdef TRC_CUDAF
@@ -77,6 +77,14 @@ module trc_binkernel
 
 
 contains
+
+   !> The one-time pair ordering, off unless asked for. See the comment at
+   !> its call site for what it costs and buys.
+   logical function bin_sort_on()
+      character(len=8) :: v
+      call get_environment_variable("TRC_BIN_SORT", v)
+      bin_sort_on = (trim(v) == "1")
+   end function bin_sort_on
 
    subroutine trc_set_prim_margin(f)
       real(dp), intent(in) :: f
@@ -148,7 +156,7 @@ contains
                         jfac, kfac, nosym, dsh, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                         ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept, ps)
-      type(pair_bins_t), intent(in) :: b
+      type(pair_bins_t), intent(inout) :: b
       integer,  intent(in)    :: nbas, npp, nao
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       real(dp), intent(in)    :: thresh
@@ -198,7 +206,29 @@ contains
                            nlaunch, nwork, nkept)
          return
       end if
-      smax_keep = int(-log10(thresh))
+      ! Order the pairs inside each bin by how much they matter, once, so
+      ! that neighbouring threads of a warp agree about screening. The
+      ! device copy has to be refreshed with the new order.
+      !
+      ! OFF by default, on measurement. Ordering the pairs inside a bin by
+      ! how much they matter should make a warp's threads agree about
+      ! screening, and on the 28-atom cage it does: 3.7% off the cc-pVDZ
+      ! Fock time. On the 123-atom slice the same change COSTS 2.8%, with
+      ! either key -- the product with the density block, or the Schwarz
+      ! bound alone. The natural order follows the shell index, which
+      ! carries spatial locality into the density and Fock accesses, and on
+      ! a large system losing that costs more than the divergence saves.
+      ! Set TRC_BIN_SORT=1 to turn it on; TRC_BIN_SORT_Q=1 keys on the
+      ! bound alone.
+      !
+      if (.not. b%sorted .and. bin_sort_on()) then
+         call sort_bins_by_weight(b, nbas, dsh)
+         !$acc update device(b%sp_i, b%sp_j, b%sp_q)
+      end if
+
+      ! In buckets, not decades: the bins carry the resolution they were
+      ! built at, and the admission test has to speak the same units.
+      smax_keep = int(-log10(thresh))*b%sres
 
       ! --- pass 1: count admitted bin pairs ---
       nseg = 0
@@ -464,7 +494,9 @@ contains
       ! dshp at its build-time floor and the general path screening on the
       ! density not at all.
       call fold_dsh(ps, nbas, dsh)
-      smax_keep = int(-log10(thresh))
+      ! In buckets, not decades: the bins carry the resolution they were
+      ! built at, and the admission test has to speak the same units.
+      smax_keep = int(-log10(thresh))*ps%pbins%sres
       nseg = 0
       do ia = 1, ps%pbins%nlive
          ka = ps%pbins%live(ia)
@@ -1792,7 +1824,9 @@ contains
 
       call this%release()
 
-      smax_keep = int(-log10(thresh))
+      ! In buckets, not decades: the bins carry the resolution they were
+      ! built at, and the admission test has to speak the same units.
+      smax_keep = int(-log10(thresh))*b%sres
 
       ! --- pass 1: count admitted bin pairs ---
       nseg = 0

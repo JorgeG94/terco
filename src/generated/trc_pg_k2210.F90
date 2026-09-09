@@ -379,17 +379,17 @@ contains
                         wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
                         tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
                   if (tval >= BOYS_TMAX) then
-                  btt = sqrt(tval)
-                  f(0) = 0.88622692545275801365_dp*erf(btt)/btt
-                  bet = exp(-tval)
-                  f(1) = (1.0_dp*f(0) - bet)*(0.5_dp/tval)
-                  f(2) = (3.0_dp*f(1) - bet)*(0.5_dp/tval)
-                  f(3) = (5.0_dp*f(2) - bet)*(0.5_dp/tval)
-                  f(4) = (7.0_dp*f(3) - bet)*(0.5_dp/tval)
-                  f(5) = (9.0_dp*f(4) - bet)*(0.5_dp/tval)
+                  btt = 1.0_dp/tval
+                  f(0) = 0.88622692545275801365_dp*sqrt(btt)
+                  bet = 0.0_dp
+                  f(1) = 1.0_dp*f(0)*(0.5_dp*btt)
+                  f(2) = 3.0_dp*f(1)*(0.5_dp*btt)
+                  f(3) = 5.0_dp*f(2)*(0.5_dp*btt)
+                  f(4) = 7.0_dp*f(3)*(0.5_dp*btt)
+                  f(5) = 9.0_dp*f(4)*(0.5_dp*btt)
                else
                   bi = int(tval*BOYS_DTINV)
-                  if (bi >= BOYS_NGRID) bi = BOYS_NGRID - 1
+                  bi = min(bi, BOYS_NGRID - 1)
                   bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
                   bx2 = 2.0_dp*bx
                   bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)

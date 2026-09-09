@@ -121,7 +121,7 @@ def emit_class(la, lb, lc, ld, vrr_body, hrr_body, block_txt, ncum, L):
     tail = _atomics_to_cuda(block_txt[ihrr:iend])
     assert "cycle" not in tail and "return" not in tail
     boys = block_txt[block_txt.index("                  if (tval >= BOYS_TMAX) then"):
-                     block_txt.index("                  oo2z = 0.5_dp/zeta")]
+                     block_txt.index("                  oo2e = 0.5_dp*reta")]
     boys = boys.replace("boys_table(", "boys_d(")
 
     # Per-lane accumulation, fully unrolled with literal indices.

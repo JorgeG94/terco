@@ -126,16 +126,28 @@ def emit_boys(m):
     """
     o = []
     w = o.append
+    # LARGE T, NO TRANSCENDENTALS.
+    #
+    # Past BOYS_TMAX = 30, erf(sqrt(T)) is 1 to within 1e-14 and exp(-T) is
+    # below 1e-13, so the asymptotic form F_m(T) = (2m-1)!!/(2T)^m
+    # sqrt(pi/(4T)) is exact to the last digit that matters -- the prescreen
+    # margin already puts 3e-7 into the Fock matrix. This branch used to
+    # call erf AND exp, and a warp pays for it if ONE of its lanes takes it.
+    # Deep contraction guarantees that: the tight primitives of a cc-pVDZ s
+    # shell push T far past 30 while the diffuse ones stay under it, so the
+    # classes that hurt most were the ones diverging into two transcendentals
+    # per primitive quartet. What is left is a reciprocal square root.
     w("               if (tval >= BOYS_TMAX) then")
-    w("                  btt = sqrt(tval)")
-    w("                  f(0) = 0.88622692545275801365_dp*erf(btt)/btt")
-    w("                  bet = exp(-tval)")
+    w("                  btt = 1.0_dp/tval")
+    w("                  f(0) = 0.88622692545275801365_dp*sqrt(btt)")
+    w("                  bet = 0.0_dp")
+    # bet is zero here, and 1/T is already in hand, so this is the
+    # asymptotic (2k-1)!!/(2T)^k ladder with no divisions of its own.
     for k in range(1, m + 1):
-        w(f"                  f({k}) = ({float(2*k - 1)}_dp*f({k - 1})"
-          f" - bet)*(0.5_dp/tval)")
+        w(f"                  f({k}) = {float(2*k - 1)}_dp*f({k - 1})*(0.5_dp*btt)")
     w("               else")
     w("                  bi = int(tval*BOYS_DTINV)")
-    w("                  if (bi >= BOYS_NGRID) bi = BOYS_NGRID - 1")
+    w("                  bi = min(bi, BOYS_NGRID - 1)")
     w("                  bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV"
       " - 1.0_dp")
     w("                  bx2 = 2.0_dp*bx")
@@ -388,6 +400,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
       real(dp) :: oo2z, oo2e, oo2ze, rz, re, sc, vv
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
+      real(dp) :: rpx, rpy, rpz, rzeta, reta, rzpe
       real(dp) :: f(0:BOYS_MMAX)
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
@@ -502,6 +515,23 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
                zeta = pp_p(kp)
                ki = pp_ki(kp); kj = pp_kj(kp)
                wab = ps_coef(ps_coff(si) + ki)*ps_coef(ps_coff(sj) + kj)
+               ! Bra-only quantities, out of the ket loop. They depend on
+               ! kp alone and were being reloaded and recomputed once per
+               ! KET primitive, which on a deeply contracted shell pair is
+               ! 144 times over for values that never change. The compiler
+               ! does not lift them, presumably because it cannot prove the
+               ! loads invariant. Measured on (ps|ss) of the silica slice in
+               ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
+               ! same profile flat.
+               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
+               pax = rpx - pp_ra(kp, 1)
+               pay = rpy - pp_ra(kp, 2)
+               paz = rpz - pp_ra(kp, 3)
+               ! 1/zeta with them: the bra exponent does not change across
+               ! the ket loop, so its reciprocal is one division per bra
+               ! primitive rather than three per primitive QUARTET.
+               rzeta = 1.0_dp/zeta
+               oo2z = 0.5_dp*rzeta
                do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
                   kk = pp_ki(kq); kl = pp_kj(kq)
@@ -517,28 +547,34 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
                   ! quartets that survive the pair pruning die here.
                   pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
                   if (abs(pref*w) <= pcut) cycle
-                  rho = zeta*eta/zpe
-                  pqx = pp_r(kp, 1) - pp_r(kq, 1)
-                  pqy = pp_r(kp, 2) - pp_r(kq, 2)
-                  pqz = pp_r(kp, 3) - pp_r(kq, 3)
-                  pax = pp_r(kp, 1) - pp_ra(kp, 1)
-                  pay = pp_r(kp, 2) - pp_ra(kp, 2)
-                  paz = pp_r(kp, 3) - pp_ra(kp, 3)
+                  ! One reciprocal each for eta and zeta+eta, then multiply.
+                  ! This loop used to issue ten double-precision divisions
+                  ! per primitive quartet -- rho, three for the W centre,
+                  ! three halves, two rho ratios and the prefactor -- against
+                  ! a recurrence that for the light classes is five lines.
+                  ! Division has no fast reciprocal in double precision, so
+                  ! that was the arithmetic, not the recurrence.
+                  reta = 1.0_dp/eta
+                  rzpe = 1.0_dp/zpe
+                  rho = zeta*eta*rzpe
+                  pqx = rpx - pp_r(kq, 1)
+                  pqy = rpy - pp_r(kq, 2)
+                  pqz = rpz - pp_r(kq, 3)
                   qcx = pp_r(kq, 1) - pp_ra(kq, 1)
                   qcy = pp_r(kq, 2) - pp_ra(kq, 2)
                   qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*pp_r(kp, 1) + eta*pp_r(kq, 1))/zpe
+                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
                   wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*pp_r(kp, 2) + eta*pp_r(kq, 2))/zpe
+                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
                   wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*pp_r(kp, 3) + eta*pp_r(kq, 3))/zpe
+                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
                   wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
    {emit_boys(lt)}
 
-                  oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-                  rz = rho/zeta; re = rho/eta
+                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
+                  rz = rho*rzeta; re = rho*reta
 
    {vrr_body}
                   do x = 1, {nv}
@@ -581,7 +617,24 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
             do kp = offab + 1, offab + nab
                zeta = pp_p(kp)
                ki = pp_ki(kp); kj = pp_kj(kp)
-{cab_fill}               do kq = offcd + 1, offcd + ncd
+{cab_fill}               ! Bra-only quantities, out of the ket loop. They depend on
+               ! kp alone and were being reloaded and recomputed once per
+               ! KET primitive, which on a deeply contracted shell pair is
+               ! 144 times over for values that never change. The compiler
+               ! does not lift them, presumably because it cannot prove the
+               ! loads invariant. Measured on (ps|ss) of the silica slice in
+               ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
+               ! same profile flat.
+               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
+               pax = rpx - pp_ra(kp, 1)
+               pay = rpy - pp_ra(kp, 2)
+               paz = rpz - pp_ra(kp, 3)
+               ! 1/zeta with them: the bra exponent does not change across
+               ! the ket loop, so its reciprocal is one division per bra
+               ! primitive rather than three per primitive QUARTET.
+               rzeta = 1.0_dp/zeta
+               oo2z = 0.5_dp*rzeta
+               do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
                   kk = pp_ki(kq); kl = pp_kj(kq)
 {ccd_fill}                  zpe = zeta + eta
@@ -597,28 +650,34 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
                   !
                   pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
                   if (abs(pref)*cabmax*ccdmax <= pcut) cycle
-                  rho = zeta*eta/zpe
-                  pqx = pp_r(kp, 1) - pp_r(kq, 1)
-                  pqy = pp_r(kp, 2) - pp_r(kq, 2)
-                  pqz = pp_r(kp, 3) - pp_r(kq, 3)
-                  pax = pp_r(kp, 1) - pp_ra(kp, 1)
-                  pay = pp_r(kp, 2) - pp_ra(kp, 2)
-                  paz = pp_r(kp, 3) - pp_ra(kp, 3)
+                  ! One reciprocal each for eta and zeta+eta, then multiply.
+                  ! This loop used to issue ten double-precision divisions
+                  ! per primitive quartet -- rho, three for the W centre,
+                  ! three halves, two rho ratios and the prefactor -- against
+                  ! a recurrence that for the light classes is five lines.
+                  ! Division has no fast reciprocal in double precision, so
+                  ! that was the arithmetic, not the recurrence.
+                  reta = 1.0_dp/eta
+                  rzpe = 1.0_dp/zpe
+                  rho = zeta*eta*rzpe
+                  pqx = rpx - pp_r(kq, 1)
+                  pqy = rpy - pp_r(kq, 2)
+                  pqz = rpz - pp_r(kq, 3)
                   qcx = pp_r(kq, 1) - pp_ra(kq, 1)
                   qcy = pp_r(kq, 2) - pp_ra(kq, 2)
                   qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*pp_r(kp, 1) + eta*pp_r(kq, 1))/zpe
+                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
                   wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*pp_r(kp, 2) + eta*pp_r(kq, 2))/zpe
+                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
                   wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*pp_r(kp, 3) + eta*pp_r(kq, 3))/zpe
+                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
                   wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
    {emit_boys(lt)}
 
-                  oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-                  rz = rho/zeta; re = rho/eta
+                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
+                  rz = rho*rzeta; re = rho*reta
 
    {vrr_body}
 {w_fill}{g_add}               end do

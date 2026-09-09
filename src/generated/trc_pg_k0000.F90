@@ -243,12 +243,12 @@ contains
                         wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
                         tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
                   if (tval >= BOYS_TMAX) then
-                  btt = sqrt(tval)
-                  f(0) = 0.88622692545275801365_dp*erf(btt)/btt
-                  bet = exp(-tval)
+                  btt = 1.0_dp/tval
+                  f(0) = 0.88622692545275801365_dp*sqrt(btt)
+                  bet = 0.0_dp
                else
                   bi = int(tval*BOYS_DTINV)
-                  if (bi >= BOYS_NGRID) bi = BOYS_NGRID - 1
+                  bi = min(bi, BOYS_NGRID - 1)
                   bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
                   bx2 = 2.0_dp*bx
                   bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)

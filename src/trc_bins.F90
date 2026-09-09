@@ -50,15 +50,36 @@ module trc_bins
    implicit none
    private
 
-   public :: SMAX, bin_key, build_binned_pairs, pair_bins_t, bin_dmax
+   public :: SMAX, bin_key, build_binned_pairs, pair_bins_t, bin_dmax, sort_bins_by_weight
    public :: ps_view_t, PS_NCOL_MAX, ps_release, fold_dsh
 
-   integer, parameter :: SMAX = 9    !! deepest size bucket, following [1]
+   !
+   ! BATCH MAGNITUDES. A pair's size bucket is the decade of its Schwarz
+   ! bound, and a bin pair is admitted when the two buckets sum below the
+   ! threshold's decade. Whole decades are a coarse test: the paper this
+   ! follows takes magnitudes of tau^(i/n), sized so that a batch holds a
+   ! useful number of pairs and the product of two batch magnitudes lands
+   ! on the threshold rather than a decade above it. `res` is that n, at
+   ! run time rather than compiled in, so a caller can trade launch count
+   ! against how much the pre-launch screen catches. res = 1 is decades,
+   ! which is what this always did.
+   !
+   integer, parameter :: SMAX_RES = 4   !! largest resolution the bins are sized for
+   integer, parameter :: SDEC = 9       !! decades of Schwarz bound worth binning
+   integer, parameter :: SMAX = SDEC*SMAX_RES  !! deepest bucket at any resolution
    integer, parameter :: KCAP = 64   !! largest contraction degree binned exactly
 
    type :: pair_bins_t
       integer :: nbin = 0
       integer :: npair = 0
+      !> Bucket resolution these bins were built at: buckets per decade of
+      !> Schwarz bound. The admission test in the launcher needs it.
+      integer :: sres = 1
+      !> Whether the pairs inside each bin have been ordered by how much
+      !> they matter. Done once, at the first Fock build, and kept: the
+      !> order is a heuristic for warp coherence, not a correctness
+      !> requirement, and the density it is keyed on moves slowly.
+      logical :: sorted = .false.
       integer, allocatable :: sp_i(:), sp_j(:)     !! shell indices, bin-sorted
       real(dp), allocatable :: sp_q(:)             !! Schwarz bound per pair
       integer, allocatable :: bin_off(:)           !! first pair of bin b
@@ -206,7 +227,7 @@ contains
    ! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
    ! pairs, against the 586M quartets the old path enumerated.
    !
-   subroutine build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g, pp_n)
+   subroutine build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g, pp_n, res)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(nbas), sh_np(nbas)
       real(dp), intent(in)  :: sh_r(3, nbas)      !! shell centres, for the intra-bin sort
@@ -219,12 +240,17 @@ contains
       !> this, not sh_np(i)*sh_np(j): after pruning the two differ, and
       !> it is the kept count that sets the kernel's trip count.
       integer,  intent(in), optional :: pp_n(:)
+      !> Buckets per decade of Schwarz bound; 1 (the default) is decades.
+      integer,  intent(in), optional :: res
 
-      integer :: nb, i, j, s, k, p, n, key, gg
+      integer :: nb, i, j, s, k, p, n, key, gg, ia, ib, sres
       integer, allocatable :: cnt(:), pos(:), keyv(:), ti(:), tj(:)
       real(dp), allocatable :: tq(:)
       real(dp) :: qq, qmax
 
+      sres = 1
+      if (present(res)) sres = max(1, min(SMAX_RES, res))
+      b%sres = sres
       nb = 2*(LMAX + 1)*(LMAX + 1)*(KCAP + 1)*(SMAX + 1) + 1
       allocate (cnt(nb), pos(nb))
       cnt = 0
@@ -244,18 +270,32 @@ contains
          end do
       end do
 
+      !
+      ! ANGULAR-MOMENTUM CANONICAL, not index canonical.
+      !
+      ! (ab|cd) = (ba|cd), so a pair is free to be stored with its higher-l
+      ! shell first, and doing so means a (ps) bin never exists: every pair
+      ! of an s and a p shell lands in (sp). At LMAX=2 that takes the nine
+      ! (la, lb) types down to six and, with the bra >= ket triangle the
+      ! segment loop already walks, the reachable classes from 45 to 21.
+      ! Same work, fewer and fatter launches. The index order is the
+      ! tiebreak when the momenta match, so the canonical enumeration
+      ! within a bin is unchanged. The Fock matrix is folded with its own
+      ! transpose afterwards, which is what makes the swap invisible.
+      !
       ! pass 1: count
       n = 0
       do i = 1, nbas
          do j = 1, i
             qq = q(i*(i - 1)/2 + j)
             if (qq*qmax <= thresh) cycle
-            s = size_index(qq)
+            call lorder(i, j, ia, ib)
+            s = size_index(qq, sres)
             gg = 0
             if (present(sh_g)) then
                if (sh_g(i) .or. sh_g(j)) gg = 1
             end if
-            key = bin_key(sh_l(i), sh_l(j), kab_of(i, j), s, gg)
+            key = bin_key(sh_l(ia), sh_l(ib), kab_of(ia, ib), s, gg)
             cnt(key) = cnt(key) + 1
             n = n + 1
          end do
@@ -278,15 +318,16 @@ contains
          do j = 1, i
             qq = q(i*(i - 1)/2 + j)
             if (qq*qmax <= thresh) cycle
-            s = size_index(qq)
+            call lorder(i, j, ia, ib)
+            s = size_index(qq, sres)
             gg = 0
             if (present(sh_g)) then
                if (sh_g(i) .or. sh_g(j)) gg = 1
             end if
-            key = bin_key(sh_l(i), sh_l(j), kab_of(i, j), s, gg)
+            key = bin_key(sh_l(ia), sh_l(ib), kab_of(ia, ib), s, gg)
             pos(key) = pos(key) + 1
-            b%sp_i(pos(key)) = i
-            b%sp_j(pos(key)) = j
+            b%sp_i(pos(key)) = ia
+            b%sp_j(pos(key)) = ib
             b%sp_q(pos(key)) = qq
          end do
       end do
@@ -300,7 +341,7 @@ contains
       do i = 0, LMAX
          do j = 0, LMAX
             do k = 0, KCAP
-               do s = 0, SMAX
+               do s = 0, SDEC*sres
                   do gg = 0, 1
                      key = bin_key(i, j, k, s, gg)
                      b%bin_la(key) = i; b%bin_lb(key) = j; b%bin_s(key) = s; b%bin_g(key) = gg
@@ -322,6 +363,18 @@ contains
       deallocate (cnt, pos)
 
    contains
+      !> The pair with the higher angular momentum first; index order
+      !> breaks the tie, so a pair of equal-l shells keeps i >= j.
+      pure subroutine lorder(i_, j_, a_, b_)
+         integer, intent(in) :: i_, j_
+         integer, intent(out) :: a_, b_
+         if (sh_l(j_) > sh_l(i_)) then
+            a_ = j_; b_ = i_
+         else
+            a_ = i_; b_ = j_
+         end if
+      end subroutine lorder
+
       pure integer function kab_of(i, j)
          integer, intent(in) :: i, j
          if (present(pp_n)) then
@@ -369,6 +422,95 @@ contains
    ! scatters those loads, and the cache locality lost exceeds the warp
    ! clustering gained -- the survivor count is identical either way, so the
    ! clustering bought nothing measurable at all.
+   !
+   ! ORDER THE PAIRS INSIDE EACH BIN BY HOW MUCH THEY MATTER.
+   !
+   ! A warp takes 32 consecutive pairs of a bin, and each thread decides on
+   ! its own whether its quartet survives the Schwarz and density test. If
+   ! neighbouring pairs are unrelated, a warp is a mix of threads that work
+   ! and threads that returned, and it runs at the speed of the ones that
+   ! work while the rest wait. Ordering by the product of the Schwarz bound
+   ! and the largest density block -- the quantity the per-quartet test is
+   ! built from -- makes neighbours agree far more often.
+   !
+   ! Once, and then never again: the density this is keyed on is the guess
+   ! at the first build, and it moves slowly enough that the order stays a
+   ! good heuristic for the whole SCF. That makes the cost a fixed charge
+   ! against every later build rather than a per-build tax.
+   !
+   subroutine sort_bins_by_weight(b, nbas, dsh)
+      type(pair_bins_t), intent(inout) :: b
+      integer,  intent(in) :: nbas
+      real(dp), intent(in) :: dsh(nbas, nbas)
+
+      integer :: k, lo, n, p, m
+      real(dp) :: wmax, w
+      logical :: qonly
+      integer(int64), allocatable :: code(:), kbuf(:)
+      integer(int_index), allocatable :: idx(:)
+      integer,  allocatable :: ti(:), tj(:)
+      real(dp), allocatable :: tq(:)
+
+      if (b%sorted .or. b%npair <= 1) return
+      allocate (code(b%npair), ti(b%npair), tj(b%npair), tq(b%npair))
+
+      !
+      ! The key is the product the per-quartet test is built from, mapped to
+      ! an integer that sorts DESCENDING -- sort_index is ascending, and the
+      ! heavy pairs want to be together at the front. A pair whose product
+      ! underflows the log lands in the last bucket, which is where the
+      ! threads that return immediately belong.
+      !
+      qonly = qkey_only()
+      wmax = 0.0_dp
+      do p = 1, b%npair
+         if (qonly) then
+            wmax = max(wmax, b%sp_q(p))
+         else
+            wmax = max(wmax, b%sp_q(p)*dsh(b%sp_i(p), b%sp_j(p)))
+         end if
+      end do
+      if (wmax <= 0.0_dp) wmax = 1.0_dp
+      do p = 1, b%npair
+         if (qonly) then
+            w = b%sp_q(p)
+         else
+            w = b%sp_q(p)*dsh(b%sp_i(p), b%sp_j(p))
+         end if
+         code(p) = int(1.0e6_dp*min(30.0_dp, -log10(max(w, 1.0e-30_dp)/wmax)), int64)
+      end do
+
+      ti = b%sp_i; tj = b%sp_j; tq = b%sp_q
+      allocate (kbuf(maxval(b%bin_cnt)), idx(maxval(b%bin_cnt)))
+      do k = 1, b%nbin
+         n = b%bin_cnt(k)
+         if (n <= 1) cycle
+         lo = b%bin_off(k) + 1
+         kbuf(1:n) = code(lo:lo + n - 1)
+         call sort_index(kbuf(1:n), idx(1:n))
+         do m = 1, n
+            p = lo + int(idx(m)) - 1
+            b%sp_i(lo + m - 1) = ti(p)
+            b%sp_j(lo + m - 1) = tj(p)
+            b%sp_q(lo + m - 1) = tq(p)
+         end do
+      end do
+
+      b%sorted = .true.
+      deallocate (code, kbuf, idx, ti, tj, tq)
+
+   contains
+      !> Key on the Schwarz bound alone rather than on the product with the
+      !> density block. The bound correlates with distance, so this keeps
+      !> more of the spatial locality the natural order has, at the cost of
+      !> a less faithful prediction of which threads will screen out.
+      logical function qkey_only()
+         character(len=8) :: v
+         call get_environment_variable("TRC_BIN_SORT_Q", v)
+         qkey_only = (trim(v) == "1")
+      end function qkey_only
+   end subroutine sort_bins_by_weight
+
    !
    ! Kept behind -DTRC_SPATIAL_SORT rather than deleted: the idea is sound
    ! for a kernel whose per-thread data does not already come from a shared
@@ -492,14 +634,27 @@ contains
    ! over-admits by up to a decade in EACH factor, which measured as 37% more
    ! work than the exact canonical count at 75 waters.
    !
-   pure integer function size_index(qq)
+   !
+   ! MEASURED, on the 123-atom silica slice and the T8 cage: raising `res`
+   ! above 1 enumerates MORE quartets, not fewer, and costs up to 1.6x.
+   ! The bucket is a CEILING on -log10(Q), so at res = 1 the admission test
+   ! `s_a + s_b <= T` rejects pairs whose exact product is above threshold
+   ! -- two pairs at Q = 0.8 both round to bucket 1 and are refused at
+   ! T = 1. That over-rejection is why the coarse bucket looks cheap: it
+   ! is not screening harder, it is discarding work it should keep, about
+   ! 0.5% of the surviving quartets on the slice. A finer bucket rounds
+   ! less and hands that work back. So res is a knob for accuracy at the
+   ! pre-launch screen, not for speed, and 1 stays the default.
+   !
+   pure integer function size_index(qq, res)
       real(dp), intent(in) :: qq
+      integer, intent(in) :: res
       real(dp) :: v
       if (qq >= 1.0_dp) then
          size_index = 0
       else
-         v = -log10(qq)
-         size_index = min(SMAX, int(ceiling(v)))
+         v = -log10(qq)*real(res, dp)
+         size_index = min(SDEC*res, int(ceiling(v)))
       end if
    end function size_index
 
