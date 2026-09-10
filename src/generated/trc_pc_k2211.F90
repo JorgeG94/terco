@@ -15,7 +15,7 @@ module trc_pc_k2211
    use trc_tables, only: LMAX
    implicit none
    private
-   public :: pcs2211
+   public :: pcs2211, pcr2211
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -3666,5 +3666,5391 @@ contains
          end do   ! idens
 #endif
    end subroutine pcsi2211
+
+   subroutine pcr2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+                      ndens, dmat, jmat, rank, nranks)
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
+      integer(int64), intent(in) :: sOff(nseg + 1)
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), thresh
+      !! Cutoff for the primitive-quartet prescreen: a primitive quartet
+      !! whose prefactor cannot reach this is skipped before the Boys
+      !! function. It is a fraction of `thresh`, and a runtime argument
+      !! rather than a literal so the fraction can be measured against the
+      !! energy it costs instead of guessed once.
+      real(dp), intent(in)    :: pcut
+      !! Coulomb and exchange scalings. Per call, so they fold into the six
+      !! atomic updates and the digestion stays folded -- separating J and K
+      !! into two matrices to scale them would give back FOCK6's 22%.
+      real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: dsh(nbas, nbas)
+      integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
+      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
+      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
+      real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
+      !! pp_c with the first column's coefficients folded in: what the
+      !! scalar kernel multiplies, so a segmented basis pays nothing.
+      real(dp), intent(in)    :: pp_cs(npp)
+      integer,  intent(in)    :: ndens
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      real(dp), intent(inout) :: jmat(ndens, nao, nao)
+      integer, intent(in) :: rank, nranks
+      integer(int64) :: g0, g1, nr, i, it
+      integer :: role
+      !
+      ! LAUNCH GEOMETRY.  `do concurrent` gives nvfortran the whole say, and it
+      ! picks 128 threads per block.  Handing the block size back to the
+      ! compiler is the point rather than a compromise: the claim this library
+      ! is making is that standard Fortran reaches competitive throughput, and
+      ! a tuned launch geometry behind a directive would be quietly conceding
+      ! it.  Per-class kernels are what recover the occupancy anyway -- ptxas
+      ! budgets registers for one (la,lb,lc,ld) instead of for the worst class.
+      !
+      ! RANKS.  The work list is sorted, so rank r of n taking every n-th item
+      ! from r is a static split that balances by construction, and every
+      ! rank walks the same list -- the reduction of the result across ranks
+      ! happens in the Fock driver, not here.  One rank is rank 0 of 1.
+      g0 = sOff(lo) + 1 + rank
+      g1 = sOff(hi + 1)
+      nr = 0
+      if (g1 >= g0) nr = (g1 - g0)/nranks + 1
+      !
+      ! ONE index, decoded.  Thread i holds quartet `it` and role `role` with
+      ! 32 consecutive i sharing a role: warp = 32 quartets x ONE role, so the
+      ! role bodies never share a warp.  A two-index `do concurrent (i, role)`
+      ! was tried first and nvfortran made `role` the fast thread index --
+      ! 5.3 active lanes of 32 and the kernel slower than the scalar one.  The
+      ! single index leans only on what every kernel here already leans on:
+      ! consecutive iterations are consecutive threads (the ket-uniform
+      ! decode in the item routine depends on the same thing).
+      !
+      do concurrent(i=1:((nr + 31)/32)*32*3)
+         role = int(mod((i - 1)/32, 3_int64)) + 1
+         it = ((i - 1)/(32*3))*32 + mod(i - 1, 32_int64) + 1
+         if (it <= nr) then
+            call pcri2211(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+         end if
+      end do
+   end subroutine pcr2211
+
+   pure subroutine pcri2211(gt, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+                      ndens, dmat, jmat)
+      !$acc routine seq
+      integer(int64), intent(in) :: gt
+      integer, intent(in) :: role
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
+      integer(int64), intent(in) :: sOff(nseg + 1)
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), thresh
+      !! Cutoff for the primitive-quartet prescreen: a primitive quartet
+      !! whose prefactor cannot reach this is skipped before the Boys
+      !! function. It is a fraction of `thresh`, and a runtime argument
+      !! rather than a literal so the fraction can be measured against the
+      !! energy it costs instead of guessed once.
+      real(dp), intent(in)    :: pcut
+      !! Coulomb and exchange scalings. Per call, so they fold into the six
+      !! atomic updates and the digestion stays folded -- separating J and K
+      !! into two matrices to scale them would give back FOCK6's 22%.
+      real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: dsh(nbas, nbas)
+      integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
+      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
+      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
+      real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
+      !! pp_c with the first column's coefficients folded in: what the
+      !! scalar kernel multiplies, so a segmented basis pays nothing.
+      real(dp), intent(in)    :: pp_cs(npp)
+      integer,  intent(in)    :: ndens
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      real(dp), intent(inout) :: jmat(ndens, nao, nao)
+      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
+      integer(int64) :: nsa, u, kx
+      real(dp) :: qcut, bnd
+      integer :: keyab, keycd, offab, offcd, nab, ncd
+      integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
+      integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
+      logical :: dij, dkl, dpq
+      real(dp) :: zeta, eta, zpe, rho, tval, pref, wc
+      real(dp) :: pqx, pqy, pqz, pax, pay, paz, qcx, qcy, qcz
+      real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
+      real(dp) :: oo2z, oo2e, oo2ze, rz, re, sc, vv
+      real(dp) :: abx, aby, abz, cdx, cdy, cdz
+      real(dp) :: rpx, rpy, rpz, rzeta, reta, rzpe
+      real(dp) :: f(0:BOYS_MMAX)
+      integer  :: bi, bj, bbase
+      real(dp) :: bx, bx2, b0, b1, b2, btt, bet
+      real(dp) :: v(193, 0:1), g1(124), vbuf(108)
+      real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
+      logical  :: same_ab, same_cd, same_pair
+      real(dp) :: jab(36), jcd(9), kac(18)
+      real(dp) :: kad(18), kbc(18), kbd(18)
+      real(dp) :: dab(36), dcd(9), dac(18)
+      real(dp) :: dad(18), dbc(18), dbd(18)
+
+      integer  :: gi
+      integer, parameter :: rc0(1) = [0]
+      integer, parameter :: rc1(1) = [1]
+      integer, parameter :: rc2(1) = [2]
+      ! locate the segment
+         p = lo; q = hi
+         do while (p < q)
+            mid = (p + q + 1)/2
+            if (sOff(mid) < gt) then
+               p = mid
+            else
+               q = mid - 1
+            end if
+         end do
+         seg = p
+         t = int(gt - sOff(seg))
+
+         ! KET-UNIFORM DECODE. The bra pair index runs fastest, so the 32
+         ! threads of a warp hold 32 bra pairs against ONE ket pair, and the
+         ! loads of the inner primitive loop -- the ket side -- are the same
+         ! address across the warp: one L1 transaction, broadcast. With the
+         ! ket index fastest, as this was, every thread pulled its own ket
+         ! record per primitive quartet and Nsight Compute had (ss|ss) at 96%
+         ! of L1 throughput with a 28% hit rate. The bra loads now diverge
+         ! instead, once per bra primitive rather than once per quartet.
+         ! On a symmetric segment the pairs are enumerated column by column,
+         ! iab >= icd, with the same closed form inverted.
+         if (sD(seg)) then
+            nsa = int(sA(seg), int64)
+            u = int(t - 1, int64)
+            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
+            if (kx < 0) kx = 0
+            do while (kx > 0)
+               if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
+               kx = kx - 1
+            end do
+            do while (((kx + 1)*(2*nsa + 1) - (kx + 1)*(kx + 1))/2 <= u)
+               kx = kx + 1
+            end do
+            icd = int(kx) + 1
+            iab = icd + int(u - (kx*(2*nsa + 1) - kx*kx)/2)
+         else
+            icd = (t - 1)/sA(seg) + 1
+            iab = t - (icd - 1)*sA(seg)
+         end if
+
+         ! exact Schwarz, per quartet.  The host bin-pair test is only
+         ! decade-granular (`int(-log10 Q)` clamped to 9) and therefore admits
+         ! up to two decades too much; at RNA3 that was 46% of all quartets.
+         qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
+         if (qcut <= thresh) return
+
+         si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
+         sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
+
+         ! Density-weighted screen.  What actually enters the Fock matrix is
+         ! Q_ab Q_cd times a density block, so a quartet whose integrals are
+         ! above threshold still contributes nothing if every density block it
+         ! multiplies is negligible.  The J terms carry a factor 4 from the
+         ! Coulomb degeneracy, the K terms 1.  For a converged density on an
+         ! extended molecule this is where most of the screening comes from --
+         ! with a flat model density it correctly fires on nothing.
+         if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
+                      dsh(si, sk), dsh(si, sl), &
+                      dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+
+         same_ab = (si == sj); same_cd = (sk == sl)
+         same_pair = sD(seg) .and. (iab == icd)
+
+         keyab = (si - 1)*nbas + sj
+         keycd = (sk - 1)*nbas + sl
+         offab = pp_off(keyab); nab = pp_n(keyab)
+         offcd = pp_off(keycd); ncd = pp_n(keycd)
+
+         abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)
+         aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)
+         abz = pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3)
+         cdx = pp_ra(offcd + 1, 1) - pp_rb(offcd + 1, 1)
+         cdy = pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2)
+         cdz = pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3)
+
+         ! Single column on every side: the canonical enumeration and the
+         ! degeneracy weights are the pair-level ones.
+         dij = .not. same_ab
+         dkl = .not. same_cd
+         dpq = .not. same_pair
+         mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
+
+         select case (role)
+         case (1)
+            do x = 1, 124
+               g1(x) = 0.0_dp
+            end do
+            do kp = offab + 1, offab + nab
+               zeta = pp_p(kp)
+               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+               ! Bra-only quantities, out of the ket loop. They depend on
+               ! kp alone and were being reloaded and recomputed once per
+               ! KET primitive, which on a deeply contracted shell pair is
+               ! 144 times over for values that never change. The compiler
+               ! does not lift them, presumably because it cannot prove the
+               ! loads invariant. Measured on (ps|ss) of the silica slice in
+               ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
+               ! same profile flat.
+               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
+               pax = rpx - pp_ra(kp, 1)
+               pay = rpy - pp_ra(kp, 2)
+               paz = rpz - pp_ra(kp, 3)
+               ! 1/zeta with them: the bra exponent does not change across
+               ! the ket loop, so its reciprocal is one division per bra
+               ! primitive rather than three per primitive QUARTET.
+               rzeta = 1.0_dp/zeta
+               oo2z = 0.5_dp*rzeta
+               do kq = offcd + 1, offcd + ncd
+                  eta = pp_p(kq)
+                  zpe = zeta + eta
+                  ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
+                  ! primitive (ss|ss) integral, and with the normalisation
+                  ! in the coefficients it bounds the higher ones to within
+                  ! the polynomial factors the cutoff's three decades of
+                  ! margin cover. Tested before the Boys function and the
+                  ! VRR, which is nearly all of a primitive quartet's cost;
+                  ! on a generally contracted basis two thirds of the
+                  ! quartets that survive the pair pruning die here.
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
+                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
+                  if (abs(pref) <= pcut) cycle
+                  ! One reciprocal each for eta and zeta+eta, then multiply.
+                  ! This loop used to issue ten double-precision divisions
+                  ! per primitive quartet -- rho, three for the W centre,
+                  ! three halves, two rho ratios and the prefactor -- against
+                  ! a recurrence that for the light classes is five lines.
+                  ! Division has no fast reciprocal in double precision, so
+                  ! that was the arithmetic, not the recurrence.
+                  reta = 1.0_dp/eta
+                  rzpe = 1.0_dp/zpe
+                  rho = zeta*eta*rzpe
+                  pqx = rpx - pp_r(kq, 1)
+                  pqy = rpy - pp_r(kq, 2)
+                  pqz = rpz - pp_r(kq, 3)
+                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
+                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
+                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
+                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
+                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
+                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
+                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
+                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
+                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+
+                  if (tval >= BOYS_TMAX) then
+                  btt = 1.0_dp/tval
+                  f(0) = 0.88622692545275801365_dp*sqrt(btt)
+                  bet = 0.0_dp
+                  f(1) = 1.0_dp*f(0)*(0.5_dp*btt)
+                  f(2) = 3.0_dp*f(1)*(0.5_dp*btt)
+                  f(3) = 5.0_dp*f(2)*(0.5_dp*btt)
+                  f(4) = 7.0_dp*f(3)*(0.5_dp*btt)
+                  f(5) = 9.0_dp*f(4)*(0.5_dp*btt)
+                  f(6) = 11.0_dp*f(5)*(0.5_dp*btt)
+               else
+                  bi = int(tval*BOYS_DTINV)
+                  bi = min(bi, BOYS_NGRID - 1)
+                  bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
+                  bx2 = 2.0_dp*bx
+                  bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
+                  bj = bbase + 6*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
+                  b2 = 0.0_dp
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  f(6) = bx*b1 - b2 + boys_table(bj + 1)
+                  bet = exp(-tval)
+                  btt = 2.0_dp*tval
+                  f(5) = (btt*f(6) + bet)*(0.09090909090909091_dp)
+                  f(4) = (btt*f(5) + bet)*(0.1111111111111111_dp)
+                  f(3) = (btt*f(4) + bet)*(0.14285714285714285_dp)
+                  f(2) = (btt*f(3) + bet)*(0.2_dp)
+                  f(1) = (btt*f(2) + bet)*(0.3333333333333333_dp)
+                  f(0) = (btt*f(1) + bet)*(1.0_dp)
+               end if
+
+                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
+                  rz = rho*rzeta; re = rho*reta
+
+               v(1,0) = pref*f(6)
+            v(1,1) = pref*f(5)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(57,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(1,0) = pref*f(4)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(23,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(57,0) = qcy*v(1,0) + wqy*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(24,0) = qcx*v(2,0) + wqx*v(2,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(58,0) = pax*v(57,0) + wpx*v(57,1)
+            v(1,1) = pref*f(3)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(23,1) = qcx*v(1,1) + wqx*v(1,0)
+            v(57,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(79,1) = qcz*v(1,1) + wqz*v(1,0)
+            v(5,1) = pax*v(2,1) + wpx*v(2,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(7,1) = pay*v(3,1) + wpy*v(3,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(8,1) = pay*v(4,1) + wpy*v(4,0)
+            v(9,1) = paz*v(4,1) + wpz*v(4,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(24,1) = pax*v(23,1) + wpx*v(23,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(58,1) = pax*v(57,1) + wpx*v(57,0)
+            v(59,1) = pay*v(57,1) + wpy*v(57,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(60,1) = paz*v(57,1) + wpz*v(57,0)
+            v(80,1) = qcz*v(4,1) + wqz*v(4,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(97,1) = qcx*v(23,1) + wqx*v(23,0) &
+               + 1.0_dp*oo2e*(v(1,1) - re*v(1,0))
+            v(10,1) = pax*v(5,1) + wpx*v(5,0) &
+               + 2.0_dp*oo2z*(v(2,1) - rz*v(2,0))
+            v(12,1) = pax*v(7,1) + wpx*v(7,0)
+            v(14,1) = pay*v(7,1) + wpy*v(7,0) &
+               + 2.0_dp*oo2z*(v(3,1) - rz*v(3,0))
+            v(16,1) = paz*v(9,1) + wpz*v(9,0) &
+               + 2.0_dp*oo2z*(v(4,1) - rz*v(4,0))
+            v(26,1) = qcx*v(5,1) + wqx*v(5,0) &
+               + 2.0_dp*oo2ze*v(2,0)
+            v(29,1) = qcx*v(7,1) + wqx*v(7,0)
+            v(31,1) = qcx*v(9,1) + wqx*v(9,0)
+            v(62,1) = pay*v(58,1) + wpy*v(58,0) &
+               + 1.0_dp*oo2ze*v(2,0)
+            v(63,1) = paz*v(58,1) + wpz*v(58,0)
+            v(98,1) = qcx*v(24,1) + wqx*v(24,0) &
+               + 1.0_dp*oo2e*(v(2,1) - re*v(2,0)) &
+               + 1.0_dp*oo2ze*v(23,0)
+            v(1,0) = pref*f(2)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(23,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(57,0) = qcy*v(1,0) + wqy*v(1,1)
+            v(79,0) = qcz*v(1,0) + wqz*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(6,0) = pax*v(4,0) + wpx*v(4,1)
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(8,0) = pay*v(4,0) + wpy*v(4,1)
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(24,0) = pax*v(23,0) + wpx*v(23,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(59,0) = pay*v(57,0) + wpy*v(57,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(60,0) = paz*v(57,0) + wpz*v(57,1)
+            v(80,0) = paz*v(79,0) + wpz*v(79,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(97,0) = qcx*v(23,0) + wqx*v(23,1) &
+               + 1.0_dp*oo2e*(v(1,0) - re*v(1,1))
+            v(10,0) = pax*v(5,0) + wpx*v(5,1) &
+               + 2.0_dp*oo2z*(v(2,0) - rz*v(2,1))
+            v(11,0) = pay*v(5,0) + wpy*v(5,1)
+            v(12,0) = pax*v(7,0) + wpx*v(7,1)
+            v(13,0) = pax*v(8,0) + wpx*v(8,1)
+            v(14,0) = pay*v(7,0) + wpy*v(7,1) &
+               + 2.0_dp*oo2z*(v(3,0) - rz*v(3,1))
+            v(15,0) = pay*v(9,0) + wpy*v(9,1)
+            v(16,0) = paz*v(9,0) + wpz*v(9,1) &
+               + 2.0_dp*oo2z*(v(4,0) - rz*v(4,1))
+            v(26,0) = qcx*v(5,0) + wqx*v(5,1) &
+               + 2.0_dp*oo2ze*v(2,1)
+            v(27,0) = pay*v(24,0) + wpy*v(24,1)
+            v(28,0) = paz*v(24,0) + wpz*v(24,1)
+            v(29,0) = qcx*v(7,0) + wqx*v(7,1)
+            v(31,0) = qcx*v(9,0) + wqx*v(9,1)
+            v(61,0) = qcy*v(5,0) + wqy*v(5,1)
+            v(62,0) = pax*v(59,0) + wpx*v(59,1)
+            v(63,0) = pax*v(60,0) + wpx*v(60,1)
+            v(64,0) = qcy*v(7,0) + wqy*v(7,1) &
+               + 2.0_dp*oo2ze*v(3,1)
+            v(65,0) = paz*v(59,0) + wpz*v(59,1)
+            v(66,0) = qcy*v(9,0) + wqy*v(9,1)
+            v(81,0) = qcz*v(5,0) + wqz*v(5,1)
+            v(82,0) = pax*v(80,0) + wpx*v(80,1)
+            v(83,0) = qcz*v(7,0) + wqz*v(7,1)
+            v(84,0) = pay*v(80,0) + wpy*v(80,1)
+            v(85,0) = qcz*v(9,0) + wqz*v(9,1) &
+               + 2.0_dp*oo2ze*v(4,1)
+            v(98,0) = pax*v(97,0) + wpx*v(97,1) &
+               + 2.0_dp*oo2ze*v(23,1)
+            v(99,0) = paz*v(97,0) + wpz*v(97,1)
+            v(17,0) = pax*v(10,0) + wpx*v(10,1) &
+               + 3.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(22,0) = paz*v(16,0) + wpz*v(16,1) &
+               + 3.0_dp*oo2z*(v(9,0) - rz*v(9,1))
+            v(33,0) = pay*v(26,0) + wpy*v(26,1)
+            v(37,0) = pax*v(31,0) + wpx*v(31,1) &
+               + 1.0_dp*oo2ze*v(9,1)
+            v(38,0) = qcx*v(14,0) + wqx*v(14,1)
+            v(39,0) = paz*v(29,0) + wpz*v(29,1)
+            v(40,0) = pay*v(31,0) + wpy*v(31,1)
+            v(68,0) = pax*v(63,0) + wpx*v(63,1) &
+               + 1.0_dp*oo2z*(v(60,0) - rz*v(60,1))
+            v(70,0) = paz*v(62,0) + wpz*v(62,1)
+            v(71,0) = qcy*v(14,0) + wqy*v(14,1) &
+               + 3.0_dp*oo2ze*v(7,1)
+            v(74,0) = qcy*v(16,0) + wqy*v(16,1)
+            v(86,0) = qcz*v(10,0) + wqz*v(10,1)
+            v(88,0) = qcz*v(12,0) + wqz*v(12,1)
+            v(90,0) = qcz*v(14,0) + wqz*v(14,1)
+            v(92,0) = qcz*v(16,0) + wqz*v(16,1) &
+               + 3.0_dp*oo2ze*v(9,1)
+            v(102,0) = paz*v(98,0) + wpz*v(98,1)
+            v(103,0) = qcx*v(29,0) + wqx*v(29,1) &
+               + 1.0_dp*oo2e*(v(7,0) - re*v(7,1))
+            v(105,0) = qcx*v(31,0) + wqx*v(31,1) &
+               + 1.0_dp*oo2e*(v(9,0) - re*v(9,1))
+            v(1,1) = pref*f(1)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(23,1) = qcx*v(1,1) + wqx*v(1,0)
+            v(57,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(79,1) = qcz*v(1,1) + wqz*v(1,0)
+            v(5,1) = pax*v(2,1) + wpx*v(2,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(6,1) = pax*v(4,1) + wpx*v(4,0)
+            v(7,1) = pay*v(3,1) + wpy*v(3,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(9,1) = paz*v(4,1) + wpz*v(4,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(24,1) = pax*v(23,1) + wpx*v(23,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(25,1) = paz*v(23,1) + wpz*v(23,0)
+            v(59,1) = pay*v(57,1) + wpy*v(57,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(80,1) = paz*v(79,1) + wpz*v(79,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(97,1) = qcx*v(23,1) + wqx*v(23,0) &
+               + 1.0_dp*oo2e*(v(1,1) - re*v(1,0))
+            v(10,1) = pax*v(5,1) + wpx*v(5,0) &
+               + 2.0_dp*oo2z*(v(2,1) - rz*v(2,0))
+            v(11,1) = pay*v(5,1) + wpy*v(5,0)
+            v(14,1) = pay*v(7,1) + wpy*v(7,0) &
+               + 2.0_dp*oo2z*(v(3,1) - rz*v(3,0))
+            v(15,1) = pay*v(9,1) + wpy*v(9,0)
+            v(16,1) = paz*v(9,1) + wpz*v(9,0) &
+               + 2.0_dp*oo2z*(v(4,1) - rz*v(4,0))
+            v(26,1) = qcx*v(5,1) + wqx*v(5,0) &
+               + 2.0_dp*oo2ze*v(2,0)
+            v(27,1) = pay*v(24,1) + wpy*v(24,0)
+            v(28,1) = paz*v(24,1) + wpz*v(24,0)
+            v(29,1) = qcx*v(7,1) + wqx*v(7,0)
+            v(61,1) = qcy*v(5,1) + wqy*v(5,0)
+            v(63,1) = qcy*v(6,1) + wqy*v(6,0)
+            v(64,1) = qcy*v(7,1) + wqy*v(7,0) &
+               + 2.0_dp*oo2ze*v(3,0)
+            v(65,1) = paz*v(59,1) + wpz*v(59,0)
+            v(66,1) = qcy*v(9,1) + wqy*v(9,0)
+            v(82,1) = pax*v(80,1) + wpx*v(80,0)
+            v(83,1) = qcz*v(7,1) + wqz*v(7,0)
+            v(84,1) = pay*v(80,1) + wpy*v(80,0)
+            v(85,1) = qcz*v(9,1) + wqz*v(9,0) &
+               + 2.0_dp*oo2ze*v(4,0)
+            v(98,1) = pax*v(97,1) + wpx*v(97,0) &
+               + 2.0_dp*oo2ze*v(23,0)
+            v(99,1) = paz*v(97,1) + wpz*v(97,0)
+            v(17,1) = pax*v(10,1) + wpx*v(10,0) &
+               + 3.0_dp*oo2z*(v(5,1) - rz*v(5,0))
+            v(18,1) = pay*v(11,1) + wpy*v(11,0) &
+               + 1.0_dp*oo2z*(v(5,1) - rz*v(5,0))
+            v(19,1) = pax*v(14,1) + wpx*v(14,0)
+            v(20,1) = pay*v(14,1) + wpy*v(14,0) &
+               + 3.0_dp*oo2z*(v(7,1) - rz*v(7,0))
+            v(21,1) = pay*v(16,1) + wpy*v(16,0)
+            v(22,1) = paz*v(16,1) + wpz*v(16,0) &
+               + 3.0_dp*oo2z*(v(9,1) - rz*v(9,0))
+            v(32,1) = qcx*v(10,1) + wqx*v(10,0) &
+               + 3.0_dp*oo2ze*v(5,0)
+            v(33,1) = pay*v(26,1) + wpy*v(26,0)
+            v(34,1) = paz*v(26,1) + wpz*v(26,0)
+            v(35,1) = pax*v(29,1) + wpx*v(29,0) &
+               + 1.0_dp*oo2ze*v(7,0)
+            v(37,1) = paz*v(28,1) + wpz*v(28,0) &
+               + 1.0_dp*oo2z*(v(24,1) - rz*v(24,0))
+            v(38,1) = qcx*v(14,1) + wqx*v(14,0)
+            v(39,1) = paz*v(29,1) + wpz*v(29,0)
+            v(40,1) = qcx*v(15,1) + wqx*v(15,0)
+            v(67,1) = pay*v(61,1) + wpy*v(61,0) &
+               + 1.0_dp*oo2ze*v(5,0)
+            v(68,1) = paz*v(61,1) + wpz*v(61,0)
+            v(69,1) = pax*v(64,1) + wpx*v(64,0)
+            v(70,1) = pax*v(65,1) + wpx*v(65,0)
+            v(71,1) = qcy*v(14,1) + wqy*v(14,0) &
+               + 3.0_dp*oo2ze*v(7,0)
+            v(72,1) = paz*v(64,1) + wpz*v(64,0)
+            v(73,1) = pay*v(66,1) + wpy*v(66,0) &
+               + 1.0_dp*oo2ze*v(9,0)
+            v(74,1) = qcy*v(16,1) + wqy*v(16,0)
+            v(86,1) = qcz*v(10,1) + wqz*v(10,0)
+            v(87,1) = pax*v(82,1) + wpx*v(82,0) &
+               + 1.0_dp*oo2z*(v(80,1) - rz*v(80,0))
+            v(88,1) = pax*v(83,1) + wpx*v(83,0)
+            v(89,1) = pax*v(85,1) + wpx*v(85,0)
+            v(90,1) = qcz*v(14,1) + wqz*v(14,0)
+            v(91,1) = paz*v(83,1) + wpz*v(83,0) &
+               + 1.0_dp*oo2ze*v(7,0)
+            v(92,1) = qcz*v(16,1) + wqz*v(16,0) &
+               + 3.0_dp*oo2ze*v(9,0)
+            v(100,1) = pax*v(98,1) + wpx*v(98,0) &
+               + 1.0_dp*oo2z*(v(97,1) - rz*v(97,0)) &
+               + 2.0_dp*oo2ze*v(24,0)
+            v(101,1) = pay*v(98,1) + wpy*v(98,0)
+            v(102,1) = paz*v(98,1) + wpz*v(98,0)
+            v(103,1) = qcx*v(29,1) + wqx*v(29,0) &
+               + 1.0_dp*oo2e*(v(7,1) - re*v(7,0))
+            v(104,1) = pay*v(99,1) + wpy*v(99,0)
+            v(105,1) = paz*v(99,1) + wpz*v(99,0) &
+               + 1.0_dp*oo2z*(v(97,1) - rz*v(97,0))
+            v(131,1) = qcy*v(26,1) + wqy*v(26,0)
+            v(132,1) = qcy*v(27,1) + wqy*v(27,0) &
+               + 1.0_dp*oo2ze*v(24,0)
+            v(133,1) = qcy*v(28,1) + wqy*v(28,0)
+            v(135,1) = qcx*v(65,1) + wqx*v(65,0)
+            v(136,1) = qcx*v(66,1) + wqx*v(66,0)
+            v(164,1) = qcx*v(82,1) + wqx*v(82,0) &
+               + 1.0_dp*oo2ze*v(80,0)
+            v(165,1) = qcx*v(83,1) + wqx*v(83,0)
+            v(166,1) = qcx*v(84,1) + wqx*v(84,0)
+            v(167,1) = qcx*v(85,1) + wqx*v(85,0)
+            v(42,1) = qcx*v(17,1) + wqx*v(17,0) &
+               + 4.0_dp*oo2ze*v(10,0)
+            v(46,1) = paz*v(33,1) + wpz*v(33,0)
+            v(48,1) = pax*v(38,1) + wpx*v(38,0) &
+               + 1.0_dp*oo2ze*v(14,0)
+            v(52,1) = pay*v(38,1) + wpy*v(38,0) &
+               + 3.0_dp*oo2z*(v(29,1) - rz*v(29,0))
+            v(56,1) = qcx*v(22,1) + wqx*v(22,0)
+            v(75,1) = pay*v(70,1) + wpy*v(70,0) &
+               + 1.0_dp*oo2z*(v(63,1) - rz*v(63,0)) &
+               + 1.0_dp*oo2ze*v(13,0)
+            v(76,1) = pax*v(74,1) + wpx*v(74,0)
+            v(77,1) = pay*v(71,1) + wpy*v(71,0) &
+               + 3.0_dp*oo2z*(v(64,1) - rz*v(64,0)) &
+               + 1.0_dp*oo2ze*v(14,0)
+            v(78,1) = paz*v(71,1) + wpz*v(71,0)
+            v(93,1) = pax*v(88,1) + wpx*v(88,0) &
+               + 1.0_dp*oo2z*(v(83,1) - rz*v(83,0))
+            v(94,1) = pay*v(90,1) + wpy*v(90,0) &
+               + 3.0_dp*oo2z*(v(83,1) - rz*v(83,0))
+            v(95,1) = pay*v(92,1) + wpy*v(92,0)
+            v(96,1) = qcz*v(22,1) + wqz*v(22,0) &
+               + 4.0_dp*oo2ze*v(16,0)
+            v(107,1) = qcx*v(33,1) + wqx*v(33,0) &
+               + 1.0_dp*oo2e*(v(11,1) - re*v(11,0)) &
+               + 2.0_dp*oo2ze*v(27,0)
+            v(108,1) = pax*v(102,1) + wpx*v(102,0) &
+               + 1.0_dp*oo2z*(v(99,1) - rz*v(99,0)) &
+               + 2.0_dp*oo2ze*v(28,0)
+            v(111,1) = pax*v(105,1) + wpx*v(105,0) &
+               + 2.0_dp*oo2ze*v(31,0)
+            v(113,1) = paz*v(103,1) + wpz*v(103,0)
+            v(115,1) = paz*v(105,1) + wpz*v(105,0) &
+               + 2.0_dp*oo2z*(v(99,1) - rz*v(99,0))
+            v(138,1) = qcy*v(33,1) + wqy*v(33,0) &
+               + 1.0_dp*oo2ze*v(26,0)
+            v(139,1) = qcx*v(68,1) + wqx*v(68,0) &
+               + 2.0_dp*oo2ze*v(63,0)
+            v(145,1) = qcy*v(40,1) + wqy*v(40,0) &
+               + 1.0_dp*oo2ze*v(31,0)
+            v(168,1) = qcx*v(86,1) + wqx*v(86,0) &
+               + 3.0_dp*oo2ze*v(81,0)
+            v(173,1) = qcz*v(37,1) + wqz*v(37,0) &
+               + 2.0_dp*oo2ze*v(28,0)
+            v(175,1) = qcz*v(39,1) + wqz*v(39,0) &
+               + 1.0_dp*oo2ze*v(29,0)
+            v(1,0) = pref*f(0)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(23,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(79,0) = qcz*v(1,0) + wqz*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(24,0) = pax*v(23,0) + wpx*v(23,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(25,0) = paz*v(23,0) + wpz*v(23,1)
+            v(59,0) = qcy*v(3,0) + wqy*v(3,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(80,0) = paz*v(79,0) + wpz*v(79,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(97,0) = qcx*v(23,0) + wqx*v(23,1) &
+               + 1.0_dp*oo2e*(v(1,0) - re*v(1,1))
+            v(10,0) = pax*v(5,0) + wpx*v(5,1) &
+               + 2.0_dp*oo2z*(v(2,0) - rz*v(2,1))
+            v(11,0) = pay*v(5,0) + wpy*v(5,1)
+            v(14,0) = pay*v(7,0) + wpy*v(7,1) &
+               + 2.0_dp*oo2z*(v(3,0) - rz*v(3,1))
+            v(15,0) = pay*v(9,0) + wpy*v(9,1)
+            v(16,0) = paz*v(9,0) + wpz*v(9,1) &
+               + 2.0_dp*oo2z*(v(4,0) - rz*v(4,1))
+            v(26,0) = qcx*v(5,0) + wqx*v(5,1) &
+               + 2.0_dp*oo2ze*v(2,1)
+            v(27,0) = pay*v(24,0) + wpy*v(24,1)
+            v(28,0) = paz*v(24,0) + wpz*v(24,1)
+            v(29,0) = qcx*v(7,0) + wqx*v(7,1)
+            v(30,0) = pay*v(25,0) + wpy*v(25,1)
+            v(31,0) = qcx*v(9,0) + wqx*v(9,1)
+            v(64,0) = qcy*v(7,0) + wqy*v(7,1) &
+               + 2.0_dp*oo2ze*v(3,1)
+            v(65,0) = paz*v(59,0) + wpz*v(59,1)
+            v(66,0) = qcy*v(9,0) + wqy*v(9,1)
+            v(82,0) = pax*v(80,0) + wpx*v(80,1)
+            v(83,0) = qcz*v(7,0) + wqz*v(7,1)
+            v(84,0) = pay*v(80,0) + wpy*v(80,1)
+            v(85,0) = qcz*v(9,0) + wqz*v(9,1) &
+               + 2.0_dp*oo2ze*v(4,1)
+            v(98,0) = pax*v(97,0) + wpx*v(97,1) &
+               + 2.0_dp*oo2ze*v(23,1)
+            v(99,0) = paz*v(97,0) + wpz*v(97,1)
+            v(17,0) = pax*v(10,0) + wpx*v(10,1) &
+               + 3.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(18,0) = pay*v(11,0) + wpy*v(11,1) &
+               + 1.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(19,0) = pax*v(14,0) + wpx*v(14,1)
+            v(20,0) = pay*v(14,0) + wpy*v(14,1) &
+               + 3.0_dp*oo2z*(v(7,0) - rz*v(7,1))
+            v(21,0) = pay*v(16,0) + wpy*v(16,1)
+            v(22,0) = paz*v(16,0) + wpz*v(16,1) &
+               + 3.0_dp*oo2z*(v(9,0) - rz*v(9,1))
+            v(32,0) = qcx*v(10,0) + wqx*v(10,1) &
+               + 3.0_dp*oo2ze*v(5,1)
+            v(33,0) = pay*v(26,0) + wpy*v(26,1)
+            v(34,0) = paz*v(26,0) + wpz*v(26,1)
+            v(35,0) = pax*v(29,0) + wpx*v(29,1) &
+               + 1.0_dp*oo2ze*v(7,1)
+            v(36,0) = pay*v(28,0) + wpy*v(28,1)
+            v(37,0) = paz*v(28,0) + wpz*v(28,1) &
+               + 1.0_dp*oo2z*(v(24,0) - rz*v(24,1))
+            v(38,0) = qcx*v(14,0) + wqx*v(14,1)
+            v(39,0) = paz*v(29,0) + wpz*v(29,1)
+            v(40,0) = qcx*v(15,0) + wqx*v(15,1)
+            v(41,0) = qcx*v(16,0) + wqx*v(16,1)
+            v(69,0) = pax*v(64,0) + wpx*v(64,1)
+            v(71,0) = qcy*v(14,0) + wqy*v(14,1) &
+               + 3.0_dp*oo2ze*v(7,1)
+            v(72,0) = paz*v(64,0) + wpz*v(64,1)
+            v(73,0) = pay*v(66,0) + wpy*v(66,1) &
+               + 1.0_dp*oo2ze*v(9,1)
+            v(74,0) = qcy*v(16,0) + wqy*v(16,1)
+            v(87,0) = pax*v(82,0) + wpx*v(82,1) &
+               + 1.0_dp*oo2z*(v(80,0) - rz*v(80,1))
+            v(90,0) = qcz*v(14,0) + wqz*v(14,1)
+            v(91,0) = paz*v(83,0) + wpz*v(83,1) &
+               + 1.0_dp*oo2ze*v(7,1)
+            v(92,0) = qcz*v(16,0) + wqz*v(16,1) &
+               + 3.0_dp*oo2ze*v(9,1)
+            v(100,0) = pax*v(98,0) + wpx*v(98,1) &
+               + 1.0_dp*oo2z*(v(97,0) - rz*v(97,1)) &
+               + 2.0_dp*oo2ze*v(24,1)
+            v(101,0) = pay*v(98,0) + wpy*v(98,1)
+            v(102,0) = paz*v(98,0) + wpz*v(98,1)
+            v(103,0) = qcx*v(29,0) + wqx*v(29,1) &
+               + 1.0_dp*oo2e*(v(7,0) - re*v(7,1))
+            v(104,0) = pay*v(99,0) + wpy*v(99,1)
+            v(105,0) = paz*v(99,0) + wpz*v(99,1) &
+               + 1.0_dp*oo2z*(v(97,0) - rz*v(97,1))
+            v(131,0) = qcy*v(26,0) + wqy*v(26,1)
+            v(132,0) = qcy*v(27,0) + wqy*v(27,1) &
+               + 1.0_dp*oo2ze*v(24,1)
+            v(133,0) = qcy*v(28,0) + wqy*v(28,1)
+            v(134,0) = qcx*v(64,0) + wqx*v(64,1)
+            v(135,0) = qcx*v(65,0) + wqx*v(65,1)
+            v(136,0) = qcx*v(66,0) + wqx*v(66,1)
+            v(162,0) = qcz*v(26,0) + wqz*v(26,1)
+            v(163,0) = qcz*v(27,0) + wqz*v(27,1)
+            v(164,0) = qcx*v(82,0) + wqx*v(82,1) &
+               + 1.0_dp*oo2ze*v(80,1)
+            v(165,0) = qcx*v(83,0) + wqx*v(83,1)
+            v(166,0) = qcx*v(84,0) + wqx*v(84,1)
+            v(167,0) = qcx*v(85,0) + wqx*v(85,1)
+            v(42,0) = qcx*v(17,0) + wqx*v(17,1) &
+               + 4.0_dp*oo2ze*v(10,1)
+            v(43,0) = pay*v(32,0) + wpy*v(32,1)
+            v(44,0) = paz*v(32,0) + wpz*v(32,1)
+            v(45,0) = pay*v(33,0) + wpy*v(33,1) &
+               + 1.0_dp*oo2z*(v(26,0) - rz*v(26,1))
+            v(46,0) = pay*v(34,0) + wpy*v(34,1)
+            v(47,0) = paz*v(34,0) + wpz*v(34,1) &
+               + 1.0_dp*oo2z*(v(26,0) - rz*v(26,1))
+            v(48,0) = pax*v(38,0) + wpx*v(38,1) &
+               + 1.0_dp*oo2ze*v(14,1)
+            v(49,0) = paz*v(35,0) + wpz*v(35,1)
+            v(50,0) = pay*v(37,0) + wpy*v(37,1)
+            v(51,0) = paz*v(37,0) + wpz*v(37,1) &
+               + 2.0_dp*oo2z*(v(28,0) - rz*v(28,1))
+            v(52,0) = qcx*v(20,0) + wqx*v(20,1)
+            v(53,0) = paz*v(38,0) + wpz*v(38,1)
+            v(54,0) = paz*v(39,0) + wpz*v(39,1) &
+               + 1.0_dp*oo2z*(v(29,0) - rz*v(29,1))
+            v(55,0) = qcx*v(21,0) + wqx*v(21,1)
+            v(56,0) = qcx*v(22,0) + wqx*v(22,1)
+            v(75,0) = pax*v(72,0) + wpx*v(72,1)
+            v(76,0) = pax*v(74,0) + wpx*v(74,1)
+            v(77,0) = qcy*v(20,0) + wqy*v(20,1) &
+               + 4.0_dp*oo2ze*v(14,1)
+            v(78,0) = paz*v(71,0) + wpz*v(71,1)
+            v(93,0) = qcz*v(18,0) + wqz*v(18,1)
+            v(94,0) = qcz*v(20,0) + wqz*v(20,1)
+            v(95,0) = pay*v(92,0) + wpy*v(92,1)
+            v(96,0) = qcz*v(22,0) + wqz*v(22,1) &
+               + 4.0_dp*oo2ze*v(16,1)
+            v(106,0) = pax*v(100,0) + wpx*v(100,1) &
+               + 2.0_dp*oo2z*(v(98,0) - rz*v(98,1)) &
+               + 2.0_dp*oo2ze*v(26,1)
+            v(107,0) = pay*v(100,0) + wpy*v(100,1)
+            v(108,0) = paz*v(100,0) + wpz*v(100,1)
+            v(109,0) = pax*v(103,0) + wpx*v(103,1) &
+               + 2.0_dp*oo2ze*v(29,1)
+            v(110,0) = pay*v(102,0) + wpy*v(102,1)
+            v(111,0) = paz*v(102,0) + wpz*v(102,1) &
+               + 1.0_dp*oo2z*(v(98,0) - rz*v(98,1))
+            v(112,0) = qcx*v(38,0) + wqx*v(38,1) &
+               + 1.0_dp*oo2e*(v(14,0) - re*v(14,1))
+            v(113,0) = paz*v(103,0) + wpz*v(103,1)
+            v(114,0) = pay*v(105,0) + wpy*v(105,1)
+            v(115,0) = paz*v(105,0) + wpz*v(105,1) &
+               + 2.0_dp*oo2z*(v(99,0) - rz*v(99,1))
+            v(137,0) = qcy*v(32,0) + wqy*v(32,1)
+            v(138,0) = pay*v(131,0) + wpy*v(131,1) &
+               + 1.0_dp*oo2ze*v(26,1)
+            v(139,0) = paz*v(131,0) + wpz*v(131,1)
+            v(140,0) = qcx*v(69,0) + wqx*v(69,1) &
+               + 1.0_dp*oo2ze*v(64,1)
+            v(141,0) = paz*v(132,0) + wpz*v(132,1)
+            v(142,0) = qcy*v(37,0) + wqy*v(37,1)
+            v(143,0) = qcx*v(71,0) + wqx*v(71,1)
+            v(144,0) = qcx*v(72,0) + wqx*v(72,1)
+            v(145,0) = qcx*v(73,0) + wqx*v(73,1)
+            v(146,0) = qcx*v(74,0) + wqx*v(74,1)
+            v(168,0) = qcz*v(32,0) + wqz*v(32,1)
+            v(169,0) = qcz*v(33,0) + wqz*v(33,1)
+            v(170,0) = qcx*v(87,0) + wqx*v(87,1) &
+               + 2.0_dp*oo2ze*v(82,1)
+            v(171,0) = qcz*v(35,0) + wqz*v(35,1)
+            v(172,0) = pay*v(164,0) + wpy*v(164,1)
+            v(173,0) = pax*v(167,0) + wpx*v(167,1) &
+               + 1.0_dp*oo2ze*v(85,1)
+            v(174,0) = qcx*v(90,0) + wqx*v(90,1)
+            v(175,0) = qcx*v(91,0) + wqx*v(91,1)
+            v(176,0) = pay*v(167,0) + wpy*v(167,1)
+            v(177,0) = qcx*v(92,0) + wqx*v(92,1)
+            v(116,0) = qcx*v(42,0) + wqx*v(42,1) &
+               + 1.0_dp*oo2e*(v(17,0) - re*v(17,1)) &
+               + 4.0_dp*oo2ze*v(32,1)
+            v(117,0) = pax*v(107,0) + wpx*v(107,1) &
+               + 2.0_dp*oo2z*(v(101,0) - rz*v(101,1)) &
+               + 2.0_dp*oo2ze*v(33,1)
+            v(118,0) = pax*v(108,0) + wpx*v(108,1) &
+               + 2.0_dp*oo2z*(v(102,0) - rz*v(102,1)) &
+               + 2.0_dp*oo2ze*v(34,1)
+            v(119,0) = pay*v(107,0) + wpy*v(107,1) &
+               + 1.0_dp*oo2z*(v(100,0) - rz*v(100,1))
+            v(120,0) = pay*v(108,0) + wpy*v(108,1)
+            v(121,0) = paz*v(108,0) + wpz*v(108,1) &
+               + 1.0_dp*oo2z*(v(100,0) - rz*v(100,1))
+            v(122,0) = qcx*v(48,0) + wqx*v(48,1) &
+               + 1.0_dp*oo2e*(v(19,0) - re*v(19,1)) &
+               + 1.0_dp*oo2ze*v(38,1)
+            v(123,0) = pax*v(113,0) + wpx*v(113,1) &
+               + 2.0_dp*oo2ze*v(39,1)
+            v(124,0) = pay*v(111,0) + wpy*v(111,1)
+            v(125,0) = paz*v(111,0) + wpz*v(111,1) &
+               + 2.0_dp*oo2z*(v(102,0) - rz*v(102,1))
+            v(126,0) = qcx*v(52,0) + wqx*v(52,1) &
+               + 1.0_dp*oo2e*(v(20,0) - re*v(20,1))
+            v(127,0) = pay*v(113,0) + wpy*v(113,1) &
+               + 2.0_dp*oo2z*(v(104,0) - rz*v(104,1))
+            v(128,0) = paz*v(113,0) + wpz*v(113,1) &
+               + 1.0_dp*oo2z*(v(103,0) - rz*v(103,1))
+            v(129,0) = pay*v(115,0) + wpy*v(115,1)
+            v(130,0) = paz*v(115,0) + wpz*v(115,1) &
+               + 3.0_dp*oo2z*(v(105,0) - rz*v(105,1))
+            v(147,0) = qcy*v(42,0) + wqy*v(42,1)
+            v(148,0) = pax*v(138,0) + wpx*v(138,1) &
+               + 2.0_dp*oo2z*(v(132,0) - rz*v(132,1)) &
+               + 1.0_dp*oo2ze*v(67,1)
+            v(149,0) = pax*v(139,0) + wpx*v(139,1) &
+               + 2.0_dp*oo2z*(v(133,0) - rz*v(133,1)) &
+               + 1.0_dp*oo2ze*v(68,1)
+            v(150,0) = pay*v(138,0) + wpy*v(138,1) &
+               + 1.0_dp*oo2z*(v(131,0) - rz*v(131,1)) &
+               + 1.0_dp*oo2ze*v(33,1)
+            v(151,0) = paz*v(138,0) + wpz*v(138,1)
+            v(152,0) = paz*v(139,0) + wpz*v(139,1) &
+               + 1.0_dp*oo2z*(v(131,0) - rz*v(131,1))
+            v(153,0) = qcy*v(48,0) + wqy*v(48,1) &
+               + 3.0_dp*oo2ze*v(35,1)
+            v(154,0) = qcx*v(75,0) + wqx*v(75,1) &
+               + 1.0_dp*oo2ze*v(72,1)
+            v(155,0) = pax*v(145,0) + wpx*v(145,1) &
+               + 1.0_dp*oo2ze*v(73,1)
+            v(156,0) = qcx*v(76,0) + wqx*v(76,1) &
+               + 1.0_dp*oo2ze*v(74,1)
+            v(157,0) = qcx*v(77,0) + wqx*v(77,1)
+            v(158,0) = qcx*v(78,0) + wqx*v(78,1)
+            v(159,0) = pay*v(145,0) + wpy*v(145,1) &
+               + 1.0_dp*oo2z*(v(136,0) - rz*v(136,1)) &
+               + 1.0_dp*oo2ze*v(40,1)
+            v(160,0) = paz*v(145,0) + wpz*v(145,1) &
+               + 2.0_dp*oo2z*(v(135,0) - rz*v(135,1))
+            v(161,0) = qcy*v(56,0) + wqy*v(56,1)
+            v(178,0) = qcz*v(42,0) + wqz*v(42,1)
+            v(179,0) = pay*v(168,0) + wpy*v(168,1)
+            v(180,0) = paz*v(168,0) + wpz*v(168,1) &
+               + 1.0_dp*oo2ze*v(32,1)
+            v(181,0) = qcx*v(93,0) + wqx*v(93,1) &
+               + 2.0_dp*oo2ze*v(88,1)
+            v(182,0) = qcz*v(46,0) + wqz*v(46,1) &
+               + 1.0_dp*oo2ze*v(33,1)
+            v(183,0) = pax*v(173,0) + wpx*v(173,1) &
+               + 1.0_dp*oo2z*(v(167,0) - rz*v(167,1)) &
+               + 1.0_dp*oo2ze*v(89,1)
+            v(184,0) = qcz*v(48,0) + wqz*v(48,1)
+            v(185,0) = pax*v(175,0) + wpx*v(175,1) &
+               + 1.0_dp*oo2ze*v(91,1)
+            v(186,0) = pay*v(173,0) + wpy*v(173,1)
+            v(187,0) = paz*v(173,0) + wpz*v(173,1) &
+               + 2.0_dp*oo2z*(v(164,0) - rz*v(164,1)) &
+               + 1.0_dp*oo2ze*v(37,1)
+            v(188,0) = qcx*v(94,0) + wqx*v(94,1)
+            v(189,0) = pay*v(175,0) + wpy*v(175,1) &
+               + 2.0_dp*oo2z*(v(166,0) - rz*v(166,1))
+            v(190,0) = paz*v(175,0) + wpz*v(175,1) &
+               + 1.0_dp*oo2z*(v(165,0) - rz*v(165,1)) &
+               + 1.0_dp*oo2ze*v(39,1)
+            v(191,0) = qcx*v(95,0) + wqx*v(95,1)
+            v(192,0) = qcx*v(96,0) + wqx*v(96,1)
+               cur = 0
+                  g1(1) = g1(1) + v(26, cur)
+                  g1(2) = g1(2) + v(27, cur)
+                  g1(3) = g1(3) + v(28, cur)
+                  g1(4) = g1(4) + v(29, cur)
+                  g1(5) = g1(5) + v(30, cur)
+                  g1(6) = g1(6) + v(31, cur)
+                  g1(7) = g1(7) + v(32, cur)
+                  g1(8) = g1(8) + v(33, cur)
+                  g1(9) = g1(9) + v(34, cur)
+                  g1(10) = g1(10) + v(35, cur)
+                  g1(11) = g1(11) + v(36, cur)
+                  g1(12) = g1(12) + v(37, cur)
+                  g1(13) = g1(13) + v(38, cur)
+                  g1(14) = g1(14) + v(39, cur)
+                  g1(15) = g1(15) + v(40, cur)
+                  g1(16) = g1(16) + v(41, cur)
+                  g1(17) = g1(17) + v(42, cur)
+                  g1(18) = g1(18) + v(43, cur)
+                  g1(19) = g1(19) + v(44, cur)
+                  g1(20) = g1(20) + v(45, cur)
+                  g1(21) = g1(21) + v(46, cur)
+                  g1(22) = g1(22) + v(47, cur)
+                  g1(23) = g1(23) + v(48, cur)
+                  g1(24) = g1(24) + v(49, cur)
+                  g1(25) = g1(25) + v(50, cur)
+                  g1(26) = g1(26) + v(51, cur)
+                  g1(27) = g1(27) + v(52, cur)
+                  g1(28) = g1(28) + v(53, cur)
+                  g1(29) = g1(29) + v(54, cur)
+                  g1(30) = g1(30) + v(55, cur)
+                  g1(31) = g1(31) + v(56, cur)
+                  g1(32) = g1(32) + v(100, cur)
+                  g1(33) = g1(33) + v(101, cur)
+                  g1(34) = g1(34) + v(102, cur)
+                  g1(35) = g1(35) + v(103, cur)
+                  g1(36) = g1(36) + v(104, cur)
+                  g1(37) = g1(37) + v(105, cur)
+                  g1(38) = g1(38) + v(106, cur)
+                  g1(39) = g1(39) + v(107, cur)
+                  g1(40) = g1(40) + v(108, cur)
+                  g1(41) = g1(41) + v(109, cur)
+                  g1(42) = g1(42) + v(110, cur)
+                  g1(43) = g1(43) + v(111, cur)
+                  g1(44) = g1(44) + v(112, cur)
+                  g1(45) = g1(45) + v(113, cur)
+                  g1(46) = g1(46) + v(114, cur)
+                  g1(47) = g1(47) + v(115, cur)
+                  g1(48) = g1(48) + v(116, cur)
+                  g1(49) = g1(49) + v(117, cur)
+                  g1(50) = g1(50) + v(118, cur)
+                  g1(51) = g1(51) + v(119, cur)
+                  g1(52) = g1(52) + v(120, cur)
+                  g1(53) = g1(53) + v(121, cur)
+                  g1(54) = g1(54) + v(122, cur)
+                  g1(55) = g1(55) + v(123, cur)
+                  g1(56) = g1(56) + v(124, cur)
+                  g1(57) = g1(57) + v(125, cur)
+                  g1(58) = g1(58) + v(126, cur)
+                  g1(59) = g1(59) + v(127, cur)
+                  g1(60) = g1(60) + v(128, cur)
+                  g1(61) = g1(61) + v(129, cur)
+                  g1(62) = g1(62) + v(130, cur)
+                  g1(63) = g1(63) + v(131, cur)
+                  g1(64) = g1(64) + v(132, cur)
+                  g1(65) = g1(65) + v(133, cur)
+                  g1(66) = g1(66) + v(134, cur)
+                  g1(67) = g1(67) + v(135, cur)
+                  g1(68) = g1(68) + v(136, cur)
+                  g1(69) = g1(69) + v(137, cur)
+                  g1(70) = g1(70) + v(138, cur)
+                  g1(71) = g1(71) + v(139, cur)
+                  g1(72) = g1(72) + v(140, cur)
+                  g1(73) = g1(73) + v(141, cur)
+                  g1(74) = g1(74) + v(142, cur)
+                  g1(75) = g1(75) + v(143, cur)
+                  g1(76) = g1(76) + v(144, cur)
+                  g1(77) = g1(77) + v(145, cur)
+                  g1(78) = g1(78) + v(146, cur)
+                  g1(79) = g1(79) + v(147, cur)
+                  g1(80) = g1(80) + v(148, cur)
+                  g1(81) = g1(81) + v(149, cur)
+                  g1(82) = g1(82) + v(150, cur)
+                  g1(83) = g1(83) + v(151, cur)
+                  g1(84) = g1(84) + v(152, cur)
+                  g1(85) = g1(85) + v(153, cur)
+                  g1(86) = g1(86) + v(154, cur)
+                  g1(87) = g1(87) + v(155, cur)
+                  g1(88) = g1(88) + v(156, cur)
+                  g1(89) = g1(89) + v(157, cur)
+                  g1(90) = g1(90) + v(158, cur)
+                  g1(91) = g1(91) + v(159, cur)
+                  g1(92) = g1(92) + v(160, cur)
+                  g1(93) = g1(93) + v(161, cur)
+                  g1(94) = g1(94) + v(162, cur)
+                  g1(95) = g1(95) + v(163, cur)
+                  g1(96) = g1(96) + v(164, cur)
+                  g1(97) = g1(97) + v(165, cur)
+                  g1(98) = g1(98) + v(166, cur)
+                  g1(99) = g1(99) + v(167, cur)
+                  g1(100) = g1(100) + v(168, cur)
+                  g1(101) = g1(101) + v(169, cur)
+                  g1(102) = g1(102) + v(170, cur)
+                  g1(103) = g1(103) + v(171, cur)
+                  g1(104) = g1(104) + v(172, cur)
+                  g1(105) = g1(105) + v(173, cur)
+                  g1(106) = g1(106) + v(174, cur)
+                  g1(107) = g1(107) + v(175, cur)
+                  g1(108) = g1(108) + v(176, cur)
+                  g1(109) = g1(109) + v(177, cur)
+                  g1(110) = g1(110) + v(178, cur)
+                  g1(111) = g1(111) + v(179, cur)
+                  g1(112) = g1(112) + v(180, cur)
+                  g1(113) = g1(113) + v(181, cur)
+                  g1(114) = g1(114) + v(182, cur)
+                  g1(115) = g1(115) + v(183, cur)
+                  g1(116) = g1(116) + v(184, cur)
+                  g1(117) = g1(117) + v(185, cur)
+                  g1(118) = g1(118) + v(186, cur)
+                  g1(119) = g1(119) + v(187, cur)
+                  g1(120) = g1(120) + v(188, cur)
+                  g1(121) = g1(121) + v(189, cur)
+                  g1(122) = g1(122) + v(190, cur)
+                  g1(123) = g1(123) + v(191, cur)
+                  g1(124) = g1(124) + v(192, cur)
+               end do
+            end do
+         vbuf(1) = abx*abx*cdx*g1(1) &
+            + abx*abx*g1(32) &
+            + 2.0_dp*abx*cdx*g1(7) &
+            + 2.0_dp*abx*g1(38) &
+            + cdx*g1(17) &
+            + g1(48)
+         vbuf(2) = abx*abx*cdx*g1(2) &
+            + abx*abx*g1(33) &
+            + 2.0_dp*abx*cdx*g1(8) &
+            + 2.0_dp*abx*g1(39) &
+            + cdx*g1(18) &
+            + g1(49)
+         vbuf(3) = abx*abx*cdx*g1(3) &
+            + abx*abx*g1(34) &
+            + 2.0_dp*abx*cdx*g1(9) &
+            + 2.0_dp*abx*g1(40) &
+            + cdx*g1(19) &
+            + g1(50)
+         vbuf(4) = abx*abx*cdx*g1(4) &
+            + abx*abx*g1(35) &
+            + 2.0_dp*abx*cdx*g1(10) &
+            + 2.0_dp*abx*g1(41) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(5) = abx*abx*cdx*g1(5) &
+            + abx*abx*g1(36) &
+            + 2.0_dp*abx*cdx*g1(11) &
+            + 2.0_dp*abx*g1(42) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(6) = abx*abx*cdx*g1(6) &
+            + abx*abx*g1(37) &
+            + 2.0_dp*abx*cdx*g1(12) &
+            + 2.0_dp*abx*g1(43) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(7) = abx*aby*cdx*g1(1) &
+            + abx*aby*g1(32) &
+            + abx*cdx*g1(8) &
+            + abx*g1(39) &
+            + aby*cdx*g1(7) &
+            + aby*g1(38) &
+            + cdx*g1(18) &
+            + g1(49)
+         vbuf(8) = abx*aby*cdx*g1(2) &
+            + abx*aby*g1(33) &
+            + abx*cdx*g1(10) &
+            + abx*g1(41) &
+            + aby*cdx*g1(8) &
+            + aby*g1(39) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(9) = abx*aby*cdx*g1(3) &
+            + abx*aby*g1(34) &
+            + abx*cdx*g1(11) &
+            + abx*g1(42) &
+            + aby*cdx*g1(9) &
+            + aby*g1(40) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(10) = abx*aby*cdx*g1(4) &
+            + abx*aby*g1(35) &
+            + abx*cdx*g1(13) &
+            + abx*g1(44) &
+            + aby*cdx*g1(10) &
+            + aby*g1(41) &
+            + cdx*g1(23) &
+            + g1(54)
+         vbuf(11) = abx*aby*cdx*g1(5) &
+            + abx*aby*g1(36) &
+            + abx*cdx*g1(14) &
+            + abx*g1(45) &
+            + aby*cdx*g1(11) &
+            + aby*g1(42) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(12) = abx*aby*cdx*g1(6) &
+            + abx*aby*g1(37) &
+            + abx*cdx*g1(15) &
+            + abx*g1(46) &
+            + aby*cdx*g1(12) &
+            + aby*g1(43) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(13) = abx*abz*cdx*g1(1) &
+            + abx*abz*g1(32) &
+            + abx*cdx*g1(9) &
+            + abx*g1(40) &
+            + abz*cdx*g1(7) &
+            + abz*g1(38) &
+            + cdx*g1(19) &
+            + g1(50)
+         vbuf(14) = abx*abz*cdx*g1(2) &
+            + abx*abz*g1(33) &
+            + abx*cdx*g1(11) &
+            + abx*g1(42) &
+            + abz*cdx*g1(8) &
+            + abz*g1(39) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(15) = abx*abz*cdx*g1(3) &
+            + abx*abz*g1(34) &
+            + abx*cdx*g1(12) &
+            + abx*g1(43) &
+            + abz*cdx*g1(9) &
+            + abz*g1(40) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(16) = abx*abz*cdx*g1(4) &
+            + abx*abz*g1(35) &
+            + abx*cdx*g1(14) &
+            + abx*g1(45) &
+            + abz*cdx*g1(10) &
+            + abz*g1(41) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(17) = abx*abz*cdx*g1(5) &
+            + abx*abz*g1(36) &
+            + abx*cdx*g1(15) &
+            + abx*g1(46) &
+            + abz*cdx*g1(11) &
+            + abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(18) = abx*abz*cdx*g1(6) &
+            + abx*abz*g1(37) &
+            + abx*cdx*g1(16) &
+            + abx*g1(47) &
+            + abz*cdx*g1(12) &
+            + abz*g1(43) &
+            + cdx*g1(26) &
+            + g1(57)
+         vbuf(19) = aby*aby*cdx*g1(1) &
+            + aby*aby*g1(32) &
+            + 2.0_dp*aby*cdx*g1(8) &
+            + 2.0_dp*aby*g1(39) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(20) = aby*aby*cdx*g1(2) &
+            + aby*aby*g1(33) &
+            + 2.0_dp*aby*cdx*g1(10) &
+            + 2.0_dp*aby*g1(41) &
+            + cdx*g1(23) &
+            + g1(54)
+         vbuf(21) = aby*aby*cdx*g1(3) &
+            + aby*aby*g1(34) &
+            + 2.0_dp*aby*cdx*g1(11) &
+            + 2.0_dp*aby*g1(42) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(22) = aby*aby*cdx*g1(4) &
+            + aby*aby*g1(35) &
+            + 2.0_dp*aby*cdx*g1(13) &
+            + 2.0_dp*aby*g1(44) &
+            + cdx*g1(27) &
+            + g1(58)
+         vbuf(23) = aby*aby*cdx*g1(5) &
+            + aby*aby*g1(36) &
+            + 2.0_dp*aby*cdx*g1(14) &
+            + 2.0_dp*aby*g1(45) &
+            + cdx*g1(28) &
+            + g1(59)
+         vbuf(24) = aby*aby*cdx*g1(6) &
+            + aby*aby*g1(37) &
+            + 2.0_dp*aby*cdx*g1(15) &
+            + 2.0_dp*aby*g1(46) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(25) = aby*abz*cdx*g1(1) &
+            + aby*abz*g1(32) &
+            + aby*cdx*g1(9) &
+            + aby*g1(40) &
+            + abz*cdx*g1(8) &
+            + abz*g1(39) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(26) = aby*abz*cdx*g1(2) &
+            + aby*abz*g1(33) &
+            + aby*cdx*g1(11) &
+            + aby*g1(42) &
+            + abz*cdx*g1(10) &
+            + abz*g1(41) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(27) = aby*abz*cdx*g1(3) &
+            + aby*abz*g1(34) &
+            + aby*cdx*g1(12) &
+            + aby*g1(43) &
+            + abz*cdx*g1(11) &
+            + abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(28) = aby*abz*cdx*g1(4) &
+            + aby*abz*g1(35) &
+            + aby*cdx*g1(14) &
+            + aby*g1(45) &
+            + abz*cdx*g1(13) &
+            + abz*g1(44) &
+            + cdx*g1(28) &
+            + g1(59)
+         vbuf(29) = aby*abz*cdx*g1(5) &
+            + aby*abz*g1(36) &
+            + aby*cdx*g1(15) &
+            + aby*g1(46) &
+            + abz*cdx*g1(14) &
+            + abz*g1(45) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(30) = aby*abz*cdx*g1(6) &
+            + aby*abz*g1(37) &
+            + aby*cdx*g1(16) &
+            + aby*g1(47) &
+            + abz*cdx*g1(15) &
+            + abz*g1(46) &
+            + cdx*g1(30) &
+            + g1(61)
+         vbuf(31) = abz*abz*cdx*g1(1) &
+            + abz*abz*g1(32) &
+            + 2.0_dp*abz*cdx*g1(9) &
+            + 2.0_dp*abz*g1(40) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(32) = abz*abz*cdx*g1(2) &
+            + abz*abz*g1(33) &
+            + 2.0_dp*abz*cdx*g1(11) &
+            + 2.0_dp*abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(33) = abz*abz*cdx*g1(3) &
+            + abz*abz*g1(34) &
+            + 2.0_dp*abz*cdx*g1(12) &
+            + 2.0_dp*abz*g1(43) &
+            + cdx*g1(26) &
+            + g1(57)
+         vbuf(34) = abz*abz*cdx*g1(4) &
+            + abz*abz*g1(35) &
+            + 2.0_dp*abz*cdx*g1(14) &
+            + 2.0_dp*abz*g1(45) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(35) = abz*abz*cdx*g1(5) &
+            + abz*abz*g1(36) &
+            + 2.0_dp*abz*cdx*g1(15) &
+            + 2.0_dp*abz*g1(46) &
+            + cdx*g1(30) &
+            + g1(61)
+         vbuf(36) = abz*abz*cdx*g1(6) &
+            + abz*abz*g1(37) &
+            + 2.0_dp*abz*cdx*g1(16) &
+            + 2.0_dp*abz*g1(47) &
+            + cdx*g1(31) &
+            + g1(62)
+         vbuf(37) = abx*abx*cdy*g1(1) &
+            + abx*abx*g1(63) &
+            + 2.0_dp*abx*cdy*g1(7) &
+            + 2.0_dp*abx*g1(69) &
+            + cdy*g1(17) &
+            + g1(79)
+         vbuf(38) = abx*abx*cdy*g1(2) &
+            + abx*abx*g1(64) &
+            + 2.0_dp*abx*cdy*g1(8) &
+            + 2.0_dp*abx*g1(70) &
+            + cdy*g1(18) &
+            + g1(80)
+         vbuf(39) = abx*abx*cdy*g1(3) &
+            + abx*abx*g1(65) &
+            + 2.0_dp*abx*cdy*g1(9) &
+            + 2.0_dp*abx*g1(71) &
+            + cdy*g1(19) &
+            + g1(81)
+         vbuf(40) = abx*abx*cdy*g1(4) &
+            + abx*abx*g1(66) &
+            + 2.0_dp*abx*cdy*g1(10) &
+            + 2.0_dp*abx*g1(72) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(41) = abx*abx*cdy*g1(5) &
+            + abx*abx*g1(67) &
+            + 2.0_dp*abx*cdy*g1(11) &
+            + 2.0_dp*abx*g1(73) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(42) = abx*abx*cdy*g1(6) &
+            + abx*abx*g1(68) &
+            + 2.0_dp*abx*cdy*g1(12) &
+            + 2.0_dp*abx*g1(74) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(43) = abx*aby*cdy*g1(1) &
+            + abx*aby*g1(63) &
+            + abx*cdy*g1(8) &
+            + abx*g1(70) &
+            + aby*cdy*g1(7) &
+            + aby*g1(69) &
+            + cdy*g1(18) &
+            + g1(80)
+         vbuf(44) = abx*aby*cdy*g1(2) &
+            + abx*aby*g1(64) &
+            + abx*cdy*g1(10) &
+            + abx*g1(72) &
+            + aby*cdy*g1(8) &
+            + aby*g1(70) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(45) = abx*aby*cdy*g1(3) &
+            + abx*aby*g1(65) &
+            + abx*cdy*g1(11) &
+            + abx*g1(73) &
+            + aby*cdy*g1(9) &
+            + aby*g1(71) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(46) = abx*aby*cdy*g1(4) &
+            + abx*aby*g1(66) &
+            + abx*cdy*g1(13) &
+            + abx*g1(75) &
+            + aby*cdy*g1(10) &
+            + aby*g1(72) &
+            + cdy*g1(23) &
+            + g1(85)
+         vbuf(47) = abx*aby*cdy*g1(5) &
+            + abx*aby*g1(67) &
+            + abx*cdy*g1(14) &
+            + abx*g1(76) &
+            + aby*cdy*g1(11) &
+            + aby*g1(73) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(48) = abx*aby*cdy*g1(6) &
+            + abx*aby*g1(68) &
+            + abx*cdy*g1(15) &
+            + abx*g1(77) &
+            + aby*cdy*g1(12) &
+            + aby*g1(74) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(49) = abx*abz*cdy*g1(1) &
+            + abx*abz*g1(63) &
+            + abx*cdy*g1(9) &
+            + abx*g1(71) &
+            + abz*cdy*g1(7) &
+            + abz*g1(69) &
+            + cdy*g1(19) &
+            + g1(81)
+         vbuf(50) = abx*abz*cdy*g1(2) &
+            + abx*abz*g1(64) &
+            + abx*cdy*g1(11) &
+            + abx*g1(73) &
+            + abz*cdy*g1(8) &
+            + abz*g1(70) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(51) = abx*abz*cdy*g1(3) &
+            + abx*abz*g1(65) &
+            + abx*cdy*g1(12) &
+            + abx*g1(74) &
+            + abz*cdy*g1(9) &
+            + abz*g1(71) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(52) = abx*abz*cdy*g1(4) &
+            + abx*abz*g1(66) &
+            + abx*cdy*g1(14) &
+            + abx*g1(76) &
+            + abz*cdy*g1(10) &
+            + abz*g1(72) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(53) = abx*abz*cdy*g1(5) &
+            + abx*abz*g1(67) &
+            + abx*cdy*g1(15) &
+            + abx*g1(77) &
+            + abz*cdy*g1(11) &
+            + abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(54) = abx*abz*cdy*g1(6) &
+            + abx*abz*g1(68) &
+            + abx*cdy*g1(16) &
+            + abx*g1(78) &
+            + abz*cdy*g1(12) &
+            + abz*g1(74) &
+            + cdy*g1(26) &
+            + g1(88)
+         vbuf(55) = aby*aby*cdy*g1(1) &
+            + aby*aby*g1(63) &
+            + 2.0_dp*aby*cdy*g1(8) &
+            + 2.0_dp*aby*g1(70) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(56) = aby*aby*cdy*g1(2) &
+            + aby*aby*g1(64) &
+            + 2.0_dp*aby*cdy*g1(10) &
+            + 2.0_dp*aby*g1(72) &
+            + cdy*g1(23) &
+            + g1(85)
+         vbuf(57) = aby*aby*cdy*g1(3) &
+            + aby*aby*g1(65) &
+            + 2.0_dp*aby*cdy*g1(11) &
+            + 2.0_dp*aby*g1(73) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(58) = aby*aby*cdy*g1(4) &
+            + aby*aby*g1(66) &
+            + 2.0_dp*aby*cdy*g1(13) &
+            + 2.0_dp*aby*g1(75) &
+            + cdy*g1(27) &
+            + g1(89)
+         vbuf(59) = aby*aby*cdy*g1(5) &
+            + aby*aby*g1(67) &
+            + 2.0_dp*aby*cdy*g1(14) &
+            + 2.0_dp*aby*g1(76) &
+            + cdy*g1(28) &
+            + g1(90)
+         vbuf(60) = aby*aby*cdy*g1(6) &
+            + aby*aby*g1(68) &
+            + 2.0_dp*aby*cdy*g1(15) &
+            + 2.0_dp*aby*g1(77) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(61) = aby*abz*cdy*g1(1) &
+            + aby*abz*g1(63) &
+            + aby*cdy*g1(9) &
+            + aby*g1(71) &
+            + abz*cdy*g1(8) &
+            + abz*g1(70) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(62) = aby*abz*cdy*g1(2) &
+            + aby*abz*g1(64) &
+            + aby*cdy*g1(11) &
+            + aby*g1(73) &
+            + abz*cdy*g1(10) &
+            + abz*g1(72) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(63) = aby*abz*cdy*g1(3) &
+            + aby*abz*g1(65) &
+            + aby*cdy*g1(12) &
+            + aby*g1(74) &
+            + abz*cdy*g1(11) &
+            + abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(64) = aby*abz*cdy*g1(4) &
+            + aby*abz*g1(66) &
+            + aby*cdy*g1(14) &
+            + aby*g1(76) &
+            + abz*cdy*g1(13) &
+            + abz*g1(75) &
+            + cdy*g1(28) &
+            + g1(90)
+         vbuf(65) = aby*abz*cdy*g1(5) &
+            + aby*abz*g1(67) &
+            + aby*cdy*g1(15) &
+            + aby*g1(77) &
+            + abz*cdy*g1(14) &
+            + abz*g1(76) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(66) = aby*abz*cdy*g1(6) &
+            + aby*abz*g1(68) &
+            + aby*cdy*g1(16) &
+            + aby*g1(78) &
+            + abz*cdy*g1(15) &
+            + abz*g1(77) &
+            + cdy*g1(30) &
+            + g1(92)
+         vbuf(67) = abz*abz*cdy*g1(1) &
+            + abz*abz*g1(63) &
+            + 2.0_dp*abz*cdy*g1(9) &
+            + 2.0_dp*abz*g1(71) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(68) = abz*abz*cdy*g1(2) &
+            + abz*abz*g1(64) &
+            + 2.0_dp*abz*cdy*g1(11) &
+            + 2.0_dp*abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(69) = abz*abz*cdy*g1(3) &
+            + abz*abz*g1(65) &
+            + 2.0_dp*abz*cdy*g1(12) &
+            + 2.0_dp*abz*g1(74) &
+            + cdy*g1(26) &
+            + g1(88)
+         vbuf(70) = abz*abz*cdy*g1(4) &
+            + abz*abz*g1(66) &
+            + 2.0_dp*abz*cdy*g1(14) &
+            + 2.0_dp*abz*g1(76) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(71) = abz*abz*cdy*g1(5) &
+            + abz*abz*g1(67) &
+            + 2.0_dp*abz*cdy*g1(15) &
+            + 2.0_dp*abz*g1(77) &
+            + cdy*g1(30) &
+            + g1(92)
+         vbuf(72) = abz*abz*cdy*g1(6) &
+            + abz*abz*g1(68) &
+            + 2.0_dp*abz*cdy*g1(16) &
+            + 2.0_dp*abz*g1(78) &
+            + cdy*g1(31) &
+            + g1(93)
+         vbuf(73) = abx*abx*cdz*g1(1) &
+            + abx*abx*g1(94) &
+            + 2.0_dp*abx*cdz*g1(7) &
+            + 2.0_dp*abx*g1(100) &
+            + cdz*g1(17) &
+            + g1(110)
+         vbuf(74) = abx*abx*cdz*g1(2) &
+            + abx*abx*g1(95) &
+            + 2.0_dp*abx*cdz*g1(8) &
+            + 2.0_dp*abx*g1(101) &
+            + cdz*g1(18) &
+            + g1(111)
+         vbuf(75) = abx*abx*cdz*g1(3) &
+            + abx*abx*g1(96) &
+            + 2.0_dp*abx*cdz*g1(9) &
+            + 2.0_dp*abx*g1(102) &
+            + cdz*g1(19) &
+            + g1(112)
+         vbuf(76) = abx*abx*cdz*g1(4) &
+            + abx*abx*g1(97) &
+            + 2.0_dp*abx*cdz*g1(10) &
+            + 2.0_dp*abx*g1(103) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(77) = abx*abx*cdz*g1(5) &
+            + abx*abx*g1(98) &
+            + 2.0_dp*abx*cdz*g1(11) &
+            + 2.0_dp*abx*g1(104) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(78) = abx*abx*cdz*g1(6) &
+            + abx*abx*g1(99) &
+            + 2.0_dp*abx*cdz*g1(12) &
+            + 2.0_dp*abx*g1(105) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(79) = abx*aby*cdz*g1(1) &
+            + abx*aby*g1(94) &
+            + abx*cdz*g1(8) &
+            + abx*g1(101) &
+            + aby*cdz*g1(7) &
+            + aby*g1(100) &
+            + cdz*g1(18) &
+            + g1(111)
+         vbuf(80) = abx*aby*cdz*g1(2) &
+            + abx*aby*g1(95) &
+            + abx*cdz*g1(10) &
+            + abx*g1(103) &
+            + aby*cdz*g1(8) &
+            + aby*g1(101) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(81) = abx*aby*cdz*g1(3) &
+            + abx*aby*g1(96) &
+            + abx*cdz*g1(11) &
+            + abx*g1(104) &
+            + aby*cdz*g1(9) &
+            + aby*g1(102) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(82) = abx*aby*cdz*g1(4) &
+            + abx*aby*g1(97) &
+            + abx*cdz*g1(13) &
+            + abx*g1(106) &
+            + aby*cdz*g1(10) &
+            + aby*g1(103) &
+            + cdz*g1(23) &
+            + g1(116)
+         vbuf(83) = abx*aby*cdz*g1(5) &
+            + abx*aby*g1(98) &
+            + abx*cdz*g1(14) &
+            + abx*g1(107) &
+            + aby*cdz*g1(11) &
+            + aby*g1(104) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(84) = abx*aby*cdz*g1(6) &
+            + abx*aby*g1(99) &
+            + abx*cdz*g1(15) &
+            + abx*g1(108) &
+            + aby*cdz*g1(12) &
+            + aby*g1(105) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(85) = abx*abz*cdz*g1(1) &
+            + abx*abz*g1(94) &
+            + abx*cdz*g1(9) &
+            + abx*g1(102) &
+            + abz*cdz*g1(7) &
+            + abz*g1(100) &
+            + cdz*g1(19) &
+            + g1(112)
+         vbuf(86) = abx*abz*cdz*g1(2) &
+            + abx*abz*g1(95) &
+            + abx*cdz*g1(11) &
+            + abx*g1(104) &
+            + abz*cdz*g1(8) &
+            + abz*g1(101) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(87) = abx*abz*cdz*g1(3) &
+            + abx*abz*g1(96) &
+            + abx*cdz*g1(12) &
+            + abx*g1(105) &
+            + abz*cdz*g1(9) &
+            + abz*g1(102) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(88) = abx*abz*cdz*g1(4) &
+            + abx*abz*g1(97) &
+            + abx*cdz*g1(14) &
+            + abx*g1(107) &
+            + abz*cdz*g1(10) &
+            + abz*g1(103) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(89) = abx*abz*cdz*g1(5) &
+            + abx*abz*g1(98) &
+            + abx*cdz*g1(15) &
+            + abx*g1(108) &
+            + abz*cdz*g1(11) &
+            + abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(90) = abx*abz*cdz*g1(6) &
+            + abx*abz*g1(99) &
+            + abx*cdz*g1(16) &
+            + abx*g1(109) &
+            + abz*cdz*g1(12) &
+            + abz*g1(105) &
+            + cdz*g1(26) &
+            + g1(119)
+         vbuf(91) = aby*aby*cdz*g1(1) &
+            + aby*aby*g1(94) &
+            + 2.0_dp*aby*cdz*g1(8) &
+            + 2.0_dp*aby*g1(101) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(92) = aby*aby*cdz*g1(2) &
+            + aby*aby*g1(95) &
+            + 2.0_dp*aby*cdz*g1(10) &
+            + 2.0_dp*aby*g1(103) &
+            + cdz*g1(23) &
+            + g1(116)
+         vbuf(93) = aby*aby*cdz*g1(3) &
+            + aby*aby*g1(96) &
+            + 2.0_dp*aby*cdz*g1(11) &
+            + 2.0_dp*aby*g1(104) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(94) = aby*aby*cdz*g1(4) &
+            + aby*aby*g1(97) &
+            + 2.0_dp*aby*cdz*g1(13) &
+            + 2.0_dp*aby*g1(106) &
+            + cdz*g1(27) &
+            + g1(120)
+         vbuf(95) = aby*aby*cdz*g1(5) &
+            + aby*aby*g1(98) &
+            + 2.0_dp*aby*cdz*g1(14) &
+            + 2.0_dp*aby*g1(107) &
+            + cdz*g1(28) &
+            + g1(121)
+         vbuf(96) = aby*aby*cdz*g1(6) &
+            + aby*aby*g1(99) &
+            + 2.0_dp*aby*cdz*g1(15) &
+            + 2.0_dp*aby*g1(108) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(97) = aby*abz*cdz*g1(1) &
+            + aby*abz*g1(94) &
+            + aby*cdz*g1(9) &
+            + aby*g1(102) &
+            + abz*cdz*g1(8) &
+            + abz*g1(101) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(98) = aby*abz*cdz*g1(2) &
+            + aby*abz*g1(95) &
+            + aby*cdz*g1(11) &
+            + aby*g1(104) &
+            + abz*cdz*g1(10) &
+            + abz*g1(103) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(99) = aby*abz*cdz*g1(3) &
+            + aby*abz*g1(96) &
+            + aby*cdz*g1(12) &
+            + aby*g1(105) &
+            + abz*cdz*g1(11) &
+            + abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(100) = aby*abz*cdz*g1(4) &
+            + aby*abz*g1(97) &
+            + aby*cdz*g1(14) &
+            + aby*g1(107) &
+            + abz*cdz*g1(13) &
+            + abz*g1(106) &
+            + cdz*g1(28) &
+            + g1(121)
+         vbuf(101) = aby*abz*cdz*g1(5) &
+            + aby*abz*g1(98) &
+            + aby*cdz*g1(15) &
+            + aby*g1(108) &
+            + abz*cdz*g1(14) &
+            + abz*g1(107) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(102) = aby*abz*cdz*g1(6) &
+            + aby*abz*g1(99) &
+            + aby*cdz*g1(16) &
+            + aby*g1(109) &
+            + abz*cdz*g1(15) &
+            + abz*g1(108) &
+            + cdz*g1(30) &
+            + g1(123)
+         vbuf(103) = abz*abz*cdz*g1(1) &
+            + abz*abz*g1(94) &
+            + 2.0_dp*abz*cdz*g1(9) &
+            + 2.0_dp*abz*g1(102) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(104) = abz*abz*cdz*g1(2) &
+            + abz*abz*g1(95) &
+            + 2.0_dp*abz*cdz*g1(11) &
+            + 2.0_dp*abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(105) = abz*abz*cdz*g1(3) &
+            + abz*abz*g1(96) &
+            + 2.0_dp*abz*cdz*g1(12) &
+            + 2.0_dp*abz*g1(105) &
+            + cdz*g1(26) &
+            + g1(119)
+         vbuf(106) = abz*abz*cdz*g1(4) &
+            + abz*abz*g1(97) &
+            + 2.0_dp*abz*cdz*g1(14) &
+            + 2.0_dp*abz*g1(107) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(107) = abz*abz*cdz*g1(5) &
+            + abz*abz*g1(98) &
+            + 2.0_dp*abz*cdz*g1(15) &
+            + 2.0_dp*abz*g1(108) &
+            + cdz*g1(30) &
+            + g1(123)
+         vbuf(108) = abz*abz*cdz*g1(6) &
+            + abz*abz*g1(99) &
+            + 2.0_dp*abz*cdz*g1(16) &
+            + 2.0_dp*abz*g1(109) &
+            + cdz*g1(31) &
+            + g1(124)
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 108
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 5
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc0(gi)
+               dcd(1 + ic + 3*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 3*id) = 0.0_dp
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc0(gi)
+            do ia = 0, 5
+               dac(1 + ia + 6*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 6*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do ia = 0, 5
+               dad(1 + ia + 6*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 6*id) = 0.0_dp
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc0(gi)
+            do ib = 0, 5
+               dbc(1 + ib + 6*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 6*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do ib = 0, 5
+               dbd(1 + ib + 6*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 6*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc0(gi)
+         do ib = 0, 5
+         do ia = 0, 5
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 3*id)
+            jcd(1 + ic + 3*id) = jcd(1 + ic + 3*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 6*ib)
+            kac(1 + ia + 6*ic) = kac(1 + ia + 6*ic) &
+                                    - kfac*sc*dbd(1 + ib + 6*id)
+            kad(1 + ia + 6*id) = kad(1 + ia + 6*id) &
+                                    - kfac*sc*dbc(1 + ib + 6*ic)
+            kbc(1 + ib + 6*ic) = kbc(1 + ib + 6*ic) &
+                                    - kfac*sc*dad(1 + ia + 6*id)
+            kbd(1 + ib + 6*id) = kbd(1 + ib + 6*id) &
+                                    - kfac*sc*dac(1 + ia + 6*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 5
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc0(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 3*id)
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc0(gi)
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 6*ic)
+            end do
+         end do
+         do id = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 6*id)
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc0(gi)
+            do ib = 0, 5
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 6*ic)
+            end do
+         end do
+         do id = 0, 2
+            do ib = 0, 5
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         case (2)
+            do x = 1, 124
+               g1(x) = 0.0_dp
+            end do
+            do kp = offab + 1, offab + nab
+               zeta = pp_p(kp)
+               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+               ! Bra-only quantities, out of the ket loop. They depend on
+               ! kp alone and were being reloaded and recomputed once per
+               ! KET primitive, which on a deeply contracted shell pair is
+               ! 144 times over for values that never change. The compiler
+               ! does not lift them, presumably because it cannot prove the
+               ! loads invariant. Measured on (ps|ss) of the silica slice in
+               ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
+               ! same profile flat.
+               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
+               pax = rpx - pp_ra(kp, 1)
+               pay = rpy - pp_ra(kp, 2)
+               paz = rpz - pp_ra(kp, 3)
+               ! 1/zeta with them: the bra exponent does not change across
+               ! the ket loop, so its reciprocal is one division per bra
+               ! primitive rather than three per primitive QUARTET.
+               rzeta = 1.0_dp/zeta
+               oo2z = 0.5_dp*rzeta
+               do kq = offcd + 1, offcd + ncd
+                  eta = pp_p(kq)
+                  zpe = zeta + eta
+                  ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
+                  ! primitive (ss|ss) integral, and with the normalisation
+                  ! in the coefficients it bounds the higher ones to within
+                  ! the polynomial factors the cutoff's three decades of
+                  ! margin cover. Tested before the Boys function and the
+                  ! VRR, which is nearly all of a primitive quartet's cost;
+                  ! on a generally contracted basis two thirds of the
+                  ! quartets that survive the pair pruning die here.
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
+                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
+                  if (abs(pref) <= pcut) cycle
+                  ! One reciprocal each for eta and zeta+eta, then multiply.
+                  ! This loop used to issue ten double-precision divisions
+                  ! per primitive quartet -- rho, three for the W centre,
+                  ! three halves, two rho ratios and the prefactor -- against
+                  ! a recurrence that for the light classes is five lines.
+                  ! Division has no fast reciprocal in double precision, so
+                  ! that was the arithmetic, not the recurrence.
+                  reta = 1.0_dp/eta
+                  rzpe = 1.0_dp/zpe
+                  rho = zeta*eta*rzpe
+                  pqx = rpx - pp_r(kq, 1)
+                  pqy = rpy - pp_r(kq, 2)
+                  pqz = rpz - pp_r(kq, 3)
+                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
+                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
+                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
+                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
+                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
+                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
+                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
+                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
+                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+
+                  if (tval >= BOYS_TMAX) then
+                  btt = 1.0_dp/tval
+                  f(0) = 0.88622692545275801365_dp*sqrt(btt)
+                  bet = 0.0_dp
+                  f(1) = 1.0_dp*f(0)*(0.5_dp*btt)
+                  f(2) = 3.0_dp*f(1)*(0.5_dp*btt)
+                  f(3) = 5.0_dp*f(2)*(0.5_dp*btt)
+                  f(4) = 7.0_dp*f(3)*(0.5_dp*btt)
+                  f(5) = 9.0_dp*f(4)*(0.5_dp*btt)
+                  f(6) = 11.0_dp*f(5)*(0.5_dp*btt)
+               else
+                  bi = int(tval*BOYS_DTINV)
+                  bi = min(bi, BOYS_NGRID - 1)
+                  bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
+                  bx2 = 2.0_dp*bx
+                  bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
+                  bj = bbase + 6*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
+                  b2 = 0.0_dp
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  f(6) = bx*b1 - b2 + boys_table(bj + 1)
+                  bet = exp(-tval)
+                  btt = 2.0_dp*tval
+                  f(5) = (btt*f(6) + bet)*(0.09090909090909091_dp)
+                  f(4) = (btt*f(5) + bet)*(0.1111111111111111_dp)
+                  f(3) = (btt*f(4) + bet)*(0.14285714285714285_dp)
+                  f(2) = (btt*f(3) + bet)*(0.2_dp)
+                  f(1) = (btt*f(2) + bet)*(0.3333333333333333_dp)
+                  f(0) = (btt*f(1) + bet)*(1.0_dp)
+               end if
+
+                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
+                  rz = rho*rzeta; re = rho*reta
+
+               v(1,0) = pref*f(6)
+            v(1,1) = pref*f(5)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(38,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(1,0) = pref*f(4)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(22,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(38,0) = qcy*v(1,0) + wqy*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(39,0) = pax*v(38,0) + wpx*v(38,1)
+            v(74,0) = qcz*v(3,0) + wqz*v(3,1)
+            v(124,0) = qcy*v(38,0) + wqy*v(38,1) &
+               + 1.0_dp*oo2e*(v(1,0) - re*v(1,1))
+            v(1,1) = pref*f(3)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(22,1) = qcx*v(1,1) + wqx*v(1,0)
+            v(38,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(73,1) = qcz*v(1,1) + wqz*v(1,0)
+            v(5,1) = pax*v(2,1) + wpx*v(2,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(7,1) = pay*v(3,1) + wpy*v(3,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(8,1) = pay*v(4,1) + wpy*v(4,0)
+            v(9,1) = paz*v(4,1) + wpz*v(4,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(23,1) = pax*v(22,1) + wpx*v(22,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(39,1) = pax*v(38,1) + wpx*v(38,0)
+            v(40,1) = pay*v(38,1) + wpy*v(38,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(41,1) = paz*v(38,1) + wpz*v(38,0)
+            v(74,1) = qcz*v(3,1) + wqz*v(3,0)
+            v(75,1) = qcz*v(4,1) + wqz*v(4,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(124,1) = qcy*v(38,1) + wqy*v(38,0) &
+               + 1.0_dp*oo2e*(v(1,1) - re*v(1,0))
+            v(10,1) = pax*v(5,1) + wpx*v(5,0) &
+               + 2.0_dp*oo2z*(v(2,1) - rz*v(2,0))
+            v(12,1) = pax*v(7,1) + wpx*v(7,0)
+            v(14,1) = pay*v(7,1) + wpy*v(7,0) &
+               + 2.0_dp*oo2z*(v(3,1) - rz*v(3,0))
+            v(16,1) = paz*v(9,1) + wpz*v(9,0) &
+               + 2.0_dp*oo2z*(v(4,1) - rz*v(4,0))
+            v(24,1) = qcx*v(5,1) + wqx*v(5,0) &
+               + 2.0_dp*oo2ze*v(2,0)
+            v(28,1) = qcx*v(9,1) + wqx*v(9,0)
+            v(43,1) = pay*v(39,1) + wpy*v(39,0) &
+               + 1.0_dp*oo2ze*v(2,0)
+            v(44,1) = paz*v(39,1) + wpz*v(39,0)
+            v(47,1) = qcy*v(9,1) + wqy*v(9,0)
+            v(78,1) = paz*v(74,1) + wpz*v(74,0) &
+               + 1.0_dp*oo2ze*v(3,0)
+            v(125,1) = pay*v(124,1) + wpy*v(124,0) &
+               + 2.0_dp*oo2ze*v(38,0)
+            v(1,0) = pref*f(2)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(22,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(38,0) = qcy*v(1,0) + wqy*v(1,1)
+            v(73,0) = qcz*v(1,0) + wqz*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(6,0) = pax*v(4,0) + wpx*v(4,1)
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(8,0) = pay*v(4,0) + wpy*v(4,1)
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(23,0) = pax*v(22,0) + wpx*v(22,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(40,0) = pay*v(38,0) + wpy*v(38,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(41,0) = paz*v(38,0) + wpz*v(38,1)
+            v(75,0) = paz*v(73,0) + wpz*v(73,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(124,0) = qcy*v(38,0) + wqy*v(38,1) &
+               + 1.0_dp*oo2e*(v(1,0) - re*v(1,1))
+            v(10,0) = pax*v(5,0) + wpx*v(5,1) &
+               + 2.0_dp*oo2z*(v(2,0) - rz*v(2,1))
+            v(11,0) = pay*v(5,0) + wpy*v(5,1)
+            v(12,0) = pax*v(7,0) + wpx*v(7,1)
+            v(13,0) = pax*v(8,0) + wpx*v(8,1)
+            v(14,0) = pay*v(7,0) + wpy*v(7,1) &
+               + 2.0_dp*oo2z*(v(3,0) - rz*v(3,1))
+            v(15,0) = pay*v(9,0) + wpy*v(9,1)
+            v(16,0) = paz*v(9,0) + wpz*v(9,1) &
+               + 2.0_dp*oo2z*(v(4,0) - rz*v(4,1))
+            v(24,0) = qcx*v(5,0) + wqx*v(5,1) &
+               + 2.0_dp*oo2ze*v(2,1)
+            v(25,0) = pay*v(23,0) + wpy*v(23,1)
+            v(26,0) = paz*v(23,0) + wpz*v(23,1)
+            v(27,0) = qcx*v(7,0) + wqx*v(7,1)
+            v(28,0) = qcx*v(9,0) + wqx*v(9,1)
+            v(42,0) = qcy*v(5,0) + wqy*v(5,1)
+            v(43,0) = pax*v(40,0) + wpx*v(40,1)
+            v(44,0) = pax*v(41,0) + wpx*v(41,1)
+            v(45,0) = qcy*v(7,0) + wqy*v(7,1) &
+               + 2.0_dp*oo2ze*v(3,1)
+            v(46,0) = paz*v(40,0) + wpz*v(40,1)
+            v(47,0) = qcy*v(9,0) + wqy*v(9,1)
+            v(76,0) = pax*v(75,0) + wpx*v(75,1)
+            v(77,0) = qcz*v(7,0) + wqz*v(7,1)
+            v(78,0) = pay*v(75,0) + wpy*v(75,1)
+            v(79,0) = qcz*v(9,0) + wqz*v(9,1) &
+               + 2.0_dp*oo2ze*v(4,1)
+            v(125,0) = pay*v(124,0) + wpy*v(124,1) &
+               + 2.0_dp*oo2ze*v(38,1)
+            v(157,0) = qcz*v(40,0) + wqz*v(40,1)
+            v(17,0) = pax*v(10,0) + wpx*v(10,1) &
+               + 3.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(21,0) = paz*v(16,0) + wpz*v(16,1) &
+               + 3.0_dp*oo2z*(v(9,0) - rz*v(9,1))
+            v(30,0) = pay*v(24,0) + wpy*v(24,1)
+            v(33,0) = qcx*v(14,0) + wqx*v(14,1)
+            v(34,0) = pay*v(28,0) + wpy*v(28,1)
+            v(48,0) = qcy*v(10,0) + wqy*v(10,1)
+            v(50,0) = pax*v(44,0) + wpx*v(44,1) &
+               + 1.0_dp*oo2z*(v(41,0) - rz*v(41,1))
+            v(52,0) = paz*v(43,0) + wpz*v(43,1)
+            v(54,0) = qcy*v(14,0) + wqy*v(14,1) &
+               + 3.0_dp*oo2ze*v(7,1)
+            v(57,0) = qcy*v(16,0) + wqy*v(16,1)
+            v(80,0) = qcz*v(10,0) + wqz*v(10,1)
+            v(83,0) = qcz*v(12,0) + wqz*v(12,1)
+            v(84,0) = qcz*v(14,0) + wqz*v(14,1)
+            v(87,0) = qcz*v(16,0) + wqz*v(16,1) &
+               + 3.0_dp*oo2ze*v(9,1)
+            v(129,0) = pay*v(125,0) + wpy*v(125,1) &
+               + 1.0_dp*oo2z*(v(124,0) - rz*v(124,1)) &
+               + 2.0_dp*oo2ze*v(40,1)
+            v(131,0) = qcy*v(47,0) + wqy*v(47,1) &
+               + 1.0_dp*oo2e*(v(9,0) - re*v(9,1))
+            v(162,0) = qcy*v(78,0) + wqy*v(78,1) &
+               + 1.0_dp*oo2ze*v(75,1)
+            v(1,1) = pref*f(1)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(22,1) = qcx*v(1,1) + wqx*v(1,0)
+            v(38,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(73,1) = qcz*v(1,1) + wqz*v(1,0)
+            v(5,1) = pax*v(2,1) + wpx*v(2,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(6,1) = pax*v(4,1) + wpx*v(4,0)
+            v(7,1) = pay*v(3,1) + wpy*v(3,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(9,1) = paz*v(4,1) + wpz*v(4,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(23,1) = pax*v(22,1) + wpx*v(22,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(40,1) = pay*v(38,1) + wpy*v(38,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(75,1) = paz*v(73,1) + wpz*v(73,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(10,1) = pax*v(5,1) + wpx*v(5,0) &
+               + 2.0_dp*oo2z*(v(2,1) - rz*v(2,0))
+            v(11,1) = pay*v(5,1) + wpy*v(5,0)
+            v(13,1) = pay*v(6,1) + wpy*v(6,0)
+            v(14,1) = pay*v(7,1) + wpy*v(7,0) &
+               + 2.0_dp*oo2z*(v(3,1) - rz*v(3,0))
+            v(15,1) = pay*v(9,1) + wpy*v(9,0)
+            v(16,1) = paz*v(9,1) + wpz*v(9,0) &
+               + 2.0_dp*oo2z*(v(4,1) - rz*v(4,0))
+            v(24,1) = qcx*v(5,1) + wqx*v(5,0) &
+               + 2.0_dp*oo2ze*v(2,0)
+            v(25,1) = pay*v(23,1) + wpy*v(23,0)
+            v(26,1) = paz*v(23,1) + wpz*v(23,0)
+            v(27,1) = qcx*v(7,1) + wqx*v(7,0)
+            v(42,1) = qcy*v(5,1) + wqy*v(5,0)
+            v(44,1) = qcy*v(6,1) + wqy*v(6,0)
+            v(45,1) = qcy*v(7,1) + wqy*v(7,0) &
+               + 2.0_dp*oo2ze*v(3,0)
+            v(46,1) = paz*v(40,1) + wpz*v(40,0)
+            v(47,1) = qcy*v(9,1) + wqy*v(9,0)
+            v(76,1) = pax*v(75,1) + wpx*v(75,0)
+            v(77,1) = qcz*v(7,1) + wqz*v(7,0)
+            v(78,1) = pay*v(75,1) + wpy*v(75,0)
+            v(79,1) = qcz*v(9,1) + wqz*v(9,0) &
+               + 2.0_dp*oo2ze*v(4,0)
+            v(125,1) = qcy*v(40,1) + wqy*v(40,0) &
+               + 1.0_dp*oo2e*(v(3,1) - re*v(3,0)) &
+               + 1.0_dp*oo2ze*v(38,0)
+            v(157,1) = qcz*v(40,1) + wqz*v(40,0)
+            v(17,1) = pax*v(10,1) + wpx*v(10,0) &
+               + 3.0_dp*oo2z*(v(5,1) - rz*v(5,0))
+            v(18,1) = pay*v(11,1) + wpy*v(11,0) &
+               + 1.0_dp*oo2z*(v(5,1) - rz*v(5,0))
+            v(19,1) = pay*v(14,1) + wpy*v(14,0) &
+               + 3.0_dp*oo2z*(v(7,1) - rz*v(7,0))
+            v(20,1) = paz*v(14,1) + wpz*v(14,0)
+            v(21,1) = paz*v(16,1) + wpz*v(16,0) &
+               + 3.0_dp*oo2z*(v(9,1) - rz*v(9,0))
+            v(29,1) = qcx*v(10,1) + wqx*v(10,0) &
+               + 3.0_dp*oo2ze*v(5,0)
+            v(30,1) = pay*v(24,1) + wpy*v(24,0)
+            v(31,1) = pax*v(27,1) + wpx*v(27,0) &
+               + 1.0_dp*oo2ze*v(7,0)
+            v(32,1) = paz*v(26,1) + wpz*v(26,0) &
+               + 1.0_dp*oo2z*(v(23,1) - rz*v(23,0))
+            v(33,1) = qcx*v(14,1) + wqx*v(14,0)
+            v(34,1) = qcx*v(15,1) + wqx*v(15,0)
+            v(48,1) = qcy*v(10,1) + wqy*v(10,0)
+            v(49,1) = pay*v(42,1) + wpy*v(42,0) &
+               + 1.0_dp*oo2ze*v(5,0)
+            v(50,1) = paz*v(42,1) + wpz*v(42,0)
+            v(51,1) = pax*v(45,1) + wpx*v(45,0)
+            v(52,1) = pax*v(46,1) + wpx*v(46,0)
+            v(53,1) = pax*v(47,1) + wpx*v(47,0)
+            v(54,1) = qcy*v(14,1) + wqy*v(14,0) &
+               + 3.0_dp*oo2ze*v(7,0)
+            v(55,1) = paz*v(45,1) + wpz*v(45,0)
+            v(56,1) = pay*v(47,1) + wpy*v(47,0) &
+               + 1.0_dp*oo2ze*v(9,0)
+            v(57,1) = qcy*v(16,1) + wqy*v(16,0)
+            v(80,1) = qcz*v(10,1) + wqz*v(10,0)
+            v(81,1) = qcz*v(11,1) + wqz*v(11,0)
+            v(82,1) = pax*v(76,1) + wpx*v(76,0) &
+               + 1.0_dp*oo2z*(v(75,1) - rz*v(75,0))
+            v(83,1) = pax*v(77,1) + wpx*v(77,0)
+            v(84,1) = qcz*v(14,1) + wqz*v(14,0)
+            v(85,1) = paz*v(77,1) + wpz*v(77,0) &
+               + 1.0_dp*oo2ze*v(7,0)
+            v(86,1) = pay*v(79,1) + wpy*v(79,0)
+            v(87,1) = qcz*v(16,1) + wqz*v(16,0) &
+               + 3.0_dp*oo2ze*v(9,0)
+            v(93,1) = qcy*v(24,1) + wqy*v(24,0)
+            v(94,1) = qcy*v(25,1) + wqy*v(25,0) &
+               + 1.0_dp*oo2ze*v(23,0)
+            v(95,1) = qcy*v(26,1) + wqy*v(26,0)
+            v(97,1) = qcx*v(46,1) + wqx*v(46,0)
+            v(98,1) = qcx*v(47,1) + wqx*v(47,0)
+            v(126,1) = qcy*v(42,1) + wqy*v(42,0) &
+               + 1.0_dp*oo2e*(v(5,1) - re*v(5,0))
+            v(127,1) = pax*v(125,1) + wpx*v(125,0)
+            v(129,1) = qcy*v(45,1) + wqy*v(45,0) &
+               + 1.0_dp*oo2e*(v(7,1) - re*v(7,0)) &
+               + 2.0_dp*oo2ze*v(40,0)
+            v(130,1) = paz*v(125,1) + wpz*v(125,0)
+            v(131,1) = qcy*v(47,1) + wqy*v(47,0) &
+               + 1.0_dp*oo2e*(v(9,1) - re*v(9,0))
+            v(158,1) = qcz*v(42,1) + wqz*v(42,0)
+            v(162,1) = paz*v(157,1) + wpz*v(157,0) &
+               + 1.0_dp*oo2ze*v(40,0)
+            v(163,1) = qcy*v(79,1) + wqy*v(79,0)
+            v(35,1) = qcx*v(17,1) + wqx*v(17,0) &
+               + 4.0_dp*oo2ze*v(10,0)
+            v(36,1) = pax*v(33,1) + wpx*v(33,0) &
+               + 1.0_dp*oo2ze*v(14,0)
+            v(37,1) = qcx*v(21,1) + wqx*v(21,0)
+            v(65,1) = pay*v(52,1) + wpy*v(52,0) &
+               + 1.0_dp*oo2z*(v(44,1) - rz*v(44,0)) &
+               + 1.0_dp*oo2ze*v(13,0)
+            v(67,1) = pax*v(57,1) + wpx*v(57,0)
+            v(68,1) = pay*v(54,1) + wpy*v(54,0) &
+               + 3.0_dp*oo2z*(v(45,1) - rz*v(45,0)) &
+               + 1.0_dp*oo2ze*v(14,0)
+            v(69,1) = paz*v(54,1) + wpz*v(54,0)
+            v(88,1) = qcz*v(17,1) + wqz*v(17,0)
+            v(89,1) = pax*v(83,1) + wpx*v(83,0) &
+               + 1.0_dp*oo2z*(v(77,1) - rz*v(77,0))
+            v(90,1) = pax*v(84,1) + wpx*v(84,0)
+            v(91,1) = pay*v(87,1) + wpy*v(87,0)
+            v(92,1) = qcz*v(21,1) + wqz*v(21,0) &
+               + 4.0_dp*oo2ze*v(16,0)
+            v(100,1) = qcy*v(30,1) + wqy*v(30,0) &
+               + 1.0_dp*oo2ze*v(24,0)
+            v(101,1) = qcx*v(50,1) + wqx*v(50,0) &
+               + 2.0_dp*oo2ze*v(44,0)
+            v(107,1) = qcy*v(34,1) + wqy*v(34,0) &
+               + 1.0_dp*oo2ze*v(28,0)
+            v(132,1) = qcy*v(48,1) + wqy*v(48,0) &
+               + 1.0_dp*oo2e*(v(10,1) - re*v(10,0))
+            v(135,1) = pax*v(129,1) + wpx*v(129,0)
+            v(136,1) = qcy*v(52,1) + wqy*v(52,0) &
+               + 1.0_dp*oo2e*(v(13,1) - re*v(13,0)) &
+               + 1.0_dp*oo2ze*v(44,0)
+            v(137,1) = pax*v(131,1) + wpx*v(131,0)
+            v(140,1) = pay*v(131,1) + wpy*v(131,0) &
+               + 2.0_dp*oo2ze*v(47,0)
+            v(141,1) = qcy*v(57,1) + wqy*v(57,0) &
+               + 1.0_dp*oo2e*(v(16,1) - re*v(16,0))
+            v(164,1) = qcy*v(80,1) + wqy*v(80,0)
+            v(166,1) = qcz*v(50,1) + wqz*v(50,0) &
+               + 1.0_dp*oo2ze*v(42,0)
+            v(172,1) = paz*v(162,1) + wpz*v(162,0) &
+               + 1.0_dp*oo2z*(v(157,1) - rz*v(157,0)) &
+               + 1.0_dp*oo2ze*v(46,0)
+            v(1,0) = pref*f(0)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(22,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(73,0) = qcz*v(1,0) + wqz*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(6,0) = pax*v(4,0) + wpx*v(4,1)
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(23,0) = pax*v(22,0) + wpx*v(22,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(40,0) = qcy*v(3,0) + wqy*v(3,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(75,0) = paz*v(73,0) + wpz*v(73,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(10,0) = pax*v(5,0) + wpx*v(5,1) &
+               + 2.0_dp*oo2z*(v(2,0) - rz*v(2,1))
+            v(11,0) = pay*v(5,0) + wpy*v(5,1)
+            v(14,0) = pay*v(7,0) + wpy*v(7,1) &
+               + 2.0_dp*oo2z*(v(3,0) - rz*v(3,1))
+            v(16,0) = paz*v(9,0) + wpz*v(9,1) &
+               + 2.0_dp*oo2z*(v(4,0) - rz*v(4,1))
+            v(24,0) = qcx*v(5,0) + wqx*v(5,1) &
+               + 2.0_dp*oo2ze*v(2,1)
+            v(25,0) = pay*v(23,0) + wpy*v(23,1)
+            v(26,0) = paz*v(23,0) + wpz*v(23,1)
+            v(42,0) = qcy*v(5,0) + wqy*v(5,1)
+            v(43,0) = pax*v(40,0) + wpx*v(40,1)
+            v(44,0) = qcy*v(6,0) + wqy*v(6,1)
+            v(45,0) = qcy*v(7,0) + wqy*v(7,1) &
+               + 2.0_dp*oo2ze*v(3,1)
+            v(46,0) = paz*v(40,0) + wpz*v(40,1)
+            v(47,0) = qcy*v(9,0) + wqy*v(9,1)
+            v(76,0) = pax*v(75,0) + wpx*v(75,1)
+            v(77,0) = qcz*v(7,0) + wqz*v(7,1)
+            v(79,0) = qcz*v(9,0) + wqz*v(9,1) &
+               + 2.0_dp*oo2ze*v(4,1)
+            v(125,0) = qcy*v(40,0) + wqy*v(40,1) &
+               + 1.0_dp*oo2e*(v(3,0) - re*v(3,1)) &
+               + 1.0_dp*oo2ze*v(38,1)
+            v(157,0) = qcz*v(40,0) + wqz*v(40,1)
+            v(17,0) = pax*v(10,0) + wpx*v(10,1) &
+               + 3.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(18,0) = pay*v(11,0) + wpy*v(11,1) &
+               + 1.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(19,0) = pay*v(14,0) + wpy*v(14,1) &
+               + 3.0_dp*oo2z*(v(7,0) - rz*v(7,1))
+            v(20,0) = paz*v(14,0) + wpz*v(14,1)
+            v(21,0) = paz*v(16,0) + wpz*v(16,1) &
+               + 3.0_dp*oo2z*(v(9,0) - rz*v(9,1))
+            v(29,0) = qcx*v(10,0) + wqx*v(10,1) &
+               + 3.0_dp*oo2ze*v(5,1)
+            v(32,0) = paz*v(26,0) + wpz*v(26,1) &
+               + 1.0_dp*oo2z*(v(23,0) - rz*v(23,1))
+            v(33,0) = qcx*v(14,0) + wqx*v(14,1)
+            v(48,0) = qcy*v(10,0) + wqy*v(10,1)
+            v(49,0) = pay*v(42,0) + wpy*v(42,1) &
+               + 1.0_dp*oo2ze*v(5,1)
+            v(50,0) = paz*v(42,0) + wpz*v(42,1)
+            v(51,0) = pax*v(45,0) + wpx*v(45,1)
+            v(52,0) = pax*v(46,0) + wpx*v(46,1)
+            v(53,0) = pax*v(47,0) + wpx*v(47,1)
+            v(54,0) = qcy*v(14,0) + wqy*v(14,1) &
+               + 3.0_dp*oo2ze*v(7,1)
+            v(55,0) = paz*v(45,0) + wpz*v(45,1)
+            v(56,0) = pay*v(47,0) + wpy*v(47,1) &
+               + 1.0_dp*oo2ze*v(9,1)
+            v(57,0) = qcy*v(16,0) + wqy*v(16,1)
+            v(80,0) = qcz*v(10,0) + wqz*v(10,1)
+            v(82,0) = pax*v(76,0) + wpx*v(76,1) &
+               + 1.0_dp*oo2z*(v(75,0) - rz*v(75,1))
+            v(84,0) = qcz*v(14,0) + wqz*v(14,1)
+            v(85,0) = paz*v(77,0) + wpz*v(77,1) &
+               + 1.0_dp*oo2ze*v(7,1)
+            v(87,0) = qcz*v(16,0) + wqz*v(16,1) &
+               + 3.0_dp*oo2ze*v(9,1)
+            v(93,0) = qcy*v(24,0) + wqy*v(24,1)
+            v(94,0) = qcy*v(25,0) + wqy*v(25,1) &
+               + 1.0_dp*oo2ze*v(23,1)
+            v(95,0) = qcy*v(26,0) + wqy*v(26,1)
+            v(96,0) = qcx*v(45,0) + wqx*v(45,1)
+            v(97,0) = qcx*v(46,0) + wqx*v(46,1)
+            v(98,0) = qcx*v(47,0) + wqx*v(47,1)
+            v(126,0) = qcy*v(42,0) + wqy*v(42,1) &
+               + 1.0_dp*oo2e*(v(5,0) - re*v(5,1))
+            v(127,0) = pax*v(125,0) + wpx*v(125,1)
+            v(128,0) = qcy*v(44,0) + wqy*v(44,1) &
+               + 1.0_dp*oo2e*(v(6,0) - re*v(6,1))
+            v(129,0) = qcy*v(45,0) + wqy*v(45,1) &
+               + 1.0_dp*oo2e*(v(7,0) - re*v(7,1)) &
+               + 2.0_dp*oo2ze*v(40,1)
+            v(130,0) = paz*v(125,0) + wpz*v(125,1)
+            v(131,0) = qcy*v(47,0) + wqy*v(47,1) &
+               + 1.0_dp*oo2e*(v(9,0) - re*v(9,1))
+            v(158,0) = qcz*v(42,0) + wqz*v(42,1)
+            v(159,0) = pax*v(157,0) + wpx*v(157,1)
+            v(160,0) = qcy*v(76,0) + wqy*v(76,1)
+            v(161,0) = qcz*v(45,0) + wqz*v(45,1)
+            v(162,0) = paz*v(157,0) + wpz*v(157,1) &
+               + 1.0_dp*oo2ze*v(40,1)
+            v(163,0) = qcy*v(79,0) + wqy*v(79,1)
+            v(35,0) = qcx*v(17,0) + wqx*v(17,1) &
+               + 4.0_dp*oo2ze*v(10,1)
+            v(36,0) = pax*v(33,0) + wpx*v(33,1) &
+               + 1.0_dp*oo2ze*v(14,1)
+            v(37,0) = qcx*v(21,0) + wqx*v(21,1)
+            v(58,0) = qcy*v(17,0) + wqy*v(17,1)
+            v(59,0) = pay*v(48,0) + wpy*v(48,1) &
+               + 1.0_dp*oo2ze*v(10,1)
+            v(60,0) = paz*v(48,0) + wpz*v(48,1)
+            v(61,0) = qcy*v(18,0) + wqy*v(18,1) &
+               + 2.0_dp*oo2ze*v(11,1)
+            v(62,0) = paz*v(49,0) + wpz*v(49,1)
+            v(63,0) = pax*v(53,0) + wpx*v(53,1) &
+               + 1.0_dp*oo2z*(v(47,0) - rz*v(47,1))
+            v(64,0) = pax*v(54,0) + wpx*v(54,1)
+            v(65,0) = pax*v(55,0) + wpx*v(55,1)
+            v(66,0) = pax*v(56,0) + wpx*v(56,1)
+            v(67,0) = pax*v(57,0) + wpx*v(57,1)
+            v(68,0) = qcy*v(19,0) + wqy*v(19,1) &
+               + 4.0_dp*oo2ze*v(14,1)
+            v(69,0) = paz*v(54,0) + wpz*v(54,1)
+            v(70,0) = paz*v(55,0) + wpz*v(55,1) &
+               + 1.0_dp*oo2z*(v(45,0) - rz*v(45,1))
+            v(71,0) = pay*v(57,0) + wpy*v(57,1) &
+               + 1.0_dp*oo2ze*v(16,1)
+            v(72,0) = qcy*v(21,0) + wqy*v(21,1)
+            v(88,0) = qcz*v(17,0) + wqz*v(17,1)
+            v(89,0) = qcz*v(18,0) + wqz*v(18,1)
+            v(90,0) = pax*v(84,0) + wpx*v(84,1)
+            v(91,0) = pay*v(87,0) + wpy*v(87,1)
+            v(92,0) = qcz*v(21,0) + wqz*v(21,1) &
+               + 4.0_dp*oo2ze*v(16,1)
+            v(99,0) = qcy*v(29,0) + wqy*v(29,1)
+            v(100,0) = pay*v(93,0) + wpy*v(93,1) &
+               + 1.0_dp*oo2ze*v(24,1)
+            v(101,0) = paz*v(93,0) + wpz*v(93,1)
+            v(102,0) = qcx*v(51,0) + wqx*v(51,1) &
+               + 1.0_dp*oo2ze*v(45,1)
+            v(103,0) = paz*v(94,0) + wpz*v(94,1)
+            v(104,0) = qcy*v(32,0) + wqy*v(32,1)
+            v(105,0) = qcx*v(54,0) + wqx*v(54,1)
+            v(106,0) = qcx*v(55,0) + wqx*v(55,1)
+            v(107,0) = qcx*v(56,0) + wqx*v(56,1)
+            v(108,0) = qcx*v(57,0) + wqx*v(57,1)
+            v(132,0) = qcy*v(48,0) + wqy*v(48,1) &
+               + 1.0_dp*oo2e*(v(10,0) - re*v(10,1))
+            v(133,0) = pay*v(126,0) + wpy*v(126,1) &
+               + 2.0_dp*oo2ze*v(42,1)
+            v(134,0) = paz*v(126,0) + wpz*v(126,1)
+            v(135,0) = pax*v(129,0) + wpx*v(129,1)
+            v(136,0) = pax*v(130,0) + wpx*v(130,1)
+            v(137,0) = pax*v(131,0) + wpx*v(131,1)
+            v(138,0) = pay*v(129,0) + wpy*v(129,1) &
+               + 2.0_dp*oo2z*(v(125,0) - rz*v(125,1)) &
+               + 2.0_dp*oo2ze*v(45,1)
+            v(139,0) = paz*v(129,0) + wpz*v(129,1)
+            v(140,0) = pay*v(131,0) + wpy*v(131,1) &
+               + 2.0_dp*oo2ze*v(47,1)
+            v(141,0) = qcy*v(57,0) + wqy*v(57,1) &
+               + 1.0_dp*oo2e*(v(16,0) - re*v(16,1))
+            v(164,0) = qcy*v(80,0) + wqy*v(80,1)
+            v(165,0) = qcz*v(49,0) + wqz*v(49,1)
+            v(166,0) = qcy*v(82,0) + wqy*v(82,1)
+            v(167,0) = qcz*v(51,0) + wqz*v(51,1)
+            v(168,0) = pax*v(162,0) + wpx*v(162,1)
+            v(169,0) = pax*v(163,0) + wpx*v(163,1)
+            v(170,0) = qcz*v(54,0) + wqz*v(54,1)
+            v(171,0) = qcy*v(85,0) + wqy*v(85,1) &
+               + 2.0_dp*oo2ze*v(78,1)
+            v(172,0) = pay*v(163,0) + wpy*v(163,1) &
+               + 1.0_dp*oo2ze*v(79,1)
+            v(173,0) = qcy*v(87,0) + wqy*v(87,1)
+            v(109,0) = qcy*v(35,0) + wqy*v(35,1)
+            v(110,0) = pax*v(100,0) + wpx*v(100,1) &
+               + 2.0_dp*oo2z*(v(94,0) - rz*v(94,1)) &
+               + 1.0_dp*oo2ze*v(49,1)
+            v(111,0) = pax*v(101,0) + wpx*v(101,1) &
+               + 2.0_dp*oo2z*(v(95,0) - rz*v(95,1)) &
+               + 1.0_dp*oo2ze*v(50,1)
+            v(112,0) = pay*v(100,0) + wpy*v(100,1) &
+               + 1.0_dp*oo2z*(v(93,0) - rz*v(93,1)) &
+               + 1.0_dp*oo2ze*v(30,1)
+            v(113,0) = paz*v(100,0) + wpz*v(100,1)
+            v(114,0) = paz*v(101,0) + wpz*v(101,1) &
+               + 1.0_dp*oo2z*(v(93,0) - rz*v(93,1))
+            v(115,0) = qcy*v(36,0) + wqy*v(36,1) &
+               + 3.0_dp*oo2ze*v(31,1)
+            v(116,0) = qcx*v(65,0) + wqx*v(65,1) &
+               + 1.0_dp*oo2ze*v(55,1)
+            v(117,0) = pax*v(107,0) + wpx*v(107,1) &
+               + 1.0_dp*oo2ze*v(56,1)
+            v(118,0) = qcx*v(67,0) + wqx*v(67,1) &
+               + 1.0_dp*oo2ze*v(57,1)
+            v(119,0) = qcx*v(68,0) + wqx*v(68,1)
+            v(120,0) = qcx*v(69,0) + wqx*v(69,1)
+            v(121,0) = pay*v(107,0) + wpy*v(107,1) &
+               + 1.0_dp*oo2z*(v(98,0) - rz*v(98,1)) &
+               + 1.0_dp*oo2ze*v(34,1)
+            v(122,0) = paz*v(107,0) + wpz*v(107,1) &
+               + 2.0_dp*oo2z*(v(97,0) - rz*v(97,1))
+            v(123,0) = qcy*v(37,0) + wqy*v(37,1)
+            v(142,0) = pax*v(132,0) + wpx*v(132,1) &
+               + 3.0_dp*oo2z*(v(126,0) - rz*v(126,1))
+            v(143,0) = pay*v(132,0) + wpy*v(132,1) &
+               + 2.0_dp*oo2ze*v(48,1)
+            v(144,0) = paz*v(132,0) + wpz*v(132,1)
+            v(145,0) = pax*v(135,0) + wpx*v(135,1) &
+               + 1.0_dp*oo2z*(v(129,0) - rz*v(129,1))
+            v(146,0) = pax*v(136,0) + wpx*v(136,1) &
+               + 1.0_dp*oo2z*(v(130,0) - rz*v(130,1))
+            v(147,0) = pax*v(137,0) + wpx*v(137,1) &
+               + 1.0_dp*oo2z*(v(131,0) - rz*v(131,1))
+            v(148,0) = pay*v(135,0) + wpy*v(135,1) &
+               + 2.0_dp*oo2z*(v(127,0) - rz*v(127,1)) &
+               + 2.0_dp*oo2ze*v(51,1)
+            v(149,0) = paz*v(135,0) + wpz*v(135,1)
+            v(150,0) = pax*v(140,0) + wpx*v(140,1)
+            v(151,0) = pax*v(141,0) + wpx*v(141,1)
+            v(152,0) = qcy*v(68,0) + wqy*v(68,1) &
+               + 1.0_dp*oo2e*(v(19,0) - re*v(19,1)) &
+               + 4.0_dp*oo2ze*v(54,1)
+            v(153,0) = qcy*v(69,0) + wqy*v(69,1) &
+               + 1.0_dp*oo2e*(v(20,0) - re*v(20,1)) &
+               + 3.0_dp*oo2ze*v(55,1)
+            v(154,0) = pay*v(140,0) + wpy*v(140,1) &
+               + 1.0_dp*oo2z*(v(131,0) - rz*v(131,1)) &
+               + 2.0_dp*oo2ze*v(56,1)
+            v(155,0) = pay*v(141,0) + wpy*v(141,1) &
+               + 2.0_dp*oo2ze*v(57,1)
+            v(156,0) = paz*v(141,0) + wpz*v(141,1) &
+               + 3.0_dp*oo2z*(v(131,0) - rz*v(131,1))
+            v(174,0) = qcy*v(88,0) + wqy*v(88,1)
+            v(175,0) = pay*v(164,0) + wpy*v(164,1) &
+               + 1.0_dp*oo2ze*v(80,1)
+            v(176,0) = paz*v(164,0) + wpz*v(164,1) &
+               + 1.0_dp*oo2ze*v(48,1)
+            v(177,0) = qcy*v(89,0) + wqy*v(89,1) &
+               + 2.0_dp*oo2ze*v(81,1)
+            v(178,0) = pay*v(166,0) + wpy*v(166,1) &
+               + 1.0_dp*oo2ze*v(82,1)
+            v(179,0) = paz*v(166,0) + wpz*v(166,1) &
+               + 1.0_dp*oo2z*(v(158,0) - rz*v(158,1)) &
+               + 1.0_dp*oo2ze*v(50,1)
+            v(180,0) = qcy*v(90,0) + wqy*v(90,1) &
+               + 3.0_dp*oo2ze*v(83,1)
+            v(181,0) = qcz*v(65,0) + wqz*v(65,1) &
+               + 1.0_dp*oo2ze*v(51,1)
+            v(182,0) = pax*v(172,0) + wpx*v(172,1)
+            v(183,0) = qcz*v(67,0) + wqz*v(67,1) &
+               + 3.0_dp*oo2ze*v(53,1)
+            v(184,0) = qcz*v(68,0) + wqz*v(68,1)
+            v(185,0) = qcz*v(69,0) + wqz*v(69,1) &
+               + 1.0_dp*oo2ze*v(54,1)
+            v(186,0) = pay*v(172,0) + wpy*v(172,1) &
+               + 1.0_dp*oo2z*(v(163,0) - rz*v(163,1)) &
+               + 1.0_dp*oo2ze*v(86,1)
+            v(187,0) = qcy*v(91,0) + wqy*v(91,1) &
+               + 1.0_dp*oo2ze*v(87,1)
+            v(188,0) = qcy*v(92,0) + wqy*v(92,1)
+               cur = 0
+                  g1(1) = g1(1) + v(42, cur)
+                  g1(2) = g1(2) + v(43, cur)
+                  g1(3) = g1(3) + v(44, cur)
+                  g1(4) = g1(4) + v(45, cur)
+                  g1(5) = g1(5) + v(46, cur)
+                  g1(6) = g1(6) + v(47, cur)
+                  g1(7) = g1(7) + v(48, cur)
+                  g1(8) = g1(8) + v(49, cur)
+                  g1(9) = g1(9) + v(50, cur)
+                  g1(10) = g1(10) + v(51, cur)
+                  g1(11) = g1(11) + v(52, cur)
+                  g1(12) = g1(12) + v(53, cur)
+                  g1(13) = g1(13) + v(54, cur)
+                  g1(14) = g1(14) + v(55, cur)
+                  g1(15) = g1(15) + v(56, cur)
+                  g1(16) = g1(16) + v(57, cur)
+                  g1(17) = g1(17) + v(58, cur)
+                  g1(18) = g1(18) + v(59, cur)
+                  g1(19) = g1(19) + v(60, cur)
+                  g1(20) = g1(20) + v(61, cur)
+                  g1(21) = g1(21) + v(62, cur)
+                  g1(22) = g1(22) + v(63, cur)
+                  g1(23) = g1(23) + v(64, cur)
+                  g1(24) = g1(24) + v(65, cur)
+                  g1(25) = g1(25) + v(66, cur)
+                  g1(26) = g1(26) + v(67, cur)
+                  g1(27) = g1(27) + v(68, cur)
+                  g1(28) = g1(28) + v(69, cur)
+                  g1(29) = g1(29) + v(70, cur)
+                  g1(30) = g1(30) + v(71, cur)
+                  g1(31) = g1(31) + v(72, cur)
+                  g1(32) = g1(32) + v(93, cur)
+                  g1(33) = g1(33) + v(94, cur)
+                  g1(34) = g1(34) + v(95, cur)
+                  g1(35) = g1(35) + v(96, cur)
+                  g1(36) = g1(36) + v(97, cur)
+                  g1(37) = g1(37) + v(98, cur)
+                  g1(38) = g1(38) + v(99, cur)
+                  g1(39) = g1(39) + v(100, cur)
+                  g1(40) = g1(40) + v(101, cur)
+                  g1(41) = g1(41) + v(102, cur)
+                  g1(42) = g1(42) + v(103, cur)
+                  g1(43) = g1(43) + v(104, cur)
+                  g1(44) = g1(44) + v(105, cur)
+                  g1(45) = g1(45) + v(106, cur)
+                  g1(46) = g1(46) + v(107, cur)
+                  g1(47) = g1(47) + v(108, cur)
+                  g1(48) = g1(48) + v(109, cur)
+                  g1(49) = g1(49) + v(110, cur)
+                  g1(50) = g1(50) + v(111, cur)
+                  g1(51) = g1(51) + v(112, cur)
+                  g1(52) = g1(52) + v(113, cur)
+                  g1(53) = g1(53) + v(114, cur)
+                  g1(54) = g1(54) + v(115, cur)
+                  g1(55) = g1(55) + v(116, cur)
+                  g1(56) = g1(56) + v(117, cur)
+                  g1(57) = g1(57) + v(118, cur)
+                  g1(58) = g1(58) + v(119, cur)
+                  g1(59) = g1(59) + v(120, cur)
+                  g1(60) = g1(60) + v(121, cur)
+                  g1(61) = g1(61) + v(122, cur)
+                  g1(62) = g1(62) + v(123, cur)
+                  g1(63) = g1(63) + v(126, cur)
+                  g1(64) = g1(64) + v(127, cur)
+                  g1(65) = g1(65) + v(128, cur)
+                  g1(66) = g1(66) + v(129, cur)
+                  g1(67) = g1(67) + v(130, cur)
+                  g1(68) = g1(68) + v(131, cur)
+                  g1(69) = g1(69) + v(132, cur)
+                  g1(70) = g1(70) + v(133, cur)
+                  g1(71) = g1(71) + v(134, cur)
+                  g1(72) = g1(72) + v(135, cur)
+                  g1(73) = g1(73) + v(136, cur)
+                  g1(74) = g1(74) + v(137, cur)
+                  g1(75) = g1(75) + v(138, cur)
+                  g1(76) = g1(76) + v(139, cur)
+                  g1(77) = g1(77) + v(140, cur)
+                  g1(78) = g1(78) + v(141, cur)
+                  g1(79) = g1(79) + v(142, cur)
+                  g1(80) = g1(80) + v(143, cur)
+                  g1(81) = g1(81) + v(144, cur)
+                  g1(82) = g1(82) + v(145, cur)
+                  g1(83) = g1(83) + v(146, cur)
+                  g1(84) = g1(84) + v(147, cur)
+                  g1(85) = g1(85) + v(148, cur)
+                  g1(86) = g1(86) + v(149, cur)
+                  g1(87) = g1(87) + v(150, cur)
+                  g1(88) = g1(88) + v(151, cur)
+                  g1(89) = g1(89) + v(152, cur)
+                  g1(90) = g1(90) + v(153, cur)
+                  g1(91) = g1(91) + v(154, cur)
+                  g1(92) = g1(92) + v(155, cur)
+                  g1(93) = g1(93) + v(156, cur)
+                  g1(94) = g1(94) + v(158, cur)
+                  g1(95) = g1(95) + v(159, cur)
+                  g1(96) = g1(96) + v(160, cur)
+                  g1(97) = g1(97) + v(161, cur)
+                  g1(98) = g1(98) + v(162, cur)
+                  g1(99) = g1(99) + v(163, cur)
+                  g1(100) = g1(100) + v(164, cur)
+                  g1(101) = g1(101) + v(165, cur)
+                  g1(102) = g1(102) + v(166, cur)
+                  g1(103) = g1(103) + v(167, cur)
+                  g1(104) = g1(104) + v(168, cur)
+                  g1(105) = g1(105) + v(169, cur)
+                  g1(106) = g1(106) + v(170, cur)
+                  g1(107) = g1(107) + v(171, cur)
+                  g1(108) = g1(108) + v(172, cur)
+                  g1(109) = g1(109) + v(173, cur)
+                  g1(110) = g1(110) + v(174, cur)
+                  g1(111) = g1(111) + v(175, cur)
+                  g1(112) = g1(112) + v(176, cur)
+                  g1(113) = g1(113) + v(177, cur)
+                  g1(114) = g1(114) + v(178, cur)
+                  g1(115) = g1(115) + v(179, cur)
+                  g1(116) = g1(116) + v(180, cur)
+                  g1(117) = g1(117) + v(181, cur)
+                  g1(118) = g1(118) + v(182, cur)
+                  g1(119) = g1(119) + v(183, cur)
+                  g1(120) = g1(120) + v(184, cur)
+                  g1(121) = g1(121) + v(185, cur)
+                  g1(122) = g1(122) + v(186, cur)
+                  g1(123) = g1(123) + v(187, cur)
+                  g1(124) = g1(124) + v(188, cur)
+               end do
+            end do
+         vbuf(1) = abx*abx*cdx*g1(1) &
+            + abx*abx*g1(32) &
+            + 2.0_dp*abx*cdx*g1(7) &
+            + 2.0_dp*abx*g1(38) &
+            + cdx*g1(17) &
+            + g1(48)
+         vbuf(2) = abx*abx*cdx*g1(2) &
+            + abx*abx*g1(33) &
+            + 2.0_dp*abx*cdx*g1(8) &
+            + 2.0_dp*abx*g1(39) &
+            + cdx*g1(18) &
+            + g1(49)
+         vbuf(3) = abx*abx*cdx*g1(3) &
+            + abx*abx*g1(34) &
+            + 2.0_dp*abx*cdx*g1(9) &
+            + 2.0_dp*abx*g1(40) &
+            + cdx*g1(19) &
+            + g1(50)
+         vbuf(4) = abx*abx*cdx*g1(4) &
+            + abx*abx*g1(35) &
+            + 2.0_dp*abx*cdx*g1(10) &
+            + 2.0_dp*abx*g1(41) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(5) = abx*abx*cdx*g1(5) &
+            + abx*abx*g1(36) &
+            + 2.0_dp*abx*cdx*g1(11) &
+            + 2.0_dp*abx*g1(42) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(6) = abx*abx*cdx*g1(6) &
+            + abx*abx*g1(37) &
+            + 2.0_dp*abx*cdx*g1(12) &
+            + 2.0_dp*abx*g1(43) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(7) = abx*aby*cdx*g1(1) &
+            + abx*aby*g1(32) &
+            + abx*cdx*g1(8) &
+            + abx*g1(39) &
+            + aby*cdx*g1(7) &
+            + aby*g1(38) &
+            + cdx*g1(18) &
+            + g1(49)
+         vbuf(8) = abx*aby*cdx*g1(2) &
+            + abx*aby*g1(33) &
+            + abx*cdx*g1(10) &
+            + abx*g1(41) &
+            + aby*cdx*g1(8) &
+            + aby*g1(39) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(9) = abx*aby*cdx*g1(3) &
+            + abx*aby*g1(34) &
+            + abx*cdx*g1(11) &
+            + abx*g1(42) &
+            + aby*cdx*g1(9) &
+            + aby*g1(40) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(10) = abx*aby*cdx*g1(4) &
+            + abx*aby*g1(35) &
+            + abx*cdx*g1(13) &
+            + abx*g1(44) &
+            + aby*cdx*g1(10) &
+            + aby*g1(41) &
+            + cdx*g1(23) &
+            + g1(54)
+         vbuf(11) = abx*aby*cdx*g1(5) &
+            + abx*aby*g1(36) &
+            + abx*cdx*g1(14) &
+            + abx*g1(45) &
+            + aby*cdx*g1(11) &
+            + aby*g1(42) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(12) = abx*aby*cdx*g1(6) &
+            + abx*aby*g1(37) &
+            + abx*cdx*g1(15) &
+            + abx*g1(46) &
+            + aby*cdx*g1(12) &
+            + aby*g1(43) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(13) = abx*abz*cdx*g1(1) &
+            + abx*abz*g1(32) &
+            + abx*cdx*g1(9) &
+            + abx*g1(40) &
+            + abz*cdx*g1(7) &
+            + abz*g1(38) &
+            + cdx*g1(19) &
+            + g1(50)
+         vbuf(14) = abx*abz*cdx*g1(2) &
+            + abx*abz*g1(33) &
+            + abx*cdx*g1(11) &
+            + abx*g1(42) &
+            + abz*cdx*g1(8) &
+            + abz*g1(39) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(15) = abx*abz*cdx*g1(3) &
+            + abx*abz*g1(34) &
+            + abx*cdx*g1(12) &
+            + abx*g1(43) &
+            + abz*cdx*g1(9) &
+            + abz*g1(40) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(16) = abx*abz*cdx*g1(4) &
+            + abx*abz*g1(35) &
+            + abx*cdx*g1(14) &
+            + abx*g1(45) &
+            + abz*cdx*g1(10) &
+            + abz*g1(41) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(17) = abx*abz*cdx*g1(5) &
+            + abx*abz*g1(36) &
+            + abx*cdx*g1(15) &
+            + abx*g1(46) &
+            + abz*cdx*g1(11) &
+            + abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(18) = abx*abz*cdx*g1(6) &
+            + abx*abz*g1(37) &
+            + abx*cdx*g1(16) &
+            + abx*g1(47) &
+            + abz*cdx*g1(12) &
+            + abz*g1(43) &
+            + cdx*g1(26) &
+            + g1(57)
+         vbuf(19) = aby*aby*cdx*g1(1) &
+            + aby*aby*g1(32) &
+            + 2.0_dp*aby*cdx*g1(8) &
+            + 2.0_dp*aby*g1(39) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(20) = aby*aby*cdx*g1(2) &
+            + aby*aby*g1(33) &
+            + 2.0_dp*aby*cdx*g1(10) &
+            + 2.0_dp*aby*g1(41) &
+            + cdx*g1(23) &
+            + g1(54)
+         vbuf(21) = aby*aby*cdx*g1(3) &
+            + aby*aby*g1(34) &
+            + 2.0_dp*aby*cdx*g1(11) &
+            + 2.0_dp*aby*g1(42) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(22) = aby*aby*cdx*g1(4) &
+            + aby*aby*g1(35) &
+            + 2.0_dp*aby*cdx*g1(13) &
+            + 2.0_dp*aby*g1(44) &
+            + cdx*g1(27) &
+            + g1(58)
+         vbuf(23) = aby*aby*cdx*g1(5) &
+            + aby*aby*g1(36) &
+            + 2.0_dp*aby*cdx*g1(14) &
+            + 2.0_dp*aby*g1(45) &
+            + cdx*g1(28) &
+            + g1(59)
+         vbuf(24) = aby*aby*cdx*g1(6) &
+            + aby*aby*g1(37) &
+            + 2.0_dp*aby*cdx*g1(15) &
+            + 2.0_dp*aby*g1(46) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(25) = aby*abz*cdx*g1(1) &
+            + aby*abz*g1(32) &
+            + aby*cdx*g1(9) &
+            + aby*g1(40) &
+            + abz*cdx*g1(8) &
+            + abz*g1(39) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(26) = aby*abz*cdx*g1(2) &
+            + aby*abz*g1(33) &
+            + aby*cdx*g1(11) &
+            + aby*g1(42) &
+            + abz*cdx*g1(10) &
+            + abz*g1(41) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(27) = aby*abz*cdx*g1(3) &
+            + aby*abz*g1(34) &
+            + aby*cdx*g1(12) &
+            + aby*g1(43) &
+            + abz*cdx*g1(11) &
+            + abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(28) = aby*abz*cdx*g1(4) &
+            + aby*abz*g1(35) &
+            + aby*cdx*g1(14) &
+            + aby*g1(45) &
+            + abz*cdx*g1(13) &
+            + abz*g1(44) &
+            + cdx*g1(28) &
+            + g1(59)
+         vbuf(29) = aby*abz*cdx*g1(5) &
+            + aby*abz*g1(36) &
+            + aby*cdx*g1(15) &
+            + aby*g1(46) &
+            + abz*cdx*g1(14) &
+            + abz*g1(45) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(30) = aby*abz*cdx*g1(6) &
+            + aby*abz*g1(37) &
+            + aby*cdx*g1(16) &
+            + aby*g1(47) &
+            + abz*cdx*g1(15) &
+            + abz*g1(46) &
+            + cdx*g1(30) &
+            + g1(61)
+         vbuf(31) = abz*abz*cdx*g1(1) &
+            + abz*abz*g1(32) &
+            + 2.0_dp*abz*cdx*g1(9) &
+            + 2.0_dp*abz*g1(40) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(32) = abz*abz*cdx*g1(2) &
+            + abz*abz*g1(33) &
+            + 2.0_dp*abz*cdx*g1(11) &
+            + 2.0_dp*abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(33) = abz*abz*cdx*g1(3) &
+            + abz*abz*g1(34) &
+            + 2.0_dp*abz*cdx*g1(12) &
+            + 2.0_dp*abz*g1(43) &
+            + cdx*g1(26) &
+            + g1(57)
+         vbuf(34) = abz*abz*cdx*g1(4) &
+            + abz*abz*g1(35) &
+            + 2.0_dp*abz*cdx*g1(14) &
+            + 2.0_dp*abz*g1(45) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(35) = abz*abz*cdx*g1(5) &
+            + abz*abz*g1(36) &
+            + 2.0_dp*abz*cdx*g1(15) &
+            + 2.0_dp*abz*g1(46) &
+            + cdx*g1(30) &
+            + g1(61)
+         vbuf(36) = abz*abz*cdx*g1(6) &
+            + abz*abz*g1(37) &
+            + 2.0_dp*abz*cdx*g1(16) &
+            + 2.0_dp*abz*g1(47) &
+            + cdx*g1(31) &
+            + g1(62)
+         vbuf(37) = abx*abx*cdy*g1(1) &
+            + abx*abx*g1(63) &
+            + 2.0_dp*abx*cdy*g1(7) &
+            + 2.0_dp*abx*g1(69) &
+            + cdy*g1(17) &
+            + g1(79)
+         vbuf(38) = abx*abx*cdy*g1(2) &
+            + abx*abx*g1(64) &
+            + 2.0_dp*abx*cdy*g1(8) &
+            + 2.0_dp*abx*g1(70) &
+            + cdy*g1(18) &
+            + g1(80)
+         vbuf(39) = abx*abx*cdy*g1(3) &
+            + abx*abx*g1(65) &
+            + 2.0_dp*abx*cdy*g1(9) &
+            + 2.0_dp*abx*g1(71) &
+            + cdy*g1(19) &
+            + g1(81)
+         vbuf(40) = abx*abx*cdy*g1(4) &
+            + abx*abx*g1(66) &
+            + 2.0_dp*abx*cdy*g1(10) &
+            + 2.0_dp*abx*g1(72) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(41) = abx*abx*cdy*g1(5) &
+            + abx*abx*g1(67) &
+            + 2.0_dp*abx*cdy*g1(11) &
+            + 2.0_dp*abx*g1(73) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(42) = abx*abx*cdy*g1(6) &
+            + abx*abx*g1(68) &
+            + 2.0_dp*abx*cdy*g1(12) &
+            + 2.0_dp*abx*g1(74) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(43) = abx*aby*cdy*g1(1) &
+            + abx*aby*g1(63) &
+            + abx*cdy*g1(8) &
+            + abx*g1(70) &
+            + aby*cdy*g1(7) &
+            + aby*g1(69) &
+            + cdy*g1(18) &
+            + g1(80)
+         vbuf(44) = abx*aby*cdy*g1(2) &
+            + abx*aby*g1(64) &
+            + abx*cdy*g1(10) &
+            + abx*g1(72) &
+            + aby*cdy*g1(8) &
+            + aby*g1(70) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(45) = abx*aby*cdy*g1(3) &
+            + abx*aby*g1(65) &
+            + abx*cdy*g1(11) &
+            + abx*g1(73) &
+            + aby*cdy*g1(9) &
+            + aby*g1(71) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(46) = abx*aby*cdy*g1(4) &
+            + abx*aby*g1(66) &
+            + abx*cdy*g1(13) &
+            + abx*g1(75) &
+            + aby*cdy*g1(10) &
+            + aby*g1(72) &
+            + cdy*g1(23) &
+            + g1(85)
+         vbuf(47) = abx*aby*cdy*g1(5) &
+            + abx*aby*g1(67) &
+            + abx*cdy*g1(14) &
+            + abx*g1(76) &
+            + aby*cdy*g1(11) &
+            + aby*g1(73) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(48) = abx*aby*cdy*g1(6) &
+            + abx*aby*g1(68) &
+            + abx*cdy*g1(15) &
+            + abx*g1(77) &
+            + aby*cdy*g1(12) &
+            + aby*g1(74) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(49) = abx*abz*cdy*g1(1) &
+            + abx*abz*g1(63) &
+            + abx*cdy*g1(9) &
+            + abx*g1(71) &
+            + abz*cdy*g1(7) &
+            + abz*g1(69) &
+            + cdy*g1(19) &
+            + g1(81)
+         vbuf(50) = abx*abz*cdy*g1(2) &
+            + abx*abz*g1(64) &
+            + abx*cdy*g1(11) &
+            + abx*g1(73) &
+            + abz*cdy*g1(8) &
+            + abz*g1(70) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(51) = abx*abz*cdy*g1(3) &
+            + abx*abz*g1(65) &
+            + abx*cdy*g1(12) &
+            + abx*g1(74) &
+            + abz*cdy*g1(9) &
+            + abz*g1(71) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(52) = abx*abz*cdy*g1(4) &
+            + abx*abz*g1(66) &
+            + abx*cdy*g1(14) &
+            + abx*g1(76) &
+            + abz*cdy*g1(10) &
+            + abz*g1(72) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(53) = abx*abz*cdy*g1(5) &
+            + abx*abz*g1(67) &
+            + abx*cdy*g1(15) &
+            + abx*g1(77) &
+            + abz*cdy*g1(11) &
+            + abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(54) = abx*abz*cdy*g1(6) &
+            + abx*abz*g1(68) &
+            + abx*cdy*g1(16) &
+            + abx*g1(78) &
+            + abz*cdy*g1(12) &
+            + abz*g1(74) &
+            + cdy*g1(26) &
+            + g1(88)
+         vbuf(55) = aby*aby*cdy*g1(1) &
+            + aby*aby*g1(63) &
+            + 2.0_dp*aby*cdy*g1(8) &
+            + 2.0_dp*aby*g1(70) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(56) = aby*aby*cdy*g1(2) &
+            + aby*aby*g1(64) &
+            + 2.0_dp*aby*cdy*g1(10) &
+            + 2.0_dp*aby*g1(72) &
+            + cdy*g1(23) &
+            + g1(85)
+         vbuf(57) = aby*aby*cdy*g1(3) &
+            + aby*aby*g1(65) &
+            + 2.0_dp*aby*cdy*g1(11) &
+            + 2.0_dp*aby*g1(73) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(58) = aby*aby*cdy*g1(4) &
+            + aby*aby*g1(66) &
+            + 2.0_dp*aby*cdy*g1(13) &
+            + 2.0_dp*aby*g1(75) &
+            + cdy*g1(27) &
+            + g1(89)
+         vbuf(59) = aby*aby*cdy*g1(5) &
+            + aby*aby*g1(67) &
+            + 2.0_dp*aby*cdy*g1(14) &
+            + 2.0_dp*aby*g1(76) &
+            + cdy*g1(28) &
+            + g1(90)
+         vbuf(60) = aby*aby*cdy*g1(6) &
+            + aby*aby*g1(68) &
+            + 2.0_dp*aby*cdy*g1(15) &
+            + 2.0_dp*aby*g1(77) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(61) = aby*abz*cdy*g1(1) &
+            + aby*abz*g1(63) &
+            + aby*cdy*g1(9) &
+            + aby*g1(71) &
+            + abz*cdy*g1(8) &
+            + abz*g1(70) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(62) = aby*abz*cdy*g1(2) &
+            + aby*abz*g1(64) &
+            + aby*cdy*g1(11) &
+            + aby*g1(73) &
+            + abz*cdy*g1(10) &
+            + abz*g1(72) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(63) = aby*abz*cdy*g1(3) &
+            + aby*abz*g1(65) &
+            + aby*cdy*g1(12) &
+            + aby*g1(74) &
+            + abz*cdy*g1(11) &
+            + abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(64) = aby*abz*cdy*g1(4) &
+            + aby*abz*g1(66) &
+            + aby*cdy*g1(14) &
+            + aby*g1(76) &
+            + abz*cdy*g1(13) &
+            + abz*g1(75) &
+            + cdy*g1(28) &
+            + g1(90)
+         vbuf(65) = aby*abz*cdy*g1(5) &
+            + aby*abz*g1(67) &
+            + aby*cdy*g1(15) &
+            + aby*g1(77) &
+            + abz*cdy*g1(14) &
+            + abz*g1(76) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(66) = aby*abz*cdy*g1(6) &
+            + aby*abz*g1(68) &
+            + aby*cdy*g1(16) &
+            + aby*g1(78) &
+            + abz*cdy*g1(15) &
+            + abz*g1(77) &
+            + cdy*g1(30) &
+            + g1(92)
+         vbuf(67) = abz*abz*cdy*g1(1) &
+            + abz*abz*g1(63) &
+            + 2.0_dp*abz*cdy*g1(9) &
+            + 2.0_dp*abz*g1(71) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(68) = abz*abz*cdy*g1(2) &
+            + abz*abz*g1(64) &
+            + 2.0_dp*abz*cdy*g1(11) &
+            + 2.0_dp*abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(69) = abz*abz*cdy*g1(3) &
+            + abz*abz*g1(65) &
+            + 2.0_dp*abz*cdy*g1(12) &
+            + 2.0_dp*abz*g1(74) &
+            + cdy*g1(26) &
+            + g1(88)
+         vbuf(70) = abz*abz*cdy*g1(4) &
+            + abz*abz*g1(66) &
+            + 2.0_dp*abz*cdy*g1(14) &
+            + 2.0_dp*abz*g1(76) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(71) = abz*abz*cdy*g1(5) &
+            + abz*abz*g1(67) &
+            + 2.0_dp*abz*cdy*g1(15) &
+            + 2.0_dp*abz*g1(77) &
+            + cdy*g1(30) &
+            + g1(92)
+         vbuf(72) = abz*abz*cdy*g1(6) &
+            + abz*abz*g1(68) &
+            + 2.0_dp*abz*cdy*g1(16) &
+            + 2.0_dp*abz*g1(78) &
+            + cdy*g1(31) &
+            + g1(93)
+         vbuf(73) = abx*abx*cdz*g1(1) &
+            + abx*abx*g1(94) &
+            + 2.0_dp*abx*cdz*g1(7) &
+            + 2.0_dp*abx*g1(100) &
+            + cdz*g1(17) &
+            + g1(110)
+         vbuf(74) = abx*abx*cdz*g1(2) &
+            + abx*abx*g1(95) &
+            + 2.0_dp*abx*cdz*g1(8) &
+            + 2.0_dp*abx*g1(101) &
+            + cdz*g1(18) &
+            + g1(111)
+         vbuf(75) = abx*abx*cdz*g1(3) &
+            + abx*abx*g1(96) &
+            + 2.0_dp*abx*cdz*g1(9) &
+            + 2.0_dp*abx*g1(102) &
+            + cdz*g1(19) &
+            + g1(112)
+         vbuf(76) = abx*abx*cdz*g1(4) &
+            + abx*abx*g1(97) &
+            + 2.0_dp*abx*cdz*g1(10) &
+            + 2.0_dp*abx*g1(103) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(77) = abx*abx*cdz*g1(5) &
+            + abx*abx*g1(98) &
+            + 2.0_dp*abx*cdz*g1(11) &
+            + 2.0_dp*abx*g1(104) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(78) = abx*abx*cdz*g1(6) &
+            + abx*abx*g1(99) &
+            + 2.0_dp*abx*cdz*g1(12) &
+            + 2.0_dp*abx*g1(105) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(79) = abx*aby*cdz*g1(1) &
+            + abx*aby*g1(94) &
+            + abx*cdz*g1(8) &
+            + abx*g1(101) &
+            + aby*cdz*g1(7) &
+            + aby*g1(100) &
+            + cdz*g1(18) &
+            + g1(111)
+         vbuf(80) = abx*aby*cdz*g1(2) &
+            + abx*aby*g1(95) &
+            + abx*cdz*g1(10) &
+            + abx*g1(103) &
+            + aby*cdz*g1(8) &
+            + aby*g1(101) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(81) = abx*aby*cdz*g1(3) &
+            + abx*aby*g1(96) &
+            + abx*cdz*g1(11) &
+            + abx*g1(104) &
+            + aby*cdz*g1(9) &
+            + aby*g1(102) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(82) = abx*aby*cdz*g1(4) &
+            + abx*aby*g1(97) &
+            + abx*cdz*g1(13) &
+            + abx*g1(106) &
+            + aby*cdz*g1(10) &
+            + aby*g1(103) &
+            + cdz*g1(23) &
+            + g1(116)
+         vbuf(83) = abx*aby*cdz*g1(5) &
+            + abx*aby*g1(98) &
+            + abx*cdz*g1(14) &
+            + abx*g1(107) &
+            + aby*cdz*g1(11) &
+            + aby*g1(104) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(84) = abx*aby*cdz*g1(6) &
+            + abx*aby*g1(99) &
+            + abx*cdz*g1(15) &
+            + abx*g1(108) &
+            + aby*cdz*g1(12) &
+            + aby*g1(105) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(85) = abx*abz*cdz*g1(1) &
+            + abx*abz*g1(94) &
+            + abx*cdz*g1(9) &
+            + abx*g1(102) &
+            + abz*cdz*g1(7) &
+            + abz*g1(100) &
+            + cdz*g1(19) &
+            + g1(112)
+         vbuf(86) = abx*abz*cdz*g1(2) &
+            + abx*abz*g1(95) &
+            + abx*cdz*g1(11) &
+            + abx*g1(104) &
+            + abz*cdz*g1(8) &
+            + abz*g1(101) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(87) = abx*abz*cdz*g1(3) &
+            + abx*abz*g1(96) &
+            + abx*cdz*g1(12) &
+            + abx*g1(105) &
+            + abz*cdz*g1(9) &
+            + abz*g1(102) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(88) = abx*abz*cdz*g1(4) &
+            + abx*abz*g1(97) &
+            + abx*cdz*g1(14) &
+            + abx*g1(107) &
+            + abz*cdz*g1(10) &
+            + abz*g1(103) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(89) = abx*abz*cdz*g1(5) &
+            + abx*abz*g1(98) &
+            + abx*cdz*g1(15) &
+            + abx*g1(108) &
+            + abz*cdz*g1(11) &
+            + abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(90) = abx*abz*cdz*g1(6) &
+            + abx*abz*g1(99) &
+            + abx*cdz*g1(16) &
+            + abx*g1(109) &
+            + abz*cdz*g1(12) &
+            + abz*g1(105) &
+            + cdz*g1(26) &
+            + g1(119)
+         vbuf(91) = aby*aby*cdz*g1(1) &
+            + aby*aby*g1(94) &
+            + 2.0_dp*aby*cdz*g1(8) &
+            + 2.0_dp*aby*g1(101) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(92) = aby*aby*cdz*g1(2) &
+            + aby*aby*g1(95) &
+            + 2.0_dp*aby*cdz*g1(10) &
+            + 2.0_dp*aby*g1(103) &
+            + cdz*g1(23) &
+            + g1(116)
+         vbuf(93) = aby*aby*cdz*g1(3) &
+            + aby*aby*g1(96) &
+            + 2.0_dp*aby*cdz*g1(11) &
+            + 2.0_dp*aby*g1(104) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(94) = aby*aby*cdz*g1(4) &
+            + aby*aby*g1(97) &
+            + 2.0_dp*aby*cdz*g1(13) &
+            + 2.0_dp*aby*g1(106) &
+            + cdz*g1(27) &
+            + g1(120)
+         vbuf(95) = aby*aby*cdz*g1(5) &
+            + aby*aby*g1(98) &
+            + 2.0_dp*aby*cdz*g1(14) &
+            + 2.0_dp*aby*g1(107) &
+            + cdz*g1(28) &
+            + g1(121)
+         vbuf(96) = aby*aby*cdz*g1(6) &
+            + aby*aby*g1(99) &
+            + 2.0_dp*aby*cdz*g1(15) &
+            + 2.0_dp*aby*g1(108) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(97) = aby*abz*cdz*g1(1) &
+            + aby*abz*g1(94) &
+            + aby*cdz*g1(9) &
+            + aby*g1(102) &
+            + abz*cdz*g1(8) &
+            + abz*g1(101) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(98) = aby*abz*cdz*g1(2) &
+            + aby*abz*g1(95) &
+            + aby*cdz*g1(11) &
+            + aby*g1(104) &
+            + abz*cdz*g1(10) &
+            + abz*g1(103) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(99) = aby*abz*cdz*g1(3) &
+            + aby*abz*g1(96) &
+            + aby*cdz*g1(12) &
+            + aby*g1(105) &
+            + abz*cdz*g1(11) &
+            + abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(100) = aby*abz*cdz*g1(4) &
+            + aby*abz*g1(97) &
+            + aby*cdz*g1(14) &
+            + aby*g1(107) &
+            + abz*cdz*g1(13) &
+            + abz*g1(106) &
+            + cdz*g1(28) &
+            + g1(121)
+         vbuf(101) = aby*abz*cdz*g1(5) &
+            + aby*abz*g1(98) &
+            + aby*cdz*g1(15) &
+            + aby*g1(108) &
+            + abz*cdz*g1(14) &
+            + abz*g1(107) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(102) = aby*abz*cdz*g1(6) &
+            + aby*abz*g1(99) &
+            + aby*cdz*g1(16) &
+            + aby*g1(109) &
+            + abz*cdz*g1(15) &
+            + abz*g1(108) &
+            + cdz*g1(30) &
+            + g1(123)
+         vbuf(103) = abz*abz*cdz*g1(1) &
+            + abz*abz*g1(94) &
+            + 2.0_dp*abz*cdz*g1(9) &
+            + 2.0_dp*abz*g1(102) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(104) = abz*abz*cdz*g1(2) &
+            + abz*abz*g1(95) &
+            + 2.0_dp*abz*cdz*g1(11) &
+            + 2.0_dp*abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(105) = abz*abz*cdz*g1(3) &
+            + abz*abz*g1(96) &
+            + 2.0_dp*abz*cdz*g1(12) &
+            + 2.0_dp*abz*g1(105) &
+            + cdz*g1(26) &
+            + g1(119)
+         vbuf(106) = abz*abz*cdz*g1(4) &
+            + abz*abz*g1(97) &
+            + 2.0_dp*abz*cdz*g1(14) &
+            + 2.0_dp*abz*g1(107) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(107) = abz*abz*cdz*g1(5) &
+            + abz*abz*g1(98) &
+            + 2.0_dp*abz*cdz*g1(15) &
+            + 2.0_dp*abz*g1(108) &
+            + cdz*g1(30) &
+            + g1(123)
+         vbuf(108) = abz*abz*cdz*g1(6) &
+            + abz*abz*g1(99) &
+            + 2.0_dp*abz*cdz*g1(16) &
+            + 2.0_dp*abz*g1(109) &
+            + cdz*g1(31) &
+            + g1(124)
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 108
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 5
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc1(gi)
+               dcd(1 + ic + 3*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 3*id) = 0.0_dp
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc1(gi)
+            do ia = 0, 5
+               dac(1 + ia + 6*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 6*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do ia = 0, 5
+               dad(1 + ia + 6*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 6*id) = 0.0_dp
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc1(gi)
+            do ib = 0, 5
+               dbc(1 + ib + 6*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 6*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do ib = 0, 5
+               dbd(1 + ib + 6*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 6*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc1(gi)
+         do ib = 0, 5
+         do ia = 0, 5
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 3*id)
+            jcd(1 + ic + 3*id) = jcd(1 + ic + 3*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 6*ib)
+            kac(1 + ia + 6*ic) = kac(1 + ia + 6*ic) &
+                                    - kfac*sc*dbd(1 + ib + 6*id)
+            kad(1 + ia + 6*id) = kad(1 + ia + 6*id) &
+                                    - kfac*sc*dbc(1 + ib + 6*ic)
+            kbc(1 + ib + 6*ic) = kbc(1 + ib + 6*ic) &
+                                    - kfac*sc*dad(1 + ia + 6*id)
+            kbd(1 + ib + 6*id) = kbd(1 + ib + 6*id) &
+                                    - kfac*sc*dac(1 + ia + 6*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 5
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc1(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 3*id)
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc1(gi)
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 6*ic)
+            end do
+         end do
+         do id = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 6*id)
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc1(gi)
+            do ib = 0, 5
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 6*ic)
+            end do
+         end do
+         do id = 0, 2
+            do ib = 0, 5
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         case (3)
+            do x = 1, 124
+               g1(x) = 0.0_dp
+            end do
+            do kp = offab + 1, offab + nab
+               zeta = pp_p(kp)
+               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+               ! Bra-only quantities, out of the ket loop. They depend on
+               ! kp alone and were being reloaded and recomputed once per
+               ! KET primitive, which on a deeply contracted shell pair is
+               ! 144 times over for values that never change. The compiler
+               ! does not lift them, presumably because it cannot prove the
+               ! loads invariant. Measured on (ps|ss) of the silica slice in
+               ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
+               ! same profile flat.
+               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
+               pax = rpx - pp_ra(kp, 1)
+               pay = rpy - pp_ra(kp, 2)
+               paz = rpz - pp_ra(kp, 3)
+               ! 1/zeta with them: the bra exponent does not change across
+               ! the ket loop, so its reciprocal is one division per bra
+               ! primitive rather than three per primitive QUARTET.
+               rzeta = 1.0_dp/zeta
+               oo2z = 0.5_dp*rzeta
+               do kq = offcd + 1, offcd + ncd
+                  eta = pp_p(kq)
+                  zpe = zeta + eta
+                  ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
+                  ! primitive (ss|ss) integral, and with the normalisation
+                  ! in the coefficients it bounds the higher ones to within
+                  ! the polynomial factors the cutoff's three decades of
+                  ! margin cover. Tested before the Boys function and the
+                  ! VRR, which is nearly all of a primitive quartet's cost;
+                  ! on a generally contracted basis two thirds of the
+                  ! quartets that survive the pair pruning die here.
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
+                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
+                  if (abs(pref) <= pcut) cycle
+                  ! One reciprocal each for eta and zeta+eta, then multiply.
+                  ! This loop used to issue ten double-precision divisions
+                  ! per primitive quartet -- rho, three for the W centre,
+                  ! three halves, two rho ratios and the prefactor -- against
+                  ! a recurrence that for the light classes is five lines.
+                  ! Division has no fast reciprocal in double precision, so
+                  ! that was the arithmetic, not the recurrence.
+                  reta = 1.0_dp/eta
+                  rzpe = 1.0_dp/zpe
+                  rho = zeta*eta*rzpe
+                  pqx = rpx - pp_r(kq, 1)
+                  pqy = rpy - pp_r(kq, 2)
+                  pqz = rpz - pp_r(kq, 3)
+                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
+                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
+                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
+                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
+                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
+                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
+                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
+                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
+                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+
+                  if (tval >= BOYS_TMAX) then
+                  btt = 1.0_dp/tval
+                  f(0) = 0.88622692545275801365_dp*sqrt(btt)
+                  bet = 0.0_dp
+                  f(1) = 1.0_dp*f(0)*(0.5_dp*btt)
+                  f(2) = 3.0_dp*f(1)*(0.5_dp*btt)
+                  f(3) = 5.0_dp*f(2)*(0.5_dp*btt)
+                  f(4) = 7.0_dp*f(3)*(0.5_dp*btt)
+                  f(5) = 9.0_dp*f(4)*(0.5_dp*btt)
+                  f(6) = 11.0_dp*f(5)*(0.5_dp*btt)
+               else
+                  bi = int(tval*BOYS_DTINV)
+                  bi = min(bi, BOYS_NGRID - 1)
+                  bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV - 1.0_dp
+                  bx2 = 2.0_dp*bx
+                  bbase = bi*(BOYS_MMAX + 1)*(BOYS_NCHEB + 1)
+                  bj = bbase + 6*(BOYS_NCHEB + 1)
+                  b1 = boys_table(bj + BOYS_NCHEB + 1)
+                  b2 = 0.0_dp
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  f(6) = bx*b1 - b2 + boys_table(bj + 1)
+                  bet = exp(-tval)
+                  btt = 2.0_dp*tval
+                  f(5) = (btt*f(6) + bet)*(0.09090909090909091_dp)
+                  f(4) = (btt*f(5) + bet)*(0.1111111111111111_dp)
+                  f(3) = (btt*f(4) + bet)*(0.14285714285714285_dp)
+                  f(2) = (btt*f(3) + bet)*(0.2_dp)
+                  f(1) = (btt*f(2) + bet)*(0.3333333333333333_dp)
+                  f(0) = (btt*f(1) + bet)*(1.0_dp)
+               end if
+
+                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
+                  rz = rho*rzeta; re = rho*reta
+
+               v(1,0) = pref*f(6)
+            v(1,1) = pref*f(5)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(39,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(1,0) = pref*f(4)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(22,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(39,0) = qcy*v(1,0) + wqy*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(40,0) = pax*v(39,0) + wpx*v(39,1)
+            v(63,0) = qcz*v(2,0) + wqz*v(2,1)
+            v(64,0) = qcz*v(3,0) + wqz*v(3,1)
+            v(1,1) = pref*f(3)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(22,1) = qcx*v(1,1) + wqx*v(1,0)
+            v(39,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(62,1) = qcz*v(1,1) + wqz*v(1,0)
+            v(5,1) = pax*v(2,1) + wpx*v(2,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(7,1) = pay*v(3,1) + wpy*v(3,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(8,1) = pay*v(4,1) + wpy*v(4,0)
+            v(9,1) = paz*v(4,1) + wpz*v(4,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(23,1) = pax*v(22,1) + wpx*v(22,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(40,1) = pax*v(39,1) + wpx*v(39,0)
+            v(41,1) = pay*v(39,1) + wpy*v(39,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(42,1) = paz*v(39,1) + wpz*v(39,0)
+            v(63,1) = qcz*v(2,1) + wqz*v(2,0)
+            v(64,1) = qcz*v(3,1) + wqz*v(3,0)
+            v(65,1) = qcz*v(4,1) + wqz*v(4,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(10,1) = pax*v(5,1) + wpx*v(5,0) &
+               + 2.0_dp*oo2z*(v(2,1) - rz*v(2,0))
+            v(12,1) = pax*v(7,1) + wpx*v(7,0)
+            v(14,1) = pay*v(7,1) + wpy*v(7,0) &
+               + 2.0_dp*oo2z*(v(3,1) - rz*v(3,0))
+            v(15,1) = paz*v(9,1) + wpz*v(9,0) &
+               + 2.0_dp*oo2z*(v(4,1) - rz*v(4,0))
+            v(24,1) = qcx*v(5,1) + wqx*v(5,0) &
+               + 2.0_dp*oo2ze*v(2,0)
+            v(27,1) = qcx*v(7,1) + wqx*v(7,0)
+            v(28,1) = qcx*v(9,1) + wqx*v(9,0)
+            v(44,1) = pay*v(40,1) + wpy*v(40,0) &
+               + 1.0_dp*oo2ze*v(2,0)
+            v(45,1) = paz*v(40,1) + wpz*v(40,0)
+            v(66,1) = qcz*v(5,1) + wqz*v(5,0)
+            v(70,1) = paz*v(64,1) + wpz*v(64,0) &
+               + 1.0_dp*oo2ze*v(3,0)
+            v(161,1) = qcz*v(63,1) + wqz*v(63,0) &
+               + 1.0_dp*oo2e*(v(2,1) - re*v(2,0))
+            v(1,0) = pref*f(2)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(22,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(39,0) = qcy*v(1,0) + wqy*v(1,1)
+            v(62,0) = qcz*v(1,0) + wqz*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(6,0) = pax*v(4,0) + wpx*v(4,1)
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(8,0) = pay*v(4,0) + wpy*v(4,1)
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(23,0) = pax*v(22,0) + wpx*v(22,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(41,0) = pay*v(39,0) + wpy*v(39,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(42,0) = paz*v(39,0) + wpz*v(39,1)
+            v(63,0) = pax*v(62,0) + wpx*v(62,1)
+            v(65,0) = paz*v(62,0) + wpz*v(62,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(10,0) = pax*v(5,0) + wpx*v(5,1) &
+               + 2.0_dp*oo2z*(v(2,0) - rz*v(2,1))
+            v(11,0) = pay*v(5,0) + wpy*v(5,1)
+            v(12,0) = pax*v(7,0) + wpx*v(7,1)
+            v(13,0) = pax*v(8,0) + wpx*v(8,1)
+            v(14,0) = pay*v(7,0) + wpy*v(7,1) &
+               + 2.0_dp*oo2z*(v(3,0) - rz*v(3,1))
+            v(15,0) = paz*v(9,0) + wpz*v(9,1) &
+               + 2.0_dp*oo2z*(v(4,0) - rz*v(4,1))
+            v(24,0) = qcx*v(5,0) + wqx*v(5,1) &
+               + 2.0_dp*oo2ze*v(2,1)
+            v(26,0) = paz*v(23,0) + wpz*v(23,1)
+            v(27,0) = qcx*v(7,0) + wqx*v(7,1)
+            v(28,0) = qcx*v(9,0) + wqx*v(9,1)
+            v(43,0) = qcy*v(5,0) + wqy*v(5,1)
+            v(44,0) = pax*v(41,0) + wpx*v(41,1)
+            v(45,0) = pax*v(42,0) + wpx*v(42,1)
+            v(46,0) = qcy*v(7,0) + wqy*v(7,1) &
+               + 2.0_dp*oo2ze*v(3,1)
+            v(47,0) = paz*v(41,0) + wpz*v(41,1)
+            v(48,0) = qcy*v(9,0) + wqy*v(9,1)
+            v(66,0) = qcz*v(5,0) + wqz*v(5,1)
+            v(68,0) = pax*v(65,0) + wpx*v(65,1)
+            v(69,0) = qcz*v(7,0) + wqz*v(7,1)
+            v(70,0) = pay*v(65,0) + wpy*v(65,1)
+            v(71,0) = qcz*v(9,0) + wqz*v(9,1) &
+               + 2.0_dp*oo2ze*v(4,1)
+            v(128,0) = qcz*v(41,0) + wqz*v(41,1)
+            v(161,0) = qcz*v(63,0) + wqz*v(63,1) &
+               + 1.0_dp*oo2e*(v(2,0) - re*v(2,1))
+            v(162,0) = qcz*v(65,0) + wqz*v(65,1) &
+               + 1.0_dp*oo2e*(v(4,0) - re*v(4,1)) &
+               + 1.0_dp*oo2ze*v(62,1)
+            v(16,0) = pax*v(10,0) + wpx*v(10,1) &
+               + 3.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(21,0) = paz*v(15,0) + wpz*v(15,1) &
+               + 3.0_dp*oo2z*(v(9,0) - rz*v(9,1))
+            v(30,0) = pay*v(24,0) + wpy*v(24,1)
+            v(33,0) = pax*v(28,0) + wpx*v(28,1) &
+               + 1.0_dp*oo2ze*v(9,1)
+            v(34,0) = qcx*v(14,0) + wqx*v(14,1)
+            v(35,0) = paz*v(27,0) + wpz*v(27,1)
+            v(51,0) = pax*v(45,0) + wpx*v(45,1) &
+               + 1.0_dp*oo2z*(v(42,0) - rz*v(42,1))
+            v(53,0) = paz*v(44,0) + wpz*v(44,1)
+            v(55,0) = qcy*v(14,0) + wqy*v(14,1) &
+               + 3.0_dp*oo2ze*v(7,1)
+            v(57,0) = qcy*v(15,0) + wqy*v(15,1)
+            v(72,0) = qcz*v(10,0) + wqz*v(10,1)
+            v(73,0) = pay*v(66,0) + wpy*v(66,1)
+            v(75,0) = qcz*v(12,0) + wqz*v(12,1)
+            v(78,0) = qcz*v(14,0) + wqz*v(14,1)
+            v(81,0) = qcz*v(15,0) + wqz*v(15,1) &
+               + 3.0_dp*oo2ze*v(9,1)
+            v(133,0) = qcy*v(70,0) + wqy*v(70,1) &
+               + 1.0_dp*oo2ze*v(65,1)
+            v(165,0) = paz*v(161,0) + wpz*v(161,1) &
+               + 2.0_dp*oo2ze*v(63,1)
+            v(167,0) = qcz*v(70,0) + wqz*v(70,1) &
+               + 1.0_dp*oo2e*(v(8,0) - re*v(8,1)) &
+               + 1.0_dp*oo2ze*v(64,1)
+            v(1,1) = pref*f(1)
+            v(2,1) = pax*v(1,1) + wpx*v(1,0)
+            v(3,1) = pay*v(1,1) + wpy*v(1,0)
+            v(4,1) = paz*v(1,1) + wpz*v(1,0)
+            v(22,1) = qcx*v(1,1) + wqx*v(1,0)
+            v(39,1) = qcy*v(1,1) + wqy*v(1,0)
+            v(62,1) = qcz*v(1,1) + wqz*v(1,0)
+            v(5,1) = pax*v(2,1) + wpx*v(2,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(6,1) = pax*v(4,1) + wpx*v(4,0)
+            v(7,1) = pay*v(3,1) + wpy*v(3,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(9,1) = paz*v(4,1) + wpz*v(4,0) &
+               + 1.0_dp*oo2z*(v(1,1) - rz*v(1,0))
+            v(23,1) = pax*v(22,1) + wpx*v(22,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(41,1) = pay*v(39,1) + wpy*v(39,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(63,1) = pax*v(62,1) + wpx*v(62,0)
+            v(64,1) = pay*v(62,1) + wpy*v(62,0)
+            v(65,1) = paz*v(62,1) + wpz*v(62,0) &
+               + 1.0_dp*oo2ze*v(1,0)
+            v(160,1) = qcz*v(62,1) + wqz*v(62,0) &
+               + 1.0_dp*oo2e*(v(1,1) - re*v(1,0))
+            v(10,1) = pax*v(5,1) + wpx*v(5,0) &
+               + 2.0_dp*oo2z*(v(2,1) - rz*v(2,0))
+            v(11,1) = pay*v(5,1) + wpy*v(5,0)
+            v(14,1) = pay*v(7,1) + wpy*v(7,0) &
+               + 2.0_dp*oo2z*(v(3,1) - rz*v(3,0))
+            v(15,1) = paz*v(9,1) + wpz*v(9,0) &
+               + 2.0_dp*oo2z*(v(4,1) - rz*v(4,0))
+            v(24,1) = qcx*v(5,1) + wqx*v(5,0) &
+               + 2.0_dp*oo2ze*v(2,0)
+            v(25,1) = pay*v(23,1) + wpy*v(23,0)
+            v(26,1) = paz*v(23,1) + wpz*v(23,0)
+            v(27,1) = qcx*v(7,1) + wqx*v(7,0)
+            v(43,1) = qcy*v(5,1) + wqy*v(5,0)
+            v(45,1) = qcy*v(6,1) + wqy*v(6,0)
+            v(46,1) = qcy*v(7,1) + wqy*v(7,0) &
+               + 2.0_dp*oo2ze*v(3,0)
+            v(47,1) = paz*v(41,1) + wpz*v(41,0)
+            v(48,1) = qcy*v(9,1) + wqy*v(9,0)
+            v(68,1) = pax*v(65,1) + wpx*v(65,0)
+            v(69,1) = qcz*v(7,1) + wqz*v(7,0)
+            v(70,1) = pay*v(65,1) + wpy*v(65,0)
+            v(71,1) = qcz*v(9,1) + wqz*v(9,0) &
+               + 2.0_dp*oo2ze*v(4,0)
+            v(128,1) = qcz*v(41,1) + wqz*v(41,0)
+            v(161,1) = qcz*v(63,1) + wqz*v(63,0) &
+               + 1.0_dp*oo2e*(v(2,1) - re*v(2,0))
+            v(162,1) = qcz*v(65,1) + wqz*v(65,0) &
+               + 1.0_dp*oo2e*(v(4,1) - re*v(4,0)) &
+               + 1.0_dp*oo2ze*v(62,0)
+            v(16,1) = pax*v(10,1) + wpx*v(10,0) &
+               + 3.0_dp*oo2z*(v(5,1) - rz*v(5,0))
+            v(17,1) = pay*v(11,1) + wpy*v(11,0) &
+               + 1.0_dp*oo2z*(v(5,1) - rz*v(5,0))
+            v(18,1) = pax*v(14,1) + wpx*v(14,0)
+            v(19,1) = pay*v(14,1) + wpy*v(14,0) &
+               + 3.0_dp*oo2z*(v(7,1) - rz*v(7,0))
+            v(20,1) = pay*v(15,1) + wpy*v(15,0)
+            v(21,1) = paz*v(15,1) + wpz*v(15,0) &
+               + 3.0_dp*oo2z*(v(9,1) - rz*v(9,0))
+            v(29,1) = qcx*v(10,1) + wqx*v(10,0) &
+               + 3.0_dp*oo2ze*v(5,0)
+            v(30,1) = pay*v(24,1) + wpy*v(24,0)
+            v(31,1) = paz*v(24,1) + wpz*v(24,0)
+            v(32,1) = pax*v(27,1) + wpx*v(27,0) &
+               + 1.0_dp*oo2ze*v(7,0)
+            v(33,1) = paz*v(26,1) + wpz*v(26,0) &
+               + 1.0_dp*oo2z*(v(23,1) - rz*v(23,0))
+            v(34,1) = qcx*v(14,1) + wqx*v(14,0)
+            v(35,1) = paz*v(27,1) + wpz*v(27,0)
+            v(49,1) = qcy*v(10,1) + wqy*v(10,0)
+            v(50,1) = pay*v(43,1) + wpy*v(43,0) &
+               + 1.0_dp*oo2ze*v(5,0)
+            v(51,1) = paz*v(43,1) + wpz*v(43,0)
+            v(52,1) = pax*v(46,1) + wpx*v(46,0)
+            v(53,1) = pax*v(47,1) + wpx*v(47,0)
+            v(54,1) = pax*v(48,1) + wpx*v(48,0)
+            v(55,1) = qcy*v(14,1) + wqy*v(14,0) &
+               + 3.0_dp*oo2ze*v(7,0)
+            v(56,1) = paz*v(46,1) + wpz*v(46,0)
+            v(57,1) = qcy*v(15,1) + wqy*v(15,0)
+            v(72,1) = qcz*v(10,1) + wqz*v(10,0)
+            v(73,1) = qcz*v(11,1) + wqz*v(11,0)
+            v(74,1) = pax*v(68,1) + wpx*v(68,0) &
+               + 1.0_dp*oo2z*(v(65,1) - rz*v(65,0))
+            v(75,1) = pax*v(69,1) + wpx*v(69,0)
+            v(77,1) = pax*v(71,1) + wpx*v(71,0)
+            v(78,1) = qcz*v(14,1) + wqz*v(14,0)
+            v(79,1) = paz*v(69,1) + wpz*v(69,0) &
+               + 1.0_dp*oo2ze*v(7,0)
+            v(80,1) = pay*v(71,1) + wpy*v(71,0)
+            v(81,1) = qcz*v(15,1) + wqz*v(15,0) &
+               + 3.0_dp*oo2ze*v(9,0)
+            v(99,1) = qcx*v(68,1) + wqx*v(68,0) &
+               + 1.0_dp*oo2ze*v(65,0)
+            v(100,1) = qcx*v(69,1) + wqx*v(69,0)
+            v(101,1) = qcx*v(70,1) + wqx*v(70,0)
+            v(102,1) = qcx*v(71,1) + wqx*v(71,0)
+            v(129,1) = qcz*v(43,1) + wqz*v(43,0)
+            v(133,1) = paz*v(128,1) + wpz*v(128,0) &
+               + 1.0_dp*oo2ze*v(41,0)
+            v(134,1) = qcy*v(71,1) + wqy*v(71,0)
+            v(164,1) = pay*v(161,1) + wpy*v(161,0)
+            v(165,1) = pax*v(162,1) + wpx*v(162,0)
+            v(166,1) = qcz*v(69,1) + wqz*v(69,0) &
+               + 1.0_dp*oo2e*(v(7,1) - re*v(7,0))
+            v(167,1) = pay*v(162,1) + wpy*v(162,0)
+            v(168,1) = qcz*v(71,1) + wqz*v(71,0) &
+               + 1.0_dp*oo2e*(v(9,1) - re*v(9,0)) &
+               + 2.0_dp*oo2ze*v(65,0)
+            v(36,1) = qcx*v(16,1) + wqx*v(16,0) &
+               + 4.0_dp*oo2ze*v(10,0)
+            v(37,1) = paz*v(30,1) + wpz*v(30,0)
+            v(38,1) = pax*v(34,1) + wpx*v(34,0) &
+               + 1.0_dp*oo2ze*v(14,0)
+            v(58,1) = pay*v(53,1) + wpy*v(53,0) &
+               + 1.0_dp*oo2z*(v(45,1) - rz*v(45,0)) &
+               + 1.0_dp*oo2ze*v(13,0)
+            v(59,1) = pax*v(57,1) + wpx*v(57,0)
+            v(60,1) = pay*v(55,1) + wpy*v(55,0) &
+               + 3.0_dp*oo2z*(v(46,1) - rz*v(46,0)) &
+               + 1.0_dp*oo2ze*v(14,0)
+            v(61,1) = paz*v(55,1) + wpz*v(55,0)
+            v(82,1) = qcz*v(16,1) + wqz*v(16,0)
+            v(85,1) = pax*v(75,1) + wpx*v(75,0) &
+               + 1.0_dp*oo2z*(v(69,1) - rz*v(69,0))
+            v(88,1) = pax*v(78,1) + wpx*v(78,0)
+            v(92,1) = pay*v(78,1) + wpy*v(78,0) &
+               + 3.0_dp*oo2z*(v(69,1) - rz*v(69,0))
+            v(95,1) = pay*v(81,1) + wpy*v(81,0)
+            v(96,1) = qcz*v(21,1) + wqz*v(21,0) &
+               + 4.0_dp*oo2ze*v(15,0)
+            v(103,1) = qcx*v(72,1) + wqx*v(72,0) &
+               + 3.0_dp*oo2ze*v(66,0)
+            v(108,1) = qcz*v(33,1) + wqz*v(33,0) &
+               + 2.0_dp*oo2ze*v(26,0)
+            v(110,1) = qcz*v(35,1) + wqz*v(35,0) &
+               + 1.0_dp*oo2ze*v(27,0)
+            v(135,1) = qcy*v(72,1) + wqy*v(72,0)
+            v(137,1) = qcz*v(51,1) + wqz*v(51,0) &
+               + 1.0_dp*oo2ze*v(43,0)
+            v(143,1) = paz*v(133,1) + wpz*v(133,0) &
+               + 1.0_dp*oo2z*(v(128,1) - rz*v(128,0)) &
+               + 1.0_dp*oo2ze*v(47,0)
+            v(170,1) = qcz*v(73,1) + wqz*v(73,0) &
+               + 1.0_dp*oo2e*(v(11,1) - re*v(11,0))
+            v(171,1) = pax*v(165,1) + wpx*v(165,0) &
+               + 1.0_dp*oo2z*(v(162,1) - rz*v(162,0))
+            v(174,1) = paz*v(165,1) + wpz*v(165,0) &
+               + 1.0_dp*oo2z*(v(161,1) - rz*v(161,0)) &
+               + 2.0_dp*oo2ze*v(68,0)
+            v(176,1) = pay*v(167,1) + wpy*v(167,0) &
+               + 1.0_dp*oo2z*(v(162,1) - rz*v(162,0))
+            v(1,0) = pref*f(0)
+            v(2,0) = pax*v(1,0) + wpx*v(1,1)
+            v(3,0) = pay*v(1,0) + wpy*v(1,1)
+            v(4,0) = paz*v(1,0) + wpz*v(1,1)
+            v(22,0) = qcx*v(1,0) + wqx*v(1,1)
+            v(62,0) = qcz*v(1,0) + wqz*v(1,1)
+            v(5,0) = pax*v(2,0) + wpx*v(2,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(7,0) = pay*v(3,0) + wpy*v(3,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(9,0) = paz*v(4,0) + wpz*v(4,1) &
+               + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
+            v(23,0) = pax*v(22,0) + wpx*v(22,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(41,0) = qcy*v(3,0) + wqy*v(3,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(64,0) = pay*v(62,0) + wpy*v(62,1)
+            v(65,0) = paz*v(62,0) + wpz*v(62,1) &
+               + 1.0_dp*oo2ze*v(1,1)
+            v(160,0) = qcz*v(62,0) + wqz*v(62,1) &
+               + 1.0_dp*oo2e*(v(1,0) - re*v(1,1))
+            v(10,0) = pax*v(5,0) + wpx*v(5,1) &
+               + 2.0_dp*oo2z*(v(2,0) - rz*v(2,1))
+            v(11,0) = pay*v(5,0) + wpy*v(5,1)
+            v(14,0) = pay*v(7,0) + wpy*v(7,1) &
+               + 2.0_dp*oo2z*(v(3,0) - rz*v(3,1))
+            v(15,0) = paz*v(9,0) + wpz*v(9,1) &
+               + 2.0_dp*oo2z*(v(4,0) - rz*v(4,1))
+            v(24,0) = qcx*v(5,0) + wqx*v(5,1) &
+               + 2.0_dp*oo2ze*v(2,1)
+            v(25,0) = pay*v(23,0) + wpy*v(23,1)
+            v(27,0) = qcx*v(7,0) + wqx*v(7,1)
+            v(43,0) = qcy*v(5,0) + wqy*v(5,1)
+            v(46,0) = qcy*v(7,0) + wqy*v(7,1) &
+               + 2.0_dp*oo2ze*v(3,1)
+            v(66,0) = qcz*v(5,0) + wqz*v(5,1)
+            v(67,0) = pax*v(64,0) + wpx*v(64,1)
+            v(68,0) = pax*v(65,0) + wpx*v(65,1)
+            v(69,0) = qcz*v(7,0) + wqz*v(7,1)
+            v(70,0) = pay*v(65,0) + wpy*v(65,1)
+            v(71,0) = qcz*v(9,0) + wqz*v(9,1) &
+               + 2.0_dp*oo2ze*v(4,1)
+            v(128,0) = qcz*v(41,0) + wqz*v(41,1)
+            v(161,0) = pax*v(160,0) + wpx*v(160,1)
+            v(162,0) = paz*v(160,0) + wpz*v(160,1) &
+               + 2.0_dp*oo2ze*v(62,1)
+            v(16,0) = pax*v(10,0) + wpx*v(10,1) &
+               + 3.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(17,0) = pay*v(11,0) + wpy*v(11,1) &
+               + 1.0_dp*oo2z*(v(5,0) - rz*v(5,1))
+            v(18,0) = pax*v(14,0) + wpx*v(14,1)
+            v(19,0) = pay*v(14,0) + wpy*v(14,1) &
+               + 3.0_dp*oo2z*(v(7,0) - rz*v(7,1))
+            v(20,0) = pay*v(15,0) + wpy*v(15,1)
+            v(21,0) = paz*v(15,0) + wpz*v(15,1) &
+               + 3.0_dp*oo2z*(v(9,0) - rz*v(9,1))
+            v(29,0) = qcx*v(10,0) + wqx*v(10,1) &
+               + 3.0_dp*oo2ze*v(5,1)
+            v(30,0) = pay*v(24,0) + wpy*v(24,1)
+            v(31,0) = paz*v(24,0) + wpz*v(24,1)
+            v(32,0) = pax*v(27,0) + wpx*v(27,1) &
+               + 1.0_dp*oo2ze*v(7,1)
+            v(34,0) = qcx*v(14,0) + wqx*v(14,1)
+            v(50,0) = pay*v(43,0) + wpy*v(43,1) &
+               + 1.0_dp*oo2ze*v(5,1)
+            v(52,0) = pax*v(46,0) + wpx*v(46,1)
+            v(55,0) = qcy*v(14,0) + wqy*v(14,1) &
+               + 3.0_dp*oo2ze*v(7,1)
+            v(56,0) = paz*v(46,0) + wpz*v(46,1)
+            v(57,0) = qcy*v(15,0) + wqy*v(15,1)
+            v(72,0) = qcz*v(10,0) + wqz*v(10,1)
+            v(73,0) = qcz*v(11,0) + wqz*v(11,1)
+            v(74,0) = pax*v(68,0) + wpx*v(68,1) &
+               + 1.0_dp*oo2z*(v(65,0) - rz*v(65,1))
+            v(75,0) = pax*v(69,0) + wpx*v(69,1)
+            v(76,0) = pax*v(70,0) + wpx*v(70,1)
+            v(77,0) = pax*v(71,0) + wpx*v(71,1)
+            v(78,0) = qcz*v(14,0) + wqz*v(14,1)
+            v(79,0) = paz*v(69,0) + wpz*v(69,1) &
+               + 1.0_dp*oo2ze*v(7,1)
+            v(80,0) = pay*v(71,0) + wpy*v(71,1)
+            v(81,0) = qcz*v(15,0) + wqz*v(15,1) &
+               + 3.0_dp*oo2ze*v(9,1)
+            v(97,0) = qcz*v(24,0) + wqz*v(24,1)
+            v(98,0) = qcz*v(25,0) + wqz*v(25,1)
+            v(99,0) = qcx*v(68,0) + wqx*v(68,1) &
+               + 1.0_dp*oo2ze*v(65,1)
+            v(100,0) = qcx*v(69,0) + wqx*v(69,1)
+            v(101,0) = qcx*v(70,0) + wqx*v(70,1)
+            v(102,0) = qcx*v(71,0) + wqx*v(71,1)
+            v(129,0) = qcz*v(43,0) + wqz*v(43,1)
+            v(130,0) = pax*v(128,0) + wpx*v(128,1)
+            v(131,0) = qcy*v(68,0) + wqy*v(68,1)
+            v(132,0) = qcz*v(46,0) + wqz*v(46,1)
+            v(133,0) = paz*v(128,0) + wpz*v(128,1) &
+               + 1.0_dp*oo2ze*v(41,1)
+            v(134,0) = qcy*v(71,0) + wqy*v(71,1)
+            v(163,0) = pax*v(161,0) + wpx*v(161,1) &
+               + 1.0_dp*oo2z*(v(160,0) - rz*v(160,1))
+            v(164,0) = pay*v(161,0) + wpy*v(161,1)
+            v(165,0) = pax*v(162,0) + wpx*v(162,1)
+            v(166,0) = qcz*v(69,0) + wqz*v(69,1) &
+               + 1.0_dp*oo2e*(v(7,0) - re*v(7,1))
+            v(167,0) = pay*v(162,0) + wpy*v(162,1)
+            v(168,0) = paz*v(162,0) + wpz*v(162,1) &
+               + 1.0_dp*oo2z*(v(160,0) - rz*v(160,1)) &
+               + 2.0_dp*oo2ze*v(65,1)
+            v(36,0) = qcx*v(16,0) + wqx*v(16,1) &
+               + 4.0_dp*oo2ze*v(10,1)
+            v(37,0) = pay*v(31,0) + wpy*v(31,1)
+            v(38,0) = pax*v(34,0) + wpx*v(34,1) &
+               + 1.0_dp*oo2ze*v(14,1)
+            v(58,0) = pax*v(56,0) + wpx*v(56,1)
+            v(59,0) = pax*v(57,0) + wpx*v(57,1)
+            v(60,0) = qcy*v(19,0) + wqy*v(19,1) &
+               + 4.0_dp*oo2ze*v(14,1)
+            v(61,0) = paz*v(55,0) + wpz*v(55,1)
+            v(82,0) = qcz*v(16,0) + wqz*v(16,1)
+            v(83,0) = pay*v(72,0) + wpy*v(72,1)
+            v(84,0) = paz*v(72,0) + wpz*v(72,1) &
+               + 1.0_dp*oo2ze*v(10,1)
+            v(85,0) = qcz*v(17,0) + wqz*v(17,1)
+            v(86,0) = pay*v(74,0) + wpy*v(74,1)
+            v(87,0) = pax*v(77,0) + wpx*v(77,1) &
+               + 1.0_dp*oo2z*(v(71,0) - rz*v(71,1))
+            v(88,0) = pax*v(78,0) + wpx*v(78,1)
+            v(89,0) = pax*v(79,0) + wpx*v(79,1)
+            v(90,0) = pax*v(80,0) + wpx*v(80,1)
+            v(91,0) = pax*v(81,0) + wpx*v(81,1)
+            v(92,0) = qcz*v(19,0) + wqz*v(19,1)
+            v(93,0) = paz*v(78,0) + wpz*v(78,1) &
+               + 1.0_dp*oo2ze*v(14,1)
+            v(94,0) = pay*v(80,0) + wpy*v(80,1) &
+               + 1.0_dp*oo2z*(v(71,0) - rz*v(71,1))
+            v(95,0) = pay*v(81,0) + wpy*v(81,1)
+            v(96,0) = qcz*v(21,0) + wqz*v(21,1) &
+               + 4.0_dp*oo2ze*v(15,1)
+            v(103,0) = qcz*v(29,0) + wqz*v(29,1)
+            v(104,0) = qcz*v(30,0) + wqz*v(30,1)
+            v(105,0) = qcx*v(74,0) + wqx*v(74,1) &
+               + 2.0_dp*oo2ze*v(68,1)
+            v(106,0) = qcz*v(32,0) + wqz*v(32,1)
+            v(107,0) = pay*v(99,0) + wpy*v(99,1)
+            v(108,0) = pax*v(102,0) + wpx*v(102,1) &
+               + 1.0_dp*oo2ze*v(71,1)
+            v(109,0) = qcx*v(78,0) + wqx*v(78,1)
+            v(110,0) = qcx*v(79,0) + wqx*v(79,1)
+            v(111,0) = pay*v(102,0) + wpy*v(102,1)
+            v(112,0) = qcx*v(81,0) + wqx*v(81,1)
+            v(135,0) = qcy*v(72,0) + wqy*v(72,1)
+            v(136,0) = qcz*v(50,0) + wqz*v(50,1)
+            v(137,0) = qcy*v(74,0) + wqy*v(74,1)
+            v(138,0) = qcz*v(52,0) + wqz*v(52,1)
+            v(139,0) = pax*v(133,0) + wpx*v(133,1)
+            v(140,0) = pax*v(134,0) + wpx*v(134,1)
+            v(141,0) = qcz*v(55,0) + wqz*v(55,1)
+            v(142,0) = qcy*v(79,0) + wqy*v(79,1) &
+               + 2.0_dp*oo2ze*v(70,1)
+            v(143,0) = pay*v(134,0) + wpy*v(134,1) &
+               + 1.0_dp*oo2ze*v(71,1)
+            v(144,0) = qcy*v(81,0) + wqy*v(81,1)
+            v(169,0) = qcz*v(72,0) + wqz*v(72,1) &
+               + 1.0_dp*oo2e*(v(10,0) - re*v(10,1))
+            v(170,0) = qcz*v(73,0) + wqz*v(73,1) &
+               + 1.0_dp*oo2e*(v(11,0) - re*v(11,1))
+            v(171,0) = pax*v(165,0) + wpx*v(165,1) &
+               + 1.0_dp*oo2z*(v(162,0) - rz*v(162,1))
+            v(172,0) = pax*v(166,0) + wpx*v(166,1)
+            v(173,0) = pax*v(167,0) + wpx*v(167,1)
+            v(174,0) = pax*v(168,0) + wpx*v(168,1)
+            v(175,0) = qcz*v(78,0) + wqz*v(78,1) &
+               + 1.0_dp*oo2e*(v(14,0) - re*v(14,1))
+            v(176,0) = paz*v(166,0) + wpz*v(166,1) &
+               + 2.0_dp*oo2ze*v(69,1)
+            v(177,0) = pay*v(168,0) + wpy*v(168,1)
+            v(178,0) = paz*v(168,0) + wpz*v(168,1) &
+               + 2.0_dp*oo2z*(v(162,0) - rz*v(162,1)) &
+               + 2.0_dp*oo2ze*v(71,1)
+            v(113,0) = qcz*v(36,0) + wqz*v(36,1)
+            v(114,0) = pay*v(103,0) + wpy*v(103,1)
+            v(115,0) = paz*v(103,0) + wpz*v(103,1) &
+               + 1.0_dp*oo2ze*v(29,1)
+            v(116,0) = qcx*v(85,0) + wqx*v(85,1) &
+               + 2.0_dp*oo2ze*v(75,1)
+            v(117,0) = qcz*v(37,0) + wqz*v(37,1) &
+               + 1.0_dp*oo2ze*v(30,1)
+            v(118,0) = pax*v(108,0) + wpx*v(108,1) &
+               + 1.0_dp*oo2z*(v(102,0) - rz*v(102,1)) &
+               + 1.0_dp*oo2ze*v(77,1)
+            v(119,0) = qcz*v(38,0) + wqz*v(38,1)
+            v(120,0) = pax*v(110,0) + wpx*v(110,1) &
+               + 1.0_dp*oo2ze*v(79,1)
+            v(121,0) = pay*v(108,0) + wpy*v(108,1)
+            v(122,0) = paz*v(108,0) + wpz*v(108,1) &
+               + 2.0_dp*oo2z*(v(99,0) - rz*v(99,1)) &
+               + 1.0_dp*oo2ze*v(33,1)
+            v(123,0) = qcx*v(92,0) + wqx*v(92,1)
+            v(124,0) = pay*v(110,0) + wpy*v(110,1) &
+               + 2.0_dp*oo2z*(v(101,0) - rz*v(101,1))
+            v(125,0) = paz*v(110,0) + wpz*v(110,1) &
+               + 1.0_dp*oo2z*(v(100,0) - rz*v(100,1)) &
+               + 1.0_dp*oo2ze*v(35,1)
+            v(126,0) = qcx*v(95,0) + wqx*v(95,1)
+            v(127,0) = qcx*v(96,0) + wqx*v(96,1)
+            v(145,0) = qcy*v(82,0) + wqy*v(82,1)
+            v(146,0) = pay*v(135,0) + wpy*v(135,1) &
+               + 1.0_dp*oo2ze*v(72,1)
+            v(147,0) = paz*v(135,0) + wpz*v(135,1) &
+               + 1.0_dp*oo2ze*v(49,1)
+            v(148,0) = qcy*v(85,0) + wqy*v(85,1) &
+               + 2.0_dp*oo2ze*v(73,1)
+            v(149,0) = pay*v(137,0) + wpy*v(137,1) &
+               + 1.0_dp*oo2ze*v(74,1)
+            v(150,0) = paz*v(137,0) + wpz*v(137,1) &
+               + 1.0_dp*oo2z*(v(129,0) - rz*v(129,1)) &
+               + 1.0_dp*oo2ze*v(51,1)
+            v(151,0) = qcy*v(88,0) + wqy*v(88,1) &
+               + 3.0_dp*oo2ze*v(75,1)
+            v(152,0) = qcz*v(58,0) + wqz*v(58,1) &
+               + 1.0_dp*oo2ze*v(52,1)
+            v(153,0) = pax*v(143,0) + wpx*v(143,1)
+            v(154,0) = qcz*v(59,0) + wqz*v(59,1) &
+               + 3.0_dp*oo2ze*v(54,1)
+            v(155,0) = qcz*v(60,0) + wqz*v(60,1)
+            v(156,0) = qcz*v(61,0) + wqz*v(61,1) &
+               + 1.0_dp*oo2ze*v(55,1)
+            v(157,0) = pay*v(143,0) + wpy*v(143,1) &
+               + 1.0_dp*oo2z*(v(134,0) - rz*v(134,1)) &
+               + 1.0_dp*oo2ze*v(80,1)
+            v(158,0) = qcy*v(95,0) + wqy*v(95,1) &
+               + 1.0_dp*oo2ze*v(81,1)
+            v(159,0) = qcy*v(96,0) + wqy*v(96,1)
+            v(179,0) = qcz*v(82,0) + wqz*v(82,1) &
+               + 1.0_dp*oo2e*(v(16,0) - re*v(16,1))
+            v(180,0) = pax*v(170,0) + wpx*v(170,1) &
+               + 2.0_dp*oo2z*(v(164,0) - rz*v(164,1))
+            v(181,0) = pax*v(171,0) + wpx*v(171,1) &
+               + 2.0_dp*oo2z*(v(165,0) - rz*v(165,1))
+            v(182,0) = qcz*v(85,0) + wqz*v(85,1) &
+               + 1.0_dp*oo2e*(v(17,0) - re*v(17,1))
+            v(183,0) = pay*v(171,0) + wpy*v(171,1)
+            v(184,0) = pax*v(174,0) + wpx*v(174,1) &
+               + 1.0_dp*oo2z*(v(168,0) - rz*v(168,1))
+            v(185,0) = qcz*v(88,0) + wqz*v(88,1) &
+               + 1.0_dp*oo2e*(v(18,0) - re*v(18,1))
+            v(186,0) = pax*v(176,0) + wpx*v(176,1)
+            v(187,0) = pay*v(174,0) + wpy*v(174,1)
+            v(188,0) = paz*v(174,0) + wpz*v(174,1) &
+               + 2.0_dp*oo2z*(v(165,0) - rz*v(165,1)) &
+               + 2.0_dp*oo2ze*v(77,1)
+            v(189,0) = qcz*v(92,0) + wqz*v(92,1) &
+               + 1.0_dp*oo2e*(v(19,0) - re*v(19,1))
+            v(190,0) = pay*v(176,0) + wpy*v(176,1) &
+               + 2.0_dp*oo2z*(v(167,0) - rz*v(167,1))
+            v(191,0) = paz*v(176,0) + wpz*v(176,1) &
+               + 1.0_dp*oo2z*(v(166,0) - rz*v(166,1)) &
+               + 2.0_dp*oo2ze*v(79,1)
+            v(192,0) = qcz*v(95,0) + wqz*v(95,1) &
+               + 1.0_dp*oo2e*(v(20,0) - re*v(20,1)) &
+               + 3.0_dp*oo2ze*v(80,1)
+            v(193,0) = qcz*v(96,0) + wqz*v(96,1) &
+               + 1.0_dp*oo2e*(v(21,0) - re*v(21,1)) &
+               + 4.0_dp*oo2ze*v(81,1)
+               cur = 0
+                  g1(1) = g1(1) + v(66, cur)
+                  g1(2) = g1(2) + v(67, cur)
+                  g1(3) = g1(3) + v(68, cur)
+                  g1(4) = g1(4) + v(69, cur)
+                  g1(5) = g1(5) + v(70, cur)
+                  g1(6) = g1(6) + v(71, cur)
+                  g1(7) = g1(7) + v(72, cur)
+                  g1(8) = g1(8) + v(73, cur)
+                  g1(9) = g1(9) + v(74, cur)
+                  g1(10) = g1(10) + v(75, cur)
+                  g1(11) = g1(11) + v(76, cur)
+                  g1(12) = g1(12) + v(77, cur)
+                  g1(13) = g1(13) + v(78, cur)
+                  g1(14) = g1(14) + v(79, cur)
+                  g1(15) = g1(15) + v(80, cur)
+                  g1(16) = g1(16) + v(81, cur)
+                  g1(17) = g1(17) + v(82, cur)
+                  g1(18) = g1(18) + v(83, cur)
+                  g1(19) = g1(19) + v(84, cur)
+                  g1(20) = g1(20) + v(85, cur)
+                  g1(21) = g1(21) + v(86, cur)
+                  g1(22) = g1(22) + v(87, cur)
+                  g1(23) = g1(23) + v(88, cur)
+                  g1(24) = g1(24) + v(89, cur)
+                  g1(25) = g1(25) + v(90, cur)
+                  g1(26) = g1(26) + v(91, cur)
+                  g1(27) = g1(27) + v(92, cur)
+                  g1(28) = g1(28) + v(93, cur)
+                  g1(29) = g1(29) + v(94, cur)
+                  g1(30) = g1(30) + v(95, cur)
+                  g1(31) = g1(31) + v(96, cur)
+                  g1(32) = g1(32) + v(97, cur)
+                  g1(33) = g1(33) + v(98, cur)
+                  g1(34) = g1(34) + v(99, cur)
+                  g1(35) = g1(35) + v(100, cur)
+                  g1(36) = g1(36) + v(101, cur)
+                  g1(37) = g1(37) + v(102, cur)
+                  g1(38) = g1(38) + v(103, cur)
+                  g1(39) = g1(39) + v(104, cur)
+                  g1(40) = g1(40) + v(105, cur)
+                  g1(41) = g1(41) + v(106, cur)
+                  g1(42) = g1(42) + v(107, cur)
+                  g1(43) = g1(43) + v(108, cur)
+                  g1(44) = g1(44) + v(109, cur)
+                  g1(45) = g1(45) + v(110, cur)
+                  g1(46) = g1(46) + v(111, cur)
+                  g1(47) = g1(47) + v(112, cur)
+                  g1(48) = g1(48) + v(113, cur)
+                  g1(49) = g1(49) + v(114, cur)
+                  g1(50) = g1(50) + v(115, cur)
+                  g1(51) = g1(51) + v(116, cur)
+                  g1(52) = g1(52) + v(117, cur)
+                  g1(53) = g1(53) + v(118, cur)
+                  g1(54) = g1(54) + v(119, cur)
+                  g1(55) = g1(55) + v(120, cur)
+                  g1(56) = g1(56) + v(121, cur)
+                  g1(57) = g1(57) + v(122, cur)
+                  g1(58) = g1(58) + v(123, cur)
+                  g1(59) = g1(59) + v(124, cur)
+                  g1(60) = g1(60) + v(125, cur)
+                  g1(61) = g1(61) + v(126, cur)
+                  g1(62) = g1(62) + v(127, cur)
+                  g1(63) = g1(63) + v(129, cur)
+                  g1(64) = g1(64) + v(130, cur)
+                  g1(65) = g1(65) + v(131, cur)
+                  g1(66) = g1(66) + v(132, cur)
+                  g1(67) = g1(67) + v(133, cur)
+                  g1(68) = g1(68) + v(134, cur)
+                  g1(69) = g1(69) + v(135, cur)
+                  g1(70) = g1(70) + v(136, cur)
+                  g1(71) = g1(71) + v(137, cur)
+                  g1(72) = g1(72) + v(138, cur)
+                  g1(73) = g1(73) + v(139, cur)
+                  g1(74) = g1(74) + v(140, cur)
+                  g1(75) = g1(75) + v(141, cur)
+                  g1(76) = g1(76) + v(142, cur)
+                  g1(77) = g1(77) + v(143, cur)
+                  g1(78) = g1(78) + v(144, cur)
+                  g1(79) = g1(79) + v(145, cur)
+                  g1(80) = g1(80) + v(146, cur)
+                  g1(81) = g1(81) + v(147, cur)
+                  g1(82) = g1(82) + v(148, cur)
+                  g1(83) = g1(83) + v(149, cur)
+                  g1(84) = g1(84) + v(150, cur)
+                  g1(85) = g1(85) + v(151, cur)
+                  g1(86) = g1(86) + v(152, cur)
+                  g1(87) = g1(87) + v(153, cur)
+                  g1(88) = g1(88) + v(154, cur)
+                  g1(89) = g1(89) + v(155, cur)
+                  g1(90) = g1(90) + v(156, cur)
+                  g1(91) = g1(91) + v(157, cur)
+                  g1(92) = g1(92) + v(158, cur)
+                  g1(93) = g1(93) + v(159, cur)
+                  g1(94) = g1(94) + v(163, cur)
+                  g1(95) = g1(95) + v(164, cur)
+                  g1(96) = g1(96) + v(165, cur)
+                  g1(97) = g1(97) + v(166, cur)
+                  g1(98) = g1(98) + v(167, cur)
+                  g1(99) = g1(99) + v(168, cur)
+                  g1(100) = g1(100) + v(169, cur)
+                  g1(101) = g1(101) + v(170, cur)
+                  g1(102) = g1(102) + v(171, cur)
+                  g1(103) = g1(103) + v(172, cur)
+                  g1(104) = g1(104) + v(173, cur)
+                  g1(105) = g1(105) + v(174, cur)
+                  g1(106) = g1(106) + v(175, cur)
+                  g1(107) = g1(107) + v(176, cur)
+                  g1(108) = g1(108) + v(177, cur)
+                  g1(109) = g1(109) + v(178, cur)
+                  g1(110) = g1(110) + v(179, cur)
+                  g1(111) = g1(111) + v(180, cur)
+                  g1(112) = g1(112) + v(181, cur)
+                  g1(113) = g1(113) + v(182, cur)
+                  g1(114) = g1(114) + v(183, cur)
+                  g1(115) = g1(115) + v(184, cur)
+                  g1(116) = g1(116) + v(185, cur)
+                  g1(117) = g1(117) + v(186, cur)
+                  g1(118) = g1(118) + v(187, cur)
+                  g1(119) = g1(119) + v(188, cur)
+                  g1(120) = g1(120) + v(189, cur)
+                  g1(121) = g1(121) + v(190, cur)
+                  g1(122) = g1(122) + v(191, cur)
+                  g1(123) = g1(123) + v(192, cur)
+                  g1(124) = g1(124) + v(193, cur)
+               end do
+            end do
+         vbuf(1) = abx*abx*cdx*g1(1) &
+            + abx*abx*g1(32) &
+            + 2.0_dp*abx*cdx*g1(7) &
+            + 2.0_dp*abx*g1(38) &
+            + cdx*g1(17) &
+            + g1(48)
+         vbuf(2) = abx*abx*cdx*g1(2) &
+            + abx*abx*g1(33) &
+            + 2.0_dp*abx*cdx*g1(8) &
+            + 2.0_dp*abx*g1(39) &
+            + cdx*g1(18) &
+            + g1(49)
+         vbuf(3) = abx*abx*cdx*g1(3) &
+            + abx*abx*g1(34) &
+            + 2.0_dp*abx*cdx*g1(9) &
+            + 2.0_dp*abx*g1(40) &
+            + cdx*g1(19) &
+            + g1(50)
+         vbuf(4) = abx*abx*cdx*g1(4) &
+            + abx*abx*g1(35) &
+            + 2.0_dp*abx*cdx*g1(10) &
+            + 2.0_dp*abx*g1(41) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(5) = abx*abx*cdx*g1(5) &
+            + abx*abx*g1(36) &
+            + 2.0_dp*abx*cdx*g1(11) &
+            + 2.0_dp*abx*g1(42) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(6) = abx*abx*cdx*g1(6) &
+            + abx*abx*g1(37) &
+            + 2.0_dp*abx*cdx*g1(12) &
+            + 2.0_dp*abx*g1(43) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(7) = abx*aby*cdx*g1(1) &
+            + abx*aby*g1(32) &
+            + abx*cdx*g1(8) &
+            + abx*g1(39) &
+            + aby*cdx*g1(7) &
+            + aby*g1(38) &
+            + cdx*g1(18) &
+            + g1(49)
+         vbuf(8) = abx*aby*cdx*g1(2) &
+            + abx*aby*g1(33) &
+            + abx*cdx*g1(10) &
+            + abx*g1(41) &
+            + aby*cdx*g1(8) &
+            + aby*g1(39) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(9) = abx*aby*cdx*g1(3) &
+            + abx*aby*g1(34) &
+            + abx*cdx*g1(11) &
+            + abx*g1(42) &
+            + aby*cdx*g1(9) &
+            + aby*g1(40) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(10) = abx*aby*cdx*g1(4) &
+            + abx*aby*g1(35) &
+            + abx*cdx*g1(13) &
+            + abx*g1(44) &
+            + aby*cdx*g1(10) &
+            + aby*g1(41) &
+            + cdx*g1(23) &
+            + g1(54)
+         vbuf(11) = abx*aby*cdx*g1(5) &
+            + abx*aby*g1(36) &
+            + abx*cdx*g1(14) &
+            + abx*g1(45) &
+            + aby*cdx*g1(11) &
+            + aby*g1(42) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(12) = abx*aby*cdx*g1(6) &
+            + abx*aby*g1(37) &
+            + abx*cdx*g1(15) &
+            + abx*g1(46) &
+            + aby*cdx*g1(12) &
+            + aby*g1(43) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(13) = abx*abz*cdx*g1(1) &
+            + abx*abz*g1(32) &
+            + abx*cdx*g1(9) &
+            + abx*g1(40) &
+            + abz*cdx*g1(7) &
+            + abz*g1(38) &
+            + cdx*g1(19) &
+            + g1(50)
+         vbuf(14) = abx*abz*cdx*g1(2) &
+            + abx*abz*g1(33) &
+            + abx*cdx*g1(11) &
+            + abx*g1(42) &
+            + abz*cdx*g1(8) &
+            + abz*g1(39) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(15) = abx*abz*cdx*g1(3) &
+            + abx*abz*g1(34) &
+            + abx*cdx*g1(12) &
+            + abx*g1(43) &
+            + abz*cdx*g1(9) &
+            + abz*g1(40) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(16) = abx*abz*cdx*g1(4) &
+            + abx*abz*g1(35) &
+            + abx*cdx*g1(14) &
+            + abx*g1(45) &
+            + abz*cdx*g1(10) &
+            + abz*g1(41) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(17) = abx*abz*cdx*g1(5) &
+            + abx*abz*g1(36) &
+            + abx*cdx*g1(15) &
+            + abx*g1(46) &
+            + abz*cdx*g1(11) &
+            + abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(18) = abx*abz*cdx*g1(6) &
+            + abx*abz*g1(37) &
+            + abx*cdx*g1(16) &
+            + abx*g1(47) &
+            + abz*cdx*g1(12) &
+            + abz*g1(43) &
+            + cdx*g1(26) &
+            + g1(57)
+         vbuf(19) = aby*aby*cdx*g1(1) &
+            + aby*aby*g1(32) &
+            + 2.0_dp*aby*cdx*g1(8) &
+            + 2.0_dp*aby*g1(39) &
+            + cdx*g1(20) &
+            + g1(51)
+         vbuf(20) = aby*aby*cdx*g1(2) &
+            + aby*aby*g1(33) &
+            + 2.0_dp*aby*cdx*g1(10) &
+            + 2.0_dp*aby*g1(41) &
+            + cdx*g1(23) &
+            + g1(54)
+         vbuf(21) = aby*aby*cdx*g1(3) &
+            + aby*aby*g1(34) &
+            + 2.0_dp*aby*cdx*g1(11) &
+            + 2.0_dp*aby*g1(42) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(22) = aby*aby*cdx*g1(4) &
+            + aby*aby*g1(35) &
+            + 2.0_dp*aby*cdx*g1(13) &
+            + 2.0_dp*aby*g1(44) &
+            + cdx*g1(27) &
+            + g1(58)
+         vbuf(23) = aby*aby*cdx*g1(5) &
+            + aby*aby*g1(36) &
+            + 2.0_dp*aby*cdx*g1(14) &
+            + 2.0_dp*aby*g1(45) &
+            + cdx*g1(28) &
+            + g1(59)
+         vbuf(24) = aby*aby*cdx*g1(6) &
+            + aby*aby*g1(37) &
+            + 2.0_dp*aby*cdx*g1(15) &
+            + 2.0_dp*aby*g1(46) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(25) = aby*abz*cdx*g1(1) &
+            + aby*abz*g1(32) &
+            + aby*cdx*g1(9) &
+            + aby*g1(40) &
+            + abz*cdx*g1(8) &
+            + abz*g1(39) &
+            + cdx*g1(21) &
+            + g1(52)
+         vbuf(26) = aby*abz*cdx*g1(2) &
+            + aby*abz*g1(33) &
+            + aby*cdx*g1(11) &
+            + aby*g1(42) &
+            + abz*cdx*g1(10) &
+            + abz*g1(41) &
+            + cdx*g1(24) &
+            + g1(55)
+         vbuf(27) = aby*abz*cdx*g1(3) &
+            + aby*abz*g1(34) &
+            + aby*cdx*g1(12) &
+            + aby*g1(43) &
+            + abz*cdx*g1(11) &
+            + abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(28) = aby*abz*cdx*g1(4) &
+            + aby*abz*g1(35) &
+            + aby*cdx*g1(14) &
+            + aby*g1(45) &
+            + abz*cdx*g1(13) &
+            + abz*g1(44) &
+            + cdx*g1(28) &
+            + g1(59)
+         vbuf(29) = aby*abz*cdx*g1(5) &
+            + aby*abz*g1(36) &
+            + aby*cdx*g1(15) &
+            + aby*g1(46) &
+            + abz*cdx*g1(14) &
+            + abz*g1(45) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(30) = aby*abz*cdx*g1(6) &
+            + aby*abz*g1(37) &
+            + aby*cdx*g1(16) &
+            + aby*g1(47) &
+            + abz*cdx*g1(15) &
+            + abz*g1(46) &
+            + cdx*g1(30) &
+            + g1(61)
+         vbuf(31) = abz*abz*cdx*g1(1) &
+            + abz*abz*g1(32) &
+            + 2.0_dp*abz*cdx*g1(9) &
+            + 2.0_dp*abz*g1(40) &
+            + cdx*g1(22) &
+            + g1(53)
+         vbuf(32) = abz*abz*cdx*g1(2) &
+            + abz*abz*g1(33) &
+            + 2.0_dp*abz*cdx*g1(11) &
+            + 2.0_dp*abz*g1(42) &
+            + cdx*g1(25) &
+            + g1(56)
+         vbuf(33) = abz*abz*cdx*g1(3) &
+            + abz*abz*g1(34) &
+            + 2.0_dp*abz*cdx*g1(12) &
+            + 2.0_dp*abz*g1(43) &
+            + cdx*g1(26) &
+            + g1(57)
+         vbuf(34) = abz*abz*cdx*g1(4) &
+            + abz*abz*g1(35) &
+            + 2.0_dp*abz*cdx*g1(14) &
+            + 2.0_dp*abz*g1(45) &
+            + cdx*g1(29) &
+            + g1(60)
+         vbuf(35) = abz*abz*cdx*g1(5) &
+            + abz*abz*g1(36) &
+            + 2.0_dp*abz*cdx*g1(15) &
+            + 2.0_dp*abz*g1(46) &
+            + cdx*g1(30) &
+            + g1(61)
+         vbuf(36) = abz*abz*cdx*g1(6) &
+            + abz*abz*g1(37) &
+            + 2.0_dp*abz*cdx*g1(16) &
+            + 2.0_dp*abz*g1(47) &
+            + cdx*g1(31) &
+            + g1(62)
+         vbuf(37) = abx*abx*cdy*g1(1) &
+            + abx*abx*g1(63) &
+            + 2.0_dp*abx*cdy*g1(7) &
+            + 2.0_dp*abx*g1(69) &
+            + cdy*g1(17) &
+            + g1(79)
+         vbuf(38) = abx*abx*cdy*g1(2) &
+            + abx*abx*g1(64) &
+            + 2.0_dp*abx*cdy*g1(8) &
+            + 2.0_dp*abx*g1(70) &
+            + cdy*g1(18) &
+            + g1(80)
+         vbuf(39) = abx*abx*cdy*g1(3) &
+            + abx*abx*g1(65) &
+            + 2.0_dp*abx*cdy*g1(9) &
+            + 2.0_dp*abx*g1(71) &
+            + cdy*g1(19) &
+            + g1(81)
+         vbuf(40) = abx*abx*cdy*g1(4) &
+            + abx*abx*g1(66) &
+            + 2.0_dp*abx*cdy*g1(10) &
+            + 2.0_dp*abx*g1(72) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(41) = abx*abx*cdy*g1(5) &
+            + abx*abx*g1(67) &
+            + 2.0_dp*abx*cdy*g1(11) &
+            + 2.0_dp*abx*g1(73) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(42) = abx*abx*cdy*g1(6) &
+            + abx*abx*g1(68) &
+            + 2.0_dp*abx*cdy*g1(12) &
+            + 2.0_dp*abx*g1(74) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(43) = abx*aby*cdy*g1(1) &
+            + abx*aby*g1(63) &
+            + abx*cdy*g1(8) &
+            + abx*g1(70) &
+            + aby*cdy*g1(7) &
+            + aby*g1(69) &
+            + cdy*g1(18) &
+            + g1(80)
+         vbuf(44) = abx*aby*cdy*g1(2) &
+            + abx*aby*g1(64) &
+            + abx*cdy*g1(10) &
+            + abx*g1(72) &
+            + aby*cdy*g1(8) &
+            + aby*g1(70) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(45) = abx*aby*cdy*g1(3) &
+            + abx*aby*g1(65) &
+            + abx*cdy*g1(11) &
+            + abx*g1(73) &
+            + aby*cdy*g1(9) &
+            + aby*g1(71) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(46) = abx*aby*cdy*g1(4) &
+            + abx*aby*g1(66) &
+            + abx*cdy*g1(13) &
+            + abx*g1(75) &
+            + aby*cdy*g1(10) &
+            + aby*g1(72) &
+            + cdy*g1(23) &
+            + g1(85)
+         vbuf(47) = abx*aby*cdy*g1(5) &
+            + abx*aby*g1(67) &
+            + abx*cdy*g1(14) &
+            + abx*g1(76) &
+            + aby*cdy*g1(11) &
+            + aby*g1(73) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(48) = abx*aby*cdy*g1(6) &
+            + abx*aby*g1(68) &
+            + abx*cdy*g1(15) &
+            + abx*g1(77) &
+            + aby*cdy*g1(12) &
+            + aby*g1(74) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(49) = abx*abz*cdy*g1(1) &
+            + abx*abz*g1(63) &
+            + abx*cdy*g1(9) &
+            + abx*g1(71) &
+            + abz*cdy*g1(7) &
+            + abz*g1(69) &
+            + cdy*g1(19) &
+            + g1(81)
+         vbuf(50) = abx*abz*cdy*g1(2) &
+            + abx*abz*g1(64) &
+            + abx*cdy*g1(11) &
+            + abx*g1(73) &
+            + abz*cdy*g1(8) &
+            + abz*g1(70) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(51) = abx*abz*cdy*g1(3) &
+            + abx*abz*g1(65) &
+            + abx*cdy*g1(12) &
+            + abx*g1(74) &
+            + abz*cdy*g1(9) &
+            + abz*g1(71) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(52) = abx*abz*cdy*g1(4) &
+            + abx*abz*g1(66) &
+            + abx*cdy*g1(14) &
+            + abx*g1(76) &
+            + abz*cdy*g1(10) &
+            + abz*g1(72) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(53) = abx*abz*cdy*g1(5) &
+            + abx*abz*g1(67) &
+            + abx*cdy*g1(15) &
+            + abx*g1(77) &
+            + abz*cdy*g1(11) &
+            + abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(54) = abx*abz*cdy*g1(6) &
+            + abx*abz*g1(68) &
+            + abx*cdy*g1(16) &
+            + abx*g1(78) &
+            + abz*cdy*g1(12) &
+            + abz*g1(74) &
+            + cdy*g1(26) &
+            + g1(88)
+         vbuf(55) = aby*aby*cdy*g1(1) &
+            + aby*aby*g1(63) &
+            + 2.0_dp*aby*cdy*g1(8) &
+            + 2.0_dp*aby*g1(70) &
+            + cdy*g1(20) &
+            + g1(82)
+         vbuf(56) = aby*aby*cdy*g1(2) &
+            + aby*aby*g1(64) &
+            + 2.0_dp*aby*cdy*g1(10) &
+            + 2.0_dp*aby*g1(72) &
+            + cdy*g1(23) &
+            + g1(85)
+         vbuf(57) = aby*aby*cdy*g1(3) &
+            + aby*aby*g1(65) &
+            + 2.0_dp*aby*cdy*g1(11) &
+            + 2.0_dp*aby*g1(73) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(58) = aby*aby*cdy*g1(4) &
+            + aby*aby*g1(66) &
+            + 2.0_dp*aby*cdy*g1(13) &
+            + 2.0_dp*aby*g1(75) &
+            + cdy*g1(27) &
+            + g1(89)
+         vbuf(59) = aby*aby*cdy*g1(5) &
+            + aby*aby*g1(67) &
+            + 2.0_dp*aby*cdy*g1(14) &
+            + 2.0_dp*aby*g1(76) &
+            + cdy*g1(28) &
+            + g1(90)
+         vbuf(60) = aby*aby*cdy*g1(6) &
+            + aby*aby*g1(68) &
+            + 2.0_dp*aby*cdy*g1(15) &
+            + 2.0_dp*aby*g1(77) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(61) = aby*abz*cdy*g1(1) &
+            + aby*abz*g1(63) &
+            + aby*cdy*g1(9) &
+            + aby*g1(71) &
+            + abz*cdy*g1(8) &
+            + abz*g1(70) &
+            + cdy*g1(21) &
+            + g1(83)
+         vbuf(62) = aby*abz*cdy*g1(2) &
+            + aby*abz*g1(64) &
+            + aby*cdy*g1(11) &
+            + aby*g1(73) &
+            + abz*cdy*g1(10) &
+            + abz*g1(72) &
+            + cdy*g1(24) &
+            + g1(86)
+         vbuf(63) = aby*abz*cdy*g1(3) &
+            + aby*abz*g1(65) &
+            + aby*cdy*g1(12) &
+            + aby*g1(74) &
+            + abz*cdy*g1(11) &
+            + abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(64) = aby*abz*cdy*g1(4) &
+            + aby*abz*g1(66) &
+            + aby*cdy*g1(14) &
+            + aby*g1(76) &
+            + abz*cdy*g1(13) &
+            + abz*g1(75) &
+            + cdy*g1(28) &
+            + g1(90)
+         vbuf(65) = aby*abz*cdy*g1(5) &
+            + aby*abz*g1(67) &
+            + aby*cdy*g1(15) &
+            + aby*g1(77) &
+            + abz*cdy*g1(14) &
+            + abz*g1(76) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(66) = aby*abz*cdy*g1(6) &
+            + aby*abz*g1(68) &
+            + aby*cdy*g1(16) &
+            + aby*g1(78) &
+            + abz*cdy*g1(15) &
+            + abz*g1(77) &
+            + cdy*g1(30) &
+            + g1(92)
+         vbuf(67) = abz*abz*cdy*g1(1) &
+            + abz*abz*g1(63) &
+            + 2.0_dp*abz*cdy*g1(9) &
+            + 2.0_dp*abz*g1(71) &
+            + cdy*g1(22) &
+            + g1(84)
+         vbuf(68) = abz*abz*cdy*g1(2) &
+            + abz*abz*g1(64) &
+            + 2.0_dp*abz*cdy*g1(11) &
+            + 2.0_dp*abz*g1(73) &
+            + cdy*g1(25) &
+            + g1(87)
+         vbuf(69) = abz*abz*cdy*g1(3) &
+            + abz*abz*g1(65) &
+            + 2.0_dp*abz*cdy*g1(12) &
+            + 2.0_dp*abz*g1(74) &
+            + cdy*g1(26) &
+            + g1(88)
+         vbuf(70) = abz*abz*cdy*g1(4) &
+            + abz*abz*g1(66) &
+            + 2.0_dp*abz*cdy*g1(14) &
+            + 2.0_dp*abz*g1(76) &
+            + cdy*g1(29) &
+            + g1(91)
+         vbuf(71) = abz*abz*cdy*g1(5) &
+            + abz*abz*g1(67) &
+            + 2.0_dp*abz*cdy*g1(15) &
+            + 2.0_dp*abz*g1(77) &
+            + cdy*g1(30) &
+            + g1(92)
+         vbuf(72) = abz*abz*cdy*g1(6) &
+            + abz*abz*g1(68) &
+            + 2.0_dp*abz*cdy*g1(16) &
+            + 2.0_dp*abz*g1(78) &
+            + cdy*g1(31) &
+            + g1(93)
+         vbuf(73) = abx*abx*cdz*g1(1) &
+            + abx*abx*g1(94) &
+            + 2.0_dp*abx*cdz*g1(7) &
+            + 2.0_dp*abx*g1(100) &
+            + cdz*g1(17) &
+            + g1(110)
+         vbuf(74) = abx*abx*cdz*g1(2) &
+            + abx*abx*g1(95) &
+            + 2.0_dp*abx*cdz*g1(8) &
+            + 2.0_dp*abx*g1(101) &
+            + cdz*g1(18) &
+            + g1(111)
+         vbuf(75) = abx*abx*cdz*g1(3) &
+            + abx*abx*g1(96) &
+            + 2.0_dp*abx*cdz*g1(9) &
+            + 2.0_dp*abx*g1(102) &
+            + cdz*g1(19) &
+            + g1(112)
+         vbuf(76) = abx*abx*cdz*g1(4) &
+            + abx*abx*g1(97) &
+            + 2.0_dp*abx*cdz*g1(10) &
+            + 2.0_dp*abx*g1(103) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(77) = abx*abx*cdz*g1(5) &
+            + abx*abx*g1(98) &
+            + 2.0_dp*abx*cdz*g1(11) &
+            + 2.0_dp*abx*g1(104) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(78) = abx*abx*cdz*g1(6) &
+            + abx*abx*g1(99) &
+            + 2.0_dp*abx*cdz*g1(12) &
+            + 2.0_dp*abx*g1(105) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(79) = abx*aby*cdz*g1(1) &
+            + abx*aby*g1(94) &
+            + abx*cdz*g1(8) &
+            + abx*g1(101) &
+            + aby*cdz*g1(7) &
+            + aby*g1(100) &
+            + cdz*g1(18) &
+            + g1(111)
+         vbuf(80) = abx*aby*cdz*g1(2) &
+            + abx*aby*g1(95) &
+            + abx*cdz*g1(10) &
+            + abx*g1(103) &
+            + aby*cdz*g1(8) &
+            + aby*g1(101) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(81) = abx*aby*cdz*g1(3) &
+            + abx*aby*g1(96) &
+            + abx*cdz*g1(11) &
+            + abx*g1(104) &
+            + aby*cdz*g1(9) &
+            + aby*g1(102) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(82) = abx*aby*cdz*g1(4) &
+            + abx*aby*g1(97) &
+            + abx*cdz*g1(13) &
+            + abx*g1(106) &
+            + aby*cdz*g1(10) &
+            + aby*g1(103) &
+            + cdz*g1(23) &
+            + g1(116)
+         vbuf(83) = abx*aby*cdz*g1(5) &
+            + abx*aby*g1(98) &
+            + abx*cdz*g1(14) &
+            + abx*g1(107) &
+            + aby*cdz*g1(11) &
+            + aby*g1(104) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(84) = abx*aby*cdz*g1(6) &
+            + abx*aby*g1(99) &
+            + abx*cdz*g1(15) &
+            + abx*g1(108) &
+            + aby*cdz*g1(12) &
+            + aby*g1(105) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(85) = abx*abz*cdz*g1(1) &
+            + abx*abz*g1(94) &
+            + abx*cdz*g1(9) &
+            + abx*g1(102) &
+            + abz*cdz*g1(7) &
+            + abz*g1(100) &
+            + cdz*g1(19) &
+            + g1(112)
+         vbuf(86) = abx*abz*cdz*g1(2) &
+            + abx*abz*g1(95) &
+            + abx*cdz*g1(11) &
+            + abx*g1(104) &
+            + abz*cdz*g1(8) &
+            + abz*g1(101) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(87) = abx*abz*cdz*g1(3) &
+            + abx*abz*g1(96) &
+            + abx*cdz*g1(12) &
+            + abx*g1(105) &
+            + abz*cdz*g1(9) &
+            + abz*g1(102) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(88) = abx*abz*cdz*g1(4) &
+            + abx*abz*g1(97) &
+            + abx*cdz*g1(14) &
+            + abx*g1(107) &
+            + abz*cdz*g1(10) &
+            + abz*g1(103) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(89) = abx*abz*cdz*g1(5) &
+            + abx*abz*g1(98) &
+            + abx*cdz*g1(15) &
+            + abx*g1(108) &
+            + abz*cdz*g1(11) &
+            + abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(90) = abx*abz*cdz*g1(6) &
+            + abx*abz*g1(99) &
+            + abx*cdz*g1(16) &
+            + abx*g1(109) &
+            + abz*cdz*g1(12) &
+            + abz*g1(105) &
+            + cdz*g1(26) &
+            + g1(119)
+         vbuf(91) = aby*aby*cdz*g1(1) &
+            + aby*aby*g1(94) &
+            + 2.0_dp*aby*cdz*g1(8) &
+            + 2.0_dp*aby*g1(101) &
+            + cdz*g1(20) &
+            + g1(113)
+         vbuf(92) = aby*aby*cdz*g1(2) &
+            + aby*aby*g1(95) &
+            + 2.0_dp*aby*cdz*g1(10) &
+            + 2.0_dp*aby*g1(103) &
+            + cdz*g1(23) &
+            + g1(116)
+         vbuf(93) = aby*aby*cdz*g1(3) &
+            + aby*aby*g1(96) &
+            + 2.0_dp*aby*cdz*g1(11) &
+            + 2.0_dp*aby*g1(104) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(94) = aby*aby*cdz*g1(4) &
+            + aby*aby*g1(97) &
+            + 2.0_dp*aby*cdz*g1(13) &
+            + 2.0_dp*aby*g1(106) &
+            + cdz*g1(27) &
+            + g1(120)
+         vbuf(95) = aby*aby*cdz*g1(5) &
+            + aby*aby*g1(98) &
+            + 2.0_dp*aby*cdz*g1(14) &
+            + 2.0_dp*aby*g1(107) &
+            + cdz*g1(28) &
+            + g1(121)
+         vbuf(96) = aby*aby*cdz*g1(6) &
+            + aby*aby*g1(99) &
+            + 2.0_dp*aby*cdz*g1(15) &
+            + 2.0_dp*aby*g1(108) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(97) = aby*abz*cdz*g1(1) &
+            + aby*abz*g1(94) &
+            + aby*cdz*g1(9) &
+            + aby*g1(102) &
+            + abz*cdz*g1(8) &
+            + abz*g1(101) &
+            + cdz*g1(21) &
+            + g1(114)
+         vbuf(98) = aby*abz*cdz*g1(2) &
+            + aby*abz*g1(95) &
+            + aby*cdz*g1(11) &
+            + aby*g1(104) &
+            + abz*cdz*g1(10) &
+            + abz*g1(103) &
+            + cdz*g1(24) &
+            + g1(117)
+         vbuf(99) = aby*abz*cdz*g1(3) &
+            + aby*abz*g1(96) &
+            + aby*cdz*g1(12) &
+            + aby*g1(105) &
+            + abz*cdz*g1(11) &
+            + abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(100) = aby*abz*cdz*g1(4) &
+            + aby*abz*g1(97) &
+            + aby*cdz*g1(14) &
+            + aby*g1(107) &
+            + abz*cdz*g1(13) &
+            + abz*g1(106) &
+            + cdz*g1(28) &
+            + g1(121)
+         vbuf(101) = aby*abz*cdz*g1(5) &
+            + aby*abz*g1(98) &
+            + aby*cdz*g1(15) &
+            + aby*g1(108) &
+            + abz*cdz*g1(14) &
+            + abz*g1(107) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(102) = aby*abz*cdz*g1(6) &
+            + aby*abz*g1(99) &
+            + aby*cdz*g1(16) &
+            + aby*g1(109) &
+            + abz*cdz*g1(15) &
+            + abz*g1(108) &
+            + cdz*g1(30) &
+            + g1(123)
+         vbuf(103) = abz*abz*cdz*g1(1) &
+            + abz*abz*g1(94) &
+            + 2.0_dp*abz*cdz*g1(9) &
+            + 2.0_dp*abz*g1(102) &
+            + cdz*g1(22) &
+            + g1(115)
+         vbuf(104) = abz*abz*cdz*g1(2) &
+            + abz*abz*g1(95) &
+            + 2.0_dp*abz*cdz*g1(11) &
+            + 2.0_dp*abz*g1(104) &
+            + cdz*g1(25) &
+            + g1(118)
+         vbuf(105) = abz*abz*cdz*g1(3) &
+            + abz*abz*g1(96) &
+            + 2.0_dp*abz*cdz*g1(12) &
+            + 2.0_dp*abz*g1(105) &
+            + cdz*g1(26) &
+            + g1(119)
+         vbuf(106) = abz*abz*cdz*g1(4) &
+            + abz*abz*g1(97) &
+            + 2.0_dp*abz*cdz*g1(14) &
+            + 2.0_dp*abz*g1(107) &
+            + cdz*g1(29) &
+            + g1(122)
+         vbuf(107) = abz*abz*cdz*g1(5) &
+            + abz*abz*g1(98) &
+            + 2.0_dp*abz*cdz*g1(15) &
+            + 2.0_dp*abz*g1(108) &
+            + cdz*g1(30) &
+            + g1(123)
+         vbuf(108) = abz*abz*cdz*g1(6) &
+            + abz*abz*g1(99) &
+            + 2.0_dp*abz*cdz*g1(16) &
+            + 2.0_dp*abz*g1(109) &
+            + cdz*g1(31) &
+            + g1(124)
+#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, 108
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, 5
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc2(gi)
+               dcd(1 + ic + 3*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 3*id) = 0.0_dp
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc2(gi)
+            do ia = 0, 5
+               dac(1 + ia + 6*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + 6*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do ia = 0, 5
+               dad(1 + ia + 6*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + 6*id) = 0.0_dp
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc2(gi)
+            do ib = 0, 5
+               dbc(1 + ib + 6*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + 6*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do ib = 0, 5
+               dbd(1 + ib + 6*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + 6*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc2(gi)
+         do ib = 0, 5
+         do ia = 0, 5
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + 3*id)
+            jcd(1 + ic + 3*id) = jcd(1 + ic + 3*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + 6*ib)
+            kac(1 + ia + 6*ic) = kac(1 + ia + 6*ic) &
+                                    - kfac*sc*dbd(1 + ib + 6*id)
+            kad(1 + ia + 6*id) = kad(1 + ia + 6*id) &
+                                    - kfac*sc*dbc(1 + ib + 6*ic)
+            kbc(1 + ib + 6*ic) = kbc(1 + ib + 6*ic) &
+                                    - kfac*sc*dad(1 + ia + 6*id)
+            kbd(1 + ib + 6*id) = kbd(1 + ib + 6*id) &
+                                    - kfac*sc*dac(1 + ia + 6*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 5
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc2(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 3*id)
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc2(gi)
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + 6*ic)
+            end do
+         end do
+         do id = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + 6*id)
+            end do
+         end do
+         do gi = 1, 1
+            ic = rc2(gi)
+            do ib = 0, 5
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + 6*ic)
+            end do
+         end do
+         do id = 0, 2
+            do ib = 0, 5
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+         end select
+   end subroutine pcri2211
 
 end module trc_pc_k2211

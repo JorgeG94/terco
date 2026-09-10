@@ -893,6 +893,250 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
     return txt
 
 
+#: WARP-ROLE DECOMPOSITION, per class: which shell's Cartesian components the
+#: work of one quartet is split over.  Measured, not guessed -- see
+#: `--role-report` for the numbers behind each entry.
+#:
+#: THE MECHANISM.  A (dp|dp) thread carries v(400,0:1), g1(400) and vbuf(324):
+#: ~1500 doubles against 127 a thread can hold, so ptxas spills 15.9 kB per
+#: thread and Nsight Compute has the kernel 94% stalled on local-memory
+#: latency with the FP64 pipe 2.6% busy.  Capping registers is monotonically
+#: worse and a hand-written CUDA port of the SAME decomposition lands on the
+#: same 255 registers: the wall is the working set, not the compiler.
+#:
+#: What moves it is giving each thread a SLICE of the quartet.  Thread
+#: (quartet, role) owns the HRR outputs whose component of the split shell is
+#: `role`, runs only the VRR dependency closure those outputs need, and
+#: accumulates only its g1 entries.  Redundant arithmetic across roles --
+#: 2.9x for (dp|dp) -- is cheaper than the local memory it replaces: 15.9 kB
+#: -> 1.7 kB spill frame, local traffic per primitive quartet 318 -> 64
+#: sectors, FP64 pipe 2.6% -> 41%, 6.7x on the race harness.  Pure
+#: `do concurrent (i, role)`: no thread hierarchy is named, and nvfortran
+#: was measured to keep `role` uniform across a warp in either index order
+#: (it picks the fast thread index from the access pattern, not the source).
+#:
+#: THE COST.  Each role loads the density blocks and does its slice of the
+#: digestion, and the Fock blocks that do not involve the split shell get one
+#: partial atomic update per role instead of one -- (dp|dp): 342 atomics per
+#: quartet instead of 117.  Screening is per thread but before the split, so
+#: a screened quartet costs one early return per role.
+#: Measured on the race harness (scalar vs role, same work, screening off,
+#: ns per primitive quartet, speedup at 1/2/3 primitives per shell):
+#:   2121 c: 2.60 / 3.83 / 4.48      2111 c: 1.69 / 2.37 / 2.52
+#:   2221 c: 1.22 / 2.16 / 2.47      2211 c: 1.12 / 1.13 / 1.13
+#:   2120 c: 1.02 / 1.21 / 1.26
+#: Left scalar, the split LOSES: 2110 c 0.57-0.90, 2010 c 0.42-0.60,
+#: 2011 c 0.35-0.65 (a: 0.18-0.22), 2111 a 0.65-1.52 (c is better).
+#: The small classes never spilled, so the redundancy buys nothing.
+#: Splitting over the ket's first shell (c) won everywhere it was tried: the
+#: HRR closure of one ket component is the smallest slice of the VRR.
+ROLE_SPLITS = {"2121": "c", "2111": "c", "2221": "c", "2211": "c", "2120": "c"}
+
+
+def _vrr_stmts(vrr):
+    """(dst, srcs) per VRR assignment, in program order; comments dropped."""
+    raw, cur = [], []
+    for line in vrr.split("\n"):
+        cur.append(line)
+        if not line.rstrip().endswith("&"):
+            raw.append("\n".join(cur))
+            cur = []
+    out = []
+    for text in raw:
+        flat = text.replace("&\n", " ")
+        m = re.match(r"\s*v\((\d+),(\d+)\)\s*=", flat)
+        if not m:
+            continue
+        dst = (int(m.group(1)), int(m.group(2)))
+        srcs = [(int(a), int(b)) for a, b in
+                re.findall(r"v\((\d+),(\d+)\)", flat.split("=", 1)[1])]
+        out.append((text, dst, srcs))
+    return out
+
+
+def _hrr_stmts(hrr):
+    """vbuf index -> (statement text, set of g(...) indices it reads)."""
+    out = {}
+    for m in re.finditer(r"([ \t]*vbuf\((\d+)\)\s*=.*?)(?=\n[ \t]*vbuf\(|\Z)",
+                         hrr, re.S):
+        out[int(m.group(2))] = (m.group(1).rstrip("\n"),
+                                {int(x) for x in re.findall(r"g\((\d+)\)", m.group(1))})
+    return out
+
+
+def role_plan(la, lb, lc, ld, vrr, hrr, shell):
+    """Per-role work for splitting over the components of `shell` (a|b|c|d).
+
+    Returns (stmts, roles) where stmts is the parsed VRR and each role is a
+    dict: keep (VRR statement ids, in order), vmap (v index -> compact),
+    g1 (sorted final-buffer indices, 1-based), gmap, vb (vbuf indices in
+    digestion order), and the component list `comps`."""
+    stmts = _vrr_stmts(vrr)
+    cur = (la + lb + lc + ld) % 2
+    defs, deps = {}, []
+    for k, (_t, dst, srcs) in enumerate(stmts):
+        deps.append({defs[s] for s in srcs})
+        defs[dst] = k
+    hs = _hrr_stmts(hrr)
+    na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
+    assert len(hs) == na*nb*nc*nd
+    nX = {"a": na, "b": nb, "c": nc, "d": nd}[shell]
+
+    def closure(t):
+        seen, stack = set(), list(t)
+        while stack:
+            k = stack.pop()
+            if k in seen:
+                continue
+            seen.add(k)
+            stack.extend(deps[k])
+        return seen
+    roles = []
+    for comp in range(nX):
+        vb = [1 + ia + na*ib + na*nb*ic + na*nb*nc*id
+              for id in range(nd) for ic in range(nc)
+              for ib in range(nb) for ia in range(na)
+              if {"a": ia, "b": ib, "c": ic, "d": id}[shell] == comp]
+        g = sorted(set().union(*(hs[i][1] for i in vb)))
+        keep = sorted(closure([defs[(i, cur)] for i in g]))
+        vidx = sorted({i for k in keep for i in
+                       [stmts[k][1][0]] + [s[0] for s in stmts[k][2]]})
+        roles.append(dict(comps=[comp], keep=keep,
+                          vmap={i: k + 1 for k, i in enumerate(vidx)},
+                          g1=g, gmap={i: k + 1 for k, i in enumerate(g)},
+                          vb=vb, bmap={i: k + 1 for k, i in enumerate(vb)}))
+    return stmts, roles, hs
+
+
+def role_report(la, lb, lc, ld, vrr, hrr):
+    """One line per candidate split shell: roles, redundancy, sizes."""
+    na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
+    tot = len(_vrr_stmts(vrr))
+    hs = _hrr_stmts(hrr)
+    allg = len(set().union(*(v[1] for v in hs.values())))
+    cols = []
+    for shell, nX in (("a", na), ("b", nb), ("c", nc), ("d", nd)):
+        if nX == 1:
+            continue
+        _s, roles, _h = role_plan(la, lb, lc, ld, vrr, hrr, shell)
+        R = sum(len(r["keep"]) for r in roles)/tot
+        cols.append(f"{shell}: {nX} roles R={R:.2f} closure<={max(len(r['keep']) for r in roles)}"
+                    f" acc={max(len(r['g1']) for r in roles)}")
+    return (f"  ({la}{lb}|{lc}{ld}) VRR {tot} g1 {allg} vbuf {na*nb*nc*nd}: "
+            + " | ".join(cols))
+
+
+def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
+    """The role kernel of one class: driver pcr<tag> + item pcri<tag>.
+
+    Built from the SAME pieces as the scalar kernel (`_scalar_pieces`): the
+    head -- segment decode, Schwarz and density screens, pair data -- is
+    shared by every role and runs once per thread; a `select case (role)`
+    then holds, per role, the primitive loops with that role's VRR closure
+    and compacted arrays, its slice of the HRR, and the digestion restricted
+    to its components of the split shell."""
+    tag = f"{la}{lb}{lc}{ld}"
+    na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
+    nv = gv.ncum(la + lb)*gv.ncum(lc + ld)
+    stmts, roles, hs = role_plan(la, lb, lc, ld, vrr, hrr, shell)
+    nrole = len(roles)
+    ivar = {"a": "ia", "b": "ib", "c": "ic", "d": "id"}[shell]
+    nX = {"a": na, "b": nb, "c": nc, "d": nd}[shell]
+    nvr = max(len(r["vmap"]) for r in roles)
+    ngr = max(len(r["g1"]) for r in roles)
+    nbr = max(len(r["vb"]) for r in roles)
+
+    # --- driver: the scalar driver with a role index on the loop
+    drv = pieces["drv"].replace("pcsi" + tag, "pcri" + tag).replace("pcs" + tag, "pcr" + tag)
+    drv = drv.replace("SCALAR driver.", "WARP-ROLE driver (split over shell "
+                      + shell + f", {nrole} roles).")
+    drv = drv.replace("      integer(int64) :: g0, g1, nr, i\n",
+                      "      integer(int64) :: g0, g1, nr, i, it\n      integer :: role\n")
+    old = ("      do concurrent(i=1:nr)\n"
+           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &\n"
+           "                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &\n"
+           "                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)\n"
+           "      end do\n")
+    assert drv.count(old) == 1
+    drv = drv.replace(old, f"""      !
+      ! ONE index, decoded.  Thread i holds quartet `it` and role `role` with
+      ! 32 consecutive i sharing a role: warp = 32 quartets x ONE role, so the
+      ! role bodies never share a warp.  A two-index `do concurrent (i, role)`
+      ! was tried first and nvfortran made `role` the fast thread index --
+      ! 5.3 active lanes of 32 and the kernel slower than the scalar one.  The
+      ! single index leans only on what every kernel here already leans on:
+      ! consecutive iterations are consecutive threads (the ket-uniform
+      ! decode in the item routine depends on the same thing).
+      !
+      do concurrent(i=1:((nr + 31)/32)*32*{nrole})
+         role = int(mod((i - 1)/32, {nrole}_int64)) + 1
+         it = ((i - 1)/(32*{nrole}))*32 + mod(i - 1, 32_int64) + 1
+         if (it <= nr) then
+            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+         end if
+      end do
+""")
+
+    # --- item: signature and declarations
+    sig = pieces["sig"].replace("pcsi" + tag + "(gt, ", "pcri" + tag + "(gt, role, ")
+    assert "pcri" + tag in sig
+    sig = sig.replace("      integer(int64), intent(in) :: gt\n",
+                      "      integer(int64), intent(in) :: gt\n      integer, intent(in) :: role\n")
+    decls = pieces["decls"]
+    decls = re.sub(r"      real\(dp\) :: v\(\d+, 0:1\), g1\(\d+\), vbuf\(\d+\)\n",
+                   f"      real(dp) :: v({nvr}, 0:1), g1({ngr}), vbuf({nbr})\n", decls)
+    decls += "      integer  :: gi\n"
+    for r, role in enumerate(roles):
+        decls += (f"      integer, parameter :: rc{r}({len(role['comps'])}) = [" +
+                  ", ".join(str(c) for c in role["comps"]) + "]\n")
+
+    prims, hd = pieces["prims"], pieces["hrr_and_digest"]
+    ihrr_end = hd.index("#ifdef TRC_NO_DIGEST")
+    digest = hd[ihrr_end:]
+    ivrr = prims.index(vrr)
+    acc_old = (f"                  do x = 1, {nv}\n"
+               "                     g1(x) = g1(x) + v(x, cur)\n"
+               "                  end do\n")
+    assert prims.count(acc_old) == 1
+    zero_old = f"            do x = 1, {nv}\n               g1(x) = 0.0_dp\n            end do\n"
+    assert prims.count(zero_old) == 1
+    cases = []
+    for r, role in enumerate(roles):
+        vmap, gmap, bmap = role["vmap"], role["gmap"], role["bmap"]
+
+        def cv(t):
+            return re.sub(r"\bv\((\d+),(\d+)\)",
+                          lambda m: f"v({vmap[int(m.group(1))]},{m.group(2)})", t)
+        body = "\n".join(cv(stmts[k][0]) for k in role["keep"])
+        body += f"\n               cur = {(la + lb + lc + ld) % 2}"
+        acc = "".join(f"                  g1({gmap[i]}) = g1({gmap[i]}) + v({vmap[i]}, cur)\n"
+                      for i in role["g1"])
+        pr = prims[:ivrr] + body + prims[ivrr + len(vrr):]
+        pr = pr.replace(acc_old, acc)
+        pr = pr.replace(zero_old, f"            do x = 1, {len(role['g1'])}\n"
+                                  "               g1(x) = 0.0_dp\n            end do\n")
+        hr = "\n".join(
+            re.sub(r"\bvbuf\((\d+)\)", lambda m: f"vbuf({bmap[int(m.group(1))]})",
+                   re.sub(r"\bg\((\d+)\)", lambda m: f"g1({gmap[int(m.group(1))]})",
+                          hs[i][0]))
+            for i in role["vb"])
+        dg = digest.replace(f"         do idx = 1, {na*nb*nc*nd}\n",
+                            f"         do idx = 1, {len(role['vb'])}\n")
+        n_loops = dg.count(f"do {ivar} = 0, {nX - 1}")
+        assert n_loops == 7, (tag, shell, n_loops)
+        dg = re.sub(r"^([ \t]*)do " + ivar + f" = 0, {nX - 1}\n",
+                    lambda m: f"{m.group(1)}do gi = 1, {len(role['comps'])}\n"
+                              f"{m.group(1)}   {ivar} = rc{r}(gi)\n", dg, flags=re.M)
+        cases.append(f"         case ({r + 1})\n" + pr + hr + "\n" + dg)
+    item = (sig + decls + pieces["head"] + pieces["decode"]
+            + "         select case (role)\n" + "".join(cases)
+            + "         end select\n"
+            + "   end subroutine pcri" + tag + "\n")
+    return drv + "\n" + item
+
+
 def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     """The scalar kernel for one class.
 
@@ -994,7 +1238,9 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     drv = txt_l[idrv:idrv_end].replace("pci" + tag, "pcsi" + tag).replace("pc" + tag, "pcs" + tag)
     drv = drv.replace("driver.  The `do concurrent`", "SCALAR driver.  The `do concurrent`")
 
-    return drv + "\n" + scalar_item
+    pieces = dict(drv=drv, sig=sig, decls=decls, head=head, prims=prims,
+                  decode=decode, hrr_and_digest=hrr_and_digest)
+    return drv + "\n" + scalar_item, pieces
 
 
 def _radix(txt):
@@ -1018,6 +1264,9 @@ def main():
                          "files satisfy, while pc_dispatch is host code "
                          "launching kernels and may cross modules freely.")
     ap.add_argument("-o", "--output", default="src/trc_pc_kernels.F90")
+    ap.add_argument("--role-report", action="store_true",
+                    help="print the warp-role redundancy table for every "
+                         "class with a d shell and exit; nothing is written")
     args = ap.parse_args()
     L = args.lmax
 
@@ -1088,10 +1337,20 @@ contains
                     hrr = gh.emit_class(la, lb, lc, ld, idx_h)
                     key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld
                     names.append((key, f"{la}{lb}{lc}{ld}"))
-                    body = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
-                    pieces.append((f"{la}{lb}{lc}{ld}", body))
+                    if args.role_report:
+                        if 2 in (la, lb, lc, ld):
+                            print(role_report(la, lb, lc, ld, vrr, hrr))
+                        continue
+                    body, parts = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
+                    tag = f"{la}{lb}{lc}{ld}"
+                    if tag in ROLE_SPLITS:
+                        body += "\n" + emit_role_kernel(la, lb, lc, ld, vrr, hrr,
+                                                        parts, ROLE_SPLITS[tag])
+                    pieces.append((tag, body))
                     out.append(body)
 
+    if args.role_report:
+        return
     out.append(f"""
    subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
@@ -1102,7 +1361,8 @@ contains
       integer, intent(in) :: rank, nranks
       select case (key)""")
     for key, tag in names:
-        out.append(f"""      case ({key}); call pcs{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+        kern = "pcr" if tag in ROLE_SPLITS else "pcs"
+        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)""")
     out.append("""      end select
@@ -1138,7 +1398,7 @@ module {mod}
    use trc_tables, only: LMAX
    implicit none
    private
-   public :: pcs{tag}
+   public :: pcs{tag}{", pcr" + tag if tag in ROLE_SPLITS else ""}
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -1146,7 +1406,8 @@ contains
 {body}
 end module {mod}
 """)
-            use_lines.append(f"   use {mod}, only: pcs{tag}")
+            use_lines.append(f"   use {mod}, only: pcs{tag}"
+                             + (f", pcr{tag}" if tag in ROLE_SPLITS else ""))
         disp = [f"""!
 ! Kernel dispatcher for the per-class modules.
 !

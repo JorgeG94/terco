@@ -74,19 +74,19 @@ module trc_pc_kernels
    use trc_pc_k2101, only: pcs2101
    use trc_pc_k2102, only: pcs2102
    use trc_pc_k2110, only: pcs2110
-   use trc_pc_k2111, only: pcs2111
+   use trc_pc_k2111, only: pcs2111, pcr2111
    use trc_pc_k2112, only: pcs2112
-   use trc_pc_k2120, only: pcs2120
-   use trc_pc_k2121, only: pcs2121
+   use trc_pc_k2120, only: pcs2120, pcr2120
+   use trc_pc_k2121, only: pcs2121, pcr2121
    use trc_pc_k2122, only: pcs2122
    use trc_pc_k2200, only: pcs2200
    use trc_pc_k2201, only: pcs2201
    use trc_pc_k2202, only: pcs2202
    use trc_pc_k2210, only: pcs2210
-   use trc_pc_k2211, only: pcs2211
+   use trc_pc_k2211, only: pcs2211, pcr2211
    use trc_pc_k2212, only: pcs2212
    use trc_pc_k2220, only: pcs2220
-   use trc_pc_k2221, only: pcs2221
+   use trc_pc_k2221, only: pcs2221, pcr2221
    use trc_pc_k2222, only: pcs2222
    implicit none
    private
@@ -335,16 +335,16 @@ contains
       case (2794); call pcs2110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
-      case (2795); call pcs2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2795); call pcr2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
       case (2796); call pcs2112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
-      case (2805); call pcs2120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2805); call pcr2120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
-      case (2806); call pcs2121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2806); call pcr2121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
       case (2807); call pcs2122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
@@ -362,7 +362,7 @@ contains
       case (2915); call pcs2210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
-      case (2916); call pcs2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2916); call pcr2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
       case (2917); call pcs2212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
@@ -371,7 +371,7 @@ contains
       case (2926); call pcs2220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
-      case (2927); call pcs2221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2927); call pcr2221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
       case (2928); call pcs2222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
