@@ -930,7 +930,28 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
 #: The small classes never spilled, so the redundancy buys nothing.
 #: Splitting over the ket's first shell (c) won everywhere it was tried: the
 #: HRR closure of one ket component is the smallest slice of the VRR.
-ROLE_SPLITS = {"2121": "c", "2111": "c", "2221": "c", "2211": "c", "2120": "c"}
+#: Extended to every canonical class whose scalar working set spills. Only 21
+#: of the 81 generated classes are ever dispatched (bra >= ket, la >= lb,
+#: lc >= ld), and across those the split's sign tracks the scalar working set
+#: -- 2*v + g1 + vbuf doubles -- almost exactly:
+#:     win  2221 2748   2211 1374   2121 1524   2120 708   2111 762
+#:     lose 2011  354   2010  138   2110  294
+#: so the threshold sits between ~350 and ~700 doubles, which is where the
+#: kernel starts spilling to local memory and the redundancy finally buys
+#: something. Two unsplit classes above it are added here; every other
+#: unsplit class is at or below 381 doubles and is left alone.
+#:
+#: (dd|dd) IS ABOVE THE THRESHOLD AND IS STILL LEFT SCALAR, on compile time.
+#: Its working set is 4971 doubles, the largest of any class, and splitting it
+#: six ways is structurally the most promising of the lot -- accumulator 961
+#: down to 310. But six roles over a 2179-statement VRR generate 52563 lines,
+#: a quarter of everything this script emits, and take the full build from 20
+#: minutes to 45. On cc-pVDZ that buys about 0.4 s of a 68 s Fock build,
+#: because (dd|dd) is 0.8% of integral time when there is one d shell per
+#: heavy atom. Revisit for a basis with more d functions, or for f, where the
+#: class is worth more and the trade may reverse.
+ROLE_SPLITS = {"2121": "c", "2111": "c", "2221": "c", "2211": "c", "2120": "c",
+               "2220": "c", "2210": "c"}
 
 
 def _vrr_stmts(vrr):
