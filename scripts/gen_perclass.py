@@ -950,8 +950,15 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
 #: because (dd|dd) is 0.8% of integral time when there is one d shell per
 #: heavy atom. Revisit for a basis with more d functions, or for f, where the
 #: class is worth more and the trade may reverse.
+#: (dd|ps) IS NOT HERE, and must not be put back without checking cc80.
+#: Its role kernel makes nvfortran 26.5 die with a signal 11 in fort2 --
+#: "TERMINATED by signal 11", no diagnostic -- when compiled for cc80. The
+#: SAME file compiles for cc70, which is how it passed review on a V100 and
+#: broke an A100 build. Every other role class here compiles for both. If a
+#: later compiler fixes it the class is worth about 1.8 s of a 68 s Fock
+#: build on the silica slice.
 ROLE_SPLITS = {"2121": "c", "2111": "c", "2221": "c", "2211": "c", "2120": "c",
-               "2220": "c", "2210": "c"}
+               "2220": "c"}
 
 
 def _vrr_stmts(vrr):

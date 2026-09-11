@@ -82,7 +82,7 @@ module trc_pc_kernels
    use trc_pc_k2200, only: pcs2200
    use trc_pc_k2201, only: pcs2201
    use trc_pc_k2202, only: pcs2202
-   use trc_pc_k2210, only: pcs2210, pcr2210
+   use trc_pc_k2210, only: pcs2210
    use trc_pc_k2211, only: pcs2211, pcr2211
    use trc_pc_k2212, only: pcs2212
    use trc_pc_k2220, only: pcs2220, pcr2220
@@ -359,7 +359,7 @@ contains
       case (2906); call pcs2202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
-      case (2915); call pcr2210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+      case (2915); call pcs2210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)
       case (2916); call pcr2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
