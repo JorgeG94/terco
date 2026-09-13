@@ -72,10 +72,40 @@ module trc_decontract
 
    public :: decon_t, decontract_basis, decon_expand, decon_fold, decon_release
    public :: decon_expand_host, decon_fold_host
-   public :: DECON_CUTOFF_DEFAULT
+   public :: DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT
 
    !> Exponents at or below this are diffuse. GPU4PySCF's `diffuse_cutoff`.
    real(dp), parameter :: DECON_CUTOFF_DEFAULT = 0.3_dp
+
+   !
+   !> SPLIT ONLY THE GROUPS THAT PAY FOR IT -- OFF BY DEFAULT.
+   !>
+   !> A group is split only if some contracted shell in it holds at least
+   !> this many compact primitives; 0 splits every general contraction,
+   !> which is what this module did before the gate existed and what the
+   !> default still does.
+   !>
+   !> The gate exists because the split is not always worth its screen.
+   !> Splitting buys back the duplicated primitive work of a general
+   !> contraction and costs a screen tightened by the transform's amplitude
+   !> (see `amp` in build_maps). Measured on one card, Fock seconds for
+   !> three iterations at thresh 1e-12, with setup beside it:
+   !>
+   !>                   split all      Si only (10)    split none
+   !>   msn  28 Si    2.00 / 27.38    6.10 / 30.73    9.67 / 39.51
+   !>   w150  no Si   5.19 / 20.44        (= none)    6.87 / 15.15
+   !>
+   !> There is NO setting that is best for both. msn wants everything
+   !> split -- gating O out of it costs 3.3 s, and the unsplit Si shells
+   !> cost another 9 -- while w150, whose only general contraction is O's
+   !> 9-primitive s, is 26% faster not splitting at all. Same element,
+   !> opposite sign in two molecules, so the discriminator is the
+   !> molecule's screening structure and not its basis, and a static rule
+   !> cannot read it. The default therefore stays where the measurements
+   !> that drove this work were taken, and this is the knob for the other
+   !> case: TRC_DECON_MINPRIM=10 on a water cluster.
+   !
+   integer, parameter :: DECON_MINPRIM_DEFAULT = 0
 
    !
    ! The transform between the contracted basis a caller speaks and the
@@ -117,12 +147,15 @@ contains
    ! `active` comes back false for a basis with nothing to split, and then
    ! `pb` and the maps are untouched: the caller must go on using `b`.
    !
-   subroutine decontract_basis(b, pb, m, cutoff)
+   subroutine decontract_basis(b, pb, m, cutoff, minprim)
       type(trc_basis_t), intent(in)    :: b
       type(trc_basis_t), intent(inout) :: pb
       type(decon_t),     intent(inout) :: m
       !> Diffuse threshold; DECON_CUTOFF_DEFAULT if absent.
       real(dp), intent(in), optional :: cutoff
+      !> Smallest compact primitive count that makes a split worth its
+      !> screen; DECON_MINPRIM_DEFAULT if absent. Zero splits everything.
+      integer, intent(in), optional :: minprim
 
       integer, allocatable :: grp(:)          ! group id per shell
       integer, allocatable :: p_l(:), p_np(:)
@@ -136,15 +169,19 @@ contains
       integer :: ng, g, i, n
       real(dp) :: cut
       real(dp) :: fl(0:8)
+      integer :: mnp
 
       cut = DECON_CUTOFF_DEFAULT
       if (present(cutoff)) cut = cutoff
+      mnp = DECON_MINPRIM_DEFAULT
+      if (present(minprim)) mnp = minprim
 
       call decon_release(m)
       call group_shells(b, grp, ng)
 
-      ! Nothing shares an exponent with anything: a segmented basis. Leave.
-      if (.not. any_group_splits(b, grp, ng, cut)) then
+      ! Nothing shares an exponent with anything, or nothing that does is
+      ! worth the split: a segmented basis as far as this module cares. Leave.
+      if (.not. any_group_splits(b, grp, ng, cut, mnp)) then
          m%active = .false.
          return
       end if
@@ -163,7 +200,7 @@ contains
       nsh_p = 0; ntr = 0
 
       do g = 1, ng
-         call split_group(b, grp, g, cut, p_l, p_np, p_e, p_c, p_r, nsh_p, &
+         call split_group(b, grp, g, cut, mnp, p_l, p_np, p_e, p_c, p_r, nsh_p, &
                           tr_mu, tr_s, tr_a, tr_whole, ntr)
       end do
 
@@ -317,15 +354,14 @@ contains
    ! has, and a segmented run is bit-for-bit what it was before this module
    ! existed.
    !
-   logical function any_group_splits(b, grp, ng, cut)
+   logical function any_group_splits(b, grp, ng, cut, minprim)
       type(trc_basis_t), intent(in) :: b
-      integer, intent(in) :: grp(:), ng
+      integer, intent(in) :: grp(:), ng, minprim
       real(dp), intent(in) :: cut
-      integer :: g, nmem
+      integer :: g
       any_group_splits = .false.
       do g = 1, ng
-         nmem = count(grp == g)
-         if (nmem > 1) then
+         if (group_pays(b, grp, g, cut, minprim)) then
             any_group_splits = .true.
             return
          end if
@@ -333,13 +369,42 @@ contains
    end function any_group_splits
 
    !
+   ! Is this group worth splitting?
+   !
+   ! It has to BE a general contraction -- more than one shell sharing the
+   ! exponents -- and its work has to be worth the screen the split tightens.
+   ! The proxy for the work is the compact primitive count of the group's
+   ! biggest contracted shell, which is what the unsplit path pays twice over:
+   ! once in the primitive pairs of every column, and once in `build_pairs`
+   ! and `schwarz_bounds`, where msn's setup went 2.0 s -> 9.7 s with the
+   ! split off. See DECON_MINPRIM_DEFAULT for the measurement.
+   !
+   logical function group_pays(b, grp, g, cut, minprim)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: grp(:), g, minprim
+      real(dp), intent(in) :: cut
+      integer :: i, k, nmem, ncomp, best
+      nmem = 0; best = 0
+      do i = 1, b%nshell
+         if (grp(i) /= g) cycle
+         nmem = nmem + 1
+         ncomp = 0
+         do k = 1, b%sh_np(i)
+            if (b%sh_e(k, i) > cut) ncomp = ncomp + 1
+         end do
+         best = max(best, ncomp)
+      end do
+      group_pays = (nmem > 1) .and. (best >= minprim)
+   end function group_pays
+
+   !
    ! Emit the shells one group becomes, and the triples that map the group's
    ! contracted shells onto them.
    !
-   subroutine split_group(b, grp, g, cut, p_l, p_np, p_e, p_c, p_r, nsh_p, &
+   subroutine split_group(b, grp, g, cut, minprim, p_l, p_np, p_e, p_c, p_r, nsh_p, &
                           tr_mu, tr_s, tr_a, tr_whole, ntr)
       type(trc_basis_t), intent(in) :: b
-      integer,  intent(in) :: grp(:), g
+      integer,  intent(in) :: grp(:), g, minprim
       real(dp), intent(in) :: cut
       integer,  intent(inout) :: p_l(:), p_np(:), nsh_p, tr_mu(:), tr_s(:), ntr
       real(dp), intent(inout) :: p_e(:, :), p_c(:, :), p_r(:, :), tr_a(:)
@@ -357,10 +422,14 @@ contains
          end if
       end do
 
-      ! A segmented shell: keep it whole, mapped one to one.
-      if (nmem == 1) then
-         call emit_whole(b, mem(1), p_l, p_np, p_e, p_c, p_r, nsh_p, &
-                         tr_mu, tr_s, tr_a, tr_whole, ntr)
+      ! A segmented shell, or a general contraction whose columns are too
+      ! cheap to be worth the tightened screen: keep every member whole,
+      ! mapped one to one, exactly as the unsplit path would have them.
+      if (.not. group_pays(b, grp, g, cut, minprim)) then
+         do i = 1, nmem
+            call emit_whole(b, mem(i), p_l, p_np, p_e, p_c, p_r, nsh_p, &
+                            tr_mu, tr_s, tr_a, tr_whole, ntr)
+         end do
          return
       end if
 

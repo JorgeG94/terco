@@ -54,7 +54,7 @@ module trc_eri
    use trc_binkernel, only: fock_bins
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
-                             DECON_CUTOFF_DEFAULT, &
+                             DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
                              decon_expand_host, decon_fold_host
    implicit none
    private
@@ -157,7 +157,8 @@ contains
       if (len_trim(bt_env) == 0) then
          ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
          ! uses, so the rule can be swept without a rebuild.
-         call decontract_basis(b, this%pb, this%dec, cutoff=decon_cutoff())
+         call decontract_basis(b, this%pb, this%dec, cutoff=decon_cutoff(), &
+                               minprim=decon_minprim())
       end if
       if (this%dec%active) then
          ! The transform runs inside `fock_resident`, where everything is
@@ -194,6 +195,22 @@ contains
          if (ios /= 0) decon_cutoff = DECON_CUTOFF_DEFAULT
       end if
    end function decon_cutoff
+
+   !> Smallest compact primitive count a general contraction must have for
+   !> the split to be worth its tightened screen. TRC_DECON_MINPRIM
+   !> overrides it, so the gate can be swept without a rebuild; 0 splits
+   !> every group, as this module did before the gate existed.
+   integer function decon_minprim()
+      character(len=32) :: e
+      integer :: ios
+      e = ' '
+      call get_environment_variable('TRC_DECON_MINPRIM', e)
+      decon_minprim = DECON_MINPRIM_DEFAULT
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) decon_minprim
+         if (ios /= 0) decon_minprim = DECON_MINPRIM_DEFAULT
+      end if
+   end function decon_minprim
 
    subroutine build_structures(this, b, thresh, bres)
       class(trc_eri_t), intent(inout) :: this
@@ -648,8 +665,21 @@ contains
          end do
       end if
 
-      if (present(count_survivors)) then
-         if (count_survivors) then
+      !
+      ! TRC_KEPT_STATS=1 reports what fraction of the launched quartets
+      ! actually survive the in-kernel screen, which is the only honest
+      ! bound on what any reordering of the work could buy. It costs a
+      ! SECOND pass over the whole work list, so a build timed with it on
+      ! is not a build time.
+      !
+      block
+         character(len=8) :: ke
+         logical :: want
+         ke = ' '
+         call get_environment_variable('TRC_KEPT_STATS', ke)
+         want = len_trim(ke) > 0
+         if (present(count_survivors)) want = want .or. count_survivors
+         if (want) then
             call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                            this%ao_off, this%thresh, .false., &
                            jfac, kfac, .false., this%dsh, &
@@ -657,8 +687,11 @@ contains
                            this%hp_ra, this%hp_rb, this%hp_c, &
                            1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
                            nkept=this%nkept)
+            if (len_trim(ke) > 0) print '(a,i0,a,i0,a,f6.2,a)', &
+               '  [kept] nwork ', this%nwork, '  nkept ', this%nkept, '  survive ', &
+               100.0_dp*real(this%nkept, dp)/max(real(this%nwork, dp), 1.0_dp), '%'
          end if
-      end if
+      end block
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, .false., this%dsh, &
