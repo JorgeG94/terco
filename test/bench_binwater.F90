@@ -48,7 +48,7 @@ program bench_binwater
    integer :: nat, nbas, nao, npp, nhpp, nq, i, j, k, l, iq, maxnp
    integer, allocatable :: sh_l(:), sh_np(:), ao_off(:), sh_at(:)
    real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
-   integer, allocatable :: pp_off(:), pp_n(:), hp_off(:), hp_n(:)
+   integer, allocatable :: pp_off(:), pp_n(:), hp_off(:), hp_n(:), hp_ki(:), hp_kj(:)
    real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
    real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :), hp_c(:)
    integer, allocatable :: q_i(:), q_j(:), q_k(:), q_l(:), q_off(:)
@@ -69,8 +69,8 @@ program bench_binwater
 
    call build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, THRESH, &
                     pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
-   call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, &
-                        hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, nhpp)
+   call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, THRESH*1.0e-3_dp, &
+                        hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
 
    allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
    dmax = 1.0_dp
@@ -80,7 +80,7 @@ program bench_binwater
    print '(a,f8.3,a)', '  schwarz bounds  : ', t1 - t0, ' s'
 
    call tick(t0)
-   call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, THRESH, bins)
+   call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=hp_n)
    call tick(t1)
    print '(a,f8.3,a)', '  bin the pairs   : ', t1 - t0, ' s'
 

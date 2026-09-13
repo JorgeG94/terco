@@ -49,10 +49,13 @@ module trc_eri
    use trc_batch, only: build_pairs
    use trc_hgp, only: build_pairs_hgp
    use trc_screen, only: schwarz_bounds
-   use trc_bins, only: pair_bins_t, build_binned_pairs, ps_view_t, PS_NCOL_MAX, ps_release
+   use trc_bins, only: pair_bins_t, build_binned_pairs
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use trc_binkernel, only: fock_bins
    use trc_api, only: trc_basis_t
+   use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
+                             DECON_CUTOFF_DEFAULT, &
+                             decon_expand_host, decon_fold_host
    implicit none
    private
    public :: trc_eri_t
@@ -61,7 +64,6 @@ module trc_eri
       real(dp) :: thresh = 1.0e-10_dp
       integer :: nbas = 0, nao = 0, nhpp = 0
       type(pair_bins_t) :: bins
-      type(ps_view_t) :: ps               !! the primitive-shell view, for the per-class kernels
       !! HGP primitive-pair data: what the kernels actually read.
       integer,  allocatable :: hp_off(:), hp_n(:)
       real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :)
@@ -69,8 +71,21 @@ module trc_eri
       !! Shell-block density bound, refreshed per iteration from D.
       real(dp), allocatable :: dsh(:, :)
       integer,  allocatable :: sh_l(:), ao_off(:)
+      !! The basis the integrals are actually evaluated over, and the
+      !! transform back to the one the caller speaks. On a generally
+      !! contracted basis `dec%active` is true, `pb` is the split basis and
+      !! `nao_w` is its (larger) function count; the public `nao` stays the
+      !! contracted one so no caller sees the difference. On a segmented
+      !! basis nothing here is allocated and `nao_w == nao`.
+      type(trc_basis_t) :: pb
+      type(decon_t) :: dec
+      integer :: nao_w = 0
       logical :: on_device = .false.
       integer :: nlaunch = 0
+      !> Quartets that survive both screens in the last build, counted only
+      !> when fock_resident is asked for it. Diagnostic: it costs a full
+      !> extra enumeration pass.
+      integer(kind=8) :: nkept = 0
       integer(kind=8) :: nwork = 0
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then
@@ -98,27 +113,18 @@ contains
    ! the HGP primitive pairs the kernels read. The MMD set is discarded once
    ! the bounds exist.
    !
-   subroutine eri_build(this, b, thresh, comm, general)
+   subroutine eri_build(this, b, thresh, comm, batch_res)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
       !! Ranks to split the quartets over. Bind each rank to its device
       !! (trc_bind_device) BEFORE any object goes to the device.
       type(comm_t), intent(in), optional :: comm
-      !! Run the per-class kernels over the primitive-shell view, with the
-      !! columns of a general contraction sharing their primitive loops.
-      !! OFF by default: on cholesterol/cc-pVDZ the view does a third of the
-      !! primitive quartets of the segmented path and still takes longer,
-      !! because the blocked kernel runs each one several times slower
-      !! (occupancy, and one thread per primitive-shell quartet). Measured,
-      !! not inferred -- see the commit that added it. The segmented path
-      !! with dead primitives dropped at `build` is what made cc-pVDZ fast.
-      logical, intent(in), optional :: general
+      !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
+      integer, intent(in), optional :: batch_res
 
-      integer :: npp, i
-      integer,  allocatable :: pp_off(:), pp_n(:)
-      real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
-      real(dp), allocatable :: qs(:), one(:)
+      integer :: bres
+      character(len=8) :: bt_env
 
       this%rank = 0; this%nranks = 1; this%distributed = .false.
       if (present(comm)) then
@@ -127,7 +133,91 @@ contains
          this%nranks = comm%size()
          this%distributed = this%nranks > 1
       end if
+      bres = 1
+      if (present(batch_res)) bres = batch_res
+
       call this%release()
+      this%thresh = thresh
+      this%nao = b%nao
+
+      !
+      ! SPLIT A GENERAL CONTRACTION BEFORE ANYTHING IS BUILT.
+      !
+      ! Everything below -- pairs, Schwarz, the HGP primitive pairs, the bins,
+      ! the density bound -- is built over `wb`, which is the split basis when
+      ! there is one and the caller's basis otherwise. Only the transform of D
+      ! on the way in and G on the way out knows the difference, so every
+      ! entry point and every caller gets this for free. See trc_decontract
+      ! for why it is worth 2.4x on cc-pVDZ.
+      !
+      ! TRC_NO_DECONTRACT=1 forces the old path, for bisecting a discrepancy.
+      !
+      bt_env = ' '
+      call get_environment_variable('TRC_NO_DECONTRACT', bt_env)
+      if (len_trim(bt_env) == 0) then
+         ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
+         ! uses, so the rule can be swept without a rebuild.
+         call decontract_basis(b, this%pb, this%dec, cutoff=decon_cutoff())
+      end if
+      if (this%dec%active) then
+         ! The transform runs inside `fock_resident`, where everything is
+         ! device-resident; the maps have to be up there with it.
+         ! The containing type first, then its arrays. Mapping a component
+         ! without the type that holds it is what nvfortran reports as
+         ! "partially present", and the same rule is why this%bins is in the
+         ! clause below alongside this%bins%sp_i.
+         !$acc enter data copyin(this%dec)
+         !$acc enter data copyin(this%dec%f_off, this%dec%f_c, this%dec%f_a, &
+         !$acc                   this%dec%t_off, this%dec%t_p, this%dec%t_a)
+         this%dec%on_device = .true.
+      end if
+      if (this%dec%active) then
+         call build_structures(this, this%pb, thresh, bres)
+      else
+         call build_structures(this, b, thresh, bres)
+      end if
+   end subroutine eri_build
+
+   !
+   ! Everything eri_build does once the basis to build over has been chosen.
+   !
+   !> Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
+   !> unless TRC_DECON_CUTOFF says otherwise.
+   real(dp) function decon_cutoff()
+      character(len=32) :: e
+      integer :: ios
+      e = ' '
+      call get_environment_variable('TRC_DECON_CUTOFF', e)
+      decon_cutoff = DECON_CUTOFF_DEFAULT
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) decon_cutoff
+         if (ios /= 0) decon_cutoff = DECON_CUTOFF_DEFAULT
+      end if
+   end function decon_cutoff
+
+   subroutine build_structures(this, b, thresh, bres)
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bres
+
+      integer :: npp, i
+      integer,  allocatable :: pp_off(:), pp_n(:)
+      real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
+      real(dp), allocatable :: qs(:), one(:)
+      integer,  allocatable :: hp_ki(:), hp_kj(:)
+      ! Stage timing, printed only when TRC_BUILD_TIMING is set. `build` is
+      ! four routines with very different costs and no way to tell from the
+      ! outside which one is the slow one.
+      logical :: btime
+      integer :: bt_c0, bt_c1, bt_rate
+      character(len=8) :: bt_env
+
+      bt_env = ' '
+      call get_environment_variable('TRC_BUILD_TIMING', bt_env)
+      btime = len_trim(bt_env) > 0
+      call system_clock(bt_c0, bt_rate)
+
       ! All three, not just Boys. The Schwarz bounds go through the MMD path,
       ! which reads the Hermite and Cartesian index tables; without them the
       ! bounds come back identically zero, every pair is pre-screened away and
@@ -136,9 +226,8 @@ contains
       call boys_init()
       call tables_init()
       call cart_init()
-      this%thresh = thresh
       this%nbas = b%nshell
-      this%nao  = b%nao
+      this%nao_w = b%nao
 
       allocate (this%sh_l(b%nshell), this%ao_off(b%nshell))
       this%sh_l   = b%sh_l
@@ -152,26 +241,53 @@ contains
 
       call build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, thresh, &
                        pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'build_pairs       ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
       call schwarz_bounds(b%nshell, npp, b%sh_l, pp_off, pp_n, pp_p, pp_r, &
                           pp_c, pp_e, qs)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'schwarz_bounds    ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
       deallocate (pp_off, pp_n, pp_p, pp_r, pp_c, pp_e)
 
-      call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
-                              this%bins)
-
+      ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
+      ! the prune judges by. The cutoff sits three orders below the
+      ! screening threshold, as the pair prefilter in build_pairs does.
       call build_pairs_hgp(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                           one, this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                           this%hp_ra, this%hp_rb, this%hp_c, this%nhpp)
+                           one, b%sh_c, thresh*1.0e-3_dp, &
+                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                           this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'build_pairs_hgp   ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
+      ! The contracted kernels fold the coefficients into hp_c and never
+      ! ask which primitive a pair came from.
+      deallocate (hp_ki, hp_kj)
+
+      call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                              this%bins, pp_n=this%hp_n, res=bres)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'build_binned_pairs', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
+
 
       allocate (this%dsh(b%nshell, b%nshell))
       this%dsh = huge(1.0_dp)*1.0e-30_dp
 
-      this%ps%nps = 0
-      if (present(general)) then
-         if (general) call build_ps_view(b, qs, thresh, this%ps)
-      end if
       deallocate (qs, one)
 
       !$acc enter data copyin(this%sh_l, this%ao_off, this%dsh, &
@@ -179,16 +295,8 @@ contains
       !$acc                   this%bins%sp_q, &
       !$acc                   this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
-      if (this%ps%nps > 0) then
-      !$acc enter data copyin(this%ps%ps_l, this%ps%ps_np, this%ps%ps_ncol, this%ps%ps_soff, this%ps%ps_coff, this%ps%ps_ao1, &
-      !$acc                   this%ps%col_ao, this%ps%col_sh, this%ps%ps_coef, this%ps%pp_off, this%ps%pp_n, &
-      !$acc                   this%ps%pp_p, this%ps%pp_r, this%ps%pp_ra, this%ps%pp_rb, this%ps%pp_c, this%ps%pp_cs, this%ps%pp_ki, this%ps%pp_kj, &
-      !$acc                   this%ps%pbins, this%ps%pbins%sp_i, this%ps%pbins%sp_j, this%ps%pbins%sp_q, &
-      !$acc                   this%ps%dshp)
-      this%ps%on_device = .true.
-      end if
       this%on_device = .true.
-   end subroutine eri_build
+   end subroutine build_structures
 
    !
    ! G = 2J - K for a given density.
@@ -232,7 +340,8 @@ contains
       logical, intent(in), optional :: density_screen
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      integer :: n, i, j
+      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
+      integer :: n, nw, i, j
       real(dp) :: jfac, kfac
 
       jfac = 1.0_dp; kfac = 1.0_dp
@@ -240,28 +349,55 @@ contains
       if (present(k_scale)) kfac = k_scale
 
       n = this%nao
-      allocate (jmat(1, n, n), kmat(1, n, n), dwork(1, n, n))
-      dwork(1, :, :) = dmat
+      nw = this%nao_w
+      ! On a split basis the kernels work in the primitive basis: the density
+      ! goes up through C D C^T and the result comes back through C^T G_p C,
+      ! a few tens of megaflops each. See trc_decontract.
+      allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
+      allocate (dp_w(nw, nw), gp_w(nw, nw))
+      if (this%dec%active) then
+         call decon_expand_host(this%dec, dmat, dp_w)
+      else
+         dp_w = dmat
+      end if
+      dwork(1, :, :) = dp_w
       jmat = 0.0_dp
       kmat = 0.0_dp
 
       if (screen_on(density_screen)) then
-         call density_blocks(this, b, dwork, 1)
+         call density_blocks(this, dwork, 1)
       else
          this%dsh = 1.0_dp
       end if
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call fock_bins(this%bins, this%nbas, this%nhpp, n, this%sh_l, &
+      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
+
+      ! Symmetrise in the basis the integrals were formed in, THEN fold. The
+      ! other order is a different matrix -- C is not square.
+      do j = 1, nw
+         do i = 1, nw
+            gp_w(i, j) = 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
+         end do
+      end do
+      if (this%dec%active) then
+         call decon_fold_host(this%dec, gp_w, gmat)
+      else
+         do j = 1, n
+            do i = 1, n
+               gmat(i, j) = gp_w(i, j)
+            end do
+         end do
+      end if
 
       ! vhf = (raw + raw^T)/2.
       !
@@ -276,13 +412,7 @@ contains
       if (present(hcore)) then
          do j = 1, n
             do i = 1, n
-               gmat(i, j) = hcore(i, j) + 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
-            end do
-         end do
-      else
-         do j = 1, n
-            do i = 1, n
-               gmat(i, j) = 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
+               gmat(i, j) = gmat(i, j) + hcore(i, j)
             end do
          end do
       end if
@@ -293,7 +423,7 @@ contains
          if (present(hcore)) gmat = gmat + hcore
       end if
 
-      deallocate (jmat, kmat, dwork)
+      deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
 
    !> Sum a matrix over the ranks, in place, every rank receiving the total.
@@ -350,7 +480,8 @@ contains
       logical, intent(in), optional :: density_screen
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      integer :: n, i, j
+      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
+      integer :: n, nw, i, j
       real(dp) :: jfac, kfac
 
       jfac = 1.0_dp; kfac = 1.0_dp
@@ -358,36 +489,52 @@ contains
       if (present(k_scale)) kfac = k_scale
 
       n = this%nao
-      allocate (jmat(1, n, n), kmat(1, n, n), dwork(1, n, n))
-      dwork(1, :, :) = dmat
+      nw = this%nao_w
+      allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
+      allocate (dp_w(nw, nw), gp_w(nw, nw))
+      if (this%dec%active) then
+         call decon_expand_host(this%dec, dmat, dp_w)
+      else
+         dp_w = dmat
+      end if
+      dwork(1, :, :) = dp_w
       jmat = 0.0_dp; kmat = 0.0_dp
       if (screen_on(density_screen)) then
-         call density_blocks(this, b, dwork, 1)
+         call density_blocks(this, dwork, 1)
       else
          this%dsh = 1.0_dp
       end if
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call fock_bins(this%bins, this%nbas, this%nhpp, n, this%sh_l, &
+      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, .true., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
 
       ! J and K come out in full and unfolded, so this is the definition.
-      do j = 1, n
-         do i = 1, n
-            gmat(i, j) = jfac*jmat(1, i, j) - 0.5_dp*kfac*kmat(1, i, j)
+      do j = 1, nw
+         do i = 1, nw
+            gp_w(i, j) = jfac*jmat(1, i, j) - 0.5_dp*kfac*kmat(1, i, j)
          end do
       end do
+      if (this%dec%active) then
+         call decon_fold_host(this%dec, gp_w, gmat)
+      else
+         do j = 1, n
+            do i = 1, n
+               gmat(i, j) = gp_w(i, j)
+            end do
+         end do
+      end if
       if (this%distributed) call sum_ranks(this, gmat, n*n)
 
-      deallocate (jmat, kmat, dwork)
+      deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock_nosym
 
    !
@@ -416,7 +563,7 @@ contains
    ! by hoisting them into the object; it is the next thing to do here.
    !
    subroutine eri_fock_resident(this, b, dmat, gmat, k_scale, j_scale, &
-                                density_screen)
+                                density_screen, count_survivors)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       !! Both must already be present on the device.
@@ -426,26 +573,42 @@ contains
       !> Weight the Schwarz bound by the density before screening (default
       !> true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
       logical, intent(in), optional :: density_screen
+      !! Also count the quartets that survive screening, into this%nkept.
+      !! A full extra pass over the work list, so it is opt-in.
+      logical, intent(in), optional :: count_survivors
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      integer :: n, i, j
+      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
+      integer :: n, nw, i, j
       real(dp) :: jfac, kfac
 
       jfac = 1.0_dp; kfac = 1.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       n = this%nao
+      nw = this%nao_w
 
-      allocate (jmat(1, n, n), kmat(1, n, n), dwork(1, n, n))
-      !$acc enter data create(jmat, kmat, dwork)
+      allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
+      allocate (dp_w(nw, nw), gp_w(nw, nw))
+      !$acc enter data create(jmat, kmat, dwork, dp_w, gp_w)
+
+      ! The density into the basis the integrals are formed in, on the device.
+      ! Nothing crosses the bus here -- that is the whole point of `resident`.
+      if (this%dec%active) then
+         call decon_expand(this%dec, dmat, dp_w)
+      else
+         do concurrent(j=1:n, i=1:n)
+            dp_w(i, j) = dmat(i, j)
+         end do
+      end if
 
       ! Reshape on the device: the kernel wants (ndens, nao, nao) and the
       ! caller has (nao, nao). This is a device-to-device copy, not a transfer.
       ! `do concurrent` rather than an OpenACC parallel loop. The arrays are
       ! already device-resident, so the standard construct is enough and the
       ! directive was only ever spelling out what it already says.
-      do concurrent(j=1:n, i=1:n)
-         dwork(1, i, j) = dmat(i, j)
+      do concurrent(j=1:nw, i=1:nw)
+         dwork(1, i, j) = dp_w(i, j)
          jmat(1, i, j) = 0.0_dp
          kmat(1, i, j) = 0.0_dp
       end do
@@ -454,37 +617,58 @@ contains
       ! `fock` does, would mean pulling the whole density down and would undo
       ! the entire point of this routine.
       if (screen_on(density_screen)) then
-         call density_blocks_device(this%nbas, n, b%sh_l, b%sh_ao, dmat, this%dsh)
+         call density_blocks_device(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
       else
          do concurrent(j=1:this%nbas, i=1:this%nbas)
             this%dsh(i, j) = 1.0_dp
          end do
       end if
 
-      call fock_bins(this%bins, this%nbas, this%nhpp, n, this%sh_l, &
+      if (present(count_survivors)) then
+         if (count_survivors) then
+            call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+                           this%ao_off, this%thresh, .false., &
+                           jfac, kfac, .false., this%dsh, &
+                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                           this%hp_ra, this%hp_rb, this%hp_c, &
+                           1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
+                           nkept=this%nkept)
+         end if
+      end if
+      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
 
       ! Fold on the device, straight into the caller's resident result.
       ! `do concurrent` rather than an OpenACC parallel loop. The arrays are
       ! already device-resident, so the standard construct is enough and the
       ! directive was only ever spelling out what it already says.
-      do concurrent(j=1:n, i=1:n)
-         gmat(i, j) = 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
+      !
+      ! Symmetrise in the basis the integrals were formed in, THEN fold back.
+      ! The other order is a different matrix, because C is not square.
+      do concurrent(j=1:nw, i=1:nw)
+         gp_w(i, j) = 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
       end do
+      if (this%dec%active) then
+         call decon_fold(this%dec, gp_w, gmat)
+      else
+         do concurrent(j=1:n, i=1:n)
+            gmat(i, j) = gp_w(i, j)
+         end do
+      end if
 
-      !$acc exit data delete(jmat, kmat, dwork)
+      !$acc exit data delete(jmat, kmat, dwork, dp_w, gp_w)
       ! Resident on every rank; the sum goes through the host for now.
       if (this%distributed) then
          !$acc update self(gmat)
          call sum_ranks(this, gmat, n*n)
          !$acc update device(gmat)
       end if
-      deallocate (jmat, kmat, dwork)
+      deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock_resident
 
    !
@@ -533,21 +717,27 @@ contains
       end do
    end subroutine density_blocks_device
 
-   subroutine density_blocks(this, b, dmat, ndens)
+   !
+   ! Shell-block density bound, over the basis the integrals are built in.
+   !
+   ! That is `this%sh_l`/`this%ao_off`, not the caller's basis: on a split
+   ! general contraction the two differ, and bounding the wrong one indexes
+   ! past the end of the density it was handed.
+   !
+   subroutine density_blocks(this, dmat, ndens)
       class(trc_eri_t), intent(inout) :: this
-      type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ndens
-      real(dp), intent(in) :: dmat(ndens, this%nao, this%nao)
+      real(dp), intent(in) :: dmat(ndens, this%nao_w, this%nao_w)
       integer :: i, j, ni, nj, d
       this%dsh = 0.0_dp
       do d = 1, ndens
-         do j = 1, b%nshell
-            nj = (b%sh_l(j) + 1)*(b%sh_l(j) + 2)/2
-            do i = 1, b%nshell
-               ni = (b%sh_l(i) + 1)*(b%sh_l(i) + 2)/2
+         do j = 1, this%nbas
+            nj = (this%sh_l(j) + 1)*(this%sh_l(j) + 2)/2
+            do i = 1, this%nbas
+               ni = (this%sh_l(i) + 1)*(this%sh_l(i) + 2)/2
                this%dsh(i, j) = max(this%dsh(i, j), maxval(abs( &
-                  dmat(d, b%sh_ao(i):b%sh_ao(i) + ni - 1, &
-                       b%sh_ao(j):b%sh_ao(j) + nj - 1))))
+                  dmat(d, this%ao_off(i):this%ao_off(i) + ni - 1, &
+                       this%ao_off(j):this%ao_off(j) + nj - 1))))
             end do
          end do
       end do
@@ -586,7 +776,8 @@ contains
       logical, intent(in), optional :: density_screen
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      integer :: n, i, j, d
+      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
+      integer :: n, nw, i, j, d
       real(dp) :: jfac, kfac
 
       jfac = 1.0_dp; kfac = 1.0_dp
@@ -594,161 +785,61 @@ contains
       if (present(k_scale)) kfac = k_scale
 
       n = this%nao
-      allocate (jmat(ndens, n, n), kmat(ndens, n, n), dwork(ndens, n, n))
-      dwork = dmats
+      nw = this%nao_w
+      allocate (jmat(ndens, nw, nw), kmat(ndens, nw, nw), dwork(ndens, nw, nw))
+      allocate (dp_w(nw, nw), gp_w(nw, nw))
+      ! Every density transformed on the way in, every result folded on the
+      ! way out. Both are per-density, and both are negligible against the
+      ! one pass over the integrals they share.
+      do d = 1, ndens
+         if (this%dec%active) then
+            call decon_expand_host(this%dec, dmats(d, :, :), dp_w)
+         else
+            dp_w = dmats(d, :, :)
+         end if
+         dwork(d, :, :) = dp_w
+      end do
       jmat = 0.0_dp
       kmat = 0.0_dp
 
       if (screen_on(density_screen)) then
-         call density_blocks(this, b, dmats, ndens)
+         call density_blocks(this, dwork, ndens)
       else
          this%dsh = 1.0_dp
       end if
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call fock_bins(this%bins, this%nbas, this%nhpp, n, this%sh_l, &
+      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
-                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, ps=this%ps)
+                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
 
       do d = 1, ndens
-         do j = 1, n
-            do i = 1, n
-               gmats(d, i, j) = 0.5_dp*(jmat(d, i, j) + jmat(d, j, i))
+         do j = 1, nw
+            do i = 1, nw
+               gp_w(i, j) = 0.5_dp*(jmat(d, i, j) + jmat(d, j, i))
             end do
          end do
+         if (this%dec%active) then
+            call decon_fold_host(this%dec, gp_w, gmats(d, :, :))
+         else
+            do j = 1, n
+               do i = 1, n
+                  gmats(d, i, j) = gp_w(i, j)
+               end do
+            end do
+         end if
       end do
 
       if (this%distributed) call sum_ranks(this, gmats, ndens*n*n)
-      deallocate (jmat, kmat, dwork)
+      deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock_many
-
-   !
-   ! The primitive-shell view of `b`: shells sharing a centre, l and exponent
-   ! list become one primitive shell with several coefficient columns (at
-   ! most PS_NCOL_MAX; more are split). Pairs, Schwarz bounds and bins over
-   ! those; the bound of a primitive-shell pair is the largest over its
-   ! column pairs, which is what makes the kernel's per-quartet test still a
-   ! bound.
-   !
-   subroutine build_ps_view(b, qs, thresh, ps)
-      type(trc_basis_t), intent(in) :: b
-      real(dp), intent(in) :: qs(:)        !! contracted Schwarz bounds, canonical index
-      real(dp), intent(in) :: thresh
-      type(ps_view_t), intent(out) :: ps
-      integer, allocatable :: ps_of(:), col_of(:), ps_np(:), ps_ncol(:), ps_first(:)
-      real(dp), allocatable :: ps_e(:, :), ps_r(:, :), ones(:, :), cf(:), qps(:)
-      integer :: is, p, nps, k, np, ia, ib, ic, a, c, sa, sb, ncoef, ncol
-      logical, allocatable :: gen(:)
-      real(dp) :: qm
-
-      allocate (ps_of(b%nshell), col_of(b%nshell), ps_np(b%nshell), ps_ncol(b%nshell), ps_first(b%nshell))
-      allocate (ps_e(b%maxnp, b%nshell), ps_r(3, b%nshell))
-      nps = 0
-      do is = 1, b%nshell
-         np = b%sh_np(is)
-         ps_of(is) = 0
-         do p = 1, nps
-            if (ps_ncol(p) >= PS_NCOL_MAX) cycle
-            if (b%sh_l(ps_first(p)) /= b%sh_l(is) .or. ps_np(p) /= np) cycle
-            if (any(abs(ps_r(:, p) - b%sh_r(:, is)) > 1.0e-12_dp)) cycle
-            if (any(abs(ps_e(1:np, p) - b%sh_e(1:np, is)) > 1.0e-12_dp*max(1.0_dp, abs(ps_e(1:np, p))))) cycle
-            ps_of(is) = p
-            exit
-         end do
-         if (ps_of(is) == 0) then
-            nps = nps + 1
-            ps_of(is) = nps
-            ps_first(nps) = is
-            ps_np(nps) = np
-            ps_ncol(nps) = 0
-            ps_e(:, nps) = 0.0_dp
-            ps_e(1:np, nps) = b%sh_e(1:np, is)
-            ps_r(:, nps) = b%sh_r(:, is)
-         end if
-         ps_ncol(ps_of(is)) = ps_ncol(ps_of(is)) + 1
-         col_of(is) = ps_ncol(ps_of(is))
-      end do
-
-      ps%nps = nps
-      allocate (ps%ps_l(nps), ps%ps_np(nps), ps%ps_ncol(nps), ps%ps_soff(nps), ps%ps_coff(nps))
-      ps%ps_np = ps_np(1:nps)
-      ps%ps_ncol = ps_ncol(1:nps)
-      ncol = 0; ncoef = 0
-      do p = 1, nps
-         ps%ps_l(p) = b%sh_l(ps_first(p))
-         ps%ps_soff(p) = ncol
-         ps%ps_coff(p) = ncoef
-         ncol = ncol + ps_ncol(p)
-         ncoef = ncoef + ps_np(p)*ps_ncol(p)
-      end do
-      ps%ncoltot = ncol; ps%ncoef = ncoef
-      allocate (ps%col_ao(ncol), ps%col_sh(ncol), ps%ps_coef(ncoef), ps%ps_ao1(nps))
-      do is = 1, b%nshell
-         p = ps_of(is); c = col_of(is)
-         ps%col_ao(ps%ps_soff(p) + c) = b%sh_ao(is)
-         ps%col_sh(ps%ps_soff(p) + c) = is
-         do k = 1, ps_np(p)
-            ps%ps_coef(ps%ps_coff(p) + (c - 1)*ps_np(p) + k) = b%sh_c(k, is)
-         end do
-      end do
-
-      ! Primitive pairs over primitive shells: unit coefficients and unit
-      ! common factor, both of which live in ps_coef now.
-      allocate (ones(b%maxnp, nps), cf(nps))
-      ones = 1.0_dp; cf = 1.0_dp
-      call build_pairs_hgp(nps, ps%ps_l, ps%ps_np, ps_e(:, 1:nps), ones, ps_r(:, 1:nps), cf, &
-                           ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%npp)
-
-      ! The scalar kernel wants the first column's coefficients folded into
-      ! the pair factor, as the contracted build had them; it only ever
-      ! sees pairs whose two shells have one column, so that is exact there.
-      allocate (ps%pp_cs(ps%npp), ps%pp_ki(ps%npp), ps%pp_kj(ps%npp), gen(nps))
-      do a = 1, nps
-         do c = 1, nps
-            k = ps%pp_off((a - 1)*nps + c)
-            do ia = 1, ps_np(a)
-               do ic = 1, ps_np(c)
-                  k = k + 1
-                  ps%pp_cs(k) = ps%pp_c(k)*ps%ps_coef(ps%ps_coff(a) + ia)*ps%ps_coef(ps%ps_coff(c) + ic)
-                  ps%pp_ki(k) = ia; ps%pp_kj(k) = ic
-               end do
-            end do
-         end do
-      end do
-      gen = ps_ncol(1:nps) > 1
-      ! The scalar kernel reads its AO offsets through this, one load per
-      ! shell as the contracted path had it, not two through the column table.
-      do p = 1, nps
-         ps%ps_ao1(p) = ps%col_ao(ps%ps_soff(p) + 1)
-      end do
-
-      ! Schwarz per primitive-shell pair: the largest contracted bound over
-      ! its column pairs.
-      allocate (qps(nps*(nps + 1)/2))
-      do a = 1, nps
-         do c = 1, a
-            qm = 0.0_dp
-            do ia = 1, ps_ncol(a)
-               sa = ps%col_sh(ps%ps_soff(a) + ia)
-               do ib = 1, ps_ncol(c)
-                  sb = ps%col_sh(ps%ps_soff(c) + ib)
-                  qm = max(qm, qs(max(sa, sb)*(max(sa, sb) - 1)/2 + min(sa, sb)))
-               end do
-            end do
-            qps(a*(a - 1)/2 + c) = qm
-         end do
-      end do
-      call build_binned_pairs(nps, ps%ps_l, ps%ps_np, ps_r(:, 1:nps), qps, thresh, ps%pbins, gen)
-      allocate (ps%dshp(nps, nps))
-      ps%dshp = huge(1.0_dp)*1.0e-30_dp
-   end subroutine build_ps_view
 
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this
@@ -760,7 +851,6 @@ contains
          !$acc                  this%hp_ra, this%hp_rb, this%hp_c)
          this%on_device = .false.
       end if
-      call ps_release(this%ps)
       if (allocated(this%hp_off)) deallocate (this%hp_off)
       if (allocated(this%hp_n))   deallocate (this%hp_n)
       if (allocated(this%hp_p))   deallocate (this%hp_p)
@@ -771,7 +861,9 @@ contains
       if (allocated(this%dsh))    deallocate (this%dsh)
       if (allocated(this%sh_l))   deallocate (this%sh_l)
       if (allocated(this%ao_off)) deallocate (this%ao_off)
-      this%nbas = 0; this%nao = 0; this%nhpp = 0
+      call decon_release(this%dec)
+      call this%pb%release()
+      this%nbas = 0; this%nao = 0; this%nao_w = 0; this%nhpp = 0
    end subroutine eri_release
 
 end module trc_eri

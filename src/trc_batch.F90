@@ -107,6 +107,9 @@ contains
       real(dp) :: ra(3), rb(3), pc(3)
       real(dp) :: e1(0:LMAX, 0:LMAX, 0:2*LMAX)
       real(dp) :: rab2, amp, cut
+      integer :: bp_c0, bp_c1, bp_rate
+      logical :: bp_t
+      character(len=8) :: bp_env
 
       allocate (pp_off(nbas*nbas), pp_n(nbas*nbas))
 
@@ -133,6 +136,10 @@ contains
       ! Gaussian, so a thousandfold tighter cutoff moves the distance at which
       ! pairs die by very little.
       !
+      bp_env = ' '
+      call get_environment_variable('TRC_BUILD_TIMING', bp_env)
+      bp_t = len_trim(bp_env) > 0
+      call system_clock(bp_c0, bp_rate)
       cut = thresh*1.0e-3_dp
       npp = 0
       do i = 1, nbas
@@ -157,8 +164,25 @@ contains
          end do
       end do
 
+      if (bp_t) then
+         call system_clock(bp_c1)
+         print '(a,f9.3,a,i0,a,i0)', '    [pairs] count   ', &
+            real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), ' s   npp ', npp, '  ne ', NE_PAIR
+         bp_c0 = bp_c1
+      end if
       allocate (pp_p(npp), pp_r(npp, 3), pp_c(npp), pp_e(npp, NE_PAIR))
-      pp_e = 0.0_dp
+      ! pp_e is deliberately NOT zeroed. It is npp x 135 doubles -- six
+      ! gigabytes on the 123-atom silica slice in cc-pVDZ -- and zeroing it
+      ! cost 3.6 s of a 5.9 s call. Nothing reads an entry the fill below
+      ! does not write: the fill covers ii <= li, jj <= lj, t <= ii+jj, and
+      ! every read in `one_quartet` is guarded by `if (ht(h) > ax + bx) cycle`
+      ! on the same three component powers. If that guard is ever removed the
+      ! zeroing has to come back.
+      if (bp_t) then
+         call system_clock(bp_c1)
+         print '(a,f9.3,a)', '    [pairs] alloc   ', real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), ' s'
+         bp_c0 = bp_c1
+      end if
 
       do i = 1, nbas
          li = sh_l(i); ra = sh_r(:, i)
@@ -199,6 +223,10 @@ contains
             end do
          end do
       end do
+      if (bp_t) then
+         call system_clock(bp_c1)
+         print '(a,f9.3,a)', '    [pairs] fill    ', real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), ' s'
+      end if
    end subroutine build_pairs
 
    !

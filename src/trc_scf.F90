@@ -47,6 +47,7 @@
 ! improvement and is not done here.
 !
 module trc_scf_driver
+   use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
@@ -94,6 +95,25 @@ module trc_scf_driver
       logical :: frac_occ = .false.
       real(dp) :: nelec_frac = 0.0_dp
       integer :: max_iter = 100
+      !> Shell-pair batch resolution: buckets per decade of Schwarz bound
+      !> when the pairs are binned. 1 is decades, which is what this always
+      !> did; higher values make the pre-launch screen finer, at more and
+      !> smaller batches. Settable through trc_set_batching.
+      integer :: batch_res = 1
+      !> Rebuild the two-electron matrix from the DENSITY DIFFERENCE rather
+      !> than the density, accumulating onto the last one. G is linear in D,
+      !> so this is exact arithmetic; what it buys is screening, because the
+      !> difference shrinks as the SCF converges while the density does not.
+      !> On a 123-atom silica slice the later iterations are where the time
+      !> goes, and they are exactly the ones the difference screens hardest.
+      !> A full build is taken every `incr_reset` iterations so screening
+      !> error cannot accumulate without bound.
+      !> OFF until the accuracy policy is settled: the screening error of
+      !> each difference build accumulates, and on water/cc-pVDZ two
+      !> convergence paths that agreed to 1e-11 agree to 5e-9 with it on.
+      !> Set TRC_INCREMENTAL=1 to measure what it buys.
+      logical :: incremental = .false.
+      integer :: incr_reset = 8
       integer :: ndiis = 10
       !! The damped start, -1 meaning "by spin": a closed shell goes to DIIS
       !! from the first iteration -- damping only delayed it until the
@@ -139,6 +159,77 @@ module trc_scf_driver
 
 contains
 
+   !> The density at a chosen iteration, written where a benchmark can read
+   !> it back. Off unless TRC_DUMP_DENSITY names a file. Stream format:
+   !> an 8-byte nao, then the matrix, which is what the test readers expect.
+   subroutine dump_density(nao, d)
+      integer, intent(in) :: nao
+      real(dp), intent(in) :: d(nao, nao)
+      character(len=512) :: path
+      integer :: u, ios
+      integer(int64) :: prev
+      call get_environment_variable("TRC_DUMP_DENSITY", path)
+      if (len_trim(path) == 0) return
+      ! The atomic SCFs of a SAD guess come through here too, and would
+      ! overwrite the molecular density with a 5x5 one. Keep the largest.
+      open (newunit=u, file=trim(path), access='stream', form='unformatted', &
+            status='old', iostat=ios)
+      if (ios == 0) then
+         read (u, iostat=ios) prev
+         close (u)
+         if (ios == 0) then
+            if (prev >= int(nao, int64)) return
+         end if
+      end if
+      open (newunit=u, file=trim(path), access='stream', form='unformatted', &
+            status='replace', iostat=ios)
+      if (ios /= 0) return
+      write (u) int(nao, int64)
+      write (u) d
+      close (u)
+      print '(a,a,a,i0,a)', "   [density dumped to ", trim(path), ", nao ", nao, "]"
+   end subroutine dump_density
+
+   !> Experiment hook for the incremental build, so its effect can be
+   !> measured through a driver that does not expose the option yet.
+   logical function incr_env()
+      character(len=8) :: v
+      call get_environment_variable("TRC_INCREMENTAL", v)
+      incr_env = (trim(v) == "1")
+   end function incr_env
+
+   !> Full rebuild interval, and an integral threshold override. A
+   !> difference build carries the same absolute screening error as a full
+   !> one, so the error accumulates across increments and DIIS stalls
+   !> before the energy converges; the cure is a tighter integral
+   !> threshold on the difference builds, and resetting often enough that
+   !> what does accumulate stays below it. Both are measured here rather
+   !> than assumed.
+   integer function incr_reset_env(dflt)
+      integer, intent(in) :: dflt
+      character(len=8) :: v
+      integer :: ios, k
+      call get_environment_variable("TRC_INCR_RESET", v)
+      incr_reset_env = dflt
+      if (len_trim(v) > 0) then
+         read (v, *, iostat=ios) k
+         if (ios == 0 .and. k > 0) incr_reset_env = k
+      end if
+   end function incr_reset_env
+
+   real(dp) function eri_thresh_env(dflt)
+      real(dp), intent(in) :: dflt
+      character(len=16) :: v
+      integer :: ios
+      real(dp) :: t
+      call get_environment_variable("TRC_ERI_THRESH", v)
+      eri_thresh_env = dflt
+      if (len_trim(v) > 0) then
+         read (v, *, iostat=ios) t
+         if (ios == 0 .and. t > 0.0_dp) eri_thresh_env = t
+      end if
+   end function eri_thresh_env
+
    !
    ! Run the SCF. `nalpha` and `nbeta` are the electron counts; the case is
    ! restricted when they are equal and `unrestricted` is not forced. The
@@ -161,6 +252,8 @@ contains
       logical :: ok
       real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :), hcore(:, :), x(:, :)
       real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :), dtot(:, :), jmat(:, :)
+      real(dp), allocatable :: dref(:, :, :), gacc(:, :, :), ddif(:, :)
+      logical :: incr_now
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :), w3(:, :), bmat(:, :), rhs(:)
       type(trc_pairlist_t) :: pl
@@ -203,6 +296,7 @@ contains
 
       allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao), hcore(nao, nao), x(nao, nao))
       allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin), dtot(nao, nao), jmat(nao, nao))
+      allocate (dref(nao, nao, nspin), gacc(nao, nao, nspin), ddif(nao, nao))
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
       allocate (w1(nao, nao), w2(nao, nao), w3(nao, nao))
@@ -214,14 +308,14 @@ contains
       tx_pts = 0.0_dp; tx_prs = 0.0_dp
       tw0 = wall()
       ! --- once per geometry, on the host ------------------------------------
-      call pl%build(b, opts%eri_thresh)
+      call pl%build(b, eri_thresh_env(opts%eri_thresh))
       call pl%to_device()
       call trc_1e(b, pl, smat, tmat, vmat)
       hcore = tmat + vmat
       if (present(comm)) then
-         call eri%build(b, opts%eri_thresh, comm)
+         call eri%build(b, eri_thresh_env(opts%eri_thresh), comm, batch_res=opts%batch_res)
       else
-         call eri%build(b, opts%eri_thresh)
+         call eri%build(b, eri_thresh_env(opts%eri_thresh), batch_res=opts%batch_res)
       end if
       res%e_nuc = nuclear_repulsion(b)
       call la%init(nao)
@@ -279,7 +373,8 @@ contains
 
       !$acc enter data copyin(ofrac)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3)
+      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3) &
+      !$acc            create(dref, gacc, ddif)
 
       eold = 0.0_dp
       ndiis_used = 0
@@ -295,7 +390,31 @@ contains
          tw0 = wall()
          ! --- two-electron part, resident ------------------------------------
          if (nspin == 1) then
-            call eri%fock_resident(b, res%dmat(:, :, 1), gmat(:, :, 1), k_scale=exx)
+            !
+            ! INCREMENTAL. G(D) = G(D_ref) + G(D - D_ref), exactly, because
+            ! G is linear in D. The point is the screening: the kernel
+            ! screens on the density it is handed, and the difference is
+            ! small and getting smaller while the density is neither.
+            !
+            incr_now = (opts%incremental .or. incr_env()) .and. it > 1 &
+                       .and. mod(it - 1, max(1, incr_reset_env(opts%incr_reset))) /= 0
+            if (incr_now) then
+               do concurrent(i=1:nao, j=1:nao)
+                  ddif(i, j) = res%dmat(i, j, 1) - dref(i, j, 1)
+               end do
+               call eri%fock_resident(b, ddif, gmat(:, :, 1), k_scale=exx)
+               do concurrent(i=1:nao, j=1:nao)
+                  gacc(i, j, 1) = gacc(i, j, 1) + gmat(i, j, 1)
+                  gmat(i, j, 1) = gacc(i, j, 1)
+                  dref(i, j, 1) = res%dmat(i, j, 1)
+               end do
+            else
+               call eri%fock_resident(b, res%dmat(:, :, 1), gmat(:, :, 1), k_scale=exx)
+               do concurrent(i=1:nao, j=1:nao)
+                  gacc(i, j, 1) = gmat(i, j, 1)
+                  dref(i, j, 1) = res%dmat(i, j, 1)
+               end do
+            end if
          else
             do concurrent(i=1:nao, j=1:nao)
                dtot(i, j) = res%dmat(i, j, 1) + res%dmat(i, j, 2)
@@ -470,6 +589,22 @@ contains
          t_rest = t_rest + (wall() - tw0)
          if (talk) print '(i5,f22.12,es14.4,es14.4,es14.4)', it, etot, etot - eold, drms, errmax
          res%iterations = it
+         ! A real density, on the way past, for the benchmarks. The model
+         ! density bench_gc invents is small and banded, so it screens far
+         ! harder than anything an SCF actually meets, and a Fock build
+         ! timed on it flatters the code by about three times. Set
+         ! TRC_DUMP_DENSITY to a path and the density leaving iteration 2 is
+         ! written there, in the stream format read_density already reads.
+         if (it == 2) then
+            ! The density lives on the DEVICE -- every update to it since the
+            ! guess was a gemm up there -- so the host copy is the SAD guess
+            ! until it is pulled back. Dumping without this wrote a
+            ! block-diagonal atomic density and called it iteration 2, which
+            ! screens about three times harder than anything real and made
+            ! every benchmark built on the file flattering and wrong.
+            !$acc update self(res%dmat)
+            call dump_density(nao, res%dmat(:, :, 1))
+         end if
          if (it > 1 .and. abs(etot - eold) < opts%conv_energy .and. errmax < opts%conv_diis) then
             res%converged = .true.
             exit
@@ -481,7 +616,8 @@ contains
       !$acc update self(dold, res%cmo, res%eps)
       !$acc exit data delete(ofrac)
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3)
+      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3) &
+      !$acc           delete(dref, gacc, ddif)
       res%dmat = dold
       res%energy = etot
       res%e_one = e1

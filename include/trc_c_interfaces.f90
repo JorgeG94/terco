@@ -400,6 +400,18 @@ module trc_c_interfaces
          real(c_double), value :: thresh
       end function trc_set_screening
 
+      integer(c_int) function trc_set_batching(handle, res) bind(c)
+         !! How finely shell pairs are batched by their Schwarz bound, in
+         !! buckets per decade. The pre-launch screen admits a pair of
+         !! batches when their bounds multiply above the threshold, so a
+         !! coarse bucket leaves more for the test inside the kernel, where
+         !! a rejected quartet has already cost a thread. 1 is decades and
+         !! is the default; 4 is the finest available.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), value :: res
+      end function trc_set_batching
+
       integer(c_int) function trc_set_guess(handle, kind, dguess, nspin) bind(c)
          !! `kind`: 0 core, 1 GWH, 2 SAD (the default; built here, one atomic
          !! SCF per element), 3 a density given in `dguess`, (nao, nao, nspin)

@@ -59,34 +59,103 @@ contains
    ! coefficient carries K_ab = exp(-mu |AB|^2), which in the MMD path was
    ! hiding inside E_000.
    !
-   subroutine build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, &
-                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, npp)
+   !
+   ! Every primitive pair whose own Schwarz factor is above `cut` is kept,
+   ! and only those. A generally contracted shell carries every primitive
+   ! of its atom's set -- cc-pVDZ silicon has twelve s exponents from 1e5
+   ! down to 0.03 -- and for two centres a bohr or more apart most of those
+   ! 144 pairs are zero to double precision. Kept, they cost the kernel a
+   ! 12^4 primitive quartet loop for the sake of nothing. Counted on a
+   ! 123-atom silica slice in cc-pVDZ, the pruning cuts the primitive pairs
+   ! by 3.2x and the primitive quartets by ten, which is the difference
+   ! between cc-pVDZ costing ten times 6-31G* and costing about the same.
+   !
+   ! The factor is the s-type sqrt((ab|ab)) of the primitive pair,
+   !
+   !     |ca cb| exp(-mu |AB|^2) sqrt(2) pi^(5/4) / (p (2p)^(1/4)),
+   !
+   ! which bounds the pair's contribution to any (ab|cd) by that times the
+   ! ket's bound. `camp` is what the kernel will multiply the pair by: the
+   ! coefficients themselves on the contracted path, the largest coefficient
+   ! over the columns on the primitive-shell path, where sh_c is unity and
+   ! the coefficients are applied in the kernel.
+   !
+   subroutine build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, &
+                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_ki, pp_kj, npp)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(:), sh_np(:)
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
+      real(dp), intent(in)  :: camp(:, :)   !! (maxnp, nbas) amplitude of each primitive, for the prune
+      real(dp), intent(in)  :: cut          !! drop a primitive pair whose Schwarz factor is at or below this
       integer,  allocatable, intent(out) :: pp_off(:), pp_n(:)
       real(dp), allocatable, intent(out) :: pp_p(:), pp_r(:, :), pp_ra(:, :), pp_rb(:, :), pp_c(:)
+      integer,  allocatable, intent(out) :: pp_ki(:), pp_kj(:)  !! primitive of each shell a kept pair came from
       integer,  intent(out) :: npp
 
-      integer  :: i, j, ki, kj, key, k, d
-      real(dp) :: a, b, p, mu, ab2
+      integer  :: i, j, ki, kj, key, k, d, k1, k2, kb
+      real(dp) :: a, b, p, mu, ab2, ukey, ubest
+      real(dp), allocatable :: emin(:), amax(:)
+      real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp  ! sqrt(2) pi^(5/4)
+      logical, allocatable :: keep(:, :, :)
 
       allocate (pp_off(nbas*nbas), pp_n(nbas*nbas))
+      allocate (keep(size(sh_e, 1), size(sh_e, 1), nbas*nbas))
+      keep = .false.
+      !
+      ! ONE EXPONENTIAL PER SHELL PAIR BEFORE ANY PRIMITIVE PAIR.
+      !
+      ! The factor below falls with mu = a b/(a + b) and rises with the
+      ! coefficients, so the largest any primitive pair of a shell pair can
+      ! reach is bounded using the SMALLEST exponent on each side and the
+      ! largest amplitude. That is an O(1) test, and on a 123-atom silica
+      ! slice in cc-pVDZ it settles 70% of the 400 thousand shell pairs
+      ! without touching their primitives -- the loop below was evaluating
+      ! 57 million exponentials, single-threaded, and throwing nearly all
+      ! of the results away. It is why the GPU sat idle for six seconds
+      ! between the atomic guess and the Schwarz bounds.
+      !
+      allocate (emin(nbas), amax(nbas))
+      do i = 1, nbas
+         emin(i) = minval(sh_e(1:sh_np(i), i))
+         amax(i) = maxval(abs(camp(1:sh_np(i), i)))
+      end do
       npp = 0
       do i = 1, nbas
          do j = 1, nbas
             key = (i - 1)*nbas + j
             pp_off(key) = npp
-            pp_n(key) = sh_np(i)*sh_np(j)
+            ab2 = 0.0_dp
+            do d = 1, 3
+               ab2 = ab2 + (sh_r(d, i) - sh_r(d, j))**2
+            end do
+            pp_n(key) = 0
+            a = emin(i); b = emin(j)
+            p = a + b
+            if (amax(i)*amax(j)*exp(-(a*b/p)*ab2)*SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) <= cut) then
+               cycle
+            end if
+            do ki = 1, sh_np(i)
+               a = sh_e(ki, i)
+               do kj = 1, sh_np(j)
+                  b = sh_e(kj, j)
+                  p = a + b
+                  mu = a*b/p
+                  keep(ki, kj, key) = abs(camp(ki, i)*camp(kj, j))*exp(-mu*ab2) &
+                                      *SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) > cut
+                  if (keep(ki, kj, key)) pp_n(key) = pp_n(key) + 1
+               end do
+            end do
             npp = npp + pp_n(key)
          end do
       end do
 
       allocate (pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp))
+      allocate (pp_ki(npp), pp_kj(npp))
 
       do i = 1, nbas
          do j = 1, nbas
             key = (i - 1)*nbas + j
+            if (pp_n(key) == 0) cycle
             k = pp_off(key)
             ab2 = 0.0_dp
             do d = 1, 3
@@ -95,11 +164,13 @@ contains
             do ki = 1, sh_np(i)
                a = sh_e(ki, i)
                do kj = 1, sh_np(j)
+                  if (.not. keep(ki, kj, key)) cycle
                   b = sh_e(kj, j)
                   k = k + 1
                   p = a + b
                   mu = a*b/p
                   pp_p(k) = p
+                  pp_ki(k) = ki; pp_kj(k) = kj
                   do d = 1, 3
                      pp_r(k, d) = (a*sh_r(d, i) + b*sh_r(d, j))/p
                      pp_ra(k, d) = sh_r(d, i)
@@ -110,6 +181,51 @@ contains
             end do
          end do
       end do
+
+      ! ORDER EACH SHELL PAIR'S PRIMITIVE PAIRS BY |c|/p, LARGEST FIRST.
+      !
+      ! The kernel bounds a primitive quartet by
+      !     2 pi^2.5 |c_p| |c_q| / (zeta eta sqrt(zeta + eta))
+      !       <= 2 pi^2.5 (|c_p|/zeta) (|c_q|/eta) / sqrt(zeta),
+      ! and with the ket pairs in this order the bound falls monotonically
+      ! along the ket loop, so the loop can EXIT at the first quartet below
+      ! the cutoff rather than test and skip each one. That distinction is
+      ! the whole point on a GPU: a skipped iteration still costs a warp the
+      ! iteration, a shortened loop does not. Selection sort, in place, on
+      ! at most a few hundred entries per shell pair.
+      !
+      do i = 1, nbas
+         do j = 1, nbas
+            key = (i - 1)*nbas + j
+            if (pp_n(key) < 2) cycle
+            do k1 = pp_off(key) + 1, pp_off(key) + pp_n(key) - 1
+               kb = k1
+               ubest = abs(camp(pp_ki(k1), i)*camp(pp_kj(k1), j)*pp_c(k1))/pp_p(k1)
+               do k2 = k1 + 1, pp_off(key) + pp_n(key)
+                  ukey = abs(camp(pp_ki(k2), i)*camp(pp_kj(k2), j)*pp_c(k2))/pp_p(k2)
+                  if (ukey > ubest) then
+                     ubest = ukey; kb = k2
+                  end if
+               end do
+               if (kb /= k1) call swap_pair(k1, kb)
+            end do
+         end do
+      end do
+   contains
+      subroutine swap_pair(x, y)
+         integer, intent(in) :: x, y
+         real(dp) :: t
+         integer :: it, dd
+         t = pp_p(x); pp_p(x) = pp_p(y); pp_p(y) = t
+         t = pp_c(x); pp_c(x) = pp_c(y); pp_c(y) = t
+         do dd = 1, 3
+            t = pp_r(x, dd); pp_r(x, dd) = pp_r(y, dd); pp_r(y, dd) = t
+            t = pp_ra(x, dd); pp_ra(x, dd) = pp_ra(y, dd); pp_ra(y, dd) = t
+            t = pp_rb(x, dd); pp_rb(x, dd) = pp_rb(y, dd); pp_rb(y, dd) = t
+         end do
+         it = pp_ki(x); pp_ki(x) = pp_ki(y); pp_ki(y) = it
+         it = pp_kj(x); pp_kj(x) = pp_kj(y); pp_kj(y) = it
+      end subroutine swap_pair
    end subroutine build_pairs_hgp
 
    subroutine hgp_batch(lo, hi, nq, nbas, npp, nout, &
