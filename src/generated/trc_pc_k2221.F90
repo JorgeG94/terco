@@ -6996,7 +6996,14 @@ contains
       ! consecutive iterations are consecutive threads (the ket-uniform
       ! decode in the item routine depends on the same thing).
       !
-      do concurrent(i=1:((nr + 31)/32)*32*6)
+      ! `local(it, role)` is redundant for the standard -- an unnamed scalar
+      ! assigned in a `do concurrent` is already per-iteration -- but the
+      ! OpenMP port rewrites this construct as `!$omp parallel do`, whose
+      ! default is SHARED.  Naming them here is what makes that rewrite a
+      ! `private(it, role)` instead of a data race; `tools/dc_locality_lint.py`
+      ! enforces it.
+      !
+      do concurrent(i=1:((nr + 31)/32)*32*6) local(it, role)
          role = int(mod((i - 1)/32, 6_int64)) + 1
          it = ((i - 1)/(32*6))*32 + mod(i - 1, 32_int64) + 1
          if (it <= nr) then
