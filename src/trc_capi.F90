@@ -62,7 +62,7 @@ module trc_capi
    public :: capi_fock, trc_fock_many, trc_fock_nosym
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, &
-             trc_set_convergence, trc_set_screening, trc_set_guess, trc_set_comm, trc_set_verbose, &
+             trc_set_convergence, trc_set_screening, trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
@@ -1215,6 +1215,35 @@ contains
       status = TRC_OK
    end function trc_set_screening
 
+   !
+   ! How finely the shell pairs are batched by their Schwarz bound: `res`
+   ! buckets per decade. The pre-launch screen admits a pair of batches
+   ! when their bounds multiply above the threshold, so a coarse bucket
+   ! admits everything within its decade and leaves the rest to the test
+   ! inside the kernel, where a rejected quartet has already cost a thread.
+   ! Finer buckets catch more before the launch, at more and smaller
+   ! batches. 1 is decades and is the default; 4 is the finest the bins are
+   ! sized for. Rebuilds the ERI object, as a threshold change does.
+   !
+   function trc_set_batching(handle, res) result(status) bind(c, name="trc_set_batching")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: res
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (res < 1 .or. res > 4) then
+         call refuse(cx, "trc_set_batching: res is buckets per decade, 1 to 4; got "//trim(itoa(int(res))))
+         return
+      end if
+      cx%opts%batch_res = int(res)
+      call drop_eri(cx)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_batching
+
    function trc_set_guess(handle, kind, dguess, nspin) result(status) bind(c, name="trc_set_guess")
       !! `kind` one of TRC_GUESS_*. For TRC_GUESS_GIVEN, `dguess` is
       !! (nao, nao, nspin) column-major and is COPIED here; the caller's array
@@ -1721,9 +1750,9 @@ contains
             return
          end if
          if (collective) then
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res)
          else
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res)
          end if
       end if
       ep => cx%eb

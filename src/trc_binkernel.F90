@@ -22,13 +22,22 @@ module trc_binkernel
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
-   use trc_bins, only: pair_bins_t, SMAX, ps_view_t, fold_dsh
+   use trc_bins, only: pair_bins_t, SMAX, sort_bins_by_weight
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
 #endif
    implicit none
    private
 
+   !> Fraction of the integral threshold at which a PRIMITIVE quartet is
+   !> abandoned before the Boys function. The prefactor bounds the (ss|ss)
+   !> primitive integral exactly and the higher classes only up to the
+   !> polynomial factors of the recurrences, so the margin is empirical: a
+   !> thousandfold was the original guess and nothing had measured what
+   !> tightening it costs. This makes that measurable.
+   real(dp), protected, public :: TRC_PRIM_MARGIN = 1.0e-3_dp
+
+   public :: trc_set_prim_margin
    public :: fock_bins
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
@@ -64,6 +73,41 @@ module trc_binkernel
 
 
 contains
+
+   !> The one-time pair ordering, off unless asked for. See the comment at
+   !> its call site for what it costs and buys.
+   !> TRC_LAUNCH_CAP caps the quartets in one launch; 0 (default) is one
+   !> launch per angular-momentum class.
+   integer(kind=8) function launch_cap()
+      character(len=32) :: e
+      integer :: ios
+      e = ' '
+      call get_environment_variable('TRC_LAUNCH_CAP', e)
+      launch_cap = 0_8
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) launch_cap
+         if (ios /= 0) launch_cap = 0_8
+      end if
+   end function launch_cap
+
+   !> TRC_SEG_STATS=1 prints the segment shape of each Fock build.
+   logical function seg_stats_on()
+      character(len=8) :: e
+      e = ' '
+      call get_environment_variable('TRC_SEG_STATS', e)
+      seg_stats_on = len_trim(e) > 0
+   end function seg_stats_on
+
+   logical function bin_sort_on()
+      character(len=8) :: v
+      call get_environment_variable("TRC_BIN_SORT", v)
+      bin_sort_on = (trim(v) == "1")
+   end function bin_sort_on
+
+   subroutine trc_set_prim_margin(f)
+      real(dp), intent(in) :: f
+      if (f > 0.0_dp) TRC_PRIM_MARGIN = f
+   end subroutine trc_set_prim_margin
 
 #include "inc/trc_boys_eval.inc"
 
@@ -129,8 +173,8 @@ contains
    subroutine fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_dens, &
                         jfac, kfac, nosym, dsh, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                        ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept, ps)
-      type(pair_bins_t), intent(in) :: b
+                        ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept)
+      type(pair_bins_t), intent(inout) :: b
       integer,  intent(in)    :: nbas, npp, nao
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       real(dp), intent(in)    :: thresh
@@ -157,13 +201,6 @@ contains
       !! Schwarz and density tests.  Costs a separate cheap pass, so it is
       !! optional and off in the timed path.
       integer(kind=8), intent(out), optional :: nkept
-      !! The primitive-shell view: with it, under TRC_PERCLASS and for a
-      !! symmetric density, the per-class kernels run over primitive-shell
-      !! pairs and contract per column combination. Without it, or for the
-      !! enumerated (nosym) kernel, the contracted view is used.
-      type(ps_view_t), intent(inout), optional :: ps
-      logical :: use_ps
-
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
       integer(kind=8) :: nt
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
@@ -171,16 +208,29 @@ contains
       logical, allocatable :: sD(:)
       integer(kind=8), allocatable :: sOff(:)
 
-      use_ps = .false.
-#ifdef TRC_PERCLASS
-      if (present(ps)) use_ps = (ps%nps > 0) .and. .not. nosym
-#endif
-      if (use_ps) then
-         call fock_bins_ps(ps, nbas, dsh, nao, thresh, jfac, kfac, use_dens, ndens, dmat, jmat, rank, nranks, &
-                           nlaunch, nwork, nkept)
-         return
+      ! Order the pairs inside each bin by how much they matter, once, so
+      ! that neighbouring threads of a warp agree about screening. The
+      ! device copy has to be refreshed with the new order.
+      !
+      ! OFF by default, on measurement. Ordering the pairs inside a bin by
+      ! how much they matter should make a warp's threads agree about
+      ! screening, and on the 28-atom cage it does: 3.7% off the cc-pVDZ
+      ! Fock time. On the 123-atom slice the same change COSTS 2.8%, with
+      ! either key -- the product with the density block, or the Schwarz
+      ! bound alone. The natural order follows the shell index, which
+      ! carries spatial locality into the density and Fock accesses, and on
+      ! a large system losing that costs more than the divergence saves.
+      ! Set TRC_BIN_SORT=1 to turn it on; TRC_BIN_SORT_Q=1 keys on the
+      ! bound alone.
+      !
+      if (.not. b%sorted .and. bin_sort_on()) then
+         call sort_bins_by_weight(b, nbas, dsh)
+         !$acc update device(b%sp_i, b%sp_j, b%sp_q)
       end if
-      smax_keep = int(-log10(thresh))
+
+      ! In buckets, not decades: the bins carry the resolution they were
+      ! built at, and the admission test has to speak the same units.
+      smax_keep = int(-log10(thresh))*b%sres
 
       ! --- pass 1: count admitted bin pairs ---
       nseg = 0
@@ -249,6 +299,28 @@ contains
 
       nwork = sOff(nseg + 1)
       nlaunch = 1
+      ! Segment shape, for comparing this against a batching scheme that caps
+      ! its batches (gmshpc: 2560 shell pairs per bra batch). A segment here
+      ! is one admitted bin pair and is homogeneous by construction -- same
+      ! four angular momenta, same contraction degree, same magnitude bucket
+      ! -- so what matters is how big they are and how much of a warp
+      ! straddles a boundary.
+      if (seg_stats_on()) then
+         block
+            integer :: q, nsmall
+            integer(kind=8) :: mn, mx, sz
+            mn = huge(0_8); mx = 0_8; nsmall = 0
+            do q = 1, nseg
+               sz = sOff(q + 1) - sOff(q)
+               mn = min(mn, sz); mx = max(mx, sz)
+               if (sz < 32) nsmall = nsmall + 1
+            end do
+            print '(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)', &
+               '  [seg] nseg ', nseg, '  work ', nwork, '  min ', mn, '  max ', mx, &
+               '  mean ', real(nwork, dp)/max(nseg, 1), '  <32 ', nsmall, &
+               '  boundary warps ', 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), '% of threads'
+         end block
+      end if
       if (nwork == 0) return
 
       if (nosym) then
@@ -277,26 +349,17 @@ contains
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl
+         integer(kind=8) :: lcap
          logical :: l2
          integer(kind=8) :: o2
-         ! Without a primitive-shell view the kernels get the trivial one:
-         ! one column per shell, unit coefficients (the contracted pair data
-         ! already carries them), the shell's own AO offset.
-         integer, allocatable :: t_np(:), t_ncol(:), t_soff(:), t_coff(:), t_ki(:)
-         real(dp), allocatable :: t_coef(:)
-         integer :: ncoef1, i1
-         allocate (t_np(nbas), t_ncol(nbas), t_soff(nbas), t_coff(nbas))
-         ncoef1 = 0
-         do i1 = 1, nbas
-            t_np(i1) = nint(sqrt(real(pp_n((i1 - 1)*nbas + i1), dp)))
-            t_ncol(i1) = 1
-            t_soff(i1) = i1 - 1
-            t_coff(i1) = ncoef1
-            ncoef1 = ncoef1 + t_np(i1)
-         end do
-         allocate (t_coef(max(ncoef1, 1)), t_ki(npp))
-         t_coef = 1.0_dp; t_ki = 1
-         !$acc enter data copyin(t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
+         ! The trivial primitive-shell view used to be built here -- eight
+         ! arrays, allocated, filled, and pushed to the device on every Fock
+         ! build -- purely to fill dummy arguments the scalar kernel never
+         ! read. They existed for the blocked kernel, which is gone with the
+         ! general contraction it was written for; `trc_decontract` splits
+         ! the basis instead. Two of them were once added to `enter data`
+         ! and not to `exit data`, which is a stale mapping and an illegal
+         ! address rather than a wrong number.
          allocate (ord(nseg), ckey(nseg))
          do a2 = 1, nseg
             ckey(a2) = ((sLA(a2)*CLASS_RADIX + sLB(a2))*CLASS_RADIX &
@@ -322,6 +385,37 @@ contains
                                              b%sp_q, thresh, dsh, nbas, nkept)
          nl = 0
          c0 = 1
+         ! Quartets per launch. Zero (the default) is one launch per class,
+         ! however much work that is; a cap splits a class at segment
+         ! boundaries.
+         !
+         ! gmshpc and EXESS cap a bra batch at 2560 SHELL PAIRS and launch
+         ! per batch pair, so a launch of theirs covers bra x ket = 2560^2 =
+         ! 6.5M quartets. That is the number to compare against, not 2560.
+         ! Swept on the 123-atom silica slice, Fock seconds:
+         !
+         !   cap        launches   cc-pVDZ   6-31G*
+         !   none (0)         21     5.257    2.874
+         !   6553600         396     5.257    2.869     <- their granularity
+         !   3000000         703     5.266    2.888
+         !   1000000        1402     5.333
+         !    100000        3953     5.569
+         !     10000        7027     5.844
+         !
+         ! So at their batch size we are already at the same throughput, to
+         ! three digits, and the flat region runs from 21 launches to about
+         ! 400. Only below ~1M quartets a launch does it cost anything, and
+         ! then it is 1-11%, not the 12x an early note claimed -- that
+         ! measurement was taken on a contracted basis, where work per
+         ! quartet was wildly uneven, and at 2200 items a launch, which is
+         ! 1.3% of one wave on a V100. It measured starvation, not batching.
+         !
+         ! The reason a cap cannot WIN here is that batching buys throughput
+         ! by keeping many kernels in flight at once, and `do concurrent`
+         ! gives no way to overlap launches. One launch at a time makes a
+         ! larger launch weakly better. Kept as a knob so the claim stays
+         ! measured.
+         lcap = launch_cap()
          do while (c0 <= nseg)
             c1 = c0
             do while (c1 < nseg)
@@ -329,21 +423,21 @@ contains
                     + sLC(c1 + 1))*CLASS_RADIX + sLD(c1 + 1) /= &
                    ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                     + sLC(c0))*CLASS_RADIX + sLD(c0)) exit
+               if (lcap > 0 .and. sOff(c1 + 2) - sOff(c0) > lcap) exit
                c1 = c1 + 1
             end do
             nl = nl + 1
             call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                               + sLC(c0))*CLASS_RADIX + sLD(c0), &
                              c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, t_ki, t_ki, &
-                             nbas, ncoef1, t_np, t_ncol, t_soff, t_coff, ao_off, t_coef, .false., &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, &
                              ndens, dmat, jmat, rank, nranks)
             c0 = c1 + 1
          end do
          nlaunch = nl
-         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
-         deallocate (ord, ckey, t_np, t_ncol, t_soff, t_coff, t_coef, t_ki)
+         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
+         deallocate (ord, ckey)
       end block
       deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
       return
@@ -368,6 +462,16 @@ contains
    ! Using the two that are known keeps this a bin-level test; it is therefore
    ! a partial screen, and deliberately conservative.
    !
+   ! NOT ARMED, and it cannot be as written: bin_dm(k) bounds the density
+   ! blocks of pairs WITHIN bin k, which bounds the Coulomb terms D_ab and
+   ! D_cd but says nothing about D_ac, D_ad, D_bc, D_bd -- the exchange
+   ! blocks, between a shell of the bra pair and a shell of the ket pair.
+   ! Arming it on this bound drops real exchange contributions: measured on
+   ! the 123-atom silica slice in cc-pVDZ, the third SCF energy moved by
+   ! 0.5 Hartree. A sound bin-level test would need the largest density
+   ! block between the two bins' shell sets, which is not a per-bin
+   ! quantity. The per-quartet test in the kernel, which reads dsh for all
+   ! six blocks, is the one that screens on the density.
    pure logical function dens_reject(b, ka, kb, thresh)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in) :: ka, kb
@@ -390,118 +494,6 @@ contains
    ! than an inference from wall-clock.
    !
 #ifdef TRC_PERCLASS
-   !
-   ! The per-class launch over the primitive-shell view. The density screen
-   ! is folded to primitive shells first (dsh is current on the device at
-   ! every call). Segments are bin pairs of ps%pbins, admitted by the size
-   ! test; the bin-level density test is left to the per-quartet one in the
-   ! kernel, which reads dshp. Sorted by class and launched a class at a
-   ! time through pc_dispatch, which also carries the column tables.
-   !
-   subroutine fock_bins_ps(ps, nbas, dsh, nao, thresh, jfac, kfac, use_dens, ndens, dmat, jmat, rank, nranks, &
-                           nlaunch, nwork, nkept)
-      type(ps_view_t), intent(inout) :: ps
-      integer, intent(in) :: nbas, nao, ndens, rank, nranks
-      real(dp), intent(in) :: dsh(nbas, nbas)
-      real(dp), intent(in) :: thresh, jfac, kfac
-      logical, intent(in) :: use_dens
-      real(dp), intent(in) :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: jmat(ndens, nao, nao)
-      integer, intent(out) :: nlaunch
-      integer(kind=8), intent(out) :: nwork
-      integer(kind=8), intent(out), optional :: nkept
-      integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is, a2, b2, t2, c0, c1, nl
-      integer(kind=8) :: nt
-      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sLA(:), sLB(:), sLC(:), sLD(:), ord(:), ckey(:)
-      logical, allocatable :: sD(:), sG(:), tG(:)
-      integer, allocatable :: tk(:)
-      integer(kind=8), allocatable :: sOff(:)
-
-      if (use_dens) call fold_dsh(ps, nbas, dsh)
-      smax_keep = int(-log10(thresh))
-      nseg = 0
-      do ia = 1, ps%pbins%nlive
-         ka = ps%pbins%live(ia)
-         do ib = 1, ia
-            kb = ps%pbins%live(ib)
-            if (ps%pbins%bin_s(ka) + ps%pbins%bin_s(kb) > smax_keep) cycle
-            if (ps%pbins%bin_cnt(ka) == 0 .or. ps%pbins%bin_cnt(kb) == 0) cycle
-            nseg = nseg + 1
-         end do
-      end do
-      nlaunch = 0; nwork = 0
-      if (present(nkept)) nkept = 0
-      if (nseg == 0) return
-      allocate (sA(nseg), sB(nseg), sOA(nseg), sOB(nseg), sNB(nseg), sD(nseg), sG(nseg))
-      allocate (sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg), sOff(nseg + 1))
-      is = 0; sOff(1) = 0
-      do ia = 1, ps%pbins%nlive
-         ka = ps%pbins%live(ia)
-         nA = ps%pbins%bin_cnt(ka)
-         do ib = 1, ia
-            kb = ps%pbins%live(ib)
-            if (ps%pbins%bin_s(ka) + ps%pbins%bin_s(kb) > smax_keep) cycle
-            nB = ps%pbins%bin_cnt(kb)
-            if (nA == 0 .or. nB == 0) cycle
-            is = is + 1
-            sA(is) = nA; sNB(is) = nB
-            sOA(is) = ps%pbins%bin_off(ka); sOB(is) = ps%pbins%bin_off(kb)
-            sD(is) = (ka == kb)
-            sG(is) = (ps%pbins%bin_g(ka) == 1 .or. ps%pbins%bin_g(kb) == 1)
-            sLA(is) = ps%pbins%bin_la(ka); sLB(is) = ps%pbins%bin_lb(ka)
-            sLC(is) = ps%pbins%bin_la(kb); sLD(is) = ps%pbins%bin_lb(kb)
-            if (ka == kb) then
-               nt = int(nA, 8)*int(nA + 1, 8)/2
-            else
-               nt = int(nA, 8)*int(nB, 8)
-            end if
-            sOff(is + 1) = sOff(is) + nt
-         end do
-      end do
-      nwork = sOff(nseg + 1)
-      allocate (ord(nseg), ckey(nseg))
-      do a2 = 1, nseg
-         ckey(a2) = 2*(((sLA(a2)*CLASS_RADIX + sLB(a2))*CLASS_RADIX + sLC(a2))*CLASS_RADIX + sLD(a2))
-         if (sG(a2)) ckey(a2) = ckey(a2) + 1
-         ord(a2) = a2
-      end do
-      do a2 = 2, nseg
-         t2 = ord(a2)
-         b2 = a2 - 1
-         do while (b2 >= 1)
-            if (ckey(ord(b2)) <= ckey(t2)) exit
-            ord(b2 + 1) = ord(b2); b2 = b2 - 1
-         end do
-         ord(b2 + 1) = t2
-      end do
-      call permute_segments(nseg, ord, sA, sNB, sOA, sOB, sD, sOff, sLA, sLB, sLC, sLD)
-      tG = sG(ord); sG = tG
-      tk = ckey(ord); ckey = tk
-      if (present(nkept)) call count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, ps%pbins%npair, &
-                                          ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, ps%dshp, ps%nps, nkept)
-      !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
-      nl = 0
-      c0 = 1
-      do while (c0 <= nseg)
-         c1 = c0
-         do while (c1 < nseg)
-            if (ckey(c1 + 1) /= ckey(c0)) exit
-            c1 = c1 + 1
-         end do
-         nl = nl + 1
-         call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX + sLC(c0))*CLASS_RADIX + sLD(c0), &
-                          c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          ps%pbins%npair, ps%pbins%sp_i, ps%pbins%sp_j, ps%pbins%sp_q, thresh, jfac, kfac, ps%dshp, &
-                          ps%nps, ps%npp, nao, ps%ps_l, ps%ps_ao1, &
-                          ps%pp_off, ps%pp_n, ps%pp_p, ps%pp_r, ps%pp_ra, ps%pp_rb, ps%pp_c, ps%pp_cs, ps%pp_ki, ps%pp_kj, &
-                          ps%ncoltot, ps%ncoef, ps%ps_np, ps%ps_ncol, ps%ps_soff, ps%ps_coff, ps%col_ao, ps%ps_coef, sG(c0), &
-                          ndens, dmat, jmat, rank, nranks)
-         c0 = c1 + 1
-      end do
-      nlaunch = nl
-      !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
-      deallocate (sA, sB, sOA, sOB, sNB, sD, sG, sOff, sLA, sLB, sLC, sLD, ord, ckey)
-   end subroutine fock_bins_ps
 #endif
 
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
@@ -1714,7 +1706,9 @@ contains
 
       call this%release()
 
-      smax_keep = int(-log10(thresh))
+      ! In buckets, not decades: the bins carry the resolution they were
+      ! built at, and the admission test has to speak the same units.
+      smax_keep = int(-log10(thresh))*b%sres
 
       ! --- pass 1: count admitted bin pairs ---
       nseg = 0

@@ -18,6 +18,7 @@ target_sources(
           trc_bins.F90       # the binned shell-pair container
           trc_binkernel.F90  # the shared quartet kernel and the digestion
           trc_api.F90        # basis, pair list, 1e, multipoles, DF
+          trc_decontract.F90 # splitting a general contraction into primitives
           trc_fock.F90       # the four-centre Fock builds
           trc_linalg.F90     # dense linear algebra on device-resident matrices
           trc_scf.F90        # the SCF: HF and Kohn-Sham, R and U, resident
@@ -107,7 +108,7 @@ if(_regen)
   # LMAX=2 a single module is a gigabyte of NVVM that does not finish.
   execute_process(
     COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py --lmax
-            ${TERCO_LMAX} --split ${_gen_dir}
+            ${TERCO_LMAX} --split ${_gen_dir} --cuda
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_perclass.py failed (${_rc})")

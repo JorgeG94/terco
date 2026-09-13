@@ -92,7 +92,7 @@ option(TERCO_BUILD_SHARED
 # depends on the offload model is a bug in the offload model.
 #
 option(TERCO_ENABLE_GPU "Offload with -stdpar=gpu (needs NVHPC)" ON)
-
+#
 if(TERCO_ENABLE_GPU AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
   message(
     FATAL_ERROR
@@ -157,7 +157,6 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 #
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
                                                TRC_FOCK6 TRC_PERCLASS)
-
 #
 # The unrolled VRR/HRR go into the SHARED kernel only, and only at LMAX<=1.
 #

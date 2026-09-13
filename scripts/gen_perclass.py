@@ -58,11 +58,17 @@ gh = _load("gh", os.path.join(HERE, "gen_hrr.py"))
 
 
 PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      !! Cutoff for the primitive-quartet prescreen: a primitive quartet
+      !! whose prefactor cannot reach this is skipped before the Boys
+      !! function. It is a fraction of `thresh`, and a runtime argument
+      !! rather than a literal so the fraction can be measured against the
+      !! energy it costs instead of guessed once.
+      real(dp), intent(in)    :: pcut
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
@@ -75,19 +81,6 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, n
       !! pp_c with the first column's coefficients folded in: what the
       !! scalar kernel multiplies, so a segmented basis pays nothing.
       real(dp), intent(in)    :: pp_cs(npp)
-      !! primitive index of each pair's two primitives within their shells
-      integer,  intent(in)    :: pp_ki(npp), pp_kj(npp)
-      !! GENERAL CONTRACTION: nbas here counts PRIMITIVE shells; sh_l is
-      !! theirs, ao_off is the first column's AO offset (the scalar kernel's
-      !! only use of it; the blocked one reads the column table), and dsh
-      !! is the screen folded to primitive shells. ps_coef holds each
-      !! primitive shell's (np x ncol) coefficient matrix column-major from
-      !! ps_coff(p)+1; column c of primitive shell p starts at AO
-      !! col_ao(ps_soff(p)+c).
-      integer,  intent(in)    :: ncoltot, ncoef
-      integer,  intent(in)    :: ps_np(nbas), ps_ncol(nbas), ps_soff(nbas), ps_coff(nbas)
-      integer,  intent(in)    :: col_ao(ncoltot)
-      real(dp), intent(in)    :: ps_coef(ncoef)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)"""
@@ -110,16 +103,28 @@ def emit_boys(m):
     """
     o = []
     w = o.append
+    # LARGE T, NO TRANSCENDENTALS.
+    #
+    # Past BOYS_TMAX = 30, erf(sqrt(T)) is 1 to within 1e-14 and exp(-T) is
+    # below 1e-13, so the asymptotic form F_m(T) = (2m-1)!!/(2T)^m
+    # sqrt(pi/(4T)) is exact to the last digit that matters -- the prescreen
+    # margin already puts 3e-7 into the Fock matrix. This branch used to
+    # call erf AND exp, and a warp pays for it if ONE of its lanes takes it.
+    # Deep contraction guarantees that: the tight primitives of a cc-pVDZ s
+    # shell push T far past 30 while the diffuse ones stay under it, so the
+    # classes that hurt most were the ones diverging into two transcendentals
+    # per primitive quartet. What is left is a reciprocal square root.
     w("               if (tval >= BOYS_TMAX) then")
-    w("                  btt = sqrt(tval)")
-    w("                  f(0) = 0.88622692545275801365_dp*erf(btt)/btt")
-    w("                  bet = exp(-tval)")
+    w("                  btt = 1.0_dp/tval")
+    w("                  f(0) = 0.88622692545275801365_dp*sqrt(btt)")
+    w("                  bet = 0.0_dp")
+    # bet is zero here, and 1/T is already in hand, so this is the
+    # asymptotic (2k-1)!!/(2T)^k ladder with no divisions of its own.
     for k in range(1, m + 1):
-        w(f"                  f({k}) = ({float(2*k - 1)}_dp*f({k - 1})"
-          f" - bet)*(0.5_dp/tval)")
+        w(f"                  f({k}) = {float(2*k - 1)}_dp*f({k - 1})*(0.5_dp*btt)")
     w("               else")
     w("                  bi = int(tval*BOYS_DTINV)")
-    w("                  if (bi >= BOYS_NGRID) bi = BOYS_NGRID - 1")
+    w("                  bi = min(bi, BOYS_NGRID - 1)")
     w("                  bx = 2.0_dp*(tval - real(bi, dp)*BOYS_DT)*BOYS_DTINV"
       " - 1.0_dp")
     w("                  bx2 = 2.0_dp*bx")
@@ -222,7 +227,37 @@ def sieve_vrr(vrr_body, hrr_body, fin):
     return "\n".join(out)
 
 
-def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
+def _unroll_combos(txt, ncab):
+    """The per-combination loop, written out at literal column pairs.
+
+    The accumulator is indexed by (x, qab, qcd) and x alone has a constant
+    bound; with qab and qcd runtime the whole block goes to local memory,
+    which is why this used to copy it there once and read the copy. At a
+    literal column pair the block stays in registers and the copy is gone,
+    which is what pays for a wider chunk. The three canonical filters were
+    `cycle` statements and become a flag, since there is no loop left."""
+    head = "         do qcd = 1, ncd_c\n         do qab = 1, nab_c\n"
+    tail = "         end do   ! qab\n         end do   ! qcd\n"
+    i = txt.index(head)
+    j = txt.index(tail, i)
+    body = txt[i + len(head):j]
+    out = ["         ! === combinations, unrolled at literal column pairs ===\n"]
+    for qcd in range(1, ncab + 1):
+        for qab in range(1, ncab + 1):
+            b = body
+            for old, new in (
+                ("iabc = ab0 + qab - 1", f"iabc = ab0 + {qab} - 1"),
+                ("icdc = cd0 + qcd - 1", f"icdc = cd0 + {qcd} - 1"),
+                ("         if (.not. ok) cycle\n", "         if (ok) then\n"),
+                ("g1(x) = g(x, qab, qcd)", f"g1(x) = g(x, {qab}, {qcd})")):
+                assert b.count(old) == 1, old
+                b = b.replace(old, new)
+            out.append(f"         if ({qab} <= nab_c .and. {qcd} <= ncd_c) then\n"
+                       + b + "         end if\n         end if\n")
+    return txt[:i] + "".join(out) + txt[j + len(tail):]
+
+
+def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
     lab, lcd = la + lb, lc + ld
     lt = lab + lcd
     nca, ncc = gv.ncum(lab), gv.ncum(lcd)
@@ -244,7 +279,18 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     # loops per block. A single-column quartet takes the scalar path.
     # Sixteen doubles of accumulator at most: (ss|sp) at 4 x 4 x 4 went to
     # 255 registers with 624 bytes of spill, and ran slower than segmented.
-    ncab = 4 if nv <= 1 else (2 if nv <= 4 else 1)
+    # REGISTERS, NOT FLOPS, SET THIS. The accumulator costs nv*ncab^2
+    # doubles per thread beside the VRR block's 2*nv and g1's nv; ptxas has
+    # 255 registers, 127 doubles, and vbuf and the six digestion blocks want
+    # their share. Budget the accumulator at 64 doubles and take the largest
+    # power-of-two chunk that fits, capped at PS_NCOL_MAX columns a side.
+    # The old rule (4 at nv<=1, 2 at nv<=4, 1 otherwise) left every class
+    # with a p on both sides at one combination per pass, which is the
+    # segmented cost with extra bookkeeping -- and those are exactly the
+    # classes cc-pVDZ spends its time in.
+    ncab = 4
+    while ncab > 1 and nv*ncab*ncab > 64:
+        ncab //= 2
     # The block accumulation is written out with literal indices so the
     # accumulator is provably register-resident; a loop over (qab, qcd) is
     # left to the unroller's judgement, which it lost on this kernel.
@@ -254,35 +300,40 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     cab_fill = "".join(
         f"               cab({a}) = wta({a})*ps_coef(offa({a}) + ki)*ps_coef(offb({a}) + kj)\n"
         for a in range(1, ncab + 1))
+    # The prescreen's bound needs the largest coefficient the chunk can
+    # apply, since the pair factor on this path carries none of them.
+    cab_fill += ("               cabmax = " + ("abs(cab(1))" if ncab == 1 else
+                 "max(" + ", ".join(f"abs(cab({a}))" for a in range(1, ncab + 1)) + ")") + "\n")
     ccd_fill = "".join(
         f"                  ccd({c}) = wtc({c})*ps_coef(offc({c}) + kk)*ps_coef(offd({c}) + kl)\n"
         for c in range(1, ncab + 1))
-    t_zero = "".join(
-        f"               do x = 1, {nv}\n                  tc(x, {c}) = 0.0_dp\n               end do\n"
-        for c in range(1, ncab + 1))
-    t_add = "".join(
-        f"                  do x = 1, {nv}\n                     tc(x, {c}) = tc(x, {c}) + ccd({c})*v(x, cur)\n                  end do\n"
-        for c in range(1, ncab + 1))
-    g_add = "".join(
-        f"               do x = 1, {nv}\n                  g(x, {a}, {c}) = g(x, {a}, {c}) + cab({a})*tc(x, {c})\n               end do\n"
+    ccd_fill += ("                  ccdmax = " + ("abs(ccd(1))" if ncab == 1 else
+                 "max(" + ", ".join(f"abs(ccd({c}))" for c in range(1, ncab + 1)) + ")") + "\n")
+    # The column-pair weight of every combination, formed once per
+    # primitive quartet, and the accumulation straight into the block. The
+    # ket-side partial this used to carry saved ncab^2 - ncab FMAs per
+    # quartet and cost nv*ncab registers, which at ncab = 2 is the wrong
+    # side of the trade: registers are what stop the chunk being wider.
+    w_fill = "".join(
+        f"                  w2({a}, {c}) = cab({a})*ccd({c})\n"
         for c in range(1, ncab + 1) for a in range(1, ncab + 1))
-    acc_copy = "".join(
-        f"            do x = 1, {nv}\n               gl(x, {a}, {c}) = g(x, {a}, {c})\n            end do\n"
+    g_add = "".join(
+        f"                  do x = 1, {nv}\n                     g(x, {a}, {c}) = g(x, {a}, {c}) + w2({a}, {c})*v(x, cur)\n                  end do\n"
         for c in range(1, ncab + 1) for a in range(1, ncab + 1))
     hrr_body = re.sub(r"\bg\(", "g1(", hrr_body)
 
-    return f"""
+    txt = f"""
    !> ({la}{lb}|{lc}{ld}) driver.  The `do concurrent` lives here and the
    !> workspaces live in the item routine below, so they are per THREAD.
    !> Declaring them alongside the loop makes them shared -- the compiler then
    !> emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
    subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
                       ndens, dmat, jmat, rank, nranks)
 {PROLOGUE}
       integer, intent(in) :: rank, nranks
-      integer(kind=8) :: g0, g1, nr, i
+      integer(int64) :: g0, g1, nr, i
       !
       ! LAUNCH GEOMETRY.  `do concurrent` gives nvfortran the whole say, and it
       ! picks 128 threads per block.  Handing the block size back to the
@@ -302,39 +353,40 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
          call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat)
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
       end do
    end subroutine pc{tag}
 
    pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
                       ndens, dmat, jmat)
       !$acc routine seq
-      integer(kind=8), intent(in) :: gt
+      integer(int64), intent(in) :: gt
 {PROLOGUE}
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
-      integer(kind=8) :: nsa, u, kx
-      real(dp) :: qcut
+      integer(int64) :: nsa, u, kx
+      real(dp) :: qcut, bnd
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
-      logical :: dij, dkl, dpq
+      logical :: dij, dkl, dpq, ok
       real(dp) :: zeta, eta, zpe, rho, tval, pref, wc
       real(dp) :: pqx, pqy, pqz, pax, pay, paz, qcx, qcy, qcz
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
       real(dp) :: oo2z, oo2e, oo2ze, rz, re, sc, vv
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
+      real(dp) :: rpx, rpy, rpz, rzeta, reta, rzpe
       real(dp) :: f(0:BOYS_MMAX)
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
-      real(dp) :: v({nv}, 0:1), g({nv}, {ncab}, {ncab}), gl({nv}, {ncab}, {ncab}), g1({nv}), vbuf({na*nb*nc*nd})
-      real(dp) :: wq, w, wab
+      real(dp) :: v({nv}, 0:1), g({nv}, {ncab}, {ncab}), g1({nv}), vbuf({na*nb*nc*nd})
+      real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd, ab0, cd0, nab_c, ncd_c, qab, qcd
       integer  :: ki, kj, kk, kl, kpl, kql, ia2, ib2, ic2, id2, iabc, icdc
       logical  :: same_ab, same_cd, same_pair
-      real(dp) :: cab({ncab}), ccd({ncab}), wta({ncab}), wtc({ncab}), tc({nv}, {ncab})
+      real(dp) :: cab({ncab}), ccd({ncab}), wta({ncab}), wtc({ncab}), w2({ncab}, {ncab})
       integer  :: offa({ncab}), offb({ncab}), offc({ncab}), offd({ncab})
       real(dp) :: jab({na*nb}), jcd({nc*nd}), kac({na*nc})
       real(dp) :: kad({na*nd}), kbc({nb*nc}), kbd({nb*nd})
@@ -365,9 +417,9 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
          ! On a symmetric segment the pairs are enumerated column by column,
          ! iab >= icd, with the same closed form inverted.
          if (sD(seg)) then
-            nsa = int(sA(seg), 8)
-            u = int(t - 1, 8)
-            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, 8)
+            nsa = int(sA(seg), int64)
+            u = int(t - 1, int64)
+            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
             if (kx < 0) kx = 0
             do while (kx > 0)
                if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
@@ -438,40 +490,68 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
             end do
             do kp = offab + 1, offab + nab
                zeta = pp_p(kp)
-               kpl = kp - offab - 1
-               ki = kpl/npj + 1
-               kj = kpl - (ki - 1)*npj + 1
+               ki = pp_ki(kp); kj = pp_kj(kp)
                wab = ps_coef(ps_coff(si) + ki)*ps_coef(ps_coff(sj) + kj)
+               ! Bra-only quantities, out of the ket loop. They depend on
+               ! kp alone and were being reloaded and recomputed once per
+               ! KET primitive, which on a deeply contracted shell pair is
+               ! 144 times over for values that never change. The compiler
+               ! does not lift them, presumably because it cannot prove the
+               ! loads invariant. Measured on (ps|ss) of the silica slice in
+               ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
+               ! same profile flat.
+               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
+               pax = rpx - pp_ra(kp, 1)
+               pay = rpy - pp_ra(kp, 2)
+               paz = rpz - pp_ra(kp, 3)
+               ! 1/zeta with them: the bra exponent does not change across
+               ! the ket loop, so its reciprocal is one division per bra
+               ! primitive rather than three per primitive QUARTET.
+               rzeta = 1.0_dp/zeta
+               oo2z = 0.5_dp*rzeta
                do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
-                  kql = kq - offcd - 1
-                  kk = kql/npl + 1
-                  kl = kql - (kk - 1)*npl + 1
+                  kk = pp_ki(kq); kl = pp_kj(kq)
                   w = wab*ps_coef(ps_coff(sk) + kk)*ps_coef(ps_coff(sl) + kl)
                   zpe = zeta + eta
-                  rho = zeta*eta/zpe
-                  pqx = pp_r(kp, 1) - pp_r(kq, 1)
-                  pqy = pp_r(kp, 2) - pp_r(kq, 2)
-                  pqz = pp_r(kp, 3) - pp_r(kq, 3)
-                  pax = pp_r(kp, 1) - pp_ra(kp, 1)
-                  pay = pp_r(kp, 2) - pp_ra(kp, 2)
-                  paz = pp_r(kp, 3) - pp_ra(kp, 3)
+                  ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
+                  ! primitive (ss|ss) integral, and with the normalisation
+                  ! in the coefficients it bounds the higher ones to within
+                  ! the polynomial factors the cutoff's three decades of
+                  ! margin cover. Tested before the Boys function and the
+                  ! VRR, which is nearly all of a primitive quartet's cost;
+                  ! on a generally contracted basis two thirds of the
+                  ! quartets that survive the pair pruning die here.
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+                  if (abs(pref*w) <= pcut) cycle
+                  ! One reciprocal each for eta and zeta+eta, then multiply.
+                  ! This loop used to issue ten double-precision divisions
+                  ! per primitive quartet -- rho, three for the W centre,
+                  ! three halves, two rho ratios and the prefactor -- against
+                  ! a recurrence that for the light classes is five lines.
+                  ! Division has no fast reciprocal in double precision, so
+                  ! that was the arithmetic, not the recurrence.
+                  reta = 1.0_dp/eta
+                  rzpe = 1.0_dp/zpe
+                  rho = zeta*eta*rzpe
+                  pqx = rpx - pp_r(kq, 1)
+                  pqy = rpy - pp_r(kq, 2)
+                  pqz = rpz - pp_r(kq, 3)
                   qcx = pp_r(kq, 1) - pp_ra(kq, 1)
                   qcy = pp_r(kq, 2) - pp_ra(kq, 2)
                   qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*pp_r(kp, 1) + eta*pp_r(kq, 1))/zpe
+                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
                   wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*pp_r(kp, 2) + eta*pp_r(kq, 2))/zpe
+                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
                   wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*pp_r(kp, 3) + eta*pp_r(kq, 3))/zpe
+                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
                   wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
    {emit_boys(lt)}
 
-                  oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-                  rz = rho/zeta; re = rho/eta
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
+                  rz = rho*rzeta; re = rho*reta
 
    {vrr_body}
                   do x = 1, {nv}
@@ -480,7 +560,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
                end do
             end do
             do x = 1, {nv}
-               gl(x, 1, 1) = g1(x)
+               g(x, 1, 1) = g1(x)
             end do
          else
 {acc_zero}            ! The column-pair coefficient offsets of this block, decoded once
@@ -499,45 +579,87 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
                offd(qab) = ps_coff(sl) + (id2 - 1)*npl
                wtc(qab) = merge(1.0_dp, 0.0_dp, cd0 + qab - 1 <= nccd)
             end do
+            ! Nothing in this chunk can contribute: skip it whole, which
+            ! is the only place the shared VRR can be skipped at all.
+            if (nqc > 1) then
+               qchunk = 0.0_dp
+               do qab = 1, nab_c
+               do qcd = 1, ncd_c
+                  qchunk = max(qchunk, &
+                     cb{tag}(ab0 + qab - 1, cd0 + qcd - 1, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c))
+               end do
+               end do
+               if (qchunk <= thresh) cycle
+            end if
             do kp = offab + 1, offab + nab
                zeta = pp_p(kp)
                ki = pp_ki(kp); kj = pp_kj(kp)
-{cab_fill}{t_zero}               do kq = offcd + 1, offcd + ncd
+{cab_fill}               ! Bra-only quantities, out of the ket loop. They depend on
+               ! kp alone and were being reloaded and recomputed once per
+               ! KET primitive, which on a deeply contracted shell pair is
+               ! 144 times over for values that never change. The compiler
+               ! does not lift them, presumably because it cannot prove the
+               ! loads invariant. Measured on (ps|ss) of the silica slice in
+               ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
+               ! same profile flat.
+               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
+               pax = rpx - pp_ra(kp, 1)
+               pay = rpy - pp_ra(kp, 2)
+               paz = rpz - pp_ra(kp, 3)
+               ! 1/zeta with them: the bra exponent does not change across
+               ! the ket loop, so its reciprocal is one division per bra
+               ! primitive rather than three per primitive QUARTET.
+               rzeta = 1.0_dp/zeta
+               oo2z = 0.5_dp*rzeta
+               do kq = offcd + 1, offcd + ncd
                   eta = pp_p(kq)
                   kk = pp_ki(kq); kl = pp_kj(kq)
 {ccd_fill}                  zpe = zeta + eta
-                  rho = zeta*eta/zpe
-                  pqx = pp_r(kp, 1) - pp_r(kq, 1)
-                  pqy = pp_r(kp, 2) - pp_r(kq, 2)
-                  pqz = pp_r(kp, 3) - pp_r(kq, 3)
-                  pax = pp_r(kp, 1) - pp_ra(kp, 1)
-                  pay = pp_r(kp, 2) - pp_ra(kp, 2)
-                  paz = pp_r(kp, 3) - pp_ra(kp, 3)
+                  !
+                  ! PRIMITIVE-QUARTET PRESCREEN. The pair factor on this
+                  ! path carries no contraction coefficients -- they are
+                  ! applied per column combination -- so the bound takes the
+                  ! largest of them on each side. Without it this kernel
+                  ! evaluated every primitive quartet in the pair list while
+                  ! the scalar one skipped two thirds of them on cc-pVDZ,
+                  ! which is most of why the primitive-shell view measured
+                  ! slower than the path it was meant to beat.
+                  !
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+                  if (abs(pref)*cabmax*ccdmax <= pcut) cycle
+                  ! One reciprocal each for eta and zeta+eta, then multiply.
+                  ! This loop used to issue ten double-precision divisions
+                  ! per primitive quartet -- rho, three for the W centre,
+                  ! three halves, two rho ratios and the prefactor -- against
+                  ! a recurrence that for the light classes is five lines.
+                  ! Division has no fast reciprocal in double precision, so
+                  ! that was the arithmetic, not the recurrence.
+                  reta = 1.0_dp/eta
+                  rzpe = 1.0_dp/zpe
+                  rho = zeta*eta*rzpe
+                  pqx = rpx - pp_r(kq, 1)
+                  pqy = rpy - pp_r(kq, 2)
+                  pqz = rpz - pp_r(kq, 3)
                   qcx = pp_r(kq, 1) - pp_ra(kq, 1)
                   qcy = pp_r(kq, 2) - pp_ra(kq, 2)
                   qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*pp_r(kp, 1) + eta*pp_r(kq, 1))/zpe
+                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
                   wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*pp_r(kp, 2) + eta*pp_r(kq, 2))/zpe
+                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
                   wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*pp_r(kp, 3) + eta*pp_r(kq, 3))/zpe
+                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
                   wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
    {emit_boys(lt)}
 
-                  oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-                  rz = rho/zeta; re = rho/eta
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
+                  rz = rho*rzeta; re = rho*reta
 
    {vrr_body}
-                  ! cd side first: NCAB FMAs per primitive quartet, and the
-                  ! NCAB x NCAB block only once per bra primitive.
-{t_add}               end do
-{g_add}            end do
-            ! To local memory once: the per-combination read below has a
-            ! runtime index and must not touch the register copy.
-{acc_copy}         end if
+{w_fill}{g_add}               end do
+            end do
+         end if
 
          do qcd = 1, ncd_c
          do qab = 1, nab_c
@@ -549,16 +671,24 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
          ! enumerated them: the column pairs of one primitive shell in one
          ! order, and the two column pairs of one primitive-shell pair in one
          ! order.
-         if (same_ab .and. ia2 < ib2) cycle
-         if (same_cd .and. ic2 < id2) cycle
-         if (same_pair .and. iabc < icdc) cycle
+         ok = .not. (same_ab .and. ia2 < ib2)
+         if (same_cd .and. ic2 < id2) ok = .false.
+         if (same_pair .and. iabc < icdc) ok = .false.
+         ! ... and only those whose own column bound survives. The quartet
+         ! test upstream used the merged maximum over the columns, which is
+         ! the right admission test for the quartet and much too generous
+         ! for any one combination of it.
+         if (nqc > 1) then
+            if (cb{tag}(iabc, icdc, nca, nccl, si, sj, sk, sl, nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) <= thresh) ok = .false.
+         end if
+         if (.not. ok) cycle
          dij = .not. (same_ab .and. ia2 == ib2)
          dkl = .not. (same_cd .and. ic2 == id2)
          dpq = .not. (same_pair .and. iabc == icdc)
          mui = col_ao(ps_soff(si) + ia2); nuj = col_ao(ps_soff(sj) + ib2)
          lamk = col_ao(ps_soff(sk) + ic2); sigl = col_ao(ps_soff(sl) + id2)
          do x = 1, {nv}
-            g1(x) = gl(x, qab, qcd)
+            g1(x) = g(x, qab, qcd)
          end do
 
          ! --- HRR ---
@@ -734,55 +864,383 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body):
          end do   ! cd0
          end do   ! ab0
    end subroutine pci{tag}
+
+   !> Schwarz times the density blocks for ONE column combination, at
+   !> CONTRACTED resolution: the same test the quartet gets, sharpened from
+   !> the merged maximum over the columns to the columns actually being
+   !> evaluated. A module procedure rather than a contained one because
+   !> `!$acc routine` cannot capture host-subprogram data, and in the same
+   !> module as its caller so it inlines.
+   pure real(dp) function cb{tag}(iab_, icd_, nca, nccl, si, sj, sk, sl, &
+                                  nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) result(qb)
+      !$acc routine seq
+      integer,  intent(in) :: iab_, icd_, nca, nccl, si, sj, sk, sl, nbas, ncoltot, nshc, nqc
+      integer,  intent(in) :: ps_soff(nbas), col_sh(ncoltot)
+      real(dp), intent(in) :: q_col(nqc), dsh_c(nshc, nshc)
+      integer :: a_, b_, c_, d_, ja, jb, jc, jd
+      a_ = mod(iab_ - 1, nca) + 1; b_ = (iab_ - 1)/nca + 1
+      c_ = mod(icd_ - 1, nccl) + 1; d_ = (icd_ - 1)/nccl + 1
+      ja = col_sh(ps_soff(si) + a_); jb = col_sh(ps_soff(sj) + b_)
+      jc = col_sh(ps_soff(sk) + c_); jd = col_sh(ps_soff(sl) + d_)
+      qb = q_col(max(ja, jb)*(max(ja, jb) - 1)/2 + min(ja, jb)) &
+           *q_col(max(jc, jd)*(max(jc, jd) - 1)/2 + min(jc, jd))
+      qb = qb*max(4.0_dp*dsh_c(ja, jb), 4.0_dp*dsh_c(jc, jd), &
+                  dsh_c(ja, jc), dsh_c(ja, jd), dsh_c(jb, jc), dsh_c(jb, jd))
+   end function cb{tag}
 """
+    if unroll and ncab > 1:
+        txt = _unroll_combos(txt, ncab)
+    return txt
+
+
+#: WARP-ROLE DECOMPOSITION, per class: which shell's Cartesian components the
+#: work of one quartet is split over.  Measured, not guessed -- see
+#: `--role-report` for the numbers behind each entry.
+#:
+#: THE MECHANISM.  A (dp|dp) thread carries v(400,0:1), g1(400) and vbuf(324):
+#: ~1500 doubles against 127 a thread can hold, so ptxas spills 15.9 kB per
+#: thread and Nsight Compute has the kernel 94% stalled on local-memory
+#: latency with the FP64 pipe 2.6% busy.  Capping registers is monotonically
+#: worse and a hand-written CUDA port of the SAME decomposition lands on the
+#: same 255 registers: the wall is the working set, not the compiler.
+#:
+#: What moves it is giving each thread a SLICE of the quartet.  Thread
+#: (quartet, role) owns the HRR outputs whose component of the split shell is
+#: `role`, runs only the VRR dependency closure those outputs need, and
+#: accumulates only its g1 entries.  Redundant arithmetic across roles --
+#: 2.9x for (dp|dp) -- is cheaper than the local memory it replaces: 15.9 kB
+#: -> 1.7 kB spill frame, local traffic per primitive quartet 318 -> 64
+#: sectors, FP64 pipe 2.6% -> 41%, 6.7x on the race harness.  Pure
+#: `do concurrent (i, role)`: no thread hierarchy is named, and nvfortran
+#: was measured to keep `role` uniform across a warp in either index order
+#: (it picks the fast thread index from the access pattern, not the source).
+#:
+#: THE COST.  Each role loads the density blocks and does its slice of the
+#: digestion, and the Fock blocks that do not involve the split shell get one
+#: partial atomic update per role instead of one -- (dp|dp): 342 atomics per
+#: quartet instead of 117.  Screening is per thread but before the split, so
+#: a screened quartet costs one early return per role.
+#: Measured on the race harness (scalar vs role, same work, screening off,
+#: ns per primitive quartet, speedup at 1/2/3 primitives per shell):
+#:   2121 c: 2.60 / 3.83 / 4.48      2111 c: 1.69 / 2.37 / 2.52
+#:   2221 c: 1.22 / 2.16 / 2.47      2211 c: 1.12 / 1.13 / 1.13
+#:   2120 c: 1.02 / 1.21 / 1.26
+#: Left scalar, the split LOSES: 2110 c 0.57-0.90, 2010 c 0.42-0.60,
+#: 2011 c 0.35-0.65 (a: 0.18-0.22), 2111 a 0.65-1.52 (c is better).
+#: The small classes never spilled, so the redundancy buys nothing.
+#: Splitting over the ket's first shell (c) won everywhere it was tried: the
+#: HRR closure of one ket component is the smallest slice of the VRR.
+#: Extended to every canonical class whose scalar working set spills. Only 21
+#: of the 81 generated classes are ever dispatched (bra >= ket, la >= lb,
+#: lc >= ld), and across those the split's sign tracks the scalar working set
+#: -- 2*v + g1 + vbuf doubles -- almost exactly:
+#:     win  2221 2748   2211 1374   2121 1524   2120 708   2111 762
+#:     lose 2011  354   2010  138   2110  294
+#: so the threshold sits between ~350 and ~700 doubles, which is where the
+#: kernel starts spilling to local memory and the redundancy finally buys
+#: something. Two unsplit classes above it are added here; every other
+#: unsplit class is at or below 381 doubles and is left alone.
+#:
+#: (dd|dd) IS ABOVE THE THRESHOLD AND IS STILL LEFT SCALAR, on compile time.
+#: Its working set is 4971 doubles, the largest of any class, and splitting it
+#: six ways is structurally the most promising of the lot -- accumulator 961
+#: down to 310. But six roles over a 2179-statement VRR generate 52563 lines,
+#: a quarter of everything this script emits, and take the full build from 20
+#: minutes to 45. On cc-pVDZ that buys about 0.4 s of a 68 s Fock build,
+#: because (dd|dd) is 0.8% of integral time when there is one d shell per
+#: heavy atom. Revisit for a basis with more d functions, or for f, where the
+#: class is worth more and the trade may reverse.
+#: (dd|ps) IS NOT HERE, and must not be put back without checking cc80.
+#: Its role kernel makes nvfortran 26.5 die with a signal 11 in fort2 --
+#: "TERMINATED by signal 11", no diagnostic -- when compiled for cc80. The
+#: SAME file compiles for cc70, which is how it passed review on a V100 and
+#: broke an A100 build. Every other role class here compiles for both. If a
+#: later compiler fixes it the class is worth about 1.8 s of a 68 s Fock
+#: build on the silica slice.
+ROLE_SPLITS = {"2121": "c", "2111": "c", "2221": "c", "2211": "c", "2120": "c",
+               "2220": "c"}
+
+
+def _vrr_stmts(vrr):
+    """(dst, srcs) per VRR assignment, in program order; comments dropped."""
+    raw, cur = [], []
+    for line in vrr.split("\n"):
+        cur.append(line)
+        if not line.rstrip().endswith("&"):
+            raw.append("\n".join(cur))
+            cur = []
+    out = []
+    for text in raw:
+        flat = text.replace("&\n", " ")
+        m = re.match(r"\s*v\((\d+),(\d+)\)\s*=", flat)
+        if not m:
+            continue
+        dst = (int(m.group(1)), int(m.group(2)))
+        srcs = [(int(a), int(b)) for a, b in
+                re.findall(r"v\((\d+),(\d+)\)", flat.split("=", 1)[1])]
+        out.append((text, dst, srcs))
+    return out
+
+
+def _hrr_stmts(hrr):
+    """vbuf index -> (statement text, set of g(...) indices it reads)."""
+    out = {}
+    for m in re.finditer(r"([ \t]*vbuf\((\d+)\)\s*=.*?)(?=\n[ \t]*vbuf\(|\Z)",
+                         hrr, re.S):
+        out[int(m.group(2))] = (m.group(1).rstrip("\n"),
+                                {int(x) for x in re.findall(r"g\((\d+)\)", m.group(1))})
+    return out
+
+
+def role_plan(la, lb, lc, ld, vrr, hrr, shell):
+    """Per-role work for splitting over the components of `shell` (a|b|c|d).
+
+    Returns (stmts, roles) where stmts is the parsed VRR and each role is a
+    dict: keep (VRR statement ids, in order), vmap (v index -> compact),
+    g1 (sorted final-buffer indices, 1-based), gmap, vb (vbuf indices in
+    digestion order), and the component list `comps`."""
+    stmts = _vrr_stmts(vrr)
+    cur = (la + lb + lc + ld) % 2
+    defs, deps = {}, []
+    for k, (_t, dst, srcs) in enumerate(stmts):
+        deps.append({defs[s] for s in srcs})
+        defs[dst] = k
+    hs = _hrr_stmts(hrr)
+    na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
+    assert len(hs) == na*nb*nc*nd
+    nX = {"a": na, "b": nb, "c": nc, "d": nd}[shell]
+
+    def closure(t):
+        seen, stack = set(), list(t)
+        while stack:
+            k = stack.pop()
+            if k in seen:
+                continue
+            seen.add(k)
+            stack.extend(deps[k])
+        return seen
+    roles = []
+    for comp in range(nX):
+        vb = [1 + ia + na*ib + na*nb*ic + na*nb*nc*id
+              for id in range(nd) for ic in range(nc)
+              for ib in range(nb) for ia in range(na)
+              if {"a": ia, "b": ib, "c": ic, "d": id}[shell] == comp]
+        g = sorted(set().union(*(hs[i][1] for i in vb)))
+        keep = sorted(closure([defs[(i, cur)] for i in g]))
+        vidx = sorted({i for k in keep for i in
+                       [stmts[k][1][0]] + [s[0] for s in stmts[k][2]]})
+        roles.append(dict(comps=[comp], keep=keep,
+                          vmap={i: k + 1 for k, i in enumerate(vidx)},
+                          g1=g, gmap={i: k + 1 for k, i in enumerate(g)},
+                          vb=vb, bmap={i: k + 1 for k, i in enumerate(vb)}))
+    return stmts, roles, hs
+
+
+def role_report(la, lb, lc, ld, vrr, hrr):
+    """One line per candidate split shell: roles, redundancy, sizes."""
+    na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
+    tot = len(_vrr_stmts(vrr))
+    hs = _hrr_stmts(hrr)
+    allg = len(set().union(*(v[1] for v in hs.values())))
+    cols = []
+    for shell, nX in (("a", na), ("b", nb), ("c", nc), ("d", nd)):
+        if nX == 1:
+            continue
+        _s, roles, _h = role_plan(la, lb, lc, ld, vrr, hrr, shell)
+        R = sum(len(r["keep"]) for r in roles)/tot
+        cols.append(f"{shell}: {nX} roles R={R:.2f} closure<={max(len(r['keep']) for r in roles)}"
+                    f" acc={max(len(r['g1']) for r in roles)}")
+    return (f"  ({la}{lb}|{lc}{ld}) VRR {tot} g1 {allg} vbuf {na*nb*nc*nd}: "
+            + " | ".join(cols))
+
+
+def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
+    """The role kernel of one class: driver pcr<tag> + item pcri<tag>.
+
+    Built from the SAME pieces as the scalar kernel (`_scalar_pieces`): the
+    head -- segment decode, Schwarz and density screens, pair data -- is
+    shared by every role and runs once per thread; a `select case (role)`
+    then holds, per role, the primitive loops with that role's VRR closure
+    and compacted arrays, its slice of the HRR, and the digestion restricted
+    to its components of the split shell."""
+    tag = f"{la}{lb}{lc}{ld}"
+    na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
+    nv = gv.ncum(la + lb)*gv.ncum(lc + ld)
+    stmts, roles, hs = role_plan(la, lb, lc, ld, vrr, hrr, shell)
+    nrole = len(roles)
+    ivar = {"a": "ia", "b": "ib", "c": "ic", "d": "id"}[shell]
+    nX = {"a": na, "b": nb, "c": nc, "d": nd}[shell]
+    nvr = max(len(r["vmap"]) for r in roles)
+    ngr = max(len(r["g1"]) for r in roles)
+    nbr = max(len(r["vb"]) for r in roles)
+
+    # --- driver: the scalar driver with a role index on the loop
+    drv = pieces["drv"].replace("pcsi" + tag, "pcri" + tag).replace("pcs" + tag, "pcr" + tag)
+    drv = drv.replace("SCALAR driver.", "WARP-ROLE driver (split over shell "
+                      + shell + f", {nrole} roles).")
+    drv = drv.replace("      integer(int64) :: g0, g1, nr, i\n",
+                      "      integer(int64) :: g0, g1, nr, i, it\n      integer :: role\n")
+    old = ("      do concurrent(i=1:nr)\n"
+           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &\n"
+           "                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &\n"
+           "                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)\n"
+           "      end do\n")
+    assert drv.count(old) == 1
+    drv = drv.replace(old, f"""      !
+      ! ONE index, decoded.  Thread i holds quartet `it` and role `role` with
+      ! 32 consecutive i sharing a role: warp = 32 quartets x ONE role, so the
+      ! role bodies never share a warp.  A two-index `do concurrent (i, role)`
+      ! was tried first and nvfortran made `role` the fast thread index --
+      ! 5.3 active lanes of 32 and the kernel slower than the scalar one.  The
+      ! single index leans only on what every kernel here already leans on:
+      ! consecutive iterations are consecutive threads (the ket-uniform
+      ! decode in the item routine depends on the same thing).
+      !
+      ! `local(it, role)` is redundant for the standard -- an unnamed scalar
+      ! assigned in a `do concurrent` is already per-iteration -- but the
+      ! OpenMP port rewrites this construct as `!$omp parallel do`, whose
+      ! default is SHARED.  Naming them here is what makes that rewrite a
+      ! `private(it, role)` instead of a data race; `tools/dc_locality_lint.py`
+      ! enforces it.
+      !
+      do concurrent(i=1:((nr + 31)/32)*32*{nrole}) local(it, role)
+         role = int(mod((i - 1)/32, {nrole}_int64)) + 1
+         it = ((i - 1)/(32*{nrole}))*32 + mod(i - 1, 32_int64) + 1
+         if (it <= nr) then
+            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+         end if
+      end do
+""")
+
+    # --- item: signature and declarations
+    sig = pieces["sig"].replace("pcsi" + tag + "(gt, ", "pcri" + tag + "(gt, role, ")
+    assert "pcri" + tag in sig
+    sig = sig.replace("      integer(int64), intent(in) :: gt\n",
+                      "      integer(int64), intent(in) :: gt\n      integer, intent(in) :: role\n")
+    decls = pieces["decls"]
+    decls = re.sub(r"      real\(dp\) :: v\(\d+, 0:1\), g1\(\d+\), vbuf\(\d+\)\n",
+                   f"      real(dp) :: v({nvr}, 0:1), g1({ngr}), vbuf({nbr})\n", decls)
+    decls += "      integer  :: gi\n"
+    for r, role in enumerate(roles):
+        decls += (f"      integer, parameter :: rc{r}({len(role['comps'])}) = [" +
+                  ", ".join(str(c) for c in role["comps"]) + "]\n")
+
+    prims, hd = pieces["prims"], pieces["hrr_and_digest"]
+    ihrr_end = hd.index("#ifdef TRC_NO_DIGEST")
+    digest = hd[ihrr_end:]
+    ivrr = prims.index(vrr)
+    acc_old = (f"                  do x = 1, {nv}\n"
+               "                     g1(x) = g1(x) + v(x, cur)\n"
+               "                  end do\n")
+    assert prims.count(acc_old) == 1
+    zero_old = f"            do x = 1, {nv}\n               g1(x) = 0.0_dp\n            end do\n"
+    assert prims.count(zero_old) == 1
+    cases = []
+    for r, role in enumerate(roles):
+        vmap, gmap, bmap = role["vmap"], role["gmap"], role["bmap"]
+
+        def cv(t):
+            return re.sub(r"\bv\((\d+),(\d+)\)",
+                          lambda m: f"v({vmap[int(m.group(1))]},{m.group(2)})", t)
+        body = "\n".join(cv(stmts[k][0]) for k in role["keep"])
+        body += f"\n               cur = {(la + lb + lc + ld) % 2}"
+        acc = "".join(f"                  g1({gmap[i]}) = g1({gmap[i]}) + v({vmap[i]}, cur)\n"
+                      for i in role["g1"])
+        pr = prims[:ivrr] + body + prims[ivrr + len(vrr):]
+        pr = pr.replace(acc_old, acc)
+        pr = pr.replace(zero_old, f"            do x = 1, {len(role['g1'])}\n"
+                                  "               g1(x) = 0.0_dp\n            end do\n")
+        hr = "\n".join(
+            re.sub(r"\bvbuf\((\d+)\)", lambda m: f"vbuf({bmap[int(m.group(1))]})",
+                   re.sub(r"\bg\((\d+)\)", lambda m: f"g1({gmap[int(m.group(1))]})",
+                          hs[i][0]))
+            for i in role["vb"])
+        dg = digest.replace(f"         do idx = 1, {na*nb*nc*nd}\n",
+                            f"         do idx = 1, {len(role['vb'])}\n")
+        n_loops = dg.count(f"do {ivar} = 0, {nX - 1}")
+        assert n_loops == 7, (tag, shell, n_loops)
+        dg = re.sub(r"^([ \t]*)do " + ivar + f" = 0, {nX - 1}\n",
+                    lambda m: f"{m.group(1)}do gi = 1, {len(role['comps'])}\n"
+                              f"{m.group(1)}   {ivar} = rc{r}(gi)\n", dg, flags=re.M)
+        cases.append(f"         case ({r + 1})\n" + pr + hr + "\n" + dg)
+    item = (sig + decls + pieces["head"] + pieces["decode"]
+            + "         select case (role)\n" + "".join(cases)
+            + "         end select\n"
+            + "   end subroutine pcri" + tag + "\n")
+    return drv + "\n" + item
 
 
 def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
-    """Two kernels per class from one template.
+    """The scalar kernel for one class.
 
-    The BLOCK kernel takes the multi-column segments: its VRR block is
-    accumulated per column combination.  The SCALAR kernel takes the
-    single-column segments and is the kernel as it was before general
-    contraction -- one accumulator, the pair coefficients folded into
-    pp_cs, no column decode -- so a segmented basis, and every segmented
-    part of a general one, runs exactly the code it ran before.  They are
-    separate routines so ptxas budgets registers for each on its own and no
-    warp carries both paths."""
+    One accumulator, the pair coefficients folded into pp_cs, no column
+    decode. It is still SLICED OUT of the block template below, because that
+    template is where the VRR, HRR and digestion are written and there is no
+    reason to keep two copies of them -- but the block kernel itself is no
+    longer emitted.
+
+    It used to be. The blocked kernel accumulated its VRR block per column
+    combination so the columns of a general contraction could share it, and
+    was the answer to cc-pVDZ costing five times 6-31G*. `trc_decontract`
+    is a better answer: it splits the contraction before anything is built,
+    which leaves every shell single-column and the blocked kernel with
+    nothing to share. Emitting it cost 162 subroutines of the 324 here and
+    roughly half the compile time of this library for code that production
+    could no longer reach."""
     tag = f"{la}{lb}{lc}{ld}"
     txt = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body)
+    # The scalar kernel is sliced out of the LOOP form: its markers are
+    # statements rather than the unrolled form's literal blocks, and the
+    # two differ only after the combination head, which the scalar kernel
+    # replaces wholesale anyway.
+    txt_l = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=False)
 
     m1 = "         if (ncab*nccd == 1) then\n"
     i1 = txt.index(m1)
     i2 = txt.index("\n         else\n            do x = 1, ", i1) + 1
-    m3 = "         end if\n\n         do qcd = 1, ncd_c\n"
+    if "! === combinations" in txt:
+        m3 = "         end if\n\n         ! === combinations"
+    else:
+        m3 = "         end if\n\n         do qcd = 1, ncd_c\n"
     i3 = txt.index(m3)
-    scalar_prims = txt[i1 + len(m1):i2]
-    block = txt[:i1] + txt[i2 + len("         else\n"):i3] + txt[i3 + len("         end if\n"):]
+    scalar_prims = txt_l[i1 + len(m1):i2]
 
     # --- scalar item: head, one accumulator, folded coefficients, no decode
-    ihead = txt.index("      ! locate the segment")
-    igc = txt.index("         ! GENERAL CONTRACTION.")
-    head = txt[ihead:igc]
+    ihead = txt_l.index("      ! locate the segment")
+    igc = txt_l.index("         ! GENERAL CONTRACTION.")
+    head = txt_l[ihead:igc]
     prims = scalar_prims
-    for drop in ("               kpl = kp - offab - 1\n",
-                 "               ki = kpl/npj + 1\n",
-                 "               kj = kpl - (ki - 1)*npj + 1\n",
+    for drop in ("               ki = pp_ki(kp); kj = pp_kj(kp)\n",
                  "               wab = ps_coef(ps_coff(si) + ki)*ps_coef(ps_coff(sj) + kj)\n",
-                 "                  kql = kq - offcd - 1\n",
-                 "                  kk = kql/npl + 1\n",
-                 "                  kl = kql - (kk - 1)*npl + 1\n",
+                 "                  kk = pp_ki(kq); kl = pp_kj(kq)\n",
                  "                  w = wab*ps_coef(ps_coff(sk) + kk)*ps_coef(ps_coff(sl) + kl)\n"):
         assert prims.count(drop) == 1, drop
         prims = prims.replace(drop, "")
     prims = prims.replace("*pp_c(kp)*pp_c(kq)", "*pp_cs(kp)*pp_cs(kq)")
+    # pp_cs carries the coefficients, so the prescreen weight is already in pref
+    assert prims.count("if (abs(pref*w) <= pcut) cycle") == 1
+    # The pairs are sorted by |c|/p descending (build_pairs_hgp), so the
+    # bound 2 pi^2.5 (|c_p|/zeta)(|c_q|/eta)/sqrt(zeta) falls along the ket
+    # loop: EXIT at the first failure, and skip a bra primitive whose best
+    # ket already fails. Exact pref is still tested for the rare quartet
+    # the loose bound admits.
+    prims = prims.replace("if (abs(pref*w) <= pcut) cycle",
+                          "if (bnd*abs(pp_cs(kq))/eta <= pcut) exit\n"
+                          "                  if (abs(pref) <= pcut) cycle")
+    prims = prims.replace("               zeta = pp_p(kp)\n",
+                          "               zeta = pp_p(kp)\n"
+                          "               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))\n"
+                          "               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle\n", 1)
     prims = prims.replace("g1(x) = g1(x) + w*v(x, cur)", "g1(x) = g1(x) + v(x, cur)")
     igl = prims.rfind("            do x = 1, ")   # the gl copy, last loop
-    assert igl > 0 and "gl(x, 1, 1) = g1(x)" in prims[igl:]
+    assert igl > 0 and "g(x, 1, 1) = g1(x)" in prims[igl:]
     prims = prims[:igl]
-    ihrr = txt.index("         ! --- HRR ---\n")
-    idig = txt.index("#ifdef TRC_NO_DIGEST")
-    iend = txt.index("         end do   ! qab\n")
-    hrr_and_digest = txt[ihrr:iend]
+    ihrr = txt_l.index("         ! --- HRR ---\n")
+    idig = txt_l.index("#ifdef TRC_NO_DIGEST")
+    iend = txt_l.index("         end do   ! qab\n")
+    hrr_and_digest = txt_l[ihrr:iend]
     decode = """         ! Single column on every side: the canonical enumeration and the
          ! degeneracy weights are the pair-level ones.
          dij = .not. same_ab
@@ -791,11 +1249,12 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
          mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
 
 """
-    idecl0 = txt.index("      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl\n")
-    decls = txt[idecl0:ihead]
-    decls = re.sub(r"      real\(dp\) :: v\((\d+), 0:1\), g\(.*?\), gl\(.*?\), g1\((\d+)\), vbuf\((\d+)\)\n",
+    idecl0 = txt_l.index("      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl\n")
+    decls = txt_l[idecl0:ihead]
+    decls = re.sub(r"      real\(dp\) :: v\((\d+), 0:1\), g\(.*?\), g1\((\d+)\), vbuf\((\d+)\)\n",
                    r"      real(dp) :: v(\1, 0:1), g1(\2), vbuf(\3)\n", decls)
     decls = re.sub(r"      real\(dp\) :: cab\(\d+\), ccd\(\d+\).*\n", "", decls)
+    decls = decls.replace("      logical :: dij, dkl, dpq, ok\n", "      logical :: dij, dkl, dpq\n")
     decls = re.sub(r"      integer  :: offa\(.*\n", "", decls)
     decls = decls.replace("      real(dp) :: wq, w, wab\n", "      real(dp) :: wq\n")
     decls = decls.replace("      integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd, ab0, cd0, nab_c, ncd_c, qab, qcd\n", "")
@@ -803,18 +1262,20 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     head = head.replace("         nca = ps_ncol(si); ncb = ps_ncol(sj); nccl = ps_ncol(sk); ncdl = ps_ncol(sl)\n", "")
     head = head.replace("         npi = ps_np(si); npj = ps_np(sj); npk = ps_np(sk); npl = ps_np(sl)\n", "")
 
-    isig = txt.index("   pure subroutine pci" + tag + "(")
-    sig = txt[isig:idecl0].replace("pci" + tag, "pcsi" + tag)
+    isig = txt_l.index("   pure subroutine pci" + tag + "(")
+    sig = txt_l[isig:idecl0].replace("pci" + tag, "pcsi" + tag)
     scalar_item = (sig + decls + head + prims + decode + hrr_and_digest
                    + "   end subroutine pcsi" + tag + "\n")
 
     # --- scalar driver: the block driver with the names swapped
-    idrv = txt.index("   subroutine pc" + tag + "(")
-    idrv_end = txt.index("   end subroutine pc" + tag + "\n") + len("   end subroutine pc" + tag + "\n")
-    drv = txt[idrv:idrv_end].replace("pci" + tag, "pcsi" + tag).replace("pc" + tag, "pcs" + tag)
+    idrv = txt_l.index("   subroutine pc" + tag + "(")
+    idrv_end = txt_l.index("   end subroutine pc" + tag + "\n") + len("   end subroutine pc" + tag + "\n")
+    drv = txt_l[idrv:idrv_end].replace("pci" + tag, "pcsi" + tag).replace("pc" + tag, "pcs" + tag)
     drv = drv.replace("driver.  The `do concurrent`", "SCALAR driver.  The `do concurrent`")
 
-    return block + "\n" + drv + "\n" + scalar_item
+    pieces = dict(drv=drv, sig=sig, decls=decls, head=head, prims=prims,
+                  decode=decode, hrr_and_digest=hrr_and_digest)
+    return drv + "\n" + scalar_item, pieces
 
 
 def _radix(txt):
@@ -838,6 +1299,9 @@ def main():
                          "files satisfy, while pc_dispatch is host code "
                          "launching kernels and may cross modules freely.")
     ap.add_argument("-o", "--output", default="src/trc_pc_kernels.F90")
+    ap.add_argument("--role-report", action="store_true",
+                    help="print the warp-role redundancy table for every "
+                         "class with a d shell and exit; nothing is written")
     args = ap.parse_args()
     L = args.lmax
 
@@ -861,6 +1325,7 @@ def main():
 ! call.
 !
 module trc_pc_kernels
+   use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
                         BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                         BOYS_DT, BOYS_DTINV
@@ -907,34 +1372,35 @@ contains
                     hrr = gh.emit_class(la, lb, lc, ld, idx_h)
                     key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld
                     names.append((key, f"{la}{lb}{lc}{ld}"))
-                    body = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
-                    pieces.append((f"{la}{lb}{lc}{ld}", body))
+                    if args.role_report:
+                        if 2 in (la, lb, lc, ld):
+                            print(role_report(la, lb, lc, ld, vrr, hrr))
+                        continue
+                    body, parts = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
+                    tag = f"{la}{lb}{lc}{ld}"
+                    if tag in ROLE_SPLITS:
+                        body += "\n" + emit_role_kernel(la, lb, lc, ld, vrr, hrr,
+                                                        parts, ROLE_SPLITS[tag])
+                    pieces.append((tag, body))
                     out.append(body)
 
+    if args.role_report:
+        return
     out.append(f"""
    subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, general, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
                           ndens, dmat, jmat, rank, nranks)
       integer, intent(in) :: key
 {PROLOGUE}
-      !! .true. sends the segments to the blocked kernel: every quartet in
-      !! them has a multi-column side.  .false. is the scalar kernel.
-      logical, intent(in) :: general
       integer, intent(in) :: rank, nranks
-      if (general) then
       select case (key)""")
     for key, tag in names:
-        out.append(f"""      case ({key}); call pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat, rank, nranks)""")
-    out.append("      end select\n      else\n      select case (key)")
-    for key, tag in names:
-        out.append(f"""      case ({key}); call pcs{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, pp_ki, pp_kj, ncoltot, ncoef, ps_np, ps_ncol, ps_soff, ps_coff, col_ao, ps_coef, ndens, dmat, jmat, rank, nranks)""")
+        kern = "pcr" if tag in ROLE_SPLITS else "pcs"
+        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)""")
     out.append("""      end select
-      end if
    end subroutine pc_dispatch
 
 end module trc_pc_kernels
@@ -960,13 +1426,14 @@ end module trc_pc_kernels
 ! rule requires; the dispatcher is host code and may cross modules.
 !
 module {mod}
+   use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    implicit none
    private
-   public :: pc{tag}, pcs{tag}
+   public :: pcs{tag}{", pcr" + tag if tag in ROLE_SPLITS else ""}
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -974,13 +1441,15 @@ contains
 {body}
 end module {mod}
 """)
-            use_lines.append(f"   use {mod}, only: pc{tag}, pcs{tag}")
+            use_lines.append(f"   use {mod}, only: pcs{tag}"
+                             + (f", pcr{tag}" if tag in ROLE_SPLITS else ""))
         disp = [f"""!
 ! Kernel dispatcher for the per-class modules.
 !
 ! GENERATED by scripts/gen_perclass.py --lmax {L} --split -- do not edit.
 !
 module trc_pc_kernels
+   use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp
    use trc_tables, only: LMAX
 """ + "\n".join(use_lines) + """
@@ -1001,8 +1470,7 @@ contains
         disp.append("end module trc_pc_kernels\n")
         with open(os.path.join(args.split, "trc_pc_kernels.F90"), "w") as fh:
             fh.write(_radix("\n".join(disp)))
-        print(f"wrote {len(names)} class modules + dispatcher into "
-              f"{args.split}")
+        print(f"wrote {len(names)} class modules + dispatcher into {args.split}")
         return
 
     open(args.output, "w").write(_radix(txt))

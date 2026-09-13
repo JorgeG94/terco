@@ -40,6 +40,11 @@ contains
          case ('C', 'c'); z(i) = 6
          case ('N', 'n'); z(i) = 7
          case ('O', 'o'); z(i) = 8
+         case ('F', 'f'); z(i) = 9
+         case ('Si', 'si', 'SI'); z(i) = 14
+         case ('P', 'p'); z(i) = 15
+         case ('S', 's'); z(i) = 16
+         case ('Cl', 'cl', 'CL'); z(i) = 17
          case default
             print '(a,a)', '  unsupported element ', trim(sym); stop 1
          end select
