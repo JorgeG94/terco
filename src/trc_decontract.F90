@@ -95,6 +95,12 @@ module trc_decontract
       integer,  allocatable :: t_off(:)   !! (nao_c + 1)
       integer,  allocatable :: t_p(:)     !! (nnz) primitive AO
       real(dp), allocatable :: t_a(:)     !! (nnz)
+      !
+      !> Per primitive SHELL, the factor its Schwarz bound must be multiplied
+      !> by for screening in this basis to bound the error in the CONTRACTED
+      !> matrix. Derived, with the reasoning, at the end of `build_maps`.
+      !> Host only -- screening is built once, on the host.
+      real(dp), allocatable :: amp(:)     !! (pb%nshell)
       logical :: on_device = .false.
    end type decon_t
 
@@ -208,6 +214,29 @@ contains
 
       call build_maps(b, pb, tr_mu, tr_s, tr_a, ntr, m)
       m%active = .true.
+      block
+         character(len=8) :: dbge
+         integer :: c, k
+         real(dp) :: amx, asum, smx
+         dbge = ' '
+         call get_environment_variable('TRC_BUILD_TIMING', dbge)
+         if (len_trim(dbge) > 0) then
+            amx = 0.0_dp; smx = 0.0_dp
+            do c = 1, m%nao_c
+               asum = 0.0_dp
+               do k = m%t_off(c), m%t_off(c + 1) - 1
+                  amx = max(amx, abs(m%t_a(k)))
+                  asum = asum + abs(m%t_a(k))
+               end do
+               smx = max(smx, asum)
+            end do
+            print '(a,i0,a,i0,a,i0,a,i0,a,es10.3,a,es10.3,a,f6.2)', &
+               '  [decon] shells ', b%nshell, ' -> ', pb%nshell, &
+               '   nao ', m%nao_c, ' -> ', m%nao_p, &
+               '   max|C| ', amx, '   max col sum|C| ', smx, &
+               '   max amp ', maxval(m%amp)
+         end if
+      end block
       deallocate (p_l, p_np, p_e, p_c, p_r, tr_mu, tr_s, tr_a, tr_whole, grp)
    end subroutine decontract_basis
 
@@ -499,6 +528,70 @@ contains
             pos(c) = pos(c) + 1
          end do
       end do
+      !
+      ! THE SCREENING AMPLITUDE.
+      !
+      ! A primitive quartet's contribution to the matrix the CALLER sees is
+      ! not the primitive integral, it is that integral folded back:
+      !
+      !   dG_uv = c_pu c_qv (pq|rs) Dp_rs
+      !
+      ! and one contracted quartet (uv|ls) is the sum of every primitive
+      ! quartet its four shells can form. If each of those is dropped at
+      ! `thresh`, the contracted quartet is wrong by
+      !
+      !   a_u a_v a_l a_s thresh,   a_u = sum_p |c_pu|
+      !
+      ! -- the COLUMN SUMS of |C|, not its largest entry. max|C| is 1 here,
+      ! which is why the per-quartet bound looks safe and is not: on
+      ! cc-pVDZ water max a_u is 7.03, so 7.03^4 = 2400 dropped primitive
+      ! quartets' worth of error lands in one contracted quartet. Measured:
+      ! E_RHF 1.04e-05 off the pyscf reference, against 4.2e-10 for the
+      ! unsplit basis, and the whole of it in the kernel's exact Schwarz
+      ! test. Tightening that test by 1e-4 by hand recovered 7e-13.
+      !
+      ! So the bound a pair is judged by carries the amplitude of both its
+      ! shells, and `thresh` means in this basis what it means in the
+      ! caller's. Per shell rather than one global factor, because the
+      ! shells that need it are the general-contraction s and p -- every d
+      ! in cc-pVDZ is a single primitive with a_u = 1 and must not be
+      ! screened any harder than before.
+      !
+      ! SUMMED over the contracted shells a primitive feeds, not maxed.
+      ! The max bounds the error in any ONE element of G; a general
+      ! contraction points the same primitive at two or three contracted
+      ! functions, one dropped pair damages all of them, and an energy
+      ! adds those errors up. The max left water at 3.1e-09 -- the right
+      ! shape, an order short; the sum lands where the unsplit basis does.
+      !
+      allocate (m%amp(pb%nshell))
+      m%amp = 0.0_dp
+      block
+         real(dp), allocatable :: acol(:)
+         real(dp) :: amu
+         integer :: k, mu, sp, na
+         allocate (acol(m%nao_c))
+         do c = 1, m%nao_c
+            acol(c) = 0.0_dp
+            do k = m%t_off(c), m%t_off(c + 1) - 1
+               acol(c) = acol(c) + abs(m%t_a(k))
+            end do
+         end do
+         do t = 1, ntr
+            mu = tr_mu(t); sp = tr_s(t)
+            na = ncart(b%sh_l(mu))
+            amu = maxval(acol(b%sh_ao(mu):b%sh_ao(mu) + na - 1))
+            m%amp(sp) = m%amp(sp) + amu
+         end do
+         deallocate (acol)
+         ! A shell no transform entry names cannot happen -- every emitted
+         ! shell has one -- but a zero here would silently screen it away
+         ! entirely, so it does not get the chance.
+         do sp = 1, pb%nshell
+            if (m%amp(sp) <= 0.0_dp) m%amp(sp) = 1.0_dp
+         end do
+      end block
+
       deallocate (cnt, pos)
    end subroutine build_maps
 
@@ -633,6 +726,7 @@ contains
       end if
       if (allocated(m%f_off)) deallocate (m%f_off, m%f_c, m%f_a)
       if (allocated(m%t_off)) deallocate (m%t_off, m%t_p, m%t_a)
+      if (allocated(m%amp)) deallocate (m%amp)
       m%active = .false.; m%nao_c = 0; m%nao_p = 0; m%nnz = 0
    end subroutine decon_release
 

@@ -48,7 +48,7 @@ module trc_eri
    use trc_cart, only: cart_init
    use trc_batch, only: build_pairs
    use trc_hgp, only: build_pairs_hgp
-   use trc_screen, only: schwarz_bounds
+   use trc_screen, only: schwarz_bounds, pair_index
    use trc_bins, only: pair_bins_t, build_binned_pairs
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use trc_binkernel, only: fock_bins
@@ -201,7 +201,7 @@ contains
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bres
 
-      integer :: npp, i
+      integer :: npp, i, j
       integer,  allocatable :: pp_off(:), pp_n(:)
       real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       real(dp), allocatable :: qs(:), one(:)
@@ -255,6 +255,30 @@ contains
          call system_clock(bt_c1)
          print '(a,a,f9.3,a)', '  [build] ', 'schwarz_bounds    ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
          bt_c0 = bt_c1
+      end if
+
+      !
+      ! ON A SPLIT BASIS THE BOUND CARRIES THE TRANSFORM'S AMPLITUDE.
+      !
+      ! `qs` bounds a primitive integral, but what has to stay below
+      ! `thresh` is the error in the contracted matrix the caller gets
+      ! back, and one contracted quartet is the sum of every primitive
+      ! quartet its shells can form. `dec%amp` is the column sum of |C|
+      ! that turns one into the other; see build_maps in trc_decontract
+      ! for the measurement that says it is worth 1.04e-05 Ha on water.
+      !
+      ! Scaled here rather than inside schwarz_bounds so that routine
+      ! stays a statement about integrals, and because both consumers --
+      ! the pair prune in build_binned_pairs and the exact per-quartet
+      ! test in the kernel, which reads sp_q -- then get it for free.
+      !
+      if (this%dec%active) then
+         do i = 1, b%nshell
+            do j = 1, i
+               qs(pair_index(i, j)) = qs(pair_index(i, j)) &
+                                      *this%dec%amp(i)*this%dec%amp(j)
+            end do
+         end do
       end if
 
       deallocate (pp_off, pp_n, pp_p, pp_r, pp_c, pp_e)
