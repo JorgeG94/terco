@@ -269,6 +269,13 @@ contains
       integer :: nfrac, ndamp
       real(dp) :: diis_start
       real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
+      !> This iteration's share of the two totals, so the table says where
+      !> the time went while it is going rather than only at the end. A
+      !> Fock build is not the same cost twice: the SAD guess is atomic, so
+      !> density screening throws nearly all of iteration 1 away, and the
+      !> per-iteration cost then climbs to a plateau. Comparing two runs by
+      !> total/iterations is therefore only valid at equal iteration counts.
+      real(dp) :: tf_it, tx_it
 
       nao = b%nao
       n2 = nao*nao
@@ -305,6 +312,7 @@ contains
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
 
       t_setup = 0.0_dp; t_grid = 0.0_dp; t_fock = 0.0_dp; t_xc = 0.0_dp; t_rest = 0.0_dp
+      tf_it = 0.0_dp; tx_it = 0.0_dp
       tx_pts = 0.0_dp; tx_prs = 0.0_dp
       tw0 = wall()
       ! --- once per geometry, on the host ------------------------------------
@@ -385,7 +393,15 @@ contains
       ! reader that kept dead primitives -- and that only shows here.
       if (talk) print '(a,i0,a,i0,a,i0,a,i0)', "   basis: ", nao, " functions, ", b%nshell, &
          " shells, ", sum(b%sh_np), " primitives, max ", maxval(b%sh_np)
-      if (talk) print '(a)', "   it        E(total)            dE          RMS(D)      |FDS-SDF|"
+      if (talk) then
+         if (dft) then
+            print '(a)', "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
+               //"   fock(s)     xc(s)"
+         else
+            print '(a)', "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
+               //"   fock(s)"
+         end if
+      end if
       do it = 1, opts%max_iter
          tw0 = wall()
          ! --- two-electron part, resident ------------------------------------
@@ -438,6 +454,7 @@ contains
          end if
          tw1 = wall()
          t_fock = t_fock + (tw1 - tw0)
+         tf_it = tw1 - tw0
          ! --- exchange-correlation: finds its density present ----------------
          if (dft) then
             if (nspin == 1) then
@@ -451,6 +468,7 @@ contains
          end if
          tw0 = wall()
          t_xc = t_xc + (tw0 - tw1)
+         tx_it = tw0 - tw1
          ! --- energy at this density -----------------------------------------
          e1 = 0.0_dp; e2 = 0.0_dp
          do s = 1, nspin
@@ -587,7 +605,15 @@ contains
          end do
          drms = sqrt(la%dot(n2*nspin, errv, errv))/real(nao, dp)
          t_rest = t_rest + (wall() - tw0)
-         if (talk) print '(i5,f22.12,es14.4,es14.4,es14.4)', it, etot, etot - eold, drms, errmax
+         if (talk) then
+            if (dft) then
+               print '(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3)', &
+                  it, etot, etot - eold, drms, errmax, tf_it, tx_it
+            else
+               print '(i5,f22.12,es14.4,es14.4,es14.4,f10.3)', &
+                  it, etot, etot - eold, drms, errmax, tf_it
+            end if
+         end if
          res%iterations = it
          ! A real density, on the way past, for the benchmarks. The model
          ! density bench_gc invents is small and banded, so it screens far
