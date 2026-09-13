@@ -41,6 +41,7 @@ module trc_sap
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: shell_collocate, NCART_MAX
+   use pic_blas_interfaces, only: pic_gemm
    implicit none
    private
 
@@ -62,6 +63,39 @@ module trc_sap
 
    !> Points per quadrature batch for the assembly.
    integer, parameter :: SAP_BATCH = 128
+
+   !
+   !> Quadrature level for the screening integral.
+   !>
+   !> This is the DFT default, and it is NOT a lazy inheritance -- a cheaper
+   !> grid was tried first, on the reasoning that a guess thrown away after
+   !> one diagonalisation cannot need a grid chosen to converge an
+   !> exchange-correlation energy. That reasoning is wrong. Quadrature error
+   !> in a matrix element is not a small perturbation of the guess, it is a
+   !> wrong operator, and the orbitals it produces are worse rather than
+   !> approximate. On the 123-atom silica slice, cc-pVDZ, at iteration 12:
+   !>
+   !>              E(12)                 dE(12)     guess cost
+   !>   level 0    -11194.245761258     -9.5e-05      7 s
+   !>   level 1    -11194.245769153     -9.9e-05     25 s
+   !>   level 3    -11194.245774662     -3.3e-10     80 s
+   !>   SAD        -11194.245774661     -6.0e-09      <1 s
+   !>
+   !> Level 3 is a better guess than SAD, by about one iteration. Levels 0
+   !> and 1 are not converging at all by iteration 12 -- worse than SAD and
+   !> cheaper than nothing is worth.
+   !>
+   !> WHICH MEANS SAP IS CURRENTLY A LOSS AT THIS SIZE. The one iteration it
+   !> saves is ~12 s and the guess costs 80, of which 18 is `assemble` and 4
+   !> the per-point potential, both host-side and single-threaded. The fix is
+   !> to put those on the device the way trc_xc does, not to coarsen the
+   !> grid; until then SAP earns its place on small molecules (water/6-31G:
+   !> 9 iterations against 10, at no measurable cost) and not on slabs.
+   !>
+   !> TRC_SAP_LEVEL overrides it so the trade can be re-measured without a
+   !> rebuild, and an explicit `level` argument overrides both.
+   !
+   integer, parameter :: SAP_GRID_LEVEL = 3
 
 contains
 
@@ -229,12 +263,14 @@ contains
       type(dft_grid_t) :: g
       real(dp), allocatable :: vpt(:)
       real(dp) :: rr
-      integer :: ia, ib, k, a0, a1, nz, ntab, ip
+      integer :: ia, ib, k, a0, a1, nz, ntab, ip, lv
+      integer :: c0, c1, crate
       logical :: talk
 
       talk = .false.
       if (present(verbose)) talk = verbose
       hsap = 0.0_dp
+      call system_clock(c0, crate)
 
       ! --- the free atoms, and their ranges -------------------------------
       if (present(nelec)) then
@@ -245,6 +281,7 @@ contains
       if (error%has_error()) return
       call trc_atom_ranges(b, atom_of, first, last, error)
       if (error%has_error()) return
+      call stage('free atoms   ')
 
       ! --- one screening table per distinct (element, function count) ------
       allocate (tab(b%natm), tab_of(b%natm), zint(b%natm))
@@ -274,15 +311,32 @@ contains
          end if
       end do
 
+      call stage('screen tables')
+
       ! --- the molecular quadrature ---------------------------------------
-      call build_dft_grid(b%at_r(:, 1:b%natm), zint, g, error, level=level)
+      lv = SAP_GRID_LEVEL
+      if (present(level)) lv = level
+      block
+         character(len=16) :: e
+         integer :: ios, lv_env
+         e = ' '
+         call get_environment_variable('TRC_SAP_LEVEL', e)
+         if (len_trim(e) > 0 .and. .not. present(level)) then
+            read (e, *, iostat=ios) lv_env
+            if (ios == 0) lv = lv_env
+         end if
+      end block
+      call build_dft_grid(b%at_r(:, 1:b%natm), zint, g, error, level=lv)
       if (error%has_error()) return
+      if (talk) print '(a,i0,a,i0,a)', "  sap: quadrature level ", lv, ", ", &
+         g%n_points, " points"
 
       ! The potential is a scalar on the grid, and every atom contributes to
       ! every point: nothing is screened here because Vscr falls off as
       ! nel/r, which is not small at molecular distances -- it is the
       ! long-range neutrality of V_ne + Vscr, and dropping it would leave a
       ! spurious charge behind.
+      call stage('grid         ')
       allocate (vpt(g%n_points))
       do ip = 1, g%n_points
          vpt(ip) = 0.0_dp
@@ -295,12 +349,30 @@ contains
          vpt(ip) = vpt(ip)*g%weights(ip)
       end do
 
+      call stage('potential    ')
       call assemble(b, g, vpt, hsap, error)
       if (error%has_error()) return
+      call stage('assemble     ')
 
       hsap = hsap + tmat + vmat
       call g%destroy()
       deallocate (dguess, atom_of, first, last, zint, tab, tab_of, vpt)
+
+   contains
+
+      !> Stage timing, printed only when TRC_BUILD_TIMING is set, as the Fock
+      !> build's own stages are. Four routines with very different costs and
+      !> no way to tell from the outside which one is slow.
+      subroutine stage(what)
+         character(len=*), intent(in) :: what
+         character(len=8) :: e
+         e = ' '
+         call get_environment_variable('TRC_BUILD_TIMING', e)
+         call system_clock(c1)
+         if (len_trim(e) > 0) print '(a,a,f9.3,a)', '  [sap] ', what, &
+            real(c1 - c0, dp)/real(crate, dp), ' s'
+         c0 = c1
+      end subroutine stage
    end subroutine trc_sap_build
 
    !
@@ -321,7 +393,7 @@ contains
       type(error_t), intent(inout) :: error
 
       type(trc_xc_grid_t) :: xg
-      real(dp), allocatable :: phi(:, :), hloc(:, :), wb(:)
+      real(dp), allocatable :: phi(:, :), phiw(:, :), hloc(:, :), wb(:)
       real(dp) :: chi(NCART_MAX), gchi(3, NCART_MAX), d(3), acc
       integer :: ib, p0, p1, npb, s0, s1, nloc, is, ish, np, nc, i, j, ip, l, mu, nu
 
@@ -337,7 +409,7 @@ contains
          s0 = xg%b_shoff(ib); s1 = xg%b_shoff(ib + 1) - 1
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          if (npb <= 0 .or. nloc <= 0) cycle
-         allocate (phi(npb, nloc), hloc(nloc, nloc), wb(npb))
+         allocate (phi(npb, nloc), phiw(npb, nloc), hloc(nloc, nloc), wb(npb))
          phi = 0.0_dp
          do ip = 1, npb
             wb(ip) = xg%w(p0 + ip - 1)
@@ -355,16 +427,24 @@ contains
                end do
             end do
          end do
-         ! hloc = phi^T diag(wb) phi
+         !
+         ! hloc = phi^T diag(wb) phi, THROUGH A GEMM.
+         !
+         ! Written out as a triple loop first, and that was the whole cost of
+         ! the guess: nloc runs into the hundreds on a dense slab, so this is
+         ! npts * nloc^2 and on the 123-atom silica slice it took the SAP
+         ! guess to 188 s against SAD's 7.3. The arithmetic is a GEMM and
+         ! BLAS does it two orders of magnitude faster; scaling one copy of
+         ! phi by the weight keeps it a single call and sidesteps the sign
+         ! split a syrk would need, since w*V is not positive.
+         !
          do j = 1, nloc
-            do i = 1, nloc
-               acc = 0.0_dp
-               do ip = 1, npb
-                  acc = acc + wb(ip)*phi(ip, i)*phi(ip, j)
-               end do
-               hloc(i, j) = acc
+            do ip = 1, npb
+               phiw(ip, j) = wb(ip)*phi(ip, j)
             end do
          end do
+         hloc = 0.0_dp
+         call pic_gemm(phiw, phi, hloc, transa='T', transb='N')
          do j = 1, nloc
             nu = xg%b_ao(xg%b_aooff(ib) + j - 1)
             do i = 1, nloc
@@ -372,7 +452,7 @@ contains
                h(mu, nu) = h(mu, nu) + hloc(i, j)
             end do
          end do
-         deallocate (phi, hloc, wb)
+         deallocate (phi, phiw, hloc, wb)
       end do
       call xg%release()
    end subroutine assemble
