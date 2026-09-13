@@ -107,6 +107,7 @@ add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
+terco_add_check(sac_atoms sac_atoms.F90 NEEDS_BASIS)
 
 # The public API end to end: overlap, kinetic, nuclear attraction, the two- and
 # three-centre Coulomb integrals, and the multipoles, all against libfint.
