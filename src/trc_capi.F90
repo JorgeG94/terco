@@ -37,7 +37,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_basis_json, only: trc_basis_from_json
-   use trc_sad, only: trc_sad_build
+   use trc_sad, only: trc_sad_build, trc_sac_build
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use pic_mpi_lib, only: comm_t, comm_world
@@ -76,8 +76,10 @@ module trc_capi
    integer(c_int), parameter, public :: TRC_ERR_NOCONV = 4   !! the SCF ran out of iterations
    integer(c_int), parameter, public :: TRC_ERR_STATE = 5    !! called before what it needs was set
    ! Guess kinds for trc_set_guess.
+   !> Appended, not inserted: 0-3 are what they have always been, so a
+   !> caller built against the old header keeps working.
    integer(c_int), parameter, public :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
-                                        TRC_GUESS_GIVEN = 3
+                                        TRC_GUESS_GIVEN = 3, TRC_GUESS_SAC = 4
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -1259,8 +1261,9 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_GIVEN) then
-         call refuse(cx, "trc_set_guess: kind "//trim(itoa(int(kind)))//" -- 0 core, 1 GWH, 2 SAD, 3 given")
+      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_SAC) then
+         call refuse(cx, "trc_set_guess: kind "//trim(itoa(int(kind))) &
+                     //" -- 0 core, 1 GWH, 2 SAD, 3 given, 4 SAC")
          return
       end if
       if (allocated(cx%dguess)) deallocate (cx%dguess)
@@ -1390,8 +1393,16 @@ contains
          opts%guess = "core"
       case (TRC_GUESS_GWH)
          opts%guess = "gwh"
-      case (TRC_GUESS_SAD)
-         call trc_sad_build(cx%bb%b, dsad, err, verbose=cx%opts%verbose)
+      case (TRC_GUESS_SAD, TRC_GUESS_SAC)
+         ! SAC is SAD with the molecule's charge put on its atoms, so it
+         ! needs the electron count this run was asked for -- which is the
+         ! one thing SAD never looks at. On a neutral molecule the two are
+         ! the same density; see trc_sad.
+         if (cx%guess_kind == TRC_GUESS_SAC) then
+            call trc_sac_build(cx%bb%b, nelec, dsad, err, verbose=cx%opts%verbose)
+         else
+            call trc_sad_build(cx%bb%b, dsad, err, verbose=cx%opts%verbose)
+         end if
          if (err%has_error()) then
             cx%message = err%get_message()
             return
