@@ -34,7 +34,7 @@ module trc_sad
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
-   public :: trc_sad_build, trc_sac_build
+   public :: trc_sad_build, trc_sac_build, trc_atom_ranges
 
 contains
 
@@ -134,7 +134,7 @@ contains
       allocate (dguess(b%nao, b%nao))
       dguess = 0.0_dp
 
-      call atom_ranges(b, atom_of, first, last, error)
+      call trc_atom_ranges(b, atom_of, first, last, error)
       if (error%has_error()) return
 
       allocate (cache_z(b%natm), cache_n(b%natm), cache_e(b%natm), cache(b%natm))
@@ -230,7 +230,7 @@ contains
    !
    ! shell -> atom by centre, and each atom's contiguous shell range.
    !
-   subroutine atom_ranges(b, atom_of, first, last, error)
+   subroutine trc_atom_ranges(b, atom_of, first, last, error)
       type(trc_basis_t), intent(in) :: b
       integer, allocatable, intent(out) :: atom_of(:), first(:), last(:)
       type(error_t), intent(inout) :: error
@@ -259,7 +259,7 @@ contains
          end if
          last(ia) = ish
       end do
-   end subroutine atom_ranges
+   end subroutine trc_atom_ranges
 
    pure subroutine hund_split(z, na, nb)
       !! Alpha and beta counts of the free atom's ground state: closed shells
