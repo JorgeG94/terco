@@ -38,6 +38,7 @@ module trc_capi
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sac_build
+   use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use pic_mpi_lib, only: comm_t, comm_world
@@ -79,7 +80,8 @@ module trc_capi
    !> Appended, not inserted: 0-3 are what they have always been, so a
    !> caller built against the old header keeps working.
    integer(c_int), parameter, public :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
-                                        TRC_GUESS_GIVEN = 3, TRC_GUESS_SAC = 4
+                                        TRC_GUESS_GIVEN = 3, TRC_GUESS_SAC = 4, &
+                                        TRC_GUESS_SAP = 5
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -1261,9 +1263,9 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_SAC) then
+      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_SAP) then
          call refuse(cx, "trc_set_guess: kind "//trim(itoa(int(kind))) &
-                     //" -- 0 core, 1 GWH, 2 SAD, 3 given, 4 SAC")
+                     //" -- 0 core, 1 GWH, 2 SAD, 3 given, 4 SAC, 5 SAP")
          return
       end if
       if (allocated(cx%dguess)) deallocate (cx%dguess)
@@ -1361,7 +1363,7 @@ contains
       type(trc_scf_options_t) :: opts
       type(comm_t) :: comm
       type(error_t) :: err
-      real(dp), allocatable :: dsad(:, :), dg(:, :, :)
+      real(dp), allocatable :: dsad(:, :), dg(:, :, :), hsap(:, :)
       integer :: nelec, nunp, nalpha, nbeta, nspin, n
       logical :: collective
       status = TRC_ERR_NULL
@@ -1413,6 +1415,33 @@ contains
          else
             dg(:, :, 1) = 0.5_dp*dsad; dg(:, :, 2) = 0.5_dp*dsad
          end if
+      case (TRC_GUESS_SAP)
+         ! SAP hands back a one-electron operator, not a density, so it goes
+         ! in through `hguess` below rather than `dg`. T and V_ne are what it
+         ! needs and the context does not keep them, so they are built here;
+         ! it is one pair list and one 1e pass against an SCF.
+         block
+            type(trc_pairlist_t) :: pl
+            real(dp), allocatable :: s1(:, :), t1(:, :), v1(:, :)
+            call pl%build(cx%bb%b, cx%opts%eri_thresh)
+            call pl%to_device()
+            allocate (s1(n, n), t1(n, n), v1(n, n), hsap(n, n))
+            !$acc enter data create(s1, t1, v1)
+            call trc_1e(cx%bb%b, pl, s1, t1, v1)
+            !$acc update self(s1, t1, v1)
+            !$acc exit data delete(s1, t1, v1)
+            call pl%release()
+            if (cx%charge /= 0) then
+               call trc_sap_build(cx%bb%b, t1, v1, hsap, err, verbose=cx%opts%verbose, nelec=nelec)
+            else
+               call trc_sap_build(cx%bb%b, t1, v1, hsap, err, verbose=cx%opts%verbose)
+            end if
+            deallocate (s1, t1, v1)
+         end block
+         if (err%has_error()) then
+            cx%message = err%get_message()
+            return
+         end if
       case (TRC_GUESS_GIVEN)
          if (.not. allocated(cx%dguess)) then
             cx%message = "trc_run_scf: guess GIVEN but no density was given"
@@ -1432,6 +1461,12 @@ contains
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg)
+         end if
+      else if (allocated(hsap)) then
+         if (collective) then
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap)
+         else
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap)
          end if
       else
          if (collective) then

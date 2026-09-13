@@ -236,12 +236,18 @@ contains
    ! basis must already be on the device. `dguess` is (nao, nao, nspin) in
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
-   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess, comm)
+   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess, comm, hguess)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: opts
       type(trc_scf_result_t), intent(out) :: res
       real(dp), intent(in), optional :: dguess(:, :, :)
+      !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
+      !! how SAP gets in (see trc_sap), which cannot come through `dguess`
+      !! because what it produces is a one-electron operator and not a
+      !! density. Ignored if `dguess` is also given: a density the caller
+      !! already has is more specific than a matrix to make one from.
+      real(dp), intent(in), optional :: hguess(:, :)
       !! Ranks. Every rank runs the same iteration on the same matrices;
       !! the quartets are split across them and the Fock matrix summed
       !! back, so the density stays identical everywhere. Bind devices
@@ -358,6 +364,10 @@ contains
       ! --- the guess, on the host, then everything goes up -------------------
       if (present(dguess)) then
          res%dmat = dguess
+      else if (present(hguess)) then
+         do s = 1, nspin
+            call guess_from(hguess, nocc(s))
+         end do
       else if (opts%guess == "core") then
          do s = 1, nspin
             call guess_from(hcore, nocc(s))
