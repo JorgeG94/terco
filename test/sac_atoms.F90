@@ -62,18 +62,24 @@ program sac_atoms
    print '(a,f18.12,a,i0,a,f18.12,a,i0,a)', "sac_atoms: neutral  sad E = ", r_sad%energy, &
       " (", r_sad%iterations, ")   sac E = ", r_sac%energy, " (", r_sac%iterations, ")"
    ! SAC on a neutral molecule is SAD, and `build_atomic` chooses the Hund
-   ! atom per atom precisely so that it is EXACTLY SAD rather than something
-   ! close to it. So the densities themselves are compared, not the energies:
-   ! an energy agreeing to 1e-8 would have hidden the earlier version, which
-   ! spin-restricted every atom and cost an iteration.
-   if (maxval(abs(d_sac - d_sad)) > 1.0e-14_dp) then
+   ! atom per atom precisely so that it is the SAME atomic SCF rather than a
+   ! similar one. So the densities themselves are compared, not the energies:
+   ! an energy agreeing to 1e-8 would have hidden the first version of this,
+   ! which spin-restricted every atom and moved the density by 1e-2.
+   !
+   ! Not bit-identity, though, even though the two calls run the same SCF on
+   ! the same input. Under the OpenMP port the reductions inside it are
+   ! threaded and their order is not fixed, so two runs differ at 4e-14 --
+   ! which is the SCF's own reproducibility and nothing to do with SAC. The
+   ! tolerance is set by that, and is still ten orders below the difference
+   ! it was written to catch.
+   if (maxval(abs(d_sac - d_sad)) > 1.0e-12_dp) then
       print '(a,es12.4)', "sac_atoms: neutral SAC is not SAD, max|dD| = ", &
          maxval(abs(d_sac - d_sad))
       ok = .false.
    end if
    if (.not. r_sac%converged) ok = .false.
    if (abs(r_sac%energy - r_sad%energy) > 1.0e-8_dp) ok = .false.
-   if (r_sac%iterations /= r_sad%iterations) ok = .false.
    deallocate (d_sad, d_sac)
 
    ! --- 2. the dication, where the two guesses differ ----------------------
@@ -100,12 +106,14 @@ program sac_atoms
       " (", r_sad%iterations, ")   sac E = ", r_sac%energy, " (", r_sac%iterations, ")"
    if (.not. r_sac%converged) ok = .false.
    if (r_sad%converged .and. abs(r_sac%energy - r_sad%energy) > 1.0e-8_dp) ok = .false.
-   ! The claim SAC is here to make. Not "fewer iterations on average" -- one
-   ! molecule cannot show that -- but that starting from the right electron
-   ! count does not cost iterations, which is the weakest thing worth
-   ! asserting and the only one a single case supports.
-   if (r_sad%converged .and. r_sac%iterations > r_sad%iterations) then
-      print '(a)', "sac_atoms: SAC took longer than SAD on the dication"
+   ! The iteration counts are PRINTED and not asserted against each other.
+   ! SAC beat SAD here by one on the GPU and lost by one under the threaded
+   ! host build, from the same code -- which is the answer to whether one
+   ! molecule can support an iteration-count claim. What is asserted is only
+   ! that the guess is not catastrophic, with the same +2 slack sad_atoms
+   ! allows itself against GWH.
+   if (r_sad%converged .and. r_sac%iterations > r_sad%iterations + 2) then
+      print '(a)', "sac_atoms: SAC took far longer than SAD on the dication"
       ok = .false.
    end if
 
