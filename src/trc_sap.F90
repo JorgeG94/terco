@@ -35,7 +35,7 @@ module trc_sap
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
-   use trc_sad, only: trc_sad_build, trc_sac_build, trc_atom_ranges
+   use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
    use trc_dft_radial, only: treutler_ahlrichs_radial
    use trc_lebedev, only: lebedev_grid, lebedev_order_at_least
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -238,9 +238,9 @@ contains
    ! H_sap = T + V_ne + sum_A Vscr_A.
    !
    ! `tmat` and `vmat` are the analytic one-electron matrices the caller
-   ! already has from trc_1e. `nelec` present selects SAC atoms -- charge
+   ! already has from trc_1e. `nelec` present selects SADQ atoms -- charge
    ! spread over the atoms -- rather than SAD's neutral ones, which is worth
-   ! having for an ion for the same reason it is worth having in SAC.
+   ! having for an ion for the same reason it is worth having in SADQ.
    !
    subroutine trc_sap_build(b, tmat, vmat, hsap, error, verbose, nelec, level)
       type(trc_basis_t), intent(in) :: b
@@ -248,7 +248,7 @@ contains
       real(dp), intent(out) :: hsap(b%nao, b%nao)
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: verbose
-      integer, intent(in), optional :: nelec   !! molecular electron count, for SAC atoms
+      integer, intent(in), optional :: nelec   !! molecular electron count, for SADQ atoms
       integer, intent(in), optional :: level   !! quadrature level, as build_dft_grid spells it
 
       real(dp), allocatable :: dguess(:, :)
@@ -274,7 +274,7 @@ contains
 
       ! --- the free atoms, and their ranges -------------------------------
       if (present(nelec)) then
-         call trc_sac_build(b, nelec, dguess, error, verbose=verbose)
+         call trc_sadq_build(b, nelec, dguess, error, verbose=verbose)
       else
          call trc_sad_build(b, dguess, error, verbose=verbose)
       end if
