@@ -42,10 +42,12 @@ module trc_sap
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: shell_collocate, NCART_MAX
    use pic_blas_interfaces, only: pic_gemm
+   use trc_api, only: trc_pairlist_t, trc_df_3c
+   use trc_basis_json, only: trc_fitted_shell_from_json
    implicit none
    private
 
-   public :: trc_sap_build, trc_sap_screen_table
+   public :: trc_sap_build, trc_sap_grid, trc_sap_screen_table, SAP_BASIS_DEFAULT
 
    !> Radial nodes per element for the screening table. The potential is
    !> smooth, and the M4 mapping puts the nodes where it bends, so this is
@@ -60,6 +62,28 @@ module trc_sap
    integer, parameter :: SAP_NANG = 26
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
+
+   !> The fitted potential set, unless a caller names another. Lehtola's
+   !> fully numerical HelFEM fit; the GRASP sets are relativistic and buy
+   !> nothing below the heavy elements.
+   character(len=*), parameter :: SAP_BASIS_DEFAULT = "basis_sets/sap_helfem_large.json"
+
+   !> Device bytes the three-centre tensor may take at once.
+   !>
+   !> `trc_df_3c` hands back the whole (nao, nao, naux) tensor and naux is
+   !> one function per atom, so asking for every atom at once wants
+   !> nao^2 * natm doubles -- 17 GB on a 150-molecule water cluster in
+   !> cc-pVDZ. The sum over atoms does not care how it is grouped, so it is
+   !> grouped to fit in this.
+   !>
+   !> It is a MEMORY budget and nothing more. I expected the pass count to
+   !> matter -- each pass looked like a full traversal of the shell-pair
+   !> list -- and it does not: the silica slice goes from sixteen passes to
+   !> one and the guess takes 21.78 s against 21.77. The three-centre
+   !> integrals are the whole cost and how they are grouped is free. Kept as
+   !> a budget anyway, because the tensor still has to fit, and set well
+   !> under a card since the SCF's resident arrays are already on it.
+   integer(kind=8), parameter :: SAP_TENSOR_BYTES = 2147483648_8
 
    !> Points per quadrature batch for the assembly.
    integer, parameter :: SAP_BATCH = 128
@@ -235,6 +259,169 @@ contains
    end function interp
 
    !
+   ! The screening potential from FITTED atomic charge distributions.
+   !
+   ! Lehtola published the SAP potentials as Gaussian fits as well as
+   ! tables, and the fitted form makes this a three-centre contraction
+   ! instead of a quadrature:
+   !
+   !   Vscr(mu,nu) = sum_A (mu nu | rho_A),   rho_A = sum_p c_p g_p
+   !
+   ! with one contracted s shell per atom, so naux is the atom count. That
+   ! is the same integral density fitting already does, on the device, and
+   ! it replaces a host-side grid assembly that cost 80 s on a 123-atom
+   ! slab -- see the grid path below, which this supersedes and which stays
+   ! only as the independent check that this agrees with it.
+   !
+   ! THE NORMALISATION, WHICH IS THE WHOLE TRAP.
+   !
+   ! The published coefficients are CHARGES over unit-normalised charge
+   ! distributions: they sum to -Z for every element, which is what
+   ! trc_fitted_shell_from_json checks. Two things have to happen to them.
+   !
+   ! The sign. A distribution carrying -Z of charge is the electrons, and
+   ! `(mu nu | P)` is written for a POSITIVE unit charge -- it goes to
+   ! S_mu_nu / R at long range. An electron in the field of Z electrons has
+   ! potential energy +Z/R, so the coefficient handed to the integral is
+   ! -c_published, and the far-field limit is +Z/R rather than -Z/R.
+   !
+   ! The normalisation. `basis_build` multiplies by common_fac_sp(l) and
+   ! nothing else, so the function the engine integrates is
+   ! (sh_c / common_fac_sp) exp(-alpha r^2). A unit charge distribution is
+   ! (alpha/pi)^(3/2) exp(-alpha r^2). So the coefficient passed in is
+   ! -c_published * (alpha/pi)^(3/2), and NOT the (2 alpha/pi)^(3/4) that a
+   ! wavefunction would want. Using the wavefunction normalisation here --
+   ! which is what every other basis this code reads is given -- makes the
+   ! potential wrong by a smooth, exponent-dependent factor that converges
+   ! to the same energy a few iterations later and announces nothing.
+   !
+   subroutine trc_sap_build(b, pl, tmat, vmat, hsap, error, verbose, path)
+      type(trc_basis_t),    intent(in) :: b
+      type(trc_pairlist_t), intent(in) :: pl
+      !> The analytic one-electron matrices. T and V_ne are exact and
+      !> already built; only the screening potential is an integral over a
+      !> fitted distribution, so only it is computed here.
+      real(dp), intent(in)  :: tmat(b%nao, b%nao), vmat(b%nao, b%nao)
+      real(dp), intent(out) :: hsap(b%nao, b%nao)
+      type(error_t), intent(inout) :: error
+      logical, intent(in), optional :: verbose
+      character(len=*), intent(in), optional :: path
+
+      type(trc_basis_t) :: aux
+      real(dp), allocatable :: e(:), c(:), tens(:, :, :)
+      real(dp), allocatable :: a_e(:, :), a_c(:, :), a_r(:, :)
+      integer,  allocatable :: a_l(:), a_np(:)
+      character(len=:), allocatable :: bpath
+      integer :: ia, i, j, k, np, nmax, n0, n1, nch, ish, nao, naux, chunk
+      real(dp) :: cfac, acc
+      logical :: talk
+
+      talk = .false.
+      if (present(verbose)) talk = verbose
+      nao = b%nao
+      bpath = SAP_BASIS_DEFAULT
+      block
+         character(len=512) :: pe
+         pe = ' '
+         call get_environment_variable('TRC_SAP_BASIS', pe)
+         if (len_trim(pe) > 0) bpath = trim(pe)
+      end block
+      if (present(path)) bpath = path
+      hsap = 0.0_dp
+      !$acc enter data copyin(hsap)
+
+      ! Widest fit in the molecule, so one rectangular block holds any chunk.
+      nmax = 0
+      do ia = 1, b%natm
+         call trc_fitted_shell_from_json(bpath, nint(b%at_z(ia)), e, c, error)
+         if (error%has_error()) return
+         nmax = max(nmax, size(e))
+      end do
+
+      !
+      ! WHAT THE BUILDER DOES TO A COEFFICIENT, ASKED RATHER THAN ASSUMED.
+      !
+      ! `basis_build` folds common_fac_sp(l) in, so the number the engine
+      ! integrates against is not the number passed in. Rather than restate
+      ! that constant here -- a second copy of a fact that lives in trc_api,
+      ! which would go stale silently -- one probe shell is built with a
+      ! coefficient of 1 and the factor is read back off it. trc_decontract
+      ! derives its own scaling from the built basis for the same reason.
+      !
+      ! Worth a probe because getting it wrong is invisible: the first
+      ! version of this divided by the factor instead of multiplying, the
+      ! potential came out a uniform 2*sqrt(pi) = 3.54 too weak, and the SCF
+      ! converged to the same energy a few iterations later saying nothing
+      ! about it. Only comparing against the grid construction found it.
+      !
+      block
+         real(dp) :: p_e(1, 1), p_c(1, 1), p_r(3, 1), p_z(1)
+         integer :: p_l(1), p_np(1)
+         type(trc_basis_t) :: probe
+         p_l = 0; p_np = 1; p_e = 1.0_dp; p_c = 1.0_dp; p_r = 0.0_dp; p_z = 1.0_dp
+         call probe%build(1, p_l, p_np, p_e, p_c, p_r, 1, p_z, p_r, 1)
+         cfac = probe%sh_c(1, 1)
+         call probe%release()
+      end block
+      if (cfac == 0.0_dp) then
+         call error%set(ERROR_VALIDATION, "trc_sap: the basis builder zeroed a unit coefficient")
+         return
+      end if
+      if (talk) print '(a,a,a,i0,a)', "  sap: fitted potentials from ", trim(bpath), &
+         ", up to ", nmax, " primitives per atom"
+
+      chunk = int(max(1_8, SAP_TENSOR_BYTES/(int(nao, 8)*int(nao, 8)*8_8)))
+      chunk = min(chunk, b%natm)
+      if (talk) print '(a,i0,a,i0,a)', "  sap: ", (b%natm + chunk - 1)/chunk, &
+         " three-centre pass(es), ", chunk, " atoms each"
+      do n0 = 1, b%natm, chunk
+         n1 = min(n0 + chunk - 1, b%natm)
+         nch = n1 - n0 + 1
+         allocate (a_l(nch), a_np(nch), a_e(nmax, nch), a_c(nmax, nch), a_r(3, nch))
+         a_l = 0; a_e = 0.0_dp; a_c = 0.0_dp
+         do ish = 1, nch
+            ia = n0 + ish - 1
+            call trc_fitted_shell_from_json(bpath, nint(b%at_z(ia)), e, c, error)
+            if (error%has_error()) then
+               deallocate (a_l, a_np, a_e, a_c, a_r); return
+            end if
+            np = size(e)
+            a_np(ish) = np
+            a_r(:, ish) = b%at_r(:, ia)
+            do k = 1, np
+               a_e(k, ish) = e(k)
+               a_c(k, ish) = -c(k)*(e(k)/PI)**1.5_dp/cfac
+            end do
+         end do
+         ! One nucleus per aux shell is a fiction the builder never looks at;
+         ! the aux centres are what matter and they are the real ones.
+         call aux%build(nch, a_l, a_np, a_e, a_c, a_r, nch, b%at_z(n0:n1), a_r, nmax)
+         call aux%to_device()
+         allocate (tens(b%nao, b%nao, aux%nao))
+         !$acc enter data create(tens)
+         call trc_df_3c(b, pl, aux, tens)
+         ! Reduced WHERE IT WAS COMPUTED. The tensor is nao^2 per atom and
+         ! only its sum over atoms is ever wanted, so bringing it down to add
+         ! it up moved gigabytes across the bus to produce a matrix of a few
+         ! megabytes. Only hsap crosses now, once, at the end.
+         naux = aux%nao
+         do concurrent(j=1:nao, i=1:nao) local(acc, k)
+            acc = 0.0_dp
+            do k = 1, naux
+               acc = acc + tens(i, j, k)
+            end do
+            hsap(i, j) = hsap(i, j) + acc
+         end do
+         !$acc exit data delete(tens)
+         deallocate (tens, a_l, a_np, a_e, a_c, a_r)
+         call aux%release()
+      end do
+      !$acc update self(hsap)
+      !$acc exit data delete(hsap)
+      hsap = hsap + tmat + vmat
+   end subroutine trc_sap_build
+
+   !
    ! H_sap = T + V_ne + sum_A Vscr_A.
    !
    ! `tmat` and `vmat` are the analytic one-electron matrices the caller
@@ -242,7 +429,7 @@ contains
    ! spread over the atoms -- rather than SAD's neutral ones, which is worth
    ! having for an ion for the same reason it is worth having in SADQ.
    !
-   subroutine trc_sap_build(b, tmat, vmat, hsap, error, verbose, nelec, level)
+   subroutine trc_sap_grid(b, tmat, vmat, hsap, error, verbose, nelec, level)
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: tmat(b%nao, b%nao), vmat(b%nao, b%nao)
       real(dp), intent(out) :: hsap(b%nao, b%nao)
@@ -373,7 +560,7 @@ contains
             real(c1 - c0, dp)/real(crate, dp), ' s'
          c0 = c1
       end subroutine stage
-   end subroutine trc_sap_build
+   end subroutine trc_sap_grid
 
    !
    ! H_munu += sum_g wv(g) chi_mu(g) chi_nu(g).
