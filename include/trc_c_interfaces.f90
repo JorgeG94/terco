@@ -54,7 +54,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_ERR_NOCONV      = 4   !! the SCF ran out of iterations
    integer(c_int), parameter :: TRC_ERR_STATE = 5   !! called before what it needs was set
    integer(c_int), parameter :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
-                                TRC_GUESS_GIVEN = 3, TRC_GUESS_SAC = 4, &
+                                TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
                                 TRC_GUESS_SAP = 5
 
    interface

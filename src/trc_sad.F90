@@ -1,18 +1,18 @@
-!! Guesses built from free-atom calculations: SAD, and SAC for ions
+!! Guesses built from free-atom calculations: SAD, and SADQ for ions
 module trc_sad
    !! Two entry points over the same machinery.
    !!
    !! `trc_sad_build` is SAD, the superposition of atomic densities, and is
    !! described below.
    !!
-   !! `trc_sac_build` is SAC, the same construction with the atoms CHARGED:
+   !! `trc_sadq_build` is SADQ, the same construction with the atoms CHARGED:
    !! the molecule's charge is spread over its atoms and each one's density
    !! comes from a free-atom SCF at its own fractional electron count. SAD
    !! hands a cation the neutral atoms' density and lets the first iteration
    !! absorb the difference, which for a highly charged system is a long way
    !! to come back from. On a neutral molecule the two agree by construction.
    !!
-   !! SAD's own description, which SAC inherits except for the occupations:
+   !! SAD's own description, which SADQ inherits except for the occupations:
    !!
    !! One restricted, spin-averaged Hartree-Fock run per element in that
    !! element's own shells, with fractional occupations so the atom is
@@ -27,14 +27,15 @@ module trc_sad
    !! produces; a basis that interleaves atoms is refused.
    !!
    !! Charged molecules get the neutral atoms' density unscaled, as PySCF
-   !! does; the first SCF iteration absorbs the difference.
+   !! does; the first SCF iteration absorbs the difference. That sentence is
+   !! why SADQ exists -- it is the one thing SAD will not do for an ion.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
-   public :: trc_sad_build, trc_sac_build, trc_atom_ranges
+   public :: trc_sad_build, trc_sadq_build, trc_atom_ranges
 
 contains
 
@@ -47,8 +48,8 @@ contains
       call build_atomic(b, dguess, error, verbose)
    end subroutine trc_sad_build
 
-   subroutine trc_sac_build(b, nelec, dguess, error, verbose, qatom)
-      !! SAC: SAD with the atoms carrying the molecule's charge.
+   subroutine trc_sadq_build(b, nelec, dguess, error, verbose, qatom)
+      !! SADQ: SAD with the atoms carrying the molecule's charge.
       !!
       !! `nelec` is the MOLECULE's electron count, so the charge it has to
       !! place is sum(Z) - nelec. Without `qatom` that charge goes onto the
@@ -80,7 +81,7 @@ contains
       allocate (nel(b%natm))
       if (present(qatom)) then
          if (size(qatom) /= b%natm) then
-            call error%set(ERROR_VALIDATION, "trc_sac: qatom has "//trim(itoa(size(qatom)))// &
+            call error%set(ERROR_VALIDATION, "trc_sadq: qatom has "//trim(itoa(size(qatom)))// &
                            " entries for "//trim(itoa(b%natm))//" atoms")
             return
          end if
@@ -92,18 +93,18 @@ contains
       end if
       do ia = 1, b%natm
          if (nel(ia) < 0.0_dp) then
-            call error%set(ERROR_VALIDATION, "trc_sac: atom "//trim(itoa(ia))// &
+            call error%set(ERROR_VALIDATION, "trc_sadq: atom "//trim(itoa(ia))// &
                            " is left with a negative electron count")
             return
          end if
       end do
       call build_atomic(b, dguess, error, verbose, nel=nel)
-   end subroutine trc_sac_build
+   end subroutine trc_sadq_build
 
    !
-   ! SAD and SAC differ only in what each free atom is asked to hold, so they
+   ! SAD and SADQ differ only in what each free atom is asked to hold, so they
    ! are one routine. `nel` absent is SAD: the neutral atom, unrestricted,
-   ! Hund's rule, spread over the degenerate frontier. `nel` present is SAC:
+   ! Hund's rule, spread over the degenerate frontier. `nel` present is SADQ:
    ! that many electrons on that atom, restricted with fractional
    ! occupations, which is what a non-integer count needs.
    !
@@ -126,11 +127,11 @@ contains
       type(trc_scf_result_t) :: res
       integer :: ia, ish, ncached, k, a0, a1, z, nz, nel_i, na, nb
       real(dp) :: want
-      logical :: talk, sac, hund
+      logical :: talk, sadq, hund
 
       talk = .false.
       if (present(verbose)) talk = verbose
-      sac = present(nel)
+      sadq = present(nel)
       allocate (dguess(b%nao, b%nao))
       dguess = 0.0_dp
 
@@ -154,7 +155,7 @@ contains
          a1 = b%sh_ao(last(ia)) + ncart(b%sh_l(last(ia))) - 1
          nz = a1 - a0 + 1
          want = real(z, dp)
-         if (sac) want = nel(ia)
+         if (sadq) want = nel(ia)
          ! The electron count joins the cache key: two atoms of one element
          ! share an SCF only if they are asked for the same charge, which
          ! under the proportional split they always are.
@@ -182,7 +183,7 @@ contains
             ! 0.124 Ha, and starting water from the restricted atoms cost an
             ! extra SCF iteration. Only a fractional count needs the
             ! restricted fractional path, and it is the only one that has
-            ! it. So SAC on a neutral molecule is SAD exactly, rather than
+            ! it. So SADQ on a neutral molecule is SAD exactly, rather than
             ! approximately, and differs only where it has something to say.
             !
             hund = abs(want - real(z, dp)) < 1.0e-12_dp
@@ -197,15 +198,15 @@ contains
             end if
             call trc_scf_run(ab, na, nb, opts, res)
             if (.not. res%converged) then
-               call error%set(ERROR_VALIDATION, merge("trc_sac", "trc_sad", sac)// &
+               call error%set(ERROR_VALIDATION, merge("trc_sadq", "trc_sad ", sadq)// &
                               ": the atomic SCF for Z = "//trim(itoa(z))//" did not converge: "// &
                               trim(res%message))
                call ab%release()
                return
             end if
             if (talk) then
-               if (sac .and. .not. hund) then
-                  print '(a,i0,a,i0,a,f10.6,a,f16.8,a,i0,a)', "  sac: Z = ", z, " (", nz, &
+               if (sadq .and. .not. hund) then
+                  print '(a,i0,a,i0,a,f10.6,a,f16.8,a,i0,a)', "  sadq: Z = ", z, " (", nz, &
                      " functions) n = ", want, " E = ", res%energy, " in ", res%iterations, " iterations"
                else
                   print '(a,i0,a,i0,a,f16.8,a,i0,a)', "  sad: Z = ", z, " (", nz, " functions) E = ", &
