@@ -25,7 +25,7 @@ module trc_basis_json
    implicit none
    private
 
-   public :: trc_basis_from_json
+   public :: trc_basis_from_json, trc_fitted_shell_from_json
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
 
@@ -114,19 +114,74 @@ contains
       call b%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, z, at_r, maxnp)
    end subroutine trc_basis_from_json
 
-   subroutine read_element(json, path, z, el, error)
+   !
+   ! One element's fitted-potential shell, exactly as the file lists it.
+   !
+   ! For the SAP sets on the BSE (sap_helfem_large and friends, role
+   ! "guess"). Their coefficients are the CHARGES of a fitted distribution,
+   ! not wavefunction coefficients: they sum to -Z for every element, which
+   ! is the check that says so and the one this routine makes. Normalising
+   ! them to unit overlap, which is what every other basis in this file
+   ! wants, would be wrong in a way that leaves the numbers looking sane.
+   !
+   subroutine trc_fitted_shell_from_json(path, z, e, c, error)
+      character(len=*), intent(in) :: path
+      integer, intent(in) :: z
+      real(dp), allocatable, intent(out) :: e(:), c(:)
+      type(error_t), intent(inout) :: error
+
+      type(json_file) :: json
+      type(element_t) :: el
+      real(dp) :: qsum
+
+      call json%initialize()
+      call json%load_file(filename=trim(path))
+      if (json%failed()) then
+         call error%set(ERROR_VALIDATION, "trc_basis_json: cannot read "//trim(path))
+         call json%destroy(); return
+      end if
+      call read_element(json, path, z, el, error, raw=.true.)
+      call json%destroy()
+      if (error%has_error()) return
+      if (el%nshell /= 1 .or. el%sh(1)%l /= 0) then
+         call error%set(ERROR_VALIDATION, "trc_basis_json: "//trim(path)//" gives element "// &
+                        itoa(z)//" more than one shell, or a shell that is not s; a fitted "// &
+                        "potential is one spherical charge distribution per atom")
+         return
+      end if
+      e = el%sh(1)%e
+      c = el%sh(1)%c
+      ! The coefficients are charges and must account for every electron. A
+      ! set that fails this is not a fitted potential, whatever it is called,
+      ! and going on would give a silently weak or wrong-signed guess.
+      qsum = sum(c)
+      if (abs(qsum + real(z, dp)) > 1.0e-6_dp*max(real(z, dp), 1.0_dp)) then
+         call error%set(ERROR_VALIDATION, "trc_basis_json: the fitted charges for element "// &
+                        itoa(z)//" in "//trim(path)//" sum to "//rtoa(qsum)//", not -"//itoa(z))
+         return
+      end if
+   end subroutine trc_fitted_shell_from_json
+
+   subroutine read_element(json, path, z, el, error, raw)
       type(json_file), intent(inout) :: json
       character(len=*), intent(in) :: path
       integer, intent(in) :: z
       type(element_t), intent(out) :: el
       type(error_t), intent(inout) :: error
+      !> Skip the wavefunction normalisation. For a set whose coefficients
+      !> are not wavefunction coefficients -- a fitted potential lists
+      !> CHARGES, and normalising those to unit overlap would be a category
+      !> error that still produces plausible numbers.
+      logical, intent(in), optional :: raw
 
       character(len=:), allocatable :: key, sp, text
       integer, allocatable :: lam(:)
       integer :: nsh_json, ish, ncol, icol, ip, np, k, ios, nsh
       real(dp) :: v
-      logical :: found
+      logical :: found, skip_norm
 
+      skip_norm = .false.
+      if (present(raw)) skip_norm = raw
       el%z = z
       key = "elements."//itoa(z)
       call json%info(key//".electron_shells", found=found, n_children=nsh_json)
@@ -192,7 +247,7 @@ contains
                end if
                el%sh(k)%c(ip) = v
             end do
-            call normalise(el%sh(k)%l, el%sh(k)%np, el%sh(k)%e, el%sh(k)%c)
+            if (.not. skip_norm) call normalise(el%sh(k)%l, el%sh(k)%np, el%sh(k)%e, el%sh(k)%c)
          end do
       end do
    end subroutine read_element
@@ -239,6 +294,12 @@ contains
          c(i) = s*c(i)*sqrt(2.0_dp**l/(PI**1.5_dp*dfac)*(2.0_dp*e(i))**(real(l, dp) + 1.5_dp))
       end do
    end subroutine normalise
+
+   pure function rtoa(x) result(t)
+      real(dp), intent(in) :: x
+      character(len=24) :: t
+      write (t, '(f0.6)') x
+   end function rtoa
 
    pure function itoa(i) result(t)
       integer, intent(in) :: i

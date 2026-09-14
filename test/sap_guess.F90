@@ -85,7 +85,7 @@ program sap_guess
 
    ! --- 2. SAP as a guess, against GWH and SAD ----------------------------
    allocate (hsap(bas%nao, bas%nao))
-   call trc_sap_build(bas, tmat, vmat, hsap, err, verbose=.true.)
+   call trc_sap_build(bas, pl, tmat, vmat, hsap, err, verbose=.true.)
    if (err%has_error()) then
       print '(a)', "sap_guess: "//err%get_message(); stop 1
    end if

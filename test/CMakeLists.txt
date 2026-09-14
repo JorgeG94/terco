@@ -109,6 +109,7 @@ set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CM
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
 terco_add_check(sadq_atoms sadq_atoms.F90 NEEDS_BASIS)
 terco_add_check(sap_guess sap_guess.F90 NEEDS_BASIS)
+terco_add_check(sapcmp sapcmp.F90 NEEDS_BASIS)
 
 # The public API end to end: overlap, kinetic, nuclear attraction, the two- and
 # three-centre Coulomb integrals, and the multipoles, all against libfint.

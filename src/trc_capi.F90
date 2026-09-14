@@ -1430,12 +1430,8 @@ contains
             call trc_1e(cx%bb%b, pl, s1, t1, v1)
             !$acc update self(s1, t1, v1)
             !$acc exit data delete(s1, t1, v1)
+            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap, err, verbose=cx%opts%verbose)
             call pl%release()
-            if (cx%charge /= 0) then
-               call trc_sap_build(cx%bb%b, t1, v1, hsap, err, verbose=cx%opts%verbose, nelec=nelec)
-            else
-               call trc_sap_build(cx%bb%b, t1, v1, hsap, err, verbose=cx%opts%verbose)
-            end if
             deallocate (s1, t1, v1)
          end block
          if (err%has_error()) then
