@@ -51,9 +51,13 @@ function(terco_add_check name source)
   target_include_directories(${name} PRIVATE ${CMAKE_BINARY_DIR}/modules)
   add_test(NAME terco/${name} COMMAND ${name} ${ARG_ARGS})
   # The oracles are read by relative path, so the tests run from test/.
+  # TERCO_CART_ORDER is not needed by the Fortran side (it already knows its
+  # own TRC_CART_ORDER at compile time), but is set here anyway so every
+  # test's environment is uniform with the Python (*_ref.py) ones below,
+  # which DO need it -- ctest is the one place both kinds of test share.
   set_tests_properties(
     terco/${name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endfunction()
 
 #
@@ -179,21 +183,21 @@ if(Python3_FOUND)
     set_tests_properties(
       terco/check_mult_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_mult)
+                 terco/check_mult ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
     # Basis function values and gradients, elementwise against eval_ao.
     add_test(NAME terco/check_ao_vs_pyscf
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ao_ref.py)
     set_tests_properties(
       terco/check_ao_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_ao)
+                 terco/check_ao ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
     # E_xc and V_xc on the same grid and density, six functionals.
     add_test(NAME terco/check_xc_energy_vs_pyscf
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/xc_energy_ref.py)
     set_tests_properties(
       terco/check_xc_energy_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_xc_energy)
+                 terco/check_xc_energy ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
     # The rotated-axis algebra itself, in Python and in float64, for every
     # ordered s/p class against int2e_cart, degenerate frames included. It
     # needs no build, so it is the first thing to break when the vendored

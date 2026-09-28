@@ -15,6 +15,7 @@ program check_api
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_df_3c, &
                       trc_multipoles, TRC_NMULT
+   use trc_cart_perm, only: cart_perm_l2b
    implicit none
 
    integer, parameter :: ATM_SLOTS = 6, BAS_SLOTS = 8
@@ -168,10 +169,15 @@ contains
          allocate (ref(n))
          read (u, *) (ref(m), m=1, n)
          k = 0
+         ! a, c walk `ref` in the order it was WRITTEN -- libfint's own,
+         ! LEXICOGRAPHIC -- so each is a lexicographic local offset;
+         ! cart_perm_l2b maps it onto this build's own local offset before
+         ! it becomes part of an index into smat/tmat/vmat, which come from
+         ! THIS build's trc_1e and so are already build-order.
          do c = 0, dj - 1
-            nu = off(j + 1) + c
+            nu = off(j + 1) + cart_perm_l2b(bas(BAS_SLOTS*j + ANG_OF), c)
             do a = 0, di - 1
-               mu = off(i + 1) + a
+               mu = off(i + 1) + cart_perm_l2b(bas(BAS_SLOTS*i + ANG_OF), a)
                k = k + 1
                select case (trim(kind))
                case ('OVLP'); d = abs(smat(mu, nu) - ref(k)); m = 1
@@ -247,12 +253,13 @@ contains
          allocate (ref(n))
          read (u, *) (ref(m), m=1, n)
          idx = 0
+         ! e, c, a: same lexicographic-local-offset story as check_1e_system.
          do e = 0, dk - 1
-            pp = off(kk + 1) + e
+            pp = off(kk + 1) + cart_perm_l2b(bas(BAS_SLOTS*kk + ANG_OF), e)
             do c = 0, dj - 1
-               nu = off(j + 1) + c
+               nu = off(j + 1) + cart_perm_l2b(bas(BAS_SLOTS*j + ANG_OF), c)
                do a = 0, di - 1
-                  mu = off(i + 1) + a
+                  mu = off(i + 1) + cart_perm_l2b(bas(BAS_SLOTS*i + ANG_OF), a)
                   idx = idx + 1
                   d = abs(tens(mu, nu, pp) - ref(idx))
                   tol = 1.0e-12_dp + 1.0e-11_dp*abs(ref(idx))

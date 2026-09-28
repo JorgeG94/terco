@@ -1,13 +1,16 @@
 !
 ! Where the XC time goes, on a real molecule in a real basis.
 !
-!   bench_xc <xyz> [level] [reps] [max_pts]
+!   bench_xc <xyz> [level] [reps] [max_pts] [basis.json]
 !
-! Builds 6-31G on the molecule, a grid at the given level with the default
-! pruning, a fixed positive density, and times `trc_xc_rks` for PBE:
-! the batching, then `reps` evaluations split into the point kernel
-! (collocation, density, functional) and the pair kernel (V_xc). A timing
-! is not a pass, so this is built and not registered as a test.
+! Builds 6-31G on the molecule by default, or the MolSSI BSE basis named by
+! the optional 5th argument (e.g. basis_sets/cc-pvdz.json on sih4.xyz, to put
+! a d shell through `shell_collocate` -- 6-31G alone has none, s/p only) --
+! a grid at the given level with the default pruning, a fixed positive
+! density, and times `trc_xc_rks` for PBE: the batching, then `reps`
+! evaluations split into the point kernel (collocation, density, functional)
+! and the pair kernel (V_xc). A timing is not a pass, so this is built and
+! not registered as a test.
 !
 program bench_xc
    use trc_boys, only: dp
@@ -18,9 +21,10 @@ program bench_xc
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks
    use trc_test_basis, only: read_xyz, build_631g
+   use trc_basis_json, only: trc_basis_from_json
    implicit none
 
-   character(len=256) :: xyzfile, arg
+   character(len=256) :: xyzfile, arg, bas_json
    integer :: level, reps, max_pts, nat, nsh, maxnp, nao, i, j, r
    integer, allocatable :: z(:), sh_l(:), sh_np(:)
    real(dp), allocatable :: at_r(:, :), zat(:), sh_e(:, :), sh_c(:, :), sh_r(:, :)
@@ -38,9 +42,9 @@ program bench_xc
    integer(kind=8) :: lcg
    logical :: ok
 
-   level = 3; reps = 5; max_pts = 512
+   level = 3; reps = 5; max_pts = 512; bas_json = ''
    if (command_argument_count() < 1) then
-      print '(a)', 'usage: bench_xc <xyz> [level] [reps] [max_pts]'
+      print '(a)', 'usage: bench_xc <xyz> [level] [reps] [max_pts] [basis.json]'
       stop 1
    end if
    call get_command_argument(1, xyzfile)
@@ -53,11 +57,19 @@ program bench_xc
    if (command_argument_count() >= 4) then
       call get_command_argument(4, arg); read (arg, *) max_pts
    end if
+   if (command_argument_count() >= 5) call get_command_argument(5, bas_json)
 
    call read_xyz(trim(xyzfile), nat, z, at_r)
    allocate (zat(nat)); zat = real(z, dp)
-   call build_631g(nat, z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
-   call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
+   if (len_trim(bas_json) > 0) then
+      call trc_basis_from_json(trim(bas_json), nat, z, at_r, bas, err)
+      if (err%has_error()) then
+         print '(a)', 'bench_xc: '//err%get_message(); stop 1
+      end if
+   else
+      call build_631g(nat, z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
+      call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
+   end if
    call bas%to_device()
    nao = bas%nao
 

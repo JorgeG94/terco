@@ -12,12 +12,25 @@
 !
 ! Written to `xc_probe.bin`: the grid, the density, and for each
 ! functional E_xc, the electron count and V_xc. `xc_energy_ref.py` feeds
-! the same grid and density to pyscf's numint and compares.
+! the same grid and density to pyscf's numint and compares -- permuting
+! both ways at the TRC_CART_ORDER boundary, since `dmat`/`dm2`/`vxc`/`vx2`
+! below are all in THIS BUILD's own AO order, and pyscf only ever speaks
+! lexicographic.
 !
 ! The density is C C^T for a fixed pseudo-random C, so it is positive
 ! semidefinite and rho >= 0 everywhere without an SCF. A symmetric matrix
 ! that is not PSD would put negative densities into the functionals, where
 ! the two codes' thresholds are entitled to differ.
+!
+! C ITSELF IS BUILT IN A FIXED LEXICOGRAPHIC ORDER, THEN PERMUTED (c_lex ->
+! c, cb_lex -> cb, below), not filled directly in raw AO-index order. Filled
+! directly, a d shell's six components draw from the PRNG stream in a
+! DIFFERENT sequence between a lexicographic and a gamess build, so the two
+! builds would integrate two different physical densities and their E_xc/N
+! would disagree by quadrature error on top of nothing -- ~1e-1, not the
+! ~1e-14 an AO relabelling alone can ever move a number by. The permutation
+! is what makes this test compare the SAME physics both builds are asked to
+! reproduce, the same way the SiH4 RHF energy check does.
 !
 ! Two internal checks need no reference:
 !
@@ -37,6 +50,7 @@ program check_xc_energy
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks
+   use trc_cart_perm, only: build_ao_perm
    implicit none
 
    integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 6
@@ -48,6 +62,8 @@ program check_xc_energy
    integer(kind=8) :: lcg
    real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), c(:, :), dmat(:, :), vxc(:, :), vxc2(:, :)
    real(dp), allocatable :: cb(:, :), dm2(:, :, :), vx2(:, :, :), vx3(:, :, :)
+   real(dp), allocatable :: c_lex(:, :), cb_lex(:, :)
+   integer, allocatable :: perm_l2b(:), perm_b2l(:)
    real(dp) :: exc3, nelec3, trds2
    integer :: nsk
    type(trc_basis_t) :: b
@@ -83,13 +99,31 @@ program check_xc_energy
    call trc_1e(b, pl, s, t, vn)
 
    ! D = 2 C C^T, closed-shell style, with C fixed pseudo-random.
-   allocate (c(nao, NOCC), dmat(nao, nao), vxc(nao, nao), vxc2(nao, nao))
+   !
+   ! C is built in a FIXED LEXICOGRAPHIC AO order (c_lex, below) and then
+   ! permuted into this build's own order, rather than filled directly in
+   ! whatever order `nao` happens to enumerate. Filling it directly in raw
+   ! AO-index order would contract the SAME numbers against DIFFERENTLY
+   ! ORDERED AOs between a lexicographic and a gamess build -- a different
+   ! density, not a permuted one, since a d shell's six components would
+   ! draw from the PRNG stream in a different sequence. That is a different
+   ! physical system, and comparing its E_xc/N to the lexicographic build's
+   ! only ever looked like a summation-order artefact; it is not one. The
+   ! permutation below is what makes both builds integrate the SAME density.
+   allocate (c(nao, NOCC), c_lex(nao, NOCC), dmat(nao, nao), vxc(nao, nao), vxc2(nao, nao))
+   allocate (perm_l2b(nao), perm_b2l(nao))
+   call build_ao_perm(b%nshell, b%sh_l, b%sh_ao, nao, perm_l2b, perm_b2l)
    lcg = 61_8
    do j = 1, NOCC
       do i = 1, nao
          lcg = mod(48271_8*lcg, 2147483647_8)
          seed = real(lcg, dp)/2147483647.0_dp
-         c(i, j) = 0.16_dp*(seed - 0.5_dp)
+         c_lex(i, j) = 0.16_dp*(seed - 0.5_dp)
+      end do
+   end do
+   do j = 1, NOCC
+      do i = 1, nao
+         c(i, j) = c_lex(perm_b2l(i), j)
       end do
    end do
    dmat = 2.0_dp*matmul(c, transpose(c))
@@ -129,12 +163,18 @@ program check_xc_energy
    ! identity: UKS with alpha = beta = D/2 must reproduce RKS on D exactly,
    ! energy and both potentials. Then the same-grid pyscf comparison.
    !
-   allocate (cb(nao, NOCC - 1), dm2(nao, nao, 2), vx2(nao, nao, 2), vx3(nao, nao, 2))
+   allocate (cb(nao, NOCC - 1), cb_lex(nao, NOCC - 1))
+   allocate (dm2(nao, nao, 2), vx2(nao, nao, 2), vx3(nao, nao, 2))
    do j = 1, NOCC - 1
       do i = 1, nao
          lcg = mod(48271_8*lcg, 2147483647_8)
          seed = real(lcg, dp)/2147483647.0_dp
-         cb(i, j) = 0.2_dp*(seed - 0.5_dp)
+         cb_lex(i, j) = 0.2_dp*(seed - 0.5_dp)
+      end do
+   end do
+   do j = 1, NOCC - 1
+      do i = 1, nao
+         cb(i, j) = cb_lex(perm_b2l(i), j)
       end do
    end do
    dm2(:, :, 1) = matmul(c, transpose(c))

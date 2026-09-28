@@ -28,6 +28,16 @@
 ! Status codes, not exceptions or aborts. A library that stops the process on
 ! bad input is unusable inside someone else's SCF.
 !
+! CARTESIAN COMPONENT ORDER
+! -------------------------
+! Every AO-indexed array this API hands back or takes in (S/T/V, the Fock
+! and density matrices, multipoles, DF tensors, `trc_set_guess`'s density)
+! uses the WITHIN-SHELL Cartesian order the library was BUILT with
+! (TRC_CART_ORDER at compile time: lexicographic by default, or gamess).
+! `trc_cart_order` below answers which one a caller is linked against, so a
+! caller need not know it out of band; it is a build-wide constant, not
+! something that varies per handle, so it takes none.
+!
 module trc_capi
    use, intrinsic :: iso_c_binding
    use trc_boys, only: dp
@@ -43,6 +53,7 @@ module trc_capi
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use pic_mpi_lib, only: comm_t, comm_world
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_cart_perm, only: trc_cart_order_id
    implicit none
    private
 
@@ -68,6 +79,7 @@ module trc_capi
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: capi_scf
+   public :: trc_cart_order
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -1568,6 +1580,15 @@ contains
    end function trc_run_rimp2
 
    ! ---- read back ---------------------------------------------------------
+
+   !> 0 (lexicographic) or 1 (gamess): the within-shell Cartesian order every
+   !> AO-indexed array this API exchanges uses, fixed at compile time
+   !> (TRC_CART_ORDER) and the same for every handle -- no handle argument,
+   !> and it always succeeds.
+   function trc_cart_order() result(order_id) bind(c, name="trc_cart_order")
+      integer(c_int) :: order_id
+      order_id = int(trc_cart_order_id(), c_int)
+   end function trc_cart_order
 
    function trc_nao(handle, nao) result(status) bind(c, name="trc_nao")
       type(c_ptr), value :: handle

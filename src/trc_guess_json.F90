@@ -4,10 +4,16 @@
 !
 ! The file holds one density block per element for one basis set, in that
 ! element's own function order -- the shells as trc_basis_json builds them
-! from the same basis file, Cartesian components in terco's order -- and
-! the guess for a molecule is those blocks placed on the diagonal, atom by
-! atom, in the molecule's atom order. mqc writes it from its atomic guess
-! (spherically averaged, restricted), one file per basis:
+! from the same basis file, Cartesian components in LEXICOGRAPHIC order, a
+! FIXED CONVENTION: mqc always writes lexicographic, regardless of which
+! order this build was built with (mqc has no notion of TRC_CART_ORDER),
+! and there is no field in the format to say so because it never varies.
+! trc_cart_perm permutes each block's components into THIS build's own
+! order on the way in, below, so every caller downstream sees an ordinary
+! build-order density -- the guess for a molecule is those blocks placed on
+! the diagonal, atom by atom, in the molecule's atom order. mqc writes it
+! from its atomic guess (spherically averaged, restricted), one file per
+! basis:
 !
 !   {
 !     "basis": "cc-pvdz",
@@ -38,6 +44,7 @@ module trc_guess_json
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_cart_perm, only: build_ao_perm
    use json_module, only: json_file
    implicit none
    private
@@ -65,7 +72,8 @@ contains
       character(len=:), allocatable :: key
       real(dp), allocatable :: blk(:), fac(:)
       integer, allocatable :: nfun(:), first(:)
-      integer :: ia, ish, n, k, i, j
+      integer, allocatable :: perm_l2b(:), perm_b2l(:)
+      integer :: ia, ish, n, k, i, j, gi, gj
       logical :: found
       character(len=16) :: buf
 
@@ -97,6 +105,15 @@ contains
          return
       end if
 
+      ! LEXICOGRAPHIC -> this build's order, global AO index -> global AO
+      ! index (see the module header). `first(ia) + i - 1` for a LOCAL,
+      ! lexicographic-order `i` (mqc's own convention, 1-based) is the
+      ! correct GLOBAL LEXICOGRAPHIC AO index regardless of TRC_CART_ORDER:
+      ! shell order by atom does not change, only the within-shell component
+      ! order does, and `first`/`nfun` above are built from counts alone.
+      allocate (perm_l2b(b%nao), perm_b2l(b%nao))
+      call build_ao_perm(b%nshell, b%sh_l, b%sh_ao, b%nao, perm_l2b, perm_b2l)
+
       allocate (dguess(b%nao, b%nao))
       dguess = 0.0_dp
       do ia = 1, b%natm
@@ -122,8 +139,13 @@ contains
          do j = 1, n
             do i = 1, n
                k = k + 1
-               dguess(first(ia) + i - 1, first(ia) + j - 1) = &
-                  blk(k)/(fac(first(ia) + i - 1)*fac(first(ia) + j - 1))
+               ! (i, j) are LOCAL, LEXICOGRAPHIC (mqc's file). Map to this
+               ! build's global AO indices before placing the element, so
+               ! `dguess` comes back ordinary build-order data like every
+               ! other AO-indexed quantity this library produces.
+               gi = perm_l2b(first(ia) + i - 1)
+               gj = perm_l2b(first(ia) + j - 1)
+               dguess(gi, gj) = blk(k)/(fac(gi)*fac(gj))
             end do
          end do
       end do

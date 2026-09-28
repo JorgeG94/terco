@@ -28,6 +28,7 @@ target_sources(
           trc_sad.F90 # the SAD guess built here, one atomic SCF per element
           trc_sap.F90 # SAP: free-atom potentials, superposed on a quadrature
           trc_capi.F90       # the bind(c) skin
+          trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           trc_acc_shim.F90)  # see the file: this one is not optional
 
 # --- the molecular quadrature -------------------------------------------------
@@ -183,15 +184,19 @@ if(_regen)
   endif()
 
   # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
-  # `comp` and trc_batch.F90's `cart_pow`, plus the flat table
-  # trc_collocation.F90's `shell_collocate` reads. Needed at every TERCO_LMAX,
-  # unlike the unrolled VRR/HRR includes below, because these four call sites
-  # are not conditional on TRC_UNROLL_VRR/HRR.
+  # `comp` and trc_batch.F90's `cart_pow`, the flat table
+  # trc_collocation.F90's `shell_collocate` reads, and the lexicographic<->
+  # this-build permutation trc_cart_perm.F90 wraps for every reader of
+  # externally-authored AO data. Needed at every TERCO_LMAX, unlike the
+  # unrolled VRR/HRR includes below, because these call sites are not
+  # conditional on TRC_UNROLL_VRR/HRR.
   execute_process(
     COMMAND
       ${Python3_EXECUTABLE} ${_scripts}/gen_cartcomp.py ${_order_flag}
       --comp-out ${_gen_dir}/trc_cart_comp.inc --colloc-out
-      ${_gen_dir}/trc_collocation_table.inc
+      ${_gen_dir}/trc_collocation_table.inc --perm-l2b-out
+      ${_gen_dir}/trc_cart_perm_l2b.inc --perm-b2l-out
+      ${_gen_dir}/trc_cart_perm_b2l.inc
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_cartcomp.py failed (${_rc})")

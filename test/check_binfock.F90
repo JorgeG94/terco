@@ -29,6 +29,7 @@ program check_binfock
    use trc_bins, only: pair_bins_t, build_binned_pairs
    use trc_binkernel, only: fock_bins
    use trc_screen, only: schwarz_bounds, build_worklist, density_blockmax, pair_index
+   use trc_cart_perm, only: cart_perm_l2b
    implicit none
 
    integer, parameter :: ATM_SLOTS = 6, BAS_SLOTS = 8
@@ -213,14 +214,20 @@ contains
          read (u, *) (ref(m), m=1, nc4)
          na = d(1); nb = d(2); nc = d(3); nd = d(4)
          idx = 0
+         ! (ia,ib,ic,id) below walk `ref` in the order it was WRITTEN --
+         ! libfint's own, LEXICOGRAPHIC -- so each is a lexicographic local
+         ! offset. cart_perm_l2b maps it to this build's own local offset
+         ! before it becomes part of an AO index into jmat/kmat/dmat, which
+         ! ARE build-order (they never left this build). Identity at the
+         ! default order, so this is a no-op there.
          do id = 0, nd - 1
-            sig = ao_off(sh(4) + 1) + id
+            sig = ao_off(sh(4) + 1) + cart_perm_l2b(sh_l(sh(4) + 1), id)
          do ic = 0, nc - 1
-            lam = ao_off(sh(3) + 1) + ic
+            lam = ao_off(sh(3) + 1) + cart_perm_l2b(sh_l(sh(3) + 1), ic)
          do ib = 0, nb - 1
-            nu = ao_off(sh(2) + 1) + ib
+            nu = ao_off(sh(2) + 1) + cart_perm_l2b(sh_l(sh(2) + 1), ib)
          do ia = 0, na - 1
-            mu = ao_off(sh(1) + 1) + ia
+            mu = ao_off(sh(1) + 1) + cart_perm_l2b(sh_l(sh(1) + 1), ia)
             idx = idx + 1
             v = ref(idx)
             jref(mu, nu) = jref(mu, nu) + v*dmat(lam, sig)
