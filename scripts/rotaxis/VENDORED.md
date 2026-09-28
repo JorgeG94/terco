@@ -1,8 +1,8 @@
 # Vendored from libfint
 
 Four files are copied verbatim from libfint, branch
-`generator/cartesian-order` at commit `d324ef7` ("Derive the GAMESS rescale
-from a closed form, and assert the tables against it"):
+`generator/cartesian-order` at commit `59f9e38` ("Rename the default order
+to "lexicographic", keeping "libcint" as an alias"):
 
 | here | libfint |
 |---|---|
@@ -12,7 +12,8 @@ from a closed form, and assert the tables against it"):
 | `scripts/rotaxis/factor.py` | `scripts/rotaxis_mmd/factor.py` |
 
 `cartorder.py` is the one definition of the within-shell Cartesian order,
-shared with libfint rather than restated: libcint's order, GAMESS's (read out
+shared with libfint rather than restated: the lexicographic order
+(libcint's, and terco's default), GAMESS's (read out
 of GAMESS's own int2a.src tables, through g), and `gamess_norm_sq`, the
 closed form for GAMESS's per-component normalisation. terco's own generators
 import it too, so one module decides the order for every kernel terco emits.
