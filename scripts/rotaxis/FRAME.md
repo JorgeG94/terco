@@ -357,3 +357,78 @@ of `3.07e-14` (`pppp`, a generic geometry) against a tolerance of `1e-10`.
 That worst case is ordinary double-precision rounding, consistent with
 libfint's own measured `5e-14` agreement between its rotaxis and Rys paths
 (`doc/ROT_AXIS_MMD.md` section 7). There was no disagreement to paper over.
+
+## 10. The role-swapped mapping (bra/ket-inner tuning, milestone-1 follow-up)
+
+HGP's own kernels put the ket primitive loop innermost and the terco decode
+that dispatches quartets across threads (`trc_pc_kernels`' segment decode)
+makes the BRA pair index vary fastest across a warp, so 32 threads share one
+ket pair and the innermost (ket) loop's loads broadcast. Sections 1-4 above
+put rotaxis's bra loop innermost instead (level 1's accumulators are per
+bra primitive), which is right for the factorisation but wrong for that
+decode: the innermost loads now diverge across the warp instead of
+broadcasting. Milestone-1's own review measured this and tried changing the
+*decode* to match (making the ket index warp-uniform instead); it worked
+for some classes and lost for others (mixed, moderately below the ~10-15%
+noise floor for some, clearly outside it for the losses) and was not
+shipped -- see the commit message and `emit_class_module`'s comment in
+`emit_docon.py`.
+
+This section is the other way to fix the same mismatch: change the
+**algebra**, not the decode. Derive `Derivation(kc, kd, ka, kb)` instead of
+`Derivation(ka, kb, kc, kd)`. Nothing in `derive.py`/`factor.py` cares which
+physical pair is called "bra" and which "ket" -- section 0 already
+established that no canonicalisation is required -- so this is legal for
+the same reason ordered classes are: `(ab|cd) = (cd|ab)` exactly, index for
+index, because it is the same four-centre Coulomb integral viewed from the
+other pair's side, not merely the same integral after summing.
+
+**The frame.** Build it from `(C, D, A, B)` instead of `(A, B, C, D)` --
+i.e. call section 1's construction with its four inputs in that order. Every
+formula is unchanged; only which physical centres feed "A", "B", "C", "D" in
+it changes:
+
+```
+z along C -> D                    (was A -> B)
+x spans AB perpendicular to CD     (was: spans CD perpendicular to AB)
+origin, and cl/dl, at C            (was: at A)
+Rs, Rc = the (A, B) pair's local x, z offset from C  (was: (C, D)'s from A)
+```
+
+**Level 1 (inner loop) is now over terco's KET primitives.** The
+derivation's "bra" pair is physically (C, D): its `p`, `ip`, `za`, `zb` come
+from `pp_p(kq)`, projected onto the NEW `zh` (along C->D), for `kq` in the
+usual `[offcd+1, offcd+ncd]` range -- this is section 2's recipe, verbatim,
+with the roles of "A","B" read as "C","D".
+
+**Level 2 (outer loop) is now over terco's BRA primitives.** The
+derivation's "ket" pair is physically (A, B): its `q`, `iq`, `yc`, `yd`,
+`ax`, `az` come from `pp_p(kp)` for `kp` in `[offab+1, offab+nab]`, using
+the NEW frame's `cl`/`Rs`/`Rc` -- section 3's recipe, with "C","D" read as
+"A","B".
+
+**Component order.** `Derivation(kc,kd,ka,kb).all_components()` iterates
+its own four slots fastest-to-slowest as `(kc, kd, ka, kb)` (section 6's
+rule applied to the swapped kinds tuple), i.e. **terco's `c` index is
+fastest, not `a`**. A component at swapped-order position `(ic, id, ia,
+ib)` (0-based within each KIND's own component list) belongs at terco's
+`(ia, ib, ic, id)` -- this is a fixed relabelling, known completely at
+generation time from the class alone, not a runtime permutation and not a
+data-dependent computation. `scripts/rotaxis/check_numeric.py`'s
+`swapped_component_map` builds this map directly (by construction, not by
+reshaping or transposing a flat array) precisely so an axis-order mistake
+cannot hide inside a `.reshape()`/`.transpose()` call.
+
+**Rotation.** Unchanged in kind: rotate whichever of terco's four slots is
+`p`, with the frame's `rot` -- the SAME shared frame built in this section,
+used for every slot regardless of which pair (bra or ket, in either sense)
+it belongs to. Only the frame itself differs from section 5's (built from
+`(C,D,A,B)` here rather than `(A,B,C,D)`).
+
+**Verified against pyscf**, not assumed: `scripts/rotaxis/check_numeric.py`
+runs BOTH evaluations -- the original (`run()`) and this one
+(`run_swapped()`) -- on the identical 16 classes x 8 geometries (including
+every degenerate case of section 1; "C == D" is this evaluator's undefined-z
+case, the way "A == B" is the original's, since `local_frame` does not know
+or care which physical pair its first two arguments came from). Worst
+scaled error `3.01e-14`, the same order as section 9's, no disagreement.

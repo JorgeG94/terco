@@ -260,6 +260,95 @@ def evaluate_quartet(f, kinds, centers, prims):
     return arr  # shape (nd, nc, nb, na)
 
 
+def swapped_component_map(kinds):
+    """index i (0-based, in Derivation(kc,kd,ka,kb)'s own all_components()
+    order) -> (ia, ib, ic, id) in TERCO's own (a,b,c,d) slot-index order.
+
+    Derivation(kc,kd,ka,kb).all_components() iterates its own four slots
+    slowest-to-fastest as (kb, ka, kd, kc) -- see derive.py's nested loop,
+    "for cd: for cc: for cb: for ca:" applied to kinds (kc,kd,ka,kb), so its
+    slot 0 (fastest) is kc, slot 1 is kd, slot 2 is ka, slot 3 (slowest) is
+    kb. Building this map once by direct construction, rather than by
+    reshape/transpose of the flat result, is what makes the swap trivial to
+    get right: every entry says explicitly which terco (ia,ib,ic,id) it is,
+    with no axis-order arithmetic to get backwards."""
+    ka, kb, kc, kd = kinds
+    NA, NB, NC, ND = (len(derive.KINDS[k]) for k in (ka, kb, kc, kd))
+    mapping = []
+    for id_ in range(NB):       # slowest: swapped slot 3 = kb = terco's b
+        for ic_ in range(NA):   # swapped slot 2 = ka = terco's a
+            for ib_ in range(ND):   # swapped slot 1 = kd = terco's d
+                for ia_ in range(NC):  # fastest: swapped slot 0 = kc = terco's c
+                    # (ia_ indexes terco's c-slot, ib_ terco's d-slot,
+                    #  ic_ terco's a-slot, id_ terco's b-slot)
+                    mapping.append((ic_, id_, ia_, ib_))  # (terco a,b,c,d)
+    return mapping
+
+
+def evaluate_quartet_swapped(f_swapped, kinds, centers, prims):
+    """The role-swapped evaluation (coordinator review, milestone-1 follow-
+    up): derive Derivation(kc,kd,ka,kb) instead of Derivation(ka,kb,kc,kd),
+    so its "bra" (level 1, the inner accumulation loop) is physically
+    terco's KET pair (C,D) and its "ket" (level 2, outer) is physically
+    terco's BRA pair (A,B). The frame is built from (C,D,A,B) instead of
+    (A,B,C,D) -- z along C->D, x from AB perpendicular to CD, local
+    coordinates of A (not C) at the frame's origin -- exactly `local_frame`
+    called with its arguments in the other order, since (ab|cd) = (cd|ab)
+    is the same integral computed from the other pair's point of view.
+
+    `f_swapped` must be `factor.Factorised(derive.Derivation(kinds[2],
+    kinds[3], kinds[0], kinds[1]))` -- the caller's, so it is built once per
+    class rather than once per geometry.
+
+    Returns the SAME shape and convention as `evaluate_quartet`: (nd, nc,
+    nb, na), lab-frame, rotated, ready to `.ravel()` against pyscf. Nothing
+    here reshapes or transposes the flat result -- `swapped_component_map`
+    says explicitly which terco slot each computed value belongs to, and
+    values are scattered directly into a terco-shaped array before the
+    (unmodified) rotation step runs, so a transpose-order mistake cannot
+    hide in an axis permutation."""
+    A, B, C, D = centers
+    rot2, rcd_dist, rab_dist, gc2, cl2 = local_frame(C, D, A, B)
+    Rs2, Rc2, cy2 = gc2
+
+    # derivation-bra = physically (C, D): the pair whose OWN separation is
+    # rcd_dist (local_frame's "rab" return when called C, D first).
+    bras2 = bra_pairs(prims[2], prims[3], rcd_dist)
+    # derivation-ket = physically (A, B): cl2/Rs2/Rc2 are A's local
+    # coordinates and (B - A)'s local offset in the NEW frame, and the
+    # Gaussian-product exponential needs (A, B)'s own separation, rab_dist
+    # (local_frame's "rcd" return here).
+    kets2 = []
+    for a, ca in prims[0]:
+        for b, cb in prims[1]:
+            q = a + b
+            mu = a * b / q
+            coef = ca * cb * math.exp(-mu * rab_dist * rab_dist)
+            yc, yd = a / q, b / q
+            ax = cl2[0] + yd * Rs2
+            az = cl2[2] + yd * Rc2
+            kets2.append(dict(q=q, iq=0.5 / q, yc=yc, yd=yd, ax=ax, az=az,
+                              kcd=TWO_PI_2_5 * coef / q))
+
+    local_swapped = eval_factorised(f_swapped, bras2, kets2, gc2)
+
+    na = len(derive.KINDS[kinds[0]])
+    nb = len(derive.KINDS[kinds[1]])
+    nc = len(derive.KINDS[kinds[2]])
+    nd = len(derive.KINDS[kinds[3]])
+    mapping = swapped_component_map(kinds)
+    assert len(mapping) == len(local_swapped) == na * nb * nc * nd
+    arr = np.zeros((nd, nc, nb, na), dtype=float)
+    for val, (ia, ib, ic, id_) in zip(local_swapped, mapping):
+        arr[id_, ic, ib, ia] = val
+
+    axis_of_slot = {0: 3, 1: 2, 2: 1, 3: 0}
+    for slot in range(4):
+        if kinds[slot] == "p":
+            arr = rotate_axis(arr, axis_of_slot[slot], rot2)
+    return arr  # shape (nd, nc, nb, na), identical convention to evaluate_quartet
+
+
 # ---------------------------------------------------------------------
 # pyscf reference
 # ---------------------------------------------------------------------
@@ -465,5 +554,70 @@ def run():
     return 0
 
 
+def run_swapped():
+    """The role-swapped evaluation (coordinator review, milestone-1 follow-
+    up): Derivation(kc,kd,ka,kb) instead of Derivation(ka,kb,kc,kd), frame
+    from (C,D,A,B). Same 16 classes, same 8 geometries (the existing
+    degenerate cases already swap roles correctly here too: "C==D" is the
+    frame's undefined-z case for THIS evaluator, exactly as "A==B" is for
+    the unswapped one, since local_frame is called with its first two
+    arguments swapped and does not know or care which physical pair they
+    came from), same tolerance. A separate function, run only after `run()`
+    has already passed, so the original check is never weakened or
+    reordered by this one."""
+    rng = np.random.default_rng(20260928)  # same seed: same geometries/prims
+    worst_overall = 0.0
+    worst_case = None
+    n_checked = 0
+    failures = []
+
+    print(f"{'class':6} {'case':16} {'worst scaled err':>18} {'max|int|':>12}")
+    for kinds in ALL_CLASSES:
+        ka, kb, kc, kd = kinds
+        d_swapped = derive.Derivation(kc, kd, ka, kb)
+        f_swapped = factor.Factorised(d_swapped)
+        for centers, label in geometries(rng):
+            prims_raw = prims_for_case(rng, label)
+            mol, prims_terco = make_mol(kinds, centers, prims_raw)
+            eri = mol.intor("int2e_cart")
+            ref_block = pyscf_block(mol, eri)
+            ref_flat = flatten_pyscf_order(ref_block)
+
+            local_lab = evaluate_quartet_swapped(f_swapped, kinds, centers, prims_terco)
+            got_flat = local_lab.ravel()
+
+            scale = max(np.max(np.abs(ref_flat)), 1e-300)
+            err = np.max(np.abs(got_flat - ref_flat)) / scale
+            n_checked += got_flat.size
+            tag = "".join(kinds)
+            print(f"{tag:6} {label:16} {err:18.3e} {scale:12.3e}")
+            if err > worst_overall:
+                worst_overall = err
+                worst_case = (tag, label)
+            if err > TOL:
+                failures.append((tag, label, err))
+
+    n_geom = len(geometries(np.random.default_rng(0)))
+    print()
+    print(f"checked {n_checked} scalar components over "
+          f"{len(ALL_CLASSES)} classes x {n_geom} geometries per class (SWAPPED)")
+    print(f"worst scaled error: {worst_overall:.3e}  at {worst_case}")
+    if failures:
+        print(f"FAILED (swapped): {len(failures)} (class, geometry) pairs exceeded "
+              f"tolerance {TOL:.1e}:")
+        for tag, label, err in failures:
+            print(f"  {tag:6} {label:16} {err:.3e}")
+        return 1
+    print(f"PASSED (swapped): every (class, geometry) pair scaled error <= {TOL:.1e}")
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(run())
+    rc = run()
+    if rc == 0:
+        print()
+        print("=" * 70)
+        print("ROLE-SWAPPED EVALUATION (coordinator review, milestone-1 follow-up)")
+        print("=" * 70)
+        rc = run_swapped()
+    sys.exit(rc)

@@ -135,8 +135,17 @@ def wrap(lhs, terms, indent="            "):
 # gen_perclass's own scaffolding functions are.
 # ---------------------------------------------------------------------
 
-def emit_frame():
-    return """         ! === the frame (FRAME.md section 1) ===
+def emit_frame(swap=False):
+    """`swap=True` builds the frame from (C,D,A,B) instead of (A,B,C,D) --
+    FRAME.md section 10 (coordinator review, "swap the algebra's roles"):
+    z along C->D, x from AB perpendicular to CD, origin (and cl/dl) at C
+    instead of A. Every occurrence of `offab`/`offcd` below is a lookup into
+    the bra/ket pair table respectively (never anything else that happens
+    to contain those five or six characters), so swapping which literal
+    token appears where is exactly swapping which physical shell pair feeds
+    the frame -- verified against pyscf via
+    scripts/rotaxis/check_numeric.py's `run_swapped()`, not assumed here."""
+    text = """         ! === the frame (FRAME.md section 1) ===
          ! ab = B - A, the bra pair's own direction; z falls back to the lab
          ! axis when A == B (rab = 0), which happens whenever two shells on
          ! the same atom are paired -- routine, not rare.
@@ -203,6 +212,10 @@ def emit_frame():
          Rc = dl3 - cl3
          cy = cl2
 """
+    if swap:
+        text = text.replace("offab", "\0OFFAB\0").replace("offcd", "offab") \
+                    .replace("\0OFFAB\0", "offcd")
+    return text
 
 
 # ---------------------------------------------------------------------
@@ -290,17 +303,40 @@ def needs_frame(f):
     return not (g_trivial and km_trivial and cm_trivial and f.max_zq_power == 0)
 
 
-def emit_core_noframe(f, scalarize=False):
+def emit_core_noframe(f, scalarize=False, ket_inner=False):
     """ssss's fast path: T computed directly from the lab-frame separation
     P - Q, no rotated frame at all. See `needs_frame` for why this is exact,
     not an approximation -- every quantity the frame would have supplied
     (za, zb, yc, yd, ax, cy, zq individually; Rs, Rc; the rotation itself)
-    is provably unused by this class's algebra."""
+    is provably unused by this class's algebra.
+
+    `ket_inner` (FRAME.md section 10, coordinator review) makes the OUTER
+    loop run over physical bra primitives and the INNER loop over physical
+    ket primitives -- matching HGP's own nesting, so HGP's own decode (bra
+    varies fastest across a warp) makes the inner loop's loads broadcast
+    the way HGP's do. `zeta`/`eta` keep their usual physical meaning (bra,
+    ket exponent sum) regardless; only which one is computed in the outer
+    vs inner loop, and which one carries the TWO_PI_2_5 factor (the outer
+    role always does -- it plays the derivation's "ket" -- matching FRAME.md
+    section 3's kcd formula, exactly HGP's own kcd/kab split when
+    ket_inner puts the physical bra outer), changes."""
     def sacc(i): return V("sacc", i, scalarize)
     def racc(i): return V("racc", i, scalarize)
     def kmv(i): return V("kmv", i, scalarize)
 
     assert f.d.L == 0 and len(f.s_list) == 1 and len(f.r_list) == 1
+
+    if ket_inner:
+        OV, OOFF, ON, OE = "kp", "offab", "nab", "zeta"
+        IV, IOFF, IN_, IE = "kq", "offcd", "ncd", "eta"
+        pref_note = """               ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
+               ! own `pref` (FRAME.md section 4); symmetric in zeta/eta, so
+               ! unaffected by which one is the outer- or inner-loop primitive."""
+    else:
+        OV, OOFF, ON, OE = "kq", "offcd", "ncd", "eta"
+        IV, IOFF, IN_, IE = "kp", "offab", "nab", "zeta"
+        pref_note = """               ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
+               ! own `pref` (FRAME.md section 4)."""
 
     o = [f"""
          ! === per-quartet integral core, NO-FRAME FAST PATH ===
@@ -315,18 +351,17 @@ def emit_core_noframe(f, scalarize=False):
          ! evaluation per primitive quartet.
          !
          {racc(1)} = 0.0_dp
-         do kq = offcd + 1, offcd + ncd
-            eta = pp_p(kq)
-            bnd = TWO_PI_2_5*abs(pp_cs(kq))/(eta*sqrt(eta))
-            if (bnd*abs(pp_cs(offab + 1))/pp_p(offab + 1) <= pcut) cycle
-            kcdv = TWO_PI_2_5*pp_cs(kq)/eta
+         do {OV} = {OOFF} + 1, {OOFF} + {ON}
+            {OE} = pp_p({OV})
+            bnd = TWO_PI_2_5*abs(pp_cs({OV}))/({OE}*sqrt({OE}))
+            if (bnd*abs(pp_cs({IOFF} + 1))/pp_p({IOFF} + 1) <= pcut) cycle
+            kcdv = TWO_PI_2_5*pp_cs({OV})/{OE}
             {sacc(1)} = 0.0_dp
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               if (bnd*abs(pp_cs(kp))/zeta <= pcut) exit
+            do {IV} = {IOFF} + 1, {IOFF} + {IN_}
+               {IE} = pp_p({IV})
+               if (bnd*abs(pp_cs({IV}))/{IE} <= pcut) exit
                zpe = zeta + eta
-               ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
-               ! own `pref` (FRAME.md section 4).
+{pref_note}
                pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
                if (abs(pref) <= pcut) cycle
                pqx = pp_r(kp, 1) - pp_r(kq, 1)
@@ -337,13 +372,13 @@ def emit_core_noframe(f, scalarize=False):
 
    {gp.emit_boys(0)}
 
-               kabv = pp_cs(kp)/zeta
+               kabv = pp_cs({IV})/{IE}
                w = kabv/sqrt(zpe)
                {sacc(1)} = {sacc(1)} + w*f(0)
-            end do   ! kp (bra primitive)
+            end do   ! {IV} ({'bra' if not ket_inner else 'ket'} primitive)
             {kmv(1)} = kcdv
             {racc(1)} = {racc(1)} + {kmv(1)}*{sacc(1)}
-         end do   ! kq (ket primitive)
+         end do   ! {OV} ({'ket' if not ket_inner else 'bra'} primitive)
 
          ! === quartet assembly, straight into vbuf (level 3) ===
          vbuf(1) = {racc(1)}
@@ -355,8 +390,48 @@ def emit_core_noframe(f, scalarize=False):
                               NBZ=0, na=1, nb=1, nc=1, nd=1, noframe=True)
 
 
-def emit_core(kinds, scalarize=False):
-    d = derive.Derivation(*kinds)
+def component_vbuf_map(kinds, ket_inner):
+    """comp_i (0-based, in f.components' own iteration order) -> the 0-based
+    vbuf index (terco's ia-fastest convention) it belongs at.
+
+    Identity when `ket_inner` is False -- `f` was built from
+    `Derivation(*kinds)`, whose own component order already IS terco's. When
+    `ket_inner` is True, `f` was built from `Derivation(kc,kd,ka,kb)`
+    instead (FRAME.md section 10), whose OWN four slots are (kc,kd,ka,kb),
+    iterated slowest-to-fastest as (kb,ka,kd,kc) -- so its component list's
+    natural order has terco's `c` index fastest, not `a`. This walks that
+    same nested loop directly (matching `swapped_component_map` in
+    check_numeric.py, which this was checked against) rather than reshaping
+    or transposing a flat array, precisely so an axis-order mistake cannot
+    hide inside a `.reshape()`."""
+    na, nb, nc, nd = (len(derive.KINDS[k]) for k in kinds)
+    if not ket_inner:
+        return list(range(na * nb * nc * nd))
+    mapping = []
+    for id_ in range(nb):       # slowest: swapped slot 3 = kb = terco's b
+        for ic_ in range(na):   # swapped slot 2 = ka = terco's a
+            for ib_ in range(nd):   # swapped slot 1 = kd = terco's d
+                for ia_ in range(nc):  # fastest: swapped slot 0 = kc = terco's c
+                    ta, tb, tc, td = ic_, id_, ia_, ib_  # terco a,b,c,d indices
+                    mapping.append(ta + na * tb + na * nb * tc + na * nb * nc * td)
+    return mapping
+
+
+def emit_core(kinds, scalarize=False, ket_inner=False):
+    """`ket_inner` (FRAME.md section 10, coordinator review) derives
+    `Derivation(kc, kd, ka, kb)` instead of `Derivation(ka, kb, kc, kd)`:
+    its "bra" (level 1, the inner accumulation loop) is then physically
+    terco's KET pair, and its "ket" (level 2, outer) is physically terco's
+    BRA pair -- so the loop that actually runs innermost iterates physical
+    ket primitives, matching HGP's own nesting (and HGP's own decode, which
+    makes the bra index warp-uniform and leaves the ket-primitive loop's
+    loads broadcasting). `(ab|cd) = (cd|ab)` exactly, index for index, so
+    this changes nothing about the answer -- only which physical loop is
+    outer/inner, and a compile-time relabelling of which vbuf slot each
+    computed component lands in (`component_vbuf_map`). Verified against
+    pyscf in Python first: `check_numeric.py`'s `run_swapped()`."""
+    d = derive.Derivation(kinds[2], kinds[3], kinds[0], kinds[1]) if ket_inner \
+        else derive.Derivation(*kinds)
     f = factor.Factorised(d)
     L = d.L
     NS, NR, NG = len(f.s_list), len(f.r_list), len(f.g_list)
@@ -368,7 +443,7 @@ def emit_core(kinds, scalarize=False):
     for g in f.g_list:
         assert g[3] == 0, "energy classes never touch the gradient's `ea` factor"
     if not needs_frame(f):
-        return emit_core_noframe(f, scalarize=scalarize)
+        return emit_core_noframe(f, scalarize=scalarize, ket_inner=ket_inner)
 
     def sacc(i): return V("sacc", i, scalarize)
     def racc(i): return V("racc", i, scalarize)
@@ -378,6 +453,21 @@ def emit_core(kinds, scalarize=False):
     def bn(i): return V("bn", i, scalarize)
     def bz(i): return V("bz", i, scalarize)
 
+    # OUTER always plays the derivation's KET role (level 2); INNER always
+    # plays the derivation's BRA role (level 1) -- an invariant regardless
+    # of `ket_inner`. What `ket_inner` picks is which PHYSICAL primitive
+    # (kp/zeta/offab/nab, the bra pair, or kq/eta/offcd/ncd, the ket pair)
+    # is bound to each role. `zeta`/`eta` keep their usual physical meaning
+    # throughout (bra, ket exponent sum); only which one is computed in the
+    # outer vs inner loop changes.
+    if ket_inner:
+        OV, OOFF, ON, OE = "kp", "offab", "nab", "zeta"
+        IV, IOFF, IN_, IE = "kq", "offcd", "ncd", "eta"
+    else:
+        OV, OOFF, ON, OE = "kq", "offcd", "ncd", "eta"
+        IV, IOFF, IN_, IE = "kp", "offab", "nab", "zeta"
+    vbuf_map = component_vbuf_map(kinds, ket_inner)
+
     # The distinct (n, kz) combinations s_list actually asks for, sharing one
     # bn(n)*zq^kz product across every bra monomial that needs it (level 1,
     # coordinator review item 2). kz == 0 needs no separate slot: bn(n) IS
@@ -386,10 +476,60 @@ def emit_core(kinds, scalarize=False):
     nk_index = {p: i for i, p in enumerate(nk_pairs)}
     NBZ = len(nk_pairs)
 
-    o = []
-    o.append(emit_frame())
-    o.append(f"""
-         ! === per-quartet integral core (FRAME.md sections 2-4) ===
+    # Every comment below is genuinely two different, hand-written texts --
+    # not one text parameterised -- because `ket_inner=False` has to stay
+    # BYTE-IDENTICAL to what was committed before this flag existed (the
+    # "gen_rotaxis's default output reproduces src/generated byte for byte"
+    # gate). The `False` branch of each pair below is that original text,
+    # unchanged; the `True` branch describes the same code with the roles
+    # FRAME.md section 10 swapped.
+    if ket_inner:
+        core_header = f"""         ! === per-quartet integral core (FRAME.md sections 2-4, 10) ===
+         !
+         ! Derivation's ket outside, bra inside (README_TERCO.md section
+         ! 2.4): the level-1 accumulators below are per DERIVATION-BRA
+         ! primitive ({IV}) and do not depend on which Cartesian component is
+         ! being built, so putting that loop innermost is what keeps a
+         ! (pp|pp) inner loop to a few dozen multiply-adds -- the same order
+         ! libfint's own rotaxis emitter uses (scripts/rotaxis_mmd/emit.py:
+         ! emit_kernel). `ket_inner` picks which PHYSICAL pair plays the
+         ! derivation's bra vs ket role (FRAME.md section 10); the role
+         ! structure itself (bra always inner) never changes.
+         !"""
+        prescreen_note = f"""            ! PRIMITIVE-QUARTET PRESCREEN, adapted from the HGP kernel's `bnd`
+            ! bound: the pair lists are sorted by |c|/p descending
+            ! (build_pairs_hgp), so `bnd` bounds every remaining inner-loop
+            ! primitive using THIS outer primitive's weight, testing it
+            ! against the best inner primitive ({IOFF} + 1) before entering
+            ! that loop at all, then EXITing it the first time a weaker one
+            ! fails -- the same two-part test the HGP kernel runs, on
+            ! whichever physical pair is outer here."""
+        yd_note = """            ! yc, yd = c/q, d/q (FRAME.md section 3) are recovered by
+            ! projecting the derivation-ket pair centre onto its own
+            ! separation, since terco's pp_p carries only q = c + d, not c
+            ! and d separately. That ratio is 0/0 when the two ket-role
+            ! centres coincide (routine for two shells on one atom); yd is
+            ! then set to an arbitrary finite value instead, provably safe
+            ! because FRAME.md section 0's derivation shows every term
+            ! carrying a yc or yd power also carries a matching Rs or Rc
+            ! power from the SAME Hermite coefficient (introduced only
+            ! together), and Rs = Rc = 0 exactly in that degenerate case --
+            ! so the term vanishes via the constant factor regardless of
+            ! what yd is, PROVIDED yd is finite: 0.0*NaN is NaN, and the
+            ! whole point of this branch is to keep that finite."""
+        pref_note = """               ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
+               ! own `pref`, since kab*kcd*B_0 regroups to the identical
+               ! product (FRAME.md section 4) -- same cutoff, same meaning,
+               ! and symmetric in zeta/eta so unaffected by which is outer."""
+        kabv_note = f"""               ! kabv is folded into the Boys ladder's overall scale HERE,
+               ! once per derivation-bra primitive, rather than multiplied
+               ! into every one of the {NS} level-1 accumulators below
+               ! (coordinator review item 2): bn(n) = kabv * (-2 alpha)^n
+               ! F_n(T) / sqrt(zpe) is exactly kabv*B_n, so every
+               ! accumulation that used to read "kabv*...*bn(n)..." now
+               ! reads "...*bn(n)..." for the identical value."""
+    else:
+        core_header = """         ! === per-quartet integral core (FRAME.md sections 2-4) ===
          !
          ! Ket outside, bra inside (README_TERCO.md section 2.4): the level-1
          ! accumulators below are per BRA primitive and do not depend on which
@@ -397,22 +537,16 @@ def emit_core(kinds, scalarize=False):
          ! innermost is what keeps a (pp|pp) inner loop to a few dozen
          ! multiply-adds. This is the SAME order libfint's own rotaxis
          ! emitter uses (scripts/rotaxis_mmd/emit.py:emit_kernel).
-         !
-{chr(10).join(f'         {racc(i)} = 0.0_dp' for i in range(1, NR + 1))}
-         do kq = offcd + 1, offcd + ncd
-            eta = pp_p(kq)
-            ! PRIMITIVE-QUARTET PRESCREEN, adapted from the HGP kernel's `bnd`
+         !"""
+        prescreen_note = """            ! PRIMITIVE-QUARTET PRESCREEN, adapted from the HGP kernel's `bnd`
             ! bound to this loop's swapped order: the pair lists are sorted by
             ! |c|/p descending (build_pairs_hgp), so `bnd` bounds every
             ! remaining bra primitive using THIS ket's weight, and testing it
             ! against the best bra (offab + 1) before entering the bra loop
             ! at all, then EXITing that loop the first time a weaker bra fails
             ! it, is the same two-part test the HGP kernel runs -- just with
-            ! bra and ket swapped, because here the ket is the outer loop.
-            bnd = TWO_PI_2_5*abs(pp_cs(kq))/(eta*sqrt(eta))
-            if (bnd*abs(pp_cs(offab + 1))/pp_p(offab + 1) <= pcut) cycle
-            iq = 0.5_dp/eta
-            ! yc, yd = c/q, d/q (FRAME.md section 3) are recovered by
+            ! bra and ket swapped, because here the ket is the outer loop."""
+        yd_note = """            ! yc, yd = c/q, d/q (FRAME.md section 3) are recovered by
             ! projecting the ket pair centre Q = pp_r(kq,:) onto CD, since
             ! terco's pp_p carries only q = c + d, not c and d separately.
             ! Q - C = yd*(D - C), so |Q - C|/rcd = yd exactly whenever
@@ -425,30 +559,51 @@ def emit_core(kinds, scalarize=False):
             ! Rs = Rc = 0 exactly whenever C == D -- so the term vanishes via
             ! the constant factor regardless of what yd is, PROVIDED yd is
             ! finite: 0.0*NaN is NaN, and the whole point of this branch is to
-            ! keep that finite so a degenerate frame does not poison the sum.
+            ! keep that finite so a degenerate frame does not poison the sum."""
+        pref_note = """               ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
+               ! own `pref`, since kab*kcd*B_0 regroups to the identical
+               ! product (FRAME.md section 4) -- same cutoff, same meaning."""
+        kabv_note = f"""               ! kabv is folded into the Boys ladder's overall scale HERE,
+               ! once per bra primitive, rather than multiplied into every
+               ! one of the {NS} level-1 accumulators below (coordinator
+               ! review item 2): bn(n) = kabv * (-2 alpha)^n F_n(T) /
+               ! sqrt(zpe) is exactly kabv*B_n, so every accumulation that
+               ! used to read "kabv*...*bn(n)..." now reads "...*bn(n)..."
+               ! for the identical value."""
+
+    o = []
+    o.append(emit_frame(swap=ket_inner))
+    o.append(f"""
+{core_header}
+{chr(10).join(f'         {racc(i)} = 0.0_dp' for i in range(1, NR + 1))}
+         do {OV} = {OOFF} + 1, {OOFF} + {ON}
+            {OE} = pp_p({OV})
+{prescreen_note}
+            bnd = TWO_PI_2_5*abs(pp_cs({OV}))/({OE}*sqrt({OE}))
+            if (bnd*abs(pp_cs({IOFF} + 1))/pp_p({IOFF} + 1) <= pcut) cycle
+            iq = 0.5_dp/{OE}
+{yd_note}
             if (rcd > 0.0_dp) then
-               yd = sqrt((pp_r(kq,1) - pp_ra(kq,1))**2 + (pp_r(kq,2) - pp_ra(kq,2))**2 &
-                       + (pp_r(kq,3) - pp_ra(kq,3))**2)/rcd
+               yd = sqrt((pp_r({OV},1) - pp_ra({OV},1))**2 + (pp_r({OV},2) - pp_ra({OV},2))**2 &
+                       + (pp_r({OV},3) - pp_ra({OV},3))**2)/rcd
             else
                yd = 0.5_dp
             end if
             yc = 1.0_dp - yd
             ax = cl1 + yd*Rs
             az = cl3 + yd*Rc
-            kcdv = TWO_PI_2_5*pp_cs(kq)/eta
+            kcdv = TWO_PI_2_5*pp_cs({OV})/{OE}
 {chr(10).join(f'            {sacc(i)} = 0.0_dp' for i in range(1, NS + 1))}
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               if (bnd*abs(pp_cs(kp))/zeta <= pcut) exit
+            do {IV} = {IOFF} + 1, {IOFF} + {IN_}
+               {IE} = pp_p({IV})
+               if (bnd*abs(pp_cs({IV}))/{IE} <= pcut) exit
                zpe = zeta + eta
-               ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
-               ! own `pref`, since kab*kcd*B_0 regroups to the identical
-               ! product (FRAME.md section 4) -- same cutoff, same meaning.
+{pref_note}
                pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
                if (abs(pref) <= pcut) cycle
-               ip = 0.5_dp/zeta
-               za = zhx*(pp_r(kp,1) - pp_ra(kp,1)) + zhy*(pp_r(kp,2) - pp_ra(kp,2)) &
-                  + zhz*(pp_r(kp,3) - pp_ra(kp,3))
+               ip = 0.5_dp/{IE}
+               za = zhx*(pp_r({IV},1) - pp_ra({IV},1)) + zhy*(pp_r({IV},2) - pp_ra({IV},2)) &
+                  + zhz*(pp_r({IV},3) - pp_ra({IV},3))
                zb = za - rab
                zq = za - az
                alpha = zeta*eta/zpe
@@ -456,14 +611,8 @@ def emit_core(kinds, scalarize=False):
 
    {gp.emit_boys(L)}
 
-               ! kabv is folded into the Boys ladder's overall scale HERE,
-               ! once per bra primitive, rather than multiplied into every
-               ! one of the {NS} level-1 accumulators below (coordinator
-               ! review item 2): bn(n) = kabv * (-2 alpha)^n F_n(T) /
-               ! sqrt(zpe) is exactly kabv*B_n, so every accumulation that
-               ! used to read "kabv*...*bn(n)..." now reads "...*bn(n)..."
-               ! for the identical value.
-               kabv = pp_cs(kp)/zeta
+{kabv_note}
+               kabv = pp_cs({IV})/{IE}
                w = kabv/sqrt(zpe)""")
     o.append(f"               {bn(0)} = w*f(0)")
     m2a_emitted = False
@@ -494,16 +643,18 @@ def emit_core(kinds, scalarize=False):
             parts.append(gb(gi + 1))
         parts.append(bz(nk_index[(n, kz)] + 1) if kz else bn(n))
         o.append(f"               {sacc(si + 1)} = {sacc(si + 1)} + {'*'.join(parts)}")
-    o.append("            end do   ! kp (bra primitive)")
+    o.append(f"            end do   ! {IV} (bra primitive)" if not ket_inner
+             else f"            end do   ! {IV} (derivation-bra primitive)")
     o.append("")
-    # kcdv is folded into every ket monomial HERE, once per ket primitive
-    # (coordinator review item 1), instead of scaling the {NR} level-2
-    # accumulators by it after the fact -- which is what the removed `rtmp`
-    # array existed to stage. kmv(i) is now kcdv itself when the monomial is
-    # trivial (every ket exponent 0), so every r-entry below can multiply by
-    # kmv(km_id) unconditionally; the old kme-is-None special case (skip the
-    # multiply entirely for a trivial monomial) is gone because there is no
-    # longer a bare, un-scaled monomial value to special-case around.
+    # kcdv is folded into every ket monomial HERE, once per derivation-ket
+    # primitive (coordinator review item 1), instead of scaling the {NR}
+    # level-2 accumulators by it after the fact -- which is what the removed
+    # `rtmp` array existed to stage. kmv(i) is now kcdv itself when the
+    # monomial is trivial (every ket exponent 0), so every r-entry below can
+    # multiply by kmv(km_id) unconditionally; the old kme-is-None special
+    # case (skip the multiply entirely for a trivial monomial) is gone
+    # because there is no longer a bare, un-scaled monomial value to
+    # special-case around.
     for ki, km in enumerate(f.km_list):
         e = mono_expr(["iq", "yc", "yd", "ax"], km)
         rhs = f"kcdv*{e}" if e else "kcdv"
@@ -523,13 +674,18 @@ def emit_core(kinds, scalarize=False):
                 body = " + ".join(inner).replace("+ -", "- ")
                 terms.append(f"{kme}*({body})")
         o.append(wrap(racc(ri + 1), terms))
-    o.append("         end do   ! kq (ket primitive)")
+    o.append(f"         end do   ! {OV} (ket primitive)" if not ket_inner
+             else f"         end do   ! {OV} (derivation-ket primitive)")
     o.append("")
     o.append("         ! === quartet assembly, straight into vbuf (level 3) ===")
+    if ket_inner:
+        o.append("         ! comp_i's target vbuf slot is relabelled at generation time")
+        o.append("         ! (component_vbuf_map, FRAME.md section 10) -- no runtime permutation.")
     for ci, cm in enumerate(f.cm_list):
         e = mono_expr(["Rs", "Rc", "cy"], cm)
         o.append(f"         {cmv(ci + 1)} = {e if e else '1.0_dp'}")
     for comp_i, terms in enumerate(f.assembly):
+        vbuf_idx = vbuf_map[comp_i] + 1
         bycm = {}
         for scale, cm_id, r_id in terms:
             bycm.setdefault(cm_id, []).append((scale, r_id))
@@ -544,7 +700,7 @@ def emit_core(kinds, scalarize=False):
             else:
                 body = " + ".join(inner).replace("+ -", "- ")
                 parts.append(f"({body})" if cme is None else f"{cme}*({body})")
-        o.append(wrap(f"vbuf({comp_i + 1})", parts))
+        o.append(wrap(f"vbuf({vbuf_idx})", parts))
     o.append("")
     o.append("         ! === rotate every p slot back to the lab frame (FRAME.md section 5) ===")
     rot_code = emit_rotation(kinds, na, nb, nc, nd)
@@ -640,11 +796,11 @@ def emit_decls(sizes, scalarize=False):
     return "\n".join(o)
 
 
-def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True):
+def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True, ket_inner=True):
     tag = tag_of(kinds)
     driver, item = f"ras{tag}", f"rasi{tag}"
     mod = f"trc_ra_k{tag}"
-    core, sizes = emit_core(kinds, scalarize=scalarize)
+    core, sizes = emit_core(kinds, scalarize=scalarize, ket_inner=ket_inner)
     na, nb, nc, nd = sizes["na"], sizes["nb"], sizes["nc"], sizes["nd"]
 
     body = []
@@ -796,13 +952,14 @@ def emit_dispatcher(cmd):
     return "\n".join(o) + "\n"
 
 
-def emit_files(cmd, scalarize=False, bra_fastest=True):
+def emit_files(cmd, scalarize=False, bra_fastest=True, ket_inner=True):
     """Return {filename: text} for every file this emitter writes, mirroring
     gen_perclass.py --split's own return shape."""
     files = {}
     for kinds in ALL_CLASSES:
         header, _driver, mod = emit_class_module(kinds, cmd, scalarize=scalarize,
-                                                 bra_fastest=bra_fastest)
+                                                 bra_fastest=bra_fastest,
+                                                 ket_inner=ket_inner)
         files[f"{mod}.F90"] = header
     files["trc_ra_kernels.F90"] = emit_dispatcher(cmd)
     return files

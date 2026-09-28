@@ -134,11 +134,11 @@ contains
       real(dp) :: f(0:BOYS_MMAX)
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
-      real(dp) :: gb(2)
-      real(dp) :: sacc(15)
-      real(dp) :: kmv(14)
-      real(dp) :: racc(48)
-      real(dp) :: cmv(16)
+      real(dp) :: gb(5)
+      real(dp) :: sacc(24)
+      real(dp) :: kmv(7)
+      real(dp) :: racc(36)
+      real(dp) :: cmv(10)
       real(dp) :: bn(0:3)
       real(dp) :: bz(6)
       real(dp) :: vbuf(27)
@@ -223,18 +223,18 @@ contains
          ! ab = B - A, the bra pair's own direction; z falls back to the lab
          ! axis when A == B (rab = 0), which happens whenever two shells on
          ! the same atom are paired -- routine, not rare.
-         abx = pp_rb(offab + 1, 1) - pp_ra(offab + 1, 1)
-         aby = pp_rb(offab + 1, 2) - pp_ra(offab + 1, 2)
-         abz = pp_rb(offab + 1, 3) - pp_ra(offab + 1, 3)
+         abx = pp_rb(offcd + 1, 1) - pp_ra(offcd + 1, 1)
+         aby = pp_rb(offcd + 1, 2) - pp_ra(offcd + 1, 2)
+         abz = pp_rb(offcd + 1, 3) - pp_ra(offcd + 1, 3)
          rab = sqrt(abx*abx + aby*aby + abz*abz)
          if (rab > 0.0_dp) then
             zhx = abx/rab; zhy = aby/rab; zhz = abz/rab
          else
             zhx = 0.0_dp; zhy = 0.0_dp; zhz = 1.0_dp
          end if
-         cdx = pp_rb(offcd + 1, 1) - pp_ra(offcd + 1, 1)
-         cdy = pp_rb(offcd + 1, 2) - pp_ra(offcd + 1, 2)
-         cdz = pp_rb(offcd + 1, 3) - pp_ra(offcd + 1, 3)
+         cdx = pp_rb(offab + 1, 1) - pp_ra(offab + 1, 1)
+         cdy = pp_rb(offab + 1, 2) - pp_ra(offab + 1, 2)
+         cdz = pp_rb(offab + 1, 3) - pp_ra(offab + 1, 3)
          rcd = sqrt(cdx*cdx + cdy*cdy + cdz*cdz)
          ! x spans what of CD is perpendicular to z; falls back to the lab
          ! axis least aligned with z when CD is parallel to AB (or C == D,
@@ -267,34 +267,37 @@ contains
          rot(1,1) = xhx; rot(2,1) = xhy; rot(3,1) = xhz
          rot(1,2) = yhx; rot(2,2) = yhy; rot(3,2) = yhz
          rot(1,3) = zhx; rot(2,3) = zhy; rot(3,3) = zhz
-         cl1 = xhx*(pp_ra(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + xhy*(pp_ra(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + xhz*(pp_ra(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         cl2 = yhx*(pp_ra(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + yhy*(pp_ra(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + yhz*(pp_ra(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         cl3 = zhx*(pp_ra(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + zhy*(pp_ra(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + zhz*(pp_ra(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         dl1 = xhx*(pp_rb(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + xhy*(pp_rb(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + xhz*(pp_rb(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         dl3 = zhx*(pp_rb(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + zhy*(pp_rb(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + zhz*(pp_rb(offcd + 1, 3) - pp_ra(offab + 1, 3))
+         cl1 = xhx*(pp_ra(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + xhy*(pp_ra(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + xhz*(pp_ra(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         cl2 = yhx*(pp_ra(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + yhy*(pp_ra(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + yhz*(pp_ra(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         cl3 = zhx*(pp_ra(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + zhy*(pp_ra(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + zhz*(pp_ra(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         dl1 = xhx*(pp_rb(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + xhy*(pp_rb(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + xhz*(pp_rb(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         dl3 = zhx*(pp_rb(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + zhy*(pp_rb(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + zhz*(pp_rb(offab + 1, 3) - pp_ra(offcd + 1, 3))
          Rs = dl1 - cl1
          Rc = dl3 - cl3
          cy = cl2
 
 
-         ! === per-quartet integral core (FRAME.md sections 2-4) ===
+         ! === per-quartet integral core (FRAME.md sections 2-4, 10) ===
          !
-         ! Ket outside, bra inside (README_TERCO.md section 2.4): the level-1
-         ! accumulators below are per BRA primitive and do not depend on which
-         ! Cartesian component is being built, so putting the bra loop
-         ! innermost is what keeps a (pp|pp) inner loop to a few dozen
-         ! multiply-adds. This is the SAME order libfint's own rotaxis
-         ! emitter uses (scripts/rotaxis_mmd/emit.py:emit_kernel).
+         ! Derivation's ket outside, bra inside (README_TERCO.md section
+         ! 2.4): the level-1 accumulators below are per DERIVATION-BRA
+         ! primitive (kq) and do not depend on which Cartesian component is
+         ! being built, so putting that loop innermost is what keeps a
+         ! (pp|pp) inner loop to a few dozen multiply-adds -- the same order
+         ! libfint's own rotaxis emitter uses (scripts/rotaxis_mmd/emit.py:
+         ! emit_kernel). `ket_inner` picks which PHYSICAL pair plays the
+         ! derivation's bra vs ket role (FRAME.md section 10); the role
+         ! structure itself (bra always inner) never changes.
          !
          racc(1) = 0.0_dp
          racc(2) = 0.0_dp
@@ -332,55 +335,42 @@ contains
          racc(34) = 0.0_dp
          racc(35) = 0.0_dp
          racc(36) = 0.0_dp
-         racc(37) = 0.0_dp
-         racc(38) = 0.0_dp
-         racc(39) = 0.0_dp
-         racc(40) = 0.0_dp
-         racc(41) = 0.0_dp
-         racc(42) = 0.0_dp
-         racc(43) = 0.0_dp
-         racc(44) = 0.0_dp
-         racc(45) = 0.0_dp
-         racc(46) = 0.0_dp
-         racc(47) = 0.0_dp
-         racc(48) = 0.0_dp
-         do kq = offcd + 1, offcd + ncd
-            eta = pp_p(kq)
+         do kp = offab + 1, offab + nab
+            zeta = pp_p(kp)
             ! PRIMITIVE-QUARTET PRESCREEN, adapted from the HGP kernel's `bnd`
-            ! bound to this loop's swapped order: the pair lists are sorted by
-            ! |c|/p descending (build_pairs_hgp), so `bnd` bounds every
-            ! remaining bra primitive using THIS ket's weight, and testing it
-            ! against the best bra (offab + 1) before entering the bra loop
-            ! at all, then EXITing that loop the first time a weaker bra fails
-            ! it, is the same two-part test the HGP kernel runs -- just with
-            ! bra and ket swapped, because here the ket is the outer loop.
-            bnd = TWO_PI_2_5*abs(pp_cs(kq))/(eta*sqrt(eta))
-            if (bnd*abs(pp_cs(offab + 1))/pp_p(offab + 1) <= pcut) cycle
-            iq = 0.5_dp/eta
+            ! bound: the pair lists are sorted by |c|/p descending
+            ! (build_pairs_hgp), so `bnd` bounds every remaining inner-loop
+            ! primitive using THIS outer primitive's weight, testing it
+            ! against the best inner primitive (offcd + 1) before entering
+            ! that loop at all, then EXITing it the first time a weaker one
+            ! fails -- the same two-part test the HGP kernel runs, on
+            ! whichever physical pair is outer here.
+            bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
+            if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+            iq = 0.5_dp/zeta
             ! yc, yd = c/q, d/q (FRAME.md section 3) are recovered by
-            ! projecting the ket pair centre Q = pp_r(kq,:) onto CD, since
-            ! terco's pp_p carries only q = c + d, not c and d separately.
-            ! Q - C = yd*(D - C), so |Q - C|/rcd = yd exactly whenever
-            ! rcd > 0. When C == D (rcd == 0, routine for two shells on one
-            ! atom) that ratio is 0/0; yd is then set to an arbitrary finite
-            ! value instead; it is provably safe because FRAME.md section 0's
-            ! derivation shows every term carrying a yc or yd power also
-            ! carries a matching Rs or Rc power from the SAME Hermite
-            ! coefficient (they are only ever introduced together), and
-            ! Rs = Rc = 0 exactly whenever C == D -- so the term vanishes via
-            ! the constant factor regardless of what yd is, PROVIDED yd is
-            ! finite: 0.0*NaN is NaN, and the whole point of this branch is to
-            ! keep that finite so a degenerate frame does not poison the sum.
+            ! projecting the derivation-ket pair centre onto its own
+            ! separation, since terco's pp_p carries only q = c + d, not c
+            ! and d separately. That ratio is 0/0 when the two ket-role
+            ! centres coincide (routine for two shells on one atom); yd is
+            ! then set to an arbitrary finite value instead, provably safe
+            ! because FRAME.md section 0's derivation shows every term
+            ! carrying a yc or yd power also carries a matching Rs or Rc
+            ! power from the SAME Hermite coefficient (introduced only
+            ! together), and Rs = Rc = 0 exactly in that degenerate case --
+            ! so the term vanishes via the constant factor regardless of
+            ! what yd is, PROVIDED yd is finite: 0.0*NaN is NaN, and the
+            ! whole point of this branch is to keep that finite.
             if (rcd > 0.0_dp) then
-               yd = sqrt((pp_r(kq,1) - pp_ra(kq,1))**2 + (pp_r(kq,2) - pp_ra(kq,2))**2 &
-                       + (pp_r(kq,3) - pp_ra(kq,3))**2)/rcd
+               yd = sqrt((pp_r(kp,1) - pp_ra(kp,1))**2 + (pp_r(kp,2) - pp_ra(kp,2))**2 &
+                       + (pp_r(kp,3) - pp_ra(kp,3))**2)/rcd
             else
                yd = 0.5_dp
             end if
             yc = 1.0_dp - yd
             ax = cl1 + yd*Rs
             az = cl3 + yd*Rc
-            kcdv = TWO_PI_2_5*pp_cs(kq)/eta
+            kcdv = TWO_PI_2_5*pp_cs(kp)/zeta
             sacc(1) = 0.0_dp
             sacc(2) = 0.0_dp
             sacc(3) = 0.0_dp
@@ -396,18 +386,28 @@ contains
             sacc(13) = 0.0_dp
             sacc(14) = 0.0_dp
             sacc(15) = 0.0_dp
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               if (bnd*abs(pp_cs(kp))/zeta <= pcut) exit
+            sacc(16) = 0.0_dp
+            sacc(17) = 0.0_dp
+            sacc(18) = 0.0_dp
+            sacc(19) = 0.0_dp
+            sacc(20) = 0.0_dp
+            sacc(21) = 0.0_dp
+            sacc(22) = 0.0_dp
+            sacc(23) = 0.0_dp
+            sacc(24) = 0.0_dp
+            do kq = offcd + 1, offcd + ncd
+               eta = pp_p(kq)
+               if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
                zpe = zeta + eta
                ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
                ! own `pref`, since kab*kcd*B_0 regroups to the identical
-               ! product (FRAME.md section 4) -- same cutoff, same meaning.
+               ! product (FRAME.md section 4) -- same cutoff, same meaning,
+               ! and symmetric in zeta/eta so unaffected by which is outer.
                pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
                if (abs(pref) <= pcut) cycle
-               ip = 0.5_dp/zeta
-               za = zhx*(pp_r(kp,1) - pp_ra(kp,1)) + zhy*(pp_r(kp,2) - pp_ra(kp,2)) &
-                  + zhz*(pp_r(kp,3) - pp_ra(kp,3))
+               ip = 0.5_dp/eta
+               za = zhx*(pp_r(kq,1) - pp_ra(kq,1)) + zhy*(pp_r(kq,2) - pp_ra(kq,2)) &
+                  + zhz*(pp_r(kq,3) - pp_ra(kq,3))
                zb = za - rab
                zq = za - az
                alpha = zeta*eta/zpe
@@ -442,13 +442,13 @@ contains
                end if
 
                ! kabv is folded into the Boys ladder's overall scale HERE,
-               ! once per bra primitive, rather than multiplied into every
-               ! one of the 15 level-1 accumulators below (coordinator
-               ! review item 2): bn(n) = kabv * (-2 alpha)^n F_n(T) /
-               ! sqrt(zpe) is exactly kabv*B_n, so every accumulation that
-               ! used to read "kabv*...*bn(n)..." now reads "...*bn(n)..."
-               ! for the identical value.
-               kabv = pp_cs(kp)/zeta
+               ! once per derivation-bra primitive, rather than multiplied
+               ! into every one of the 24 level-1 accumulators below
+               ! (coordinator review item 2): bn(n) = kabv * (-2 alpha)^n
+               ! F_n(T) / sqrt(zpe) is exactly kabv*B_n, so every
+               ! accumulation that used to read "kabv*...*bn(n)..." now
+               ! reads "...*bn(n)..." for the identical value.
+               kabv = pp_cs(kq)/eta
                w = kabv/sqrt(zpe)
                bn(0) = w*f(0)
                m2a = -2.0_dp*alpha
@@ -467,135 +467,125 @@ contains
                bz(5) = bn(3)*zq2
                bz(6) = bn(3)*zq3
                gb(1) = ip
-               gb(2) = za
-               sacc(1) = sacc(1) + gb(1)*bn(1)
-               sacc(2) = sacc(2) + gb(1)*bn(2)
-               sacc(3) = sacc(3) + gb(1)*bn(3)
-               sacc(4) = sacc(4) + gb(2)*bn(0)
-               sacc(5) = sacc(5) + gb(1)*bz(1)
-               sacc(6) = sacc(6) + gb(2)*bn(1)
-               sacc(7) = sacc(7) + gb(1)*bz(2)
-               sacc(8) = sacc(8) + gb(2)*bn(2)
-               sacc(9) = sacc(9) + gb(1)*bz(4)
-               sacc(10) = sacc(10) + gb(2)*bz(1)
-               sacc(11) = sacc(11) + gb(1)*bz(3)
-               sacc(12) = sacc(12) + gb(2)*bz(2)
-               sacc(13) = sacc(13) + gb(1)*bz(5)
-               sacc(14) = sacc(14) + gb(2)*bz(3)
-               sacc(15) = sacc(15) + gb(1)*bz(6)
-            end do   ! kp (bra primitive)
+               gb(2) = ip*ip
+               gb(3) = ip*za
+               gb(4) = ip*zb
+               gb(5) = za*zb
+               sacc(1) = sacc(1) + gb(1)*bn(0)
+               sacc(2) = sacc(2) + gb(1)*bn(1)
+               sacc(3) = sacc(3) + gb(2)*bn(2)
+               sacc(4) = sacc(4) + gb(2)*bn(1)
+               sacc(5) = sacc(5) + gb(2)*bn(3)
+               sacc(6) = sacc(6) + gb(3)*bn(1)
+               sacc(7) = sacc(7) + gb(2)*bz(2)
+               sacc(8) = sacc(8) + gb(3)*bn(2)
+               sacc(9) = sacc(9) + gb(2)*bz(4)
+               sacc(10) = sacc(10) + gb(4)*bn(1)
+               sacc(11) = sacc(11) + gb(4)*bn(2)
+               sacc(12) = sacc(12) + gb(5)*bn(0)
+               sacc(13) = sacc(13) + gb(4)*bz(1)
+               sacc(14) = sacc(14) + gb(3)*bz(1)
+               sacc(15) = sacc(15) + gb(2)*bz(3)
+               sacc(16) = sacc(16) + gb(5)*bn(1)
+               sacc(17) = sacc(17) + gb(4)*bz(2)
+               sacc(18) = sacc(18) + gb(3)*bz(2)
+               sacc(19) = sacc(19) + gb(2)*bz(5)
+               sacc(20) = sacc(20) + gb(1)*bz(1)
+               sacc(21) = sacc(21) + gb(5)*bz(1)
+               sacc(22) = sacc(22) + gb(4)*bz(3)
+               sacc(23) = sacc(23) + gb(3)*bz(3)
+               sacc(24) = sacc(24) + gb(2)*bz(6)
+            end do   ! kq (derivation-bra primitive)
 
-            kmv(1) = kcdv*yc*yd*ax
+            kmv(1) = kcdv*yd
             kmv(2) = kcdv*iq*ax
-            kmv(3) = kcdv*iq*yc*ax*ax
-            kmv(4) = kcdv*iq*yc
-            kmv(5) = kcdv*iq*yd*ax*ax
-            kmv(6) = kcdv*iq*yd
-            kmv(7) = kcdv*iq*iq*ax*ax*ax
-            kmv(8) = kcdv*iq*iq*ax
-            kmv(9) = kcdv*yc*yd
-            kmv(10) = kcdv*iq
-            kmv(11) = kcdv*iq*yc*ax
-            kmv(12) = kcdv*iq*yd*ax
-            kmv(13) = kcdv*iq*iq*ax*ax
-            kmv(14) = kcdv*iq*iq
-            racc(1) = racc(1) + kmv(1)*sacc(1)
-            racc(2) = racc(2) + kmv(2)*sacc(1) + kmv(7)*sacc(3) + 3.0_dp*kmv(8)*sacc(2)
-            racc(3) = racc(3) + kmv(3)*sacc(2) + kmv(4)*sacc(1) - kmv(5)*sacc(2) - kmv(6)*sacc(1)
-            racc(4) = racc(4) + kmv(9)*sacc(1)
-            racc(5) = racc(5) + kmv(10)*sacc(1) + kmv(13)*sacc(3) + kmv(14)*sacc(2)
-            racc(6) = racc(6) + kmv(11)*sacc(2) - kmv(12)*sacc(2)
-            racc(7) = racc(7) + kmv(9)*(sacc(4) + sacc(5))
-            racc(8) = racc(8) + kmv(10)*(sacc(4) + sacc(5)) + kmv(13)*(sacc(8) + sacc(9)) + &
-               kmv(14)*(sacc(6) + sacc(7))
-            racc(9) = racc(9) + kmv(11)*(sacc(6) + sacc(7)) + kmv(12)*(-sacc(6) - sacc(7))
-            racc(10) = racc(10) + kmv(13)*sacc(3) + kmv(14)*sacc(2)
-            racc(11) = racc(11) + kmv(11)*sacc(2)
-            racc(12) = racc(12) + kmv(8)*sacc(2)
-            racc(13) = racc(13) + kmv(4)*sacc(1)
-            racc(14) = racc(14) + kmv(4)*sacc(2)
-            racc(15) = racc(15) + kmv(8)*sacc(3)
-            racc(16) = racc(16) + kmv(8)*(sacc(8) + sacc(9))
-            racc(17) = racc(17) + kmv(4)*(sacc(6) + sacc(7))
-            racc(18) = racc(18) + kmv(13)*sacc(9) + kmv(14)*sacc(7)
-            racc(19) = racc(19) + kmv(11)*sacc(7)
-            racc(20) = racc(20) + kmv(5)*sacc(2) + kmv(6)*sacc(1)
-            racc(21) = racc(21) + kmv(8)*sacc(9)
-            racc(22) = racc(22) + kmv(4)*sacc(7)
-            racc(23) = racc(23) + kmv(12)*sacc(2)
-            racc(24) = racc(24) + kmv(8)*(sacc(2) + sacc(12) + sacc(13))
-            racc(25) = racc(25) + kmv(4)*(sacc(1) + sacc(10) + sacc(11))
-            racc(26) = racc(26) + kmv(12)*(sacc(6) + sacc(7))
-            racc(27) = racc(27) + kmv(6)*sacc(1)
-            racc(28) = racc(28) + kmv(6)*sacc(2)
-            racc(29) = racc(29) + kmv(6)*(sacc(6) + sacc(7))
-            racc(30) = racc(30) + kmv(2)*sacc(1) + kmv(8)*sacc(2)
-            racc(31) = racc(31) + kmv(10)*sacc(1) + 3.0_dp*kmv(14)*sacc(2)
-            racc(32) = racc(32) + kmv(14)*sacc(3)
-            racc(33) = racc(33) + kmv(10)*(sacc(4) + sacc(5)) + kmv(14)*(sacc(6) + sacc(7))
-            racc(34) = racc(34) + kmv(14)*(sacc(8) + sacc(9))
-            racc(35) = racc(35) + kmv(14)*sacc(7)
-            racc(36) = racc(36) + kmv(14)*sacc(9)
-            racc(37) = racc(37) + kmv(14)*(sacc(2) + sacc(12) + sacc(13))
-            racc(38) = racc(38) + kmv(12)*sacc(7)
-            racc(39) = racc(39) + kmv(3)*sacc(2) + kmv(4)*sacc(1)
-            racc(40) = racc(40) + kmv(6)*sacc(7)
-            racc(41) = racc(41) + kmv(6)*(sacc(1) + sacc(10) + sacc(11))
-            racc(42) = racc(42) + kmv(11)*(sacc(6) + sacc(7))
-            racc(43) = racc(43) + kmv(2)*sacc(1) + kmv(8)*(sacc(2) + sacc(13))
-            racc(44) = racc(44) + kmv(11)*sacc(7) - kmv(12)*sacc(7)
-            racc(45) = racc(45) + kmv(10)*sacc(1) + kmv(14)*(sacc(2) + sacc(13))
-            racc(46) = racc(46) + kmv(4)*sacc(7) - kmv(6)*sacc(7)
-            racc(47) = racc(47) + kmv(10)*(sacc(4) + sacc(5)) + kmv(14)*(sacc(6) + 3.0_dp*sacc(7) + &
-               sacc(14) + sacc(15))
-            racc(48) = racc(48) + kmv(4)*(sacc(1) + sacc(10) + sacc(11)) + kmv(6)*(-sacc(1) - &
-               sacc(10) - sacc(11))
-         end do   ! kq (ket primitive)
+            kmv(3) = kcdv*yd*ax*ax
+            kmv(4) = kcdv*iq*ax*ax*ax
+            kmv(5) = kcdv*yd*ax
+            kmv(6) = kcdv*iq*ax*ax
+            kmv(7) = kcdv*iq
+            racc(1) = racc(1) + kmv(1)*(sacc(1) + sacc(4)) + kmv(3)*sacc(3)
+            racc(2) = racc(2) + kmv(2)*(sacc(2) + 3.0_dp*sacc(3)) + kmv(4)*sacc(5)
+            racc(3) = racc(3) + kmv(5)*sacc(3)
+            racc(4) = racc(4) + kmv(6)*sacc(5) + kmv(7)*sacc(3)
+            racc(5) = racc(5) + kmv(5)*(sacc(6) + sacc(7))
+            racc(6) = racc(6) + kmv(6)*(sacc(8) + sacc(9)) + kmv(7)*(sacc(6) + sacc(7))
+            racc(7) = racc(7) + kmv(1)*(sacc(1) + sacc(4))
+            racc(8) = racc(8) + kmv(2)*(sacc(2) + sacc(3))
+            racc(9) = racc(9) + kmv(1)*sacc(3)
+            racc(10) = racc(10) + kmv(2)*sacc(5)
+            racc(11) = racc(11) + kmv(1)*(sacc(6) + sacc(7))
+            racc(12) = racc(12) + kmv(2)*(sacc(8) + sacc(9))
+            racc(13) = racc(13) + kmv(5)*(sacc(7) + sacc(10))
+            racc(14) = racc(14) + kmv(6)*(sacc(9) + sacc(11)) + kmv(7)*(sacc(7) + sacc(10))
+            racc(15) = racc(15) + kmv(1)*(sacc(7) + sacc(10))
+            racc(16) = racc(16) + kmv(2)*(sacc(9) + sacc(11))
+            racc(17) = racc(17) + kmv(1)*(sacc(1) + sacc(4) + sacc(12) + sacc(13) + sacc(14) + &
+               sacc(15))
+            racc(18) = racc(18) + kmv(2)*(sacc(2) + sacc(3) + sacc(16) + sacc(17) + sacc(18) + &
+               sacc(19))
+            racc(19) = racc(19) + kmv(6)*sacc(5) + kmv(7)*(sacc(2) + sacc(3))
+            racc(20) = racc(20) + kmv(2)*sacc(3)
+            racc(21) = racc(21) + kmv(7)*(sacc(2) + 3.0_dp*sacc(3))
+            racc(22) = racc(22) + kmv(7)*sacc(5)
+            racc(23) = racc(23) + kmv(7)*(sacc(6) + sacc(7))
+            racc(24) = racc(24) + kmv(7)*(sacc(8) + sacc(9))
+            racc(25) = racc(25) + kmv(7)*(sacc(7) + sacc(10))
+            racc(26) = racc(26) + kmv(7)*(sacc(9) + sacc(11))
+            racc(27) = racc(27) + kmv(7)*(sacc(2) + sacc(3) + sacc(16) + sacc(17) + sacc(18) + &
+               sacc(19))
+            racc(28) = racc(28) + kmv(6)*sacc(9) + kmv(7)*(sacc(7) + sacc(20))
+            racc(29) = racc(29) + kmv(2)*sacc(9)
+            racc(30) = racc(30) + kmv(2)*(sacc(3) + sacc(18) + sacc(19))
+            racc(31) = racc(31) + kmv(7)*(sacc(7) + sacc(20))
+            racc(32) = racc(32) + kmv(7)*sacc(9)
+            racc(33) = racc(33) + kmv(7)*(sacc(3) + sacc(18) + sacc(19))
+            racc(34) = racc(34) + kmv(2)*(sacc(3) + sacc(17) + sacc(19))
+            racc(35) = racc(35) + kmv(7)*(sacc(3) + sacc(17) + sacc(19))
+            racc(36) = racc(36) + kmv(7)*(sacc(6) + 3.0_dp*sacc(7) + sacc(10) + sacc(20) + sacc(21) &
+               + sacc(22) + sacc(23) + sacc(24))
+         end do   ! kp (derivation-ket primitive)
 
          ! === quartet assembly, straight into vbuf (level 3) ===
-         cmv(1) = Rs*Rs
+         ! comp_i's target vbuf slot is relabelled at generation time
+         ! (component_vbuf_map, FRAME.md section 10) -- no runtime permutation.
+         cmv(1) = Rs
          cmv(2) = 1.0_dp
-         cmv(3) = Rs
-         cmv(4) = Rs*Rs*cy
-         cmv(5) = cy
-         cmv(6) = Rs*cy
-         cmv(7) = Rs*cy*cy
-         cmv(8) = cy*cy
-         cmv(9) = Rs*Rc
-         cmv(10) = Rc
-         cmv(11) = Rs*Rc*cy
-         cmv(12) = Rc*cy
-         cmv(13) = cy*cy*cy
-         cmv(14) = Rc*cy*cy
-         cmv(15) = Rc*Rc
-         cmv(16) = Rc*Rc*cy
-            vbuf(1) = cmv(1)*racc(1) - racc(2) + cmv(3)*racc(3)
-            vbuf(2) = cmv(4)*racc(4) - cmv(5)*racc(5) + cmv(6)*racc(6)
-            vbuf(3) = -cmv(1)*racc(7) + racc(8) - cmv(3)*racc(9)
-            vbuf(4) = -cmv(5)*racc(10) + cmv(6)*racc(11)
-            vbuf(5) = -racc(12) + cmv(3)*racc(13) + cmv(7)*racc(14) - cmv(8)*racc(15)
-            vbuf(6) = cmv(5)*racc(16) - cmv(6)*racc(17)
-            vbuf(7) = racc(18) - cmv(3)*racc(19) + cmv(9)*racc(1) - cmv(10)*racc(20)
-            vbuf(8) = cmv(5)*racc(21) - cmv(6)*racc(22) + cmv(11)*racc(4) - cmv(12)*racc(23)
-            vbuf(9) = -racc(24) + cmv(3)*racc(25) - cmv(9)*racc(7) + cmv(10)*racc(26)
-            vbuf(10) = -cmv(5)*racc(10) - cmv(6)*racc(23)
-            vbuf(11) = -racc(12) - cmv(3)*racc(27) - cmv(7)*racc(28) - cmv(8)*racc(15)
-            vbuf(12) = cmv(5)*racc(16) + cmv(6)*racc(29)
-            vbuf(13) = -racc(30) - cmv(8)*racc(15)
-            vbuf(14) = -cmv(5)*racc(31) - cmv(13)*racc(32)
-            vbuf(15) = racc(33) + cmv(8)*racc(34)
-            vbuf(16) = cmv(5)*racc(21) - cmv(12)*racc(23)
-            vbuf(17) = racc(35) + cmv(8)*racc(36) - cmv(10)*racc(27) - cmv(14)*racc(28)
-            vbuf(18) = -cmv(5)*racc(37) + cmv(12)*racc(29)
-            vbuf(19) = racc(18) + cmv(3)*racc(38) + cmv(9)*racc(1) + cmv(10)*racc(39)
-            vbuf(20) = cmv(5)*racc(21) + cmv(6)*racc(40) + cmv(11)*racc(4) + cmv(12)*racc(11)
-            vbuf(21) = -racc(24) - cmv(3)*racc(41) - cmv(9)*racc(7) - cmv(10)*racc(42)
-            vbuf(22) = cmv(5)*racc(21) + cmv(12)*racc(11)
-            vbuf(23) = racc(35) + cmv(8)*racc(36) + cmv(10)*racc(13) + cmv(14)*racc(14)
-            vbuf(24) = -cmv(5)*racc(37) - cmv(12)*racc(17)
-            vbuf(25) = -racc(43) - cmv(10)*racc(44) + cmv(15)*racc(1)
-            vbuf(26) = -cmv(5)*racc(45) - cmv(12)*racc(46) + cmv(16)*racc(4)
-            vbuf(27) = racc(47) + cmv(10)*racc(48) - cmv(15)*racc(7)
+         cmv(3) = Rs*cy
+         cmv(4) = cy
+         cmv(5) = Rs*cy*cy
+         cmv(6) = cy*cy
+         cmv(7) = cy*cy*cy
+         cmv(8) = Rc
+         cmv(9) = Rc*cy
+         cmv(10) = Rc*cy*cy
+            vbuf(1) = cmv(1)*racc(1) + racc(2)
+            vbuf(4) = cmv(3)*racc(3) + cmv(4)*racc(4)
+            vbuf(7) = -cmv(1)*racc(5) - racc(6)
+            vbuf(10) = cmv(3)*racc(3) + cmv(4)*racc(4)
+            vbuf(13) = cmv(1)*racc(7) + racc(8) + cmv(5)*racc(9) + cmv(6)*racc(10)
+            vbuf(16) = -cmv(3)*racc(11) - cmv(4)*racc(12)
+            vbuf(19) = -cmv(1)*racc(13) - racc(14)
+            vbuf(22) = -cmv(3)*racc(15) - cmv(4)*racc(16)
+            vbuf(25) = cmv(1)*racc(17) + racc(18)
+            vbuf(2) = cmv(4)*racc(19)
+            vbuf(5) = racc(20) + cmv(6)*racc(10)
+            vbuf(8) = -cmv(4)*racc(12)
+            vbuf(11) = racc(20) + cmv(6)*racc(10)
+            vbuf(14) = cmv(4)*racc(21) + cmv(7)*racc(22)
+            vbuf(17) = -racc(23) - cmv(6)*racc(24)
+            vbuf(20) = -cmv(4)*racc(16)
+            vbuf(23) = -racc(25) - cmv(6)*racc(26)
+            vbuf(26) = cmv(4)*racc(27)
+            vbuf(3) = -racc(28) + cmv(8)*racc(1)
+            vbuf(6) = -cmv(4)*racc(29) + cmv(9)*racc(3)
+            vbuf(9) = racc(30) - cmv(8)*racc(5)
+            vbuf(12) = -cmv(4)*racc(29) + cmv(9)*racc(3)
+            vbuf(15) = -racc(31) - cmv(6)*racc(32) + cmv(8)*racc(7) + cmv(10)*racc(9)
+            vbuf(18) = cmv(4)*racc(33) - cmv(9)*racc(11)
+            vbuf(21) = racc(34) - cmv(8)*racc(13)
+            vbuf(24) = cmv(4)*racc(35) - cmv(9)*racc(15)
+            vbuf(27) = -racc(36) + cmv(8)*racc(17)
 
          ! === rotate every p slot back to the lab frame (FRAME.md section 5) ===
          t1 = vbuf(1); t2 = vbuf(2); t3 = vbuf(3)

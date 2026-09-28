@@ -62,6 +62,22 @@ def main():
                           "for the likely mechanism. Exists so the experiment "
                           "is reproducible, not because it should be turned "
                           "on.")
+    ap.add_argument("--legacy-bra-inner", action="store_true",
+                     help="derive Derivation(ka,kb,kc,kd) directly (physical "
+                          "BRA primitives innermost) instead of the DEFAULT "
+                          "Derivation(kc,kd,ka,kb) (physical KET primitives "
+                          "innermost, matching HGP's own nesting -- FRAME.md "
+                          "section 10, coordinator review). MEASURED, not "
+                          "assumed: on a 20-water 6-31G cluster the 75-water "
+                          "Fock build is 11.8% faster with the ket-inner "
+                          "default than with this flag (1.14x HGP vs 1.29x), "
+                          "reproducibly to within 0.1% over repeats, and no "
+                          "class regressed by more than the fixed ~10% "
+                          "decision-rule bound -- see emit_class_module's "
+                          "comment and the commit message for the full "
+                          "per-class table. This flag exists to reproduce "
+                          "the earlier (milestone-1) default for comparison, "
+                          "not because it measures better.")
     args = ap.parse_args()
 
     # The output directory is not recorded, as in gen_perclass.py: the header
@@ -72,9 +88,12 @@ def main():
         cmd += " --scalarize"
     if args.bra_uniform:
         cmd += " --bra-uniform"
+    if args.legacy_bra_inner:
+        cmd += " --legacy-bra-inner"
     os.makedirs(args.split, exist_ok=True)
     files = emit_docon.emit_files(cmd, scalarize=args.scalarize,
-                                  bra_fastest=not args.bra_uniform)
+                                  bra_fastest=not args.bra_uniform,
+                                  ket_inner=not args.legacy_bra_inner)
     for name, text in files.items():
         with open(os.path.join(args.split, name), "w") as fh:
             fh.write(text)

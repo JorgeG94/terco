@@ -224,18 +224,19 @@ contains
          ! evaluation per primitive quartet.
          !
          racc(1) = 0.0_dp
-         do kq = offcd + 1, offcd + ncd
-            eta = pp_p(kq)
-            bnd = TWO_PI_2_5*abs(pp_cs(kq))/(eta*sqrt(eta))
-            if (bnd*abs(pp_cs(offab + 1))/pp_p(offab + 1) <= pcut) cycle
-            kcdv = TWO_PI_2_5*pp_cs(kq)/eta
+         do kp = offab + 1, offab + nab
+            zeta = pp_p(kp)
+            bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
+            if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+            kcdv = TWO_PI_2_5*pp_cs(kp)/zeta
             sacc(1) = 0.0_dp
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               if (bnd*abs(pp_cs(kp))/zeta <= pcut) exit
+            do kq = offcd + 1, offcd + ncd
+               eta = pp_p(kq)
+               if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
                zpe = zeta + eta
                ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
-               ! own `pref` (FRAME.md section 4).
+               ! own `pref` (FRAME.md section 4); symmetric in zeta/eta, so
+               ! unaffected by which one is the outer- or inner-loop primitive.
                pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
                if (abs(pref) <= pcut) cycle
                pqx = pp_r(kp, 1) - pp_r(kq, 1)
@@ -264,13 +265,13 @@ contains
                   f(0) = bx*b1 - b2 + boys_table(bj + 1)
                end if
 
-               kabv = pp_cs(kp)/zeta
+               kabv = pp_cs(kq)/eta
                w = kabv/sqrt(zpe)
                sacc(1) = sacc(1) + w*f(0)
-            end do   ! kp (bra primitive)
+            end do   ! kq (ket primitive)
             kmv(1) = kcdv
             racc(1) = racc(1) + kmv(1)*sacc(1)
-         end do   ! kq (ket primitive)
+         end do   ! kp (bra primitive)
 
          ! === quartet assembly, straight into vbuf (level 3) ===
          vbuf(1) = racc(1)

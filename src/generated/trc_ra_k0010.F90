@@ -133,11 +133,11 @@ contains
       real(dp) :: f(0:BOYS_MMAX)
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
-      real(dp) :: gb(1)
+      real(dp) :: gb(2)
       real(dp) :: sacc(3)
-      real(dp) :: kmv(3)
-      real(dp) :: racc(4)
-      real(dp) :: cmv(4)
+      real(dp) :: kmv(2)
+      real(dp) :: racc(3)
+      real(dp) :: cmv(2)
       real(dp) :: bn(0:1)
       real(dp) :: bz(1)
       real(dp) :: vbuf(3)
@@ -222,18 +222,18 @@ contains
          ! ab = B - A, the bra pair's own direction; z falls back to the lab
          ! axis when A == B (rab = 0), which happens whenever two shells on
          ! the same atom are paired -- routine, not rare.
-         abx = pp_rb(offab + 1, 1) - pp_ra(offab + 1, 1)
-         aby = pp_rb(offab + 1, 2) - pp_ra(offab + 1, 2)
-         abz = pp_rb(offab + 1, 3) - pp_ra(offab + 1, 3)
+         abx = pp_rb(offcd + 1, 1) - pp_ra(offcd + 1, 1)
+         aby = pp_rb(offcd + 1, 2) - pp_ra(offcd + 1, 2)
+         abz = pp_rb(offcd + 1, 3) - pp_ra(offcd + 1, 3)
          rab = sqrt(abx*abx + aby*aby + abz*abz)
          if (rab > 0.0_dp) then
             zhx = abx/rab; zhy = aby/rab; zhz = abz/rab
          else
             zhx = 0.0_dp; zhy = 0.0_dp; zhz = 1.0_dp
          end if
-         cdx = pp_rb(offcd + 1, 1) - pp_ra(offcd + 1, 1)
-         cdy = pp_rb(offcd + 1, 2) - pp_ra(offcd + 1, 2)
-         cdz = pp_rb(offcd + 1, 3) - pp_ra(offcd + 1, 3)
+         cdx = pp_rb(offab + 1, 1) - pp_ra(offab + 1, 1)
+         cdy = pp_rb(offab + 1, 2) - pp_ra(offab + 1, 2)
+         cdz = pp_rb(offab + 1, 3) - pp_ra(offab + 1, 3)
          rcd = sqrt(cdx*cdx + cdy*cdy + cdz*cdz)
          ! x spans what of CD is perpendicular to z; falls back to the lab
          ! axis least aligned with z when CD is parallel to AB (or C == D,
@@ -266,91 +266,93 @@ contains
          rot(1,1) = xhx; rot(2,1) = xhy; rot(3,1) = xhz
          rot(1,2) = yhx; rot(2,2) = yhy; rot(3,2) = yhz
          rot(1,3) = zhx; rot(2,3) = zhy; rot(3,3) = zhz
-         cl1 = xhx*(pp_ra(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + xhy*(pp_ra(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + xhz*(pp_ra(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         cl2 = yhx*(pp_ra(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + yhy*(pp_ra(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + yhz*(pp_ra(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         cl3 = zhx*(pp_ra(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + zhy*(pp_ra(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + zhz*(pp_ra(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         dl1 = xhx*(pp_rb(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + xhy*(pp_rb(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + xhz*(pp_rb(offcd + 1, 3) - pp_ra(offab + 1, 3))
-         dl3 = zhx*(pp_rb(offcd + 1, 1) - pp_ra(offab + 1, 1)) &
-             + zhy*(pp_rb(offcd + 1, 2) - pp_ra(offab + 1, 2)) &
-             + zhz*(pp_rb(offcd + 1, 3) - pp_ra(offab + 1, 3))
+         cl1 = xhx*(pp_ra(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + xhy*(pp_ra(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + xhz*(pp_ra(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         cl2 = yhx*(pp_ra(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + yhy*(pp_ra(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + yhz*(pp_ra(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         cl3 = zhx*(pp_ra(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + zhy*(pp_ra(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + zhz*(pp_ra(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         dl1 = xhx*(pp_rb(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + xhy*(pp_rb(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + xhz*(pp_rb(offab + 1, 3) - pp_ra(offcd + 1, 3))
+         dl3 = zhx*(pp_rb(offab + 1, 1) - pp_ra(offcd + 1, 1)) &
+             + zhy*(pp_rb(offab + 1, 2) - pp_ra(offcd + 1, 2)) &
+             + zhz*(pp_rb(offab + 1, 3) - pp_ra(offcd + 1, 3))
          Rs = dl1 - cl1
          Rc = dl3 - cl3
          cy = cl2
 
 
-         ! === per-quartet integral core (FRAME.md sections 2-4) ===
+         ! === per-quartet integral core (FRAME.md sections 2-4, 10) ===
          !
-         ! Ket outside, bra inside (README_TERCO.md section 2.4): the level-1
-         ! accumulators below are per BRA primitive and do not depend on which
-         ! Cartesian component is being built, so putting the bra loop
-         ! innermost is what keeps a (pp|pp) inner loop to a few dozen
-         ! multiply-adds. This is the SAME order libfint's own rotaxis
-         ! emitter uses (scripts/rotaxis_mmd/emit.py:emit_kernel).
+         ! Derivation's ket outside, bra inside (README_TERCO.md section
+         ! 2.4): the level-1 accumulators below are per DERIVATION-BRA
+         ! primitive (kq) and do not depend on which Cartesian component is
+         ! being built, so putting that loop innermost is what keeps a
+         ! (pp|pp) inner loop to a few dozen multiply-adds -- the same order
+         ! libfint's own rotaxis emitter uses (scripts/rotaxis_mmd/emit.py:
+         ! emit_kernel). `ket_inner` picks which PHYSICAL pair plays the
+         ! derivation's bra vs ket role (FRAME.md section 10); the role
+         ! structure itself (bra always inner) never changes.
          !
          racc(1) = 0.0_dp
          racc(2) = 0.0_dp
          racc(3) = 0.0_dp
-         racc(4) = 0.0_dp
-         do kq = offcd + 1, offcd + ncd
-            eta = pp_p(kq)
+         do kp = offab + 1, offab + nab
+            zeta = pp_p(kp)
             ! PRIMITIVE-QUARTET PRESCREEN, adapted from the HGP kernel's `bnd`
-            ! bound to this loop's swapped order: the pair lists are sorted by
-            ! |c|/p descending (build_pairs_hgp), so `bnd` bounds every
-            ! remaining bra primitive using THIS ket's weight, and testing it
-            ! against the best bra (offab + 1) before entering the bra loop
-            ! at all, then EXITing that loop the first time a weaker bra fails
-            ! it, is the same two-part test the HGP kernel runs -- just with
-            ! bra and ket swapped, because here the ket is the outer loop.
-            bnd = TWO_PI_2_5*abs(pp_cs(kq))/(eta*sqrt(eta))
-            if (bnd*abs(pp_cs(offab + 1))/pp_p(offab + 1) <= pcut) cycle
-            iq = 0.5_dp/eta
+            ! bound: the pair lists are sorted by |c|/p descending
+            ! (build_pairs_hgp), so `bnd` bounds every remaining inner-loop
+            ! primitive using THIS outer primitive's weight, testing it
+            ! against the best inner primitive (offcd + 1) before entering
+            ! that loop at all, then EXITing it the first time a weaker one
+            ! fails -- the same two-part test the HGP kernel runs, on
+            ! whichever physical pair is outer here.
+            bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
+            if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+            iq = 0.5_dp/zeta
             ! yc, yd = c/q, d/q (FRAME.md section 3) are recovered by
-            ! projecting the ket pair centre Q = pp_r(kq,:) onto CD, since
-            ! terco's pp_p carries only q = c + d, not c and d separately.
-            ! Q - C = yd*(D - C), so |Q - C|/rcd = yd exactly whenever
-            ! rcd > 0. When C == D (rcd == 0, routine for two shells on one
-            ! atom) that ratio is 0/0; yd is then set to an arbitrary finite
-            ! value instead; it is provably safe because FRAME.md section 0's
-            ! derivation shows every term carrying a yc or yd power also
-            ! carries a matching Rs or Rc power from the SAME Hermite
-            ! coefficient (they are only ever introduced together), and
-            ! Rs = Rc = 0 exactly whenever C == D -- so the term vanishes via
-            ! the constant factor regardless of what yd is, PROVIDED yd is
-            ! finite: 0.0*NaN is NaN, and the whole point of this branch is to
-            ! keep that finite so a degenerate frame does not poison the sum.
+            ! projecting the derivation-ket pair centre onto its own
+            ! separation, since terco's pp_p carries only q = c + d, not c
+            ! and d separately. That ratio is 0/0 when the two ket-role
+            ! centres coincide (routine for two shells on one atom); yd is
+            ! then set to an arbitrary finite value instead, provably safe
+            ! because FRAME.md section 0's derivation shows every term
+            ! carrying a yc or yd power also carries a matching Rs or Rc
+            ! power from the SAME Hermite coefficient (introduced only
+            ! together), and Rs = Rc = 0 exactly in that degenerate case --
+            ! so the term vanishes via the constant factor regardless of
+            ! what yd is, PROVIDED yd is finite: 0.0*NaN is NaN, and the
+            ! whole point of this branch is to keep that finite.
             if (rcd > 0.0_dp) then
-               yd = sqrt((pp_r(kq,1) - pp_ra(kq,1))**2 + (pp_r(kq,2) - pp_ra(kq,2))**2 &
-                       + (pp_r(kq,3) - pp_ra(kq,3))**2)/rcd
+               yd = sqrt((pp_r(kp,1) - pp_ra(kp,1))**2 + (pp_r(kp,2) - pp_ra(kp,2))**2 &
+                       + (pp_r(kp,3) - pp_ra(kp,3))**2)/rcd
             else
                yd = 0.5_dp
             end if
             yc = 1.0_dp - yd
             ax = cl1 + yd*Rs
             az = cl3 + yd*Rc
-            kcdv = TWO_PI_2_5*pp_cs(kq)/eta
+            kcdv = TWO_PI_2_5*pp_cs(kp)/zeta
             sacc(1) = 0.0_dp
             sacc(2) = 0.0_dp
             sacc(3) = 0.0_dp
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               if (bnd*abs(pp_cs(kp))/zeta <= pcut) exit
+            do kq = offcd + 1, offcd + ncd
+               eta = pp_p(kq)
+               if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
                zpe = zeta + eta
                ! The exact (ss|ss)-type bound: bit-for-bit the HGP kernel's
                ! own `pref`, since kab*kcd*B_0 regroups to the identical
-               ! product (FRAME.md section 4) -- same cutoff, same meaning.
+               ! product (FRAME.md section 4) -- same cutoff, same meaning,
+               ! and symmetric in zeta/eta so unaffected by which is outer.
                pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
                if (abs(pref) <= pcut) cycle
-               ip = 0.5_dp/zeta
-               za = zhx*(pp_r(kp,1) - pp_ra(kp,1)) + zhy*(pp_r(kp,2) - pp_ra(kp,2)) &
-                  + zhz*(pp_r(kp,3) - pp_ra(kp,3))
+               ip = 0.5_dp/eta
+               za = zhx*(pp_r(kq,1) - pp_ra(kq,1)) + zhy*(pp_r(kq,2) - pp_ra(kq,2)) &
+                  + zhz*(pp_r(kq,3) - pp_ra(kq,3))
                zb = za - rab
                zq = za - az
                alpha = zeta*eta/zpe
@@ -381,42 +383,41 @@ contains
                end if
 
                ! kabv is folded into the Boys ladder's overall scale HERE,
-               ! once per bra primitive, rather than multiplied into every
-               ! one of the 3 level-1 accumulators below (coordinator
-               ! review item 2): bn(n) = kabv * (-2 alpha)^n F_n(T) /
-               ! sqrt(zpe) is exactly kabv*B_n, so every accumulation that
-               ! used to read "kabv*...*bn(n)..." now reads "...*bn(n)..."
-               ! for the identical value.
-               kabv = pp_cs(kp)/zeta
+               ! once per derivation-bra primitive, rather than multiplied
+               ! into every one of the 3 level-1 accumulators below
+               ! (coordinator review item 2): bn(n) = kabv * (-2 alpha)^n
+               ! F_n(T) / sqrt(zpe) is exactly kabv*B_n, so every
+               ! accumulation that used to read "kabv*...*bn(n)..." now
+               ! reads "...*bn(n)..." for the identical value.
+               kabv = pp_cs(kq)/eta
                w = kabv/sqrt(zpe)
                bn(0) = w*f(0)
                m2a = -2.0_dp*alpha
                w = w*m2a
                bn(1) = w*f(1)
                bz(1) = bn(1)*zq
-               gb(1) = 1.0_dp
-               sacc(1) = sacc(1) + bn(0)
-               sacc(2) = sacc(2) + bn(1)
-               sacc(3) = sacc(3) + bz(1)
-            end do   ! kp (bra primitive)
+               gb(1) = ip
+               gb(2) = za
+               sacc(1) = sacc(1) + gb(1)*bn(1)
+               sacc(2) = sacc(2) + gb(2)*bn(0)
+               sacc(3) = sacc(3) + gb(1)*bz(1)
+            end do   ! kq (derivation-bra primitive)
 
-            kmv(1) = kcdv*yd
-            kmv(2) = kcdv*iq*ax
-            kmv(3) = kcdv*iq
+            kmv(1) = kcdv*ax
+            kmv(2) = kcdv
             racc(1) = racc(1) + kmv(1)*sacc(1)
-            racc(2) = racc(2) + kmv(2)*sacc(2)
-            racc(3) = racc(3) + kmv(3)*sacc(2)
-            racc(4) = racc(4) + kmv(3)*sacc(3)
-         end do   ! kq (ket primitive)
+            racc(2) = racc(2) + kmv(2)*sacc(1)
+            racc(3) = racc(3) + kmv(2)*(sacc(2) + sacc(3))
+         end do   ! kp (derivation-ket primitive)
 
          ! === quartet assembly, straight into vbuf (level 3) ===
-         cmv(1) = Rs
-         cmv(2) = 1.0_dp
-         cmv(3) = cy
-         cmv(4) = Rc
-            vbuf(1) = cmv(1)*racc(1) + racc(2)
-            vbuf(2) = cmv(3)*racc(3)
-            vbuf(3) = -racc(4) + cmv(4)*racc(1)
+         ! comp_i's target vbuf slot is relabelled at generation time
+         ! (component_vbuf_map, FRAME.md section 10) -- no runtime permutation.
+         cmv(1) = 1.0_dp
+         cmv(2) = cy
+            vbuf(1) = -racc(1)
+            vbuf(2) = -cmv(2)*racc(2)
+            vbuf(3) = racc(3)
 
          ! === rotate every p slot back to the lab frame (FRAME.md section 5) ===
          t1 = vbuf(1); t2 = vbuf(2); t3 = vbuf(3)
