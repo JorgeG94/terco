@@ -56,6 +56,11 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
                                 TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
                                 TRC_GUESS_SAP = 5
+   ! AO normalisation kinds for trc_set_ao_norm: TRC_AO_NORM_SHELL (the
+   ! default) is terco's own per-l convention, TRC_AO_NORM_UNIT is
+   ! GAMESS's per-component one. See trc_capi.F90's "AO NORMALISATION"
+   ! header section for the transform and which entries apply it.
+   integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0, TRC_AO_NORM_UNIT = 1
 
    interface
 
@@ -434,6 +439,25 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), value :: fcomm
       end function trc_set_comm
+
+      integer(c_int) function trc_set_ao_norm(handle, kind) bind(c)
+         !! TRC_AO_NORM_SHELL (0, the default -- terco's/libcint's own
+         !! convention) or TRC_AO_NORM_UNIT (1 -- GAMESS's, every Cartesian
+         !! component individually normalised to 1). Settable before or
+         !! after the basis; NOT retroactive on a density already given
+         !! through trc_set_guess. See trc_capi.F90's "AO NORMALISATION"
+         !! header section for exactly which entries this changes.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), value :: kind
+      end function trc_set_ao_norm
+
+      integer(c_int) function trc_get_ao_norm(handle, kind) bind(c)
+         !! The AO normalisation this context is set to.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: kind
+      end function trc_get_ao_norm
 
       integer(c_int) function trc_set_verbose(handle, level) bind(c)
          import :: c_int, c_ptr

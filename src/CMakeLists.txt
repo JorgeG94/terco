@@ -29,6 +29,7 @@ target_sources(
           trc_sap.F90 # SAP: free-atom potentials, superposed on a quadrature
           trc_capi.F90       # the bind(c) skin
           trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
+          trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
           trc_acc_shim.F90)  # see the file: this one is not optional
 
 # --- the molecular quadrature -------------------------------------------------

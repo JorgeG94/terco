@@ -281,6 +281,21 @@ target_link_libraries(context_scf PRIVATE ${main_lib} terco_test_basis terco_c_i
 add_test(NAME terco/context_scf COMMAND context_scf)
 set_tests_properties(terco/context_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# GAMESS's per-component AO normalisation (trc_set_ao_norm): the factor
+# itself against scripts/cartorder.py's recorded reference, l = 0..4, then
+# the overlap diagonal, the SCF energy, Tr(D S) and a guess round trip, all
+# in both TRC_AO_NORM_SHELL and TRC_AO_NORM_UNIT, on water/cc-pVDZ (real d
+# functions). See check_ao_norm.F90's own header for why each check is
+# there and reference_ao_norm.dat's header for how it was generated.
+add_executable(check_ao_norm check_ao_norm.F90)
+target_compile_definitions(check_ao_norm PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_ao_norm PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_include_directories(check_ao_norm PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/check_ao_norm COMMAND check_ao_norm)
+set_tests_properties(terco/check_ao_norm PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 target_include_directories(scf_rimp2 PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_rimp2 COMMAND scf_rimp2)
 set_tests_properties(
