@@ -61,12 +61,18 @@ import cartorder
 ONE_E_RADIX = 11
 
 
-def cart(l):
-    """(nx,ny,nz) for one shell, libcint order.
+def cart(l, order="lexicographic"):
+    """(nx,ny,nz) for one shell, in `order`.
 
     Thin wrapper: the order itself is the single definition in cartorder.py.
+    Called with NO explicit order (the default) at every INTERNAL use below
+    -- `cart_cum`'s index into the VRR's `vn`/`g` arrays, and
+    `emit_nuc_vrr`'s own level-by-level bookkeeping -- so those stay pinned
+    to lexicographic regardless of what `--order` asks for. Only
+    `emit_hrr`'s and `emit_class`'s/`emit_multipole`'s OUTPUT enumerations
+    (the AO slot order) take `order` explicitly.
     """
-    return cartorder.components(l)
+    return cartorder.components(l, order)
 
 
 def cart_cum(lmax):
@@ -189,17 +195,21 @@ def emit_nuc_vrr(lab, idx):
     return "\n".join(o)
 
 
-def emit_hrr(la, lb, idx, src, dst):
+def emit_hrr(la, lb, idx, src, dst, order="lexicographic"):
     """(a|b) from [a+b|0] -- the same horizontal transfer the ERI uses.
 
     It is a statement about the two Gaussian centres, not about the operator
     between them, so it is reused verbatim.
+
+    `order` governs only the two outer loops (`dst`'s own AO slot); `idx`
+    (built by `cart_cum` with no order argument by every caller) addresses
+    `src`, an internal VRR array, and stays lexicographic regardless.
     """
     o, w = [], None
     w = o.append
     na = len(cart(la))
-    for ib, (bx, by, bz) in enumerate(cart(lb)):
-        for ia, (axp, ayp, azp) in enumerate(cart(la)):
+    for ib, (bx, by, bz) in enumerate(cart(lb, order)):
+        for ia, (axp, ayp, azp) in enumerate(cart(la, order)):
             terms = []
             for px in range(bx + 1):
                 for py in range(by + 1):
@@ -226,7 +236,7 @@ def emit_hrr(la, lb, idx, src, dst):
 MULT_MAX = 3   # octupole
 
 
-def emit_multipole(la, lb):
+def emit_multipole(la, lb, order="lexicographic"):
     """Cartesian multipole moments through the octupole, one class.
 
     SEPARABLE, like overlap and for the same reason: (r-O)^n is a product of
@@ -246,9 +256,13 @@ def emit_multipole(la, lb):
     No new recurrence, no auxiliary index, no Boys function.
 
     mqc wants the FULL Cartesian tensor -- 3, 9 and 27 components, not the 4,
-    6 and 10 unique ones -- in libcint's order with the last index fastest.
-    The repeats are written out rather than mapped, because a component table
-    is another thing to get out of step with the caller.
+    6 and 10 unique ones -- with the last index fastest. That MOMENT-RANK
+    axis (dipole/quadrupole/octupole component slot) is a fixed tensor
+    convention unrelated to `--order`: it is not a within-shell Cartesian
+    layout, so it is untouched here regardless of which order the AO axis
+    (the `k` index below, this class's `(la|lb)` slot) follows. The repeats
+    are written out rather than mapped, because a component table is another
+    thing to get out of step with the caller.
     """
     o, w = [], None
     w = o.append
@@ -270,18 +284,19 @@ def emit_multipole(la, lb):
                     joiner = " &" + chr(10) + "            + "
                     w(f"         m{ax}{pw}({a},{b}) = " + joiner.join(terms))
 
-    # the components, in libcint order: last index fastest
+    # the moment-rank components, last index fastest (see the docstring: this
+    # is not the Cartesian shell order and does not take `order`)
     slot = 0
-    for order in range(1, MULT_MAX + 1):
-        for idx in range(3**order):
+    for mrank in range(1, MULT_MAX + 1):
+        for idx in range(3**mrank):
             # decode the index tuple, last fastest
             t, powers = idx, [0, 0, 0]
-            for _ in range(order):
+            for _ in range(mrank):
                 powers[t % 3] += 1
                 t //= 3
             slot += 1
-            for ib, (bx, by, bz) in enumerate(cart(lb)):
-                for ia, (ax_, ay_, az_) in enumerate(cart(la)):
+            for ib, (bx, by, bz) in enumerate(cart(lb, order)):
+                for ia, (ax_, ay_, az_) in enumerate(cart(la, order)):
                     k = 1 + ia + na*ib
                     fac = []
                     for d, ch in enumerate(axes):
@@ -295,7 +310,7 @@ def emit_multipole(la, lb):
     return chr(10).join(o), slot
 
 
-def emit_class(la, lb, LMAX):
+def emit_class(la, lb, LMAX, order="lexicographic"):
     lab = la + lb
     na, nb = len(cart(la)), len(cart(lb))
     idx = cart_cum(lab)
@@ -305,10 +320,11 @@ def emit_class(la, lb, LMAX):
     sxyz = "\n".join(emit_1d(la, lb, a) for a in "xyz")
     txyz = "\n".join(emit_kin_1d(la, lb, a) for a in "xyz")
 
-    # overlap and kinetic components, straight from the 1-D tables
+    # overlap and kinetic components, straight from the 1-D tables. OUTPUT:
+    # sout/tout are AO-indexed, so this enumeration follows `order`.
     comps = []
-    for ib, (bx, by, bz) in enumerate(cart(lb)):
-        for ia, (ax, ay, az) in enumerate(cart(la)):
+    for ib, (bx, by, bz) in enumerate(cart(lb, order)):
+        for ia, (ax, ay, az) in enumerate(cart(la, order)):
             k = 1 + ia + na*ib
             comps.append(
                 f"         sout({k}) = sout({k}) + "
@@ -321,7 +337,7 @@ def emit_class(la, lb, LMAX):
     comps = "\n".join(comps)
 
     vrr = emit_nuc_vrr(lab, idx)
-    hrr = emit_hrr(la, lb, idx, "vn0", "vtmp")
+    hrr = emit_hrr(la, lb, idx, "vn0", "vtmp", order)
 
     return f"""
    !> ({la}|{lb}) one-electron block: overlap, kinetic, nuclear attraction.
@@ -412,12 +428,14 @@ def emit_class(la, lb, LMAX):
 """
 
 
-def emit_multipole_module(L, path):
+def emit_multipole_module(L, path, order="lexicographic"):
     """Multipole kernels, one routine per class, in their own module."""
+    order_val = 0 if order == "lexicographic" else 1
+    order_arg = "" if order == "lexicographic" else f" --order {order}"
     parts = [f"""!
 ! Cartesian multipole moments through the octupole.
 !
-! GENERATED by scripts/gen_1e.py --lmax {L} --multipole -- do not edit.
+! GENERATED by scripts/gen_1e.py --lmax {L} --multipole{order_arg} -- do not edit.
 !
 ! Separate from the S/T/V kernels ON PURPOSE. Fusing them shares the 1-D
 ! overlap tables, which sounds free and is not: 39 components per class in the
@@ -429,6 +447,14 @@ def emit_multipole_module(L, path):
 ! libcint's order with the last index fastest, because that is what mqc's
 ! `multipole_matrices` returns and a component map is one more thing to drift.
 !
+! TRC_CART_ORDER GUARD. An undefined TRC_CART_ORDER reads as 0 in a
+! preprocessor #if, so the default (lexicographic) build needs no new -D
+! flag; see docs/GENERATORS.md's TRC_LMAX guard for the failure mode this
+! prevents.
+!
+#if TRC_CART_ORDER != {order_val}
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
 module trc_mult_kernels
    use trc_boys, only: dp
    implicit none
@@ -452,7 +478,7 @@ contains
     names = []
     for la in range(L + 1):
         for lb in range(L + 1):
-            body, nmult = emit_multipole(la, lb)
+            body, nmult = emit_multipole(la, lb, order)
             na, nb = len(cart(la)), len(cart(lb))
             sxyz = "\n".join(emit_1d(la, lb, a, extra=MULT_MAX) for a in "xyz")
             names.append((la, lb))
@@ -546,6 +572,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lmax", type=int, default=2)
     ap.add_argument("-o", "--output", default="src/trc_1e_kernels.F90")
+    ap.add_argument("--order", choices=("lexicographic", "gamess"),
+                    default="lexicographic",
+                    help="Cartesian order of the AO slots sout/tout/vout (and "
+                         "the multipole AO axis, under --multipole) are "
+                         "written in. INTERNAL VRR indices (cart_cum, "
+                         "emit_nuc_vrr) stay lexicographic regardless.")
     ap.add_argument("--multipole", metavar="FILE", default=None,
                     help="emit the multipole kernels into their own module "
                          "instead. They are NOT fused with S/T/V: doing that "
@@ -555,15 +587,18 @@ def main():
                          "1-D tables saved nothing worth that.")
     args = ap.parse_args()
     L = args.lmax
+    order = args.order
+    order_val = 0 if order == "lexicographic" else 1
+    order_arg = "" if order == "lexicographic" else f" --order {order}"
 
     if args.multipole:
-        emit_multipole_module(L, args.multipole)
+        emit_multipole_module(L, args.multipole, order)
         return
 
     parts = [f"""!
 ! One-electron kernels: overlap, kinetic, nuclear attraction.
 !
-! GENERATED by scripts/gen_1e.py --lmax {L} -- do not edit.
+! GENERATED by scripts/gen_1e.py --lmax {L}{order_arg} -- do not edit.
 !
 ! One straight-line routine per (la, lb) class, in the same style the
 ! four-centre kernels established: literal indices, no runtime loop bounds over
@@ -576,6 +611,16 @@ def main():
 ! statement about the two Gaussian centres rather than the operator between
 ! them. See the module docstring of scripts/gen_1e.py.
 !
+! TRC_CART_ORDER GUARD. sout/tout/vout below are AO-indexed and follow the
+! order --order was given at generation time (0 = lexicographic, the
+! default; 1 = gamess); TRC_CART_ORDER selects it at compile time, and an
+! undefined TRC_CART_ORDER reads as 0 in a preprocessor #if, so the default
+! build needs no new -D flag. Same idea as docs/GENERATORS.md's TRC_LMAX
+! guard, for a different compile-time constant.
+!
+#if TRC_CART_ORDER != {order_val}
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
 module trc_1e_kernels
    use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none
@@ -603,7 +648,7 @@ contains
     names = []
     for la in range(L + 1):
         for lb in range(L + 1):
-            parts.append(emit_class(la, lb, L))
+            parts.append(emit_class(la, lb, L, order))
             names.append((la, lb))
 
     parts.append(f"""

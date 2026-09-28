@@ -390,7 +390,7 @@ def emit_core_noframe(f, scalarize=False, ket_inner=False):
                               NBZ=0, na=1, nb=1, nc=1, nd=1, noframe=True)
 
 
-def component_vbuf_map(kinds, ket_inner):
+def component_vbuf_map(kinds, ket_inner, order="lexicographic"):
     """comp_i (0-based, in f.components' own iteration order) -> the 0-based
     vbuf index (terco's ia-fastest convention) it belongs at.
 
@@ -403,8 +403,13 @@ def component_vbuf_map(kinds, ket_inner):
     same nested loop directly (matching `swapped_component_map` in
     check_numeric.py, which this was checked against) rather than reshaping
     or transposing a flat array, precisely so an axis-order mistake cannot
-    hide inside a `.reshape()`."""
-    na, nb, nc, nd = (len(derive.kind_components(k)) for k in kinds)
+    hide inside a `.reshape()`.
+
+    `order` only matters for the kind "d"/"f" etc that FRAME.md's s/p class
+    set never reaches (KIND_LMAX <= 1 throughout), so lexicographic and
+    gamess give identical counts here; threaded through anyway so this stays
+    correct if rotaxis ever grows a kind above p."""
+    na, nb, nc, nd = (len(derive.kind_components(k, order)) for k in kinds)
     if not ket_inner:
         return list(range(na * nb * nc * nd))
     mapping = []
@@ -417,7 +422,7 @@ def component_vbuf_map(kinds, ket_inner):
     return mapping
 
 
-def emit_core(kinds, scalarize=False, ket_inner=False):
+def emit_core(kinds, scalarize=False, ket_inner=False, order="lexicographic"):
     """`ket_inner` (FRAME.md section 10, coordinator review) derives
     `Derivation(kc, kd, ka, kb)` instead of `Derivation(ka, kb, kc, kd)`:
     its "bra" (level 1, the inner accumulation loop) is then physically
@@ -429,16 +434,24 @@ def emit_core(kinds, scalarize=False, ket_inner=False):
     this changes nothing about the answer -- only which physical loop is
     outer/inner, and a compile-time relabelling of which vbuf slot each
     computed component lands in (`component_vbuf_map`). Verified against
-    pyscf in Python first: `check_numeric.py`'s `run_swapped()`."""
-    d = derive.Derivation(kinds[2], kinds[3], kinds[0], kinds[1]) if ket_inner \
-        else derive.Derivation(*kinds)
+    pyscf in Python first: `check_numeric.py`'s `run_swapped()`.
+
+    `order` is OUTPUT layout, `Derivation`'s own `order` parameter (its
+    docstring: "the Cartesian component order of the OUTPUT only"). It only
+    has a class of s/p here (FRAME.md section 5: rotaxis is not implemented
+    past p), and lexicographic and gamess coincide for s and p, so this never
+    changes a byte of what gets emitted today -- threaded through anyway so
+    a `--order gamess` build's kernels are provably generated the same way
+    as every other generator's, not merely "happen to agree."."""
+    d = derive.Derivation(kinds[2], kinds[3], kinds[0], kinds[1], order=order) if ket_inner \
+        else derive.Derivation(*kinds, order=order)
     f = factor.Factorised(d)
     L = d.L
     NS, NR, NG = len(f.s_list), len(f.r_list), len(f.g_list)
     NKM, NCM = len(f.km_list), len(f.cm_list)
     NCOMP = len(f.components)
     KMAX = f.max_zq_power
-    na, nb, nc, nd = (len(derive.kind_components(k)) for k in kinds)
+    na, nb, nc, nd = (len(derive.kind_components(k, order)) for k in kinds)
     assert NCOMP == na * nb * nc * nd
     for g in f.g_list:
         assert g[3] == 0, "energy classes never touch the gradient's `ea` factor"
@@ -466,7 +479,7 @@ def emit_core(kinds, scalarize=False, ket_inner=False):
     else:
         OV, OOFF, ON, OE = "kq", "offcd", "ncd", "eta"
         IV, IOFF, IN_, IE = "kp", "offab", "nab", "zeta"
-    vbuf_map = component_vbuf_map(kinds, ket_inner)
+    vbuf_map = component_vbuf_map(kinds, ket_inner, order)
 
     # The distinct (n, kz) combinations s_list actually asks for, sharing one
     # bn(n)*zq^kz product across every bra monomial that needs it (level 1,
@@ -796,11 +809,12 @@ def emit_decls(sizes, scalarize=False):
     return "\n".join(o)
 
 
-def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True, ket_inner=True):
+def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True, ket_inner=True,
+                      order="lexicographic"):
     tag = tag_of(kinds)
     driver, item = f"ras{tag}", f"rasi{tag}"
     mod = f"trc_ra_k{tag}"
-    core, sizes = emit_core(kinds, scalarize=scalarize, ket_inner=ket_inner)
+    core, sizes = emit_core(kinds, scalarize=scalarize, ket_inner=ket_inner, order=order)
     na, nb, nc, nd = sizes["na"], sizes["nb"], sizes["nc"], sizes["nd"]
 
     body = []
@@ -840,7 +854,7 @@ def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True, ket_inner=T
     body.append(f"   end subroutine {item}")
     body_text = "\n".join(body)
 
-    d = derive.Derivation(*kinds)
+    d = derive.Derivation(*kinds, order=order)
     f = factor.Factorised(d)
     header = f"""!
 ! Rotated-axis MD class ({kinds[0]}{kinds[1]}|{kinds[2]}{kinds[3]}) kernel.
@@ -853,6 +867,13 @@ def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True, ket_inner=T
 ! routine stays in the same file as its driver so it inlines (the whole
 ! reason the HGP kernels do this too, see docs/GENERATORS.md), and the
 ! dispatcher is host code free to cross modules.
+!
+! No TRC_CART_ORDER guard: every class here is s/p (FRAME.md section 5 --
+! d is not implemented), and lexicographic and gamess are the SAME order for
+! s and p, so this file's layout is provably order-invariant regardless of
+! --order. (--order is still accepted and threaded to `Derivation` above,
+! so a future kind above p would be generated correctly rather than silently
+! defaulting.)
 !
 module {mod}
    use, intrinsic :: iso_fortran_env, only: int64
@@ -952,14 +973,15 @@ def emit_dispatcher(cmd):
     return "\n".join(o) + "\n"
 
 
-def emit_files(cmd, scalarize=False, bra_fastest=True, ket_inner=True):
+def emit_files(cmd, scalarize=False, bra_fastest=True, ket_inner=True,
+              order="lexicographic"):
     """Return {filename: text} for every file this emitter writes, mirroring
     gen_perclass.py --split's own return shape."""
     files = {}
     for kinds in ALL_CLASSES:
         header, _driver, mod = emit_class_module(kinds, cmd, scalarize=scalarize,
                                                  bra_fastest=bra_fastest,
-                                                 ket_inner=ket_inner)
+                                                 ket_inner=ket_inner, order=order)
         files[f"{mod}.F90"] = header
     files["trc_ra_kernels.F90"] = emit_dispatcher(cmd)
     return files

@@ -13,9 +13,11 @@
 !   * the coefficients in `sh_c` already carry libcint's primitive
 !     normalisation and its `common_fac_sp`, so NOTHING is normalised here.
 !     A component is x^i y^j z^k times sum_p c_p exp(-a_p r^2), full stop;
-!   * the components of a shell come out in libcint's Cartesian order --
-!     x descending outermost, y descending inside it -- which is the order
-!     `trc_cart` uses and the order the integrals fill.
+!   * the components of a shell come out in the BUILD's Cartesian order
+!     (TRC_CART_ORDER; lexicographic by default -- x descending outermost,
+!     y descending inside it), which is the order every AO-indexed quantity
+!     the integrals fill uses too. The table below (scripts/gen_cartcomp.py)
+!     is generated for the same order and guards against a mismatch.
 !
 ! The gradient is the same expression differentiated:
 !
@@ -37,6 +39,12 @@ module trc_collocation
    integer, parameter :: XC_LMAX = 4
    integer, parameter :: NCART_MAX = (XC_LMAX + 1)*(XC_LMAX + 2)/2
    real(dp), parameter :: COLLOCATE_EXP_MAX = 34.5_dp   !! exp(-34.5) = 1e-15: a primitive past this is skipped
+
+   ! CC_NX/CC_NY/CC_NZ/CC_OFF/CC_NCART: the flat (ix,iy,iz) table
+   ! shell_collocate reads below, in the build's Cartesian order
+   ! (TRC_CART_ORDER). OUTPUT layout -- see scripts/gen_cartcomp.py, whose
+   ! header explains why this is a table and not a `select case`.
+#include "trc_collocation_table.inc"
 
 contains
 
@@ -73,20 +81,23 @@ contains
          zp(m) = zp(m - 1)*d(3)
       end do
 
-      m = 0
-      do ix = l, 0, -1
-         do iy = l - ix, 0, -1
-            iz = l - ix - iy
-            m = m + 1
-            ang = xp(ix)*yp(iy)*zp(iz)
-            chi(m) = ang*rad
-            gchi(1, m) = xp(ix + 1)*yp(iy)*zp(iz)*drad
-            gchi(2, m) = xp(ix)*yp(iy + 1)*zp(iz)*drad
-            gchi(3, m) = xp(ix)*yp(iy)*zp(iz + 1)*drad
-            if (ix > 0) gchi(1, m) = gchi(1, m) + real(ix, dp)*xp(ix - 1)*yp(iy)*zp(iz)*rad
-            if (iy > 0) gchi(2, m) = gchi(2, m) + real(iy, dp)*xp(ix)*yp(iy - 1)*zp(iz)*rad
-            if (iz > 0) gchi(3, m) = gchi(3, m) + real(iz, dp)*xp(ix)*yp(iy)*zp(iz - 1)*rad
-         end do
+      ! (ix,iy,iz) comes from the flat table above rather than from nested
+      ! loop counters now, so this loop follows the build's AO output order
+      ! (TRC_CART_ORDER) instead of always producing lexicographic's; the
+      ! per-point arithmetic itself -- one lookup and the same handful of
+      ! multiplies -- is what the nested loop already cost.
+      do m = 1, CC_OFF(l + 1) - CC_OFF(l)
+         ix = CC_NX(CC_OFF(l) + m)
+         iy = CC_NY(CC_OFF(l) + m)
+         iz = CC_NZ(CC_OFF(l) + m)
+         ang = xp(ix)*yp(iy)*zp(iz)
+         chi(m) = ang*rad
+         gchi(1, m) = xp(ix + 1)*yp(iy)*zp(iz)*drad
+         gchi(2, m) = xp(ix)*yp(iy + 1)*zp(iz)*drad
+         gchi(3, m) = xp(ix)*yp(iy)*zp(iz + 1)*drad
+         if (ix > 0) gchi(1, m) = gchi(1, m) + real(ix, dp)*xp(ix - 1)*yp(iy)*zp(iz)*rad
+         if (iy > 0) gchi(2, m) = gchi(2, m) + real(iy, dp)*xp(ix)*yp(iy - 1)*zp(iz)*rad
+         if (iz > 0) gchi(3, m) = gchi(3, m) + real(iz, dp)*xp(ix)*yp(iy)*zp(iz - 1)*rad
       end do
    end subroutine shell_collocate
 

@@ -138,22 +138,17 @@ contains
    ! 31% of runtime.  trc_hgp keeps the originals for the standalone HGP path
    ! and check_hgp still validates those.
    !
+   !
+   ! (l, ic) -> (px,py,pz), the component AT AN AO OFFSET (`ic` becomes
+   ! `mu = ao_off(si) + ic` etc below) -- OUTPUT layout, follows the build's
+   ! Cartesian order.  Generated so this deliberate second copy of trc_hgp's
+   ! `comp` cannot drift from it; see scripts/gen_cartcomp.py.
+   !
    pure subroutine comp(l, ic, px, py, pz)
       !$acc routine seq
       integer, intent(in)  :: l, ic
       integer, intent(out) :: px, py, pz
-      integer :: n, lx, ly
-      n = 0
-      do lx = l, 0, -1
-         do ly = l - lx, 0, -1
-            if (n == ic) then
-               px = lx; py = ly; pz = l - lx - ly
-               return
-            end if
-            n = n + 1
-         end do
-      end do
-      px = 0; py = 0; pz = 0
+#include "trc_cart_comp.inc"
    end subroutine comp
 
    pure real(dp) function binom(n, k)

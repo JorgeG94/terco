@@ -81,21 +81,45 @@ target_include_directories(${main_lib} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # --- generated --------------------------------------------------------------
 #
-# The repository ships ONE generated configuration: TERCO_LMAX=2, in
-# src/generated. That is what `fpm build` uses, since fpm cannot run a
-# generator, and it is what a consumer gets without needing Python.
+# The repository ships ONE generated configuration: TERCO_LMAX=2,
+# TERCO_CART_ORDER=lexicographic, in src/generated. That is what `fpm build`
+# uses, since fpm cannot run a generator, and it is what a consumer gets
+# without needing Python.
 #
-# Any other ceiling -- or an explicit TERCO_REGENERATE -- runs the generators.
-# At configure time rather than build time, because the file list is not known
-# until they have run and CMake needs it to construct the target.
+# Any other ceiling, any other Cartesian order, or an explicit
+# TERCO_REGENERATE runs the generators. At configure time rather than build
+# time, because the file list is not known until they have run and CMake
+# needs it to construct the target.
 #
+# "libcint" is accepted as an alias for TERCO_CART_ORDER, same as
+# cartorder.py's own ORDERS dict -- it costs one line and nothing else needs
+# to know the alias exists.
+if(TERCO_CART_ORDER STREQUAL "libcint")
+  set(TERCO_CART_ORDER "lexicographic")
+endif()
+
 set(_gen_dir "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 set(_regen OFF)
 if(NOT TERCO_LMAX STREQUAL "2")
   set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
   set(_regen ON)
+elseif(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
+  set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
+  set(_regen ON)
 elseif(TERCO_REGENERATE)
   set(_regen ON)
+endif()
+
+# `--order` is passed to every generator call below ONLY when it is not the
+# default, exactly like `--lmax` is always passed (TERCO_LMAX has no
+# "leave it out" state). Suppressing the default keeps a lexicographic
+# regeneration's invocation line -- and so its GENERATED header -- identical
+# to what every generator emitted before this option existed, which is what
+# "regenerates byte for byte" in docs/GENERATORS.md means for the shipped
+# set.
+set(_order_flag "")
+if(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
+  set(_order_flag "--order" "${TERCO_CART_ORDER}")
 endif()
 
 if(_regen)
@@ -103,13 +127,14 @@ if(_regen)
   file(MAKE_DIRECTORY "${_gen_dir}")
   set(_scripts "${CMAKE_SOURCE_DIR}/scripts")
 
-  message(STATUS "terco: generating kernels for LMAX=${TERCO_LMAX} in ${_gen_dir}")
+  message(STATUS "terco: generating kernels for LMAX=${TERCO_LMAX} "
+                 "CART_ORDER=${TERCO_CART_ORDER} in ${_gen_dir}")
 
   # Four-centre, one module per (la,lb,lc,ld) class. `--split` matters: at
   # LMAX=2 a single module is a gigabyte of NVVM that does not finish.
   execute_process(
     COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py --lmax
-            ${TERCO_LMAX} --split ${_gen_dir}
+            ${TERCO_LMAX} ${_order_flag} --split ${_gen_dir}
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_perclass.py failed (${_rc})")
@@ -120,8 +145,11 @@ if(_regen)
   # set does not grow with the ceiling (scripts/rotaxis/FRAME.md section 5),
   # and trc_ra_kernels.F90 imports CLASS_RADIX from trc_pc_kernels, so it must
   # run after gen_perclass.py has written that module into the same directory.
+  # `--order` is accepted for symmetry with the other generators, though s/p
+  # is where lexicographic and gamess coincide, so it never changes a byte of
+  # what comes out (scripts/gen_rotaxis.py's own docstring on --order).
   execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_rotaxis.py --split ${_gen_dir}
+    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_rotaxis.py ${_order_flag} --split ${_gen_dir}
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_rotaxis.py failed (${_rc})")
@@ -136,37 +164,63 @@ if(_regen)
   # Fock matrix. H would be built from whatever one_e_dispatch returns for a
   # key it has no case for, and an SCF converges on that without complaint.
   execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX}
-                          -o ${_gen_dir}/trc_1e_kernels.F90 RESULT_VARIABLE _rc OUTPUT_QUIET)
+                          ${_order_flag} -o ${_gen_dir}/trc_1e_kernels.F90
+                  RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_1e.py failed (${_rc})")
   endif()
   execute_process(
     COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX} --multipole
-            ${_gen_dir}/trc_mult_kernels.F90 RESULT_VARIABLE _rc OUTPUT_QUIET)
+            ${_gen_dir}/trc_mult_kernels.F90 ${_order_flag} RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_1e.py --multipole failed (${_rc})")
   endif()
   execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${TERCO_LMAX}
-                          -o ${_gen_dir}/trc_df_kernels.F90 RESULT_VARIABLE _rc OUTPUT_QUIET)
+                          ${_order_flag} -o ${_gen_dir}/trc_df_kernels.F90
+                  RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_df.py failed (${_rc})")
+  endif()
+
+  # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
+  # `comp` and trc_batch.F90's `cart_pow`, plus the flat table
+  # trc_collocation.F90's `shell_collocate` reads. Needed at every TERCO_LMAX,
+  # unlike the unrolled VRR/HRR includes below, because these four call sites
+  # are not conditional on TRC_UNROLL_VRR/HRR.
+  execute_process(
+    COMMAND
+      ${Python3_EXECUTABLE} ${_scripts}/gen_cartcomp.py ${_order_flag}
+      --comp-out ${_gen_dir}/trc_cart_comp.inc --colloc-out
+      ${_gen_dir}/trc_collocation_table.inc
+    RESULT_VARIABLE _rc OUTPUT_QUIET)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "gen_cartcomp.py failed (${_rc})")
   endif()
 
   # The unrolled recurrences are textual includes, and only the shared kernel
   # uses them -- at LMAX<=1, for the reason the top-level CMakeLists gives.
   # They carry a `#if TRC_LMAX != n / #error` guard, so a stale one is a
   # compile error rather than a wrong number. That guard exists because a
-  # stale one WAS a wrong number, silently, for a month.
+  # stale one WAS a wrong number, silently, for a month. gen_hrr.py's output
+  # additionally depends on the Cartesian order (its digestion writes AO
+  # slots directly), so it also carries a `#if TRC_CART_ORDER != n` guard and
+  # takes `--order`; gen_vrr.py's VRR intermediates are addressed only
+  # internally and never reach an AO index, so it has no `--order` at all.
   if(TERCO_LMAX LESS_EQUAL 1)
     execute_process(
       COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_vrr.py --lmax ${TERCO_LMAX}
               --mode include -o ${_gen_dir}/trc_vrr_cases.inc OUTPUT_QUIET)
     execute_process(
       COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_hrr.py --lmax ${TERCO_LMAX}
-              -o ${_gen_dir}/trc_hrr_cases.inc OUTPUT_QUIET)
-    target_include_directories(${main_lib} PRIVATE ${_gen_dir})
+              ${_order_flag} -o ${_gen_dir}/trc_hrr_cases.inc OUTPUT_QUIET)
   endif()
 endif()
+
+# Always on the include path, not just when regenerating for LMAX<=1: the
+# shipped src/generated also carries trc_cart_comp.inc and
+# trc_collocation_table.inc now, which trc_hgp.F90, trc_binkernel.F90,
+# trc_batch.F90 and trc_collocation.F90 #include unconditionally.
+target_include_directories(${main_lib} PRIVATE ${_gen_dir})
 
 file(GLOB _generated CONFIGURE_DEPENDS "${_gen_dir}/*.F90")
 if(NOT _generated)

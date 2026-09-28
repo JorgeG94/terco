@@ -43,6 +43,14 @@ def main():
                      help="emit one module per class into DIR, plus "
                           "trc_ra_kernels.F90, matching gen_perclass.py "
                           "--split's own layout.")
+    ap.add_argument("--order", choices=("lexicographic", "gamess"),
+                     default="lexicographic",
+                     help="Cartesian order, threaded to derive.Derivation "
+                          "for consistency with the other generators. Every "
+                          "class here is s/p (FRAME.md section 5), where "
+                          "lexicographic and gamess coincide, so this never "
+                          "changes a byte of what comes out today -- see "
+                          "emit_class_module's header comment.")
     ap.add_argument("--scalarize", action="store_true",
                      help="name sacc/racc/kmv/cmv/gb/bn/bz as individual "
                           "scalars instead of small arrays -- the register-"
@@ -90,10 +98,13 @@ def main():
         cmd += " --bra-uniform"
     if args.legacy_bra_inner:
         cmd += " --legacy-bra-inner"
+    if args.order != "lexicographic":
+        cmd += f" --order {args.order}"
     os.makedirs(args.split, exist_ok=True)
     files = emit_docon.emit_files(cmd, scalarize=args.scalarize,
                                   bra_fastest=not args.bra_uniform,
-                                  ket_inner=not args.legacy_bra_inner)
+                                  ket_inner=not args.legacy_bra_inner,
+                                  order=args.order)
     for name, text in files.items():
         with open(os.path.join(args.split, name), "w") as fh:
             fh.write(text)

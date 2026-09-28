@@ -14,6 +14,16 @@
 ! statement about the two Gaussian centres rather than the operator between
 ! them. See the module docstring of scripts/gen_1e.py.
 !
+! TRC_CART_ORDER GUARD. sout/tout/vout below are AO-indexed and follow the
+! order --order was given at generation time (0 = lexicographic, the
+! default; 1 = gamess); TRC_CART_ORDER selects it at compile time, and an
+! undefined TRC_CART_ORDER reads as 0 in a preprocessor #if, so the default
+! build needs no new -D flag. Same idea as docs/GENERATORS.md's TRC_LMAX
+! guard, for a different compile-time constant.
+!
+#if TRC_CART_ORDER != 0
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
 module trc_1e_kernels
    use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none

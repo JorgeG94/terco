@@ -10,6 +10,13 @@
 ! reason the HGP kernels do this too, see docs/GENERATORS.md), and the
 ! dispatcher is host code free to cross modules.
 !
+! No TRC_CART_ORDER guard: every class here is s/p (FRAME.md section 5 --
+! d is not implemented), and lexicographic and gamess are the SAME order for
+! s and p, so this file's layout is provably order-invariant regardless of
+! --order. (--order is still accepted and threaded to `Derivation` above,
+! so a future kind above p would be generated correctly rather than silently
+! defaulting.)
+!
 module trc_ra_k0001
    use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &

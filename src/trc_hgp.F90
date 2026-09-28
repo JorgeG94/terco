@@ -445,22 +445,18 @@ contains
       end do
    end subroutine hrr_store
 
+   !
+   ! (l, ic) -> (px,py,pz), the component AT AN AO OFFSET: `ic` becomes
+   ! `mu = ao_off(shell) + ic` at every call site in this module, so this is
+   ! OUTPUT layout and follows the build's Cartesian order.  Generated rather
+   ! than hand-rolled so trc_binkernel.F90's deliberate second copy cannot
+   ! drift from this one -- see scripts/gen_cartcomp.py.
+   !
    pure subroutine comp(l, ic, px, py, pz)
       !$acc routine seq
       integer, intent(in)  :: l, ic
       integer, intent(out) :: px, py, pz
-      integer :: n, lx, ly
-      n = 0
-      do lx = l, 0, -1
-         do ly = l - lx, 0, -1
-            if (n == ic) then
-               px = lx; py = ly; pz = l - lx - ly
-               return
-            end if
-            n = n + 1
-         end do
-      end do
-      px = 0; py = 0; pz = 0
+#include "trc_cart_comp.inc"
    end subroutine comp
 
    pure real(dp) function binom(n, k)
