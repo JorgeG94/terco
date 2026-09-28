@@ -190,6 +190,17 @@ if(Python3_FOUND)
       terco/check_xc_energy_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
                  terco/check_xc_energy)
+    # The rotated-axis algebra itself, in Python and in float64, for every
+    # ordered s/p class against int2e_cart, degenerate frames included. It
+    # needs no build, so it is the first thing to break when the vendored
+    # derivation or scripts/rotaxis/FRAME.md drifts -- libfint's own numeric
+    # check went unrun and quietly wrong, which is why this one is a test.
+    add_test(NAME terco/check_rotaxis_numeric
+             COMMAND ${Python3_EXECUTABLE}
+                     ${PROJECT_SOURCE_DIR}/scripts/rotaxis/check_numeric.py)
+    set_tests_properties(
+      terco/check_rotaxis_numeric
+      PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()
