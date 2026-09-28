@@ -41,6 +41,8 @@ import argparse
 import importlib.util
 import os
 
+import cart_order
+
 
 def _load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -55,9 +57,11 @@ gh = _load("gh", os.path.join(HERE, "gen_hrr.py"))
 
 
 def cart(l):
-    return [(lx, ly, l - lx - ly)
-            for lx in range(l, -1, -1)
-            for ly in range(l - lx, -1, -1)]
+    """(nx,ny,nz) for one shell, libcint order.
+
+    Thin wrapper: the order itself is the single definition in cart_order.py.
+    """
+    return cart_order.components(l)
 
 
 def binom(n, k):

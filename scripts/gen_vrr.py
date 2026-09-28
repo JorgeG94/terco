@@ -35,14 +35,17 @@ experiment is narrower.  It gets measured before it gets believed.
 
 import argparse
 
+import cart_order
+
 
 def cart_list(lmax):
-    """(nx,ny,nz) in trc_cart order: angular-momentum-major, libcint within."""
+    """(nx,ny,nz) in trc_cart order: angular-momentum-major, libcint within.
+
+    Thin wrapper: the order itself is the single definition in cart_order.py.
+    """
     out = []
     for l in range(lmax + 1):
-        for lx in range(l, -1, -1):
-            for ly in range(l - lx, -1, -1):
-                out.append((lx, ly, l - lx - ly))
+        out.extend(cart_order.components(l))
     return out
 
 

@@ -29,12 +29,15 @@ here, so this is an include from the start.
 
 import argparse
 
+import cart_order
+
 
 def cart(l):
-    """(nx,ny,nz) for one shell, libcint order."""
-    return [(lx, ly, l - lx - ly)
-            for lx in range(l, -1, -1)
-            for ly in range(l - lx, -1, -1)]
+    """(nx,ny,nz) for one shell, libcint order.
+
+    Thin wrapper: the order itself is the single definition in cart_order.py.
+    """
+    return cart_order.components(l)
 
 
 def cart_cum(lmax):
