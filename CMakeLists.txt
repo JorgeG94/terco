@@ -259,11 +259,15 @@ find_package("jsonfortran" REQUIRED)
 if(DEFINED TERCO_HOST_NVHPC_OPTIONS)
   target_compile_options(${main_lib} PRIVATE ${TERCO_HOST_NVHPC_OPTIONS})
 endif()
-if(TERCO_ENABLE_MPI)
-  # The C entry that takes a communicator handle checks it against
-  # MPI_COMM_WORLD, which needs mpi_f08; without MPI it ignores the handle.
-  target_compile_definitions(${main_lib} PRIVATE TERCO_HAVE_MPI)
-endif()
+#
+# The library itself no longer branches on whether MPI is present: every
+# pic-mpi backend (mpi_f08, legacy MPI, and the single-rank serial stand-in
+# PIC_ENABLE_MPI=OFF selects above) exports the same comm_from_handle, so
+# trc_capi's communicator handling compiles and runs unchanged either way.
+# TERCO_HAVE_MPI still exists as a TEST-ONLY define (test/CMakeLists.txt),
+# because the tests need `mpi_f08` themselves to build a Fortran handle to
+# hand the C API in the first place.
+#
 target_link_libraries(${main_lib} PUBLIC $<BUILD_INTERFACE:pic::pic>
                                          $<BUILD_INTERFACE:pic-blas::pic-blas>
                                          $<BUILD_INTERFACE:pic-mpi::pic-mpi>

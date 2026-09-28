@@ -191,7 +191,15 @@ contains
 
    !
    ! One device per rank: rank r takes device r modulo the number of
-   ! devices. Call it right after MPI is up and BEFORE any basis, pair list
+   ! devices. `rank` must be the caller's rank WITHIN ITS NODE, not
+   ! necessarily its rank in the whole communicator: a communicator is not
+   ! guaranteed to be node-ordered (a DDI compute communicator or a
+   ! fragment's sub-communicator need not be), so a caller whose
+   ! communicator might span more than one node should split it by shared
+   ! memory first (pic-mpi's comm_t%split(), MPI_COMM_TYPE_SHARED
+   ! underneath) and pass the rank in THAT communicator. trc_capi's
+   ! trc_build_comm does exactly this for every fcomm-taking C entry.
+   ! Call it right after MPI is up and BEFORE any basis, pair list
    ! or grid goes to the device -- those land on whichever device is current
    ! at the time. Under a host build there is nothing to bind. Returns the
    ! device chosen, -1 on a host build.

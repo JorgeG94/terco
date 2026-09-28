@@ -28,6 +28,20 @@
 ! Status codes, not exceptions or aborts. A library that stops the process on
 ! bad input is unusable inside someone else's SCF.
 !
+! COMMUNICATORS
+! -------------
+! Every entry that takes an `fcomm` (trc_scf_mpi, trc_rimp2, trc_set_comm)
+! accepts the Fortran handle of ANY intra-communicator the caller already
+! has open and is willing to be collective over -- not just MPI_COMM_WORLD.
+! -1 means one rank and no MPI, in any build. terco duplicates whatever the
+! handle names (MPI_Comm_dup, so every rank of it must call together) into
+! its own comm_t and frees only that duplicate afterwards; the caller's own
+! communicator is untouched and stays open for its own use throughout. This
+! is what lets GAMESS hand in DDI's compute communicator -- whose data
+! servers sit in MPI_COMM_WORLD but never call into terco, so terco must
+! never wait on MPI_COMM_WORLD itself -- and what will let a fragment
+! method hand in a per-fragment sub-communicator. See trc_build_comm.
+!
 ! CARTESIAN COMPONENT ORDER
 ! -------------------------
 ! Every AO-indexed array this API hands back or takes in (S/T/V, the Fock
@@ -51,7 +65,7 @@ module trc_capi
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
-   use pic_mpi_lib, only: comm_t, comm_world
+   use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_cart_perm, only: trc_cart_order_id
    implicit none
@@ -673,21 +687,21 @@ contains
    ! the ranks and every rank returns the identical result. `fcomm` is the
    ! Fortran handle of the communicator (MPI_Comm_c2f from C, or the
    ! integer a Fortran caller holds), and every rank of it must call this
-   ! together. Each rank binds the device numbered by its rank, modulo the
-   ! devices present, before anything else -- the caller does not.
+   ! together, because building terco's own communicator from it duplicates
+   ! it. Each rank binds its own device before anything else -- the caller
+   ! does not.
    !
-   ! Only the world communicator is accepted for now: pic-mpi builds its
-   ! communicator object by duplicating MPI_COMM_WORLD, and terco has no
-   ! way to wrap an arbitrary handle. Any other handle is
-   ! TRC_ERR_UNSUPPORTED, except -1, which is trc_scf on one rank in any
-   ! build. In a build without MPI every other handle is the single rank.
+   ! ANY intra-communicator is accepted, not just MPI_COMM_WORLD: this is
+   ! what lets GAMESS hand in DDI's compute communicator, whose data-server
+   ! ranks never call here at all, and what lets a fragment method hand in
+   ! a per-fragment sub-communicator later. -1 is trc_scf on one rank in
+   ! any build; in a build without MPI every other handle is also the
+   ! single rank there is, because that is what pic-mpi's serial backend's
+   ! comm_from_handle gives back.
    !
    function capi_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, &
                          conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                          niter) result(status) bind(c, name="trc_scf_mpi")
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
       integer(c_int), value :: fcomm
       type(c_ptr), value :: basis
       integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
@@ -699,22 +713,18 @@ contains
       integer(c_int), intent(out) :: niter
       integer(c_int) :: status
       type(comm_t) :: comm
-      integer :: dev
-      if (fcomm == -1) then
-         ! One rank, no communicator: trc_scf.
+      logical :: collective
+      call trc_build_comm(fcomm, comm, collective, status)
+      if (status /= TRC_OK) then
+         energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
+         return
+      end if
+      if (.not. collective) then
+         ! fcomm was -1: one rank, no communicator: trc_scf.
          status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
                             max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter)
          return
       end if
-#ifdef TERCO_HAVE_MPI
-      if (fcomm /= MPI_COMM_WORLD%mpi_val) then
-         status = TRC_ERR_UNSUPPORTED
-         energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
-         return
-      end if
-#endif
-      comm = comm_world()
-      dev = trc_bind_device(comm%rank())
       status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
                          max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter, comm)
       call comm%finalize()
@@ -727,16 +737,12 @@ contains
    ! occupied orbitals are left out of the correlation; `aux_block` bounds
    ! the depth of the three-index tensor held at once (0 for all of it).
    ! E_os and E_ss come back separately: MP2 is their sum, SCS and SOS are
-   ! weights on them. With `fcomm` the world communicator's Fortran handle
-   ! the occupied orbitals are split over its ranks and every rank gets the
-   ! same numbers; pass any value in a build without MPI, or run on one
-   ! rank with fcomm = -1 in any build.
+   ! weights on them. `fcomm` is ANY intra-communicator's Fortran handle
+   ! (see capi_scf_mpi); the occupied orbitals are split over its ranks and
+   ! every rank gets the same numbers. -1 runs on one rank in any build.
    !
    function capi_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) &
       result(status) bind(c, name="trc_rimp2")
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
       integer(c_int), value :: fcomm
       type(c_ptr), value :: basis, aux
       integer(c_int), value :: nfrozen, aux_block
@@ -746,7 +752,7 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
-      integer :: dev, nblk
+      integer :: nblk
       logical :: collective
 
       e_os = 0.0_c_double; e_ss = 0.0_c_double
@@ -758,21 +764,14 @@ contains
       if (.not. allocated(bb%cmo)) return           ! no SCF on this basis yet
       if (bb%nalpha /= bb%nbeta) return             ! restricted reference only
       if (nfrozen < 0 .or. nfrozen >= bb%nalpha) return
-      collective = fcomm /= -1
-#ifdef TERCO_HAVE_MPI
-      if (collective .and. fcomm /= MPI_COMM_WORLD%mpi_val) then
-         status = TRC_ERR_UNSUPPORTED
-         return
-      end if
-#endif
+      call trc_build_comm(fcomm, comm, collective, status)
+      if (status /= TRC_OK) return
       nblk = int(aux_block)
       if (nblk <= 0) nblk = ab%b%nao
       if (.not. ab%b%on_device) call ab%b%to_device()
       call pl%build(bb%b, 1.0e-12_dp)
       call pl%to_device()
       if (collective) then
-         comm = comm_world()
-         dev = trc_bind_device(comm%rank())
          call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
                             nfrozen=int(nfrozen), aux_block=nblk, comm=comm)
          call comm%finalize()
@@ -1304,7 +1303,17 @@ contains
    end function trc_set_guess
 
    function trc_set_comm(handle, fcomm) result(status) bind(c, name="trc_set_comm")
-      !! A Fortran communicator handle; -1 means one rank. MPI_COMM_WORLD only.
+      !! `fcomm` is the Fortran handle of ANY intra-communicator the caller
+      !! already has open and collective over -- MPI_Comm_c2f from C, or
+      !! the integer a Fortran caller holds (mpi_f08's MPI_VAL, or the
+      !! legacy `mpi` module's handle directly); -1 means one rank, no MPI.
+      !! It need not be MPI_COMM_WORLD: GAMESS, for example, hands this
+      !! DDI's compute communicator, whose data-server ranks are not part
+      !! of it and never call trc_run_scf/trc_run_rimp2 at all. terco
+      !! duplicates whatever `fcomm` names (MPI_Comm_dup) the first time a
+      !! run needs it, so every rank of THAT communicator must reach the
+      !! run together; the caller keeps ownership of its own communicator,
+      !! since only terco's duplicate is ever freed.
       type(c_ptr), value :: handle
       integer(c_int), value :: fcomm
       integer(c_int) :: status
@@ -1343,28 +1352,66 @@ contains
       status = TRC_OK
    end function trc_set_rimp2
 
-   subroutine world_comm(cx, comm, ok, status)
-      !! The communicator a run splits over, if the context names one.
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
-      type(context_box), intent(in) :: cx
+   subroutine trc_build_comm(fcomm, comm, ok, status)
+      !! THE ONE PLACE `fcomm` (a caller's Fortran communicator handle, as
+      !! every C entry point below receives it) becomes terco's own comm_t.
+      !! Every entry that takes or stores an `fcomm` -- capi_scf_mpi,
+      !! capi_rimp2, and trc_run_scf/trc_run_rimp2/trc_context_eri through
+      !! the context's cx%fcomm -- calls this rather than repeating the
+      !! conversion.
+      !!
+      !! `fcomm` of -1 means one rank, no MPI: `ok` comes back .false. and
+      !! `comm` is not built, so the caller takes its non-collective path.
+      !! Any other value is the Fortran handle of an intra-communicator the
+      !! caller already has open: MPI_Comm_c2f from C, the MPI_VAL of an
+      !! mpi_f08 handle, or the plain integer the legacy `mpi` module uses.
+      !! ANY such communicator is accepted -- there is no MPI_COMM_WORLD
+      !! check here, deliberately, because GAMESS's DDI hands libraries its
+      !! *compute* communicator, not MPI_COMM_WORLD: DDI's data-server
+      !! ranks sit in MPI_COMM_WORLD but never call into terco, so waiting
+      !! on MPI_COMM_WORLD from inside terco would hang on the first
+      !! collective. A fragment method's per-fragment sub-communicator is
+      !! the same story. This IS collective, over whatever communicator
+      !! `fcomm` names: comm_from_handle duplicates it (MPI_Comm_dup), so
+      !! every rank of that communicator must call this together.
+      !!
+      !! The duplicate is what makes ownership work: terco's `comm` is its
+      !! own copy, so `comm%finalize()` after the run frees only that copy.
+      !! The caller's own handle is never touched and stays open for
+      !! whatever else it is used for (other DDI traffic, another library)
+      !! during and after this call.
+      !!
+      !! A communicator of size 1 -- a one-rank fragment -- needs no special
+      !! case: MPI_Comm_dup and the node split below are both defined, and
+      !! well-behaved, on a single-rank communicator.
+      !!
+      !! Binds this rank's device by NODE-LOCAL rank, not by comm%rank():
+      !! a DDI compute communicator or a fragment sub-communicator is not
+      !! guaranteed to be node-ordered (rank 0 and rank 1 of it need not be
+      !! on the same node, or even adjacent on one), so binding by comm%rank()
+      !! directly could stack two ranks of one node on the same device
+      !! while another device sat idle. Splitting by shared memory
+      !! (comm%split(), MPI_COMM_TYPE_SHARED under the hood) finds the
+      !! ranks that actually share a node; the node communicator is scratch
+      !! and is freed here, before returning.
+      integer(c_int), intent(in) :: fcomm
       type(comm_t), intent(out) :: comm
       logical, intent(out) :: ok
       integer(c_int), intent(out) :: status
+      type(comm_t) :: node_comm
       integer :: dev
       ok = .false.; status = TRC_OK
-      if (cx%fcomm == -1) return
-#ifdef TERCO_HAVE_MPI
-      if (cx%fcomm /= MPI_COMM_WORLD%mpi_val) then
-         status = TRC_ERR_UNSUPPORTED
+      if (fcomm == -1) return
+      comm = comm_from_handle(int(fcomm))
+      if (comm%is_null()) then
+         status = TRC_ERR_BADARG
          return
       end if
-#endif
-      comm = comm_world()
-      dev = trc_bind_device(comm%rank())
+      node_comm = comm%split()
+      dev = trc_bind_device(node_comm%rank())
+      call node_comm%finalize()
       ok = .true.
-   end subroutine world_comm
+   end subroutine trc_build_comm
 
    function trc_run_scf(handle) result(status) bind(c, name="trc_run_scf")
       !! Needs the molecule and the basis. Builds the guess it was asked for,
@@ -1462,7 +1509,7 @@ contains
          end if
          dg = cx%dguess
       end select
-      call world_comm(cx, comm, collective, status)
+      call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
       if (allocated(dg)) then
          if (collective) then
@@ -1561,7 +1608,7 @@ contains
       end if
       nblk = cx%aux_block
       if (nblk <= 0) nblk = cx%ab%b%nao
-      call world_comm(cx, comm, collective, status)
+      call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
@@ -1807,7 +1854,7 @@ contains
       if (.not. cx%have_basis) return
       if (.not. allocated(cx%eb)) then
          allocate (cx%eb)
-         call world_comm(cx, comm, collective, status)
+         call trc_build_comm(cx%fcomm, comm, collective, status)
          if (status /= TRC_OK) then
             deallocate (cx%eb)
             return

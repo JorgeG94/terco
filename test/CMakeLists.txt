@@ -346,6 +346,27 @@ else()
                                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 endif()
 
+#
+# GAMESS's DDI and a fragment method, imitated: see scf_mpi_frag.F90's own
+# header for what each of the four scenarios checks. Needs exactly 4 ranks
+# -- two DDI compute ranks and two data servers, or two 2-rank fragments --
+# so it is only meaningful, and only registered, under MPI; it still builds
+# in a non-MPI configuration (uniformly with every other test here) and
+# just says so and exits. A TIMEOUT, not only the barrier inside the test
+# itself: a regression that brings back the MPI_COMM_WORLD hang this test
+# exists to catch should fail ctest, not wedge it.
+#
+add_executable(scf_mpi_frag scf_mpi_frag.F90)
+target_compile_definitions(scf_mpi_frag PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_mpi_frag PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_include_directories(scf_mpi_frag PRIVATE ${CMAKE_BINARY_DIR}/modules)
+if(TERCO_ENABLE_MPI)
+  add_test(NAME terco/scf_mpi_frag
+           COMMAND ${_mpiexec} ${_npflag} 4 $<TARGET_FILE:scf_mpi_frag>)
+  set_tests_properties(terco/scf_mpi_frag PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                     TIMEOUT 300)
+endif()
+
 add_executable(demo_makefp demo_makefp.F90)
 target_compile_definitions(demo_makefp PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(demo_makefp PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)

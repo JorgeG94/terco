@@ -101,7 +101,14 @@ program scf_mpi
 #ifdef TERCO_HAVE_MPI
       fcomm = MPI_COMM_WORLD%mpi_val
 #else
-      fcomm = 0
+      ! Any handle but -1 exercises the "collective" path even with no real
+      ! MPI (pic-mpi's serial backend gives back rank 0 of 1). NOT 0: that is
+      ! pic-mpi's own stand-in for MPI_COMM_NULL in this backend
+      ! (MPI_COMM_NULL = MPI_Comm(0), pic_mpi_serial.F90), and
+      ! comm_from_handle correctly refuses it as the null communicator --
+      ! which trc_build_comm now surfaces as TRC_ERR_BADARG instead of
+      ! silently treating every non-MPI handle alike.
+      fcomm = 1
 #endif
       allocate (zat(natm), lc(nsh), npc(nsh))
       zat = real(at_z, c_double); lc = int(sh_l, c_int); npc = int(sh_np, c_int)
