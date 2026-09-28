@@ -404,7 +404,7 @@ def component_vbuf_map(kinds, ket_inner):
     check_numeric.py, which this was checked against) rather than reshaping
     or transposing a flat array, precisely so an axis-order mistake cannot
     hide inside a `.reshape()`."""
-    na, nb, nc, nd = (len(derive.KINDS[k]) for k in kinds)
+    na, nb, nc, nd = (len(derive.kind_components(k)) for k in kinds)
     if not ket_inner:
         return list(range(na * nb * nc * nd))
     mapping = []
@@ -438,7 +438,7 @@ def emit_core(kinds, scalarize=False, ket_inner=False):
     NKM, NCM = len(f.km_list), len(f.cm_list)
     NCOMP = len(f.components)
     KMAX = f.max_zq_power
-    na, nb, nc, nd = (len(derive.KINDS[k]) for k in kinds)
+    na, nb, nc, nd = (len(derive.kind_components(k)) for k in kinds)
     assert NCOMP == na * nb * nc * nd
     for g in f.g_list:
         assert g[3] == 0, "energy classes never touch the gradient's `ea` factor"

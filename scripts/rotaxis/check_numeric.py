@@ -248,10 +248,10 @@ def evaluate_quartet(f, kinds, centers, prims):
 
     local = eval_factorised(f, bras, kets, gc)
 
-    na = len(derive.KINDS[kinds[0]])
-    nb = len(derive.KINDS[kinds[1]])
-    nc = len(derive.KINDS[kinds[2]])
-    nd = len(derive.KINDS[kinds[3]])
+    na = len(derive.kind_components(kinds[0]))
+    nb = len(derive.kind_components(kinds[1]))
+    nc = len(derive.kind_components(kinds[2]))
+    nd = len(derive.kind_components(kinds[3]))
     arr = np.array(local, dtype=float).reshape(nd, nc, nb, na)
     axis_of_slot = {0: 3, 1: 2, 2: 1, 3: 0}
     for slot in range(4):
@@ -273,7 +273,7 @@ def swapped_component_map(kinds):
     get right: every entry says explicitly which terco (ia,ib,ic,id) it is,
     with no axis-order arithmetic to get backwards."""
     ka, kb, kc, kd = kinds
-    NA, NB, NC, ND = (len(derive.KINDS[k]) for k in (ka, kb, kc, kd))
+    NA, NB, NC, ND = (len(derive.kind_components(k)) for k in (ka, kb, kc, kd))
     mapping = []
     for id_ in range(NB):       # slowest: swapped slot 3 = kb = terco's b
         for ic_ in range(NA):   # swapped slot 2 = ka = terco's a
@@ -332,10 +332,10 @@ def evaluate_quartet_swapped(f_swapped, kinds, centers, prims):
 
     local_swapped = eval_factorised(f_swapped, bras2, kets2, gc2)
 
-    na = len(derive.KINDS[kinds[0]])
-    nb = len(derive.KINDS[kinds[1]])
-    nc = len(derive.KINDS[kinds[2]])
-    nd = len(derive.KINDS[kinds[3]])
+    na = len(derive.kind_components(kinds[0]))
+    nb = len(derive.kind_components(kinds[1]))
+    nc = len(derive.kind_components(kinds[2]))
+    nd = len(derive.kind_components(kinds[3]))
     mapping = swapped_component_map(kinds)
     assert len(mapping) == len(local_swapped) == na * nb * nc * nd
     arr = np.zeros((nd, nc, nb, na), dtype=float)

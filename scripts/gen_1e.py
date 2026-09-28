@@ -42,7 +42,7 @@ USAGE
 
 import argparse
 
-import cart_order
+import cartorder
 
 # FIXED, and not lmax + 1.
 #
@@ -64,9 +64,9 @@ ONE_E_RADIX = 11
 def cart(l):
     """(nx,ny,nz) for one shell, libcint order.
 
-    Thin wrapper: the order itself is the single definition in cart_order.py.
+    Thin wrapper: the order itself is the single definition in cartorder.py.
     """
-    return cart_order.components(l)
+    return cartorder.components(l)
 
 
 def cart_cum(lmax):
