@@ -109,7 +109,7 @@ if(_regen)
   # LMAX=2 a single module is a gigabyte of NVVM that does not finish.
   execute_process(
     COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py --lmax
-            ${TERCO_LMAX} --split ${_gen_dir} --cuda
+            ${TERCO_LMAX} --split ${_gen_dir}
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_perclass.py failed (${_rc})")
