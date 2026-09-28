@@ -257,6 +257,429 @@ def _unroll_combos(txt, ncab):
     return txt[:i] + "".join(out) + txt[j + len(tail):]
 
 
+#: ---------------------------------------------------------------------
+#: SCAFFOLDING SHARED WITH THE ROTATED-AXIS EMITTER.
+#:
+#: `scripts/rotaxis/emit_docon.py` calls these same functions rather than
+#: keeping a second copy: the segment locate/decode, the exact Schwarz and
+#: density-weighted screens, the same_ab/same_cd/same_pair canonicalisation,
+#: the pair-table offset lookup, the scalar-path degeneracy/AO-offset decode,
+#: and the block-accumulated, density-batched digestion (plus its
+#: TRC_NO_DIGEST timing branch) do not depend on WHICH integral core fills
+#: `vbuf` -- HGP's VRR/HRR or rotaxis's frame-and-three-levels -- only on the
+#: pair tables and the four shells' Cartesian counts. Factoring them out is
+#: what makes "byte-identical before and after" a meaningful check: this
+#: file's own emission is unchanged (same text, now produced by a function
+#: call instead of an inline literal), and the rotaxis emitter gets the
+#: identical text rather than a hand-copied approximation of it.
+#: ---------------------------------------------------------------------
+
+def emit_segment_decode(bra_fastest=True):
+    """Locate the segment `gt` falls in and decode (iab, icd) within it.
+
+    `bra_fastest` (the default, and the ONLY value HGP's own kernels ever
+    pass -- byte-identity depends on that) makes 32 consecutive threads hold
+    32 consecutive bra pairs against one ket pair: the right mapping when
+    the PRIMITIVE loop nested inside is ket-outside/bra-inside, i.e. HGP's,
+    because then the innermost loads -- the ket side -- are the same address
+    across the warp (broadcast). See the KET-UNIFORM DECODE comment this
+    emits for the measurement behind it.
+
+    `bra_fastest=False` mirrors it for rotaxis's OWN primitive nesting,
+    which FRAME.md fixes the other way round (ket outside, bra inside, so
+    the level-1 accumulators can be per-bra-primitive and component-
+    independent -- README_TERCO.md section 2.4). With the same thread
+    mapping as HGP, rotaxis's innermost loop -- bra primitives -- would be
+    the one that diverges instead of broadcasting, undoing the whole point.
+    Swapping which pair index is uniform across the warp fixes that: 32
+    consecutive threads then hold 32 consecutive KET pairs against one BRA
+    pair, so the bra-primitive loop's addresses (`offab`, fixed for the
+    warp) are identical across every lane.
+
+    The symmetric-segment closed form (`sD(seg)`) enumerates the SAME set of
+    (iab, icd) pairs with iab >= icd either way -- verified by exhaustive
+    count against the bra-fastest form for every segment size up to several
+    thousand pairs and spot-checked by round-trip up to 65000 -- just row by
+    iab (mirrored) instead of row by icd. The non-symmetric form swaps which
+    of `sA` (bra pairs) / `sNB` (ket pairs) is the modulus."""
+    o = ["""      ! locate the segment
+         p = lo; q = hi
+         do while (p < q)
+            mid = (p + q + 1)/2
+            if (sOff(mid) < gt) then
+               p = mid
+            else
+               q = mid - 1
+            end if
+         end do
+         seg = p
+         t = int(gt - sOff(seg))
+"""]
+    if bra_fastest:
+        o.append("""
+         ! KET-UNIFORM DECODE. The bra pair index runs fastest, so the 32
+         ! threads of a warp hold 32 bra pairs against ONE ket pair, and the
+         ! loads of the inner primitive loop -- the ket side -- are the same
+         ! address across the warp: one L1 transaction, broadcast. With the
+         ! ket index fastest, as this was, every thread pulled its own ket
+         ! record per primitive quartet and Nsight Compute had (ss|ss) at 96%
+         ! of L1 throughput with a 28% hit rate. The bra loads now diverge
+         ! instead, once per bra primitive rather than once per quartet.
+         ! On a symmetric segment the pairs are enumerated column by column,
+         ! iab >= icd, with the same closed form inverted.
+         if (sD(seg)) then
+            nsa = int(sA(seg), int64)
+            u = int(t - 1, int64)
+            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
+            if (kx < 0) kx = 0
+            do while (kx > 0)
+               if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
+               kx = kx - 1
+            end do
+            do while (((kx + 1)*(2*nsa + 1) - (kx + 1)*(kx + 1))/2 <= u)
+               kx = kx + 1
+            end do
+            icd = int(kx) + 1
+            iab = icd + int(u - (kx*(2*nsa + 1) - kx*kx)/2)
+         else
+            icd = (t - 1)/sA(seg) + 1
+            iab = t - (icd - 1)*sA(seg)
+         end if
+""")
+    else:
+        o.append("""
+         ! BRA-UNIFORM DECODE (mirrored from HGP's KET-UNIFORM form above --
+         ! see emit_segment_decode's docstring). The ket pair index runs
+         ! fastest, so the 32 threads of a warp hold 32 ket pairs against ONE
+         ! bra pair, and rotaxis's innermost primitive loop -- the bra side,
+         ! FRAME.md's ket-outside/bra-inside nesting -- reads the same
+         ! address across the warp: one L1 transaction, broadcast. The ket
+         ! loads diverge instead, once per ket primitive rather than once per
+         ! quartet -- the outer loop, run far fewer times.
+         ! On a symmetric segment the pairs are enumerated row by row in
+         ! iab (mirrored from HGP's row-by-icd form), iab >= icd throughout,
+         ! with the standard triangular-number inversion.
+         if (sD(seg)) then
+            nsa = int(sA(seg), int64)
+            u = int(t - 1, int64)
+            kx = int((sqrt(8.0_dp*real(u, dp) + 1.0_dp) - 1.0_dp)/2.0_dp, int64)
+            if (kx < 0) kx = 0
+            do while (kx > 0)
+               if (kx*(kx + 1)/2 <= u) exit
+               kx = kx - 1
+            end do
+            do while ((kx + 1)*(kx + 2)/2 <= u)
+               kx = kx + 1
+            end do
+            iab = int(kx) + 1
+            icd = int(u - kx*(kx + 1)/2) + 1
+         else
+            iab = (t - 1)/sNB(seg) + 1
+            icd = t - (iab - 1)*sNB(seg)
+         end if
+""")
+    return "".join(o)
+
+
+def emit_screens():
+    """Exact Schwarz and density-weighted screens, and the same_ab/same_cd/
+    same_pair canonicalisation flags. Fixed text, shared for the same reason
+    as `emit_segment_decode`."""
+    return """
+         ! exact Schwarz, per quartet.  The host bin-pair test is only
+         ! decade-granular (`int(-log10 Q)` clamped to 9) and therefore admits
+         ! up to two decades too much; at RNA3 that was 46% of all quartets.
+         qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
+         if (qcut <= thresh) return
+
+         si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
+         sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
+
+         ! Density-weighted screen.  What actually enters the Fock matrix is
+         ! Q_ab Q_cd times a density block, so a quartet whose integrals are
+         ! above threshold still contributes nothing if every density block it
+         ! multiplies is negligible.  The J terms carry a factor 4 from the
+         ! Coulomb degeneracy, the K terms 1.  For a converged density on an
+         ! extended molecule this is where most of the screening comes from --
+         ! with a flat model density it correctly fires on nothing.
+         if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
+                      dsh(si, sk), dsh(si, sl), &
+                      dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+
+         same_ab = (si == sj); same_cd = (sk == sl)
+         same_pair = sD(seg) .and. (iab == icd)
+"""
+
+
+def emit_pair_offsets(with_columns):
+    """Pair-table offsets for the bra and ket shell pairs.
+
+    `with_columns` additionally decodes the per-shell column/primitive
+    counts the general-contraction (block) kernel needs; the scalar HGP path
+    and every rotaxis kernel -- one column, no block accumulation -- pass
+    False."""
+    o = """
+         keyab = (si - 1)*nbas + sj
+         keycd = (sk - 1)*nbas + sl
+         offab = pp_off(keyab); nab = pp_n(keyab)
+         offcd = pp_off(keycd); ncd = pp_n(keycd)
+"""
+    if with_columns:
+        o += "         nca = ps_ncol(si); ncb = ps_ncol(sj); nccl = ps_ncol(sk); ncdl = ps_ncol(sl)\n"
+        o += "         npi = ps_np(si); npj = ps_np(sj); npk = ps_np(sk); npl = ps_np(sl)\n"
+    return o
+
+
+def emit_scalar_decode():
+    """Degeneracy flags and AO offsets on the single-column (scalar) path:
+    the canonical enumeration and the degeneracy weights are the pair-level
+    ones directly, with no column decode. Identical for HGP and rotaxis."""
+    return """         ! Single column on every side: the canonical enumeration and the
+         ! degeneracy weights are the pair-level ones.
+         dij = .not. same_ab
+         dkl = .not. same_cd
+         dpq = .not. same_pair
+         mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
+
+"""
+
+
+def emit_digestion(na, nb, nc, nd):
+    """Block-accumulated, density-batched Fock digestion from `vbuf`, plus
+    the TRC_NO_DIGEST timing branch. Parameterised only by the four shells'
+    Cartesian counts, so it is the same text for every kernel -- HGP or
+    rotaxis -- that fills `vbuf(1:na*nb*nc*nd)` in the ia-fastest order this
+    reads (FRAME.md section 6 confirms rotaxis's derivation order already
+    matches it, so no remapping is needed to reuse this)."""
+    ncomp = na*nb*nc*nd
+    return f"""#ifdef TRC_NO_DIGEST
+         !
+         ! Evaluation only, for like-for-like comparison against published
+         ! numbers that were measured with digestion removed (the libERI paper
+         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
+         ! evaluation alone).  Every integral is still formed -- the whole VRR
+         ! and HRR run and every component of vbuf is read, so nothing is
+         ! dead-code eliminated -- but the density loads and the atomic
+         ! scatters into the Fock matrix are gone.  The guard is opaque to the
+         ! compiler and never fires, so jmat is untouched and the ANSWER IS
+         ! DELIBERATELY WRONG.  Timing only.
+         !
+         sc = 0.0_dp
+         do idx = 1, {ncomp}
+            sc = sc + vbuf(idx)
+         end do
+         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
+#else
+         !
+         ! BLOCK-ACCUMULATED DIGESTION.
+         !
+         ! The previous form did six atomic updates and six scattered `dmat`
+         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
+         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
+         ! jmat and six of dmat are ever touched.
+         !
+         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
+         ! density blocks into registers once (`load_dm`), contract every
+         ! component against them there (`dot_dm`), and write each output block
+         ! out once.  Same arithmetic, an order of magnitude less traffic --
+         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
+         !
+         ! The degeneracy factors are per-quartet, so they collapse into one
+         ! scalar applied as the components are consumed.
+         !
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+
+         !
+         ! BATCHED OVER DENSITIES.
+         !
+         ! The integral is formed once, in `vbuf`, and contracted against every
+         ! density in the batch. In the coupled-perturbed equations that is the
+         ! difference between one integral pass and a hundred: the dynamic
+         ! polarizabilities need nine perturbations times twelve imaginary
+         ! frequencies, each a Fock build on a different response density.
+         !
+         ! The density loop is OUTSIDE the block accumulators, not inside, and
+         ! that is the whole trick. The six blocks are zeroed, filled and
+         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
+         ! BATCH -- holding N sets of blocks at once would have cost 54 more
+         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
+         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
+         ! one over the digestion fraction.
+         !
+         do idens = 1, ndens
+
+         do ib = 0, {nb - 1}
+            do ia = 0, {na - 1}
+               dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + {na}*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ic = 0, {nc - 1}
+               dcd(1 + ic + {nc}*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + {nc}*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, {nc - 1}
+            do ia = 0, {na - 1}
+               dac(1 + ia + {na}*ic) = dmat(idens, mui + ia, lamk + ic)
+               kac(1 + ia + {na}*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ia = 0, {na - 1}
+               dad(1 + ia + {na}*id) = dmat(idens, mui + ia, sigl + id)
+               kad(1 + ia + {na}*id) = 0.0_dp
+            end do
+         end do
+         do ic = 0, {nc - 1}
+            do ib = 0, {nb - 1}
+               dbc(1 + ib + {nb}*ic) = dmat(idens, nuj + ib, lamk + ic)
+               kbc(1 + ib + {nb}*ic) = 0.0_dp
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ib = 0, {nb - 1}
+               dbd(1 + ib + {nb}*id) = dmat(idens, nuj + ib, sigl + id)
+               kbd(1 + ib + {nb}*id) = 0.0_dp
+            end do
+         end do
+
+         idx = 0
+         do id = 0, {nd - 1}
+         do ic = 0, {nc - 1}
+         do ib = 0, {nb - 1}
+         do ia = 0, {na - 1}
+            idx = idx + 1
+            sc = wq*vbuf(idx)
+            jab(1 + ia + {na}*ib) = jab(1 + ia + {na}*ib) &
+                                    + 4.0_dp*jfac*sc*dcd(1 + ic + {nc}*id)
+            jcd(1 + ic + {nc}*id) = jcd(1 + ic + {nc}*id) &
+                                    + 4.0_dp*jfac*sc*dab(1 + ia + {na}*ib)
+            kac(1 + ia + {na}*ic) = kac(1 + ia + {na}*ic) &
+                                    - kfac*sc*dbd(1 + ib + {nb}*id)
+            kad(1 + ia + {na}*id) = kad(1 + ia + {na}*id) &
+                                    - kfac*sc*dbc(1 + ib + {nb}*ic)
+            kbc(1 + ib + {nb}*ic) = kbc(1 + ib + {nb}*ic) &
+                                    - kfac*sc*dad(1 + ia + {na}*id)
+            kbd(1 + ib + {nb}*id) = kbd(1 + ib + {nb}*id) &
+                                    - kfac*sc*dac(1 + ia + {na}*ic)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, {nb - 1}
+            do ia = 0, {na - 1}
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + {na}*ib)
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ic = 0, {nc - 1}
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + {nc}*id)
+            end do
+         end do
+         do ic = 0, {nc - 1}
+            do ia = 0, {na - 1}
+               !$acc atomic update
+               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
+                                           + kac(1 + ia + {na}*ic)
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ia = 0, {na - 1}
+               !$acc atomic update
+               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
+                                           + kad(1 + ia + {na}*id)
+            end do
+         end do
+         do ic = 0, {nc - 1}
+            do ib = 0, {nb - 1}
+               !$acc atomic update
+               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
+                                           + kbc(1 + ib + {nb}*ic)
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ib = 0, {nb - 1}
+               !$acc atomic update
+               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
+                                           + kbd(1 + ib + {nb}*id)
+            end do
+         end do
+
+         end do   ! idens
+#endif
+"""
+
+
+def emit_scalar_driver(name, item):
+    """The scalar launch driver: `do concurrent` over the quartets of one
+    segment run, ranks split by static stride, the item routine called once
+    per iteration. Fixed text parameterised only by the driver's and item
+    routine's own names, so HGP and rotaxis kernels share it exactly.
+
+    HGP's own scalar driver is still produced by editing the general-
+    contraction (block) driver's text (see `emit_kernel` below) rather than
+    by calling this function: that derivation is what `--split`'s byte-
+    identity check was verified against, and changing it over risked that
+    invariant for no behavioural gain, since the two are already the same
+    text by construction. `scripts/rotaxis/emit_docon.py` -- which has no
+    block-form driver to derive from -- calls this directly."""
+    return f"""   subroutine {name}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+                      ndens, dmat, jmat, rank, nranks)
+{PROLOGUE}
+      integer, intent(in) :: rank, nranks
+      integer(int64) :: g0, g1, nr, i
+      !
+      ! LAUNCH GEOMETRY.  `do concurrent` gives nvfortran the whole say, and it
+      ! picks 128 threads per block.  Handing the block size back to the
+      ! compiler is the point rather than a compromise: the claim this library
+      ! is making is that standard Fortran reaches competitive throughput, and
+      ! a tuned launch geometry behind a directive would be quietly conceding
+      ! it.  Per-class kernels are what recover the occupancy anyway -- ptxas
+      ! budgets registers for one (la,lb,lc,ld) instead of for the worst class.
+      !
+      ! RANKS.  The work list is sorted, so rank r of n taking every n-th item
+      ! from r is a static split that balances by construction, and every
+      ! rank walks the same list -- the reduction of the result across ranks
+      ! happens in the Fock driver, not here.  One rank is rank 0 of 1.
+      g0 = sOff(lo) + 1 + rank
+      g1 = sOff(hi + 1)
+      nr = 0
+      if (g1 >= g0) nr = (g1 - g0)/nranks + 1
+      do concurrent(i=1:nr)
+         call {item}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+      end do
+   end subroutine {name}
+"""
+
+
+def emit_item_signature(name):
+    """The item routine's signature: same argument list as the driver plus
+    the flat quartet index `gt`, `pure` and `!$acc routine seq` so it inlines
+    into its caller (the reason it lives in the same module and file)."""
+    return f"""   pure subroutine {name}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+                      ndens, dmat, jmat)
+      !$acc routine seq
+      integer(int64), intent(in) :: gt
+{PROLOGUE}
+"""
+
+
 def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
     lab, lcd = la + lb, lc + ld
     lt = lab + lcd
@@ -393,78 +816,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
       real(dp) :: dab({na*nb}), dcd({nc*nd}), dac({na*nc})
       real(dp) :: dad({na*nd}), dbc({nb*nc}), dbd({nb*nd})
 
-      ! locate the segment
-         p = lo; q = hi
-         do while (p < q)
-            mid = (p + q + 1)/2
-            if (sOff(mid) < gt) then
-               p = mid
-            else
-               q = mid - 1
-            end if
-         end do
-         seg = p
-         t = int(gt - sOff(seg))
-
-         ! KET-UNIFORM DECODE. The bra pair index runs fastest, so the 32
-         ! threads of a warp hold 32 bra pairs against ONE ket pair, and the
-         ! loads of the inner primitive loop -- the ket side -- are the same
-         ! address across the warp: one L1 transaction, broadcast. With the
-         ! ket index fastest, as this was, every thread pulled its own ket
-         ! record per primitive quartet and Nsight Compute had (ss|ss) at 96%
-         ! of L1 throughput with a 28% hit rate. The bra loads now diverge
-         ! instead, once per bra primitive rather than once per quartet.
-         ! On a symmetric segment the pairs are enumerated column by column,
-         ! iab >= icd, with the same closed form inverted.
-         if (sD(seg)) then
-            nsa = int(sA(seg), int64)
-            u = int(t - 1, int64)
-            kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
-            if (kx < 0) kx = 0
-            do while (kx > 0)
-               if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
-               kx = kx - 1
-            end do
-            do while (((kx + 1)*(2*nsa + 1) - (kx + 1)*(kx + 1))/2 <= u)
-               kx = kx + 1
-            end do
-            icd = int(kx) + 1
-            iab = icd + int(u - (kx*(2*nsa + 1) - kx*kx)/2)
-         else
-            icd = (t - 1)/sA(seg) + 1
-            iab = t - (icd - 1)*sA(seg)
-         end if
-
-         ! exact Schwarz, per quartet.  The host bin-pair test is only
-         ! decade-granular (`int(-log10 Q)` clamped to 9) and therefore admits
-         ! up to two decades too much; at RNA3 that was 46% of all quartets.
-         qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
-         if (qcut <= thresh) return
-
-         si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
-         sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
-
-         ! Density-weighted screen.  What actually enters the Fock matrix is
-         ! Q_ab Q_cd times a density block, so a quartet whose integrals are
-         ! above threshold still contributes nothing if every density block it
-         ! multiplies is negligible.  The J terms carry a factor 4 from the
-         ! Coulomb degeneracy, the K terms 1.  For a converged density on an
-         ! extended molecule this is where most of the screening comes from --
-         ! with a flat model density it correctly fires on nothing.
-         if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                      dsh(si, sk), dsh(si, sl), &
-                      dsh(sj, sk), dsh(sj, sl)) <= thresh) return
-
-         same_ab = (si == sj); same_cd = (sk == sl)
-         same_pair = sD(seg) .and. (iab == icd)
-
-         keyab = (si - 1)*nbas + sj
-         keycd = (sk - 1)*nbas + sl
-         offab = pp_off(keyab); nab = pp_n(keyab)
-         offcd = pp_off(keycd); ncd = pp_n(keycd)
-         nca = ps_ncol(si); ncb = ps_ncol(sj); nccl = ps_ncol(sk); ncdl = ps_ncol(sl)
-         npi = ps_np(si); npj = ps_np(sj); npk = ps_np(sk); npl = ps_np(sl)
-
+{emit_segment_decode()}{emit_screens()}{emit_pair_offsets(True)}
          abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)
          aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)
          abz = pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3)
@@ -694,172 +1046,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
          ! --- HRR ---
 {hrr_body}
 
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, {na*nb*nc*nd}
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
-         !
-         ! BLOCK-ACCUMULATED DIGESTION.
-         !
-         ! The previous form did six atomic updates and six scattered `dmat`
-         ! loads PER CARTESIAN COMPONENT.  For (pp|pp) that is 81 components x
-         ! 6 = 486 of each, per quartet, even though only six small BLOCKS of
-         ! jmat and six of dmat are ever touched.
-         !
-         ! gpu4pyscf's rys_contract_jk.cu does it the other way round: pull the
-         ! density blocks into registers once (`load_dm`), contract every
-         ! component against them there (`dot_dm`), and write each output block
-         ! out once.  Same arithmetic, an order of magnitude less traffic --
-         ! 54 loads and 54 atomics for (pp|pp) instead of 486.
-         !
-         ! The degeneracy factors are per-quartet, so they collapse into one
-         ! scalar applied as the components are consumed.
-         !
-         wq = 1.0_dp
-         if (.not. dij) wq = wq*0.5_dp
-         if (.not. dkl) wq = wq*0.5_dp
-         if (.not. dpq) wq = wq*0.5_dp
-
-         !
-         ! BATCHED OVER DENSITIES.
-         !
-         ! The integral is formed once, in `vbuf`, and contracted against every
-         ! density in the batch. In the coupled-perturbed equations that is the
-         ! difference between one integral pass and a hundred: the dynamic
-         ! polarizabilities need nine perturbations times twelve imaginary
-         ! frequencies, each a Fock build on a different response density.
-         !
-         ! The density loop is OUTSIDE the block accumulators, not inside, and
-         ! that is the whole trick. The six blocks are zeroed, filled and
-         ! written per density, so REGISTER PRESSURE DOES NOT GROW WITH THE
-         ! BATCH -- holding N sets of blocks at once would have cost 54 more
-         ! doubles per density at (pp|pp) and 216 at (dd|dd), on a kernel
-         ! already spilling. Cost is `eval + ndens*digest`, and the ceiling is
-         ! one over the digestion fraction.
-         !
-         do idens = 1, ndens
-
-         do ib = 0, {nb - 1}
-            do ia = 0, {na - 1}
-               dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)
-               jab(1 + ia + {na}*ib) = 0.0_dp
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ic = 0, {nc - 1}
-               dcd(1 + ic + {nc}*id) = dmat(idens, lamk + ic, sigl + id)
-               jcd(1 + ic + {nc}*id) = 0.0_dp
-            end do
-         end do
-         do ic = 0, {nc - 1}
-            do ia = 0, {na - 1}
-               dac(1 + ia + {na}*ic) = dmat(idens, mui + ia, lamk + ic)
-               kac(1 + ia + {na}*ic) = 0.0_dp
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ia = 0, {na - 1}
-               dad(1 + ia + {na}*id) = dmat(idens, mui + ia, sigl + id)
-               kad(1 + ia + {na}*id) = 0.0_dp
-            end do
-         end do
-         do ic = 0, {nc - 1}
-            do ib = 0, {nb - 1}
-               dbc(1 + ib + {nb}*ic) = dmat(idens, nuj + ib, lamk + ic)
-               kbc(1 + ib + {nb}*ic) = 0.0_dp
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ib = 0, {nb - 1}
-               dbd(1 + ib + {nb}*id) = dmat(idens, nuj + ib, sigl + id)
-               kbd(1 + ib + {nb}*id) = 0.0_dp
-            end do
-         end do
-
-         idx = 0
-         do id = 0, {nd - 1}
-         do ic = 0, {nc - 1}
-         do ib = 0, {nb - 1}
-         do ia = 0, {na - 1}
-            idx = idx + 1
-            sc = wq*vbuf(idx)
-            jab(1 + ia + {na}*ib) = jab(1 + ia + {na}*ib) &
-                                    + 4.0_dp*jfac*sc*dcd(1 + ic + {nc}*id)
-            jcd(1 + ic + {nc}*id) = jcd(1 + ic + {nc}*id) &
-                                    + 4.0_dp*jfac*sc*dab(1 + ia + {na}*ib)
-            kac(1 + ia + {na}*ic) = kac(1 + ia + {na}*ic) &
-                                    - kfac*sc*dbd(1 + ib + {nb}*id)
-            kad(1 + ia + {na}*id) = kad(1 + ia + {na}*id) &
-                                    - kfac*sc*dbc(1 + ib + {nb}*ic)
-            kbc(1 + ib + {nb}*ic) = kbc(1 + ib + {nb}*ic) &
-                                    - kfac*sc*dad(1 + ia + {na}*id)
-            kbd(1 + ib + {nb}*id) = kbd(1 + ib + {nb}*id) &
-                                    - kfac*sc*dac(1 + ia + {na}*ic)
-         end do
-         end do
-         end do
-         end do
-
-         do ib = 0, {nb - 1}
-            do ia = 0, {na - 1}
-               !$acc atomic update
-               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
-                                          + jab(1 + ia + {na}*ib)
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ic = 0, {nc - 1}
-               !$acc atomic update
-               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
-                                            + jcd(1 + ic + {nc}*id)
-            end do
-         end do
-         do ic = 0, {nc - 1}
-            do ia = 0, {na - 1}
-               !$acc atomic update
-               jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &
-                                           + kac(1 + ia + {na}*ic)
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ia = 0, {na - 1}
-               !$acc atomic update
-               jmat(idens, mui + ia, sigl + id) = jmat(idens, mui + ia, sigl + id) &
-                                           + kad(1 + ia + {na}*id)
-            end do
-         end do
-         do ic = 0, {nc - 1}
-            do ib = 0, {nb - 1}
-               !$acc atomic update
-               jmat(idens, nuj + ib, lamk + ic) = jmat(idens, nuj + ib, lamk + ic) &
-                                           + kbc(1 + ib + {nb}*ic)
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ib = 0, {nb - 1}
-               !$acc atomic update
-               jmat(idens, nuj + ib, sigl + id) = jmat(idens, nuj + ib, sigl + id) &
-                                           + kbd(1 + ib + {nb}*id)
-            end do
-         end do
-
-         end do   ! idens
-#endif
-         end do   ! qab
+{emit_digestion(na, nb, nc, nd)}         end do   ! qab
          end do   ! qcd
          end do   ! cd0
          end do   ! ab0
@@ -1241,14 +1428,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     idig = txt_l.index("#ifdef TRC_NO_DIGEST")
     iend = txt_l.index("         end do   ! qab\n")
     hrr_and_digest = txt_l[ihrr:iend]
-    decode = """         ! Single column on every side: the canonical enumeration and the
-         ! degeneracy weights are the pair-level ones.
-         dij = .not. same_ab
-         dkl = .not. same_cd
-         dpq = .not. same_pair
-         mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
-
-"""
+    decode = emit_scalar_decode()
     idecl0 = txt_l.index("      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl\n")
     decls = txt_l[idecl0:ihead]
     decls = re.sub(r"      real\(dp\) :: v\((\d+), 0:1\), g\(.*?\), g1\((\d+)\), vbuf\((\d+)\)\n",

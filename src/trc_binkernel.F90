@@ -25,6 +25,7 @@ module trc_binkernel
    use trc_bins, only: pair_bins_t, SMAX, sort_bins_by_weight
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
+   use trc_ra_kernels, only: ra_dispatch, ra_has_class
 #endif
    implicit none
    private
@@ -103,6 +104,19 @@ contains
       call get_environment_variable("TRC_BIN_SORT", v)
       bin_sort_on = (trim(v) == "1")
    end function bin_sort_on
+
+   !> TRC_ROTAXIS=1 sends every class the rotated-axis dispatcher supports
+   !> (the 16 ordered s/p classes, scripts/rotaxis/FRAME.md) through
+   !> `ra_dispatch` instead of `pc_dispatch`; a class it does not support (any
+   !> with a d shell) still goes through HGP. Default off, so nothing changes
+   !> for existing users. Read once per Fock build in `fock_bins`, not once
+   !> per launch -- `get_environment_variable` is a few hundred launches'
+   !> worth of syscall on a large molecule if it were not hoisted.
+   logical function rotaxis_on()
+      character(len=8) :: v
+      call get_environment_variable("TRC_ROTAXIS", v)
+      rotaxis_on = (trim(v) == "1")
+   end function rotaxis_on
 
    subroutine trc_set_prim_margin(f)
       real(dp), intent(in) :: f
@@ -348,9 +362,9 @@ contains
       !
       block
          integer, allocatable :: ord(:), ckey(:)
-         integer :: a2, b2, t2, c0, c1, nl
+         integer :: a2, b2, t2, c0, c1, nl, key2
          integer(kind=8) :: lcap
-         logical :: l2
+         logical :: l2, use_ra
          integer(kind=8) :: o2
          ! The trivial primitive-shell view used to be built here -- eight
          ! arrays, allocated, filled, and pushed to the device on every Fock
@@ -416,6 +430,9 @@ contains
          ! larger launch weakly better. Kept as a knob so the claim stays
          ! measured.
          lcap = launch_cap()
+         ! Read once per Fock build (see rotaxis_on's own comment), not once
+         ! per class run below.
+         use_ra = rotaxis_on()
          do while (c0 <= nseg)
             c1 = c0
             do while (c1 < nseg)
@@ -427,12 +444,26 @@ contains
                c1 = c1 + 1
             end do
             nl = nl + 1
-            call pc_dispatch(((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
-                              + sLC(c0))*CLASS_RADIX + sLD(c0), &
-                             c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, &
-                             ndens, dmat, jmat, rank, nranks)
+            key2 = ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
+                    + sLC(c0))*CLASS_RADIX + sLD(c0)
+            ! TRC_ROTAXIS races the two algorithms: a class the rotated-axis
+            ! dispatcher supports (the 16 ordered s/p classes) goes through it
+            ! instead of HGP when the knob is on; every other class -- any
+            ! with a d shell -- always goes through HGP, whatever the knob
+            ! says, because `ra_has_class` asks the dispatcher's own case
+            ! list rather than an angular-momentum bound (the landmine
+            ! libfint's own README_TERCO.md section 5 records).
+            if (use_ra .and. ra_has_class(key2)) then
+               call ra_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                                pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, &
+                                ndens, dmat, jmat, rank, nranks)
+            else
+               call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
+                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                                pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, &
+                                ndens, dmat, jmat, rank, nranks)
+            end if
             c0 = c1 + 1
          end do
          nlaunch = nl
