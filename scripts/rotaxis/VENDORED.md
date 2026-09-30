@@ -1,8 +1,24 @@
 # Vendored from libfint
 
 Four files are copied verbatim from libfint, branch
-`generator/cartesian-order` at commit `59f9e38` ("Rename the default order
-to "lexicographic", keeping "libcint" as an alias"):
+`generator/cartesian-order` at commit `f39b3cc` ("Fix check_numeric's
+energy half, and run the generators in CI"). Their content there is the
+same as at `e2c20cf` ("Rename the default order to 'lexicographic'").
+
+That branch was force-pushed on 2026-09-30 to take libfint's
+README_TERCO.md out of its history; the code did not change. terco's own
+commit messages cite the pre-rewrite hashes, which map as follows:
+
+| cited in terco | now |
+|---|---|
+| `c181abb` Define the Cartesian component order once | `35f8690` |
+| `07cd704` Transcribe GAMESS's f and g orders | `607f482` |
+| `f477d4b` Decode the GAMESS rescale | `c643701` |
+| `d324ef7` Derive the GAMESS rescale from a closed form | `49eb0d9` |
+| `59f9e38` Rename the default order to "lexicographic" | `e2c20cf` |
+
+The guide libfint wrote for this work is kept in terco at
+`docs/LIBFINT_GENERATORS.md`, since it is no longer in libfint's git.
 
 | here | libfint |
 |---|---|
