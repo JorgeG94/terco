@@ -30,6 +30,7 @@ target_sources(
           trc_capi.F90       # the bind(c) skin
           trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
+          trc_sph.F90        # the spherical (pure) AO space: block-sparse Cartesian <-> spherical transforms
           trc_acc_shim.F90)  # see the file: this one is not optional
 
 # --- the molecular quadrature -------------------------------------------------
@@ -186,6 +187,20 @@ if(_regen)
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_cartcomp.py failed (${_rc})")
+  endif()
+
+  # The Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4
+  # (src/trc_sph.F90's only consumer). Fixed at l<=4 regardless of
+  # TERCO_LMAX or TRC_MAXL, for the same reason gen_cartcomp.py's CEIL is 4
+  # and not TERCO_LMAX: f support (milestone M3) needs this table ready
+  # before any four-centre kernel reaches f, and generating a small table
+  # four levels higher than today's d ceiling costs nothing.
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag}
+            -o ${_gen_dir}/trc_sph_tables.F90
+    RESULT_VARIABLE _rc OUTPUT_QUIET)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "gen_sph.py failed (${_rc})")
   endif()
 
   # The unrolled recurrences are textual includes, and only the shared kernel

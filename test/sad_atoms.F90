@@ -1,4 +1,13 @@
 !! terco's own SAD guess: electron count, and that it beats GWH on water
+!!
+!! FORCED CARTESIAN: `smat`/`tmat`/`vmat` below come from `trc_1e` directly,
+!! which is always Cartesian-sized (b%nao), and are compared against
+!! `dguess` and used to build `dg3`. A spherical cc-pVDZ's `dguess` (from
+!! trc_sad_build) would come back nao_sph-sized instead, a shape mismatch
+!! against the Cartesian matrices this test builds by hand -- this test is
+!! about the SAD algorithm (electron count, beating GWH), not about which
+!! AO space it runs in, so it forces Cartesian rather than growing a
+!! parallel spherical path for a one-off check.
 program sad_atoms
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
@@ -26,7 +35,8 @@ program sad_atoms
    opts%conv_energy = 1.0e-10_dp
    ok = .true.
    do ib = 1, 2
-      call trc_basis_from_json('basis_sets/'//trim(bases(ib))//'.json', natm, zint, at_r, bas, err)
+      call trc_basis_from_json('basis_sets/'//trim(bases(ib))//'.json', natm, zint, at_r, bas, err, &
+                               force_cart=.true.)
       if (.not. err%has_error()) call trc_sad_build(bas, dguess, err, verbose=.true.)
       if (err%has_error()) then
          print '(a)', "sad_atoms: "//err%get_message()

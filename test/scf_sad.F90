@@ -5,7 +5,10 @@
 ! must take at most one iteration more than the built-in one (see the
 ! comment at that comparison for why one, not zero). Fixtures
 ! sad_6-31g.json and sad_cc-pvdz.json were written by mqc
-! (mqc.write_sad_guess).
+! (mqc.write_sad_guess), in terco's CARTESIAN AO convention -- so both
+! basis loads below force Cartesian: cc-pVDZ's d shells default to the
+! spherical AO space now, and mqc's guess has no spherical form to
+! compare against.
 !
 program scf_sad
    use trc_boys, only: dp
@@ -36,7 +39,8 @@ program scf_sad
    opts%conv_density = 1.0e-7_dp
    ok = .true.
    do ib = 1, 2
-      call trc_basis_from_json('basis_sets/'//trim(bases(ib))//'.json', natm, zint, at_r, bas, err)
+      call trc_basis_from_json('basis_sets/'//trim(bases(ib))//'.json', natm, zint, at_r, bas, err, &
+                               force_cart=.true.)
       if (.not. err%has_error()) call trc_guess_from_json('sad_'//trim(bases(ib))//'.json', bas, zint, dguess, err)
       if (err%has_error()) then
          print '(a)', "scf_sad: "//err%get_message()

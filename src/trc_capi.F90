@@ -71,8 +71,47 @@
 ! The setting lives on `basis_box` (propagated from a context's own choice
 ! by `take_basis`, so a handle borrowed through trc_context_basis carries
 ! it), not only on the context, because that is the object every AO-array
-! entry below actually holds. EVERY entry that returns or accepts an
-! AO-indexed array, classified:
+! entry below actually holds.
+!
+! SPHERICAL BASES
+! ----------------
+! A context's orbital basis may be SPHERICAL (trc_api.F90's
+! `trc_basis_t%spherical`, set by trc_basis_json.F90 from a JSON basis's
+! own function_type, "gto_spherical" meaning yes; `trc_set_force_cartesian`
+! overrides it to Cartesian regardless). When it is, every SCF-FACING
+! AO-indexed entry below -- trc_nao, trc_density, trc_mo_coefficients,
+! trc_mo_energies, trc_set_guess's `dguess`, and `trc_run_scf` itself --
+! is sized at `nao_sph`, not the Cartesian `nao`; `trc_nao` is the single
+! place that size is computed (`scf_space_nao`) and every other entry
+! reads it from there, so a caller sizing its own buffers from `trc_nao`
+! never has to know which case it is in. `trc_is_spherical` answers
+! directly for a caller that wants to know anyway.
+!
+! The raw-basis-handle entries (trc_compute_1e, trc_compute_multipoles,
+! trc_compute_df2c/df3c, capi_fock and its *_many/*_nosym siblings,
+! capi_scf/capi_scf_mpi through scf_entry) are NOT affected and stay at
+! the Cartesian `nao` of `trc_basis_nao` unconditionally: a basis built
+! through `trc_basis_create*` has no JSON file to ever set `spherical`
+! from, by construction (trc_api.F90's `basis_build` always leaves it
+! `.false.`), so there is nothing for these entries to switch on.
+! RI-MP2 (trc_run_rimp2) refuses a spherical orbital basis outright: its
+! three-centre tensor is Cartesian and nothing converts the MO
+! coefficients it is contracted against, which is the same reasoning as
+! trc_compute_df2c/df3c's own exemption below, just enforced as an error
+! instead of a silent exemption because RI-MP2 crosses actual MO data.
+!
+! TRC_AO_NORM_UNIT AND A SPHERICAL BASIS DO NOT COMBINE. UNIT rescales
+! each CARTESIAN component of a shell individually (GAMESS's convention);
+! a spherical AO is already a fixed linear combination of several
+! Cartesian components, each with its own ratio, so "the UNIT-normalised
+! version of a spherical d_z2" is not a well-defined request under
+! anything this module implements. `trc_set_ao_norm(..., TRC_AO_NORM_UNIT)`
+! refuses if the context's current basis is spherical, and loading a
+! spherical basis while UNIT mode is already set is refused the other
+! way, at `trc_set_basis_json`/`trc_set_aux_json`. Neither direction
+! silently falls back to one interpretation of the two.
+!
+! EVERY entry that returns or accepts an AO-indexed array, classified:
 !
 !   WIRED (scales when the basis/context involved is TRC_AO_NORM_UNIT):
 !     trc_compute_1e        covariant, S and T and V each
@@ -145,6 +184,7 @@ module trc_capi
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
                           ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
+   use trc_sph, only: sph_cart_to_sph
    implicit none
    private
 
@@ -170,6 +210,7 @@ module trc_capi
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_set_ao_norm, trc_get_ao_norm
+   public :: trc_set_force_cartesian, trc_is_spherical
    public :: capi_scf
    public :: trc_cart_order
 
@@ -262,6 +303,26 @@ module trc_capi
    end type context_box
 
 contains
+
+   !
+   ! The SIZE of the AO space the SCF-facing entries of this file read and
+   ! write -- trc_nao, trc_density, trc_mo_coefficients, trc_mo_energies,
+   ! trc_set_guess, trc_run_scf. `nao_sph` when the basis this box holds is
+   ! spherical, `nao` (Cartesian) otherwise -- the same choice
+   ! trc_scf_driver itself makes (trc_scf.F90's own `sph`/`nao` split), so
+   ! this is the one place that choice is restated at the C boundary rather
+   ! than copied into every entry that needs it. The raw-basis-handle
+   ! family (trc_basis_nao, trc_compute_1e, capi_fock and friends) does NOT
+   ! use this: those operate on whatever `trc_basis_create*` built
+   ! directly, which has no file to read a function_type from and so is
+   ! never spherical (see trc_api.F90's `basis_build`, which always leaves
+   ! `spherical` at its default .false.) -- `bb%b%nao` is already right
+   ! for them, unconditionally.
+   !
+   pure integer function scf_space_nao(bb) result(n)
+      type(basis_box), intent(in) :: bb
+      n = merge(bb%b%nao_sph, bb%b%nao, bb%b%spherical)
+   end function scf_space_nao
 
    !
    ! Build a basis from flat per-shell arrays.
@@ -1405,10 +1466,29 @@ contains
          if (path(i) == c_null_char) exit
          fpath(i:i) = path(i)
       end do
-      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err)
+      ! An auxiliary/fitting basis stays Cartesian unconditionally --
+      ! density fitting and RI-MP2 are untouched by this feature (the
+      ! milestone's own scope), so there is no spherical path for `aux` to
+      ! follow even if its own JSON says "gto_spherical" (def2's -jkfit
+      ! sets often do). The orbital basis (aux = .false.) follows the file
+      ! unless `force_cartesian` was set (trc_set_force_cartesian).
+      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, &
+                               force_cart=(aux .or. cx%opts%force_cartesian))
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
+         return
+      end if
+      ! TRC_AO_NORM_UNIT and a spherical basis do not combine (see
+      ! trc_set_ao_norm's own comment on why); this is the other direction
+      ! of that same refusal, for a basis loaded AFTER unit mode was
+      ! already requested.
+      if (b%spherical .and. cx%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         call refuse(cx, "trc_set_basis_json: "//trim(fpath)//" is a spherical basis "// &
+                     "(its JSON tags a shell 'gto_spherical') and this context is set to "// &
+                     "TRC_AO_NORM_UNIT, which only applies to a Cartesian basis -- call "// &
+                     "trc_set_ao_norm(TRC_AO_NORM_SHELL) first, or set force_cartesian")
+         call b%release()
          return
       end if
       call take_basis(cx, aux, b)
@@ -1545,6 +1625,30 @@ contains
       status = TRC_OK
    end function trc_set_batching
 
+   function trc_set_force_cartesian(handle, flag) result(status) bind(c, name="trc_set_force_cartesian")
+      !! Force the Cartesian AO space on every basis this context loads
+      !! from here on, regardless of what a JSON file's function_type says
+      !! (trc_scf_options_t%force_cartesian). `flag` non-zero sets it.
+      !!
+      !! NOT RETROACTIVE: a basis already loaded (trc_set_basis_json) kept
+      !! whichever space it was built in at that call -- the same way
+      !! trc_set_ao_norm's own comment describes for a TRC_GUESS_GIVEN
+      !! density already copied. Call this BEFORE trc_set_basis_json/
+      !! trc_set_aux_json for it to take effect on that basis; a caller
+      !! wanting it to also apply to a basis already loaded has to load
+      !! the file again.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: flag
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%opts%force_cartesian = (flag /= 0)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_force_cartesian
+
    function trc_set_guess(handle, kind, dguess, nspin) result(status) bind(c, name="trc_set_guess")
       !! `kind` one of TRC_GUESS_*. For TRC_GUESS_GIVEN, `dguess` is
       !! (nao, nao, nspin) column-major and is COPIED here; the caller's array
@@ -1587,7 +1691,10 @@ contains
             call refuse(cx, "trc_set_guess: set the basis before giving a density; its size comes from there")
             return
          end if
-         n = cx%bb%b%nao
+         ! The SCF's own space (nao_sph if this basis is spherical) -- a
+         ! caller supplying a guess density sizes it from `trc_nao`, which
+         ! now reports the same number (scf_space_nao).
+         n = scf_space_nao(cx%bb)
          call c_f_pointer(dguess, dg, [n, n, int(nspin)])
          allocate (cx%dguess(n, n, nspin))
          cx%dguess = real(dg, dp)
@@ -1631,6 +1738,25 @@ contains
       if (kind /= TRC_AO_NORM_SHELL .and. kind /= TRC_AO_NORM_UNIT) then
          call refuse(cx, "trc_set_ao_norm: kind must be 0 (shell) or 1 (unit)")
          return
+      end if
+      ! TRC_AO_NORM_UNIT rescales CARTESIAN components individually
+      ! (GAMESS's convention); it says nothing about a SPHERICAL AO, which
+      ! has no single Cartesian component to rescale -- a d_z2 is already a
+      ! fixed linear combination of six of them, each carrying its own
+      ! ratio. Combining the two would need a second, different
+      ! normalisation convention for spherical AOs that nothing here
+      ! defines, so this is refused rather than silently doing one of the
+      ! two things it could plausibly mean. Cartesian bases (the default
+      ! for every basis without a "gto_spherical" tag, or any basis loaded
+      ! with force_cartesian) are unaffected.
+      if (kind == TRC_AO_NORM_UNIT) then
+         if ((cx%have_basis .and. cx%bb%b%spherical) .or. (cx%have_aux .and. cx%ab%b%spherical)) then
+            call refuse(cx, "trc_set_ao_norm: TRC_AO_NORM_UNIT only applies to a Cartesian "// &
+                        "basis; this context's basis is spherical (its JSON basis was "// &
+                        "'gto_spherical' and force_cartesian was not set) -- set "// &
+                        "force_cartesian, or load a Cartesian basis, before asking for UNIT")
+            return
+         end if
       end if
       cx%ao_norm_kind = int(kind)
       if (cx%have_basis) cx%bb%ao_norm_kind = cx%ao_norm_kind
@@ -1775,7 +1901,7 @@ contains
       type(comm_t) :: comm
       type(error_t) :: err
       real(dp), allocatable :: dsad(:, :), dg(:, :, :), hsap(:, :)
-      integer :: nelec, nunp, nalpha, nbeta, nspin, n
+      integer :: nelec, nunp, nalpha, nbeta, nspin, n, nc
       logical :: collective
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -1786,7 +1912,11 @@ contains
          cx%message = "trc_run_scf: set the molecule and the basis first"
          return
       end if
-      n = cx%bb%b%nao
+      ! `n` is the SCF's own space (nao_sph if spherical); `nc` is always
+      ! the Cartesian count, for the one place below (SAP) that still
+      ! builds something in Cartesian space before handing it to the SCF.
+      n = scf_space_nao(cx%bb)
+      nc = cx%bb%b%nao
       nelec = nint(sum(cx%at_z)) - cx%charge
       nunp = cx%multiplicity - 1
       status = TRC_ERR_BADARG
@@ -1831,19 +1961,45 @@ contains
          ! in through `hguess` below rather than `dg`. T and V_ne are what it
          ! needs and the context does not keep them, so they are built here;
          ! it is one pair list and one 1e pass against an SCF.
+         !
+         ! trc_sap_build itself stays entirely Cartesian (`hsap_c`, `nc`):
+         ! it is built from the analytic one-electron matrices and a
+         ! quadrature over free-atom potentials, neither of which this
+         ! feature touches. The one transform this guess needs is here, at
+         ! the boundary, the same as SAD's own (trc_sad.F90) -- except SAD
+         ! produces its density already in the matching space because its
+         ! atomic sub-SCFs run on a `subset` basis that carries `spherical`
+         ! itself, where SAP's grid/one-electron machinery has no such
+         ! basis-level hook to carry it through.
          block
             type(trc_pairlist_t) :: pl
-            real(dp), allocatable :: s1(:, :), t1(:, :), v1(:, :)
+            real(dp), allocatable :: s1(:, :), t1(:, :), v1(:, :), hsap_c(:, :)
             call pl%build(cx%bb%b, cx%opts%eri_thresh)
             call pl%to_device()
-            allocate (s1(n, n), t1(n, n), v1(n, n), hsap(n, n))
+            allocate (s1(nc, nc), t1(nc, nc), v1(nc, nc), hsap_c(nc, nc))
             !$acc enter data create(s1, t1, v1)
             call trc_1e(cx%bb%b, pl, s1, t1, v1)
             !$acc update self(s1, t1, v1)
             !$acc exit data delete(s1, t1, v1)
-            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap, err, verbose=cx%opts%verbose)
+            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap_c, err, verbose=cx%opts%verbose)
             call pl%release()
             deallocate (s1, t1, v1)
+            if (.not. err%has_error()) then
+               allocate (hsap(n, n))
+               if (cx%bb%b%spherical) then
+                  ! trc_sap_build already copied `hsap_c` back to the host
+                  ! and dropped its own device copy, so it has to go back
+                  ! up for the transform -- which, like every other matrix
+                  ! this SCF touches, runs on the device.
+                  !$acc enter data copyin(hsap_c) create(hsap)
+                  call sph_cart_to_sph(cx%bb%b, hsap_c, hsap)
+                  !$acc update self(hsap)
+                  !$acc exit data delete(hsap_c, hsap)
+               else
+                  hsap = hsap_c
+               end if
+            end if
+            deallocate (hsap_c)
          end block
          if (err%has_error()) then
             cx%message = err%get_message()
@@ -1946,6 +2102,18 @@ contains
          cx%message = "trc_run_rimp2: restricted closed-shell reference only"
          return
       end if
+      ! Density fitting and RI-MP2 are out of scope for the spherical AO
+      ! space (this milestone's own boundary: trc_df_2c/trc_df_3c stay
+      ! Cartesian-only, see this file's AO classification header). `cx%res
+      ! %cmo` is AO-row-indexed in whatever space the SCF ran in, so an
+      ! MO built from a spherical orbital basis does not line up with
+      ! trc_rimp2_run's Cartesian three-centre tensor -- refused rather
+      ! than silently contracting the wrong AO index against the right one.
+      if (cx%bb%b%spherical) then
+         cx%message = "trc_run_rimp2: the orbital basis is spherical; RI-MP2 only "// &
+                      "supports a Cartesian basis today -- set force_cartesian"
+         return
+      end if
       nfrozen = cx%nfrozen
       if (nfrozen < 0) then
          nfrozen = 0
@@ -2000,9 +2168,29 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%have_basis) return
-      nao = int(cx%bb%b%nao, c_int)
+      nao = int(scf_space_nao(cx%bb), c_int)
       status = TRC_OK
    end function trc_nao
+
+   function trc_is_spherical(handle, flag) result(status) bind(c, name="trc_is_spherical")
+      !! Non-zero if the orbital basis this context holds is running in
+      !! the spherical AO space (nao_sph of trc_nao, rather than the
+      !! Cartesian nao) -- the basis's own JSON function_type unless
+      !! force_cartesian overrode it. For a caller checking which space
+      !! `trc_nao`'s number, and every AO-indexed array it sizes, is in.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: flag
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      flag = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_basis) return
+      flag = merge(1_c_int, 0_c_int, cx%bb%b%spherical)
+      status = TRC_OK
+   end function trc_is_spherical
 
    function trc_nspin(handle, nspin) result(status) bind(c, name="trc_nspin")
       type(c_ptr), value :: handle
@@ -2100,7 +2288,7 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
-      n = cx%bb%b%nao; ns = cx%res%nspin
+      n = scf_space_nao(cx%bb); ns = cx%res%nspin
       d = cx%res%dmat
       if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
@@ -2129,7 +2317,7 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
-      n = cx%bb%b%nao; ns = cx%res%nspin
+      n = scf_space_nao(cx%bb); ns = cx%res%nspin
       c = cx%res%cmo
       if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
@@ -2154,7 +2342,7 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
-      n = cx%bb%b%nao; ns = cx%res%nspin
+      n = scf_space_nao(cx%bb); ns = cx%res%nspin
       eps(1:n*ns) = real(reshape(cx%res%eps, [n*ns]), c_double)
       status = TRC_OK
    end function trc_mo_energies
