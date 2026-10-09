@@ -255,6 +255,29 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
                                       DEPENDS terco/scf_rks)
 endif()
 
+#
+# The hard-case set for SCF robustness (M2, Part B): A/EDIIS ahead of CDIIS
+# and canonical orthogonalisation at their measured defaults, on four small
+# systems chosen because plain damped DIIS is weak on each for a different
+# reason -- see scf_robust.F90's header. Writes scf_robust_probe.bin for
+# the pyscf comparison registered below.
+#
+add_executable(scf_robust scf_robust.F90)
+target_compile_definitions(scf_robust PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_robust PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_robust PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_robust COMMAND scf_robust)
+set_tests_properties(
+  terco/scf_robust PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                              ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_robust_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scf_robust_ref.py)
+  set_tests_properties(
+    terco/scf_robust_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                         DEPENDS terco/scf_robust)
+endif()
+
 # The SAD guess read from mqc's JSON blocks, against terco's own start.
 add_executable(scf_sad scf_sad.F90)
 target_compile_definitions(scf_sad PRIVATE ${TERCO_TEST_DEFS})

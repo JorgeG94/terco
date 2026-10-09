@@ -106,14 +106,60 @@ module trc_scf_driver
       !> difference shrinks as the SCF converges while the density does not.
       !> On a 123-atom silica slice the later iterations are where the time
       !> goes, and they are exactly the ones the difference screens hardest.
-      !> A full build is taken every `incr_reset` iterations so screening
-      !> error cannot accumulate without bound.
-      !> OFF until the accuracy policy is settled: the screening error of
-      !> each difference build accumulates, and on water/cc-pVDZ two
-      !> convergence paths that agreed to 1e-11 agree to 5e-9 with it on.
-      !> Set TRC_INCREMENTAL=1 to measure what it buys.
+      !> A full build is taken every `incr_reset` iterations as a backstop
+      !> against long-run drift, though at the measured `incr_thresh_scale`
+      !> and `incr_start` below a single increment's own error is already
+      !> inside `conv_energy` and the backstop rarely has to do any work.
+      !>
+      !> WHY THIS WAS OFF, AND WHAT CHANGED. Handing the difference density
+      !> to the SAME absolute screening threshold a full build uses was the
+      !> bug, not the idea: the dropped quartets are bounded in absolute
+      !> terms, which is right when the density hanging over them is O(1),
+      !> and is not a bound that shrinks with a difference that is heading
+      !> to zero. On w172/6-31G (450 atoms, 1950 AOs) that showed up as
+      !> RMS(D) reaching 1e-10 while the energy kept bouncing by 1e-4 to
+      !> 1e-6 Eh every iteration with every full rebuild agreeing with every
+      !> other to 1e-9 -- consistent, so the dropped set IS the same one
+      !> every full build, but each DIFFERENCE build drops a different set,
+      !> because ddif's spatial pattern changes iteration to iteration the
+      !> way D's does not, and those errors do not cancel. `incr_thresh_scale`
+      !> and `incr_start` below are the fix, measured on the same case:
+      !> 200 iterations, not converged, becomes 20, converged to the same
+      !> energy as incremental-off (-11395.98363707 against -11395.98363707,
+      !> both well inside 1e-8), in 23.3 s against the 24.4 s reference.
+      !> Set TRC_INCREMENTAL=1 to turn it on without a rebuild.
       logical :: incremental = .false.
-      integer :: incr_reset = 8
+      integer :: incr_reset = 20
+      !! Multiplies `eri_thresh` for an incremental Fock build only, so its
+      !! screen is tighter than the full build's by this fixed factor
+      !! rather than tracking how small the increment itself has become --
+      !! that was tried first (scale by ||ddif||/||dref||) and is backwards:
+      !! it loosens towards "keep everything" as ddif shrinks, which buys
+      !! back the accuracy at the cost of the speed an increment build
+      !! exists for (measured on w172: 25.6 s, slower than incremental off).
+      !! A FIXED tighter floor keeps the per-quartet error small enough,
+      !! every time, that an unlucky run of iterations whose dropped sets
+      !! do not cancel still cannot add up past `conv_energy`. 1e-4,
+      !! measured on w172/6-31G (450 atoms, 1950 AOs), reproduces the
+      !! incremental-off energy to 2e-10 (comfortably inside `conv_energy`
+      !! at 1e-8) while still costing less than a full build once the
+      !! density difference is small enough for `incr_start` to have let
+      !! incrementing start.
+      real(dp) :: incr_thresh_scale = 1.0e-4_dp
+      !! Do not increment until the PREVIOUS iteration's commutator norm
+      !! is already below this. Early on, before CDIIS has settled, D
+      !! swings by a large fraction of itself iteration to iteration --
+      !! on w172 the energy jumps 1267 Eh between iterations 3 and 4 -- so
+      !! ddif is no smaller than D itself, and `incr_thresh_scale`'s fixed
+      !! floor then makes an increment survey MORE quartets than a full
+      !! build would, not fewer (the floor is tight against a bound, dd,
+      !! that is not small yet). A handful of full builds while the
+      !! commutator is still large costs less than that: measured on
+      !! w172, gating the fixed-scale increment on `errmax < incr_start`
+      !! rather than starting it at iteration 2 turns a 34 s run (slower
+      !! than incremental off) into a 23.3 s one (faster than the 24.4 s
+      !! reference), at the same energy.
+      real(dp) :: incr_start = 1.0e-2_dp
       integer :: ndiis = 10
       !! The damped start, -1 meaning "by spin": a closed shell goes to DIIS
       !! from the first iteration -- damping only delayed it until the
@@ -131,7 +177,29 @@ module trc_scf_driver
       !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
       !! its answer and a damped Roothaan step alone throws it 300 hartree
       !! away; raising the virtuals keeps the occupied space from collapsing.
+      !! ADIIS (Hu & Yang, JCP 132, 054109) while damping has ended but the
+      !! commutator is still too large for CDIIS (see `diis_start`):
+      !! minimise an energy functional over the convex hull of the
+      !! Fock/density history instead of taking the level-shifted Roothaan
+      !! step. Off by default -- measured against the existing suite,
+      !! where `ndamp`/`level_shift` already reach the CDIIS window in the
+      !! same iteration count, so turning it on there only pays for the
+      !! history bookkeeping. Where it earns its keep is the hard cases
+      !! (stretched bonds, small gaps, charged open shells) that plain
+      !! damping oscillates on; see the robustness test set.
+      logical :: adiis = .false.
       real(dp) :: level_shift = 1.0_dp
+      !! Canonical orthogonalisation: an eigenvalue of S below this is
+      !! LINEAR DEPENDENCE, and that direction is projected out of X rather
+      !! than scaled by S^-1/4, which would divide by (nearly) zero. A
+      !! compact double-zeta basis never gets near this; a diffuse one
+      !! does -- def2-TZVPD and aug-cc-pVDZ put several S eigenvalues below
+      !! 1e-8 on anything but a single atom, because two diffuse shells on
+      !! neighbouring centres are nearly the same function. 0 restores the
+      !! old behaviour: `error stop` the first time S is not numerically
+      !! positive definite, which is what every existing test still gets
+      !! since none of them is diffuse enough to reach this threshold.
+      real(dp) :: lindep_thresh = 1.0e-8_dp
       real(dp) :: eri_thresh = 1.0e-12_dp
       integer :: grid_level = 3
       integer :: grid_max_pts = 512
@@ -149,6 +217,10 @@ module trc_scf_driver
       real(dp) :: e_two = 0.0_dp       !! Coulomb and exact exchange
       real(dp) :: e_xc = 0.0_dp
       real(dp) :: nelec_grid = 0.0_dp  !! what the grid integrated the density to
+      !! Functions dropped by canonical orthogonalisation: S eigenvalues
+      !! below `opts%lindep_thresh`. 0 for every compact basis; see
+      !! `lindep_thresh` for why a diffuse one is different.
+      integer :: n_lindep = 0
       real(dp), allocatable :: dmat(:, :, :)   !! (nao, nao, nspin); restricted holds the total
       real(dp), allocatable :: cmo(:, :, :)    !! (nao, nao, nspin) orbitals
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
@@ -217,6 +289,36 @@ contains
       end if
    end function incr_reset_env
 
+   !> Experiment hook, like `incr_reset_env`: TRC_INCR_THRESH_SCALE sweeps
+   !> `incr_thresh_scale` without a rebuild.
+   real(dp) function incr_thresh_scale_env(dflt)
+      real(dp), intent(in) :: dflt
+      character(len=16) :: v
+      integer :: ios
+      real(dp) :: t
+      call get_environment_variable("TRC_INCR_THRESH_SCALE", v)
+      incr_thresh_scale_env = dflt
+      if (len_trim(v) > 0) then
+         read (v, *, iostat=ios) t
+         if (ios == 0 .and. t > 0.0_dp) incr_thresh_scale_env = t
+      end if
+   end function incr_thresh_scale_env
+
+   !> Experiment hook, like `incr_reset_env`: TRC_INCR_START sweeps
+   !> `incr_start` without a rebuild.
+   real(dp) function incr_start_env(dflt)
+      real(dp), intent(in) :: dflt
+      character(len=16) :: v
+      integer :: ios
+      real(dp) :: t
+      call get_environment_variable("TRC_INCR_START", v)
+      incr_start_env = dflt
+      if (len_trim(v) > 0) then
+         read (v, *, iostat=ios) t
+         if (ios == 0 .and. t > 0.0_dp) incr_start_env = t
+      end if
+   end function incr_start_env
+
    real(dp) function eri_thresh_env(dflt)
       real(dp), intent(in) :: dflt
       character(len=16) :: v
@@ -262,6 +364,14 @@ contains
       logical :: incr_now
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :), w3(:, :), bmat(:, :), rhs(:)
+      !! ADIIS history (fock, density) and its own slot count, kept apart
+      !! from the CDIIS `fstore`/`estore` above: ADIIS runs exactly in the
+      !! window CDIIS has not opened yet, so the two never need the same
+      !! entries, and keeping them separate means `opts%adiis = .false.`
+      !! leaves the CDIIS path untouched, to the bit.
+      real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :), cad(:)
+      integer :: nadiis_used
+      logical :: adiis_active
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(dft_grid_t) :: grid
@@ -316,6 +426,14 @@ contains
       allocate (ofrac(nao)); ofrac = 0.0_dp
       allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
+      ! Only when asked for: a second ndiis-deep history the size of
+      ! fstore/estore, which matters on a system the size of w172, where
+      ! one nao^2*ndiis block is already hundreds of megabytes.
+      if (opts%adiis) then
+         allocate (fstore_a(nao, nao, nspin, opts%ndiis), dstore_a(nao, nao, nspin, opts%ndiis))
+         allocate (cad(opts%ndiis))
+         fstore_a = 0.0_dp; dstore_a = 0.0_dp
+      end if
 
       t_setup = 0.0_dp; t_grid = 0.0_dp; t_fock = 0.0_dp; t_xc = 0.0_dp; t_rest = 0.0_dp
       tf_it = 0.0_dp; tx_it = 0.0_dp
@@ -333,7 +451,10 @@ contains
       end if
       res%e_nuc = nuclear_repulsion(b)
       call la%init(nao)
-      call sym_orthog(la, nao, smat, x)
+      call sym_orthog(la, nao, smat, x, opts%lindep_thresh, res%n_lindep)
+      if (talk .and. res%n_lindep > 0) print '(a,i0,a,es9.2,a)', &
+         "   canonical orthogonalisation: ", res%n_lindep, &
+         " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
       t_setup = wall() - tw0
 
       if (dft) then
@@ -393,9 +514,13 @@ contains
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3) &
       !$acc            create(dref, gacc, ddif)
+      if (opts%adiis) then
+         !$acc enter data copyin(fstore_a, dstore_a)
+      end if
 
       eold = 0.0_dp
       ndiis_used = 0
+      nadiis_used = 0
       diis_on = .false.
       exc = 0.0_dp; ngrid = 0.0_dp
       ! What the SCF is actually running on. Two callers can hand over the
@@ -423,12 +548,65 @@ contains
             ! small and getting smaller while the density is neither.
             !
             incr_now = (opts%incremental .or. incr_env()) .and. it > 1 &
+                       .and. errmax < incr_start_env(opts%incr_start) &
                        .and. mod(it - 1, max(1, incr_reset_env(opts%incr_reset))) /= 0
             if (incr_now) then
                do concurrent(i=1:nao, j=1:nao)
                   ddif(i, j) = res%dmat(i, j, 1) - dref(i, j, 1)
                end do
-               call eri%fock_resident(b, ddif, gmat(:, :, 1), k_scale=exx)
+               !
+               ! A FIXED, TIGHTER THRESHOLD ON THE INCREMENT -- not one
+               ! that tracks how small ddif has become.
+               !
+               ! `eri`'s Schwarz/density screen drops a quartet whose
+               ! bound, qq*dd, is below an ABSOLUTE threshold: right for a
+               ! full build, where dd comes from a density of order one
+               ! and the dropped piece really is negligible against the
+               ! matrix being formed. Handed the same threshold on ddif
+               ! instead, dd is the bound of a density that is getting
+               ! small, so quartets the full build would never have kept
+               ! survive here on sufferance, right at the edge of the
+               ! test -- and WHICH quartets sit at that edge changes from
+               ! one iteration's ddif to the next, because ddif's shape
+               ! changes (it is a difference of two iterates, not a
+               ! density that settles into one spatial pattern the way D
+               ! does). So the quartets this build drops are not the same
+               ! set the last one dropped, each drop is an independent
+               ! truncation of a comparable size, and the errors do not
+               ! average down across iterations the way the full build's
+               ! -- which drops the SAME negligible quartets every time --
+               ! does. Measured on w172/6-31G (450 atoms, 1950 AOs): RMS(D)
+               ! reaches 1e-10 while the energy keeps bouncing by 1e-4 to
+               ! 1e-6 Eh every iteration, with no downward trend, which is
+               ! exactly what an error that does not shrink with ddif
+               ! looks like.
+               !
+               ! The fix is not to chase ddif's shrinking scale -- that
+               ! was tried, scaling `thresh` down by ||ddif||/||dref|| makes
+               ! the screen loosen towards "keep everything" as ddif gets
+               ! small, which is backwards: it buys back the accuracy at
+               ! the cost of all of the speed an increment build exists
+               ! for, measured on this case as 25.6 s against the 24.4 s
+               ! baseline, i.e. no win at all. What works is a threshold
+               ! that is simply TIGHTER, by a fixed factor, for every
+               ! increment, so the per-quartet error floor itself is
+               ! small enough that an unlucky run of iterations whose
+               ! dropped sets do not cancel still cannot add up past
+               ! `conv_energy`. `incr_thresh_scale` is that factor,
+               ! default 1e-4: measured on the same case, tight enough
+               ! that |dE| clears 1e-8 at every reset through iteration
+               ! 20 (matching the incremental-off reference to the same
+               ! energy), while the kept-quartet count stays low enough
+               ! that each incremental build is still a few times
+               ! cheaper than a full one, not equal to it.
+               !
+               block
+                  real(dp) :: thresh0
+                  thresh0 = eri%thresh
+                  eri%thresh = thresh0*incr_thresh_scale_env(opts%incr_thresh_scale)
+                  call eri%fock_resident(b, ddif, gmat(:, :, 1), k_scale=exx)
+                  eri%thresh = thresh0
+               end block
                do concurrent(i=1:nao, j=1:nao)
                   gacc(i, j, 1) = gacc(i, j, 1) + gmat(i, j, 1)
                   gmat(i, j, 1) = gacc(i, j, 1)
@@ -512,8 +690,60 @@ contains
          ! --- DIIS, once the commutator is small enough to extrapolate from --
          errmax = sqrt(la%dot(n2*nspin, errv, errv))
          if (.not. diis_on .and. it > ndamp) diis_on = errmax < diis_start
-         ! --- level shift while DIIS is off: F += mu (S - S D S / occ) --------
-         if (.not. diis_on .and. opts%level_shift > 0.0_dp) then
+         !
+         ! A/EDIIS WHILE DAMPING HAS ENDED BUT THE COMMUTATOR IS STILL TOO
+         ! LARGE FOR CDIIS.
+         !
+         ! CDIIS minimises an error norm with no constraint on its
+         ! coefficients, which is exactly why `diis_start` gates it: far
+         ! from convergence the error vectors are not yet meaningful, and
+         ! an unconstrained extrapolation from them can overshoot or head
+         ! for a saddle rather than downhill. ADIIS (Hu & Yang, JCP 132,
+         ! 054109) instead minimises an energy functional over the convex
+         ! hull of the Fock/density history -- coefficients confined to
+         ! the simplex {c >= 0, sum c = 1}, so the step can only move
+         ! towards a density already visited, never away from all of
+         ! them. That makes it reliable exactly where CDIIS is not, and
+         ! slow exactly where CDIIS is fast, which is why the two SWITCH
+         ! rather than blend: gmshpc measured a blended step turning a
+         ! stretched-water case that converged in 21 CDIIS iterations into
+         ! one that did not converge at all.
+         !
+         adiis_active = opts%adiis .and. .not. diis_on .and. it > ndamp
+         if (adiis_active) then
+            if (nadiis_used < opts%ndiis) then
+               nadiis_used = nadiis_used + 1
+            else
+               do k = 1, opts%ndiis - 1
+                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                     fstore_a(i, j, s, k) = fstore_a(i, j, s, k + 1)
+                     dstore_a(i, j, s, k) = dstore_a(i, j, s, k + 1)
+                  end do
+               end do
+            end if
+            k = nadiis_used
+            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+               fstore_a(i, j, s, k) = fock(i, j, s)
+               dstore_a(i, j, s, k) = dold(i, j, s)
+            end do
+            ! One entry: the simplex is a point, c = 1 on it, a no-op.
+            ! Skip the solve and leave `fock` as it is, which is also what
+            ! `adiis_coeffs` would return from "start at the newest entry"
+            ! after finding no improving step.
+            if (nadiis_used > 1) then
+               call adiis_coeffs(nadiis_used, cad(1:nadiis_used))
+               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                  fock(i, j, s) = 0.0_dp
+               end do
+               do k = 1, nadiis_used
+                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                     fock(i, j, s) = fock(i, j, s) + cad(k)*fstore_a(i, j, s, k)
+                  end do
+               end do
+            end if
+         end if
+         ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
+         if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
             do s = 1, nspin
                call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
                call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
@@ -594,7 +824,7 @@ contains
                end do
             end if
          end do
-         if (.not. diis_on) then
+         if (.not. diis_on .and. .not. adiis_active) then
             do concurrent(i=1:nao, j=1:nao, s=1:nspin)
                res%dmat(i, j, s) = opts%damp*res%dmat(i, j, s) + (1.0_dp - opts%damp)*dold(i, j, s)
             end do
@@ -654,6 +884,9 @@ contains
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3) &
       !$acc           delete(dref, gacc, ddif)
+      if (opts%adiis) then
+         !$acc exit data delete(fstore_a, dstore_a)
+      end if
       res%dmat = dold
       res%energy = etot
       res%e_one = e1
@@ -749,6 +982,124 @@ contains
          end do
       end subroutine zero_dev
 
+      !
+      ! ADIIS coefficients over the first `m` slots of fstore_a/dstore_a
+      ! (host association: trc_scf_run's locals, same way `la`/`n2`/`nspin`
+      ! are reached here). Slot `m` is always the newest -- the ADIIS
+      ! history above is appended the same way CDIIS's is, at the top of
+      ! the used range, not cycled -- so Hu & Yang's "entry n" is simply
+      ! the last index.
+      !
+      ! Minimises, over the simplex {c >= 0, sum c = 1},
+      !
+      !     f(c) = 2 sum_i c_i <D_i - D_m, F_m>
+      !            + sum_ij c_i c_j <D_i - D_m, F_j - F_m>
+      !
+      ! by projected gradient with backtracking: m <= ndiis, so this is a
+      ! few hundred flops on the host once the dot products (device, via
+      ! `la%dot`, the same call the CDIIS B matrix above uses) are in
+      ! hand. Starting from all weight on the newest entry means a step
+      ! that makes no progress degrades to the plain Roothaan step rather
+      ! than to nonsense.
+      !
+      subroutine adiis_coeffs(m, c)
+         integer, intent(in) :: m
+         real(dp), intent(out) :: c(m)
+         real(dp) :: dvec(m), amat(m, m), g(m), trial(m), f, ft, step
+         integer :: ii, jj, itr, ls
+         logical :: improved
+         do ii = 1, m
+            dvec(ii) = la%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
+                       - la%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+            do jj = 1, m
+               amat(ii, jj) = la%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, jj)) &
+                              - la%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
+                              - la%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, jj)) &
+                              + la%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+            end do
+         end do
+         c = 0.0_dp; c(m) = 1.0_dp
+         f = adiis_value(m, dvec, amat, c)
+         step = 1.0_dp
+         do itr = 1, 200
+            do ii = 1, m
+               g(ii) = 2.0_dp*dvec(ii)
+               do jj = 1, m
+                  g(ii) = g(ii) + (amat(ii, jj) + amat(jj, ii))*c(jj)
+               end do
+            end do
+            improved = .false.
+            do ls = 1, 30
+               trial = c - step*g
+               call project_simplex(m, trial)
+               ft = adiis_value(m, dvec, amat, trial)
+               if (ft < f - 1.0e-14_dp) then
+                  c = trial; f = ft; improved = .true.
+                  exit
+               end if
+               step = step*0.5_dp
+            end do
+            if (.not. improved) exit
+            step = step*1.5_dp
+         end do
+      end subroutine adiis_coeffs
+
+      pure function adiis_value(m, dvec, amat, c) result(f)
+         integer, intent(in) :: m
+         real(dp), intent(in) :: dvec(m), amat(m, m), c(m)
+         real(dp) :: f
+         integer :: ii, jj
+         f = 0.0_dp
+         do ii = 1, m
+            f = f + 2.0_dp*c(ii)*dvec(ii)
+            do jj = 1, m
+               f = f + c(ii)*c(jj)*amat(ii, jj)
+            end do
+         end do
+      end function adiis_value
+
+      ! Projection onto the simplex {c : sum c = 1, c >= 0}: the standard
+      ! sort-and-threshold algorithm, which is what enforces ADIIS's
+      ! non-negativity constraint, the thing that keeps it from wandering
+      ! off far from convergence.
+      pure subroutine project_simplex(m, c)
+         integer, intent(in) :: m
+         real(dp), intent(inout) :: c(m)
+         real(dp) :: u(m), css, theta, t
+         integer :: ii, rho
+         u = c
+         call sort_desc(m, u)
+         css = 0.0_dp; theta = 0.0_dp; rho = 0
+         do ii = 1, m
+            css = css + u(ii)
+            t = (css - 1.0_dp)/real(ii, dp)
+            if (u(ii) - t > 0.0_dp) then
+               rho = ii; theta = t
+            end if
+         end do
+         if (rho == 0) then
+            c = 1.0_dp/real(m, dp)
+            return
+         end if
+         c = max(c - theta, 0.0_dp)
+      end subroutine project_simplex
+
+      ! Insertion sort, descending: m <= ndiis, so this is never worth more
+      ! than a handful of compares.
+      pure subroutine sort_desc(m, u)
+         integer, intent(in) :: m
+         real(dp), intent(inout) :: u(m)
+         integer :: ii, jj
+         real(dp) :: t
+         do ii = 1, m - 1
+            do jj = ii + 1, m
+               if (u(jj) > u(ii)) then
+                  t = u(ii); u(ii) = u(jj); u(jj) = t
+               end if
+            end do
+         end do
+      end subroutine sort_desc
+
    end subroutine trc_scf_run
 
    ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
@@ -779,26 +1130,56 @@ contains
       end do
    end function nuclear_repulsion
 
-   ! X = S^(-1/2), symmetric orthogonalisation. Once per geometry, on the
-   ! host: it is where near-null modes would be filtered, and it is not
-   ! per iteration.
-   subroutine sym_orthog(la, n, s, x)
+   ! X = S^(-1/2), symmetric orthogonalisation -- or, once `lindep_thresh`
+   ! is positive and some S eigenvalue falls below it, CANONICAL
+   ! orthogonalisation: those columns of U are set to zero rather than
+   ! divided by sqrt(sqrt(w)), which is what symmetric orthogonalisation
+   ! does to a near-null mode and is why it diverges first. A zeroed column
+   ! of X contributes nothing to X^T F X either, so that mode decouples
+   ! from the eigenproblem instead of blowing it up; the eigenvectors that
+   ! come back from it are an exact, orthogonal, physically unused
+   ! complement, not noise that has to be swept up afterwards. Still once
+   ! per geometry, on the host side of the call.
+   subroutine sym_orthog(la, n, s, x, lindep_thresh, ndropped)
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n)
       real(dp), intent(out) :: x(n, n)
+      real(dp), intent(in), optional :: lindep_thresh
+      integer, intent(out), optional :: ndropped
       real(dp), allocatable :: u(:, :), w(:)
-      integer :: i, k
+      real(dp) :: thr
+      integer :: i, k, ndrop
       allocate (u(n, n), w(n))
       u = s
+      thr = 0.0_dp
+      if (present(lindep_thresh)) thr = lindep_thresh
       !$acc data copy(u) create(w) copyout(x)
       call la%syev(n, u, n, w)
       !$acc update self(w)
-      if (w(1) <= 0.0_dp) error stop "trc_scf: the overlap is not positive definite"
-      ! Columns scaled by w^-1/4 on the device, then X = U U^T.
+      ! w is ascending (LAPACK/cuSOLVER convention), so the near-null modes
+      ! -- the ones canonical orthogonalisation drops -- are the leading
+      ! entries, the same ones the old unconditional check read as w(1).
+      ndrop = 0
+      if (thr > 0.0_dp) then
+         do k = 1, n
+            if (w(k) < thr) ndrop = ndrop + 1
+         end do
+      else if (w(1) <= 0.0_dp) then
+         error stop "trc_scf: the overlap is not positive definite"
+      end if
+      if (present(ndropped)) ndropped = ndrop
+      ! Columns scaled by w^-1/4 on the device, then X = U U^T; the first
+      ! `ndrop` columns -- the near-null modes -- are zeroed instead, so
+      ! they carry no weight into X^T F X and never has to divide by a
+      ! near-zero w.
       !$acc update device(w)
       do concurrent(i=1:n, k=1:n)
-         u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
+         if (k <= ndrop) then
+            u(i, k) = 0.0_dp
+         else
+            u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
+         end if
       end do
       call la%gemm('N', 'T', n, n, n, 1.0_dp, u, n, u, n, 0.0_dp, x, n)
       !$acc end data
