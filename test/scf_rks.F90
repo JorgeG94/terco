@@ -23,7 +23,9 @@ program scf_rks
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz, uncontract_basis
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
 
    integer, parameter :: NCASE = 7
@@ -54,7 +56,15 @@ program scf_rks
          if (allocated(at_z)) deallocate (at_z)
          allocate (at_z(natm))
          at_z = real(zint, dp)
-         call build_631g(natm, zint, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp, uncontracted=.true.)
+         block
+            type(trc_basis_t) :: jbas
+            type(error_t) :: err
+            call trc_basis_from_json('basis_sets/6-31g.json', natm, zint, at_r, jbas, err)
+            if (err%has_error()) then
+               print '(a)', 'scf_rks: '//err%get_message(); stop 1
+            end if
+            call uncontract_basis(jbas, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
+         end block
          call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, at_z, at_r, maxnp)
          call bas%to_device()
          print '(a)', ""

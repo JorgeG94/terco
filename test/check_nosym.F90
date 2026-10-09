@@ -26,7 +26,9 @@ program check_nosym
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_eri, only: trc_eri_t
    use trc_tables, only: LMAX
-   use trc_test_basis, only: read_xyz, build_631g, build_aux
+   use trc_test_basis, only: read_xyz, build_aux
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
 
    character(len=256) :: xyzfile, arg
@@ -38,6 +40,7 @@ program check_nosym
    type(trc_basis_t)    :: bas
    type(trc_pairlist_t) :: pl
    type(trc_eri_t)      :: eri
+   type(error_t) :: err
    real(dp) :: worst, thresh
 
    thresh = 1.0e-10_dp
@@ -55,17 +58,21 @@ program check_nosym
    call read_xyz(xyzfile, nat, at_z, at_r)
    if (auxl >= 0) then
       call build_aux(nat, at_z, at_r, auxl, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
+      allocate (zat(nat)); zat = real(at_z, dp)
+      call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
    else
-      call build_631g(nat, at_z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
+      ! 6-31G, through the one basis-construction path.
+      call trc_basis_from_json('basis_sets/6-31g.json', nat, at_z, at_r, bas, err)
+      if (err%has_error()) then
+         print '(a)', 'check_nosym: '//err%get_message(); stop 1
+      end if
    end if
-   if (maxval(sh_l) > LMAX) then
-      print '(a,i0,a,i0,a)', '  SKIP: basis needs l = ', maxval(sh_l), &
+   if (maxval(bas%sh_l) > LMAX) then
+      print '(a,i0,a,i0,a)', '  SKIP: basis needs l = ', maxval(bas%sh_l), &
          ' and this build has LMAX = ', LMAX, '.'
       stop 0
    end if
 
-   allocate (zat(nat)); zat = real(at_z, dp)
-   call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
    call pl%build(bas, thresh)
    nao = bas%nao
    call bas%to_device(); call pl%to_device()
@@ -85,8 +92,8 @@ program check_nosym
    call eri%fock_nosym(bas, d, gn)
    worst = maxval(abs(gs - gn))
 
-   print '(a,i0,a,i0,a,i0)', '  ', nao, ' functions, shells ', nsh, &
-      ', max l ', maxval(sh_l)
+   print '(a,i0,a,i0,a,i0)', '  ', nao, ' functions, shells ', bas%nshell, &
+      ', max l ', maxval(bas%sh_l)
    print '(a,es12.4)',  '  asymmetry of the density ', maxval(abs(d - transpose(d)))
    print '(a,es24.16)', '  sum folded     ', sum(gs)
    print '(a,es24.16)', '  sum enumerated ', sum(gn)

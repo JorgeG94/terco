@@ -55,7 +55,9 @@ program demo_makefp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz, unpack_basis
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
 
    real(dp), parameter :: BOHR_PER_ANG = 1.8897261254578281_dp
@@ -133,9 +135,15 @@ program demo_makefp
    ! --- stage 1: the basis and terco's containers ----------------------------
    call tick(t0)
    call read_xyz(xyzfile, nat, at_z, at_r)
-   call build_631g(nat, at_z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
+   block
+      type(error_t) :: err
+      call trc_basis_from_json('basis_sets/6-31g.json', nat, at_z, at_r, bas, err)
+      if (err%has_error()) then
+         print '(a)', 'demo_makefp: '//err%get_message(); stop 1
+      end if
+   end block
+   call unpack_basis(bas, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
    allocate (zat(nat)); zat = real(at_z, dp)
-   call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
    call pl%build(bas, thresh)
    nao = bas%nao
    nocc = (sum(at_z) - charge)/2

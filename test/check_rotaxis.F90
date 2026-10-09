@@ -34,7 +34,10 @@ program check_rotaxis
    use trc_bins, only: pair_bins_t, build_binned_pairs
    use trc_binkernel, only: fock_bins
    use trc_screen, only: schwarz_bounds
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz, uncontract_basis
+   use trc_api, only: trc_basis_t
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
 
    interface
@@ -90,9 +93,18 @@ contains
       integer :: npp, nhpp, nao
       integer(kind=8) :: nwork2
       real(dp) :: worstj, worstk, maxf
+      type(trc_basis_t) :: jbas
+      type(error_t) :: err
 
       call read_xyz(fn, nat, z, r)
-      call build_631g(nat, z, r, nbas, l, np, e, c, sr, mnp, uncontracted=.true.)
+      ! 6-31G, through the one basis-construction path, then uncontracted
+      ! to primitives exactly as build_631g's old `uncontracted=.true.`
+      ! argument used to (see uncontract_basis's own comment).
+      call trc_basis_from_json('basis_sets/6-31g.json', nat, z, r, jbas, err)
+      if (err%has_error()) then
+         print '(a)', 'check_rotaxis: '//err%get_message(); stop 1
+      end if
+      call uncontract_basis(jbas, nbas, l, np, e, c, sr, mnp)
       if (maxval(l) > LMAX) then
          print '(a,a,a)', '  ', trim(fn), ': SKIPPED (needs p, build has LMAX < 1)'
          return
