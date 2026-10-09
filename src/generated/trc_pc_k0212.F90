@@ -133,6 +133,8 @@ contains
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v(200, 0:1), g1(200), vbuf(108)
+      real(dp) :: h(680)
+
       real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       logical  :: same_ab, same_cd, same_pair
       real(dp) :: jab(6), jcd(18), kac(3)
@@ -819,1329 +821,794 @@ contains
          mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
 
          ! --- HRR ---
-         vbuf(1) = abx*abx*cdx*cdx*g1(11) &
-            + 2.0_dp*abx*abx*cdx*g1(41) &
-            + abx*abx*g1(101) &
-            + 2.0_dp*abx*cdx*cdx*g1(12) &
-            + 4.0_dp*abx*cdx*g1(42) &
-            + 2.0_dp*abx*g1(102) &
-            + cdx*cdx*g1(15) &
-            + 2.0_dp*cdx*g1(45) &
-            + g1(105)
-         vbuf(2) = abx*aby*cdx*cdx*g1(11) &
-            + 2.0_dp*abx*aby*cdx*g1(41) &
-            + abx*aby*g1(101) &
-            + abx*cdx*cdx*g1(13) &
-            + 2.0_dp*abx*cdx*g1(43) &
-            + abx*g1(103) &
-            + aby*cdx*cdx*g1(12) &
-            + 2.0_dp*aby*cdx*g1(42) &
-            + aby*g1(102) &
-            + cdx*cdx*g1(16) &
-            + 2.0_dp*cdx*g1(46) &
-            + g1(106)
-         vbuf(3) = abx*abz*cdx*cdx*g1(11) &
-            + 2.0_dp*abx*abz*cdx*g1(41) &
-            + abx*abz*g1(101) &
-            + abx*cdx*cdx*g1(14) &
-            + 2.0_dp*abx*cdx*g1(44) &
-            + abx*g1(104) &
-            + abz*cdx*cdx*g1(12) &
-            + 2.0_dp*abz*cdx*g1(42) &
-            + abz*g1(102) &
-            + cdx*cdx*g1(17) &
-            + 2.0_dp*cdx*g1(47) &
-            + g1(107)
-         vbuf(4) = aby*aby*cdx*cdx*g1(11) &
-            + 2.0_dp*aby*aby*cdx*g1(41) &
-            + aby*aby*g1(101) &
-            + 2.0_dp*aby*cdx*cdx*g1(13) &
-            + 4.0_dp*aby*cdx*g1(43) &
-            + 2.0_dp*aby*g1(103) &
-            + cdx*cdx*g1(18) &
-            + 2.0_dp*cdx*g1(48) &
-            + g1(108)
-         vbuf(5) = aby*abz*cdx*cdx*g1(11) &
-            + 2.0_dp*aby*abz*cdx*g1(41) &
-            + aby*abz*g1(101) &
-            + aby*cdx*cdx*g1(14) &
-            + 2.0_dp*aby*cdx*g1(44) &
-            + aby*g1(104) &
-            + abz*cdx*cdx*g1(13) &
-            + 2.0_dp*abz*cdx*g1(43) &
-            + abz*g1(103) &
-            + cdx*cdx*g1(19) &
-            + 2.0_dp*cdx*g1(49) &
-            + g1(109)
-         vbuf(6) = abz*abz*cdx*cdx*g1(11) &
-            + 2.0_dp*abz*abz*cdx*g1(41) &
-            + abz*abz*g1(101) &
-            + 2.0_dp*abz*cdx*cdx*g1(14) &
-            + 4.0_dp*abz*cdx*g1(44) &
-            + 2.0_dp*abz*g1(104) &
-            + cdx*cdx*g1(20) &
-            + 2.0_dp*cdx*g1(50) &
-            + g1(110)
-         vbuf(7) = abx*abx*cdx*cdx*g1(21) &
-            + 2.0_dp*abx*abx*cdx*g1(51) &
-            + abx*abx*g1(111) &
-            + 2.0_dp*abx*cdx*cdx*g1(22) &
-            + 4.0_dp*abx*cdx*g1(52) &
-            + 2.0_dp*abx*g1(112) &
-            + cdx*cdx*g1(25) &
-            + 2.0_dp*cdx*g1(55) &
-            + g1(115)
-         vbuf(8) = abx*aby*cdx*cdx*g1(21) &
-            + 2.0_dp*abx*aby*cdx*g1(51) &
-            + abx*aby*g1(111) &
-            + abx*cdx*cdx*g1(23) &
-            + 2.0_dp*abx*cdx*g1(53) &
-            + abx*g1(113) &
-            + aby*cdx*cdx*g1(22) &
-            + 2.0_dp*aby*cdx*g1(52) &
-            + aby*g1(112) &
-            + cdx*cdx*g1(26) &
-            + 2.0_dp*cdx*g1(56) &
-            + g1(116)
-         vbuf(9) = abx*abz*cdx*cdx*g1(21) &
-            + 2.0_dp*abx*abz*cdx*g1(51) &
-            + abx*abz*g1(111) &
-            + abx*cdx*cdx*g1(24) &
-            + 2.0_dp*abx*cdx*g1(54) &
-            + abx*g1(114) &
-            + abz*cdx*cdx*g1(22) &
-            + 2.0_dp*abz*cdx*g1(52) &
-            + abz*g1(112) &
-            + cdx*cdx*g1(27) &
-            + 2.0_dp*cdx*g1(57) &
-            + g1(117)
-         vbuf(10) = aby*aby*cdx*cdx*g1(21) &
-            + 2.0_dp*aby*aby*cdx*g1(51) &
-            + aby*aby*g1(111) &
-            + 2.0_dp*aby*cdx*cdx*g1(23) &
-            + 4.0_dp*aby*cdx*g1(53) &
-            + 2.0_dp*aby*g1(113) &
-            + cdx*cdx*g1(28) &
-            + 2.0_dp*cdx*g1(58) &
-            + g1(118)
-         vbuf(11) = aby*abz*cdx*cdx*g1(21) &
-            + 2.0_dp*aby*abz*cdx*g1(51) &
-            + aby*abz*g1(111) &
-            + aby*cdx*cdx*g1(24) &
-            + 2.0_dp*aby*cdx*g1(54) &
-            + aby*g1(114) &
-            + abz*cdx*cdx*g1(23) &
-            + 2.0_dp*abz*cdx*g1(53) &
-            + abz*g1(113) &
-            + cdx*cdx*g1(29) &
-            + 2.0_dp*cdx*g1(59) &
-            + g1(119)
-         vbuf(12) = abz*abz*cdx*cdx*g1(21) &
-            + 2.0_dp*abz*abz*cdx*g1(51) &
-            + abz*abz*g1(111) &
-            + 2.0_dp*abz*cdx*cdx*g1(24) &
-            + 4.0_dp*abz*cdx*g1(54) &
-            + 2.0_dp*abz*g1(114) &
-            + cdx*cdx*g1(30) &
-            + 2.0_dp*cdx*g1(60) &
-            + g1(120)
-         vbuf(13) = abx*abx*cdx*cdx*g1(31) &
-            + 2.0_dp*abx*abx*cdx*g1(61) &
-            + abx*abx*g1(121) &
-            + 2.0_dp*abx*cdx*cdx*g1(32) &
-            + 4.0_dp*abx*cdx*g1(62) &
-            + 2.0_dp*abx*g1(122) &
-            + cdx*cdx*g1(35) &
-            + 2.0_dp*cdx*g1(65) &
-            + g1(125)
-         vbuf(14) = abx*aby*cdx*cdx*g1(31) &
-            + 2.0_dp*abx*aby*cdx*g1(61) &
-            + abx*aby*g1(121) &
-            + abx*cdx*cdx*g1(33) &
-            + 2.0_dp*abx*cdx*g1(63) &
-            + abx*g1(123) &
-            + aby*cdx*cdx*g1(32) &
-            + 2.0_dp*aby*cdx*g1(62) &
-            + aby*g1(122) &
-            + cdx*cdx*g1(36) &
-            + 2.0_dp*cdx*g1(66) &
-            + g1(126)
-         vbuf(15) = abx*abz*cdx*cdx*g1(31) &
-            + 2.0_dp*abx*abz*cdx*g1(61) &
-            + abx*abz*g1(121) &
-            + abx*cdx*cdx*g1(34) &
-            + 2.0_dp*abx*cdx*g1(64) &
-            + abx*g1(124) &
-            + abz*cdx*cdx*g1(32) &
-            + 2.0_dp*abz*cdx*g1(62) &
-            + abz*g1(122) &
-            + cdx*cdx*g1(37) &
-            + 2.0_dp*cdx*g1(67) &
-            + g1(127)
-         vbuf(16) = aby*aby*cdx*cdx*g1(31) &
-            + 2.0_dp*aby*aby*cdx*g1(61) &
-            + aby*aby*g1(121) &
-            + 2.0_dp*aby*cdx*cdx*g1(33) &
-            + 4.0_dp*aby*cdx*g1(63) &
-            + 2.0_dp*aby*g1(123) &
-            + cdx*cdx*g1(38) &
-            + 2.0_dp*cdx*g1(68) &
-            + g1(128)
-         vbuf(17) = aby*abz*cdx*cdx*g1(31) &
-            + 2.0_dp*aby*abz*cdx*g1(61) &
-            + aby*abz*g1(121) &
-            + aby*cdx*cdx*g1(34) &
-            + 2.0_dp*aby*cdx*g1(64) &
-            + aby*g1(124) &
-            + abz*cdx*cdx*g1(33) &
-            + 2.0_dp*abz*cdx*g1(63) &
-            + abz*g1(123) &
-            + cdx*cdx*g1(39) &
-            + 2.0_dp*cdx*g1(69) &
-            + g1(129)
-         vbuf(18) = abz*abz*cdx*cdx*g1(31) &
-            + 2.0_dp*abz*abz*cdx*g1(61) &
-            + abz*abz*g1(121) &
-            + 2.0_dp*abz*cdx*cdx*g1(34) &
-            + 4.0_dp*abz*cdx*g1(64) &
-            + 2.0_dp*abz*g1(124) &
-            + cdx*cdx*g1(40) &
-            + 2.0_dp*cdx*g1(70) &
-            + g1(130)
-         vbuf(19) = abx*abx*cdx*cdy*g1(11) &
-            + abx*abx*cdx*g1(51) &
-            + abx*abx*cdy*g1(41) &
-            + abx*abx*g1(111) &
-            + 2.0_dp*abx*cdx*cdy*g1(12) &
-            + 2.0_dp*abx*cdx*g1(52) &
-            + 2.0_dp*abx*cdy*g1(42) &
-            + 2.0_dp*abx*g1(112) &
-            + cdx*cdy*g1(15) &
-            + cdx*g1(55) &
-            + cdy*g1(45) &
-            + g1(115)
-         vbuf(20) = abx*aby*cdx*cdy*g1(11) &
-            + abx*aby*cdx*g1(51) &
-            + abx*aby*cdy*g1(41) &
-            + abx*aby*g1(111) &
-            + abx*cdx*cdy*g1(13) &
-            + abx*cdx*g1(53) &
-            + abx*cdy*g1(43) &
-            + abx*g1(113) &
-            + aby*cdx*cdy*g1(12) &
-            + aby*cdx*g1(52) &
-            + aby*cdy*g1(42) &
-            + aby*g1(112) &
-            + cdx*cdy*g1(16) &
-            + cdx*g1(56) &
-            + cdy*g1(46) &
-            + g1(116)
-         vbuf(21) = abx*abz*cdx*cdy*g1(11) &
-            + abx*abz*cdx*g1(51) &
-            + abx*abz*cdy*g1(41) &
-            + abx*abz*g1(111) &
-            + abx*cdx*cdy*g1(14) &
-            + abx*cdx*g1(54) &
-            + abx*cdy*g1(44) &
-            + abx*g1(114) &
-            + abz*cdx*cdy*g1(12) &
-            + abz*cdx*g1(52) &
-            + abz*cdy*g1(42) &
-            + abz*g1(112) &
-            + cdx*cdy*g1(17) &
-            + cdx*g1(57) &
-            + cdy*g1(47) &
-            + g1(117)
-         vbuf(22) = aby*aby*cdx*cdy*g1(11) &
-            + aby*aby*cdx*g1(51) &
-            + aby*aby*cdy*g1(41) &
-            + aby*aby*g1(111) &
-            + 2.0_dp*aby*cdx*cdy*g1(13) &
-            + 2.0_dp*aby*cdx*g1(53) &
-            + 2.0_dp*aby*cdy*g1(43) &
-            + 2.0_dp*aby*g1(113) &
-            + cdx*cdy*g1(18) &
-            + cdx*g1(58) &
-            + cdy*g1(48) &
-            + g1(118)
-         vbuf(23) = aby*abz*cdx*cdy*g1(11) &
-            + aby*abz*cdx*g1(51) &
-            + aby*abz*cdy*g1(41) &
-            + aby*abz*g1(111) &
-            + aby*cdx*cdy*g1(14) &
-            + aby*cdx*g1(54) &
-            + aby*cdy*g1(44) &
-            + aby*g1(114) &
-            + abz*cdx*cdy*g1(13) &
-            + abz*cdx*g1(53) &
-            + abz*cdy*g1(43) &
-            + abz*g1(113) &
-            + cdx*cdy*g1(19) &
-            + cdx*g1(59) &
-            + cdy*g1(49) &
-            + g1(119)
-         vbuf(24) = abz*abz*cdx*cdy*g1(11) &
-            + abz*abz*cdx*g1(51) &
-            + abz*abz*cdy*g1(41) &
-            + abz*abz*g1(111) &
-            + 2.0_dp*abz*cdx*cdy*g1(14) &
-            + 2.0_dp*abz*cdx*g1(54) &
-            + 2.0_dp*abz*cdy*g1(44) &
-            + 2.0_dp*abz*g1(114) &
-            + cdx*cdy*g1(20) &
-            + cdx*g1(60) &
-            + cdy*g1(50) &
-            + g1(120)
-         vbuf(25) = abx*abx*cdx*cdy*g1(21) &
-            + abx*abx*cdx*g1(71) &
-            + abx*abx*cdy*g1(51) &
-            + abx*abx*g1(131) &
-            + 2.0_dp*abx*cdx*cdy*g1(22) &
-            + 2.0_dp*abx*cdx*g1(72) &
-            + 2.0_dp*abx*cdy*g1(52) &
-            + 2.0_dp*abx*g1(132) &
-            + cdx*cdy*g1(25) &
-            + cdx*g1(75) &
-            + cdy*g1(55) &
-            + g1(135)
-         vbuf(26) = abx*aby*cdx*cdy*g1(21) &
-            + abx*aby*cdx*g1(71) &
-            + abx*aby*cdy*g1(51) &
-            + abx*aby*g1(131) &
-            + abx*cdx*cdy*g1(23) &
-            + abx*cdx*g1(73) &
-            + abx*cdy*g1(53) &
-            + abx*g1(133) &
-            + aby*cdx*cdy*g1(22) &
-            + aby*cdx*g1(72) &
-            + aby*cdy*g1(52) &
-            + aby*g1(132) &
-            + cdx*cdy*g1(26) &
-            + cdx*g1(76) &
-            + cdy*g1(56) &
-            + g1(136)
-         vbuf(27) = abx*abz*cdx*cdy*g1(21) &
-            + abx*abz*cdx*g1(71) &
-            + abx*abz*cdy*g1(51) &
-            + abx*abz*g1(131) &
-            + abx*cdx*cdy*g1(24) &
-            + abx*cdx*g1(74) &
-            + abx*cdy*g1(54) &
-            + abx*g1(134) &
-            + abz*cdx*cdy*g1(22) &
-            + abz*cdx*g1(72) &
-            + abz*cdy*g1(52) &
-            + abz*g1(132) &
-            + cdx*cdy*g1(27) &
-            + cdx*g1(77) &
-            + cdy*g1(57) &
-            + g1(137)
-         vbuf(28) = aby*aby*cdx*cdy*g1(21) &
-            + aby*aby*cdx*g1(71) &
-            + aby*aby*cdy*g1(51) &
-            + aby*aby*g1(131) &
-            + 2.0_dp*aby*cdx*cdy*g1(23) &
-            + 2.0_dp*aby*cdx*g1(73) &
-            + 2.0_dp*aby*cdy*g1(53) &
-            + 2.0_dp*aby*g1(133) &
-            + cdx*cdy*g1(28) &
-            + cdx*g1(78) &
-            + cdy*g1(58) &
-            + g1(138)
-         vbuf(29) = aby*abz*cdx*cdy*g1(21) &
-            + aby*abz*cdx*g1(71) &
-            + aby*abz*cdy*g1(51) &
-            + aby*abz*g1(131) &
-            + aby*cdx*cdy*g1(24) &
-            + aby*cdx*g1(74) &
-            + aby*cdy*g1(54) &
-            + aby*g1(134) &
-            + abz*cdx*cdy*g1(23) &
-            + abz*cdx*g1(73) &
-            + abz*cdy*g1(53) &
-            + abz*g1(133) &
-            + cdx*cdy*g1(29) &
-            + cdx*g1(79) &
-            + cdy*g1(59) &
-            + g1(139)
-         vbuf(30) = abz*abz*cdx*cdy*g1(21) &
-            + abz*abz*cdx*g1(71) &
-            + abz*abz*cdy*g1(51) &
-            + abz*abz*g1(131) &
-            + 2.0_dp*abz*cdx*cdy*g1(24) &
-            + 2.0_dp*abz*cdx*g1(74) &
-            + 2.0_dp*abz*cdy*g1(54) &
-            + 2.0_dp*abz*g1(134) &
-            + cdx*cdy*g1(30) &
-            + cdx*g1(80) &
-            + cdy*g1(60) &
-            + g1(140)
-         vbuf(31) = abx*abx*cdx*cdy*g1(31) &
-            + abx*abx*cdx*g1(81) &
-            + abx*abx*cdy*g1(61) &
-            + abx*abx*g1(141) &
-            + 2.0_dp*abx*cdx*cdy*g1(32) &
-            + 2.0_dp*abx*cdx*g1(82) &
-            + 2.0_dp*abx*cdy*g1(62) &
-            + 2.0_dp*abx*g1(142) &
-            + cdx*cdy*g1(35) &
-            + cdx*g1(85) &
-            + cdy*g1(65) &
-            + g1(145)
-         vbuf(32) = abx*aby*cdx*cdy*g1(31) &
-            + abx*aby*cdx*g1(81) &
-            + abx*aby*cdy*g1(61) &
-            + abx*aby*g1(141) &
-            + abx*cdx*cdy*g1(33) &
-            + abx*cdx*g1(83) &
-            + abx*cdy*g1(63) &
-            + abx*g1(143) &
-            + aby*cdx*cdy*g1(32) &
-            + aby*cdx*g1(82) &
-            + aby*cdy*g1(62) &
-            + aby*g1(142) &
-            + cdx*cdy*g1(36) &
-            + cdx*g1(86) &
-            + cdy*g1(66) &
-            + g1(146)
-         vbuf(33) = abx*abz*cdx*cdy*g1(31) &
-            + abx*abz*cdx*g1(81) &
-            + abx*abz*cdy*g1(61) &
-            + abx*abz*g1(141) &
-            + abx*cdx*cdy*g1(34) &
-            + abx*cdx*g1(84) &
-            + abx*cdy*g1(64) &
-            + abx*g1(144) &
-            + abz*cdx*cdy*g1(32) &
-            + abz*cdx*g1(82) &
-            + abz*cdy*g1(62) &
-            + abz*g1(142) &
-            + cdx*cdy*g1(37) &
-            + cdx*g1(87) &
-            + cdy*g1(67) &
-            + g1(147)
-         vbuf(34) = aby*aby*cdx*cdy*g1(31) &
-            + aby*aby*cdx*g1(81) &
-            + aby*aby*cdy*g1(61) &
-            + aby*aby*g1(141) &
-            + 2.0_dp*aby*cdx*cdy*g1(33) &
-            + 2.0_dp*aby*cdx*g1(83) &
-            + 2.0_dp*aby*cdy*g1(63) &
-            + 2.0_dp*aby*g1(143) &
-            + cdx*cdy*g1(38) &
-            + cdx*g1(88) &
-            + cdy*g1(68) &
-            + g1(148)
-         vbuf(35) = aby*abz*cdx*cdy*g1(31) &
-            + aby*abz*cdx*g1(81) &
-            + aby*abz*cdy*g1(61) &
-            + aby*abz*g1(141) &
-            + aby*cdx*cdy*g1(34) &
-            + aby*cdx*g1(84) &
-            + aby*cdy*g1(64) &
-            + aby*g1(144) &
-            + abz*cdx*cdy*g1(33) &
-            + abz*cdx*g1(83) &
-            + abz*cdy*g1(63) &
-            + abz*g1(143) &
-            + cdx*cdy*g1(39) &
-            + cdx*g1(89) &
-            + cdy*g1(69) &
-            + g1(149)
-         vbuf(36) = abz*abz*cdx*cdy*g1(31) &
-            + abz*abz*cdx*g1(81) &
-            + abz*abz*cdy*g1(61) &
-            + abz*abz*g1(141) &
-            + 2.0_dp*abz*cdx*cdy*g1(34) &
-            + 2.0_dp*abz*cdx*g1(84) &
-            + 2.0_dp*abz*cdy*g1(64) &
-            + 2.0_dp*abz*g1(144) &
-            + cdx*cdy*g1(40) &
-            + cdx*g1(90) &
-            + cdy*g1(70) &
-            + g1(150)
-         vbuf(37) = abx*abx*cdx*cdz*g1(11) &
-            + abx*abx*cdx*g1(61) &
-            + abx*abx*cdz*g1(41) &
-            + abx*abx*g1(121) &
-            + 2.0_dp*abx*cdx*cdz*g1(12) &
-            + 2.0_dp*abx*cdx*g1(62) &
-            + 2.0_dp*abx*cdz*g1(42) &
-            + 2.0_dp*abx*g1(122) &
-            + cdx*cdz*g1(15) &
-            + cdx*g1(65) &
-            + cdz*g1(45) &
-            + g1(125)
-         vbuf(38) = abx*aby*cdx*cdz*g1(11) &
-            + abx*aby*cdx*g1(61) &
-            + abx*aby*cdz*g1(41) &
-            + abx*aby*g1(121) &
-            + abx*cdx*cdz*g1(13) &
-            + abx*cdx*g1(63) &
-            + abx*cdz*g1(43) &
-            + abx*g1(123) &
-            + aby*cdx*cdz*g1(12) &
-            + aby*cdx*g1(62) &
-            + aby*cdz*g1(42) &
-            + aby*g1(122) &
-            + cdx*cdz*g1(16) &
-            + cdx*g1(66) &
-            + cdz*g1(46) &
-            + g1(126)
-         vbuf(39) = abx*abz*cdx*cdz*g1(11) &
-            + abx*abz*cdx*g1(61) &
-            + abx*abz*cdz*g1(41) &
-            + abx*abz*g1(121) &
-            + abx*cdx*cdz*g1(14) &
-            + abx*cdx*g1(64) &
-            + abx*cdz*g1(44) &
-            + abx*g1(124) &
-            + abz*cdx*cdz*g1(12) &
-            + abz*cdx*g1(62) &
-            + abz*cdz*g1(42) &
-            + abz*g1(122) &
-            + cdx*cdz*g1(17) &
-            + cdx*g1(67) &
-            + cdz*g1(47) &
-            + g1(127)
-         vbuf(40) = aby*aby*cdx*cdz*g1(11) &
-            + aby*aby*cdx*g1(61) &
-            + aby*aby*cdz*g1(41) &
-            + aby*aby*g1(121) &
-            + 2.0_dp*aby*cdx*cdz*g1(13) &
-            + 2.0_dp*aby*cdx*g1(63) &
-            + 2.0_dp*aby*cdz*g1(43) &
-            + 2.0_dp*aby*g1(123) &
-            + cdx*cdz*g1(18) &
-            + cdx*g1(68) &
-            + cdz*g1(48) &
-            + g1(128)
-         vbuf(41) = aby*abz*cdx*cdz*g1(11) &
-            + aby*abz*cdx*g1(61) &
-            + aby*abz*cdz*g1(41) &
-            + aby*abz*g1(121) &
-            + aby*cdx*cdz*g1(14) &
-            + aby*cdx*g1(64) &
-            + aby*cdz*g1(44) &
-            + aby*g1(124) &
-            + abz*cdx*cdz*g1(13) &
-            + abz*cdx*g1(63) &
-            + abz*cdz*g1(43) &
-            + abz*g1(123) &
-            + cdx*cdz*g1(19) &
-            + cdx*g1(69) &
-            + cdz*g1(49) &
-            + g1(129)
-         vbuf(42) = abz*abz*cdx*cdz*g1(11) &
-            + abz*abz*cdx*g1(61) &
-            + abz*abz*cdz*g1(41) &
-            + abz*abz*g1(121) &
-            + 2.0_dp*abz*cdx*cdz*g1(14) &
-            + 2.0_dp*abz*cdx*g1(64) &
-            + 2.0_dp*abz*cdz*g1(44) &
-            + 2.0_dp*abz*g1(124) &
-            + cdx*cdz*g1(20) &
-            + cdx*g1(70) &
-            + cdz*g1(50) &
-            + g1(130)
-         vbuf(43) = abx*abx*cdx*cdz*g1(21) &
-            + abx*abx*cdx*g1(81) &
-            + abx*abx*cdz*g1(51) &
-            + abx*abx*g1(141) &
-            + 2.0_dp*abx*cdx*cdz*g1(22) &
-            + 2.0_dp*abx*cdx*g1(82) &
-            + 2.0_dp*abx*cdz*g1(52) &
-            + 2.0_dp*abx*g1(142) &
-            + cdx*cdz*g1(25) &
-            + cdx*g1(85) &
-            + cdz*g1(55) &
-            + g1(145)
-         vbuf(44) = abx*aby*cdx*cdz*g1(21) &
-            + abx*aby*cdx*g1(81) &
-            + abx*aby*cdz*g1(51) &
-            + abx*aby*g1(141) &
-            + abx*cdx*cdz*g1(23) &
-            + abx*cdx*g1(83) &
-            + abx*cdz*g1(53) &
-            + abx*g1(143) &
-            + aby*cdx*cdz*g1(22) &
-            + aby*cdx*g1(82) &
-            + aby*cdz*g1(52) &
-            + aby*g1(142) &
-            + cdx*cdz*g1(26) &
-            + cdx*g1(86) &
-            + cdz*g1(56) &
-            + g1(146)
-         vbuf(45) = abx*abz*cdx*cdz*g1(21) &
-            + abx*abz*cdx*g1(81) &
-            + abx*abz*cdz*g1(51) &
-            + abx*abz*g1(141) &
-            + abx*cdx*cdz*g1(24) &
-            + abx*cdx*g1(84) &
-            + abx*cdz*g1(54) &
-            + abx*g1(144) &
-            + abz*cdx*cdz*g1(22) &
-            + abz*cdx*g1(82) &
-            + abz*cdz*g1(52) &
-            + abz*g1(142) &
-            + cdx*cdz*g1(27) &
-            + cdx*g1(87) &
-            + cdz*g1(57) &
-            + g1(147)
-         vbuf(46) = aby*aby*cdx*cdz*g1(21) &
-            + aby*aby*cdx*g1(81) &
-            + aby*aby*cdz*g1(51) &
-            + aby*aby*g1(141) &
-            + 2.0_dp*aby*cdx*cdz*g1(23) &
-            + 2.0_dp*aby*cdx*g1(83) &
-            + 2.0_dp*aby*cdz*g1(53) &
-            + 2.0_dp*aby*g1(143) &
-            + cdx*cdz*g1(28) &
-            + cdx*g1(88) &
-            + cdz*g1(58) &
-            + g1(148)
-         vbuf(47) = aby*abz*cdx*cdz*g1(21) &
-            + aby*abz*cdx*g1(81) &
-            + aby*abz*cdz*g1(51) &
-            + aby*abz*g1(141) &
-            + aby*cdx*cdz*g1(24) &
-            + aby*cdx*g1(84) &
-            + aby*cdz*g1(54) &
-            + aby*g1(144) &
-            + abz*cdx*cdz*g1(23) &
-            + abz*cdx*g1(83) &
-            + abz*cdz*g1(53) &
-            + abz*g1(143) &
-            + cdx*cdz*g1(29) &
-            + cdx*g1(89) &
-            + cdz*g1(59) &
-            + g1(149)
-         vbuf(48) = abz*abz*cdx*cdz*g1(21) &
-            + abz*abz*cdx*g1(81) &
-            + abz*abz*cdz*g1(51) &
-            + abz*abz*g1(141) &
-            + 2.0_dp*abz*cdx*cdz*g1(24) &
-            + 2.0_dp*abz*cdx*g1(84) &
-            + 2.0_dp*abz*cdz*g1(54) &
-            + 2.0_dp*abz*g1(144) &
-            + cdx*cdz*g1(30) &
-            + cdx*g1(90) &
-            + cdz*g1(60) &
-            + g1(150)
-         vbuf(49) = abx*abx*cdx*cdz*g1(31) &
-            + abx*abx*cdx*g1(91) &
-            + abx*abx*cdz*g1(61) &
-            + abx*abx*g1(151) &
-            + 2.0_dp*abx*cdx*cdz*g1(32) &
-            + 2.0_dp*abx*cdx*g1(92) &
-            + 2.0_dp*abx*cdz*g1(62) &
-            + 2.0_dp*abx*g1(152) &
-            + cdx*cdz*g1(35) &
-            + cdx*g1(95) &
-            + cdz*g1(65) &
-            + g1(155)
-         vbuf(50) = abx*aby*cdx*cdz*g1(31) &
-            + abx*aby*cdx*g1(91) &
-            + abx*aby*cdz*g1(61) &
-            + abx*aby*g1(151) &
-            + abx*cdx*cdz*g1(33) &
-            + abx*cdx*g1(93) &
-            + abx*cdz*g1(63) &
-            + abx*g1(153) &
-            + aby*cdx*cdz*g1(32) &
-            + aby*cdx*g1(92) &
-            + aby*cdz*g1(62) &
-            + aby*g1(152) &
-            + cdx*cdz*g1(36) &
-            + cdx*g1(96) &
-            + cdz*g1(66) &
-            + g1(156)
-         vbuf(51) = abx*abz*cdx*cdz*g1(31) &
-            + abx*abz*cdx*g1(91) &
-            + abx*abz*cdz*g1(61) &
-            + abx*abz*g1(151) &
-            + abx*cdx*cdz*g1(34) &
-            + abx*cdx*g1(94) &
-            + abx*cdz*g1(64) &
-            + abx*g1(154) &
-            + abz*cdx*cdz*g1(32) &
-            + abz*cdx*g1(92) &
-            + abz*cdz*g1(62) &
-            + abz*g1(152) &
-            + cdx*cdz*g1(37) &
-            + cdx*g1(97) &
-            + cdz*g1(67) &
-            + g1(157)
-         vbuf(52) = aby*aby*cdx*cdz*g1(31) &
-            + aby*aby*cdx*g1(91) &
-            + aby*aby*cdz*g1(61) &
-            + aby*aby*g1(151) &
-            + 2.0_dp*aby*cdx*cdz*g1(33) &
-            + 2.0_dp*aby*cdx*g1(93) &
-            + 2.0_dp*aby*cdz*g1(63) &
-            + 2.0_dp*aby*g1(153) &
-            + cdx*cdz*g1(38) &
-            + cdx*g1(98) &
-            + cdz*g1(68) &
-            + g1(158)
-         vbuf(53) = aby*abz*cdx*cdz*g1(31) &
-            + aby*abz*cdx*g1(91) &
-            + aby*abz*cdz*g1(61) &
-            + aby*abz*g1(151) &
-            + aby*cdx*cdz*g1(34) &
-            + aby*cdx*g1(94) &
-            + aby*cdz*g1(64) &
-            + aby*g1(154) &
-            + abz*cdx*cdz*g1(33) &
-            + abz*cdx*g1(93) &
-            + abz*cdz*g1(63) &
-            + abz*g1(153) &
-            + cdx*cdz*g1(39) &
-            + cdx*g1(99) &
-            + cdz*g1(69) &
-            + g1(159)
-         vbuf(54) = abz*abz*cdx*cdz*g1(31) &
-            + abz*abz*cdx*g1(91) &
-            + abz*abz*cdz*g1(61) &
-            + abz*abz*g1(151) &
-            + 2.0_dp*abz*cdx*cdz*g1(34) &
-            + 2.0_dp*abz*cdx*g1(94) &
-            + 2.0_dp*abz*cdz*g1(64) &
-            + 2.0_dp*abz*g1(154) &
-            + cdx*cdz*g1(40) &
-            + cdx*g1(100) &
-            + cdz*g1(70) &
-            + g1(160)
-         vbuf(55) = abx*abx*cdy*cdy*g1(11) &
-            + 2.0_dp*abx*abx*cdy*g1(51) &
-            + abx*abx*g1(131) &
-            + 2.0_dp*abx*cdy*cdy*g1(12) &
-            + 4.0_dp*abx*cdy*g1(52) &
-            + 2.0_dp*abx*g1(132) &
-            + cdy*cdy*g1(15) &
-            + 2.0_dp*cdy*g1(55) &
-            + g1(135)
-         vbuf(56) = abx*aby*cdy*cdy*g1(11) &
-            + 2.0_dp*abx*aby*cdy*g1(51) &
-            + abx*aby*g1(131) &
-            + abx*cdy*cdy*g1(13) &
-            + 2.0_dp*abx*cdy*g1(53) &
-            + abx*g1(133) &
-            + aby*cdy*cdy*g1(12) &
-            + 2.0_dp*aby*cdy*g1(52) &
-            + aby*g1(132) &
-            + cdy*cdy*g1(16) &
-            + 2.0_dp*cdy*g1(56) &
-            + g1(136)
-         vbuf(57) = abx*abz*cdy*cdy*g1(11) &
-            + 2.0_dp*abx*abz*cdy*g1(51) &
-            + abx*abz*g1(131) &
-            + abx*cdy*cdy*g1(14) &
-            + 2.0_dp*abx*cdy*g1(54) &
-            + abx*g1(134) &
-            + abz*cdy*cdy*g1(12) &
-            + 2.0_dp*abz*cdy*g1(52) &
-            + abz*g1(132) &
-            + cdy*cdy*g1(17) &
-            + 2.0_dp*cdy*g1(57) &
-            + g1(137)
-         vbuf(58) = aby*aby*cdy*cdy*g1(11) &
-            + 2.0_dp*aby*aby*cdy*g1(51) &
-            + aby*aby*g1(131) &
-            + 2.0_dp*aby*cdy*cdy*g1(13) &
-            + 4.0_dp*aby*cdy*g1(53) &
-            + 2.0_dp*aby*g1(133) &
-            + cdy*cdy*g1(18) &
-            + 2.0_dp*cdy*g1(58) &
-            + g1(138)
-         vbuf(59) = aby*abz*cdy*cdy*g1(11) &
-            + 2.0_dp*aby*abz*cdy*g1(51) &
-            + aby*abz*g1(131) &
-            + aby*cdy*cdy*g1(14) &
-            + 2.0_dp*aby*cdy*g1(54) &
-            + aby*g1(134) &
-            + abz*cdy*cdy*g1(13) &
-            + 2.0_dp*abz*cdy*g1(53) &
-            + abz*g1(133) &
-            + cdy*cdy*g1(19) &
-            + 2.0_dp*cdy*g1(59) &
-            + g1(139)
-         vbuf(60) = abz*abz*cdy*cdy*g1(11) &
-            + 2.0_dp*abz*abz*cdy*g1(51) &
-            + abz*abz*g1(131) &
-            + 2.0_dp*abz*cdy*cdy*g1(14) &
-            + 4.0_dp*abz*cdy*g1(54) &
-            + 2.0_dp*abz*g1(134) &
-            + cdy*cdy*g1(20) &
-            + 2.0_dp*cdy*g1(60) &
-            + g1(140)
-         vbuf(61) = abx*abx*cdy*cdy*g1(21) &
-            + 2.0_dp*abx*abx*cdy*g1(71) &
-            + abx*abx*g1(161) &
-            + 2.0_dp*abx*cdy*cdy*g1(22) &
-            + 4.0_dp*abx*cdy*g1(72) &
-            + 2.0_dp*abx*g1(162) &
-            + cdy*cdy*g1(25) &
-            + 2.0_dp*cdy*g1(75) &
-            + g1(165)
-         vbuf(62) = abx*aby*cdy*cdy*g1(21) &
-            + 2.0_dp*abx*aby*cdy*g1(71) &
-            + abx*aby*g1(161) &
-            + abx*cdy*cdy*g1(23) &
-            + 2.0_dp*abx*cdy*g1(73) &
-            + abx*g1(163) &
-            + aby*cdy*cdy*g1(22) &
-            + 2.0_dp*aby*cdy*g1(72) &
-            + aby*g1(162) &
-            + cdy*cdy*g1(26) &
-            + 2.0_dp*cdy*g1(76) &
-            + g1(166)
-         vbuf(63) = abx*abz*cdy*cdy*g1(21) &
-            + 2.0_dp*abx*abz*cdy*g1(71) &
-            + abx*abz*g1(161) &
-            + abx*cdy*cdy*g1(24) &
-            + 2.0_dp*abx*cdy*g1(74) &
-            + abx*g1(164) &
-            + abz*cdy*cdy*g1(22) &
-            + 2.0_dp*abz*cdy*g1(72) &
-            + abz*g1(162) &
-            + cdy*cdy*g1(27) &
-            + 2.0_dp*cdy*g1(77) &
-            + g1(167)
-         vbuf(64) = aby*aby*cdy*cdy*g1(21) &
-            + 2.0_dp*aby*aby*cdy*g1(71) &
-            + aby*aby*g1(161) &
-            + 2.0_dp*aby*cdy*cdy*g1(23) &
-            + 4.0_dp*aby*cdy*g1(73) &
-            + 2.0_dp*aby*g1(163) &
-            + cdy*cdy*g1(28) &
-            + 2.0_dp*cdy*g1(78) &
-            + g1(168)
-         vbuf(65) = aby*abz*cdy*cdy*g1(21) &
-            + 2.0_dp*aby*abz*cdy*g1(71) &
-            + aby*abz*g1(161) &
-            + aby*cdy*cdy*g1(24) &
-            + 2.0_dp*aby*cdy*g1(74) &
-            + aby*g1(164) &
-            + abz*cdy*cdy*g1(23) &
-            + 2.0_dp*abz*cdy*g1(73) &
-            + abz*g1(163) &
-            + cdy*cdy*g1(29) &
-            + 2.0_dp*cdy*g1(79) &
-            + g1(169)
-         vbuf(66) = abz*abz*cdy*cdy*g1(21) &
-            + 2.0_dp*abz*abz*cdy*g1(71) &
-            + abz*abz*g1(161) &
-            + 2.0_dp*abz*cdy*cdy*g1(24) &
-            + 4.0_dp*abz*cdy*g1(74) &
-            + 2.0_dp*abz*g1(164) &
-            + cdy*cdy*g1(30) &
-            + 2.0_dp*cdy*g1(80) &
-            + g1(170)
-         vbuf(67) = abx*abx*cdy*cdy*g1(31) &
-            + 2.0_dp*abx*abx*cdy*g1(81) &
-            + abx*abx*g1(171) &
-            + 2.0_dp*abx*cdy*cdy*g1(32) &
-            + 4.0_dp*abx*cdy*g1(82) &
-            + 2.0_dp*abx*g1(172) &
-            + cdy*cdy*g1(35) &
-            + 2.0_dp*cdy*g1(85) &
-            + g1(175)
-         vbuf(68) = abx*aby*cdy*cdy*g1(31) &
-            + 2.0_dp*abx*aby*cdy*g1(81) &
-            + abx*aby*g1(171) &
-            + abx*cdy*cdy*g1(33) &
-            + 2.0_dp*abx*cdy*g1(83) &
-            + abx*g1(173) &
-            + aby*cdy*cdy*g1(32) &
-            + 2.0_dp*aby*cdy*g1(82) &
-            + aby*g1(172) &
-            + cdy*cdy*g1(36) &
-            + 2.0_dp*cdy*g1(86) &
-            + g1(176)
-         vbuf(69) = abx*abz*cdy*cdy*g1(31) &
-            + 2.0_dp*abx*abz*cdy*g1(81) &
-            + abx*abz*g1(171) &
-            + abx*cdy*cdy*g1(34) &
-            + 2.0_dp*abx*cdy*g1(84) &
-            + abx*g1(174) &
-            + abz*cdy*cdy*g1(32) &
-            + 2.0_dp*abz*cdy*g1(82) &
-            + abz*g1(172) &
-            + cdy*cdy*g1(37) &
-            + 2.0_dp*cdy*g1(87) &
-            + g1(177)
-         vbuf(70) = aby*aby*cdy*cdy*g1(31) &
-            + 2.0_dp*aby*aby*cdy*g1(81) &
-            + aby*aby*g1(171) &
-            + 2.0_dp*aby*cdy*cdy*g1(33) &
-            + 4.0_dp*aby*cdy*g1(83) &
-            + 2.0_dp*aby*g1(173) &
-            + cdy*cdy*g1(38) &
-            + 2.0_dp*cdy*g1(88) &
-            + g1(178)
-         vbuf(71) = aby*abz*cdy*cdy*g1(31) &
-            + 2.0_dp*aby*abz*cdy*g1(81) &
-            + aby*abz*g1(171) &
-            + aby*cdy*cdy*g1(34) &
-            + 2.0_dp*aby*cdy*g1(84) &
-            + aby*g1(174) &
-            + abz*cdy*cdy*g1(33) &
-            + 2.0_dp*abz*cdy*g1(83) &
-            + abz*g1(173) &
-            + cdy*cdy*g1(39) &
-            + 2.0_dp*cdy*g1(89) &
-            + g1(179)
-         vbuf(72) = abz*abz*cdy*cdy*g1(31) &
-            + 2.0_dp*abz*abz*cdy*g1(81) &
-            + abz*abz*g1(171) &
-            + 2.0_dp*abz*cdy*cdy*g1(34) &
-            + 4.0_dp*abz*cdy*g1(84) &
-            + 2.0_dp*abz*g1(174) &
-            + cdy*cdy*g1(40) &
-            + 2.0_dp*cdy*g1(90) &
-            + g1(180)
-         vbuf(73) = abx*abx*cdy*cdz*g1(11) &
-            + abx*abx*cdy*g1(61) &
-            + abx*abx*cdz*g1(51) &
-            + abx*abx*g1(141) &
-            + 2.0_dp*abx*cdy*cdz*g1(12) &
-            + 2.0_dp*abx*cdy*g1(62) &
-            + 2.0_dp*abx*cdz*g1(52) &
-            + 2.0_dp*abx*g1(142) &
-            + cdy*cdz*g1(15) &
-            + cdy*g1(65) &
-            + cdz*g1(55) &
-            + g1(145)
-         vbuf(74) = abx*aby*cdy*cdz*g1(11) &
-            + abx*aby*cdy*g1(61) &
-            + abx*aby*cdz*g1(51) &
-            + abx*aby*g1(141) &
-            + abx*cdy*cdz*g1(13) &
-            + abx*cdy*g1(63) &
-            + abx*cdz*g1(53) &
-            + abx*g1(143) &
-            + aby*cdy*cdz*g1(12) &
-            + aby*cdy*g1(62) &
-            + aby*cdz*g1(52) &
-            + aby*g1(142) &
-            + cdy*cdz*g1(16) &
-            + cdy*g1(66) &
-            + cdz*g1(56) &
-            + g1(146)
-         vbuf(75) = abx*abz*cdy*cdz*g1(11) &
-            + abx*abz*cdy*g1(61) &
-            + abx*abz*cdz*g1(51) &
-            + abx*abz*g1(141) &
-            + abx*cdy*cdz*g1(14) &
-            + abx*cdy*g1(64) &
-            + abx*cdz*g1(54) &
-            + abx*g1(144) &
-            + abz*cdy*cdz*g1(12) &
-            + abz*cdy*g1(62) &
-            + abz*cdz*g1(52) &
-            + abz*g1(142) &
-            + cdy*cdz*g1(17) &
-            + cdy*g1(67) &
-            + cdz*g1(57) &
-            + g1(147)
-         vbuf(76) = aby*aby*cdy*cdz*g1(11) &
-            + aby*aby*cdy*g1(61) &
-            + aby*aby*cdz*g1(51) &
-            + aby*aby*g1(141) &
-            + 2.0_dp*aby*cdy*cdz*g1(13) &
-            + 2.0_dp*aby*cdy*g1(63) &
-            + 2.0_dp*aby*cdz*g1(53) &
-            + 2.0_dp*aby*g1(143) &
-            + cdy*cdz*g1(18) &
-            + cdy*g1(68) &
-            + cdz*g1(58) &
-            + g1(148)
-         vbuf(77) = aby*abz*cdy*cdz*g1(11) &
-            + aby*abz*cdy*g1(61) &
-            + aby*abz*cdz*g1(51) &
-            + aby*abz*g1(141) &
-            + aby*cdy*cdz*g1(14) &
-            + aby*cdy*g1(64) &
-            + aby*cdz*g1(54) &
-            + aby*g1(144) &
-            + abz*cdy*cdz*g1(13) &
-            + abz*cdy*g1(63) &
-            + abz*cdz*g1(53) &
-            + abz*g1(143) &
-            + cdy*cdz*g1(19) &
-            + cdy*g1(69) &
-            + cdz*g1(59) &
-            + g1(149)
-         vbuf(78) = abz*abz*cdy*cdz*g1(11) &
-            + abz*abz*cdy*g1(61) &
-            + abz*abz*cdz*g1(51) &
-            + abz*abz*g1(141) &
-            + 2.0_dp*abz*cdy*cdz*g1(14) &
-            + 2.0_dp*abz*cdy*g1(64) &
-            + 2.0_dp*abz*cdz*g1(54) &
-            + 2.0_dp*abz*g1(144) &
-            + cdy*cdz*g1(20) &
-            + cdy*g1(70) &
-            + cdz*g1(60) &
-            + g1(150)
-         vbuf(79) = abx*abx*cdy*cdz*g1(21) &
-            + abx*abx*cdy*g1(81) &
-            + abx*abx*cdz*g1(71) &
-            + abx*abx*g1(171) &
-            + 2.0_dp*abx*cdy*cdz*g1(22) &
-            + 2.0_dp*abx*cdy*g1(82) &
-            + 2.0_dp*abx*cdz*g1(72) &
-            + 2.0_dp*abx*g1(172) &
-            + cdy*cdz*g1(25) &
-            + cdy*g1(85) &
-            + cdz*g1(75) &
-            + g1(175)
-         vbuf(80) = abx*aby*cdy*cdz*g1(21) &
-            + abx*aby*cdy*g1(81) &
-            + abx*aby*cdz*g1(71) &
-            + abx*aby*g1(171) &
-            + abx*cdy*cdz*g1(23) &
-            + abx*cdy*g1(83) &
-            + abx*cdz*g1(73) &
-            + abx*g1(173) &
-            + aby*cdy*cdz*g1(22) &
-            + aby*cdy*g1(82) &
-            + aby*cdz*g1(72) &
-            + aby*g1(172) &
-            + cdy*cdz*g1(26) &
-            + cdy*g1(86) &
-            + cdz*g1(76) &
-            + g1(176)
-         vbuf(81) = abx*abz*cdy*cdz*g1(21) &
-            + abx*abz*cdy*g1(81) &
-            + abx*abz*cdz*g1(71) &
-            + abx*abz*g1(171) &
-            + abx*cdy*cdz*g1(24) &
-            + abx*cdy*g1(84) &
-            + abx*cdz*g1(74) &
-            + abx*g1(174) &
-            + abz*cdy*cdz*g1(22) &
-            + abz*cdy*g1(82) &
-            + abz*cdz*g1(72) &
-            + abz*g1(172) &
-            + cdy*cdz*g1(27) &
-            + cdy*g1(87) &
-            + cdz*g1(77) &
-            + g1(177)
-         vbuf(82) = aby*aby*cdy*cdz*g1(21) &
-            + aby*aby*cdy*g1(81) &
-            + aby*aby*cdz*g1(71) &
-            + aby*aby*g1(171) &
-            + 2.0_dp*aby*cdy*cdz*g1(23) &
-            + 2.0_dp*aby*cdy*g1(83) &
-            + 2.0_dp*aby*cdz*g1(73) &
-            + 2.0_dp*aby*g1(173) &
-            + cdy*cdz*g1(28) &
-            + cdy*g1(88) &
-            + cdz*g1(78) &
-            + g1(178)
-         vbuf(83) = aby*abz*cdy*cdz*g1(21) &
-            + aby*abz*cdy*g1(81) &
-            + aby*abz*cdz*g1(71) &
-            + aby*abz*g1(171) &
-            + aby*cdy*cdz*g1(24) &
-            + aby*cdy*g1(84) &
-            + aby*cdz*g1(74) &
-            + aby*g1(174) &
-            + abz*cdy*cdz*g1(23) &
-            + abz*cdy*g1(83) &
-            + abz*cdz*g1(73) &
-            + abz*g1(173) &
-            + cdy*cdz*g1(29) &
-            + cdy*g1(89) &
-            + cdz*g1(79) &
-            + g1(179)
-         vbuf(84) = abz*abz*cdy*cdz*g1(21) &
-            + abz*abz*cdy*g1(81) &
-            + abz*abz*cdz*g1(71) &
-            + abz*abz*g1(171) &
-            + 2.0_dp*abz*cdy*cdz*g1(24) &
-            + 2.0_dp*abz*cdy*g1(84) &
-            + 2.0_dp*abz*cdz*g1(74) &
-            + 2.0_dp*abz*g1(174) &
-            + cdy*cdz*g1(30) &
-            + cdy*g1(90) &
-            + cdz*g1(80) &
-            + g1(180)
-         vbuf(85) = abx*abx*cdy*cdz*g1(31) &
-            + abx*abx*cdy*g1(91) &
-            + abx*abx*cdz*g1(81) &
-            + abx*abx*g1(181) &
-            + 2.0_dp*abx*cdy*cdz*g1(32) &
-            + 2.0_dp*abx*cdy*g1(92) &
-            + 2.0_dp*abx*cdz*g1(82) &
-            + 2.0_dp*abx*g1(182) &
-            + cdy*cdz*g1(35) &
-            + cdy*g1(95) &
-            + cdz*g1(85) &
-            + g1(185)
-         vbuf(86) = abx*aby*cdy*cdz*g1(31) &
-            + abx*aby*cdy*g1(91) &
-            + abx*aby*cdz*g1(81) &
-            + abx*aby*g1(181) &
-            + abx*cdy*cdz*g1(33) &
-            + abx*cdy*g1(93) &
-            + abx*cdz*g1(83) &
-            + abx*g1(183) &
-            + aby*cdy*cdz*g1(32) &
-            + aby*cdy*g1(92) &
-            + aby*cdz*g1(82) &
-            + aby*g1(182) &
-            + cdy*cdz*g1(36) &
-            + cdy*g1(96) &
-            + cdz*g1(86) &
-            + g1(186)
-         vbuf(87) = abx*abz*cdy*cdz*g1(31) &
-            + abx*abz*cdy*g1(91) &
-            + abx*abz*cdz*g1(81) &
-            + abx*abz*g1(181) &
-            + abx*cdy*cdz*g1(34) &
-            + abx*cdy*g1(94) &
-            + abx*cdz*g1(84) &
-            + abx*g1(184) &
-            + abz*cdy*cdz*g1(32) &
-            + abz*cdy*g1(92) &
-            + abz*cdz*g1(82) &
-            + abz*g1(182) &
-            + cdy*cdz*g1(37) &
-            + cdy*g1(97) &
-            + cdz*g1(87) &
-            + g1(187)
-         vbuf(88) = aby*aby*cdy*cdz*g1(31) &
-            + aby*aby*cdy*g1(91) &
-            + aby*aby*cdz*g1(81) &
-            + aby*aby*g1(181) &
-            + 2.0_dp*aby*cdy*cdz*g1(33) &
-            + 2.0_dp*aby*cdy*g1(93) &
-            + 2.0_dp*aby*cdz*g1(83) &
-            + 2.0_dp*aby*g1(183) &
-            + cdy*cdz*g1(38) &
-            + cdy*g1(98) &
-            + cdz*g1(88) &
-            + g1(188)
-         vbuf(89) = aby*abz*cdy*cdz*g1(31) &
-            + aby*abz*cdy*g1(91) &
-            + aby*abz*cdz*g1(81) &
-            + aby*abz*g1(181) &
-            + aby*cdy*cdz*g1(34) &
-            + aby*cdy*g1(94) &
-            + aby*cdz*g1(84) &
-            + aby*g1(184) &
-            + abz*cdy*cdz*g1(33) &
-            + abz*cdy*g1(93) &
-            + abz*cdz*g1(83) &
-            + abz*g1(183) &
-            + cdy*cdz*g1(39) &
-            + cdy*g1(99) &
-            + cdz*g1(89) &
-            + g1(189)
-         vbuf(90) = abz*abz*cdy*cdz*g1(31) &
-            + abz*abz*cdy*g1(91) &
-            + abz*abz*cdz*g1(81) &
-            + abz*abz*g1(181) &
-            + 2.0_dp*abz*cdy*cdz*g1(34) &
-            + 2.0_dp*abz*cdy*g1(94) &
-            + 2.0_dp*abz*cdz*g1(84) &
-            + 2.0_dp*abz*g1(184) &
-            + cdy*cdz*g1(40) &
-            + cdy*g1(100) &
-            + cdz*g1(90) &
-            + g1(190)
-         vbuf(91) = abx*abx*cdz*cdz*g1(11) &
-            + 2.0_dp*abx*abx*cdz*g1(61) &
-            + abx*abx*g1(151) &
-            + 2.0_dp*abx*cdz*cdz*g1(12) &
-            + 4.0_dp*abx*cdz*g1(62) &
-            + 2.0_dp*abx*g1(152) &
-            + cdz*cdz*g1(15) &
-            + 2.0_dp*cdz*g1(65) &
-            + g1(155)
-         vbuf(92) = abx*aby*cdz*cdz*g1(11) &
-            + 2.0_dp*abx*aby*cdz*g1(61) &
-            + abx*aby*g1(151) &
-            + abx*cdz*cdz*g1(13) &
-            + 2.0_dp*abx*cdz*g1(63) &
-            + abx*g1(153) &
-            + aby*cdz*cdz*g1(12) &
-            + 2.0_dp*aby*cdz*g1(62) &
-            + aby*g1(152) &
-            + cdz*cdz*g1(16) &
-            + 2.0_dp*cdz*g1(66) &
-            + g1(156)
-         vbuf(93) = abx*abz*cdz*cdz*g1(11) &
-            + 2.0_dp*abx*abz*cdz*g1(61) &
-            + abx*abz*g1(151) &
-            + abx*cdz*cdz*g1(14) &
-            + 2.0_dp*abx*cdz*g1(64) &
-            + abx*g1(154) &
-            + abz*cdz*cdz*g1(12) &
-            + 2.0_dp*abz*cdz*g1(62) &
-            + abz*g1(152) &
-            + cdz*cdz*g1(17) &
-            + 2.0_dp*cdz*g1(67) &
-            + g1(157)
-         vbuf(94) = aby*aby*cdz*cdz*g1(11) &
-            + 2.0_dp*aby*aby*cdz*g1(61) &
-            + aby*aby*g1(151) &
-            + 2.0_dp*aby*cdz*cdz*g1(13) &
-            + 4.0_dp*aby*cdz*g1(63) &
-            + 2.0_dp*aby*g1(153) &
-            + cdz*cdz*g1(18) &
-            + 2.0_dp*cdz*g1(68) &
-            + g1(158)
-         vbuf(95) = aby*abz*cdz*cdz*g1(11) &
-            + 2.0_dp*aby*abz*cdz*g1(61) &
-            + aby*abz*g1(151) &
-            + aby*cdz*cdz*g1(14) &
-            + 2.0_dp*aby*cdz*g1(64) &
-            + aby*g1(154) &
-            + abz*cdz*cdz*g1(13) &
-            + 2.0_dp*abz*cdz*g1(63) &
-            + abz*g1(153) &
-            + cdz*cdz*g1(19) &
-            + 2.0_dp*cdz*g1(69) &
-            + g1(159)
-         vbuf(96) = abz*abz*cdz*cdz*g1(11) &
-            + 2.0_dp*abz*abz*cdz*g1(61) &
-            + abz*abz*g1(151) &
-            + 2.0_dp*abz*cdz*cdz*g1(14) &
-            + 4.0_dp*abz*cdz*g1(64) &
-            + 2.0_dp*abz*g1(154) &
-            + cdz*cdz*g1(20) &
-            + 2.0_dp*cdz*g1(70) &
-            + g1(160)
-         vbuf(97) = abx*abx*cdz*cdz*g1(21) &
-            + 2.0_dp*abx*abx*cdz*g1(81) &
-            + abx*abx*g1(181) &
-            + 2.0_dp*abx*cdz*cdz*g1(22) &
-            + 4.0_dp*abx*cdz*g1(82) &
-            + 2.0_dp*abx*g1(182) &
-            + cdz*cdz*g1(25) &
-            + 2.0_dp*cdz*g1(85) &
-            + g1(185)
-         vbuf(98) = abx*aby*cdz*cdz*g1(21) &
-            + 2.0_dp*abx*aby*cdz*g1(81) &
-            + abx*aby*g1(181) &
-            + abx*cdz*cdz*g1(23) &
-            + 2.0_dp*abx*cdz*g1(83) &
-            + abx*g1(183) &
-            + aby*cdz*cdz*g1(22) &
-            + 2.0_dp*aby*cdz*g1(82) &
-            + aby*g1(182) &
-            + cdz*cdz*g1(26) &
-            + 2.0_dp*cdz*g1(86) &
-            + g1(186)
-         vbuf(99) = abx*abz*cdz*cdz*g1(21) &
-            + 2.0_dp*abx*abz*cdz*g1(81) &
-            + abx*abz*g1(181) &
-            + abx*cdz*cdz*g1(24) &
-            + 2.0_dp*abx*cdz*g1(84) &
-            + abx*g1(184) &
-            + abz*cdz*cdz*g1(22) &
-            + 2.0_dp*abz*cdz*g1(82) &
-            + abz*g1(182) &
-            + cdz*cdz*g1(27) &
-            + 2.0_dp*cdz*g1(87) &
-            + g1(187)
-         vbuf(100) = aby*aby*cdz*cdz*g1(21) &
-            + 2.0_dp*aby*aby*cdz*g1(81) &
-            + aby*aby*g1(181) &
-            + 2.0_dp*aby*cdz*cdz*g1(23) &
-            + 4.0_dp*aby*cdz*g1(83) &
-            + 2.0_dp*aby*g1(183) &
-            + cdz*cdz*g1(28) &
-            + 2.0_dp*cdz*g1(88) &
-            + g1(188)
-         vbuf(101) = aby*abz*cdz*cdz*g1(21) &
-            + 2.0_dp*aby*abz*cdz*g1(81) &
-            + aby*abz*g1(181) &
-            + aby*cdz*cdz*g1(24) &
-            + 2.0_dp*aby*cdz*g1(84) &
-            + aby*g1(184) &
-            + abz*cdz*cdz*g1(23) &
-            + 2.0_dp*abz*cdz*g1(83) &
-            + abz*g1(183) &
-            + cdz*cdz*g1(29) &
-            + 2.0_dp*cdz*g1(89) &
-            + g1(189)
-         vbuf(102) = abz*abz*cdz*cdz*g1(21) &
-            + 2.0_dp*abz*abz*cdz*g1(81) &
-            + abz*abz*g1(181) &
-            + 2.0_dp*abz*cdz*cdz*g1(24) &
-            + 4.0_dp*abz*cdz*g1(84) &
-            + 2.0_dp*abz*g1(184) &
-            + cdz*cdz*g1(30) &
-            + 2.0_dp*cdz*g1(90) &
-            + g1(190)
-         vbuf(103) = abx*abx*cdz*cdz*g1(31) &
-            + 2.0_dp*abx*abx*cdz*g1(91) &
-            + abx*abx*g1(191) &
-            + 2.0_dp*abx*cdz*cdz*g1(32) &
-            + 4.0_dp*abx*cdz*g1(92) &
-            + 2.0_dp*abx*g1(192) &
-            + cdz*cdz*g1(35) &
-            + 2.0_dp*cdz*g1(95) &
-            + g1(195)
-         vbuf(104) = abx*aby*cdz*cdz*g1(31) &
-            + 2.0_dp*abx*aby*cdz*g1(91) &
-            + abx*aby*g1(191) &
-            + abx*cdz*cdz*g1(33) &
-            + 2.0_dp*abx*cdz*g1(93) &
-            + abx*g1(193) &
-            + aby*cdz*cdz*g1(32) &
-            + 2.0_dp*aby*cdz*g1(92) &
-            + aby*g1(192) &
-            + cdz*cdz*g1(36) &
-            + 2.0_dp*cdz*g1(96) &
-            + g1(196)
-         vbuf(105) = abx*abz*cdz*cdz*g1(31) &
-            + 2.0_dp*abx*abz*cdz*g1(91) &
-            + abx*abz*g1(191) &
-            + abx*cdz*cdz*g1(34) &
-            + 2.0_dp*abx*cdz*g1(94) &
-            + abx*g1(194) &
-            + abz*cdz*cdz*g1(32) &
-            + 2.0_dp*abz*cdz*g1(92) &
-            + abz*g1(192) &
-            + cdz*cdz*g1(37) &
-            + 2.0_dp*cdz*g1(97) &
-            + g1(197)
-         vbuf(106) = aby*aby*cdz*cdz*g1(31) &
-            + 2.0_dp*aby*aby*cdz*g1(91) &
-            + aby*aby*g1(191) &
-            + 2.0_dp*aby*cdz*cdz*g1(33) &
-            + 4.0_dp*aby*cdz*g1(93) &
-            + 2.0_dp*aby*g1(193) &
-            + cdz*cdz*g1(38) &
-            + 2.0_dp*cdz*g1(98) &
-            + g1(198)
-         vbuf(107) = aby*abz*cdz*cdz*g1(31) &
-            + 2.0_dp*aby*abz*cdz*g1(91) &
-            + aby*abz*g1(191) &
-            + aby*cdz*cdz*g1(34) &
-            + 2.0_dp*aby*cdz*g1(94) &
-            + aby*g1(194) &
-            + abz*cdz*cdz*g1(33) &
-            + 2.0_dp*abz*cdz*g1(93) &
-            + abz*g1(193) &
-            + cdz*cdz*g1(39) &
-            + 2.0_dp*cdz*g1(99) &
-            + g1(199)
-         vbuf(108) = abz*abz*cdz*cdz*g1(31) &
-            + 2.0_dp*abz*abz*cdz*g1(91) &
-            + abz*abz*g1(191) &
-            + 2.0_dp*abz*cdz*cdz*g1(34) &
-            + 4.0_dp*abz*cdz*g1(94) &
-            + 2.0_dp*abz*g1(194) &
-            + cdz*cdz*g1(40) &
-            + 2.0_dp*cdz*g1(100) &
-            + g1(200)
+         h(1) = g1(105) + cdx*g1(45)
+         h(2) = g1(45) + cdx*g1(15)
+         h(3) = h(1) + cdx*h(2)
+         h(4) = g1(102) + cdx*g1(42)
+         h(5) = g1(42) + cdx*g1(12)
+         h(6) = h(4) + cdx*h(5)
+         h(7) = h(3) + abx*h(6)
+         h(8) = g1(101) + cdx*g1(41)
+         h(9) = g1(41) + cdx*g1(11)
+         h(10) = h(8) + cdx*h(9)
+         h(11) = h(6) + abx*h(10)
+         h(12) = h(7) + abx*h(11)
+         vbuf(1) = h(12)
+         h(13) = g1(106) + cdx*g1(46)
+         h(14) = g1(46) + cdx*g1(16)
+         h(15) = h(13) + cdx*h(14)
+         h(16) = h(15) + aby*h(6)
+         h(17) = g1(103) + cdx*g1(43)
+         h(18) = g1(43) + cdx*g1(13)
+         h(19) = h(17) + cdx*h(18)
+         h(20) = h(19) + aby*h(10)
+         h(21) = h(16) + abx*h(20)
+         vbuf(2) = h(21)
+         h(22) = g1(107) + cdx*g1(47)
+         h(23) = g1(47) + cdx*g1(17)
+         h(24) = h(22) + cdx*h(23)
+         h(25) = h(24) + abz*h(6)
+         h(26) = g1(104) + cdx*g1(44)
+         h(27) = g1(44) + cdx*g1(14)
+         h(28) = h(26) + cdx*h(27)
+         h(29) = h(28) + abz*h(10)
+         h(30) = h(25) + abx*h(29)
+         vbuf(3) = h(30)
+         h(31) = g1(108) + cdx*g1(48)
+         h(32) = g1(48) + cdx*g1(18)
+         h(33) = h(31) + cdx*h(32)
+         h(34) = h(33) + aby*h(19)
+         h(35) = h(34) + aby*h(20)
+         vbuf(4) = h(35)
+         h(36) = g1(109) + cdx*g1(49)
+         h(37) = g1(49) + cdx*g1(19)
+         h(38) = h(36) + cdx*h(37)
+         h(39) = h(38) + abz*h(19)
+         h(40) = h(39) + aby*h(29)
+         vbuf(5) = h(40)
+         h(41) = g1(110) + cdx*g1(50)
+         h(42) = g1(50) + cdx*g1(20)
+         h(43) = h(41) + cdx*h(42)
+         h(44) = h(43) + abz*h(28)
+         h(45) = h(44) + abz*h(29)
+         vbuf(6) = h(45)
+         h(46) = g1(115) + cdx*g1(55)
+         h(47) = g1(55) + cdx*g1(25)
+         h(48) = h(46) + cdx*h(47)
+         h(49) = g1(112) + cdx*g1(52)
+         h(50) = g1(52) + cdx*g1(22)
+         h(51) = h(49) + cdx*h(50)
+         h(52) = h(48) + abx*h(51)
+         h(53) = g1(111) + cdx*g1(51)
+         h(54) = g1(51) + cdx*g1(21)
+         h(55) = h(53) + cdx*h(54)
+         h(56) = h(51) + abx*h(55)
+         h(57) = h(52) + abx*h(56)
+         vbuf(7) = h(57)
+         h(58) = g1(116) + cdx*g1(56)
+         h(59) = g1(56) + cdx*g1(26)
+         h(60) = h(58) + cdx*h(59)
+         h(61) = h(60) + aby*h(51)
+         h(62) = g1(113) + cdx*g1(53)
+         h(63) = g1(53) + cdx*g1(23)
+         h(64) = h(62) + cdx*h(63)
+         h(65) = h(64) + aby*h(55)
+         h(66) = h(61) + abx*h(65)
+         vbuf(8) = h(66)
+         h(67) = g1(117) + cdx*g1(57)
+         h(68) = g1(57) + cdx*g1(27)
+         h(69) = h(67) + cdx*h(68)
+         h(70) = h(69) + abz*h(51)
+         h(71) = g1(114) + cdx*g1(54)
+         h(72) = g1(54) + cdx*g1(24)
+         h(73) = h(71) + cdx*h(72)
+         h(74) = h(73) + abz*h(55)
+         h(75) = h(70) + abx*h(74)
+         vbuf(9) = h(75)
+         h(76) = g1(118) + cdx*g1(58)
+         h(77) = g1(58) + cdx*g1(28)
+         h(78) = h(76) + cdx*h(77)
+         h(79) = h(78) + aby*h(64)
+         h(80) = h(79) + aby*h(65)
+         vbuf(10) = h(80)
+         h(81) = g1(119) + cdx*g1(59)
+         h(82) = g1(59) + cdx*g1(29)
+         h(83) = h(81) + cdx*h(82)
+         h(84) = h(83) + abz*h(64)
+         h(85) = h(84) + aby*h(74)
+         vbuf(11) = h(85)
+         h(86) = g1(120) + cdx*g1(60)
+         h(87) = g1(60) + cdx*g1(30)
+         h(88) = h(86) + cdx*h(87)
+         h(89) = h(88) + abz*h(73)
+         h(90) = h(89) + abz*h(74)
+         vbuf(12) = h(90)
+         h(91) = g1(125) + cdx*g1(65)
+         h(92) = g1(65) + cdx*g1(35)
+         h(93) = h(91) + cdx*h(92)
+         h(94) = g1(122) + cdx*g1(62)
+         h(95) = g1(62) + cdx*g1(32)
+         h(96) = h(94) + cdx*h(95)
+         h(97) = h(93) + abx*h(96)
+         h(98) = g1(121) + cdx*g1(61)
+         h(99) = g1(61) + cdx*g1(31)
+         h(100) = h(98) + cdx*h(99)
+         h(101) = h(96) + abx*h(100)
+         h(102) = h(97) + abx*h(101)
+         vbuf(13) = h(102)
+         h(103) = g1(126) + cdx*g1(66)
+         h(104) = g1(66) + cdx*g1(36)
+         h(105) = h(103) + cdx*h(104)
+         h(106) = h(105) + aby*h(96)
+         h(107) = g1(123) + cdx*g1(63)
+         h(108) = g1(63) + cdx*g1(33)
+         h(109) = h(107) + cdx*h(108)
+         h(110) = h(109) + aby*h(100)
+         h(111) = h(106) + abx*h(110)
+         vbuf(14) = h(111)
+         h(112) = g1(127) + cdx*g1(67)
+         h(113) = g1(67) + cdx*g1(37)
+         h(114) = h(112) + cdx*h(113)
+         h(115) = h(114) + abz*h(96)
+         h(116) = g1(124) + cdx*g1(64)
+         h(117) = g1(64) + cdx*g1(34)
+         h(118) = h(116) + cdx*h(117)
+         h(119) = h(118) + abz*h(100)
+         h(120) = h(115) + abx*h(119)
+         vbuf(15) = h(120)
+         h(121) = g1(128) + cdx*g1(68)
+         h(122) = g1(68) + cdx*g1(38)
+         h(123) = h(121) + cdx*h(122)
+         h(124) = h(123) + aby*h(109)
+         h(125) = h(124) + aby*h(110)
+         vbuf(16) = h(125)
+         h(126) = g1(129) + cdx*g1(69)
+         h(127) = g1(69) + cdx*g1(39)
+         h(128) = h(126) + cdx*h(127)
+         h(129) = h(128) + abz*h(109)
+         h(130) = h(129) + aby*h(119)
+         vbuf(17) = h(130)
+         h(131) = g1(130) + cdx*g1(70)
+         h(132) = g1(70) + cdx*g1(40)
+         h(133) = h(131) + cdx*h(132)
+         h(134) = h(133) + abz*h(118)
+         h(135) = h(134) + abz*h(119)
+         vbuf(18) = h(135)
+         h(136) = g1(115) + cdy*g1(45)
+         h(137) = g1(55) + cdy*g1(15)
+         h(138) = h(136) + cdx*h(137)
+         h(139) = g1(112) + cdy*g1(42)
+         h(140) = g1(52) + cdy*g1(12)
+         h(141) = h(139) + cdx*h(140)
+         h(142) = h(138) + abx*h(141)
+         h(143) = g1(111) + cdy*g1(41)
+         h(144) = g1(51) + cdy*g1(11)
+         h(145) = h(143) + cdx*h(144)
+         h(146) = h(141) + abx*h(145)
+         h(147) = h(142) + abx*h(146)
+         vbuf(19) = h(147)
+         h(148) = g1(116) + cdy*g1(46)
+         h(149) = g1(56) + cdy*g1(16)
+         h(150) = h(148) + cdx*h(149)
+         h(151) = h(150) + aby*h(141)
+         h(152) = g1(113) + cdy*g1(43)
+         h(153) = g1(53) + cdy*g1(13)
+         h(154) = h(152) + cdx*h(153)
+         h(155) = h(154) + aby*h(145)
+         h(156) = h(151) + abx*h(155)
+         vbuf(20) = h(156)
+         h(157) = g1(117) + cdy*g1(47)
+         h(158) = g1(57) + cdy*g1(17)
+         h(159) = h(157) + cdx*h(158)
+         h(160) = h(159) + abz*h(141)
+         h(161) = g1(114) + cdy*g1(44)
+         h(162) = g1(54) + cdy*g1(14)
+         h(163) = h(161) + cdx*h(162)
+         h(164) = h(163) + abz*h(145)
+         h(165) = h(160) + abx*h(164)
+         vbuf(21) = h(165)
+         h(166) = g1(118) + cdy*g1(48)
+         h(167) = g1(58) + cdy*g1(18)
+         h(168) = h(166) + cdx*h(167)
+         h(169) = h(168) + aby*h(154)
+         h(170) = h(169) + aby*h(155)
+         vbuf(22) = h(170)
+         h(171) = g1(119) + cdy*g1(49)
+         h(172) = g1(59) + cdy*g1(19)
+         h(173) = h(171) + cdx*h(172)
+         h(174) = h(173) + abz*h(154)
+         h(175) = h(174) + aby*h(164)
+         vbuf(23) = h(175)
+         h(176) = g1(120) + cdy*g1(50)
+         h(177) = g1(60) + cdy*g1(20)
+         h(178) = h(176) + cdx*h(177)
+         h(179) = h(178) + abz*h(163)
+         h(180) = h(179) + abz*h(164)
+         vbuf(24) = h(180)
+         h(181) = g1(135) + cdy*g1(55)
+         h(182) = g1(75) + cdy*g1(25)
+         h(183) = h(181) + cdx*h(182)
+         h(184) = g1(132) + cdy*g1(52)
+         h(185) = g1(72) + cdy*g1(22)
+         h(186) = h(184) + cdx*h(185)
+         h(187) = h(183) + abx*h(186)
+         h(188) = g1(131) + cdy*g1(51)
+         h(189) = g1(71) + cdy*g1(21)
+         h(190) = h(188) + cdx*h(189)
+         h(191) = h(186) + abx*h(190)
+         h(192) = h(187) + abx*h(191)
+         vbuf(25) = h(192)
+         h(193) = g1(136) + cdy*g1(56)
+         h(194) = g1(76) + cdy*g1(26)
+         h(195) = h(193) + cdx*h(194)
+         h(196) = h(195) + aby*h(186)
+         h(197) = g1(133) + cdy*g1(53)
+         h(198) = g1(73) + cdy*g1(23)
+         h(199) = h(197) + cdx*h(198)
+         h(200) = h(199) + aby*h(190)
+         h(201) = h(196) + abx*h(200)
+         vbuf(26) = h(201)
+         h(202) = g1(137) + cdy*g1(57)
+         h(203) = g1(77) + cdy*g1(27)
+         h(204) = h(202) + cdx*h(203)
+         h(205) = h(204) + abz*h(186)
+         h(206) = g1(134) + cdy*g1(54)
+         h(207) = g1(74) + cdy*g1(24)
+         h(208) = h(206) + cdx*h(207)
+         h(209) = h(208) + abz*h(190)
+         h(210) = h(205) + abx*h(209)
+         vbuf(27) = h(210)
+         h(211) = g1(138) + cdy*g1(58)
+         h(212) = g1(78) + cdy*g1(28)
+         h(213) = h(211) + cdx*h(212)
+         h(214) = h(213) + aby*h(199)
+         h(215) = h(214) + aby*h(200)
+         vbuf(28) = h(215)
+         h(216) = g1(139) + cdy*g1(59)
+         h(217) = g1(79) + cdy*g1(29)
+         h(218) = h(216) + cdx*h(217)
+         h(219) = h(218) + abz*h(199)
+         h(220) = h(219) + aby*h(209)
+         vbuf(29) = h(220)
+         h(221) = g1(140) + cdy*g1(60)
+         h(222) = g1(80) + cdy*g1(30)
+         h(223) = h(221) + cdx*h(222)
+         h(224) = h(223) + abz*h(208)
+         h(225) = h(224) + abz*h(209)
+         vbuf(30) = h(225)
+         h(226) = g1(145) + cdy*g1(65)
+         h(227) = g1(85) + cdy*g1(35)
+         h(228) = h(226) + cdx*h(227)
+         h(229) = g1(142) + cdy*g1(62)
+         h(230) = g1(82) + cdy*g1(32)
+         h(231) = h(229) + cdx*h(230)
+         h(232) = h(228) + abx*h(231)
+         h(233) = g1(141) + cdy*g1(61)
+         h(234) = g1(81) + cdy*g1(31)
+         h(235) = h(233) + cdx*h(234)
+         h(236) = h(231) + abx*h(235)
+         h(237) = h(232) + abx*h(236)
+         vbuf(31) = h(237)
+         h(238) = g1(146) + cdy*g1(66)
+         h(239) = g1(86) + cdy*g1(36)
+         h(240) = h(238) + cdx*h(239)
+         h(241) = h(240) + aby*h(231)
+         h(242) = g1(143) + cdy*g1(63)
+         h(243) = g1(83) + cdy*g1(33)
+         h(244) = h(242) + cdx*h(243)
+         h(245) = h(244) + aby*h(235)
+         h(246) = h(241) + abx*h(245)
+         vbuf(32) = h(246)
+         h(247) = g1(147) + cdy*g1(67)
+         h(248) = g1(87) + cdy*g1(37)
+         h(249) = h(247) + cdx*h(248)
+         h(250) = h(249) + abz*h(231)
+         h(251) = g1(144) + cdy*g1(64)
+         h(252) = g1(84) + cdy*g1(34)
+         h(253) = h(251) + cdx*h(252)
+         h(254) = h(253) + abz*h(235)
+         h(255) = h(250) + abx*h(254)
+         vbuf(33) = h(255)
+         h(256) = g1(148) + cdy*g1(68)
+         h(257) = g1(88) + cdy*g1(38)
+         h(258) = h(256) + cdx*h(257)
+         h(259) = h(258) + aby*h(244)
+         h(260) = h(259) + aby*h(245)
+         vbuf(34) = h(260)
+         h(261) = g1(149) + cdy*g1(69)
+         h(262) = g1(89) + cdy*g1(39)
+         h(263) = h(261) + cdx*h(262)
+         h(264) = h(263) + abz*h(244)
+         h(265) = h(264) + aby*h(254)
+         vbuf(35) = h(265)
+         h(266) = g1(150) + cdy*g1(70)
+         h(267) = g1(90) + cdy*g1(40)
+         h(268) = h(266) + cdx*h(267)
+         h(269) = h(268) + abz*h(253)
+         h(270) = h(269) + abz*h(254)
+         vbuf(36) = h(270)
+         h(271) = g1(125) + cdz*g1(45)
+         h(272) = g1(65) + cdz*g1(15)
+         h(273) = h(271) + cdx*h(272)
+         h(274) = g1(122) + cdz*g1(42)
+         h(275) = g1(62) + cdz*g1(12)
+         h(276) = h(274) + cdx*h(275)
+         h(277) = h(273) + abx*h(276)
+         h(278) = g1(121) + cdz*g1(41)
+         h(279) = g1(61) + cdz*g1(11)
+         h(280) = h(278) + cdx*h(279)
+         h(281) = h(276) + abx*h(280)
+         h(282) = h(277) + abx*h(281)
+         vbuf(37) = h(282)
+         h(283) = g1(126) + cdz*g1(46)
+         h(284) = g1(66) + cdz*g1(16)
+         h(285) = h(283) + cdx*h(284)
+         h(286) = h(285) + aby*h(276)
+         h(287) = g1(123) + cdz*g1(43)
+         h(288) = g1(63) + cdz*g1(13)
+         h(289) = h(287) + cdx*h(288)
+         h(290) = h(289) + aby*h(280)
+         h(291) = h(286) + abx*h(290)
+         vbuf(38) = h(291)
+         h(292) = g1(127) + cdz*g1(47)
+         h(293) = g1(67) + cdz*g1(17)
+         h(294) = h(292) + cdx*h(293)
+         h(295) = h(294) + abz*h(276)
+         h(296) = g1(124) + cdz*g1(44)
+         h(297) = g1(64) + cdz*g1(14)
+         h(298) = h(296) + cdx*h(297)
+         h(299) = h(298) + abz*h(280)
+         h(300) = h(295) + abx*h(299)
+         vbuf(39) = h(300)
+         h(301) = g1(128) + cdz*g1(48)
+         h(302) = g1(68) + cdz*g1(18)
+         h(303) = h(301) + cdx*h(302)
+         h(304) = h(303) + aby*h(289)
+         h(305) = h(304) + aby*h(290)
+         vbuf(40) = h(305)
+         h(306) = g1(129) + cdz*g1(49)
+         h(307) = g1(69) + cdz*g1(19)
+         h(308) = h(306) + cdx*h(307)
+         h(309) = h(308) + abz*h(289)
+         h(310) = h(309) + aby*h(299)
+         vbuf(41) = h(310)
+         h(311) = g1(130) + cdz*g1(50)
+         h(312) = g1(70) + cdz*g1(20)
+         h(313) = h(311) + cdx*h(312)
+         h(314) = h(313) + abz*h(298)
+         h(315) = h(314) + abz*h(299)
+         vbuf(42) = h(315)
+         h(316) = g1(145) + cdz*g1(55)
+         h(317) = g1(85) + cdz*g1(25)
+         h(318) = h(316) + cdx*h(317)
+         h(319) = g1(142) + cdz*g1(52)
+         h(320) = g1(82) + cdz*g1(22)
+         h(321) = h(319) + cdx*h(320)
+         h(322) = h(318) + abx*h(321)
+         h(323) = g1(141) + cdz*g1(51)
+         h(324) = g1(81) + cdz*g1(21)
+         h(325) = h(323) + cdx*h(324)
+         h(326) = h(321) + abx*h(325)
+         h(327) = h(322) + abx*h(326)
+         vbuf(43) = h(327)
+         h(328) = g1(146) + cdz*g1(56)
+         h(329) = g1(86) + cdz*g1(26)
+         h(330) = h(328) + cdx*h(329)
+         h(331) = h(330) + aby*h(321)
+         h(332) = g1(143) + cdz*g1(53)
+         h(333) = g1(83) + cdz*g1(23)
+         h(334) = h(332) + cdx*h(333)
+         h(335) = h(334) + aby*h(325)
+         h(336) = h(331) + abx*h(335)
+         vbuf(44) = h(336)
+         h(337) = g1(147) + cdz*g1(57)
+         h(338) = g1(87) + cdz*g1(27)
+         h(339) = h(337) + cdx*h(338)
+         h(340) = h(339) + abz*h(321)
+         h(341) = g1(144) + cdz*g1(54)
+         h(342) = g1(84) + cdz*g1(24)
+         h(343) = h(341) + cdx*h(342)
+         h(344) = h(343) + abz*h(325)
+         h(345) = h(340) + abx*h(344)
+         vbuf(45) = h(345)
+         h(346) = g1(148) + cdz*g1(58)
+         h(347) = g1(88) + cdz*g1(28)
+         h(348) = h(346) + cdx*h(347)
+         h(349) = h(348) + aby*h(334)
+         h(350) = h(349) + aby*h(335)
+         vbuf(46) = h(350)
+         h(351) = g1(149) + cdz*g1(59)
+         h(352) = g1(89) + cdz*g1(29)
+         h(353) = h(351) + cdx*h(352)
+         h(354) = h(353) + abz*h(334)
+         h(355) = h(354) + aby*h(344)
+         vbuf(47) = h(355)
+         h(356) = g1(150) + cdz*g1(60)
+         h(357) = g1(90) + cdz*g1(30)
+         h(358) = h(356) + cdx*h(357)
+         h(359) = h(358) + abz*h(343)
+         h(360) = h(359) + abz*h(344)
+         vbuf(48) = h(360)
+         h(361) = g1(155) + cdz*g1(65)
+         h(362) = g1(95) + cdz*g1(35)
+         h(363) = h(361) + cdx*h(362)
+         h(364) = g1(152) + cdz*g1(62)
+         h(365) = g1(92) + cdz*g1(32)
+         h(366) = h(364) + cdx*h(365)
+         h(367) = h(363) + abx*h(366)
+         h(368) = g1(151) + cdz*g1(61)
+         h(369) = g1(91) + cdz*g1(31)
+         h(370) = h(368) + cdx*h(369)
+         h(371) = h(366) + abx*h(370)
+         h(372) = h(367) + abx*h(371)
+         vbuf(49) = h(372)
+         h(373) = g1(156) + cdz*g1(66)
+         h(374) = g1(96) + cdz*g1(36)
+         h(375) = h(373) + cdx*h(374)
+         h(376) = h(375) + aby*h(366)
+         h(377) = g1(153) + cdz*g1(63)
+         h(378) = g1(93) + cdz*g1(33)
+         h(379) = h(377) + cdx*h(378)
+         h(380) = h(379) + aby*h(370)
+         h(381) = h(376) + abx*h(380)
+         vbuf(50) = h(381)
+         h(382) = g1(157) + cdz*g1(67)
+         h(383) = g1(97) + cdz*g1(37)
+         h(384) = h(382) + cdx*h(383)
+         h(385) = h(384) + abz*h(366)
+         h(386) = g1(154) + cdz*g1(64)
+         h(387) = g1(94) + cdz*g1(34)
+         h(388) = h(386) + cdx*h(387)
+         h(389) = h(388) + abz*h(370)
+         h(390) = h(385) + abx*h(389)
+         vbuf(51) = h(390)
+         h(391) = g1(158) + cdz*g1(68)
+         h(392) = g1(98) + cdz*g1(38)
+         h(393) = h(391) + cdx*h(392)
+         h(394) = h(393) + aby*h(379)
+         h(395) = h(394) + aby*h(380)
+         vbuf(52) = h(395)
+         h(396) = g1(159) + cdz*g1(69)
+         h(397) = g1(99) + cdz*g1(39)
+         h(398) = h(396) + cdx*h(397)
+         h(399) = h(398) + abz*h(379)
+         h(400) = h(399) + aby*h(389)
+         vbuf(53) = h(400)
+         h(401) = g1(160) + cdz*g1(70)
+         h(402) = g1(100) + cdz*g1(40)
+         h(403) = h(401) + cdx*h(402)
+         h(404) = h(403) + abz*h(388)
+         h(405) = h(404) + abz*h(389)
+         vbuf(54) = h(405)
+         h(406) = h(181) + cdy*h(137)
+         h(407) = h(184) + cdy*h(140)
+         h(408) = h(406) + abx*h(407)
+         h(409) = h(188) + cdy*h(144)
+         h(410) = h(407) + abx*h(409)
+         h(411) = h(408) + abx*h(410)
+         vbuf(55) = h(411)
+         h(412) = h(193) + cdy*h(149)
+         h(413) = h(412) + aby*h(407)
+         h(414) = h(197) + cdy*h(153)
+         h(415) = h(414) + aby*h(409)
+         h(416) = h(413) + abx*h(415)
+         vbuf(56) = h(416)
+         h(417) = h(202) + cdy*h(158)
+         h(418) = h(417) + abz*h(407)
+         h(419) = h(206) + cdy*h(162)
+         h(420) = h(419) + abz*h(409)
+         h(421) = h(418) + abx*h(420)
+         vbuf(57) = h(421)
+         h(422) = h(211) + cdy*h(167)
+         h(423) = h(422) + aby*h(414)
+         h(424) = h(423) + aby*h(415)
+         vbuf(58) = h(424)
+         h(425) = h(216) + cdy*h(172)
+         h(426) = h(425) + abz*h(414)
+         h(427) = h(426) + aby*h(420)
+         vbuf(59) = h(427)
+         h(428) = h(221) + cdy*h(177)
+         h(429) = h(428) + abz*h(419)
+         h(430) = h(429) + abz*h(420)
+         vbuf(60) = h(430)
+         h(431) = g1(165) + cdy*g1(75)
+         h(432) = h(431) + cdy*h(182)
+         h(433) = g1(162) + cdy*g1(72)
+         h(434) = h(433) + cdy*h(185)
+         h(435) = h(432) + abx*h(434)
+         h(436) = g1(161) + cdy*g1(71)
+         h(437) = h(436) + cdy*h(189)
+         h(438) = h(434) + abx*h(437)
+         h(439) = h(435) + abx*h(438)
+         vbuf(61) = h(439)
+         h(440) = g1(166) + cdy*g1(76)
+         h(441) = h(440) + cdy*h(194)
+         h(442) = h(441) + aby*h(434)
+         h(443) = g1(163) + cdy*g1(73)
+         h(444) = h(443) + cdy*h(198)
+         h(445) = h(444) + aby*h(437)
+         h(446) = h(442) + abx*h(445)
+         vbuf(62) = h(446)
+         h(447) = g1(167) + cdy*g1(77)
+         h(448) = h(447) + cdy*h(203)
+         h(449) = h(448) + abz*h(434)
+         h(450) = g1(164) + cdy*g1(74)
+         h(451) = h(450) + cdy*h(207)
+         h(452) = h(451) + abz*h(437)
+         h(453) = h(449) + abx*h(452)
+         vbuf(63) = h(453)
+         h(454) = g1(168) + cdy*g1(78)
+         h(455) = h(454) + cdy*h(212)
+         h(456) = h(455) + aby*h(444)
+         h(457) = h(456) + aby*h(445)
+         vbuf(64) = h(457)
+         h(458) = g1(169) + cdy*g1(79)
+         h(459) = h(458) + cdy*h(217)
+         h(460) = h(459) + abz*h(444)
+         h(461) = h(460) + aby*h(452)
+         vbuf(65) = h(461)
+         h(462) = g1(170) + cdy*g1(80)
+         h(463) = h(462) + cdy*h(222)
+         h(464) = h(463) + abz*h(451)
+         h(465) = h(464) + abz*h(452)
+         vbuf(66) = h(465)
+         h(466) = g1(175) + cdy*g1(85)
+         h(467) = h(466) + cdy*h(227)
+         h(468) = g1(172) + cdy*g1(82)
+         h(469) = h(468) + cdy*h(230)
+         h(470) = h(467) + abx*h(469)
+         h(471) = g1(171) + cdy*g1(81)
+         h(472) = h(471) + cdy*h(234)
+         h(473) = h(469) + abx*h(472)
+         h(474) = h(470) + abx*h(473)
+         vbuf(67) = h(474)
+         h(475) = g1(176) + cdy*g1(86)
+         h(476) = h(475) + cdy*h(239)
+         h(477) = h(476) + aby*h(469)
+         h(478) = g1(173) + cdy*g1(83)
+         h(479) = h(478) + cdy*h(243)
+         h(480) = h(479) + aby*h(472)
+         h(481) = h(477) + abx*h(480)
+         vbuf(68) = h(481)
+         h(482) = g1(177) + cdy*g1(87)
+         h(483) = h(482) + cdy*h(248)
+         h(484) = h(483) + abz*h(469)
+         h(485) = g1(174) + cdy*g1(84)
+         h(486) = h(485) + cdy*h(252)
+         h(487) = h(486) + abz*h(472)
+         h(488) = h(484) + abx*h(487)
+         vbuf(69) = h(488)
+         h(489) = g1(178) + cdy*g1(88)
+         h(490) = h(489) + cdy*h(257)
+         h(491) = h(490) + aby*h(479)
+         h(492) = h(491) + aby*h(480)
+         vbuf(70) = h(492)
+         h(493) = g1(179) + cdy*g1(89)
+         h(494) = h(493) + cdy*h(262)
+         h(495) = h(494) + abz*h(479)
+         h(496) = h(495) + aby*h(487)
+         vbuf(71) = h(496)
+         h(497) = g1(180) + cdy*g1(90)
+         h(498) = h(497) + cdy*h(267)
+         h(499) = h(498) + abz*h(486)
+         h(500) = h(499) + abz*h(487)
+         vbuf(72) = h(500)
+         h(501) = h(316) + cdy*h(272)
+         h(502) = h(319) + cdy*h(275)
+         h(503) = h(501) + abx*h(502)
+         h(504) = h(323) + cdy*h(279)
+         h(505) = h(502) + abx*h(504)
+         h(506) = h(503) + abx*h(505)
+         vbuf(73) = h(506)
+         h(507) = h(328) + cdy*h(284)
+         h(508) = h(507) + aby*h(502)
+         h(509) = h(332) + cdy*h(288)
+         h(510) = h(509) + aby*h(504)
+         h(511) = h(508) + abx*h(510)
+         vbuf(74) = h(511)
+         h(512) = h(337) + cdy*h(293)
+         h(513) = h(512) + abz*h(502)
+         h(514) = h(341) + cdy*h(297)
+         h(515) = h(514) + abz*h(504)
+         h(516) = h(513) + abx*h(515)
+         vbuf(75) = h(516)
+         h(517) = h(346) + cdy*h(302)
+         h(518) = h(517) + aby*h(509)
+         h(519) = h(518) + aby*h(510)
+         vbuf(76) = h(519)
+         h(520) = h(351) + cdy*h(307)
+         h(521) = h(520) + abz*h(509)
+         h(522) = h(521) + aby*h(515)
+         vbuf(77) = h(522)
+         h(523) = h(356) + cdy*h(312)
+         h(524) = h(523) + abz*h(514)
+         h(525) = h(524) + abz*h(515)
+         vbuf(78) = h(525)
+         h(526) = g1(175) + cdz*g1(75)
+         h(527) = h(526) + cdy*h(317)
+         h(528) = g1(172) + cdz*g1(72)
+         h(529) = h(528) + cdy*h(320)
+         h(530) = h(527) + abx*h(529)
+         h(531) = g1(171) + cdz*g1(71)
+         h(532) = h(531) + cdy*h(324)
+         h(533) = h(529) + abx*h(532)
+         h(534) = h(530) + abx*h(533)
+         vbuf(79) = h(534)
+         h(535) = g1(176) + cdz*g1(76)
+         h(536) = h(535) + cdy*h(329)
+         h(537) = h(536) + aby*h(529)
+         h(538) = g1(173) + cdz*g1(73)
+         h(539) = h(538) + cdy*h(333)
+         h(540) = h(539) + aby*h(532)
+         h(541) = h(537) + abx*h(540)
+         vbuf(80) = h(541)
+         h(542) = g1(177) + cdz*g1(77)
+         h(543) = h(542) + cdy*h(338)
+         h(544) = h(543) + abz*h(529)
+         h(545) = g1(174) + cdz*g1(74)
+         h(546) = h(545) + cdy*h(342)
+         h(547) = h(546) + abz*h(532)
+         h(548) = h(544) + abx*h(547)
+         vbuf(81) = h(548)
+         h(549) = g1(178) + cdz*g1(78)
+         h(550) = h(549) + cdy*h(347)
+         h(551) = h(550) + aby*h(539)
+         h(552) = h(551) + aby*h(540)
+         vbuf(82) = h(552)
+         h(553) = g1(179) + cdz*g1(79)
+         h(554) = h(553) + cdy*h(352)
+         h(555) = h(554) + abz*h(539)
+         h(556) = h(555) + aby*h(547)
+         vbuf(83) = h(556)
+         h(557) = g1(180) + cdz*g1(80)
+         h(558) = h(557) + cdy*h(357)
+         h(559) = h(558) + abz*h(546)
+         h(560) = h(559) + abz*h(547)
+         vbuf(84) = h(560)
+         h(561) = g1(185) + cdz*g1(85)
+         h(562) = h(561) + cdy*h(362)
+         h(563) = g1(182) + cdz*g1(82)
+         h(564) = h(563) + cdy*h(365)
+         h(565) = h(562) + abx*h(564)
+         h(566) = g1(181) + cdz*g1(81)
+         h(567) = h(566) + cdy*h(369)
+         h(568) = h(564) + abx*h(567)
+         h(569) = h(565) + abx*h(568)
+         vbuf(85) = h(569)
+         h(570) = g1(186) + cdz*g1(86)
+         h(571) = h(570) + cdy*h(374)
+         h(572) = h(571) + aby*h(564)
+         h(573) = g1(183) + cdz*g1(83)
+         h(574) = h(573) + cdy*h(378)
+         h(575) = h(574) + aby*h(567)
+         h(576) = h(572) + abx*h(575)
+         vbuf(86) = h(576)
+         h(577) = g1(187) + cdz*g1(87)
+         h(578) = h(577) + cdy*h(383)
+         h(579) = h(578) + abz*h(564)
+         h(580) = g1(184) + cdz*g1(84)
+         h(581) = h(580) + cdy*h(387)
+         h(582) = h(581) + abz*h(567)
+         h(583) = h(579) + abx*h(582)
+         vbuf(87) = h(583)
+         h(584) = g1(188) + cdz*g1(88)
+         h(585) = h(584) + cdy*h(392)
+         h(586) = h(585) + aby*h(574)
+         h(587) = h(586) + aby*h(575)
+         vbuf(88) = h(587)
+         h(588) = g1(189) + cdz*g1(89)
+         h(589) = h(588) + cdy*h(397)
+         h(590) = h(589) + abz*h(574)
+         h(591) = h(590) + aby*h(582)
+         vbuf(89) = h(591)
+         h(592) = g1(190) + cdz*g1(90)
+         h(593) = h(592) + cdy*h(402)
+         h(594) = h(593) + abz*h(581)
+         h(595) = h(594) + abz*h(582)
+         vbuf(90) = h(595)
+         h(596) = h(361) + cdz*h(272)
+         h(597) = h(364) + cdz*h(275)
+         h(598) = h(596) + abx*h(597)
+         h(599) = h(368) + cdz*h(279)
+         h(600) = h(597) + abx*h(599)
+         h(601) = h(598) + abx*h(600)
+         vbuf(91) = h(601)
+         h(602) = h(373) + cdz*h(284)
+         h(603) = h(602) + aby*h(597)
+         h(604) = h(377) + cdz*h(288)
+         h(605) = h(604) + aby*h(599)
+         h(606) = h(603) + abx*h(605)
+         vbuf(92) = h(606)
+         h(607) = h(382) + cdz*h(293)
+         h(608) = h(607) + abz*h(597)
+         h(609) = h(386) + cdz*h(297)
+         h(610) = h(609) + abz*h(599)
+         h(611) = h(608) + abx*h(610)
+         vbuf(93) = h(611)
+         h(612) = h(391) + cdz*h(302)
+         h(613) = h(612) + aby*h(604)
+         h(614) = h(613) + aby*h(605)
+         vbuf(94) = h(614)
+         h(615) = h(396) + cdz*h(307)
+         h(616) = h(615) + abz*h(604)
+         h(617) = h(616) + aby*h(610)
+         vbuf(95) = h(617)
+         h(618) = h(401) + cdz*h(312)
+         h(619) = h(618) + abz*h(609)
+         h(620) = h(619) + abz*h(610)
+         vbuf(96) = h(620)
+         h(621) = h(561) + cdz*h(317)
+         h(622) = h(563) + cdz*h(320)
+         h(623) = h(621) + abx*h(622)
+         h(624) = h(566) + cdz*h(324)
+         h(625) = h(622) + abx*h(624)
+         h(626) = h(623) + abx*h(625)
+         vbuf(97) = h(626)
+         h(627) = h(570) + cdz*h(329)
+         h(628) = h(627) + aby*h(622)
+         h(629) = h(573) + cdz*h(333)
+         h(630) = h(629) + aby*h(624)
+         h(631) = h(628) + abx*h(630)
+         vbuf(98) = h(631)
+         h(632) = h(577) + cdz*h(338)
+         h(633) = h(632) + abz*h(622)
+         h(634) = h(580) + cdz*h(342)
+         h(635) = h(634) + abz*h(624)
+         h(636) = h(633) + abx*h(635)
+         vbuf(99) = h(636)
+         h(637) = h(584) + cdz*h(347)
+         h(638) = h(637) + aby*h(629)
+         h(639) = h(638) + aby*h(630)
+         vbuf(100) = h(639)
+         h(640) = h(588) + cdz*h(352)
+         h(641) = h(640) + abz*h(629)
+         h(642) = h(641) + aby*h(635)
+         vbuf(101) = h(642)
+         h(643) = h(592) + cdz*h(357)
+         h(644) = h(643) + abz*h(634)
+         h(645) = h(644) + abz*h(635)
+         vbuf(102) = h(645)
+         h(646) = g1(195) + cdz*g1(95)
+         h(647) = h(646) + cdz*h(362)
+         h(648) = g1(192) + cdz*g1(92)
+         h(649) = h(648) + cdz*h(365)
+         h(650) = h(647) + abx*h(649)
+         h(651) = g1(191) + cdz*g1(91)
+         h(652) = h(651) + cdz*h(369)
+         h(653) = h(649) + abx*h(652)
+         h(654) = h(650) + abx*h(653)
+         vbuf(103) = h(654)
+         h(655) = g1(196) + cdz*g1(96)
+         h(656) = h(655) + cdz*h(374)
+         h(657) = h(656) + aby*h(649)
+         h(658) = g1(193) + cdz*g1(93)
+         h(659) = h(658) + cdz*h(378)
+         h(660) = h(659) + aby*h(652)
+         h(661) = h(657) + abx*h(660)
+         vbuf(104) = h(661)
+         h(662) = g1(197) + cdz*g1(97)
+         h(663) = h(662) + cdz*h(383)
+         h(664) = h(663) + abz*h(649)
+         h(665) = g1(194) + cdz*g1(94)
+         h(666) = h(665) + cdz*h(387)
+         h(667) = h(666) + abz*h(652)
+         h(668) = h(664) + abx*h(667)
+         vbuf(105) = h(668)
+         h(669) = g1(198) + cdz*g1(98)
+         h(670) = h(669) + cdz*h(392)
+         h(671) = h(670) + aby*h(659)
+         h(672) = h(671) + aby*h(660)
+         vbuf(106) = h(672)
+         h(673) = g1(199) + cdz*g1(99)
+         h(674) = h(673) + cdz*h(397)
+         h(675) = h(674) + abz*h(659)
+         h(676) = h(675) + aby*h(667)
+         vbuf(107) = h(676)
+         h(677) = g1(200) + cdz*g1(100)
+         h(678) = h(677) + cdz*h(402)
+         h(679) = h(678) + abz*h(666)
+         h(680) = h(679) + abz*h(667)
+         vbuf(108) = h(680)
 
 #ifdef TRC_NO_DIGEST
          !

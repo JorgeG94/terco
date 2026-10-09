@@ -841,6 +841,24 @@ contains
       integer  :: mui, nuj, lamk, sigl
       ! largest Cartesian block this LMAX allows: ((L+1)(L+2)/2)^4
       real(dp) :: vbuf((((LMAX + 1)*(LMAX + 2)/2)**4))
+#ifdef TRC_UNROLL_HRR
+      ! The HRR DAG's shared intermediates (trc_hrr_cases.inc). Sized for
+      ! the worst class across the whole LMAX set,
+      ! not this call's own class, because this procedure is shared by
+      ! every class via `select case` -- a per-class kernel declares `h`
+      ! exactly sized instead (gen_perclass.py). Every access is at a
+      ! literal, generation-time-constant index, so the compiler treats
+      ! `h` as TRC_HRR_HMAX independent scalars with their own liveness,
+      ! the same way it already does for v/g1/vbuf -- see
+      ! docs/GENERATORS.md's measured register numbers.
+      !
+      ! Guarded by TRC_UNROLL_HRR, the same macro that gates the #include
+      ! below: trc_hrr_hmax.inc is generated alongside trc_hrr_cases.inc
+      ! (only at TERCO_LMAX<=1, see src/CMakeLists.txt) and does not exist
+      ! in a build that never asks for it.
+#include "trc_hrr_hmax.inc"
+      real(dp) :: h(TRC_HRR_HMAX)
+#endif
       integer  :: pij, pkl
       logical  :: dij, dkl, dpq
 
@@ -1250,6 +1268,24 @@ contains
       integer  :: mui, nuj, lamk, sigl
       ! largest Cartesian block this LMAX allows: ((L+1)(L+2)/2)^4
       real(dp) :: vbuf((((LMAX + 1)*(LMAX + 2)/2)**4))
+#ifdef TRC_UNROLL_HRR
+      ! The HRR DAG's shared intermediates (trc_hrr_cases.inc). Sized for
+      ! the worst class across the whole LMAX set,
+      ! not this call's own class, because this procedure is shared by
+      ! every class via `select case` -- a per-class kernel declares `h`
+      ! exactly sized instead (gen_perclass.py). Every access is at a
+      ! literal, generation-time-constant index, so the compiler treats
+      ! `h` as TRC_HRR_HMAX independent scalars with their own liveness,
+      ! the same way it already does for v/g1/vbuf -- see
+      ! docs/GENERATORS.md's measured register numbers.
+      !
+      ! Guarded by TRC_UNROLL_HRR, the same macro that gates the #include
+      ! below: trc_hrr_hmax.inc is generated alongside trc_hrr_cases.inc
+      ! (only at TERCO_LMAX<=1, see src/CMakeLists.txt) and does not exist
+      ! in a build that never asks for it.
+#include "trc_hrr_hmax.inc"
+      real(dp) :: h(TRC_HRR_HMAX)
+#endif
       integer  :: pij, pkl
       logical  :: dij, dkl, dpq
 

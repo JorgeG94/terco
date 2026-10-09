@@ -133,6 +133,8 @@ contains
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v(10, 0:1), g1(10), vbuf(6)
+      real(dp) :: h(15)
+
       real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       logical  :: same_ab, same_cd, same_pair
       real(dp) :: jab(1), jcd(6), kac(1)
@@ -343,27 +345,27 @@ contains
          mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
 
          ! --- HRR ---
-         vbuf(1) = cdx*cdx*g1(1) &
-            + 2.0_dp*cdx*g1(2) &
-            + g1(5)
-         vbuf(2) = cdx*cdy*g1(1) &
-            + cdx*g1(3) &
-            + cdy*g1(2) &
-            + g1(6)
-         vbuf(3) = cdx*cdz*g1(1) &
-            + cdx*g1(4) &
-            + cdz*g1(2) &
-            + g1(7)
-         vbuf(4) = cdy*cdy*g1(1) &
-            + 2.0_dp*cdy*g1(3) &
-            + g1(8)
-         vbuf(5) = cdy*cdz*g1(1) &
-            + cdy*g1(4) &
-            + cdz*g1(3) &
-            + g1(9)
-         vbuf(6) = cdz*cdz*g1(1) &
-            + 2.0_dp*cdz*g1(4) &
-            + g1(10)
+         h(1) = g1(5) + cdx*g1(2)
+         h(2) = g1(2) + cdx*g1(1)
+         h(3) = h(1) + cdx*h(2)
+         vbuf(1) = h(3)
+         h(4) = g1(6) + cdy*g1(2)
+         h(5) = g1(3) + cdy*g1(1)
+         h(6) = h(4) + cdx*h(5)
+         vbuf(2) = h(6)
+         h(7) = g1(7) + cdz*g1(2)
+         h(8) = g1(4) + cdz*g1(1)
+         h(9) = h(7) + cdx*h(8)
+         vbuf(3) = h(9)
+         h(10) = g1(8) + cdy*g1(3)
+         h(11) = h(10) + cdy*h(5)
+         vbuf(4) = h(11)
+         h(12) = g1(9) + cdz*g1(3)
+         h(13) = h(12) + cdy*h(8)
+         vbuf(5) = h(13)
+         h(14) = g1(10) + cdz*g1(4)
+         h(15) = h(14) + cdz*h(8)
+         vbuf(6) = h(15)
 
 #ifdef TRC_NO_DIGEST
          !

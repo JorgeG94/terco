@@ -173,6 +173,19 @@ terco_add_check(check_mult check_mult.F90)
 #
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
+  # The HRR DAG (gen_hrr.py --hrr dag, the default) against the closed form
+  # it replaces: every (la,lb,lc,ld) up to LMAX=2, random VRR-buffer values,
+  # no Fortran, no basis and no pyscf needed -- see
+  # scripts/check_hrr_dag_numeric.py's own header for why this is a strong
+  # check despite being purely algebraic. Unlike the pyscf-gated checks
+  # below, this one has no optional dependency, so it is not inside the
+  # `_pyscf_rc EQUAL 0` branch.
+  add_test(NAME terco/check_hrr_dag_numeric
+           COMMAND ${Python3_EXECUTABLE}
+                   ${PROJECT_SOURCE_DIR}/scripts/check_hrr_dag_numeric.py)
+  set_tests_properties(
+    terco/check_hrr_dag_numeric
+    PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
   execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import numpy, pyscf"
     RESULT_VARIABLE _pyscf_rc
