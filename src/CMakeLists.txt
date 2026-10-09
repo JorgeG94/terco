@@ -142,21 +142,6 @@ if(_regen)
     message(FATAL_ERROR "gen_perclass.py failed (${_rc})")
   endif()
 
-  # Rotated-axis MD, one module per ordered s/p class plus its dispatcher
-  # (trc_ra_kernels.F90). Fixed at s/p regardless of TERCO_LMAX -- the class
-  # set does not grow with the ceiling (scripts/rotaxis/FRAME.md section 5),
-  # and trc_ra_kernels.F90 imports CLASS_RADIX from trc_pc_kernels, so it must
-  # run after gen_perclass.py has written that module into the same directory.
-  # `--order` is accepted for symmetry with the other generators, though s/p
-  # is where lexicographic and gamess coincide, so it never changes a byte of
-  # what comes out (scripts/gen_rotaxis.py's own docstring on --order).
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_rotaxis.py ${_order_flag} --split ${_gen_dir}
-    RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_rotaxis.py failed (${_rc})")
-  endif()
-
   # One-electron, multipoles and density fitting carry angular momentum on two
   # or three centres rather than four, so they grow as L^2 or L^3 and can
   # afford the same ceiling as the four-centre kernels for far less compile.

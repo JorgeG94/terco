@@ -102,10 +102,6 @@ terco_add_check(check_xc_energy check_xc_energy.F90)
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
-# Rotated-axis MD vs HGP: the same Fock build with TRC_ROTAXIS forced off then
-# on in one process (see check_rotaxis.F90's header), on water and a linear
-# molecule where collinear frames are routine rather than a corner case.
-terco_add_check(check_rotaxis check_rotaxis.F90 NEEDS_BASIS)
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
