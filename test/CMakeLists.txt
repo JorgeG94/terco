@@ -114,6 +114,14 @@ terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+# build_631g against trc_basis_from_json, on water through a five-water
+# cluster -- the one check allowed to call build_631g for its own basis
+# (see that subroutine's comment in trc_test_basis.F90). Water through
+# five waters, not one geometry: a per-shell coefficient scale error can
+# still agree with the reference to several digits at a single small
+# geometry, which is what let the common_fac_sp regression this check
+# guards against go unnoticed before.
+terco_add_check(check_basis_631g_ref check_basis_631g_ref.F90 NEEDS_BASIS)
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
 terco_add_check(sadq_atoms sadq_atoms.F90 NEEDS_BASIS)
 terco_add_check(sap_guess sap_guess.F90 NEEDS_BASIS)

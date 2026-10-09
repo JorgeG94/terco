@@ -12,7 +12,16 @@
 ! stores them as strings to keep every digit.
 !
 ! Coefficients are normalised as metalquicha and pyscf normalise them: each
-! primitive to unit self-overlap, then the contraction to unit self-overlap.
+! primitive to unit self-overlap, then the contraction to unit self-overlap
+! -- and then divided by libcint's `common_fac_sp(l)` (`normalise` below),
+! because `trc_basis_t%build` folds that factor in once more and every
+! other caller of `build` (the hardcoded 6-31G, a decontracted shell) hands
+! it a coefficient that is missing the factor for exactly that reason. Skip
+! that extra division and `build`'s fold applies common_fac_sp TWICE to an s
+! or p shell -- which integrates fine on its own (a per-AO rescale is a
+! no-op for F C = S C eps) but silently loosens the Schwarz screen, giving
+! answers that are right on one water and wrong by hundreds of Hartree on
+! twenty. See `normalise`'s own comment for the measurements.
 ! The function_type ("gto_spherical" on a d shell) is read and ignored:
 ! terco is Cartesian, and a spherical set is run in its Cartesian form, as
 ! pyscf does with cart=True.
@@ -269,9 +278,46 @@ contains
 
    !
    ! metalquicha's normalisation (mqc_basis_normalization): each primitive
-   ! to unit self-overlap, then the contraction to unit self-overlap. The
-   ! coefficients come back ready for trc_basis_t%build, which folds
-   ! common_fac_sp itself.
+   ! to unit self-overlap, then the contraction to unit self-overlap. That
+   ! is BSE's own convention (also gmshpc's and pyscf's): it makes <s|s> = 1
+   ! for a fully-built shell.
+   !
+   ! terco's convention is not that one. `trc_basis_t%build` unconditionally
+   ! folds libcint's `common_fac_sp` into every s and p shell's coefficients
+   ! (trc_api.F90, duplicated in trc_ao_norm.F90 and trc_batch.F90 for the
+   ! same reason it is duplicated here rather than exported: it is three
+   ! lines, and the alternative widens trc_api's public surface for one
+   ! boundary conversion), which makes terco's OWN raw <s|s> come out
+   ! 1/(4*pi), not 1. Everything else that ever builds a shell -- the
+   ! hardcoded 6-31G in test/trc_test_basis.F90, trc_decontract.F90's split
+   ! shells -- hands `build` a coefficient with NO common_fac_sp in it, by
+   ! construction, so the single fold inside `build` lands on the right
+   ! number.
+   !
+   ! This routine used to hand `build` the complete, CFS-already-folded-in
+   ! BSE/pyscf coefficient instead, and `build`'s own fold then multiplied
+   ! it by common_fac_sp(l) A SECOND TIME -- scaling every s shell's
+   ! coefficients down by 0.282094791773878 and every p shell's by
+   ! 0.488602511902920, with d and higher untouched (common_fac_sp(l>=2) =
+   ! 1, which is why a JSON 6-31G*'s polarization function was never the
+   ! problem).
+   !
+   ! A per-shell constant rescaling of one AO changes nothing on its own --
+   ! F C = S C eps is invariant to it, same as any other diagonal congruence
+   ! (trc_ao_norm.F90's header works through exactly this invariance). What
+   ! it broke was the ABSOLUTE Schwarz threshold: shrinking an s or p shell's
+   ! integrals by that factor shrinks their Schwarz bound by its square
+   ! while the density-matrix element that will multiply a dropped
+   ! integral back up is correspondingly LARGER by its inverse square, so a
+   ! fixed `eri_thresh` silently screens away pairs that matter more than it
+   ! thinks. Invisible on one water (too few near-threshold pairs to
+   ! matter: 4e-8 Eh at w1-w3), 1.1e-5 Eh on five, and total SCF failure on
+   ! twenty (-822 Eh against a correct -1519) -- because the error is a
+   ! coherent per-shell-type bias, not a random one, and it accumulates with
+   ! the pair count rather than averaging out. The fix is to divide the
+   ! final coefficient by the same `common_fac_sp(l)` here, so this routine
+   ! hands `build` the CFS-free coefficient every other caller hands it, and
+   ! `build`'s single fold is once again the only one.
    !
    pure subroutine normalise(l, np, e, c)
       integer, intent(in) :: l, np
@@ -291,9 +337,24 @@ contains
       end do
       s = ovl**(-0.5_dp)
       do i = 1, np
-         c(i) = s*c(i)*sqrt(2.0_dp**l/(PI**1.5_dp*dfac)*(2.0_dp*e(i))**(real(l, dp) + 1.5_dp))
+         c(i) = s*c(i)*sqrt(2.0_dp**l/(PI**1.5_dp*dfac)*(2.0_dp*e(i))**(real(l, dp) + 1.5_dp)) &
+                /common_fac_sp(l)
       end do
    end subroutine normalise
+
+   !> Duplicated from trc_api.F90 (and trc_ao_norm.F90, and trc_batch.F90)
+   !> rather than imported -- see those modules' own comments on the same
+   !> duplication. `build` folds this in once; this routine has to undo the
+   !> complete BSE/pyscf normalisation's OWN copy of it first, so that the
+   !> two folds net to exactly one.
+   pure real(dp) function common_fac_sp(l)
+      integer, intent(in) :: l
+      select case (l)
+      case (0); common_fac_sp = 0.282094791773878143_dp
+      case (1); common_fac_sp = 0.488602511902919921_dp
+      case default; common_fac_sp = 1.0_dp
+      end select
+   end function common_fac_sp
 
    pure function rtoa(x) result(t)
       real(dp), intent(in) :: x

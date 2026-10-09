@@ -24,16 +24,36 @@
 ! formula in Fortran rather than importing it, because nothing on this side
 ! of the C boundary can call out to Python.
 !
-! THAT RATIO IS NOT THE WHOLE SCALE FOR s AND p, though -- terco (matching
-! libcint) folds a SECOND, unrelated constant into an s or p shell's
-! coefficients at build time (`common_fac_sp` below, the real-solid-harmonic
-! scale libcint's own convention carries for historical reasons that have
-! nothing to do with GAMESS or Cartesian normalisation). It makes terco's
-! raw <s|s> come out 1/(4*pi) and <p_x|p_x> 3/(4*pi), not 1, so reaching
-! GAMESS's true unit convention needs `gamess_norm` DIVIDED by this second
-! factor too. It is exactly 1 for l >= 2, which is why d, f and g never
-! showed the problem and s and p quietly did -- see `common_fac_sp`'s own
-! comment for how this was found.
+! `gamess_norm` ALONE IS THE WHOLE SCALE, for every l, s and p included.
+! terco (matching libcint) also folds a constant called `common_fac_sp` into
+! an s or p shell's coefficients at build time (trc_api.F90's `basis_build`),
+! but that fold is paid for by every CALLER of `build` handing in a
+! coefficient already divided by it (gto_norm in test/trc_test_basis.F90,
+! `normalise` in trc_basis_json.F90) -- the two are designed to cancel, and
+! they do: terco's own raw <s|s> and <p_x|p_x> come out 1, exactly GAMESS's
+! own convention for those two, which is what `gamess_norm`'s "(-1)!! = 1"
+! case above already says and is confirmed directly against pyscf/libcint
+! (a bare, uncontracted s or p primitive: `mol.intor('int1e_ovlp')` gives 1,
+! not 1/(4*pi) or 3/(4*pi)).
+!
+! AN EARLIER VERSION OF THIS MODULE DIVIDED `gamess_norm` BY `common_fac_sp`
+! HERE, on the belief that terco's raw <s|s> was 1/(4*pi). It was not: that
+! belief was reverse-engineered from a basis loaded through trc_basis_json's
+! OWN bug of the same shape (`normalise` applying its own complete,
+! already-common_fac_sp-shaped normalisation AND letting `build` fold the
+! factor in again, making a JSON-loaded s or p shell's raw <s|s>/<p_x|p_x>
+! come out 1/(4*pi) and 3/(4*pi) for real) -- not from first principles, and
+! not cross-checked against the OTHER basis constructor (test/trc_test_basis.F90's
+! `build_631g`, whose gto_norm-based shells give raw <s|s> = 1 directly, same
+! as pyscf). Two bugs, matched in shape, canceling: this module's own
+! `/common_fac_sp` undid exactly what trc_basis_json's double fold added, so
+! every self-consistency check here (the SCF energy and Tr(D S) agreeing
+! between SHELL and UNIT mode) passed regardless, and only the hard-coded
+! absolute numbers in test/check_ao_norm.F90's check (a) -- which had been
+! written to match the bug, not to derive the answer -- caught it, the
+! moment trc_basis_json's fold was fixed on its own. common_fac_sp(l >= 2)
+! is 1 regardless, which is why d, f and g were never involved in any of
+! this.
 !
 ! ORDER AND NORMALISATION ARE SEPARATE, ON PURPOSE. Which slot a component
 ! sits in comes from TRC_CART_ORDER (trc_cart_perm.F90); how much that slot
@@ -86,10 +106,9 @@ module trc_ao_norm
 
    public :: TRC_AO_NORM_SHELL, TRC_AO_NORM_UNIT
    public :: ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
-   !> Exported ONLY for test/check_ao_norm.F90's (e): the pure GAMESS ratio,
-   !> decoupled from `ao_norm_vector`'s ADDITIONAL common_fac_sp correction
-   !> below, so that check can compare against scripts/cartorder.py's
-   !> `gamess_norm_sq` exactly, which is this ratio and nothing else.
+   !> Exported for test/check_ao_norm.F90's (e), so that check can compare
+   !> against scripts/cartorder.py's `gamess_norm_sq` directly -- this IS
+   !> the whole of `ao_norm_vector`'s UNIT scale now, not a part of it.
    public :: gamess_norm
 
    !> Must match trc_capi.F90's TRC_AO_NORM_SHELL/TRC_AO_NORM_UNIT exactly;
@@ -122,7 +141,10 @@ contains
          ncart = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
          do ic = 0, ncart - 1
             call cart_pow(sh_l(ish), ic, px, py, pz)
-            nrm(base + ic + 1) = gamess_norm(px, py, pz)/common_fac_sp(sh_l(ish))
+            ! `gamess_norm` alone, no extra `common_fac_sp` divide -- see the
+            ! module header for why an earlier version of this line carried
+            ! one, and why it was wrong.
+            nrm(base + ic + 1) = gamess_norm(px, py, pz)
          end do
       end do
    end subroutine ao_norm_vector
@@ -135,27 +157,6 @@ contains
       n = sqrt(real(dfact(px + py + pz), dp)/ &
               real(dfact(px)*dfact(py)*dfact(pz), dp))
    end function gamess_norm
-
-   !> The OTHER baseline shift `ao_norm_vector` has to undo, on top of
-   !> `gamess_norm`: terco folds libcint's own real-solid-harmonic scale
-   !> into an s or p shell's coefficients at BUILD time (trc_api.F90's
-   !> `common_fac_sp`, this is the exact same two constants, duplicated
-   !> rather than exported because it is three lines and the alternative is
-   !> widening trc_api's public surface for one boundary conversion). It
-   !> makes terco's OWN raw <s|s> come out 1/(4*pi) and <p_x|p_x> 3/(4*pi),
-   !> not 1 -- discovered the hard way, by this module's own test failing
-   !> against an assumed baseline of 1 for s and p. It is 1 for l >= 2
-   !> (trc_api.F90's `case default`), which is why d, f and g never needed
-   !> this: `gamess_norm` alone was already the right answer for them, and
-   !> ONLY s and p were silently wrong.
-   pure real(dp) function common_fac_sp(l)
-      integer, intent(in) :: l
-      select case (l)
-      case (0); common_fac_sp = 0.282094791773878143_dp
-      case (1); common_fac_sp = 0.488602511902919921_dp
-      case default; common_fac_sp = 1.0_dp
-      end select
-   end function common_fac_sp
 
    !> (2n-1)!! = 1*3*5*...*(2n-1), with (-1)!! = 1 by convention (an
    !> exponent of 0 contributes no factor, which is what makes an s or p
