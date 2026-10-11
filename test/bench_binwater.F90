@@ -24,7 +24,7 @@ program bench_binwater
    use trc_hgp, only: build_pairs_hgp, hgp_batch
 
    use trc_screen, only: schwarz_bounds
-   use trc_bins, only: pair_bins_t, build_binned_pairs
+   use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use trc_binkernel, only: fock_bins, trc_plan_t
    implicit none
 
@@ -57,6 +57,14 @@ program bench_binwater
    integer :: nout, r, nchunk, ic, c, l0, h0, nlaunch
    integer(kind=8) :: nwork, nkept
    type(pair_bins_t) :: bins
+   !! Bin-interleaved second copy of the hp_* data (build_pair_quartets);
+   !! flat here, as trc_eri_t keeps them -- see that type's own comment.
+   integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
+   integer :: nqp
+   real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
+   real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
+   real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
+   integer, allocatable :: sq_n(:)
    real(dp), allocatable :: dmat(:,:), jmat(:,:), kmat(:,:), dsh(:,:)
    logical :: DSCREEN = .true.
    integer, parameter :: CHUNK = 400000
@@ -81,6 +89,9 @@ program bench_binwater
 
    call tick(t0)
    call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=hp_n)
+   call build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+                            qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                            sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
    call tick(t1)
    print '(a,f8.3,a)', '  bin the pairs   : ', t1 - t0, ' s'
 
@@ -137,12 +148,16 @@ program bench_binwater
 
 
    !$acc enter data copyin(sh_l, ao_off, dmat, dsh, bins, bins%sp_i, bins%sp_j, bins%sp_q, &
-   !$acc                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c) &
+   !$acc                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+   !$acc                   qp_z, qp_c, qp_px, qp_py, qp_pz, &
+   !$acc                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n) &
    !$acc            copyin(jmat, kmat)
 
    call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
                      1.0_dp, 1.0_dp, .false., dsh, &
                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+                  qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                   1, dmat, jmat, kmat, 0, 1, nlaunch, nwork, nkept)
    !$acc wait
    jmat = 0.0_dp; kmat = 0.0_dp
@@ -173,6 +188,8 @@ program bench_binwater
       call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
                      1.0_dp, 1.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+                     qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                     sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                      1, dmat, jmat, kmat, 0, 1, nlaunch, nwork)
       !$acc wait
       call tick(t1)
@@ -184,7 +201,9 @@ program bench_binwater
 
    !$acc update self(jmat, kmat)
    !$acc exit data delete(sh_l, ao_off, dmat, bins%sp_i, bins%sp_j, bins, &
-   !$acc                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, jmat, kmat)
+   !$acc                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+   !$acc                  qp_z, qp_c, qp_px, qp_py, qp_pz, &
+   !$acc                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, jmat, kmat)
 
    print '(a,i0,a,i0)', '  kernel launches ', nlaunch, '   work items ', nwork
    print '(a,i0,a,f6.2,a)', '  survive screen  ', nkept, '  (', &
