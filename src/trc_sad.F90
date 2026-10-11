@@ -127,12 +127,21 @@ contains
       type(trc_scf_result_t) :: res
       integer :: ia, ish, ncached, k, a0, a1, z, nz, nel_i, na, nb
       real(dp) :: want
-      logical :: talk, sadq, hund
+      logical :: talk, sadq, hund, sph
 
       talk = .false.
       if (present(verbose)) talk = verbose
       sadq = present(nel)
-      allocate (dguess(b%nao, b%nao))
+      ! `dguess` is in whatever AO space `b` itself exposes to the SCF
+      ! (trc_api.F90's `spherical`/`nao_sph`): a spherical molecular basis
+      ! gets a spherical SAD guess, built from spherical ATOMIC SCFs below,
+      ! because `b%subset` (and so every `ab` built from it) carries the
+      ! same `spherical` flag -- `trc_scf_run(ab, ...)` on a spherical atom
+      ! already returns `res%dmat` at `ab%nao_sph`, not at the atom's
+      ! CARTESIAN function count, so the block this routine places into
+      ! `dguess` has to be addressed and sized to match.
+      sph = b%spherical
+      allocate (dguess(merge(b%nao_sph, b%nao, sph), merge(b%nao_sph, b%nao, sph)))
       dguess = 0.0_dp
 
       call trc_atom_ranges(b, atom_of, first, last, error)
@@ -151,8 +160,13 @@ contains
       do ia = 1, b%natm
          z = nint(b%at_z(ia))
          if (first(ia) == 0) cycle   ! a ghost, or an atom with no functions
-         a0 = b%sh_ao(first(ia))
-         a1 = b%sh_ao(last(ia)) + ncart(b%sh_l(last(ia))) - 1
+         if (sph) then
+            a0 = b%sh_ao_sph(first(ia))
+            a1 = b%sh_ao_sph(last(ia)) + (2*b%sh_l(last(ia)) + 1) - 1
+         else
+            a0 = b%sh_ao(first(ia))
+            a1 = b%sh_ao(last(ia)) + ncart(b%sh_l(last(ia))) - 1
+         end if
          nz = a1 - a0 + 1
          want = real(z, dp)
          if (sadq) want = nel(ia)

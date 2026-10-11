@@ -94,7 +94,10 @@ program scf_robust
          nalpha = nelec/2
          nbeta = nalpha
       end if
-      call trc_basis_from_json('basis_sets/'//trim(basf(ic))//'.json', natm, zint, at_r, bas, err)
+      ! Cartesian, to match scf_robust_ref.py's cart=True and the lindep
+      ! threshold measured on it: d-aug-cc-pVDZ tags shells gto_spherical.
+      call trc_basis_from_json('basis_sets/'//trim(basf(ic))//'.json', natm, zint, at_r, bas, err, &
+                               force_cart=.true.)
       if (err%has_error()) then
          print '(a,a)', 'scf_robust: '//trim(xyzf(ic))//': ', err%get_message(); stop 1
       end if

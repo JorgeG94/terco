@@ -118,6 +118,13 @@ set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CM
 # geometry, which is what let the common_fac_sp regression this check
 # guards against go unnoticed before.
 terco_add_check(check_basis_631g_ref check_basis_631g_ref.F90 NEEDS_BASIS)
+# The spherical (pure) AO space against pyscf's cart=False: water in
+# def2-SVP and cc-pVDZ, a three-water cluster in def2-SVP, SiH4 in
+# cc-pVDZ, and the OH radical open-shell in cc-pVDZ. See check_spherical.F90's
+# own header for the reference numbers' provenance and def2-svp.json's own
+# (copied from gmshpc's data/basis, itself the Basis Set Exchange's JSON
+# bundle -- same source and format as every other file in basis_sets/).
+terco_add_check(check_spherical check_spherical.F90 NEEDS_BASIS)
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
 terco_add_check(sadq_atoms sadq_atoms.F90 NEEDS_BASIS)
 terco_add_check(sap_guess sap_guess.F90 NEEDS_BASIS)
@@ -431,6 +438,11 @@ target_link_libraries(bench_xc PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_gc bench_gc.F90)
 target_compile_definitions(bench_gc PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_gc PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many bench_xc bench_gc)
+# The spherical transform's cost against one Fock build -- see
+# bench_sph.F90's own header. Not a pass/fail: a timing, like its siblings.
+add_executable(bench_sph bench_sph.F90)
+target_compile_definitions(bench_sph PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_sph PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
