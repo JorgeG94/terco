@@ -15,8 +15,12 @@ name: ci
 # `test/` that report their own tolerances.
 
 on:
+  # A branch with an open PR is built once, by its pull_request run. Pushes
+  # build only main, which is what landed; anything else can be run by hand.
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
   # Weekly, to catch toolchain drift with no code change. Scheduled runs fire
   # only on the default branch.
   schedule:
