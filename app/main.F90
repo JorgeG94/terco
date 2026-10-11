@@ -194,7 +194,7 @@ program terco_main
 
    if (conv == 0) then
       write (error_unit, "(a)") "terco: the SCF did not converge in "//itoa(int(niter))//" iterations"
-      stop 2, quiet=.true.
+      call quit(2)
    end if
    write (output_unit, "(/,a)") " normal termination of terco"
 
@@ -203,8 +203,24 @@ contains
    subroutine die(msg)
       character(len=*), intent(in) :: msg
       write (error_unit, "(a)") "terco: "//msg
-      stop 1, quiet=.true.
+      call quit(1)
    end subroutine die
+
+   subroutine quit(code)
+      !! End the process with exit status `code`, printing nothing more.
+      !! `stop code, quiet=.true.` is the standard way to say this, but
+      !! nvfortran rejects it, and a plain `stop code` prints the code.
+      integer, intent(in) :: code
+      interface
+         subroutine c_exit(status) bind(c, name="exit")
+            import :: c_int
+            integer(c_int), value :: status
+         end subroutine c_exit
+      end interface
+      flush (output_unit)
+      flush (error_unit)
+      call c_exit(int(code, c_int))
+   end subroutine quit
 
    subroutine check(what)
       character(len=*), intent(in) :: what
