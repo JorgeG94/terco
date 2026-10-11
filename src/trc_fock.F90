@@ -49,7 +49,7 @@ module trc_eri
    use trc_batch, only: build_pairs
    use trc_hgp, only: build_pairs_hgp
    use trc_screen, only: schwarz_bounds, pair_index
-   use trc_bins, only: pair_bins_t, build_binned_pairs
+   use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use trc_binkernel, only: fock_bins
    use trc_api, only: trc_basis_t
@@ -68,6 +68,15 @@ module trc_eri
       integer,  allocatable :: hp_off(:), hp_n(:)
       real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :)
       real(dp), allocatable :: hp_c(:)
+      !! Bin-interleaved second copy of the above (trc_bins%build_pair_quartets):
+      !! flat fields here, not components of `bins` -- see that routine's
+      !! own comment for why.
+      integer :: nqp = 0
+      integer,  allocatable :: qp_bin_pbase(:), qp_bin_k(:)
+      real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
+      real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
+      real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
+      integer,  allocatable :: sq_n(:)
       !! Shell-block density bound, refreshed per iteration from D.
       real(dp), allocatable :: dsh(:, :)
       integer,  allocatable :: sh_l(:), ao_off(:)
@@ -325,6 +334,18 @@ contains
          bt_c0 = bt_c1
       end if
 
+      call build_pair_quartets(this%bins, b%nshell, this%nhpp, &
+                               this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                               this%hp_ra, this%hp_rb, this%hp_c, &
+                               this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                               this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                               this%sq_ax, this%sq_ay, this%sq_az, &
+                               this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n)
+      if (btime) then
+         call system_clock(bt_c1)
+         print '(a,a,f9.3,a)', '  [build] ', 'build_pair_quartets', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
+         bt_c0 = bt_c1
+      end if
 
       allocate (this%dsh(b%nshell, b%nshell))
       this%dsh = huge(1.0_dp)*1.0e-30_dp
@@ -334,6 +355,11 @@ contains
       !$acc enter data copyin(this%sh_l, this%ao_off, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
+      !$acc                   this%qp_z, this%qp_c, &
+      !$acc                   this%qp_px, this%qp_py, this%qp_pz, &
+      !$acc                   this%sq_ax, this%sq_ay, this%sq_az, &
+      !$acc                   this%sq_abx, this%sq_aby, this%sq_abz, &
+      !$acc                   this%sq_n, &
       !$acc                   this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
       this%on_device = .true.
@@ -418,6 +444,10 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
+                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                     this%sq_ax, this%sq_ay, this%sq_az, &
+                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
@@ -553,6 +583,10 @@ contains
                      jfac, kfac, .true., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
+                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                     this%sq_ax, this%sq_ay, this%sq_az, &
+                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat, kmat)
@@ -685,6 +719,10 @@ contains
                            jfac, kfac, .false., this%dsh, &
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                            this%hp_ra, this%hp_rb, this%hp_c, &
+                           this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                           this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                           this%sq_ax, this%sq_ay, this%sq_az, &
+                           this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                            1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
                            nkept=this%nkept)
             if (len_trim(ke) > 0) print '(a,i0,a,i0,a,f6.2,a)', &
@@ -697,6 +735,10 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
+                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                     this%sq_ax, this%sq_ay, this%sq_az, &
+                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
 
@@ -872,6 +914,10 @@ contains
                      jfac, kfac, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
+                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                     this%sq_ax, this%sq_ay, this%sq_az, &
+                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
       !$acc wait
       !$acc update self(jmat)
@@ -904,6 +950,11 @@ contains
          !$acc exit data delete(this%sh_l, this%ao_off, this%dsh, &
          !$acc                  this%bins%sp_i, this%bins%sp_j, &
          !$acc                  this%bins%sp_q, this%bins, &
+         !$acc                  this%qp_z, this%qp_c, &
+         !$acc                  this%qp_px, this%qp_py, this%qp_pz, &
+         !$acc                  this%sq_ax, this%sq_ay, this%sq_az, &
+         !$acc                  this%sq_abx, this%sq_aby, this%sq_abz, &
+         !$acc                  this%sq_n, &
          !$acc                  this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
          !$acc                  this%hp_ra, this%hp_rb, this%hp_c)
          this%on_device = .false.
@@ -915,6 +966,20 @@ contains
       if (allocated(this%hp_ra))  deallocate (this%hp_ra)
       if (allocated(this%hp_rb))  deallocate (this%hp_rb)
       if (allocated(this%hp_c))   deallocate (this%hp_c)
+      if (allocated(this%qp_bin_pbase)) deallocate (this%qp_bin_pbase)
+      if (allocated(this%qp_bin_k))     deallocate (this%qp_bin_k)
+      if (allocated(this%qp_z))   deallocate (this%qp_z)
+      if (allocated(this%qp_c))   deallocate (this%qp_c)
+      if (allocated(this%qp_px))  deallocate (this%qp_px)
+      if (allocated(this%qp_py))  deallocate (this%qp_py)
+      if (allocated(this%qp_pz))  deallocate (this%qp_pz)
+      if (allocated(this%sq_ax))  deallocate (this%sq_ax)
+      if (allocated(this%sq_ay))  deallocate (this%sq_ay)
+      if (allocated(this%sq_az))  deallocate (this%sq_az)
+      if (allocated(this%sq_abx)) deallocate (this%sq_abx)
+      if (allocated(this%sq_aby)) deallocate (this%sq_aby)
+      if (allocated(this%sq_abz)) deallocate (this%sq_abz)
+      if (allocated(this%sq_n))   deallocate (this%sq_n)
       if (allocated(this%dsh))    deallocate (this%dsh)
       if (allocated(this%sh_l))   deallocate (this%sh_l)
       if (allocated(this%ao_off)) deallocate (this%ao_off)

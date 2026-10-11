@@ -26,13 +26,18 @@ module trc_pc_k2111
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
 contains
-   subroutine pcs2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+   subroutine pcs2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat, rank, nranks)
-      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
+      !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -48,12 +53,18 @@ contains
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
-      real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
-      !! pp_c with the first column's coefficients folded in: what the
-      !! scalar kernel multiplies, so a segmented basis pays nothing.
-      real(dp), intent(in)    :: pp_cs(npp)
+      !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
+      !! are what the kernel reads for the bra/ket primitives, at
+      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! + icd (ket).
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
+      !! and the real kept primitive-pair count pp_n(key) gave before.
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
@@ -77,21 +88,27 @@ contains
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call pcsi2111(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+         call pcsi2111(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine pcs2111
 
-   pure subroutine pcsi2111(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+   pure subroutine pcsi2111(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(int64), intent(in) :: gt
-      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
+      !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -107,20 +124,27 @@ contains
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
-      real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
-      !! pp_c with the first column's coefficients folded in: what the
-      !! scalar kernel multiplies, so a segmented basis pays nothing.
-      real(dp), intent(in)    :: pp_cs(npp)
+      !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
+      !! are what the kernel reads for the bra/ket primitives, at
+      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! + icd (ket).
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
+      !! and the real kept primitive-pair count pp_n(key) gave before.
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(int64) :: nsa, u, kx
       real(dp) :: qcut, bnd
-      integer :: keyab, keycd, offab, offcd, nab, ncd
-      integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
+      integer :: slotab, slotcd, nab, ncd
+      integer :: kp, kq, k1, k2
+      integer :: d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
       logical :: dij, dkl, dpq
       real(dp) :: zeta, eta, zpe, rho, tval, pref, wc
@@ -205,25 +229,20 @@ contains
          same_ab = (si == sj); same_cd = (sk == sl)
          same_pair = sD(seg) .and. (iab == icd)
 
-         keyab = (si - 1)*nbas + sj
-         keycd = (sk - 1)*nbas + sl
-         offab = pp_off(keyab); nab = pp_n(keyab)
-         offcd = pp_off(keycd); ncd = pp_n(keycd)
+         slotab = sOA(seg) + iab; slotcd = sOB(seg) + icd
+         nab = sq_n(slotab); ncd = sq_n(slotcd)
 
-         abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)
-         aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)
-         abz = pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3)
-         cdx = pp_ra(offcd + 1, 1) - pp_rb(offcd + 1, 1)
-         cdy = pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2)
-         cdz = pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3)
+         abx = sq_abx(slotab); aby = sq_aby(slotab); abz = sq_abz(slotab)
+         cdx = sq_abx(slotcd); cdy = sq_aby(slotcd); cdz = sq_abz(slotcd)
 
             do x = 1, 200
                g1(x) = 0.0_dp
             end do
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
-               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+            do k1 = 1, nab
+               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               zeta = qp_z(kp)
+               bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
                ! Bra-only quantities, out of the ket loop. They depend on
                ! kp alone and were being reloaded and recomputed once per
                ! KET primitive, which on a deeply contracted shell pair is
@@ -232,17 +251,18 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
-               pax = rpx - pp_ra(kp, 1)
-               pay = rpy - pp_ra(kp, 2)
-               paz = rpz - pp_ra(kp, 3)
+               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               pax = rpx - sq_ax(slotab)
+               pay = rpy - sq_ay(slotab)
+               paz = rpz - sq_az(slotab)
                ! 1/zeta with them: the bra exponent does not change across
                ! the ket loop, so its reciprocal is one division per bra
                ! primitive rather than three per primitive QUARTET.
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
-               do kq = offcd + 1, offcd + ncd
-                  eta = pp_p(kq)
+               do k2 = 1, ncd
+                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
                   ! primitive (ss|ss) integral, and with the normalisation
@@ -252,8 +272,8 @@ contains
                   ! VRR, which is nearly all of a primitive quartet's cost;
                   ! on a generally contracted basis two thirds of the
                   ! quartets that survive the pair pruning die here.
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
-                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)
+                  if (bnd*abs(qp_c(kq))/eta <= pcut) exit
                   if (abs(pref) <= pcut) cycle
                   ! One reciprocal each for eta and zeta+eta, then multiply.
                   ! This loop used to issue ten double-precision divisions
@@ -265,18 +285,18 @@ contains
                   reta = 1.0_dp/eta
                   rzpe = 1.0_dp/zpe
                   rho = zeta*eta*rzpe
-                  pqx = rpx - pp_r(kq, 1)
-                  pqy = rpy - pp_r(kq, 2)
-                  pqz = rpz - pp_r(kq, 3)
-                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
-                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
-                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
-                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
-                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
-                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  pqx = rpx - qp_px(kq)
+                  pqy = rpy - qp_py(kq)
+                  pqz = rpz - qp_pz(kq)
+                  qcx = qp_px(kq) - sq_ax(slotcd)
+                  qcy = qp_py(kq) - sq_ay(slotcd)
+                  qcz = qp_pz(kq) - sq_az(slotcd)
+                  wc = (zeta*rpx + eta*qp_px(kq))*rzpe
+                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wc = (zeta*rpy + eta*qp_py(kq))*rzpe
+                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
+                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -1609,13 +1629,18 @@ contains
 #endif
    end subroutine pcsi2111
 
-   subroutine pcr2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+   subroutine pcr2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat, rank, nranks)
-      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
+      !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -1631,12 +1656,18 @@ contains
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
-      real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
-      !! pp_c with the first column's coefficients folded in: what the
-      !! scalar kernel multiplies, so a segmented basis pays nothing.
-      real(dp), intent(in)    :: pp_cs(npp)
+      !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
+      !! are what the kernel reads for the bra/ket primitives, at
+      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! + icd (ket).
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
+      !! and the real kept primitive-pair count pp_n(key) gave before.
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
@@ -1681,23 +1712,29 @@ contains
          role = int(mod((i - 1)/32, 3_int64)) + 1
          it = ((i - 1)/(32*3))*32 + mod(i - 1, 32_int64) + 1
          if (it <= nr) then
-            call pcri2111(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+            call pcri2111(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
          end if
       end do
    end subroutine pcr2111
 
-   pure subroutine pcri2111(gt, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+   pure subroutine pcri2111(gt, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(int64), intent(in) :: gt
       integer, intent(in) :: role
-      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
+      !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -1713,20 +1750,27 @@ contains
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
-      real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
-      !! pp_c with the first column's coefficients folded in: what the
-      !! scalar kernel multiplies, so a segmented basis pays nothing.
-      real(dp), intent(in)    :: pp_cs(npp)
+      !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
+      !! are what the kernel reads for the bra/ket primitives, at
+      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! + icd (ket).
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
+      !! and the real kept primitive-pair count pp_n(key) gave before.
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(int64) :: nsa, u, kx
       real(dp) :: qcut, bnd
-      integer :: keyab, keycd, offab, offcd, nab, ncd
-      integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
+      integer :: slotab, slotcd, nab, ncd
+      integer :: kp, kq, k1, k2
+      integer :: d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
       logical :: dij, dkl, dpq
       real(dp) :: zeta, eta, zpe, rho, tval, pref, wc
@@ -1815,17 +1859,11 @@ contains
          same_ab = (si == sj); same_cd = (sk == sl)
          same_pair = sD(seg) .and. (iab == icd)
 
-         keyab = (si - 1)*nbas + sj
-         keycd = (sk - 1)*nbas + sl
-         offab = pp_off(keyab); nab = pp_n(keyab)
-         offcd = pp_off(keycd); ncd = pp_n(keycd)
+         slotab = sOA(seg) + iab; slotcd = sOB(seg) + icd
+         nab = sq_n(slotab); ncd = sq_n(slotcd)
 
-         abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)
-         aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)
-         abz = pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3)
-         cdx = pp_ra(offcd + 1, 1) - pp_rb(offcd + 1, 1)
-         cdy = pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2)
-         cdz = pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3)
+         abx = sq_abx(slotab); aby = sq_aby(slotab); abz = sq_abz(slotab)
+         cdx = sq_abx(slotcd); cdy = sq_aby(slotcd); cdz = sq_abz(slotcd)
 
          ! Single column on every side: the canonical enumeration and the
          ! degeneracy weights are the pair-level ones.
@@ -1839,10 +1877,11 @@ contains
             do x = 1, 64
                g1(x) = 0.0_dp
             end do
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
-               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+            do k1 = 1, nab
+               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               zeta = qp_z(kp)
+               bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
                ! Bra-only quantities, out of the ket loop. They depend on
                ! kp alone and were being reloaded and recomputed once per
                ! KET primitive, which on a deeply contracted shell pair is
@@ -1851,17 +1890,18 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
-               pax = rpx - pp_ra(kp, 1)
-               pay = rpy - pp_ra(kp, 2)
-               paz = rpz - pp_ra(kp, 3)
+               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               pax = rpx - sq_ax(slotab)
+               pay = rpy - sq_ay(slotab)
+               paz = rpz - sq_az(slotab)
                ! 1/zeta with them: the bra exponent does not change across
                ! the ket loop, so its reciprocal is one division per bra
                ! primitive rather than three per primitive QUARTET.
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
-               do kq = offcd + 1, offcd + ncd
-                  eta = pp_p(kq)
+               do k2 = 1, ncd
+                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
                   ! primitive (ss|ss) integral, and with the normalisation
@@ -1871,8 +1911,8 @@ contains
                   ! VRR, which is nearly all of a primitive quartet's cost;
                   ! on a generally contracted basis two thirds of the
                   ! quartets that survive the pair pruning die here.
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
-                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)
+                  if (bnd*abs(qp_c(kq))/eta <= pcut) exit
                   if (abs(pref) <= pcut) cycle
                   ! One reciprocal each for eta and zeta+eta, then multiply.
                   ! This loop used to issue ten double-precision divisions
@@ -1884,18 +1924,18 @@ contains
                   reta = 1.0_dp/eta
                   rzpe = 1.0_dp/zpe
                   rho = zeta*eta*rzpe
-                  pqx = rpx - pp_r(kq, 1)
-                  pqy = rpy - pp_r(kq, 2)
-                  pqz = rpz - pp_r(kq, 3)
-                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
-                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
-                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
-                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
-                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
-                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  pqx = rpx - qp_px(kq)
+                  pqy = rpy - qp_py(kq)
+                  pqz = rpz - qp_pz(kq)
+                  qcx = qp_px(kq) - sq_ax(slotcd)
+                  qcy = qp_py(kq) - sq_ay(slotcd)
+                  qcz = qp_pz(kq) - sq_az(slotcd)
+                  wc = (zeta*rpx + eta*qp_px(kq))*rzpe
+                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wc = (zeta*rpy + eta*qp_py(kq))*rzpe
+                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
+                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -2699,10 +2739,11 @@ contains
             do x = 1, 64
                g1(x) = 0.0_dp
             end do
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
-               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+            do k1 = 1, nab
+               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               zeta = qp_z(kp)
+               bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
                ! Bra-only quantities, out of the ket loop. They depend on
                ! kp alone and were being reloaded and recomputed once per
                ! KET primitive, which on a deeply contracted shell pair is
@@ -2711,17 +2752,18 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
-               pax = rpx - pp_ra(kp, 1)
-               pay = rpy - pp_ra(kp, 2)
-               paz = rpz - pp_ra(kp, 3)
+               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               pax = rpx - sq_ax(slotab)
+               pay = rpy - sq_ay(slotab)
+               paz = rpz - sq_az(slotab)
                ! 1/zeta with them: the bra exponent does not change across
                ! the ket loop, so its reciprocal is one division per bra
                ! primitive rather than three per primitive QUARTET.
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
-               do kq = offcd + 1, offcd + ncd
-                  eta = pp_p(kq)
+               do k2 = 1, ncd
+                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
                   ! primitive (ss|ss) integral, and with the normalisation
@@ -2731,8 +2773,8 @@ contains
                   ! VRR, which is nearly all of a primitive quartet's cost;
                   ! on a generally contracted basis two thirds of the
                   ! quartets that survive the pair pruning die here.
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
-                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)
+                  if (bnd*abs(qp_c(kq))/eta <= pcut) exit
                   if (abs(pref) <= pcut) cycle
                   ! One reciprocal each for eta and zeta+eta, then multiply.
                   ! This loop used to issue ten double-precision divisions
@@ -2744,18 +2786,18 @@ contains
                   reta = 1.0_dp/eta
                   rzpe = 1.0_dp/zpe
                   rho = zeta*eta*rzpe
-                  pqx = rpx - pp_r(kq, 1)
-                  pqy = rpy - pp_r(kq, 2)
-                  pqz = rpz - pp_r(kq, 3)
-                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
-                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
-                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
-                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
-                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
-                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  pqx = rpx - qp_px(kq)
+                  pqy = rpy - qp_py(kq)
+                  pqz = rpz - qp_pz(kq)
+                  qcx = qp_px(kq) - sq_ax(slotcd)
+                  qcy = qp_py(kq) - sq_ay(slotcd)
+                  qcz = qp_pz(kq) - sq_az(slotcd)
+                  wc = (zeta*rpx + eta*qp_px(kq))*rzpe
+                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wc = (zeta*rpy + eta*qp_py(kq))*rzpe
+                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
+                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -3539,10 +3581,11 @@ contains
             do x = 1, 64
                g1(x) = 0.0_dp
             end do
-            do kp = offab + 1, offab + nab
-               zeta = pp_p(kp)
-               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))
-               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle
+            do k1 = 1, nab
+               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               zeta = qp_z(kp)
+               bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
+               if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
                ! Bra-only quantities, out of the ket loop. They depend on
                ! kp alone and were being reloaded and recomputed once per
                ! KET primitive, which on a deeply contracted shell pair is
@@ -3551,17 +3594,18 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)
-               pax = rpx - pp_ra(kp, 1)
-               pay = rpy - pp_ra(kp, 2)
-               paz = rpz - pp_ra(kp, 3)
+               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               pax = rpx - sq_ax(slotab)
+               pay = rpy - sq_ay(slotab)
+               paz = rpz - sq_az(slotab)
                ! 1/zeta with them: the bra exponent does not change across
                ! the ket loop, so its reciprocal is one division per bra
                ! primitive rather than three per primitive QUARTET.
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
-               do kq = offcd + 1, offcd + ncd
-                  eta = pp_p(kq)
+               do k2 = 1, ncd
+                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
                   ! primitive (ss|ss) integral, and with the normalisation
@@ -3571,8 +3615,8 @@ contains
                   ! VRR, which is nearly all of a primitive quartet's cost;
                   ! on a generally contracted basis two thirds of the
                   ! quartets that survive the pair pruning die here.
-                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)
-                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit
+                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)
+                  if (bnd*abs(qp_c(kq))/eta <= pcut) exit
                   if (abs(pref) <= pcut) cycle
                   ! One reciprocal each for eta and zeta+eta, then multiply.
                   ! This loop used to issue ten double-precision divisions
@@ -3584,18 +3628,18 @@ contains
                   reta = 1.0_dp/eta
                   rzpe = 1.0_dp/zpe
                   rho = zeta*eta*rzpe
-                  pqx = rpx - pp_r(kq, 1)
-                  pqy = rpy - pp_r(kq, 2)
-                  pqz = rpz - pp_r(kq, 3)
-                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)
-                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)
-                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)
-                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe
-                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)
-                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe
-                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)
-                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe
-                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)
+                  pqx = rpx - qp_px(kq)
+                  pqy = rpy - qp_py(kq)
+                  pqz = rpz - qp_pz(kq)
+                  qcx = qp_px(kq) - sq_ax(slotcd)
+                  qcy = qp_py(kq) - sq_ay(slotcd)
+                  qcz = qp_pz(kq) - sq_az(slotcd)
+                  wc = (zeta*rpx + eta*qp_px(kq))*rzpe
+                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wc = (zeta*rpy + eta*qp_py(kq))*rzpe
+                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
+                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
                   tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
