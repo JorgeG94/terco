@@ -951,9 +951,10 @@ def emit_dispatcher(cmd):
     o.append("      end select")
     o.append("   end function ra_has_class")
     o.append("")
-    o.append("   subroutine ra_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &")
-    o.append("                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &")
-    o.append("                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &")
+    o.append("   subroutine ra_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &")
+    o.append("                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &")
+    o.append("                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &")
+    o.append("                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &")
     o.append("                          ndens, dmat, jmat, rank, nranks)")
     o.append("      integer, intent(in) :: key")
     o.append(gp.PROLOGUE)
@@ -962,9 +963,10 @@ def emit_dispatcher(cmd):
     for i, (tag, k) in enumerate(mods):
         la, lb, lc, ld = (_KIND_L[x] for x in k)
         label = f"((({la}*CLASS_RADIX + {lb})*CLASS_RADIX + {lc})*CLASS_RADIX + {ld})"
-        o.append(f"""      case ({label}); call ras{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)""")
+        o.append(f"""      case ({label}); call ras{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)""")
     o.append("      case default")
     o.append("         error stop 'trc_ra_kernels: no rotaxis kernel for this class'")
     o.append("      end select")

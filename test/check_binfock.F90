@@ -26,7 +26,7 @@ program check_binfock
    use trc_cart, only: cart_init
    use trc_hgp, only: build_pairs_hgp
    use trc_tables, only: LMAX
-   use trc_bins, only: pair_bins_t, build_binned_pairs
+   use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use trc_binkernel, only: fock_bins
    use trc_screen, only: schwarz_bounds, build_worklist, density_blockmax, pair_index
    use trc_cart_perm, only: cart_perm_l2b
@@ -116,6 +116,15 @@ contains
       real(dp), allocatable :: qs(:), dmax(:, :), cfac(:)
       real(dp), allocatable :: hp_p(:), hp_r(:,:), hp_ra(:,:), hp_rb(:,:), hp_c(:)
       integer, allocatable :: hp_off(:), hp_n(:)
+      !! Bin-interleaved second copy of the hp_* data (build_pair_quartets);
+      !! flat here for the same reason trc_eri_t keeps them flat rather than
+      !! as components of `bins` -- see that type's own comment.
+      integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
+      integer :: nqp
+      real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
+      real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
+      real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
+      integer, allocatable :: sq_n(:)
       type(pair_bins_t) :: bins
       integer :: nhpp, nlaunch
       integer(kind=8) :: nwork
@@ -181,6 +190,9 @@ contains
       call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, 1.0e-33_dp, &
                            hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
       call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins, pp_n=hp_n)
+      call build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+                               qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                               sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
       print '(a,i0,a,i0,a,i0)', '  system ', isys, ': shell pairs ', bins%npair, &
          '   live bins ', bins%nlive
 
@@ -190,15 +202,21 @@ contains
       dsh = huge(1.0_dp)*1.0e-30_dp
 
       !$acc enter data copyin(sh_l, ao_off, dmat, dsh, bins, bins%sp_i, bins%sp_j, bins%sp_q, &
-      !$acc                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c) &
+      !$acc                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+      !$acc                   qp_z, qp_c, qp_px, qp_py, qp_pz, &
+      !$acc                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n) &
       !$acc            copyin(jmat, kmat)
       call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, 1.0e-30_dp, .false., &
                      1.0_dp, 1.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+                     qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                     sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                      1, dmat, jmat, kmat, 0, 1, nlaunch, nwork)
       !$acc update self(jmat, kmat)
       !$acc exit data delete(sh_l, ao_off, dmat, dsh, bins%sp_i, bins%sp_j, bins%sp_q, bins, &
-      !$acc                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, jmat, kmat)
+      !$acc                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+      !$acc                  qp_z, qp_c, qp_px, qp_py, qp_pz, &
+      !$acc                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, jmat, kmat)
       print '(a,i0,a,i0)', '           launches ', nlaunch, '   work items ', nwork
 
       ! --- reference: contract libfint's own integrals on the host ---
