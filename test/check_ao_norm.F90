@@ -163,12 +163,12 @@ contains
       end if
    end subroutine expect
 
-   !> (e) The closed form, l = 0..4, every component, against
-   !> test/reference_ao_norm.dat -- indexed by (lx,ly,lz), not by
-   !> within-shell offset, so this build's own TRC_CART_ORDER (via
-   !> `cart_pow`) decides which offset is checked against which line, and
-   !> the one file serves every build.
    subroutine check_factors(ok)
+      !! (e) The closed form, l = 0..4, every component, against
+      !! test/reference_ao_norm.dat -- indexed by (lx,ly,lz), not by
+      !! within-shell offset, so this build's own TRC_CART_ORDER (via
+      !! `cart_pow`) decides which offset is checked against which line, and
+      !! the one file serves every build.
       logical, intent(inout) :: ok
       integer, parameter :: NREF = 35
       integer :: ref_p(3, NREF)
@@ -213,9 +213,9 @@ contains
       s = trim(buf)
    end function itoa
 
-   !> Runs (a), the SCF, (c) and (d) in one AO-normalisation mode; hands
-   !> back the SCF energy for (b)'s comparison across modes.
    subroutine run_mode(mode, label, e_out, ok)
+      !! Runs (a), the SCF, (c) and (d) in one AO-normalisation mode; hands
+      !! back the SCF energy for (b)'s comparison across modes.
       integer(c_int), intent(in) :: mode
       character(len=*), intent(in) :: label
       real(c_double), intent(out) :: e_out
@@ -319,21 +319,21 @@ contains
       deallocate (smat, tmat, vmat, dmat)
    end subroutine run_mode
 
-   !> (f) THE FOCK BUILD, the entry GAMESS's own driver calls for J/K
-   !> (run_Fockbuild's role in hpcchem_driver.src) -- see the module
-   !> header's own paragraph on this check.
-   !>
-   !> ONE physical density: D_shell, from a converged SHELL-mode SCF, fed
-   !> to trc_fock in SHELL mode directly, and D_unit = N^-1 D_shell N^-1,
-   !> built HERE by explicit conversion -- NOT from a second, independently
-   !> converged SCF in UNIT mode. Two independent SCF runs agree only to
-   !> the SCF's own convergence threshold (~1e-8 to ~1e-10 here), which
-   !> would cap this check's precision at that, not the ~1e-12 the
-   !> transform itself is exact to; an explicit conversion of the SAME
-   !> array sidesteps that entirely. h_unit therefore never runs an SCF at
-   !> all -- it exists only to lend trc_context_basis/trc_context_eri
-   !> handles for trc_fock's UNIT-mode path to run on.
    subroutine check_fock(ok)
+      !! (f) THE FOCK BUILD, the entry GAMESS's own driver calls for J/K
+      !! (run_Fockbuild's role in hpcchem_driver.src) -- see the module
+      !! header's own paragraph on this check.
+      !!
+      !! ONE physical density: D_shell, from a converged SHELL-mode SCF, fed
+      !! to trc_fock in SHELL mode directly, and D_unit = N^-1 D_shell N^-1,
+      !! built HERE by explicit conversion -- NOT from a second, independently
+      !! converged SCF in UNIT mode. Two independent SCF runs agree only to
+      !! the SCF's own convergence threshold (~1e-8 to ~1e-10 here), which
+      !! would cap this check's precision at that, not the ~1e-12 the
+      !! transform itself is exact to; an explicit conversion of the SAME
+      !! array sidesteps that entirely. h_unit therefore never runs an SCF at
+      !! all -- it exists only to lend trc_context_basis/trc_context_eri
+      !! handles for trc_fock's UNIT-mode path to run on.
       logical, intent(inout) :: ok
       type(c_ptr) :: h_shell, h_unit, basis_shell, basis_unit, eri_shell, eri_unit
       integer(c_int) :: rc, nao

@@ -150,40 +150,40 @@ module trc_scf_driver
       logical :: frac_occ = .false.
       real(dp) :: nelec_frac = 0.0_dp
       integer :: max_iter = 100
-      !> Shell-pair batch resolution: buckets per decade of Schwarz bound
-      !> when the pairs are binned. 1 is decades, which is what this always
-      !> did; higher values make the pre-launch screen finer, at more and
-      !> smaller batches. Settable through trc_set_batching.
       integer :: batch_res = 1
-      !> Rebuild the two-electron matrix from the DENSITY DIFFERENCE rather
-      !> than the density, accumulating onto the last one. G is linear in D,
-      !> so this is exact arithmetic; what it buys is screening, because the
-      !> difference shrinks as the SCF converges while the density does not.
-      !> On a 123-atom silica slice the later iterations are where the time
-      !> goes, and they are exactly the ones the difference screens hardest.
-      !> A full build is taken every `incr_reset` iterations as a backstop
-      !> against long-run drift, though at the measured `incr_thresh_scale`
-      !> and `incr_start` below a single increment's own error is already
-      !> inside `conv_energy` and the backstop rarely has to do any work.
-      !>
-      !> WHY THIS WAS OFF, AND WHAT CHANGED. Handing the difference density
-      !> to the SAME absolute screening threshold a full build uses was the
-      !> bug, not the idea: the dropped quartets are bounded in absolute
-      !> terms, which is right when the density hanging over them is O(1),
-      !> and is not a bound that shrinks with a difference that is heading
-      !> to zero. On w172/6-31G (450 atoms, 1950 AOs) that showed up as
-      !> RMS(D) reaching 1e-10 while the energy kept bouncing by 1e-4 to
-      !> 1e-6 Eh every iteration with every full rebuild agreeing with every
-      !> other to 1e-9 -- consistent, so the dropped set IS the same one
-      !> every full build, but each DIFFERENCE build drops a different set,
-      !> because ddif's spatial pattern changes iteration to iteration the
-      !> way D's does not, and those errors do not cancel. `incr_thresh_scale`
-      !> and `incr_start` below are the fix, measured on the same case:
-      !> 200 iterations, not converged, becomes 20, converged to the same
-      !> energy as incremental-off (-11395.98363707 against -11395.98363707,
-      !> both well inside 1e-8), in 23.3 s against the 24.4 s reference.
-      !> Set TRC_INCREMENTAL=1 to turn it on without a rebuild.
+      !! Shell-pair batch resolution: buckets per decade of Schwarz bound
+      !! when the pairs are binned. 1 is decades, which is what this always
+      !! did; higher values make the pre-launch screen finer, at more and
+      !! smaller batches. Settable through trc_set_batching.
       logical :: incremental = .false.
+      !! Rebuild the two-electron matrix from the DENSITY DIFFERENCE rather
+      !! than the density, accumulating onto the last one. G is linear in D,
+      !! so this is exact arithmetic; what it buys is screening, because the
+      !! difference shrinks as the SCF converges while the density does not.
+      !! On a 123-atom silica slice the later iterations are where the time
+      !! goes, and they are exactly the ones the difference screens hardest.
+      !! A full build is taken every `incr_reset` iterations as a backstop
+      !! against long-run drift, though at the measured `incr_thresh_scale`
+      !! and `incr_start` below a single increment's own error is already
+      !! inside `conv_energy` and the backstop rarely has to do any work.
+      !!
+      !! WHY THIS WAS OFF, AND WHAT CHANGED. Handing the difference density
+      !! to the SAME absolute screening threshold a full build uses was the
+      !! bug, not the idea: the dropped quartets are bounded in absolute
+      !! terms, which is right when the density hanging over them is O(1),
+      !! and is not a bound that shrinks with a difference that is heading
+      !! to zero. On w172/6-31G (450 atoms, 1950 AOs) that showed up as
+      !! RMS(D) reaching 1e-10 while the energy kept bouncing by 1e-4 to
+      !! 1e-6 Eh every iteration with every full rebuild agreeing with every
+      !! other to 1e-9 -- consistent, so the dropped set IS the same one
+      !! every full build, but each DIFFERENCE build drops a different set,
+      !! because ddif's spatial pattern changes iteration to iteration the
+      !! way D's does not, and those errors do not cancel. `incr_thresh_scale`
+      !! and `incr_start` below are the fix, measured on the same case:
+      !! 200 iterations, not converged, becomes 20, converged to the same
+      !! energy as incremental-off (-11395.98363707 against -11395.98363707,
+      !! both well inside 1e-8), in 23.3 s against the 24.4 s reference.
+      !! Set TRC_INCREMENTAL=1 to turn it on without a rebuild.
       integer :: incr_reset = 20
       !! Multiplies `eri_thresh` for an incremental Fock build only, so its
       !! screen is tighter than the full build's by this fixed factor
@@ -300,10 +300,10 @@ module trc_scf_driver
 
 contains
 
-   !> The density at a chosen iteration, written where a benchmark can read
-   !> it back. Off unless TRC_DUMP_DENSITY names a file. Stream format:
-   !> an 8-byte nao, then the matrix, which is what the test readers expect.
    subroutine dump_density(nao, d)
+      !! The density at a chosen iteration, written where a benchmark can read
+      !! it back. Off unless TRC_DUMP_DENSITY names a file. Stream format:
+      !! an 8-byte nao, then the matrix, which is what the test readers expect.
       integer, intent(in) :: nao
       real(dp), intent(in) :: d(nao, nao)
       character(len=512) :: path
@@ -331,22 +331,22 @@ contains
       print '(a,a,a,i0,a)', "   [density dumped to ", trim(path), ", nao ", nao, "]"
    end subroutine dump_density
 
-   !> Experiment hook for the incremental build, so its effect can be
-   !> measured through a driver that does not expose the option yet.
    logical function incr_env()
+      !! Experiment hook for the incremental build, so its effect can be
+      !! measured through a driver that does not expose the option yet.
       character(len=8) :: v
       call get_environment_variable("TRC_INCREMENTAL", v)
       incr_env = (trim(v) == "1")
    end function incr_env
 
-   !> Full rebuild interval, and an integral threshold override. A
-   !> difference build carries the same absolute screening error as a full
-   !> one, so the error accumulates across increments and DIIS stalls
-   !> before the energy converges; the cure is a tighter integral
-   !> threshold on the difference builds, and resetting often enough that
-   !> what does accumulate stays below it. Both are measured here rather
-   !> than assumed.
    integer function incr_reset_env(dflt)
+      !! Full rebuild interval, and an integral threshold override. A
+      !! difference build carries the same absolute screening error as a full
+      !! one, so the error accumulates across increments and DIIS stalls
+      !! before the energy converges; the cure is a tighter integral
+      !! threshold on the difference builds, and resetting often enough that
+      !! what does accumulate stays below it. Both are measured here rather
+      !! than assumed.
       integer, intent(in) :: dflt
       character(len=8) :: v
       integer :: ios, k
@@ -358,9 +358,9 @@ contains
       end if
    end function incr_reset_env
 
-   !> Experiment hook, like `incr_reset_env`: TRC_INCR_THRESH_SCALE sweeps
-   !> `incr_thresh_scale` without a rebuild.
    real(dp) function incr_thresh_scale_env(dflt)
+      !! Experiment hook, like `incr_reset_env`: TRC_INCR_THRESH_SCALE sweeps
+      !! `incr_thresh_scale` without a rebuild.
       real(dp), intent(in) :: dflt
       character(len=16) :: v
       integer :: ios
@@ -373,9 +373,9 @@ contains
       end if
    end function incr_thresh_scale_env
 
-   !> Experiment hook, like `incr_reset_env`: TRC_INCR_START sweeps
-   !> `incr_start` without a rebuild.
    real(dp) function incr_start_env(dflt)
+      !! Experiment hook, like `incr_reset_env`: TRC_INCR_START sweeps
+      !! `incr_start` without a rebuild.
       real(dp), intent(in) :: dflt
       character(len=16) :: v
       integer :: ios
@@ -466,13 +466,13 @@ contains
       integer :: nfrac, ndamp
       real(dp) :: diis_start
       real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
-      !> This iteration's share of the two totals, so the table says where
-      !> the time went while it is going rather than only at the end. A
-      !> Fock build is not the same cost twice: the SAD guess is atomic, so
-      !> density screening throws nearly all of iteration 1 away, and the
-      !> per-iteration cost then climbs to a plateau. Comparing two runs by
-      !> total/iterations is therefore only valid at equal iteration counts.
       real(dp) :: tf_it, tx_it
+      !! This iteration's share of the two totals, so the table says where
+      !! the time went while it is going rather than only at the end. A
+      !! Fock build is not the same cost twice: the SAD guess is atomic, so
+      !! density screening throws nearly all of iteration 1 away, and the
+      !! per-iteration cost then climbs to a plateau. Comparing two runs by
+      !! total/iterations is therefore only valid at equal iteration counts.
 
       nao_c = b%nao
       sph = b%spherical

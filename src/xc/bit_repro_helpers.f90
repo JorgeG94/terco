@@ -1,30 +1,30 @@
-!> The arithmetic machinery behind the bit_repro public functions: exact-rounding
-!! primitives, the double-double log2/exp2 core, binary exponentiation, and the
-!! cuberoot rescalers.  Bodies are verbatim from the pre-submodule layout; the
-!! split is bit-neutral and gated by the harness checksums.
 submodule (bit_repro) bit_repro_helpers
+   !! The arithmetic machinery behind the bit_repro public functions: exact-rounding
+   !! primitives, the double-double log2/exp2 core, binary exponentiation, and the
+   !! cuberoot rescalers.  Bodies are verbatim from the pre-submodule layout; the
+   !! split is bit-neutral and gated by the harness checksums.
 
 implicit none
 
 ! IEEE-754 binary64 layout constants
-integer, parameter :: fraclen = 52  !< Bits in the fraction (mantissa)
-integer, parameter :: explen  = 11  !< Bits in the exponent
-integer, parameter :: signbit = 63  !< Position of the sign bit
-integer, parameter :: expbit  = fraclen !< Position of the lowest exponent bit
-integer(kind=int64), parameter :: bias = 1023_int64 !< Exponent bias
+integer, parameter :: fraclen = 52  !! Bits in the fraction (mantissa)
+integer, parameter :: explen  = 11  !! Bits in the exponent
+integer, parameter :: signbit = 63  !! Position of the sign bit
+integer, parameter :: expbit  = fraclen !! Position of the lowest exponent bit
+integer(kind=int64), parameter :: bias = 1023_int64 !! Exponent bias
 
 contains
 
-!> exponent()/fraction() split that is well-defined for denormal x > 0 on every
-!! compiler: denormals are pre-scaled by 2**54 (an exact multiply) first, because
-!! the intrinsics' behavior on denormals is processor-dependent (and wrong under
-!! nvfortran).  For normal x this is bit-identical to the plain intrinsics.
 elemental module subroutine norm_split(x, m, k)
+   !! exponent()/fraction() split that is well-defined for denormal x > 0 on every
+   !! compiler: denormals are pre-scaled by 2**54 (an exact multiply) first, because
+   !! the intrinsics' behavior on denormals is processor-dependent (and wrong under
+   !! nvfortran).  For normal x this is bit-identical to the plain intrinsics.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in)  :: x  !< The argument, x > 0, finite
-  real(wp), intent(out) :: m  !< fraction(x), in [0.5, 1)
-  integer, intent(out) :: k !< exponent(x), corrected for denormals
+  real(wp), intent(in)  :: x  !! The argument, x > 0, finite
+  real(wp), intent(out) :: m  !! fraction(x), in [0.5, 1)
+  integer, intent(out) :: k !! exponent(x), corrected for denormals
   real(wp), parameter :: two_p54 = 18014398509481984.0_wp  ! 2**54, exact
   real(wp) :: xn
   integer :: kb
@@ -33,20 +33,20 @@ elemental module subroutine norm_split(x, m, k)
   k = exponent(xn) + kb ; m = fraction(xn)
 end subroutine norm_split
 
-!> scale(v, n) with reproducible behavior at BOTH edges of the exponent range:
-!! Fortran leaves SCALE processor-dependent outside the model, and nvfortran
-!! (a) flushes denormal results to zero where ifx rounds them, and (b) returns
-!! Inf for n > 1023 even when v < 1 makes the result representable (measured:
-!! exp(709.774) -> Inf under nv, correct 1.78e308 under ifx).  The last 64
-!! doublings/halvings are therefore done with one IEEE multiply by an exact
-!! power of two, which every conforming platform rounds -- and overflows --
-!! identically.
 elemental function scale_reprod(v, n) result(sv)
+   !! scale(v, n) with reproducible behavior at BOTH edges of the exponent range:
+   !! Fortran leaves SCALE processor-dependent outside the model, and nvfortran
+   !! (a) flushes denormal results to zero where ifx rounds them, and (b) returns
+   !! Inf for n > 1023 even when v < 1 makes the result representable (measured:
+   !! exp(709.774) -> Inf under nv, correct 1.78e308 under ifx).  The last 64
+   !! doublings/halvings are therefore done with one IEEE multiply by an exact
+   !! power of two, which every conforming platform rounds -- and overflows --
+   !! identically.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: v     !< The value to be scaled, |v| in ~[0.5, 2.5)
-  integer, intent(in) :: n  !< The power of two to scale by
-  real(wp) :: sv                !< v * 2**n, correctly rounded incl. denormals/overflow
+  real(wp), intent(in) :: v     !! The value to be scaled, |v| in ~[0.5, 2.5)
+  integer, intent(in) :: n  !! The power of two to scale by
+  real(wp) :: sv                !! v * 2**n, correctly rounded incl. denormals/overflow
   real(wp), parameter :: two_m64 = 2.0_wp**(-64)  ! exact
   real(wp), parameter :: two_p64 = 2.0_wp**64     ! exact
   if (n > 960) then
@@ -58,14 +58,14 @@ elemental function scale_reprod(v, n) result(sv)
   endif
 end function scale_reprod
 
-!> x**n for n >= 0 by binary exponentiation: pure IEEE multiplies, so it is
-!! reproducible everywhere, and ipow(x,2) == RN(x*x) exactly.
 elemental module function ipow(x, n) result(p)
+   !! x**n for n >= 0 by binary exponentiation: pure IEEE multiplies, so it is
+   !! reproducible everywhere, and ipow(x,2) == RN(x*x) exactly.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x    !< The base
-  integer, intent(in) :: n !< The non-negative exponent
-  real(wp) :: p                !< x**|n|, or its reciprocal for n < 0
+  real(wp), intent(in) :: x    !! The base
+  integer, intent(in) :: n !! The non-negative exponent
+  real(wp) :: p                !! x**|n|, or its reciprocal for n < 0
 
   real(wp) :: b    ! Running square
   integer :: m ! Remaining exponent bits
@@ -86,8 +86,8 @@ elemental module function ipow(x, n) result(p)
 end function ipow
 
 
-!> Knuth two_sum: s + e == a + b exactly, branch-free.
 elemental module subroutine two_sum(a, b, s, e)
+   !! Knuth two_sum: s + e == a + b exactly, branch-free.
   !$omp declare target
   !$acc routine seq
   real(wp), intent(in)  :: a, b
@@ -98,11 +98,11 @@ elemental module subroutine two_sum(a, b, s, e)
   e = (a - (s - bb)) + (b - bb)
 end subroutine two_sum
 
-!> Dekker/Veltkamp two_prod WITHOUT fma: p + e == a*b exactly.
-!! Requires the compiler not to contract these expressions into fma (build with
-!! -fno-fma / -Mnofma / -gpu=nofma) -- contraction would still be exact here but
-!! would change the split arithmetic bit-for-bit between compilers.
 elemental module subroutine two_prod(a, b, p, e)
+   !! Dekker/Veltkamp two_prod WITHOUT fma: p + e == a*b exactly.
+   !! Requires the compiler not to contract these expressions into fma (build with
+   !! -fno-fma / -Mnofma / -gpu=nofma) -- contraction would still be exact here but
+   !! would change the split arithmetic bit-for-bit between compilers.
   !$omp declare target
   !$acc routine seq
   real(wp), intent(in)  :: a, b
@@ -117,15 +117,15 @@ elemental module subroutine two_prod(a, b, p, e)
   e = ((a1*b1 - p) + a1*b2 + a2*b1) + a2*b2
 end subroutine two_prod
 
-!> log2(x) for finite normal/denormal x > 0 as a double-double pair (h, l),
-!! accurate to ~2**-85 relative: exponent/fraction split, mantissa recentered to
-!! [sqrt(1/2), sqrt(2)), atanh series with the leading term carried in dd.
 elemental module subroutine log2_dd(x, h, l)
+   !! log2(x) for finite normal/denormal x > 0 as a double-double pair (h, l),
+   !! accurate to ~2**-85 relative: exponent/fraction split, mantissa recentered to
+   !! [sqrt(1/2), sqrt(2)), atanh series with the leading term carried in dd.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in)  :: x  !< The argument, x > 0, finite
-  real(wp), intent(out) :: h  !< High part of log2(x)
-  real(wp), intent(out) :: l  !< Low part of log2(x)
+  real(wp), intent(in)  :: x  !! The argument, x > 0, finite
+  real(wp), intent(out) :: h  !! High part of log2(x)
+  real(wp), intent(out) :: l  !! Low part of log2(x)
 
   real(wp), parameter :: sqrt2_2 = 0.70710678118654752440_wp ! sqrt(1/2)
   ! 2/ln(2) as a double-double constant
@@ -174,17 +174,17 @@ elemental module subroutine log2_dd(x, h, l)
   l = l + l1
 end subroutine log2_dd
 
-!> 2**(h+l) for a double-double exponent, |l| << 1.  Table-based reduction:
-!! h = n + i/32 + r with |r| <= 1/64, so 2**h = 2**n * T(i) * 2**r with T(i) a
-!! 32-entry double-double table and 2**r a short degree-6 polynomial.  The
-!! T(i)*poly product is carried through two_prod, keeping the assembly error
-!! near half an ulp.  Overflow -> Inf, underflow -> 0/denormal via scale().
 elemental module function exp2_pair(h, l) result(e2)
+   !! 2**(h+l) for a double-double exponent, |l| << 1.  Table-based reduction:
+   !! h = n + i/32 + r with |r| <= 1/64, so 2**h = 2**n * T(i) * 2**r with T(i) a
+   !! 32-entry double-double table and 2**r a short degree-6 polynomial.  The
+   !! T(i)*poly product is carried through two_prod, keeping the assembly error
+   !! near half an ulp.  Overflow -> Inf, underflow -> 0/denormal via scale().
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: h  !< High part of the exponent
-  real(wp), intent(in) :: l  !< Low part of the exponent
-  real(wp) :: e2             !< 2**(h+l)
+  real(wp), intent(in) :: h  !! High part of the exponent
+  real(wp), intent(in) :: l  !! Low part of the exponent
+  real(wp) :: e2             !! 2**(h+l)
 
   ! T(i) = 2**(i/32) as double-double (generated at 60-digit precision)
   real(wp), parameter :: t2hi(0:31) = [ &
@@ -237,15 +237,15 @@ elemental module function exp2_pair(h, l) result(e2)
   endif
 end function exp2_pair
 
-!> Rescale `a` to the range [0.125, 1) while computing its cube-root exponent and
-!! sign, by direct manipulation of the IEEE-754 bit representation.
 pure module subroutine rescale_cbrt(a, x, e_r, s_a)
+   !! Rescale `a` to the range [0.125, 1) while computing its cube-root exponent and
+   !! sign, by direct manipulation of the IEEE-754 bit representation.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: a  !< The number to be rescaled for cube-root computation
-  real(wp), intent(out) :: x !< The rescaled value of `a` in the range [0.125, 1)
-  integer(kind=int64), intent(out) :: e_r !< The integral component of the cube-root exponent of `a`
-  integer(kind=int64), intent(out) :: s_a !< Sign bit of `a`; nonzero indicates negative
+  real(wp), intent(in) :: a  !! The number to be rescaled for cube-root computation
+  real(wp), intent(out) :: x !! The rescaled value of `a` in the range [0.125, 1)
+  integer(kind=int64), intent(out) :: e_r !! The integral component of the cube-root exponent of `a`
+  integer(kind=int64), intent(out) :: s_a !! Sign bit of `a`; nonzero indicates negative
 
   integer(kind=int64) :: xb  ! Bit representation of `a`
   integer(kind=int64) :: e_a ! Exponent of `a`
@@ -261,14 +261,14 @@ pure module subroutine rescale_cbrt(a, x, e_r, s_a)
   x = transfer(xb, 1._wp)
 end subroutine rescale_cbrt
 
-!> Undo the rescaling of a real number back to its original base.
 pure module function descale(x, e_a, s_a) result(a)
+   !! Undo the rescaling of a real number back to its original base.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x !< The rescaled value which is to be restored
-  integer(kind=int64), intent(in) :: e_a !< Exponent of the unscaled value
-  integer(kind=int64), intent(in) :: s_a !< Sign bit of the unscaled value
-  real(wp) :: a !< Restored value with the corrected exponent and sign
+  real(wp), intent(in) :: x !! The rescaled value which is to be restored
+  integer(kind=int64), intent(in) :: e_a !! Exponent of the unscaled value
+  integer(kind=int64), intent(in) :: s_a !! Sign bit of the unscaled value
+  real(wp) :: a !! Restored value with the corrected exponent and sign
 
   integer(kind=int64) :: xb  ! Bit representation
   integer(kind=int64) :: e_x ! Biased exponent of x

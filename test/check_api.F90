@@ -88,8 +88,8 @@ contains
       read (u, '(a)') t; read (u, *) (env(i), i=0, nenv - 1)
    end subroutine read_system
 
-   !> AO offset of each shell, computed the way the container does.
    subroutine ao_offsets(bas, nbas, off, nao)
+      !! AO offset of each shell, computed the way the container does.
       integer, intent(in)  :: bas(0:), nbas
       integer, intent(out) :: off(nbas), nao
       integer :: i, l

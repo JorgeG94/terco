@@ -46,10 +46,10 @@ program check_selftest
    implicit none
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
-   !> libcint's per-shell factor, which `basis%build` folds into the
-   !> coefficients. The analytic comparison has to include it or it is
-   !> measuring a different function.
    real(dp), parameter :: FAC_S = 0.282094791773878143_dp
+   !! libcint's per-shell factor, which `basis%build` folds into the
+   !! coefficients. The analytic comparison has to include it or it is
+   !! measuring a different function.
 
    integer :: nbad
    nbad = 0
@@ -83,9 +83,9 @@ contains
          '   (tol ', tol, ')   '//verdict
    end subroutine report
 
-   !> libcint's primitive normalisation, so a coefficient of one means what a
-   !> basis-set file means by one.
    pure real(dp) function gto_norm(l, a)
+      !! libcint's primitive normalisation, so a coefficient of one means what a
+      !! basis-set file means by one.
       integer,  intent(in) :: l
       real(dp), intent(in) :: a
       real(dp) :: nn, gi

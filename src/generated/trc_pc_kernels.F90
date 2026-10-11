@@ -96,11 +96,11 @@ module trc_pc_kernels
    private
    public :: pc_dispatch, CLASS_RADIX
 
-   !> Radix of the dispatch key, FIXED so it does not encode LMAX.
-   !> The caller in trc_binkernel imports this rather than repeating the
-   !> literal, because a key formed two ways that disagree dispatches the
-   !> wrong kernel and still builds.
    integer, parameter :: CLASS_RADIX = 11
+   !! Radix of the dispatch key, FIXED so it does not encode LMAX.
+   !! The caller in trc_binkernel imports this rather than repeating the
+   !! literal, because a key formed two ways that disagree dispatches the
+   !! wrong kernel and still builds.
 
 contains
 

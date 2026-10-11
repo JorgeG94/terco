@@ -29,13 +29,13 @@ module trc_binkernel
    implicit none
    private
 
-   !> Fraction of the integral threshold at which a PRIMITIVE quartet is
-   !> abandoned before the Boys function. The prefactor bounds the (ss|ss)
-   !> primitive integral exactly and the higher classes only up to the
-   !> polynomial factors of the recurrences, so the margin is empirical: a
-   !> thousandfold was the original guess and nothing had measured what
-   !> tightening it costs. This makes that measurable.
    real(dp), protected, public :: TRC_PRIM_MARGIN = 1.0e-3_dp
+   !! Fraction of the integral threshold at which a PRIMITIVE quartet is
+   !! abandoned before the Boys function. The prefactor bounds the (ss|ss)
+   !! primitive integral exactly and the higher classes only up to the
+   !! polynomial factors of the recurrences, so the margin is empirical: a
+   !! thousandfold was the original guess and nothing had measured what
+   !! tightening it costs. This makes that measurable.
 
    public :: trc_set_prim_margin
    public :: fock_bins
@@ -74,11 +74,11 @@ module trc_binkernel
 
 contains
 
-   !> The one-time pair ordering, off unless asked for. See the comment at
-   !> its call site for what it costs and buys.
-   !> TRC_LAUNCH_CAP caps the quartets in one launch; 0 (default) is one
-   !> launch per angular-momentum class.
    integer(kind=8) function launch_cap()
+      !! The one-time pair ordering, off unless asked for. See the comment at
+      !! its call site for what it costs and buys.
+      !! TRC_LAUNCH_CAP caps the quartets in one launch; 0 (default) is one
+      !! launch per angular-momentum class.
       character(len=32) :: e
       integer :: ios
       e = ' '
@@ -90,8 +90,8 @@ contains
       end if
    end function launch_cap
 
-   !> TRC_SEG_STATS=1 prints the segment shape of each Fock build.
    logical function seg_stats_on()
+      !! TRC_SEG_STATS=1 prints the segment shape of each Fock build.
       character(len=8) :: e
       e = ' '
       call get_environment_variable('TRC_SEG_STATS', e)
@@ -578,8 +578,8 @@ contains
       nkept = nk
    end subroutine count_kept
 
-   !> Apply a permutation to the segment descriptor arrays, in place.
    subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
+      !! Apply a permutation to the segment descriptor arrays, in place.
       integer, intent(in) :: n, ord(n)
       integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
       integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
@@ -685,12 +685,12 @@ contains
       end do
    end subroutine fock_all
 
-   !> Whole-worklist driver for the general-density kernel.
    subroutine fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                              npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, &
                              nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                              ndens, dmat, jmat, kmat, rank, nranks)
+      !! Whole-worklist driver for the general-density kernel.
       integer,  intent(in)    :: nseg, npair, nbas, npp, nao, ndens, rank, nranks
       integer(kind=8), intent(in) :: nwork
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)

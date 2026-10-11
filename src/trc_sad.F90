@@ -69,9 +69,9 @@ contains
       real(dp), allocatable, intent(out) :: dguess(:, :)
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: verbose
-      !> Per-atom charge, positive for electrons removed. Overrides the
-      !> proportional split; must have one entry per atom.
       real(dp), intent(in), optional :: qatom(:)
+      !! Per-atom charge, positive for electrons removed. Overrides the
+      !! proportional split; must have one entry per atom.
 
       real(dp), allocatable :: nel(:)
       real(dp) :: ztot

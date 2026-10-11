@@ -394,8 +394,8 @@ contains
       print '(a,es10.3,a,es10.3)', '    max|D| ', amax, '   mean|D| ', amean
    end subroutine read_density
 
-   !> Minimal xyz reader: count, comment, then `sym x y z` in Angstrom.
    subroutine read_xyz()
+      !! Minimal xyz reader: count, comment, then `sym x y z` in Angstrom.
       integer :: u, i, ios
       character(len=8) :: sym
       character(len=256) :: line

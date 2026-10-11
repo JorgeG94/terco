@@ -115,10 +115,10 @@ module trc_xc
 
    public :: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
 
-   !> A batch whose bound on rho is below this is skipped. The functionals'
-   !> own density thresholds are 1e-12 to 1e-32; check_xc_energy measures
-   !> what this value costs against an unscreened evaluation.
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
+   !! A batch whose bound on rho is below this is skipped. The functionals'
+   !! own density thresholds are 1e-12 to 1e-32; check_xc_energy measures
+   !! what this value costs against an unscreened evaluation.
    integer, parameter :: XC_NP_PAD = 128   !! tile rows are padded to a multiple of this
    integer, parameter :: XC_NL_PAD = 32    !! and tile columns to a multiple of this
 

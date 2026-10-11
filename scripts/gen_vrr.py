@@ -424,9 +424,9 @@ contains
             nm = f"vrr_{lab}_{lcd}"
             names.append((lab, lcd, nm, fin))
             parts.append(f'''
-   !> (lab={lab} | lcd={lcd});  result left in buffer {fin}
    pure subroutine {nm}(ldv, v, f, pref, pax, pay, paz, qcx, qcy, qcz, &
                         wpx, wpy, wpz, wqx, wqy, wqz, oo2z, oo2e, oo2ze, rz, re)
+      !! (lab={lab} | lcd={lcd});  result left in buffer {fin}
       !$acc routine seq
       ! ldv is the CALLER's leading dimension, not this class's nca*ncc.  The
       ! caller holds one fixed-size buffer pair for every class, so the second
@@ -443,8 +443,8 @@ contains
 ''')
 
     parts.append('''
-   !> Which buffer a class leaves its answer in.
    pure integer function vrr_final(lab, lcd)
+      !! Which buffer a class leaves its answer in.
       integer, intent(in) :: lab, lcd
       vrr_final = mod(lab + lcd, 2)
    end function vrr_final

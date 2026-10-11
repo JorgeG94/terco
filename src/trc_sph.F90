@@ -99,8 +99,8 @@ contains
                               b%nao, b%nao_sph, mcart, msph)
    end subroutine sph_cart_to_sph
 
-   !> M_cart := T M_sph T^T.
    subroutine sph_sph_to_cart(b, msph, mcart)
+      !! M_cart := T M_sph T^T.
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: msph(b%nao_sph, b%nao_sph)
       real(dp), intent(out) :: mcart(b%nao, b%nao)

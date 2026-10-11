@@ -74,38 +74,37 @@ module trc_decontract
    public :: decon_expand_host, decon_fold_host
    public :: DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT
 
-   !> Exponents at or below this are diffuse. GPU4PySCF's `diffuse_cutoff`.
    real(dp), parameter :: DECON_CUTOFF_DEFAULT = 0.3_dp
+   !! Exponents at or below this are diffuse. GPU4PySCF's `diffuse_cutoff`.
 
    !
-   !> SPLIT ONLY THE GROUPS THAT PAY FOR IT -- OFF BY DEFAULT.
-   !>
-   !> A group is split only if some contracted shell in it holds at least
-   !> this many compact primitives; 0 splits every general contraction,
-   !> which is what this module did before the gate existed and what the
-   !> default still does.
-   !>
-   !> The gate exists because the split is not always worth its screen.
-   !> Splitting buys back the duplicated primitive work of a general
-   !> contraction and costs a screen tightened by the transform's amplitude
-   !> (see `amp` in build_maps). Measured on one card, Fock seconds for
-   !> three iterations at thresh 1e-12, with setup beside it:
-   !>
-   !>                   split all      Si only (10)    split none
-   !>   msn  28 Si    2.00 / 27.38    6.10 / 30.73    9.67 / 39.51
-   !>   w150  no Si   5.19 / 20.44        (= none)    6.87 / 15.15
-   !>
-   !> There is NO setting that is best for both. msn wants everything
-   !> split -- gating O out of it costs 3.3 s, and the unsplit Si shells
-   !> cost another 9 -- while w150, whose only general contraction is O's
-   !> 9-primitive s, is 26% faster not splitting at all. Same element,
-   !> opposite sign in two molecules, so the discriminator is the
-   !> molecule's screening structure and not its basis, and a static rule
-   !> cannot read it. The default therefore stays where the measurements
-   !> that drove this work were taken, and this is the knob for the other
-   !> case: TRC_DECON_MINPRIM=10 on a water cluster.
-   !
    integer, parameter :: DECON_MINPRIM_DEFAULT = 0
+   !! SPLIT ONLY THE GROUPS THAT PAY FOR IT -- OFF BY DEFAULT.
+   !!
+   !! A group is split only if some contracted shell in it holds at least
+   !! this many compact primitives; 0 splits every general contraction,
+   !! which is what this module did before the gate existed and what the
+   !! default still does.
+   !!
+   !! The gate exists because the split is not always worth its screen.
+   !! Splitting buys back the duplicated primitive work of a general
+   !! contraction and costs a screen tightened by the transform's amplitude
+   !! (see `amp` in build_maps). Measured on one card, Fock seconds for
+   !! three iterations at thresh 1e-12, with setup beside it:
+   !!
+   !!                   split all      Si only (10)    split none
+   !!   msn  28 Si    2.00 / 27.38    6.10 / 30.73    9.67 / 39.51
+   !!   w150  no Si   5.19 / 20.44        (= none)    6.87 / 15.15
+   !!
+   !! There is NO setting that is best for both. msn wants everything
+   !! split -- gating O out of it costs 3.3 s, and the unsplit Si shells
+   !! cost another 9 -- while w150, whose only general contraction is O's
+   !! 9-primitive s, is 26% faster not splitting at all. Same element,
+   !! opposite sign in two molecules, so the discriminator is the
+   !! molecule's screening structure and not its basis, and a static rule
+   !! cannot read it. The default therefore stays where the measurements
+   !! that drove this work were taken, and this is the knob for the other
+   !! case: TRC_DECON_MINPRIM=10 on a water cluster.
 
    !
    ! The transform between the contracted basis a caller speaks and the
@@ -126,11 +125,11 @@ module trc_decontract
       integer,  allocatable :: t_p(:)     !! (nnz) primitive AO
       real(dp), allocatable :: t_a(:)     !! (nnz)
       !
-      !> Per primitive SHELL, the factor its Schwarz bound must be multiplied
-      !> by for screening in this basis to bound the error in the CONTRACTED
-      !> matrix. Derived, with the reasoning, at the end of `build_maps`.
-      !> Host only -- screening is built once, on the host.
       real(dp), allocatable :: amp(:)     !! (pb%nshell)
+      !! Per primitive SHELL, the factor its Schwarz bound must be multiplied
+      !! by for screening in this basis to bound the error in the CONTRACTED
+      !! matrix. Derived, with the reasoning, at the end of `build_maps`.
+      !! Host only -- screening is built once, on the host.
       logical :: on_device = .false.
    end type decon_t
 
@@ -151,11 +150,11 @@ contains
       type(trc_basis_t), intent(in)    :: b
       type(trc_basis_t), intent(inout) :: pb
       type(decon_t),     intent(inout) :: m
-      !> Diffuse threshold; DECON_CUTOFF_DEFAULT if absent.
       real(dp), intent(in), optional :: cutoff
-      !> Smallest compact primitive count that makes a split worth its
-      !> screen; DECON_MINPRIM_DEFAULT if absent. Zero splits everything.
+      !! Diffuse threshold; DECON_CUTOFF_DEFAULT if absent.
       integer, intent(in), optional :: minprim
+      !! Smallest compact primitive count that makes a split worth its
+      !! screen; DECON_MINPRIM_DEFAULT if absent. Zero splits everything.
 
       integer, allocatable :: grp(:)          ! group id per shell
       integer, allocatable :: p_l(:), p_np(:)

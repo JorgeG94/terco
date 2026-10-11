@@ -89,8 +89,8 @@ contains
       ncart = (l + 1)*(l + 2)/2
    end function ncart
 
-   !> libcint's per-shell factor, applied outside `env`.
    pure real(dp) function common_fac_sp(l)
+      !! libcint's per-shell factor, applied outside `env`.
       integer, intent(in) :: l
       select case (l)
       case (0); common_fac_sp = 0.282094791773878143_dp

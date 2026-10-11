@@ -31,6 +31,10 @@ contains
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat, rank, nranks)
+      !! (00|12) SCALAR driver.  The `do concurrent` lives here and the
+      !! workspaces live in the item routine below, so they are per THREAD.
+      !! Declaring them alongside the loop makes them shared -- the compiler then
+      !! emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)

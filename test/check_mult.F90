@@ -81,9 +81,9 @@ program check_mult
 
 contains
 
-   !> libcint's primitive normalisation. For ONE primitive this is also what
-   !> pyscf uses, which is the whole reason this system is uncontracted.
    pure real(dp) function gto_norm(l, a)
+      !! libcint's primitive normalisation. For ONE primitive this is also what
+      !! pyscf uses, which is the whole reason this system is uncontracted.
       integer,  intent(in) :: l
       real(dp), intent(in) :: a
       real(dp) :: nn, gi

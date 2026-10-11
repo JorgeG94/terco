@@ -47,13 +47,13 @@ module trc_acc_shim
 
 contains
 
-   !> The OpenACC profiling registration hook, deliberately doing nothing.
-   !>
-   !> The three arguments are the register, unregister and lookup callbacks
-   !> the OpenACC profiling interface passes; they are taken by value as
-   !> opaque pointers and ignored.
    subroutine acc_register_library(reg, unreg, lookup) &
       bind(c, name="acc_register_library")
+      !! The OpenACC profiling registration hook, deliberately doing nothing.
+      !!
+      !! The three arguments are the register, unregister and lookup callbacks
+      !! the OpenACC profiling interface passes; they are taken by value as
+      !! opaque pointers and ignored.
       type(c_ptr), value :: reg, unreg, lookup
       ! Reference them so no compiler warns about unused dummies while
       ! keeping the body genuinely empty.

@@ -119,25 +119,25 @@ contains
       close (u)
    end subroutine read_xyz
 
-   !> 6-31G for H, C, N, O, FROM LITERAL BSE COEFFICIENTS -- a SECOND,
-   !> independent transcription of the same numbers `basis_sets/6-31g.json`
-   !> holds, kept ONLY so something in the tree can prove the JSON path
-   !> (`trc_basis_json`) right against a source that does not go through
-   !> it. terco has one basis-construction path, and it is
-   !> `trc_basis_from_json`; no test should reach for this as a convenient
-   !> second way to get 6-31G -- see test/check_basis_631g_ref.F90, the one
-   !> check that is allowed to call this for exactly that reason, for the
-   !> measured agreement between the two (water through twenty waters, 4e-8
-   !> to 1e-6 Eh, the gap between a hand-copied 7-digit literal and the
-   !> JSON file's full double precision).
-   !>
-   !> `uncontracted` makes every primitive its own shell with coefficient
-   !> one -- what pyscf's gto.uncontract does -- so that a comparison of
-   !> total energies is not spoilt by pyscf renormalising contracted shells
-   !> and terco not. `uncontract_basis` below does the same transform on
-   !> ANY built basis, JSON-loaded included, and is what a caller wanting
-   !> an uncontracted 6-31G outside this one reference check should use.
    subroutine build_631g(nat, z, r, nsh, l, np, e, c, sr, mnp, uncontracted)
+      !! 6-31G for H, C, N, O, FROM LITERAL BSE COEFFICIENTS -- a SECOND,
+      !! independent transcription of the same numbers `basis_sets/6-31g.json`
+      !! holds, kept ONLY so something in the tree can prove the JSON path
+      !! (`trc_basis_json`) right against a source that does not go through
+      !! it. terco has one basis-construction path, and it is
+      !! `trc_basis_from_json`; no test should reach for this as a convenient
+      !! second way to get 6-31G -- see test/check_basis_631g_ref.F90, the one
+      !! check that is allowed to call this for exactly that reason, for the
+      !! measured agreement between the two (water through twenty waters, 4e-8
+      !! to 1e-6 Eh, the gap between a hand-copied 7-digit literal and the
+      !! JSON file's full double precision).
+      !!
+      !! `uncontracted` makes every primitive its own shell with coefficient
+      !! one -- what pyscf's gto.uncontract does -- so that a comparison of
+      !! total energies is not spoilt by pyscf renormalising contracted shells
+      !! and terco not. `uncontract_basis` below does the same transform on
+      !! ANY built basis, JSON-loaded included, and is what a caller wanting
+      !! an uncontracted 6-31G outside this one reference check should use.
       integer,  intent(in)  :: nat, z(nat)
       real(dp), intent(in)  :: r(3, nat)
       integer,  intent(out) :: nsh, mnp
@@ -274,9 +274,9 @@ contains
       end do
    end subroutine put
 
-   !> libcint's primitive normalisation, so the caller's coefficients mean
-   !> what a basis-set file means.
    pure real(dp) function gto_norm(l, a)
+      !! libcint's primitive normalisation, so the caller's coefficients mean
+      !! what a basis-set file means.
       integer,  intent(in) :: l
       real(dp), intent(in) :: a
       real(dp) :: t
