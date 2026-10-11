@@ -1,10 +1,10 @@
-!! Segmented path against the primitive-shell view, timed, on any
-!! geometry and basis:  bench_gc <xyz> <basis.json> [reps]
-!!
-!! One density, a decaying band as check_gc uses, so that neither path
-!! gets to screen on a block-diagonal guess. Reports the build time, the
-!! per-Fock time of each path, and how far the two Fock matrices differ.
 program bench_gc
+   !! Segmented path against the primitive-shell view, timed, on any
+   !! geometry and basis:  bench_gc <xyz> <basis.json> [reps]
+   !!
+   !! One density, a decaying band as check_gc uses, so that neither path
+   !! gets to screen on a block-diagonal guess. Reports the build time, the
+   !! per-Fock time of each path, and how far the two Fock matrices differ.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_eri, only: trc_eri_t

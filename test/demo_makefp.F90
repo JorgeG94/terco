@@ -69,10 +69,10 @@ program demo_makefp
       2.03_dp, 1.74_dp, 1.44_dp, 1.32_dp, 1.22_dp, 1.18_dp, 1.17_dp, 1.17_dp, &
       1.16_dp, 1.15_dp, 1.17_dp, 1.25_dp, 1.26_dp, 1.22_dp, 1.20_dp, 1.16_dp, &
       1.14_dp, 1.12_dp]
+   ! Offsets into the full Cartesian tensors terco returns. The dipole is
+   ! components 1:3, the quadrupole 4:12 (all nine) and the octupole 13:39
+   ! (all twenty-seven); a `.efp` carries only the unique ones, in this order.
    integer, parameter :: QUAD_PACK(6)  = [1, 5, 9, 2, 3, 6]
-   !! Offsets into the full Cartesian tensors terco returns. The dipole is
-   !! components 1:3, the quadrupole 4:12 (all nine) and the octupole 13:39
-   !! (all twenty-seven); a `.efp` carries only the unique ones, in this order.
    integer, parameter :: OCT_PACK(10)  = [1, 14, 27, 2, 3, 5, 15, 9, 18, 6]
    real(dp), parameter :: TIE_TOL = 1.0e-6_dp
 

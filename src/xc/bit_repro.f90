@@ -77,9 +77,9 @@ real(wp), parameter :: t2lo(0:31) = [ &
     8.199010020581497e-17_wp, -1.851380418263111e-17_wp, 2.960140695448873e-17_wp, 1.8227458427912087e-17_wp, &
     3.283107224245627e-17_wp, -6.122763413004143e-17_wp, -1.0619946056195963e-16_wp, 8.960767791036668e-17_wp ]
 
+! Shared constants for the erfc family (scalar, branch-free, and 8-wide
+! variants) and its inlined exp2 cores.
 real(wp), parameter :: log2e_hi_c = 1.4426950408889634_wp
-!! Shared constants for the erfc family (scalar, branch-free, and 8-wide
-!! variants) and its inlined exp2 cores.
 real(wp), parameter :: log2e_lo_c = 2.0355273740931033e-17_wp
 real(wp), parameter :: e2c1_c = 0.6931471805599453_wp,    e2c2_c = 0.24022650695910072_wp
 real(wp), parameter :: e2c3_c = 0.05550410866482158_wp,   e2c4_c = 0.009618129107628477_wp

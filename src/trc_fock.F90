@@ -64,29 +64,29 @@ module trc_eri
       real(dp) :: thresh = 1.0e-10_dp
       integer :: nbas = 0, nao = 0, nhpp = 0
       type(pair_bins_t) :: bins
-      !! HGP primitive-pair data: what the kernels actually read.
       integer,  allocatable :: hp_off(:), hp_n(:)
+      !! HGP primitive-pair data: what the kernels actually read.
       real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :)
       real(dp), allocatable :: hp_c(:)
+      integer :: nqp = 0
       !! Bin-interleaved second copy of the above (trc_bins%build_pair_quartets):
       !! flat fields here, not components of `bins` -- see that routine's
       !! own comment for why.
-      integer :: nqp = 0
       integer,  allocatable :: qp_bin_pbase(:), qp_bin_k(:)
       real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
       real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
       real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
       integer,  allocatable :: sq_n(:)
-      !! Shell-block density bound, refreshed per iteration from D.
       real(dp), allocatable :: dsh(:, :)
+      !! Shell-block density bound, refreshed per iteration from D.
       integer,  allocatable :: sh_l(:), ao_off(:)
+      type(trc_basis_t) :: pb
       !! The basis the integrals are actually evaluated over, and the
       !! transform back to the one the caller speaks. On a generally
       !! contracted basis `dec%active` is true, `pb` is the split basis and
       !! `nao_w` is its (larger) function count; the public `nao` stays the
       !! contracted one so no caller sees the difference. On a segmented
       !! basis nothing here is allocated and `nao_w == nao`.
-      type(trc_basis_t) :: pb
       type(decon_t) :: dec
       integer :: nao_w = 0
       logical :: on_device = .false.
@@ -96,10 +96,10 @@ module trc_eri
       !! when fock_resident is asked for it. Diagnostic: it costs a full
       !! extra enumeration pass.
       integer(kind=8) :: nwork = 0
+      type(comm_t) :: comm
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then
       !! summed across ranks. One rank is rank 0 of 1 and no communicator.
-      type(comm_t) :: comm
       integer :: rank = 0, nranks = 1
       logical :: distributed = .false.
    contains
@@ -126,11 +126,11 @@ contains
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
+      type(comm_t), intent(in), optional :: comm
       !! Ranks to split the quartets over. Bind each rank to its device
       !! (trc_bind_device) BEFORE any object goes to the device.
-      type(comm_t), intent(in), optional :: comm
-      !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
       integer, intent(in), optional :: batch_res
+      !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
 
       integer :: bres
       character(len=8) :: bt_env
@@ -648,9 +648,9 @@ contains
       logical, intent(in), optional :: density_screen
       !! Weight the Schwarz bound by the density before screening (default
       !! true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
+      logical, intent(in), optional :: count_survivors
       !! Also count the quartets that survive screening, into this%nkept.
       !! A full extra pass over the work list, so it is opt-in.
-      logical, intent(in), optional :: count_survivors
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
@@ -859,10 +859,10 @@ contains
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(ndens, this%nao, this%nao)
       !! (ndens, nao, nao): the density index is FASTEST on purpose. With it
       !! slowest the N atomic updates for one (mu,nu) are nao^2 apart and the
       !! batch degrades past N=4; adjacent, they coalesce.
-      real(dp), intent(in)  :: dmats(ndens, this%nao, this%nao)
       real(dp), intent(out) :: gmats(ndens, this%nao, this%nao)
       real(dp), intent(in), optional :: k_scale, j_scale
       logical, intent(in), optional :: density_screen

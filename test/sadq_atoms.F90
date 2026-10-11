@@ -1,14 +1,14 @@
-!! terco's SADQ guess: the electron count it actually carries, that it is SAD
-!! when the molecule is neutral, and that it beats SAD on an ion.
-!!
-!! The electron count is the point. SAD superposes NEUTRAL atoms, so on a
-!! dication it hands the SCF a density holding two electrons too many and the
-!! first iterations are spent giving them back. Tr(D S) is what says whether a
-!! guess got that right, and it is checked exactly rather than loosely: the
-!! atomic blocks are idempotent-free but each atomic SCF converged its own
-!! count, so the sum is the molecular count to machine precision or the
-!! construction is wrong somewhere.
 program sadq_atoms
+   !! terco's SADQ guess: the electron count it actually carries, that it is SAD
+   !! when the molecule is neutral, and that it beats SAD on an ion.
+   !!
+   !! The electron count is the point. SAD superposes NEUTRAL atoms, so on a
+   !! dication it hands the SCF a density holding two electrons too many and the
+   !! first iterations are spent giving them back. Tr(D S) is what says whether a
+   !! guess got that right, and it is checked exactly rather than loosely: the
+   !! atomic blocks are idempotent-free but each atomic SCF converged its own
+   !! count, so the sum is the molecular count to machine precision or the
+   !! construction is wrong somewhere.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run

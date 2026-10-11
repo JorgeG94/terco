@@ -48,12 +48,12 @@ module trc_dft_partition
    !! becke_partition_weights. Becke's s(0.95) is 1e-9; a cell function is a
    !! product of such factors, so a dropped atom's cell is at most that.
 
+   ! Cutoff profile
    integer, parameter :: PARTITION_BECKE = 1     !! Three iterations of p(x), smooth everywhere
-   !! Cutoff profile
    integer, parameter :: PARTITION_STRATMANN = 2  !! Degree-5 with a hard cutoff, screenable
 
+   ! Atomic size adjustment
    integer, parameter :: ADJUST_NONE = 0      !! All atoms the same size
-   !! Atomic size adjustment
    integer, parameter :: ADJUST_BECKE = 1     !! Bragg radii
    integer, parameter :: ADJUST_TREUTLER = 2  !! Square roots of the Bragg radii
 
@@ -111,6 +111,7 @@ contains
       integer, intent(in) :: adjust              !! ADJUST_NONE, _BECKE or _TREUTLER
       real(dp), intent(out) :: weights(:)        !! (n_points)
       type(error_t), intent(inout) :: error
+      real(dp), intent(in), optional :: nu_max
       !! Screening. An atom whose cutoff argument against the point's owner
       !! is already at or beyond this value is left out of the pair loop for
       !! that point: with Becke's cutoff its cell function is then below
@@ -118,14 +119,13 @@ contains
       !! loop is O(active^2) per point instead of O(n_atoms^2). Pass a value
       !! >= 1 for no screening; check_grid measures the difference. Default
       !! PARTITION_NU_MAX, or STRATMANN_A under that scheme.
-      real(dp), intent(in), optional :: nu_max
+      integer(kind=8), intent(in), optional :: budget
       !! Scratch budget in doubles, default 2^26 (512 MB): sets how many
       !! points a chunk holds, 2^26 / (3 n_atoms).
-      integer(kind=8), intent(in), optional :: budget
+      integer, intent(in), optional :: first, last
       !! Only the points first..last are partitioned; every other weight is
       !! returned as zero, so a caller holding one block per rank can sum
       !! the arrays and have the whole grid. Default all of them.
-      integer, intent(in), optional :: first, last
 
       real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
       real(dp), allocatable :: atom_r(:, :), cell(:, :)

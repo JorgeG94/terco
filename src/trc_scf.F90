@@ -121,14 +121,15 @@ module trc_scf_driver
 
    type :: trc_scf_options_t
       character(len=16) :: functional = ""   !! empty is Hartree-Fock
+      character(len=8) :: guess = "gwh"
       !! Starting orbitals when no density is given: "gwh" (Wolfsberg-Helmholz
       !! over the overlap and the core Hamiltonian, the default) or "core".
       !! The core guess is hopeless past a few atoms -- cholesterol starts
       !! 660 hartree high and never recovers -- and GWH costs nothing.
-      character(len=8) :: guess = "gwh"
       logical :: unrestricted = .false.      !! forced; an open shell is unrestricted regardless
       real(dp) :: conv_energy = 1.0e-10_dp
       real(dp) :: conv_density = 1.0e-7_dp   !! RMS change per element, printed; no longer gates
+      real(dp) :: conv_diis = 1.0e-5_dp
       !! Frobenius norm of the orthogonalised commutator X^T (FDS - SDF) X,
       !! the DIIS error, below which the SCF is converged once the energy
       !! change is too. The density change was the gate before, and on
@@ -137,7 +138,7 @@ module trc_scf_driver
       !! more iterations waiting for an RMS change under 1e-7 that wandered
       !! between 1e-7 and 1e-6. PySCF stops on the gradient norm at
       !! sqrt(conv_tol) for the same reason.
-      real(dp) :: conv_diis = 1.0e-5_dp
+      logical :: frac_occ = .false.
       !! FRACTIONAL OCCUPATIONS, for the free-atom runs behind the SAD guess.
       !! Each iteration the orbitals of a spin channel are filled by aufbau on
       !! their own eigenvalues, and the degenerate set at the frontier shares
@@ -147,7 +148,6 @@ module trc_scf_driver
       !! channels, a proper spin-polarised atom (carbon: two alpha thirds in
       !! each p, no beta p). `nalpha`/`nbeta` are ignored for the count only
       !! in the restricted case.
-      logical :: frac_occ = .false.
       real(dp) :: nelec_frac = 0.0_dp
       integer :: max_iter = 100
       integer :: batch_res = 1
@@ -185,6 +185,7 @@ module trc_scf_driver
       !! both well inside 1e-8), in 23.3 s against the 24.4 s reference.
       !! Set TRC_INCREMENTAL=1 to turn it on without a rebuild.
       integer :: incr_reset = 20
+      real(dp) :: incr_thresh_scale = 1.0e-4_dp
       !! Multiplies `eri_thresh` for an incremental Fock build only, so its
       !! screen is tighter than the full build's by this fixed factor
       !! rather than tracking how small the increment itself has become --
@@ -200,7 +201,7 @@ module trc_scf_driver
       !! at 1e-8) while still costing less than a full build once the
       !! density difference is small enough for `incr_start` to have let
       !! incrementing start.
-      real(dp) :: incr_thresh_scale = 1.0e-4_dp
+      real(dp) :: incr_start = 1.0e-2_dp
       !! Do not increment until the PREVIOUS iteration's commutator norm
       !! is already below this. Early on, before CDIIS has settled, D
       !! swings by a large fraction of itself iteration to iteration --
@@ -214,8 +215,8 @@ module trc_scf_driver
       !! rather than starting it at iteration 2 turns a 34 s run (slower
       !! than incremental off) into a 23.3 s one (faster than the 24.4 s
       !! reference), at the same energy.
-      real(dp) :: incr_start = 1.0e-2_dp
       integer :: ndiis = 10
+      integer :: ndamp = -1                  !! damped steps before DIIS, at least
       !! The damped start, -1 meaning "by spin": a closed shell goes to DIIS
       !! from the first iteration -- damping only delayed it until the
       !! commutator fell under `diis_start`, which took cholesterol from 29
@@ -223,15 +224,11 @@ module trc_scf_driver
       !! keeps four damped steps and a 0.5 start, because UHF on the OH
       !! radical from GWH oscillates for a hundred iterations without them.
       !! Any value >= 0 here, or a finite `diis_start`, is taken as given.
-      integer :: ndamp = -1                  !! damped steps before DIIS, at least
+      real(dp) :: diis_start = -1.0_dp     !! commutator norm below which DIIS may start; -1 by spin
       !! DIIS also waits until the largest commutator element is below this;
       !! extrapolating from a wild guess wanders, damping does not.
-      real(dp) :: diis_start = -1.0_dp     !! commutator norm below which DIIS may start; -1 by spin
       real(dp) :: damp = 0.3_dp              !! weight of the new density while damping
-      !! Level shift on the virtual space while DIIS is off, in hartree.
-      !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
-      !! its answer and a damped Roothaan step alone throws it 300 hartree
-      !! away; raising the virtuals keeps the occupied space from collapsing.
+      logical :: adiis = .false.
       !! ADIIS (Hu & Yang, JCP 132, 054109) while damping has ended but the
       !! commutator is still too large for CDIIS (see `diis_start`):
       !! minimise an energy functional over the convex hull of the
@@ -242,8 +239,12 @@ module trc_scf_driver
       !! history bookkeeping. Where it earns its keep is the hard cases
       !! (stretched bonds, small gaps, charged open shells) that plain
       !! damping oscillates on; see the robustness test set.
-      logical :: adiis = .false.
       real(dp) :: level_shift = 1.0_dp
+      !! Level shift on the virtual space while DIIS is off, in hartree.
+      !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
+      !! its answer and a damped Roothaan step alone throws it 300 hartree
+      !! away; raising the virtuals keeps the occupied space from collapsing.
+      real(dp) :: lindep_thresh = 1.0e-8_dp
       !! Canonical orthogonalisation: an eigenvalue of S below this is
       !! LINEAR DEPENDENCE, and that direction is projected out of X rather
       !! than scaled by S^-1/4, which would divide by (nearly) zero. A
@@ -254,12 +255,12 @@ module trc_scf_driver
       !! old behaviour: `error stop` the first time S is not numerically
       !! positive definite, which is what every existing test still gets
       !! since none of them is diffuse enough to reach this threshold.
-      real(dp) :: lindep_thresh = 1.0e-8_dp
       real(dp) :: eri_thresh = 1.0e-12_dp
       integer :: grid_level = 3
       integer :: grid_max_pts = 512
       real(dp) :: rho_tol = XC_RHO_TOL
       logical :: verbose = .false.
+      logical :: force_cartesian = .false.
       !! Run the Cartesian AO space even when the basis says spherical
       !! (`trc_basis_t%spherical`, set from a JSON basis's own
       !! "gto_spherical" function_type -- trc_basis_json.F90). For
@@ -273,7 +274,6 @@ module trc_scf_driver
       !! already resolved by the time a basis reaches here (the caller,
       !! trc_capi.F90's `basis_json`, is what applies this option to a
       !! freshly loaded JSON basis's own flag).
-      logical :: force_cartesian = .false.
    end type trc_scf_options_t
 
    type :: trc_scf_result_t
@@ -286,10 +286,10 @@ module trc_scf_driver
       real(dp) :: e_two = 0.0_dp       !! Coulomb and exact exchange
       real(dp) :: e_xc = 0.0_dp
       real(dp) :: nelec_grid = 0.0_dp  !! what the grid integrated the density to
+      integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see
       !! `lindep_thresh` for why a diffuse one is different.
-      integer :: n_lindep = 0
       real(dp), allocatable :: dmat(:, :, :)   !! (nao, nao, nspin); restricted holds the total
       real(dp), allocatable :: cmo(:, :, :)    !! (nao, nao, nspin) orbitals
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
@@ -413,17 +413,17 @@ contains
       type(trc_scf_options_t), intent(in) :: opts
       type(trc_scf_result_t), intent(out) :: res
       real(dp), intent(in), optional :: dguess(:, :, :)
+      real(dp), intent(in), optional :: hguess(:, :)
       !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
       !! how SAP gets in (see trc_sap), which cannot come through `dguess`
       !! because what it produces is a one-electron operator and not a
       !! density. Ignored if `dguess` is also given: a density the caller
       !! already has is more specific than a matrix to make one from.
-      real(dp), intent(in), optional :: hguess(:, :)
+      type(comm_t), intent(in), optional :: comm
       !! Ranks. Every rank runs the same iteration on the same matrices;
       !! the quartets are split across them and the Fock matrix summed
       !! back, so the density stays identical everywhere. Bind devices
       !! first (trc_bind_device). The XC batches are split across ranks too.
-      type(comm_t), intent(in), optional :: comm
 
       integer :: nao, nao_c, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
       logical :: ok, sph
@@ -445,12 +445,12 @@ contains
       logical :: incr_now
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :), w3(:, :), bmat(:, :), rhs(:)
+      real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :), cad(:)
       !! ADIIS history (fock, density) and its own slot count, kept apart
       !! from the CDIIS `fstore`/`estore` above: ADIIS runs exactly in the
       !! window CDIIS has not opened yet, so the two never need the same
       !! entries, and keeping them separate means `opts%adiis = .false.`
       !! leaves the CDIIS path untouched, to the bit.
-      real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :), cad(:)
       integer :: nadiis_used
       logical :: adiis_active
       type(trc_pairlist_t) :: pl

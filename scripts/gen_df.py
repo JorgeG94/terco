@@ -316,9 +316,9 @@ module trc_df_kernels
 
    integer, parameter :: DF_LMAX = {L}, DF_LMAX_AUX = {LA}
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
+   integer, parameter :: NC_MAX = (max(DF_LMAX, DF_LMAX_AUX) + 1)*(max(DF_LMAX, DF_LMAX_AUX) + 2)/2
    !! Largest Cartesian blocks the drivers' per-item buffers must hold;
    !! fixed because `do concurrent` locals are.
-   integer, parameter :: NC_MAX = (max(DF_LMAX, DF_LMAX_AUX) + 1)*(max(DF_LMAX, DF_LMAX_AUX) + 2)/2
    integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
    integer, parameter :: NBLK3_MAX = NC_MAX*NC_MAX*NC_MAX
 

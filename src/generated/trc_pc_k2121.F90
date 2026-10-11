@@ -38,35 +38,35 @@ contains
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       !! Primitive base of the bra bin / ket bin, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
-      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in)    :: pcut
       !! Cutoff for the primitive-quartet prescreen: a primitive quartet
       !! whose prefactor cannot reach this is skipped before the Boys
       !! function. It is a fraction of `thresh`, and a runtime argument
       !! rather than a literal so the fraction can be measured against the
       !! energy it costs instead of guessed once.
-      real(dp), intent(in)    :: pcut
+      real(dp), intent(in)    :: jfac, kfac
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
-      real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
+      integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
       !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
       !! + icd (ket).
-      integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
       !! and the real kept primitive-pair count pp_n(key) gave before.
-      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
       integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
@@ -109,35 +109,35 @@ contains
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       !! Primitive base of the bra bin / ket bin, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
-      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in)    :: pcut
       !! Cutoff for the primitive-quartet prescreen: a primitive quartet
       !! whose prefactor cannot reach this is skipped before the Boys
       !! function. It is a fraction of `thresh`, and a runtime argument
       !! rather than a literal so the fraction can be measured against the
       !! energy it costs instead of guessed once.
-      real(dp), intent(in)    :: pcut
+      real(dp), intent(in)    :: jfac, kfac
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
-      real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
+      integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
       !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
       !! + icd (ket).
-      integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
       !! and the real kept primitive-pair count pp_n(key) gave before.
-      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
       integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
@@ -2849,35 +2849,35 @@ contains
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       !! Primitive base of the bra bin / ket bin, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
-      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in)    :: pcut
       !! Cutoff for the primitive-quartet prescreen: a primitive quartet
       !! whose prefactor cannot reach this is skipped before the Boys
       !! function. It is a fraction of `thresh`, and a runtime argument
       !! rather than a literal so the fraction can be measured against the
       !! energy it costs instead of guessed once.
-      real(dp), intent(in)    :: pcut
+      real(dp), intent(in)    :: jfac, kfac
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
-      real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
+      integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
       !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
       !! + icd (ket).
-      integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
       !! and the real kept primitive-pair count pp_n(key) gave before.
-      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
       integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
@@ -2943,35 +2943,35 @@ contains
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       !! Primitive base of the bra bin / ket bin, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
-      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in)    :: pcut
       !! Cutoff for the primitive-quartet prescreen: a primitive quartet
       !! whose prefactor cannot reach this is skipped before the Boys
       !! function. It is a fraction of `thresh`, and a runtime argument
       !! rather than a literal so the fraction can be measured against the
       !! energy it costs instead of guessed once.
-      real(dp), intent(in)    :: pcut
+      real(dp), intent(in)    :: jfac, kfac
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
-      real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
+      integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
       !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
       !! + icd (ket).
-      integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
       !! and the real kept primitive-pair count pp_n(key) gave before.
-      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
       real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
       integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens

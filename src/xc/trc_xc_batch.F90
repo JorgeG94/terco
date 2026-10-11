@@ -118,11 +118,11 @@ contains
       type(trc_basis_t), intent(in) :: b
       integer, intent(in), optional :: max_pts
       real(dp), intent(in), optional :: tol
+      real(dp), intent(in), optional :: w_tol
       !! A point whose |weight| is below this is dropped before batching:
       !! after the partition a sizeable fraction of the grid carries
       !! nothing (Stocks and Barca drop 15-20% at 2e-15). Default 2e-15;
       !! pass 0 to keep every point.
-      real(dp), intent(in), optional :: w_tol
 
       integer :: maxp, i, j, k, lo, hi, axis, top, nb, ib, ish, nsh_b, nao_b
       integer :: sh_in_batch

@@ -1,12 +1,12 @@
-!! The spherical transform's cost against one Fock build, on any geometry
-!! and a spherical basis:  bench_sph <xyz> <basis.json> [reps]
-!!
-!! `sph_sph_to_cart`/`sph_cart_to_sph` run once per Fock build already (one
-!! of each, trc_scf.F90's per-iteration D_cart/G_sph steps); this times
-!! `reps` of BOTH back to back against one `eri%fock_resident`, on a
-!! basis large enough (1000+ AO) that the O(nao^4) build and the
-!! O(nshell^2) transform are not both too small to time honestly.
 program bench_sph
+   !! The spherical transform's cost against one Fock build, on any geometry
+   !! and a spherical basis:  bench_sph <xyz> <basis.json> [reps]
+   !!
+   !! `sph_sph_to_cart`/`sph_cart_to_sph` run once per Fock build already (one
+   !! of each, trc_scf.F90's per-iteration D_cart/G_sph steps); this times
+   !! `reps` of BOTH back to back against one `eri%fock_resident`, on a
+   !! basis large enough (1000+ AO) that the O(nao^4) build and the
+   !! O(nshell^2) transform are not both too small to time honestly.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart

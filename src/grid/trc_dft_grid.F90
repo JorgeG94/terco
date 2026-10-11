@@ -195,8 +195,8 @@ contains
       integer, intent(in), optional :: n_radial   !! Override, all atoms
       integer, intent(in), optional :: n_angular  !! Override, all atoms
       integer, intent(in), optional :: prune      !! PRUNE_NONE or PRUNE_NWCHEM
-      !! With both given, only this rank's block of the points is partitioned.
       integer, intent(in), optional :: my_rank, n_ranks
+      !! With both given, only this rank's block of the points is partitioned.
 
       real(dp), allocatable :: r(:), dr(:), sphere(:, :), w_ang(:)
       integer, allocatable :: shell_order(:)

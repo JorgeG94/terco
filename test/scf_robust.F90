@@ -60,10 +60,10 @@ program scf_robust
       "6-31g", "6-31g", "d-aug-cc-pvdz", "6-31g"]
    logical, parameter :: uhf(NCASE) = [.true., .false., .false., .true.]
    integer, parameter :: charge(NCASE) = [1, 0, 0, -1]
+   real(dp), parameter :: lindep(NCASE) = [1.0e-8_dp, 1.0e-8_dp, 1.0e-5_dp, 1.0e-8_dp]
    !! Canonical orthogonalisation threshold, per case: the type default
    !! (1e-8) for everything but the diffuse case, which needs it loosened
    !! to reach the S eigenvalues a doubly-augmented basis actually has.
-   real(dp), parameter :: lindep(NCASE) = [1.0e-8_dp, 1.0e-8_dp, 1.0e-5_dp, 1.0e-8_dp]
    !! A/EDIIS is a no-op for the two closed-shell cases: `diis_start` is
    !! already infinite there (see trc_scf.F90), so `diis_on` is true from
    !! the first post-damping iteration and `adiis_active` can never fire.
