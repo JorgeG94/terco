@@ -32,7 +32,7 @@ program check_nosym
    implicit none
 
    character(len=256) :: xyzfile, arg
-   integer :: nat, nsh, maxnp, nao, i, j, auxl
+   integer :: nat, nsh, maxnp, nao, i, j, k, auxl
    integer,  allocatable :: at_z(:), sh_l(:), sh_np(:)
    real(dp), allocatable :: at_r(:, :), zat(:)
    real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
@@ -41,7 +41,7 @@ program check_nosym
    type(trc_pairlist_t) :: pl
    type(trc_eri_t)      :: eri
    type(error_t) :: err
-   real(dp) :: worst, thresh
+   real(dp) :: worst, thresh, x
 
    thresh = 1.0e-10_dp
    if (command_argument_count() < 1) then
@@ -81,9 +81,20 @@ program check_nosym
    ! Any symmetric density will do; a deterministic one that is not sparse
    ! exercises more of the digestion than a converged one would.
    allocate (d(nao, nao), gs(nao, nao), gn(nao, nao))
+   !
+   ! Spelled out rather than as one expression. The one-liner,
+   ! 0.3*cos(real(2*i + 3*j)) + 0.1*real(min(i, j)), crashed nvfortran 26.5
+   ! and 26.9 at -fast -O3 with internal compiler errors that moved with
+   ! whatever else was in the build ("bitcast with differing sizes",
+   ! "unexpected type for intrinsic function"), always at this loop. The
+   ! values are the same to the bit.
+   !
    do j = 1, nao
       do i = 1, nao
-         d(i, j) = 0.3_dp*cos(real(2*i + 3*j, dp)) + 0.1_dp*real(min(i, j), dp)
+         x = real(2*i + 3*j, dp)
+         k = i
+         if (j < i) k = j
+         d(i, j) = 0.3_dp*cos(x) + 0.1_dp*real(k, dp)
       end do
    end do
    d = 0.5_dp*(d + transpose(d))
