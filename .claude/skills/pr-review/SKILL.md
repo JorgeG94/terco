@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review a terco pull request — correctness of integrals and SCF first, then the do concurrent / OpenACC rules, generated code, tests and performance claims. Use when asked to review a PR or a diff in this repository.
+description: Review a terco pull request — correctness of integrals and SCF first, then the do concurrent / OpenACC rules, generated code, tests, performance claims, and FORD-only doc comments (no Doxygen). Use when asked to review a PR or a diff in this repository.
 ---
 
 # Reviewing a terco pull request
@@ -20,7 +20,9 @@ standard Fortran.
    without its output, a caller not updated).
 2. Rank findings by severity: correctness, then GPU rules, then generated code,
    then tests, then performance claims, then style. Report problems, not
-   praise. If there are none, say so in one line.
+   praise. If there are none, say so in one line. Always also run the
+   documentation check in section 7: it is must-fix whatever else the PR
+   contains.
 3. Post line-specific findings as inline comments and one summary comment.
    Every finding states the concrete failure: which input, what goes wrong.
    Don't post a finding you can't tie to a line and a consequence.
@@ -138,6 +140,43 @@ terco's changes are justified by measurement. When a PR claims a speedup:
 - Naming follows the file: `trc_` module prefix, short physics names
   (`zeta`, `eta`, `pqx`) inside kernels.
 - Don't raise nits a formatter would settle.
+
+## 7. Extras: documentation is FORD, never Doxygen
+
+terco documents its Fortran with FORD. FORD attaches a `!!` block to the
+statement **before** it, so a doc comment goes on the line(s) after the entity:
+after a declaration (or inline, `real(dp) :: x  !! doc`), and indented one level
+after a procedure, module, submodule, program, type or interface header. The
+repository was converted from a Doxygen/FORD mix to FORD only, so don't let
+Doxygen back in. These rules are not style nits: report every violation as
+must-fix, even when the PR has nothing else wrong.
+
+- **No Doxygen markers or tags.** A `!>` or `!<` doc comment, or a Doxygen tag
+  (`@brief`, `@param`, `@return`, `@details`, `\param`, `\brief`, ...) in any
+  added line is a defect, in `src/`, `include/`, `test/` and in the Fortran
+  templates inside `scripts/gen_*.py`. Directives (`!$acc`, `!$omp`) are not
+  comments and aren't affected.
+- **No `!!` block above its entity.** That is Doxygen placement with FORD's
+  marker. FORD then attaches the text to the previous declaration, so it
+  silently documents the wrong variable. Check every added or moved `!!` block
+  against the line above it, not only the line below:
+  - a block between two declarations belongs to the one *above* it;
+  - a block above `module`, `program` or a procedure header attaches to
+    nothing useful and belongs under that header;
+  - a heading for a group of constants ("Cutoff profile") is a plain `!`
+    comment above the group, not a `!!` block.
+- **Generated code.** A Doxygen marker or a misplaced `!!` in `src/generated/`
+  is fixed in its generator, never in the output (see section 3).
+
+To find them, run these on the diff's added lines:
+
+```sh
+gh pr diff <N> | grep -nE '^\+.*!(>|<)'
+gh pr diff <N> | grep -nE '^\+.*[@\\](brief|param|returns?|details|note|see)\b'
+```
+
+Then read each added `!!` block with its surrounding lines to check its
+placement; grep cannot tell which declaration a block is about.
 
 ## Output
 
