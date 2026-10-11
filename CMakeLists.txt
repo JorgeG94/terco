@@ -83,6 +83,7 @@ set(TERCO_CUDA_VERSION
     CACHE STRING "CUDA version to build against (empty: nvfortran's default), e.g. 12.9")
 
 option(TERCO_ENABLE_TESTING "Build the correctness checks" ON)
+option(TERCO_BUILD_APP "Build and install the terco command line program" ON)
 #
 # Ranks. The Fock build splits the sorted quartet list across ranks -- every
 # nranks-th item from the rank -- and sums the result; one device per rank.
@@ -282,6 +283,11 @@ target_include_directories(
 if(TERCO_ENABLE_TESTING)
   enable_testing()
   add_subdirectory(test)
+endif()
+
+# The `terco` command line program (app/), installed alongside the library.
+if(TERCO_BUILD_APP)
+  add_subdirectory(app)
 endif()
 
 # ---------------------------------------------------------------------------

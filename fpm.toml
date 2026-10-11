@@ -40,6 +40,13 @@ module-naming = false
 [install]
 library = true
 
+# The `terco` command line program. Under fpm it finds basis sets by path or
+# through $TERCO_BASIS_PATH only; the CMake build also installs them.
+[[executable]]
+name = "terco"
+source-dir = "app"
+main = "main.F90"
+
 
 [dependencies]
 pic = { git = "https://github.com/JorgeG94/pic", tag = "v0.9.2" }
