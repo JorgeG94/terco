@@ -41,8 +41,8 @@ contains
 #include "inc/trc_df_3c_driver.inc"
 
 
-   !> (a|c) class (00|0) -- 1 VRR statements after the sieve.
    pure subroutine df_2c00(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (00|0) -- 1 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -108,8 +108,8 @@ contains
    end subroutine df_2c00
 
 
-   !> (a|c) class (00|1) -- 5 VRR statements after the sieve.
    pure subroutine df_2c01(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (00|1) -- 5 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -182,8 +182,8 @@ contains
    end subroutine df_2c01
 
 
-   !> (a|c) class (00|2) -- 15 VRR statements after the sieve.
    pure subroutine df_2c02(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (00|2) -- 15 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -273,8 +273,8 @@ contains
    end subroutine df_2c02
 
 
-   !> (a|c) class (00|3) -- 31 VRR statements after the sieve.
    pure subroutine df_2c03(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (00|3) -- 31 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -391,8 +391,8 @@ contains
    end subroutine df_2c03
 
 
-   !> (a|c) class (10|0) -- 5 VRR statements after the sieve.
    pure subroutine df_2c10(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (10|0) -- 5 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -465,8 +465,8 @@ contains
    end subroutine df_2c10
 
 
-   !> (a|c) class (10|1) -- 18 VRR statements after the sieve.
    pure subroutine df_2c11(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (10|1) -- 18 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -562,8 +562,8 @@ contains
    end subroutine df_2c11
 
 
-   !> (a|c) class (10|2) -- 52 VRR statements after the sieve.
    pure subroutine df_2c12(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (10|2) -- 52 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -716,8 +716,8 @@ contains
    end subroutine df_2c12
 
 
-   !> (a|c) class (10|3) -- 103 VRR statements after the sieve.
    pure subroutine df_2c13(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (10|3) -- 103 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -960,8 +960,8 @@ contains
    end subroutine df_2c13
 
 
-   !> (a|c) class (20|0) -- 15 VRR statements after the sieve.
    pure subroutine df_2c20(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (20|0) -- 15 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -1051,8 +1051,8 @@ contains
    end subroutine df_2c20
 
 
-   !> (a|c) class (20|1) -- 49 VRR statements after the sieve.
    pure subroutine df_2c21(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (20|1) -- 49 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -1203,8 +1203,8 @@ contains
    end subroutine df_2c21
 
 
-   !> (a|c) class (20|2) -- 130 VRR statements after the sieve.
    pure subroutine df_2c22(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (20|2) -- 130 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -1497,8 +1497,8 @@ contains
    end subroutine df_2c22
 
 
-   !> (a|c) class (20|3) -- 253 VRR statements after the sieve.
    pure subroutine df_2c23(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (20|3) -- 253 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -2023,8 +2023,8 @@ contains
    end subroutine df_2c23
 
 
-   !> (a|c) class (30|0) -- 31 VRR statements after the sieve.
    pure subroutine df_2c30(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (30|0) -- 31 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -2141,8 +2141,8 @@ contains
    end subroutine df_2c30
 
 
-   !> (a|c) class (30|1) -- 95 VRR statements after the sieve.
    pure subroutine df_2c31(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (30|1) -- 95 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -2374,8 +2374,8 @@ contains
    end subroutine df_2c31
 
 
-   !> (a|c) class (30|2) -- 251 VRR statements after the sieve.
    pure subroutine df_2c32(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (30|2) -- 251 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -2882,8 +2882,8 @@ contains
    end subroutine df_2c32
 
 
-   !> (a|c) class (30|3) -- 541 VRR statements after the sieve.
    pure subroutine df_2c33(nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out)
+      !! (a|c) class (30|3) -- 541 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_c
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
@@ -3923,8 +3923,8 @@ contains
    end subroutine df_2c33
 
 
-   !> (ab|c) class (00|0) -- 1 VRR statements after the sieve.
    pure subroutine df_3c000(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (00|0) -- 1 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -3990,8 +3990,8 @@ contains
    end subroutine df_3c000
 
 
-   !> (ab|c) class (00|1) -- 5 VRR statements after the sieve.
    pure subroutine df_3c001(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (00|1) -- 5 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -4064,8 +4064,8 @@ contains
    end subroutine df_3c001
 
 
-   !> (ab|c) class (00|2) -- 15 VRR statements after the sieve.
    pure subroutine df_3c002(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (00|2) -- 15 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -4155,8 +4155,8 @@ contains
    end subroutine df_3c002
 
 
-   !> (ab|c) class (00|3) -- 31 VRR statements after the sieve.
    pure subroutine df_3c003(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (00|3) -- 31 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -4273,8 +4273,8 @@ contains
    end subroutine df_3c003
 
 
-   !> (ab|c) class (01|0) -- 5 VRR statements after the sieve.
    pure subroutine df_3c010(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (01|0) -- 5 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -4350,8 +4350,8 @@ contains
    end subroutine df_3c010
 
 
-   !> (ab|c) class (01|1) -- 21 VRR statements after the sieve.
    pure subroutine df_3c011(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (01|1) -- 21 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -4459,8 +4459,8 @@ contains
    end subroutine df_3c011
 
 
-   !> (ab|c) class (01|2) -- 57 VRR statements after the sieve.
    pure subroutine df_3c012(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (01|2) -- 57 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -4637,8 +4637,8 @@ contains
    end subroutine df_3c012
 
 
-   !> (ab|c) class (01|3) -- 114 VRR statements after the sieve.
    pure subroutine df_3c013(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (01|3) -- 114 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -4925,8 +4925,8 @@ contains
    end subroutine df_3c013
 
 
-   !> (ab|c) class (02|0) -- 15 VRR statements after the sieve.
    pure subroutine df_3c020(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (02|0) -- 15 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -5031,8 +5031,8 @@ contains
    end subroutine df_3c020
 
 
-   !> (ab|c) class (02|1) -- 55 VRR statements after the sieve.
    pure subroutine df_3c021(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (02|1) -- 55 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -5233,8 +5233,8 @@ contains
    end subroutine df_3c021
 
 
-   !> (ab|c) class (02|2) -- 146 VRR statements after the sieve.
    pure subroutine df_3c022(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (02|2) -- 146 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -5636,8 +5636,8 @@ contains
    end subroutine df_3c022
 
 
-   !> (ab|c) class (02|3) -- 279 VRR statements after the sieve.
    pure subroutine df_3c023(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (02|3) -- 279 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -6344,8 +6344,8 @@ contains
    end subroutine df_3c023
 
 
-   !> (ab|c) class (10|0) -- 5 VRR statements after the sieve.
    pure subroutine df_3c100(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (10|0) -- 5 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -6418,8 +6418,8 @@ contains
    end subroutine df_3c100
 
 
-   !> (ab|c) class (10|1) -- 18 VRR statements after the sieve.
    pure subroutine df_3c101(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (10|1) -- 18 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -6515,8 +6515,8 @@ contains
    end subroutine df_3c101
 
 
-   !> (ab|c) class (10|2) -- 52 VRR statements after the sieve.
    pure subroutine df_3c102(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (10|2) -- 52 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -6669,8 +6669,8 @@ contains
    end subroutine df_3c102
 
 
-   !> (ab|c) class (10|3) -- 103 VRR statements after the sieve.
    pure subroutine df_3c103(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (10|3) -- 103 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -6913,8 +6913,8 @@ contains
    end subroutine df_3c103
 
 
-   !> (ab|c) class (11|0) -- 15 VRR statements after the sieve.
    pure subroutine df_3c110(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (11|0) -- 15 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -7016,8 +7016,8 @@ contains
    end subroutine df_3c110
 
 
-   !> (ab|c) class (11|1) -- 55 VRR statements after the sieve.
    pure subroutine df_3c111(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (11|1) -- 55 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -7209,8 +7209,8 @@ contains
    end subroutine df_3c111
 
 
-   !> (ab|c) class (11|2) -- 144 VRR statements after the sieve.
    pure subroutine df_3c112(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (11|2) -- 144 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -7592,8 +7592,8 @@ contains
    end subroutine df_3c112
 
 
-   !> (ab|c) class (11|3) -- 277 VRR statements after the sieve.
    pure subroutine df_3c113(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (11|3) -- 277 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -8268,8 +8268,8 @@ contains
    end subroutine df_3c113
 
 
-   !> (ab|c) class (12|0) -- 33 VRR statements after the sieve.
    pure subroutine df_3c120(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (12|0) -- 33 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -8441,8 +8441,8 @@ contains
    end subroutine df_3c120
 
 
-   !> (ab|c) class (12|1) -- 111 VRR statements after the sieve.
    pure subroutine df_3c121(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (12|1) -- 111 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -8853,8 +8853,8 @@ contains
    end subroutine df_3c121
 
 
-   !> (ab|c) class (12|2) -- 299 VRR statements after the sieve.
    pure subroutine df_3c122(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (12|2) -- 299 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -9744,8 +9744,8 @@ contains
    end subroutine df_3c122
 
 
-   !> (ab|c) class (12|3) -- 610 VRR statements after the sieve.
    pure subroutine df_3c123(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (12|3) -- 610 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -11405,8 +11405,8 @@ contains
    end subroutine df_3c123
 
 
-   !> (ab|c) class (20|0) -- 15 VRR statements after the sieve.
    pure subroutine df_3c200(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (20|0) -- 15 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -11496,8 +11496,8 @@ contains
    end subroutine df_3c200
 
 
-   !> (ab|c) class (20|1) -- 49 VRR statements after the sieve.
    pure subroutine df_3c201(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (20|1) -- 49 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -11648,8 +11648,8 @@ contains
    end subroutine df_3c201
 
 
-   !> (ab|c) class (20|2) -- 130 VRR statements after the sieve.
    pure subroutine df_3c202(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (20|2) -- 130 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -11942,8 +11942,8 @@ contains
    end subroutine df_3c202
 
 
-   !> (ab|c) class (20|3) -- 253 VRR statements after the sieve.
    pure subroutine df_3c203(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (20|3) -- 253 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -12468,8 +12468,8 @@ contains
    end subroutine df_3c203
 
 
-   !> (ab|c) class (21|0) -- 33 VRR statements after the sieve.
    pure subroutine df_3c210(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (21|0) -- 33 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -12614,8 +12614,8 @@ contains
    end subroutine df_3c210
 
 
-   !> (ab|c) class (21|1) -- 106 VRR statements after the sieve.
    pure subroutine df_3c211(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (21|1) -- 106 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -12939,8 +12939,8 @@ contains
    end subroutine df_3c211
 
 
-   !> (ab|c) class (21|2) -- 286 VRR statements after the sieve.
    pure subroutine df_3c212(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (21|2) -- 286 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -13653,8 +13653,8 @@ contains
    end subroutine df_3c212
 
 
-   !> (ab|c) class (21|3) -- 591 VRR statements after the sieve.
    pure subroutine df_3c213(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (21|3) -- 591 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -15023,8 +15023,8 @@ contains
    end subroutine df_3c213
 
 
-   !> (ab|c) class (22|0) -- 61 VRR statements after the sieve.
    pure subroutine df_3c220(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (22|0) -- 61 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -15300,8 +15300,8 @@ contains
    end subroutine df_3c220
 
 
-   !> (ab|c) class (22|1) -- 205 VRR statements after the sieve.
    pure subroutine df_3c221(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (22|1) -- 205 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -16049,8 +16049,8 @@ contains
    end subroutine df_3c221
 
 
-   !> (ab|c) class (22|2) -- 532 VRR statements after the sieve.
    pure subroutine df_3c222(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (22|2) -- 532 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
@@ -17708,8 +17708,8 @@ contains
    end subroutine df_3c222
 
 
-   !> (ab|c) class (22|3) -- 1069 VRR statements after the sieve.
    pure subroutine df_3c223(npp, ppz, ppk, ppp, ppa, abx, aby, abz, nprim_c, ec, cc_, rc, out)
+      !! (ab|c) class (22|3) -- 1069 VRR statements after the sieve.
       !$acc routine seq
       integer,  intent(in)  :: npp, nprim_c
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)

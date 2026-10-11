@@ -48,20 +48,20 @@ program check_spherical
    implicit none
 
    real(dp), parameter :: TOL_E = 1.0e-8_dp
-   !> UKS/PBE0 on the open-shell OH radical only. Measured, not assumed:
-   !> re-running pyscf's own UKS('PBE0') on oh.xyz/cc-pVDZ three times,
-   !> nothing else changed, gave -75.65268138238153, -75.6526813035182,
-   !> -75.65268129442721 -- a 9e-8 spread from pyscf against ITSELF,
-   !> presumably summation-order noise in a multi-threaded reduction over
-   !> the grid (the restricted, closed-shell PBE0 cases below show no such
-   !> spread and pass at TOL_E comfortably, to 1e-10 or better, both here
-   !> and for RHF/UHF on this same OH geometry, which has no grid at all).
-   !> terco's UPBE0 energy sits at -75.652681029867, 2.6e-7 from the
-   !> literal reference below and well inside that measured noise cloud --
-   !> this is the oracle's own irreproducibility, not this feature's, and
-   !> the tolerance says so explicitly rather than silently covering it
-   !> with one number loosened for every case.
    real(dp), parameter :: TOL_E_OPEN_DFT = 5.0e-7_dp
+   !! UKS/PBE0 on the open-shell OH radical only. Measured, not assumed:
+   !! re-running pyscf's own UKS('PBE0') on oh.xyz/cc-pVDZ three times,
+   !! nothing else changed, gave -75.65268138238153, -75.6526813035182,
+   !! -75.65268129442721 -- a 9e-8 spread from pyscf against ITSELF,
+   !! presumably summation-order noise in a multi-threaded reduction over
+   !! the grid (the restricted, closed-shell PBE0 cases below show no such
+   !! spread and pass at TOL_E comfortably, to 1e-10 or better, both here
+   !! and for RHF/UHF on this same OH geometry, which has no grid at all).
+   !! terco's UPBE0 energy sits at -75.652681029867, 2.6e-7 from the
+   !! literal reference below and well inside that measured noise cloud --
+   !! this is the oracle's own irreproducibility, not this feature's, and
+   !! the tolerance says so explicitly rather than silently covering it
+   !! with one number loosened for every case.
 
    type :: case_t
       character(len=16) :: xyz

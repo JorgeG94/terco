@@ -73,10 +73,10 @@ contains
       real(dp), intent(in) :: at_r(3, natm)
       type(trc_basis_t), intent(out) :: b
       type(error_t), intent(inout) :: error
-      !> Force the Cartesian AO space regardless of what the file says --
-      !> trc_scf_options_t%force_cartesian's route in. Default .false.:
-      !> follow the basis, which is what every existing caller gets.
       logical, intent(in), optional :: force_cart
+      !! Force the Cartesian AO space regardless of what the file says --
+      !! trc_scf_options_t%force_cartesian's route in. Default .false.:
+      !! follow the basis, which is what every existing caller gets.
 
       type(json_file) :: json
       type(element_t), allocatable :: el(:)
@@ -208,11 +208,11 @@ contains
       integer, intent(in) :: z
       type(element_t), intent(out) :: el
       type(error_t), intent(inout) :: error
-      !> Skip the wavefunction normalisation. For a set whose coefficients
-      !> are not wavefunction coefficients -- a fitted potential lists
-      !> CHARGES, and normalising those to unit overlap would be a category
-      !> error that still produces plausible numbers.
       logical, intent(in), optional :: raw
+      !! Skip the wavefunction normalisation. For a set whose coefficients
+      !! are not wavefunction coefficients -- a fitted potential lists
+      !! CHARGES, and normalising those to unit overlap would be a category
+      !! error that still produces plausible numbers.
 
       character(len=:), allocatable :: key, sp, text, ftype
       integer, allocatable :: lam(:)
@@ -383,12 +383,12 @@ contains
       end do
    end subroutine normalise
 
-   !> Duplicated from trc_api.F90 (and trc_ao_norm.F90, and trc_batch.F90)
-   !> rather than imported -- see those modules' own comments on the same
-   !> duplication. `build` folds this in once; this routine has to undo the
-   !> complete BSE/pyscf normalisation's OWN copy of it first, so that the
-   !> two folds net to exactly one.
    pure real(dp) function common_fac_sp(l)
+      !! Duplicated from trc_api.F90 (and trc_ao_norm.F90, and trc_batch.F90)
+      !! rather than imported -- see those modules' own comments on the same
+      !! duplication. `build` folds this in once; this routine has to undo the
+      !! complete BSE/pyscf normalisation's OWN copy of it first, so that the
+      !! two folds net to exactly one.
       integer, intent(in) :: l
       select case (l)
       case (0); common_fac_sp = 0.282094791773878143_dp

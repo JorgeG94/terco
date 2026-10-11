@@ -48,14 +48,14 @@ contains
 #include "inc/trc_1e_driver.inc"
 
 
-   !> (0|0) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_00(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (0|0) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -149,14 +149,14 @@ contains
    end subroutine one_e_00
 
 
-   !> (0|1) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_01(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (0|1) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -274,14 +274,14 @@ contains
    end subroutine one_e_01
 
 
-   !> (0|2) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_02(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (0|2) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -446,14 +446,14 @@ contains
    end subroutine one_e_02
 
 
-   !> (1|0) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_10(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (1|0) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -574,14 +574,14 @@ contains
    end subroutine one_e_10
 
 
-   !> (1|1) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_11(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (1|1) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -767,14 +767,14 @@ contains
    end subroutine one_e_11
 
 
-   !> (1|2) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_12(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (1|2) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -1083,14 +1083,14 @@ contains
    end subroutine one_e_12
 
 
-   !> (2|0) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_20(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (2|0) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -1252,14 +1252,14 @@ contains
    end subroutine one_e_20
 
 
-   !> (2|1) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_21(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (2|1) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -1547,14 +1547,14 @@ contains
    end subroutine one_e_21
 
 
-   !> (2|2) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_22(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! (2|2) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -2077,10 +2077,10 @@ contains
    end subroutine one_e_22
 
 
-   !> Dispatch on the class. Host-side call, so the module boundary the
-   !> kernels care about is not crossed here.
    pure subroutine one_e_dispatch(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, &
                                   ra, rb, natm, zatm, ratm, sout, tout, vout)
+      !! Dispatch on the class. Host-side call, so the module boundary the
+      !! kernels care about is not crossed here.
       !$acc routine seq
       integer,  intent(in)  :: la, lb, nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)

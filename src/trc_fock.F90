@@ -91,10 +91,10 @@ module trc_eri
       integer :: nao_w = 0
       logical :: on_device = .false.
       integer :: nlaunch = 0
-      !> Quartets that survive both screens in the last build, counted only
-      !> when fock_resident is asked for it. Diagnostic: it costs a full
-      !> extra enumeration pass.
       integer(kind=8) :: nkept = 0
+      !! Quartets that survive both screens in the last build, counted only
+      !! when fock_resident is asked for it. Diagnostic: it costs a full
+      !! extra enumeration pass.
       integer(kind=8) :: nwork = 0
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then
@@ -191,9 +191,9 @@ contains
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
-   !> Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
-   !> unless TRC_DECON_CUTOFF says otherwise.
    real(dp) function decon_cutoff()
+      !! Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
+      !! unless TRC_DECON_CUTOFF says otherwise.
       character(len=32) :: e
       integer :: ios
       e = ' '
@@ -205,11 +205,11 @@ contains
       end if
    end function decon_cutoff
 
-   !> Smallest compact primitive count a general contraction must have for
-   !> the split to be worth its tightened screen. TRC_DECON_MINPRIM
-   !> overrides it, so the gate can be swept without a rebuild; 0 splits
-   !> every group, as this module did before the gate existed.
    integer function decon_minprim()
+      !! Smallest compact primitive count a general contraction must have for
+      !! the split to be worth its tightened screen. TRC_DECON_MINPRIM
+      !! overrides it, so the gate can be swept without a rebuild; 0 splits
+      !! every group, as this module did before the gate existed.
       character(len=32) :: e
       integer :: ios
       e = ' '
@@ -378,33 +378,33 @@ contains
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
-      !> j*J - k*K/2 for the total density, plus Hcore if given.
       real(dp), intent(out) :: gmat(this%nao, this%nao)
-      !> Fraction of exact exchange. One is Hartree-Fock and the default; zero
-      !> is pure DFT exchange; a hybrid is between. Present so a Kohn-Sham
-      !> build needs no second routine, and because the coupled-perturbed
-      !> equations pass it explicitly.
+      !! j*J - k*K/2 for the total density, plus Hcore if given.
       real(dp), intent(in), optional :: k_scale
-      !> Fraction of the Coulomb term, default one. Zero is what the second
-      !> pass of a range-separated hybrid wants: long-range exchange and
-      !> nothing else.
+      !! Fraction of exact exchange. One is Hartree-Fock and the default; zero
+      !! is pure DFT exchange; a hybrid is between. Present so a Kohn-Sham
+      !! build needs no second routine, and because the coupled-perturbed
+      !! equations pass it explicitly.
       real(dp), intent(in), optional :: j_scale
-      !> Core Hamiltonian. If present the result is the full Fock matrix
-      !> rather than its two-electron part -- the caller almost always wants
-      !> that, and making them add it themselves is friction for nothing.
+      !! Fraction of the Coulomb term, default one. Zero is what the second
+      !! pass of a range-separated hybrid wants: long-range exchange and
+      !! nothing else.
       real(dp), intent(in), optional :: hcore(this%nao, this%nao)
-      !> Weight the Schwarz bound by the density it multiplies before
-      !> screening. Default true, which is what an SCF wants: a quartet whose
-      !> density elements are all negligible contributes nothing however large
-      !> its integral.
-      !>
-      !> A COUPLED-PERTURBED SOLVE MUST PASS FALSE. Its density is a trial
-      !> vector the solver drives towards zero, so a screen keyed on the
-      !> density's magnitude tightens as the solve proceeds -- the operator
-      !> stops being the same linear map from one matvec to the next and the
-      !> iteration cannot converge. False recovers the plain Schwarz screen,
-      !> which depends on the basis alone and leaves the operator fixed.
+      !! Core Hamiltonian. If present the result is the full Fock matrix
+      !! rather than its two-electron part -- the caller almost always wants
+      !! that, and making them add it themselves is friction for nothing.
       logical, intent(in), optional :: density_screen
+      !! Weight the Schwarz bound by the density it multiplies before
+      !! screening. Default true, which is what an SCF wants: a quartet whose
+      !! density elements are all negligible contributes nothing however large
+      !! its integral.
+      !!
+      !! A COUPLED-PERTURBED SOLVE MUST PASS FALSE. Its density is a trial
+      !! vector the solver drives towards zero, so a screen keyed on the
+      !! density's magnitude tightens as the solve proceeds -- the operator
+      !! stops being the same linear map from one matvec to the next and the
+      !! iteration cannot converge. False recovers the plain Schwarz screen,
+      !! which depends on the basis alone and leaves the operator fixed.
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
@@ -497,14 +497,14 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
 
-   !> Sum a matrix over the ranks, in place, every rank receiving the total.
-   !>
-   !> Then rank 0's copy is broadcast. An allreduce is not obliged to leave
-   !> the same bits on every rank -- 1e-13 apart in practice -- and an SCF
-   !> iterated from bit-different matrices on different ranks drifts apart,
-   !> slowly when it converges and catastrophically when it does not. The
-   !> broadcast costs one more nao^2 message and makes the ranks identical.
    subroutine sum_ranks(this, g, n)
+      !! Sum a matrix over the ranks, in place, every rank receiving the total.
+      !!
+      !! Then rank 0's copy is broadcast. An allreduce is not obliged to leave
+      !! the same bits on every rank -- 1e-13 apart in practice -- and an SCF
+      !! iterated from bit-different matrices on different ranks drifts apart,
+      !! slowly when it converges and catastrophically when it does not. The
+      !! broadcast costs one more nao^2 message and makes the ranks identical.
       class(trc_eri_t), intent(in) :: this
       integer, intent(in) :: n
       real(dp), intent(inout) :: g(n)
@@ -537,18 +537,18 @@ contains
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
       real(dp), intent(out) :: gmat(this%nao, this%nao)
       real(dp), intent(in), optional :: k_scale, j_scale
-      !> Weight the Schwarz bound by the density it multiplies before
-      !> screening. Default true, which is what an SCF wants: a quartet whose
-      !> density elements are all negligible contributes nothing however large
-      !> its integral.
-      !>
-      !> A COUPLED-PERTURBED SOLVE MUST PASS FALSE. Its density is a trial
-      !> vector the solver drives towards zero, so a screen keyed on the
-      !> density's magnitude tightens as the solve proceeds -- the operator
-      !> stops being the same linear map from one matvec to the next and the
-      !> iteration cannot converge. False recovers the plain Schwarz screen,
-      !> which depends on the basis alone and leaves the operator fixed.
       logical, intent(in), optional :: density_screen
+      !! Weight the Schwarz bound by the density it multiplies before
+      !! screening. Default true, which is what an SCF wants: a quartet whose
+      !! density elements are all negligible contributes nothing however large
+      !! its integral.
+      !!
+      !! A COUPLED-PERTURBED SOLVE MUST PASS FALSE. Its density is a trial
+      !! vector the solver drives towards zero, so a screen keyed on the
+      !! density's magnitude tightens as the solve proceeds -- the operator
+      !! stops being the same linear map from one matvec to the next and the
+      !! iteration cannot converge. False recovers the plain Schwarz screen,
+      !! which depends on the basis alone and leaves the operator fixed.
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
@@ -645,9 +645,9 @@ contains
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
       real(dp), intent(out) :: gmat(this%nao, this%nao)
       real(dp), intent(in), optional :: k_scale, j_scale
-      !> Weight the Schwarz bound by the density before screening (default
-      !> true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
       logical, intent(in), optional :: density_screen
+      !! Weight the Schwarz bound by the density before screening (default
+      !! true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
       !! Also count the quartets that survive screening, into this%nkept.
       !! A full extra pass over the work list, so it is opt-in.
       logical, intent(in), optional :: count_survivors
@@ -778,14 +778,14 @@ contains
    ! shell pair, each scanning its own block, writing `dsh` in place while it
    ! is device-resident.
    !
-   !> `density_screen` with its default applied, in one place.
-   !>
-   !> Written as a function rather than repeated three times because the
-   !> default is the DANGEROUS one for a response solve: a caller that forgets
-   !> the argument gets a screen that changes with the trial vector, and a
-   !> CPHF that will not converge for a reason nothing in the output points
-   !> at. One place to read the default is one place to get it wrong.
    pure logical function screen_on(flag)
+      !! `density_screen` with its default applied, in one place.
+      !!
+      !! Written as a function rather than repeated three times because the
+      !! default is the DANGEROUS one for a response solve: a caller that forgets
+      !! the argument gets a screen that changes with the trial vector, and a
+      !! CPHF that will not converge for a reason nothing in the output points
+      !! at. One place to read the default is one place to get it wrong.
       logical, intent(in), optional :: flag
       screen_on = .true.
       if (present(flag)) screen_on = flag
@@ -865,14 +865,14 @@ contains
       real(dp), intent(in)  :: dmats(ndens, this%nao, this%nao)
       real(dp), intent(out) :: gmats(ndens, this%nao, this%nao)
       real(dp), intent(in), optional :: k_scale, j_scale
-      !> Weight the Schwarz bound by the density before screening (default
-      !> true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
-      !>
-      !> Over a batch the bound is the maximum across every density, so all of
-      !> them see the same quartets whichever way this is set; that is what
-      !> keeps a batch bit-comparable with the same densities passed one at a
-      !> time.
       logical, intent(in), optional :: density_screen
+      !! Weight the Schwarz bound by the density before screening (default
+      !! true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
+      !!
+      !! Over a batch the bound is the maximum across every density, so all of
+      !! them see the same quartets whichever way this is set; that is what
+      !! keeps a batch bit-comparable with the same densities passed one at a
+      !! time.
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)

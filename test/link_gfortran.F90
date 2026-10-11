@@ -358,8 +358,8 @@ contains
       deallocate (atm, bas, env)
    end subroutine build_libcint_arrays
 
-   !> Which atom a shell sits on, by matching its centre.
    integer function atom_of(is)
+      !! Which atom a shell sits on, by matching its centre.
       integer, intent(in) :: is
       integer :: ia
       atom_of = 1

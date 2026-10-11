@@ -1,24 +1,24 @@
-!> Bit-reproducible, GPU-offloadable transcendental functions for MOM6, developed
-!! standalone in bit_repro_adventure.  The five public functions live HERE, in
-!! full, so this file reads as the algorithms; the arithmetic machinery they use
-!! (exact-rounding primitives, the dd log2/exp2 core, binary exponentiation, the
-!! cuberoot rescalers) is implemented in the bit_repro_helpers submodule and is
-!! unreachable from outside.
-!!
-!! Ground rules (see README.md):
-!!  - bitwise identical results on CPU and GPU, any rank count, any compiler we use
-!!  - IEEE-compliant handling of specials (0, -0, Inf, NaN, denormals)
-!!  - elemental + `!$omp declare target` so everything drops into `do concurrent`
-!!  - as fast as possible subject to all of the above
 module bit_repro
+   !! Bit-reproducible, GPU-offloadable transcendental functions for MOM6, developed
+   !! standalone in bit_repro_adventure.  The five public functions live HERE, in
+   !! full, so this file reads as the algorithms; the arithmetic machinery they use
+   !! (exact-rounding primitives, the dd log2/exp2 core, binary exponentiation, the
+   !! cuberoot rescalers) is implemented in the bit_repro_helpers submodule and is
+   !! unreachable from outside.
+   !!
+   !! Ground rules (see README.md):
+   !!  - bitwise identical results on CPU and GPU, any rank count, any compiler we use
+   !!  - IEEE-compliant handling of specials (0, -0, Inf, NaN, denormals)
+   !!  - elemental + `!$omp declare target` so everything drops into `do concurrent`
+   !!  - as fast as possible subject to all of the above
 
 use, intrinsic :: iso_fortran_env, only : int64, real64
 implicit none ; private
 
-!> Working precision: the library is kind-explicit (every declaration and
+integer, parameter :: wp = real64
+!! Working precision: the library is kind-explicit (every declaration and
 !! literal carries wp), so NO default-real promotion flag (-r8,
 !! -fdefault-real-8) is needed on any compiler.
-integer, parameter :: wp = real64
 
 
 real(wp), parameter :: erf_mac(0:15) = [ &
@@ -77,9 +77,9 @@ real(wp), parameter :: t2lo(0:31) = [ &
     8.199010020581497e-17_wp, -1.851380418263111e-17_wp, 2.960140695448873e-17_wp, 1.8227458427912087e-17_wp, &
     3.283107224245627e-17_wp, -6.122763413004143e-17_wp, -1.0619946056195963e-16_wp, 8.960767791036668e-17_wp ]
 
-!> Shared constants for the erfc family (scalar, branch-free, and 8-wide
-!! variants) and its inlined exp2 cores.
 real(wp), parameter :: log2e_hi_c = 1.4426950408889634_wp
+!! Shared constants for the erfc family (scalar, branch-free, and 8-wide
+!! variants) and its inlined exp2 cores.
 real(wp), parameter :: log2e_lo_c = 2.0355273740931033e-17_wp
 real(wp), parameter :: e2c1_c = 0.6931471805599453_wp,    e2c2_c = 0.24022650695910072_wp
 real(wp), parameter :: e2c3_c = 0.05550410866482158_wp,   e2c4_c = 0.009618129107628477_wp
@@ -88,11 +88,11 @@ real(wp), parameter :: two_m64_c = 2.0_wp**(-64)
 
 public :: exp_reprod, log_reprod, pow_reprod, pow_reprod_explog, cuberoot, erfc_reprod, erfc_reprod_bf, erfc_reprod_v
 
-!> Private machinery, implemented in the bit_repro_helpers submodule.
 interface
+   !! Private machinery, implemented in the bit_repro_helpers submodule.
 
-  !> x**n by binary exponentiation (n<0 via one reciprocal); ipow(x,2) == RN(x*x)
   elemental module function ipow(x, n) result(p)
+     !! x**n by binary exponentiation (n<0 via one reciprocal); ipow(x,2) == RN(x*x)
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in) :: x
@@ -101,25 +101,25 @@ interface
   end function ipow
 
 
-  !> Knuth two_sum: s + e == a + b exactly, branch-free
   elemental module subroutine two_sum(a, b, s, e)
+     !! Knuth two_sum: s + e == a + b exactly, branch-free
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in)  :: a, b
     real(wp), intent(out) :: s, e
   end subroutine two_sum
 
-  !> Dekker/Veltkamp two_prod (no FMA): p + e == a*b exactly
   elemental module subroutine two_prod(a, b, p, e)
+     !! Dekker/Veltkamp two_prod (no FMA): p + e == a*b exactly
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in)  :: a, b
     real(wp), intent(out) :: p, e
   end subroutine two_prod
 
-  !> Denormal-safe exponent()/fraction() split (bit-identical to the intrinsics
-  !! for normal x; see the helper for why the intrinsics cannot be used raw)
   elemental module subroutine norm_split(x, m, k)
+     !! Denormal-safe exponent()/fraction() split (bit-identical to the intrinsics
+     !! for normal x; see the helper for why the intrinsics cannot be used raw)
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in)  :: x
@@ -127,24 +127,24 @@ interface
     integer, intent(out) :: k
   end subroutine norm_split
 
-  !> log2(x) as a double-double pair, ~2**-85 relative, finite x > 0
   elemental module subroutine log2_dd(x, h, l)
+     !! log2(x) as a double-double pair, ~2**-85 relative, finite x > 0
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in)  :: x
     real(wp), intent(out) :: h, l
   end subroutine log2_dd
 
-  !> 2**(h+l) for a double-double exponent: table + short polynomial
   elemental module function exp2_pair(h, l) result(e2)
+     !! 2**(h+l) for a double-double exponent: table + short polynomial
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in) :: h, l
     real(wp) :: e2
   end function exp2_pair
 
-  !> Rescale for cuberoot: |a| -> [0.125,1) plus integral cube-root exponent + sign
   pure module subroutine rescale_cbrt(a, x, e_r, s_a)
+     !! Rescale for cuberoot: |a| -> [0.125,1) plus integral cube-root exponent + sign
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in) :: a
@@ -152,8 +152,8 @@ interface
     integer(kind=int64), intent(out) :: e_r, s_a
   end subroutine rescale_cbrt
 
-  !> Undo rescale_cbrt
   pure module function descale(x, e_a, s_a) result(a)
+     !! Undo rescale_cbrt
     !$omp declare target
     !$acc routine seq
     real(wp), intent(in) :: x
@@ -165,16 +165,16 @@ end interface
 
 contains
 
-!> Bit-reproducible exp(x): dd multiply by log2(e), then the table-based 2**r
-!! core shared with pow_reprod.  Full IEEE specials: NaN passes through,
-!! exp(+Inf)=Inf, exp(-Inf)=0, saturating clamps protect the integer reduction.
-!! NOTE: this DEPARTS bitwise from the in-tree tidal-port exp_reprod (Cody-Waite
-!! + Taylor); adopting it into MOM6 requires re-gating the tidal baseline.
 elemental function exp_reprod(x) result(ex)
+   !! Bit-reproducible exp(x): dd multiply by log2(e), then the table-based 2**r
+   !! core shared with pow_reprod.  Full IEEE specials: NaN passes through,
+   !! exp(+Inf)=Inf, exp(-Inf)=0, saturating clamps protect the integer reduction.
+   !! NOTE: this DEPARTS bitwise from the in-tree tidal-port exp_reprod (Cody-Waite
+   !! + Taylor); adopting it into MOM6 requires re-gating the tidal baseline.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x  !< The argument of the exponential
-  real(wp) :: ex             !< The reproducible exponential of x
+  real(wp), intent(in) :: x  !! The argument of the exponential
+  real(wp) :: ex             !! The reproducible exponential of x
 
   ! log2(e) = 1/ln(2) as a double-double constant (exact halves of 2/ln2)
   real(wp), parameter :: log2e_hi = 1.4426950408889634_wp
@@ -196,18 +196,18 @@ elemental function exp_reprod(x) result(ex)
   endif
 end function exp_reprod
 
-!> Bit-reproducible natural log, rebuilt on the double-double log2 core:
-!! ln(x) = (h+l)*ln2 with the leading product carried through two_prod.  This
-!! replaces the earlier single-double atanh evaluation, whose rounding shows
-!! at ~3 ulp (52% correctly rounded near x=1); the dd core is the same one the
-!! pow general path uses, which measures ~1 ulp there.  IEEE specials:
-!! log(0) = -Inf raising divideByZero, log(negative) = NaN raising invalid,
-!! log(+Inf) = +Inf, NaN passes through; denormals via norm_split.
 elemental function log_reprod(x) result(lx)
+   !! Bit-reproducible natural log, rebuilt on the double-double log2 core:
+   !! ln(x) = (h+l)*ln2 with the leading product carried through two_prod.  This
+   !! replaces the earlier single-double atanh evaluation, whose rounding shows
+   !! at ~3 ulp (52% correctly rounded near x=1); the dd core is the same one the
+   !! pow general path uses, which measures ~1 ulp there.  IEEE specials:
+   !! log(0) = -Inf raising divideByZero, log(negative) = NaN raising invalid,
+   !! log(+Inf) = +Inf, NaN passes through; denormals via norm_split.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x  !< The argument of the logarithm
-  real(wp) :: lx             !< The reproducible natural logarithm of x
+  real(wp), intent(in) :: x  !! The argument of the logarithm
+  real(wp) :: lx             !! The reproducible natural logarithm of x
 
   ! ln(2) as a double-double constant
   real(wp), parameter :: ln2_hi = 0.6931471805599453_wp
@@ -229,40 +229,40 @@ elemental function log_reprod(x) result(lx)
   endif
 end function log_reprod
 
-!> The ORIGINAL (reverted-MEKE) x**y via exp_reprod(y*log_reprod(x)), kept for
-!! comparison.  Known weak: the error of y*log(x) is amplified by exp, and
-!! integral y is not special-cased, so pow_reprod_explog(x,2.0) /= x*x.
 elemental function pow_reprod_explog(x, y) result(p)
+   !! The ORIGINAL (reverted-MEKE) x**y via exp_reprod(y*log_reprod(x)), kept for
+   !! comparison.  Known weak: the error of y*log(x) is amplified by exp, and
+   !! integral y is not special-cased, so pow_reprod_explog(x,2.0) /= x*x.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x  !< The base, x > 0
-  real(wp), intent(in) :: y  !< The exponent
-  real(wp) :: p              !< The reproducible x**y
+  real(wp), intent(in) :: x  !! The base, x > 0
+  real(wp), intent(in) :: y  !! The exponent
+  real(wp) :: p              !! The reproducible x**y
 
   p = exp_reprod(y * log_reprod(x))
 end function pow_reprod_explog
 
-!> Bit-reproducible x**y, v2.  Built only from IEEE-exact operations (+,-,*,/,
-!! sqrt, integer bit manipulation), so it is reproducible across CPU/GPU and
-!! compilers by construction (compile WITHOUT fma contraction).
-!!
-!! Paths:
-!!  - full IEEE-754 pow special-value matrix (0, -0, +-Inf, NaN, x<0)
-!!  - integral y, |y| <= 16: binary exponentiation.  pow(x,2.0) == RN(x*x)
-!!    exactly, so sqrt(pow_reprod(x,2.0)) == x by the IEEE sqrt round-trip
-!!    theorem.
-!!  - y = +-0.5, +-0.25: IEEE sqrt / sqrt(sqrt) -- the MEKE exponents become
-!!    one or two hardware square roots.
-!!  - half-integral y, |y| <= 16.5: ipow * sqrt.
-!!  - general y: double-double log2(x) (Dekker/Veltkamp two_prod, no FMA),
-!!    dd multiply by y, then a 2**r polynomial.  Faithful (<=1 ulp) for the
-!!    moderate |y| MOM6 uses; error grows slowly as ~|y|*2**-60 beyond that.
 elemental function pow_reprod(x, y) result(p)
+   !! Bit-reproducible x**y, v2.  Built only from IEEE-exact operations (+,-,*,/,
+   !! sqrt, integer bit manipulation), so it is reproducible across CPU/GPU and
+   !! compilers by construction (compile WITHOUT fma contraction).
+   !!
+   !! Paths:
+   !!  - full IEEE-754 pow special-value matrix (0, -0, +-Inf, NaN, x<0)
+   !!  - integral y, |y| <= 16: binary exponentiation.  pow(x,2.0) == RN(x*x)
+   !!    exactly, so sqrt(pow_reprod(x,2.0)) == x by the IEEE sqrt round-trip
+   !!    theorem.
+   !!  - y = +-0.5, +-0.25: IEEE sqrt / sqrt(sqrt) -- the MEKE exponents become
+   !!    one or two hardware square roots.
+   !!  - half-integral y, |y| <= 16.5: ipow * sqrt.
+   !!  - general y: double-double log2(x) (Dekker/Veltkamp two_prod, no FMA),
+   !!    dd multiply by y, then a 2**r polynomial.  Faithful (<=1 ulp) for the
+   !!    moderate |y| MOM6 uses; error grows slowly as ~|y|*2**-60 beyond that.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x  !< The base
-  real(wp), intent(in) :: y  !< The exponent
-  real(wp) :: p              !< The reproducible x**y
+  real(wp), intent(in) :: x  !! The base
+  real(wp), intent(in) :: y  !! The exponent
+  real(wp) :: p              !! The reproducible x**y
 
   real(wp) :: ax     ! |x|
   real(wp) :: sgn    ! Sign to apply to the result (negative base, odd integral y)
@@ -357,27 +357,27 @@ elemental function pow_reprod(x, y) result(p)
   endif
 end function pow_reprod
 
-!> Bit-reproducible complementary error function.  Representation:
-!!  - |x| <= 0.46875: erfc = 1 - x*P(x**2) with the exact erf Maclaurin
-!!    coefficients (1-erf amplification is bounded by ~2 here; beyond it the
-!!    subtraction is the classic catastrophic cancellation)
-!!  - 0.46875 < |x| <= 2 and 2 < |x| <= 7: Chebyshev fits (Clenshaw, fixed
-!!    order) of the scaled function erfcx(x) = erfc(x)*exp(x**2), times
-!!    exp_reprod(-x**2) with the argument squared EXACTLY via two_prod and the
-!!    low part applied as a (1-e) correction (dropping it costs ~1e3 ulp near
-!!    the underflow end)
-!!  - 7 < |x| < 28: asymptotic series (exact (2n-1)!!/(-2)**n coefficients)
-!!    times the same exp core; gradual underflow comes out of the IEEE
-!!    arithmetic naturally
-!!  - erfc(x) = 2 - erfc(-x) for negative x (addition, no cancellation);
-!!    clamps to 2 / 0 past +-28 cover +-Inf; NaN passes through.
-!! Coefficients generated by tools/gen_erfc.py (stdlib Decimal, 100 digits,
-!! fit residuals ~1e-21, verified in-generator).
 elemental function erfc_reprod(x) result(ec)
+   !! Bit-reproducible complementary error function.  Representation:
+   !!  - |x| <= 0.46875: erfc = 1 - x*P(x**2) with the exact erf Maclaurin
+   !!    coefficients (1-erf amplification is bounded by ~2 here; beyond it the
+   !!    subtraction is the classic catastrophic cancellation)
+   !!  - 0.46875 < |x| <= 2 and 2 < |x| <= 7: Chebyshev fits (Clenshaw, fixed
+   !!    order) of the scaled function erfcx(x) = erfc(x)*exp(x**2), times
+   !!    exp_reprod(-x**2) with the argument squared EXACTLY via two_prod and the
+   !!    low part applied as a (1-e) correction (dropping it costs ~1e3 ulp near
+   !!    the underflow end)
+   !!  - 7 < |x| < 28: asymptotic series (exact (2n-1)!!/(-2)**n coefficients)
+   !!    times the same exp core; gradual underflow comes out of the IEEE
+   !!    arithmetic naturally
+   !!  - erfc(x) = 2 - erfc(-x) for negative x (addition, no cancellation);
+   !!    clamps to 2 / 0 past +-28 cover +-Inf; NaN passes through.
+   !! Coefficients generated by tools/gen_erfc.py (stdlib Decimal, 100 digits,
+   !! fit residuals ~1e-21, verified in-generator).
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x  !< The argument
-  real(wp) :: ec             !< The reproducible erfc(x)
+  real(wp), intent(in) :: x  !! The argument
+  real(wp) :: ec             !! The reproducible erfc(x)
 
 
   real(wp) :: ax     ! |x|
@@ -440,19 +440,19 @@ elemental function erfc_reprod(x) result(ec)
 end function erfc_reprod
 
 
-!> EXPERIMENTAL branch-free erfc: every band is computed unconditionally on a
-!! clamped argument and the result selected with merge(), with an inlined
-!! guard-free exp2 core (the clamp bounds h to its valid range) and the
-!! two-step scale applied unconditionally (exact wherever the plain path is).
-!! By construction each band's selected arm performs the identical operation
-!! sequence to erfc_reprod, so the results must be bit-identical -- verified
-!! by scan.  Purpose: give the vectorizer straight-line code and measure
-!! whether masked SIMD beats scalar branching.
 elemental function erfc_reprod_bf(x) result(ec)
+   !! EXPERIMENTAL branch-free erfc: every band is computed unconditionally on a
+   !! clamped argument and the result selected with merge(), with an inlined
+   !! guard-free exp2 core (the clamp bounds h to its valid range) and the
+   !! two-step scale applied unconditionally (exact wherever the plain path is).
+   !! By construction each band's selected arm performs the identical operation
+   !! sequence to erfc_reprod, so the results must be bit-identical -- verified
+   !! by scan.  Purpose: give the vectorizer straight-line code and measure
+   !! whether masked SIMD beats scalar branching.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x  !< The argument
-  real(wp) :: ec             !< The reproducible erfc(x)
+  real(wp), intent(in) :: x  !! The argument
+  real(wp) :: ec             !! The reproducible erfc(x)
 
   real(wp) :: ax, axc, xm, u, tmac
   real(wp) :: p, e, ph, pt, h, l, r, q, v, ex2
@@ -517,19 +517,19 @@ elemental function erfc_reprod_bf(x) result(ec)
 end function erfc_reprod_bf
 
 
-!> Hand-eight-wide erfc over arrays: the branch-free formulation with every
-!! statement an operation on fixed-width vectors, so the compiler's ONLY job
-!! is to emit one SIMD instruction per line -- no vectorization decisions, no
-!! masking heuristics.  The table lookup is a gather (vector subscript) and
-!! scale() is replaced by BIT-BUILT powers of two (exponent-field construction,
-!! split so each factor is a normal number; the final product performs the
-!! identical single rounding scale() would).  Bit-identical to erfc_reprod by
-!! construction and by the enforced lockstep gate; remainder elements go
-!! through the scalar function (also bit-identical).  CPU-only companion --
-!! on the GPU the elemental form is already optimal.
 subroutine erfc_reprod_v(x, r)
-  real(wp), intent(in)  :: x(:)  !< Arguments
-  real(wp), intent(out) :: r(:)  !< erfc of each argument, bit-equal to erfc_reprod
+   !! Hand-eight-wide erfc over arrays: the branch-free formulation with every
+   !! statement an operation on fixed-width vectors, so the compiler's ONLY job
+   !! is to emit one SIMD instruction per line -- no vectorization decisions, no
+   !! masking heuristics.  The table lookup is a gather (vector subscript) and
+   !! scale() is replaced by BIT-BUILT powers of two (exponent-field construction,
+   !! split so each factor is a normal number; the final product performs the
+   !! identical single rounding scale() would).  Bit-identical to erfc_reprod by
+   !! construction and by the enforced lockstep gate; remainder elements go
+   !! through the scalar function (also bit-identical).  CPU-only companion --
+   !! on the GPU the elemental form is already optimal.
+  real(wp), intent(in)  :: x(:)  !! Arguments
+  real(wp), intent(out) :: r(:)  !! erfc of each argument, bit-equal to erfc_reprod
 
   integer, parameter :: W = 8
   real(wp), parameter :: splitter = 134217729.0_wp  ! 2**27 + 1
@@ -621,15 +621,15 @@ subroutine erfc_reprod_v(x, r)
   enddo
 end subroutine erfc_reprod_v
 
-!> Returns the cube root of a real argument at roundoff accuracy, in a form that
-!! works properly with rescaling of the argument by integer powers of 8 (upstream
-!! MOM6, Adcroft/Ward).  Bit-reproducible by construction: integer exponent
-!! manipulation plus division-free Halley iterations and one Newton polish.
 elemental function cuberoot(x) result(root)
+   !! Returns the cube root of a real argument at roundoff accuracy, in a form that
+   !! works properly with rescaling of the argument by integer powers of 8 (upstream
+   !! MOM6, Adcroft/Ward).  Bit-reproducible by construction: integer exponent
+   !! manipulation plus division-free Halley iterations and one Newton polish.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x !< The argument of cuberoot
-  real(wp) :: root !< The real cube root of x
+  real(wp), intent(in) :: x !! The argument of cuberoot
+  real(wp) :: root !! The real cube root of x
 
   real(wp) :: asx ! |x| rescaled by an integer power of 8 into 0.125 < asx <= 1.0
   real(wp) :: root_asx ! The cube root of asx

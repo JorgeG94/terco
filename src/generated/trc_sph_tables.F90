@@ -29,13 +29,6 @@ module trc_sph_tables
    integer, parameter :: SPH_NCART_MAX = 15   !! (LMAX+1)(LMAX+2)/2, l=4
    integer, parameter :: SPH_NSPH_MAX  = 9    !! 2*LMAX+1
 
-   !> SPH_T(icart, isph, l): row `icart` (1-based, THIS BUILD's Cartesian
-   !> order within a shell of angular momentum l) and column `isph`
-   !> (1-based; m = isph - l - 1, ascending, for l>=2; this build's own p
-   !> order for l<=1 -- see gen_sph.py's docstring). Only the leading
-   !> ncart(l)-by-(2l+1) corner of each l-slice is meaningful; the padding
-   !> is exact zero, which is what lets a caller index with the small
-   !> shell-local sizes and never read into it.
    real(dp), parameter :: SPH_T(SPH_NCART_MAX, SPH_NSPH_MAX, 0:4) = reshape( &
       [ &
          1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
@@ -174,5 +167,12 @@ module trc_sph_tables
          0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
          0.6258357354491761_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp &
       ], [SPH_NCART_MAX, SPH_NSPH_MAX, 5])
+   !! SPH_T(icart, isph, l): row `icart` (1-based, THIS BUILD's Cartesian
+   !! order within a shell of angular momentum l) and column `isph`
+   !! (1-based; m = isph - l - 1, ascending, for l>=2; this build's own p
+   !! order for l<=1 -- see gen_sph.py's docstring). Only the leading
+   !! ncart(l)-by-(2l+1) corner of each l-slice is meaningful; the padding
+   !! is exact zero, which is what lets a caller index with the small
+   !! shell-local sizes and never read into it.
 
 end module trc_sph_tables

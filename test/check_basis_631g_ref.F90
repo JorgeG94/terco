@@ -31,10 +31,10 @@ program check_basis_631g_ref
    implicit none
 
    character(len=*), parameter :: files(3) = [character(len=16) :: "water.xyz", "w3.xyz", "w5.xyz"]
-   !> Per-primitive coefficient agreement. Does not grow with cluster size
-   !> (it is a per-shell comparison, not an energy), so one tolerance
-   !> serves every geometry in `files`.
    real(dp), parameter :: TOL_C = 2.0e-4_dp
+   !! Per-primitive coefficient agreement. Does not grow with cluster size
+   !! (it is a per-shell comparison, not an energy), so one tolerance
+   !! serves every geometry in `files`.
    integer :: ib, dev
    logical :: ok
    type(error_t) :: err

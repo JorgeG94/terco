@@ -295,9 +295,9 @@ contains
       end do
    end function nuclear_repulsion
 
-   !> X = S^(-1/2), symmetric orthogonalisation, with near-null vectors
-   !> dropped rather than inverted.
    subroutine sym_orthog(n, s, x)
+      !! X = S^(-1/2), symmetric orthogonalisation, with near-null vectors
+      !! dropped rather than inverted.
       integer,  intent(in)  :: n
       real(dp), intent(in)  :: s(n, n)
       real(dp), intent(out) :: x(n, n)
@@ -340,9 +340,9 @@ contains
       deallocate (fp, tmp, work)
    end subroutine diag_fock
 
-   !> D = 2 C_occ C_occ^T -- the TOTAL density, which is the convention
-   !> `fock` expects (it returns 2J - K for that D).
    subroutine make_density(n, nocc, c, d)
+      !! D = 2 C_occ C_occ^T -- the TOTAL density, which is the convention
+      !! `fock` expects (it returns 2J - K for that D).
       integer,  intent(in)  :: n, nocc
       real(dp), intent(in)  :: c(n, n)
       real(dp), intent(out) :: d(n, n)

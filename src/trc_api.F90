@@ -604,8 +604,8 @@ contains
    end subroutine trc_multipoles
 
 
-   !> Overlap, kinetic and nuclear attraction, all three at once.
    subroutine trc_1e(b, p, smat, tmat, vmat)
+      !! Overlap, kinetic and nuclear attraction, all three at once.
       type(trc_basis_t), intent(in)  :: b
       type(trc_pairlist_t), intent(in) :: p
       real(dp), intent(out) :: smat(b%nao, b%nao)
@@ -622,8 +622,8 @@ contains
    ! per launch; reaching through b%component inside the loop does the same.
    !
 
-   !> (P|Q) over an auxiliary basis.
    subroutine trc_df_2c(aux, jmat)
+      !! (P|Q) over an auxiliary basis.
       type(trc_basis_t), intent(in) :: aux
       real(dp), intent(out) :: jmat(aux%nao, aux%nao)
       call df_2c_driver(aux%nshell, aux%nao, aux%maxnp, aux%sh_l, aux%sh_np, &
@@ -631,8 +631,8 @@ contains
    end subroutine trc_df_2c
 
 
-   !> (mu nu|P), the three-index tensor density fitting is built on.
    subroutine trc_df_3c(b, p, aux, tens)
+      !! (mu nu|P), the three-index tensor density fitting is built on.
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: p
       real(dp), intent(out) :: tens(b%nao, b%nao, aux%nao)

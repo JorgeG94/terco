@@ -37,34 +37,34 @@ module trc_lebedev
    public :: lebedev_has_negative_weights  !! Whether an order carries negative weights
    public :: lebedev_grid            !! Points and weights for an order
 
-   !> Number of orbit types, codes 0 to N_ORBIT_CODES-1
    integer, parameter :: N_ORBIT_CODES = 6
+   !! Number of orbit types, codes 0 to N_ORBIT_CODES-1
 
-   !> Largest orbit: a seed with three distinct non-zero coordinates reaches
-   !> all 6 permutations in all 8 sign combinations.
    integer, parameter :: MAX_ORBIT_POINTS = 48
+   !! Largest orbit: a seed with three distinct non-zero coordinates reaches
+   !! all 6 permutations in all 8 sign combinations.
 
-   !> Permutations of three coordinates
    integer, parameter :: N_PERMUTATIONS = 6
+   !! Permutations of three coordinates
 
-   !> Spatial dimensions
    integer, parameter :: N_DIM = 3
+   !! Spatial dimensions
 
-   !> Points in the orbit of each code, before duplicates are removed
    integer, parameter :: ORBIT_SIZE(0:N_ORBIT_CODES - 1) = [6, 12, 8, 24, 24, MAX_ORBIT_POINTS]
+   !! Points in the orbit of each code, before duplicates are removed
 
-   !> Orders whose weights are not all positive.
-   !>
-   !> These are valid quadratures -- they integrate to the stated accuracy, and
-   !> their weights still sum to 1 -- but a negative weight can drive a
-   !> numerically integrated density negative in a low-density region, so DFT
-   !> grids conventionally avoid them. Checked against PySCF: the same three
-   !> orders, with 8, 6 and 18 negative weights respectively.
    integer, parameter :: NEGATIVE_WEIGHT_ORDERS(3) = [74, 230, 266]
+   !! Orders whose weights are not all positive.
+   !!
+   !! These are valid quadratures -- they integrate to the stated accuracy, and
+   !! their weights still sum to 1 -- but a negative weight can drive a
+   !! numerically integrated density negative in a low-density region, so DFT
+   !! grids conventionally avoid them. Checked against PySCF: the same three
+   !! orders, with 8, 6 and 18 negative weights respectively.
 
-   !> Two generated points closer than this are the same point. Seeds differ in
-   !> their parameters by far more than this, so no distinct pair can merge.
    real(dp), parameter :: DUPLICATE_TOL = 1.0e-12_dp
+   !! Two generated points closer than this are the same point. Seeds differ in
+   !! their parameters by far more than this, so no distinct pair can merge.
 
 contains
 
@@ -171,9 +171,9 @@ contains
       real(dp), intent(out) :: points(N_DIM, MAX_ORBIT_POINTS)  !! Distinct images, first `n_points` valid
       integer, intent(out) :: n_points
 
-      !> The six permutations of three coordinates
       integer, parameter :: PERM(N_DIM, N_PERMUTATIONS) = reshape([1, 2, 3, 1, 3, 2, 2, 1, 3, &
                                                                    2, 3, 1, 3, 1, 2, 3, 2, 1], [N_DIM, N_PERMUTATIONS])
+      !! The six permutations of three coordinates
       real(dp) :: seed(3), candidate(3)
       integer :: p, sx, sy, sz, i
       logical :: seen

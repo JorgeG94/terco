@@ -72,14 +72,14 @@ module trc_bins
    type :: pair_bins_t
       integer :: nbin = 0
       integer :: npair = 0
-      !> Bucket resolution these bins were built at: buckets per decade of
-      !> Schwarz bound. The admission test in the launcher needs it.
       integer :: sres = 1
-      !> Whether the pairs inside each bin have been ordered by how much
-      !> they matter. Done once, at the first Fock build, and kept: the
-      !> order is a heuristic for warp coherence, not a correctness
-      !> requirement, and the density it is keyed on moves slowly.
+      !! Bucket resolution these bins were built at: buckets per decade of
+      !! Schwarz bound. The admission test in the launcher needs it.
       logical :: sorted = .false.
+      !! Whether the pairs inside each bin have been ordered by how much
+      !! they matter. Done once, at the first Fock build, and kept: the
+      !! order is a heuristic for warp coherence, not a correctness
+      !! requirement, and the density it is keyed on moves slowly.
       integer, allocatable :: sp_i(:), sp_j(:)     !! shell indices, bin-sorted
       real(dp), allocatable :: sp_q(:)             !! Schwarz bound per pair
       integer, allocatable :: bin_off(:)           !! first pair of bin b
@@ -129,13 +129,13 @@ contains
       real(dp), intent(in)  :: thresh
       type(pair_bins_t), intent(out) :: b
       logical,  intent(in), optional :: sh_g(nbas)  !! shell has more than one column
-      !> Primitive pairs actually kept per shell pair, rectangular key
-      !> (i-1)*nbas+j. The contraction degree the bin key sorts on is
-      !> this, not sh_np(i)*sh_np(j): after pruning the two differ, and
-      !> it is the kept count that sets the kernel's trip count.
       integer,  intent(in), optional :: pp_n(:)
-      !> Buckets per decade of Schwarz bound; 1 (the default) is decades.
+      !! Primitive pairs actually kept per shell pair, rectangular key
+      !! (i-1)*nbas+j. The contraction degree the bin key sorts on is
+      !! this, not sh_np(i)*sh_np(j): after pruning the two differ, and
+      !! it is the kept count that sets the kernel's trip count.
       integer,  intent(in), optional :: res
+      !! Buckets per decade of Schwarz bound; 1 (the default) is decades.
 
       integer :: nb, i, j, s, k, p, n, key, gg, ia, ib, sres
       integer, allocatable :: cnt(:), pos(:), keyv(:), ti(:), tj(:)
@@ -257,9 +257,9 @@ contains
       deallocate (cnt, pos)
 
    contains
-      !> The pair with the higher angular momentum first; index order
-      !> breaks the tie, so a pair of equal-l shells keeps i >= j.
       pure subroutine lorder(i_, j_, a_, b_)
+         !! The pair with the higher angular momentum first; index order
+         !! breaks the tie, so a pair of equal-l shells keeps i >= j.
          integer, intent(in) :: i_, j_
          integer, intent(out) :: a_, b_
          if (sh_l(j_) > sh_l(i_)) then
@@ -516,11 +516,11 @@ contains
       deallocate (code, kbuf, idx, ti, tj, tq)
 
    contains
-      !> Key on the Schwarz bound alone rather than on the product with the
-      !> density block. The bound correlates with distance, so this keeps
-      !> more of the spatial locality the natural order has, at the cost of
-      !> a less faithful prediction of which threads will screen out.
       logical function qkey_only()
+         !! Key on the Schwarz bound alone rather than on the product with the
+         !! density block. The bound correlates with distance, so this keeps
+         !! more of the spatial locality the natural order has, at the cost of
+         !! a less faithful prediction of which threads will screen out.
          character(len=8) :: v
          call get_environment_variable("TRC_BIN_SORT_Q", v)
          qkey_only = (trim(v) == "1")
@@ -587,8 +587,8 @@ contains
       deallocate (code, kbuf, idx, ti, tj, tq)
    end subroutine sort_bins_spatially
 
-   !> Interleave the low ten bits of three coordinates.
    pure integer(int64) function morton3(ix, iy, iz)
+      !! Interleave the low ten bits of three coordinates.
       integer, intent(in) :: ix, iy, iz
       integer :: t, bit
       morton3 = 0_8

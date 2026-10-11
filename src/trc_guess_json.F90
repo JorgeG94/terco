@@ -193,11 +193,11 @@ contains
       t = trim(buf)
    end function itoa
 
-   !> Duplicated from trc_api.F90 (and trc_ao_norm.F90, trc_basis_json.F90,
-   !> trc_batch.F90) rather than imported -- see those modules' own comments
-   !> on the same duplication. Used only to cancel itself out of `fac` for s
-   !> and p, per this module's own header.
    pure real(dp) function common_fac_sp(l)
+      !! Duplicated from trc_api.F90 (and trc_ao_norm.F90, trc_basis_json.F90,
+      !! trc_batch.F90) rather than imported -- see those modules' own comments
+      !! on the same duplication. Used only to cancel itself out of `fac` for s
+      !! and p, per this module's own header.
       integer, intent(in) :: l
       select case (l)
       case (0); common_fac_sp = 0.282094791773878143_dp

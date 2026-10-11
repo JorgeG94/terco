@@ -44,8 +44,8 @@ module trc_cart_perm
 
 contains
 
-   !> 0 (lexicographic) or 1 (gamess), the same encoding TRC_CART_ORDER uses.
    pure integer function trc_cart_order_id()
+      !! 0 (lexicographic) or 1 (gamess), the same encoding TRC_CART_ORDER uses.
 #if TRC_CART_ORDER == 1
       trc_cart_order_id = 1
 #else
@@ -53,10 +53,10 @@ contains
 #endif
    end function trc_cart_order_id
 
-   !> "lexicographic" or "gamess", for anything that wants to print or
-   !> record which build produced its output (the C API query function,
-   !> a probe file header).
    pure function trc_cart_order_name() result(nm)
+      !! "lexicographic" or "gamess", for anything that wants to print or
+      !! record which build produced its output (the C API query function,
+      !! a probe file header).
       character(len=:), allocatable :: nm
 #if TRC_CART_ORDER == 1
       nm = "gamess"
@@ -65,38 +65,38 @@ contains
 #endif
    end function trc_cart_order_name
 
-   !> The component at LEXICOGRAPHIC local offset `ic` (0-based) of a shell
-   !> of angular momentum `l` sits at THIS BUILD's local offset
-   !> `cart_perm_l2b(l, ic)` (0-based). Identity at lexicographic order.
    pure integer function cart_perm_l2b(l, ic) result(r)
+      !! The component at LEXICOGRAPHIC local offset `ic` (0-based) of a shell
+      !! of angular momentum `l` sits at THIS BUILD's local offset
+      !! `cart_perm_l2b(l, ic)` (0-based). Identity at lexicographic order.
       !$acc routine seq
       integer, intent(in) :: l, ic
 #include "trc_cart_perm_l2b.inc"
    end function cart_perm_l2b
 
-   !> The inverse: the component at THIS BUILD's local offset `ic` (0-based)
-   !> sits at LEXICOGRAPHIC local offset `cart_perm_b2l(l, ic)` (0-based).
    pure integer function cart_perm_b2l(l, ic) result(r)
+      !! The inverse: the component at THIS BUILD's local offset `ic` (0-based)
+      !! sits at LEXICOGRAPHIC local offset `cart_perm_b2l(l, ic)` (0-based).
       !$acc routine seq
       integer, intent(in) :: l, ic
 #include "trc_cart_perm_b2l.inc"
    end function cart_perm_b2l
 
-   !> Full-basis AO permutation, host code (a reader of external data is
-   !> never device code): for a basis of `nshell` shells with angular
-   !> momenta `sh_l` and 1-based AO offsets `sh_ao` (`trc_basis_t`'s own
-   !> fields), build the two `nao`-length permutations.
-   !>
-   !>   perm_l2b(i): the BUILD-order AO the LEXICOGRAPHIC-order AO `i`
-   !>                (1-based) corresponds to.
-   !>   perm_b2l(j): the LEXICOGRAPHIC-order AO the BUILD-order AO `j`
-   !>                (1-based) corresponds to -- perm_b2l's inverse.
-   !>
-   !> A reader converting an externally-authored (lexicographic) array
-   !> `lex(nao)` into this build's own order does
-   !> `build(j) = lex(perm_b2l(j))` for j = 1, nao (a gather); a matrix does
-   !> `build(i,j) = lex(perm_b2l(i), perm_b2l(j))`.
    subroutine build_ao_perm(nshell, sh_l, sh_ao, nao, perm_l2b, perm_b2l)
+      !! Full-basis AO permutation, host code (a reader of external data is
+      !! never device code): for a basis of `nshell` shells with angular
+      !! momenta `sh_l` and 1-based AO offsets `sh_ao` (`trc_basis_t`'s own
+      !! fields), build the two `nao`-length permutations.
+      !!
+      !!   perm_l2b(i): the BUILD-order AO the LEXICOGRAPHIC-order AO `i`
+      !!                (1-based) corresponds to.
+      !!   perm_b2l(j): the LEXICOGRAPHIC-order AO the BUILD-order AO `j`
+      !!                (1-based) corresponds to -- perm_b2l's inverse.
+      !!
+      !! A reader converting an externally-authored (lexicographic) array
+      !! `lex(nao)` into this build's own order does
+      !! `build(j) = lex(perm_b2l(j))` for j = 1, nao (a gather); a matrix does
+      !! `build(i,j) = lex(perm_b2l(i), perm_b2l(j))`.
       integer, intent(in)  :: nshell, nao
       integer, intent(in)  :: sh_l(nshell), sh_ao(nshell)
       integer, intent(out) :: perm_l2b(nao), perm_b2l(nao)

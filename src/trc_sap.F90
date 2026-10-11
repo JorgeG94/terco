@@ -49,77 +49,76 @@ module trc_sap
 
    public :: trc_sap_build, trc_sap_grid, trc_sap_screen_table, SAP_BASIS_DEFAULT
 
-   !> Radial nodes per element for the screening table. The potential is
-   !> smooth, and the M4 mapping puts the nodes where it bends, so this is
-   !> generous rather than tuned; the table is built once per element.
    integer, parameter :: SAP_NRAD = 400
+   !! Radial nodes per element for the screening table. The potential is
+   !! smooth, and the M4 mapping puts the nodes where it bends, so this is
+   !! generous rather than tuned; the table is built once per element.
 
-   !> Angular order for the spherical average of the atomic density. The
-   !> free-atom density is already spherical -- fractional occupations over
-   !> the degenerate frontier are what make it so -- but averaging costs
-   !> nothing here and means a non-spherical atom degrades the guess instead
-   !> of silently tilting it.
    integer, parameter :: SAP_NANG = 26
+   !! Angular order for the spherical average of the atomic density. The
+   !! free-atom density is already spherical -- fractional occupations over
+   !! the degenerate frontier are what make it so -- but averaging costs
+   !! nothing here and means a non-spherical atom degrades the guess instead
+   !! of silently tilting it.
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
 
-   !> The fitted potential set, unless a caller names another. Lehtola's
-   !> fully numerical HelFEM fit; the GRASP sets are relativistic and buy
-   !> nothing below the heavy elements.
    character(len=*), parameter :: SAP_BASIS_DEFAULT = "basis_sets/sap_helfem_large.json"
+   !! The fitted potential set, unless a caller names another. Lehtola's
+   !! fully numerical HelFEM fit; the GRASP sets are relativistic and buy
+   !! nothing below the heavy elements.
 
-   !> Device bytes the three-centre tensor may take at once.
-   !>
-   !> `trc_df_3c` hands back the whole (nao, nao, naux) tensor and naux is
-   !> one function per atom, so asking for every atom at once wants
-   !> nao^2 * natm doubles -- 17 GB on a 150-molecule water cluster in
-   !> cc-pVDZ. The sum over atoms does not care how it is grouped, so it is
-   !> grouped to fit in this.
-   !>
-   !> It is a MEMORY budget and nothing more. I expected the pass count to
-   !> matter -- each pass looked like a full traversal of the shell-pair
-   !> list -- and it does not: the silica slice goes from sixteen passes to
-   !> one and the guess takes 21.78 s against 21.77. The three-centre
-   !> integrals are the whole cost and how they are grouped is free. Kept as
-   !> a budget anyway, because the tensor still has to fit, and set well
-   !> under a card since the SCF's resident arrays are already on it.
    integer(kind=8), parameter :: SAP_TENSOR_BYTES = 2147483648_8
+   !! Device bytes the three-centre tensor may take at once.
+   !!
+   !! `trc_df_3c` hands back the whole (nao, nao, naux) tensor and naux is
+   !! one function per atom, so asking for every atom at once wants
+   !! nao^2 * natm doubles -- 17 GB on a 150-molecule water cluster in
+   !! cc-pVDZ. The sum over atoms does not care how it is grouped, so it is
+   !! grouped to fit in this.
+   !!
+   !! It is a MEMORY budget and nothing more. I expected the pass count to
+   !! matter -- each pass looked like a full traversal of the shell-pair
+   !! list -- and it does not: the silica slice goes from sixteen passes to
+   !! one and the guess takes 21.78 s against 21.77. The three-centre
+   !! integrals are the whole cost and how they are grouped is free. Kept as
+   !! a budget anyway, because the tensor still has to fit, and set well
+   !! under a card since the SCF's resident arrays are already on it.
 
-   !> Points per quadrature batch for the assembly.
    integer, parameter :: SAP_BATCH = 128
+   !! Points per quadrature batch for the assembly.
 
-   !
-   !> Quadrature level for the screening integral.
-   !>
-   !> This is the DFT default, and it is NOT a lazy inheritance -- a cheaper
-   !> grid was tried first, on the reasoning that a guess thrown away after
-   !> one diagonalisation cannot need a grid chosen to converge an
-   !> exchange-correlation energy. That reasoning is wrong. Quadrature error
-   !> in a matrix element is not a small perturbation of the guess, it is a
-   !> wrong operator, and the orbitals it produces are worse rather than
-   !> approximate. On the 123-atom silica slice, cc-pVDZ, at iteration 12:
-   !>
-   !>              E(12)                 dE(12)     guess cost
-   !>   level 0    -11194.245761258     -9.5e-05      7 s
-   !>   level 1    -11194.245769153     -9.9e-05     25 s
-   !>   level 3    -11194.245774662     -3.3e-10     80 s
-   !>   SAD        -11194.245774661     -6.0e-09      <1 s
-   !>
-   !> Level 3 is a better guess than SAD, by about one iteration. Levels 0
-   !> and 1 are not converging at all by iteration 12 -- worse than SAD and
-   !> cheaper than nothing is worth.
-   !>
-   !> WHICH MEANS SAP IS CURRENTLY A LOSS AT THIS SIZE. The one iteration it
-   !> saves is ~12 s and the guess costs 80, of which 18 is `assemble` and 4
-   !> the per-point potential, both host-side and single-threaded. The fix is
-   !> to put those on the device the way trc_xc does, not to coarsen the
-   !> grid; until then SAP earns its place on small molecules (water/6-31G:
-   !> 9 iterations against 10, at no measurable cost) and not on slabs.
-   !>
-   !> TRC_SAP_LEVEL overrides it so the trade can be re-measured without a
-   !> rebuild, and an explicit `level` argument overrides both.
    !
    integer, parameter :: SAP_GRID_LEVEL = 3
+   !! Quadrature level for the screening integral.
+   !!
+   !! This is the DFT default, and it is NOT a lazy inheritance -- a cheaper
+   !! grid was tried first, on the reasoning that a guess thrown away after
+   !! one diagonalisation cannot need a grid chosen to converge an
+   !! exchange-correlation energy. That reasoning is wrong. Quadrature error
+   !! in a matrix element is not a small perturbation of the guess, it is a
+   !! wrong operator, and the orbitals it produces are worse rather than
+   !! approximate. On the 123-atom silica slice, cc-pVDZ, at iteration 12:
+   !!
+   !!              E(12)                 dE(12)     guess cost
+   !!   level 0    -11194.245761258     -9.5e-05      7 s
+   !!   level 1    -11194.245769153     -9.9e-05     25 s
+   !!   level 3    -11194.245774662     -3.3e-10     80 s
+   !!   SAD        -11194.245774661     -6.0e-09      <1 s
+   !!
+   !! Level 3 is a better guess than SAD, by about one iteration. Levels 0
+   !! and 1 are not converging at all by iteration 12 -- worse than SAD and
+   !! cheaper than nothing is worth.
+   !!
+   !! WHICH MEANS SAP IS CURRENTLY A LOSS AT THIS SIZE. The one iteration it
+   !! saves is ~12 s and the guess costs 80, of which 18 is `assemble` and 4
+   !! the per-point potential, both host-side and single-threaded. The fix is
+   !! to put those on the device the way trc_xc does, not to coarsen the
+   !! grid; until then SAP earns its place on small molecules (water/6-31G:
+   !! 9 iterations against 10, at no measurable cost) and not on slabs.
+   !!
+   !! TRC_SAP_LEVEL overrides it so the trade can be re-measured without a
+   !! rebuild, and an explicit `level` argument overrides both.
 
 contains
 
@@ -298,10 +297,10 @@ contains
    subroutine trc_sap_build(b, pl, tmat, vmat, hsap, error, verbose, path)
       type(trc_basis_t),    intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
-      !> The analytic one-electron matrices. T and V_ne are exact and
-      !> already built; only the screening potential is an integral over a
-      !> fitted distribution, so only it is computed here.
       real(dp), intent(in)  :: tmat(b%nao, b%nao), vmat(b%nao, b%nao)
+      !! The analytic one-electron matrices. T and V_ne are exact and
+      !! already built; only the screening potential is an integral over a
+      !! fitted distribution, so only it is computed here.
       real(dp), intent(out) :: hsap(b%nao, b%nao)
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: verbose
@@ -547,10 +546,10 @@ contains
 
    contains
 
-      !> Stage timing, printed only when TRC_BUILD_TIMING is set, as the Fock
-      !> build's own stages are. Four routines with very different costs and
-      !> no way to tell from the outside which one is slow.
       subroutine stage(what)
+         !! Stage timing, printed only when TRC_BUILD_TIMING is set, as the Fock
+         !! build's own stages are. Four routines with very different costs and
+         !! no way to tell from the outside which one is slow.
          character(len=*), intent(in) :: what
          character(len=8) :: e
          e = ' '

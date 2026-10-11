@@ -759,15 +759,15 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
     hrr_body = re.sub(r"\bg\(", "g1(", hrr_body)
 
     txt = f"""
-   !> ({la}{lb}|{lc}{ld}) driver.  The `do concurrent` lives here and the
-   !> workspaces live in the item routine below, so they are per THREAD.
-   !> Declaring them alongside the loop makes them shared -- the compiler then
-   !> emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
    subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat, rank, nranks)
+      !! ({la}{lb}|{lc}{ld}) driver.  The `do concurrent` lives here and the
+      !! workspaces live in the item routine below, so they are per THREAD.
+      !! Declaring them alongside the loop makes them shared -- the compiler then
+      !! emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
 {PROLOGUE}
       integer, intent(in) :: rank, nranks
       integer(int64) :: g0, g1, nr, i
@@ -1068,14 +1068,14 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
          end do   ! ab0
    end subroutine pci{tag}
 
-   !> Schwarz times the density blocks for ONE column combination, at
-   !> CONTRACTED resolution: the same test the quartet gets, sharpened from
-   !> the merged maximum over the columns to the columns actually being
-   !> evaluated. A module procedure rather than a contained one because
-   !> `!$acc routine` cannot capture host-subprogram data, and in the same
-   !> module as its caller so it inlines.
    pure real(dp) function cb{tag}(iab_, icd_, nca, nccl, si, sj, sk, sl, &
                                   nbas, ncoltot, ps_soff, col_sh, nshc, nqc, q_col, dsh_c) result(qb)
+      !! Schwarz times the density blocks for ONE column combination, at
+      !! CONTRACTED resolution: the same test the quartet gets, sharpened from
+      !! the merged maximum over the columns to the columns actually being
+      !! evaluated. A module procedure rather than a contained one because
+      !! `!$acc routine` cannot capture host-subprogram data, and in the same
+      !! module as its caller so it inlines.
       !$acc routine seq
       integer,  intent(in) :: iab_, icd_, nca, nccl, si, sj, sk, sl, nbas, ncoltot, nshc, nqc
       integer,  intent(in) :: ps_soff(nbas), col_sh(ncoltot)
@@ -1645,11 +1645,11 @@ module trc_pc_kernels
    private
    public :: pc_dispatch, CLASS_RADIX
 
-   !> Radix of the dispatch key, FIXED so it does not encode LMAX.
-   !> The caller in trc_binkernel imports this rather than repeating the
-   !> literal, because a key formed two ways that disagree dispatches the
-   !> wrong kernel and still builds.
    integer, parameter :: CLASS_RADIX = __RADIX__
+   !! Radix of the dispatch key, FIXED so it does not encode LMAX.
+   !! The caller in trc_binkernel imports this rather than repeating the
+   !! literal, because a key formed two ways that disagree dispatches the
+   !! wrong kernel and still builds.
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -1784,11 +1784,11 @@ module trc_pc_kernels
    private
    public :: pc_dispatch, CLASS_RADIX
 
-   !> Radix of the dispatch key, FIXED so it does not encode LMAX.
-   !> The caller in trc_binkernel imports this rather than repeating the
-   !> literal, because a key formed two ways that disagree dispatches the
-   !> wrong kernel and still builds.
    integer, parameter :: CLASS_RADIX = __RADIX__
+   !! Radix of the dispatch key, FIXED so it does not encode LMAX.
+   !! The caller in trc_binkernel imports this rather than repeating the
+   !! literal, because a key formed two ways that disagree dispatches the
+   !! wrong kernel and still builds.
 
 contains
 """]

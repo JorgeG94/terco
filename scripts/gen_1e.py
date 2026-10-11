@@ -340,14 +340,14 @@ def emit_class(la, lb, LMAX, order="lexicographic"):
     hrr = emit_hrr(la, lb, idx, "vn0", "vtmp", order)
 
     return f"""
-   !> ({la}|{lb}) one-electron block: overlap, kinetic, nuclear attraction.
-   !>
-   !> One routine for all three because they share the shell-pair quantities
-   !> (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
-   !> the core Hamiltonian. Computing them together reads the primitive data
-   !> once instead of three times.
    pure subroutine one_e_{tag}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
                                natm, zatm, ratm, sout, tout, vout)
+      !! ({la}|{lb}) one-electron block: overlap, kinetic, nuclear attraction.
+      !!
+      !! One routine for all three because they share the shell-pair quantities
+      !! (zeta, P, the Gaussian product prefactor) and mqc needs all three to form
+      !! the core Hamiltonian. Computing them together reads the primitive data
+      !! once instead of three times.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -652,10 +652,10 @@ contains
             names.append((la, lb))
 
     parts.append(f"""
-   !> Dispatch on the class. Host-side call, so the module boundary the
-   !> kernels care about is not crossed here.
    pure subroutine one_e_dispatch(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, &
                                   ra, rb, natm, zatm, ratm, sout, tout, vout)
+      !! Dispatch on the class. Host-side call, so the module boundary the
+      !! kernels care about is not crossed here.
       !$acc routine seq
       integer,  intent(in)  :: la, lb, nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)

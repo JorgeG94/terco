@@ -94,10 +94,10 @@ contains
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(:), sh_np(:)
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
-      !> Screening threshold. A shell pair whose Gaussian product prefactor
-      !> cannot reach it is skipped outright -- see the note on the counting
-      !> pass below.
       real(dp), intent(in)  :: thresh
+      !! Screening threshold. A shell pair whose Gaussian product prefactor
+      !! cannot reach it is skipped outright -- see the note on the counting
+      !! pass below.
       integer,  allocatable, intent(out) :: pp_off(:), pp_n(:)
       real(dp), allocatable, intent(out) :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       integer,  intent(out) :: npp

@@ -201,8 +201,8 @@ def emit_class(la, lb, lc, three, order="lexicographic"):
         abset = ""   # no HRR in the two-centre case, so no AB vector
 
     return f"""
-   !> {'(ab|c)' if three else '(a|c)'} class ({la}{lb}|{lc}) -- {nlive} VRR statements after the sieve.
    pure subroutine df_{tag}({sig})
+      !! {'(ab|c)' if three else '(a|c)'} class ({la}{lb}|{lc}) -- {nlive} VRR statements after the sieve.
       !$acc routine seq
 {decls}
       real(dp), intent(out) :: out({nout})

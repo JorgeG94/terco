@@ -29,10 +29,10 @@ program scf_mpi
    use trc_error, only: error_t
    implicit none
 
-   !> trc_basis_from_json's own 6-31G water values, 2026-10-08.
    real(dp), parameter :: E_RHF = -75.983974465718_dp
-   !> Same date, same basis path.
+   !! trc_basis_from_json's own 6-31G water values, 2026-10-08.
    real(dp), parameter :: E_PBE = -76.298105565582_dp
+   !! Same date, same basis path.
    type(comm_t) :: comm
    integer :: natm, nsh, maxnp, dev, ic
    integer, allocatable :: zint(:), sh_l(:), sh_np(:)

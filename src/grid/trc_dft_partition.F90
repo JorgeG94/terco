@@ -43,28 +43,28 @@ module trc_dft_partition
    public :: partition_scheme_name
    public :: PARTITION_NU_MAX
 
-   !> Screening threshold on the cutoff argument against the owner; see
-   !> becke_partition_weights. Becke's s(0.95) is 1e-9; a cell function is a
-   !> product of such factors, so a dropped atom's cell is at most that.
    real(dp), parameter :: PARTITION_NU_MAX = 0.95_dp
+   !! Screening threshold on the cutoff argument against the owner; see
+   !! becke_partition_weights. Becke's s(0.95) is 1e-9; a cell function is a
+   !! product of such factors, so a dropped atom's cell is at most that.
 
-   !> Cutoff profile
    integer, parameter :: PARTITION_BECKE = 1     !! Three iterations of p(x), smooth everywhere
+   !! Cutoff profile
    integer, parameter :: PARTITION_STRATMANN = 2  !! Degree-5 with a hard cutoff, screenable
 
-   !> Atomic size adjustment
    integer, parameter :: ADJUST_NONE = 0      !! All atoms the same size
+   !! Atomic size adjustment
    integer, parameter :: ADJUST_BECKE = 1     !! Bragg radii
    integer, parameter :: ADJUST_TREUTLER = 2  !! Square roots of the Bragg radii
 
-   !> Stratmann's cutoff parameter, eq. 14
    real(dp), parameter :: STRATMANN_A = 0.64_dp
+   !! Stratmann's cutoff parameter, eq. 14
 
-   !> Becke's clamp on the size-adjustment shift
    real(dp), parameter :: MAX_ADJUST = 0.5_dp
+   !! Becke's clamp on the size-adjustment shift
 
-   !> Guards the ratio when a radius is zero (a ghost atom)
    real(dp), parameter, public :: TINY_RADIUS = 1.0e-200_dp
+   !! Guards the ratio when a radius is zero (a ghost atom)
 
    integer, parameter :: N_DIM = 3
 

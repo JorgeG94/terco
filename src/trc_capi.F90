@@ -222,11 +222,11 @@ module trc_capi
    integer(c_int), parameter, public :: TRC_ERR_NOCONV = 4   !! the SCF ran out of iterations
    integer(c_int), parameter, public :: TRC_ERR_STATE = 5    !! called before what it needs was set
    ! Guess kinds for trc_set_guess.
-   !> Appended, not inserted: 0-3 are what they have always been, so a
-   !> caller built against the old header keeps working.
    integer(c_int), parameter, public :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
                                         TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
                                         TRC_GUESS_SAP = 5
+   !! Appended, not inserted: 0-3 are what they have always been, so a
+   !! caller built against the old header keeps working.
    ! AO normalisation kinds for trc_set_ao_norm -- re-exported from
    ! trc_ao_norm (renamed on import, above, only so this c_int redeclaration
    ! does not clash with the plain-integer names it reads) so a C caller
@@ -376,9 +376,9 @@ contains
       status = TRC_OK
    end function trc_basis_destroy
 
-   !> Number of atomic orbitals, so a caller can size its own output buffers.
    function trc_basis_nao(handle, nao) result(status) &
       bind(c, name="trc_basis_nao")
+      !! Number of atomic orbitals, so a caller can size its own output buffers.
       type(c_ptr), value :: handle
       integer(c_int), intent(out) :: nao
       integer(c_int) :: status
@@ -574,12 +574,12 @@ contains
       status = TRC_OK
    end function trc_basis_create_libcint
 
-   !> Highest angular momentum in the basis, so a caller can decide whether to
-   !> use this library at all before it builds anything expensive. The
-   !> four-centre kernels stop at d and the caller has to fall back rather than
-   !> get a wrong answer.
    function trc_basis_maxl(handle, maxl) result(status) &
       bind(c, name="trc_basis_maxl")
+      !! Highest angular momentum in the basis, so a caller can decide whether to
+      !! use this library at all before it builds anything expensive. The
+      !! four-centre kernels stop at d and the caller has to fall back rather than
+      !! get a wrong answer.
       type(c_ptr), value :: handle
       integer(c_int), intent(out) :: maxl
       integer(c_int) :: status
@@ -592,12 +592,12 @@ contains
       status = TRC_OK
    end function trc_basis_maxl
 
-   !> Number of Cartesian multipole components, so a caller can size its buffer
-   !> without hardcoding 39 and drifting when the operator order changes.
-   !> Named for what it counts rather than `trc_nmult`, which collides with the
-   !> parameter of that name it returns.
    function trc_multipole_count() result(n) &
       bind(c, name="trc_multipole_count")
+      !! Number of Cartesian multipole components, so a caller can size its buffer
+      !! without hardcoding 39 and drifting when the operator order changes.
+      !! Named for what it counts rather than `trc_nmult`, which collides with the
+      !! parameter of that name it returns.
       integer(c_int) :: n
       n = int(TRC_NMULT, c_int)
    end function trc_multipole_count
@@ -702,13 +702,13 @@ contains
       real(c_double), intent(in)  :: dmat(*)
       real(c_double), intent(out) :: gmat(*)
       real(c_double), value :: jfac, kfac
-      !> Nonzero to weight the Schwarz bound by the density (an SCF), zero for
-      !> the plain Schwarz screen (a coupled-perturbed solve, whose trial
-      !> vector the solver drives to zero -- a density-keyed screen tightens
-      !> as it does and the operator stops being a fixed linear map).
-      !> An int rather than a logical: Fortran's logical has no guaranteed C
-      !> representation and c_bool is one byte against C's four-byte int.
       integer(c_int), value :: dscreen
+      !! Nonzero to weight the Schwarz bound by the density (an SCF), zero for
+      !! the plain Schwarz screen (a coupled-perturbed solve, whose trial
+      !! vector the solver drives to zero -- a density-keyed screen tightens
+      !! as it does and the operator stops being a fixed linear map).
+      !! An int rather than a logical: Fortran's logical has no guaranteed C
+      !! representation and c_bool is one byte against C's four-byte int.
       integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
@@ -737,11 +737,11 @@ contains
       status = TRC_OK
    end function capi_fock
 
-   !> UNIT mode only, shared by capi_fock and trc_fock_nosym (identical
-   !> (n,n) shape): copies `dmat` -- never mutated, it is the caller's --
-   !> into a host scratch array and scales THAT to terco's own convention,
-   !> D_terco = N D_GAMESS N. One O(n^2) copy against an O(n^4) Fock build.
    subroutine fock_scale_in(bb, n, dmat, nrm, dscratch)
+      !! UNIT mode only, shared by capi_fock and trc_fock_nosym (identical
+      !! (n,n) shape): copies `dmat` -- never mutated, it is the caller's --
+      !! into a host scratch array and scales THAT to terco's own convention,
+      !! D_terco = N D_GAMESS N. One O(n^2) copy against an O(n^4) Fock build.
       type(basis_box), intent(in) :: bb
       integer, intent(in) :: n
       real(c_double), intent(in) :: dmat(*)
@@ -752,11 +752,11 @@ contains
       call ao_scale_cov(nrm, dscratch)
    end subroutine fock_scale_in
 
-   !> UNIT mode only: `gmat` is terco's own to write (intent(out) at the C
-   !> boundary, so whatever was in the caller's buffer before this call is
-   !> already gone), so scaling it after the build, in place, costs nothing
-   !> the build itself did not already cost -- G_GAMESS = N G_terco N.
    subroutine fock_scale_out(nrm, n, gmat)
+      !! UNIT mode only: `gmat` is terco's own to write (intent(out) at the C
+      !! boundary, so whatever was in the caller's buffer before this call is
+      !! already gone), so scaling it after the build, in place, costs nothing
+      !! the build itself did not already cost -- G_GAMESS = N G_terco N.
       real(dp), intent(in) :: nrm(:)
       integer, intent(in) :: n
       real(c_double), intent(inout) :: gmat(*)
@@ -841,11 +841,11 @@ contains
       status = TRC_OK
    end function trc_fock_many
 
-   !> As `fock_shaped`, and for the same reason -- the batch is the case where
-   !> the copy would have hurt most, being N times the size (in SHELL mode;
-   !> UNIT mode already pays for a copy every entry that wires it, so this
-   !> one is no different in kind, only in the extra `nd` loop).
    subroutine fock_many_shaped(b, e, nd, n, d, g, jfac, kfac, dscreen)
+      !! As `fock_shaped`, and for the same reason -- the batch is the case where
+      !! the copy would have hurt most, being N times the size (in SHELL mode;
+      !! UNIT mode already pays for a copy every entry that wires it, so this
+      !! one is no different in kind, only in the extra `nd` loop).
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: e
       integer, intent(in) :: nd, n
@@ -857,11 +857,11 @@ contains
                        density_screen=dscreen)
    end subroutine fock_many_shaped
 
-   !> UNIT mode only: as `fock_scale_in`, but `dmats` is (ndens, nao, nao)
-   !> with the DENSITY INDEX FASTEST (trc_fock_many's own layout comment
-   !> above), so every one of the `nd` densities gets the SAME `nrm(i)*
-   !> nrm(j)` -- one basis, one scale, `nd` copies of it in the array.
    subroutine fock_many_scale_in(bb, nd, n, dmats, nrm, dscratch)
+      !! UNIT mode only: as `fock_scale_in`, but `dmats` is (ndens, nao, nao)
+      !! with the DENSITY INDEX FASTEST (trc_fock_many's own layout comment
+      !! above), so every one of the `nd` densities gets the SAME `nrm(i)*
+      !! nrm(j)` -- one basis, one scale, `nd` copies of it in the array.
       type(basis_box), intent(in) :: bb
       integer, intent(in) :: nd, n
       real(c_double), intent(in) :: dmats(*)
@@ -877,8 +877,8 @@ contains
       end do
    end subroutine fock_many_scale_in
 
-   !> UNIT mode only: as `fock_scale_out`, `nd` densities at a time.
    subroutine fock_many_scale_out(nrm, nd, n, gmats)
+      !! UNIT mode only: as `fock_scale_out`, `nd` densities at a time.
       real(dp), intent(in) :: nrm(:)
       integer, intent(in) :: nd, n
       real(c_double), intent(inout) :: gmats(*)
@@ -934,8 +934,8 @@ contains
       status = TRC_OK
    end function trc_fock_nosym
 
-   !> As `fock_shaped`.
    subroutine fock_nosym_shaped(b, e, n, d, g, dscreen)
+      !! As `fock_shaped`.
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: e
       integer, intent(in) :: n
@@ -2148,11 +2148,11 @@ contains
 
    ! ---- read back ---------------------------------------------------------
 
-   !> 0 (lexicographic) or 1 (gamess): the within-shell Cartesian order every
-   !> AO-indexed array this API exchanges uses, fixed at compile time
-   !> (TRC_CART_ORDER) and the same for every handle -- no handle argument,
-   !> and it always succeeds.
    function trc_cart_order() result(order_id) bind(c, name="trc_cart_order")
+      !! 0 (lexicographic) or 1 (gamess): the within-shell Cartesian order every
+      !! AO-indexed array this API exchanges uses, fixed at compile time
+      !! (TRC_CART_ORDER) and the same for every handle -- no handle argument,
+      !! and it always succeeds.
       integer(c_int) :: order_id
       order_id = int(trc_cart_order_id(), c_int)
    end function trc_cart_order
