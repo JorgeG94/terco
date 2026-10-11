@@ -51,9 +51,13 @@ function(terco_add_check name source)
   target_include_directories(${name} PRIVATE ${CMAKE_BINARY_DIR}/modules)
   add_test(NAME terco/${name} COMMAND ${name} ${ARG_ARGS})
   # The oracles are read by relative path, so the tests run from test/.
+  # TERCO_CART_ORDER is not needed by the Fortran side (it already knows its
+  # own TRC_CART_ORDER at compile time), but is set here anyway so every
+  # test's environment is uniform with the Python (*_ref.py) ones below,
+  # which DO need it -- ctest is the one place both kinds of test share.
   set_tests_properties(
     terco/${name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endfunction()
 
 #
@@ -98,6 +102,10 @@ terco_add_check(check_xc_energy check_xc_energy.F90)
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
+# Rotated-axis MD vs HGP: the same Fock build with TRC_ROTAXIS forced off then
+# on in one process (see check_rotaxis.F90's header), on water and a linear
+# molecule where collinear frames are routine rather than a corner case.
+terco_add_check(check_rotaxis check_rotaxis.F90 NEEDS_BASIS)
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
@@ -175,21 +183,32 @@ if(Python3_FOUND)
     set_tests_properties(
       terco/check_mult_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_mult)
+                 terco/check_mult ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
     # Basis function values and gradients, elementwise against eval_ao.
     add_test(NAME terco/check_ao_vs_pyscf
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ao_ref.py)
     set_tests_properties(
       terco/check_ao_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_ao)
+                 terco/check_ao ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
     # E_xc and V_xc on the same grid and density, six functionals.
     add_test(NAME terco/check_xc_energy_vs_pyscf
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/xc_energy_ref.py)
     set_tests_properties(
       terco/check_xc_energy_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_xc_energy)
+                 terco/check_xc_energy ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+    # The rotated-axis algebra itself, in Python and in float64, for every
+    # ordered s/p class against int2e_cart, degenerate frames included. It
+    # needs no build, so it is the first thing to break when the vendored
+    # derivation or scripts/rotaxis/FRAME.md drifts -- libfint's own numeric
+    # check went unrun and quietly wrong, which is why this one is a test.
+    add_test(NAME terco/check_rotaxis_numeric
+             COMMAND ${Python3_EXECUTABLE}
+                     ${PROJECT_SOURCE_DIR}/scripts/rotaxis/check_numeric.py)
+    set_tests_properties(
+      terco/check_rotaxis_numeric
+      PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()
@@ -262,6 +281,21 @@ target_link_libraries(context_scf PRIVATE ${main_lib} terco_test_basis terco_c_i
 add_test(NAME terco/context_scf COMMAND context_scf)
 set_tests_properties(terco/context_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# GAMESS's per-component AO normalisation (trc_set_ao_norm): the factor
+# itself against scripts/cartorder.py's recorded reference, l = 0..4, then
+# the overlap diagonal, the SCF energy, Tr(D S) and a guess round trip, all
+# in both TRC_AO_NORM_SHELL and TRC_AO_NORM_UNIT, on water/cc-pVDZ (real d
+# functions). See check_ao_norm.F90's own header for why each check is
+# there and reference_ao_norm.dat's header for how it was generated.
+add_executable(check_ao_norm check_ao_norm.F90)
+target_compile_definitions(check_ao_norm PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_ao_norm PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_include_directories(check_ao_norm PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/check_ao_norm COMMAND check_ao_norm)
+set_tests_properties(terco/check_ao_norm PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 target_include_directories(scf_rimp2 PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_rimp2 COMMAND scf_rimp2)
 set_tests_properties(
@@ -325,6 +359,27 @@ else()
   add_test(NAME terco/scf_mpi COMMAND scf_mpi)
   set_tests_properties(terco/scf_mpi PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+endif()
+
+#
+# GAMESS's DDI and a fragment method, imitated: see scf_mpi_frag.F90's own
+# header for what each of the four scenarios checks. Needs exactly 4 ranks
+# -- two DDI compute ranks and two data servers, or two 2-rank fragments --
+# so it is only meaningful, and only registered, under MPI; it still builds
+# in a non-MPI configuration (uniformly with every other test here) and
+# just says so and exits. A TIMEOUT, not only the barrier inside the test
+# itself: a regression that brings back the MPI_COMM_WORLD hang this test
+# exists to catch should fail ctest, not wedge it.
+#
+add_executable(scf_mpi_frag scf_mpi_frag.F90)
+target_compile_definitions(scf_mpi_frag PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_mpi_frag PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_include_directories(scf_mpi_frag PRIVATE ${CMAKE_BINARY_DIR}/modules)
+if(TERCO_ENABLE_MPI)
+  add_test(NAME terco/scf_mpi_frag
+           COMMAND ${_mpiexec} ${_npflag} 4 $<TARGET_FILE:scf_mpi_frag>)
+  set_tests_properties(terco/scf_mpi_frag PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                     TIMEOUT 300)
 endif()
 
 add_executable(demo_makefp demo_makefp.F90)

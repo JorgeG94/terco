@@ -56,6 +56,11 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
                                 TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
                                 TRC_GUESS_SAP = 5
+   ! AO normalisation kinds for trc_set_ao_norm: TRC_AO_NORM_SHELL (the
+   ! default) is terco's own per-l convention, TRC_AO_NORM_UNIT is
+   ! GAMESS's per-component one. See trc_capi.F90's "AO NORMALISATION"
+   ! header section for the transform and which entries apply it.
+   integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0, TRC_AO_NORM_UNIT = 1
 
    interface
 
@@ -226,11 +231,13 @@ module trc_c_interfaces
          !! kept one release for callers already written to it.
             niter) bind(c)
          !! trc_scf run collectively by every rank of the communicator whose
-         !! Fortran handle is `fcomm` (MPI_Comm_c2f from C); only the world
-         !! communicator is accepted, anything else is TRC_ERR_UNSUPPORTED, and
-         !! -1 runs on one rank as trc_scf does. Every rank binds its own device
-         !! and returns the identical result. Without MPI in the build any
-         !! handle but -1 means the single rank there is.
+         !! Fortran handle is `fcomm` (MPI_Comm_c2f from C, not necessarily
+         !! MPI_COMM_WORLD -- GAMESS, for one, hands in DDI's compute
+         !! communicator). terco duplicates it; the caller keeps ownership
+         !! of its own handle. -1 runs on one rank as trc_scf does. Every
+         !! rank binds its own device and returns the identical result.
+         !! Without MPI in the build any handle but -1 means the single
+         !! rank there is.
          import :: c_int, c_double, c_ptr, c_char
          integer(c_int), value :: fcomm
          type(c_ptr), value :: basis
@@ -250,8 +257,9 @@ module trc_c_interfaces
          !! (restricted only), with `aux` the auxiliary basis, `nfrozen` frozen
          !! doubly occupied orbitals, `aux_block` the depth of the three-index
          !! tensor held at once (0: all). E_os and E_ss separately; MP2 is the
-         !! sum. `fcomm` -1 runs on one rank; the world communicator's Fortran
-         !! handle splits the occupied orbitals over its ranks.
+         !! sum. `fcomm` -1 runs on one rank; any other value is a caller
+         !! communicator's Fortran handle (need not be MPI_COMM_WORLD; see
+         !! trc_scf_mpi) and splits the occupied orbitals over its ranks.
          import :: c_int, c_double, c_ptr
          integer(c_int), value :: fcomm
          type(c_ptr), value :: basis, aux
@@ -425,11 +433,31 @@ module trc_c_interfaces
 
       integer(c_int) function trc_set_comm(handle, fcomm) bind(c)
          !! A Fortran communicator handle to split the run over; -1 is one
-         !! rank. MPI_COMM_WORLD only, and every rank must make the same calls.
+         !! rank. ANY intra-communicator (need not be MPI_COMM_WORLD -- see
+         !! trc_scf_mpi), and every rank of it must make the same calls.
          import :: c_int, c_ptr
          type(c_ptr), value :: handle
          integer(c_int), value :: fcomm
       end function trc_set_comm
+
+      integer(c_int) function trc_set_ao_norm(handle, kind) bind(c)
+         !! TRC_AO_NORM_SHELL (0, the default -- terco's/libcint's own
+         !! convention) or TRC_AO_NORM_UNIT (1 -- GAMESS's, every Cartesian
+         !! component individually normalised to 1). Settable before or
+         !! after the basis; NOT retroactive on a density already given
+         !! through trc_set_guess. See trc_capi.F90's "AO NORMALISATION"
+         !! header section for exactly which entries this changes.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), value :: kind
+      end function trc_set_ao_norm
+
+      integer(c_int) function trc_get_ao_norm(handle, kind) bind(c)
+         !! The AO normalisation this context is set to.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: kind
+      end function trc_get_ao_norm
 
       integer(c_int) function trc_set_verbose(handle, level) bind(c)
          import :: c_int, c_ptr

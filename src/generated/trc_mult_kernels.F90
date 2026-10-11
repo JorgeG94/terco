@@ -13,6 +13,14 @@
 ! libcint's order with the last index fastest, because that is what mqc's
 ! `multipole_matrices` returns and a component map is one more thing to drift.
 !
+! TRC_CART_ORDER GUARD. An undefined TRC_CART_ORDER reads as 0 in a
+! preprocessor #if, so the default (lexicographic) build needs no new -D
+! flag; see docs/GENERATORS.md's TRC_LMAX guard for the failure mode this
+! prevents.
+!
+#if TRC_CART_ORDER != 0
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
 module trc_mult_kernels
    use trc_boys, only: dp
    implicit none

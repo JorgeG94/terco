@@ -28,6 +28,105 @@
 ! Status codes, not exceptions or aborts. A library that stops the process on
 ! bad input is unusable inside someone else's SCF.
 !
+! COMMUNICATORS
+! -------------
+! Every entry that takes an `fcomm` (trc_scf_mpi, trc_rimp2, trc_set_comm)
+! accepts the Fortran handle of ANY intra-communicator the caller already
+! has open and is willing to be collective over -- not just MPI_COMM_WORLD.
+! -1 means one rank and no MPI, in any build. terco duplicates whatever the
+! handle names (MPI_Comm_dup, so every rank of it must call together) into
+! its own comm_t and frees only that duplicate afterwards; the caller's own
+! communicator is untouched and stays open for its own use throughout. This
+! is what lets GAMESS hand in DDI's compute communicator -- whose data
+! servers sit in MPI_COMM_WORLD but never call into terco, so terco must
+! never wait on MPI_COMM_WORLD itself -- and what will let a fragment
+! method hand in a per-fragment sub-communicator. See trc_build_comm.
+!
+! CARTESIAN COMPONENT ORDER
+! -------------------------
+! Every AO-indexed array this API hands back or takes in (S/T/V, the Fock
+! and density matrices, multipoles, DF tensors, `trc_set_guess`'s density)
+! uses the WITHIN-SHELL Cartesian order the library was BUILT with
+! (TRC_CART_ORDER at compile time: lexicographic by default, or gamess).
+! `trc_cart_order` below answers which one a caller is linked against, so a
+! caller need not know it out of band; it is a build-wide constant, not
+! something that varies per handle, so it takes none.
+!
+! AO NORMALISATION
+! ----------------
+! Separate from the order above, and a RUNTIME choice, not a build one:
+! trc_set_ao_norm(handle, TRC_AO_NORM_SHELL | TRC_AO_NORM_UNIT) on a
+! context, default TRC_AO_NORM_SHELL (terco's and libcint's own convention,
+! so nothing changes for a caller that never calls it). TRC_AO_NORM_UNIT is
+! GAMESS's: every Cartesian component individually normalised to 1. See
+! trc_ao_norm.F90's header for the closed form (n = sqrt((2l-1)!! /
+! product over x,y,z of (2*power-1)!!), FURTHER divided by terco's own
+! libcint-inherited `common_fac_sp` scale, which is 1 for d and up but not
+! for s or p -- also in that header, found the hard way) and the
+! covariant/contravariant transform it implies -- M_GAMESS = N M_terco N
+! for a two-AO-index matrix, D_GAMESS = N^-1 D_terco N^-1 for a density,
+! C_GAMESS = N^-1 C_terco (one index only: the other is an orbital label,
+! not an AO).
+!
+! The setting lives on `basis_box` (propagated from a context's own choice
+! by `take_basis`, so a handle borrowed through trc_context_basis carries
+! it), not only on the context, because that is the object every AO-array
+! entry below actually holds. EVERY entry that returns or accepts an
+! AO-indexed array, classified:
+!
+!   WIRED (scales when the basis/context involved is TRC_AO_NORM_UNIT):
+!     trc_compute_1e        covariant, S and T and V each
+!     trc_compute_multipoles covariant, one multipole component at a time
+!     trc_density            contravariant (context)
+!     trc_mo_coefficients    contravariant, AO index only (context)
+!     trc_set_guess           covariant-IN for TRC_GUESS_GIVEN, once, at the
+!                             copy (context) -- see that entry's own comment
+!     capi_fock (trc_fock), trc_fock_many, trc_fock_nosym
+!         dmat contravariant in, gmat covariant out. This is GAMESS's own
+!         MAIN caller -- its Fock/J/K build, run_Fockbuild's role in
+!         hpcchem_driver.src -- so it is wired even though it costs the
+!         one exception to this module's usual zero-copy Fock path: in
+!         TRC_AO_NORM_UNIT, `dmat` is copied to a host scratch array and
+!         scaled to terco's own convention THERE (never touching the
+!         caller's buffer -- see fock_scale_in), and `gmat` is scaled in
+!         place AFTER the build, since it is terco's own to write anyway
+!         (fock_scale_out). One O(n^2) copy against an O(n^4) Fock build.
+!         TRC_AO_NORM_SHELL, the default, still takes the original
+!         sequence-associated NO-COPY path unchanged (see fock_shaped's
+!         own comment), so no existing caller pays anything for this.
+!         trc_fock_many's `nd` densities (density index fastest) use
+!         their own small scale-in/out pair for that layout.
+!     capi_scf (trc_scf), capi_scf_mpi (trc_scf_mpi), through scf_entry
+!         dguess contravariant in, dmat contravariant out, eps invariant;
+!         wired for the same reason as the Fock family -- a UNIT-mode
+!         caller can reach this with a context-borrowed `basis` exactly
+!         as it can reach trc_fock. `res%dmat`/`bb%cmo`/`bb%eps` stay in
+!         terco's own convention internally (trc_run_rimp2 reads them
+!         that way); only the copies handed back across the C boundary
+!         are scaled.
+!
+!   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
+!     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
+!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nspin, trc_message
+!
+!   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
+!   the handle's own ao_norm_kind is what a later entry reads):
+!     trc_basis_create*, trc_pairs_create, trc_eri_create,
+!     trc_context_basis, trc_context_eri, trc_set_ao_norm, trc_get_ao_norm
+!
+!   COVARIANT/CONTRAVARIANT BY THE SAME RULE, BUT NOT WIRED IN THIS RELEASE
+!   -- always behave as TRC_AO_NORM_SHELL regardless of what a context they
+!   were reached through is set to, which is safe (identical to every
+!   caller before this setting existed) but not yet convention-aware:
+!     trc_compute_df2c, trc_compute_df3c
+!         covariant, one N per AO index (df3c's auxiliary index scales by
+!         the AUXILIARY basis's own N, not the orbital basis's -- it is a
+!         basis function too, just a different basis). Unreached by
+!         trc_set_ao_norm in practice: context never lends out `ab` (no
+!         trc_context_aux exists), so every `aux` handle these two ever see
+!         was built by trc_basis_create* directly and is always
+!         TRC_AO_NORM_SHELL.
+!
 module trc_capi
    use, intrinsic :: iso_c_binding
    use trc_boys, only: dp
@@ -41,8 +140,11 @@ module trc_capi
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
-   use pic_mpi_lib, only: comm_t, comm_world
+   use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_cart_perm, only: trc_cart_order_id
+   use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
+                          ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
    implicit none
    private
 
@@ -67,7 +169,9 @@ module trc_capi
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
+   public :: trc_set_ao_norm, trc_get_ao_norm
    public :: capi_scf
+   public :: trc_cart_order
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -82,6 +186,14 @@ module trc_capi
    integer(c_int), parameter, public :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
                                         TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
                                         TRC_GUESS_SAP = 5
+   ! AO normalisation kinds for trc_set_ao_norm -- re-exported from
+   ! trc_ao_norm (renamed on import, above, only so this c_int redeclaration
+   ! does not clash with the plain-integer names it reads) so a C caller
+   ! needs only this header, not that module's own Fortran-only one. See
+   ! trc_ao_norm's header for the convention itself and this module's own
+   ! "AO NORMALISATION" section below for which entries it applies to.
+   integer(c_int), parameter, public :: TRC_AO_NORM_SHELL = ao_norm_shell_
+   integer(c_int), parameter, public :: TRC_AO_NORM_UNIT = ao_norm_unit_
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -92,6 +204,13 @@ module trc_capi
       ! callers already written to it.
       real(dp), allocatable :: cmo(:, :, :), eps(:, :)
       integer :: nalpha = -1, nbeta = -1
+      ! TRC_AO_NORM_SHELL by default: an independently-created basis (this
+      ! box built through trc_basis_create*, never touched by
+      ! trc_set_ao_norm) always reports and accepts terco's own convention,
+      ! which is what makes the new setting opt-in. A context propagates its
+      ! own choice here (see `take_basis`) so that a handle borrowed through
+      ! trc_context_basis carries it to whatever raw entry receives it.
+      integer :: ao_norm_kind = TRC_AO_NORM_SHELL
    end type basis_box
 
    type :: pairs_box
@@ -124,6 +243,14 @@ module trc_capi
       real(dp), allocatable :: dguess(:, :, :)
       integer :: fcomm = -1
       integer :: nfrozen = -1, aux_block = 256
+      ! TRC_AO_NORM_SHELL by default: terco's own per-l convention, so no
+      ! existing caller sees a difference. trc_set_ao_norm sets this AND,
+      ! if a basis is already present, `bb`/`ab`'s own copies (see
+      ! `take_basis`, which propagates it into every basis built afterwards
+      ! too); the entries that actually convert read `bb`/`ab`'s copy, not
+      ! this one, because they are the ones a caller can also reach without
+      ! a context (trc_context_basis's borrowed handle).
+      integer :: ao_norm_kind = TRC_AO_NORM_SHELL
       ! the ERI context, only if something borrows it
       type(eri_box), allocatable :: eb
       ! results
@@ -259,12 +386,17 @@ contains
    !
    function trc_compute_1e(basis, pairs, smat, tmat, vmat) result(status) &
       bind(c, name="trc_compute_1e")
+      !! COVARIANT under `basis`'s own ao_norm_kind (set through
+      !! trc_set_ao_norm on a context that lent this handle via
+      !! trc_context_basis; a raw trc_basis_create* handle is always
+      !! TRC_AO_NORM_SHELL and this is then a no-op): S_out = N S N, same
+      !! for T and V.
       type(c_ptr), value :: basis, pairs
       real(c_double), intent(out) :: smat(*), tmat(*), vmat(*)
       integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(pairs_box), pointer :: pb
-      real(dp), allocatable :: s(:, :), t(:, :), v(:, :)
+      real(dp), allocatable :: s(:, :), t(:, :), v(:, :), nrm(:)
       integer :: n
 
       status = TRC_ERR_NULL
@@ -277,6 +409,12 @@ contains
       call trc_1e(bb%b, pb%p, s, t, v)
       !$acc update self(s, t, v)
       !$acc exit data delete(s, t, v)
+      if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         allocate (nrm(n))
+         call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
+         call ao_scale_cov(nrm, s); call ao_scale_cov(nrm, t); call ao_scale_cov(nrm, v)
+         deallocate (nrm)
+      end if
       smat(1:n*n) = reshape(s, [n*n])
       tmat(1:n*n) = reshape(t, [n*n])
       vmat(1:n*n) = reshape(v, [n*n])
@@ -410,14 +548,16 @@ contains
    !
    function trc_compute_multipoles(basis, pairs, origin, mmat) result(status) &
       bind(c, name="trc_compute_multipoles")
+      !! COVARIANT under `basis`'s own ao_norm_kind, one component at a
+      !! time (see trc_compute_1e).
       type(c_ptr), value :: basis, pairs
       real(c_double), intent(in)  :: origin(3)
       real(c_double), intent(out) :: mmat(*)
       integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(pairs_box), pointer :: pb
-      real(dp), allocatable :: m(:, :, :)
-      integer :: n
+      real(dp), allocatable :: m(:, :, :), nrm(:)
+      integer :: n, k
       integer(kind=8) :: ntot
 
       status = TRC_ERR_NULL
@@ -431,6 +571,14 @@ contains
       call trc_multipoles(bb%b, pb%p, real(origin, dp), m)
       !$acc update self(m)
       !$acc exit data delete(m)
+      if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         allocate (nrm(n))
+         call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
+         do k = 1, TRC_NMULT
+            call ao_scale_cov(nrm, m(:, :, k))
+         end do
+         deallocate (nrm)
+      end if
       mmat(1:ntot) = reshape(m, [ntot])
       deallocate (m)
       status = TRC_OK
@@ -483,6 +631,12 @@ contains
    !
    function capi_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen) &
       result(status) bind(c, name="trc_fock")
+      !! CONTRAVARIANT in (dmat), COVARIANT out (gmat), under `basis`'s own
+      !! ao_norm_kind: this is GAMESS's own main caller (its Fock/J/K
+      !! build, run_Fockbuild's role in hpcchem_driver.src), so it is wired
+      !! rather than left at TRC_AO_NORM_SHELL like the entries the "not
+      !! wired" list below still names. See fock_scale_in/fock_scale_out
+      !! for why SHELL mode still costs nothing extra.
       type(c_ptr), value :: eri, basis
       real(c_double), intent(in)  :: dmat(*)
       real(c_double), intent(out) :: gmat(*)
@@ -498,27 +652,73 @@ contains
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
       integer :: n
+      real(dp), allocatable :: nrm(:), dscratch(:, :)
 
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
-      call fock_shaped(bb%b, eb%e, n, dmat, gmat, real(jfac, dp), &
-                       real(kfac, dp), dscreen /= 0)
+      if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         call fock_scale_in(bb, n, dmat, nrm, dscratch)
+         call fock_shaped(bb%b, eb%e, n, dscratch, gmat, real(jfac, dp), &
+                          real(kfac, dp), dscreen /= 0)
+         call fock_scale_out(nrm, n, gmat)
+      else
+         ! The zero-copy path, untouched: `dmat` and `gmat` are sequence
+         ! associated straight into the caller's own memory (see the
+         ! comment on `fock_shaped` below), which is exactly why SHELL
+         ! mode -- the default, so every existing caller -- pays nothing
+         ! for this entry existing.
+         call fock_shaped(bb%b, eb%e, n, dmat, gmat, real(jfac, dp), &
+                          real(kfac, dp), dscreen /= 0)
+      end if
       status = TRC_OK
    end function capi_fock
 
+   !> UNIT mode only, shared by capi_fock and trc_fock_nosym (identical
+   !> (n,n) shape): copies `dmat` -- never mutated, it is the caller's --
+   !> into a host scratch array and scales THAT to terco's own convention,
+   !> D_terco = N D_GAMESS N. One O(n^2) copy against an O(n^4) Fock build.
+   subroutine fock_scale_in(bb, n, dmat, nrm, dscratch)
+      type(basis_box), intent(in) :: bb
+      integer, intent(in) :: n
+      real(c_double), intent(in) :: dmat(*)
+      real(dp), allocatable, intent(out) :: nrm(:), dscratch(:, :)
+      allocate (nrm(n), dscratch(n, n))
+      call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
+      dscratch = reshape(real(dmat(1:n*n), dp), [n, n])
+      call ao_scale_cov(nrm, dscratch)
+   end subroutine fock_scale_in
+
+   !> UNIT mode only: `gmat` is terco's own to write (intent(out) at the C
+   !> boundary, so whatever was in the caller's buffer before this call is
+   !> already gone), so scaling it after the build, in place, costs nothing
+   !> the build itself did not already cost -- G_GAMESS = N G_terco N.
+   subroutine fock_scale_out(nrm, n, gmat)
+      real(dp), intent(in) :: nrm(:)
+      integer, intent(in) :: n
+      real(c_double), intent(inout) :: gmat(*)
+      real(dp) :: g(n, n)
+      g = reshape(real(gmat(1:n*n), dp), [n, n])
+      call ao_scale_cov(nrm, g)
+      gmat(1:n*n) = real(reshape(g, [n*n]), c_double)
+   end subroutine fock_scale_out
+
    !
-   ! NO COPY. `dmat` and `gmat` arrive as assumed-size, and handing an
-   ! assumed-size actual to an explicit-shape `(n, n)` dummy is sequence
-   ! association -- the callee addresses the caller's memory directly.
+   ! NO COPY in TRC_AO_NORM_SHELL, the default. `dmat` and `gmat` arrive as
+   ! assumed-size, and handing an assumed-size actual to an explicit-shape
+   ! `(n, n)` dummy is sequence association -- the callee addresses the
+   ! caller's memory directly.
    !
    ! The first version reshaped both into allocatable locals, which at 2773
    ! functions is four passes over 61 MB per Fock build for nothing. Reshaping
    ! is the obvious way to write this and the obvious way is wrong: the bytes
    ! are already contiguous and already in the right order, so all the copy
-   ! bought was a second name for them.
+   ! bought was a second name for them. TRC_AO_NORM_UNIT is the one case that
+   ! DOES need its own copy (fock_scale_in/fock_scale_out, above, called from
+   ! capi_fock and trc_fock_nosym before/after this): an O(n^2) price only a
+   ! caller who opted into UNIT mode pays, against an O(n^4) build.
    !
    subroutine fock_shaped(b, e, n, d, g, jfac, kfac, dscreen)
       type(trc_basis_t), intent(in) :: b
@@ -543,6 +743,10 @@ contains
    !
    function trc_fock_many(eri, basis, ndens, dmats, gmats, jfac, kfac, dscreen) &
       result(status) bind(c, name="trc_fock_many")
+      !! CONTRAVARIANT in, COVARIANT out, under `basis`'s own ao_norm_kind
+      !! -- see capi_fock; the density-index-fastest layout means the
+      !! UNIT-mode scaling here is its own small routines
+      !! (fock_many_scale_in/out) rather than a reuse of fock_scale_in/out.
       type(c_ptr), value :: eri, basis
       integer(c_int), value :: ndens
       real(c_double), intent(in)  :: dmats(*)
@@ -553,6 +757,7 @@ contains
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
       integer :: n
+      real(dp), allocatable :: nrm(:), dscratch(:, :, :)
 
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
@@ -563,13 +768,22 @@ contains
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
-      call fock_many_shaped(bb%b, eb%e, int(ndens), n, dmats, gmats, &
-                            real(jfac, dp), real(kfac, dp), dscreen /= 0)
+      if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         call fock_many_scale_in(bb, int(ndens), n, dmats, nrm, dscratch)
+         call fock_many_shaped(bb%b, eb%e, int(ndens), n, dscratch, gmats, &
+                               real(jfac, dp), real(kfac, dp), dscreen /= 0)
+         call fock_many_scale_out(nrm, int(ndens), n, gmats)
+      else
+         call fock_many_shaped(bb%b, eb%e, int(ndens), n, dmats, gmats, &
+                               real(jfac, dp), real(kfac, dp), dscreen /= 0)
+      end if
       status = TRC_OK
    end function trc_fock_many
 
    !> As `fock_shaped`, and for the same reason -- the batch is the case where
-   !> the copy would have hurt most, being N times the size.
+   !> the copy would have hurt most, being N times the size (in SHELL mode;
+   !> UNIT mode already pays for a copy every entry that wires it, so this
+   !> one is no different in kind, only in the extra `nd` loop).
    subroutine fock_many_shaped(b, e, nd, n, d, g, jfac, kfac, dscreen)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: e
@@ -582,6 +796,43 @@ contains
                        density_screen=dscreen)
    end subroutine fock_many_shaped
 
+   !> UNIT mode only: as `fock_scale_in`, but `dmats` is (ndens, nao, nao)
+   !> with the DENSITY INDEX FASTEST (trc_fock_many's own layout comment
+   !> above), so every one of the `nd` densities gets the SAME `nrm(i)*
+   !> nrm(j)` -- one basis, one scale, `nd` copies of it in the array.
+   subroutine fock_many_scale_in(bb, nd, n, dmats, nrm, dscratch)
+      type(basis_box), intent(in) :: bb
+      integer, intent(in) :: nd, n
+      real(c_double), intent(in) :: dmats(*)
+      real(dp), allocatable, intent(out) :: nrm(:), dscratch(:, :, :)
+      integer :: i, j
+      allocate (nrm(n), dscratch(nd, n, n))
+      call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
+      dscratch = reshape(real(dmats(1:nd*n*n), dp), [nd, n, n])
+      do j = 1, n
+         do i = 1, n
+            dscratch(:, i, j) = dscratch(:, i, j)*nrm(i)*nrm(j)
+         end do
+      end do
+   end subroutine fock_many_scale_in
+
+   !> UNIT mode only: as `fock_scale_out`, `nd` densities at a time.
+   subroutine fock_many_scale_out(nrm, nd, n, gmats)
+      real(dp), intent(in) :: nrm(:)
+      integer, intent(in) :: nd, n
+      real(c_double), intent(inout) :: gmats(*)
+      real(dp), allocatable :: g(:, :, :)
+      integer :: i, j
+      allocate (g(nd, n, n))
+      g = reshape(real(gmats(1:nd*n*n), dp), [nd, n, n])
+      do j = 1, n
+         do i = 1, n
+            g(:, i, j) = g(:, i, j)*nrm(i)*nrm(j)
+         end do
+      end do
+      gmats(1:nd*n*n) = real(reshape(g, [nd*n*n]), c_double)
+   end subroutine fock_many_scale_out
+
    !
    ! The same build for a density that is NOT symmetric.
    !
@@ -593,6 +844,10 @@ contains
    !
    function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) result(status) &
       bind(c, name="trc_fock_nosym")
+      !! CONTRAVARIANT in, COVARIANT out, exactly as capi_fock -- the
+      !! diagonal congruence ao_scale_cov/fock_scale_in apply does not
+      !! care whether `dmat` is symmetric, so nothing here differs from
+      !! the symmetric entry beyond which shared routines it reuses.
       type(c_ptr), value :: eri, basis
       real(c_double), intent(in)  :: dmat(*)
       real(c_double), intent(out) :: gmat(*)
@@ -601,13 +856,20 @@ contains
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
       integer :: n
+      real(dp), allocatable :: nrm(:), dscratch(:, :)
 
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
-      call fock_nosym_shaped(bb%b, eb%e, n, dmat, gmat, dscreen /= 0)
+      if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         call fock_scale_in(bb, n, dmat, nrm, dscratch)
+         call fock_nosym_shaped(bb%b, eb%e, n, dscratch, gmat, dscreen /= 0)
+         call fock_scale_out(nrm, n, gmat)
+      else
+         call fock_nosym_shaped(bb%b, eb%e, n, dmat, gmat, dscreen /= 0)
+      end if
       status = TRC_OK
    end function trc_fock_nosym
 
@@ -661,21 +923,21 @@ contains
    ! the ranks and every rank returns the identical result. `fcomm` is the
    ! Fortran handle of the communicator (MPI_Comm_c2f from C, or the
    ! integer a Fortran caller holds), and every rank of it must call this
-   ! together. Each rank binds the device numbered by its rank, modulo the
-   ! devices present, before anything else -- the caller does not.
+   ! together, because building terco's own communicator from it duplicates
+   ! it. Each rank binds its own device before anything else -- the caller
+   ! does not.
    !
-   ! Only the world communicator is accepted for now: pic-mpi builds its
-   ! communicator object by duplicating MPI_COMM_WORLD, and terco has no
-   ! way to wrap an arbitrary handle. Any other handle is
-   ! TRC_ERR_UNSUPPORTED, except -1, which is trc_scf on one rank in any
-   ! build. In a build without MPI every other handle is the single rank.
+   ! ANY intra-communicator is accepted, not just MPI_COMM_WORLD: this is
+   ! what lets GAMESS hand in DDI's compute communicator, whose data-server
+   ! ranks never call here at all, and what lets a fragment method hand in
+   ! a per-fragment sub-communicator later. -1 is trc_scf on one rank in
+   ! any build; in a build without MPI every other handle is also the
+   ! single rank there is, because that is what pic-mpi's serial backend's
+   ! comm_from_handle gives back.
    !
    function capi_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, &
                          conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                          niter) result(status) bind(c, name="trc_scf_mpi")
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
       integer(c_int), value :: fcomm
       type(c_ptr), value :: basis
       integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
@@ -687,22 +949,18 @@ contains
       integer(c_int), intent(out) :: niter
       integer(c_int) :: status
       type(comm_t) :: comm
-      integer :: dev
-      if (fcomm == -1) then
-         ! One rank, no communicator: trc_scf.
+      logical :: collective
+      call trc_build_comm(fcomm, comm, collective, status)
+      if (status /= TRC_OK) then
+         energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
+         return
+      end if
+      if (.not. collective) then
+         ! fcomm was -1: one rank, no communicator: trc_scf.
          status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
                             max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter)
          return
       end if
-#ifdef TERCO_HAVE_MPI
-      if (fcomm /= MPI_COMM_WORLD%mpi_val) then
-         status = TRC_ERR_UNSUPPORTED
-         energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
-         return
-      end if
-#endif
-      comm = comm_world()
-      dev = trc_bind_device(comm%rank())
       status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
                          max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter, comm)
       call comm%finalize()
@@ -715,16 +973,12 @@ contains
    ! occupied orbitals are left out of the correlation; `aux_block` bounds
    ! the depth of the three-index tensor held at once (0 for all of it).
    ! E_os and E_ss come back separately: MP2 is their sum, SCS and SOS are
-   ! weights on them. With `fcomm` the world communicator's Fortran handle
-   ! the occupied orbitals are split over its ranks and every rank gets the
-   ! same numbers; pass any value in a build without MPI, or run on one
-   ! rank with fcomm = -1 in any build.
+   ! weights on them. `fcomm` is ANY intra-communicator's Fortran handle
+   ! (see capi_scf_mpi); the occupied orbitals are split over its ranks and
+   ! every rank gets the same numbers. -1 runs on one rank in any build.
    !
    function capi_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) &
       result(status) bind(c, name="trc_rimp2")
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
       integer(c_int), value :: fcomm
       type(c_ptr), value :: basis, aux
       integer(c_int), value :: nfrozen, aux_block
@@ -734,7 +988,7 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
-      integer :: dev, nblk
+      integer :: nblk
       logical :: collective
 
       e_os = 0.0_c_double; e_ss = 0.0_c_double
@@ -746,21 +1000,14 @@ contains
       if (.not. allocated(bb%cmo)) return           ! no SCF on this basis yet
       if (bb%nalpha /= bb%nbeta) return             ! restricted reference only
       if (nfrozen < 0 .or. nfrozen >= bb%nalpha) return
-      collective = fcomm /= -1
-#ifdef TERCO_HAVE_MPI
-      if (collective .and. fcomm /= MPI_COMM_WORLD%mpi_val) then
-         status = TRC_ERR_UNSUPPORTED
-         return
-      end if
-#endif
+      call trc_build_comm(fcomm, comm, collective, status)
+      if (status /= TRC_OK) return
       nblk = int(aux_block)
       if (nblk <= 0) nblk = ab%b%nao
       if (.not. ab%b%on_device) call ab%b%to_device()
       call pl%build(bb%b, 1.0e-12_dp)
       call pl%to_device()
       if (collective) then
-         comm = comm_world()
-         dev = trc_bind_device(comm%rank())
          call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
                             nfrozen=int(nfrozen), aux_block=nblk, comm=comm)
          call comm%finalize()
@@ -781,6 +1028,11 @@ contains
    function scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
                       conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                       niter, comm) result(status)
+      !! `dguess` CONTRAVARIANT in, `dmat` CONTRAVARIANT out, `eps`
+      !! invariant, under `basis`'s own ao_norm_kind -- wired for the same
+      !! reason capi_fock is: this is the entry capi_scf/capi_scf_mpi both
+      !! funnel through, and a UNIT-mode caller can reach it with a
+      !! context-borrowed `basis` exactly as it can reach the Fock family.
       type(c_ptr), value :: basis
       integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
       character(kind=c_char), intent(in) :: functional(*)
@@ -795,7 +1047,9 @@ contains
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: res
       real(c_double), pointer :: dg(:, :, :)
+      real(dp), allocatable :: nrm(:), dgscratch(:, :, :)
       integer :: n, nspin, i, s, k
+      logical :: unit_mode
 
       status = TRC_ERR_NULL
       energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
@@ -806,6 +1060,11 @@ contains
       if (nalpha < 0 .or. nbeta < 0 .or. nalpha + nbeta > 2*n) return
       if (grid_level < 0 .or. max_iter < 1) return
       nspin = merge(2, 1, nalpha /= nbeta)
+      unit_mode = bb%ao_norm_kind == TRC_AO_NORM_UNIT
+      if (unit_mode) then
+         allocate (nrm(n))
+         call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
+      end if
 
       opts%functional = ""
       do i = 1, len(opts%functional)
@@ -820,7 +1079,19 @@ contains
 
       if (c_associated(dguess)) then
          call c_f_pointer(dguess, dg, [n, n, nspin])
-         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=real(dg, dp), comm=comm)
+         if (unit_mode) then
+            ! `dg` points at the CALLER's guess; copy before scaling so
+            ! that guess is never touched, D_terco = N D_GAMESS N.
+            allocate (dgscratch(n, n, nspin))
+            dgscratch = real(dg, dp)
+            do s = 1, nspin
+               call ao_scale_cov(nrm, dgscratch(:, :, s))
+            end do
+            call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=dgscratch, comm=comm)
+            deallocate (dgscratch)
+         else
+            call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=real(dg, dp), comm=comm)
+         end if
       else
          call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, comm=comm)
       end if
@@ -832,13 +1103,37 @@ contains
       energy = real(res%energy, c_double)
       e_xc = real(res%e_xc, c_double)
       niter = int(res%iterations, c_int)
-      k = 0
-      do s = 1, nspin
-         do i = 1, n*n
-            k = k + 1
-            dmat(k) = real(res%dmat(mod(i - 1, n) + 1, (i - 1)/n + 1, s), c_double)
+      ! `res%dmat` is terco's own SCF result, in terco's own convention --
+      ! scale a COPY (D_GAMESS = N^-1 D_terco N^-1) for the caller-facing
+      ! `dmat` and keep `res%dmat` itself untouched for the orbitals kept
+      ! below (bb%cmo/bb%eps stay terco-native; trc_run_rimp2 needs them
+      ! that way).
+      if (unit_mode) then
+         block
+            real(dp), allocatable :: dscratch(:, :, :)
+            allocate (dscratch(n, n, nspin))
+            dscratch = res%dmat
+            do s = 1, nspin
+               call ao_scale_contra(nrm, dscratch(:, :, s))
+            end do
+            k = 0
+            do s = 1, nspin
+               do i = 1, n*n
+                  k = k + 1
+                  dmat(k) = real(dscratch(mod(i - 1, n) + 1, (i - 1)/n + 1, s), c_double)
+               end do
+            end do
+            deallocate (dscratch)
+         end block
+      else
+         k = 0
+         do s = 1, nspin
+            do i = 1, n*n
+               k = k + 1
+               dmat(k) = real(res%dmat(mod(i - 1, n) + 1, (i - 1)/n + 1, s), c_double)
+            end do
          end do
-      end do
+      end if
       k = 0
       do s = 1, nspin
          do i = 1, n
@@ -960,6 +1255,7 @@ contains
          if (cx%have_aux) call cx%ab%b%release()
          cx%ab%b = b
          call cx%ab%b%to_device()
+         cx%ab%ao_norm_kind = cx%ao_norm_kind
          cx%have_aux = .true.
          cx%rimp2_ok = .false.
          call b%release()
@@ -968,6 +1264,7 @@ contains
          if (cx%have_basis) call cx%bb%b%release()
          cx%bb%b = b
          call cx%bb%b%to_device()
+         cx%bb%ao_norm_kind = cx%ao_norm_kind
          if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
          cx%have_basis = .true.
          call drop_eri(cx)
@@ -1252,13 +1549,22 @@ contains
       !! `kind` one of TRC_GUESS_*. For TRC_GUESS_GIVEN, `dguess` is
       !! (nao, nao, nspin) column-major and is COPIED here; the caller's array
       !! is free afterwards. The basis must be set first for that copy.
+      !!
+      !! CONTRAVARIANT under trc_set_ao_norm: a density given in
+      !! TRC_AO_NORM_UNIT is converted to terco's own shell-normalised
+      !! convention here, once, at the copy -- D_terco = N D_given N (see
+      !! trc_ao_norm.F90's header; this is the "guess coming IN" direction,
+      !! the covariant congruence run forward). Everything downstream of
+      !! this copy, including trc_run_scf's own iteration, only ever sees
+      !! terco's native convention.
       type(c_ptr), value :: handle
       integer(c_int), value :: kind, nspin
       type(c_ptr), value :: dguess
       integer(c_int) :: status
       type(context_box), pointer :: cx
       real(c_double), pointer :: dg(:, :, :)
-      integer :: n
+      real(dp), allocatable :: nrm(:)
+      integer :: n, s
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -1285,14 +1591,81 @@ contains
          call c_f_pointer(dguess, dg, [n, n, int(nspin)])
          allocate (cx%dguess(n, n, nspin))
          cx%dguess = real(dg, dp)
+         if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+            allocate (nrm(n))
+            call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
+            do s = 1, int(nspin)
+               call ao_scale_cov(nrm, cx%dguess(:, :, s))
+            end do
+            deallocate (nrm)
+         end if
       end if
       cx%guess_kind = int(kind)
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_guess
 
+   function trc_set_ao_norm(handle, kind) result(status) bind(c, name="trc_set_ao_norm")
+      !! How this context's AO-indexed C API entries normalise a Cartesian
+      !! shell's components: TRC_AO_NORM_SHELL (0, the default -- terco's
+      !! own convention, and libcint's) or TRC_AO_NORM_UNIT (1 -- every
+      !! component individually normalised to 1, GAMESS's convention; see
+      !! trc_ao_norm.F90's header for the closed form and which entries
+      !! convert). Defaulting to SHELL means no caller that never calls
+      !! this sees any difference from before this entry existed.
+      !!
+      !! Order-independent of trc_set_basis*/trc_set_aux*: settable before
+      !! or after either, and takes effect on whichever basis is present now
+      !! and on any set afterwards. NOT retroactive on an already-copied
+      !! TRC_GUESS_GIVEN density, though -- that conversion happened once,
+      !! at trc_set_guess's own call, under whatever mode was active then;
+      !! call this before trc_set_guess if the two must agree.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: kind
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (kind /= TRC_AO_NORM_SHELL .and. kind /= TRC_AO_NORM_UNIT) then
+         call refuse(cx, "trc_set_ao_norm: kind must be 0 (shell) or 1 (unit)")
+         return
+      end if
+      cx%ao_norm_kind = int(kind)
+      if (cx%have_basis) cx%bb%ao_norm_kind = cx%ao_norm_kind
+      if (cx%have_aux) cx%ab%ao_norm_kind = cx%ao_norm_kind
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_ao_norm
+
+   function trc_get_ao_norm(handle, kind) result(status) bind(c, name="trc_get_ao_norm")
+      !! The AO normalisation this context is set to -- TRC_AO_NORM_SHELL
+      !! unless trc_set_ao_norm was called with TRC_AO_NORM_UNIT.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: kind
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      kind = TRC_AO_NORM_SHELL
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      kind = int(cx%ao_norm_kind, c_int)
+      status = TRC_OK
+   end function trc_get_ao_norm
+
    function trc_set_comm(handle, fcomm) result(status) bind(c, name="trc_set_comm")
-      !! A Fortran communicator handle; -1 means one rank. MPI_COMM_WORLD only.
+      !! `fcomm` is the Fortran handle of ANY intra-communicator the caller
+      !! already has open and collective over -- MPI_Comm_c2f from C, or
+      !! the integer a Fortran caller holds (mpi_f08's MPI_VAL, or the
+      !! legacy `mpi` module's handle directly); -1 means one rank, no MPI.
+      !! It need not be MPI_COMM_WORLD: GAMESS, for example, hands this
+      !! DDI's compute communicator, whose data-server ranks are not part
+      !! of it and never call trc_run_scf/trc_run_rimp2 at all. terco
+      !! duplicates whatever `fcomm` names (MPI_Comm_dup) the first time a
+      !! run needs it, so every rank of THAT communicator must reach the
+      !! run together; the caller keeps ownership of its own communicator,
+      !! since only terco's duplicate is ever freed.
       type(c_ptr), value :: handle
       integer(c_int), value :: fcomm
       integer(c_int) :: status
@@ -1331,28 +1704,66 @@ contains
       status = TRC_OK
    end function trc_set_rimp2
 
-   subroutine world_comm(cx, comm, ok, status)
-      !! The communicator a run splits over, if the context names one.
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
-      type(context_box), intent(in) :: cx
+   subroutine trc_build_comm(fcomm, comm, ok, status)
+      !! THE ONE PLACE `fcomm` (a caller's Fortran communicator handle, as
+      !! every C entry point below receives it) becomes terco's own comm_t.
+      !! Every entry that takes or stores an `fcomm` -- capi_scf_mpi,
+      !! capi_rimp2, and trc_run_scf/trc_run_rimp2/trc_context_eri through
+      !! the context's cx%fcomm -- calls this rather than repeating the
+      !! conversion.
+      !!
+      !! `fcomm` of -1 means one rank, no MPI: `ok` comes back .false. and
+      !! `comm` is not built, so the caller takes its non-collective path.
+      !! Any other value is the Fortran handle of an intra-communicator the
+      !! caller already has open: MPI_Comm_c2f from C, the MPI_VAL of an
+      !! mpi_f08 handle, or the plain integer the legacy `mpi` module uses.
+      !! ANY such communicator is accepted -- there is no MPI_COMM_WORLD
+      !! check here, deliberately, because GAMESS's DDI hands libraries its
+      !! *compute* communicator, not MPI_COMM_WORLD: DDI's data-server
+      !! ranks sit in MPI_COMM_WORLD but never call into terco, so waiting
+      !! on MPI_COMM_WORLD from inside terco would hang on the first
+      !! collective. A fragment method's per-fragment sub-communicator is
+      !! the same story. This IS collective, over whatever communicator
+      !! `fcomm` names: comm_from_handle duplicates it (MPI_Comm_dup), so
+      !! every rank of that communicator must call this together.
+      !!
+      !! The duplicate is what makes ownership work: terco's `comm` is its
+      !! own copy, so `comm%finalize()` after the run frees only that copy.
+      !! The caller's own handle is never touched and stays open for
+      !! whatever else it is used for (other DDI traffic, another library)
+      !! during and after this call.
+      !!
+      !! A communicator of size 1 -- a one-rank fragment -- needs no special
+      !! case: MPI_Comm_dup and the node split below are both defined, and
+      !! well-behaved, on a single-rank communicator.
+      !!
+      !! Binds this rank's device by NODE-LOCAL rank, not by comm%rank():
+      !! a DDI compute communicator or a fragment sub-communicator is not
+      !! guaranteed to be node-ordered (rank 0 and rank 1 of it need not be
+      !! on the same node, or even adjacent on one), so binding by comm%rank()
+      !! directly could stack two ranks of one node on the same device
+      !! while another device sat idle. Splitting by shared memory
+      !! (comm%split(), MPI_COMM_TYPE_SHARED under the hood) finds the
+      !! ranks that actually share a node; the node communicator is scratch
+      !! and is freed here, before returning.
+      integer(c_int), intent(in) :: fcomm
       type(comm_t), intent(out) :: comm
       logical, intent(out) :: ok
       integer(c_int), intent(out) :: status
+      type(comm_t) :: node_comm
       integer :: dev
       ok = .false.; status = TRC_OK
-      if (cx%fcomm == -1) return
-#ifdef TERCO_HAVE_MPI
-      if (cx%fcomm /= MPI_COMM_WORLD%mpi_val) then
-         status = TRC_ERR_UNSUPPORTED
+      if (fcomm == -1) return
+      comm = comm_from_handle(int(fcomm))
+      if (comm%is_null()) then
+         status = TRC_ERR_BADARG
          return
       end if
-#endif
-      comm = comm_world()
-      dev = trc_bind_device(comm%rank())
+      node_comm = comm%split()
+      dev = trc_bind_device(node_comm%rank())
+      call node_comm%finalize()
       ok = .true.
-   end subroutine world_comm
+   end subroutine trc_build_comm
 
    function trc_run_scf(handle) result(status) bind(c, name="trc_run_scf")
       !! Needs the molecule and the basis. Builds the guess it was asked for,
@@ -1450,7 +1861,7 @@ contains
          end if
          dg = cx%dguess
       end select
-      call world_comm(cx, comm, collective, status)
+      call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
       if (allocated(dg)) then
          if (collective) then
@@ -1549,7 +1960,7 @@ contains
       end if
       nblk = cx%aux_block
       if (nblk <= 0) nblk = cx%ab%b%nao
-      call world_comm(cx, comm, collective, status)
+      call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
@@ -1568,6 +1979,15 @@ contains
    end function trc_run_rimp2
 
    ! ---- read back ---------------------------------------------------------
+
+   !> 0 (lexicographic) or 1 (gamess): the within-shell Cartesian order every
+   !> AO-indexed array this API exchanges uses, fixed at compile time
+   !> (TRC_CART_ORDER) and the same for every handle -- no handle argument,
+   !> and it always succeeds.
+   function trc_cart_order() result(order_id) bind(c, name="trc_cart_order")
+      integer(c_int) :: order_id
+      order_id = int(trc_cart_order_id(), c_int)
+   end function trc_cart_order
 
    function trc_nao(handle, nao) result(status) bind(c, name="trc_nao")
       type(c_ptr), value :: handle
@@ -1664,34 +2084,62 @@ contains
 
    function trc_density(handle, dmat) result(status) bind(c, name="trc_density")
       !! (nao, nao, nspin), column-major; restricted holds the total.
+      !!
+      !! CONTRAVARIANT under trc_set_ao_norm: D_out = N^-1 D_terco N^-1 per
+      !! spin slice when UNIT. Scaled on a COPY -- `cx%res%dmat` itself
+      !! stays in terco's own convention, because trc_run_rimp2 and a
+      !! second trc_run_scf both read it as such internally.
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: dmat(*)
       integer(c_int) :: status
       type(context_box), pointer :: cx
-      integer :: n, ns
+      real(dp), allocatable :: d(:, :, :), nrm(:)
+      integer :: n, ns, s
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
       n = cx%bb%b%nao; ns = cx%res%nspin
-      dmat(1:n*n*ns) = real(reshape(cx%res%dmat, [n*n*ns]), c_double)
+      d = cx%res%dmat
+      if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         allocate (nrm(n))
+         call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
+         do s = 1, ns
+            call ao_scale_contra(nrm, d(:, :, s))
+         end do
+         deallocate (nrm)
+      end if
+      dmat(1:n*n*ns) = real(reshape(d, [n*n*ns]), c_double)
       status = TRC_OK
    end function trc_density
 
    function trc_mo_coefficients(handle, cmo) result(status) bind(c, name="trc_mo_coefficients")
+      !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:
+      !! C_out = N^-1 C_terco per spin slice when UNIT -- see trc_density
+      !! for why this scales a copy, not `cx%res%cmo` itself.
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: cmo(*)
       integer(c_int) :: status
       type(context_box), pointer :: cx
-      integer :: n, ns
+      real(dp), allocatable :: c(:, :, :), nrm(:)
+      integer :: n, ns, s
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
       n = cx%bb%b%nao; ns = cx%res%nspin
-      cmo(1:n*n*ns) = real(reshape(cx%res%cmo, [n*n*ns]), c_double)
+      c = cx%res%cmo
+      if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         allocate (nrm(n))
+         call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
+         do s = 1, ns
+            call ao_scale_contra_row(nrm, c(:, :, s))
+         end do
+         deallocate (nrm)
+      end if
+      cmo(1:n*n*ns) = real(reshape(c, [n*n*ns]), c_double)
       status = TRC_OK
    end function trc_mo_coefficients
 
@@ -1786,7 +2234,7 @@ contains
       if (.not. cx%have_basis) return
       if (.not. allocated(cx%eb)) then
          allocate (cx%eb)
-         call world_comm(cx, comm, collective, status)
+         call trc_build_comm(cx%fcomm, comm, collective, status)
          if (status /= TRC_OK) then
             deallocate (cx%eb)
             return

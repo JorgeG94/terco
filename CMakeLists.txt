@@ -38,6 +38,30 @@ set(TERCO_LMAX
     CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d)")
 set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2)
 
+#
+# The within-shell Cartesian component order every AO-indexed quantity terco
+# produces uses: Fock/J/K, the one-electron matrices, multipoles, DF tensors,
+# AO values on the grid, and the density blocks read back in. ORDER ONLY --
+# this does not apply GAMESS's per-component sqrt3/sqrt5 normalisation, which
+# is a separate decision at the API boundary.
+#
+# lexicographic (the default) is libcint's own order -- the exponent triples
+# in descending lexicographic order, x < y < z alphabetically on the labels
+# -- and it is exactly today's behaviour: a lexicographic build needs no new
+# -D flag anywhere (src/CMakeLists.txt), so the shipped src/generated and an
+# `fpm build`, which passes none, are unaffected. gamess switches d and f
+# (s and p are unchanged, being identical in both orders) to GAMESS's own
+# order; see scripts/cartorder.py for both tables and their sourcing.
+#
+# "libcint" is accepted as an alias, same as cartorder.py's own ORDERS dict
+# (src/CMakeLists.txt normalises it), so a command line written against the
+# old name still works.
+#
+set(TERCO_CART_ORDER
+    "lexicographic"
+    CACHE STRING "Within-shell Cartesian component order (lexicographic, gamess)")
+set_property(CACHE TERCO_CART_ORDER PROPERTY STRINGS lexicographic gamess libcint)
+
 set(TERCO_GPU_ARCH
     "cc70"
     CACHE STRING "Target GPU architecture, as nvfortran spells it (cc70, cc80, ...)")
@@ -158,6 +182,25 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
                                                TRC_FOCK6 TRC_PERCLASS)
 #
+# TRC_CART_ORDER: 0 = lexicographic, 1 = gamess. Defined ONLY for gamess, left
+# UNDEFINED for the default: every guard this feature adds reads as
+# `#if TRC_CART_ORDER != 0`, and the C preprocessor treats an undefined
+# identifier in an `#if` as 0, so a lexicographic build -- fpm's included,
+# which passes no -D flags at all -- needs no new define to pass every guard.
+# The "libcint" alias is normalised here too (src/CMakeLists.txt does its own
+# copy of this same normalisation, for the generator calls it makes below
+# `add_subdirectory(src)`; both read the same TERCO_CART_ORDER cache entry).
+#
+if(TERCO_CART_ORDER STREQUAL "libcint")
+  set(TERCO_CART_ORDER "lexicographic")
+endif()
+if(TERCO_CART_ORDER STREQUAL "gamess")
+  target_compile_definitions(${main_lib} PRIVATE TRC_CART_ORDER=1)
+elseif(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
+  message(FATAL_ERROR "TERCO_CART_ORDER must be lexicographic or gamess, "
+                      "got '${TERCO_CART_ORDER}'")
+endif()
+#
 # The unrolled VRR/HRR go into the SHARED kernel only, and only at LMAX<=1.
 #
 # That kernel holds two copies of the recurrence, so unrolling it at LMAX=2
@@ -216,11 +259,15 @@ find_package("jsonfortran" REQUIRED)
 if(DEFINED TERCO_HOST_NVHPC_OPTIONS)
   target_compile_options(${main_lib} PRIVATE ${TERCO_HOST_NVHPC_OPTIONS})
 endif()
-if(TERCO_ENABLE_MPI)
-  # The C entry that takes a communicator handle checks it against
-  # MPI_COMM_WORLD, which needs mpi_f08; without MPI it ignores the handle.
-  target_compile_definitions(${main_lib} PRIVATE TERCO_HAVE_MPI)
-endif()
+#
+# The library itself no longer branches on whether MPI is present: every
+# pic-mpi backend (mpi_f08, legacy MPI, and the single-rank serial stand-in
+# PIC_ENABLE_MPI=OFF selects above) exports the same comm_from_handle, so
+# trc_capi's communicator handling compiles and runs unchanged either way.
+# TERCO_HAVE_MPI still exists as a TEST-ONLY define (test/CMakeLists.txt),
+# because the tests need `mpi_f08` themselves to build a Fortran handle to
+# hand the C API in the first place.
+#
 target_link_libraries(${main_lib} PUBLIC $<BUILD_INTERFACE:pic::pic>
                                          $<BUILD_INTERFACE:pic-blas::pic-blas>
                                          $<BUILD_INTERFACE:pic-mpi::pic-mpi>

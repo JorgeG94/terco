@@ -701,26 +701,19 @@ contains
 
    !
    ! Cartesian powers of component `ic` of a shell of angular momentum l, in
-   ! libcint's order (x descending outer, y descending inner).  Computed rather
-   ! than looked up: it is a handful of integer ops against a table load, and
-   ! it keeps one more array off the device.
+   ! the build's Cartesian order (TRC_CART_ORDER; lexicographic by default --
+   ! x descending outer, y descending inner). OUTPUT layout: `ic` is what a
+   ! caller adds to an AO offset directly (`digest_sym`). Generated from a
+   ! `select case`, still no array: the comment this replaced ("keeps one more
+   ! array off the device") is preserved by generating the SAME branch-per-call
+   ! shape trc_hgp.F90's and trc_binkernel.F90's `comp` use, from the same
+   ! source -- see scripts/gen_cartcomp.py.
    !
    pure subroutine cart_pow(l, ic, px, py, pz)
       !$acc routine seq
       integer, intent(in)  :: l, ic
       integer, intent(out) :: px, py, pz
-      integer :: n, lx, ly
-      n = 0
-      do lx = l, 0, -1
-         do ly = l - lx, 0, -1
-            if (n == ic) then
-               px = lx; py = ly; pz = l - lx - ly
-               return
-            end if
-            n = n + 1
-         end do
-      end do
-      px = 0; py = 0; pz = 0
+#include "trc_cart_comp.inc"
    end subroutine cart_pow
 
 end module trc_batch

@@ -22,6 +22,7 @@
 program check_1e
    use trc_boys, only: dp, boys_init
    use trc_1e_kernels, only: one_e_dispatch, ONE_E_LMAX
+   use trc_cart_perm, only: cart_perm_b2l
    implicit none
 
    integer, parameter :: ATM_SLOTS = 6, BAS_SLOTS = 8
@@ -105,7 +106,7 @@ contains
 
       character(len=80) :: line
       character(len=8)  :: kind
-      integer :: i, j, di, dj, n, m, k, la, lb, npa, npb, ic
+      integer :: i, j, di, dj, n, m, ml, k, la, lb, npa, npb, ic
       real(dp), allocatable :: ref(:), sout(:), tout(:), vout(:)
       real(dp), allocatable :: zatm(:), ratm(:, :)
       real(dp) :: ra(3), rb(3), d, tol, fac
@@ -155,13 +156,21 @@ contains
 
          fac = common_fac_sp(la)*common_fac_sp(lb)
          do m = 1, n
+            ! sout/tout/vout(m) is this BUILD's own flat index
+            ! (1 + ia_build + di*ib_build); ref(m) is libfint's, LEXICOGRAPHIC
+            ! (1 + ia_lex + di*ib_lex). Decode m's build-order (ia,ib),
+            ! convert each to lexicographic, recombine, and read `ref` at
+            ! THAT index -- the two flat spaces agree only at the default
+            ! order, where cart_perm_b2l is the identity.
+            ml = 1 + cart_perm_b2l(la, mod(m - 1, di)) &
+                   + di*cart_perm_b2l(lb, (m - 1)/di)
             select case (trim(kind))
-            case ('OVLP'); d = abs(fac*sout(m) - ref(m)); k = 1
-            case ('KIN');  d = abs(fac*tout(m) - ref(m)); k = 2
-            case ('NUC');  d = abs(fac*vout(m) - ref(m)); k = 3
+            case ('OVLP'); d = abs(fac*sout(m) - ref(ml)); k = 1
+            case ('KIN');  d = abs(fac*tout(m) - ref(ml)); k = 2
+            case ('NUC');  d = abs(fac*vout(m) - ref(ml)); k = 3
             case default;  d = 0.0_dp; k = 1
             end select
-            tol = 1.0e-12_dp + 1.0e-11_dp*abs(ref(m))
+            tol = 1.0e-12_dp + 1.0e-11_dp*abs(ref(ml))
             worst(k) = max(worst(k), d)
             if (d > tol) nbad = nbad + 1
          end do

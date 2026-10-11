@@ -4,11 +4,17 @@ function(print_terco_summary)
   message(STATUS "  Fortran compiler      : ${CMAKE_Fortran_COMPILER_ID}")
   message(STATUS "  TERCO_ENABLE_GPU      : ${TERCO_ENABLE_GPU}")
   message(STATUS "  TERCO_LMAX            : ${TERCO_LMAX} (four-centre ceiling)")
+  message(STATUS "  TERCO_CART_ORDER      : ${TERCO_CART_ORDER} (within-shell Cartesian order)")
   message(STATUS "  TERCO_GPU_ARCH        : ${TERCO_GPU_ARCH}")
   message(STATUS "  TERCO_BUILD_SHARED    : ${TERCO_BUILD_SHARED}")
   message(STATUS "  TERCO_ENABLE_TESTING  : ${TERCO_ENABLE_TESTING}")
   message(STATUS "  TERCO_REGENERATE      : ${TERCO_REGENERATE}")
+  # Not just TERCO_LMAX any more: TERCO_CART_ORDER != lexicographic sends
+  # src/CMakeLists.txt to the build tree too (its own _regen logic is the
+  # authority; this mirrors it for the status message only).
   if(NOT TERCO_LMAX STREQUAL "2")
+    message(STATUS "  kernels               : regenerated in the build tree")
+  elseif(NOT TERCO_CART_ORDER STREQUAL "lexicographic" AND NOT TERCO_CART_ORDER STREQUAL "libcint")
     message(STATUS "  kernels               : regenerated in the build tree")
   elseif(TERCO_REGENERATE)
     message(STATUS "  kernels               : regenerated in-tree (src/generated)")

@@ -12,6 +12,14 @@
 ! Output is the integral block itself, not a Fock contribution -- density
 ! fitting wants the tensor.
 !
+! TRC_CART_ORDER GUARD. An undefined TRC_CART_ORDER reads as 0 in a
+! preprocessor #if, so the default build needs no new -D flag -- same idea
+! as docs/GENERATORS.md's TRC_LMAX guard, for a different compile-time
+! constant.
+!
+#if TRC_CART_ORDER != 0
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
 module trc_df_kernels
    use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none

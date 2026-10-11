@@ -7,6 +7,12 @@
 ! routine stays in the same file as its driver, which is what the inlining
 ! rule requires; the dispatcher is host code and may cross modules.
 !
+! TRC_CART_ORDER GUARD -- see this generator's non-split header (above, in
+! gen_perclass.py) for the full explanation; same guard, one per class file.
+!
+#if TRC_CART_ORDER != 0
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
 module trc_pc_k2100
    use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
