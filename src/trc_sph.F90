@@ -127,8 +127,7 @@ contains
 
       ! Flattened shell-pair index -- see this module's own header on why
       ! `do concurrent(jsh=..., ish=...)` is not used here.
-      do concurrent(ij=0:nshell*nshell - 1) &
-         local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, s, acc, inner)
+      do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, s, acc, inner)
          jsh = ij/nshell + 1
          ish = ij - (jsh - 1)*nshell + 1
          li = sh_l(ish); lj = sh_l(jsh)
@@ -165,8 +164,7 @@ contains
       integer :: p, q, r, s
       real(dp) :: acc, inner
 
-      do concurrent(ij=0:nshell*nshell - 1) &
-         local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, s, acc, inner)
+      do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, s, acc, inner)
          jsh = ij/nshell + 1
          ish = ij - (jsh - 1)*nshell + 1
          li = sh_l(ish); lj = sh_l(jsh)
