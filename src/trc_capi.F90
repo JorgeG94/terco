@@ -88,7 +88,7 @@
 ! directly for a caller that wants to know anyway.
 !
 ! The raw-basis-handle entries (trc_compute_1e, trc_compute_multipoles,
-! trc_compute_df2c/df3c, capi_fock and its *_many/*_nosym siblings,
+! trc_compute_df2c/df3c, capi_fock and its _many and _nosym siblings,
 ! capi_scf/capi_scf_mpi through scf_entry) are NOT affected and stay at
 ! the Cartesian `nao` of `trc_basis_nao` unconditionally: a basis built
 ! through `trc_basis_create*` has no JSON file to ever set `spherical`
@@ -1721,7 +1721,7 @@ contains
       !! convert). Defaulting to SHELL means no caller that never calls
       !! this sees any difference from before this entry existed.
       !!
-      !! Order-independent of trc_set_basis*/trc_set_aux*: settable before
+      !! Order-independent of trc_set_basis* and trc_set_aux*: settable before
       !! or after either, and takes effect on whichever basis is present now
       !! and on any set afterwards. NOT retroactive on an already-copied
       !! TRC_GUESS_GIVEN density, though -- that conversion happened once,
