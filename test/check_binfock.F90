@@ -116,10 +116,10 @@ contains
       real(dp), allocatable :: qs(:), dmax(:, :), cfac(:)
       real(dp), allocatable :: hp_p(:), hp_r(:,:), hp_ra(:,:), hp_rb(:,:), hp_c(:)
       integer, allocatable :: hp_off(:), hp_n(:)
+      integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
       !! Bin-interleaved second copy of the hp_* data (build_pair_quartets);
       !! flat here for the same reason trc_eri_t keeps them flat rather than
       !! as components of `bins` -- see that type's own comment.
-      integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
       integer :: nqp
       real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
       real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)

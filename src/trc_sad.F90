@@ -1,5 +1,6 @@
-!! Guesses built from free-atom calculations: SAD, and SADQ for ions
 module trc_sad
+   !! Guesses built from free-atom calculations: SAD, and SADQ for ions
+   !!
    !! Two entry points over the same machinery.
    !!
    !! `trc_sad_build` is SAD, the superposition of atomic densities, and is

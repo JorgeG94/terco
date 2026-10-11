@@ -1,7 +1,7 @@
-!! Fitted SAP against the grid SAP: two independent constructions of the
-!! same screening potential, which is the only check that settles the
-!! normalisation without trusting either one.
 program sapcmp
+   !! Fitted SAP against the grid SAP: two independent constructions of the
+   !! same screening potential, which is the only check that settles the
+   !! normalisation without trusting either one.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json

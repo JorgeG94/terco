@@ -1,5 +1,6 @@
-!! The superposition-of-atomic-potentials guess
 module trc_sap
+   !! The superposition-of-atomic-potentials guess
+   !!
    !! SAP builds a one-electron Hamiltonian out of free-atom potentials and
    !! diagonalises it, rather than superposing free-atom densities and
    !! diagonalising the Fock matrix that density makes. Lehtola's point (JCTC

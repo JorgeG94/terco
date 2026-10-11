@@ -40,10 +40,10 @@ program bench_binwater
    real(dp) :: THRESH = 1.0e-10_dp
    character(len=256) :: DMFILE = ''
    character(len=256) :: GFILE = ''
+   logical :: POLAR = .false.
    !! 6-31G(d): one uncontracted d per heavy atom. Selected by the
    !! environment rather than a positional argument so existing command lines
    !! keep working. Needs an LMAX=2 build.
-   logical :: POLAR = .false.
 
    integer :: nat, nbas, nao, npp, nhpp, nq, i, j, k, l, iq, maxnp
    integer, allocatable :: sh_l(:), sh_np(:), ao_off(:), sh_at(:)
@@ -57,9 +57,9 @@ program bench_binwater
    integer :: nout, r, nchunk, ic, c, l0, h0, nlaunch
    integer(kind=8) :: nwork, nkept
    type(pair_bins_t) :: bins
+   integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
    !! Bin-interleaved second copy of the hp_* data (build_pair_quartets);
    !! flat here, as trc_eri_t keeps them -- see that type's own comment.
-   integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
    integer :: nqp
    real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
    real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)

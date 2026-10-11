@@ -139,13 +139,13 @@ contains
       real(dp), intent(out) :: vxc(b%nao, b%nao)
       real(dp), intent(out) :: exc, nelec
       integer(kind=8), intent(in), optional :: budget
+      real(dp), intent(out), optional :: t_points, t_pairs
       !! Wall time spent in the two kernels, for the benchmark. A `do
       !! concurrent` under -stdpar returns when the device is done, so the
       !! clock around it is the kernel's.
-      real(dp), intent(out), optional :: t_points, t_pairs
+      real(dp), intent(in), optional :: rho_tol
       !! Density screening threshold on the per-batch bound of rho; zero
       !! screens nothing. Default XC_RHO_TOL.
-      real(dp), intent(in), optional :: rho_tol
       integer, intent(out), optional :: n_skipped   !! batches the screening removed
       type(comm_t), intent(in), optional :: comm     !! split the batches over its ranks
       type(trc_linalg_t), intent(inout), optional :: la  !! GEMM handles; made and released here if absent

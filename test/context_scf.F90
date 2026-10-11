@@ -1,14 +1,14 @@
-!! The context surface against the Fortran drivers: water/cc-pVDZ RHF and
-!! RI-MP2 through one handle, set up in steps, must reproduce trc_scf_run
-!! and trc_rimp2_run to the last digit, and every misuse must be a status.
-!!
-!! FORCED CARTESIAN. This test is about the C API surface, not about
-!! cc-pVDZ's physics, and RI-MP2 (trc_run_rimp2/trc_rimp2_run) refuses a
-!! spherical orbital basis outright (trc_capi.F90's own guard) -- so every
-!! basis load here, Fortran-driver and handle alike, forces Cartesian,
-!! which is what keeps this test exercising the API it always has rather
-!! than failing on that refusal.
 program context_scf
+   !! The context surface against the Fortran drivers: water/cc-pVDZ RHF and
+   !! RI-MP2 through one handle, set up in steps, must reproduce trc_scf_run
+   !! and trc_rimp2_run to the last digit, and every misuse must be a status.
+   !!
+   !! FORCED CARTESIAN. This test is about the C API surface, not about
+   !! cc-pVDZ's physics, and RI-MP2 (trc_run_rimp2/trc_rimp2_run) refuses a
+   !! spherical orbital basis outright (trc_capi.F90's own guard) -- so every
+   !! basis load here, Fortran-driver and handle alike, forces Cartesian,
+   !! which is what keeps this test exercising the API it always has rather
+   !! than failing on that refusal.
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char, c_char
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device

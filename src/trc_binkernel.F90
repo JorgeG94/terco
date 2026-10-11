@@ -175,21 +175,21 @@ contains
       integer,  intent(in)    :: nbas, npp, nao
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       real(dp), intent(in)    :: thresh
-      !! Coulomb and exchange scalings; 1 and 1 is Hartree-Fock.
       real(dp), intent(in)    :: jfac, kfac
+      !! Coulomb and exchange scalings; 1 and 1 is Hartree-Fock.
+      logical,  intent(in)    :: nosym
       !! Contract a density that is NOT symmetric, through the enumerated
       !! kernel. Costs what folding bought; needed by the response Hessian.
-      logical,  intent(in)    :: nosym
+      real(dp), intent(in)    :: dsh(nbas, nbas)
       !! max |D| over each shell-pair block; the per-quartet density screen.
       !! Pass it filled with huge() to disable density screening entirely.
-      real(dp), intent(in)    :: dsh(nbas, nbas)
       logical,  intent(in)    :: use_dens
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
       real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
+      integer,  allocatable, intent(inout) :: qp_bin_pbase(:), qp_bin_k(:)
       !! Bin-interleaved second copy of the above (trc_eri_t's own flat
       !! fields -- see build_pair_quartets for why they are not part of `b`).
       !! `intent(inout)`, not `in`: a resort rebuilds them in place.
-      integer,  allocatable, intent(inout) :: qp_bin_pbase(:), qp_bin_k(:)
       integer,  intent(inout) :: nqp
       real(dp), allocatable, intent(inout) :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
       real(dp), allocatable, intent(inout) :: sq_ax(:), sq_ay(:), sq_az(:)
@@ -198,15 +198,15 @@ contains
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
+      integer,  intent(in)    :: rank, nranks
       !! This rank's share of the sorted work list: every nranks-th item from
       !! rank. The caller reduces the result across ranks.
-      integer,  intent(in)    :: rank, nranks
       integer,  intent(out)   :: nlaunch
       integer(kind=8), intent(out) :: nwork
+      integer(kind=8), intent(out), optional :: nkept
       !! Diagnostic: how many of `nwork` actually survive the in-kernel
       !! Schwarz and density tests.  Costs a separate cheap pass, so it is
       !! optional and off in the timed path.
-      integer(kind=8), intent(out), optional :: nkept
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
       integer(kind=8) :: nt
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sPA(:), sPB(:)

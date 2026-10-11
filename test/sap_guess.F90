@@ -1,21 +1,21 @@
-!! terco's SAP guess: the screening potential it builds, and whether starting
-!! from it is better than starting from GWH.
-!!
-!! TWO CHECKS THAT CAN FAIL INDEPENDENTLY OF THE SCF.
-!!
-!! The radial construction is checked against two things it must satisfy and
-!! which nothing else in the guess would reveal:
-!!
-!!   4 pi int r^2 rho dr  =  N_A        the atom's own electron count
-!!   r Vscr(r) -> N_A     as r -> inf   the screened nucleus seen from afar
-!!
-!! Both come out of the same radial quadrature that builds the potential, so
-!! if the collocation, the mesh or either cumulative integral is wrong they
-!! move -- whereas the SCF converges to the same energy from any guess and
-!! would say nothing. The second is the sharper of the two: it is the only
-!! statement about the OUTWARD integral, which is the one accumulated
-!! backwards and the one a plausible-looking implementation gets wrong.
 program sap_guess
+   !! terco's SAP guess: the screening potential it builds, and whether starting
+   !! from it is better than starting from GWH.
+   !!
+   !! TWO CHECKS THAT CAN FAIL INDEPENDENTLY OF THE SCF.
+   !!
+   !! The radial construction is checked against two things it must satisfy and
+   !! which nothing else in the guess would reveal:
+   !!
+   !!   4 pi int r^2 rho dr  =  N_A        the atom's own electron count
+   !!   r Vscr(r) -> N_A     as r -> inf   the screened nucleus seen from afar
+   !!
+   !! Both come out of the same radial quadrature that builds the potential, so
+   !! if the collocation, the mesh or either cumulative integral is wrong they
+   !! move -- whereas the SCF converges to the same energy from any guess and
+   !! would say nothing. The second is the sharper of the two: it is the only
+   !! statement about the OUTWARD integral, which is the one accumulated
+   !! backwards and the one a plausible-looking implementation gets wrong.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run

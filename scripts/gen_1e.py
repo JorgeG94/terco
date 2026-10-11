@@ -462,14 +462,14 @@ module trc_mult_kernels
    public :: multipole_dispatch, mult_driver, TRC_NMULT, MULT_LMAX
 
    integer, parameter :: MULT_LMAX = {L}
+   integer, parameter :: NC_MAX = (MULT_LMAX + 1)*(MULT_LMAX + 2)/2
    !! Largest Cartesian block a shell pair produces here; the driver's
    !! per-item buffer is this size because `do concurrent` locals are fixed.
-   integer, parameter :: NC_MAX = (MULT_LMAX + 1)*(MULT_LMAX + 2)/2
    integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
-   !! Dispatch radix, FIXED and independent of MULT_LMAX -- see gen_1e.py.
    integer, parameter :: ONE_E_RADIX = __RADIX__
-   !! 3 dipole + 9 quadrupole + 27 octupole
+   !! Dispatch radix, FIXED and independent of MULT_LMAX -- see gen_1e.py.
    integer, parameter :: TRC_NMULT = 39
+   !! 3 dipole + 9 quadrupole + 27 octupole
 
 contains
 
@@ -627,16 +627,16 @@ module trc_1e_kernels
    private
    public :: one_e_dispatch, one_e_driver, ONE_E_LMAX, TRC_NMULT
 
-   !! Dipole + quadrupole + octupole, full Cartesian tensors.
    integer, parameter :: TRC_NMULT = 3 + 9 + 27
+   !! Dipole + quadrupole + octupole, full Cartesian tensors.
 
    integer, parameter :: ONE_E_LMAX = {L}
-   !! Dispatch radix, FIXED and independent of ONE_E_LMAX -- see gen_1e.py.
    integer, parameter :: ONE_E_RADIX = __RADIX__
+   !! Dispatch radix, FIXED and independent of ONE_E_LMAX -- see gen_1e.py.
    real(dp), parameter :: PI = 3.14159265358979323846_dp
+   integer, parameter :: NC_MAX = (ONE_E_LMAX + 1)*(ONE_E_LMAX + 2)/2
    !! Largest Cartesian block a shell pair produces here; the driver's
    !! per-item buffers are this size because `do concurrent` locals are fixed.
-   integer, parameter :: NC_MAX = (ONE_E_LMAX + 1)*(ONE_E_LMAX + 2)/2
    integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
 
 contains
