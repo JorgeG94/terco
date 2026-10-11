@@ -1,0 +1,73 @@
+name: Claude Code Review
+
+# An automatic review on every non-draft pull request, posted as inline
+# comments plus one summary. Advisory only: it is not a required check, and a
+# review it cannot finish (no secret, a fork's PR) fails without blocking.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read # Required for Claude to read CI results on PRs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request to terco, a GPU electron-repulsion-integral
+            and SCF library in standard Fortran. Read the diff with `gh pr diff`
+            and the description with `gh pr view`.
+
+            Report problems, not praise, ranked most severe first:
+
+            1. Correctness. Wrong integrals, normalisation, Cartesian component
+               order, degeneracy factors, screening that can drop a contribution
+               that matters, SCF convergence logic. A change that moves an energy
+               needs a reference (pyscf or a stored value) that justifies it.
+               Loosened test tolerances are a defect unless the PR argues for them.
+            2. GPU rules this code keeps:
+               - Compute kernels are standard `do concurrent`. No CUDA, streams,
+                 OpenACC `async`, or OpenACC compute constructs in the integral
+                 or XC path; OpenACC is for data movement, `routine seq` and
+                 atomics only.
+               - Every `!$acc enter data` has a matching `exit data`, and every
+                 array a kernel reads is present on the device.
+               - Item routines called from `do concurrent` must be `pure`,
+                 `!$acc routine seq`, and in the same module as their driver so
+                 they inline.
+               - Per-thread workspaces must be declared inside the item routine,
+                 not shared across the loop.
+            3. Generated code. Files in `src/generated/` come from the scripts in
+               `scripts/`. A hand edit there, or a generator change without the
+               regenerated files, is a defect.
+            4. Tests. New behaviour needs a check in `test/`; CI runs the suite
+               on the host only, where `do concurrent` is serial.
+
+            Match the surrounding code's comment density and naming when you
+            suggest a change. Skip style nits a formatter would settle.
+
+            Use `mcp__github_inline_comment__create_inline_comment` for
+            line-specific findings (with `confirmed: true`), then post one
+            summary with `gh pr comment`. If you find nothing, say so in one line.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
