@@ -53,8 +53,12 @@ program scf_rimp2
    call read_xyz(trim(xyz), natm, zint, at_r)
    allocate (at_z(natm)); at_z = real(zint, dp)
    if (len_trim(bas_json) > 0) then
-      call trc_basis_from_json(trim(bas_json), natm, zint, at_r, bas, err)
-      if (.not. err%has_error()) call trc_basis_from_json(trim(aux_json), natm, zint, at_r, aux, err)
+      ! Forced Cartesian: RI-MP2 (below) is Cartesian-only (trc_rimp2.F90's
+      ! own refusal of a spherical basis), and mqc's SAD guess fixture, when
+      ! one is given, is in terco's Cartesian AO convention regardless.
+      call trc_basis_from_json(trim(bas_json), natm, zint, at_r, bas, err, force_cart=.true.)
+      if (.not. err%has_error()) call trc_basis_from_json(trim(aux_json), natm, zint, at_r, aux, err, &
+                                                           force_cart=.true.)
       if (err%has_error()) then
          print '(a)', "scf_rimp2: "//err%get_message()
          stop 1

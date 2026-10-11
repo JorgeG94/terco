@@ -46,10 +46,65 @@
 ! case needs one; a batched build over the three densities is the obvious
 ! improvement and is not done here.
 !
+! SPHERICAL BASES
+! ----------------
+! `b%spherical` (trc_api.F90, set from a JSON basis's own function_type by
+! trc_basis_json.F90) is the only new input here, and it changes the SIZE
+! of every matrix this module itself owns -- S, H, D, F, C, eps, X, the
+! DIIS history -- from `b%nao` (Cartesian) to `b%nao_sph`, with everything
+! that already operated on those matrices (sym_orthog, the commutator, the
+! DIIS solve, the eigenproblem, the damped/level-shifted update) left
+! completely alone: it is still exactly the SCF this header describes,
+! just at a different, smaller `nao`.
+!
+! What DOES still run Cartesian, unconditionally, is every quantity that
+! touches an actual kernel: the one-electron integrals (`trc_1e`), the
+! two-electron Fock build (`trc_eri_t%fock_resident`), and the XC
+! integrator (`trc_xc_rks`/`trc_xc_uks`) -- docs/GENERATORS.md's "Cartesian
+! ordering is libcint's" extends to this module exactly as far as it says
+! and no further. A handful of CARTESIAN-sized scratch matrices (named
+! with a `_c` suffix below: `s_c`, `h_c`, `d_c`, `gmat_c`, `vxc_c`, ...)
+! sit between the kernels and the SCF's own matrices, built once per
+! geometry (`s_c`/`h_c`, folded into `smat`/`hcore` by `sph_cart_to_sph`)
+! or once per iteration (`d_c` from the current density, `gmat_c`/`vxc_c`
+! from the Fock/XC calls that density feeds, folded back up by
+! `sph_cart_to_sph` before the rest of the iteration ever sees them).
+!
+! `sph_sph_to_cart`/`sph_cart_to_sph` (src/trc_sph.F90) are block-sparse
+! over shell pairs, not a dense (nao, nao_sph) GEMM -- see that module's
+! own header for why -- and when `b%spherical` is false this module takes
+! exactly the branch it always has (`sph` guards every call into
+! trc_sph.F90; see each call site below), so the Cartesian path is not
+! merely numerically equivalent, it is the SAME CODE PATH as before this
+! feature existed, which is what makes it byte-for-byte unchanged rather
+! than unchanged up to a transform that happens to be the identity.
+!
+! The density fed to the XC integrator is `d_c`, the CARTESIAN density
+! rebuilt from `res%dmat` every iteration -- not a transform of AO values
+! on the grid to spherical. Two reasons: it is the one transform the
+! Coulomb/exchange build already needs for the same iteration, so sharing
+! it costs nothing extra; and `shell_collocate` (src/xc/trc_collocation.F90)
+! evaluates a shell's Cartesian components directly off a flat generated
+! table with no AO-space indirection at all today, so teaching it a second,
+! spherical AO space would duplicate exactly the block structure
+! trc_sph.F90 already owns.
+!
+! SAD and GWH both reach this module already in the right space: SAD
+! (trc_sad.F90) builds its guess from atomic sub-SCFs run on a `subset`
+! basis that carries `spherical` itself, so `trc_sad_build`'s returned
+! density is `nao_sph`-sized whenever the molecular one is; GWH is built
+! here, from `hcore`, which is already spherical by the time the guess
+! code touches it. SAP (trc_sap.F90) is not: it stays Cartesian
+! throughout and is transformed once, at the trc_capi.F90 call site that
+! builds it, because its one-electron/quadrature machinery has no basis
+! handle of its own to carry `spherical` through the way SAD's atomic
+! subsets do.
+!
 module trc_scf_driver
    use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
+   use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_eri, only: trc_eri_t
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
@@ -137,6 +192,20 @@ module trc_scf_driver
       integer :: grid_max_pts = 512
       real(dp) :: rho_tol = XC_RHO_TOL
       logical :: verbose = .false.
+      !! Run the Cartesian AO space even when the basis says spherical
+      !! (`trc_basis_t%spherical`, set from a JSON basis's own
+      !! "gto_spherical" function_type -- trc_basis_json.F90). For
+      !! comparison against pyscf's cart=True, or against one of terco's
+      !! own existing Cartesian-only references: this does not change
+      !! which basis functions are USED (every test and reference built
+      !! before this option existed is Cartesian regardless), only what a
+      !! spherical-tagged file like cc-pVDZ's does by default now that
+      !! there is a spherical path to default TO. `trc_scf_run` itself
+      !! does not read this field -- it reads `b%spherical`, which is
+      !! already resolved by the time a basis reaches here (the caller,
+      !! trc_capi.F90's `basis_json`, is what applies this option to a
+      !! freshly loaded JSON basis's own flag).
+      logical :: force_cartesian = .false.
    end type trc_scf_options_t
 
    type :: trc_scf_result_t
@@ -254,11 +323,23 @@ contains
       !! first (trc_bind_device). The XC batches are split across ranks too.
       type(comm_t), intent(in), optional :: comm
 
-      integer :: nao, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
-      logical :: ok
-      real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :), hcore(:, :), x(:, :)
-      real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :), dtot(:, :), jmat(:, :)
-      real(dp), allocatable :: dref(:, :, :), gacc(:, :, :), ddif(:, :)
+      integer :: nao, nao_c, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
+      logical :: ok, sph
+      real(dp), allocatable :: smat(:, :), hcore(:, :), x(:, :)
+      real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :)
+      ! CARTESIAN scratch: the one-electron setup (`s_c`/`h_c`), and the
+      ! per-iteration density/Fock/XC quantities the kernels actually
+      ! operate on (`d_c`, `gmat_c`, `vxc_c`, and the Cartesian-only
+      ! intermediates the unrestricted and incremental paths already
+      ! needed, now sized here instead of at `nao`). See this module's own
+      ! header. All of it is exactly `b%nao` in size regardless of `sph`;
+      ! when `sph` is false, `nao_c == nao` and every transform call below
+      ! is simply not taken, which is the whole of how the Cartesian path
+      ! stays byte-for-byte unchanged.
+      real(dp), allocatable :: s_c(:, :), h_c(:, :)
+      real(dp), allocatable :: d_c(:, :, :), gmat_c(:, :, :), vxc_c(:, :, :)
+      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), w1_c(:, :)
+      real(dp), allocatable :: dref_c(:, :), gacc_c(:, :), ddif_c(:, :)
       logical :: incr_now
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :), w3(:, :), bmat(:, :), rhs(:)
@@ -283,7 +364,9 @@ contains
       !> total/iterations is therefore only valid at equal iteration counts.
       real(dp) :: tf_it, tx_it
 
-      nao = b%nao
+      nao_c = b%nao
+      sph = b%spherical
+      nao = merge(b%nao_sph, nao_c, sph)
       n2 = nao*nao
       talk = opts%verbose
       if (present(comm)) talk = talk .and. comm%rank() == 0
@@ -307,9 +390,12 @@ contains
       diis_start = opts%diis_start
       if (diis_start < 0.0_dp) diis_start = merge(0.5_dp, huge(1.0_dp), nspin == 2)
 
-      allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao), hcore(nao, nao), x(nao, nao))
-      allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin), dtot(nao, nao), jmat(nao, nao))
-      allocate (dref(nao, nao, nspin), gacc(nao, nao, nspin), ddif(nao, nao))
+      allocate (smat(nao, nao), hcore(nao, nao), x(nao, nao))
+      allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin))
+      allocate (s_c(nao_c, nao_c), h_c(nao_c, nao_c))
+      allocate (d_c(nao_c, nao_c, nspin), gmat_c(nao_c, nao_c, nspin), vxc_c(nao_c, nao_c, nspin))
+      allocate (dtot_c(nao_c, nao_c), jmat_c(nao_c, nao_c), w1_c(nao_c, nao_c))
+      allocate (dref_c(nao_c, nao_c), gacc_c(nao_c, nao_c), ddif_c(nao_c, nao_c))
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
       allocate (w1(nao, nao), w2(nao, nao), w3(nao, nao))
@@ -324,8 +410,27 @@ contains
       ! --- once per geometry, on the host ------------------------------------
       call pl%build(b, eri_thresh_env(opts%eri_thresh))
       call pl%to_device()
-      call trc_1e(b, pl, smat, tmat, vmat)
-      hcore = tmat + vmat
+      ! The one-electron integrals are always Cartesian (trc_1e never
+      ! changes); `s_c`/`h_c` are folded up to the SCF's own space once,
+      ! here, for the whole run -- S and H never change after this. The
+      ! nuclear attraction matrix is only needed to form `h_c` and reuses
+      ! `w1_c` (otherwise idle until the iterations start) rather than a
+      ! fourth Cartesian array kept for nothing afterward.
+      call trc_1e(b, pl, s_c, h_c, w1_c)
+      h_c = h_c + w1_c
+      if (sph) then
+         ! `smat`/`hcore` are not entered onto the device until the big
+         ! block below (they are reused, host and device, across the
+         ! whole run) -- so the transform's own OUTPUT needs its own
+         ! `create` here, or `update self` has nothing to read from.
+         !$acc enter data copyin(s_c, h_c) create(smat, hcore)
+         call sph_cart_to_sph(b, s_c, smat)
+         call sph_cart_to_sph(b, h_c, hcore)
+         !$acc update self(smat, hcore)
+         !$acc exit data delete(s_c, h_c, smat, hcore)
+      else
+         smat = s_c; hcore = h_c
+      end if
       if (present(comm)) then
          call eri%build(b, eri_thresh_env(opts%eri_thresh), comm, batch_res=opts%batch_res)
       else
@@ -386,13 +491,15 @@ contains
       end if
       res%cmo = 0.0_dp; res%eps = 0.0_dp
       fock = 0.0_dp; gmat = 0.0_dp; vxc = 0.0_dp; dold = 0.0_dp; errv = 0.0_dp
-      fstore = 0.0_dp; estore = 0.0_dp; dtot = 0.0_dp; jmat = 0.0_dp
+      fstore = 0.0_dp; estore = 0.0_dp
       w1 = 0.0_dp; w2 = 0.0_dp; w3 = 0.0_dp
+      d_c = 0.0_dp; gmat_c = 0.0_dp; vxc_c = 0.0_dp; dtot_c = 0.0_dp; jmat_c = 0.0_dp; w1_c = 0.0_dp
 
       !$acc enter data copyin(ofrac)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3) &
-      !$acc            create(dref, gacc, ddif)
+      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
+      !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c) &
+      !$acc            create(dref_c, gacc_c, ddif_c)
 
       eold = 0.0_dp
       ndiis_used = 0
@@ -414,7 +521,21 @@ contains
       end if
       do it = 1, opts%max_iter
          tw0 = wall()
-         ! --- two-electron part, resident ------------------------------------
+         ! --- D_cart := T D_sph T^T, the one transform every Cartesian
+         ! quantity below (the Fock build, the XC density) is built from.
+         ! Not taken at all when `sph` is false -- see this module's own
+         ! header on why that keeps the Cartesian path byte-for-byte
+         ! unchanged rather than merely numerically equivalent.
+         do s = 1, nspin
+            if (sph) then
+               call sph_sph_to_cart(b, res%dmat(:, :, s), d_c(:, :, s))
+            else
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  d_c(i, j, s) = res%dmat(i, j, s)
+               end do
+            end if
+         end do
+         ! --- two-electron part, resident, entirely in Cartesian space -------
          if (nspin == 1) then
             !
             ! INCREMENTAL. G(D) = G(D_ref) + G(D - D_ref), exactly, because
@@ -425,56 +546,76 @@ contains
             incr_now = (opts%incremental .or. incr_env()) .and. it > 1 &
                        .and. mod(it - 1, max(1, incr_reset_env(opts%incr_reset))) /= 0
             if (incr_now) then
-               do concurrent(i=1:nao, j=1:nao)
-                  ddif(i, j) = res%dmat(i, j, 1) - dref(i, j, 1)
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  ddif_c(i, j) = d_c(i, j, 1) - dref_c(i, j)
                end do
-               call eri%fock_resident(b, ddif, gmat(:, :, 1), k_scale=exx)
-               do concurrent(i=1:nao, j=1:nao)
-                  gacc(i, j, 1) = gacc(i, j, 1) + gmat(i, j, 1)
-                  gmat(i, j, 1) = gacc(i, j, 1)
-                  dref(i, j, 1) = res%dmat(i, j, 1)
+               call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  gacc_c(i, j) = gacc_c(i, j) + gmat_c(i, j, 1)
+                  gmat_c(i, j, 1) = gacc_c(i, j)
+                  dref_c(i, j) = d_c(i, j, 1)
                end do
             else
-               call eri%fock_resident(b, res%dmat(:, :, 1), gmat(:, :, 1), k_scale=exx)
-               do concurrent(i=1:nao, j=1:nao)
-                  gacc(i, j, 1) = gmat(i, j, 1)
-                  dref(i, j, 1) = res%dmat(i, j, 1)
+               call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  gacc_c(i, j) = gmat_c(i, j, 1)
+                  dref_c(i, j) = d_c(i, j, 1)
                end do
             end if
          else
-            do concurrent(i=1:nao, j=1:nao)
-               dtot(i, j) = res%dmat(i, j, 1) + res%dmat(i, j, 2)
+            do concurrent(i=1:nao_c, j=1:nao_c)
+               dtot_c(i, j) = d_c(i, j, 1) + d_c(i, j, 2)
             end do
-            call eri%fock_resident(b, dtot, jmat, k_scale=0.0_dp)
+            call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
             do s = 1, 2
                if (exx /= 0.0_dp) then
-                  do concurrent(i=1:nao, j=1:nao)
-                     w1(i, j) = 2.0_dp*res%dmat(i, j, s)
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     w1_c(i, j) = 2.0_dp*d_c(i, j, s)
                   end do
-                  call eri%fock_resident(b, w1, gmat(:, :, s), j_scale=0.0_dp, k_scale=exx)
-                  do concurrent(i=1:nao, j=1:nao)
-                     gmat(i, j, s) = gmat(i, j, s) + jmat(i, j)
+                  call eri%fock_resident(b, w1_c, gmat_c(:, :, s), j_scale=0.0_dp, k_scale=exx)
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     gmat_c(i, j, s) = gmat_c(i, j, s) + jmat_c(i, j)
                   end do
                else
-                  do concurrent(i=1:nao, j=1:nao)
-                     gmat(i, j, s) = jmat(i, j)
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     gmat_c(i, j, s) = jmat_c(i, j)
                   end do
                end if
             end do
          end if
+         ! --- G_sph := T^T G_cart T, back up to the space the rest of the
+         ! iteration runs in.
+         do s = 1, nspin
+            if (sph) then
+               call sph_cart_to_sph(b, gmat_c(:, :, s), gmat(:, :, s))
+            else
+               do concurrent(i=1:nao, j=1:nao)
+                  gmat(i, j, s) = gmat_c(i, j, s)
+               end do
+            end if
+         end do
          tw1 = wall()
          t_fock = t_fock + (tw1 - tw0)
          tf_it = tw1 - tw0
-         ! --- exchange-correlation: finds its density present ----------------
+         ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (dft) then
             if (nspin == 1) then
-               call trc_xc_rks(b, xg, func, res%dmat(:, :, 1), vxc(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol, &
+               call trc_xc_rks(b, xg, func, d_c(:, :, 1), vxc_c(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol, &
                                comm=comm, t_points=tp1, t_pairs=tq1, la=la)
             else
-               call trc_xc_uks(b, xg, func, res%dmat, vxc, exc, ngrid, rho_tol=opts%rho_tol, &
+               call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=opts%rho_tol, &
                                comm=comm, t_points=tp1, t_pairs=tq1, la=la)
             end if
             tx_pts = tx_pts + tp1; tx_prs = tx_prs + tq1
+            do s = 1, nspin
+               if (sph) then
+                  call sph_cart_to_sph(b, vxc_c(:, :, s), vxc(:, :, s))
+               else
+                  do concurrent(i=1:nao, j=1:nao)
+                     vxc(i, j, s) = vxc_c(i, j, s)
+                  end do
+               end if
+            end do
          end if
          tw0 = wall()
          t_xc = t_xc + (tw0 - tw1)
@@ -652,8 +793,9 @@ contains
       !$acc update self(dold, res%cmo, res%eps)
       !$acc exit data delete(ofrac)
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, dtot, jmat, w1, w2, w3) &
-      !$acc           delete(dref, gacc, ddif)
+      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
+      !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c) &
+      !$acc           delete(dref_c, gacc_c, ddif_c)
       res%dmat = dold
       res%energy = etot
       res%e_one = e1

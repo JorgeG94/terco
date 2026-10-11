@@ -8,6 +8,16 @@
 ! src/trc_ao_norm.F90's header for the closed form and src/trc_capi.F90's
 ! "AO NORMALISATION" section for exactly which entries convert.
 !
+! FORCED CARTESIAN. cc-pVDZ's d shells are tagged "gto_spherical" in BSE, so
+! since the spherical AO space was added this basis defaults to running
+! spherical (trc_api.F90's `b%spherical`). This check's entire subject is
+! the per-COMPONENT GAMESS convention, which is defined on CARTESIAN
+! components only and refuses to combine with a spherical basis at all
+! (trc_set_ao_norm's own refusal, trc_capi.F90) -- so every basis load here
+! forces Cartesian (`force_cart=.true.`/`trc_set_force_cartesian`), which is
+! what keeps this check testing the same thing it always has rather than
+! either failing outright on the refusal or silently changing subject.
+!
 ! SIX CHECKS.
 !
 !   (e) THE FACTOR ITSELF, l = 0..4, against test/reference_ao_norm.dat --
@@ -96,7 +106,8 @@ program check_ao_norm
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
-                               trc_set_ao_norm, trc_get_ao_norm, trc_context_basis, trc_context_eri, &
+                               trc_set_ao_norm, trc_get_ao_norm, trc_set_force_cartesian, &
+                               trc_context_basis, trc_context_eri, &
                                trc_pairs_create, trc_pairs_destroy, trc_compute_1e, trc_fock, &
                                trc_set_method, trc_set_convergence, trc_set_guess, trc_run_scf, &
                                trc_energy, trc_density, trc_nao, trc_converged, trc_iterations, &
@@ -118,7 +129,7 @@ program check_ao_norm
    call check_factors(ok)
 
    call read_xyz('water.xyz', natm, zint, at_r)
-   call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, b, err)
+   call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, b, err, force_cart=.true.)
    if (err%has_error()) then
       print '(a)', "check_ao_norm: "//err%get_message()
       stop 1
@@ -222,6 +233,8 @@ contains
       rc = trc_set_ao_norm(h, mode); call expect(ok, rc == TRC_OK, label//": set_ao_norm")
       rc = trc_get_ao_norm(h, got_mode)
       call expect(ok, rc == TRC_OK .and. got_mode == mode, label//": get_ao_norm reads back what was set")
+      rc = trc_set_force_cartesian(h, 1_c_int)
+      call expect(ok, rc == TRC_OK, label//": set_force_cartesian")
       rc = trc_set_basis_json(h, 'basis_sets/cc-pvdz.json'//c_null_char)
       call expect(ok, rc == TRC_OK, label//": set_basis_json")
       rc = trc_nao(h, nao); call expect(ok, rc == TRC_OK .and. nao == b%nao, label//": nao")
@@ -332,6 +345,7 @@ contains
       rc = trc_set_molecule(h_shell, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), &
                             0_c_int, 1_c_int)
       rc = trc_set_ao_norm(h_shell, TRC_AO_NORM_SHELL)
+      rc = trc_set_force_cartesian(h_shell, 1_c_int)
       rc = trc_set_basis_json(h_shell, 'basis_sets/cc-pvdz.json'//c_null_char)
       call expect(ok, rc == TRC_OK, "fock: shell set_basis_json")
       rc = trc_nao(h_shell, nao)
@@ -360,6 +374,7 @@ contains
       rc = trc_set_molecule(h_unit, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), &
                             0_c_int, 1_c_int)
       rc = trc_set_ao_norm(h_unit, TRC_AO_NORM_UNIT)
+      rc = trc_set_force_cartesian(h_unit, 1_c_int)
       rc = trc_set_basis_json(h_unit, 'basis_sets/cc-pvdz.json'//c_null_char)
       call expect(ok, rc == TRC_OK, "fock: unit set_basis_json")
       rc = trc_context_basis(h_unit, basis_unit); call expect(ok, rc == TRC_OK, "fock: unit context_basis")

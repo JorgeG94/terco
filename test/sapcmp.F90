@@ -25,7 +25,11 @@ program sapcmp
    if (command_argument_count() >= 2) call get_command_argument(2, bjs)
    print '(a)', "sapcmp: "//trim(xyz)//"  "//trim(bjs)
    call read_xyz(trim(xyz), natm, zint, at_r)
-   call trc_basis_from_json(trim(bjs), natm, zint, at_r, bas, err)
+   ! trc_sap_build/trc_sap_grid build directly at `bas%nao` (Cartesian;
+   ! SAP's own guess machinery is not spherical-aware, see trc_scf.F90's
+   ! header), so this comparison forces Cartesian regardless of what basis
+   ! a caller names on the command line.
+   call trc_basis_from_json(trim(bjs), natm, zint, at_r, bas, err, force_cart=.true.)
    call bas%to_device()
    call pl%build(bas, 1.0e-12_dp); call pl%to_device()
    allocate (smat(bas%nao, bas%nao), tmat(bas%nao, bas%nao), vmat(bas%nao, bas%nao))

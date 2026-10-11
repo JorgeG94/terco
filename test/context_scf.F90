@@ -1,6 +1,13 @@
 !! The context surface against the Fortran drivers: water/cc-pVDZ RHF and
 !! RI-MP2 through one handle, set up in steps, must reproduce trc_scf_run
 !! and trc_rimp2_run to the last digit, and every misuse must be a status.
+!!
+!! FORCED CARTESIAN. This test is about the C API surface, not about
+!! cc-pVDZ's physics, and RI-MP2 (trc_run_rimp2/trc_rimp2_run) refuses a
+!! spherical orbital basis outright (trc_capi.F90's own guard) -- so every
+!! basis load here, Fortran-driver and handle alike, forces Cartesian,
+!! which is what keeps this test exercising the API it always has rather
+!! than failing on that refusal.
 program context_scf
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char, c_char
    use trc_boys, only: dp
@@ -12,6 +19,7 @@ program context_scf
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
+                               trc_set_force_cartesian, &
                                trc_set_method, trc_set_convergence, trc_set_rimp2, trc_run_scf, trc_run_rimp2, &
                                trc_nao, trc_nspin, trc_energy, trc_converged, trc_iterations, trc_density, &
                                trc_mo_energies, trc_rimp2_energy, trc_message, trc_set_guess, &
@@ -38,8 +46,9 @@ program context_scf
    ok = .true.
 
    ! --- the reference, through the Fortran drivers, from terco's own SAD ----
-   call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, b, err)
-   if (.not. err%has_error()) call trc_basis_from_json('basis_sets/cc-pvdz-rifit.json', natm, zint, at_r, aux, err)
+   call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, b, err, force_cart=.true.)
+   if (.not. err%has_error()) call trc_basis_from_json('basis_sets/cc-pvdz-rifit.json', natm, zint, at_r, aux, err, &
+                                                        force_cart=.true.)
    if (.not. err%has_error()) call trc_sad_build(b, dsad, err)
    if (err%has_error()) then
       print '(a)', "context_scf: "//err%get_message()
@@ -69,6 +78,7 @@ program context_scf
    ! --- the same calculation through the handle ----------------------------
    rc = trc_set_molecule(h, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
    call expect(rc == TRC_OK, "set_molecule")
+   rc = trc_set_force_cartesian(h, 1_c_int);                                  call expect(rc == TRC_OK, "set_force_cartesian")
    rc = trc_set_basis_json(h, 'basis_sets/cc-pvdz.json'//c_null_char);       call expect(rc == TRC_OK, "set_basis_json")
    rc = trc_set_aux_json(h, 'basis_sets/cc-pvdz-rifit.json'//c_null_char);   call expect(rc == TRC_OK, "set_aux_json")
    rc = trc_set_method(h, ''//c_null_char, 3_c_int);                          call expect(rc == TRC_OK, "set_method")

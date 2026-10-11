@@ -121,6 +121,26 @@ module trc_api
       real(dp), allocatable :: sh_r(:, :)   !! (3, nshell) centres
       real(dp), allocatable :: at_z(:)      !! (natm) charges
       real(dp), allocatable :: at_r(:, :)   !! (3, natm) positions
+      !
+      ! THE SPHERICAL AO SPACE. Computed unconditionally -- it is a cheap
+      ! by-product of the same loop that sets `sh_ao`, and a caller that
+      ! never asks for it pays nothing extra for having it sit there.
+      ! `spherical` is the only field that actually changes anything: it is
+      ! what trc_scf_driver reads to decide whether the SCF runs its own
+      ! matrices (S, H, D, F, C, eps) at `nao` or at `nao_sph`. The
+      ! integrals themselves never see this flag -- every kernel, generator
+      ! and screen stays Cartesian, exactly as today, and `nao` keeps
+      ! meaning "Cartesian functions" everywhere it already did.
+      !
+      ! `sh_ao_sph` is `sh_ao`'s own first-AO-of-the-shell offset, but into
+      ! the SPHERICAL numbering (2l+1 wide per shell instead of
+      ! (l+1)(l+2)/2): trc_sph.F90's block-sparse transforms are the only
+      ! reader, and need both offsets side by side to copy one shell's
+      ! block at a time.
+      !
+      logical :: spherical = .false.
+      integer :: nao_sph = 0
+      integer,  allocatable :: sh_ao_sph(:)
       logical :: on_device = .false.
    contains
       !! The primary constructor: flat arrays, one entry per shell. A caller
@@ -265,6 +285,7 @@ contains
       this%maxnp  = maxnp
 
       allocate (this%sh_l(nshell), this%sh_np(nshell), this%sh_ao(nshell))
+      allocate (this%sh_ao_sph(nshell))
       allocate (this%sh_e(maxnp, nshell), this%sh_c(maxnp, nshell))
       allocate (this%sh_r(3, nshell))
       allocate (this%at_z(natm), this%at_r(3, natm))
@@ -274,6 +295,8 @@ contains
       this%at_r = at_r
 
       this%nao = 0
+      this%nao_sph = 0
+      this%spherical = .false.
       do i = 1, nshell
          this%sh_l(i)  = sh_l(i)
          this%sh_np(i) = sh_np(i)
@@ -299,6 +322,8 @@ contains
          this%sh_np(i) = n
          this%sh_ao(i) = this%nao + 1
          this%nao = this%nao + ncart(sh_l(i))
+         this%sh_ao_sph(i) = this%nao_sph + 1
+         this%nao_sph = this%nao_sph + 2*sh_l(i) + 1
       end do
    end subroutine basis_build
 
@@ -325,7 +350,7 @@ contains
       out%nshell = n
       out%natm = this%natm
       out%maxnp = this%maxnp
-      allocate (out%sh_l(n), out%sh_np(n), out%sh_ao(n))
+      allocate (out%sh_l(n), out%sh_np(n), out%sh_ao(n), out%sh_ao_sph(n))
       allocate (out%sh_e(this%maxnp, n), out%sh_c(this%maxnp, n), out%sh_r(3, n))
       allocate (out%at_z(this%natm), out%at_r(3, this%natm))
       out%sh_l = this%sh_l(s0:s1)
@@ -335,10 +360,18 @@ contains
       out%sh_r = this%sh_r(:, s0:s1)
       out%at_z = this%at_z
       out%at_r = this%at_r
-      out%nao = 0
+      ! Same convention as the parent -- an atomic SAD/SADQ subbasis stays
+      ! spherical when the molecule it was cut from is, so its own atomic
+      ! SCF (trc_sad.F90) runs in the same AO space and the density it
+      ! hands back slots straight into the molecular one with no further
+      ! conversion at that boundary.
+      out%spherical = this%spherical
+      out%nao = 0; out%nao_sph = 0
       do i = 1, n
          out%sh_ao(i) = out%nao + 1
          out%nao = out%nao + ncart(out%sh_l(i))
+         out%sh_ao_sph(i) = out%nao_sph + 1
+         out%nao_sph = out%nao_sph + 2*out%sh_l(i) + 1
       end do
    end subroutine basis_subset
 
@@ -395,7 +428,7 @@ contains
       class(trc_basis_t), intent(inout) :: this
       if (this%on_device) return
       !$acc enter data copyin(this)
-      !$acc enter data copyin(this%sh_l, this%sh_np, this%sh_ao, &
+      !$acc enter data copyin(this%sh_l, this%sh_np, this%sh_ao, this%sh_ao_sph, &
       !$acc                   this%sh_e, this%sh_c, this%sh_r, &
       !$acc                   this%at_z, this%at_r)
       this%on_device = .true.
@@ -404,7 +437,7 @@ contains
    subroutine basis_release(this)
       class(trc_basis_t), intent(inout) :: this
       if (this%on_device) then
-         !$acc exit data delete(this%sh_l, this%sh_np, this%sh_ao, &
+         !$acc exit data delete(this%sh_l, this%sh_np, this%sh_ao, this%sh_ao_sph, &
          !$acc                  this%sh_e, this%sh_c, this%sh_r, &
          !$acc                  this%at_z, this%at_r)
          !$acc exit data delete(this)
@@ -413,12 +446,14 @@ contains
       if (allocated(this%sh_l))  deallocate (this%sh_l)
       if (allocated(this%sh_np)) deallocate (this%sh_np)
       if (allocated(this%sh_ao)) deallocate (this%sh_ao)
+      if (allocated(this%sh_ao_sph)) deallocate (this%sh_ao_sph)
       if (allocated(this%sh_e))  deallocate (this%sh_e)
       if (allocated(this%sh_c))  deallocate (this%sh_c)
       if (allocated(this%sh_r))  deallocate (this%sh_r)
       if (allocated(this%at_z))  deallocate (this%at_z)
       if (allocated(this%at_r))  deallocate (this%at_r)
-      this%nshell = 0; this%nao = 0; this%natm = 0
+      this%nshell = 0; this%nao = 0; this%natm = 0; this%nao_sph = 0
+      this%spherical = .false.
    end subroutine basis_release
 
    subroutine pairs_build(this, b, thresh)

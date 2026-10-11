@@ -22,9 +22,20 @@
 ! no-op for F C = S C eps) but silently loosens the Schwarz screen, giving
 ! answers that are right on one water and wrong by hundreds of Hartree on
 ! twenty. See `normalise`'s own comment for the measurements.
-! The function_type ("gto_spherical" on a d shell) is read and ignored:
-! terco is Cartesian, and a spherical set is run in its Cartesian form, as
-! pyscf does with cart=True.
+! The function_type ("gto_spherical" on a d shell, BSE's own per-shell tag)
+! decides whether the basis this call hands back is SPHERICAL
+! (`b%spherical`, trc_api.F90) -- any shell tagged "gto_spherical" is enough,
+! since a real basis set is consistently one family or the other once l>=2,
+! and s/p carry no such tag either way (a Cartesian and a spherical s or p
+! function are the identical thing, trc_sph.F90's own header). `force_cart`
+! overrides this to Cartesian regardless of what the file says, for a
+! caller comparing against pyscf's cart=True or running one of terco's own
+! existing Cartesian-only tests -- see trc_scf_options_t%force_cartesian
+! and trc_capi's TRC_FORCE_CARTESIAN for how a caller reaches it. Without
+! either tag present (a pure-s/p basis, or a cartesian-only family such as
+! 6-31G's "gto_cartesian"), the basis comes back Cartesian: today's
+! behaviour, byte for byte, which is the default every existing test and
+! reference was built against.
 !
 module trc_basis_json
    use trc_boys, only: dp
@@ -41,6 +52,7 @@ module trc_basis_json
    type :: shell_t
       integer :: l = 0, np = 0
       real(dp), allocatable :: e(:), c(:)
+      logical :: sph = .false.   !! this shell's own function_type said "gto_spherical"
    end type shell_t
 
    type :: element_t
@@ -54,20 +66,27 @@ contains
    ! `at_z` atomic numbers, `at_r` (3, natm) in Bohr; the basis comes back
    ! built (host side; the caller moves it to the device).
    !
-   subroutine trc_basis_from_json(path, natm, at_z, at_r, b, error)
+   subroutine trc_basis_from_json(path, natm, at_z, at_r, b, error, force_cart)
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
       integer, intent(in) :: at_z(natm)
       real(dp), intent(in) :: at_r(3, natm)
       type(trc_basis_t), intent(out) :: b
       type(error_t), intent(inout) :: error
+      !> Force the Cartesian AO space regardless of what the file says --
+      !> trc_scf_options_t%force_cartesian's route in. Default .false.:
+      !> follow the basis, which is what every existing caller gets.
+      logical, intent(in), optional :: force_cart
 
       type(json_file) :: json
       type(element_t), allocatable :: el(:)
       integer :: nel, ia, ie, is, nsh, maxnp, k
       integer, allocatable :: sh_l(:), sh_np(:), which(:)
       real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), z(:)
-      logical :: ok
+      logical :: ok, any_sph, force
+
+      force = .false.
+      if (present(force_cart)) force = force_cart
 
       call json%initialize()
       call json%load(filename=path)
@@ -121,6 +140,18 @@ contains
       end do
       z = real(at_z, dp)
       call b%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, z, at_r, maxnp)
+
+      ! Any shell of any element tagged "gto_spherical" is enough: a real
+      ! basis set is one family or the other throughout its l>=2 shells
+      ! (see this module's own header), so one true tag settles the whole
+      ! basis rather than needing every shell to agree.
+      any_sph = .false.
+      do ie = 1, nel
+         do is = 1, el(ie)%nshell
+            if (el(ie)%sh(is)%sph) any_sph = .true.
+         end do
+      end do
+      b%spherical = any_sph .and. .not. force
    end subroutine trc_basis_from_json
 
    !
@@ -183,11 +214,11 @@ contains
       !> error that still produces plausible numbers.
       logical, intent(in), optional :: raw
 
-      character(len=:), allocatable :: key, sp, text
+      character(len=:), allocatable :: key, sp, text, ftype
       integer, allocatable :: lam(:)
       integer :: nsh_json, ish, ncol, icol, ip, np, k, ios, nsh
       real(dp) :: v
-      logical :: found, skip_norm
+      logical :: found, skip_norm, found_ft, sph_ish
 
       skip_norm = .false.
       if (present(raw)) skip_norm = raw
@@ -219,6 +250,15 @@ contains
             call error%set(ERROR_VALIDATION, "trc_basis_json: shell without exponents in "//trim(path))
             return
          end if
+         ! BSE's own per-shell tag ("gto", "gto_spherical" or
+         ! "gto_cartesian"): read once per JSON shell and carried onto
+         ! every column it splits into. Missing entirely (an older or
+         ! hand-written file) reads as Cartesian, same as "gto" or
+         ! "gto_cartesian" -- today's behaviour for a file that never had
+         ! an opinion.
+         call json%get(sp//".function_type", ftype, found_ft)
+         sph_ish = found_ft
+         if (sph_ish) sph_ish = (trim(ftype) == "gto_spherical")
          ncol = columns(json, key, ish, size(lam))
          do icol = 1, ncol
             k = k + 1
@@ -230,6 +270,7 @@ contains
                el%sh(k)%l = lam(1)
             end if
             el%sh(k)%np = np
+            el%sh(k)%sph = sph_ish
             allocate (el%sh(k)%e(np), el%sh(k)%c(np))
             do ip = 1, np
                call json%get(sp//".exponents("//itoa(ip)//")", text, found)

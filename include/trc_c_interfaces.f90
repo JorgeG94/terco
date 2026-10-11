@@ -424,7 +424,10 @@ module trc_c_interfaces
       integer(c_int) function trc_set_guess(handle, kind, dguess, nspin) bind(c)
          !! `kind`: 0 core, 1 GWH, 2 SAD (the default; built here, one atomic
          !! SCF per element), 3 a density given in `dguess`, (nao, nao, nspin)
-         !! column-major, copied at this call. Set the basis before giving one.
+         !! column-major, copied at this call -- `nao` is trc_nao's own
+         !! number (nao_sph if the basis is spherical), the same size every
+         !! other SCF-facing entry in this file uses. Set the basis before
+         !! giving one.
          import :: c_int, c_ptr
          type(c_ptr), value :: handle
          integer(c_int), value :: kind, nspin
@@ -459,6 +462,17 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: kind
       end function trc_get_ao_norm
 
+      integer(c_int) function trc_set_force_cartesian(handle, flag) bind(c)
+         !! Non-zero: every basis this context loads from here on runs
+         !! Cartesian regardless of its JSON function_type -- for
+         !! comparison against pyscf's cart=True, or an existing
+         !! Cartesian-only reference. NOT retroactive; call before
+         !! trc_set_basis_json/trc_set_aux_json.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), value :: flag
+      end function trc_set_force_cartesian
+
       integer(c_int) function trc_set_verbose(handle, level) bind(c)
          import :: c_int, c_ptr
          type(c_ptr), value :: handle
@@ -487,10 +501,28 @@ module trc_c_interfaces
       end function trc_run_rimp2
 
       integer(c_int) function trc_nao(handle, nao) bind(c)
+         !! The AO count every SCF-facing entry below sizes its arrays by
+         !! (trc_density, trc_mo_coefficients, trc_mo_energies,
+         !! trc_set_guess's `dguess`): nao_sph if the basis is spherical
+         !! (trc_is_spherical), the Cartesian count otherwise. The
+         !! raw-basis-handle entries (trc_compute_1e and friends,
+         !! trc_fock/trc_scf taking a bare basis handle rather than a
+         !! context) are unaffected -- those always report and use the
+         !! Cartesian count, because a basis built through
+         !! trc_basis_create/trc_basis_create_libcint has no JSON file to
+         !! ever mark spherical.
          import :: c_int, c_ptr
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: nao
       end function trc_nao
+
+      integer(c_int) function trc_is_spherical(handle, flag) bind(c)
+         !! Non-zero if this context's orbital basis is running in the
+         !! spherical AO space trc_nao's number is in.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: flag
+      end function trc_is_spherical
 
       integer(c_int) function trc_nspin(handle, nspin) bind(c)
          import :: c_int, c_ptr
