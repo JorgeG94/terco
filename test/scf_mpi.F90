@@ -8,20 +8,31 @@
 ! energies must be too -- bitwise, in principle, since the same numbers are
 ! summed in the same order; the check allows rounding.
 !
-! Water, 6-31G, RHF and PBE. The RHF energy is the one link_gfortran asserts
-! (-75.983974469890), and PBE at level 3 the one the single-GPU driver gives
-! (-76.2981056519); both must come out the same on any rank count, which is
-! what makes a run under `mpiexec -np 4` a test and not a demonstration.
+! Water, 6-31G, RHF and PBE; both must come out the same on any rank count,
+! which is what makes a run under `mpiexec -np 4` a test and not a
+! demonstration.
+!
+! The basis loads through `trc_basis_from_json`, the one construction path
+! -- E_RHF and E_PBE below are its own full-double-precision values (2026-
+! 10-08), not `build_631g`'s old 7-significant-figure literal ones, which
+! differed by 4.2e-9 Eh (RHF) and 8.6e-8 Eh (PBE, the DFT quadrature being
+! the more sensitive of the two to it). The tolerance stays 1e-8: it is a
+! correctness check, not a place to absorb a basis change by loosening it.
 !
 program scf_mpi
    use trc_boys, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, MPI_MAX, MPI_MIN
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz, unpack_basis
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
 
-   real(dp), parameter :: E_RHF = -75.983974469890_dp, E_PBE = -76.2981056519_dp
+   !> trc_basis_from_json's own 6-31G water values, 2026-10-08.
+   real(dp), parameter :: E_RHF = -75.983974465718_dp
+   !> Same date, same basis path.
+   real(dp), parameter :: E_PBE = -76.298105565582_dp
    type(comm_t) :: comm
    integer :: natm, nsh, maxnp, dev, ic
    integer, allocatable :: zint(:), sh_l(:), sh_np(:)
@@ -46,8 +57,14 @@ program scf_mpi
    ! A second argument of any kind prints the iterations (rank 0 only).
    call read_xyz(trim(xyz), natm, zint, at_r)
    allocate (at_z(natm)); at_z = real(zint, dp)
-   call build_631g(natm, zint, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
-   call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, at_z, at_r, maxnp)
+   block
+      type(error_t) :: err
+      call trc_basis_from_json('basis_sets/6-31g.json', natm, zint, at_r, bas, err)
+      if (err%has_error()) then
+         print '(a)', 'scf_mpi: '//err%get_message(); stop 1
+      end if
+   end block
+   call unpack_basis(bas, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
    call bas%to_device()
 
    ok = .true.

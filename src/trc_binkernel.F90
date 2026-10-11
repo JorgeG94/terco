@@ -22,10 +22,9 @@ module trc_binkernel
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
-   use trc_bins, only: pair_bins_t, SMAX, sort_bins_by_weight
+   use trc_bins, only: pair_bins_t, SMAX, sort_bins_by_weight, build_pair_quartets
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
-   use trc_ra_kernels, only: ra_dispatch, ra_has_class
 #endif
    implicit none
    private
@@ -105,19 +104,6 @@ contains
       bin_sort_on = (trim(v) == "1")
    end function bin_sort_on
 
-   !> TRC_ROTAXIS=1 sends every class the rotated-axis dispatcher supports
-   !> (the 16 ordered s/p classes, scripts/rotaxis/FRAME.md) through
-   !> `ra_dispatch` instead of `pc_dispatch`; a class it does not support (any
-   !> with a d shell) still goes through HGP. Default off, so nothing changes
-   !> for existing users. Read once per Fock build in `fock_bins`, not once
-   !> per launch -- `get_environment_variable` is a few hundred launches'
-   !> worth of syscall on a large molecule if it were not hoisted.
-   logical function rotaxis_on()
-      character(len=8) :: v
-      call get_environment_variable("TRC_ROTAXIS", v)
-      rotaxis_on = (trim(v) == "1")
-   end function rotaxis_on
-
    subroutine trc_set_prim_margin(f)
       real(dp), intent(in) :: f
       if (f > 0.0_dp) TRC_PRIM_MARGIN = f
@@ -182,6 +168,8 @@ contains
    subroutine fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_dens, &
                         jfac, kfac, nosym, dsh, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+                        qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                         ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept)
       type(pair_bins_t), intent(inout) :: b
       integer,  intent(in)    :: nbas, npp, nao
@@ -198,6 +186,15 @@ contains
       logical,  intent(in)    :: use_dens
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
       real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
+      !! Bin-interleaved second copy of the above (trc_eri_t's own flat
+      !! fields -- see build_pair_quartets for why they are not part of `b`).
+      !! `intent(inout)`, not `in`: a resort rebuilds them in place.
+      integer,  allocatable, intent(inout) :: qp_bin_pbase(:), qp_bin_k(:)
+      integer,  intent(inout) :: nqp
+      real(dp), allocatable, intent(inout) :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
+      real(dp), allocatable, intent(inout) :: sq_ax(:), sq_ay(:), sq_az(:)
+      real(dp), allocatable, intent(inout) :: sq_abx(:), sq_aby(:), sq_abz(:)
+      integer,  allocatable, intent(inout) :: sq_n(:)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
@@ -212,7 +209,7 @@ contains
       integer(kind=8), intent(out), optional :: nkept
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
       integer(kind=8) :: nt
-      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
+      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sPA(:), sPB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
       integer(kind=8), allocatable :: sOff(:)
@@ -235,6 +232,15 @@ contains
       if (.not. b%sorted .and. bin_sort_on()) then
          call sort_bins_by_weight(b, nbas, dsh)
          !$acc update device(b%sp_i, b%sp_j, b%sp_q)
+         ! The slot order inside a bin just changed, and the bin-interleaved
+         ! tables are keyed on it -- rebuild them from the same pp_* data
+         ! build_pairs_hgp filled, and refresh the device copy.
+         call build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+                                  qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
+         !$acc update device(qp_z, qp_c, qp_px, qp_py, qp_pz, &
+         !$acc                sq_ax, sq_ay, sq_az, &
+         !$acc                sq_abx, sq_aby, sq_abz, sq_n)
       end if
 
       ! In buckets, not decades: the bins carry the resolution they were
@@ -258,6 +264,7 @@ contains
 
       allocate (sA(nseg), sB(nseg), sOA(nseg), sOB(nseg), sNB(nseg), sD(nseg))
       allocate (sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg))
+      allocate (sPA(nseg), sPB(nseg))
       allocate (sOff(nseg + 1))
 
       ! --- pass 2: fill descriptors and prefix-sum the work ---
@@ -283,6 +290,7 @@ contains
             is = is + 1
             sA(is) = nA; sNB(is) = nB
             sOA(is) = b%bin_off(ka); sOB(is) = b%bin_off(kb)
+            sPA(is) = qp_bin_pbase(ka); sPB(is) = qp_bin_pbase(kb)
             sD(is) = (ka == kb)
             sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
             sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
@@ -343,7 +351,7 @@ contains
                              ndens, dmat, jmat, kmat, rank, nranks)
          nlaunch = 1
          !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
-         deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
+         deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
          return
       end if
 
@@ -359,7 +367,7 @@ contains
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl, key2
          integer(kind=8) :: lcap
-         logical :: l2, use_ra
+         logical :: l2
          integer(kind=8) :: o2
          ! The trivial primitive-shell view used to be built here -- eight
          ! arrays, allocated, filled, and pushed to the device on every Fock
@@ -385,10 +393,10 @@ contains
             end do
             ord(b2 + 1) = t2
          end do
-         call permute_segments(nseg, ord, sA, sNB, sOA, sOB, sD, sOff, &
+         call permute_segments(nseg, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, &
                                sLA, sLB, sLC, sLD)
 
-         !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
+         !$acc enter data copyin(sA, sNB, sOA, sOB, sPA, sPB, sD, sOff)
          if (present(nkept)) call count_kept(nseg, nwork, sNB, sOA, sOB, sD, &
                                              sOff, b%npair, b%sp_i, b%sp_j, &
                                              b%sp_q, thresh, dsh, nbas, nkept)
@@ -425,9 +433,6 @@ contains
          ! larger launch weakly better. Kept as a knob so the claim stays
          ! measured.
          lcap = launch_cap()
-         ! Read once per Fock build (see rotaxis_on's own comment), not once
-         ! per class run below.
-         use_ra = rotaxis_on()
          do while (c0 <= nseg)
             c1 = c0
             do while (c1 < nseg)
@@ -441,31 +446,18 @@ contains
             nl = nl + 1
             key2 = ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                     + sLC(c0))*CLASS_RADIX + sLD(c0)
-            ! TRC_ROTAXIS races the two algorithms: a class the rotated-axis
-            ! dispatcher supports (the 16 ordered s/p classes) goes through it
-            ! instead of HGP when the knob is on; every other class -- any
-            ! with a d shell -- always goes through HGP, whatever the knob
-            ! says, because `ra_has_class` asks the dispatcher's own case
-            ! list rather than an angular-momentum bound (the landmine
-            ! libfint's own README_TERCO.md section 5 records).
-            if (use_ra .and. ra_has_class(key2)) then
-               call ra_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                                pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, &
-                                ndens, dmat, jmat, rank, nranks)
-            else
-               call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                                pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_c, &
-                                ndens, dmat, jmat, rank, nranks)
-            end if
+            call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                             nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                             ndens, dmat, jmat, rank, nranks)
             c0 = c1 + 1
          end do
          nlaunch = nl
-         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
+         !$acc exit data delete(sA, sNB, sOA, sOB, sPA, sPB, sD, sOff)
          deallocate (ord, ckey)
       end block
-      deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
+      deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
       return
 #endif
 
@@ -475,7 +467,7 @@ contains
                     pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
       !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
 
-      deallocate (sA, sB, sOA, sOB, sNB, sD, sOff, sLA, sLB, sLC, sLD)
+      deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
    end subroutine fock_bins
 
    !
@@ -587,9 +579,9 @@ contains
    end subroutine count_kept
 
    !> Apply a permutation to the segment descriptor arrays, in place.
-   subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sD, sOff, sLA, sLB, sLC, sLD)
+   subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
       integer, intent(in) :: n, ord(n)
-      integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n)
+      integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
       integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
       logical, intent(inout) :: sD(n)
       integer(kind=8), intent(inout) :: sOff(n + 1)
@@ -602,6 +594,8 @@ contains
       t = sNB(ord); sNB = t
       t = sOA(ord); sOA = t
       t = sOB(ord); sOB = t
+      t = sPA(ord); sPA = t
+      t = sPB(ord); sPB = t
       t = sLA(ord); sLA = t
       t = sLB(ord); sLB = t
       t = sLC(ord); sLC = t

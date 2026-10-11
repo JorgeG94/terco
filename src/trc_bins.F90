@@ -51,6 +51,7 @@ module trc_bins
    private
 
    public :: SMAX, bin_key, build_binned_pairs, pair_bins_t, bin_dmax, sort_bins_by_weight
+   public :: build_pair_quartets
 
    !
    ! BATCH MAGNITUDES. A pair's size bucket is the decade of its Schwarz
@@ -277,6 +278,128 @@ contains
          end if
       end function kab_of
    end subroutine build_binned_pairs
+
+   !
+   ! Build the bin-interleaved primitive-pair tables from the pp_* ("hp_*" at
+   ! the call site) data build_pairs_hgp already built. Called once after
+   ! build_binned_pairs, and again whenever the slot order inside bins
+   ! changes (sort_bins_by_weight).
+   !
+   ! K is constant inside a bin except for pairs clamped at KCAP (bin_key),
+   ! so bin_k(b) -- the max kept primitive-pair count over the bin's pairs --
+   ! equals every pair's own count for the common case and only pads for the
+   ! rare KCAP-clamped bin. A padding slot (k beyond that PAIR's own count,
+   ! k <= bin_k(b)) is never read: the kernel's loop bound is the pair's own
+   ! count (`sq_n`), exactly as pp_n(key) was. It is still filled, with
+   ! qp_c = 0, qp_z = 1 and P at the A centre, so the storage has no
+   ! uninitialised entries and nothing downstream has to know which slots
+   ! are real.
+   !
+   !
+   ! The new tables are NOT fields of `b`. An earlier version added them to
+   ! pair_bins_t, which is itself mirrored whole by an `!$acc enter data
+   ! copyin(this%bins, this%bins%sp_i, ...)` at the call site -- and growing
+   ! that type's allocatable-component count that way made nvfortran 26.5
+   ! miscompile an UNRELATED host loop two modules away (an internal
+   ! "bitcast with differing sizes" in code that never touches a bin). The
+   ! caller instead owns these as its own flat allocatables, exactly the
+   ! shape pp_off/pp_n/pp_p/... already have, and passes them back in on a
+   ! rebuild so the reuse-the-allocation logic below still applies.
+   !
+   subroutine build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+                                  bin_pbase, bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
+      type(pair_bins_t), intent(in) :: b
+      integer,  intent(in) :: nbas, npp
+      integer,  intent(in) :: pp_off(nbas*nbas), pp_n(nbas*nbas)
+      real(dp), intent(in) :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
+      integer,  allocatable, intent(inout) :: bin_pbase(:), bin_k(:)
+      integer,  intent(out) :: nqp
+      real(dp), allocatable, intent(inout) :: qp_z(:), qp_c(:)
+      real(dp), allocatable, intent(inout) :: qp_px(:), qp_py(:), qp_pz(:)
+      real(dp), allocatable, intent(inout) :: sq_ax(:), sq_ay(:), sq_az(:)
+      real(dp), allocatable, intent(inout) :: sq_abx(:), sq_aby(:), sq_abz(:)
+      integer,  allocatable, intent(inout) :: sq_n(:)
+
+      integer :: ib, bb, s, p, key, k1, kreal, off, ix
+
+      !
+      ! REUSE THE ALLOCATION ON A REBUILD.
+      !
+      ! sort_bins_by_weight only permutes slots WITHIN a bin, so bin_cnt,
+      ! every pair's own count and therefore bin_k and nqp come out
+      ! identical the second time. Device residency is keyed on the host
+      ! array's address: an `!$acc enter data copyin` from build_structures
+      ! stays valid only if a later `!$acc update device` (after a resort)
+      ! finds the same allocation, so this fills the existing arrays in
+      ! place rather than deallocating and reallocating them.
+      !
+      if (.not. allocated(bin_pbase)) allocate (bin_pbase(b%nbin), bin_k(b%nbin))
+      if (.not. allocated(sq_ax)) then
+         allocate (sq_ax(b%npair), sq_ay(b%npair), sq_az(b%npair))
+         allocate (sq_abx(b%npair), sq_aby(b%npair), sq_abz(b%npair))
+         allocate (sq_n(b%npair))
+      end if
+      bin_pbase = 0; bin_k = 0
+
+      ! Per pair slot: the A centre, A - B, and the real kept count -- what
+      ! pp_off(key)/pp_n(key) gave the kernel before, read here once rather
+      ! than once per quartet.
+      do p = 1, b%npair
+         key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
+         off = pp_off(key)
+         sq_ax(p) = pp_ra(off + 1, 1); sq_ay(p) = pp_ra(off + 1, 2); sq_az(p) = pp_ra(off + 1, 3)
+         sq_abx(p) = pp_ra(off + 1, 1) - pp_rb(off + 1, 1)
+         sq_aby(p) = pp_ra(off + 1, 2) - pp_rb(off + 1, 2)
+         sq_abz(p) = pp_ra(off + 1, 3) - pp_rb(off + 1, 3)
+         sq_n(p) = pp_n(key)
+      end do
+
+      ! Per bin: K_b, then the prefix sum that lays bins out one after
+      ! another in qp_*.
+      do ib = 1, b%nlive
+         bb = b%live(ib)
+         do s = 1, b%bin_cnt(bb)
+            bin_k(bb) = max(bin_k(bb), sq_n(b%bin_off(bb) + s))
+         end do
+      end do
+      nqp = 0
+      do bb = 1, b%nbin
+         bin_pbase(bb) = nqp
+         nqp = nqp + b%bin_cnt(bb)*bin_k(bb)
+      end do
+
+      if (.not. allocated(qp_z)) then
+         allocate (qp_z(nqp), qp_c(nqp))
+         allocate (qp_px(nqp), qp_py(nqp), qp_pz(nqp))
+      end if
+
+      ! Interleaved by primitive index: ix(b, k, s) = bin_pbase(b) + (k-1)*n_b + s.
+      ! The real primitives keep the order build_pairs_hgp already sorted them
+      ! into (largest |c|/p first), so every sum happens in the same order and
+      ! results are bit-identical to the pp_* path.
+      do ib = 1, b%nlive
+         bb = b%live(ib)
+         do s = 1, b%bin_cnt(bb)
+            p = b%bin_off(bb) + s
+            key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
+            off = pp_off(key)
+            kreal = sq_n(p)
+            do k1 = 1, bin_k(bb)
+               ix = bin_pbase(bb) + (k1 - 1)*b%bin_cnt(bb) + s
+               if (k1 <= kreal) then
+                  qp_z(ix) = pp_p(off + k1); qp_c(ix) = pp_c(off + k1)
+                  qp_px(ix) = pp_r(off + k1, 1)
+                  qp_py(ix) = pp_r(off + k1, 2)
+                  qp_pz(ix) = pp_r(off + k1, 3)
+               else
+                  qp_z(ix) = 1.0_dp; qp_c(ix) = 0.0_dp
+                  qp_px(ix) = sq_ax(p); qp_py(ix) = sq_ay(p); qp_pz(ix) = sq_az(p)
+               end if
+            end do
+         end do
+      end do
+   end subroutine build_pair_quartets
 
    !
    ! Order the pairs INSIDE each bin along a Morton curve through the pair

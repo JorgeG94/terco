@@ -57,9 +57,13 @@ gv = _load("gv", os.path.join(HERE, "gen_vrr.py"))
 gh = _load("gh", os.path.join(HERE, "gen_hrr.py"))
 
 
-PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, nao
+PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
+      !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -75,12 +79,18 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, npp, n
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3)
-      real(dp), intent(in)    :: pp_rb(npp, 3), pp_c(npp)
-      !! pp_c with the first column's coefficients folded in: what the
-      !! scalar kernel multiplies, so a segmented basis pays nothing.
-      real(dp), intent(in)    :: pp_cs(npp)
+      !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
+      !! are what the kernel reads for the bra/ket primitives, at
+      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! + icd (ket).
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      !! Per pair slot, aligned with sp_i/sp_j/sp_q: the A centre, A - B,
+      !! and the real kept primitive-pair count pp_n(key) gave before.
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)"""
@@ -633,9 +643,10 @@ def emit_scalar_driver(name, item):
     invariant for no behavioural gain, since the two are already the same
     text by construction. `scripts/rotaxis/emit_docon.py` -- which has no
     block-form driver to derive from -- calls this directly."""
-    return f"""   subroutine {name}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+    return f"""   subroutine {name}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat, rank, nranks)
 {PROLOGUE}
       integer, intent(in) :: rank, nranks
@@ -658,9 +669,10 @@ def emit_scalar_driver(name, item):
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call {item}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+         call {item}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine {name}
 """
@@ -670,9 +682,10 @@ def emit_item_signature(name):
     """The item routine's signature: same argument list as the driver plus
     the flat quartet index `gt`, `pure` and `!$acc routine seq` so it inlines
     into its caller (the reason it lives in the same module and file)."""
-    return f"""   pure subroutine {name}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+    return f"""   pure subroutine {name}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(int64), intent(in) :: gt
@@ -750,9 +763,10 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
    !> workspaces live in the item routine below, so they are per THREAD.
    !> Declaring them alongside the loop makes them shared -- the compiler then
    !> emits `implicit copy(v, g, vbuf, f)` per launch and the threads race.
-   subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+   subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat, rank, nranks)
 {PROLOGUE}
       integer, intent(in) :: rank, nranks
@@ -775,15 +789,17 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+         call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine pc{tag}
 
-   pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                      pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+   pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat)
       !$acc routine seq
       integer(int64), intent(in) :: gt
@@ -1268,9 +1284,10 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
     drv = drv.replace("      integer(int64) :: g0, g1, nr, i\n",
                       "      integer(int64) :: g0, g1, nr, i, it\n      integer :: role\n")
     old = ("      do concurrent(i=1:nr)\n"
-           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &\n"
-           "                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &\n"
-           "                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)\n"
+           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
+           "                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &\n"
+           "                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &\n"
+           "                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)\n"
            "      end do\n")
     assert drv.count(old) == 1
     drv = drv.replace(old, f"""      !
@@ -1294,9 +1311,10 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
          role = int(mod((i - 1)/32, {nrole}_int64)) + 1
          it = ((i - 1)/(32*{nrole}))*32 + mod(i - 1, 32_int64) + 1
          if (it <= nr) then
-            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat)
+            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
          end if
       end do
 """)
@@ -1441,6 +1459,95 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     decls = decls.replace("      integer  :: ki, kj, kk, kl, kpl, kql, ia2, ib2, ic2, id2, iabc, icdc\n", "")
     head = head.replace("         nca = ps_ncol(si); ncb = ps_ncol(sj); nccl = ps_ncol(sk); ncdl = ps_ncol(sl)\n", "")
     head = head.replace("         npi = ps_np(si); npj = ps_np(sj); npk = ps_np(sk); npl = ps_np(sl)\n", "")
+
+    #
+    # BIN-INTERLEAVED PRIMITIVE-PAIR LAYOUT.
+    #
+    # Replace the pp_off/pp_n shell-pair lookup and the pp_p/pp_r/pp_ra/pp_cs
+    # reads of the primitive loop with the bin-interleaved qp_*/sq_* tables
+    # (trc_bins%build_pair_quartets): `slotab`/`slotcd` are the pair's own
+    # slot, aligned with sp_i/sp_j/sp_q, and `kp`/`kq` become addresses into
+    # qp_* rather than flat pp_* indices. Same screens, same cycle/exit, same
+    # order of operations -- only where each value comes from changes.
+    #
+    decls = decls.replace("      integer :: keyab, keycd, offab, offcd, nab, ncd\n",
+                          "      integer :: slotab, slotcd, nab, ncd\n"
+                          "      integer :: kp, kq, k1, k2\n")
+    assert decls.count("      integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens\n") == 1
+    decls = decls.replace("      integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens\n",
+                          "      integer :: d, x, cur, ia, ib, ic, id, idx, idens\n")
+
+    head_old = ("         keyab = (si - 1)*nbas + sj\n"
+                "         keycd = (sk - 1)*nbas + sl\n"
+                "         offab = pp_off(keyab); nab = pp_n(keyab)\n"
+                "         offcd = pp_off(keycd); ncd = pp_n(keycd)\n"
+                "\n"
+                "         abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)\n"
+                "         aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)\n"
+                "         abz = pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3)\n"
+                "         cdx = pp_ra(offcd + 1, 1) - pp_rb(offcd + 1, 1)\n"
+                "         cdy = pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2)\n"
+                "         cdz = pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3)\n")
+    assert head.count(head_old) == 1
+    head = head.replace(head_old,
+                        "         slotab = sOA(seg) + iab; slotcd = sOB(seg) + icd\n"
+                        "         nab = sq_n(slotab); ncd = sq_n(slotcd)\n"
+                        "\n"
+                        "         abx = sq_abx(slotab); aby = sq_aby(slotab); abz = sq_abz(slotab)\n"
+                        "         cdx = sq_abx(slotcd); cdy = sq_aby(slotcd); cdz = sq_abz(slotcd)\n")
+
+    prims_old = ("            do kp = offab + 1, offab + nab\n"
+                 "               zeta = pp_p(kp)\n"
+                 "               bnd = TWO_PI_2_5*abs(pp_cs(kp))/(zeta*sqrt(zeta))\n"
+                 "               if (bnd*abs(pp_cs(offcd + 1))/pp_p(offcd + 1) <= pcut) cycle\n")
+    assert prims.count(prims_old) == 1
+    prims = prims.replace(prims_old,
+                          "            do k1 = 1, nab\n"
+                          "               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab\n"
+                          "               zeta = qp_z(kp)\n"
+                          "               bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))\n"
+                          "               if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle\n")
+    prims = prims.replace("               rpx = pp_r(kp, 1); rpy = pp_r(kp, 2); rpz = pp_r(kp, 3)\n"
+                          "               pax = rpx - pp_ra(kp, 1)\n"
+                          "               pay = rpy - pp_ra(kp, 2)\n"
+                          "               paz = rpz - pp_ra(kp, 3)\n",
+                          "               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)\n"
+                          "               pax = rpx - sq_ax(slotab)\n"
+                          "               pay = rpy - sq_ay(slotab)\n"
+                          "               paz = rpz - sq_az(slotab)\n")
+    prims = prims.replace("               do kq = offcd + 1, offcd + ncd\n"
+                          "                  eta = pp_p(kq)\n",
+                          "               do k2 = 1, ncd\n"
+                          "                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd\n"
+                          "                  eta = qp_z(kq)\n")
+    prims = prims.replace("                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)\n"
+                          "                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit\n",
+                          "                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)\n"
+                          "                  if (bnd*abs(qp_c(kq))/eta <= pcut) exit\n")
+    prims = prims.replace("                  pqx = rpx - pp_r(kq, 1)\n"
+                          "                  pqy = rpy - pp_r(kq, 2)\n"
+                          "                  pqz = rpz - pp_r(kq, 3)\n"
+                          "                  qcx = pp_r(kq, 1) - pp_ra(kq, 1)\n"
+                          "                  qcy = pp_r(kq, 2) - pp_ra(kq, 2)\n"
+                          "                  qcz = pp_r(kq, 3) - pp_ra(kq, 3)\n"
+                          "                  wc = (zeta*rpx + eta*pp_r(kq, 1))*rzpe\n"
+                          "                  wpx = wc - pp_r(kp, 1); wqx = wc - pp_r(kq, 1)\n"
+                          "                  wc = (zeta*rpy + eta*pp_r(kq, 2))*rzpe\n"
+                          "                  wpy = wc - pp_r(kp, 2); wqy = wc - pp_r(kq, 2)\n"
+                          "                  wc = (zeta*rpz + eta*pp_r(kq, 3))*rzpe\n"
+                          "                  wpz = wc - pp_r(kp, 3); wqz = wc - pp_r(kq, 3)\n",
+                          "                  pqx = rpx - qp_px(kq)\n"
+                          "                  pqy = rpy - qp_py(kq)\n"
+                          "                  pqz = rpz - qp_pz(kq)\n"
+                          "                  qcx = qp_px(kq) - sq_ax(slotcd)\n"
+                          "                  qcy = qp_py(kq) - sq_ay(slotcd)\n"
+                          "                  qcz = qp_pz(kq) - sq_az(slotcd)\n"
+                          "                  wc = (zeta*rpx + eta*qp_px(kq))*rzpe\n"
+                          "                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)\n"
+                          "                  wc = (zeta*rpy + eta*qp_py(kq))*rzpe\n"
+                          "                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)\n"
+                          "                  wc = (zeta*rpz + eta*qp_pz(kq))*rzpe\n"
+                          "                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)\n")
 
     isig = txt_l.index("   pure subroutine pci" + tag + "(")
     sig = txt_l[isig:idecl0].replace("pci" + tag, "pcsi" + tag)
@@ -1595,9 +1702,10 @@ contains
     if args.role_report:
         return
     out.append(f"""
-   subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, &
+   subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                           ndens, dmat, jmat, rank, nranks)
       integer, intent(in) :: key
 {PROLOGUE}
@@ -1605,9 +1713,10 @@ contains
       select case (key)""")
     for key, tag in names:
         kern = "pcr" if tag in ROLE_SPLITS else "pcs"
-        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_cs, ndens, dmat, jmat, rank, nranks)""")
+        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)""")
     out.append("""      end select
    end subroutine pc_dispatch
 

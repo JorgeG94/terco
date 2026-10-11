@@ -102,10 +102,6 @@ terco_add_check(check_xc_energy check_xc_energy.F90)
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
-# Rotated-axis MD vs HGP: the same Fock build with TRC_ROTAXIS forced off then
-# on in one process (see check_rotaxis.F90's header), on water and a linear
-# molecule where collinear frames are routine rather than a corner case.
-terco_add_check(check_rotaxis check_rotaxis.F90 NEEDS_BASIS)
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
@@ -114,6 +110,21 @@ terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+# build_631g against trc_basis_from_json, on water through a five-water
+# cluster -- the one check allowed to call build_631g for its own basis
+# (see that subroutine's comment in trc_test_basis.F90). Water through
+# five waters, not one geometry: a per-shell coefficient scale error can
+# still agree with the reference to several digits at a single small
+# geometry, which is what let the common_fac_sp regression this check
+# guards against go unnoticed before.
+terco_add_check(check_basis_631g_ref check_basis_631g_ref.F90 NEEDS_BASIS)
+# The spherical (pure) AO space against pyscf's cart=False: water in
+# def2-SVP and cc-pVDZ, a three-water cluster in def2-SVP, SiH4 in
+# cc-pVDZ, and the OH radical open-shell in cc-pVDZ. See check_spherical.F90's
+# own header for the reference numbers' provenance and def2-svp.json's own
+# (copied from gmshpc's data/basis, itself the Basis Set Exchange's JSON
+# bundle -- same source and format as every other file in basis_sets/).
+terco_add_check(check_spherical check_spherical.F90 NEEDS_BASIS)
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
 terco_add_check(sadq_atoms sadq_atoms.F90 NEEDS_BASIS)
 terco_add_check(sap_guess sap_guess.F90 NEEDS_BASIS)
@@ -249,6 +260,29 @@ if(Python3_FOUND AND _pyscf_rc EQUAL 0)
   set_tests_properties(
     terco/scf_rks_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                       DEPENDS terco/scf_rks)
+endif()
+
+#
+# The hard-case set for SCF robustness (M2, Part B): A/EDIIS ahead of CDIIS
+# and canonical orthogonalisation at their measured defaults, on four small
+# systems chosen because plain damped DIIS is weak on each for a different
+# reason -- see scf_robust.F90's header. Writes scf_robust_probe.bin for
+# the pyscf comparison registered below.
+#
+add_executable(scf_robust scf_robust.F90)
+target_compile_definitions(scf_robust PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_robust PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_robust PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_robust COMMAND scf_robust)
+set_tests_properties(
+  terco/scf_robust PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                              ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+if(Python3_FOUND AND _pyscf_rc EQUAL 0)
+  add_test(NAME terco/scf_robust_vs_pyscf
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scf_robust_ref.py)
+  set_tests_properties(
+    terco/scf_robust_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                         DEPENDS terco/scf_robust)
 endif()
 
 # The SAD guess read from mqc's JSON blocks, against terco's own start.
@@ -404,6 +438,11 @@ target_link_libraries(bench_xc PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_gc bench_gc.F90)
 target_compile_definitions(bench_gc PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_gc PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many bench_xc bench_gc)
+# The spherical transform's cost against one Fock build -- see
+# bench_sph.F90's own header. Not a pass/fail: a timing, like its siblings.
+add_executable(bench_sph bench_sph.F90)
+target_compile_definitions(bench_sph PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_sph PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()

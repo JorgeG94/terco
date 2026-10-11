@@ -89,6 +89,19 @@ contains
 
       nao = b%nao
       naux = aux%nao
+      ! Density fitting stays Cartesian-only for this milestone (see
+      ! trc_capi.F90's AO classification header, and its own refusal on
+      ! the same basis at the C boundary): `cmo` above is declared
+      ! (b%nao, b%nao), and a caller whose SCF ran spherical hands this a
+      ! `cmo` actually shaped (b%nao_sph, b%nao_sph) -- smaller, so this
+      ! would read past the end of the caller's array under sequence
+      ! association rather than merely giving a wrong number. Refused
+      ! before that read happens, not after.
+      if (b%spherical) then
+         res%message = "trc_rimp2: the orbital basis is spherical; RI-MP2 only "// &
+                       "supports a Cartesian basis today"
+         return
+      end if
       nfz = 0
       if (present(nfrozen)) nfz = max(nfrozen, 0)
       no = nocc - nfz

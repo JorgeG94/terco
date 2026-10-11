@@ -29,16 +29,34 @@
 ! since a mismatch means a different basis and a silently wrong start.
 !
 ! CONVENTION. The two codes scale a Cartesian function x^l e^{-a r^2}
-! differently, and neither is uniform in l on its own. terco folds
-! libcint's common factor into the coefficients, so its S_ii is 1/(4 pi)
-! for s, 3/(4 pi) for p, and 1 from d up. mqc's S_ii is 1 for s and p,
-! 4 pi/5 for d, 4 pi/7 for f (measured, both of them). The RATIO is what
-! matters here and it is 4 pi/(2l+1) for every l, so a block element is
-! divided by f(l_i) f(l_j) with f(l) = sqrt((2l+1)/(4 pi)) on the way in.
-! Energies cannot see a function's scale; a density can: Tr(D S) came out
-! at 1.43 electrons for water before the s and p factors were understood,
-! and at 10.0046 for cc-pVDZ before the d one was, with every energy check
-! passing both times. That is why scf_sad integrates the guess against S.
+! differently for d and up, and neither is uniform in l on its own. mqc's
+! S_ii is 1 for s and p, 4 pi/5 for d, 4 pi/7 for f (measured). terco's own
+! raw S_ii is 1 for s and p too -- `trc_basis_t%build` folds libcint's
+! `common_fac_sp` into an s or p shell's coefficients, but every builder
+! that feeds it (this file's `trc_basis_json`, test/trc_test_basis.F90's
+! `build_631g`) hands it a coefficient already divided by that factor, so
+! the two cancel and terco's raw <s|s>/<p_x|p_x> come out 1, matching mqc
+! (and pyscf/libcint) directly: no conversion needed for s or p. `build`
+! does not touch d and up (common_fac_sp(l>=2) = 1), so terco's OWN d/f
+! stays at 1 while mqc's is 4 pi/5, 4 pi/7 -- a REAL difference, needing a
+! REAL conversion there. The ratio is 4 pi/(2l+1), so a block element is
+! divided by f(l_i) f(l_j) with f(l) = sqrt((2l+1)/(4 pi)) / common_fac_sp(l)
+! on the way in -- the common_fac_sp divide makes f(l) = 1 for s and p
+! (nothing to convert) and leaves it sqrt((2l+1)/(4 pi)) for d and up
+! (common_fac_sp(l>=2) = 1, a no-op divide there).
+!
+! THIS MODULE USED TO DIVIDE BY sqrt((2l+1)/(4 pi)) ALONE, s and p included
+! -- which happened to be the right number only because trc_basis_json had
+! its OWN bug of the same shape (folding common_fac_sp twice into an s or p
+! shell, making terco's raw S_ii for those come out 1/(4 pi) and 3/(4 pi)
+! for real, not 1). Two bugs the same shape, canceling: that is also why
+! Tr(D S) came out right (10.0046 for cc-pVDZ, see below) despite both. The
+! common_fac_sp divide was added here the moment trc_basis_json's fold was
+! fixed and this module's own conversion stopped canceling it. Energies
+! cannot see a function's scale; a density can: Tr(D S) came out at 1.43
+! electrons for water before the s and p factors were understood, and at
+! 10.0046 for cc-pVDZ before the d one was, with every energy check passing
+! both times. That is why scf_sad integrates the guess against S.
 !
 module trc_guess_json
    use trc_boys, only: dp
@@ -86,7 +104,8 @@ contains
          ia = atom_of(b, ish)
          n = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
          nfun(ia) = nfun(ia) + n
-         fac(b%sh_ao(ish):b%sh_ao(ish) + n - 1) = sqrt(real(2*b%sh_l(ish) + 1, dp)/(4.0_dp*PI))
+         fac(b%sh_ao(ish):b%sh_ao(ish) + n - 1) = sqrt(real(2*b%sh_l(ish) + 1, dp)/(4.0_dp*PI)) &
+                                                 /common_fac_sp(b%sh_l(ish))
       end do
       first(1) = 1
       do ia = 2, b%natm
@@ -173,5 +192,18 @@ contains
       write (buf, '(i0)') i
       t = trim(buf)
    end function itoa
+
+   !> Duplicated from trc_api.F90 (and trc_ao_norm.F90, trc_basis_json.F90,
+   !> trc_batch.F90) rather than imported -- see those modules' own comments
+   !> on the same duplication. Used only to cancel itself out of `fac` for s
+   !> and p, per this module's own header.
+   pure real(dp) function common_fac_sp(l)
+      integer, intent(in) :: l
+      select case (l)
+      case (0); common_fac_sp = 0.282094791773878143_dp
+      case (1); common_fac_sp = 0.488602511902919921_dp
+      case default; common_fac_sp = 1.0_dp
+      end select
+   end function common_fac_sp
 
 end module trc_guess_json

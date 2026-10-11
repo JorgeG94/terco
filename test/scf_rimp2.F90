@@ -12,7 +12,7 @@ program scf_rimp2
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
-   use trc_test_basis, only: read_xyz, build_631g, build_aux
+   use trc_test_basis, only: read_xyz, build_aux, uncontract_basis
    use trc_basis_json, only: trc_basis_from_json
    use trc_guess_json, only: trc_guess_from_json
    use trc_error, only: error_t
@@ -53,8 +53,12 @@ program scf_rimp2
    call read_xyz(trim(xyz), natm, zint, at_r)
    allocate (at_z(natm)); at_z = real(zint, dp)
    if (len_trim(bas_json) > 0) then
-      call trc_basis_from_json(trim(bas_json), natm, zint, at_r, bas, err)
-      if (.not. err%has_error()) call trc_basis_from_json(trim(aux_json), natm, zint, at_r, aux, err)
+      ! Forced Cartesian: RI-MP2 (below) is Cartesian-only (trc_rimp2.F90's
+      ! own refusal of a spherical basis), and mqc's SAD guess fixture, when
+      ! one is given, is in terco's Cartesian AO convention regardless.
+      call trc_basis_from_json(trim(bas_json), natm, zint, at_r, bas, err, force_cart=.true.)
+      if (.not. err%has_error()) call trc_basis_from_json(trim(aux_json), natm, zint, at_r, aux, err, &
+                                                           force_cart=.true.)
       if (err%has_error()) then
          print '(a)', "scf_rimp2: "//err%get_message()
          stop 1
@@ -70,7 +74,17 @@ program scf_rimp2
       end if
       call unpack_basis(aux, nsha, ax_l, ax_np, ax_e, ax_c, ax_r, maxnpa)
    else
-      call build_631g(natm, zint, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp, uncontracted=.true.)
+      ! 6-31G, through the one basis-construction path, then uncontracted
+      ! to primitives exactly as the old `build_631g(..., uncontracted=
+      ! .true.)` call did (see uncontract_basis's own comment). `bas` is
+      ! reused as scratch for the JSON load -- `%build` below releases
+      ! and rebuilds it, so nothing of the intermediate load survives.
+      call trc_basis_from_json('basis_sets/6-31g.json', natm, zint, at_r, bas, err)
+      if (err%has_error()) then
+         print '(a)', "scf_rimp2: "//err%get_message()
+         stop 1
+      end if
+      call uncontract_basis(bas, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
       call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, at_z, at_r, maxnp)
       call build_aux(natm, zint, at_r, 2, nsha, ax_l, ax_np, ax_e, ax_c, ax_r, maxnpa)
       call aux%build(nsha, ax_l, ax_np, ax_e, ax_c, ax_r, natm, at_z, at_r, maxnpa)

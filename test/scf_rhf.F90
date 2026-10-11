@@ -31,17 +31,19 @@ program scf_rhf
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
 
    character(len=256) :: xyzfile, arg
    integer  :: charge, maxiter
    real(dp) :: thresh
 
-   integer :: nat, nsh, maxnp, nao, nelec, nocc, i, j, it
-   integer,  allocatable :: at_z(:), sh_l(:), sh_np(:)
+   integer :: nat, nao, nelec, nocc, i, j, it
+   integer,  allocatable :: at_z(:)
    real(dp), allocatable :: at_r(:, :), zat(:)
-   real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
+   type(error_t) :: err
    real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
    real(dp), allocatable :: hcore(:, :), gmat(:, :), fock(:, :)
    real(dp), allocatable :: dmat(:, :), dold(:, :), x(:, :), c(:, :), eps(:)
@@ -70,7 +72,6 @@ program scf_rhf
    ! result, stop. Exists to compare this path against bench_binwater on the
    ! SAME density, which is the only way to tell two fold conventions apart.
    call read_xyz(xyzfile, nat, at_z, at_r)
-   call build_631g(nat, at_z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
    allocate (zat(nat)); zat = real(at_z, dp)
 
    nelec = sum(at_z) - charge
@@ -81,12 +82,15 @@ program scf_rhf
    nocc = nelec/2
 
    ! ---- the library: basis, pair list, integral engines ----
-   call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
+   call trc_basis_from_json('basis_sets/6-31g.json', nat, at_z, at_r, bas, err)
+   if (err%has_error()) then
+      print '(a)', 'scf_rhf: '//err%get_message(); stop 1
+   end if
    call pl%build(bas, thresh)
    nao = bas%nao
 
    print '(a,a)',       '  geometry   : ', trim(xyzfile)
-   print '(a,i0,a,i0,a,i0)', '  atoms ', nat, '   shells ', nsh, '   nao ', nao
+   print '(a,i0,a,i0,a,i0)', '  atoms ', nat, '   shells ', bas%nshell, '   nao ', nao
    print '(a,i0,a,i0)', '  electrons ', nelec, '   occupied ', nocc
    print '(a,es9.2)',   '  threshold  : ', thresh
 

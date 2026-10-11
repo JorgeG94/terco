@@ -13,9 +13,14 @@
 ! matrices and every Fock build come from terco across the C boundary, and
 ! only the eigenproblem is local. Water at 6-31G must give
 !
-!     -75.983974469890
+!     -75.983974465717   (trc_basis_from_json's own value, 2026-10-08)
 !
-! which is what `test/scf_rhf.F90` gets natively and what pyscf gets. Anything
+! which is what `test/scf_rhf.F90` gets natively and what pyscf gets (both
+! to 1e-8, through the SAME basis-construction path, `trc_basis_from_json`,
+! this file now also uses -- see trc_test_basis.F90's header for why
+! `build_631g` is no longer that path; it used to be build_631g's own
+! 7-figure-literal value, -75.983974469890, 4.2e-9 Eh away from this one).
+! Anything
 ! else means the ABI is misdescribing an array somewhere -- and a transposed
 ! or mis-strided matrix usually still converges, to the wrong energy, so the
 ! energy is the check and "it ran" is not.
@@ -41,7 +46,10 @@ program link_gfortran
    ! code months later.
    !
    use trc_c_interfaces
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz, unpack_basis
+   use trc_api, only: trc_basis_t
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
    integer, parameter :: dp = kind(1.0d0)
 
@@ -52,6 +60,8 @@ program link_gfortran
    real(dp), allocatable :: at_r(:, :), sh_e(:, :), sh_c(:, :), sh_r(:, :)
    real(c_double), allocatable :: zat(:)
    integer(c_int), allocatable :: lc(:), npc(:)
+   type(trc_basis_t) :: jbas
+   type(error_t) :: err
    type(c_ptr) :: hbas, hpair, heri, hbas2, hpair2
    integer :: nao
    real(dp), allocatable :: s(:, :), t(:, :), v(:, :), h(:, :)
@@ -66,7 +76,11 @@ program link_gfortran
    call get_command_argument(1, xyzfile)
 
    call read_xyz(xyzfile, nat, at_z, at_r)
-   call build_631g(nat, at_z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
+   call trc_basis_from_json('basis_sets/6-31g.json', nat, at_z, at_r, jbas, err)
+   if (err%has_error()) then
+      print '(a)', 'link_gfortran: '//err%get_message(); stop 1
+   end if
+   call unpack_basis(jbas, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
    allocate (zat(nat), lc(nsh), npc(nsh))
    zat = real(at_z, c_double)
    lc = int(sh_l, c_int); npc = int(sh_np, c_int)
@@ -145,7 +159,8 @@ program link_gfortran
       call must(rc, 'trc_scf (PBE)')
       print '(a,f18.10,a,f16.10,a,i0,a)', '    trc_scf PBE  ', e_lib, '   E_xc ', e_xc, '   (', niter, ' iterations)'
    end block
-   if (abs(escf + 75.983974469890_dp) < 1.0e-8_dp) then
+   ! trc_basis_from_json's own 6-31G water RHF value, 2026-10-08.
+   if (abs(escf + 75.983974465717_dp) < 1.0e-8_dp) then
       print '(a)', '    RESULT: PASS (matches the native build and pyscf)'
    else
       print '(a)', '    RESULT: FAIL'

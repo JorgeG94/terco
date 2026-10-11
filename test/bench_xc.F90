@@ -20,14 +20,14 @@ program bench_xc
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    implicit none
 
    character(len=256) :: xyzfile, arg, bas_json
-   integer :: level, reps, max_pts, nat, nsh, maxnp, nao, i, j, r
-   integer, allocatable :: z(:), sh_l(:), sh_np(:)
-   real(dp), allocatable :: at_r(:, :), zat(:), sh_e(:, :), sh_c(:, :), sh_r(:, :)
+   integer :: level, reps, max_pts, nat, nao, i, j, r
+   integer, allocatable :: z(:)
+   real(dp), allocatable :: at_r(:, :)
    real(dp), allocatable :: c(:, :), dmat(:, :), vxc(:, :)
    type(trc_basis_t) :: bas
    type(trc_pairlist_t) :: pl
@@ -60,15 +60,16 @@ program bench_xc
    if (command_argument_count() >= 5) call get_command_argument(5, bas_json)
 
    call read_xyz(trim(xyzfile), nat, z, at_r)
-   allocate (zat(nat)); zat = real(z, dp)
    if (len_trim(bas_json) > 0) then
       call trc_basis_from_json(trim(bas_json), nat, z, at_r, bas, err)
       if (err%has_error()) then
          print '(a)', 'bench_xc: '//err%get_message(); stop 1
       end if
    else
-      call build_631g(nat, z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
-      call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
+      call trc_basis_from_json('basis_sets/6-31g.json', nat, z, at_r, bas, err)
+      if (err%has_error()) then
+         print '(a)', 'bench_xc: '//err%get_message(); stop 1
+      end if
    end if
    call bas%to_device()
    nao = bas%nao

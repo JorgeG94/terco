@@ -28,17 +28,19 @@ program bench_many
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_eri, only: trc_eri_t
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    implicit none
 
    character(len=256) :: xyzfile, dmfile, arg
    integer  :: nmax
    real(dp) :: thresh
 
-   integer :: nat, nsh, maxnp, nao, i, j, d, n, r
-   integer,  allocatable :: at_z(:), sh_l(:), sh_np(:)
-   real(dp), allocatable :: at_r(:, :), zat(:)
-   real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
+   integer :: nat, nao, i, j, d, n, r
+   integer,  allocatable :: at_z(:)
+   real(dp), allocatable :: at_r(:, :)
+   type(error_t) :: err
    real(dp), allocatable :: d0(:, :), dmats(:, :, :), gmany(:, :, :), gone(:, :)
    type(trc_basis_t)    :: bas
    type(trc_pairlist_t) :: pl
@@ -60,9 +62,10 @@ program bench_many
    end if
 
    call read_xyz(xyzfile, nat, at_z, at_r)
-   call build_631g(nat, at_z, at_r, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
-   allocate (zat(nat)); zat = real(at_z, dp)
-   call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, nat, zat, at_r, maxnp)
+   call trc_basis_from_json('basis_sets/6-31g.json', nat, at_z, at_r, bas, err)
+   if (err%has_error()) then
+      print '(a)', 'bench_many: '//err%get_message(); stop 1
+   end if
    call pl%build(bas, thresh)
    nao = bas%nao
 
@@ -73,7 +76,7 @@ program bench_many
    call pl%to_device()
    call eri%build(bas, thresh)
 
-   print '(a,a,a,i0,a,i0)', '  ', trim(xyzfile), '   nao ', nao, '   shells ', nsh
+   print '(a,a,a,i0,a,i0)', '  ', trim(xyzfile), '   nao ', nao, '   shells ', bas%nshell
    print '(a,es9.2)', '  threshold ', thresh
    print '(a)', ''
    print '(a)', '     N   t(batched)   t(N separate)   speedup   worst |diff|'

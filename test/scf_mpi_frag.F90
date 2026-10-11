@@ -49,7 +49,10 @@
 program scf_mpi_frag
    use trc_boys, only: dp
    use pic_mpi_lib, only: pic_mpi_init, pic_mpi_finalize
-   use trc_test_basis, only: read_xyz, build_631g
+   use trc_test_basis, only: read_xyz, unpack_basis
+   use trc_api, only: trc_basis_t
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
    use trc_c_interfaces, only: trc_basis_create, trc_basis_destroy, trc_basis_nao, trc_scf_mpi, TRC_OK
 #ifdef TERCO_HAVE_MPI
@@ -80,6 +83,8 @@ program scf_mpi_frag
    type(c_ptr) :: hbas_w, hbas_o
    integer(c_int) :: nao_w, nao_o, rc
    real(c_double), allocatable :: dmat_w(:), eps_w(:), dmat_o(:), eps_o(:)
+   type(trc_basis_t) :: jbas
+   type(error_t) :: err
    logical :: ok
 
    ok = .true.
@@ -90,7 +95,11 @@ program scf_mpi_frag
    ! (open-shell, nalpha /= nbeta -- UHF), so scenario (b) is not running
    ! the same physics on both fragments.
    call read_xyz('water.xyz', natm_w, z_w, r_w)
-   call build_631g(natm_w, z_w, r_w, nsh_w, l_w, np_w, e_w, c_w, sr_w, maxnp_w)
+   call trc_basis_from_json('basis_sets/6-31g.json', natm_w, z_w, r_w, jbas, err)
+   if (err%has_error()) then
+      print '(a)', 'scf_mpi_frag: '//err%get_message(); call pic_mpi_finalize(); stop 1
+   end if
+   call unpack_basis(jbas, nsh_w, l_w, np_w, e_w, c_w, sr_w, maxnp_w)
    allocate (lc_w(nsh_w), npc_w(nsh_w), zat_w(natm_w))
    lc_w = int(l_w, c_int); npc_w = int(np_w, c_int); zat_w = real(z_w, c_double)
    rc = trc_basis_create(int(nsh_w, c_int), int(maxnp_w, c_int), lc_w, npc_w, &
@@ -101,7 +110,11 @@ program scf_mpi_frag
    allocate (dmat_w(nao_w*nao_w), eps_w(nao_w))
 
    call read_xyz('oh.xyz', natm_o, z_o, r_o)
-   call build_631g(natm_o, z_o, r_o, nsh_o, l_o, np_o, e_o, c_o, sr_o, maxnp_o)
+   call trc_basis_from_json('basis_sets/6-31g.json', natm_o, z_o, r_o, jbas, err)
+   if (err%has_error()) then
+      print '(a)', 'scf_mpi_frag: '//err%get_message(); call pic_mpi_finalize(); stop 1
+   end if
+   call unpack_basis(jbas, nsh_o, l_o, np_o, e_o, c_o, sr_o, maxnp_o)
    allocate (lc_o(nsh_o), npc_o(nsh_o), zat_o(natm_o))
    lc_o = int(l_o, c_int); npc_o = int(np_o, c_int); zat_o = real(z_o, c_double)
    rc = trc_basis_create(int(nsh_o, c_int), int(maxnp_o, c_int), lc_o, npc_o, &

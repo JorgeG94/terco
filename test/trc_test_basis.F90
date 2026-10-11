@@ -1,20 +1,86 @@
 !
-! Basis construction for the test programs.
+! Shared code for the test programs: reading an xyz, and the flat-array
+! plumbing a basis built through `trc_basis_t%build` needs.
 !
 ! The library does NOT ship a basis set -- a caller supplies exponents and
-! coefficients. That is the right contract, but it means every test program
-! needs its own basis, and three of them wanting the same 6-31G is duplication
-! rather than independence. This module is that shared code, and it lives in
-! `test/` rather than `src/` precisely because it is not part of the library.
+! coefficients, and the ONE way a terco test does that is
+! `trc_basis_from_json` (`src/trc_basis_json.F90`) against a file under
+! `basis_sets/`. `build_631g` below is NOT a second way to do this: it is a
+! literal, hand-transcribed copy of 6-31G kept so one check
+! (test/check_basis_631g_ref.F90) can prove the JSON path right against a
+! source that was never near it, and its own comment says so. Everything
+! else in this module -- `read_xyz`, `unpack_basis`, `uncontract_basis`,
+! `build_aux` (a synthetic auxiliary ladder, unrelated to any orbital set)
+! -- is ordinary shared plumbing with nothing to do with that one path/not-
+! a-path distinction. This module lives in `test/` rather than `src/`
+! precisely because none of it is part of the library.
 !
 module trc_test_basis
    use trc_boys, only: dp
+   use trc_api, only: trc_basis_t
    implicit none
    public
 
    real(dp), parameter :: ANG = 1.8897261254578281_dp
 
 contains
+
+   !
+   ! A built basis's own flat arrays, with `basis_build`'s `common_fac_sp`
+   ! fold taken back out -- ready to hand to ANOTHER `%build` (a subset,
+   ! an uncontracted copy, a probe written out for pyscf) without folding
+   ! the factor in twice. Shared by every caller that round-trips a built
+   ! basis this way, rather than each keeping its own copy.
+   !
+   subroutine unpack_basis(b, n, l, np, e, c, r, mnp)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(out) :: n, mnp
+      integer, allocatable, intent(out) :: l(:), np(:)
+      real(dp), allocatable, intent(out) :: e(:, :), c(:, :), r(:, :)
+      integer :: i
+      n = b%nshell; mnp = b%maxnp
+      allocate (l(n), np(n), e(mnp, n), c(mnp, n), r(3, n))
+      l = b%sh_l; np = b%sh_np; e = b%sh_e; c = b%sh_c; r = b%sh_r
+      do i = 1, n
+         if (l(i) == 0) c(:, i) = c(:, i)/0.282094791773878143_dp
+         if (l(i) == 1) c(:, i) = c(:, i)/0.488602511902919921_dp
+      end do
+   end subroutine unpack_basis
+
+   !
+   ! `b`, uncontracted: every primitive of every shell becomes its own
+   ! one-primitive shell, coefficient `gto_norm(l,e)` -- what pyscf's
+   ! `gto.uncontract` does -- so a comparison of TOTAL ENERGIES is not
+   ! spoilt by pyscf renormalising a contracted shell and terco not (see
+   ! `gto_norm`'s own comment). This is `build_631g`'s old `uncontracted`
+   ! argument, pulled out so it works on ANY built basis -- a JSON-loaded
+   ! one included -- rather than only the hardcoded one: the transform only
+   ! ever needed the shell list's angular momenta and exponents, never the
+   ! original contraction weights, which it throws away.
+   !
+   subroutine uncontract_basis(b, n2, l2, np2, e2, c2, r2, mnp2)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(out) :: n2, mnp2
+      integer, allocatable, intent(out) :: l2(:), np2(:)
+      real(dp), allocatable, intent(out) :: e2(:, :), c2(:, :), r2(:, :)
+      integer :: i, k, n
+
+      n = 0
+      do i = 1, b%nshell
+         n = n + b%sh_np(i)
+      end do
+      n2 = n; mnp2 = 1
+      allocate (l2(n2), np2(n2), e2(1, n2), c2(1, n2), r2(3, n2))
+      n = 0
+      do i = 1, b%nshell
+         do k = 1, b%sh_np(i)
+            n = n + 1
+            l2(n) = b%sh_l(i); np2(n) = 1; r2(:, n) = b%sh_r(:, i)
+            e2(1, n) = b%sh_e(k, i)
+            c2(1, n) = gto_norm(b%sh_l(i), b%sh_e(k, i))
+         end do
+      end do
+   end subroutine uncontract_basis
 
    subroutine read_xyz(fn, nat, z, r)
       character(len=*), intent(in) :: fn
@@ -41,6 +107,7 @@ contains
          case ('N', 'n'); z(i) = 7
          case ('O', 'o'); z(i) = 8
          case ('F', 'f'); z(i) = 9
+         case ('Ne', 'ne', 'NE'); z(i) = 10
          case ('Si', 'si', 'SI'); z(i) = 14
          case ('P', 'p'); z(i) = 15
          case ('S', 's'); z(i) = 16
@@ -52,11 +119,24 @@ contains
       close (u)
    end subroutine read_xyz
 
-   !> 6-31G for H, C, N, O. Same values as bench_binwater, from the BSE JSON.
+   !> 6-31G for H, C, N, O, FROM LITERAL BSE COEFFICIENTS -- a SECOND,
+   !> independent transcription of the same numbers `basis_sets/6-31g.json`
+   !> holds, kept ONLY so something in the tree can prove the JSON path
+   !> (`trc_basis_json`) right against a source that does not go through
+   !> it. terco has one basis-construction path, and it is
+   !> `trc_basis_from_json`; no test should reach for this as a convenient
+   !> second way to get 6-31G -- see test/check_basis_631g_ref.F90, the one
+   !> check that is allowed to call this for exactly that reason, for the
+   !> measured agreement between the two (water through twenty waters, 4e-8
+   !> to 1e-6 Eh, the gap between a hand-copied 7-digit literal and the
+   !> JSON file's full double precision).
+   !>
    !> `uncontracted` makes every primitive its own shell with coefficient
    !> one -- what pyscf's gto.uncontract does -- so that a comparison of
    !> total energies is not spoilt by pyscf renormalising contracted shells
-   !> and terco not.
+   !> and terco not. `uncontract_basis` below does the same transform on
+   !> ANY built basis, JSON-loaded included, and is what a caller wanting
+   !> an uncontracted 6-31G outside this one reference check should use.
    subroutine build_631g(nat, z, r, nsh, l, np, e, c, sr, mnp, uncontracted)
       integer,  intent(in)  :: nat, z(nat)
       real(dp), intent(in)  :: r(3, nat)
