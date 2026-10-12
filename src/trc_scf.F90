@@ -916,16 +916,42 @@ contains
                fstore(i, j, s, k) = fock(i, j, s)
                estore(i, j, s, k) = errv(i, j, s)
             end do
-            m = ndiis_used + 1
-            bmat = -1.0_dp
-            bmat(m, m) = 0.0_dp
-            do j = 1, ndiis_used
-               do i = 1, j
-                  bmat(i, j) = la%dot(n2*nspin, estore(:, :, :, i), estore(:, :, :, j))
-                  bmat(j, i) = bmat(i, j)
+            !
+            ! AN ILL-CONDITIONED SUBSPACE LOSES ITS OLDEST ENTRY, NOT THE STEP.
+            !
+            ! When the solve fails, extrapolating from nothing and taking the
+            ! plain Roothaan step instead is not neutral. On water/def2-SVP
+            ! PBE0 the history holds errors of order 1 next to the newest at
+            ! 1e-7, B's scaled pivots drop under solve_diis's 1e-14, and the
+            ! plain steps that follow grow the commutator by x1.28 per
+            ! iteration along one direction. Errors along one direction make
+            ! B singular in turn, so the solve keeps failing: 65 iterations
+            ! of runaway to |FDS-SDF| ~ 2 before the nonlinearity broke it,
+            ! and past max_iter whenever it broke later. Dropping the oldest
+            ! entries until the system solves keeps the extrapolation; two
+            ! distinct error vectors always give a solvable system, and that
+            ! two-term step is exactly what cancels one growing mode.
+            !
+            do
+               m = ndiis_used + 1
+               bmat = -1.0_dp
+               bmat(m, m) = 0.0_dp
+               do j = 1, ndiis_used
+                  do i = 1, j
+                     bmat(i, j) = la%dot(n2*nspin, estore(:, :, :, i), estore(:, :, :, j))
+                     bmat(j, i) = bmat(i, j)
+                  end do
                end do
+               call solve_diis(m, bmat(1:m, 1:m), rhs(1:m), ok)
+               if (ok .or. ndiis_used <= 2) exit
+               do k = 1, ndiis_used - 1
+                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                     fstore(i, j, s, k) = fstore(i, j, s, k + 1)
+                     estore(i, j, s, k) = estore(i, j, s, k + 1)
+                  end do
+               end do
+               ndiis_used = ndiis_used - 1
             end do
-            call solve_diis(m, bmat(1:m, 1:m), rhs(1:m), ok)
             if (ok) then
                do concurrent(i=1:nao, j=1:nao, s=1:nspin)
                   fock(i, j, s) = 0.0_dp
