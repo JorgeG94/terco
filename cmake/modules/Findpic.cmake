@@ -3,7 +3,7 @@ set(_url "https://github.com/JorgeG94/pic/")
 
 include("${CMAKE_CURRENT_LIST_DIR}/sample_utils.cmake")
 
-set(_rev "v0.6.0")
+set(_rev "v0.9.2")
 my_fetch_package("${_lib}" "${_url}" "${_rev}")
 
 unset(_lib)

@@ -127,6 +127,37 @@ ceiling needs CMake.
 
 ## Using it
 
+### From the command line
+
+The CMake build also makes a `terco` program (`-DTERCO_BUILD_APP=OFF` skips
+it). It reads an xyz file and runs an SCF, in the spirit of xtb:
+
+```sh
+terco water.xyz                              # RHF/def2-SVP from a SAD guess
+terco water.xyz -b cc-pvdz -f pbe0           # RKS/PBE0
+terco oh.xyz -u 1 -f b3lyp                   # UKS doublet
+terco nh4.xyz -c 1                           # cation: SADQ guess by default
+terco water.xyz -b 6-31g --rimp2             # RHF + RI-MP2 (cc-pvdz-rifit)
+terco water.xyz --json result.json           # also write a JSON summary
+terco --help
+```
+
+| option | |
+|---|---|
+| `-b, --basis` | a Basis Set Exchange JSON file, or a name (default `def2-svp`) |
+| `-c, --chrg` / `-u, --uhf` | charge and number of unpaired electrons; else `.CHRG`/`.UHF` in the working directory, as xtb reads them |
+| `-f, --func` | `hf` (default), `lda`, `pbe`, `blyp`, `pbe0`, `b3lyp`, `b3lyp5` |
+| `-g, --guess` | `sad` (default), `sadq` (default for an ion), `sap`, `gwh`, `core` |
+| `--cart` | Cartesian AOs even for a basis defined spherical |
+| `--grid`, `--iterations`, `--econv`, `--gconv`, `--thresh` | DFT grid level and SCF/screening thresholds |
+| `--rimp2`, `--aux`, `--frozen` | RI-MP2 after a closed-shell SCF; runs Cartesian AOs, as RI-MP2 needs today |
+| `-s, --silent` | only the summary: no SCF iterations, timings or guess details |
+
+A basis name is looked up as `<name>.json` in each directory of
+`$TERCO_BASIS_PATH`, then in `share/terco/basis_sets` under the install prefix,
+where `cmake --install` puts the basis sets terco is tested with. The exit
+status is 0 on success, 1 on an error and 2 if the SCF did not converge.
+
 ### From Fortran
 
 ```fortran
