@@ -251,8 +251,8 @@ if(TERCO_RYS)
 
   # The root/weight tables: committed, like the Boys table, because they
   # need mpmath to regenerate and this project's generators otherwise run
-  # on a bare Python (docs/RYS_PLAN.md). In their own subdirectory so the
-  # GLOB above -- which is not recursive -- never picks them up, ON or OFF.
+  # on a bare Python. In their own subdirectory so the GLOB above -- which
+  # is not recursive -- never picks them up, ON or OFF.
   target_sources(
     ${main_lib}
     PRIVATE trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
@@ -263,7 +263,7 @@ if(TERCO_RYS)
             generated/rys/trc_rys_table5.F90)
 
   # Every class with at least one d shell, plus (pp|pp) and (pp|ps) for
-  # crossover measurement below it -- RYS.md puts the crossover near
+  # crossover measurement below it -- the measured crossover sits near
   # (pp|pp), so those two are included even without a d shell. Regenerated
   # at configure time into the build tree, never committed: unlike the root
   # tables above, a per-class kernel needs no mpmath, and it is only ever as
@@ -346,9 +346,9 @@ if(TERCO_RYS)
   # --- Rys GRADIENT kernels: all 81 classes up to (dd|dd), no HGP fallback --
   #
   # Unlike the energy kernel above (generated only where Rys measures faster
-  # than HGP), the gradient has no HGP counterpart to fall back to -- out of
-  # scope, per docs/RYS_PLAN.md's gradient plan -- so every class a basis up
-  # to LMAX=2 can form needs one.
+  # than HGP), the gradient has no HGP counterpart to fall back to -- an HGP
+  # gradient is out of scope -- so every class a basis up to LMAX=2 can form
+  # needs one.
   #
   set(_rys_grad_classes "")
   foreach(la RANGE 0 2)

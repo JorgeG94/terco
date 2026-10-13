@@ -1,8 +1,7 @@
 !
 ! Two-electron gradient, over the same binned shell-pair plan the Fock
 ! build uses: one launch per angular-momentum class, Rys only -- there is
-! no HGP gradient (out of scope; see docs/RYS_PLAN.md and the task plan
-! this follows).
+! no HGP gradient (out of scope).
 !
 ! SCREENING: the same bound as the energy/Fock build (`thresh`), not a
 ! separate gradient-specific tolerance. Gamma already carries the density
@@ -10,10 +9,10 @@
 ! kbd blocks do (see scripts/gen_rys_grad.py), so a quartet the Schwarz
 ! bound already lets through at `thresh` is precisely the set whose energy
 ! contribution the SCF trusted; there is no argument for trusting its
-! derivative less. A modest tightening factor was considered (the task plan
-! asks this to be stated) and rejected for lack of any measurement showing
-! the plain bound insufficient for the ~1e-7 relative finite-difference
-! gate -- see test/check_rys_gradient_fd.F90.
+! derivative less. A modest tightening factor was considered and rejected
+! for lack of any measurement showing the plain bound insufficient for the
+! ~1e-7 relative finite-difference tolerance -- see
+! test/check_rys_grad_fd.F90.
 !
 module trc_grad
    use trc_boys, only: dp
@@ -389,10 +388,10 @@ contains
 
    logical function grad_diag_on()
       !! TRC_GRAD_DIAG=1 prints, once, how many (ss|ss) work items `grad_bins`
-      !! launches and how many pass each screen (Step 1 of the Rys-algorithm
-      !! plan): exact Schwarz, density-weighted, the same-atom skip, and the
-      !! primitive-quartet prescreen inside the bra/ket loop. Diagnostic
-      !! only -- never on the path an integral takes.
+      !! launches and how many pass each screen: exact Schwarz,
+      !! density-weighted, the same-atom skip, and the primitive-quartet
+      !! prescreen inside the bra/ket loop. Diagnostic only -- never on the
+      !! path an integral takes.
       character(len=8) :: v
       call get_environment_variable("TRC_GRAD_DIAG", v)
       grad_diag_on = (trim(v) == "1")

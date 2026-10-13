@@ -59,13 +59,13 @@ program check_rys_grad_vs_pyscf
    call eri%gradient(bas, duhf, grad_uhf)
    call eri%release()
 
-   ! The overlap, for rys_grad_ref.py's AO-normalisation check (coordinator's
-   ! diagnosis: a fixed density is NOT invariant to a per-AO rescaling the
-   ! way an SCF energy is, and pyscf's cart=True d functions are not all
-   ! unit-normalised the way this build's are -- off-diagonal xy/xz/yz carry
-   ! a different factor from xx/yy/zz). S_terco = N S_pyscf N with
-   ! n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)) is the check; D_pyscf = N D_terco N
-   ! is the fix, if the check holds.
+   ! The overlap, for rys_grad_ref.py's AO-normalisation check (a fixed
+   ! density is NOT invariant to a per-AO rescaling the way an SCF energy
+   ! is, and pyscf's cart=True d functions are not all unit-normalised the
+   ! way this build's are -- off-diagonal xy/xz/yz carry a different factor
+   ! from xx/yy/zz). S_terco = N S_pyscf N with n_i =
+   ! sqrt(S_terco(i,i)/S_pyscf(i,i)) is the check; D_pyscf = N D_terco N is
+   ! the fix, if the check holds.
    allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao))
    call pl%build(bas, THRESH)
    call pl%to_device()

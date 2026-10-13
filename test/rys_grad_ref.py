@@ -56,13 +56,12 @@ after two independent bugs in THIS SCRIPT, neither in the gradient kernel:
      the overlap check with the wrong SIGN on some elements, not just the
      wrong magnitude -- the tell that sent this back to `mol.ao_labels()`
      instead of deeper into trc_basis_json.F90).
-  2. AO NORMALISATION (the coordinator's diagnosis, confirmed once (1)
-     stopped hiding it): an SCF energy is invariant to rescaling the AOs;
-     a fixed synthetic density is not. `n_i = sqrt(S_terco(i,i) /
-     S_pyscf(i,i))`; the overlap check asserts `S_terco == N S_pyscf N`
-     to 1e-9 before anything else runs, so a future convention change on
-     either side fails loudly here instead of silently in the gradient
-     numbers.
+  2. AO NORMALISATION (confirmed once (1) stopped hiding it): an SCF
+     energy is invariant to rescaling the AOs; a fixed synthetic density is
+     not. `n_i = sqrt(S_terco(i,i) / S_pyscf(i,i))`; the overlap check
+     asserts `S_terco == N S_pyscf N` to 1e-9 before anything else runs, so
+     a future convention change on either side fails loudly here instead of
+     silently in the gradient numbers.
 
 Independently confirmed before (1) and (2) were found, and still true:
   - terco's eri%gradient agrees with a finite difference of terco's own
@@ -235,15 +234,15 @@ def main():
     da = da[np.ix_(inv_perm, inv_perm)]
     db = db[np.ix_(inv_perm, inv_perm)]
 
-    # Coordinator's diagnosis: an SCF energy is invariant to rescaling the
-    # AOs, but a FIXED synthetic density is not -- pyscf's cart=True d
-    # functions are not all unit-normalised the way this build's are
-    # (xy/xz/yz carry a different factor from xx/yy/zz), so the basis can
-    # be the SAME physical functions while S_terco and S_pyscf still differ
-    # by a per-AO diagonal rescaling. n_i = sqrt(S_terco(i,i)/S_pyscf(i,i));
-    # if the two overlaps agree up to N = diag(n), the basis is fine and
-    # only the density's normalisation convention needs transforming before
-    # contracting with pyscf's integrals: D_pyscf = N D_terco N.
+    # An SCF energy is invariant to rescaling the AOs, but a FIXED
+    # synthetic density is not -- pyscf's cart=True d functions are not all
+    # unit-normalised the way this build's are (xy/xz/yz carry a different
+    # factor from xx/yy/zz), so the basis can be the SAME physical functions
+    # while S_terco and S_pyscf still differ by a per-AO diagonal rescaling.
+    # n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)); if the two overlaps agree up to
+    # N = diag(n), the basis is fine and only the density's normalisation
+    # convention needs transforming before contracting with pyscf's
+    # integrals: D_pyscf = N D_terco N.
     s_pyscf = mol.intor('int1e_ovlp')
     n = np.sqrt(np.diag(s_terco) / np.diag(s_pyscf))
     s_pred = n[:, None] * s_pyscf * n[None, :]

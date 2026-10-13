@@ -54,7 +54,7 @@ program check_rys_vs_hgp
    ! present-table bookkeeping underneath trc_api's device-resident types
    ! is not validated for a second build+teardown in the same process (a
    ! property of that bookkeeping, not of either integral scheme), so two
-   ! ctest invocations below cover the two systems gate 2 asks for.
+   ! ctest invocations cover the two systems (water/6-31G*, water/cc-pVDZ).
    if (command_argument_count() < 1) then
       print '(a)', 'usage: check_rys_vs_hgp <basis.json>'; stop 1
    end if

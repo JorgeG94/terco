@@ -167,10 +167,10 @@ terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
 terco_add_check(check_nosym_f check_nosym.F90 NEEDS_BASIS ARGS water.xyz 3)
 
 #
-# Gate 2 of docs/RYS_PLAN.md: Rys against HGP, same density and screening,
-# on water/6-31G* and water/cc-pVDZ. Only meaningful under TERCO_RYS=ON --
-# off, TRC_RYS_CLASSES has no kernel to route to and the two builds this
-# check compares are the same build twice. GPU 2, not the fleet default of
+# Rys against HGP, same density and screening, on water/6-31G* and
+# water/cc-pVDZ. Only meaningful under TERCO_RYS=ON -- off, TRC_RYS_CLASSES
+# has no kernel to route to and the two builds this check compares are the
+# same build twice. GPU 2, not the fleet default of
 # 0 `terco_add_check` otherwise sets, to stay off the GPUs other work on
 # this host uses.
 #
@@ -184,9 +184,9 @@ if(TERCO_RYS)
     PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=2;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
   #
-  # The gradient plan's validation section: eri%gradient (Rys, the only
-  # scheme it has) against a central difference of eri%fock's (HGP by
-  # default) energy, RHF and UHF, water/6-31G* and water/cc-pVDZ. No
+  # eri%gradient (Rys, the only scheme it has) against a central difference
+  # of eri%fock's (HGP by default) energy, RHF and UHF, water/6-31G* and
+  # water/cc-pVDZ. No
   # TRC_RYS_CLASSES override here, deliberately -- the finite-difference
   # reference goes through HGP, so this cross-validates the gradient's
   # algebra against an UNRELATED energy path, not Rys against itself.

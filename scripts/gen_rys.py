@@ -30,9 +30,9 @@ misalign the splice:
      into its pre-HRR block. Replaced by the Rys root lookup, the 2D
      recurrence and the horizontal transfer, run per primitive quartet
      (HGP contracts over primitives and only then transforms once; Rys
-     builds the shifted class per primitive quartet instead -- see
-     `docs/RYS.md`'s "the cause"). This writes the final Cartesian block
-     straight into `vbuf`, so there is no separate HRR pass afterward.
+     builds the shifted class per primitive quartet instead). This writes
+     the final Cartesian block straight into `vbuf`, so there is no
+     separate HRR pass afterward.
   3. TAIL: the degeneracy/AO-offset decode (`! Single column on every
      side:`), the digestion (`#ifdef TRC_NO_DIGEST ... #endif`), and
      `end subroutine`. Scheme-independent, kept verbatim. HGP's own
@@ -266,8 +266,7 @@ def main():
 ! prologue (segment decode, screens, the primitive-pair loads, the
 ! primitive-quartet prescreen) and the folded six-atomic digestion are that
 ! file's text, verbatim; only the integral itself differs. See this
-! generator's module docstring for the cut points and docs/RYS_PLAN.md for
-! why the splice is done this way.
+! generator's module docstring for the cut points.
 !
 ! TRC_CART_ORDER GUARD -- see gen_perclass.py's non-split header for the
 ! full explanation; same guard, carried over from the file this was spliced

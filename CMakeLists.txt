@@ -125,7 +125,7 @@ option(TERCO_RYS
 # (10.91 s / 22.89 s, within noise of 81's number) while costing 330-530 s
 # of EXTRA serial compile time PER CLASS for those three alone -- compile
 # cost that buys nothing. 81 is the point past which unrolling stops paying
-# for itself; see docs/RYS.md for the full per-class table.
+# for itself.
 #
 set(TERCO_RYS_UNROLL_MAX
     "81"

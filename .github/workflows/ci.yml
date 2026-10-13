@@ -170,11 +170,10 @@ jobs:
 
       # scripts/gen_rys_roots.py is the one generator in this project that
       # needs mpmath -- high-precision quadrature for the Chebyshev fit, at
-      # generation time only, never on the device. docs/RYS_PLAN.md's
-      # constraint: the install lands in the SAME commit as the generator,
-      # pinned, so a library that changes its last digit shows up here
-      # rather than defeating "regenerating reproduces the committed files"
-      # silently.
+      # generation time only, never on the device. The install lands in the
+      # SAME commit as the generator, pinned, so a library that changes its
+      # last digit shows up here rather than defeating "regenerating
+      # reproduces the committed files" silently.
       - name: Install mpmath
         run: pip install mpmath==1.3.0
 

@@ -515,10 +515,10 @@ contains
    end subroutine eri_fock
 
    !
-   ! The two-electron part of the nuclear gradient, Rys only (see
-   ! docs/RYS_PLAN.md's gradient plan). `dens` is (nao, nao, ndens): ndens=1
-   ! is RHF with the total density; ndens=2 is UHF with Da and Db. `grad` is
-   ! (3, natm), the two-electron contribution ONLY -- the one-electron
+   ! The two-electron part of the nuclear gradient, Rys only: there is no
+   ! HGP gradient. `dens` is (nao, nao, ndens): ndens=1 is RHF with the
+   ! total density; ndens=2 is UHF with Da and Db. `grad` is (3, natm), the
+   ! two-electron contribution ONLY -- the one-electron
    ! derivative terms, the overlap (energy-weighted density) term, nuclear
    ! repulsion, XC and PCM are the caller's, same scope line eri_fock draws
    ! around Hcore.

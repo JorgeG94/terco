@@ -1,9 +1,8 @@
 !
-! Finite-difference oracle for eri%gradient (docs/RYS_PLAN.md's gradient
-! plan, validation section): the two-electron part of the nuclear gradient
-! against a central difference of E2 = Tr(D * vhf(D)), with D FIXED and the
-! basis rebuilt at the displaced geometry so the basis functions move with
-! their atom.
+! Finite-difference oracle for eri%gradient: the two-electron part of the
+! nuclear gradient against a central difference of E2 = Tr(D * vhf(D)),
+! with D FIXED and the basis rebuilt at the displaced geometry so the basis
+! functions move with their atom.
 !
 ! D is a deterministic, dense, symmetric synthetic density -- same
 ! construction check_rys_vs_hgp.F90 uses -- not a converged SCF density.
