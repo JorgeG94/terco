@@ -360,3 +360,54 @@ def rys2d_hrr_decls(la, lb, nk_h):
     return (f"      integer  :: i, k, a, b, c\n"
             f"      real(dp) :: ab2, cd2\n"
             f"      real(dp) :: ht(0:{la}, 0:{lb}, 0:{nk_h})\n")
+
+
+def hrr_slice_assignments(hneed, g, t, h, ab, cd, indent):
+    """The horizontal transfer for a SLICE of the table: only the elements
+    `h(i, j, k, l)` in `hneed` (a set of index tuples), each written as a
+    named scalar straight from the named 2D scalars `{g}_i_k` that
+    `rys2d_scalar_assignments` emitted -- for the gradient's chunked
+    emission mode (gen_rys_grad.py, CHUNKED RHF COMPACT PASS), which needs a
+    different, small corner of h per chunk of output components instead of
+    the whole table at once.
+
+    Same binomial transfer as `hrr_scalar_assignments`, in the same two
+    stages: `{t}_i_j_k = sum_t C(j,t) ab^(j-t) g(i+t, k)` for every (i, j, k)
+    the slice reaches, then `{h}_i_j_k_l = sum_u C(l,u) cd^(l-u) t(i, j,
+    k+u)`. A stage with nothing to transfer (j = 0, or l = 0) is an ALIAS --
+    the element is the g (or t) scalar itself, not a copy of it. The powers
+    ab^2 and cd^2 are read as `{ab}2`/`{cd}2`, which the caller assigns once
+    per quartet. Returns (text, names assigned, {(i, j, k, l): scalar name})."""
+    pad = " "*indent
+    out, names = [], []
+    tneed = sorted({(i, j, k + u) for (i, j, k, l) in hneed for u in range(l + 1)})
+
+    def tname(i, j, k):
+        return nm(g, i, k) if j == 0 else nm(t, i, j, k)
+
+    for (i, j, k) in tneed:
+        if j == 0:
+            continue
+        terms = []
+        for s in range(j + 1):
+            coef, p = BINOM[j][s], j - s
+            pre = "" if coef == 1 else f"{float(coef)}_dp*"
+            mul = "" if p == 0 else (f"{ab}*" if p == 1 else f"{ab}{p}*")
+            terms.append(f"{pre}{mul}{nm(g, i + s, k)}")
+        names.append(nm(t, i, j, k))
+        out.append(f"{pad}{nm(t, i, j, k)} = " + " + ".join(terms))
+    hmap = {}
+    for (i, j, k, l) in sorted(hneed):
+        if l == 0:
+            hmap[(i, j, k, l)] = tname(i, j, k)
+            continue
+        terms = []
+        for u in range(l + 1):
+            coef, p = BINOM[l][u], l - u
+            pre = "" if coef == 1 else f"{float(coef)}_dp*"
+            mul = "" if p == 0 else (f"{cd}*" if p == 1 else f"{cd}{p}*")
+            terms.append(f"{pre}{mul}{tname(i, j, k + u)}")
+        names.append(nm(h, i, j, k, l))
+        out.append(f"{pad}{nm(h, i, j, k, l)} = " + " + ".join(terms))
+        hmap[(i, j, k, l)] = nm(h, i, j, k, l)
+    return "\n".join(out) + ("\n" if out else ""), names, hmap

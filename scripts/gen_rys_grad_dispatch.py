@@ -84,7 +84,7 @@ def main():
         f"""      case ({key}); call rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
-                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, grad)"""
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, npriv, gp)"""
         for key, tag in keys)
 
     out = f"""!
@@ -164,10 +164,12 @@ contains
                           npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                          ndens, dmat, grad)
+                          ndens, dmat, npriv, gp)
       !! ORDERED SURVIVOR COMPACTION, compact pass: the same integral body
       !! as `rysg_dispatch`'s fused kernel, run over the dense survivor
-      !! list `rysg_screen_dispatch` produced.
+      !! list `rysg_screen_dispatch` produced, adding into npriv
+      !! lane-private gradient copies gp (see gen_rys_grad.py's compact
+      !! driver) that the caller sums into grad.
       integer, intent(in) :: key
       integer(int64), intent(in) :: nout
       integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
@@ -186,7 +188,8 @@ contains
       integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: grad(3, natm)
+      integer,  intent(in)    :: npriv
+      real(dp), intent(inout) :: gp(3, natm, npriv)
       select case (key)
 {compact_cases}
       end select

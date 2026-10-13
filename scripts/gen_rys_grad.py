@@ -73,6 +73,7 @@ Never hand-edit the output; change this generator and regenerate.
 """
 import argparse
 import importlib.util
+import itertools
 import math
 import os
 import re
@@ -289,7 +290,338 @@ def _return_to(s, term, n):
     return s2
 
 
-def screen_and_compact_text(tag, head, middle):
+# ---------------------------------------------------------------------------
+# CHUNKED RHF COMPACT PASS
+# ---------------------------------------------------------------------------
+#
+# WHY. The heavy classes (three or more non-s shells) were bound by DRAM
+# traffic to their OWN per-thread stack, not by arithmetic: one thread held
+# the whole raised HRR table hx/hy/hz, the whole Gamma(nv) and the density
+# blocks across the primitive loop, far beyond the 255-register file, and
+# with ~20k resident threads a V100 has ~300 B of L2 per thread, so every
+# spilled element streamed through DRAM. Nsight Compute, w150 6-31G*,
+# 1e-13: (pp|pp) 640 GB/s of DRAM (71% of peak), (dp|pp) 400 GB/s, 75-80%
+# of stall cycles on L1TEX long scoreboard, 2848 B / 3616 B of stack.
+#
+# WHAT. For RHF (ndens = 1, known at compile time in this routine) the
+# compact pass of every class chunk_auto selects -- the heavy ones, and the
+# light ones too, which gain from the RHF and D trims alone -- becomes
+# rysgi{tag}_crhf, ordered
+#
+#     chunk of output components -> primitive quartet -> root
+#
+# A chunk is every Cartesian component of the shells in `inside` for one
+# fixed component of each other shell. Per chunk: its Gamma values, read
+# straight from dmat (no materialised gam(nv), no density blocks held);
+# then the primitive loop, the roots, and per root ONLY the 2D-table corner
+# and the HRR slice that chunk's derivative terms read (hrr_slice_
+# assignments in rys_inline.py), all named scalars with literal indices.
+# The chunk loop is a runtime `do` with a `select case` on the chunk (each
+# case keeps its indices literal), and the root loop is a runtime `do`:
+# unrolling both took (pp|pp) past nvfortran's 590 s per-object budget
+# (27 chunks x 3 roots: no object after 590 s), while the runtime form
+# compiles in ~2 min and keeps the stack at 112-960 B (only ru/rw, read with
+# the runtime root index, and a little spill). D comes from translational
+# invariance once per quartet, vd = -(va + vb + vc), instead of a fourth set
+# of accumulators.
+#
+# The price is recomputation: the primitive-quartet setup and the roots are
+# redone once per chunk. So chunks are as FEW as possible while their live
+# set stays small; see chunk_plan. UHF (ndens = 2) keeps the old routine.
+#
+# Order matters. With the chunk loop INSIDE the primitive loop, nvfortran
+# hoists every Gamma (loop-invariant there) out of the primitive loops and
+# rebuilds the materialised gam(nv) in registers: (pp|pp) went to 5936 B
+# of stack and 0.83 s, slower than the 0.63 s it started from.
+#
+#: Live-set ceiling, in doubles, for one chunk: Gamma values + the 2D-table
+#: box + the HRR slice (chunk_live). Measured, w150 6-31G*, 1e-13, V100,
+#: compact pass, (chunks x components per chunk, live) -> time:
+#:   (pp|pp) 27x3 (50) 0.467 s; 9x9 (75) 0.234 s; 3x27 (115) 0.129 s;
+#:           1x81 (225) 0.226 s. Old form 0.635 s.
+#:   (dp|pp) 27x6 (69) 0.738 s; 9x18 (101-106) 0.37 s; 6x27 (147) 0.33 s;
+#:           3x54 (170) 0.463 s. Old form 1.55 s.
+#:   (ds|pp) 3x18 (91) 0.251 s; 1x54 (168) 0.306 s.
+#:   (dp|ps) 3x18 (96) 0.430 s; 1x54 (165) 0.433 s.
+#:   (dd|ds) 36x6 (77) 0.268 s; 6x36 (155) 0.115 s.
+#:   (dd|pp) 18x18 (110) 0.152 s; 9x36 (156) 0.136 s.
+#: Fewer chunks win up to a live set of ~156; at 165-170 the gain is gone
+#: or reversed, and at 225 the chunk spills like the old form.
+CHUNK_LIVE_MAX = 160
+
+#: Largest class (na*nb*nc*nd) chunk_auto chunks: compile time, not speed.
+#: The chunked routine is ~10 lines of fold per component; one nvfortran
+#: 26.5 object took 187-206 s at 324 components ((dp|dp), (dd|pp)) and did
+#: not finish in 590 s at 648 ((dd|dp), 12.4 K lines), the per-object
+#: budget of terco's builds. (dd|dp) and (dd|dd) keep the old form.
+CHUNK_MAX_COMP = 324
+
+
+def _chunk_h_needs(comps, chunk, axis):
+    """The h(i, j, k, l) elements one axis of the derivative fold reads for
+    the components in `chunk` -- exactly the terms _axis_derivative emits:
+    h(e), h(ei+1), h(ei-1) if ei > 0, h(ek+1), h(ek-1) if ek > 0, h(ej-1)
+    if ej > 0."""
+    need = set()
+    for (a, b, c, d) in chunk:
+        ei, ej, ek, el = (comps[0][a][axis], comps[1][b][axis],
+                          comps[2][c][axis], comps[3][d][axis])
+        need.add((ei, ej, ek, el))
+        need.add((ei + 1, ej, ek, el))
+        need.add((ei, ej, ek + 1, el))
+        if ei > 0:
+            need.add((ei - 1, ej, ek, el))
+        if ek > 0:
+            need.add((ei, ej, ek - 1, el))
+        if ej > 0:
+            need.add((ei, ej - 1, ek, el))
+    return need
+
+
+def _g_box(hneed):
+    """The 2D-table corner g(0:imax, 0:kmax) an HRR slice reads. The
+    recurrence fills a corner from itself alone, so the corner is all that
+    has to be built."""
+    return (max(i + j for (i, j, k, l) in hneed),
+            max(k + l for (i, j, k, l) in hneed))
+
+
+def _chunks(comps, inside):
+    """The chunks for a given `inside` set: one list of (a, b, c, d) per
+    combination of the OTHER shells' components."""
+    dims = [len(c) for c in comps]
+    outer = [s for s in range(4) if s not in inside]
+    res = []
+    for oc in itertools.product(*[range(dims[s]) for s in reversed(outer)]):
+        fixed = dict(zip(reversed(outer), oc))
+        chunk = []
+        for ic in itertools.product(*[range(dims[s]) for s in reversed(sorted(inside))]):
+            full = {**fixed, **dict(zip(reversed(sorted(inside)), ic))}
+            chunk.append((full[0], full[1], full[2], full[3]))
+        res.append(chunk)
+    return res
+
+
+def chunk_live(comps, chunk):
+    """Doubles one chunk keeps live per root: its Gamma values, the 2D-table
+    box and the HRR slice, summed over the three axes. A model, calibrated
+    against the measurements at CHUNK_LIVE_MAX, not a register count."""
+    live = len(chunk)
+    for axis in range(3):
+        hneed = _chunk_h_needs(comps, chunk, axis)
+        imax, kmax = _g_box(hneed)
+        live += (imax + 1)*(kmax + 1) + len(hneed)
+    return live
+
+
+def chunk_auto(tag):
+    """Whether a class's RHF compact pass is chunked by default: every class
+    the pair bins can reach (la >= lb, lc >= ld, (la, lb) >= (lc, ld) -- see
+    trc_bins.F90's ANGULAR-MOMENTUM CANONICAL; the other 60 tags are built
+    but never launched, so chunking them would only cost compile time) up
+    to CHUNK_MAX_COMP components. Measured on every one of them, w150
+    6-31G*, 1e-13, V100, compact pass: none got slower; the heavy classes
+    gained 50-80% ((pp|pp) 0.635 -> 0.127 s, (dp|pp) 1.56 -> 0.33 s, (dp|ds)
+    1.47 -> 0.29 s, (dd|ps) 1.05 -> 0.19 s), and even the one-chunk light
+    classes gained from the RHF specialisation and D-by-invariance alone
+    ((ps|ss) 1.19 -> 1.05 s, (ps|ps) 0.54 -> 0.40 s, (ss|ss) 0.72 -> 0.69 s)."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    canonical = la >= lb and lc >= ld and (la, lb) >= (lc, ld)
+    nv = 1
+    for l in (la, lb, lc, ld):
+        nv *= (l + 1)*(l + 2)//2
+    return canonical and nv <= CHUNK_MAX_COMP
+
+
+def chunk_plan(comps, live_max=CHUNK_LIVE_MAX):
+    """The `inside` set with the FEWEST chunks whose worst chunk stays at or
+    under `live_max`; ties go to the smaller live set. Fewest chunks, since
+    every chunk redoes the primitive setup and the roots."""
+    best = None
+    for r in range(1, 5):
+        for inside in itertools.combinations(range(4), r):
+            chunks = _chunks(comps, inside)
+            live = max(chunk_live(comps, ch) for ch in chunks)
+            if live > live_max:
+                continue
+            key = (len(chunks), live)
+            if best is None or key < best[0]:
+                best = (key, inside)
+    return None if best is None else best[1]
+
+
+def _gamma_from_dmat(a, b, c, d):
+    """Gamma for one component, RHF, read straight from dmat:
+    cj*D_ab*D_cd - ck*(D_ac*D_bd + D_ad*D_bc), with cj = 8 wq jfac and
+    ck = 8 wq kfac/4 (see the item routine's comments on the 8 and the 1/4)."""
+    D = lambda o0, x, o1, y: f"dmat(1, {o0} + {x}, {o1} + {y})"
+    return (f"cj*{D('mui', a, 'nuj', b)}*{D('lamk', c, 'sigl', d)} &\n"
+            f"                    - ck*({D('mui', a, 'lamk', c)}*{D('nuj', b, 'sigl', d)} &\n"
+            f"                    + {D('mui', a, 'sigl', d)}*{D('nuj', b, 'lamk', c)})")
+
+
+def _chunk_root_body(comps, lb, ld, chunk, pad, names):
+    """One root's work for one chunk: the 2D-table corner per axis, the HRR
+    slice, and the derivative fold of every component in the chunk into
+    the nine A/B/C accumulators."""
+    out, hmaps = [], []
+    for axis, ax in enumerate("xyz"):
+        hneed = _chunk_h_needs(comps, chunk, axis)
+        imax, kmax = _g_box(hneed)
+        g00 = "f00" if ax == "z" else "1.0_dp"
+        out.append(ri.rys2d_scalar_assignments(imax, kmax, f"c00{ax}", f"cp0{ax}",
+                                               "b00r", "b10r", "bp01r", g00,
+                                               f"qg{ax}", len(pad)))
+        names.update(ri.rys2d_scalar_names(imax, kmax, f"qg{ax}"))
+        txt, hn, hmap = ri.hrr_slice_assignments(hneed, f"qg{ax}", f"qt{ax}", f"qh{ax}",
+                                                 f"ab{ax}", f"cd{ax}", len(pad))
+        out.append(txt)
+        names.update(hn)
+        hmaps.append(hmap)
+    for n, (a, b, c, d) in enumerate(chunk):
+        v, fi, fj, fk = [], [], [], []
+        for axis, ax in enumerate("xyz"):
+            ei, ej, ek, el = (comps[0][a][axis], comps[1][b][axis],
+                              comps[2][c][axis], comps[3][d][axis])
+            H = lambda i, j, k, l: hmaps[axis][(i, j, k, l)]
+            v.append(H(ei, ej, ek, el))
+            e = f"ai2*{H(ei + 1, ej, ek, el)}"
+            if ei > 0:
+                e += f" - {float(ei)}_dp*{H(ei - 1, ej, ek, el)}"
+            fi.append(e)
+            e = f"aj2*({H(ei + 1, ej, ek, el)} + ab{ax}*{H(ei, ej, ek, el)})"
+            if ej > 0:
+                e += f" - {float(ej)}_dp*{H(ei, ej - 1, ek, el)}"
+            fj.append(e)
+            e = f"ak2*{H(ei, ej, ek + 1, el)}"
+            if ek > 0:
+                e += f" - {float(ek)}_dp*{H(ei, ej, ek - 1, el)}"
+            fk.append(e)
+        out.append(f"{pad}gyz = {v[1]}*{v[2]}*gm_{n}; gxz = {v[0]}*{v[2]}*gm_{n}; "
+                   f"gxy = {v[0]}*{v[1]}*gm_{n}\n")
+        for axis, (ax, gg) in enumerate((("x", "gyz"), ("y", "gxz"), ("z", "gxy"))):
+            out.append(f"{pad}va{ax} = va{ax} + ({fi[axis]})*{gg}\n")
+            out.append(f"{pad}vb{ax} = vb{ax} + ({fj[axis]})*{gg}\n")
+            out.append(f"{pad}vc{ax} = vc{ax} + ({fk[axis]})*{gg}\n")
+    return "".join(out)
+
+
+#: Declarations of the item routine that the chunked routine never reads:
+#: the old full tables, density blocks and materialised Gamma, in both the
+#: unrolled (named-scalar) and the loop (array) forms.
+_CHUNK_DEAD_DECL = re.compile(
+    r"^(gx|gy|gz|hx|hy|hz|ht|dab|dcd|dac1|dac2|dad1|dad2|dbc1|dbc2|dbd1|dbd2|"
+    r"gam|dac|dad|dbc|dbd)(_|\()")
+
+
+def _strip_dead_decls(text):
+    """Drop `real(dp) ::` statements (continuations included) whose every
+    name is in _CHUNK_DEAD_DECL, and the dead names from mixed ones."""
+    keep, stmt = [], []
+    for ln in text.split("\n"):
+        stmt.append(ln)
+        if ln.rstrip().endswith("&"):
+            continue
+        src, stmt = stmt, []
+        joined = " ".join(x.strip().rstrip("&").strip() for x in src)
+        m = re.match(r"real\(dp\)\s*::\s*(.*)", joined)
+        if m:
+            nms = [x.strip() for x in re.split(r",(?![^(]*\))", m.group(1)) if x.strip()]
+            dead = [x for x in nms if _CHUNK_DEAD_DECL.match(x)]
+            if dead:
+                live = [x for x in nms if not _CHUNK_DEAD_DECL.match(x)]
+                if live:
+                    keep.append("      real(dp) :: " + ", ".join(live))
+                continue
+        keep.extend(src)
+    return "\n".join(keep)
+
+
+def chunked_rhf_item_text(tag, item, comps, inside):
+    """rysgi{tag}_crhf: the CHUNKED RHF COMPACT PASS (see the section
+    comment above), built from the compact item routine `item` -- its
+    signature, declarations, survivor setup, same-atom skip, AO offsets,
+    degeneracy weight and primitive-loop header are reused verbatim; the
+    density fold, the integral build and the D accumulators are replaced."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    nroots = (la + lb + lc + ld + 1)//2 + 1
+
+    kfac_line = "         kfac_eff = merge(0.25_dp, 0.5_dp, ndens == 1)*kfac\n"
+    i_kfac = item.index(kfac_line)
+    i_k1 = item.index("            do k1 = 1, nab\n")
+    tval_line = "tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
+    i_tv = item.index(tval_line, i_k1) + len(tval_line)
+    i_at = item.index("\n         !$acc atomic update\n")
+    pre = _strip_dead_decls(item[:i_kfac])
+    prim_hdr = item[i_k1:i_tv]
+    tail = item[i_at:]
+
+    names = {"cj", "ck", "ai2", "aj2", "ak2", "gyz", "gxz", "gxy"}
+    chunks = _chunks(comps, inside)
+    nmax = max(len(ch) for ch in chunks)
+    names.update(f"gm_{n}" for n in range(nmax))
+    body = [
+        "         ! RHF: ndens is 1 in this routine, so kfac_eff is kfac/4\n"
+        "         ! (see the item routine above for the 1/4 and the 8).\n"
+        "         kfac_eff = 0.25_dp*kfac\n"
+        "         cj = 8.0_dp*wq*jfac\n"
+        "         ck = 8.0_dp*wq*kfac_eff\n"]
+    if lb == 2 or ld == 2:
+        body.append("         abx2 = abx*abx; aby2 = aby*aby; abz2 = abz*abz\n"
+                    "         cdx2 = cdx*cdx; cdy2 = cdy*cdy; cdz2 = cdz*cdz\n")
+        names.update(("abx2", "aby2", "abz2", "cdx2", "cdy2", "cdz2"))
+    body.append("         vax = 0.0_dp; vay = 0.0_dp; vaz = 0.0_dp\n"
+                "         vbx = 0.0_dp; vby = 0.0_dp; vbz = 0.0_dp\n"
+                "         vcx = 0.0_dp; vcy = 0.0_dp; vcz = 0.0_dp\n")
+    body.append(f"         do jch = 1, {len(chunks)}\n")
+    body.append("            ! This chunk's Gamma, once, before its primitive loop.\n")
+    body.append("            select case (jch)\n")
+    for n, ch in enumerate(chunks):
+        body.append(f"            case ({n + 1})\n")
+        for m, (a, b, c, d) in enumerate(ch):
+            body.append(f"               gm_{m} = {_gamma_from_dmat(a, b, c, d)}\n")
+    body.append("            end select\n")
+    body.append(prim_hdr)
+    body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
+    body.append(ri.roots_inline_body(nroots, "tval", 18))
+    body.append(f"""\
+                  do jrt = 1, {nroots}
+                     u2 = ru(jrt)/(1.0_dp - ru(jrt))*rho
+                     dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+                     b00r  = 0.5_dp*u2*dinv
+                     b10r  = 0.5_dp*(eta + u2)*dinv
+                     bp01r = 0.5_dp*(zeta + u2)*dinv
+                     f00 = pref*rw(jrt)
+                     c00x = pax - u2*eta*dinv*pqx
+                     c00y = pay - u2*eta*dinv*pqy
+                     c00z = paz - u2*eta*dinv*pqz
+                     cp0x = qcx + u2*zeta*dinv*pqx
+                     cp0y = qcy + u2*zeta*dinv*pqy
+                     cp0z = qcz + u2*zeta*dinv*pqz
+                     select case (jch)
+""")
+    for n, ch in enumerate(chunks):
+        body.append(f"                     case ({n + 1})\n")
+        body.append(_chunk_root_body(comps, lb, ld, ch, " "*24, names))
+    body.append("                     end select\n"
+                "                  end do\n"
+                "               end do\n"
+                "            end do\n"
+                "         end do\n")
+    body.append("\n         ! D from translational invariance, once per quartet, in place of\n"
+                "         ! a fourth set of accumulators: flx = -fix - fjx - fkx per term.\n"
+                "         vdx = -(vax + vbx + vcx); vdy = -(vay + vby + vcy); vdz = -(vaz + vbz + vcz)\n")
+
+    decls = ri.scalar_decl_lines(sorted(names), 6) + "      integer  :: jch, jrt\n"
+    i_si = pre.index("si = sp_i(sOA(seg) + iab)")
+    i_si = pre.rfind("\n", 0, i_si)
+    pre = pre[:i_si] + "\n" + decls + pre[i_si:]
+    pre = pre.replace(f"subroutine rysgi{tag}_compact(", f"subroutine rysgi{tag}_crhf(", 1)
+    tail = tail.replace(f"end subroutine rysgi{tag}_compact", f"end subroutine rysgi{tag}_crhf")
+    return pre + "".join(body) + tail
+
+
+def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     """ORDERED SURVIVOR COMPACTION (ps|ss) prototype, generalised to every
     class: split the fused rysg{tag}/rysgi{tag} this module already built
     (in `head`/`middle`) into
@@ -319,6 +651,11 @@ def screen_and_compact_text(tag, head, middle):
         dead the second time (the screen pass already removed every
         same-atom survivor) but removing it would mean hand-editing
         spliced text instead of just slicing around it.
+
+    With `chunk_inside` set (a chunk_plan result; `comps` is the four
+    shells' Cartesian components), the compact driver also gets the
+    CHUNKED RHF COMPACT PASS, rysgi{tag}_crhf, and runs it whenever
+    ndens == 1; the per-quartet rysgi{tag}_compact stays for ndens == 2.
 
     Every piece below is sliced out of `head`/`middle` by anchoring on
     literal text that does not depend on (la, lb, lc, ld) -- the decode,
@@ -367,6 +704,25 @@ def screen_and_compact_text(tag, head, middle):
     end_marker_new = f"      end subroutine rysgi{tag}_compact\n"
     assert middle.count(end_marker_old) == 1
     compact_middle = middle.replace(end_marker_old, end_marker_new, 1)
+
+    # LANE-PRIVATE GRADIENT COPIES: the compact pass adds into its own
+    # copy gp(:, :, slot) of the gradient, not into grad itself -- see the
+    # compact driver's comment below for why and what it measured.
+    compact_middle, ngp = re.subn(r"grad\((\d), sh_at\((s[ijkl])\)\)",
+                                  r"gp(\1, sh_at(\2), slot)", compact_middle)
+    assert ngp == 24, f"compact gp rewrite: expected 24 grad references, found {ngp}"
+    # Only classes of total angular momentum <= 3 spread over the copies;
+    # heavier ones all add into copy 1 (the old single-grad behaviour).
+    # Their compact pass is 20-460 ns per quartet against ~2 ns for
+    # (ss|ss), so 12 atomics are not their bound, and the computed slot
+    # alone cost them 2-7% (V100, w150 1e-13: (dp|ps) 1.33 -> 1.37 s,
+    # (dp|pp) 1.55 -> 1.60 s, (dd|dd) 0.073 -> 0.078 s; back to
+    # 1.35/1.57/0.073 s with slot = 1). L = 3 still gains: (ds|ps) -4%,
+    # (dp|ss) -2.5%; (pp|ps) is flat.
+    if sum(int(c) for c in tag) <= 3:
+        slot_expr = "int(mod(i - 1, int(npriv, int64))) + 1"
+    else:
+        slot_expr = "1"
 
     screen = f"""
    !
@@ -458,6 +814,28 @@ def screen_and_compact_text(tag, head, middle):
    end subroutine rysgi{tag}_screen_chunk
 """
 
+    def compact_loop(item, indent):
+        p = " "*indent
+        return (f"{p}do concurrent(i=1:nout)\n"
+                f"{p}   call {item}(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
+                f"{p}                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &\n"
+                f"{p}                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
+                f"{p}                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
+                f"{p}                          ndens, dmat, npriv, gp, {slot_expr})\n"
+                f"{p}end do\n")
+
+    if chunk_inside is None:
+        compact_loops = compact_loop(f"rysgi{tag}_compact", 6)
+    else:
+        compact_loops = (
+            "      ! RHF runs the CHUNKED RHF COMPACT PASS (gen_rys_grad.py); UHF keeps\n"
+            "      ! the per-quartet form below.\n"
+            "      if (ndens == 1) then\n"
+            + compact_loop(f"rysgi{tag}_crhf", 9)
+            + "      else\n"
+            + compact_loop(f"rysgi{tag}_compact", 9)
+            + "      end if\n")
+
     compact = f"""
    !
    ! ORDERED SURVIVOR COMPACTION -- compact pass, class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}).
@@ -471,7 +849,7 @@ def screen_and_compact_text(tag, head, middle):
                              npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                             ndens, dmat, grad)
+                             ndens, dmat, npriv, gp)
       integer(int64), intent(in) :: nout
       integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
       integer,  intent(in)    :: nseg, npair, nbas, nao
@@ -489,22 +867,29 @@ def screen_and_compact_text(tag, head, middle):
       integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: grad(3, natm)
+      integer,  intent(in)    :: npriv
+      real(dp), intent(inout) :: gp(3, natm, npriv)
+      !! LANE-PRIVATE GRADIENT COPIES: survivor i adds into copy
+      !! mod(i-1, npriv)+1, so the 32 lanes of a warp (consecutive i) add
+      !! into 32 different copies instead of all into the same grad entry.
+      !! The survivor list is ket-uniform (every lane of a warp, and every
+      !! warp of a segment column, shares one ket pair, and runs of bra
+      !! pairs share atom A), so with a single grad(3, natm) the 12 atomics
+      !! per quartet are same-address and serialise at L2: on (ss|ss) at
+      !! w150 6-31G* 1e-13 they held 55% of all stall samples. grad_bins
+      !! sums the copies into grad once per eri%gradient, on the device. V100,
+      !! compact pass: (ss|ss) 1.34 -> 0.71 s, (ps|ss) 1.77 -> 1.20 s with
+      !! 32 copies; 8 copies give 0.72/1.21 s, 64 the same as 32, and
+      !! copy-major against atom-major order makes no difference. Classes
+      !! with la+lb+lc+ld > 3 pass slot = 1: see gen_rys_grad.py.
       integer(int64) :: i
-      do concurrent(i=1:nout)
-         call rysgi{tag}_compact(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
-                                nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
-                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                                ndens, dmat, grad)
-      end do
-   end subroutine rysg{tag}_compact
+{compact_loops}   end subroutine rysg{tag}_compact
 
    pure subroutine rysgi{tag}_compact(seg, iab, icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                              npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                             ndens, dmat, grad)
+                             ndens, dmat, npriv, gp, slot)
       !$acc routine seq
       integer,  intent(in)    :: seg, iab, icd
       integer,  intent(in)    :: nseg, npair, nbas, nao
@@ -522,10 +907,14 @@ def screen_and_compact_text(tag, head, middle):
       integer,  intent(in)    :: sq_n(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: grad(3, natm)
+      integer,  intent(in)    :: npriv, slot
+      real(dp), intent(inout) :: gp(3, natm, npriv)
 {compact_decls}
 {si_only_block}{rest_after_density}{compact_middle}"""
 
+    if chunk_inside is not None:
+        i_item = compact.index(f"   pure subroutine rysgi{tag}_compact(")
+        compact += "\n" + chunked_rhf_item_text(tag, compact[i_item:], comps, chunk_inside)
     return screen + compact
 
 
@@ -545,6 +934,12 @@ def main():
                          "na*nb*nc*nd is at most this; 'inf'/'all' unrolls "
                          "every class. Default 0: no class is unrolled, "
                          "i.e. today's array/loop form, unchanged")
+    ap.add_argument("--chunk-classes", default="auto",
+                    help="classes whose RHF compact pass uses the CHUNKED "
+                         "RHF COMPACT PASS: 'auto' (chunk_auto's rule), "
+                         "'none', 'all', or a comma-separated list of tags")
+    ap.add_argument("--chunk-live-max", type=int, default=CHUNK_LIVE_MAX,
+                    help="live-set ceiling chunk_plan picks the chunk shape under")
     ap.add_argument("-o", "--output", required=True,
                     help="never a path under src/generated: regenerated at "
                          "configure time into the build directory")
@@ -958,13 +1353,23 @@ contains
     assert head.count("\ncontains\n") == 1
     head = head.replace("\ncontains\n", helpers, 1)
 
-    sc_text = screen_and_compact_text(tag, head, middle)
+    comps = [co.components(l, args.order) for l in (la, lb, lc, ld)]
+    sel = args.chunk_classes
+    if sel == "auto":
+        chunked = chunk_auto(tag)
+    elif sel in ("none", "all"):
+        chunked = sel == "all"
+    else:
+        chunked = tag in sel.split(",")
+    inside = chunk_plan(comps, args.chunk_live_max) if chunked else None
+    sc_text = screen_and_compact_text(tag, head, middle, comps, inside)
 
     out = head + middle + sc_text + f"\nend module trc_pc_rysg{tag}\n"
     with open(args.output, "w") as fh:
         fh.write(out)
     print(f"  {args.output}: ({la}{lb}|{lc}{ld}), {nroots} roots, "
-          f"{len(out.splitlines())} lines")
+          f"{len(out.splitlines())} lines"
+          + (f", chunked inside={inside}" if inside is not None else ""))
 
 
 if __name__ == "__main__":

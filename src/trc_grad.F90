@@ -48,6 +48,18 @@ module trc_grad
    !: does not exhaust device memory, not because it has been exercised.
    integer(kind=8), parameter :: GRAD_COMPACT_CAP = 2_8**25
 
+   !: LANE-PRIVATE GRADIENT COPIES: how many copies gp(3, natm, GRAD_NPRIV)
+   !: of the gradient the compact pass adds into (survivor i into copy
+   !: mod(i-1, GRAD_NPRIV)+1; see scripts/gen_rys_grad.py's compact
+   !: driver). One per lane of a warp. Measured on (ss|ss)+(ps|ss), w150
+   !: 6-31G* 1e-13, V100, compact pass: 3.11 s with one grad, 1.93 s with
+   !: 8 copies, 1.91 s with 32, 1.91 s with 64. 32 copies are 345 KB at
+   !: 450 atoms: L2-resident, zeroed and summed once per eri%gradient
+   !: (the two tiny kernels are microseconds). Whole eri%gradient on w150:
+   !: 17.9 -> 16.4 s at 1e-13, 9.29 -> 8.80 s at 1e-10, with classes of
+   !: L > 3 left on copy 1 (gen_rys_grad.py).
+   integer, parameter :: GRAD_NPRIV = 32
+
 contains
 
    !
@@ -140,7 +152,12 @@ contains
 #ifdef TERCO_RYS
       block
          integer, allocatable :: ord(:), ckey(:)
-         integer :: a2, b2, t2, c0, c1, key2
+         integer :: a2, b2, t2, c0, c1, key2, ga, gc, gs
+         real(dp) :: gsum
+         real(dp), allocatable :: gp(:, :, :)
+         !! The compact pass's lane-private gradient copies (GRAD_NPRIV).
+         !! A local, not a component of trc_eri_t or an argument of
+         !! grad_bins: nvfortran 26.5 has hung or ICE'd on both.
          allocate (ord(nseg), ckey(nseg))
          do a2 = 1, nseg
             ckey(a2) = ((sLA(a2)*GCLASS_RADIX + sLB(a2))*GCLASS_RADIX &
@@ -160,6 +177,11 @@ contains
                                sLA, sLB, sLC, sLD)
 
          !$acc enter data copyin(sA, sNB, sOA, sOB, sPA, sPB, sD, sOff)
+         allocate (gp(3, natm, GRAD_NPRIV))
+         !$acc enter data create(gp)
+         do concurrent(gs=1:GRAD_NPRIV, ga=1:natm, gc=1:3)
+            gp(gc, ga, gs) = 0.0_dp
+         end do
          c0 = 1
          do while (c0 <= nseg)
             c1 = c0
@@ -191,10 +213,22 @@ contains
                                  jfac, kfac, dsh, nbas, nao, ao_off, sh_at, natm, &
                                  nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                                 ndens, dmat, grad, rank, nranks)
+                                 ndens, dmat, gp, rank, nranks)
             end if
             c0 = c1 + 1
          end do
+         ! Sum the copies into grad, on the device (grad is already there:
+         ! eri_gradient's enter data). The fused path never touches gp, so
+         ! this adds zeros under TRC_GRAD_FUSED=1.
+         do concurrent(ga=1:natm, gc=1:3) local(gsum, gs)
+            gsum = 0.0_dp
+            do gs = 1, GRAD_NPRIV
+               gsum = gsum + gp(gc, ga, gs)
+            end do
+            grad(gc, ga) = grad(gc, ga) + gsum
+         end do
+         !$acc exit data delete(gp)
+         deallocate (gp)
          !$acc exit data delete(sA, sNB, sOA, sOB, sPA, sPB, sD, sOff)
          deallocate (ord, ckey)
       end block
@@ -284,7 +318,7 @@ contains
                                  dsh, nbas, nao, ao_off, sh_at, natm, &
                                  nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                                 ndens, dmat, grad, rank, nranks)
+                                 ndens, dmat, gp, rank, nranks)
       integer,  intent(in)    :: key, c0, c1, nseg, npair, nbas, nao, natm
       integer(kind=8), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
@@ -301,7 +335,8 @@ contains
       real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
       integer,  intent(in)    :: ndens
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: grad(3, natm)
+      real(dp), intent(inout) :: gp(3, natm, GRAD_NPRIV)
+      !! The lane-private gradient copies grad_bins sums into grad.
       integer,  intent(in)    :: rank, nranks
 
       integer :: nseg_run, seg_lo, seg_hi, b0, b1
@@ -343,7 +378,7 @@ contains
                                       npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
                                       nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                                      ndens, dmat, grad)
+                                      ndens, dmat, GRAD_NPRIV, gp)
             !$acc exit data delete(out_seg, out_iab, out_icd, ctr)
             deallocate (out_seg, out_iab, out_icd)
          end if
