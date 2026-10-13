@@ -17,6 +17,7 @@ target_sources(
           trc_screen.F90     # Schwarz bounds
           trc_bins.F90       # the binned shell-pair container
           trc_binkernel.F90  # the shared quartet kernel and the digestion
+          trc_grad.F90       # two-electron gradient launch plan, Rys only
           trc_api.F90        # basis, pair list, 1e, multipoles, DF
           trc_decontract.F90 # splitting a general contraction into primitives
           trc_fock.F90       # the four-centre Fock builds
@@ -317,4 +318,49 @@ if(TERCO_RYS)
   list(LENGTH _rys_sources _nrys)
   message(STATUS "terco: ${_nrys} Rys class kernels generated into ${_rys_dir}")
   target_sources(${main_lib} PRIVATE ${_rys_sources} ${_rys_disp})
+
+  # --- Rys GRADIENT kernels: all 81 classes up to (dd|dd), no HGP fallback --
+  #
+  # Unlike the energy kernel above (generated only where Rys measures faster
+  # than HGP), the gradient has no HGP counterpart to fall back to -- out of
+  # scope, per docs/RYS_PLAN.md's gradient plan -- so every class a basis up
+  # to LMAX=2 can form needs one.
+  #
+  set(_rys_grad_classes "")
+  foreach(la RANGE 0 2)
+    foreach(lb RANGE 0 2)
+      foreach(lc RANGE 0 2)
+        foreach(ld RANGE 0 2)
+          list(APPEND _rys_grad_classes "${la}${lb}${lc}${ld}")
+        endforeach()
+      endforeach()
+    endforeach()
+  endforeach()
+
+  set(_rys_grad_sources "")
+  foreach(_tag ${_rys_grad_classes})
+    set(_rys_grad_out "${_rys_dir}/trc_pc_rysg${_tag}.F90")
+    execute_process(
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py
+              ${_tag} ${_order_flag} --src-dir ${_gen_dir} -o ${_rys_grad_out}
+      RESULT_VARIABLE _rc OUTPUT_QUIET)
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR "gen_rys_grad.py ${_tag} failed (${_rc})")
+    endif()
+    list(APPEND _rys_grad_sources "${_rys_grad_out}")
+  endforeach()
+
+  list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
+  set(_rys_grad_disp "${_rys_dir}/trc_rys_grad_kernels.F90")
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
+            --classes ${_rys_grad_classes_csv} -o ${_rys_grad_disp}
+    RESULT_VARIABLE _rc OUTPUT_QUIET)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "gen_rys_grad_dispatch.py failed (${_rc})")
+  endif()
+
+  list(LENGTH _rys_grad_sources _nrysg)
+  message(STATUS "terco: ${_nrysg} Rys gradient class kernels generated into ${_rys_dir}")
+  target_sources(${main_lib} PRIVATE ${_rys_grad_sources} ${_rys_grad_disp})
 endif()

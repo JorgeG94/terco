@@ -81,7 +81,7 @@ contains
    ! the coefficients are applied in the kernel.
    !
    subroutine build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, &
-                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_ki, pp_kj, npp)
+                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_ki, pp_kj, npp, pp_a)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(:), sh_np(:)
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
@@ -91,6 +91,11 @@ contains
       real(dp), allocatable, intent(out) :: pp_p(:), pp_r(:, :), pp_ra(:, :), pp_rb(:, :), pp_c(:)
       integer,  allocatable, intent(out) :: pp_ki(:), pp_kj(:)  !! primitive of each shell a kept pair came from
       integer,  intent(out) :: npp
+      real(dp), allocatable, optional, intent(out) :: pp_a(:)
+      !! The i-side primitive's OWN exponent (not the pair sum `pp_p`).
+      !! Optional: only the gradient path needs it, so an HGP-only caller
+      !! pays nothing extra. beta (the j-side exponent) is pp_p - pp_a,
+      !! never stored separately.
 
       integer  :: i, j, ki, kj, key, k, d, k1, k2, kb
       real(dp) :: a, b, p, mu, ab2, ukey, ubest
@@ -151,6 +156,7 @@ contains
 
       allocate (pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp))
       allocate (pp_ki(npp), pp_kj(npp))
+      if (present(pp_a)) allocate (pp_a(npp))
 
       do i = 1, nbas
          do j = 1, nbas
@@ -170,6 +176,7 @@ contains
                   p = a + b
                   mu = a*b/p
                   pp_p(k) = p
+                  if (present(pp_a)) pp_a(k) = a
                   pp_ki(k) = ki; pp_kj(k) = kj
                   do d = 1, 3
                      pp_r(k, d) = (a*sh_r(d, i) + b*sh_r(d, j))/p
@@ -218,6 +225,9 @@ contains
          integer :: it, dd
          t = pp_p(x); pp_p(x) = pp_p(y); pp_p(y) = t
          t = pp_c(x); pp_c(x) = pp_c(y); pp_c(y) = t
+         if (present(pp_a)) then
+            t = pp_a(x); pp_a(x) = pp_a(y); pp_a(y) = t
+         end if
          do dd = 1, 3
             t = pp_r(x, dd); pp_r(x, dd) = pp_r(y, dd); pp_r(y, dd) = t
             t = pp_ra(x, dd); pp_ra(x, dd) = pp_ra(y, dd); pp_ra(y, dd) = t
