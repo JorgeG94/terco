@@ -104,6 +104,29 @@ option(TERCO_REGENERATE
 option(TERCO_RYS
        "Also build the Rys kernel family, selectable per class at runtime" OFF)
 #
+# Unroll the Rys kernels' root and component loops (scripts/rys_inline.py's
+# UNROLLED MODE) for every class whose Cartesian component count na*nb*nc*nd
+# is at most this -- passed straight through to gen_rys.py/gen_rys_grad.py's
+# --unroll-max-comp. A class above the threshold keeps today's array/loop
+# form. "0" (not unrolling anything) is only useful as a measurement
+# baseline; "inf"/"all" unrolls every class, including (dd|dd), which is a
+# compile-time measurement point, not a build anyone should ship.
+#
+# 81 is MEASURED, not a guess (w172, 6-31G*, one GPU): the gradient drops
+# from 14.74 s to 10.76 s at 1e-10 (-27%) and 30.59 s to 22.67 s at 1e-13
+# (-26%) going from 0 to 81, every class below the threshold matching its
+# own e31f06a timing exactly where it is NOT yet unrolled (a built-in
+# regression check). Raising the ceiling to 243 unrolls three more classes
+# ((dp|pp), (dp|ds), (ds|dd)) but changes the measured total NOT AT ALL
+# (10.91 s / 22.89 s, within noise of 81's number) while costing 330-530 s
+# of EXTRA serial compile time PER CLASS for those three alone -- compile
+# cost that buys nothing. 81 is the point past which unrolling stops paying
+# for itself; see docs/RYS.md for the full per-class table.
+#
+set(TERCO_RYS_UNROLL_MAX
+    "81"
+    CACHE STRING "Unroll Rys classes with na*nb*nc*nd <= this ('inf'/'all': every class)")
+#
 # Shared by default. The one consumer that matters, metalquicha, is built
 # with gfortran and reaches terco through the C ABI, and a static libterco
 # from nvfortran cannot be linked by another compiler: its device code, the

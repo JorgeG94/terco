@@ -73,6 +73,7 @@ Never hand-edit the output; change this generator and regenerate.
 """
 import argparse
 import importlib.util
+import math
 import os
 import re
 
@@ -87,65 +88,178 @@ def _load(name, path):
 
 
 co = _load("co", os.path.join(HERE, "cartorder.py"))
-
-#: Binomial row b, for the horizontal transfer written out rather than
-#: looped -- LMAX stays 2, so a shift of 0, 1 or 2 is everything this ever
-#: needs. Index [b][t] is C(b, t). Same table as gen_rys.py's.
-_BINOM = [[1], [1, 1], [1, 2, 1]]
+ri = _load("ri", os.path.join(HERE, "rys_inline.py"))
 
 
-def hrr_sub(name, ni, nk, la, lb, lc, ld, ab, cd):
-    """Text for `pure subroutine {name}(g, {ab}, {cd}, h)`: the horizontal
-    transfer from a combined-index 2D table g(0:ni, 0:nk) to
-    h(0:la, 0:lb, 0:lc, 0:ld). Same algebra as gen_rys.py's rys_hrr_{tag},
-    factored out so the gradient kernel can call it with la+1/lc+1/ni+1/nk+1
-    for the extended table without duplicating the derivation."""
-    t_rows = []
-    for b in range(lb + 1):
-        terms = []
-        for t in range(b + 1):
-            coef, p = _BINOM[b][t], b - t
-            pre = "" if coef == 1 else f"{float(coef)}_dp*"
-            mul = "" if p == 0 else (f"{ab}*" if p == 1 else f"{ab}2*")
-            terms.append(f"{pre}{mul}g(a + {t}, c)")
-        t_rows.append(f"            t(a, {b}, c) = " + " + ".join(terms))
-    h_rows = []
-    for d in range(ld + 1):
-        terms = []
-        for t in range(d + 1):
-            coef, p = _BINOM[d][t], d - t
-            pre = "" if coef == 1 else f"{float(coef)}_dp*"
-            mul = "" if p == 0 else (f"{cd}*" if p == 1 else f"{cd}2*")
-            terms.append(f"{pre}{mul}t(a, b, c + {t})")
-        h_rows.append(f"               h(a, b, c, {d}) = " + " + ".join(terms))
-    return f"""
-   pure subroutine {name}(g, {ab}, {cd}, h)
-      !! Horizontal transfer on both indices, to the gradient-extended
-      !! table: (a,b+1| = (a+1,b| + (A-B)(a,b|. Binomials for a shift of
-      !! 0, 1 or 2, written out -- LMAX stays 2.
-      !$acc routine seq
-      real(dp), intent(in)  :: g(0:{ni}, 0:{nk}), {ab}, {cd}
-      real(dp), intent(out) :: h(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})
-      real(dp) :: t(0:{la}, 0:{lb}, 0:{nk})
-      integer  :: a, b, c
-      real(dp) :: {ab}2, {cd}2
+def _parse_unroll_max(s):
+    """Same parsing as gen_rys.py's --unroll-max-comp: an int, or
+    'inf'/'all' for no ceiling."""
+    if s.strip().lower() in ("inf", "all"):
+        return math.inf
+    return int(s)
 
-      {ab}2 = {ab}*{ab}
-      {cd}2 = {cd}*{cd}
-      do a = 0, {la}
-         do c = 0, {nk}
-{chr(10).join(t_rows)}
-         end do
-      end do
-      do a = 0, {la}
-         do b = 0, {lb}
-            do c = 0, {lc}
-{chr(10).join(h_rows)}
-            end do
-         end do
-      end do
-   end subroutine {name}
-"""
+
+def unrolled_gam_block(d0, d1, d2, d3):
+    """The unrolled mode's twin of the density-block/Gamma fill (see the
+    module docstring's inject text, just below `kfac_eff`): same algebra,
+    but every `dab`/`dcd`/`dac`/`dad`/`dbc`/`dbd`/`gam` array element
+    becomes a named scalar (`nm`), and the `do idens = 1, ndens` loop --
+    ndens is a RUNTIME value, but only ever 1 (RHF) or 2 (UHF) -- is
+    unrolled into the idens=1 term (always present) plus an `if (ndens ==
+    2)` for the idens=2 term, rather than keeping a 2-element array indexed
+    by a loop variable. `dab`/`dcd` already summed over idens in the array
+    form (they hold the TOTAL density), so they keep that shape; `dac`/
+    `dad`/`dbc`/`dbd` keep one spin apart (`dac1_*`/`dac2_*`, ...), since
+    Gamma's K term needs each spin's own product, not their sum."""
+    lines = []
+    for ib in range(d1):
+        for ia in range(d0):
+            v = ri.nm("dab", ia, ib)
+            lines.append(f"         {v} = dmat(1, mui + {ia}, nuj + {ib})")
+            lines.append(f"         if (ndens == 2) {v} = {v} + dmat(2, mui + {ia}, nuj + {ib})")
+    for idd in range(d3):
+        for ic in range(d2):
+            v = ri.nm("dcd", ic, idd)
+            lines.append(f"         {v} = dmat(1, lamk + {ic}, sigl + {idd})")
+            lines.append(f"         if (ndens == 2) {v} = {v} + dmat(2, lamk + {ic}, sigl + {idd})")
+    for ic in range(d2):
+        for ia in range(d0):
+            v1, v2 = ri.nm("dac1", ia, ic), ri.nm("dac2", ia, ic)
+            lines.append(f"         {v1} = dmat(1, mui + {ia}, lamk + {ic})")
+            lines.append(f"         if (ndens == 2) {v2} = dmat(2, mui + {ia}, lamk + {ic})")
+    for idd in range(d3):
+        for ia in range(d0):
+            v1, v2 = ri.nm("dad1", ia, idd), ri.nm("dad2", ia, idd)
+            lines.append(f"         {v1} = dmat(1, mui + {ia}, sigl + {idd})")
+            lines.append(f"         if (ndens == 2) {v2} = dmat(2, mui + {ia}, sigl + {idd})")
+    for ic in range(d2):
+        for ib in range(d1):
+            v1, v2 = ri.nm("dbc1", ib, ic), ri.nm("dbc2", ib, ic)
+            lines.append(f"         {v1} = dmat(1, nuj + {ib}, lamk + {ic})")
+            lines.append(f"         if (ndens == 2) {v2} = dmat(2, nuj + {ib}, lamk + {ic})")
+    for idd in range(d3):
+        for ib in range(d1):
+            v1, v2 = ri.nm("dbd1", ib, idd), ri.nm("dbd2", ib, idd)
+            lines.append(f"         {v1} = dmat(1, nuj + {ib}, sigl + {idd})")
+            lines.append(f"         if (ndens == 2) {v2} = dmat(2, nuj + {ib}, sigl + {idd})")
+    for idd in range(d3):
+        for ic in range(d2):
+            for ib in range(d1):
+                for ia in range(d0):
+                    g = ri.nm("gam", ia, ib, ic, idd)
+                    dabn, dcdn = ri.nm("dab", ia, ib), ri.nm("dcd", ic, idd)
+                    dac1, dac2 = ri.nm("dac1", ia, ic), ri.nm("dac2", ia, ic)
+                    dad1, dad2 = ri.nm("dad1", ia, idd), ri.nm("dad2", ia, idd)
+                    dbc1, dbc2 = ri.nm("dbc1", ib, ic), ri.nm("dbc2", ib, ic)
+                    dbd1, dbd2 = ri.nm("dbd1", ib, idd), ri.nm("dbd2", ib, idd)
+                    lines.append(f"         {g} = 8.0_dp*wq*jfac*{dabn}*{dcdn} &")
+                    lines.append(f"              - 8.0_dp*wq*kfac_eff*({dac1}*{dbd1} + {dad1}*{dbc1})")
+                    lines.append(f"         if (ndens == 2) {g} = {g} - 8.0_dp*wq*kfac_eff*({dac2}*{dbd2} + {dad2}*{dbc2})")
+    return "\n".join(lines) + "\n"
+
+
+def unrolled_gam_decls(d0, d1, d2, d3, indent=6):
+    """Declarations for `unrolled_gam_block`'s named scalars."""
+    names = ([ri.nm("dab", ia, ib) for ib in range(d1) for ia in range(d0)]
+             + [ri.nm("dcd", ic, idd) for idd in range(d3) for ic in range(d2)]
+             + [ri.nm(p, ia, ic) for p in ("dac1", "dac2") for ic in range(d2) for ia in range(d0)]
+             + [ri.nm(p, ia, idd) for p in ("dad1", "dad2") for idd in range(d3) for ia in range(d0)]
+             + [ri.nm(p, ib, ic) for p in ("dbc1", "dbc2") for ic in range(d2) for ib in range(d1)]
+             + [ri.nm(p, ib, idd) for p in ("dbd1", "dbd2") for idd in range(d3) for ib in range(d1)]
+             + [ri.nm("gam", ia, ib, ic, idd)
+                for idd in range(d3) for ic in range(d2) for ib in range(d1) for ia in range(d0)])
+    return ri.scalar_decl_lines(names, indent)
+
+
+def _axis_derivative(e_i, e_j, e_k, e_l, hprefix, ab_name):
+    """One axis's vix/fix/fkx/fjx (GPU4PySCF's BUILD_4C_GXYZ identity, see
+    this generator's module docstring), with the exponents e_i/e_j/e_k
+    literal: `real(e, dp)` folds to its value, and a `- e*h(e-1)` term is
+    simply never emitted when that exponent is 0, rather than guarded by a
+    runtime `if` the way the loop form (gen_rys_grad.py's main `middle`)
+    still is."""
+    h = lambda a, b, c, d: ri.nm(hprefix, a, b, c, d)
+    fi = f"2.0_dp*alpha_i*{h(e_i + 1, e_j, e_k, e_l)}"
+    if e_i > 0:
+        fi += f" - {float(e_i)}_dp*{h(e_i - 1, e_j, e_k, e_l)}"
+    fk = f"2.0_dp*alpha_k*{h(e_i, e_j, e_k + 1, e_l)}"
+    if e_k > 0:
+        fk += f" - {float(e_k)}_dp*{h(e_i, e_j, e_k - 1, e_l)}"
+    fj = f"2.0_dp*alpha_j*({h(e_i + 1, e_j, e_k, e_l)} + {ab_name}*{h(e_i, e_j, e_k, e_l)})"
+    if e_j > 0:
+        fj += f" - {float(e_j)}_dp*{h(e_i, e_j - 1, e_k, e_l)}"
+    return h(e_i, e_j, e_k, e_l), fi, fk, fj
+
+
+def unrolled_gradient_middle(tag, la, lb, lc, ld, nig, nkg, nroots, dims, order):
+    """The unrolled mode's gradient middle (see rys_inline.py's UNROLLED
+    MODE section and gen_rys.py's unrolled_energy_middle, its energy twin):
+    the roots lookup once, each root as its own block, the raised 2D
+    recurrence and HRR writing named scalars, and the (aa, bb, cc, dd2)
+    derivative fold unrolled Python-side -- every `hx(eix, ...)` read
+    becomes a literal-indexed named scalar, and a derivative term that
+    GPU4PySCF's `- e*h(e-1)` would multiply by a literal exponent of 0 is
+    simply never emitted, rather than guarded by a runtime `if`."""
+    comps = [co.components(l, order) for l in (la, lb, lc, ld)]
+    d0, d1, d2, d3 = dims
+    pad = " "*21
+    out = [ri.roots_inline_body(nroots, "tval", 18)]
+    for rr in range(1, nroots + 1):
+        out.append(f"""\
+                  u2 = ru({rr})/(1.0_dp - ru({rr}))*rho
+                  dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+                  b00r  = 0.5_dp*u2*dinv
+                  b10r  = 0.5_dp*(eta + u2)*dinv
+                  bp01r = 0.5_dp*(zeta + u2)*dinv
+                  f00 = pref*rw({rr})
+                  c00x = pax - u2*eta*dinv*pqx
+                  c00y = pay - u2*eta*dinv*pqy
+                  c00z = paz - u2*eta*dinv*pqz
+                  cp0x = qcx + u2*zeta*dinv*pqx
+                  cp0y = qcy + u2*zeta*dinv*pqy
+                  cp0z = qcz + u2*zeta*dinv*pqz
+""")
+        out.append(ri.rys2d_scalar_assignments(nig, nkg, "c00x", "cp0x", "b00r", "b10r", "bp01r", "1.0_dp", "gx", 18))
+        out.append(ri.rys2d_scalar_assignments(nig, nkg, "c00y", "cp0y", "b00r", "b10r", "bp01r", "1.0_dp", "gy", 18))
+        out.append(ri.rys2d_scalar_assignments(nig, nkg, "c00z", "cp0z", "b00r", "b10r", "bp01r", "f00",    "gz", 18))
+        out.append(ri.hrr_scalar_assignments(nig, nkg, la + 1, lb, lc + 1, ld, "gx", "abx", "cdx", "hx", 18))
+        out.append(ri.hrr_scalar_assignments(nig, nkg, la + 1, lb, lc + 1, ld, "gy", "aby", "cdy", "hy", 18))
+        out.append(ri.hrr_scalar_assignments(nig, nkg, la + 1, lb, lc + 1, ld, "gz", "abz", "cdz", "hz", 18))
+
+        for dd2 in range(1, d3 + 1):
+            for cc in range(1, d2 + 1):
+                for bb in range(1, d1 + 1):
+                    for aa in range(1, d0 + 1):
+                        eix, eiy, eiz = comps[0][aa - 1]
+                        ejx, ejy, ejz = comps[1][bb - 1]
+                        ekx, eky, ekz = comps[2][cc - 1]
+                        elx, ely, elz = comps[3][dd2 - 1]
+                        gnm = ri.nm("gam", aa - 1, bb - 1, cc - 1, dd2 - 1)
+                        blk = []
+
+                        vix, fix_e, fkx_e, fjx_e = _axis_derivative(eix, ejx, ekx, elx, "hx", "abx")
+                        viy, fiy_e, fky_e, fjy_e = _axis_derivative(eiy, ejy, eky, ely, "hy", "aby")
+                        viz, fiz_e, fkz_e, fjz_e = _axis_derivative(eiz, ejz, ekz, elz, "hz", "abz")
+                        blk.append(f"{pad}vix = {vix}; viy = {viy}; viz = {viz}")
+                        blk.append(f"{pad}pyz = viy*viz; pxz = vix*viz; pxy = vix*viy")
+                        blk.append(f"{pad}fix = {fix_e}")
+                        blk.append(f"{pad}fkx = {fkx_e}")
+                        blk.append(f"{pad}fjx = {fjx_e}")
+                        blk.append(f"{pad}flx = -fix - fjx - fkx")
+                        blk.append(f"{pad}fiy = {fiy_e}")
+                        blk.append(f"{pad}fky = {fky_e}")
+                        blk.append(f"{pad}fjy = {fjy_e}")
+                        blk.append(f"{pad}fly = -fiy - fjy - fky")
+                        blk.append(f"{pad}fiz = {fiz_e}")
+                        blk.append(f"{pad}fkz = {fkz_e}")
+                        blk.append(f"{pad}fjz = {fjz_e}")
+                        blk.append(f"{pad}flz = -fiz - fjz - fkz")
+                        blk.append(f"{pad}vax = vax + fix*pyz*{gnm}; vay = vay + fiy*pxz*{gnm}; vaz = vaz + fiz*pxy*{gnm}")
+                        blk.append(f"{pad}vbx = vbx + fjx*pyz*{gnm}; vby = vby + fjy*pxz*{gnm}; vbz = vbz + fjz*pxy*{gnm}")
+                        blk.append(f"{pad}vcx = vcx + fkx*pyz*{gnm}; vcy = vcy + fky*pxz*{gnm}; vcz = vcz + fkz*pxy*{gnm}")
+                        blk.append(f"{pad}vdx = vdx + flx*pyz*{gnm}; vdy = vdy + fly*pxz*{gnm}; vdz = vdz + flz*pxy*{gnm}")
+                        out.append("\n".join(blk) + "\n")
+    return "".join(out)
 
 
 def main():
@@ -158,6 +272,12 @@ def main():
     ap.add_argument("--src-dir", default="src/generated",
                     help="where trc_pc_k{tag}.F90 (the scalar HGP kernel) "
                          "already lives")
+    ap.add_argument("--unroll-max-comp", default="0",
+                    help="unroll the component and root loops (see "
+                         "rys_inline.py's UNROLLED MODE) for a class whose "
+                         "na*nb*nc*nd is at most this; 'inf'/'all' unrolls "
+                         "every class. Default 0: no class is unrolled, "
+                         "i.e. today's array/loop form, unchanged")
     ap.add_argument("-o", "--output", required=True,
                     help="never a path under src/generated: regenerated at "
                          "configure time into the build directory")
@@ -173,6 +293,7 @@ def main():
                           "committed root tables")
     dims = [len(co.components(l, args.order)) for l in (la, lb, lc, ld)]
     nv = dims[0]*dims[1]*dims[2]*dims[3]
+    unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
     src = open(src_path).read()
@@ -236,25 +357,32 @@ def main():
 
     decl_new = (
         f"      real(dp) :: ru({nroots}), rw({nroots})\n"
-        f"      real(dp) :: gx(0:{nig}, 0:{nkg}), gy(0:{nig}, 0:{nkg}), gz(0:{nig}, 0:{nkg})\n"
-        f"      real(dp) :: hx(0:{la + 1}, 0:{lb}, 0:{lc + 1}, 0:{ld})\n"
-        f"      real(dp) :: hy(0:{la + 1}, 0:{lb}, 0:{lc + 1}, 0:{ld})\n"
-        f"      real(dp) :: hz(0:{la + 1}, 0:{lb}, 0:{lc + 1}, 0:{ld})\n"
         f"      real(dp) :: u2, dinv, b00r, b10r, bp01r, f00\n"
         f"      real(dp) :: c00x, c00y, c00z, cp0x, cp0y, cp0z\n"
         f"      real(dp) :: alpha_i, alpha_j, alpha_k, kfac_eff\n"
-        f"      integer  :: rr, aa, bb, cc, dd2\n"
-        f"      integer  :: eix, eiy, eiz, ejx, ejy, ejz\n"
-        f"      integer  :: ekx, eky, ekz, elx, ely, elz\n"
         f"      real(dp) :: vix, viy, viz, pyz, pxz, pxy\n"
         f"      real(dp) :: fix, fiy, fiz, fjx, fjy, fjz\n"
         f"      real(dp) :: fkx, fky, fkz, flx, fly, flz\n"
         f"      real(dp) :: vax, vay, vaz, vbx, vby, vbz\n"
         f"      real(dp) :: vcx, vcy, vcz, vdx, vdy, vdz\n"
-        f"      real(dp) :: dab({dims[0]*dims[1]}), dcd({dims[2]*dims[3]})\n"
-        f"      real(dp) :: dac(2, {dims[0]*dims[2]}), dad(2, {dims[0]*dims[3]})\n"
-        f"      real(dp) :: dbc(2, {dims[1]*dims[2]}), dbd(2, {dims[1]*dims[3]})\n"
-        f"      real(dp) :: gam({nv})\n")
+        + ri.roots_decls())
+    if unroll:
+        decl_new += (ri.unrolled_table_decls(nig, nkg, la + 1, lb, lc + 1, ld, 6)
+                     + unrolled_gam_decls(*dims, 6))
+    else:
+        decl_new += (
+            f"      real(dp) :: gx(0:{nig}, 0:{nkg}), gy(0:{nig}, 0:{nkg}), gz(0:{nig}, 0:{nkg})\n"
+            f"      real(dp) :: hx(0:{la + 1}, 0:{lb}, 0:{lc + 1}, 0:{ld})\n"
+            f"      real(dp) :: hy(0:{la + 1}, 0:{lb}, 0:{lc + 1}, 0:{ld})\n"
+            f"      real(dp) :: hz(0:{la + 1}, 0:{lb}, 0:{lc + 1}, 0:{ld})\n"
+            f"      integer  :: rr, aa, bb, cc, dd2\n"
+            f"      integer  :: eix, eiy, eiz, ejx, ejy, ejz\n"
+            f"      integer  :: ekx, eky, ekz, elx, ely, elz\n"
+            f"      real(dp) :: dab({dims[0]*dims[1]}), dcd({dims[2]*dims[3]})\n"
+            f"      real(dp) :: dac(2, {dims[0]*dims[2]}), dad(2, {dims[0]*dims[3]})\n"
+            f"      real(dp) :: dbc(2, {dims[1]*dims[2]}), dbd(2, {dims[1]*dims[3]})\n"
+            f"      real(dp) :: gam({nv})\n"
+            + ri.rys2d_hrr_decls(la + 1, lb, nkg))
     head = head[:m.start()] + decl_new + head[m.end():]
 
     for pat in (r"      real\(dp\) :: f\(0:BOYS_MMAX\)\n",
@@ -274,10 +402,10 @@ def main():
         head, n1 = re.subn(pat, "", head, count=1)
         assert n1 == 1, pat
 
-    # No Boys function; the root lookup replaces it, same as the energy splice.
+    # No Boys function; the root lookup replaces it, inlined (see
+    # rys_inline.py) rather than called, same as the energy splice.
     head, n1 = re.subn(r"   use trc_boys, only:.*?BOYS_DT, BOYS_DTINV\n",
-                       f"   use trc_boys, only: dp\n"
-                       f"   use trc_rys, only: trc_rys_roots{nroots}_tab\n",
+                       f"   use trc_boys, only: dp\n" + ri.roots_table_use(nroots),
                        head, count=1, flags=re.S)
     assert n1 == 1
 
@@ -325,6 +453,11 @@ def main():
          ! the full density was actually wrong, not just this constant).
          kfac_eff = merge(0.25_dp, 0.5_dp, ndens == 1)*kfac
 
+"""
+    if unroll:
+        inject += unrolled_gam_block(d0, d1, d2, d3)
+    else:
+        inject += f"""\
          do ib = 0, {d1 - 1}
             do ia = 0, {d0 - 1}
                dab(1 + ia + {d0}*ib) = 0.0_dp
@@ -380,7 +513,8 @@ def main():
                end do
             end do
          end do
-
+"""
+    inject += """
          vax = 0.0_dp; vay = 0.0_dp; vaz = 0.0_dp
          vbx = 0.0_dp; vby = 0.0_dp; vbz = 0.0_dp
          vcx = 0.0_dp; vcy = 0.0_dp; vcz = 0.0_dp
@@ -424,9 +558,12 @@ def main():
     #     extended horizontal transfer, then the derivative fold straight
     #     into the 12 running sums -- no output integral block is ever
     #     materialised. ---
-    middle = f"""
-                  call trc_rys_roots{nroots}_tab(tval, ru, rw)
-
+    if unroll:
+        middle = ("\n" + unrolled_gradient_middle(tag, la, lb, lc, ld, nig, nkg, nroots, dims, args.order)
+                  + "               end do\n            end do\n")
+    else:
+        middle = f"""
+{ri.roots_inline_body(nroots, "tval", 18)}
                   do rr = 1, {nroots}
                      u2 = ru(rr)/(1.0_dp - ru(rr))*rho
                      dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
@@ -441,12 +578,12 @@ def main():
                      cp0y = qcy + u2*zeta*dinv*pqy
                      cp0z = qcz + u2*zeta*dinv*pqz
 
-                     call rys2d_{tag}(c00x, cp0x, b00r, b10r, bp01r, 1.0_dp, gx)
-                     call rys2d_{tag}(c00y, cp0y, b00r, b10r, bp01r, 1.0_dp, gy)
-                     call rys2d_{tag}(c00z, cp0z, b00r, b10r, bp01r, f00,    gz)
-                     call rys_hrr_g_{tag}(gx, abx, cdx, hx)
-                     call rys_hrr_g_{tag}(gy, aby, cdy, hy)
-                     call rys_hrr_g_{tag}(gz, abz, cdz, hz)
+{ri.rys2d_inline_body(nig, nkg, "c00x", "cp0x", "b00r", "b10r", "bp01r", "1.0_dp", "gx", 21)}
+{ri.rys2d_inline_body(nig, nkg, "c00y", "cp0y", "b00r", "b10r", "bp01r", "1.0_dp", "gy", 21)}
+{ri.rys2d_inline_body(nig, nkg, "c00z", "cp0z", "b00r", "b10r", "bp01r", "f00",    "gz", 21)}
+{ri.hrr_inline_body(nig, nkg, la + 1, lb, lc + 1, ld, "gx", "abx", "cdx", "hx", 21)}
+{ri.hrr_inline_body(nig, nkg, la + 1, lb, lc + 1, ld, "gy", "aby", "cdy", "hy", 21)}
+{ri.hrr_inline_body(nig, nkg, la + 1, lb, lc + 1, ld, "gz", "abz", "cdz", "hz", 21)}
 
                      idx = 0
                      do dd2 = 1, {d3}
@@ -498,7 +635,9 @@ def main():
                   end do
                end do
             end do
+"""
 
+    middle += f"""
          !$acc atomic update
          grad(1, sh_at(si)) = grad(1, sh_at(si)) + vax
          !$acc atomic update
@@ -526,43 +665,24 @@ def main():
       end subroutine rysgi{tag}
 """
 
+    # As in gen_rys.py: an unrolled class needs no runtime component lookup
+    # table at all -- the triples come straight off `co.components` at
+    # GENERATION time (see unrolled_gradient_middle).
     tabs = ""
-    for nm, ax in (("cnx", 0), ("cny", 1), ("cnz", 2)):
-        for which, l in enumerate((la, lb, lc, ld)):
-            comps = co.components(l, args.order)
-            vals = ", ".join(str(c[ax]) for c in comps)
-            tabs += f"   integer, parameter :: {nm}{which}_{tag}({len(comps)}) = [{vals}]\n"
+    if not unroll:
+        for cnm, ax in (("cnx", 0), ("cny", 1), ("cnz", 2)):
+            for which, l in enumerate((la, lb, lc, ld)):
+                comps = co.components(l, args.order)
+                vals = ", ".join(str(c[ax]) for c in comps)
+                tabs += f"   integer, parameter :: {cnm}{which}_{tag}({len(comps)}) = [{vals}]\n"
 
+    # No helper subroutines follow the component tables any more -- the
+    # roots lookup, 2D recurrence and HRR are inlined straight into `middle`
+    # above instead of called (see scripts/rys_inline.py), so `contains`
+    # goes right back to introducing rysg{tag}/rysgi{tag}.
     helpers = f"""
 {tabs}
 contains
-
-   pure subroutine rys2d_{tag}(c00, cp00, b00, b10, bp01, g00, g)
-      !! One axis of 2D Rys integrals, gradient-extended by one unit of
-      !! angular momentum on each of the bra- and ket-combined indices.
-      !$acc routine seq
-      real(dp), intent(in)  :: c00, cp00, b00, b10, bp01, g00
-      real(dp), intent(out) :: g(0:{nig}, 0:{nkg})
-      integer :: i, k
-
-      g(0, 0) = g00
-{"      g(1, 0) = c00*g00" if nig >= 1 else ""}
-{f"      do i = 1, {nig - 1}" if nig >= 2 else ""}
-{"         g(i + 1, 0) = real(i, dp)*b10*g(i - 1, 0) + c00*g(i, 0)" if nig >= 2 else ""}
-{"      end do" if nig >= 2 else ""}
-{"      g(0, 1) = cp00*g00" if nkg >= 1 else ""}
-{f"      do i = 1, {nig}" if nkg >= 1 and nig >= 1 else ""}
-{"         g(i, 1) = real(i, dp)*b00*g(i - 1, 0) + cp00*g(i, 0)" if nkg >= 1 and nig >= 1 else ""}
-{"      end do" if nkg >= 1 and nig >= 1 else ""}
-{f"      do k = 1, {nkg - 1}" if nkg >= 2 else ""}
-{"         g(0, k + 1) = real(k, dp)*bp01*g(0, k - 1) + cp00*g(0, k)" if nkg >= 2 else ""}
-{f"         do i = 1, {nig}" if nkg >= 2 and nig >= 1 else ""}
-{"            g(i, k + 1) = real(i, dp)*b00*g(i - 1, k) &" if nkg >= 2 and nig >= 1 else ""}
-{"                        + real(k, dp)*bp01*g(i, k - 1) + cp00*g(i, k)" if nkg >= 2 and nig >= 1 else ""}
-{"         end do" if nkg >= 2 and nig >= 1 else ""}
-{"      end do" if nkg >= 2 else ""}
-   end subroutine rys2d_{tag}
-{hrr_sub(f"rys_hrr_g_{tag}", nig, nkg, la + 1, lb, lc + 1, ld, "ab", "cd")}
 """
 
     assert head.count("\ncontains\n") == 1

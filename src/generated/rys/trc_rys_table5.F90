@@ -6,8 +6,10 @@
 ! Degree 13 on intervals of width 2.5 over X in [0, 65]; above that
 ! asymptotic form is exact in double precision. Reference values from mpmath at
 ! 40 digits, so the table is not limited by the double precision
-! construction (src/trc_rys.F90's docstring records a 1.3e-15 cross-check of
-! that construction, which this table is not built from).
+! construction (GAMESS's own RYSDS/RYSGW -- discretised Stieltjes on a
+! fixed 35-point base rule, then Golub-Welsch by QL -- checked against an
+! independent mpmath construction of the same rule to 1.3e-15 for X in
+! [0.05, 50]; this table is not built from that construction).
 !
 ! LAYOUT: coefficient j of series s on interval iv is
 !     RYS_C5(((iv-1)*10 + (s-1))*14 + j + 1)

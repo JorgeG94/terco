@@ -177,8 +177,10 @@ def main():
 ! Degree {DEGREE} on intervals of width {float(WIDTH)} over X in [0, {int(x_max)}]; above that
 ! asymptotic form is exact in double precision. Reference values from mpmath at
 ! {args.dps} digits, so the table is not limited by the double precision
-! construction (src/trc_rys.F90's docstring records a 1.3e-15 cross-check of
-! that construction, which this table is not built from).
+! construction (GAMESS's own RYSDS/RYSGW -- discretised Stieltjes on a
+! fixed 35-point base rule, then Golub-Welsch by QL -- checked against an
+! independent mpmath construction of the same rule to 1.3e-15 for X in
+! [0.05, 50]; this table is not built from that construction).
 !
 ! LAYOUT: coefficient j of series s on interval iv is
 !     RYS_C{n}(((iv-1)*{2*n} + (s-1))*{DEGREE+1} + j + 1)

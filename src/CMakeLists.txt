@@ -255,8 +255,7 @@ if(TERCO_RYS)
   # GLOB above -- which is not recursive -- never picks them up, ON or OFF.
   target_sources(
     ${main_lib}
-    PRIVATE trc_rys.F90        # Rys root/weight lookup, tabulated
-            trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
+    PRIVATE trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
             generated/rys/trc_rys_table1.F90
             generated/rys/trc_rys_table2.F90
             generated/rys/trc_rys_table3.F90
@@ -297,7 +296,8 @@ if(TERCO_RYS)
     set(_rys_out "${_rys_dir}/trc_pc_rys${_tag}.F90")
     execute_process(
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
-              ${_tag} ${_order_flag} --src-dir ${_gen_dir} -o ${_rys_out}
+              ${_tag} ${_order_flag} --src-dir ${_gen_dir}
+              --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_out}
       RESULT_VARIABLE _rc OUTPUT_QUIET)
     if(NOT _rc EQUAL 0)
       message(FATAL_ERROR "gen_rys.py ${_tag} failed (${_rc})")
@@ -342,7 +342,8 @@ if(TERCO_RYS)
     set(_rys_grad_out "${_rys_dir}/trc_pc_rysg${_tag}.F90")
     execute_process(
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py
-              ${_tag} ${_order_flag} --src-dir ${_gen_dir} -o ${_rys_grad_out}
+              ${_tag} ${_order_flag} --src-dir ${_gen_dir}
+              --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_grad_out}
       RESULT_VARIABLE _rc OUTPUT_QUIET)
     if(NOT _rc EQUAL 0)
       message(FATAL_ERROR "gen_rys_grad.py ${_tag} failed (${_rc})")

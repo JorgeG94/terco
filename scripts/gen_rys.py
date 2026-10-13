@@ -53,6 +53,7 @@ Fock matrix this produces against HGP's on the same density.
 """
 import argparse
 import importlib.util
+import math
 import os
 import re
 
@@ -67,11 +68,68 @@ def _load(name, path):
 
 
 co = _load("co", os.path.join(HERE, "cartorder.py"))
+ri = _load("ri", os.path.join(HERE, "rys_inline.py"))
 
-#: Binomial row b, for the horizontal transfer written out rather than
-#: looped -- LMAX stays 2, so a shift of 0, 1 or 2 is everything this ever
-#: needs. Index [b][t] is C(b, t).
-_BINOM = [[1], [1, 1], [1, 2, 1]]
+
+def _parse_unroll_max(s):
+    """`--unroll-max-comp` takes an int, or 'inf'/'all' for no ceiling --
+    the measurement sweep's top end, where every class is unrolled."""
+    if s.strip().lower() in ("inf", "all"):
+        return math.inf
+    return int(s)
+
+
+def unrolled_energy_middle(tag, la, lb, lc, ld, ni, nk, nroots, dims, order):
+    """The unrolled mode's energy middle (see rys_inline.py's UNROLLED MODE
+    section): the roots lookup once, then each root as its own block --
+    nroots is a compile-time constant per class -- with the 2D recurrence
+    and HRR writing named scalars instead of gx/gy/gz/hx/hy/hz arrays, and
+    the (aa, bb, cc, dd2) component loop unrolled Python-side so every
+    `hx(cnx0(aa), ...)` becomes a literal-indexed named scalar read straight
+    off this generator's own `co.components` tables -- no cnx*_tag lookup
+    table is even needed for an unrolled class."""
+    comps = [co.components(l, order) for l in (la, lb, lc, ld)]
+    d0, d1, d2, d3 = dims
+    pad = " "*21
+    out = [ri.roots_inline_body(nroots, "tval", 18)]
+    for rr in range(1, nroots + 1):
+        out.append(f"""\
+                  u2 = ru({rr})/(1.0_dp - ru({rr}))*rho
+                  dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+                  b00r  = 0.5_dp*u2*dinv
+                  b10r  = 0.5_dp*(eta + u2)*dinv
+                  bp01r = 0.5_dp*(zeta + u2)*dinv
+                  f00 = pref*rw({rr})
+                  c00x = pax - u2*eta*dinv*pqx
+                  c00y = pay - u2*eta*dinv*pqy
+                  c00z = paz - u2*eta*dinv*pqz
+                  cp0x = qcx + u2*zeta*dinv*pqx
+                  cp0y = qcy + u2*zeta*dinv*pqy
+                  cp0z = qcz + u2*zeta*dinv*pqz
+""")
+        out.append(ri.rys2d_scalar_assignments(ni, nk, "c00x", "cp0x", "b00r", "b10r", "bp01r", "1.0_dp", "gx", 18))
+        out.append(ri.rys2d_scalar_assignments(ni, nk, "c00y", "cp0y", "b00r", "b10r", "bp01r", "1.0_dp", "gy", 18))
+        out.append(ri.rys2d_scalar_assignments(ni, nk, "c00z", "cp0z", "b00r", "b10r", "bp01r", "f00",    "gz", 18))
+        out.append(ri.hrr_scalar_assignments(ni, nk, la, lb, lc, ld, "gx", "abx", "cdx", "hx", 18))
+        out.append(ri.hrr_scalar_assignments(ni, nk, la, lb, lc, ld, "gy", "aby", "cdy", "hy", 18))
+        out.append(ri.hrr_scalar_assignments(ni, nk, la, lb, lc, ld, "gz", "abz", "cdz", "hz", 18))
+        idx = 0
+        acc = []
+        for dd2 in range(1, d3 + 1):
+            for cc in range(1, d2 + 1):
+                for bb in range(1, d1 + 1):
+                    for aa in range(1, d0 + 1):
+                        idx += 1
+                        eix, eiy, eiz = comps[0][aa - 1]
+                        ejx, ejy, ejz = comps[1][bb - 1]
+                        ekx, eky, ekz = comps[2][cc - 1]
+                        elx, ely, elz = comps[3][dd2 - 1]
+                        hxn = ri.nm("hx", eix, ejx, ekx, elx)
+                        hyn = ri.nm("hy", eiy, ejy, eky, ely)
+                        hzn = ri.nm("hz", eiz, ejz, ekz, elz)
+                        acc.append(f"{pad}vbuf({idx}) = vbuf({idx}) + {hxn}*{hyn}*{hzn}")
+        out.append("\n".join(acc) + "\n")
+    return "".join(out)
 
 
 def main():
@@ -86,6 +144,12 @@ def main():
     ap.add_argument("--src-dir", default="src/generated",
                     help="where trc_pc_k{tag}.F90 (the scalar HGP kernel) "
                          "already lives")
+    ap.add_argument("--unroll-max-comp", default="0",
+                    help="unroll the component and root loops (see "
+                         "rys_inline.py's UNROLLED MODE) for a class whose "
+                         "na*nb*nc*nd is at most this; 'inf'/'all' unrolls "
+                         "every class. Default 0: no class is unrolled, "
+                         "i.e. today's array/loop form, unchanged")
     ap.add_argument("-o", "--output", required=True,
                     help="required, and never a path under src/generated: "
                          "unlike the Rys root tables, these per-class "
@@ -99,6 +163,7 @@ def main():
     nroots = (la + lb + lc + ld)//2 + 1
     dims = [len(co.components(l, args.order)) for l in (la, lb, lc, ld)]
     nv = dims[0]*dims[1]*dims[2]*dims[3]
+    unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
     src = open(src_path).read()
@@ -142,13 +207,19 @@ def main():
     decl_new = (
         f"      real(dp) :: vbuf({nv})\n"
         f"      real(dp) :: ru({nroots}), rw({nroots})\n"
-        f"      real(dp) :: gx(0:{ni}, 0:{nk}), gy(0:{ni}, 0:{nk}), gz(0:{ni}, 0:{nk})\n"
-        f"      real(dp) :: hx(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
-        f"      real(dp) :: hy(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
-        f"      real(dp) :: hz(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
         f"      real(dp) :: u2, dinv, b00r, b10r, bp01r, f00\n"
         f"      real(dp) :: c00x, c00y, c00z, cp0x, cp0y, cp0z\n"
-        f"      integer  :: rr, aa, bb, cc, dd2\n")
+        + ri.roots_decls())
+    if unroll:
+        decl_new += ri.unrolled_table_decls(ni, nk, la, lb, lc, ld, 6)
+    else:
+        decl_new += (
+            f"      real(dp) :: gx(0:{ni}, 0:{nk}), gy(0:{ni}, 0:{nk}), gz(0:{ni}, 0:{nk})\n"
+            f"      real(dp) :: hx(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
+            f"      real(dp) :: hy(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
+            f"      real(dp) :: hz(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
+            f"      integer  :: rr, aa, bb, cc, dd2\n"
+            + ri.rys2d_hrr_decls(la, lb, nk))
     head = head[:m.start()] + decl_new + head[m.end():]
 
     # Boys scratch, now unused.
@@ -165,10 +236,10 @@ def main():
     head, n1 = zero_re.subn(lambda g: f"{g.group(1)}{nv}{g.group(2)}vbuf(x){g.group(3)}", head, 1)
     assert n1 == 1, "could not find the g1 zero loop to retarget at vbuf"
 
-    # No Boys function; the root lookup replaces it.
+    # No Boys function; the root lookup replaces it, inlined (see
+    # rys_inline.py) rather than called.
     head, n1 = re.subn(r"   use trc_boys, only:.*?BOYS_DT, BOYS_DTINV\n",
-                       f"   use trc_boys, only: dp\n"
-                       f"   use trc_rys, only: trc_rys_roots{nroots}_tab\n",
+                       f"   use trc_boys, only: dp\n" + ri.roots_table_use(nroots),
                        head, count=1, flags=re.S)
     assert n1 == 1
 
@@ -210,10 +281,17 @@ def main():
 
     # The Rys integral itself: roots, the 2D recurrence per axis, the
     # horizontal transfer per axis, and the outer product straight into
-    # vbuf -- no deferred HRR, see the module docstring.
-    middle = f"""
-                  call trc_rys_roots{nroots}_tab(tval, ru, rw)
-
+    # vbuf -- no deferred HRR, see the module docstring. Every piece is
+    # inlined straight-line code (scripts/rys_inline.py): no CALL survives
+    # into the SASS, which is this generator's whole point -- see that
+    # module's docstring for why a call boundary, even within the same
+    # module, could not be trusted to disappear on its own.
+    if unroll:
+        middle = "\n" + unrolled_energy_middle(tag, la, lb, lc, ld, ni, nk, nroots, dims, args.order) + \
+            "               end do\n            end do\n"
+    else:
+        middle = f"""
+{ri.roots_inline_body(nroots, "tval", 18)}
                   do rr = 1, {nroots}
                      u2 = ru(rr)/(1.0_dp - ru(rr))*rho
                      dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
@@ -228,12 +306,12 @@ def main():
                      cp0y = qcy + u2*zeta*dinv*pqy
                      cp0z = qcz + u2*zeta*dinv*pqz
 
-                     call rys2d_{tag}(c00x, cp0x, b00r, b10r, bp01r, 1.0_dp, gx)
-                     call rys2d_{tag}(c00y, cp0y, b00r, b10r, bp01r, 1.0_dp, gy)
-                     call rys2d_{tag}(c00z, cp0z, b00r, b10r, bp01r, f00,    gz)
-                     call rys_hrr_{tag}(gx, abx, cdx, hx)
-                     call rys_hrr_{tag}(gy, aby, cdy, hy)
-                     call rys_hrr_{tag}(gz, abz, cdz, hz)
+{ri.rys2d_inline_body(ni, nk, "c00x", "cp0x", "b00r", "b10r", "bp01r", "1.0_dp", "gx", 21)}
+{ri.rys2d_inline_body(ni, nk, "c00y", "cp0y", "b00r", "b10r", "bp01r", "1.0_dp", "gy", 21)}
+{ri.rys2d_inline_body(ni, nk, "c00z", "cp0z", "b00r", "b10r", "bp01r", "f00",    "gz", 21)}
+{ri.hrr_inline_body(ni, nk, la, lb, lc, ld, "gx", "abx", "cdx", "hx", 21)}
+{ri.hrr_inline_body(ni, nk, la, lb, lc, ld, "gy", "aby", "cdy", "hy", 21)}
+{ri.hrr_inline_body(ni, nk, la, lb, lc, ld, "gz", "abz", "cdz", "hz", 21)}
 
                      idx = 0
                      do dd2 = 1, {dims[3]}
@@ -257,83 +335,30 @@ def main():
     # Component tables: aa/bb/cc/dd2 above index into these to pick up each
     # shell's (lx,ly,lz) triple in the BUILD'S OWN Cartesian order -- the
     # same order gen_perclass.py's digestion scattered into when it wrote
-    # the tail this file reused verbatim.
+    # the tail this file reused verbatim. An unrolled class needs none of
+    # this: the component triples are read straight off `co.components` at
+    # GENERATION time instead (see unrolled_energy_middle).
     tabs = ""
-    for nm, ax in (("cnx", 0), ("cny", 1), ("cnz", 2)):
-        for which, l in enumerate((la, lb, lc, ld)):
-            comps = co.components(l, args.order)
-            vals = ", ".join(str(c[ax]) for c in comps)
-            tabs += f"   integer, parameter :: {nm}{which}_{tag}({len(comps)}) = [{vals}]\n"
+    if not unroll:
+        for cnm, ax in (("cnx", 0), ("cny", 1), ("cnz", 2)):
+            for which, l in enumerate((la, lb, lc, ld)):
+                comps = co.components(l, args.order)
+                vals = ", ".join(str(c[ax]) for c in comps)
+                tabs += f"   integer, parameter :: {cnm}{which}_{tag}({len(comps)}) = [{vals}]\n"
 
+    # `ren` renamed the module's own "contains" line nowhere -- it is bare
+    # text -- so insert the component tables ahead of the module's original
+    # `contains` (the one right after its TWO_PI_2_5 parameter, in the
+    # specification part, before any subroutine; the tables are `parameter`
+    # arrays and may not follow one). No helper subroutines follow them any
+    # more -- the roots lookup, 2D recurrence and HRR are inlined straight
+    # into `middle` below instead of called, so `contains` goes right back
+    # to introducing rys{tag}/rysi{tag}, same as the HGP file this was
+    # spliced from.
     helpers = f"""
 {tabs}
 contains
-
-   pure subroutine rys2d_{tag}(c00, cp00, b00, b10, bp01, g00, g)
-      !! One axis of 2D Rys integrals, all angular momentum on A and C.
-      !$acc routine seq
-      real(dp), intent(in)  :: c00, cp00, b00, b10, bp01, g00
-      real(dp), intent(out) :: g(0:{ni}, 0:{nk})
-      integer :: i, k
-
-      g(0, 0) = g00
-{"      g(1, 0) = c00*g00" if ni >= 1 else ""}
-{f"      do i = 1, {ni - 1}" if ni >= 2 else ""}
-{"         g(i + 1, 0) = real(i, dp)*b10*g(i - 1, 0) + c00*g(i, 0)" if ni >= 2 else ""}
-{"      end do" if ni >= 2 else ""}
-{"      g(0, 1) = cp00*g00" if nk >= 1 else ""}
-{f"      do i = 1, {ni}" if nk >= 1 and ni >= 1 else ""}
-{"         g(i, 1) = real(i, dp)*b00*g(i - 1, 0) + cp00*g(i, 0)" if nk >= 1 and ni >= 1 else ""}
-{"      end do" if nk >= 1 and ni >= 1 else ""}
-{f"      do k = 1, {nk - 1}" if nk >= 2 else ""}
-{"         g(0, k + 1) = real(k, dp)*bp01*g(0, k - 1) + cp00*g(0, k)" if nk >= 2 else ""}
-{f"         do i = 1, {ni}" if nk >= 2 and ni >= 1 else ""}
-{"            g(i, k + 1) = real(i, dp)*b00*g(i - 1, k) &" if nk >= 2 and ni >= 1 else ""}
-{"                        + real(k, dp)*bp01*g(i, k - 1) + cp00*g(i, k)" if nk >= 2 and ni >= 1 else ""}
-{"         end do" if nk >= 2 and ni >= 1 else ""}
-{"      end do" if nk >= 2 else ""}
-   end subroutine rys2d_{tag}
-
-   pure subroutine rys_hrr_{tag}(g, ab, cd, h)
-      !! Horizontal transfer on both indices: (a,b+1| = (a+1,b| + (A-B)(a,b|.
-      !! Binomials for a shift of 0, 1 or 2, written out -- LMAX stays 2.
-      !$acc routine seq
-      real(dp), intent(in)  :: g(0:{ni}, 0:{nk}), ab, cd
-      real(dp), intent(out) :: h(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})
-      real(dp) :: t(0:{la}, 0:{lb}, 0:{nk})
-      integer  :: a, b, c
-      real(dp) :: ab2, cd2
-
-      ab2 = ab*ab
-      cd2 = cd*cd
-      do a = 0, {la}
-         do c = 0, {nk}
-{chr(10).join(f"            t(a, {b}, c) = " + " + ".join(
-    (("" if co_ == 1 else f"{float(co_)}_dp*") +
-     ("" if p == 0 else (f"ab*" if p == 1 else f"ab2*")) + f"g(a + {t}, c)")
-    for t, (co_, p) in enumerate((_BINOM[b][t], b - t) for t in range(b + 1)))
-    for b in range(lb + 1))}
-         end do
-      end do
-      do a = 0, {la}
-         do b = 0, {lb}
-            do c = 0, {lc}
-{chr(10).join(f"               h(a, b, c, {d}) = " + " + ".join(
-    (("" if co_ == 1 else f"{float(co_)}_dp*") +
-     ("" if p == 0 else (f"cd*" if p == 1 else f"cd2*")) + f"t(a, b, c + {t})")
-    for t, (co_, p) in enumerate((_BINOM[d][t], d - t) for t in range(d + 1)))
-    for d in range(ld + 1))}
-            end do
-         end do
-      end do
-   end subroutine rys_hrr_{tag}
 """
-
-    # `ren` renamed the module's own "contains" line nowhere -- it is bare
-    # text -- so insert the component tables and the two helpers at the
-    # module's original `contains` (the one right after its TWO_PI_2_5
-    # parameter, in the specification part, before any subroutine; the
-    # tables are `parameter` arrays and may not follow one).
     assert head.count("\ncontains\n") == 1
     head = head.replace("\ncontains\n", helpers, 1)
 
