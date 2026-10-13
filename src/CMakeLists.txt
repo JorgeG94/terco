@@ -262,9 +262,11 @@ if(TERCO_RYS)
             generated/rys/trc_rys_table4.F90
             generated/rys/trc_rys_table5.F90)
 
-  # Every class with at least one d shell, plus (pp|pp) and (pp|ps) for
-  # crossover measurement below it -- the measured crossover sits near
-  # (pp|pp), so those two are included even without a d shell. Regenerated
+  # Every class with at least one d shell, plus (pp|pp) and (pp|ps) as the
+  # light end of the HGP/Rys comparison: measured on a 450-atom water cluster
+  # in 6-31G*, Rys only beats HGP at (dd|dd) (1.11x) and is 1.1-7.4x slower
+  # everywhere below, (pp|pp) the slowest, which is why HGP stays the energy
+  # default for every class. The gradient family covers all 81. Regenerated
   # at configure time into the build tree, never committed: unlike the root
   # tables above, a per-class kernel needs no mpmath, and it is only ever as
   # current as the HGP scalar kernel it is spliced from, which this project
