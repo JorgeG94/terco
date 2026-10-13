@@ -148,7 +148,7 @@ jobs:
           python3 scripts/gen_perclass.py --lmax 2 --split src/generated
           python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
           python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
-          python3 scripts/gen_df.py --lmax 2 -o src/generated/trc_df_kernels.F90
+          python3 scripts/gen_df.py --lmax 2 --split src/generated
 
       - name: Require no diff
         run: |

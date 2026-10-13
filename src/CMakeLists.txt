@@ -204,8 +204,11 @@ if(_regen)
   if(NOT "${TERCO_DF_LMAX}" STREQUAL "")
     set(_df_lmax ${TERCO_DF_LMAX})
   endif()
+  # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
+  # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
+  # module did not finish compiling on the GPU back end.
   execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
-                          ${_order_flag} -o ${_gen_out}/trc_df_kernels.F90
+                          ${_order_flag} --split ${_gen_out}
                   RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_df.py failed (${_rc})")
