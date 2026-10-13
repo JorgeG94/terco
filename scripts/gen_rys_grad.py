@@ -262,6 +262,273 @@ def unrolled_gradient_middle(tag, la, lb, lc, ld, nig, nkg, nroots, dims, order)
     return "".join(out)
 
 
+def _same_atom_check(term):
+    """The same-atom skip, exactly as injected into the fused item routine
+    (see the `inject` string in `main`), with `return` swapped for
+    whatever control-flow word fits the caller -- `cycle` inside the
+    screen pass's chunk loop, `return` (the default, unused here) inside
+    a `pure` item routine."""
+    return f"""\
+         ! A quartet whose four shells sit on one atom is translation-
+         ! invariant on its own: dGrad/dR = 0 for every R trivially, so skip
+         ! it before the primitive loop rather than compute and cancel it.
+         if (sh_at(si) == sh_at(sj) .and. sh_at(si) == sh_at(sk) &
+             .and. sh_at(si) == sh_at(sl)) {term}
+"""
+
+
+def _return_to(s, term, n):
+    """Swap every `...) return` for `...) term` in a decode/screen
+    fragment sliced out of the fused item routine -- `cycle` turns a
+    `return`-from-item screen into a `cycle`-this-work-item screen inside
+    the chunk loop below. `n` is the expected count, asserted so a future
+    change to the spliced text cannot silently change how many screens
+    the chunk loop actually applies."""
+    s2, cnt = re.subn(r"\) return\n", f") {term}\n", s)
+    assert cnt == n, (n, cnt, s)
+    return s2
+
+
+def screen_and_compact_text(tag, head, middle):
+    """ORDERED SURVIVOR COMPACTION (ps|ss) prototype, generalised to every
+    class: split the fused rysg{tag}/rysgi{tag} this module already built
+    (in `head`/`middle`) into
+
+      - rysg{tag}_screen / rysgi{tag}_screen_chunk: the decode and the
+        three quartet-level screens (exact Schwarz, density-weighted,
+        same-atom) ONLY, run RUNLEN=32 consecutive work items per `do
+        concurrent` iteration (one warp's worth), appending survivors'
+        (seg, iab, icd) to a dense list with ONE atomic-capture per
+        chunk, sized to the chunk's own local survivor count, written in
+        item order. The decode is bra-fastest, so RUNLEN consecutive
+        items usually share one ket pair -- the chunked append keeps
+        those survivors contiguous, instead of scattering them the way a
+        per-item atomic-capture append would. RUNLEN=32 measured against
+        64/128/256 on (ps|ss), w150 6-31G*, V100: 32 matches the warp
+        width and wins (3.97s fused -> 3.31s per-item append -> 2.15s
+        RUNLEN=32 at thresh=1e-13; 1.62 -> 0.92s at 1e-10).
+      - rysg{tag}_compact / rysgi{tag}_compact: the SAME integral body
+        the fused kernel runs (same_ab/same_cd/same_pair, the AO offsets,
+        the density fold, Gamma, the Rys root/HRR/derivative build, the
+        atomic grad updates) over that dense survivor list, by slicing
+        the fused item routine's own text right after its decode and
+        screens -- nothing here is retyped or re-derived by hand. The
+        same-atom check is spliced in TWICE (once in the screen pass as
+        `cycle`, once more where the fused text already has it before the
+        AO offsets) rather than edited out of the second copy: it is
+        dead the second time (the screen pass already removed every
+        same-atom survivor) but removing it would mean hand-editing
+        spliced text instead of just slicing around it.
+
+    Every piece below is sliced out of `head`/`middle` by anchoring on
+    literal text that does not depend on (la, lb, lc, ld) -- the decode,
+    the screens and the primitive-pair loop headers are byte-identical
+    across every class (only array sizes and the integral build differ,
+    and those live entirely in the parts this function does not touch).
+    """
+    decl_end_marker = "real(dp), intent(inout) :: grad(3, natm)\n"
+    decl_start = head.rfind(decl_end_marker) + len(decl_end_marker)
+    assert decl_start > len(decl_end_marker)
+
+    decode_start_marker = "      ! locate the segment\n"
+    decode_start = head.index(decode_start_marker, decl_start)
+    item_decls = head[decl_start:decode_start]
+
+    schwarz_return = "if (qcut <= thresh) return\n"
+    decode_end = head.index(schwarz_return, decode_start) + len(schwarz_return)
+    decode_block = head[decode_start:decode_end]
+
+    si_marker = "si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)\n"
+    si_start = head.index(si_marker, decode_end)
+    density_comment = "         ! Density-weighted screen."
+    density_start = head.index(density_comment, si_start)
+    si_only_block = head[si_start:density_start]
+
+    density_return = "dsh(sj, sk), dsh(sj, sl)) <= thresh) return\n"
+    density_end = head.index(density_return, density_start) + len(density_return)
+    density_block = head[density_start:density_end]
+
+    # same_ab/same_cd/same_pair, slotab/slotcd/nab/ncd, abx..cdz, the
+    # injected same-atom+mui+wq+kfac_eff+gam block, and the primitive-pair
+    # loop headers through the tval line -- unchanged, verbatim, for the
+    # compact pass only (the screen pass stops at the same-atom check).
+    rest_after_density = head[density_end:]
+
+    decode_block_c = _return_to(decode_block, "cycle", 1)
+    density_block_c = _return_to(density_block, "cycle", 1)
+    same_atom_c = _same_atom_check("cycle")
+
+    decl_line_old = "      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl\n"
+    decl_line_new = "      integer :: p, q, mid, t, si, sj, sk, sl\n"
+    compact_decls, ndc = re.subn(re.escape(decl_line_old), decl_line_new, item_decls, count=1)
+    assert ndc == 1, "compact decl rewrite: expected decode-local decl line not found"
+
+    end_marker_old = f"      end subroutine rysgi{tag}\n"
+    end_marker_new = f"      end subroutine rysgi{tag}_compact\n"
+    assert middle.count(end_marker_old) == 1
+    compact_middle = middle.replace(end_marker_old, end_marker_new, 1)
+
+    screen = f"""
+   !
+   ! ORDERED SURVIVOR COMPACTION -- screen pass, class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}).
+   ! See screen_and_compact_text's docstring (scripts/gen_rys_grad.py) for
+   ! the technique and the measurement it is based on.
+   !
+   subroutine rysg{tag}_screen(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                             npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
+                             out_seg, out_iab, out_icd, nmax, ctr)
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nmax
+      integer(int64), intent(in) :: sOff(nseg + 1)
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in)    :: dsh(nbas, nbas)
+      integer,  intent(in)    :: sh_at(nbas)
+      integer,  intent(inout) :: out_seg(nmax), out_iab(nmax), out_icd(nmax)
+      integer(int64), intent(inout) :: ctr(1)
+      !: Run length a chunk screens per `do concurrent` iteration: one
+      !: warp's worth. Measured against 64/128/256 on (ps|ss), w150
+      !: 6-31G*, V100 -- 32 matches the warp width and wins; see this
+      !: file's module-level screen_and_compact_text docstring.
+      integer, parameter :: RUNLEN = 32
+      integer(int64) :: g0, g1, nr, nchunks, c, clen
+      g0 = sOff(lo) + 1
+      g1 = sOff(hi + 1)
+      nr = 0
+      if (g1 >= g0) nr = g1 - g0 + 1
+      nchunks = (nr + RUNLEN - 1)/RUNLEN
+      do concurrent(c=1:nchunks)
+         call rysgi{tag}_screen_chunk(g0 + (c - 1)*RUNLEN, &
+                               min(int(RUNLEN, int64), nr - (c - 1)*RUNLEN), &
+                               lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                               npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
+                               out_seg, out_iab, out_icd, nmax, ctr)
+      end do
+   end subroutine rysg{tag}_screen
+
+   pure subroutine rysgi{tag}_screen_chunk(gt0, clen, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                             npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
+                             out_seg, out_iab, out_icd, nmax, ctr)
+      !$acc routine seq
+      integer(int64), intent(in) :: gt0, clen
+      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nmax
+      integer(int64), intent(in) :: sOff(nseg + 1)
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in)    :: dsh(nbas, nbas)
+      integer,  intent(in)    :: sh_at(nbas)
+      integer,  intent(inout) :: out_seg(nmax), out_iab(nmax), out_icd(nmax)
+      integer(int64), intent(inout) :: ctr(1)
+      integer, parameter :: RUNLEN = 32
+      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
+      integer(int64) :: nsa, u, kx, gt, slot0
+      real(dp) :: qcut
+      integer :: loc_seg(RUNLEN), loc_iab(RUNLEN), loc_icd(RUNLEN)
+      integer :: nlocal, j
+
+      nlocal = 0
+      do j = 0, int(clen) - 1
+         gt = gt0 + j
+
+{decode_block_c}{si_only_block}{density_block_c}{same_atom_c}
+         nlocal = nlocal + 1
+         loc_seg(nlocal) = seg
+         loc_iab(nlocal) = iab
+         loc_icd(nlocal) = icd
+      end do
+
+      if (nlocal > 0) then
+         !$acc atomic capture
+         slot0 = ctr(1)
+         ctr(1) = ctr(1) + nlocal
+         !$acc end atomic
+         do j = 1, nlocal
+            if (slot0 + (j - 1) < int(nmax, int64)) then
+               out_seg(slot0 + j) = loc_seg(j)
+               out_iab(slot0 + j) = loc_iab(j)
+               out_icd(slot0 + j) = loc_icd(j)
+            end if
+         end do
+      end if
+   end subroutine rysgi{tag}_screen_chunk
+"""
+
+    compact = f"""
+   !
+   ! ORDERED SURVIVOR COMPACTION -- compact pass, class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}).
+   ! The same integral body rysgi{tag} above runs, sliced to start right
+   ! after the decode and the three quartet-level screens: seg/iab/icd
+   ! come in directly instead of being decoded from a work-item index,
+   ! and the Schwarz/density screens are not repeated (the screen pass
+   ! already applied them). See screen_and_compact_text's docstring.
+   !
+   subroutine rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                             nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                             ndens, dmat, grad)
+      integer(int64), intent(in) :: nout
+      integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
+      integer,  intent(in)    :: nseg, npair, nbas, nao
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac
+      integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
+      integer,  intent(in)    :: ndens
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      real(dp), intent(inout) :: grad(3, natm)
+      integer(int64) :: i
+      do concurrent(i=1:nout)
+         call rysgi{tag}_compact(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                                npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                                nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                                ndens, dmat, grad)
+      end do
+   end subroutine rysg{tag}_compact
+
+   pure subroutine rysgi{tag}_compact(seg, iab, icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                             nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                             ndens, dmat, grad)
+      !$acc routine seq
+      integer,  intent(in)    :: seg, iab, icd
+      integer,  intent(in)    :: nseg, npair, nbas, nao
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac
+      integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
+      integer,  intent(in)    :: ndens
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      real(dp), intent(inout) :: grad(3, natm)
+{compact_decls}
+{si_only_block}{rest_after_density}{compact_middle}"""
+
+    return screen + compact
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("class_tag", help="four digits, e.g. 1111 or 2222")
@@ -528,7 +795,10 @@ def main():
         t = t.replace(f"pcs{tag}", f"rysg{tag}")
         return t
 
-    head = re.sub(r"public :: pcs" + tag + r".*\n", f"public :: rysg{tag}\n", head, count=1)
+    head = re.sub(r"public :: pcs" + tag + r".*\n",
+                  f"public :: rysg{tag}\n"
+                  f"   public :: rysg{tag}_screen, rysg{tag}_compact\n",
+                  head, count=1)
     head = ren(head)
 
     old_header_re = re.compile(r"\A!\n.*?#endif\n", re.S)
@@ -688,7 +958,9 @@ contains
     assert head.count("\ncontains\n") == 1
     head = head.replace("\ncontains\n", helpers, 1)
 
-    out = head + middle + f"\nend module trc_pc_rysg{tag}\n"
+    sc_text = screen_and_compact_text(tag, head, middle)
+
+    out = head + middle + sc_text + f"\nend module trc_pc_rysg{tag}\n"
     with open(args.output, "w") as fh:
         fh.write(out)
     print(f"  {args.output}: ({la}{lb}|{lc}{ld}), {nroots} roots, "
