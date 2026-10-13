@@ -94,15 +94,19 @@ option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" O
 option(TERCO_REGENERATE
        "Regenerate the committed kernels in-tree rather than using them" OFF)
 #
-# Rys quadrature, next to HGP, selectable per class at RUNTIME by
-# TRC_RYS_CLASSES (trc_rys_select.F90) -- a measurement tool, never the
-# default for any class; see docs/RYS.md for the working-set argument this
-# is testing. OFF builds nothing new: no root tables, no per-class Rys
-# kernel, no dispatcher, and trc_binkernel.F90's call site compiles back to
-# exactly what it was before this option existed.
+# Rys quadrature, built by default: it is the only source of the analytic
+# two-electron gradient (eri%gradient), and the kernels the Fock build uses
+# do not change -- HGP stays the energy path for every class unless
+# TRC_RYS_CLASSES routes one to Rys at runtime (trc_rys_select.F90). OFF
+# builds a library without the gradient: no root tables, no per-class Rys
+# kernels, no dispatchers, and eri%gradient stops with an error. The cost
+# of ON is compile time -- roughly 25 CPU-minutes of extra nvfortran GPU
+# compilation, measured per object (the chunked heavy gradient classes run to
+# 1-3 min each) -- and Python 3 at configure time, which generates the
+# per-class kernels into the build tree.
 #
 option(TERCO_RYS
-       "Also build the Rys kernel family, selectable per class at runtime" OFF)
+       "Build the Rys kernel family: the analytic gradient, and per-class Rys energies" ON)
 #
 # Unroll the Rys kernels' root and component loops (scripts/rys_inline.py's
 # UNROLLED MODE) for every class whose Cartesian component count na*nb*nc*nd

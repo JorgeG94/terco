@@ -240,11 +240,11 @@ list(LENGTH _generated _ngen)
 message(STATUS "terco: ${_ngen} generated kernel modules from ${_gen_dir}")
 target_sources(${main_lib} PRIVATE ${_generated})
 
-# --- Rys, optional -----------------------------------------------------------
+# --- Rys (on by default) -----------------------------------------------------
 #
 # See the TERCO_RYS option's own comment (top-level CMakeLists.txt). OFF
-# (the default) adds nothing: no root tables, no per-class kernel, no
-# dispatcher, and nothing above this line is affected either way.
+# adds nothing: no root tables, no per-class kernel, no dispatcher, and
+# nothing above this line is affected either way.
 #
 if(TERCO_RYS)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
