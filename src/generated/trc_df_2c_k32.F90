@@ -58,20 +58,28 @@ contains
       integer,  intent(in)    :: ord_a(na), ord_c(nc)
       real(dp), intent(inout) :: jmat(nao, nao)
 
-      integer  :: ii, jj, a, c, mu, nu, k
+      integer  :: ii, jj, a, c, mu, nu
       real(dp) :: blk(60)
 
       ii = ord_a(int(mod(t, int(na, 8))) + 1)
       jj = ord_c(int(t/na) + 1)
       call df_2c32(sh_np(ii), sh_e(:, ii), sh_c(:, ii), sh_r(:, ii), &
                  sh_np(jj), sh_e(:, jj), sh_c(:, jj), sh_r(:, jj), blk)
-      k = 0
+      ! `blk` is addressed by the SAME affine formula the kernel's own
+      ! digestion used to fill it (slot = 1 + ia + na*ic, emit_class's
+      ! else-branch above) rather than a running counter incremented once
+      ! per iteration: nvfortran 26.5 fails "Missing increment value" on
+      ! `!$acc routine seq` translation of a nested loop that increments a
+      ! counter and uses it as another array's subscript while ALSO writing
+      ! a two-index array through loop-derived indices (mu, nu) -- confirmed
+      ! with a four-line reproducer outside this project, bisected down to
+      ! exactly that combination. An affine index from the loop variables
+      ! sidesteps it and costs nothing: na is a compile-time literal here.
       do c = 0, 5
          nu = sh_ao(jj) + c
          do a = 0, 9
             mu = sh_ao(ii) + a
-            k = k + 1
-            jmat(mu, nu) = blk(k)
+            jmat(mu, nu) = blk(1 + a + 10*c)
          end do
       end do
    end subroutine df_2c_i32

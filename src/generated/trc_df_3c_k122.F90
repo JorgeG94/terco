@@ -82,7 +82,7 @@ contains
       integer,  intent(in)    :: ord_a(nac)
       real(dp), intent(inout) :: tens(nao, nao, nax)
 
-      integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, m, o
+      integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, o
       real(dp) :: blk(108), abx, aby, abz
 
       ip = ord_p(int(mod(t, int(npc, 8))) + 1)
@@ -101,16 +101,20 @@ contains
       ! (mu nu|P) is symmetric in mu <-> nu, so each thread fills both. On a
       ! diagonal shell pair the second write repeats the first with the same
       ! value -- same convention as the old single-dispatch df_3c_item.
-      m = 0
+      !
+      ! `blk` is addressed by the SAME affine formula the kernel's own
+      ! digestion used to fill it (slot = 1 + ia + na*(ib + nb*ic),
+      ! emit_bra_hrr above) rather than a running counter -- see
+      ! emit_2c_module's identical comment for the nvfortran bug this
+      ! avoids. na and nb are compile-time literals here.
       do e = 0, 5
          pq = ax_ao(kk) + e
          do c = 0, 5
             nu = sh_ao(jj) + c
             do a = 0, 2
                mu = sh_ao(ii) + a
-               m = m + 1
-               tens(mu, nu, pq) = blk(m)
-               tens(nu, mu, pq) = blk(m)
+               tens(mu, nu, pq) = blk(1 + a + 3*(c + 6*e))
+               tens(nu, mu, pq) = blk(1 + a + 3*(c + 6*e))
             end do
          end do
       end do

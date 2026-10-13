@@ -356,20 +356,28 @@ contains
       integer,  intent(in)    :: ord_a(na), ord_c(nc)
       real(dp), intent(inout) :: jmat(nao, nao)
 
-      integer  :: ii, jj, a, c, mu, nu, k
+      integer  :: ii, jj, a, c, mu, nu
       real(dp) :: blk({na*nc})
 
       ii = ord_a(int(mod(t, int(na, 8))) + 1)
       jj = ord_c(int(t/na) + 1)
       call {kern}(sh_np(ii), sh_e(:, ii), sh_c(:, ii), sh_r(:, ii), &
                  sh_np(jj), sh_e(:, jj), sh_c(:, jj), sh_r(:, jj), blk)
-      k = 0
+      ! `blk` is addressed by the SAME affine formula the kernel's own
+      ! digestion used to fill it (slot = 1 + ia + na*ic, emit_class's
+      ! else-branch above) rather than a running counter incremented once
+      ! per iteration: nvfortran 26.5 fails "Missing increment value" on
+      ! `!$acc routine seq` translation of a nested loop that increments a
+      ! counter and uses it as another array's subscript while ALSO writing
+      ! a two-index array through loop-derived indices (mu, nu) -- confirmed
+      ! with a four-line reproducer outside this project, bisected down to
+      ! exactly that combination. An affine index from the loop variables
+      ! sidesteps it and costs nothing: na is a compile-time literal here.
       do c = 0, {nc - 1}
          nu = sh_ao(jj) + c
          do a = 0, {na - 1}
             mu = sh_ao(ii) + a
-            k = k + 1
-            jmat(mu, nu) = blk(k)
+            jmat(mu, nu) = blk(1 + a + {na}*c)
          end do
       end do
    end subroutine {itm}
@@ -458,7 +466,7 @@ contains
       integer,  intent(in)    :: ord_a(nac)
       real(dp), intent(inout) :: tens(nao, nao, nax)
 
-      integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, m, o
+      integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, o
       real(dp) :: blk({na*nb*nc}), abx, aby, abz
 
       ip = ord_p(int(mod(t, int(npc, 8))) + 1)
@@ -477,16 +485,20 @@ contains
       ! (mu nu|P) is symmetric in mu <-> nu, so each thread fills both. On a
       ! diagonal shell pair the second write repeats the first with the same
       ! value -- same convention as the old single-dispatch df_3c_item.
-      m = 0
+      !
+      ! `blk` is addressed by the SAME affine formula the kernel's own
+      ! digestion used to fill it (slot = 1 + ia + na*(ib + nb*ic),
+      ! emit_bra_hrr above) rather than a running counter -- see
+      ! emit_2c_module's identical comment for the nvfortran bug this
+      ! avoids. na and nb are compile-time literals here.
       do e = 0, {nc - 1}
          pq = ax_ao(kk) + e
          do c = 0, {nb - 1}
             nu = sh_ao(jj) + c
             do a = 0, {na - 1}
                mu = sh_ao(ii) + a
-               m = m + 1
-               tens(mu, nu, pq) = blk(m)
-               tens(nu, mu, pq) = blk(m)
+               tens(mu, nu, pq) = blk(1 + a + {na}*(c + {nb}*e))
+               tens(nu, mu, pq) = blk(1 + a + {na}*(c + {nb}*e))
             end do
          end do
       end do
