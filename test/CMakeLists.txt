@@ -325,6 +325,33 @@ if(Python3_FOUND)
         PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                    FIXTURES_REQUIRED rys_fock_probe_${case})
     endforeach()
+
+    #
+    # trc_df_2c ((P|Q)) and trc_df_3c ((mu nu|P)) against pyscf's
+    # int2c2e/aux_e2(int3c2e) -- the density-fitting analogue of the
+    # eri%fock comparison above, and the first one that can exercise a g
+    # SHELL (l=4), on the auxiliary basis. check_df_vs_pyscf.F90 skips
+    # itself (stop 0, after printing SKIP) when either basis needs more l
+    # than this build's DF_LMAX/DF_LMAX_AUX reach (gen_df.py's two
+    # ceilings, src/CMakeLists.txt's TERCO_DF_LMAX), same convention as
+    # check_rys_fock_vs_pyscf.F90's TRC_LMAX skip -- registered
+    # unconditionally, nothing to run at the shipped ceiling (DF_LMAX=2,
+    # DF_LMAX_AUX=3), and running water/cc-pVTZ (f on O) against
+    # cc-pVTZ-RI (g on O, scripts/pyscf_basis_to_json.py's
+    # cc-pvtz-rifit.json) once DF_LMAX reaches 3.
+    #
+    set(dump ${CMAKE_CURRENT_BINARY_DIR}/df_vs_pyscf_probe.bin)
+    terco_add_check(check_df_vs_pyscf check_df_vs_pyscf.F90
+                    NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvtz.json
+                    basis_sets/cc-pvtz-rifit.json ${dump})
+    add_test(NAME terco/check_df_vs_pyscf_ref
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/df_vs_pyscf_ref.py
+                     basis_sets/cc-pvtz.json basis_sets/cc-pvtz-rifit.json ${dump})
+    set_tests_properties(terco/check_df_vs_pyscf
+      PROPERTIES FIXTURES_SETUP df_vs_pyscf_probe)
+    set_tests_properties(terco/check_df_vs_pyscf_ref
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                 FIXTURES_REQUIRED df_vs_pyscf_probe)
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()

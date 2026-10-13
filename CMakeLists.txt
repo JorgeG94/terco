@@ -46,10 +46,15 @@ set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3)
 # The density-fitting kernels' orbital ceiling (gen_df.py --lmax; the
 # auxiliary ceiling is one higher). Empty follows TERCO_LMAX. Separate
 # because DF is three-centre with an auxiliary shell one above the orbital
-# one, and generated as one file: at TERCO_LMAX=3 (aux g) nvfortran spent
-# over two hours on it and had not finished, while nothing in the
-# four-centre f path uses it. 2 keeps the shipped DF set; RI-MP2 and the
-# trc_df_* entry points then stop on an orbital basis above d.
+# one: gen_df.py now emits one module per class (src/CMakeLists.txt's
+# --split, same reason gen_perclass.py's does), but before that split, at
+# TERCO_LMAX=3 (aux g) nvfortran spent over two hours on the single
+# monolithic file and had not finished, while nothing in the four-centre f
+# path uses it -- raising this alone (src/CMakeLists.txt sends it to the
+# build tree, never src/generated) is how the per-class split is exercised
+# without pulling in TERCO_LMAX's unrelated Rys four-centre sweep. 2 keeps
+# the shipped DF set; RI-MP2 and the trc_df_* entry points then stop on an
+# orbital basis above d.
 #
 set(TERCO_DF_LMAX
     ""

@@ -133,6 +133,17 @@ if(NOT TERCO_LMAX STREQUAL "2")
 elseif(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
   set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
   set(_regen ON)
+elseif(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND NOT TERCO_DF_LMAX STREQUAL "2")
+  # A DF ceiling above the shipped one, with the four-centre ceiling left at
+  # its default: into the build tree, same as the TERCO_LMAX branch above --
+  # never into src/generated, which TERCO_REGENERATE below writes into
+  # DELIBERATELY (regenerating the shipped --lmax 2 --lmax-aux 3 set in
+  # place to verify it reproduces the committed files). Without this branch,
+  # TERCO_DF_LMAX alone did nothing (_regen stayed OFF) unless paired with
+  # TERCO_REGENERATE, which then overwrote the committed DF kernels with a
+  # higher-ceiling set -- the mistake this branch exists to make impossible.
+  set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
+  set(_regen ON)
 elseif(TERCO_REGENERATE)
   set(_regen ON)
 endif()
