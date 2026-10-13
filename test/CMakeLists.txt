@@ -167,6 +167,40 @@ terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
 terco_add_check(check_nosym_f check_nosym.F90 NEEDS_BASIS ARGS water.xyz 3)
 
 #
+# Rys against HGP, same density and screening, on water/6-31G* and
+# water/cc-pVDZ. Only meaningful under TERCO_RYS=ON -- off, TRC_RYS_CLASSES
+# has no kernel to route to and the two builds this check compares are the
+# same build twice. GPU 2, not the fleet default of
+# 0 `terco_add_check` otherwise sets, to stay off the GPUs other work on
+# this host uses.
+#
+if(TERCO_RYS)
+  terco_add_check(check_rys_vs_hgp_631gs check_rys_vs_hgp.F90 NEEDS_BASIS
+                  ARGS basis_sets/6-31gs.json)
+  terco_add_check(check_rys_vs_hgp_ccpvdz check_rys_vs_hgp.F90 NEEDS_BASIS
+                  ARGS basis_sets/cc-pvdz.json)
+  set_tests_properties(
+    terco/check_rys_vs_hgp_631gs terco/check_rys_vs_hgp_ccpvdz
+    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+
+  #
+  # eri%gradient (Rys, the only scheme it has) against a central difference
+  # of eri%fock's (HGP by default) energy, RHF and UHF, water/6-31G* and
+  # water/cc-pVDZ. No
+  # TRC_RYS_CLASSES override here, deliberately -- the finite-difference
+  # reference goes through HGP, so this cross-validates the gradient's
+  # algebra against an UNRELATED energy path, not Rys against itself.
+  #
+  terco_add_check(check_rys_grad_fd_631gs check_rys_grad_fd.F90 NEEDS_BASIS
+                  ARGS basis_sets/6-31gs.json)
+  terco_add_check(check_rys_grad_fd_ccpvdz check_rys_grad_fd.F90 NEEDS_BASIS
+                  ARGS basis_sets/cc-pvdz.json)
+  set_tests_properties(
+    terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
+    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+endif()
+
+#
 # Cartesian multipoles through the octupole. The Fortran half writes a binary
 # dump; `mult_ref.py` compares all 39 components against pyscf and refuses to
 # judge any of them until the overlap agrees first.
@@ -220,6 +254,34 @@ if(Python3_FOUND)
     set_tests_properties(
       terco/check_rotaxis_numeric
       PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    if(TERCO_RYS)
+      # eri%gradient against pyscf's int2e_ip1, contracted with the same
+      # Gamma by hand (pyscf's own Gradients class assumes a converged SCF
+      # density; this is a fixed, non-SCF density, same reasoning as
+      # check_rys_grad_fd). RHF and UHF, water/6-31G* and water/cc-pVDZ.
+      # Each basis has its own dump in the build tree, and each reader requires
+      # its own producer through a fixture, so the pair is correct in any
+      # order and under ctest -j. A shared dump file, ordered by DEPENDS, let
+      # the 6-31G* reader compare cc-pVDZ's numbers.
+      foreach(b 631gs ccpvdz)
+        if(b STREQUAL "631gs")
+          set(json basis_sets/6-31gs.json)
+        else()
+          set(json basis_sets/cc-pvdz.json)
+        endif()
+        set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
+        terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
+                        NEEDS_BASIS ARGS ${json} ${dump})
+        add_test(NAME terco/check_rys_grad_vs_pyscf_${b}_ref
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rys_grad_ref.py
+                         ${json} ${dump})
+        set_tests_properties(terco/check_rys_grad_vs_pyscf_${b}
+          PROPERTIES FIXTURES_SETUP rys_grad_probe_${b})
+        set_tests_properties(terco/check_rys_grad_vs_pyscf_${b}_ref
+          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     FIXTURES_REQUIRED rys_grad_probe_${b})
+      endforeach()
+    endif()
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()

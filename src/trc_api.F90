@@ -119,6 +119,10 @@ module trc_api
       real(dp), allocatable :: sh_c(:, :)   !! (maxnp, nshell) coefficients,
                                             !! with common_fac_sp folded in
       real(dp), allocatable :: sh_r(:, :)   !! (3, nshell) centres
+      integer,  allocatable :: sh_at(:)     !! (nshell) atom index of the shell's
+                                            !! centre, for the gradient's shell ->
+                                            !! atom map; built in `build` by an
+                                            !! exact match of sh_r against at_r
       real(dp), allocatable :: at_z(:)      !! (natm) charges
       real(dp), allocatable :: at_r(:, :)   !! (3, natm) positions
       !
@@ -275,7 +279,7 @@ contains
       real(dp), intent(in) :: sh_r(3, nshell)
       real(dp), intent(in) :: at_z(natm), at_r(3, natm)
 
-      integer :: i, k, n
+      integer :: i, k, n, ia
 
       call this%release()
       call boys_init()
@@ -287,7 +291,7 @@ contains
       allocate (this%sh_l(nshell), this%sh_np(nshell), this%sh_ao(nshell))
       allocate (this%sh_ao_sph(nshell))
       allocate (this%sh_e(maxnp, nshell), this%sh_c(maxnp, nshell))
-      allocate (this%sh_r(3, nshell))
+      allocate (this%sh_r(3, nshell), this%sh_at(nshell))
       allocate (this%at_z(natm), this%at_r(3, natm))
       this%sh_e = 0.0_dp; this%sh_c = 0.0_dp
 
@@ -301,6 +305,23 @@ contains
          this%sh_l(i)  = sh_l(i)
          this%sh_np(i) = sh_np(i)
          this%sh_r(:, i) = sh_r(:, i)
+         ! Every caller sets sh_r(:,i) to a bit-identical copy of some
+         ! at_r(:,ia) -- trc_basis_json.F90, trc_decontract.F90 (a split
+         ! shell keeps its parent's centre) and basis_from_libcint all copy
+         ! the coordinate, never recompute it -- so an exact match is a
+         ! robust shell -> atom map, not a tolerance-guarded heuristic.
+         ! sh_at stays 0 for a shell on no atom. That is legitimate here --
+         ! a ghost or probe function (sapcmp's far-field check) needs no
+         ! atom for the one-electron or Fock paths -- so it is
+         ! eri%gradient, the one consumer of sh_at, that refuses it.
+         this%sh_at(i) = 0
+         do ia = 1, natm
+            if (sh_r(1, i) == at_r(1, ia) .and. sh_r(2, i) == at_r(2, ia) &
+                .and. sh_r(3, i) == at_r(3, ia)) then
+               this%sh_at(i) = ia
+               exit
+            end if
+         end do
          ! Primitives with a zero coefficient are dropped here, once. A
          ! general-contraction table lists every exponent of the block under
          ! every column, so the uncontracted column of a cc-pVDZ carbon s
@@ -352,12 +373,14 @@ contains
       out%maxnp = this%maxnp
       allocate (out%sh_l(n), out%sh_np(n), out%sh_ao(n), out%sh_ao_sph(n))
       allocate (out%sh_e(this%maxnp, n), out%sh_c(this%maxnp, n), out%sh_r(3, n))
+      allocate (out%sh_at(n))
       allocate (out%at_z(this%natm), out%at_r(3, this%natm))
       out%sh_l = this%sh_l(s0:s1)
       out%sh_np = this%sh_np(s0:s1)
       out%sh_e = this%sh_e(:, s0:s1)
       out%sh_c = this%sh_c(:, s0:s1)
       out%sh_r = this%sh_r(:, s0:s1)
+      out%sh_at = this%sh_at(s0:s1)
       out%at_z = this%at_z
       out%at_r = this%at_r
       ! Same convention as the parent -- an atomic SAD/SADQ subbasis stays
@@ -429,7 +452,7 @@ contains
       if (this%on_device) return
       !$acc enter data copyin(this)
       !$acc enter data copyin(this%sh_l, this%sh_np, this%sh_ao, this%sh_ao_sph, &
-      !$acc                   this%sh_e, this%sh_c, this%sh_r, &
+      !$acc                   this%sh_e, this%sh_c, this%sh_r, this%sh_at, &
       !$acc                   this%at_z, this%at_r)
       this%on_device = .true.
    end subroutine basis_to_device
@@ -438,7 +461,7 @@ contains
       class(trc_basis_t), intent(inout) :: this
       if (this%on_device) then
          !$acc exit data delete(this%sh_l, this%sh_np, this%sh_ao, this%sh_ao_sph, &
-         !$acc                  this%sh_e, this%sh_c, this%sh_r, &
+         !$acc                  this%sh_e, this%sh_c, this%sh_r, this%sh_at, &
          !$acc                  this%at_z, this%at_r)
          !$acc exit data delete(this)
          this%on_device = .false.
@@ -450,6 +473,7 @@ contains
       if (allocated(this%sh_e))  deallocate (this%sh_e)
       if (allocated(this%sh_c))  deallocate (this%sh_c)
       if (allocated(this%sh_r))  deallocate (this%sh_r)
+      if (allocated(this%sh_at)) deallocate (this%sh_at)
       if (allocated(this%at_z))  deallocate (this%at_z)
       if (allocated(this%at_r))  deallocate (this%at_r)
       this%nshell = 0; this%nao = 0; this%natm = 0; this%nao_sph = 0

@@ -52,6 +52,9 @@ module trc_eri
    use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use trc_binkernel, only: fock_bins
+#ifdef TERCO_RYS
+   use trc_grad, only: grad_bins
+#endif
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
@@ -68,18 +71,28 @@ module trc_eri
       !! HGP primitive-pair data: what the kernels actually read.
       real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :)
       real(dp), allocatable :: hp_c(:)
+      real(dp), allocatable :: hp_a(:)
+      !! The i-side primitive's own exponent, alongside hp_p (the pair sum).
+      !! Only the Rys gradient kernels read this; built unconditionally
+      !! anyway since it is a one-time O(npp) cost at geometry-build time,
+      !! not per Fock build.
       integer :: nqp = 0
       !! Bin-interleaved second copy of the above (trc_bins%build_pair_quartets):
       !! flat fields here, not components of `bins` -- see that routine's
       !! own comment for why.
       integer,  allocatable :: qp_bin_pbase(:), qp_bin_k(:)
       real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
+      real(dp), allocatable :: qp_a(:)
+      !! Bin-interleaved form of hp_a, read by the Rys gradient kernels only.
       real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
       real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
       integer,  allocatable :: sq_n(:)
       real(dp), allocatable :: dsh(:, :)
       !! Shell-block density bound, refreshed per iteration from D.
       integer,  allocatable :: sh_l(:), ao_off(:)
+      integer,  allocatable :: sh_at(:)
+      !! Shell -> atom map, copied from the basis's own, for the gradient's
+      !! digestion to route a shell's contribution to grad(3, natm).
       type(trc_basis_t) :: pb
       !! The basis the integrals are actually evaluated over, and the
       !! transform back to the one the caller speaks. On a generally
@@ -108,6 +121,7 @@ module trc_eri
       procedure :: fock_many  => eri_fock_many
       procedure :: fock_nosym => eri_fock_nosym
       procedure :: fock_resident => eri_fock_resident
+      procedure :: gradient => eri_gradient
       procedure :: release => eri_release
    end type trc_eri_t
 
@@ -255,9 +269,10 @@ contains
       this%nbas = b%nshell
       this%nao_w = b%nao
 
-      allocate (this%sh_l(b%nshell), this%ao_off(b%nshell))
+      allocate (this%sh_l(b%nshell), this%ao_off(b%nshell), this%sh_at(b%nshell))
       this%sh_l   = b%sh_l
       this%ao_off = b%sh_ao
+      this%sh_at  = b%sh_at
 
       ! The basis already folded common_fac_sp into its coefficients, so the
       ! separate per-shell factor these builders expect is unity. Passing the
@@ -315,7 +330,8 @@ contains
       call build_pairs_hgp(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
                            one, b%sh_c, thresh*1.0e-3_dp, &
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                           this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp)
+                           this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp, &
+                           pp_a=this%hp_a)
       if (btime) then
          call system_clock(bt_c1)
          print '(a,a,f9.3,a)', '  [build] ', 'build_pairs_hgp   ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
@@ -340,7 +356,8 @@ contains
                                this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
                                this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
                                this%sq_ax, this%sq_ay, this%sq_az, &
-                               this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n)
+                               this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
+                               pp_a=this%hp_a, qp_a=this%qp_a)
       if (btime) then
          call system_clock(bt_c1)
          print '(a,a,f9.3,a)', '  [build] ', 'build_pair_quartets', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
@@ -352,10 +369,10 @@ contains
 
       deallocate (qs, one)
 
-      !$acc enter data copyin(this%sh_l, this%ao_off, this%dsh, &
+      !$acc enter data copyin(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
-      !$acc                   this%qp_z, this%qp_c, &
+      !$acc                   this%qp_z, this%qp_c, this%qp_a, &
       !$acc                   this%qp_px, this%qp_py, this%qp_pz, &
       !$acc                   this%sq_ax, this%sq_ay, this%sq_az, &
       !$acc                   this%sq_abx, this%sq_aby, this%sq_abz, &
@@ -496,6 +513,83 @@ contains
 
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
+
+   !
+   ! The two-electron part of the nuclear gradient, Rys only: there is no
+   ! HGP gradient. `dens` is (nao, nao, ndens): ndens=1 is RHF with the
+   ! total density; ndens=2 is UHF with Da and Db. `grad` is (3, natm), the
+   ! two-electron contribution ONLY -- the one-electron
+   ! derivative terms, the overlap (energy-weighted density) term, nuclear
+   ! repulsion, XC and PCM are the caller's, same scope line eri_fock draws
+   ! around Hcore.
+   !
+   subroutine eri_gradient(this, b, dens, grad, k_scale, j_scale)
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)  :: dens(:, :, :)
+      !! (nao, nao, ndens): ndens = size(dens, 3) is read from this, not
+      !! passed separately, so the call stays eri%gradient(bas, dens, grad)
+      !! with no extra integer for the caller to keep in sync.
+      real(dp), intent(out) :: grad(3, b%natm)
+      real(dp), intent(in), optional :: k_scale, j_scale
+      !! Same meaning as eri_fock's: a hybrid functional's exchange fraction
+      !! multiplies kfac; default one is Hartree-Fock.
+
+      real(dp), allocatable :: dwork(:, :, :)
+      integer :: ndens, nw, id
+      real(dp) :: jfac, kfac
+
+#ifndef TERCO_RYS
+      error stop "terco: eri%gradient needs a TERCO_RYS=ON build"
+#else
+      ndens = size(dens, 3)
+
+      ! A shell whose centre matched no atom exactly (basis_build leaves
+      ! sh_at = 0) has nowhere to put its force: grad_bins would drop or
+      ! misindex its contributions. A ghost function is fine for an energy,
+      ! not for a gradient; a recomputed centre is a caller bug either way.
+      if (any(this%sh_at == 0)) error stop &
+         "terco: eri%gradient: a shell centre matches no atom coordinate exactly"
+
+      jfac = 1.0_dp; kfac = 1.0_dp
+      if (present(j_scale)) jfac = j_scale
+      if (present(k_scale)) kfac = k_scale
+
+      ! On a general contraction the kernels run over the split (working)
+      ! basis, same as eri_fock's dp_w. A shell -> atom map is unaffected by
+      ! the split -- a split shell keeps its parent's centre, trc_decontract
+      ! never moves one -- so `grad` needs no fold-back the way a two-index
+      ! G does; only the density going IN has to be expanded.
+      nw = this%nao_w
+      allocate (dwork(ndens, nw, nw))
+      do id = 1, ndens
+         if (this%dec%active) then
+            call decon_expand_host(this%dec, dens(:, :, id), dwork(id, :, :))
+         else
+            dwork(id, :, :) = dens(:, :, id)
+         end if
+      end do
+
+      grad = 0.0_dp
+      call density_blocks(this, dwork, ndens)
+
+      !$acc enter data copyin(dwork) copyin(grad)
+      !$acc update device(this%dsh)
+      call grad_bins(this%bins, this%nbas, nw, this%sh_l, this%ao_off, this%sh_at, b%natm, &
+                     this%thresh, jfac, kfac, this%dsh, &
+                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                     this%qp_z, this%qp_c, this%qp_a, this%qp_px, this%qp_py, this%qp_pz, &
+                     this%sq_ax, this%sq_ay, this%sq_az, &
+                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
+                     ndens, dwork, grad, this%rank, this%nranks)
+      !$acc wait
+      !$acc update self(grad)
+      !$acc exit data delete(dwork, grad)
+      deallocate (dwork)
+
+      if (this%distributed) call sum_ranks(this, grad, 3*b%natm)
+#endif
+   end subroutine eri_gradient
 
    subroutine sum_ranks(this, g, n)
       !! Sum a matrix over the ranks, in place, every rank receiving the total.
@@ -947,10 +1041,10 @@ contains
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this
       if (this%on_device) then
-         !$acc exit data delete(this%sh_l, this%ao_off, this%dsh, &
+         !$acc exit data delete(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
          !$acc                  this%bins%sp_i, this%bins%sp_j, &
          !$acc                  this%bins%sp_q, this%bins, &
-         !$acc                  this%qp_z, this%qp_c, &
+         !$acc                  this%qp_z, this%qp_c, this%qp_a, &
          !$acc                  this%qp_px, this%qp_py, this%qp_pz, &
          !$acc                  this%sq_ax, this%sq_ay, this%sq_az, &
          !$acc                  this%sq_abx, this%sq_aby, this%sq_abz, &
@@ -966,10 +1060,12 @@ contains
       if (allocated(this%hp_ra))  deallocate (this%hp_ra)
       if (allocated(this%hp_rb))  deallocate (this%hp_rb)
       if (allocated(this%hp_c))   deallocate (this%hp_c)
+      if (allocated(this%hp_a))   deallocate (this%hp_a)
       if (allocated(this%qp_bin_pbase)) deallocate (this%qp_bin_pbase)
       if (allocated(this%qp_bin_k))     deallocate (this%qp_bin_k)
       if (allocated(this%qp_z))   deallocate (this%qp_z)
       if (allocated(this%qp_c))   deallocate (this%qp_c)
+      if (allocated(this%qp_a))   deallocate (this%qp_a)
       if (allocated(this%qp_px))  deallocate (this%qp_px)
       if (allocated(this%qp_py))  deallocate (this%qp_py)
       if (allocated(this%qp_pz))  deallocate (this%qp_pz)
@@ -983,6 +1079,7 @@ contains
       if (allocated(this%dsh))    deallocate (this%dsh)
       if (allocated(this%sh_l))   deallocate (this%sh_l)
       if (allocated(this%ao_off)) deallocate (this%ao_off)
+      if (allocated(this%sh_at))  deallocate (this%sh_at)
       call decon_release(this%dec)
       call this%pb%release()
       this%nbas = 0; this%nao = 0; this%nao_w = 0; this%nhpp = 0

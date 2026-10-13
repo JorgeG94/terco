@@ -308,7 +308,7 @@ contains
    !
    subroutine build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                                   bin_pbase, bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
+                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, pp_a, qp_a)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in) :: nbas, npp
       integer,  intent(in) :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -320,6 +320,13 @@ contains
       real(dp), allocatable, intent(inout) :: sq_ax(:), sq_ay(:), sq_az(:)
       real(dp), allocatable, intent(inout) :: sq_abx(:), sq_aby(:), sq_abz(:)
       integer,  allocatable, intent(inout) :: sq_n(:)
+      real(dp), optional, intent(in) :: pp_a(npp)
+      !! The i-side primitive's own exponent, pp_a from build_pairs_hgp.
+      !! Optional, like there: only the gradient path threads it through.
+      real(dp), allocatable, optional, intent(inout) :: qp_a(:)
+      !! Bin-interleaved form of pp_a, same layout as qp_z. The padding
+      !! slot (k > a pair's own kept count) gets 0: never read, since the
+      !! kernel's loop bound is always the pair's real count (`sq_n`).
 
       integer :: ib, bb, s, p, key, k1, kreal, off, ix
 
@@ -373,6 +380,9 @@ contains
          allocate (qp_z(nqp), qp_c(nqp))
          allocate (qp_px(nqp), qp_py(nqp), qp_pz(nqp))
       end if
+      if (present(qp_a)) then
+         if (.not. allocated(qp_a)) allocate (qp_a(nqp))
+      end if
 
       ! Interleaved by primitive index: ix(b, k, s) = bin_pbase(b) + (k-1)*n_b + s.
       ! The real primitives keep the order build_pairs_hgp already sorted them
@@ -392,9 +402,11 @@ contains
                   qp_px(ix) = pp_r(off + k1, 1)
                   qp_py(ix) = pp_r(off + k1, 2)
                   qp_pz(ix) = pp_r(off + k1, 3)
+                  if (present(qp_a)) qp_a(ix) = pp_a(off + k1)
                else
                   qp_z(ix) = 1.0_dp; qp_c(ix) = 0.0_dp
                   qp_px(ix) = sq_ax(p); qp_py(ix) = sq_ay(p); qp_pz(ix) = sq_az(p)
+                  if (present(qp_a)) qp_a(ix) = 0.0_dp
                end if
             end do
          end do

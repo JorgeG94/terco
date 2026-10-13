@@ -94,6 +94,43 @@ option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" O
 option(TERCO_REGENERATE
        "Regenerate the committed kernels in-tree rather than using them" OFF)
 #
+# Rys quadrature, built by default: it is the only source of the analytic
+# two-electron gradient (eri%gradient), and the kernels the Fock build uses
+# do not change -- HGP stays the energy path for every class unless
+# TRC_RYS_CLASSES routes one to Rys at runtime (trc_rys_select.F90). OFF
+# builds a library without the gradient: no root tables, no per-class Rys
+# kernels, no dispatchers, and eri%gradient stops with an error. The cost
+# of ON is compile time -- roughly 25 CPU-minutes of extra nvfortran GPU
+# compilation, measured per object (the chunked heavy gradient classes run to
+# 1-3 min each) -- and Python 3 at configure time, which generates the
+# per-class kernels into the build tree.
+#
+option(TERCO_RYS
+       "Build the Rys kernel family: the analytic gradient, and per-class Rys energies" ON)
+#
+# Unroll the Rys kernels' root and component loops (scripts/rys_inline.py's
+# UNROLLED MODE) for every class whose Cartesian component count na*nb*nc*nd
+# is at most this -- passed straight through to gen_rys.py/gen_rys_grad.py's
+# --unroll-max-comp. A class above the threshold keeps today's array/loop
+# form. "0" (not unrolling anything) is only useful as a measurement
+# baseline; "inf"/"all" unrolls every class, including (dd|dd), which is a
+# compile-time measurement point, not a build anyone should ship.
+#
+# 81 is MEASURED, not a guess (w172, 6-31G*, one GPU): the gradient drops
+# from 14.74 s to 10.76 s at 1e-10 (-27%) and 30.59 s to 22.67 s at 1e-13
+# (-26%) going from 0 to 81, every class below the threshold matching its
+# own e31f06a timing exactly where it is NOT yet unrolled (a built-in
+# regression check). Raising the ceiling to 243 unrolls three more classes
+# ((dp|pp), (dp|ds), (ds|dd)) but changes the measured total NOT AT ALL
+# (10.91 s / 22.89 s, within noise of 81's number) while costing 330-530 s
+# of EXTRA serial compile time PER CLASS for those three alone -- compile
+# cost that buys nothing. 81 is the point past which unrolling stops paying
+# for itself.
+#
+set(TERCO_RYS_UNROLL_MAX
+    "81"
+    CACHE STRING "Unroll Rys classes with na*nb*nc*nd <= this ('inf'/'all': every class)")
+#
 # Shared by default. The one consumer that matters, metalquicha, is built
 # with gfortran and reaches terco through the C ABI, and a static libterco
 # from nvfortran cannot be linked by another compiler: its device code, the
@@ -182,6 +219,14 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 #
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
                                                TRC_FOCK6 TRC_PERCLASS)
+#
+# TERCO_RYS: see the option's own comment above. Only this define is
+# conditional; TRC_LMAX, TRC_FOCK6 and TRC_PERCLASS above are not options at
+# all, so they stay unconditional defines.
+#
+if(TERCO_RYS)
+  target_compile_definitions(${main_lib} PRIVATE TERCO_RYS)
+endif()
 #
 # TRC_CART_ORDER: 0 = lexicographic, 1 = gamess. Defined ONLY for gamess, left
 # UNDEFINED for the default: every guard this feature adds reads as
