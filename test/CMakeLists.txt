@@ -282,6 +282,49 @@ if(Python3_FOUND)
                      FIXTURES_REQUIRED rys_grad_probe_${b})
       endforeach()
     endif()
+
+    #
+    # eri%fock against pyscf's raw int2e on a fixed density -- the first
+    # comparison that can exercise an f shell (l=3). check_rys_fock_vs_pyscf.F90
+    # skips itself (stop 0, after printing SKIP) when the basis needs more l
+    # than this build's TRC_LMAX reaches, exactly the way check_nosym_f does,
+    # so it is registered unconditionally and at every ceiling: a build that
+    # CAN reach f always runs it, and nothing here depends on TERCO_RYS --
+    # this exercises the ordinary eri%fock dispatch, whichever scheme ends up
+    # routing an f class once TERCO_LMAX reaches 3.
+    #
+    # water/cc-pVDZ has no f on O and passes TODAY, at LMAX=2: the proof that
+    # the AO permutation and the per-AO normalisation this shares with
+    # rys_grad_ref.py (pyscf's cart=True does not keep a JSON's literal shell
+    # order, and its Cartesian d/f components are not all unit-normalised the
+    # way this build's are) are right before any f kernel exists to test.
+    # water/cc-pVTZ (f on O) and formamide/def2-TZVP (f on C, N and O --
+    # formamide.xyz, an idealised planar geometry) are the f cases, ready for
+    # whoever raises TRC_LMAX to 3.
+    #
+    foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
+      if(case STREQUAL "water_ccpvdz")
+        set(xyz water.xyz)
+        set(json basis_sets/cc-pvdz.json)
+      elseif(case STREQUAL "water_ccpvtz")
+        set(xyz water.xyz)
+        set(json basis_sets/cc-pvtz.json)
+      else()
+        set(xyz formamide.xyz)
+        set(json basis_sets/def2-tzvp.json)
+      endif()
+      set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_fock_probe_${case}.bin)
+      terco_add_check(check_rys_fock_vs_pyscf_${case} check_rys_fock_vs_pyscf.F90
+                      NEEDS_BASIS ARGS ${xyz} ${json} ${dump})
+      add_test(NAME terco/check_rys_fock_vs_pyscf_${case}_ref
+               COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rys_fock_ref.py
+                       ${json} ${dump})
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
+        PROPERTIES FIXTURES_SETUP rys_fock_probe_${case})
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
+        PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                   FIXTURES_REQUIRED rys_fock_probe_${case})
+    endforeach()
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()
