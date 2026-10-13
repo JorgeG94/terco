@@ -184,6 +184,10 @@ jobs:
           python3 scripts/gen_rys_roots.py -n 3 -o src/generated/rys/trc_rys_table3.F90
           python3 scripts/gen_rys_roots.py -n 4 -o src/generated/rys/trc_rys_table4.F90
           python3 scripts/gen_rys_roots.py -n 5 -o src/generated/rys/trc_rys_table5.F90
+          python3 scripts/gen_rys_roots.py -n 6 -o src/generated/rys/trc_rys_table6.F90
+          python3 scripts/gen_rys_roots.py -n 7 -o src/generated/rys/trc_rys_table7.F90
+          python3 scripts/gen_rys_roots.py -n 8 -o src/generated/rys/trc_rys_table8.F90
+          python3 scripts/gen_rys_roots.py -n 9 -o src/generated/rys/trc_rys_table9.F90
 
       - name: Require no diff
         run: |

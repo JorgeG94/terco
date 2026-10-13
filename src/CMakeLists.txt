@@ -260,7 +260,11 @@ if(TERCO_RYS)
             generated/rys/trc_rys_table2.F90
             generated/rys/trc_rys_table3.F90
             generated/rys/trc_rys_table4.F90
-            generated/rys/trc_rys_table5.F90)
+            generated/rys/trc_rys_table5.F90
+            generated/rys/trc_rys_table6.F90
+            generated/rys/trc_rys_table7.F90
+            generated/rys/trc_rys_table8.F90
+            generated/rys/trc_rys_table9.F90)
 
   # Every class with at least one d shell, plus (pp|pp) and (pp|ps) as the
   # light end of the HGP/Rys comparison: measured on a 450-atom water cluster

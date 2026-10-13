@@ -53,7 +53,16 @@ WIDTH = mpf(5) / 2
 # of X to become negligible). n <= 4 do not show this -- checked against the
 # same reference, their X_MAX = 55 seam is already at the 1e-14 floor -- so
 # only n = 5 moves its switchover out, to where the seam is clean again.
-X_MAX_OVERRIDE = {5: mpf(65)}
+#
+# n = 6..9 checked the same way, each against its own closed-form asymptotic
+# constants: the weight error at a fixed X grows by roughly two orders of
+# magnitude per extra root, so every root past 5 pushes the clean seam out by
+# another 5 in X. Measured: n = 6 at X = 65 is 2.3e-14, falling to 3.6e-16 by
+# X = 70; n = 7 at X = 70 is 3.5e-14, falling to 5.9e-16 by X = 75; n = 8 at
+# X = 75 is 4.6e-14, falling to 8.6e-16 by X = 80; n = 9 at X = 80 is 5.7e-14,
+# falling to 1.2e-15 by X = 85 -- each landing on the same floor n = 5's
+# override reached.
+X_MAX_OVERRIDE = {5: mpf(65), 6: mpf(70), 7: mpf(75), 8: mpf(80), 9: mpf(85)}
 
 
 def rys(n, X):
