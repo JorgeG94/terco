@@ -310,6 +310,10 @@ contains
          ! shell keeps its parent's centre) and basis_from_libcint all copy
          ! the coordinate, never recompute it -- so an exact match is a
          ! robust shell -> atom map, not a tolerance-guarded heuristic.
+         ! sh_at stays 0 for a shell on no atom. That is legitimate here --
+         ! a ghost or probe function (sapcmp's far-field check) needs no
+         ! atom for the one-electron or Fock paths -- so it is
+         ! eri%gradient, the one consumer of sh_at, that refuses it.
          this%sh_at(i) = 0
          do ia = 1, natm
             if (sh_r(1, i) == at_r(1, ia) .and. sh_r(2, i) == at_r(2, ia) &

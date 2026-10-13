@@ -544,6 +544,13 @@ contains
 #else
       ndens = size(dens, 3)
 
+      ! A shell whose centre matched no atom exactly (basis_build leaves
+      ! sh_at = 0) has nowhere to put its force: grad_bins would drop or
+      ! misindex its contributions. A ghost function is fine for an energy,
+      ! not for a gradient; a recomputed centre is a caller bug either way.
+      if (any(this%sh_at == 0)) error stop &
+         "terco: eri%gradient: a shell centre matches no atom coordinate exactly"
+
       jfac = 1.0_dp; kfac = 1.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
