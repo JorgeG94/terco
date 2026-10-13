@@ -58,9 +58,9 @@ refuses:
 
 - **Angular momentum above d, on four centres.** The four-centre kernels are
   generated one per `(la,lb,lc,ld)` class, so they grow as `L⁴`: 16 classes at
-  p, 81 at d, and `(dd|dd)` alone is twenty thousand lines. f would need a
-  larger Boys table as well — the current one caps `la+lb+lc+ld` at 8 and
-  `(ff|ff)` needs 12.
+  p, 81 at d, and `(dd|dd)` alone is twenty thousand lines. The Boys table
+  already caps `la+lb+lc+ld` at 16, which covers g (`(gg|gg)` needs 16); the
+  remaining obstacle to f and g is the generated volume, not the table.
 - **Spherical harmonics.** Cartesian only. A caller passing a spherical basis
   is refused rather than silently reinterpreted, because reinterpreting it
   gives wrong numbers instead of an error.

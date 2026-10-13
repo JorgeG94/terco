@@ -25,9 +25,9 @@ include(terco_print_status)
 #
 # Not a preference. The four-centre kernels are generated one per (la,lb,lc,ld)
 # class, so the count goes as L^4: LMAX=1 is 16 classes, LMAX=2 is 81 and
-# (dd|dd) alone is twenty thousand lines. f would need both a larger Boys table
-# -- BOYS_MMAX caps la+lb+lc+ld at 8 and (ff|ff) needs 12 -- and an answer to
-# compile time.
+# (dd|dd) alone is twenty thousand lines. BOYS_MMAX caps la+lb+lc+ld at 16,
+# which covers g (gg|gg needs 16), so f and g no longer need a larger Boys
+# table -- the remaining obstacle past 2 is compile time.
 #
 # 2 is the shipped configuration and the one whose generated sources are in the
 # repository. Anything else is regenerated into the build tree, which needs

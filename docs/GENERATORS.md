@@ -98,9 +98,9 @@ Work outward from something that already exists rather than from the algebra.
 ### Raising the angular momentum ceiling
 
 For the **four-centre** kernels, `TERCO_LMAX` is the switch, and the cost is
-`L⁴`. Before raising it past 2, check `BOYS_MMAX` in `trc_boys.F90`: it caps
-`la+lb+lc+ld` and `(ff|ff)` needs 12 where the table currently stops at 8. The
-generated volume is the real obstacle, not the mathematics.
+`L⁴`. `BOYS_MMAX` in `trc_boys.F90` caps `la+lb+lc+ld` at 16, which already
+covers g (`(gg|gg)` needs 16), so the table is not what stops `TERCO_LMAX`
+past 2. The generated volume is the real obstacle, not the mathematics.
 
 For **one-electron, multipole and density-fitting** kernels, momentum sits on
 two or three centres, so they grow as `L²` or `L³` and f or g is affordable.
