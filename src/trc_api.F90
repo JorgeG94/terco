@@ -650,6 +650,10 @@ contains
       !! (P|Q) over an auxiliary basis.
       type(trc_basis_t), intent(in) :: aux
       real(dp), intent(out) :: jmat(aux%nao, aux%nao)
+      ! The DF dispatchers have no case for a class above the ceilings they
+      ! were generated for and would leave its block unwritten, silently.
+      if (maxval(aux%sh_l) > DF_LMAX_AUX) error stop &
+         "terco: trc_df_2c: auxiliary basis above DF_LMAX_AUX (gen_df.py --lmax-aux)"
       call df_2c_driver(aux%nshell, aux%nao, aux%maxnp, aux%sh_l, aux%sh_np, &
                         aux%sh_ao, aux%sh_e, aux%sh_c, aux%sh_r, jmat)
    end subroutine trc_df_2c
@@ -660,6 +664,11 @@ contains
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: p
       real(dp), intent(out) :: tens(b%nao, b%nao, aux%nao)
+      ! Same reason as trc_df_2c: no case means an unwritten block, not a stop.
+      if (maxval(b%sh_l) > DF_LMAX) error stop &
+         "terco: trc_df_3c: orbital basis above DF_LMAX (gen_df.py --lmax)"
+      if (maxval(aux%sh_l) > DF_LMAX_AUX) error stop &
+         "terco: trc_df_3c: auxiliary basis above DF_LMAX_AUX (gen_df.py --lmax-aux)"
       call df_3c_driver(b%nshell, b%nao, b%maxnp, b%sh_l, b%sh_ao, b%sh_r, &
                         p%npair, p%npp, p%p_i, p%p_j, p%pp_off, p%pp_n, &
                         p%pp_z, p%pp_k, p%pp_p, p%pp_a, &
