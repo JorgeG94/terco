@@ -181,7 +181,7 @@ if(TERCO_RYS)
                   ARGS basis_sets/cc-pvdz.json)
   set_tests_properties(
     terco/check_rys_vs_hgp_631gs terco/check_rys_vs_hgp_ccpvdz
-    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=2;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
   #
   # eri%gradient (Rys, the only scheme it has) against a central difference
@@ -197,7 +197,7 @@ if(TERCO_RYS)
                   ARGS basis_sets/cc-pvdz.json)
   set_tests_properties(
     terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
-    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=2;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endif()
 
 #
