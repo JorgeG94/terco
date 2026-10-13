@@ -29,14 +29,18 @@ include(terco_print_status)
 # which covers g (gg|gg needs 16), so f and g no longer need a larger Boys
 # table -- the remaining obstacle past 2 is compile time.
 #
+# HGP stops at d. LMAX=3 keeps HGP's d set exactly as at LMAX=2 and builds
+# every class with an f shell as a Rys kernel only (trc_rys_select.F90's
+# HGP_LMAX), so it needs TERCO_RYS=ON.
+#
 # 2 is the shipped configuration and the one whose generated sources are in the
 # repository. Anything else is regenerated into the build tree, which needs
 # Python 3.
 #
 set(TERCO_LMAX
     "2"
-    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d)")
-set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2)
+    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d, 3=f)")
+set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3)
 
 #
 # The within-shell Cartesian component order every AO-indexed quantity terco
@@ -107,6 +111,10 @@ option(TERCO_REGENERATE
 #
 option(TERCO_RYS
        "Build the Rys kernel family: the analytic gradient, and per-class Rys energies" ON)
+if(TERCO_LMAX GREATER 2 AND NOT TERCO_RYS)
+  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX} needs TERCO_RYS=ON: every class "
+                      "with a shell above d is a Rys kernel, HGP has none.")
+endif()
 #
 # Unroll the Rys kernels' root and component loops (scripts/rys_inline.py's
 # UNROLLED MODE) for every class whose Cartesian component count na*nb*nc*nd

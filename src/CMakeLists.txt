@@ -135,10 +135,18 @@ if(_regen)
                  "CART_ORDER=${TERCO_CART_ORDER} in ${_gen_dir}")
 
   # Four-centre, one module per (la,lb,lc,ld) class. `--split` matters: at
-  # LMAX=2 a single module is a gigabyte of NVVM that does not finish.
+  # LMAX=2 a single module is a gigabyte of NVVM that does not finish. HGP
+  # stops at d whatever TERCO_LMAX is: classes with an f shell are Rys only
+  # (see the Rys section below), and HGP's d kernels do not depend on the
+  # ceiling -- generated at --lmax 3 they differ from --lmax 2 only in the
+  # GENERATED line.
+  set(_hgp_lmax ${TERCO_LMAX})
+  if(_hgp_lmax GREATER 2)
+    set(_hgp_lmax 2)
+  endif()
   execute_process(
     COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py --lmax
-            ${TERCO_LMAX} ${_order_flag} --split ${_gen_dir}
+            ${_hgp_lmax} ${_order_flag} --split ${_gen_dir}
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_perclass.py failed (${_rc})")
@@ -278,47 +286,60 @@ if(TERCO_RYS)
   set(_rys_dir "${CMAKE_BINARY_DIR}/generated_rys")
   file(MAKE_DIRECTORY "${_rys_dir}")
 
-  # The template the Rys generators splice from: a private copy of the HGP
-  # per-class kernels, written here rather than read out of ${_gen_dir},
+  # The template the Rys generators splice from: a private SKELETON copy of
+  # the HGP per-class kernels (gen_perclass.py --skeleton: every marker and
+  # size the splicers read, without HGP's VRR/HRR body they discard),
+  # written here rather than read out of ${_gen_dir},
   # because gen_rys.py and gen_rys_grad.py slice those files on literal
   # anchors (`pure subroutine pcsi...`, `!$acc atomic update`) and anything
   # that edits src/ in place -- CI's OpenMP port strips `pure` and rewrites
   # `!$acc` before configuring -- removes them. Same flags as the ${_gen_dir}
-  # set, so in an unedited tree this copy is byte-identical to it (CI's
-  # generators job checks the committed one) and so are the Rys kernels.
+  # set, so in an unedited tree the Rys kernels spliced from it are
+  # byte-identical to ones spliced from the full HGP text (checked for all
+  # 81 classes up to d, energy and gradient). The skeleton is what makes f
+  # affordable: the full HGP text at --lmax 3 takes over six minutes and
+  # 136 MB to write, the skeleton well under a second.
   #
   # The Rys kernels themselves are deliberately NOT converted: under
   # -fopenmp their `do concurrent` is a serial loop and their `!$acc` lines
   # comments, and that is correct because the Rys dispatchers are only ever
   # called from the sequential class loops in trc_binkernel.F90 and
   # trc_grad.F90, never from inside a converted parallel region.
+  set(_all_classes "")
+  foreach(la RANGE 0 ${TERCO_LMAX})
+    foreach(lb RANGE 0 ${TERCO_LMAX})
+      foreach(lc RANGE 0 ${TERCO_LMAX})
+        foreach(ld RANGE 0 ${TERCO_LMAX})
+          list(APPEND _all_classes "${la}${lb}${lc}${ld}")
+        endforeach()
+      endforeach()
+    endforeach()
+  endforeach()
+  list(JOIN _all_classes "," _all_classes_csv)
+
   set(_hgp_template "${CMAKE_BINARY_DIR}/hgp_template")
   file(MAKE_DIRECTORY "${_hgp_template}")
   execute_process(
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_perclass.py
-            --lmax ${TERCO_LMAX} ${_order_flag} --split ${_hgp_template}
+            --lmax ${TERCO_LMAX} ${_order_flag} --classes ${_all_classes_csv}
+            --skeleton --split ${_hgp_template}
     RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_perclass.py (Rys template) failed (${_rc})")
   endif()
 
+  # Every class with a shell of d or above, plus (pp|pp) and (pp|ps). Above
+  # d these are the only kernels a class has (trc_rys_select.F90 routes
+  # them unconditionally); up to d, HGP stays the default and these exist
+  # for TRC_RYS_CLASSES.
   set(_rys_classes "")
-  foreach(la RANGE 0 2)
-    foreach(lb RANGE 0 2)
-      foreach(lc RANGE 0 2)
-        foreach(ld RANGE 0 2)
-          set(_tag "${la}${lb}${lc}${ld}")
-          if(la EQUAL 2
-             OR lb EQUAL 2
-             OR lc EQUAL 2
-             OR ld EQUAL 2
-             OR _tag STREQUAL "1111"
-             OR _tag STREQUAL "1110")
-            list(APPEND _rys_classes "${_tag}")
-          endif()
-        endforeach()
-      endforeach()
-    endforeach()
+  foreach(_tag ${_all_classes})
+    string(REGEX MATCH "[2-9]" _has_d "${_tag}")
+    if(_has_d
+       OR _tag STREQUAL "1111"
+       OR _tag STREQUAL "1110")
+      list(APPEND _rys_classes "${_tag}")
+    endif()
   endforeach()
 
   set(_rys_sources "")
@@ -354,13 +375,18 @@ if(TERCO_RYS)
   # Unlike the energy kernel above (generated only where Rys measures faster
   # than HGP), the gradient has no HGP counterpart to fall back to -- an HGP
   # gradient is out of scope -- so every class a basis up to LMAX=2 can form
-  # needs one.
+  # needs one. Not above d yet: gen_rys_grad.py stops at five roots, so an f
+  # gradient stops in grad_bins (rysg_has_class) rather than running.
   #
+  set(_grad_lmax ${TERCO_LMAX})
+  if(_grad_lmax GREATER 2)
+    set(_grad_lmax 2)
+  endif()
   set(_rys_grad_classes "")
-  foreach(la RANGE 0 2)
-    foreach(lb RANGE 0 2)
-      foreach(lc RANGE 0 2)
-        foreach(ld RANGE 0 2)
+  foreach(la RANGE 0 ${_grad_lmax})
+    foreach(lb RANGE 0 ${_grad_lmax})
+      foreach(lc RANGE 0 ${_grad_lmax})
+        foreach(ld RANGE 0 ${_grad_lmax})
           list(APPEND _rys_grad_classes "${la}${lb}${lc}${ld}")
         endforeach()
       endforeach()
