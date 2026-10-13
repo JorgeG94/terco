@@ -624,7 +624,9 @@ def chunked_rhf_item_text(tag, item, comps, inside):
 def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     """ORDERED SURVIVOR COMPACTION (ps|ss) prototype, generalised to every
     class: split the fused rysg{tag}/rysgi{tag} this module already built
-    (in `head`/`middle`) into
+    (in `head`/`middle`) into the two kernels below. The fused pair itself
+    is only the source text they are sliced from; main() does not emit it.
+    The two kernels are
 
       - rysg{tag}_screen / rysgi{tag}_screen_chunk: the decode and the
         three quartet-level screens (exact Schwarz, density-weighted,
@@ -730,10 +732,14 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
    ! See screen_and_compact_text's docstring (scripts/gen_rys_grad.py) for
    ! the technique and the measurement it is based on.
    !
-   subroutine rysg{tag}_screen(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   subroutine rysg{tag}_screen(lo, hi, w0, w1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                              npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
                              out_seg, out_iab, out_icd, nmax, ctr)
+      !! Screens work items [w0, w1], which must lie inside segments
+      !! [lo, hi] (the decode's segment search runs over [lo, hi]); the
+      !! caller windows a segment too large for one survivor list.
       integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nmax
+      integer(int64), intent(in) :: w0, w1
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
@@ -744,19 +750,17 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
       integer,  intent(in)    :: sh_at(nbas)
       integer,  intent(inout) :: out_seg(nmax), out_iab(nmax), out_icd(nmax)
       integer(int64), intent(inout) :: ctr(1)
-      !: Run length a chunk screens per `do concurrent` iteration: one
-      !: warp's worth. Measured against 64/128/256 on (ps|ss), w150
-      !: 6-31G*, V100 -- 32 matches the warp width and wins; see this
-      !: file's module-level screen_and_compact_text docstring.
       integer, parameter :: RUNLEN = 32
-      integer(int64) :: g0, g1, nr, nchunks, c, clen
-      g0 = sOff(lo) + 1
-      g1 = sOff(hi + 1)
+      !! Run length a chunk screens per `do concurrent` iteration: one
+      !! warp's worth. Measured against 64/128/256 on (ps|ss), w150
+      !! 6-31G*, V100 -- 32 matches the warp width and wins; see
+      !! scripts/gen_rys_grad.py's screen_and_compact_text docstring.
+      integer(int64) :: nr, nchunks, c, clen
       nr = 0
-      if (g1 >= g0) nr = g1 - g0 + 1
+      if (w1 >= w0) nr = w1 - w0 + 1
       nchunks = (nr + RUNLEN - 1)/RUNLEN
       do concurrent(c=1:nchunks)
-         call rysgi{tag}_screen_chunk(g0 + (c - 1)*RUNLEN, &
+         call rysgi{tag}_screen_chunk(w0 + (c - 1)*RUNLEN, &
                                min(int(RUNLEN, int64), nr - (c - 1)*RUNLEN), &
                                lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
@@ -839,11 +843,13 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     compact = f"""
    !
    ! ORDERED SURVIVOR COMPACTION -- compact pass, class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}).
-   ! The same integral body rysgi{tag} above runs, sliced to start right
-   ! after the decode and the three quartet-level screens: seg/iab/icd
-   ! come in directly instead of being decoded from a work-item index,
-   ! and the Schwarz/density screens are not repeated (the screen pass
-   ! already applied them). See screen_and_compact_text's docstring.
+   ! The integral body, sliced out of the fused per-work-item kernel the
+   ! generator builds internally (and does not emit) to start right after
+   ! the decode and the three quartet-level screens: seg/iab/icd come in
+   ! directly instead of being decoded from a work-item index, and the
+   ! Schwarz/density screens are not repeated (the screen pass already
+   ! applied them). See scripts/gen_rys_grad.py's
+   ! screen_and_compact_text docstring.
    !
    subroutine rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                              npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
@@ -1191,8 +1197,7 @@ def main():
         return t
 
     head = re.sub(r"public :: pcs" + tag + r".*\n",
-                  f"public :: rysg{tag}\n"
-                  f"   public :: rysg{tag}_screen, rysg{tag}_compact\n",
+                  f"public :: rysg{tag}_screen, rysg{tag}_compact\n",
                   head, count=1)
     head = ren(head)
 
@@ -1343,8 +1348,7 @@ def main():
 
     # No helper subroutines follow the component tables any more -- the
     # roots lookup, 2D recurrence and HRR are inlined straight into `middle`
-    # above instead of called (see scripts/rys_inline.py), so `contains`
-    # goes right back to introducing rysg{tag}/rysgi{tag}.
+    # above instead of called (see scripts/rys_inline.py).
     helpers = f"""
 {tabs}
 contains
@@ -1364,7 +1368,12 @@ contains
     inside = chunk_plan(comps, args.chunk_live_max) if chunked else None
     sc_text = screen_and_compact_text(tag, head, middle, comps, inside)
 
-    out = head + middle + sc_text + f"\nend module trc_pc_rysg{tag}\n"
+    # Emit the module prelude and the screen/compact pair only. The fused
+    # rysg{tag}/rysgi{tag} in head + middle is just the text sc_text was
+    # sliced from: nothing calls it, and compiling it would roughly double
+    # each file's compile time for nothing.
+    prelude = head[:head.index("\ncontains\n") + len("\ncontains\n")]
+    out = prelude + sc_text + f"\nend module trc_pc_rysg{tag}\n"
     with open(args.output, "w") as fh:
         fh.write(out)
     print(f"  {args.output}: ({la}{lb}|{lc}{ld}), {nroots} roots, "
