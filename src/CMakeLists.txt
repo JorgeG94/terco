@@ -267,11 +267,35 @@ if(TERCO_RYS)
   # (pp|pp), so those two are included even without a d shell. Regenerated
   # at configure time into the build tree, never committed: unlike the root
   # tables above, a per-class kernel needs no mpmath, and it is only ever as
-  # current as the HGP scalar kernel in ${_gen_dir} it was spliced from,
-  # which this project already keeps in-tree-regenerable for exactly this
-  # kind of drift.
+  # current as the HGP scalar kernel it is spliced from, which this project
+  # already keeps in-tree-regenerable for exactly this kind of drift.
   set(_rys_dir "${CMAKE_BINARY_DIR}/generated_rys")
   file(MAKE_DIRECTORY "${_rys_dir}")
+
+  # The template the Rys generators splice from: a private copy of the HGP
+  # per-class kernels, written here rather than read out of ${_gen_dir},
+  # because gen_rys.py and gen_rys_grad.py slice those files on literal
+  # anchors (`pure subroutine pcsi...`, `!$acc atomic update`) and anything
+  # that edits src/ in place -- CI's OpenMP port strips `pure` and rewrites
+  # `!$acc` before configuring -- removes them. Same flags as the ${_gen_dir}
+  # set, so in an unedited tree this copy is byte-identical to it (CI's
+  # generators job checks the committed one) and so are the Rys kernels.
+  #
+  # The Rys kernels themselves are deliberately NOT converted: under
+  # -fopenmp their `do concurrent` is a serial loop and their `!$acc` lines
+  # comments, and that is correct because the Rys dispatchers are only ever
+  # called from the sequential class loops in trc_binkernel.F90 and
+  # trc_grad.F90, never from inside a converted parallel region.
+  set(_hgp_template "${CMAKE_BINARY_DIR}/hgp_template")
+  file(MAKE_DIRECTORY "${_hgp_template}")
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_perclass.py
+            --lmax ${TERCO_LMAX} ${_order_flag} --split ${_hgp_template}
+    RESULT_VARIABLE _rc OUTPUT_QUIET)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "gen_perclass.py (Rys template) failed (${_rc})")
+  endif()
+
   set(_rys_classes "")
   foreach(la RANGE 0 2)
     foreach(lb RANGE 0 2)
@@ -296,7 +320,7 @@ if(TERCO_RYS)
     set(_rys_out "${_rys_dir}/trc_pc_rys${_tag}.F90")
     execute_process(
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
-              ${_tag} ${_order_flag} --src-dir ${_gen_dir}
+              ${_tag} ${_order_flag} --src-dir ${_hgp_template}
               --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_out}
       RESULT_VARIABLE _rc OUTPUT_QUIET)
     if(NOT _rc EQUAL 0)
@@ -342,7 +366,7 @@ if(TERCO_RYS)
     set(_rys_grad_out "${_rys_dir}/trc_pc_rysg${_tag}.F90")
     execute_process(
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py
-              ${_tag} ${_order_flag} --src-dir ${_gen_dir}
+              ${_tag} ${_order_flag} --src-dir ${_hgp_template}
               --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_grad_out}
       RESULT_VARIABLE _rc OUTPUT_QUIET)
     if(NOT _rc EQUAL 0)
