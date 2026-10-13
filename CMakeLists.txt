@@ -43,6 +43,19 @@ set(TERCO_LMAX
 set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3)
 
 #
+# The density-fitting kernels' orbital ceiling (gen_df.py --lmax; the
+# auxiliary ceiling is one higher). Empty follows TERCO_LMAX. Separate
+# because DF is three-centre with an auxiliary shell one above the orbital
+# one, and generated as one file: at TERCO_LMAX=3 (aux g) nvfortran spent
+# over two hours on it and had not finished, while nothing in the
+# four-centre f path uses it. 2 keeps the shipped DF set; RI-MP2 and the
+# trc_df_* entry points then stop on an orbital basis above d.
+#
+set(TERCO_DF_LMAX
+    ""
+    CACHE STRING "Density-fitting orbital angular momentum ceiling (empty: TERCO_LMAX)")
+
+#
 # The within-shell Cartesian component order every AO-indexed quantity terco
 # produces uses: Fock/J/K, the one-electron matrices, multipoles, DF tensors,
 # AO values on the grid, and the density blocks read back in. ORDER ONLY --
