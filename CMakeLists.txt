@@ -94,6 +94,16 @@ option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" O
 option(TERCO_REGENERATE
        "Regenerate the committed kernels in-tree rather than using them" OFF)
 #
+# Rys quadrature, next to HGP, selectable per class at RUNTIME by
+# TRC_RYS_CLASSES (trc_rys_select.F90) -- a measurement tool, never the
+# default for any class; see docs/RYS.md for the working-set argument this
+# is testing. OFF builds nothing new: no root tables, no per-class Rys
+# kernel, no dispatcher, and trc_binkernel.F90's call site compiles back to
+# exactly what it was before this option existed.
+#
+option(TERCO_RYS
+       "Also build the Rys kernel family, selectable per class at runtime" OFF)
+#
 # Shared by default. The one consumer that matters, metalquicha, is built
 # with gfortran and reaches terco through the C ABI, and a static libterco
 # from nvfortran cannot be linked by another compiler: its device code, the
@@ -182,6 +192,14 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 #
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
                                                TRC_FOCK6 TRC_PERCLASS)
+#
+# TERCO_RYS: see the option's own comment above. Only this define is
+# conditional; TRC_LMAX, TRC_FOCK6 and TRC_PERCLASS above are not options at
+# all, so they stay unconditional defines.
+#
+if(TERCO_RYS)
+  target_compile_definitions(${main_lib} PRIVATE TERCO_RYS)
+endif()
 #
 # TRC_CART_ORDER: 0 = lexicographic, 1 = gamess. Defined ONLY for gamess, left
 # UNDEFINED for the default: every guard this feature adds reads as

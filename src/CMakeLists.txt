@@ -238,3 +238,83 @@ endif()
 list(LENGTH _generated _ngen)
 message(STATUS "terco: ${_ngen} generated kernel modules from ${_gen_dir}")
 target_sources(${main_lib} PRIVATE ${_generated})
+
+# --- Rys, optional -----------------------------------------------------------
+#
+# See the TERCO_RYS option's own comment (top-level CMakeLists.txt). OFF
+# (the default) adds nothing: no root tables, no per-class kernel, no
+# dispatcher, and nothing above this line is affected either way.
+#
+if(TERCO_RYS)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+  # The root/weight tables: committed, like the Boys table, because they
+  # need mpmath to regenerate and this project's generators otherwise run
+  # on a bare Python (docs/RYS_PLAN.md). In their own subdirectory so the
+  # GLOB above -- which is not recursive -- never picks them up, ON or OFF.
+  target_sources(
+    ${main_lib}
+    PRIVATE trc_rys.F90        # Rys root/weight lookup, tabulated
+            trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
+            generated/rys/trc_rys_table1.F90
+            generated/rys/trc_rys_table2.F90
+            generated/rys/trc_rys_table3.F90
+            generated/rys/trc_rys_table4.F90
+            generated/rys/trc_rys_table5.F90)
+
+  # Every class with at least one d shell, plus (pp|pp) and (pp|ps) for
+  # crossover measurement below it -- RYS.md puts the crossover near
+  # (pp|pp), so those two are included even without a d shell. Regenerated
+  # at configure time into the build tree, never committed: unlike the root
+  # tables above, a per-class kernel needs no mpmath, and it is only ever as
+  # current as the HGP scalar kernel in ${_gen_dir} it was spliced from,
+  # which this project already keeps in-tree-regenerable for exactly this
+  # kind of drift.
+  set(_rys_dir "${CMAKE_BINARY_DIR}/generated_rys")
+  file(MAKE_DIRECTORY "${_rys_dir}")
+  set(_rys_classes "")
+  foreach(la RANGE 0 2)
+    foreach(lb RANGE 0 2)
+      foreach(lc RANGE 0 2)
+        foreach(ld RANGE 0 2)
+          set(_tag "${la}${lb}${lc}${ld}")
+          if(la EQUAL 2
+             OR lb EQUAL 2
+             OR lc EQUAL 2
+             OR ld EQUAL 2
+             OR _tag STREQUAL "1111"
+             OR _tag STREQUAL "1110")
+            list(APPEND _rys_classes "${_tag}")
+          endif()
+        endforeach()
+      endforeach()
+    endforeach()
+  endforeach()
+
+  set(_rys_sources "")
+  foreach(_tag ${_rys_classes})
+    set(_rys_out "${_rys_dir}/trc_pc_rys${_tag}.F90")
+    execute_process(
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
+              ${_tag} ${_order_flag} --src-dir ${_gen_dir} -o ${_rys_out}
+      RESULT_VARIABLE _rc OUTPUT_QUIET)
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR "gen_rys.py ${_tag} failed (${_rc})")
+    endif()
+    list(APPEND _rys_sources "${_rys_out}")
+  endforeach()
+
+  list(JOIN _rys_classes "," _rys_classes_csv)
+  set(_rys_disp "${_rys_dir}/trc_rys_kernels.F90")
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_dispatch.py
+            --classes ${_rys_classes_csv} -o ${_rys_disp}
+    RESULT_VARIABLE _rc OUTPUT_QUIET)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "gen_rys_dispatch.py failed (${_rc})")
+  endif()
+
+  list(LENGTH _rys_sources _nrys)
+  message(STATUS "terco: ${_nrys} Rys class kernels generated into ${_rys_dir}")
+  target_sources(${main_lib} PRIVATE ${_rys_sources} ${_rys_disp})
+endif()

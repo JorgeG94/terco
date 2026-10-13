@@ -26,6 +26,10 @@ module trc_binkernel
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
 #endif
+#ifdef TERCO_RYS
+   use trc_rys_select, only: rys_select_init, rys_route
+   use trc_rys_kernels, only: rys_dispatch
+#endif
    implicit none
    private
 
@@ -363,6 +367,12 @@ contains
       ! exactly its (la,lb,lc,ld) -- no select case, and ptxas budgets registers
       ! per class instead of for the worst class across all of them.
       !
+#ifdef TERCO_RYS
+      ! TRC_RYS_CLASSES, read once per Fock build -- `fock_bins` IS one Fock
+      ! build, called once per SCF iteration (or once, standalone, by a
+      ! correctness check) -- not once per launch below. See trc_rys_select.
+      call rys_select_init()
+#endif
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl, key2
@@ -446,11 +456,27 @@ contains
             nl = nl + 1
             key2 = ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                     + sLC(c0))*CLASS_RADIX + sLD(c0)
+#ifdef TERCO_RYS
+            ! TRC_RYS_CLASSES routes this launch's whole class run to the
+            ! Rys kernel instead of HGP's, for classes that have one --
+            ! `rys_route` already checked that. Out of scope otherwise: Rys
+            ! never changes HGP's own dispatch, decode or launch geometry.
+            if (rys_route(key2)) then
+               call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                                nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                                ndens, dmat, jmat, rank, nranks)
+            else
+#endif
             call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
                              nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                              ndens, dmat, jmat, rank, nranks)
+#ifdef TERCO_RYS
+            end if
+#endif
             c0 = c1 + 1
          end do
          nlaunch = nl

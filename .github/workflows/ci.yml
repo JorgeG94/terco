@@ -159,6 +159,42 @@ jobs:
             exit 1
           fi
 
+  rys-generators:
+    name: Rys root tables are up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # scripts/gen_rys_roots.py is the one generator in this project that
+      # needs mpmath -- high-precision quadrature for the Chebyshev fit, at
+      # generation time only, never on the device. docs/RYS_PLAN.md's
+      # constraint: the install lands in the SAME commit as the generator,
+      # pinned, so a library that changes its last digit shows up here
+      # rather than defeating "regenerating reproduces the committed files"
+      # silently.
+      - name: Install mpmath
+        run: pip install mpmath==1.3.0
+
+      - name: Regenerate
+        run: |
+          python3 scripts/gen_rys_roots.py -n 1 -o src/generated/rys/trc_rys_table1.F90
+          python3 scripts/gen_rys_roots.py -n 2 -o src/generated/rys/trc_rys_table2.F90
+          python3 scripts/gen_rys_roots.py -n 3 -o src/generated/rys/trc_rys_table3.F90
+          python3 scripts/gen_rys_roots.py -n 4 -o src/generated/rys/trc_rys_table4.F90
+          python3 scripts/gen_rys_roots.py -n 5 -o src/generated/rys/trc_rys_table5.F90
+
+      - name: Require no diff
+        run: |
+          if ! git diff --quiet -- src/generated/rys; then
+            echo "::error::src/generated/rys is out of date with scripts/gen_rys_roots.py."
+            echo "Run the commands in the 'Regenerate' step and commit the result."
+            git diff --stat -- src/generated/rys
+            exit 1
+          fi
+
   openmp-port:
     name: OpenACC to OpenMP conversion
     runs-on: ubuntu-latest
