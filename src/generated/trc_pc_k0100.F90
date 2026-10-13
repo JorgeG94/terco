@@ -161,6 +161,8 @@ contains
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v(4, 0:1), g1(4), vbuf(3)
+      real(dp) :: h(3)
+
       real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       logical  :: same_ab, same_cd, same_pair
       real(dp) :: jab(3), jcd(1), kac(1)
@@ -351,12 +353,12 @@ contains
          mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
 
          ! --- HRR ---
-         vbuf(1) = abx*g1(1) &
-            + g1(2)
-         vbuf(2) = aby*g1(1) &
-            + g1(3)
-         vbuf(3) = abz*g1(1) &
-            + g1(4)
+         h(1) = g1(2) + abx*g1(1)
+         vbuf(1) = h(1)
+         h(2) = g1(3) + aby*g1(1)
+         vbuf(2) = h(2)
+         h(3) = g1(4) + abz*g1(1)
+         vbuf(3) = h(3)
 
 #ifdef TRC_NO_DIGEST
          !

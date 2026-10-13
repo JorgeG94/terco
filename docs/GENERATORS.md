@@ -196,6 +196,117 @@ If you extend the sieve, the fixed-point iteration is the part to be careful
 with: removing a node can make another removable, and stopping after one pass
 leaves most of the win on the table.
 
+### The HRR is a sieved DAG too
+
+`gen_vrr.py`'s sieve builds the VRR as a DAG of shared intermediates reachable
+from the targets a class actually needs, kept to the cheapest route to each
+one. `gen_hrr.py`'s HRR did not get the same treatment until now: `emit_class`
+still summed each of a class's na*nb*nc*nd output components as its own
+independent closed-form expression over the contracted VRR buffer `g`, so two
+outputs that share a partial bra or ket transfer recomputed it from scratch.
+
+`emit_class_dag` builds the HRR the same way the VRR already is built: from
+the targets back to the VRR buffer. Bra transfer, `(a,b| = (a+1_k, b-1_k|
++ AB_k*(a, b-1_k|)`, and ket transfer, the same on `(c,d)` with `CD` once `b`
+is exhausted, each recurse one elementary step at a time; a node is keyed on
+the literal `(a,b,c,d)` tuple reached and memoised on that key, so whichever
+output asks for `(a, b-1_k|c,d)` first builds it, and the output that would
+otherwise recompute it hits the memo instead. The recursion direction (which
+axis of `b` or `d` to reduce) is a fixed, deterministic rule — the first
+nonzero axis in `x,y,z` order — rather than anything cost-modelled, which is
+enough to let memoisation actually find the sharing: a value-dependent choice
+would route two paths to equal content by unequal names and never collide in
+the memo. Every output's own node is reachable this way, so nothing needs a
+separate elimination pass — the DAG is sieved by construction, not pruned
+afterward.
+
+**Emission order matters more than it looks.** Building every node before
+writing any output leaves a node live from its creation to the LAST output
+that reads it — for `(dd|dd)` that meant 1406 values simultaneously live
+tracked by hand. `emit_class_dag` instead walks the targets in their existing
+output order (which already groups every `(a,b)` pair under a fixed `(c,d)`,
+the DAG's own sharing axis) and emits each output's still-missing nodes right
+before that output, so most nodes die within the block that created them.
+Measured peak live count, same two schedules, same classes:
+
+| class | nodes | peak live, all-nodes-first | peak live, interleaved by target |
+|---|---|---|---|
+| (pp\|pp) | 162 | 83 | 6 |
+| (dp\|dp) | 612 | 326 | 12 |
+| (dd\|dp) | 1980 | 703 | 31 |
+| (dd\|dd) | 5293 | 1406 | 637 |
+
+Interleaved is what ships. `(dd|dd)`'s 637 is still large by hand-count, and
+is exactly the number this rewrite worried would turn into GPU spill — see
+below for what `ptxas` actually did with it.
+
+**Operation counts** (the `+ - * / ` characters on the right-hand side of
+every assignment, closed form against the DAG, per contracted quartet):
+
+| class | closed-form ops | DAG ops | ratio |
+|---|---|---|---|
+| (pp\|pp) | 567 | 324 | 0.57 |
+| (dp\|dp) | 2268 | 1224 | 0.54 |
+| (dd\|dp) | 11340 | 3960 | 0.35 |
+| (dd\|dd) | 50544 | 10586 | 0.21 |
+
+Fewer than a fifth of the arithmetic for `(dd|dd)`, and the regenerated
+`src/generated` is smaller to match: 81 files, 49152 lines inserted against
+88020 deleted net across the set, because each output is now a short `h(k) =
+ref + coef*ref` chain instead of a long wrapped sum.
+
+**Measured: spill went down, the stack frame went up, and compile time got
+worse.** `ptxinfo` has to be read at the right entry. For the large classes
+the `do concurrent` kernel (`trc_pc_kABCD_pcsABCD_79_gpu`, 64 registers for
+`(dd|dd)`) is only a wrapper: it CALLS the item routine `pcsiABCD`, which is
+not inlined at that size, and that routine is where the work and the local
+memory are. `(dd|dd)`, closed form against DAG, same flags:
+
+|                                   | closed form | DAG     |
+|---|---|---|
+| `pcsi2222` stack frame            | 59 KB       | 95 KB   |
+| `pcsi2222` spill stores / loads   | 52 / 75 KB  | 38 / 58 KB |
+| compile, alone on an idle machine | 485 s       | 639 s   |
+
+`(pp|pp)` is inlined, and its kernel sits at 255 registers with about 2 KB
+of spill in both forms. So the DAG cuts spill traffic by about a quarter on
+`(dd|dd)` at the price of a larger frame, and nvfortran spends 32% LONGER
+compiling it, despite a fifth of the arithmetic: it now has thousands of
+named intermediates to schedule rather than independent expressions. (An
+earlier reading of 58 and 64 registers with no spill came from the wrapper
+entries, and does not describe the work.) It also shows up, modestly, in the Fock build itself: on
+172 waters, RHF/6-31G\*, SAD guess, `eri_thresh` 1e-10 (`CUDA_VISIBLE_DEVICES`
+pinned to one idle V100):
+
+| basis | Fock s/iteration, old closed form | Fock s/iteration, DAG |
+|---|---|---|
+| 6-31G\* (has d) | 2.26 | 2.236 |
+| 6-31G (no d) | 0.968 | 0.970 |
+
+A small win where there are d functions to share, a tie within noise where
+there are not — consistent with identical occupancy and a real but modest cut
+in instructions actually executed. `E = -11399.3977137361` on 6-31G\*, bit
+for bit the same value the closed form gives.
+
+**Numeric correctness is checked in pure Python**, independent of Fortran,
+GPU or a basis set: `scripts/check_hrr_dag_numeric.py` evaluates
+`emit_class_dag`'s recursion and `emit_class`'s closed form (kept only as
+this check's oracle; no generator's command line reaches it any more) on
+random VRR-buffer and AB/CD values for every class up to `TRC_LMAX=2`, and
+separately re-derives every warp-role split's own compacted closure
+(`role_plan`'s `hset`/`hmap`) and checks it against the class's own
+unsplit DAG — the role split's closure and renumbering logic is exactly
+where a bug would actually live, since `emit_class_dag`'s own recursion says
+nothing about whether a role's SLICE of it was taken correctly. Both run as
+`ctest`'s `terco/check_hrr_dag_numeric`.
+
+On these numbers the DAG is not yet the right default for nvfortran: a 1%
+Fock-time gain does not pay for a 32% longer compile of the class that
+already dominates the build. On this branch the closed form survives only as
+the numeric check's oracle. Before this merges, it returns as the nvfortran
+default, and the DAG stays as a generator option, chiefly for a CUDA backend,
+where nvcc's compile cost on large unrolled code is far lower.
+
 ---
 
 ## Porting the directives to OpenMP

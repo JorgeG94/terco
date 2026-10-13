@@ -219,7 +219,8 @@ if(_regen)
               --mode include -o ${_gen_dir}/trc_vrr_cases.inc OUTPUT_QUIET)
     execute_process(
       COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_hrr.py --lmax ${TERCO_LMAX}
-              ${_order_flag} -o ${_gen_dir}/trc_hrr_cases.inc OUTPUT_QUIET)
+              ${_order_flag} -o ${_gen_dir}/trc_hrr_cases.inc
+              --hmax-output ${_gen_dir}/trc_hrr_hmax.inc OUTPUT_QUIET)
   endif()
 endif()
 

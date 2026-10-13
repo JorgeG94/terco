@@ -693,7 +693,7 @@ def emit_item_signature(name):
 """
 
 
-def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
+def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, nhrr=0):
     lab, lcd = la + lb, lc + ld
     lt = lab + lcd
     nca, ncc = gv.ncum(lab), gv.ncum(lcd)
@@ -821,6 +821,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v({nv}, 0:1), g({nv}, {ncab}, {ncab}), g1({nv}), vbuf({na*nb*nc*nd})
+{"      real(dp) :: h(" + str(nhrr) + ")" + chr(10) if nhrr > 0 else ""}
       real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       integer  :: nca, ncb, nccl, ncdl, npi, npj, npk, npl, ncab, nccd, ab0, cd0, nab_c, ncd_c, qab, qcd
       integer  :: ki, kj, kk, kl, kpl, kql, ia2, ib2, ic2, id2, iabc, icdc
@@ -1185,32 +1186,77 @@ def _vrr_stmts(vrr):
     return out
 
 
-def _hrr_stmts(hrr):
-    """vbuf index -> (statement text, set of g(...) indices it reads)."""
-    out = {}
-    for m in re.finditer(r"([ \t]*vbuf\((\d+)\)\s*=.*?)(?=\n[ \t]*vbuf\(|\Z)",
-                         hrr, re.S):
-        out[int(m.group(2))] = (m.group(1).rstrip("\n"),
-                                {int(x) for x in re.findall(r"g\((\d+)\)", m.group(1))})
-    return out
+def _hrr_dag_stmts(hrr):
+    """Parse gen_hrr.emit_class_dag's output: every statement is exactly one
+    line (no continuations), and `h(...)` node definitions are interleaved
+    with `vbuf(...)` writes rather than grouped, so this walks lines
+    directly instead of hunting for the next `vbuf(`.
+
+    Returns (h_nodes, vbuf_refs):
+      h_nodes[id]   -> (statement text, [('g', idx) | ('h', id), ...]) the
+                        refs that statement's RHS reads, in no particular
+                        order -- only membership is used.
+      vbuf_refs[slot] -> ('g', idx) | ('h', id), the single ref that output
+                        copies (emit_class_dag never sums at the vbuf line;
+                        see its docstring)."""
+    h_nodes, vbuf_refs = {}, {}
+    for line in hrr.split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        mh = re.match(r"h\((\d+)\)\s*=\s*(.*)$", s)
+        if mh:
+            nid, rhs = int(mh.group(1)), mh.group(2)
+            deps = [("g", int(x)) for x in re.findall(r"g\((\d+)\)", rhs)]
+            deps += [("h", int(x)) for x in re.findall(r"h\((\d+)\)", rhs)]
+            h_nodes[nid] = (line, deps)
+            continue
+        mv = re.match(r"vbuf\((\d+)\)\s*=\s*(.*)$", s)
+        if mv:
+            slot, rhs = int(mv.group(1)), mv.group(2).strip()
+            mg = re.match(r"g\((\d+)\)$", rhs)
+            mh2 = re.match(r"h\((\d+)\)$", rhs)
+            assert mg or mh2, f"unexpected vbuf rhs in dag form: {rhs!r}"
+            vbuf_refs[slot] = ("g", int(mg.group(1))) if mg else ("h", int(mh2.group(1)))
+    return h_nodes, vbuf_refs
+
+
+def _h_closure(h_ids, h_nodes):
+    """Every h-node transitively needed by `h_ids` (inclusive), plus the
+    set of leaf g(...) indices the closure bottoms out at -- the DAG
+    analogue of `role_plan`'s VRR `closure`, one level up the chain."""
+    seen_h, seen_g = set(), set()
+    stack = list(h_ids)
+    while stack:
+        hid = stack.pop()
+        if hid in seen_h:
+            continue
+        seen_h.add(hid)
+        for kind, val in h_nodes[hid][1]:
+            if kind == "h":
+                stack.append(val)
+            else:
+                seen_g.add(val)
+    return seen_h, seen_g
 
 
 def role_plan(la, lb, lc, ld, vrr, hrr, shell):
     """Per-role work for splitting over the components of `shell` (a|b|c|d).
 
-    Returns (stmts, roles) where stmts is the parsed VRR and each role is a
-    dict: keep (VRR statement ids, in order), vmap (v index -> compact),
-    g1 (sorted final-buffer indices, 1-based), gmap, vb (vbuf indices in
-    digestion order), and the component list `comps`."""
+    Returns (stmts, roles, (h_nodes, vbuf_refs)) where stmts is the parsed
+    VRR and each role is a dict: keep (VRR statement ids, in order), vmap
+    (v index -> compact), g1 (sorted final-buffer indices, 1-based), gmap,
+    vb (vbuf indices in digestion order), the component list `comps`, and
+    hset/hmap: the DAG nodes that role's own outputs need, transitively,
+    compacted the same way `vmap` compacts VRR statements -- see
+    `_h_closure`. `h_nodes`/`vbuf_refs` are `_hrr_dag_stmts`'s own return."""
     stmts = _vrr_stmts(vrr)
     cur = (la + lb + lc + ld) % 2
     defs, deps = {}, []
     for k, (_t, dst, srcs) in enumerate(stmts):
         deps.append({defs[s] for s in srcs})
         defs[dst] = k
-    hs = _hrr_stmts(hrr)
     na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
-    assert len(hs) == na*nb*nc*nd
     nX = {"a": na, "b": nb, "c": nc, "d": nd}[shell]
 
     def closure(t):
@@ -1222,29 +1268,47 @@ def role_plan(la, lb, lc, ld, vrr, hrr, shell):
             seen.add(k)
             stack.extend(deps[k])
         return seen
+
+    def vb_of(comp):
+        return [1 + ia + na*ib + na*nb*ic + na*nb*nc*id
+                for id in range(nd) for ic in range(nc)
+                for ib in range(nb) for ia in range(na)
+                if {"a": ia, "b": ib, "c": ic, "d": id}[shell] == comp]
+
     roles = []
+    h_nodes, vbuf_refs = _hrr_dag_stmts(hrr)
+    assert len(vbuf_refs) == na*nb*nc*nd
     for comp in range(nX):
-        vb = [1 + ia + na*ib + na*nb*ic + na*nb*nc*id
-              for id in range(nd) for ic in range(nc)
-              for ib in range(nb) for ia in range(na)
-              if {"a": ia, "b": ib, "c": ic, "d": id}[shell] == comp]
-        g = sorted(set().union(*(hs[i][1] for i in vb)))
+        vb = vb_of(comp)
+        direct_h = [vbuf_refs[i][1] for i in vb if vbuf_refs[i][0] == "h"]
+        direct_g = {vbuf_refs[i][1] for i in vb if vbuf_refs[i][0] == "g"}
+        hset, g_from_h = _h_closure(direct_h, h_nodes)
+        g = sorted(direct_g | g_from_h)
         keep = sorted(closure([defs[(i, cur)] for i in g]))
         vidx = sorted({i for k in keep for i in
                        [stmts[k][1][0]] + [s[0] for s in stmts[k][2]]})
+        # h-nodes are numbered in dependency order at generation time
+        # (a node's deps always have a SMALLER id -- gen_hrr.py's
+        # `_make_hrr_rec` only assigns an id after both children
+        # return), so sorting a role's subset by id keeps it
+        # topological: this role's own `hmap` can renumber it densely
+        # without re-deriving the order.
+        hsorted = sorted(hset)
         roles.append(dict(comps=[comp], keep=keep,
                           vmap={i: k + 1 for k, i in enumerate(vidx)},
                           g1=g, gmap={i: k + 1 for k, i in enumerate(g)},
-                          vb=vb, bmap={i: k + 1 for k, i in enumerate(vb)}))
-    return stmts, roles, hs
+                          vb=vb, bmap={i: k + 1 for k, i in enumerate(vb)},
+                          hset=hsorted, hmap={i: k + 1 for k, i in enumerate(hsorted)}))
+    return stmts, roles, (h_nodes, vbuf_refs)
 
 
 def role_report(la, lb, lc, ld, vrr, hrr):
     """One line per candidate split shell: roles, redundancy, sizes."""
     na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
     tot = len(_vrr_stmts(vrr))
-    hs = _hrr_stmts(hrr)
-    allg = len(set().union(*(v[1] for v in hs.values())))
+    h_nodes, vbuf_refs = _hrr_dag_stmts(hrr)
+    allg = len({v for k, v in vbuf_refs.values() if k == "g"} |
+               {v for node in h_nodes.values() for k, v in node[1] if k == "g"})
     cols = []
     for shell, nX in (("a", na), ("b", nb), ("c", nc), ("d", nd)):
         if nX == 1:
@@ -1265,17 +1329,23 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
     shared by every role and runs once per thread; a `select case (role)`
     then holds, per role, the primitive loops with that role's VRR closure
     and compacted arrays, its slice of the HRR, and the digestion restricted
-    to its components of the split shell."""
+    to its components of the split shell.
+
+    Each role additionally compacts its own slice of the shared HRR DAG --
+    see role_plan's `hset`/`hmap` -- into a role-local `h(...)`, which is
+    usually far smaller than the class's full node count: a role only
+    needs the nodes its OWN vbuf slots actually reach."""
     tag = f"{la}{lb}{lc}{ld}"
     na, nb, nc, nd = [(l + 1)*(l + 2)//2 for l in (la, lb, lc, ld)]
     nv = gv.ncum(la + lb)*gv.ncum(lc + ld)
-    stmts, roles, hs = role_plan(la, lb, lc, ld, vrr, hrr, shell)
+    stmts, roles, (h_nodes, vbuf_refs) = role_plan(la, lb, lc, ld, vrr, hrr, shell)
     nrole = len(roles)
     ivar = {"a": "ia", "b": "ib", "c": "ic", "d": "id"}[shell]
     nX = {"a": na, "b": nb, "c": nc, "d": nd}[shell]
     nvr = max(len(r["vmap"]) for r in roles)
     ngr = max(len(r["g1"]) for r in roles)
     nbr = max(len(r["vb"]) for r in roles)
+    nhr = max((len(r["hset"]) for r in roles), default=0)
 
     # --- driver: the scalar driver with a role index on the loop
     drv = pieces["drv"].replace("pcsi" + tag, "pcri" + tag).replace("pcs" + tag, "pcr" + tag)
@@ -1327,6 +1397,14 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
     decls = pieces["decls"]
     decls = re.sub(r"      real\(dp\) :: v\(\d+, 0:1\), g1\(\d+\), vbuf\(\d+\)\n",
                    f"      real(dp) :: v({nvr}, 0:1), g1({ngr}), vbuf({nbr})\n", decls)
+    if nhr > 0:
+        decls = re.sub(r"      real\(dp\) :: h\(\d+\)\n",
+                       f"      real(dp) :: h({nhr})\n", decls)
+    else:
+        # No role needs a shared node at all (every role's outputs are
+        # direct VRR leaves) -- drop the declaration rather than leave an
+        # unused h(0).
+        decls = re.sub(r"      real\(dp\) :: h\(\d+\)\n", "", decls)
     decls += "      integer  :: gi\n"
     for r, role in enumerate(roles):
         decls += (f"      integer, parameter :: rc{r}({len(role['comps'])}) = [" +
@@ -1357,11 +1435,26 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
         pr = pr.replace(acc_old, acc)
         pr = pr.replace(zero_old, f"            do x = 1, {len(role['g1'])}\n"
                                   "               g1(x) = 0.0_dp\n            end do\n")
-        hr = "\n".join(
-            re.sub(r"\bvbuf\((\d+)\)", lambda m: f"vbuf({bmap[int(m.group(1))]})",
-                   re.sub(r"\bg\((\d+)\)", lambda m: f"g1({gmap[int(m.group(1))]})",
-                          hs[i][0]))
-            for i in role["vb"])
+        hmap = role["hmap"]
+
+        def hv(kind, val):
+            return f"g1({gmap[val]})" if kind == "g" else f"h({hmap[val]})"
+
+        def rewrite_h_stmt(text):
+            # `h(id) = ref1 + coef*ref2`: resize the LHS id and rewrite
+            # every ref on the RHS through the same gmap/hmap this
+            # role's VRR and vbuf lines use.
+            s = re.sub(r"^(\s*)h\((\d+)\)",
+                      lambda m: f"{m.group(1)}h({hmap[int(m.group(2))]})", text)
+            s = re.sub(r"\bg\((\d+)\)", lambda m: hv("g", int(m.group(1))), s)
+            s = re.sub(r"\bh\((\d+)\)", lambda m: hv("h", int(m.group(1)))
+                       if m.start() > s.index("=") else m.group(0), s)
+            return s
+        node_lines = "\n".join(rewrite_h_stmt(h_nodes[i][0]) for i in role["hset"])
+        copy_lines = "\n".join(
+            f"         vbuf({bmap[slot]}) = {hv(*vbuf_refs[slot])}"
+            for slot in role["vb"])
+        hr = (node_lines + ("\n" if node_lines else "") + copy_lines)
         dg = digest.replace(f"         do idx = 1, {na*nb*nc*nd}\n",
                             f"         do idx = 1, {len(role['vb'])}\n")
         n_loops = dg.count(f"do {ivar} = 0, {nX - 1}")
@@ -1377,7 +1470,7 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
     return drv + "\n" + item
 
 
-def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
+def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body, nhrr=0):
     """The scalar kernel for one class.
 
     One accumulator, the pair coefficients folded into pp_cs, no column
@@ -1395,12 +1488,12 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     roughly half the compile time of this library for code that production
     could no longer reach."""
     tag = f"{la}{lb}{lc}{ld}"
-    txt = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body)
+    txt = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, nhrr=nhrr)
     # The scalar kernel is sliced out of the LOOP form: its markers are
     # statements rather than the unrolled form's literal blocks, and the
     # two differ only after the combination head, which the scalar kernel
     # replaces wholesale anyway.
-    txt_l = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=False)
+    txt_l = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=False, nhrr=nhrr)
 
     m1 = "         if (ncab*nccd == 1) then\n"
     i1 = txt.index(m1)
@@ -1582,7 +1675,7 @@ def main():
                          "OUTPUT layout only: the VRR sieve's targets "
                          "(gv.cart_list) and the HRR's internal index into "
                          "`g` (gh.cart_cum) stay lexicographic regardless -- "
-                         "see the comment where gh.emit_class is called "
+                         "see the comment where gh.emit_class_dag is called "
                          "below.")
     ap.add_argument("--split", metavar="DIR", default=None,
                     help="emit one module per class into DIR, plus a "
@@ -1663,8 +1756,11 @@ contains
                 for ld in range(L + 1):
                     # Gill's sieve needs to know what the HRR actually reads,
                     # so the HRR is generated first and its target set drives
-                    # the VRR.
-                    hrr_pre = gh.emit_class(la, lb, lc, ld, idx_h)
+                    # the VRR. The read set is the same whichever of
+                    # emit_class_dag's internal node orderings asks for it
+                    # (every target's recursion bottoms out at the same VRR
+                    # leaves), so this throwaway pass costs nothing extra.
+                    hrr_pre, _ = gh.emit_class_dag(la, lb, lc, ld, idx_h)
                     nca_ = gv.ncum(la + lb)
                     reads = {int(x) for x in re.findall(r"g\((\d+)\)", hrr_pre)}
                     targets = {((r - 1) % nca_ + 1, (r - 1)//nca_ + 1, 0)
@@ -1684,14 +1780,14 @@ contains
                     # (unlike hrr_pre above, whose reads set is order-
                     # invariant -- see the module docstring) this one gets
                     # the requested order.
-                    hrr = gh.emit_class(la, lb, lc, ld, idx_h, order)
+                    hrr, nnodes = gh.emit_class_dag(la, lb, lc, ld, idx_h, order)
                     key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld
                     names.append((key, f"{la}{lb}{lc}{ld}"))
                     if args.role_report:
                         if 2 in (la, lb, lc, ld):
                             print(role_report(la, lb, lc, ld, vrr, hrr))
                         continue
-                    body, parts = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
+                    body, parts = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr, nhrr=nnodes)
                     tag = f"{la}{lb}{lc}{ld}"
                     if tag in ROLE_SPLITS:
                         body += "\n" + emit_role_kernel(la, lb, lc, ld, vrr, hrr,

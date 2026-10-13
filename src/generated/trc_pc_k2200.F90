@@ -161,6 +161,8 @@ contains
       integer  :: bi, bj, bbase
       real(dp) :: bx, bx2, b0, b1, b2, btt, bet
       real(dp) :: v(35, 0:1), g1(35), vbuf(36)
+      real(dp) :: h(79)
+
       real(dp) :: wq, w, wab, cabmax, ccdmax, qchunk
       logical  :: same_ab, same_cd, same_pair
       real(dp) :: jab(36), jcd(1), kac(6)
@@ -437,132 +439,121 @@ contains
          mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
 
          ! --- HRR ---
-         vbuf(1) = abx*abx*g1(5) &
-            + 2.0_dp*abx*g1(11) &
-            + g1(21)
-         vbuf(2) = abx*abx*g1(6) &
-            + 2.0_dp*abx*g1(12) &
-            + g1(22)
-         vbuf(3) = abx*abx*g1(7) &
-            + 2.0_dp*abx*g1(13) &
-            + g1(23)
-         vbuf(4) = abx*abx*g1(8) &
-            + 2.0_dp*abx*g1(14) &
-            + g1(24)
-         vbuf(5) = abx*abx*g1(9) &
-            + 2.0_dp*abx*g1(15) &
-            + g1(25)
-         vbuf(6) = abx*abx*g1(10) &
-            + 2.0_dp*abx*g1(16) &
-            + g1(26)
-         vbuf(7) = abx*aby*g1(5) &
-            + abx*g1(12) &
-            + aby*g1(11) &
-            + g1(22)
-         vbuf(8) = abx*aby*g1(6) &
-            + abx*g1(14) &
-            + aby*g1(12) &
-            + g1(24)
-         vbuf(9) = abx*aby*g1(7) &
-            + abx*g1(15) &
-            + aby*g1(13) &
-            + g1(25)
-         vbuf(10) = abx*aby*g1(8) &
-            + abx*g1(17) &
-            + aby*g1(14) &
-            + g1(27)
-         vbuf(11) = abx*aby*g1(9) &
-            + abx*g1(18) &
-            + aby*g1(15) &
-            + g1(28)
-         vbuf(12) = abx*aby*g1(10) &
-            + abx*g1(19) &
-            + aby*g1(16) &
-            + g1(29)
-         vbuf(13) = abx*abz*g1(5) &
-            + abx*g1(13) &
-            + abz*g1(11) &
-            + g1(23)
-         vbuf(14) = abx*abz*g1(6) &
-            + abx*g1(15) &
-            + abz*g1(12) &
-            + g1(25)
-         vbuf(15) = abx*abz*g1(7) &
-            + abx*g1(16) &
-            + abz*g1(13) &
-            + g1(26)
-         vbuf(16) = abx*abz*g1(8) &
-            + abx*g1(18) &
-            + abz*g1(14) &
-            + g1(28)
-         vbuf(17) = abx*abz*g1(9) &
-            + abx*g1(19) &
-            + abz*g1(15) &
-            + g1(29)
-         vbuf(18) = abx*abz*g1(10) &
-            + abx*g1(20) &
-            + abz*g1(16) &
-            + g1(30)
-         vbuf(19) = aby*aby*g1(5) &
-            + 2.0_dp*aby*g1(12) &
-            + g1(24)
-         vbuf(20) = aby*aby*g1(6) &
-            + 2.0_dp*aby*g1(14) &
-            + g1(27)
-         vbuf(21) = aby*aby*g1(7) &
-            + 2.0_dp*aby*g1(15) &
-            + g1(28)
-         vbuf(22) = aby*aby*g1(8) &
-            + 2.0_dp*aby*g1(17) &
-            + g1(31)
-         vbuf(23) = aby*aby*g1(9) &
-            + 2.0_dp*aby*g1(18) &
-            + g1(32)
-         vbuf(24) = aby*aby*g1(10) &
-            + 2.0_dp*aby*g1(19) &
-            + g1(33)
-         vbuf(25) = aby*abz*g1(5) &
-            + aby*g1(13) &
-            + abz*g1(12) &
-            + g1(25)
-         vbuf(26) = aby*abz*g1(6) &
-            + aby*g1(15) &
-            + abz*g1(14) &
-            + g1(28)
-         vbuf(27) = aby*abz*g1(7) &
-            + aby*g1(16) &
-            + abz*g1(15) &
-            + g1(29)
-         vbuf(28) = aby*abz*g1(8) &
-            + aby*g1(18) &
-            + abz*g1(17) &
-            + g1(32)
-         vbuf(29) = aby*abz*g1(9) &
-            + aby*g1(19) &
-            + abz*g1(18) &
-            + g1(33)
-         vbuf(30) = aby*abz*g1(10) &
-            + aby*g1(20) &
-            + abz*g1(19) &
-            + g1(34)
-         vbuf(31) = abz*abz*g1(5) &
-            + 2.0_dp*abz*g1(13) &
-            + g1(26)
-         vbuf(32) = abz*abz*g1(6) &
-            + 2.0_dp*abz*g1(15) &
-            + g1(29)
-         vbuf(33) = abz*abz*g1(7) &
-            + 2.0_dp*abz*g1(16) &
-            + g1(30)
-         vbuf(34) = abz*abz*g1(8) &
-            + 2.0_dp*abz*g1(18) &
-            + g1(33)
-         vbuf(35) = abz*abz*g1(9) &
-            + 2.0_dp*abz*g1(19) &
-            + g1(34)
-         vbuf(36) = abz*abz*g1(10) &
-            + 2.0_dp*abz*g1(20) &
-            + g1(35)
+         h(1) = g1(21) + abx*g1(11)
+         h(2) = g1(11) + abx*g1(5)
+         h(3) = h(1) + abx*h(2)
+         vbuf(1) = h(3)
+         h(4) = g1(22) + abx*g1(12)
+         h(5) = g1(12) + abx*g1(6)
+         h(6) = h(4) + abx*h(5)
+         vbuf(2) = h(6)
+         h(7) = g1(23) + abx*g1(13)
+         h(8) = g1(13) + abx*g1(7)
+         h(9) = h(7) + abx*h(8)
+         vbuf(3) = h(9)
+         h(10) = g1(24) + abx*g1(14)
+         h(11) = g1(14) + abx*g1(8)
+         h(12) = h(10) + abx*h(11)
+         vbuf(4) = h(12)
+         h(13) = g1(25) + abx*g1(15)
+         h(14) = g1(15) + abx*g1(9)
+         h(15) = h(13) + abx*h(14)
+         vbuf(5) = h(15)
+         h(16) = g1(26) + abx*g1(16)
+         h(17) = g1(16) + abx*g1(10)
+         h(18) = h(16) + abx*h(17)
+         vbuf(6) = h(18)
+         h(19) = g1(22) + aby*g1(11)
+         h(20) = g1(12) + aby*g1(5)
+         h(21) = h(19) + abx*h(20)
+         vbuf(7) = h(21)
+         h(22) = g1(24) + aby*g1(12)
+         h(23) = g1(14) + aby*g1(6)
+         h(24) = h(22) + abx*h(23)
+         vbuf(8) = h(24)
+         h(25) = g1(25) + aby*g1(13)
+         h(26) = g1(15) + aby*g1(7)
+         h(27) = h(25) + abx*h(26)
+         vbuf(9) = h(27)
+         h(28) = g1(27) + aby*g1(14)
+         h(29) = g1(17) + aby*g1(8)
+         h(30) = h(28) + abx*h(29)
+         vbuf(10) = h(30)
+         h(31) = g1(28) + aby*g1(15)
+         h(32) = g1(18) + aby*g1(9)
+         h(33) = h(31) + abx*h(32)
+         vbuf(11) = h(33)
+         h(34) = g1(29) + aby*g1(16)
+         h(35) = g1(19) + aby*g1(10)
+         h(36) = h(34) + abx*h(35)
+         vbuf(12) = h(36)
+         h(37) = g1(23) + abz*g1(11)
+         h(38) = g1(13) + abz*g1(5)
+         h(39) = h(37) + abx*h(38)
+         vbuf(13) = h(39)
+         h(40) = g1(25) + abz*g1(12)
+         h(41) = g1(15) + abz*g1(6)
+         h(42) = h(40) + abx*h(41)
+         vbuf(14) = h(42)
+         h(43) = g1(26) + abz*g1(13)
+         h(44) = g1(16) + abz*g1(7)
+         h(45) = h(43) + abx*h(44)
+         vbuf(15) = h(45)
+         h(46) = g1(28) + abz*g1(14)
+         h(47) = g1(18) + abz*g1(8)
+         h(48) = h(46) + abx*h(47)
+         vbuf(16) = h(48)
+         h(49) = g1(29) + abz*g1(15)
+         h(50) = g1(19) + abz*g1(9)
+         h(51) = h(49) + abx*h(50)
+         vbuf(17) = h(51)
+         h(52) = g1(30) + abz*g1(16)
+         h(53) = g1(20) + abz*g1(10)
+         h(54) = h(52) + abx*h(53)
+         vbuf(18) = h(54)
+         h(55) = h(22) + aby*h(20)
+         vbuf(19) = h(55)
+         h(56) = h(28) + aby*h(23)
+         vbuf(20) = h(56)
+         h(57) = h(31) + aby*h(26)
+         vbuf(21) = h(57)
+         h(58) = g1(31) + aby*g1(17)
+         h(59) = h(58) + aby*h(29)
+         vbuf(22) = h(59)
+         h(60) = g1(32) + aby*g1(18)
+         h(61) = h(60) + aby*h(32)
+         vbuf(23) = h(61)
+         h(62) = g1(33) + aby*g1(19)
+         h(63) = h(62) + aby*h(35)
+         vbuf(24) = h(63)
+         h(64) = h(40) + aby*h(38)
+         vbuf(25) = h(64)
+         h(65) = h(46) + aby*h(41)
+         vbuf(26) = h(65)
+         h(66) = h(49) + aby*h(44)
+         vbuf(27) = h(66)
+         h(67) = g1(32) + abz*g1(17)
+         h(68) = h(67) + aby*h(47)
+         vbuf(28) = h(68)
+         h(69) = g1(33) + abz*g1(18)
+         h(70) = h(69) + aby*h(50)
+         vbuf(29) = h(70)
+         h(71) = g1(34) + abz*g1(19)
+         h(72) = h(71) + aby*h(53)
+         vbuf(30) = h(72)
+         h(73) = h(43) + abz*h(38)
+         vbuf(31) = h(73)
+         h(74) = h(49) + abz*h(41)
+         vbuf(32) = h(74)
+         h(75) = h(52) + abz*h(44)
+         vbuf(33) = h(75)
+         h(76) = h(69) + abz*h(47)
+         vbuf(34) = h(76)
+         h(77) = h(71) + abz*h(50)
+         vbuf(35) = h(77)
+         h(78) = g1(35) + abz*g1(20)
+         h(79) = h(78) + abz*h(53)
+         vbuf(36) = h(79)
 
 #ifdef TRC_NO_DIGEST
          !
