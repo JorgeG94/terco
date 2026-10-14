@@ -104,9 +104,6 @@ program check_xc
       sogga11_x_x_exc_vxc_polar, sogga11_x_x_fxc_polar, sogga11_x_x_vxc_fxc_polar
    use trc_xc_vwn, only: vwn_exc_unpolar, vwn_exc_vxc_unpolar, vwn_fxc_unpolar, &
       vwn_vxc_fxc_unpolar, vwn_exc_polar, vwn_exc_vxc_polar, vwn_fxc_polar, vwn_vxc_fxc_polar
-   use trc_xc_vwn3, only: vwn3_exc_unpolar, vwn3_exc_vxc_unpolar, vwn3_fxc_unpolar, &
-      vwn3_vxc_fxc_unpolar, vwn3_exc_polar, vwn3_exc_vxc_polar, vwn3_fxc_polar, &
-      vwn3_vxc_fxc_polar
    use trc_xc_vwn_rpa, only: vwn_rpa_exc_unpolar, vwn_rpa_exc_vxc_unpolar, &
       vwn_rpa_fxc_unpolar, vwn_rpa_vxc_fxc_unpolar, vwn_rpa_exc_polar, vwn_rpa_exc_vxc_polar, &
       vwn_rpa_fxc_polar, vwn_rpa_vxc_fxc_polar
@@ -728,20 +725,6 @@ contains
             call vwn_fxc_unpolar(x(1), f(1))
             call vwn_exc_unpolar(x(1), e)
             call vwn_vxc_fxc_unpolar(x(1), v2(1), f2(1))
-            nv = 1; nf = 1
-         end if
-      case ("vwn3")
-         if (polar) then
-            call vwn3_exc_vxc_polar(x(1), x(2), out(1), v(1), v(2))
-            call vwn3_fxc_polar(x(1), x(2), f(1), f(2), f(3))
-            call vwn3_exc_polar(x(1), x(2), e)
-            call vwn3_vxc_fxc_polar(x(1), x(2), v2(1), v2(2), f2(1), f2(2), f2(3))
-            nv = 2; nf = 3
-         else
-            call vwn3_exc_vxc_unpolar(x(1), out(1), v(1))
-            call vwn3_fxc_unpolar(x(1), f(1))
-            call vwn3_exc_unpolar(x(1), e)
-            call vwn3_vxc_fxc_unpolar(x(1), v2(1), f2(1))
             nv = 1; nf = 1
          end if
       case ("vwn_rpa")

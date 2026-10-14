@@ -54,7 +54,6 @@ module trc_xc_functional
    use trc_xc_sogga11_x_c, only: sogga11_x_c_exc_vxc_unpolar, sogga11_x_c_exc_vxc_polar
    use trc_xc_sogga11_x_x, only: sogga11_x_x_exc_vxc_unpolar, sogga11_x_x_exc_vxc_polar
    use trc_xc_vwn, only: vwn_exc_vxc_unpolar, vwn_exc_vxc_polar
-   use trc_xc_vwn3, only: vwn3_exc_vxc_unpolar, vwn3_exc_vxc_polar
    use trc_xc_vwn_rpa, only: vwn_rpa_exc_vxc_unpolar, vwn_rpa_exc_vxc_polar
    use trc_xc_wb97_xc, only: wb97_xc_exc_vxc_unpolar, wb97_xc_exc_vxc_polar
    use trc_xc_wb97x_d_xc, only: wb97x_d_xc_exc_vxc_unpolar, wb97x_d_xc_exc_vxc_polar
@@ -97,12 +96,11 @@ module trc_xc_functional
    integer, parameter :: XC_K_SOGGA11_X_C = 25
    integer, parameter :: XC_K_SOGGA11_X_X = 26
    integer, parameter :: XC_K_VWN = 27
-   integer, parameter :: XC_K_VWN3 = 28
-   integer, parameter :: XC_K_VWN_RPA = 29
-   integer, parameter :: XC_K_WB97_XC = 30
-   integer, parameter :: XC_K_WB97X_D_XC = 31
-   integer, parameter :: XC_K_WB97X_V_XC = 32
-   integer, parameter :: XC_K_WB97X_XC = 33
+   integer, parameter :: XC_K_VWN_RPA = 28
+   integer, parameter :: XC_K_WB97_XC = 29
+   integer, parameter :: XC_K_WB97X_D_XC = 30
+   integer, parameter :: XC_K_WB97X_V_XC = 31
+   integer, parameter :: XC_K_WB97X_XC = 32
 
    !! Every selectable name, available or `missing`: the CLI's --func
    !! help and trc_capi's unknown-functional message are built from this
@@ -124,7 +122,7 @@ module trc_xc_functional
       "tpss         ", "tpss0        ", "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", &
       "wb97         ", "wb97x        ", "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", &
       "wb97xv       ", "x3lyp        ", "xlyp         " ]
-   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b3lyp, b3lyp5, b3pw91, b88, bhandh, blyp, bp86, bp86vwn, lda, lda_x, mpw1k, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn3, svwn5, svwn_rpa, vwn3, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
+   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b3lyp, b3lyp5, b3pw91, b88, bhandh, blyp, bp86, bp86vwn, lda, lda_x, mpw1k, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
 
    type :: trc_xc_functional_t
       character(len=24) :: name = ""
@@ -195,7 +193,6 @@ contains
          case (XC_K_SOGGA11_X_C); call sogga11_x_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case (XC_K_SOGGA11_X_X); call sogga11_x_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case (XC_K_VWN); call vwn_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_VWN3); call vwn3_exc_vxc_unpolar(rho, e, vr)
          case (XC_K_VWN_RPA); call vwn_rpa_exc_vxc_unpolar(rho, e, vr)
          case (XC_K_WB97_XC); call wb97_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case (XC_K_WB97X_D_XC); call wb97x_d_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
@@ -276,7 +273,6 @@ contains
          case (XC_K_SOGGA11_X_X); call sogga11_x_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
             s_bb, e, va, vb, saa, sab, sbb)
          case (XC_K_VWN); call vwn_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_VWN3); call vwn3_exc_vxc_polar(rho_a, rho_b, e, va, vb)
          case (XC_K_VWN_RPA); call vwn_rpa_exc_vxc_polar(rho_a, rho_b, e, va, vb)
          case (XC_K_WB97_XC); call wb97_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
             va, vb, saa, sab, sbb)
@@ -372,7 +368,7 @@ contains
          f%exx_lr = 1.0_dp
          f%omega = 0.4_dp
       case ("svwn3")
-         call set(f, XC_FAMILY_LDA, [XC_K_SLATER_EXCHANGE, XC_K_VWN3], [1.0_dp, 1.0_dp])
+         f%missing = "needs VWN3: translated kernel disagrees with libxc on the GPU (polarised eps off by 1.41e-11 at rho ~ 1e-8, zeta ~ 1; agrees on the CPU), and its UKS potential missed pyscf on terco's grid -- under investigation"
       case ("scan")
          f%missing = "needs SCAN_C, SCAN_X: meta-GGA kernels are not translated yet"
       case ("r2scan")
@@ -412,7 +408,7 @@ contains
       case ("tpss0")
          f%missing = "needs TPSS_C, TPSS_X: meta-GGA kernels are not translated yet"
       case ("vwn3")
-         call set(f, XC_FAMILY_LDA, [XC_K_VWN3], [1.0_dp])
+         f%missing = "needs VWN3: translated kernel disagrees with libxc on the GPU (polarised eps off by 1.41e-11 at rho ~ 1e-8, zeta ~ 1; agrees on the CPU), and its UKS potential missed pyscf on terco's grid -- under investigation"
       case ("vwn5")
          call set(f, XC_FAMILY_LDA, [XC_K_VWN_RPA], [1.0_dp])
       case ("lrcwpbe")

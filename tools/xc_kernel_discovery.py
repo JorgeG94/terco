@@ -54,6 +54,9 @@ DISAGREES_WITH_LIBXC = {
     "lrcwpbeh_hjs_pbe_x": "translated kernel disagrees with libxc (fxc off by up to 1.9e-6)",
     "wb97x_d3_xc": "translated kernel disagrees with libxc (vxc off by 1.66e-11 at its own "
                    "omega-attenuation switch, just past the 1e-11 tolerance)",
+    "vwn3": "translated kernel disagrees with libxc on the GPU (polarised eps off by "
+            "1.41e-11 at rho ~ 1e-8, zeta ~ 1; agrees on the CPU), and its UKS potential "
+            "missed pyscf on terco's grid -- under investigation",
 }
 
 
