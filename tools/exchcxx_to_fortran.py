@@ -13,9 +13,13 @@ sequences ending in assignments to the reference outputs. No loops, no
 branches, no pointers. The only C++ in them is
 
     safe_math::cbrt(x) and friends      -> a Fortran intrinsic or a helper
+    safe_math::erf(x)                    -> xc_erf(x), bit-reproducible (trc_xc_util)
     piecewise_functor_3(c, a, b)         -> merge(a, b, c)
     piecewise_functor_5(b, x, c, y, z)   -> merge(x, merge(y, z, c), b)
-    constants::m_cbrt_3                  -> a parameter from trc_xc_util
+    constants::m_cbrt_3, bare M_PI       -> a parameter from trc_xc_util
+                                             (matched case-insensitively: a
+                                             libm macro like M_PI has no
+                                             `constants::` prefix to strip)
     0.1e1                                -> 0.1e1_dp
 
 `piecewise_functor_*` are ordinary functions taking VALUES, so C++ evaluates
@@ -36,7 +40,7 @@ hole curvature bound) and nothing needs them yet.
 
 Usage:
     python tools/exchcxx_to_fortran.py --exchcxx ~/dev/ExchCXX \
-        -o src/xc slater_exchange vwn vwn_rpa pbe_x pbe_c b88 lyp
+        -o src/xc slater_exchange vwn vwn_rpa pbe_x pbe_c b88 lyp wb97x_v_xc
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ FUNC_MAP: dict[str, str] = {
     "safe_math::log": "log",
     "safe_math::exp": "exp",
     "safe_math::atan": "atan",
-    "safe_math::erf": "erf",
+    "safe_math::erf": "xc_erf",
     "safe_math::xc_erfcx": "xc_erfcx",
     "fabs": "abs",
     "square": "xc_square",
@@ -69,7 +73,7 @@ FUNC_MAP: dict[str, str] = {
     "enforce_fermi_hole_curvature": "enforce_fermi_hole_curvature",
 }
 UTIL_NAMES = {
-    "xc_cbrt", "xc_square", "pow_3_2", "pow_1_4", "xc_erfcx",
+    "xc_cbrt", "xc_square", "pow_3_2", "pow_1_4", "xc_erfcx", "xc_erf",
     "enforce_polar_sigma_constraints", "enforce_fermi_hole_curvature",
 }
 CONSTANT_NAMES = {
@@ -329,8 +333,12 @@ def emit_impl(k: Kernel, fn: Function, used: set[str]) -> list[str]:
     for lhs, rhs, is_new in fn.stmts:
         f_rhs = translate_expr(rhs)
         for nm in re.findall(r"[A-Za-z_]\w*", f_rhs):
-            if nm in UTIL_NAMES or nm in CONSTANT_NAMES:
-                used.add(nm)
+            # Fortran identifiers are case-insensitive, so `M_PI` in the C++
+            # (the libm macro, not `constants::m_pi`) still refers to the
+            # same module constant as `m_pi`; match the lowered form.
+            nm_lower = nm.lower()
+            if nm_lower in UTIL_NAMES or nm_lower in CONSTANT_NAMES:
+                used.add(nm_lower)
         if is_new:
             if lhs in seen:
                 raise Unsupported(f"{lhs} declared twice in {fn.name}")
