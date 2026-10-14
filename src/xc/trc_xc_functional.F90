@@ -105,24 +105,25 @@ module trc_xc_functional
    !! Every selectable name, available or `missing`: the CLI's --func
    !! help and trc_capi's unknown-functional message are built from this
    !! rather than keeping their own copy of the list.
-   integer, parameter :: XC_FUNCTIONAL_COUNT = 87
+   integer, parameter :: XC_FUNCTIONAL_COUNT = 92
    character(len=13), parameter :: XC_FUNCTIONAL_NAMES(XC_FUNCTIONAL_COUNT) = [ &
       "b3lyp        ", "b3lyp5       ", "b3pw91       ", "b88          ", "b97d         ", "b97d3zero    ", &
-      "bhandh       ", "blyp         ", "bmk          ", "bp86         ", "bp86vwn      ", "camb3lyp     ", &
-      "cf22d        ", "epc17_1      ", "epc17_2      ", "epc18_1      ", "epc18_2      ", "hse03        ", &
-      "hse06        ", "lcwpbe       ", "lda          ", "lda_x        ", "lrcwpbe      ", "lrcwpbeh     ", &
-      "m05          ", "m052x        ", "m06          ", "m062x        ", "m06hf        ", "m06l         ", &
-      "m06sx        ", "m08hx        ", "m08so        ", "m11          ", "mbeef        ", "mn12l        ", &
-      "mn12sx       ", "mn15         ", "mn15l        ", "mpw1k        ", "mpw91        ", "o3lyp        ", &
-      "olyp         ", "opbe         ", "pbe          ", "pbe0         ", "pkzb         ", "pw86b95      ", &
-      "pw86pbe      ", "pw91         ", "r2scan       ", "r2scan0      ", "r2scan50     ", "r2scanh      ", &
-      "r2scanl      ", "revb3lyp     ", "revm06l      ", "revpbe       ", "revpbe0      ", "revtpss      ", &
-      "revtpssh     ", "rpbe         ", "rscan        ", "scan         ", "scan0        ", "slater       ", &
-      "sogga11x     ", "spw92        ", "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", &
-      "tpss         ", "tpss0        ", "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", &
-      "wb97         ", "wb97x        ", "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", &
-      "wb97xv       ", "x3lyp        ", "xlyp         " ]
-   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b3lyp, b3lyp5, b3pw91, b88, bhandh, blyp, bp86, bp86vwn, lda, lda_x, mpw1k, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
+      "bhandh       ", "bhandhlyp    ", "bhhlyp       ", "blyp         ", "bmk          ", "bp86         ", &
+      "bp86vwn      ", "camb3lyp     ", "cf22d        ", "epc17_1      ", "epc17_2      ", "epc18_1      ", &
+      "epc18_2      ", "hf-lyp       ", "hf_lyp       ", "hflyp        ", "hse03        ", "hse06        ", &
+      "lcwpbe       ", "lda          ", "lda_x        ", "lrcwpbe      ", "lrcwpbeh     ", "m05          ", &
+      "m052x        ", "m06          ", "m062x        ", "m06hf        ", "m06l         ", "m06sx        ", &
+      "m08hx        ", "m08so        ", "m11          ", "mbeef        ", "mn12l        ", "mn12sx       ", &
+      "mn15         ", "mn15l        ", "mpw1k        ", "mpw91        ", "o3lyp        ", "olyp         ", &
+      "opbe         ", "pbe          ", "pbe0         ", "pkzb         ", "pw86b95      ", "pw86pbe      ", &
+      "pw91         ", "r2scan       ", "r2scan0      ", "r2scan50     ", "r2scanh      ", "r2scanl      ", &
+      "revb3lyp     ", "revm06l      ", "revpbe       ", "revpbe0      ", "revtpss      ", "revtpssh     ", &
+      "rpbe         ", "rscan        ", "scan         ", "scan0        ", "slater       ", "sogga11x     ", &
+      "spw92        ", "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", "tpss         ", &
+      "tpss0        ", "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", &
+      "wb97x        ", "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", &
+      "x3lyp        ", "xlyp         " ]
+   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bp86, bp86vwn, hf-lyp, hf_lyp, hflyp, lda, lda_x, mpw1k, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
 
    type :: trc_xc_functional_t
       character(len=24) :: name = ""
@@ -335,6 +336,16 @@ contains
          call set(f, XC_FAMILY_GGA, [XC_K_SLATER_EXCHANGE, XC_K_B88, XC_K_VWN, XC_K_LYP], &
             [0.08_dp, 0.72_dp, 0.19_dp, 0.81_dp])
          f%exx = 0.2_dp
+      case ("bhandhlyp", "bhhlyp")
+         ! libxc HYB_GGA_XC_BHANDHLYP (Gaussian's BHandHLYP): 0.5 B88 + LYP,
+         ! half exact exchange. Not in ExchCXX's functional table.
+         call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_LYP], [0.5_dp, 1.0_dp])
+         f%exx = 0.5_dp
+      case ("hflyp", "hf-lyp", "hf_lyp")
+         ! Full exact exchange plus LYP correlation; pyscf's 'HF,LYP'
+         ! (libxc GGA_C_LYP with hybrid_coeff 1). Not in ExchCXX's table.
+         call set(f, XC_FAMILY_GGA, [XC_K_LYP], [1.0_dp])
+         f%exx = 1.0_dp
       case ("wb97x-v", "wb97xv", "wb97x_v")
          ! libxc HYB_GGA_XC_WB97X_V. rsh_coeff (omega, alpha, beta) =
          ! (0.3, 1.0, -0.833): alpha is the LONG-RANGE exact-exchange

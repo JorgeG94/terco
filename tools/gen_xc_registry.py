@@ -98,6 +98,16 @@ LOCAL: list[Entry] = [
         comment=["libxc HYB_GGA_XC_B3LYP5 and ExchCXX's B3LYP: VWN5"],
     ),
     Entry(
+        "bhandhlyp", ("bhhlyp",), "gga", [(0.5, "b88"), (1.0, "lyp")], exx=0.5,
+        comment=["libxc HYB_GGA_XC_BHANDHLYP (Gaussian's BHandHLYP): 0.5 B88 + LYP,",
+                 "half exact exchange. Not in ExchCXX's functional table."],
+    ),
+    Entry(
+        "hflyp", ("hf-lyp", "hf_lyp"), "gga", [(1.0, "lyp")], exx=1.0,
+        comment=["Full exact exchange plus LYP correlation; pyscf's 'HF,LYP'",
+                 "(libxc GGA_C_LYP with hybrid_coeff 1). Not in ExchCXX's table."],
+    ),
+    Entry(
         "wb97x-v", ("wb97xv", "wb97x_v"), "gga", [(1.0, "wb97x_v_xc")],
         exx=0.167, exx_lr=0.833, omega=0.3, nlc_b=6.0, nlc_c=0.01,
         comment=[

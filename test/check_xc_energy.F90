@@ -68,11 +68,11 @@ program check_xc_energy
    ! V_xc element at this test's own grid/density misses this test's 1e-9
    ! by 16% while E_xc and N match to 1e-15/1e-13 -- recorded, not chased
    ! further, since check_xc is the authoritative per-kernel check.)
-   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 18
+   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 20
    character(len=8), parameter :: names(NFUNC) = [character(len=8) :: &
                                                   "lda_x", "svwn", "pbe", "blyp", "b3lyp", "b3lyp5", "wb97x-v", &
                                                   "wb97x", "wb97", "vwn5", "pw91", "bp86", "rpbe", "o3lyp", &
-                                                  "revb3lyp", "x3lyp", "bhandh", "sogga11x"]
+                                                  "revb3lyp", "x3lyp", "bhandh", "sogga11x", "bhhlyp", "hflyp"]
    integer :: sh_l(NSH), sh_np(NSH), i, j, nao, ifn, unit, nfail
    real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
    real(dp) :: at_z(NATM), at_r(3, NATM), seed, exc, nelec, exc2, nelec2, trds

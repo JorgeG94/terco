@@ -65,13 +65,15 @@ inv = np.argsort(perm)
 # over this test's 1e-9 (E_xc and N match to 1e-15/1e-13) -- see the commit
 # that added this sweep.
 NAMES = ['lda_x', 'svwn', 'pbe', 'blyp', 'b3lyp', 'b3lyp5', 'wb97x-v', 'wb97x', 'wb97',
-         'vwn5', 'pw91', 'bp86', 'rpbe', 'o3lyp', 'revb3lyp', 'x3lyp', 'bhandh', 'sogga11x']
+         'vwn5', 'pw91', 'bp86', 'rpbe', 'o3lyp', 'revb3lyp', 'x3lyp', 'bhandh', 'sogga11x',
+         'bhhlyp', 'hflyp']
 PYSCF = {'lda_x': 'LDA_X', 'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'blyp': 'BLYP',
          'b3lyp': 'HYB_GGA_XC_B3LYP', 'b3lyp5': 'HYB_GGA_XC_B3LYP5',
          'wb97x-v': 'HYB_GGA_XC_WB97X_V', 'wb97x': 'HYB_GGA_XC_WB97X', 'wb97': 'HYB_GGA_XC_WB97',
          'vwn5': 'LDA_C_VWN_RPA', 'pw91': 'GGA_X_PW91,GGA_C_PW91', 'bp86': 'GGA_X_B88,GGA_C_P86',
          'rpbe': 'GGA_X_RPBE,GGA_C_PBE', 'o3lyp': 'O3LYP', 'revb3lyp': 'REVB3LYP', 'x3lyp': 'X3LYP',
-         'bhandh': '0.5*HF + 0.5*LDA_X, GGA_C_LYP', 'sogga11x': 'HYB_GGA_X_SOGGA11_X,GGA_C_SOGGA11_X'}
+         'bhandh': '0.5*HF + 0.5*LDA_X, GGA_C_LYP', 'sogga11x': 'HYB_GGA_X_SOGGA11_X,GGA_C_SOGGA11_X',
+         'bhhlyp': 'HYB_GGA_XC_BHANDHLYP', 'hflyp': 'HF,GGA_C_LYP'}
 
 f = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xc_probe.bin'), 'rb')
 npts, n, nfunc = np.fromfile(f, dtype=np.int64, count=3)
