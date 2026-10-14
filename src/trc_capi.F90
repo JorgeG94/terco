@@ -738,6 +738,17 @@ contains
 
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
+      if (.not. (omega >= 0.0_c_double)) then
+         ! A negative omega reaches trc_fock.F90's `error stop`, which kills
+         ! the host process; a NaN omega returns TRC_OK with an unattenuated
+         ! K (the `ow < 0` guard there never fires for NaN). Catch both at
+         ! the boundary instead. No context handle here (only `eri`/`basis`
+         ! boxes), so -- as with `trc_fock_many`'s own `ndens < 1` check,
+         ! below -- there is nowhere to stash a message; the status code is
+         ! the whole report.
+         status = TRC_ERR_BADARG
+         return
+      end if
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
@@ -848,6 +859,11 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
       if (ndens < 1) then
+         status = TRC_ERR_BADARG
+         return
+      end if
+      if (.not. (omega >= 0.0_c_double)) then
+         ! See capi_fock's own omega check.
          status = TRC_ERR_BADARG
          return
       end if

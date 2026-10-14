@@ -441,7 +441,7 @@ contains
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
-      if (ow < 0.0_dp) error stop "terco: omega < 0 (erfc/short-range) is not implemented"
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
@@ -677,7 +677,7 @@ contains
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
-      if (ow < 0.0_dp) error stop "terco: omega < 0 (erfc/short-range) is not implemented"
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
@@ -783,7 +783,7 @@ contains
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
-      if (ow < 0.0_dp) error stop "terco: omega < 0 (erfc/short-range) is not implemented"
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
       n = this%nao
       nw = this%nao_w
 
@@ -1009,7 +1009,7 @@ contains
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
-      if (ow < 0.0_dp) error stop "terco: omega < 0 (erfc/short-range) is not implemented"
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
