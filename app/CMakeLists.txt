@@ -18,7 +18,10 @@ target_compile_definitions(
   terco_cli
   PRIVATE TERCO_VERSION="${PROJECT_VERSION}"
           TERCO_BASIS_DIR="${CMAKE_INSTALL_PREFIX}/${TERCO_BASIS_INSTALL_DIR}")
-target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic)
+# pic-mpi: the CLI initialises and finalises MPI, and asks for the world
+# communicator's Fortran handle, itself (app/main.F90) -- the library only
+# ever sees the handle trc_set_comm hands it.
+target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi)
 # Find libterco next to the install's bin/, wherever the prefix is moved to.
 # The library installs to lib/ (the root CMakeLists.txt), not LIBDIR.
 if(APPLE)
@@ -67,4 +70,38 @@ if(TERCO_ENABLE_TESTING)
   # A missing geometry is an error with a message, not a crash.
   add_test(NAME terco/cli_missing_file COMMAND terco_cli no_such_file.xyz)
   set_tests_properties(terco/cli_missing_file PROPERTIES WILL_FAIL TRUE)
+
+  #
+  # The CLI itself over ranks -- mirroring test/scf_mpi.F90's own launcher
+  # logic (same reason for the compiler-wrapper's own mpiexec, not the
+  # first one on PATH), since this is a different driver over the same
+  # trc_set_comm/trc_run_scf and needs its own check: np 1 and np 2 must
+  # agree on water RHF and B3LYP, and wB97X-V (VV10) must be refused
+  # cleanly at np 2. Registered only when this build can run it.
+  #
+  if(TERCO_ENABLE_MPI)
+    find_package(Python3 COMPONENTS Interpreter)
+    get_filename_component(_mpi_bindir "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+    if(EXISTS "${_mpi_bindir}/mpiexec")
+      set(_cli_mpiexec "${_mpi_bindir}/mpiexec")
+      set(_cli_npflag "-np")
+    else()
+      find_package(MPI REQUIRED COMPONENTS Fortran)
+      set(_cli_mpiexec "${MPIEXEC_EXECUTABLE}")
+      set(_cli_npflag "${MPIEXEC_NUMPROC_FLAG}")
+    endif()
+    if(Python3_FOUND)
+      add_test(
+        NAME terco/cli_mpi
+        COMMAND
+          ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_mpi_check.py
+          ${_cli_mpiexec} ${_cli_npflag} $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz
+          ${PROJECT_SOURCE_DIR}/test/basis_sets)
+      set_tests_properties(terco/cli_mpi PROPERTIES WORKING_DIRECTORY
+                                                     ${CMAKE_CURRENT_SOURCE_DIR}
+                                                     TIMEOUT 300)
+    endif()
+    unset(_cli_mpiexec)
+    unset(_cli_npflag)
+  endif()
 endif()

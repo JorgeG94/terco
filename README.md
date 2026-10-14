@@ -159,6 +159,28 @@ A basis name is looked up as `<name>.json` in each directory of
 where `cmake --install` puts the basis sets terco is tested with. The exit
 status is 0 on success, 1 on an error and 2 if the SCF did not converge.
 
+#### Over MPI ranks
+
+Build with `-DTERCO_ENABLE_MPI=ON` (NVHPC's own MPI; see the CMake table
+above), then run under `mpiexec`:
+
+```sh
+mpiexec -np 4 terco water.xyz -b 6-31g*       # one GPU per rank
+```
+
+`terco` initialises and finalises MPI itself (through pic-mpi; a build with
+`TERCO_ENABLE_MPI=OFF` makes this a no-op, so the command is the same either
+way). Every rank binds its own device and runs the same input; the Fock
+build and RI-MP2 (`--rimp2`) split across ranks, the SCF/guess/summary
+output prints once (rank 0), and the energies agree with a single-rank run
+to the same tolerance `test/scf_mpi.F90` checks (1e-8). The exchange-
+correlation quadrature does **not** split -- it runs whole on every rank --
+and VV10 nonlocal correlation (`wb97x-v`) is refused outright
+over more than one rank rather than running it wrong; every rank reports the
+refusal and the process exits non-zero. An error on any rank (a bad
+argument, a missing basis file, an unsupported functional) ends every rank,
+not just the one that saw it.
+
 ### From Fortran
 
 ```fortran
