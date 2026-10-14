@@ -70,10 +70,56 @@ specific accumulation this feeds). Classes above the threshold keep the
 array/loop form (`rys2d_inline_body`/`hrr_inline_body`), unchanged.
 """
 
-#: Binomial row b, for the horizontal transfer written out rather than
-#: looped -- LMAX stays 2, so a shift of 0, 1 or 2 is everything this ever
-#: needs. Index [b][t] is C(b, t).
-BINOM = [[1], [1, 1], [1, 2, 1]]
+import math
+
+
+def binom(n, k):
+    """C(n, k), for the horizontal transfer's binomial expansion -- the
+    shift on the HRR's b or d index, from 0 up to lb or ld. A literal
+    table (`BINOM = [[1], [1, 1], [1, 2, 1]]`) covered this while LMAX
+    stayed 2; g shells (l = 4) need rows up to 4, and a closed form needs
+    no ceiling at all. 0 for k < 0 or k > n, same as a padded table row
+    would have read."""
+    if k < 0 or k > n:
+        return 0
+    return math.comb(n, k)
+
+
+def _ab_power_lines(ab, cd, lb, ld, indent):
+    """`ab2 = ab*ab` and `cd2 = cd*cd`, exactly as every class has always
+    computed them, plus `ab3`/`ab4`/`cd3`/`cd4` by Horner chaining once lb
+    or ld reaches 3 or 4: the HRR's binomial expansion (`hrr_inline_body`/
+    `hrr_scalar_assignments`) reads `{ab}` raised to the shift, which runs
+    up to lb on the bra side and up to ld on the ket side -- 2 was
+    everything needed while LMAX stayed 2. A class with lb, ld <= 2 emits
+    exactly the two lines it always did."""
+    pad = " "*indent
+    lines = [f"{pad}ab2 = {ab}*{ab}"]
+    if lb >= 3:
+        lines.append(f"{pad}ab3 = ab2*{ab}")
+    if lb >= 4:
+        lines.append(f"{pad}ab4 = ab3*{ab}")
+    lines.append(f"{pad}cd2 = {cd}*{cd}")
+    if ld >= 3:
+        lines.append(f"{pad}cd3 = cd2*{cd}")
+    if ld >= 4:
+        lines.append(f"{pad}cd4 = cd3*{cd}")
+    return lines
+
+
+def _pow_term(prefix, expr, p):
+    """The multiplier token for a shift of `p` in the HRR's binomial
+    expansion: '' at p = 0, the bare factor at p = 1, and the precomputed
+    power `{prefix}{p}` (see `_ab_power_lines`) from p = 2 up. This used to
+    read `"ab2*"` unconditionally for any p >= 2, which was silently wrong
+    past p = 2 -- harmless while LMAX stayed 2 and every shift topped out
+    there, wrong the day a g shell's shift of 3 or 4 reused the squared
+    power instead of the cubed or fourth one."""
+    if p == 0:
+        return ""
+    if p == 1:
+        return f"{expr}*"
+    return f"{prefix}{p}*"
 
 
 def roots_table_use(nroots):
@@ -180,15 +226,15 @@ def hrr_inline_body(ni, nk, la, lb, lc, ld, g, ab, cd, h, indent):
     `ab2`, `cd2` and the loop variables `a`/`b`/`c` are declared once in the
     caller and reused for all three axes (sequential, not nested)."""
     pad = " "*indent
-    lines = [f"{pad}ab2 = {ab}*{ab}", f"{pad}cd2 = {cd}*{cd}"]
+    lines = _ab_power_lines(ab, cd, lb, ld, indent)
     lines.append(f"{pad}do a = 0, {la}")
     lines.append(f"{pad}   do c = 0, {nk}")
     for b in range(lb + 1):
         terms = []
         for t in range(b + 1):
-            coef, p = BINOM[b][t], b - t
+            coef, p = binom(b, t), b - t
             pre = "" if coef == 1 else f"{float(coef)}_dp*"
-            mul = "" if p == 0 else (f"{ab}*" if p == 1 else "ab2*")
+            mul = _pow_term("ab", ab, p)
             terms.append(f"{pre}{mul}{g}(a + {t}, c)")
         lines.append(f"{pad}      ht(a, {b}, c) = " + " + ".join(terms))
     lines.append(f"{pad}   end do")
@@ -199,9 +245,9 @@ def hrr_inline_body(ni, nk, la, lb, lc, ld, g, ab, cd, h, indent):
     for d in range(ld + 1):
         terms = []
         for t in range(d + 1):
-            coef, p = BINOM[d][t], d - t
+            coef, p = binom(d, t), d - t
             pre = "" if coef == 1 else f"{float(coef)}_dp*"
-            mul = "" if p == 0 else (f"{cd}*" if p == 1 else "cd2*")
+            mul = _pow_term("cd", cd, p)
             terms.append(f"{pre}{mul}ht(a, b, c + {t})")
         lines.append(f"{pad}         {h}(a, b, c, {d}) = " + " + ".join(terms))
     lines.append(f"{pad}      end do")
@@ -284,15 +330,15 @@ def hrr_scalar_assignments(ni, nk, la, lb, lc, ld, g, ab, cd, h, indent):
     gf = lambda i, k: nm(g, i, k)
     ht = lambda a, b, c: nm("ht", a, b, c)
     hf = lambda a, b, c, d: nm(h, a, b, c, d)
-    lines = [f"{pad}ab2 = {ab}*{ab}", f"{pad}cd2 = {cd}*{cd}"]
+    lines = _ab_power_lines(ab, cd, lb, ld, indent)
     for a in range(la + 1):
         for c in range(nk + 1):
             for b in range(lb + 1):
                 terms = []
                 for t in range(b + 1):
-                    coef, p = BINOM[b][t], b - t
+                    coef, p = binom(b, t), b - t
                     pre = "" if coef == 1 else f"{float(coef)}_dp*"
-                    mul = "" if p == 0 else (f"{ab}*" if p == 1 else "ab2*")
+                    mul = _pow_term("ab", ab, p)
                     terms.append(f"{pre}{mul}{gf(a + t, c)}")
                 lines.append(f"{pad}{ht(a, b, c)} = " + " + ".join(terms))
     for a in range(la + 1):
@@ -301,9 +347,9 @@ def hrr_scalar_assignments(ni, nk, la, lb, lc, ld, g, ab, cd, h, indent):
                 for d in range(ld + 1):
                     terms = []
                     for t in range(d + 1):
-                        coef, p = BINOM[d][t], d - t
+                        coef, p = binom(d, t), d - t
                         pre = "" if coef == 1 else f"{float(coef)}_dp*"
-                        mul = "" if p == 0 else (f"{cd}*" if p == 1 else "cd2*")
+                        mul = _pow_term("cd", cd, p)
                         terms.append(f"{pre}{mul}{ht(a, b, c + t)}")
                     lines.append(f"{pad}{hf(a, b, c, d)} = " + " + ".join(terms))
     return "\n".join(lines) + "\n"
@@ -345,20 +391,41 @@ def unrolled_table_decls(ni, nk, la, lb, lc, ld, indent):
         g_names += rys2d_scalar_names(ni, nk, f"g{ax}")
         h_names += hrr_scalar_names(la, lb, lc, ld, f"h{ax}")
     ht_names = ht_scalar_names(la, lb, nk)
-    return (f"{pad}real(dp) :: ab2, cd2\n"
+    return (f"{pad}real(dp) :: {_power_decl_names(lb, ld)}\n"
             + scalar_decl_lines(g_names, indent)
             + scalar_decl_lines(h_names, indent)
             + scalar_decl_lines(ht_names, indent))
 
 
-def rys2d_hrr_decls(la, lb, nk_h):
+def _power_decl_names(lb, ld):
+    """`ab2, cd2`, plus `ab3`/`ab4`/`cd3`/`cd4` once lb or ld reaches 3 or
+    4 -- the same condition `_ab_power_lines` computes those under, so a
+    declaration and its assignment never disagree. A class with lb, ld <=
+    2 gets exactly `ab2, cd2`, same as every class did before l reached 3."""
+    names = ["ab2"]
+    if lb >= 3:
+        names.append("ab3")
+    if lb >= 4:
+        names.append("ab4")
+    names.append("cd2")
+    if ld >= 3:
+        names.append("cd3")
+    if ld >= 4:
+        names.append("cd4")
+    return ", ".join(names)
+
+
+def rys2d_hrr_decls(la, lb, ld, nk_h):
     """Declarations shared by the inlined 2D recurrence and HRR: the loop
     variables and the HRR's scratch array `ht`, sized for one axis -- the
     same array is reused for x, y, z in turn. `nk_h` is the HRR's own
     second dimension bound (equal to `nk` for the energy kernel, `nk + 1`
-    for the gradient kernel's extended table)."""
+    for the gradient kernel's extended table). `ld` sizes the ket-side
+    power scratch (cd3/cd4, see `_power_decl_names`) -- needed once a g
+    shell raises the ket shift past 2; `lb` does the same for ab3/ab4,
+    already a parameter here for `ht`'s own bound."""
     return (f"      integer  :: i, k, a, b, c\n"
-            f"      real(dp) :: ab2, cd2\n"
+            f"      real(dp) :: {_power_decl_names(lb, ld)}\n"
             f"      real(dp) :: ht(0:{la}, 0:{lb}, 0:{nk_h})\n")
 
 
@@ -390,7 +457,7 @@ def hrr_slice_assignments(hneed, g, t, h, ab, cd, indent):
             continue
         terms = []
         for s in range(j + 1):
-            coef, p = BINOM[j][s], j - s
+            coef, p = binom(j, s), j - s
             pre = "" if coef == 1 else f"{float(coef)}_dp*"
             mul = "" if p == 0 else (f"{ab}*" if p == 1 else f"{ab}{p}*")
             terms.append(f"{pre}{mul}{nm(g, i + s, k)}")
@@ -403,7 +470,7 @@ def hrr_slice_assignments(hneed, g, t, h, ab, cd, indent):
             continue
         terms = []
         for u in range(l + 1):
-            coef, p = BINOM[l][u], l - u
+            coef, p = binom(l, u), l - u
             pre = "" if coef == 1 else f"{float(coef)}_dp*"
             mul = "" if p == 0 else (f"{cd}*" if p == 1 else f"{cd}{p}*")
             terms.append(f"{pre}{mul}{tname(i, j, k + u)}")

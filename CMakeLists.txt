@@ -25,9 +25,13 @@ include(terco_print_status)
 #
 # Not a preference. The four-centre kernels are generated one per (la,lb,lc,ld)
 # class, so the count goes as L^4: LMAX=1 is 16 classes, LMAX=2 is 81 and
-# (dd|dd) alone is twenty thousand lines. f would need both a larger Boys table
-# -- BOYS_MMAX caps la+lb+lc+ld at 8 and (ff|ff) needs 12 -- and an answer to
-# compile time.
+# (dd|dd) alone is twenty thousand lines. BOYS_MMAX caps la+lb+lc+ld at 16,
+# which covers g (gg|gg needs 16), so f and g no longer need a larger Boys
+# table -- the remaining obstacle past 2 is compile time.
+#
+# HGP stops at d. LMAX=3 keeps HGP's d set exactly as at LMAX=2 and builds
+# every class with an f shell as a Rys kernel only (trc_rys_select.F90's
+# HGP_LMAX), so it needs TERCO_RYS=ON.
 #
 # 2 is the shipped configuration and the one whose generated sources are in the
 # repository. Anything else is regenerated into the build tree, which needs
@@ -35,8 +39,44 @@ include(terco_print_status)
 #
 set(TERCO_LMAX
     "2"
-    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d)")
-set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2)
+    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d, 3=f)")
+set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3)
+
+#
+# The density-fitting kernels' orbital ceiling (gen_df.py --lmax; the
+# auxiliary ceiling is one higher). Empty follows TERCO_LMAX. Separate
+# because DF is three-centre with an auxiliary shell one above the orbital
+# one: gen_df.py now emits one module per class (src/CMakeLists.txt's
+# --split, same reason gen_perclass.py's does), but before that split, at
+# TERCO_LMAX=3 (aux g) nvfortran spent over two hours on the single
+# monolithic file and had not finished, while nothing in the four-centre f
+# path uses it -- raising this alone (src/CMakeLists.txt sends it to the
+# build tree, never src/generated) is how the per-class split is exercised
+# without pulling in TERCO_LMAX's unrelated Rys four-centre sweep. 2 keeps
+# the shipped DF set; RI-MP2 and the trc_df_* entry points then stop on an
+# orbital basis above d.
+#
+set(TERCO_DF_LMAX
+    ""
+    CACHE STRING "Density-fitting orbital angular momentum ceiling (empty: TERCO_LMAX)")
+
+#
+# TESTING ONLY -- never set by a shipped build. gen_df.py routes a class
+# above gen_df.py's SHIPPED_L/SHIPPED_LA (la > 2, lb > 2 or lc > 3 for a
+# three-centre class; la > 3 or lc > 3 for a two-centre one) to a Rys
+# quadrature body instead of the written-out VRR+HRR -- see that script's
+# module docstring. This forces the Rys body onto classes that would
+# otherwise keep the VRR+HRR, so the two can be compared element-wise on
+# exactly the same (shell pair, auxiliary shell): 'all' forces every class,
+# or a comma-separated list of gen_df.py's own class-digit tags (--force-rys
+# --help). Threaded straight through to gen_df.py --force-rys; empty means
+# "don't pass the flag at all", which is what every normal configuration
+# does.
+#
+set(TERCO_DF_FORCE_RYS
+    ""
+    CACHE STRING "TESTING ONLY: force gen_df.py's Rys body onto these classes ('' / 'all' / tag list)")
+mark_as_advanced(TERCO_DF_FORCE_RYS)
 
 #
 # The within-shell Cartesian component order every AO-indexed quantity terco
@@ -107,6 +147,10 @@ option(TERCO_REGENERATE
 #
 option(TERCO_RYS
        "Build the Rys kernel family: the analytic gradient, and per-class Rys energies" ON)
+if(TERCO_LMAX GREATER 2 AND NOT TERCO_RYS)
+  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX} needs TERCO_RYS=ON: every class "
+                      "with a shell above d is a Rys kernel, HGP has none.")
+endif()
 #
 # Unroll the Rys kernels' root and component loops (scripts/rys_inline.py's
 # UNROLLED MODE) for every class whose Cartesian component count na*nb*nc*nd

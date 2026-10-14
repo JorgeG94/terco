@@ -153,6 +153,11 @@ terco_add_check(check_1e check_1e.F90)
 # so every other check passes without executing a line of it.
 #
 terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
+# 6-31G needs only l <= 1, so this only self-skips (SKIP + stop 0, same
+# check_nosym.F90 branch check_nosym_f's comment below describes) at
+# TERCO_LMAX=0 -- a build that drops even p functions. Covered for the
+# same reason check_nosym_f is, below.
+set_tests_properties(terco/check_nosym PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # The same comparison with f functions, which is the only test that exercises
@@ -165,6 +170,12 @@ terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
 # run it always does.
 #
 terco_add_check(check_nosym_f check_nosym.F90 NEEDS_BASIS ARGS water.xyz 3)
+# At TERCO_LMAX < 3 this prints "SKIP: ..." and `stop 0` instead of running
+# anything (see check_nosym.F90's own header) -- a pass by exit code, with
+# nothing checked. SKIP_REGULAR_EXPRESSION makes ctest report that as
+# "Skipped" rather than "Passed" so a CI matrix that never raises TERCO_LMAX
+# cannot mistake silence for coverage.
+set_tests_properties(terco/check_nosym_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # Rys against HGP, same density and screening, on water/6-31G* and
@@ -282,10 +293,123 @@ if(Python3_FOUND)
                      FIXTURES_REQUIRED rys_grad_probe_${b})
       endforeach()
     endif()
+
+    #
+    # eri%fock against pyscf's raw int2e on a fixed density -- the first
+    # comparison that can exercise an f shell (l=3). check_rys_fock_vs_pyscf.F90
+    # skips itself (stop 0, after printing SKIP) when the basis needs more l
+    # than this build's TRC_LMAX reaches, exactly the way check_nosym_f does,
+    # so it is registered unconditionally and at every ceiling: a build that
+    # CAN reach f always runs it, and nothing here depends on TERCO_RYS --
+    # this exercises the ordinary eri%fock dispatch, whichever scheme ends up
+    # routing an f class once TERCO_LMAX reaches 3.
+    #
+    # water/cc-pVDZ has no f on O and passes TODAY, at LMAX=2: the proof that
+    # the AO permutation and the per-AO normalisation this shares with
+    # rys_grad_ref.py (pyscf's cart=True does not keep a JSON's literal shell
+    # order, and its Cartesian d/f components are not all unit-normalised the
+    # way this build's are) are right before any f kernel exists to test.
+    # water/cc-pVTZ (f on O) and formamide/def2-TZVP (f on C, N and O --
+    # formamide.xyz, an idealised planar geometry) are the f cases, ready for
+    # whoever raises TRC_LMAX to 3.
+    #
+    foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
+      # rys_fock_ref.py's gate is 1e-9 by default, tightened per case where
+      # measurement leaves ample margin (its own DEFAULT_TOL comment has the
+      # numbers): water/cc-pVTZ measures 8e-13, four orders of magnitude
+      # under even 1e-10, so it is passed explicitly here. Formamide/def2-TZVP
+      # measures 2.6e-11 -- a real size effect (more atoms, more AOs, not
+      # noise) -- and keeps the script's 1e-9 default rather than risk a false
+      # red on a larger system tested later.
+      set(tol "")
+      if(case STREQUAL "water_ccpvdz")
+        set(xyz water.xyz)
+        set(json basis_sets/cc-pvdz.json)
+      elseif(case STREQUAL "water_ccpvtz")
+        set(xyz water.xyz)
+        set(json basis_sets/cc-pvtz.json)
+        set(tol 1e-10)
+      else()
+        set(xyz formamide.xyz)
+        set(json basis_sets/def2-tzvp.json)
+      endif()
+      set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_fock_probe_${case}.bin)
+      terco_add_check(check_rys_fock_vs_pyscf_${case} check_rys_fock_vs_pyscf.F90
+                      NEEDS_BASIS ARGS ${xyz} ${json} ${dump})
+      add_test(NAME terco/check_rys_fock_vs_pyscf_${case}_ref
+               COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rys_fock_ref.py
+                       ${json} ${dump} ${tol})
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
+        PROPERTIES FIXTURES_SETUP rys_fock_probe_${case})
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
+        PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                   FIXTURES_REQUIRED rys_fock_probe_${case})
+      # Both halves of the pair print "SKIP" and exit 0 at TERCO_LMAX < 3
+      # (the Fortran side's own check; the Python side's mirror when the
+      # dump it depends on was never written -- see rys_fock_ref.py's own
+      # comment). Make ctest call that "Skipped", not "Passed".
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
+        PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
+        PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+    endforeach()
+
+    #
+    # trc_df_2c ((P|Q)) and trc_df_3c ((mu nu|P)) against pyscf's
+    # int2c2e/aux_e2(int3c2e) -- the density-fitting analogue of the
+    # eri%fock comparison above, and the first one that can exercise a g
+    # SHELL (l=4), on the auxiliary basis. check_df_vs_pyscf.F90 skips
+    # itself (stop 0, after printing SKIP) when either basis needs more l
+    # than this build's DF_LMAX/DF_LMAX_AUX reach (gen_df.py's two
+    # ceilings, src/CMakeLists.txt's TERCO_DF_LMAX), same convention as
+    # check_rys_fock_vs_pyscf.F90's TRC_LMAX skip -- registered
+    # unconditionally, nothing to run at the shipped ceiling (DF_LMAX=2,
+    # DF_LMAX_AUX=3), and running water/cc-pVTZ (f on O) against
+    # cc-pVTZ-RI (g on O, scripts/pyscf_basis_to_json.py's
+    # cc-pvtz-rifit.json) once DF_LMAX reaches 3.
+    #
+    set(dump ${CMAKE_CURRENT_BINARY_DIR}/df_vs_pyscf_probe.bin)
+    terco_add_check(check_df_vs_pyscf check_df_vs_pyscf.F90
+                    NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvtz.json
+                    basis_sets/cc-pvtz-rifit.json ${dump})
+    add_test(NAME terco/check_df_vs_pyscf_ref
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/df_vs_pyscf_ref.py
+                     basis_sets/cc-pvtz.json basis_sets/cc-pvtz-rifit.json ${dump})
+    set_tests_properties(terco/check_df_vs_pyscf
+      PROPERTIES FIXTURES_SETUP df_vs_pyscf_probe)
+    set_tests_properties(terco/check_df_vs_pyscf_ref
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                 FIXTURES_REQUIRED df_vs_pyscf_probe)
+    # Same self-skip convention as check_rys_fock_vs_pyscf above, one level
+    # up: either basis above this build's DF_LMAX/DF_LMAX_AUX prints "SKIP"
+    # and exits 0 on both sides of the pair.
+    set_tests_properties(terco/check_df_vs_pyscf
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+    set_tests_properties(terco/check_df_vs_pyscf_ref
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()
 endif()
+
+#
+# Negative tests: trc_df_2c and trc_df_3c must refuse a basis above the
+# ceiling the DF dispatchers were generated for, by `error stop`, rather
+# than read an unwritten block. Nothing above exercises this -- every
+# check builds within the ceiling on purpose -- so without these nothing
+# notices if the guard in trc_api.F90 is ever lost. Each hands the entry
+# point a shell one l above THIS build's DF_LMAX/DF_LMAX_AUX
+# (trc_df_kernels), so the test is valid whatever the ceiling is, not only
+# at the shipped one. PASS_REGULAR_EXPRESSION matches the error-stop
+# message itself rather than WILL_FAIL, so a different crash -- a segfault
+# before the guard runs -- does not count as this test passing.
+#
+terco_add_check(check_df_2c_ceiling check_df_2c_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_df_2c_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_df_2c: auxiliary basis above DF_LMAX_AUX")
+terco_add_check(check_df_3c_ceiling check_df_3c_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_df_3c_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_df_3c: orbital basis above DF_LMAX")
 
 #
 # A complete RHF through the public API, and the makeEFP pathway on top of it.

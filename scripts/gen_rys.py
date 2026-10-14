@@ -219,7 +219,7 @@ def main():
             f"      real(dp) :: hy(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
             f"      real(dp) :: hz(0:{la}, 0:{lb}, 0:{lc}, 0:{ld})\n"
             f"      integer  :: rr, aa, bb, cc, dd2\n"
-            + ri.rys2d_hrr_decls(la, lb, nk))
+            + ri.rys2d_hrr_decls(la, lb, ld, nk))
     head = head[:m.start()] + decl_new + head[m.end():]
 
     # Boys scratch, now unused.

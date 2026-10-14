@@ -124,7 +124,9 @@ def bse_json_basis(path, elements):
     return out
 
 
-_NCART = {0: 1, 1: 3, 2: 6, 3: 10}
+_NCART = {0: 1, 1: 3, 2: 6, 3: 10, 4: 15}
+#: l=4 (g) added for df_vs_pyscf_ref.py's auxiliary-basis permutation --
+#: harmless to every existing caller, which never has a shell past f.
 
 
 def terco_to_pyscf_perm(atoms, basis_arg):

@@ -41,7 +41,11 @@ def main():
         use_lines.append(f"   use trc_pc_rysg{tag}, only: rysg{tag}_screen, rysg{tag}_compact")
     keys.sort()
 
-    case_list = ", ".join(str(k) for k, _ in keys)
+    # Wrapped, not one line: at TERCO_LMAX=3 the list runs to 242 keys
+    # (~1400 characters), which nvfortran rejects as a source line too long.
+    case_list = ", &\n               ".join(
+        ", ".join(str(k) for k, _ in keys[i:i + 16])
+        for i in range(0, len(keys), 16))
     screen_cases = "\n".join(
         f"""      case ({key}); call rysg{tag}_screen(lo, hi, w0, w1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &

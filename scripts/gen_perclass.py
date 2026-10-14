@@ -1598,7 +1598,34 @@ def main():
     ap.add_argument("--role-report", action="store_true",
                     help="print the warp-role redundancy table for every "
                          "class with a d shell and exit; nothing is written")
+    ap.add_argument("--classes", default=None,
+                    help="comma-separated four-digit class tags (e.g. "
+                         "3330,3333) to emit instead of the full "
+                         "(--lmax + 1)^4 sweep; requires --split, since a "
+                         "partial set has no single-file form and no "
+                         "dispatcher (see the --split handling below). "
+                         "Paired with --skeleton to produce one or a few "
+                         "classes' splicer template without the full-sweep "
+                         "cost of --lmax 3 or 4.")
+    ap.add_argument("--skeleton", action="store_true",
+                    help="skip the VRR/HRR generation (gen_vrr.py/gen_hrr.py) "
+                         "for every selected class and emit a placeholder "
+                         "integral body instead. gen_rys.py and "
+                         "gen_rys_grad.py only ever read the scalar kernel "
+                         "up to the primitive loop's `tval` line, and from "
+                         "the digestion onward (see either generator's "
+                         "docstring for THE CUT POINTS); the HGP VRR/HRR "
+                         "algebra in between is spliced away unread. A "
+                         "skeleton module keeps every marker and array size "
+                         "those splicers key on -- the same emit_kernel, "
+                         "the same digestion, the same declarations -- and "
+                         "skips only the part neither of them looks at. At "
+                         "(ff|ff) the real VRR/HRR text alone is hundreds "
+                         "of thousands of lines; the skeleton's is a "
+                         "handful.")
     args = ap.parse_args()
+    if args.classes and not args.role_report:
+        assert args.split, "--classes writes one module per class; pass --split DIR too"
     L = args.lmax
     order = args.order
     order_val = 0 if order == "lexicographic" else 1
@@ -1656,48 +1683,78 @@ module trc_pc_kernels
 contains
 """]
 
+    if args.classes:
+        combos = []
+        for t in (s.strip() for s in args.classes.split(",")):
+            if not t:
+                continue
+            assert len(t) == 4 and t.isdigit(), f"bad --classes tag {t!r}"
+            la, lb, lc, ld = (int(c) for c in t)
+            assert max(la, lb, lc, ld) <= L, (
+                f"--classes {t} needs --lmax >= {max(la, lb, lc, ld)}")
+            combos.append((la, lb, lc, ld))
+    else:
+        combos = [(la, lb, lc, ld)
+                  for la in range(L + 1) for lb in range(L + 1)
+                  for lc in range(L + 1) for ld in range(L + 1)]
+
     names = []
-    for la in range(L + 1):
-        for lb in range(L + 1):
-            for lc in range(L + 1):
-                for ld in range(L + 1):
-                    # Gill's sieve needs to know what the HRR actually reads,
-                    # so the HRR is generated first and its target set drives
-                    # the VRR.
-                    hrr_pre = gh.emit_class(la, lb, lc, ld, idx_h)
-                    nca_ = gv.ncum(la + lb)
-                    reads = {int(x) for x in re.findall(r"g\((\d+)\)", hrr_pre)}
-                    targets = {((r - 1) % nca_ + 1, (r - 1)//nca_ + 1, 0)
-                               for r in reads}
-                    Pl = [None] + gv.cart_list(2*L)
-                    Il = {q: i for i, q in enumerate(Pl) if q is not None}
-                    ref, _f0, _n0 = gv.emit_class(la + lb, lc + ld, lst, idx_v, info)
-                    vrr, _fin, nlive = gv.emit_class_sieved(
-                        la + lb, lc + ld, targets, Pl, Il, nca_)
-                    print(f"  ({la}{lb}|{lc}{ld}): VRR statements "
-                          f"{len([x for x in ref.split(chr(10)) if '=' in x])}"
-                          f" -> {nlive}")
-                    vrr = "\n".join("      " + ln if ln.strip() else ln
-                                    for ln in vrr.split("\n"))
-                    vrr += f"\n               cur = {(la + lb + lc + ld) % 2}"
-                    # OUTPUT: this is the digestion's own AO slot order, so
-                    # (unlike hrr_pre above, whose reads set is order-
-                    # invariant -- see the module docstring) this one gets
-                    # the requested order.
-                    hrr = gh.emit_class(la, lb, lc, ld, idx_h, order)
-                    key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld
-                    names.append((key, f"{la}{lb}{lc}{ld}"))
-                    if args.role_report:
-                        if 2 in (la, lb, lc, ld):
-                            print(role_report(la, lb, lc, ld, vrr, hrr))
-                        continue
-                    body, parts = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
-                    tag = f"{la}{lb}{lc}{ld}"
-                    if tag in ROLE_SPLITS:
-                        body += "\n" + emit_role_kernel(la, lb, lc, ld, vrr, hrr,
-                                                        parts, ROLE_SPLITS[tag])
-                    pieces.append((tag, body))
-                    out.append(body)
+    for la, lb, lc, ld in combos:
+        tag = f"{la}{lb}{lc}{ld}"
+        if args.skeleton:
+            # See --skeleton's help: gen_rys.py/gen_rys_grad.py never read
+            # the HGP VRR/HRR algebra at all, only the markers and sizes
+            # around it, so the generation gv.emit_class_sieved/
+            # gh.emit_class would otherwise do here (THE expensive step --
+            # hundreds of thousands of lines at (ff|ff)) is skipped
+            # outright. `cur` is the one piece of this range a downstream
+            # statement (the accumulate loop right after it) still reads;
+            # everything else here is dropped by the splice unread.
+            vrr = (f"      ! HGP VRR omitted -- --skeleton (scripts/gen_perclass.py)\n"
+                   f"               cur = {(la + lb + lc + ld) % 2}")
+            hrr = "         ! HGP HRR omitted -- --skeleton (scripts/gen_perclass.py)\n"
+            print(f"  ({la}{lb}|{lc}{ld}): skeleton, HGP body omitted")
+        else:
+            # Gill's sieve needs to know what the HRR actually reads, so
+            # the HRR is generated first and its target set drives the VRR.
+            hrr_pre = gh.emit_class(la, lb, lc, ld, idx_h)
+            nca_ = gv.ncum(la + lb)
+            reads = {int(x) for x in re.findall(r"g\((\d+)\)", hrr_pre)}
+            targets = {((r - 1) % nca_ + 1, (r - 1)//nca_ + 1, 0)
+                       for r in reads}
+            Pl = [None] + gv.cart_list(2*L)
+            Il = {q: i for i, q in enumerate(Pl) if q is not None}
+            ref, _f0, _n0 = gv.emit_class(la + lb, lc + ld, lst, idx_v, info)
+            vrr, _fin, nlive = gv.emit_class_sieved(
+                la + lb, lc + ld, targets, Pl, Il, nca_)
+            print(f"  ({la}{lb}|{lc}{ld}): VRR statements "
+                  f"{len([x for x in ref.split(chr(10)) if '=' in x])}"
+                  f" -> {nlive}")
+            vrr = "\n".join("      " + ln if ln.strip() else ln
+                            for ln in vrr.split("\n"))
+            vrr += f"\n               cur = {(la + lb + lc + ld) % 2}"
+            # OUTPUT: this is the digestion's own AO slot order, so (unlike
+            # hrr_pre above, whose reads set is order-invariant -- see the
+            # module docstring) this one gets the requested order.
+            hrr = gh.emit_class(la, lb, lc, ld, idx_h, order)
+        key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld
+        names.append((key, tag))
+        if args.role_report:
+            if not args.skeleton and 2 in (la, lb, lc, ld):
+                print(role_report(la, lb, lc, ld, vrr, hrr))
+            continue
+        body, parts = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr)
+        # The role-split kernels are an HGP-only redundant-warp optimisation
+        # (pcr{tag}/pcri{tag}) that gen_rys.py/gen_rys_grad.py never read --
+        # see gen_rys.py's THE CUT POINTS on why it scopes its search to
+        # pcsi{tag} alone. A skeleton module has no real HRR for
+        # emit_role_kernel to split, so it is skipped here rather than fed
+        # the placeholder.
+        if tag in ROLE_SPLITS and not args.skeleton:
+            body += "\n" + emit_role_kernel(la, lb, lc, ld, vrr, hrr,
+                                            parts, ROLE_SPLITS[tag])
+        pieces.append((tag, body))
+        out.append(body)
 
     if args.role_report:
         return
@@ -1766,6 +1823,18 @@ end module {mod}
 """)
             use_lines.append(f"   use {mod}, only: pcs{tag}"
                              + (f", pcr{tag}" if tag in ROLE_SPLITS else ""))
+        if args.classes:
+            # A --classes run is a requested subset, not the full
+            # (--lmax + 1)^4 sweep pc_dispatch's `select case` is built to
+            # cover -- writing it here would dispatch every OTHER class to
+            # nothing. gen_rys.py/gen_rys_grad.py (the only consumers this
+            # mode exists for) read trc_pc_k{tag}.F90 directly and never
+            # look at the dispatcher at all, so it is skipped outright
+            # rather than written partial and misleading.
+            print(f"wrote {len(names)} class module(s) "
+                  f"(skeleton={args.skeleton}) into {args.split}; "
+                  "no dispatcher -- --classes is a partial set")
+            return
         disp = [f"""!
 ! Kernel dispatcher for the per-class modules.
 !

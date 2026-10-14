@@ -48,7 +48,11 @@ def main():
         use_lines.append(f"   use trc_pc_rys{tag}, only: rys{tag}")
     keys.sort()
 
-    case_list = ", ".join(str(k) for k, _ in keys)
+    # Wrapped, not one line: at TERCO_LMAX=3 the list runs to 242 keys
+    # (~1400 characters), which nvfortran rejects as a source line too long.
+    case_list = ", &\n               ".join(
+        ", ".join(str(k) for k, _ in keys[i:i + 16])
+        for i in range(0, len(keys), 16))
     dispatch_cases = "\n".join(
         f"""      case ({key}); call rys{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &

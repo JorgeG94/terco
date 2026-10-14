@@ -41,7 +41,7 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 | `gen_hrr.py` | horizontal transfer plus the digestion, as `case` blocks | the shared kernel |
 | `gen_perclass.py` | one four-centre Fock kernel per class, `--split` one module each | the four-centre path |
 | `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors | `trc_1e`, `trc_multipoles` |
-| `gen_df.py` | two- and three-centre Coulomb | `trc_df_2c`, `trc_df_3c` |
+| `gen_df.py` | two- and three-centre Coulomb, one module per class (`--split`, the only mode) | `trc_df_2c`, `trc_df_3c` |
 
 `gen_df.py` reuses `gen_vrr.py`'s four-centre recurrence with `eta = gamma`,
 `Q = C` and `K_cd = 1` — a three-centre integral is a four-centre one with a
@@ -98,9 +98,9 @@ Work outward from something that already exists rather than from the algebra.
 ### Raising the angular momentum ceiling
 
 For the **four-centre** kernels, `TERCO_LMAX` is the switch, and the cost is
-`L⁴`. Before raising it past 2, check `BOYS_MMAX` in `trc_boys.F90`: it caps
-`la+lb+lc+ld` and `(ff|ff)` needs 12 where the table currently stops at 8. The
-generated volume is the real obstacle, not the mathematics.
+`L⁴`. `BOYS_MMAX` in `trc_boys.F90` caps `la+lb+lc+ld` at 16, which already
+covers g (`(gg|gg)` needs 16), so the table is not what stops `TERCO_LMAX`
+past 2. The generated volume is the real obstacle, not the mathematics.
 
 For **one-electron, multipole and density-fitting** kernels, momentum sits on
 two or three centres, so they grow as `L²` or `L³` and f or g is affordable.
@@ -303,7 +303,7 @@ Or call them directly, which is what CMake does:
 python3 scripts/gen_perclass.py --lmax 2 --split src/generated
 python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
-python3 scripts/gen_df.py --lmax 2 -o src/generated/trc_df_kernels.F90
+python3 scripts/gen_df.py --lmax 2 --split src/generated
 ```
 
 `[1]` in the sources refers to the reference in the README.

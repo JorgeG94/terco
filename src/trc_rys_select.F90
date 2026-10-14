@@ -1,8 +1,11 @@
 !
 ! Runtime selection of Rys over HGP, per class, from TRC_RYS_CLASSES.
 !
-! Rys is a measurement tool next to HGP, not a replacement for it: this
-! module is the only place that decides which one a launch uses, and it is
+! Below HGP_LMAX, Rys is a measurement tool next to HGP, not a replacement
+! for it. Above it there is no HGP kernel at all -- HGP stops at d -- so a
+! class with any shell above HGP_LMAX goes to Rys whatever TRC_RYS_CLASSES
+! says. This module is the only place that decides which one a launch uses,
+! and it is
 ! hand-written rather than generated because the decision itself -- parse an
 ! environment variable, look up a key -- has nothing to do with angular
 ! momentum and nothing to regenerate if LMAX or TRC_CART_ORDER changes.
@@ -29,6 +32,13 @@ module trc_rys_select
    !! only needs to parse an environment variable. The two must agree; if
    !! CLASS_RADIX ever changes, update this one too.
    integer, parameter :: RYS_KEY_MAX = RYS_CLASS_RADIX**4 - 1
+
+   integer, parameter :: HGP_LMAX = 2
+   !! Highest shell angular momentum with an HGP per-class kernel. The HGP
+   !! set is generated at --lmax 2 and kept at that ceiling at every
+   !! TERCO_LMAX: its d kernels generated at --lmax 3 are identical, and its
+   !! f kernels would be 175 classes of HGP text for integrals Rys builds
+   !! anyway.
 
    logical, save :: rys_all = .false.
    logical, save :: rys_table(0:RYS_KEY_MAX) = .false.
@@ -73,9 +83,18 @@ contains
       !! trc_binkernel.F90 forms from (sLA,sLB,sLC,sLD) -- go to Rys? Folds in
       !! `rys_has_class`, so a class TRC_RYS_CLASSES asks for but that has no
       !! generated kernel falls back to HGP instead of reaching an unbuilt
-      !! reference or, with "all", silently skipping the class entirely.
+      !! reference or, with "all", silently skipping the class entirely. A
+      !! class above HGP_LMAX always goes to Rys, and has no fallback: HGP's
+      !! dispatcher would run nothing for it, so a missing Rys kernel there
+      !! is a stop, not a silently absent block of integrals.
       integer, intent(in) :: key
       logical :: wanted
+      if (key_lmax(key) > HGP_LMAX) then
+         if (.not. rys_has_class(key)) error stop &
+            "terco: a class above d has no Rys kernel in this build"
+         rys_route = .true.
+         return
+      end if
       if (rys_all) then
          wanted = .true.
       else if (key >= 0 .and. key <= RYS_KEY_MAX) then
@@ -85,6 +104,18 @@ contains
       end if
       rys_route = wanted .and. rys_has_class(key)
    end function rys_route
+
+   pure integer function key_lmax(key)
+      !! The highest of the four shell angular momenta packed into `key`.
+      integer, intent(in) :: key
+      integer :: k, i
+      k = key
+      key_lmax = 0
+      do i = 1, 4
+         key_lmax = max(key_lmax, mod(k, RYS_CLASS_RADIX))
+         k = k/RYS_CLASS_RADIX
+      end do
+   end function key_lmax
 
    pure integer function class_key(tag)
       !! Four ASCII digits "0".."9" -- la, lb, lc, ld in order -- to the same

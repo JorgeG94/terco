@@ -1050,7 +1050,7 @@ def main():
             f"      real(dp) :: dac(2, {dims[0]*dims[2]}), dad(2, {dims[0]*dims[3]})\n"
             f"      real(dp) :: dbc(2, {dims[1]*dims[2]}), dbd(2, {dims[1]*dims[3]})\n"
             f"      real(dp) :: gam({nv})\n"
-            + ri.rys2d_hrr_decls(la + 1, lb, nkg))
+            + ri.rys2d_hrr_decls(la + 1, lb, ld, nkg))
     head = head[:m.start()] + decl_new + head[m.end():]
 
     for pat in (r"      real\(dp\) :: f\(0:BOYS_MMAX\)\n",
