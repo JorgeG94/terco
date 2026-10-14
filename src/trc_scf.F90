@@ -574,6 +574,14 @@ contains
       diis_start = opts%diis_start
       if (diis_start < 0.0_dp) diis_start = merge(0.5_dp, huge(1.0_dp), nspin == 2)
       pcm_on = pcm_model_from_name(opts%pcm_model) /= PCM_MODEL_NONE
+      ! The continuum is built and solved whole on one device; over ranks
+      ! every rank would repeat all of it, so refuse until it is split.
+      if (pcm_on .and. present(comm)) then
+         if (comm%size() > 1) then
+            res%message = "trc_scf: PCM solvation is not available over MPI ranks"
+            return
+         end if
+      end if
       epcm = 0.0_dp; t_pcm = 0.0_dp; t_pcm_setup = 0.0_dp
 
       allocate (smat(nao, nao), hcore(nao, nao), x(nao, nao))
