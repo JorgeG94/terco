@@ -43,10 +43,12 @@ module trc_api
    use trc_1e_kernels, only: one_e_driver, ONE_E_LMAX
    use trc_mult_kernels, only: mult_driver, TRC_NMULT, MULT_LMAX
    use trc_df_kernels, only: df_2c_driver, df_3c_driver, DF_LMAX, DF_LMAX_AUX
+   use trc_pcm_kernels, only: pcm_potential_driver, pcm_fock_driver, PCM_LMAX
    implicit none
    private
    public :: trc_basis_t, trc_pairlist_t
    public :: trc_1e, trc_multipoles, trc_df_2c, trc_df_3c
+   public :: trc_pcm_potential, trc_pcm_fock, PCM_LMAX
    public :: trc_bind_device
    public :: TRC_NMULT
 
@@ -639,6 +641,46 @@ contains
                         b%sh_ao, b%sh_e, b%sh_c, b%sh_r, b%at_z, b%at_r, &
                         p%npair, p%p_i, p%p_j, smat, tmat, vmat)
    end subroutine trc_1e
+
+   !
+   ! The polarisable continuum's solute-surface integrals. A surface point
+   ! is a normalised s Gaussian of exponent zeta_k**2 centred at pts(:,k);
+   ! its potential is erf(zeta_k r)/r, so these are the nuclear-attraction
+   ! integrals with that operator in place of 1/r (gen_1e.py's --pcm
+   ! kernels). Both Cartesian, both device-resident like trc_1e: b, p, pts,
+   ! zeta and the matrix/vector arguments must already be present.
+   !
+   ! The pair list's primitive-pair data is what the kernels read, so `p`
+   ! must have been built from `b`.
+   !
+   subroutine trc_pcm_potential(b, p, npts, pts, zeta, dmat, v)
+      !! `v(k) = sum_{mu nu} D_mu,nu <mu| erf(zeta_k|r - pts_k|)/|r - pts_k| |nu>`
+      type(trc_basis_t), intent(in) :: b
+      type(trc_pairlist_t), intent(in) :: p
+      integer, intent(in) :: npts
+      real(dp), intent(in)  :: pts(3, npts), zeta(npts)
+      real(dp), intent(in)  :: dmat(b%nao, b%nao)
+      real(dp), intent(out) :: v(npts)
+      if (maxval(b%sh_l) > PCM_LMAX) error stop &
+         "terco: trc_pcm_potential: basis above PCM_LMAX (gen_1e.py --pcm --lmax)"
+      call pcm_potential_driver(b%nshell, b%nao, b%sh_l, b%sh_ao, b%sh_r, p%npair, p%npp, &
+                                p%p_i, p%p_j, p%pp_off, p%pp_n, p%pp_z, p%pp_k, p%pp_p, p%pp_a, &
+                                npts, pts, zeta, dmat, v)
+   end subroutine trc_pcm_potential
+
+   subroutine trc_pcm_fock(b, p, npts, pts, zeta, q, vmat)
+      !! `vmat(mu,nu) += sum_k q_k <mu| erf(zeta_k|r - pts_k|)/|r - pts_k| |nu>` -- ADDS
+      type(trc_basis_t), intent(in) :: b
+      type(trc_pairlist_t), intent(in) :: p
+      integer, intent(in) :: npts
+      real(dp), intent(in)    :: pts(3, npts), zeta(npts), q(npts)
+      real(dp), intent(inout) :: vmat(b%nao, b%nao)
+      if (maxval(b%sh_l) > PCM_LMAX) error stop &
+         "terco: trc_pcm_fock: basis above PCM_LMAX (gen_1e.py --pcm --lmax)"
+      call pcm_fock_driver(b%nshell, b%nao, b%sh_l, b%sh_ao, b%sh_r, p%npair, p%npp, &
+                           p%p_i, p%p_j, p%pp_off, p%pp_n, p%pp_z, p%pp_k, p%pp_p, p%pp_a, &
+                           npts, pts, zeta, q, vmat)
+   end subroutine trc_pcm_fock
 
    !
    ! Explicit-shape dummies with the extents passed in, and the extents

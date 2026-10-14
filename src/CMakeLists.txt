@@ -452,6 +452,11 @@ if(_regen)
               ${_order_flag} -o ${_gen_out}/trc_1e_kernels.F90)
     terco_gen("gen_1e.py --multipole" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
               --lmax ${TERCO_LMAX} --multipole ${_gen_out}/trc_mult_kernels.F90 ${_order_flag})
+    # The PCM smeared-charge surface integrals follow TERCO_LMAX for the
+    # same reason the 1e kernels do: a continuum that stops below the
+    # four-centre ceiling would have no operator for the basis it is given.
+    terco_gen("gen_1e.py --pcm" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --pcm ${_gen_out}/trc_pcm_kernels.F90 ${_order_flag})
 
     # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
     # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
