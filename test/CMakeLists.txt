@@ -153,6 +153,11 @@ terco_add_check(check_1e check_1e.F90)
 # so every other check passes without executing a line of it.
 #
 terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
+# 6-31G needs only l <= 1, so this only self-skips (SKIP + stop 0, same
+# check_nosym.F90 branch check_nosym_f's comment below describes) at
+# TERCO_LMAX=0 -- a build that drops even p functions. Covered for the
+# same reason check_nosym_f is, below.
+set_tests_properties(terco/check_nosym PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # The same comparison with f functions, which is the only test that exercises
@@ -165,6 +170,12 @@ terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
 # run it always does.
 #
 terco_add_check(check_nosym_f check_nosym.F90 NEEDS_BASIS ARGS water.xyz 3)
+# At TERCO_LMAX < 3 this prints "SKIP: ..." and `stop 0` instead of running
+# anything (see check_nosym.F90's own header) -- a pass by exit code, with
+# nothing checked. SKIP_REGULAR_EXPRESSION makes ctest report that as
+# "Skipped" rather than "Passed" so a CI matrix that never raises TERCO_LMAX
+# cannot mistake silence for coverage.
+set_tests_properties(terco/check_nosym_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # Rys against HGP, same density and screening, on water/6-31G* and
@@ -324,6 +335,14 @@ if(Python3_FOUND)
       set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
         PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                    FIXTURES_REQUIRED rys_fock_probe_${case})
+      # Both halves of the pair print "SKIP" and exit 0 at TERCO_LMAX < 3
+      # (the Fortran side's own check; the Python side's mirror when the
+      # dump it depends on was never written -- see rys_fock_ref.py's own
+      # comment). Make ctest call that "Skipped", not "Passed".
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
+        PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
+        PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
     endforeach()
 
     #
@@ -352,6 +371,13 @@ if(Python3_FOUND)
     set_tests_properties(terco/check_df_vs_pyscf_ref
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                  FIXTURES_REQUIRED df_vs_pyscf_probe)
+    # Same self-skip convention as check_rys_fock_vs_pyscf above, one level
+    # up: either basis above this build's DF_LMAX/DF_LMAX_AUX prints "SKIP"
+    # and exits 0 on both sides of the pair.
+    set_tests_properties(terco/check_df_vs_pyscf
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+    set_tests_properties(terco/check_df_vs_pyscf_ref
+      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
   else()
     message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
   endif()
