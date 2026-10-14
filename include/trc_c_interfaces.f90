@@ -188,7 +188,7 @@ module trc_c_interfaces
       end function trc_eri_destroy
 
       integer(c_int) function trc_fock(eri, basis, dmat, gmat, jfac, kfac, &
-            dscreen) bind(c)
+            dscreen, omega) bind(c)
          !! `g = jfac*J - kfac*K/2` for one density.
          !!
          !! `dscreen` nonzero weights the Schwarz bound by the density, which is
@@ -196,12 +196,17 @@ module trc_c_interfaces
          !! density is a trial vector driven towards zero, so a density-keyed
          !! screen tightens as the solve proceeds and the operator stops being
          !! the same linear map between matvecs.
+         !!
+         !! `omega` is the range-separation parameter, bohr^-1: zero is the
+         !! ordinary Coulomb operator; positive builds J and K with
+         !! erf(omega*r12)/r12 instead (wB97X-V's long-range exchange pass).
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: eri, basis
          real(c_double), intent(in) :: dmat(*)
          real(c_double), intent(out) :: gmat(*)
          real(c_double), value :: jfac, kfac
          integer(c_int), value :: dscreen
+         real(c_double), value :: omega
       end function trc_fock
 
       integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, &
@@ -268,15 +273,17 @@ module trc_c_interfaces
       end function trc_rimp2
 
       integer(c_int) function trc_fock_many(eri, basis, ndens, dmats, gmats, &
-            jfac, kfac, dscreen) bind(c)
+            jfac, kfac, dscreen, omega) bind(c)
          !! N densities against one pass over the integrals.
          !! `(ndens, nao, nao)`, density index FIRST -- see the header.
+         !! `omega`: see trc_fock.
          import :: c_int, c_double, c_ptr
          type(c_ptr), value :: eri, basis
          integer(c_int), value :: ndens, dscreen
          real(c_double), intent(in) :: dmats(*)
          real(c_double), intent(out) :: gmats(*)
          real(c_double), value :: jfac, kfac
+         real(c_double), value :: omega
       end function trc_fock_many
 
       integer(c_int) function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) &
@@ -393,6 +400,19 @@ module trc_c_interfaces
          character(kind=c_char), intent(in) :: functional(*)
          integer(c_int), value :: grid_level
       end function trc_set_method
+
+      integer(c_int) function trc_max_angular_momentum(eri_lmax, df_lmax, df_lmax_aux) bind(c)
+         !! This build's compiled ceilings: four-centre/SCF, DF orbital, DF auxiliary.
+         import :: c_int
+         integer(c_int), intent(out) :: eri_lmax, df_lmax, df_lmax_aux
+      end function trc_max_angular_momentum
+
+      integer(c_int) function trc_set_nlc_grid(handle, grid_level) bind(c)
+         !! Grid level for VV10 (default 1); only used by a functional with VV10.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), value :: grid_level
+      end function trc_set_nlc_grid
 
       integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) bind(c)
          !! The SCF stops when the energy change is under conv_energy AND the

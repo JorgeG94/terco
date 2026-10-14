@@ -254,6 +254,17 @@ if(Python3_FOUND)
       terco/check_xc_energy_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
                  terco/check_xc_energy ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+    # VV10's E_nlc and potential on the same grid and density, against
+    # pyscf's numint.nr_nlc_vxc: water/6-31G* and water/cc-pVDZ (RKS),
+    # the OH radical/cc-pVDZ (UKS).
+    terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS)
+    add_test(NAME terco/check_vv10_vs_pyscf_ref
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/vv10_ref.py)
+    set_tests_properties(terco/check_vv10_vs_pyscf
+      PROPERTIES FIXTURES_SETUP vv10_probe)
+    set_tests_properties(terco/check_vv10_vs_pyscf_ref
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                 FIXTURES_REQUIRED vv10_probe ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
     # The rotated-axis algebra itself, in Python and in float64, for every
     # ordered s/p class against int2e_cart, degenerate frames included. It
     # needs no build, so it is the first thing to break when the vendored
@@ -352,6 +363,66 @@ if(Python3_FOUND)
         PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
       set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
         PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+    endforeach()
+
+    #
+    # omega > 0 (erf(0.3*r12)/r12, wB97X-V's long-range exchange operator)
+    # against pyscf's own range-separated J/K (mol.with_range_coulomb,
+    # scf.hf.get_jk) -- check_erf_fock_vs_pyscf.F90's own header has the
+    # J/K-isolation trick. water/6-31G* and water/cc-pVDZ exercise s/p only;
+    # formamide/cc-pVDZ puts d functions on every heavy atom. Each case runs
+    # three ways: eri%fock through HGP (the default), eri%fock through Rys
+    # (TRC_RYS_CLASSES=all), and eri%fock_nosym (the enumerated/general
+    # path) -- the same substitution has to be right in all three.
+    #
+    foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+      if(case STREQUAL "water_631gs")
+        set(xyz water.xyz)
+        set(json basis_sets/6-31gs.json)
+      elseif(case STREQUAL "water_ccpvdz")
+        set(xyz water.xyz)
+        set(json basis_sets/cc-pvdz.json)
+      else()
+        set(xyz formamide.xyz)
+        set(json basis_sets/cc-pvdz.json)
+      endif()
+      foreach(path hgp nosym)
+        set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_${path}.bin)
+        if(path STREQUAL "nosym")
+          set(nosym_flag 1)
+        else()
+          set(nosym_flag 0)
+        endif()
+        terco_add_check(check_erf_fock_vs_pyscf_${case}_${path}
+                        check_erf_fock_vs_pyscf.F90
+                        NEEDS_BASIS ARGS ${xyz} ${json} ${dump} ${nosym_flag})
+        add_test(NAME terco/check_erf_fock_vs_pyscf_${case}_${path}_ref
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/erf_fock_ref.py
+                         ${json} ${dump})
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_${path}
+          PROPERTIES FIXTURES_SETUP erf_fock_probe_${case}_${path})
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_${path}_ref
+          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     FIXTURES_REQUIRED erf_fock_probe_${case}_${path})
+      endforeach()
+      if(TERCO_RYS)
+        # Same as the "hgp" case above, but routed through the Rys kernels
+        # instead of HGP's -- TRC_RYS_CLASSES=all is only meaningful under
+        # TERCO_RYS (see check_rys_vs_hgp's own comment).
+        set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_rys.bin)
+        terco_add_check(check_erf_fock_vs_pyscf_${case}_rys
+                        check_erf_fock_vs_pyscf.F90
+                        NEEDS_BASIS ARGS ${xyz} ${json} ${dump} 0)
+        add_test(NAME terco/check_erf_fock_vs_pyscf_${case}_rys_ref
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/erf_fock_ref.py
+                         ${json} ${dump})
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys
+          PROPERTIES FIXTURES_SETUP erf_fock_probe_${case}_rys
+                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=all")
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys_ref
+          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     FIXTURES_REQUIRED erf_fock_probe_${case}_rys)
+      endif()
     endforeach()
 
     #
@@ -621,6 +692,9 @@ target_link_libraries(bench_many PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_xc bench_xc.F90)
 target_compile_definitions(bench_xc PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_xc PRIVATE ${main_lib} terco_test_basis)
+add_executable(bench_vv10 bench_vv10.F90)
+target_compile_definitions(bench_vv10 PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_vv10 PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_gc bench_gc.F90)
 target_compile_definitions(bench_gc PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_gc PRIVATE ${main_lib} terco_test_basis)

@@ -50,6 +50,17 @@ needs them too.  `tval` IS the Rys argument and `pref` already carries
 against libcint through (dd|dd) on explore/rys-4c (not carried over here);
 what checks it in this tree is `test/check_rys_vs_hgp.F90`, comparing the
 Fock matrix this produces against HGP's on the same density.
+
+RANGE SEPARATION
+----------------
+`omega` and `theta` arrive already computed in the spliced HEAD (see
+scripts/gen_perclass.py's primitive loop): `tval` is already theta*T, and
+`pref` is scaled by sqrt(theta) once the roots/weights are in hand. The one
+thing this generator still has to get right itself is `u2` -- see the
+comment where it is built (`unrolled_energy_middle` and this module's
+`main`): t^2 -> theta*t^2 inside u2's own formula, NOT rho -> theta*rho the
+way HGP's VRR does, confirmed by comparing against pyscf's
+`mol.with_range_coulomb` (test/check_erf_fock_vs_pyscf.F90).
 """
 import argparse
 import importlib.util
@@ -91,10 +102,27 @@ def unrolled_energy_middle(tag, la, lb, lc, ld, ni, nk, nroots, dims, order):
     comps = [co.components(l, order) for l in (la, lb, lc, ld)]
     d0, d1, d2, d3 = dims
     pad = " "*21
-    out = [ri.roots_inline_body(nroots, "tval", 18)]
+    out = [ri.roots_inline_body(nroots, "tval", 18),
+          "                  pref = pref*sqrt(theta)\n"]
     for rr in range(1, nroots + 1):
         out.append(f"""\
-                  u2 = ru({rr})/(1.0_dp - ru({rr}))*rho
+                  ! RANGE SEPARATION. ru(n) is already the root of the
+                  ! quadrature at the ATTENUATED argument tval = theta*T (see
+                  ! the primitive loop above), so the Coulomb u2 = t^2/(1-t^2)
+                  ! * rho does NOT simply take rho -> theta*rho here the way
+                  ! the HGP VRR's oo2ze/rz/re do: u2 is t^2 reparametrised
+                  ! into the Laplace variable this root stands for, and the
+                  ! substitution that keeps that reparametrisation consistent
+                  ! with the SAME theta is t^2 -> theta*t^2 inside u2's own
+                  ! formula, not an extra factor of theta outside it (checked
+                  ! against pyscf's mol.with_range_coulomb, not derived and
+                  ! trusted: the rho*theta analogue of HGP's substitution
+                  ! passed every omega == 0 regression and still disagreed
+                  ! with pyscf by O(1) once omega > 0). theta*ru({rr}) replaces
+                  ! every bare ru({rr}) in the ORIGINAL expression, in the
+                  ! ORIGINAL grouping -- omega == 0 makes theta = 1.0_dp
+                  ! exactly, reproducing the unattenuated u2 bit-for-bit.
+                  u2 = (theta*ru({rr}))/(1.0_dp - theta*ru({rr}))*rho
                   dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
                   b00r  = 0.5_dp*u2*dinv
                   b10r  = 0.5_dp*(eta + u2)*dinv
@@ -177,7 +205,7 @@ def main():
     whole = src[:i_end]
     assert i_item < i_end
 
-    tval_line = "tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
+    tval_line = "tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
     i_tval = whole.index(tval_line) + len(tval_line)
     head = whole[:i_tval]
 
@@ -291,8 +319,13 @@ def main():
     else:
         middle = f"""
 {ri.roots_inline_body(nroots, "tval", 18)}
+                  pref = pref*sqrt(theta)
                   do rr = 1, {nroots}
-                     u2 = ru(rr)/(1.0_dp - ru(rr))*rho
+                     ! RANGE SEPARATION -- see unrolled_energy_middle's own
+                     ! comment (scripts/gen_rys.py) for the derivation: u2's
+                     ! substitution is t^2 -> theta*t^2 inside its own
+                     ! formula, not rho -> theta*rho the way HGP's VRR does.
+                     u2 = (theta*ru(rr))/(1.0_dp - theta*ru(rr))*rho
                      dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
                      b00r  = 0.5_dp*u2*dinv
                      b10r  = 0.5_dp*(eta + u2)*dinv

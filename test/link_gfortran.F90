@@ -112,7 +112,7 @@ program link_gfortran
    d = 2.0_dp*matmul(c(:, 1:nocc), transpose(c(:, 1:nocc)))
    eold = 0.0_dp
    do it = 1, 200
-      rc = trc_fock(heri, hbas, d, g, 1.0_c_double, 1.0_c_double, 1_c_int)
+      rc = trc_fock(heri, hbas, d, g, 1.0_c_double, 1.0_c_double, 1_c_int, 0.0_c_double)
       call must(rc, 'trc_fock')
       f = h + g
       escf = enuc + 0.5_dp*sum(d*(h + f))
@@ -236,7 +236,7 @@ contains
       ! the (ndens, nao, nao) layout at once: with the density index in the
       ! wrong position this reads across the wrong stride and disagrees.
       allocate (g1(nao, nao), gn(nao, nao), gm(2, nao, nao))
-      rc = trc_fock(heri, hbas, d, g1, 1.0_c_double, 1.0_c_double, 1_c_int)
+      rc = trc_fock(heri, hbas, d, g1, 1.0_c_double, 1.0_c_double, 1_c_int, 0.0_c_double)
       call must(rc, 'trc_fock')
       block
          real(dp), allocatable :: dm(:, :, :)
@@ -248,7 +248,7 @@ contains
             end do
          end do
          rc = trc_fock_many(heri, hbas, 2_c_int, dm, gm, 1.0_c_double, &
-                            1.0_c_double, 1_c_int)
+                            1.0_c_double, 1_c_int, 0.0_c_double)
          call must(rc, 'trc_fock_many')
          worst = 0.0_dp
          do j = 1, nao
@@ -296,6 +296,49 @@ contains
 
       rc = trc_pairs_destroy(hpair2); rc = trc_basis_destroy(hbas2)
       deallocate (g1, gn, gm, j2c, t3c)
+
+      ! --- omega refusal: negative and NaN must be TRC_ERR_BADARG, not a
+      ! crash or a silently wrong G ------------------------------------
+      block
+         use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+         real(c_double) :: nan_omega
+         nan_omega = ieee_value(nan_omega, ieee_quiet_nan)
+         rc = trc_fock(heri, hbas, d, g1, 1.0_c_double, 1.0_c_double, &
+                       1_c_int, -1.0_c_double)
+         if (rc /= TRC_ERR_BADARG) then
+            print '(a,i0,a,i0)', '    trc_fock(omega=-1) should refuse with ', &
+               TRC_ERR_BADARG, ', got ', rc
+            stop 1
+         end if
+         rc = trc_fock(heri, hbas, d, g1, 1.0_c_double, 1.0_c_double, &
+                       1_c_int, nan_omega)
+         if (rc /= TRC_ERR_BADARG) then
+            print '(a,i0,a,i0)', '    trc_fock(omega=NaN) should refuse with ', &
+               TRC_ERR_BADARG, ', got ', rc
+            stop 1
+         end if
+         block
+            real(dp), allocatable :: dm(:, :, :), gm2(:, :, :)
+            allocate (dm(2, nao, nao), gm2(2, nao, nao))
+            dm(1, :, :) = d; dm(2, :, :) = d
+            rc = trc_fock_many(heri, hbas, 2_c_int, dm, gm2, 1.0_c_double, &
+                               1.0_c_double, 1_c_int, -1.0_c_double)
+            if (rc /= TRC_ERR_BADARG) then
+               print '(a,i0,a,i0)', '    trc_fock_many(omega=-1) should refuse with ', &
+                  TRC_ERR_BADARG, ', got ', rc
+               stop 1
+            end if
+            rc = trc_fock_many(heri, hbas, 2_c_int, dm, gm2, 1.0_c_double, &
+                               1.0_c_double, 1_c_int, nan_omega)
+            if (rc /= TRC_ERR_BADARG) then
+               print '(a,i0,a,i0)', '    trc_fock_many(omega=NaN) should refuse with ', &
+                  TRC_ERR_BADARG, ', got ', rc
+               stop 1
+            end if
+            deallocate (dm, gm2)
+         end block
+         print '(a)', '    trc_fock/trc_fock_many refuse omega<0 and omega=NaN'
+      end block
    end subroutine cover_rest
 
    logical function ieee_ok(a)

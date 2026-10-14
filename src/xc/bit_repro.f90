@@ -86,7 +86,8 @@ real(wp), parameter :: e2c3_c = 0.05550410866482158_wp,   e2c4_c = 0.00961812910
 real(wp), parameter :: e2c5_c = 0.0013333558146428443_wp, e2c6_c = 0.0001540353039338161_wp
 real(wp), parameter :: two_m64_c = 2.0_wp**(-64)
 
-public :: exp_reprod, log_reprod, pow_reprod, pow_reprod_explog, cuberoot, erfc_reprod, erfc_reprod_bf, erfc_reprod_v
+public :: exp_reprod, log_reprod, pow_reprod, pow_reprod_explog, cuberoot
+public :: erfc_reprod, erf_reprod, erfc_reprod_bf, erfc_reprod_v
 
 interface
    !! Private machinery, implemented in the bit_repro_helpers submodule.
@@ -438,6 +439,47 @@ elemental function erfc_reprod(x) result(ec)
     endif
   endif
 end function erfc_reprod
+
+
+elemental function erf_reprod(x) result(ef)
+   !! Bit-reproducible error function, reusing erfc_reprod's own band split:
+   !!  - |x| <= 0.46875: the exact erf Maclaurin series (erf_mac, shared with
+   !!    erfc_reprod) evaluated directly as x*P(x**2), rather than through
+   !!    1 - erfc_reprod(x). Going through erfc_reprod here would compute
+   !!    ec = 1 - x*t and then ef = 1 - ec: two roundings to the ulp of 1.0
+   !!    instead of one to the ulp of x*t, which for |x| ~ 1e-6 (small
+   !!    densities at a grid's edge) throws away four decimal digits of
+   !!    RELATIVE accuracy that are free to keep here.
+   !!  - |x| > 0.46875: erf(x) = 1 - erfc_reprod(x). erfc_reprod(x) is itself
+   !!    small there, so the subtraction is a single correctly-rounded IEEE
+   !!    op; erf is already within 2*erfc(0.46875) - 1 ~= 0.013 of its +-1
+   !!    asymptote, so losing relative accuracy near that asymptote is
+   !!    erf's own behaviour, not an artefact of this implementation --
+   !!    every correctly-rounded erf has it.
+   !! Checked against gfortran's intrinsic erf over [-30, 30]: agrees to
+   !! machine epsilon (absolute) everywhere, and to the intrinsic's own
+   !! precision (not guaranteed correctly rounded) for relative accuracy
+   !! near zero -- unlike 1 - erfc_reprod(x) alone, which is only good to
+   !! ~1e-4 relative for |x| ~ 1e-6..1e-7.
+  !$omp declare target
+  !$acc routine seq
+  real(wp), intent(in) :: x  !! The argument
+  real(wp) :: ef             !! The reproducible erf(x)
+  real(wp) :: u, t
+  integer :: j
+  if (x /= x) then
+    ef = x
+  elseif (abs(x) <= 0.46875_wp) then
+    u = x*x
+    t = erf_mac(15)
+    do j = 14, 0, -1
+      t = erf_mac(j) + u*t
+    enddo
+    ef = x*t
+  else
+    ef = 1.0_wp - erfc_reprod(x)
+  endif
+end function erf_reprod
 
 
 elemental function erfc_reprod_bf(x) result(ec)

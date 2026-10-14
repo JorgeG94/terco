@@ -178,7 +178,9 @@ module trc_capi
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
-   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_AVAILABLE_FUNCTIONALS
+   use trc_tables, only: TRC_ERI_LMAX => LMAX
+   use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_cart_perm, only: trc_cart_order_id
@@ -204,13 +206,14 @@ module trc_capi
    ! the C symbols are the ABI and are unchanged.
    public :: capi_fock, trc_fock_many, trc_fock_nosym
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
-             trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, &
+             trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
              trc_set_convergence, trc_set_screening, trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_set_ao_norm, trc_get_ao_norm
    public :: trc_set_force_cartesian, trc_is_spherical
+   public :: trc_max_angular_momentum
    public :: capi_scf
    public :: trc_cart_order
 
@@ -592,6 +595,21 @@ contains
       status = TRC_OK
    end function trc_basis_maxl
 
+   function trc_max_angular_momentum(eri_lmax, df_lmax, df_lmax_aux) result(status) &
+      bind(c, name="trc_max_angular_momentum")
+      !! The angular-momentum ceilings THIS build was compiled for, so a host
+      !! can check a basis against them instead of hard-coding them: the
+      !! four-centre ERIs / SCF (TERCO_LMAX: 2 by default, 3 for f), and the
+      !! density-fitting orbital and auxiliary bases (TERCO_DF_LMAX; the
+      !! auxiliary one is one higher). Compare with trc_basis_maxl.
+      integer(c_int), intent(out) :: eri_lmax, df_lmax, df_lmax_aux
+      integer(c_int) :: status
+      eri_lmax = int(TRC_ERI_LMAX, c_int)
+      df_lmax = int(DF_LMAX, c_int)
+      df_lmax_aux = int(DF_LMAX_AUX, c_int)
+      status = TRC_OK
+   end function trc_max_angular_momentum
+
    function trc_multipole_count() result(n) &
       bind(c, name="trc_multipole_count")
       !! Number of Cartesian multipole components, so a caller can size its buffer
@@ -690,7 +708,7 @@ contains
    ! Hartree-Fock passes 1 and 1. Making them mandatory at the boundary also
    ! means a Kohn-Sham caller cannot forget them and silently get HF.
    !
-   function capi_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen) &
+   function capi_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen, omega) &
       result(status) bind(c, name="trc_fock")
       !! CONTRAVARIANT in (dmat), COVARIANT out (gmat), under `basis`'s own
       !! ao_norm_kind: this is GAMESS's own main caller (its Fock/J/K
@@ -709,6 +727,9 @@ contains
       !! as it does and the operator stops being a fixed linear map).
       !! An int rather than a logical: Fortran's logical has no guaranteed C
       !! representation and c_bool is one byte against C's four-byte int.
+      real(c_double), value :: omega
+      !! Range-separation parameter, bohr^-1; zero is the ordinary Coulomb
+      !! operator. See eri%fock.
       integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
@@ -717,13 +738,24 @@ contains
 
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
+      if (.not. (omega >= 0.0_c_double)) then
+         ! A negative omega reaches trc_fock.F90's `error stop`, which kills
+         ! the host process; a NaN omega returns TRC_OK with an unattenuated
+         ! K (the `ow < 0` guard there never fires for NaN). Catch both at
+         ! the boundary instead. No context handle here (only `eri`/`basis`
+         ! boxes), so -- as with `trc_fock_many`'s own `ndens < 1` check,
+         ! below -- there is nowhere to stash a message; the status code is
+         ! the whole report.
+         status = TRC_ERR_BADARG
+         return
+      end if
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          call fock_scale_in(bb, n, dmat, nrm, dscratch)
          call fock_shaped(bb%b, eb%e, n, dscratch, gmat, real(jfac, dp), &
-                          real(kfac, dp), dscreen /= 0)
+                          real(kfac, dp), dscreen /= 0, real(omega, dp))
          call fock_scale_out(nrm, n, gmat)
       else
          ! The zero-copy path, untouched: `dmat` and `gmat` are sequence
@@ -732,7 +764,7 @@ contains
          ! mode -- the default, so every existing caller -- pays nothing
          ! for this entry existing.
          call fock_shaped(bb%b, eb%e, n, dmat, gmat, real(jfac, dp), &
-                          real(kfac, dp), dscreen /= 0)
+                          real(kfac, dp), dscreen /= 0, real(omega, dp))
       end if
       status = TRC_OK
    end function capi_fock
@@ -781,7 +813,7 @@ contains
    ! capi_fock and trc_fock_nosym before/after this): an O(n^2) price only a
    ! caller who opted into UNIT mode pays, against an O(n^4) build.
    !
-   subroutine fock_shaped(b, e, n, d, g, jfac, kfac, dscreen)
+   subroutine fock_shaped(b, e, n, d, g, jfac, kfac, dscreen, omega)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: e
       integer, intent(in) :: n
@@ -789,7 +821,9 @@ contains
       real(dp), intent(out) :: g(n, n)
       real(dp), intent(in) :: jfac, kfac
       logical, intent(in) :: dscreen
-      call e%fock(b, d, g, k_scale=kfac, j_scale=jfac, density_screen=dscreen)
+      real(dp), intent(in) :: omega
+      call e%fock(b, d, g, k_scale=kfac, j_scale=jfac, density_screen=dscreen, &
+                 omega=omega)
    end subroutine fock_shaped
 
    !
@@ -802,7 +836,7 @@ contains
    ! paying past N = 4. The layout is part of the contract, so it is stated
    ! here rather than transposed silently.
    !
-   function trc_fock_many(eri, basis, ndens, dmats, gmats, jfac, kfac, dscreen) &
+   function trc_fock_many(eri, basis, ndens, dmats, gmats, jfac, kfac, dscreen, omega) &
       result(status) bind(c, name="trc_fock_many")
       !! CONTRAVARIANT in, COVARIANT out, under `basis`'s own ao_norm_kind
       !! -- see capi_fock; the density-index-fastest layout means the
@@ -814,6 +848,8 @@ contains
       real(c_double), intent(out) :: gmats(*)
       real(c_double), value :: jfac, kfac
       integer(c_int), value :: dscreen
+      real(c_double), value :: omega
+      !! See capi_fock.
       integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
@@ -826,22 +862,27 @@ contains
          status = TRC_ERR_BADARG
          return
       end if
+      if (.not. (omega >= 0.0_c_double)) then
+         ! See capi_fock's own omega check.
+         status = TRC_ERR_BADARG
+         return
+      end if
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          call fock_many_scale_in(bb, int(ndens), n, dmats, nrm, dscratch)
          call fock_many_shaped(bb%b, eb%e, int(ndens), n, dscratch, gmats, &
-                               real(jfac, dp), real(kfac, dp), dscreen /= 0)
+                               real(jfac, dp), real(kfac, dp), dscreen /= 0, real(omega, dp))
          call fock_many_scale_out(nrm, int(ndens), n, gmats)
       else
          call fock_many_shaped(bb%b, eb%e, int(ndens), n, dmats, gmats, &
-                               real(jfac, dp), real(kfac, dp), dscreen /= 0)
+                               real(jfac, dp), real(kfac, dp), dscreen /= 0, real(omega, dp))
       end if
       status = TRC_OK
    end function trc_fock_many
 
-   subroutine fock_many_shaped(b, e, nd, n, d, g, jfac, kfac, dscreen)
+   subroutine fock_many_shaped(b, e, nd, n, d, g, jfac, kfac, dscreen, omega)
       !! As `fock_shaped`, and for the same reason -- the batch is the case where
       !! the copy would have hurt most, being N times the size (in SHELL mode;
       !! UNIT mode already pays for a copy every entry that wires it, so this
@@ -853,8 +894,9 @@ contains
       real(dp), intent(out) :: g(nd, n, n)
       real(dp), intent(in) :: jfac, kfac
       logical, intent(in) :: dscreen
+      real(dp), intent(in) :: omega
       call e%fock_many(b, nd, d, g, k_scale=kfac, j_scale=jfac, &
-                       density_screen=dscreen)
+                       density_screen=dscreen, omega=omega)
    end subroutine fock_many_shaped
 
    subroutine fock_many_scale_in(bb, nd, n, dmats, nrm, dscratch)
@@ -1536,8 +1578,14 @@ contains
          if (.not. xc_functional_by_name(cx%opts%functional, func)) then
             status = TRC_ERR_UNSUPPORTED
             call refuse(cx, "trc_set_method: unknown functional '"//trim(cx%opts%functional)// &
-                        "'; terco has lda_x (slater), svwn, svwn_rpa, pbe, blyp, pbe0, b3lyp, b3lyp5, "// &
-                        "or an empty name for Hartree-Fock")
+                        "'; terco has "//XC_AVAILABLE_FUNCTIONALS//", or an empty name for Hartree-Fock")
+            cx%opts%functional = ""
+            return
+         end if
+         if (len_trim(func%missing) > 0) then
+            status = TRC_ERR_UNSUPPORTED
+            call refuse(cx, "trc_set_method: functional '"//trim(cx%opts%functional)// &
+                        "' is not available: "//trim(func%missing))
             cx%opts%functional = ""
             return
          end if
@@ -1546,6 +1594,28 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_method
+
+   function trc_set_nlc_grid(handle, grid_level) result(status) bind(c, name="trc_set_nlc_grid")
+      !! Grid level for VV10's nonlocal correlation (default 1, coarser than
+      !! the semilocal grid: VV10 is a double sum over its points). Only
+      !! used by a functional with VV10, such as wB97X-V.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: grid_level
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (grid_level < 0) then
+         call refuse(cx, "trc_set_nlc_grid: grid_level "//trim(itoa(int(grid_level)))// &
+                     " -- terco builds its grids by level, 0 upward")
+         return
+      end if
+      cx%opts%nlc_grid_level = int(grid_level)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_nlc_grid
 
    function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) result(status) &
       bind(c, name="trc_set_convergence")
@@ -2112,6 +2182,23 @@ contains
       if (cx%bb%b%spherical) then
          cx%message = "trc_run_rimp2: the orbital basis is spherical; RI-MP2 only "// &
                       "supports a Cartesian basis today -- set force_cartesian"
+         return
+      end if
+      ! A status, not the DF kernels' own error stop: a host passing an
+      ! auxiliary basis (a *-rifit set carries f/g on heavy atoms) above
+      ! what this build's density fitting was generated for gets a refusal
+      ! it can report, rather than the whole process -- every MPI rank --
+      ! stopping. trc_max_angular_momentum gives the ceilings up front.
+      if (maxval(cx%bb%b%sh_l) > DF_LMAX) then
+         cx%message = "trc_run_rimp2: the orbital basis has l = "// &
+                      trim(itoa(int(maxval(cx%bb%b%sh_l))))//", above this build's density-fitting "// &
+                      "ceiling "//trim(itoa(DF_LMAX))//" (TERCO_DF_LMAX)"
+         return
+      end if
+      if (maxval(cx%ab%b%sh_l) > DF_LMAX_AUX) then
+         cx%message = "trc_run_rimp2: the auxiliary basis has l = "// &
+                      trim(itoa(int(maxval(cx%ab%b%sh_l))))//", above this build's density-fitting "// &
+                      "auxiliary ceiling "//trim(itoa(DF_LMAX_AUX))//" (TERCO_DF_LMAX + 1)"
          return
       end if
       nfrozen = cx%nfrozen

@@ -4,9 +4,9 @@
 ! keeps in `impl/builtin/util.hpp` and `constants.hpp`.
 !
 ! The kernels themselves are GENERATED, by tools/exchcxx_to_fortran.py, from
-! ExchCXX's Maple-emitted C++ (MIT, Lawrence Berkeley National Laboratory and
-! Microsoft). This file is written by hand and is the only piece of the XC
-! functional layer that is.
+! ExchCXX's Maple-emitted C++ (BSD 3-clause, Lawrence Berkeley National
+! Laboratory and Microsoft). This file is written by hand and is the only
+! piece of the XC functional layer that is.
 !
 ! Everything here is `pure` and scalar, and marked `!$acc routine seq`, because
 ! it is called from inside `do concurrent` over grid points. Nothing here may
@@ -24,11 +24,11 @@
 !
 module trc_xc_util
    use trc_boys, only: dp
-   use bit_repro, only: erfc_reprod, exp_reprod, cuberoot
+   use bit_repro, only: erfc_reprod, erf_reprod, exp_reprod, cuberoot
    implicit none
    private
 
-   public :: xc_cbrt, xc_square, pow_3_2, pow_1_4, xc_erfcx
+   public :: xc_cbrt, xc_square, pow_3_2, pow_1_4, xc_erfcx, xc_erf
    public :: enforce_polar_sigma_constraints, enforce_fermi_hole_curvature
 
    ! ExchCXX constants.hpp, digit for digit. The long-double literals there
@@ -46,6 +46,10 @@ module trc_xc_util
    real(dp), parameter, public :: m_cbrt_pi_sq     = 2.145029397111025470934e+00_dp
    real(dp), parameter, public :: x2s        = 0.1282782438530421943003109254455883701296_dp
    real(dp), parameter, public :: x_factor_c = 0.9305257363491000250020102180716672510262_dp
+   ! Not an ExchCXX `constants::` member: the bare libm macro M_PI already
+   ! above is one too, matched case-insensitively (see
+   ! tools/exchcxx_to_fortran.py's CONSTANT_NAMES comment); glibc's value.
+   real(dp), parameter, public :: m_sqrt2    = 1.41421356237309504880e+00_dp
 
 contains
 
@@ -100,6 +104,19 @@ contains
       real(dp) :: y
       y = exp_reprod(x*x)*erfc_reprod(x)
    end function xc_erfcx
+
+   !
+   ! The error function, bit-reproducible. A translated kernel's `erf(x)`
+   ! calls become this rather than the Fortran intrinsic, which is not
+   ! required to be correctly rounded and is not the same bits on the CPU
+   ! and the GPU.
+   !
+   pure function xc_erf(x) result(y)
+      !$acc routine seq
+      real(dp), intent(in) :: x
+      real(dp) :: y
+      y = erf_reprod(x)
+   end function xc_erf
 
    ! |sigma_ab| may not exceed the mean of the two like-spin gradients.
    pure function enforce_polar_sigma_constraints(sigma_aa, sigma_ab, sigma_bb) result(s)

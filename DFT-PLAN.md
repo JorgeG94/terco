@@ -121,7 +121,7 @@ renamed on `chore/cenzontle-rename`; modules are `mqc_czt_*`).
 | Repo | Path | License | Verdict |
 |---|---|---|---|
 | GauXC | `~/dev/GauXC` | BSD | Copy the *design* only |
-| ExchCXX | `~/dev/ExchCXX` | **MIT** | Translate the kernels |
+| ExchCXX | `~/dev/ExchCXX` | **BSD 3-clause** | Translate the kernels |
 | IntegratorXX | `~/dev/IntegratorXX` | BSD | Ignore — mqc has it |
 
 ## Scale, measured — why "port GauXC" is the wrong instinct
@@ -214,7 +214,7 @@ libxc remains selectable as the reference oracle.
 
 ## Attribution
 
-ExchCXX is MIT and GauXC is BSD; both permit translation with attribution.
+ExchCXX is BSD 3-clause and GauXC is BSD; both permit translation with attribution.
 Credit ExchCXX in the header of every generated functional file, and GauXC in
 whatever documents the batching design.
 

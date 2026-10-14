@@ -11,13 +11,17 @@
 ! needs to reproduce each case exactly: the shells as built, the grid, the
 ! energy and the final density.
 !
-!   water, closed shell:  RHF, then SVWN, PBE, BLYP, B3LYP restricted
-!   OH radical, doublet:  UHF, then PBE unrestricted
+!   water, closed shell:  RHF, then SVWN, PBE, BLYP, B3LYP, wB97X-V, wB97X,
+!                         wB97 restricted
+!   OH radical, doublet:  UHF, then PBE, wB97X-V, wB97X unrestricted
 !
 ! So the restricted and unrestricted paths, Hartree-Fock and Kohn-Sham,
-! LDA, GGA and hybrid, all go through the one driver. `rks_ref.py` rebuilds
+! LDA, GGA, global and range-separated hybrid, with and without VV10's
+! nonlocal correlation, all go through the one driver. `rks_ref.py` rebuilds
 ! the same basis in the same order and runs pyscf's RHF/UHF/RKS/UKS on the
-! same points from terco's converged density.
+! same points from terco's converged density -- VV10's own (coarser) grid
+! too, for a functional that has it, set as pyscf's `nlcgrids` exactly as
+! the semilocal grid is set as `grids`.
 !
 program scf_rks
    use trc_boys, only: dp
@@ -28,13 +32,15 @@ program scf_rks
    use trc_error, only: error_t
    implicit none
 
-   integer, parameter :: NCASE = 7
+   integer, parameter :: NCASE = 12
    character(len=8), parameter :: mol(NCASE) = [character(len=8) :: &
-                                                "water", "water", "water", "water", "water", "oh", "oh"]
+                                                "water", "water", "water", "water", "water", "water", "water", &
+                                                "water", "oh", "oh", "oh", "oh"]
    character(len=8), parameter :: fn(NCASE) = [character(len=8) :: &
-                                               "", "svwn", "pbe", "blyp", "b3lyp", "", "pbe"]
-   integer, parameter :: nalpha(NCASE) = [5, 5, 5, 5, 5, 5, 5]
-   integer, parameter :: nbeta(NCASE) = [5, 5, 5, 5, 5, 4, 4]
+                                               "", "svwn", "pbe", "blyp", "b3lyp", "wb97x-v", "wb97x", "wb97", &
+                                               "", "pbe", "wb97x-v", "wb97x"]
+   integer, parameter :: nalpha(NCASE) = [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+   integer, parameter :: nbeta(NCASE) = [5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4]
    integer :: ic, unit, natm, nsh, maxnp, ish
    integer, allocatable :: sh_l(:), sh_np(:), zint(:)
    real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), at_z(:), at_r(:, :)
@@ -99,6 +105,12 @@ program scf_rks
       if (len_trim(fn(ic)) > 0) then
          write (unit) int(size(res%grid_w), kind=8)
          write (unit) res%grid_r, res%grid_w
+      else
+         write (unit) 0_8
+      end if
+      if (allocated(res%grid_w_nlc)) then
+         write (unit) int(size(res%grid_w_nlc), kind=8)
+         write (unit) res%grid_r_nlc, res%grid_w_nlc
       else
          write (unit) 0_8
       end if

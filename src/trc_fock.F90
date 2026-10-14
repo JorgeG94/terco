@@ -391,7 +391,7 @@ contains
    ! than a flag -- confusing the two is a segfault, not a wrong number.
    !
    subroutine eri_fock(this, b, dmat, gmat, k_scale, j_scale, hcore, &
-                       density_screen)
+                       density_screen, omega)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
@@ -406,6 +406,15 @@ contains
       !! Fraction of the Coulomb term, default one. Zero is what the second
       !! pass of a range-separated hybrid wants: long-range exchange and
       !! nothing else.
+      real(dp), intent(in), optional :: omega
+      !! Range-separation parameter, bohr^-1. Absent or zero (the default)
+      !! builds J and K with the ordinary Coulomb operator; omega > 0 builds
+      !! them with erf(omega*r12)/r12 instead -- wB97X-V's long-range
+      !! exchange pass wants this with k_scale = 0.833_dp (and usually
+      !! j_scale = 0, since the short-range/full-range split of J is a
+      !! functional choice the caller makes, not this routine's). omega < 0
+      !! (erfc short-range) is not implemented. See scripts/gen_perclass.py
+      !! for the substitution.
       real(dp), intent(in), optional :: hcore(this%nao, this%nao)
       !! Core Hamiltonian. If present the result is the full Fock matrix
       !! rather than its two-electron part -- the caller almost always wants
@@ -426,11 +435,13 @@ contains
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
-      real(dp) :: jfac, kfac
+      real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp
+      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
+      if (present(omega)) ow = omega
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
@@ -458,7 +469,7 @@ contains
       !$acc update device(this%dsh)
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     jfac, kfac, .false., this%dsh, &
+                     jfac, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -523,7 +534,7 @@ contains
    ! repulsion, XC and PCM are the caller's, same scope line eri_fock draws
    ! around Hcore.
    !
-   subroutine eri_gradient(this, b, dens, grad, k_scale, j_scale)
+   subroutine eri_gradient(this, b, dens, grad, k_scale, j_scale, omega)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: dens(:, :, :)
@@ -534,6 +545,12 @@ contains
       real(dp), intent(in), optional :: k_scale, j_scale
       !! Same meaning as eri_fock's: a hybrid functional's exchange fraction
       !! multiplies kfac; default one is Hartree-Fock.
+      real(dp), intent(in), optional :: omega
+      !! NOT implemented: there is no range-separated gradient kernel, only
+      !! the Rys energy and HGP/Rys Fock paths carry the erf(omega*r12)/r12
+      !! substitution (see eri%fock). Present only so a caller that always
+      !! threads omega through every eri% call does not need a special case
+      !! for the gradient; passing anything but absent or zero error-stops.
 
       real(dp), allocatable :: dwork(:, :, :)
       integer :: ndens, nw, id
@@ -542,6 +559,11 @@ contains
 #ifndef TERCO_RYS
       error stop "terco: eri%gradient needs a TERCO_RYS=ON build"
 #else
+      if (present(omega)) then
+         if (omega /= 0.0_dp) error stop &
+            "terco: eri%gradient: no range-separated gradient; omega must be absent or zero"
+      end if
+
       ndens = size(dens, 3)
 
       ! A shell whose centre matched no atom exactly (basis_build leaves
@@ -625,12 +647,14 @@ contains
    ! Hessian needs; mqc calls it `build_fock_direct_nosym`.
    !
    subroutine eri_fock_nosym(this, b, dmat, gmat, k_scale, j_scale, &
-                             density_screen)
+                             density_screen, omega)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
       real(dp), intent(out) :: gmat(this%nao, this%nao)
       real(dp), intent(in), optional :: k_scale, j_scale
+      real(dp), intent(in), optional :: omega
+      !! Range-separation parameter, bohr^-1; see eri%fock's omega.
       logical, intent(in), optional :: density_screen
       !! Weight the Schwarz bound by the density it multiplies before
       !! screening. Default true, which is what an SCF wants: a quartet whose
@@ -647,11 +671,13 @@ contains
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
-      real(dp) :: jfac, kfac
+      real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp
+      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
+      if (present(omega)) ow = omega
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
@@ -674,7 +700,7 @@ contains
       !$acc update device(this%dsh)
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     jfac, kfac, .true., this%dsh, &
+                     jfac, kfac, ow, .true., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -732,13 +758,15 @@ contains
    ! by hoisting them into the object; it is the next thing to do here.
    !
    subroutine eri_fock_resident(this, b, dmat, gmat, k_scale, j_scale, &
-                                density_screen, count_survivors)
+                                density_screen, count_survivors, omega)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       !! Both must already be present on the device.
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
       real(dp), intent(out) :: gmat(this%nao, this%nao)
       real(dp), intent(in), optional :: k_scale, j_scale
+      real(dp), intent(in), optional :: omega
+      !! Range-separation parameter, bohr^-1; see eri%fock's omega.
       logical, intent(in), optional :: density_screen
       !! Weight the Schwarz bound by the density before screening (default
       !! true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
@@ -749,11 +777,13 @@ contains
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
-      real(dp) :: jfac, kfac
+      real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp
+      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
+      if (present(omega)) ow = omega
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
       n = this%nao
       nw = this%nao_w
 
@@ -810,7 +840,7 @@ contains
          if (want) then
             call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                            this%ao_off, this%thresh, .false., &
-                           jfac, kfac, .false., this%dsh, &
+                           jfac, kfac, ow, .false., this%dsh, &
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                            this%hp_ra, this%hp_rb, this%hp_c, &
                            this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -826,7 +856,7 @@ contains
       end block
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     jfac, kfac, .false., this%dsh, &
+                     jfac, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -949,7 +979,7 @@ contains
    ! here, so between 2.7x and 4.2x, approached slowly.
    !
    subroutine eri_fock_many(this, b, ndens, dmats, gmats, k_scale, j_scale, &
-                            density_screen)
+                            density_screen, omega)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ndens
@@ -959,6 +989,8 @@ contains
       !! batch degrades past N=4; adjacent, they coalesce.
       real(dp), intent(out) :: gmats(ndens, this%nao, this%nao)
       real(dp), intent(in), optional :: k_scale, j_scale
+      real(dp), intent(in), optional :: omega
+      !! Range-separation parameter, bohr^-1; see eri%fock's omega.
       logical, intent(in), optional :: density_screen
       !! Weight the Schwarz bound by the density before screening (default
       !! true). A COUPLED-PERTURBED SOLVE MUST PASS FALSE -- see `eri_fock`.
@@ -971,11 +1003,13 @@ contains
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j, d
-      real(dp) :: jfac, kfac
+      real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp
+      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
+      if (present(omega)) ow = omega
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
@@ -1005,7 +1039,7 @@ contains
       !$acc update device(this%dsh)
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     jfac, kfac, .false., this%dsh, &
+                     jfac, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &

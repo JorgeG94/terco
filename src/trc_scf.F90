@@ -109,6 +109,7 @@ module trc_scf_driver
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
    use trc_xc_batch, only: trc_xc_grid_t
+   use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
@@ -257,6 +258,11 @@ module trc_scf_driver
       !! since none of them is diffuse enough to reach this threshold.
       real(dp) :: eri_thresh = 1.0e-12_dp
       integer :: grid_level = 3
+      integer :: nlc_grid_level = 1
+      !! Grid level for VV10's nonlocal correlation, when the functional has
+      !! it. Coarser than the semilocal grid by convention (SG-1-like): VV10
+      !! is a double sum over grid points, so its cost goes as the square of
+      !! this grid's size.
       integer :: grid_max_pts = 512
       real(dp) :: rho_tol = XC_RHO_TOL
       logical :: verbose = .false.
@@ -295,6 +301,8 @@ module trc_scf_driver
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
       real(dp), allocatable :: grid_r(:, :)    !! (3, npts) the grid used, for a same-grid comparison
       real(dp), allocatable :: grid_w(:)
+      real(dp), allocatable :: grid_r_nlc(:, :)  !! VV10's own (coarser) grid, unallocated when the
+      real(dp), allocatable :: grid_w_nlc(:)     !! functional has no nonlocal correlation.
       character(len=256) :: message = ""
    end type trc_scf_result_t
 
@@ -440,7 +448,9 @@ contains
       ! stays byte-for-byte unchanged.
       real(dp), allocatable :: s_c(:, :), h_c(:, :)
       real(dp), allocatable :: d_c(:, :, :), gmat_c(:, :, :), vxc_c(:, :, :)
-      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), w1_c(:, :)
+      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), w1_c(:, :), klr_c(:, :)
+      !! klr_c: the long-range exchange of a range-separated hybrid, built
+      !! by its own pass (erf(omega r12)/r12) and added into G.
       real(dp), allocatable :: dref_c(:, :), gacc_c(:, :), ddif_c(:, :)
       logical :: incr_now
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
@@ -456,11 +466,17 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(dft_grid_t) :: grid
-      type(trc_xc_grid_t) :: xg
+      type(trc_xc_grid_t) :: xg, xg_nlc
+      type(dft_grid_t) :: grid_nlc
+      logical :: nlc
+      real(dp) :: e_nlc
       type(trc_xc_functional_t) :: func
       type(trc_linalg_t) :: la
       type(error_t) :: err
       logical :: dft, talk, diis_on
+      real(dp) :: exx_lr, omega
+      !! A range-separated hybrid's extra long-range exchange fraction and
+      !! its omega: K_total = exx*K + exx_lr*K_erf(omega). Zero otherwise.
       real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ, errmax
       real(dp), allocatable :: ofrac(:)
       integer :: nfrac, ndamp
@@ -481,13 +497,35 @@ contains
       talk = opts%verbose
       if (present(comm)) talk = talk .and. comm%rank() == 0
       dft = len_trim(opts%functional) > 0
+      nlc = .false.
       exx = 1.0_dp
+      exx_lr = 0.0_dp; omega = 0.0_dp
       if (dft) then
          if (.not. xc_functional_by_name(opts%functional, func)) then
             res%message = "trc_scf: unknown functional "//trim(opts%functional)
             return
          end if
+         ! A registered functional terco cannot evaluate yet (meta-GGA,
+         ! dispersion, ...) comes back with `missing` set rather than as an
+         ! unknown name; running it would converge on whatever subset of its
+         ! pieces is present.
+         if (len_trim(func%missing) > 0) then
+            res%message = "trc_scf: functional "//trim(opts%functional)// &
+                          " is not available: "//trim(func%missing)
+            return
+         end if
          exx = func%exx
+         nlc = func%nlc_b /= 0.0_dp
+         ! VV10's double sum runs over the whole grid on one device; split
+         ! over ranks it would need every rank's points.
+         if (nlc .and. present(comm)) then
+            if (comm%size() > 1) then
+               res%message = "trc_scf: VV10 nonlocal correlation is not available over MPI ranks"
+               return
+            end if
+         end if
+         exx_lr = func%exx_lr
+         omega = func%omega
       end if
       nspin = 1
       if ((nalpha /= nbeta .or. opts%unrestricted) .and. .not. (opts%frac_occ .and. .not. opts%unrestricted)) nspin = 2
@@ -504,7 +542,7 @@ contains
       allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin))
       allocate (s_c(nao_c, nao_c), h_c(nao_c, nao_c))
       allocate (d_c(nao_c, nao_c, nspin), gmat_c(nao_c, nao_c, nspin), vxc_c(nao_c, nao_c, nspin))
-      allocate (dtot_c(nao_c, nao_c), jmat_c(nao_c, nao_c), w1_c(nao_c, nao_c))
+      allocate (dtot_c(nao_c, nao_c), jmat_c(nao_c, nao_c), w1_c(nao_c, nao_c), klr_c(nao_c, nao_c))
       allocate (dref_c(nao_c, nao_c), gacc_c(nao_c, nao_c), ddif_c(nao_c, nao_c))
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
@@ -582,6 +620,26 @@ contains
          end if
          call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=opts%grid_max_pts)
          call xg%to_device()
+         if (nlc) then
+            call build_dft_grid(b%at_r, nint(b%at_z), grid_nlc, err, level=opts%nlc_grid_level)
+            if (err%has_error()) then
+               res%message = "trc_scf: "//err%get_message()
+               ! The semilocal grid/grid-object pair is already built and on
+               ! the device at this point (xg%build/xg%to_device, just
+               ! above) -- only the VV10 (nlc) grid failed. Release it too,
+               ! or its device allocation and `grid`'s host arrays leak on
+               ! this early return, same as the success path does at the
+               ! end of this routine.
+               call xg%release(); call grid%destroy()
+               call eri%release(); call pl%release()
+               return
+            end if
+            call xg_nlc%build(grid_nlc%n_points, grid_nlc%coords, grid_nlc%weights, b, &
+                              max_pts=opts%grid_max_pts)
+            call xg_nlc%to_device()
+            res%grid_r_nlc = grid_nlc%coords
+            res%grid_w_nlc = grid_nlc%weights
+         end if
          res%grid_r = grid%coords
          res%grid_w = grid%weights
          t_grid = wall() - tw0
@@ -614,12 +672,12 @@ contains
       fock = 0.0_dp; gmat = 0.0_dp; vxc = 0.0_dp; dold = 0.0_dp; errv = 0.0_dp
       fstore = 0.0_dp; estore = 0.0_dp
       w1 = 0.0_dp; w2 = 0.0_dp; w3 = 0.0_dp
-      d_c = 0.0_dp; gmat_c = 0.0_dp; vxc_c = 0.0_dp; dtot_c = 0.0_dp; jmat_c = 0.0_dp; w1_c = 0.0_dp
+      d_c = 0.0_dp; gmat_c = 0.0_dp; vxc_c = 0.0_dp; dtot_c = 0.0_dp; jmat_c = 0.0_dp; w1_c = 0.0_dp; klr_c = 0.0_dp
 
       !$acc enter data copyin(ofrac)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
-      !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c) &
+      !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
       !$acc            create(dref_c, gacc_c, ddif_c)
       if (opts%adiis) then
          !$acc enter data copyin(fstore_a, dstore_a)
@@ -726,6 +784,12 @@ contains
                   thresh0 = eri%thresh
                   eri%thresh = thresh0*incr_thresh_scale_env(opts%incr_thresh_scale)
                   call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
+                  if (exx_lr /= 0.0_dp) then
+                     call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                     do concurrent(i=1:nao_c, j=1:nao_c)
+                        gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
+                     end do
+                  end if
                   eri%thresh = thresh0
                end block
                do concurrent(i=1:nao_c, j=1:nao_c)
@@ -735,6 +799,12 @@ contains
                end do
             else
                call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
+               if (exx_lr /= 0.0_dp) then
+                  call eri%fock_resident(b, d_c(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
+                  end do
+               end if
                do concurrent(i=1:nao_c, j=1:nao_c)
                   gacc_c(i, j) = gmat_c(i, j, 1)
                   dref_c(i, j) = d_c(i, j, 1)
@@ -746,11 +816,17 @@ contains
             end do
             call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
             do s = 1, 2
-               if (exx /= 0.0_dp) then
+               if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
                   do concurrent(i=1:nao_c, j=1:nao_c)
                      w1_c(i, j) = 2.0_dp*d_c(i, j, s)
                   end do
                   call eri%fock_resident(b, w1_c, gmat_c(:, :, s), j_scale=0.0_dp, k_scale=exx)
+                  if (exx_lr /= 0.0_dp) then
+                     call eri%fock_resident(b, w1_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                     do concurrent(i=1:nao_c, j=1:nao_c)
+                        gmat_c(i, j, s) = gmat_c(i, j, s) + klr_c(i, j)
+                     end do
+                  end if
                   do concurrent(i=1:nao_c, j=1:nao_c)
                      gmat_c(i, j, s) = gmat_c(i, j, s) + jmat_c(i, j)
                   end do
@@ -783,6 +859,17 @@ contains
             else
                call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=opts%rho_tol, &
                                comm=comm, t_points=tp1, t_pairs=tq1, la=la)
+            end if
+            ! VV10 adds its energy to exc and its potential into vxc_c, on
+            ! its own (coarser) grid, before the spherical transform below.
+            if (nlc) then
+               if (nspin == 1) then
+                  call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1))
+               else
+                  call trc_vv10_uks(b, xg_nlc, d_c(:, :, 1), d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
+                                    vxc_c(:, :, 1), vxc_c(:, :, 2))
+               end if
+               exc = exc + e_nlc
             end if
             tx_pts = tx_pts + tp1; tx_prs = tx_prs + tq1
             do s = 1, nspin
@@ -1050,7 +1137,7 @@ contains
       !$acc exit data delete(ofrac)
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
-      !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c) &
+      !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
       !$acc           delete(dref_c, gacc_c, ddif_c)
       if (opts%adiis) then
          !$acc exit data delete(fstore_a, dstore_a)
@@ -1070,6 +1157,9 @@ contains
       call eri%release(); call pl%release()
       if (dft) then
          call xg%release(); call grid%destroy()
+         if (nlc) then
+            call xg_nlc%release(); call grid_nlc%destroy()
+         end if
       end if
 
    contains
