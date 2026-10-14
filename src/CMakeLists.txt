@@ -239,10 +239,11 @@ endfunction()
 # records each command line, then with "run", which executes them -- but
 # only if the stamp says it must. The stamp is a SHA256 over
 #   - every generator command line, exactly as it would run: the scripts'
-#     paths, the interpreter, every option that reaches a generator
-#     (TERCO_LMAX, TERCO_DF_LMAX, TERCO_CART_ORDER, TERCO_RYS_UNROLL_MAX,
-#     TERCO_DF_FORCE_RYS) and the class lists computed below, so no option
-#     can be left out of it by forgetting to list it; and
+#     paths, the interpreter (and its version), every option that reaches a
+#     generator (TERCO_LMAX, TERCO_DF_LMAX, TERCO_CART_ORDER,
+#     TERCO_RYS_UNROLL_MAX, TERCO_DF_FORCE_RYS) and the class lists
+#     computed below, so no option can be left out of it by forgetting to
+#     list it; and
 #   - the contents of every script those commands run or load (passed as
 #     SCRIPTS: the scripts each block invokes plus what they import or load
 #     with importlib -- none of them reads any other committed file).
@@ -253,9 +254,10 @@ endfunction()
 #
 # Editing a generator re-runs the configure on the next build
 # (CMAKE_CONFIGURE_DEPENDS), and the changed hash regenerates. Nothing here
-# applies to TERCO_REGENERATE's in-place refresh of src/generated, which
-# always runs: that is the CI check that the committed set reproduces. And
-# TERCO_FORCE_REGENERATE ignores every stamp for one configure.
+# applies to TERCO_REGENERATE, which always runs its generators: its
+# in-place refresh of src/generated is how the committed set is checked to
+# reproduce. And TERCO_FORCE_REGENERATE ignores every stamp for one
+# configure.
 function(terco_gen what)
   get_property(_mode GLOBAL PROPERTY TERCO_GEN_MODE)
   if(_mode STREQUAL "plan")
@@ -330,7 +332,7 @@ function(terco_generate name gen_macro stage dest prune stampable)
   cmake_language(CALL ${gen_macro})
   get_property(_tg_plan GLOBAL PROPERTY TERCO_GEN_PLAN)
 
-  set(_tg_sig "dest ${dest}\nprune ${prune}\n")
+  set(_tg_sig "dest ${dest}\nprune ${prune}\npython ${Python3_VERSION}\n")
   foreach(_tg_s ${_tg_gen_deps})
     file(SHA256 "${_tg_s}" _tg_h)
     string(APPEND _tg_sig "script ${_tg_s} ${_tg_h}\n")
@@ -410,98 +412,93 @@ if(_regen)
   set(_gen_out "${CMAKE_BINARY_DIR}/stage/generated")
   set(_scripts "${CMAKE_SOURCE_DIR}/scripts")
 
-  # Four-centre, one module per (la,lb,lc,ld) class. `--split` matters: at
-  # LMAX=2 a single module is a gigabyte of NVVM that does not finish. HGP
-  # stops at d whatever TERCO_LMAX is: classes with an f shell are Rys only
-  # (see the Rys section below), and HGP's d kernels do not depend on the
-  # ceiling -- generated at --lmax 3 they differ from --lmax 2 only in the
-  # GENERATED line.
   set(_hgp_lmax ${TERCO_LMAX})
   if(_hgp_lmax GREATER 2)
     set(_hgp_lmax 2)
   endif()
-  # gen_perclass.py --split, in _terco_gen_main below.
-
-  # One-electron, multipoles and density fitting carry angular momentum on two
-  # or three centres rather than four, so they grow as L^2 or L^3 and can
-  # afford the same ceiling as the four-centre kernels for far less compile.
-  #
-  # They follow TERCO_LMAX rather than a literal, because a one-electron path
-  # that stops below the four-centre one is not a limitation -- it is a wrong
-  # Fock matrix. H would be built from whatever one_e_dispatch returns for a
-  # key it has no case for, and an SCF converges on that without complaint.
-  # DF is the exception that proved too expensive at f: it follows
-  # TERCO_DF_LMAX when that is set (see its comment in the top-level
-  # CMakeLists.txt), and its entry points stop on a basis above it.
-  # gen_1e.py (and --multipole), in _terco_gen_main below.
   set(_df_lmax ${TERCO_LMAX})
   if(NOT "${TERCO_DF_LMAX}" STREQUAL "")
     set(_df_lmax ${TERCO_DF_LMAX})
   endif()
-  # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
-  # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
-  # module did not finish compiling on the GPU back end. Classes above
-  # gen_df.py's own SHIPPED_L/SHIPPED_LA get a Rys quadrature body instead
-  # of the written-out VRR+HRR -- same reason, see that script's module
-  # docstring -- so it takes the SAME unroll threshold gen_rys.py's
-  # four-centre Rys classes do (TERCO_RYS_UNROLL_MAX), not a new one; the
-  # header this embeds (MOD_HEADER) never includes either flag, so this
-  # does not disturb the shipped set's byte-for-byte regeneration.
-  # TERCO_DF_FORCE_RYS is TESTING ONLY and empty in every normal build (see
-  # its own comment, top-level CMakeLists.txt).
   set(_df_force_rys_flag "")
   if(NOT "${TERCO_DF_FORCE_RYS}" STREQUAL "")
     set(_df_force_rys_flag "--force-rys" "${TERCO_DF_FORCE_RYS}")
   endif()
-  # gen_df.py, in _terco_gen_main below.
 
-  # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
-  # `comp` and trc_batch.F90's `cart_pow`, the flat table
-  # trc_collocation.F90's `shell_collocate` reads, and the lexicographic<->
-  # this-build permutation trc_cart_perm.F90 wraps for every reader of
-  # externally-authored AO data. Needed at every TERCO_LMAX, unlike the
-  # unrolled VRR/HRR includes below, because these call sites are not
-  # conditional on TRC_UNROLL_VRR/HRR.
-  # gen_cartcomp.py, in _terco_gen_main below.
-
-  # The Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4
-  # (src/trc_sph.F90's only consumer). Fixed at l<=4 regardless of
-  # TERCO_LMAX or TRC_MAXL, for the same reason gen_cartcomp.py's CEIL is 4
-  # and not TERCO_LMAX: f support (milestone M3) needs this table ready
-  # before any four-centre kernel reaches f, and generating a small table
-  # four levels higher than today's d ceiling costs nothing.
-  # gen_sph.py, in _terco_gen_main below.
-
-  # The unrolled recurrences are textual includes, and only the shared kernel
-  # uses them -- at LMAX<=1, for the reason the top-level CMakeLists gives.
-  # They carry a `#if TRC_LMAX != n / #error` guard, so a stale one is a
-  # compile error rather than a wrong number. That guard exists because a
-  # stale one WAS a wrong number, silently, for a month. gen_hrr.py's output
-  # additionally depends on the Cartesian order (its digestion writes AO
-  # slots directly), so it also carries a `#if TRC_CART_ORDER != n` guard and
-  # takes `--order`; gen_vrr.py's VRR intermediates are addressed only
-  # internally and never reach an AO index, so it has no `--order` at all.
-  # gen_vrr.py/gen_hrr.py, in _terco_gen_main below.
-
-  # The generators themselves, in the order they always ran. A macro, not
-  # inline, so terco_generate can run it once to plan and once to execute.
+  # The generators, in a macro so terco_generate can run it once to plan
+  # (record each command line for the stamp) and once to execute.
   macro(_terco_gen_main)
+    # Four-centre, one module per (la,lb,lc,ld) class. `--split` matters: at
+    # LMAX=2 a single module is a gigabyte of NVVM that does not finish. HGP
+    # stops at d whatever TERCO_LMAX is: classes with an f shell are Rys only
+    # (see the Rys section below), and HGP's d kernels do not depend on the
+    # ceiling -- generated at --lmax 3 they differ from --lmax 2 only in the
+    # GENERATED line.
     terco_gen("gen_perclass.py" ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py
               --lmax ${_hgp_lmax} ${_order_flag} --split ${_gen_out})
+
+    # One-electron, multipoles and density fitting carry angular momentum on two
+    # or three centres rather than four, so they grow as L^2 or L^3 and can
+    # afford the same ceiling as the four-centre kernels for far less compile.
+    #
+    # They follow TERCO_LMAX rather than a literal, because a one-electron path
+    # that stops below the four-centre one is not a limitation -- it is a wrong
+    # Fock matrix. H would be built from whatever one_e_dispatch returns for a
+    # key it has no case for, and an SCF converges on that without complaint.
+    # DF is the exception that proved too expensive at f: it follows
+    # TERCO_DF_LMAX when that is set (see its comment in the top-level
+    # CMakeLists.txt), and its entry points stop on a basis above it.
     terco_gen("gen_1e.py" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX}
               ${_order_flag} -o ${_gen_out}/trc_1e_kernels.F90)
     terco_gen("gen_1e.py --multipole" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
               --lmax ${TERCO_LMAX} --multipole ${_gen_out}/trc_mult_kernels.F90 ${_order_flag})
+
+    # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
+    # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
+    # module did not finish compiling on the GPU back end. Classes above
+    # gen_df.py's own SHIPPED_L/SHIPPED_LA get a Rys quadrature body instead
+    # of the written-out VRR+HRR -- same reason, see that script's module
+    # docstring -- so it takes the SAME unroll threshold gen_rys.py's
+    # four-centre Rys classes do (TERCO_RYS_UNROLL_MAX), not a new one; the
+    # header this embeds (MOD_HEADER) never includes either flag, so this
+    # does not disturb the shipped set's byte-for-byte regeneration.
+    # TERCO_DF_FORCE_RYS is TESTING ONLY and empty in every normal build (see
+    # its own comment, top-level CMakeLists.txt).
     terco_gen("gen_df.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
               ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
               ${_df_force_rys_flag} --split ${_gen_out})
+
+    # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
+    # `comp` and trc_batch.F90's `cart_pow`, the flat table
+    # trc_collocation.F90's `shell_collocate` reads, and the lexicographic<->
+    # this-build permutation trc_cart_perm.F90 wraps for every reader of
+    # externally-authored AO data. Needed at every TERCO_LMAX, unlike the
+    # unrolled VRR/HRR includes below, because these call sites are not
+    # conditional on TRC_UNROLL_VRR/HRR.
     terco_gen("gen_cartcomp.py" ${Python3_EXECUTABLE} ${_scripts}/gen_cartcomp.py ${_order_flag}
               --comp-out ${_gen_out}/trc_cart_comp.inc
               --colloc-out ${_gen_out}/trc_collocation_table.inc
               --perm-l2b-out ${_gen_out}/trc_cart_perm_l2b.inc
               --perm-b2l-out ${_gen_out}/trc_cart_perm_b2l.inc)
+
+    # The Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4
+    # (src/trc_sph.F90's only consumer). Fixed at l<=4 regardless of
+    # TERCO_LMAX or TRC_MAXL, for the same reason gen_cartcomp.py's CEIL is 4
+    # and not TERCO_LMAX: f support (milestone M3) needs this table ready
+    # before any four-centre kernel reaches f, and generating a small table
+    # four levels higher than today's d ceiling costs nothing.
     terco_gen("gen_sph.py" ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag}
               -o ${_gen_out}/trc_sph_tables.F90)
+
+    # The unrolled recurrences are textual includes, and only the shared kernel
+    # uses them -- at LMAX<=1, for the reason the top-level CMakeLists gives.
+    # They carry a `#if TRC_LMAX != n / #error` guard, so a stale one is a
+    # compile error rather than a wrong number. That guard exists because a
+    # stale one WAS a wrong number, silently, for a month. gen_hrr.py's output
+    # additionally depends on the Cartesian order (its digestion writes AO
+    # slots directly), so it also carries a `#if TRC_CART_ORDER != n` guard and
+    # takes `--order`; gen_vrr.py's VRR intermediates are addressed only
+    # internally and never reach an AO index, so it has no `--order` at all.
     if(TERCO_LMAX LESS_EQUAL 1)
       terco_gen("gen_vrr.py" ${Python3_EXECUTABLE} ${_scripts}/gen_vrr.py --lmax ${TERCO_LMAX}
                 --mode include -o ${_gen_out}/trc_vrr_cases.inc)
@@ -510,15 +507,21 @@ if(_regen)
     endif()
   endmacro()
 
-  # src/generated (TERCO_REGENERATE) is refreshed in place, never pruned
-  # and never stamped: see GENERATION STAMPS above.
+  # src/generated (TERCO_REGENERATE) is refreshed in place and never
+  # pruned. TERCO_REGENERATE is never stamped either, in place or (with a
+  # non-default ceiling or order) in the build tree: it always runs its
+  # generators, see GENERATION STAMPS above.
   set(_prune ON)
   if(_gen_dir STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/generated")
     set(_prune OFF)
   endif()
+  set(_stampable ON)
+  if(TERCO_REGENERATE)
+    set(_stampable OFF)
+  endif()
   terco_generate(
     "kernels for LMAX=${TERCO_LMAX}, ${TERCO_CART_ORDER} order" _terco_gen_main
-    "${_gen_out}" "${_gen_dir}" ${_prune} ${_prune}
+    "${_gen_out}" "${_gen_dir}" ${_prune} ${_stampable}
     ${_scripts}/gen_perclass.py ${_scripts}/gen_vrr.py ${_scripts}/gen_hrr.py
     ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/rys_inline.py
     ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/cartorder.py)

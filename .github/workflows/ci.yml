@@ -185,6 +185,27 @@ jobs:
           -DTERCO_DF_LMAX=3
           -S . -B build
 
+      # The generation stamps (src/CMakeLists.txt, GENERATION STAMPS): a
+      # reconfigure with nothing changed must run no generator, and an edited
+      # output must be regenerated and restored. This job, because it is the
+      # one that generates both blocks (the kernel set and the Rys kernels).
+      - name: Reconfigure skips the generators
+        run: |
+          cmake build | tee reconf.log
+          grep -q "kernels for LMAX=3, lexicographic order up to date (stamp" reconf.log
+          grep -q "Rys kernels up to date (stamp" reconf.log
+          if grep -q "terco: generating" reconf.log; then
+            echo "::error::a reconfigure with nothing changed ran a generator"
+            exit 1
+          fi
+          echo '! stale' >> build/generated_rys/trc_rys_kernels.F90
+          cmake build | tee reconf2.log
+          grep -q "terco: generating Rys kernels" reconf2.log
+          if grep -q '! stale' build/generated_rys/trc_rys_kernels.F90; then
+            echo "::error::an edited generated file survived the reconfigure"
+            exit 1
+          fi
+
       - name: Build
         run: cmake --build build --parallel 2
 
