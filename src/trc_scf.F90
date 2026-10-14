@@ -109,6 +109,7 @@ module trc_scf_driver
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
    use trc_xc_batch, only: trc_xc_grid_t
+   use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
@@ -257,6 +258,11 @@ module trc_scf_driver
       !! since none of them is diffuse enough to reach this threshold.
       real(dp) :: eri_thresh = 1.0e-12_dp
       integer :: grid_level = 3
+      integer :: nlc_grid_level = 1
+      !! Grid level for VV10's nonlocal correlation, when the functional has
+      !! it. Coarser than the semilocal grid by convention (SG-1-like): VV10
+      !! is a double sum over grid points, so its cost goes as the square of
+      !! this grid's size.
       integer :: grid_max_pts = 512
       real(dp) :: rho_tol = XC_RHO_TOL
       logical :: verbose = .false.
@@ -456,7 +462,10 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(dft_grid_t) :: grid
-      type(trc_xc_grid_t) :: xg
+      type(trc_xc_grid_t) :: xg, xg_nlc
+      type(dft_grid_t) :: grid_nlc
+      logical :: nlc
+      real(dp) :: e_nlc
       type(trc_xc_functional_t) :: func
       type(trc_linalg_t) :: la
       type(error_t) :: err
@@ -481,6 +490,7 @@ contains
       talk = opts%verbose
       if (present(comm)) talk = talk .and. comm%rank() == 0
       dft = len_trim(opts%functional) > 0
+      nlc = .false.
       exx = 1.0_dp
       if (dft) then
          if (.not. xc_functional_by_name(opts%functional, func)) then
@@ -488,12 +498,21 @@ contains
             return
          end if
          exx = func%exx
+         nlc = func%nlc_b /= 0.0_dp
+         ! VV10's double sum runs over the whole grid on one device; split
+         ! over ranks it would need every rank's points.
+         if (nlc .and. present(comm)) then
+            if (comm%size() > 1) then
+               res%message = "trc_scf: VV10 nonlocal correlation is not available over MPI ranks"
+               return
+            end if
+         end if
          ! Range-separated exchange and VV10 are not wired into this loop
          ! yet; running with exx alone would converge on a wrong functional
          ! without complaint.
-         if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp .or. func%nlc_b /= 0.0_dp) then
+         if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
             res%message = "trc_scf: "//trim(opts%functional)// &
-                          " needs range-separated exchange and VV10, not yet in the SCF"
+                          " needs range-separated exchange, not yet in the SCF"
             return
          end if
       end if
@@ -590,6 +609,17 @@ contains
          end if
          call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=opts%grid_max_pts)
          call xg%to_device()
+         if (nlc) then
+            call build_dft_grid(b%at_r, nint(b%at_z), grid_nlc, err, level=opts%nlc_grid_level)
+            if (err%has_error()) then
+               res%message = "trc_scf: "//err%get_message()
+               call eri%release(); call pl%release()
+               return
+            end if
+            call xg_nlc%build(grid_nlc%n_points, grid_nlc%coords, grid_nlc%weights, b, &
+                              max_pts=opts%grid_max_pts)
+            call xg_nlc%to_device()
+         end if
          res%grid_r = grid%coords
          res%grid_w = grid%weights
          t_grid = wall() - tw0
@@ -791,6 +821,17 @@ contains
             else
                call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=opts%rho_tol, &
                                comm=comm, t_points=tp1, t_pairs=tq1, la=la)
+            end if
+            ! VV10 adds its energy to exc and its potential into vxc_c, on
+            ! its own (coarser) grid, before the spherical transform below.
+            if (nlc) then
+               if (nspin == 1) then
+                  call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1))
+               else
+                  call trc_vv10_uks(b, xg_nlc, d_c(:, :, 1), d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
+                                    vxc_c(:, :, 1), vxc_c(:, :, 2))
+               end if
+               exc = exc + e_nlc
             end if
             tx_pts = tx_pts + tp1; tx_prs = tx_prs + tq1
             do s = 1, nspin
@@ -1078,6 +1119,9 @@ contains
       call eri%release(); call pl%release()
       if (dft) then
          call xg%release(); call grid%destroy()
+         if (nlc) then
+            call xg_nlc%release(); call grid_nlc%destroy()
+         end if
       end if
 
    contains
