@@ -300,11 +300,32 @@ contains
    end subroutine vv10_density_body
 
    !
-   ! Pass 2: the O(N^2) double sum -- one launch, `do concurrent` over the
-   ! outer point i, a plain sequential loop over j inside it. Each i owns
-   ! vrho(i), vsigma(i), eg(i) outright, so no atomics anywhere here,
-   ! unlike pass 3.
+   ! Pass 2: the O(N^2) double sum -- one launch, the outer point i calling
+   ! vv10_kernel_body once each. The O(N) reduction over j that builds
+   ! vrho(i)/vsigma(i)/eg(i) is entirely inside that one call, owned by
+   ! iteration i alone -- nothing here can legally alias across i, so this
+   ! is as race-free as pass 1, and `do concurrent` promises the compiler
+   ! nothing a plain `do` does not already guarantee.
    !
+   ! GPU form: `do concurrent`, same as pass 1 and pass 3's GPU form.
+   !
+   ! CPU form: a plain sequential `do`, same split as pass 3 but for a
+   ! different reason, found by bisection rather than read off the standard.
+   ! ifx (2026.0, Release, the CI host build) makes vrho(i)/vsigma(i)/eg(i)
+   ! come out exactly 0 -- not noisy, not NaN, silently dropped -- but ONLY
+   ! when the value assigned to one of them is built from vv10_kernel_body's
+   ! own `do j` reduction (fsum/usum/wsum) AND the call sits inside a `do
+   ! concurrent`. The same call through a plain `do` is correct to pyscf's
+   ! precision; an output that does not depend on that reduction (a
+   ! constant, or a bare dummy argument) survives `do concurrent` fine; and
+   ! the loop itself still runs either way (its local accumulators compute
+   ! correctly, they just never reach the caller's array through `do
+   ! concurrent`). That is a mis-optimisation of ifx's inlined-reduction
+   ! code path for this one pattern, not a standards question -- gfortran
+   ! and nvfortran both compute pass 2 correctly through `do concurrent`
+   ! already, which is why only the CPU form changes here.
+   !
+#ifdef _OPENACC
    subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, vrho, vsigma, eg)
       integer, intent(in) :: npts
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
@@ -316,6 +337,19 @@ contains
          call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, vrho(i), vsigma(i), eg(i))
       end do
    end subroutine vv10_kernel
+#else
+   subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, vrho, vsigma, eg)
+      integer, intent(in) :: npts
+      real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
+      real(dp), intent(in) :: b, c, kvv, beta
+      real(dp), intent(out) :: vrho(npts), vsigma(npts), eg(npts)
+      integer :: i
+
+      do i = 1, npts
+         call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, vrho(i), vsigma(i), eg(i))
+      end do
+   end subroutine vv10_kernel
+#endif
 
    pure subroutine vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, vrho_i, vsigma_i, eg_i)
       !$acc routine seq
