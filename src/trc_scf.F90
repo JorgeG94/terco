@@ -503,6 +503,15 @@ contains
             res%message = "trc_scf: unknown functional "//trim(opts%functional)
             return
          end if
+         ! A registered functional terco cannot evaluate yet (meta-GGA,
+         ! dispersion, ...) comes back with `missing` set rather than as an
+         ! unknown name; running it would converge on whatever subset of its
+         ! pieces is present.
+         if (len_trim(func%missing) > 0) then
+            res%message = "trc_scf: functional "//trim(opts%functional)// &
+                          " is not available: "//trim(func%missing)
+            return
+         end if
          exx = func%exx
          nlc = func%nlc_b /= 0.0_dp
          ! VV10's double sum runs over the whole grid on one device; split
