@@ -29,6 +29,19 @@ set_target_properties(terco_test_basis PROPERTIES Fortran_MODULE_DIRECTORY
                                                   ${CMAKE_BINARY_DIR}/modules)
 
 #
+# The reader for the committed pyscf references under test/pyscf_refs/ (see
+# that directory's README.md and pyscf_ref_io.F90's own header). Every check
+# that used to hand a dump to a `*_ref.py` companion links this instead, and
+# compares in Fortran against a file test/pyscf_refs/generate.py wrote
+# offline -- pyscf itself never runs in CI.
+#
+add_library(terco_pyscf_ref_io STATIC pyscf_ref_io.F90)
+target_compile_definitions(terco_pyscf_ref_io PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(terco_pyscf_ref_io PUBLIC ${main_lib})
+set_target_properties(terco_pyscf_ref_io PROPERTIES Fortran_MODULE_DIRECTORY
+                                                     ${CMAKE_BINARY_DIR}/modules)
+
+#
 # The library's definitions are PRIVATE -- TRC_FOCK6 and TRC_PERCLASS are
 # implementation choices and no consumer should need them. A test can, though:
 # `check_binfock` compares against a raw oracle and has to know whether the
@@ -41,20 +54,24 @@ set_target_properties(terco_test_basis PROPERTIES Fortran_MODULE_DIRECTORY
 # the kernels were broken.
 #
 function(terco_add_check name source)
-  cmake_parse_arguments(ARG "NEEDS_BASIS" "" "ARGS" ${ARGN})
+  cmake_parse_arguments(ARG "NEEDS_BASIS;NEEDS_PYSCF_REF" "" "ARGS" ${ARGN})
   add_executable(${name} ${source})
   target_compile_definitions(${name} PRIVATE ${TERCO_TEST_DEFS})
   target_link_libraries(${name} PRIVATE ${main_lib})
   if(ARG_NEEDS_BASIS)
     target_link_libraries(${name} PRIVATE terco_test_basis)
   endif()
+  if(ARG_NEEDS_PYSCF_REF)
+    target_link_libraries(${name} PRIVATE terco_pyscf_ref_io)
+  endif()
   target_include_directories(${name} PRIVATE ${CMAKE_BINARY_DIR}/modules)
   add_test(NAME terco/${name} COMMAND ${name} ${ARG_ARGS})
-  # The oracles are read by relative path, so the tests run from test/.
-  # TERCO_CART_ORDER is not needed by the Fortran side (it already knows its
-  # own TRC_CART_ORDER at compile time), but is set here anyway so every
-  # test's environment is uniform with the Python (*_ref.py) ones below,
-  # which DO need it -- ctest is the one place both kinds of test share.
+  # The oracles (reference.dat/reference1e.dat/reference_df.dat/
+  # reference_xc.dat/pyscf_refs/*.ref) are read by relative path, so the
+  # tests run from test/. TERCO_CART_ORDER is not needed by the Fortran
+  # side (it already knows its own TRC_CART_ORDER at compile time), but is
+  # set here anyway for uniformity with test/pyscf_refs/generate.py, which
+  # DOES need it when regenerating a reference by hand outside this build.
   set_tests_properties(
     terco/${name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                              ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
@@ -72,10 +89,28 @@ endfunction()
 terco_add_check(check_selftest check_selftest.F90)
 
 #
-# The translated XC kernels against libxc, through the values `xc_ref.py`
-# recorded in reference_xc.dat. Every derivative to second order, both spin
-# cases, eleven decades of density. Needs no GPU and no pyscf to run; pyscf
-# only to regenerate the reference.
+# The staleness guard over every committed pyscf reference under
+# test/pyscf_refs/ (see that directory's README.md and check_staleness.py's
+# own header). Standard-library Python only -- no pyscf, no numpy -- so it
+# runs in CI like every other check here, and fails loudly (not silently)
+# when a reference's own recorded inputs (geometry, basis JSON, the
+# Fortran source that builds a fixed density or grid, or generate.py
+# itself) have changed since it was written.
+#
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  add_test(NAME terco/check_pyscf_refs_fresh
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pyscf_refs/check_staleness.py)
+  set_tests_properties(
+    terco/check_pyscf_refs_fresh
+    PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+#
+# The translated XC kernels against libxc, through the values
+# test/pyscf_refs/generate.py's gen_xc_kernels() records in reference_xc.dat.
+# Every derivative to second order, both spin cases, eleven decades of
+# density. Needs no GPU and no pyscf to run; pyscf only to regenerate it.
 #
 terco_add_check(check_xc check_xc.F90)
 
@@ -87,17 +122,9 @@ terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
 #
 # Basis functions on grid points: the numerical overlap against trc_1e's
 # analytic one, and the batched, screened evaluation against the unscreened
-# one. It also writes ao_probe.bin for the pyscf comparison registered
-# further down.
+# one. (check_ao itself -- the pyscf comparison on top of it -- is
+# registered further down, alongside check_mult and check_xc_energy's.)
 #
-terco_add_check(check_ao check_ao.F90)
-
-#
-# The integrator from a fixed density: the electron count against Tr(DS),
-# independence of the chunking, symmetry of V_xc -- and xc_probe.bin for
-# the same-grid pyscf comparison of E_xc and V_xc registered further down.
-#
-terco_add_check(check_xc_energy check_xc_energy.F90)
 
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
@@ -212,21 +239,29 @@ if(TERCO_RYS)
 endif()
 
 #
-# Cartesian multipoles through the octupole. The Fortran half writes a binary
-# dump; `mult_ref.py` compares all 39 components against pyscf and refuses to
-# judge any of them until the overlap agrees first.
+# Cartesian multipoles through the octupole, against a reference
+# test/pyscf_refs/generate.py recorded from pyscf. No pyscf in CI, ever --
+# see test/pyscf_refs/README.md: the Fortran program below reads
+# test/pyscf_refs/mult.ref back and does the comparison itself.
 #
-terco_add_check(check_mult check_mult.F90)
+terco_add_check(check_mult check_mult.F90 NEEDS_PYSCF_REF)
 
 #
-# The pyscf comparison is registered only if pyscf is actually importable.
+# Basis function values and gradients, elementwise against a committed
+# pyscf eval_ao reference (test/pyscf_refs/ao.ref).
 #
-# terco does not depend on pyscf and neither should its test suite: a missing
-# optional oracle should not turn the suite red, because a red suite that is
-# always red stops being read. `check_mult` above already validates the
-# multipole kernels against libfint through `check_api`; this adds an
-# independent second opinion when one is available.
-#
+terco_add_check(check_ao check_ao.F90 NEEDS_PYSCF_REF)
+
+# E_xc and V_xc on the same grid and density, twenty functionals, RKS and
+# UKS, against test/pyscf_refs/xc_energy.ref.
+terco_add_check(check_xc_energy check_xc_energy.F90 NEEDS_PYSCF_REF)
+
+# The rotated-axis algebra itself, in Python and in float64, for every
+# ordered s/p class against int2e_cart, degenerate frames included. This one
+# genuinely needs a live pyscf (it is the ONLY place in this tree besides
+# test/pyscf_refs/generate.py that may import it), so it is registered only
+# when pyscf is importable -- never in CI, same as the pyscf-refs gate below
+# used to cover every check in this file.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
   execute_process(
@@ -234,234 +269,159 @@ if(Python3_FOUND)
     RESULT_VARIABLE _pyscf_rc
     OUTPUT_QUIET ERROR_QUIET)
   if(_pyscf_rc EQUAL 0)
-    add_test(NAME terco/check_mult_vs_pyscf
-             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/mult_ref.py)
-    set_tests_properties(
-      terco/check_mult_vs_pyscf
-      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_mult ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
-    # Basis function values and gradients, elementwise against eval_ao.
-    add_test(NAME terco/check_ao_vs_pyscf
-             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ao_ref.py)
-    set_tests_properties(
-      terco/check_ao_vs_pyscf
-      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_ao ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
-    # E_xc and V_xc on the same grid and density, six functionals.
-    add_test(NAME terco/check_xc_energy_vs_pyscf
-             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/xc_energy_ref.py)
-    set_tests_properties(
-      terco/check_xc_energy_vs_pyscf
-      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
-                 terco/check_xc_energy ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
-    # VV10's E_nlc and potential on the same grid and density, against
-    # pyscf's numint.nr_nlc_vxc: water/6-31G* and water/cc-pVDZ (RKS),
-    # the OH radical/cc-pVDZ (UKS).
-    terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS)
-    add_test(NAME terco/check_vv10_vs_pyscf_ref
-             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/vv10_ref.py)
-    set_tests_properties(terco/check_vv10_vs_pyscf
-      PROPERTIES FIXTURES_SETUP vv10_probe)
-    set_tests_properties(terco/check_vv10_vs_pyscf_ref
-      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                 FIXTURES_REQUIRED vv10_probe ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
-    # The rotated-axis algebra itself, in Python and in float64, for every
-    # ordered s/p class against int2e_cart, degenerate frames included. It
-    # needs no build, so it is the first thing to break when the vendored
-    # derivation or scripts/rotaxis/FRAME.md drifts -- libfint's own numeric
-    # check went unrun and quietly wrong, which is why this one is a test.
     add_test(NAME terco/check_rotaxis_numeric
              COMMAND ${Python3_EXECUTABLE}
                      ${PROJECT_SOURCE_DIR}/scripts/rotaxis/check_numeric.py)
     set_tests_properties(
       terco/check_rotaxis_numeric
       PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-    if(TERCO_RYS)
-      # eri%gradient against pyscf's int2e_ip1, contracted with the same
-      # Gamma by hand (pyscf's own Gradients class assumes a converged SCF
-      # density; this is a fixed, non-SCF density, same reasoning as
-      # check_rys_grad_fd). RHF and UHF, water/6-31G* and water/cc-pVDZ.
-      # Each basis has its own dump in the build tree, and each reader requires
-      # its own producer through a fixture, so the pair is correct in any
-      # order and under ctest -j. A shared dump file, ordered by DEPENDS, let
-      # the 6-31G* reader compare cc-pVDZ's numbers.
-      foreach(b 631gs ccpvdz)
-        if(b STREQUAL "631gs")
-          set(json basis_sets/6-31gs.json)
-        else()
-          set(json basis_sets/cc-pvdz.json)
-        endif()
-        set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
-        terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
-                        NEEDS_BASIS ARGS ${json} ${dump})
-        add_test(NAME terco/check_rys_grad_vs_pyscf_${b}_ref
-                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rys_grad_ref.py
-                         ${json} ${dump})
-        set_tests_properties(terco/check_rys_grad_vs_pyscf_${b}
-          PROPERTIES FIXTURES_SETUP rys_grad_probe_${b})
-        set_tests_properties(terco/check_rys_grad_vs_pyscf_${b}_ref
-          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                     FIXTURES_REQUIRED rys_grad_probe_${b})
-      endforeach()
-    endif()
-
-    #
-    # eri%fock against pyscf's raw int2e on a fixed density -- the first
-    # comparison that can exercise an f shell (l=3). check_rys_fock_vs_pyscf.F90
-    # skips itself (stop 0, after printing SKIP) when the basis needs more l
-    # than this build's TRC_LMAX reaches, exactly the way check_nosym_f does,
-    # so it is registered unconditionally and at every ceiling: a build that
-    # CAN reach f always runs it, and nothing here depends on TERCO_RYS --
-    # this exercises the ordinary eri%fock dispatch, whichever scheme ends up
-    # routing an f class once TERCO_LMAX reaches 3.
-    #
-    # water/cc-pVDZ has no f on O and passes TODAY, at LMAX=2: the proof that
-    # the AO permutation and the per-AO normalisation this shares with
-    # rys_grad_ref.py (pyscf's cart=True does not keep a JSON's literal shell
-    # order, and its Cartesian d/f components are not all unit-normalised the
-    # way this build's are) are right before any f kernel exists to test.
-    # water/cc-pVTZ (f on O) and formamide/def2-TZVP (f on C, N and O --
-    # formamide.xyz, an idealised planar geometry) are the f cases, ready for
-    # whoever raises TRC_LMAX to 3.
-    #
-    foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
-      # rys_fock_ref.py's gate is 1e-9 by default, tightened per case where
-      # measurement leaves ample margin (its own DEFAULT_TOL comment has the
-      # numbers): water/cc-pVTZ measures 8e-13, four orders of magnitude
-      # under even 1e-10, so it is passed explicitly here. Formamide/def2-TZVP
-      # measures 2.6e-11 -- a real size effect (more atoms, more AOs, not
-      # noise) -- and keeps the script's 1e-9 default rather than risk a false
-      # red on a larger system tested later.
-      set(tol "")
-      if(case STREQUAL "water_ccpvdz")
-        set(xyz water.xyz)
-        set(json basis_sets/cc-pvdz.json)
-      elseif(case STREQUAL "water_ccpvtz")
-        set(xyz water.xyz)
-        set(json basis_sets/cc-pvtz.json)
-        set(tol 1e-10)
-      else()
-        set(xyz formamide.xyz)
-        set(json basis_sets/def2-tzvp.json)
-      endif()
-      set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_fock_probe_${case}.bin)
-      terco_add_check(check_rys_fock_vs_pyscf_${case} check_rys_fock_vs_pyscf.F90
-                      NEEDS_BASIS ARGS ${xyz} ${json} ${dump})
-      add_test(NAME terco/check_rys_fock_vs_pyscf_${case}_ref
-               COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rys_fock_ref.py
-                       ${json} ${dump} ${tol})
-      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
-        PROPERTIES FIXTURES_SETUP rys_fock_probe_${case})
-      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
-        PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                   FIXTURES_REQUIRED rys_fock_probe_${case})
-      # Both halves of the pair print "SKIP" and exit 0 at TERCO_LMAX < 3
-      # (the Fortran side's own check; the Python side's mirror when the
-      # dump it depends on was never written -- see rys_fock_ref.py's own
-      # comment). Make ctest call that "Skipped", not "Passed".
-      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
-        PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
-      set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
-        PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
-    endforeach()
-
-    #
-    # omega > 0 (erf(0.3*r12)/r12, wB97X-V's long-range exchange operator)
-    # against pyscf's own range-separated J/K (mol.with_range_coulomb,
-    # scf.hf.get_jk) -- check_erf_fock_vs_pyscf.F90's own header has the
-    # J/K-isolation trick. water/6-31G* and water/cc-pVDZ exercise s/p only;
-    # formamide/cc-pVDZ puts d functions on every heavy atom. Each case runs
-    # three ways: eri%fock through HGP (the default), eri%fock through Rys
-    # (TRC_RYS_CLASSES=all), and eri%fock_nosym (the enumerated/general
-    # path) -- the same substitution has to be right in all three.
-    #
-    foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
-      if(case STREQUAL "water_631gs")
-        set(xyz water.xyz)
-        set(json basis_sets/6-31gs.json)
-      elseif(case STREQUAL "water_ccpvdz")
-        set(xyz water.xyz)
-        set(json basis_sets/cc-pvdz.json)
-      else()
-        set(xyz formamide.xyz)
-        set(json basis_sets/cc-pvdz.json)
-      endif()
-      foreach(path hgp nosym)
-        set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_${path}.bin)
-        if(path STREQUAL "nosym")
-          set(nosym_flag 1)
-        else()
-          set(nosym_flag 0)
-        endif()
-        terco_add_check(check_erf_fock_vs_pyscf_${case}_${path}
-                        check_erf_fock_vs_pyscf.F90
-                        NEEDS_BASIS ARGS ${xyz} ${json} ${dump} ${nosym_flag})
-        add_test(NAME terco/check_erf_fock_vs_pyscf_${case}_${path}_ref
-                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/erf_fock_ref.py
-                         ${json} ${dump})
-        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_${path}
-          PROPERTIES FIXTURES_SETUP erf_fock_probe_${case}_${path})
-        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_${path}_ref
-          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                     FIXTURES_REQUIRED erf_fock_probe_${case}_${path})
-      endforeach()
-      if(TERCO_RYS)
-        # Same as the "hgp" case above, but routed through the Rys kernels
-        # instead of HGP's -- TRC_RYS_CLASSES=all is only meaningful under
-        # TERCO_RYS (see check_rys_vs_hgp's own comment).
-        set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_rys.bin)
-        terco_add_check(check_erf_fock_vs_pyscf_${case}_rys
-                        check_erf_fock_vs_pyscf.F90
-                        NEEDS_BASIS ARGS ${xyz} ${json} ${dump} 0)
-        add_test(NAME terco/check_erf_fock_vs_pyscf_${case}_rys_ref
-                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/erf_fock_ref.py
-                         ${json} ${dump})
-        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys
-          PROPERTIES FIXTURES_SETUP erf_fock_probe_${case}_rys
-                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=all")
-        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys_ref
-          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                     FIXTURES_REQUIRED erf_fock_probe_${case}_rys)
-      endif()
-    endforeach()
-
-    #
-    # trc_df_2c ((P|Q)) and trc_df_3c ((mu nu|P)) against pyscf's
-    # int2c2e/aux_e2(int3c2e) -- the density-fitting analogue of the
-    # eri%fock comparison above, and the first one that can exercise a g
-    # SHELL (l=4), on the auxiliary basis. check_df_vs_pyscf.F90 skips
-    # itself (stop 0, after printing SKIP) when either basis needs more l
-    # than this build's DF_LMAX/DF_LMAX_AUX reach (gen_df.py's two
-    # ceilings, src/CMakeLists.txt's TERCO_DF_LMAX), same convention as
-    # check_rys_fock_vs_pyscf.F90's TRC_LMAX skip -- registered
-    # unconditionally, nothing to run at the shipped ceiling (DF_LMAX=2,
-    # DF_LMAX_AUX=3), and running water/cc-pVTZ (f on O) against
-    # cc-pVTZ-RI (g on O, scripts/pyscf_basis_to_json.py's
-    # cc-pvtz-rifit.json) once DF_LMAX reaches 3.
-    #
-    set(dump ${CMAKE_CURRENT_BINARY_DIR}/df_vs_pyscf_probe.bin)
-    terco_add_check(check_df_vs_pyscf check_df_vs_pyscf.F90
-                    NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvtz.json
-                    basis_sets/cc-pvtz-rifit.json ${dump})
-    add_test(NAME terco/check_df_vs_pyscf_ref
-             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/df_vs_pyscf_ref.py
-                     basis_sets/cc-pvtz.json basis_sets/cc-pvtz-rifit.json ${dump})
-    set_tests_properties(terco/check_df_vs_pyscf
-      PROPERTIES FIXTURES_SETUP df_vs_pyscf_probe)
-    set_tests_properties(terco/check_df_vs_pyscf_ref
-      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                 FIXTURES_REQUIRED df_vs_pyscf_probe)
-    # Same self-skip convention as check_rys_fock_vs_pyscf above, one level
-    # up: either basis above this build's DF_LMAX/DF_LMAX_AUX prints "SKIP"
-    # and exits 0 on both sides of the pair.
-    set_tests_properties(terco/check_df_vs_pyscf
-      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
-    set_tests_properties(terco/check_df_vs_pyscf_ref
-      PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
   else()
-    message(STATUS "terco: pyscf not importable, skipping the multipole cross-check")
+    message(STATUS "terco: pyscf not importable, skipping check_rotaxis_numeric")
   endif()
 endif()
+
+# VV10's E_nlc and potential on the same grid and density, against
+# test/pyscf_refs/vv10.ref: water/6-31G* and water/cc-pVDZ (RKS), the OH
+# radical/cc-pVDZ (UKS).
+terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+if(TERCO_RYS)
+  # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
+  # own Gradients class assumes a converged SCF density; this is a fixed,
+  # non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,
+  # water/6-31G* and water/cc-pVDZ.
+  foreach(b 631gs ccpvdz)
+    if(b STREQUAL "631gs")
+      set(json basis_sets/6-31gs.json)
+    else()
+      set(json basis_sets/cc-pvdz.json)
+    endif()
+    set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
+    terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
+                    NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
+  endforeach()
+endif()
+
+#
+# eri%fock against a committed pyscf raw int2e reference, on a fixed
+# density -- the first comparison that can exercise an f shell (l=3).
+# check_rys_fock_vs_pyscf.F90 skips itself (stop 0, after printing SKIP)
+# when the basis needs more l than this build's TRC_LMAX reaches, exactly
+# the way check_nosym_f does, so it is registered unconditionally and at
+# every ceiling: a build that CAN reach f always runs it, and nothing here
+# depends on TERCO_RYS -- this exercises the ordinary eri%fock dispatch,
+# whichever scheme ends up routing an f class once TERCO_LMAX reaches 3.
+#
+# water/cc-pVDZ has no f on O and passes TODAY, at LMAX=2: the proof that
+# the AO permutation and the per-AO normalisation this shares with the
+# rys_grad case (pyscf's cart=True does not keep a JSON's literal shell
+# order, and its Cartesian d/f components are not all unit-normalised the
+# way this build's are) are right before any f kernel exists to test.
+# water/cc-pVTZ (f on O) and formamide/def2-TZVP (f on C, N and O --
+# formamide.xyz, an idealised planar geometry) are the f cases: at
+# TERCO_LMAX=3 they run for real against test/pyscf_refs/rys_fock_*.ref,
+# which the LMAX=3 CI job requires to exist (see check_rys_fock_vs_pyscf.F90's
+# own FAIL-not-SKIP branch for a missing reference at that ceiling).
+#
+foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
+  # The gate is 1e-9 by default, tightened per case where measurement
+  # leaves ample margin: water/cc-pVTZ measures 8e-13, four orders of
+  # magnitude under even 1e-10, so it is passed explicitly here.
+  # Formamide/def2-TZVP measures 2.6e-11 -- a real size effect (more atoms,
+  # more AOs, not noise) -- and keeps the 1e-9 default rather than risk a
+  # false red on a larger system tested later.
+  set(tol 1e-9)
+  if(case STREQUAL "water_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+  elseif(case STREQUAL "water_ccpvtz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvtz.json)
+    set(tol 1e-10)
+  else()
+    set(xyz formamide.xyz)
+    set(json basis_sets/def2-tzvp.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_fock_probe_${case}.bin)
+  terco_add_check(check_rys_fock_vs_pyscf_${case} check_rys_fock_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${tol})
+  # The build-side LMAX self-skip still prints "SKIP" and exits 0 at
+  # TERCO_LMAX < 3 -- ctest calls that "Skipped", not "Passed". At
+  # TERCO_LMAX>=3 a MISSING reference is a hard FAIL instead (see
+  # ref_require in pyscf_ref_io.F90), never silently skipped.
+  set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+
+#
+# omega > 0 (erf(0.3*r12)/r12, wB97X-V's long-range exchange operator)
+# against a committed pyscf range-separated J/K
+# (test/pyscf_refs/erf_fock_*.ref, from mol.with_range_coulomb/scf.hf.get_jk
+# -- see check_erf_fock_vs_pyscf.F90's own header for the J/K-isolation
+# trick). water/6-31G* and water/cc-pVDZ exercise s/p only; formamide/cc-pVDZ
+# puts d functions on every heavy atom. Each case runs three ways:
+# eri%fock through HGP (the default), eri%fock through Rys
+# (TRC_RYS_CLASSES=all), and eri%fock_nosym (the enumerated/general path) --
+# the same substitution has to be right in all three, and all three compare
+# against the SAME reference file (the fixed density and pyscf's J/K do not
+# depend on which terco kernel path produced the number under test).
+#
+foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+  if(case STREQUAL "water_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+  elseif(case STREQUAL "water_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+  else()
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+  endif()
+  foreach(path hgp nosym)
+    set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_${path}.bin)
+    if(path STREQUAL "nosym")
+      set(nosym_flag 1)
+    else()
+      set(nosym_flag 0)
+    endif()
+    terco_add_check(check_erf_fock_vs_pyscf_${case}_${path}
+                    check_erf_fock_vs_pyscf.F90
+                    NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${nosym_flag} ${case})
+  endforeach()
+  if(TERCO_RYS)
+    # Same as the "hgp" case above, but routed through the Rys kernels
+    # instead of HGP's -- TRC_RYS_CLASSES=all is only meaningful under
+    # TERCO_RYS (see check_rys_vs_hgp's own comment).
+    set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_rys.bin)
+    terco_add_check(check_erf_fock_vs_pyscf_${case}_rys
+                    check_erf_fock_vs_pyscf.F90
+                    NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} 0 ${case})
+    set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys
+      PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=all")
+  endif()
+endforeach()
+
+#
+# trc_df_2c ((P|Q)) and trc_df_3c ((mu nu|P)) against a committed pyscf
+# int2c2e/aux_e2(int3c2e) reference (test/pyscf_refs/df_vs_pyscf.ref) -- the
+# density-fitting analogue of the eri%fock comparison above, and the first
+# one that can exercise a g SHELL (l=4), on the auxiliary basis.
+# check_df_vs_pyscf.F90 skips itself (stop 0, after printing SKIP) when
+# either basis needs more l than this build's DF_LMAX/DF_LMAX_AUX reach
+# (gen_df.py's two ceilings, src/CMakeLists.txt's TERCO_DF_LMAX), same
+# convention as check_rys_fock_vs_pyscf.F90's TRC_LMAX skip -- registered
+# unconditionally, nothing to run at the shipped ceiling (DF_LMAX=2,
+# DF_LMAX_AUX=3), and running water/cc-pVTZ (f on O) against cc-pVTZ-RI
+# (g on O, scripts/pyscf_basis_to_json.py's cc-pvtz-rifit.json) for real
+# once DF_LMAX reaches 3 -- a missing reference there is a hard FAIL.
+#
+set(dump ${CMAKE_CURRENT_BINARY_DIR}/df_vs_pyscf_probe.bin)
+terco_add_check(check_df_vs_pyscf check_df_vs_pyscf.F90
+                NEEDS_BASIS NEEDS_PYSCF_REF ARGS water.xyz basis_sets/cc-pvtz.json
+                basis_sets/cc-pvtz-rifit.json ${dump})
+# Same self-skip convention as check_rys_fock_vs_pyscf above, one level up.
+set_tests_properties(terco/check_df_vs_pyscf
+  PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # Negative tests: trc_df_2c and trc_df_3c must refuse a basis above the
@@ -505,42 +465,28 @@ target_include_directories(scf_rhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
 #
 add_executable(scf_rks scf_rks.F90)
 target_compile_definitions(scf_rks PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_rks PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_link_libraries(scf_rks PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
 target_include_directories(scf_rks PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_rks COMMAND scf_rks)
 set_tests_properties(
   terco/scf_rks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
-if(Python3_FOUND AND _pyscf_rc EQUAL 0)
-  add_test(NAME terco/scf_rks_vs_pyscf
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rks_ref.py)
-  set_tests_properties(
-    terco/scf_rks_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                      DEPENDS terco/scf_rks)
-endif()
 
 #
 # The hard-case set for SCF robustness (M2, Part B): A/EDIIS ahead of CDIIS
 # and canonical orthogonalisation at their measured defaults, on four small
 # systems chosen because plain damped DIIS is weak on each for a different
-# reason -- see scf_robust.F90's header. Writes scf_robust_probe.bin for
-# the pyscf comparison registered below.
+# reason -- see scf_robust.F90's header. Compares against pyscf's own
+# converged energy, committed in test/pyscf_refs/scf_robust.ref.
 #
 add_executable(scf_robust scf_robust.F90)
 target_compile_definitions(scf_robust PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_robust PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_link_libraries(scf_robust PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
 target_include_directories(scf_robust PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_robust COMMAND scf_robust)
 set_tests_properties(
   terco/scf_robust PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                               ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
-if(Python3_FOUND AND _pyscf_rc EQUAL 0)
-  add_test(NAME terco/scf_robust_vs_pyscf
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scf_robust_ref.py)
-  set_tests_properties(
-    terco/scf_robust_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                         DEPENDS terco/scf_robust)
-endif()
 
 # The SAD guess read from mqc's JSON blocks, against terco's own start.
 add_executable(scf_sad scf_sad.F90)
@@ -562,7 +508,7 @@ target_include_directories(terco_c_interfaces INTERFACE ${CMAKE_CURRENT_BINARY_D
 
 add_executable(scf_rimp2 scf_rimp2.F90)
 target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
+target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces terco_pyscf_ref_io LAPACK::LAPACK)
 
 # The context surface against the Fortran drivers, through the compiled
 # interface declarations like scf_rimp2.
@@ -592,13 +538,6 @@ add_test(NAME terco/scf_rimp2 COMMAND scf_rimp2)
 set_tests_properties(
   terco/scf_rimp2 PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                              ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
-if(Python3_FOUND AND _pyscf_rc EQUAL 0)
-  add_test(NAME terco/scf_rimp2_vs_pyscf
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rimp2_ref.py)
-  set_tests_properties(
-    terco/scf_rimp2_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                        DEPENDS terco/scf_rimp2)
-endif()
 
 # The same with both sets from MolSSI BSE JSON, the files mqc ships: cc-pVDZ
 # in its Cartesian form with cc-pVDZ-RI, general contractions split per
@@ -609,13 +548,6 @@ add_test(NAME terco/scf_rimp2_ccpvdz
 set_tests_properties(
   terco/scf_rimp2_ccpvdz PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
-if(Python3_FOUND AND _pyscf_rc EQUAL 0)
-  add_test(NAME terco/scf_rimp2_ccpvdz_vs_pyscf
-           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rimp2_ref.py rimp2_ccpvdz_probe.bin)
-  set_tests_properties(
-    terco/scf_rimp2_ccpvdz_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                               DEPENDS terco/scf_rimp2_ccpvdz)
-endif()
 
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial

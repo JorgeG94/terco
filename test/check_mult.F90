@@ -24,6 +24,7 @@ program check_mult
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
 
    integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1
@@ -78,6 +79,38 @@ program check_mult
       '   components ', TRC_NMULT
    print '(a,es20.12)', '  sum(S)  ', sum(s)
    call pl%release(); call b%release()
+
+   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   block
+      integer :: u, nao_ref, nmult_ref, nfail, k
+      real(dp), allocatable :: s_ref(:, :), mm_ref(:, :, :)
+      real(dp) :: ds, worst
+      call ref_require('mult.ref', u)
+      call ref_read_int(u, 'NAO', nao_ref)
+      call ref_read_int(u, 'NMULT', nmult_ref)
+      if (nao_ref /= nao .or. nmult_ref /= TRC_NMULT) then
+         print '(a)', 'check_mult: pyscf reference shape does not match this build'; stop 1
+      end if
+      allocate (s_ref(nao, nao), mm_ref(nao, nao, TRC_NMULT))
+      call ref_read_matrix(u, 'S', nao, nao, s_ref)
+      call ref_read_matrix3(u, 'MM', nao, nao, TRC_NMULT, mm_ref)
+      call ref_close(u)
+      nfail = 0
+      ds = maxval(abs(s - s_ref))
+      call ref_report(nfail, ds < 1.0e-12_dp, 'CONTROL overlap vs pyscf, max|diff|', ds)
+      if (ds >= 1.0e-12_dp) then
+         print '(a)', '  -> systems differ; nothing below means anything'; stop 1
+      end if
+      worst = 0.0_dp
+      do k = 1, TRC_NMULT
+         worst = max(worst, maxval(abs(mm(:, :, k) - mm_ref(:, :, k))))
+      end do
+      call ref_report(nfail, worst < 1.0e-10_dp, 'multipoles vs pyscf, max|diff| over all 39 components', worst)
+      if (nfail > 0) then
+         print '(a)', 'check_mult: FAILED against the pyscf reference'; stop 1
+      end if
+      print '(a)', 'check_mult: multipoles vs pyscf RESULT: PASS'
+   end block
 
 contains
 

@@ -1,0 +1,13 @@
+# terco pyscf reference v1
+# case: scf_rimp2:rimp2_probe.bin
+# generator: test/pyscf_refs/generate.py
+# pyscf: 2.14.0
+# hash: f07864ff832fe532bcc3453f6b5da7ebbddc4127279e604460c0e834564ca441
+# files: test/pyscf_refs/generate.py test/scf_rimp2.F90
+E_SCF -7.59891399994695007e+01
+E_OS -1.33234125140366116e-01
+E_SS -3.84794204649246407e-02
+CONV_TOL 9.99999999999999980e-13
+CONV_TOL_GRAD 1.00000000000000002e-08
+GRAD_NORM 3.00405416675992935e-09
+END

@@ -19,10 +19,11 @@ program check_rys_grad_vs_pyscf
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
    implicit none
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
-   character(len=256) :: basis_json, dump
+   character(len=256) :: basis_json, dump, case_name
    type(trc_basis_t) :: bas
    type(trc_eri_t)   :: eri
    type(error_t) :: err
@@ -39,6 +40,8 @@ program check_rys_grad_vs_pyscf
    end if
    call get_command_argument(1, basis_json)
    call get_command_argument(2, dump)
+   case_name = 'ccpvdz'
+   if (command_argument_count() >= 3) call get_command_argument(3, case_name)
 
    call read_xyz('water.xyz', nat, at_z, r)
    call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
@@ -88,7 +91,36 @@ program check_rys_grad_vs_pyscf
    write (unit) smat
    close (unit)
    print '(a,i0,a,i0,a)', 'check_rys_grad_vs_pyscf: wrote '//trim(dump)//' (', &
-      nat, ' atoms, ', nao, ' AOs) for rys_grad_ref.py'
+      nat, ' atoms, ', nao, ' AOs) for the pyscf-reference comparison'
+
+   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   block
+      integer :: u, nat_ref, nao_ref, nfail
+      real(dp), allocatable :: s_ref(:, :), grad_rhf_ref(:, :), grad_uhf_ref(:, :)
+      real(dp) :: ds, worst_rhf, worst_uhf
+      call ref_require('rys_grad_'//trim(case_name)//'.ref', u)
+      call ref_read_int(u, 'NAT', nat_ref)
+      call ref_read_int(u, 'NAO', nao_ref)
+      if (nat_ref /= nat .or. nao_ref /= nao) then
+         print '(a)', 'check_rys_grad_vs_pyscf: pyscf reference shape does not match this build'; stop 1
+      end if
+      allocate (s_ref(nao, nao), grad_rhf_ref(3, nat), grad_uhf_ref(3, nat))
+      call ref_read_matrix(u, 'S', nao, nao, s_ref)
+      call ref_read_matrix(u, 'GRAD_RHF', 3, nat, grad_rhf_ref)
+      call ref_read_matrix(u, 'GRAD_UHF', 3, nat, grad_uhf_ref)
+      call ref_close(u)
+      nfail = 0
+      ds = maxval(abs(smat - s_ref))
+      call ref_report(nfail, ds < 1.0e-9_dp, 'overlap check vs pyscf, max|diff|', ds)
+      worst_rhf = maxval(abs(grad_rhf - grad_rhf_ref))
+      worst_uhf = maxval(abs(grad_uhf - grad_uhf_ref))
+      call ref_report(nfail, worst_rhf < 1.0e-9_dp, 'RHF gradient vs pyscf, worst|diff|', worst_rhf)
+      call ref_report(nfail, worst_uhf < 1.0e-9_dp, 'UHF gradient vs pyscf, worst|diff|', worst_uhf)
+      if (nfail > 0) then
+         print '(a)', 'check_rys_grad_vs_pyscf: FAILED against the pyscf reference'; stop 1
+      end if
+      print '(a)', 'check_rys_grad_vs_pyscf: RESULT: PASS'
+   end block
 
    deallocate (at_z, r, drhf, duhf, grad_rhf, grad_uhf)
 

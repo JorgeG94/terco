@@ -51,6 +51,7 @@ program scf_robust
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, ref_report
    implicit none
 
    integer, parameter :: NCASE = 4
@@ -61,6 +62,15 @@ program scf_robust
    logical, parameter :: uhf(NCASE) = [.true., .false., .false., .true.]
    integer, parameter :: charge(NCASE) = [1, 0, 0, -1]
    real(dp), parameter :: lindep(NCASE) = [1.0e-8_dp, 1.0e-8_dp, 1.0e-5_dp, 1.0e-8_dp]
+   real(dp), parameter :: pyscf_tol(NCASE) = [2.0e-5_dp, 2.0e-5_dp, 3.0e-4_dp, 2.0e-5_dp]
+   !! Agreement with pyscf's own converged energy (test/pyscf_refs/
+   !! scf_robust.ref). Looser than the uncontracted comparisons elsewhere in
+   !! this tree because the basis here is CONTRACTED and read by both codes
+   !! from a name, not terco's exact exponents -- see this program's header.
+   !! w5/d-aug-cc-pVDZ gets the loosest gate: canonical orthogonalisation
+   !! drops functions below `lindep_thresh` there, and pyscf's default RHF
+   !! applies no such cut, so the two are not solving the same, numerically
+   !! well-posed problem to begin with.
    !! Canonical orthogonalisation threshold, per case: the type default
    !! (1e-8) for everything but the diffuse case, which needs it loosened
    !! to reach the S eigenvalues a doubly-augmented basis actually has.
@@ -79,11 +89,26 @@ program scf_robust
    type(trc_scf_result_t) :: res
    type(error_t) :: err
    logical :: all_ok
+   integer :: refu, ncase_ref, nfail
+   character(len=16) :: tag
+   logical :: has_ref
 
    dev = trc_bind_device(0)
    open (newunit=unit, file='scf_robust_probe.bin', access='stream', form='unformatted', status='replace')
    write (unit) int(NCASE, kind=8)
    all_ok = .true.
+
+   ! Opened (not required) before any case runs -- see scf_rks.F90's own
+   ! comment on why: a missing reference must not stop this program before
+   ! scf_robust_probe.bin exists.
+   call ref_open('scf_robust.ref', refu, has_ref)
+   nfail = 0
+   if (has_ref) then
+      call ref_read_int(refu, 'NCASE', ncase_ref)
+      if (ncase_ref /= NCASE) then
+         print '(a)', 'scf_robust: pyscf reference case count does not match this build'; stop 1
+      end if
+   end if
    do ic = 1, NCASE
       call read_xyz(trim(xyzf(ic))//'.xyz', natm, zint, at_r)
       nelec = sum(zint) - charge(ic)
@@ -123,9 +148,36 @@ program scf_robust
       write (unit) xyzf(ic), basf(ic)
       write (unit) res%energy
       call bas%release()
+
+      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+      if (has_ref) then
+      block
+         character(len=16) :: xyz_ref, bas_ref
+         real(dp) :: e_ref, de, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
+         write (tag, '(i0)') ic - 1
+         call ref_read_str(refu, 'XYZ_'//trim(tag), xyz_ref)
+         call ref_read_str(refu, 'BAS_'//trim(tag), bas_ref)
+         call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+         ! Provenance only -- see scf_rks.F90's own comment on the same tags.
+         call ref_read_real(refu, 'CONV_TOL_'//trim(tag), pyscf_conv_tol)
+         call ref_read_real(refu, 'CONV_TOL_GRAD_'//trim(tag), pyscf_conv_tol_grad)
+         call ref_read_real(refu, 'GRAD_NORM_'//trim(tag), pyscf_grad_norm)
+         if (trim(xyz_ref) /= trim(xyzf(ic)) .or. trim(bas_ref) /= trim(basf(ic))) then
+            print '(a)', 'scf_robust: pyscf reference case order does not match this build'; stop 1
+         end if
+         de = abs(res%energy - e_ref)
+         call ref_report(nfail, de < pyscf_tol(ic), trim(xyzf(ic))//'/'//trim(basf(ic))//' vs pyscf', de)
+      end block
+      end if
    end do
    close (unit)
-   if (.not. all_ok) stop 1
+   if (has_ref) call ref_close(refu)
+   if (.not. has_ref) then
+      print '(a)', 'FAIL: missing reference pyscf_refs/scf_robust.ref -- run test/pyscf_refs/generate.py ' &
+         //'(see test/pyscf_refs/README.md)'
+      stop 1
+   end if
+   if (.not. all_ok .or. nfail > 0) stop 1
    print '(a)', ''
-   print '(a)', 'scf_robust: all hard cases converged; run scf_robust_ref.py for the pyscf comparison'
+   print '(a)', 'scf_robust: all hard cases converged and agree with the pyscf reference; RESULT: PASS'
 end program scf_robust

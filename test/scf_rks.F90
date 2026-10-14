@@ -30,6 +30,8 @@ program scf_rks
    use trc_test_basis, only: read_xyz, uncontract_basis
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, &
+                           ref_read_matrix3, ref_report
    implicit none
 
    integer, parameter :: NCASE = 12
@@ -45,15 +47,31 @@ program scf_rks
    integer, allocatable :: sh_l(:), sh_np(:), zint(:)
    real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), at_z(:), at_r(:, :)
    type(trc_basis_t) :: bas
-   type(trc_scf_options_t) :: opts
-   type(trc_scf_result_t) :: res
+   type(trc_scf_options_t) :: opts, opts2
+   type(trc_scf_result_t) :: res, res2
    character(len=8) :: current
    logical :: all_ok
+   integer :: refu, ncase_ref, nfail
+   character(len=16) :: tag
+   logical :: has_ref
 
    open (newunit=unit, file='rks_probe.bin', access='stream', form='unformatted', status='replace')
    write (unit) int(NCASE, kind=8)
    all_ok = .true.
    current = ""
+
+   ! Opened (not required) before any case runs: a missing reference must
+   ! not stop this program before rks_probe.bin is written, or
+   ! test/pyscf_refs/generate.py has nothing to bootstrap from. The FAIL
+   ! happens below, after the dump is safely written.
+   call ref_open('rks.ref', refu, has_ref)
+   nfail = 0
+   if (has_ref) then
+      call ref_read_int(refu, 'NCASE', ncase_ref)
+      if (ncase_ref /= NCASE) then
+         print '(a)', 'scf_rks: pyscf reference case count does not match this build'; stop 1
+      end if
+   end if
    do ic = 1, NCASE
       if (mol(ic) /= current) then
          if (len_trim(current) > 0) call bas%release()
@@ -81,6 +99,12 @@ program scf_rks
       opts%grid_level = 3
       opts%conv_energy = 1.0e-11_dp
       opts%conv_density = 1.0e-8_dp
+      ! conv_density no longer gates (trc_scf.F90); the commutator norm does.
+      ! At its default 1e-5 the slow UKS wB97X-V case could stop up to ~2e-7
+      ! above its minimum (seen under ifx), past the 1e-8 gate below, while
+      ! terco's energy AT pyscf's density agreed to 2.5e-11. Converge to the
+      ! gate's own precision instead.
+      opts%conv_diis = 1.0e-8_dp
       call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts, res)
       if (.not. res%converged) then
          print '(a,a)', "  NOT CONVERGED: ", trim(res%message)
@@ -116,12 +140,61 @@ program scf_rks
       end if
       write (unit) res%energy
       write (unit) res%dmat
+
+      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+      if (has_ref) then
+      block
+         character(len=16) :: name_ref
+         integer :: nspin_ref, nao_ref
+         real(dp) :: e_ref, de, dat, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
+         real(dp), allocatable :: dm_ref(:, :, :)
+         write (tag, '(i0)') ic - 1
+         call ref_read_str(refu, 'NAME_'//trim(tag), name_ref)
+         call ref_read_int(refu, 'NSPIN_'//trim(tag), nspin_ref)
+         call ref_read_int(refu, 'NAO_'//trim(tag), nao_ref)
+         call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+         ! Provenance only (not asserted on here): the pyscf convergence
+         ! this energy was committed at -- see generate.py's converge_tight,
+         ! which refuses a case whose gradient norm does not clear
+         ! conv_tol_grad, tighter than pyscf's own sqrt(conv_tol) default.
+         call ref_read_real(refu, 'CONV_TOL_'//trim(tag), pyscf_conv_tol)
+         call ref_read_real(refu, 'CONV_TOL_GRAD_'//trim(tag), pyscf_conv_tol_grad)
+         call ref_read_real(refu, 'GRAD_NORM_'//trim(tag), pyscf_grad_norm)
+         if (nspin_ref /= res%nspin .or. nao_ref /= bas%nao) then
+            print '(a)', 'scf_rks: pyscf reference shape does not match this build'; stop 1
+         end if
+         allocate (dm_ref(bas%nao, bas%nao, res%nspin))
+         call ref_read_matrix3(refu, 'DM_'//trim(tag), bas%nao, bas%nao, res%nspin, dm_ref)
+         de = abs(res%energy - e_ref)
+         ! The at-density control: terco's OWN energy at pyscf's committed,
+         ! converged density -- max_iter=1 with dguess runs exactly one
+         ! Roothaan iteration, whose etot (src/trc_scf.F90's own "energy at
+         ! this density" comment) is computed from dguess BEFORE the
+         ! diagonalisation updates it, i.e. exactly energy_tot(dm0)'s
+         ! equivalent -- never an iterated answer.
+         opts2 = opts
+         opts2%max_iter = 1
+         call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts2, res2, dguess=dm_ref)
+         dat = abs(res2%energy - e_ref)
+         print '(a,a,a,es10.2,a,es10.2)', '    ', trim(name_ref), &
+            ': de(converged) ', de, '  de(at pyscf D) ', dat
+         call ref_report(nfail, de < 1.0e-8_dp .and. dat < 1.0e-8_dp, &
+                         trim(name_ref)//': E(converged) and E(terco at pyscf D) vs pyscf', max(de, dat))
+         deallocate (dm_ref)
+      end block
+      end if
    end do
    close (unit)
    call bas%release()
-   if (.not. all_ok) stop 1
+   if (has_ref) call ref_close(refu)
+   if (.not. has_ref) then
+      print '(a)', 'FAIL: missing reference pyscf_refs/rks.ref -- run test/pyscf_refs/generate.py ' &
+         //'(see test/pyscf_refs/README.md)'
+      stop 1
+   end if
+   if (.not. all_ok .or. nfail > 0) stop 1
    print '(a)', ""
-   print '(a)', "scf_rks: all cases converged; run rks_ref.py for the pyscf comparison"
+   print '(a)', "scf_rks: all cases converged and agree with the pyscf reference; RESULT: PASS"
 
 contains
 

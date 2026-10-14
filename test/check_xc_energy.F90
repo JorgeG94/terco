@@ -51,6 +51,8 @@ program check_xc_energy
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks
    use trc_cart_perm, only: build_ao_perm
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_matrix, &
+                           ref_read_matrix3, ref_report
    implicit none
 
    ! The first 9 were here before the ExchCXX functional sweep; the other 9
@@ -80,6 +82,11 @@ program check_xc_energy
    real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), c(:, :), dmat(:, :), vxc(:, :), vxc2(:, :)
    real(dp), allocatable :: cb(:, :), dm2(:, :, :), vx2(:, :, :), vx3(:, :, :)
    real(dp), allocatable :: c_lex(:, :), cb_lex(:, :)
+   real(dp), allocatable :: exc_all(:), n_all(:), vxc_all(:, :, :)
+   real(dp), allocatable :: uexc_all(:), un_all(:), uvxc_all(:, :, :, :)
+   !! One entry per functional, kept around (rather than only written to
+   !! xc_probe.bin) so the pyscf-reference comparison block below rks_checks/
+   !! uks_checks can read them back without a second pass over the kernels.
    integer, allocatable :: perm_l2b(:), perm_b2l(:)
    real(dp) :: exc3, nelec3, trds2
    integer :: nsk
@@ -109,6 +116,8 @@ program check_xc_energy
    call b%build(NSH, sh_l, sh_np, sh_e, sh_c, sh_r, NATM, at_z, at_r, MAXNP)
    nao = b%nao
    nfail = 0
+   allocate (exc_all(NFUNC), n_all(NFUNC), vxc_all(nao, nao, NFUNC))
+   allocate (uexc_all(NFUNC), un_all(NFUNC), uvxc_all(nao, nao, 2, NFUNC))
 
    call pl%build(b, 1.0e-30_dp)
    allocate (s(nao, nao), t(nao, nao), vn(nao, nao))
@@ -202,11 +211,48 @@ program check_xc_energy
    close (unit)
 
    call xg%release(); call grid%destroy(); call pl%release(); call b%release()
+
+   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   block
+      integer :: u, nao_ref, npts_ref, nfunc_ref
+      real(dp) :: exc_ref, n_ref, dv
+      real(dp), allocatable :: vxc_ref(:, :), uvxc_ref(:, :, :)
+      call ref_require('xc_energy.ref', u)
+      call ref_read_int(u, 'NAO', nao_ref)
+      call ref_read_int(u, 'NPTS', npts_ref)
+      call ref_read_int(u, 'NFUNC', nfunc_ref)
+      if (nao_ref /= nao .or. nfunc_ref /= NFUNC) then
+         print '(a)', "check_xc_energy: pyscf reference shape does not match this build"; stop 1
+      end if
+      allocate (vxc_ref(nao, nao), uvxc_ref(nao, nao, 2))
+      do ifn = 1, NFUNC
+         call ref_read_real(u, 'EXC_'//trim(names(ifn)), exc_ref)
+         call ref_read_real(u, 'N_'//trim(names(ifn)), n_ref)
+         call ref_read_matrix(u, 'VXC_'//trim(names(ifn)), nao, nao, vxc_ref)
+         dv = maxval(abs(vxc_all(:, :, ifn) - vxc_ref))
+         call ref_report(nfail, abs(exc_all(ifn) - exc_ref) < 1.0e-9_dp .and. &
+                         abs(n_all(ifn) - n_ref) < 1.0e-9_dp .and. dv < 1.0e-9_dp, &
+                         trim(names(ifn))//": RKS E_xc/N/V_xc vs pyscf", &
+                         max(abs(exc_all(ifn) - exc_ref), dv))
+      end do
+      do ifn = 1, NFUNC
+         call ref_read_real(u, 'UEXC_'//trim(names(ifn)), exc_ref)
+         call ref_read_real(u, 'UN_'//trim(names(ifn)), n_ref)
+         call ref_read_matrix3(u, 'UVXC_'//trim(names(ifn)), nao, nao, 2, uvxc_ref)
+         dv = maxval(abs(uvxc_all(:, :, :, ifn) - uvxc_ref))
+         call ref_report(nfail, abs(uexc_all(ifn) - exc_ref) < 1.0e-9_dp .and. &
+                         abs(un_all(ifn) - n_ref) < 1.0e-9_dp .and. dv < 1.0e-9_dp, &
+                         trim(names(ifn))//": UKS E_xc/N/V_xc vs pyscf", &
+                         max(abs(uexc_all(ifn) - exc_ref), dv))
+      end do
+      call ref_close(u)
+   end block
+
    if (nfail > 0) then
       print '(a,i0,a)', "check_xc_energy: ", nfail, " check(s) FAILED"
       stop 1
    end if
-   print '(a)', "check_xc_energy: internal checks passed; run xc_energy_ref.py for the pyscf comparison"
+   print '(a)', "check_xc_energy: internal checks (including the pyscf reference) passed; RESULT: PASS"
 
 contains
 
@@ -227,6 +273,7 @@ contains
          call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, budget=1_8)
          write (unit) exc, nelec
          write (unit) vxc
+         exc_all(ifn) = exc; n_all(ifn) = nelec; vxc_all(:, :, ifn) = vxc
          print '(a,a8,a,f18.12,a,f14.10)', "  ", names(ifn), "  E_xc = ", exc, "   N = ", nelec
          ! Relative: the grid's accuracy per electron, and rounding per unit of
          ! energy and potential.
@@ -256,6 +303,7 @@ contains
          call trc_xc_uks(b, xg, func, dm2, vx3, exc2, nelec2, budget=1_8)
          write (unit) exc3, nelec3
          write (unit) vx2
+         uexc_all(ifn) = exc3; un_all(ifn) = nelec3; uvxc_all(:, :, :, ifn) = vx2
          print '(a,a8,a,f18.12,a,f14.10)', "  ", names(ifn), "  E_xc(UKS) = ", exc3, "   N = ", nelec3
          call report(abs(nelec3 - trds2)/trds2 < 1.0e-7_dp, trim(names(ifn))//": UKS sum w rho vs Tr(DS), relative", &
                      abs(nelec3 - trds2)/trds2)
