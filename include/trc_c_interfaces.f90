@@ -401,6 +401,12 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
       end function trc_set_method
 
+      integer(c_int) function trc_max_angular_momentum(eri_lmax, df_lmax, df_lmax_aux) bind(c)
+         !! This build's compiled ceilings: four-centre/SCF, DF orbital, DF auxiliary.
+         import :: c_int
+         integer(c_int), intent(out) :: eri_lmax, df_lmax, df_lmax_aux
+      end function trc_max_angular_momentum
+
       integer(c_int) function trc_set_nlc_grid(handle, grid_level) bind(c)
          !! Grid level for VV10 (default 1); only used by a functional with VV10.
          import :: c_int, c_ptr

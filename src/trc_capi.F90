@@ -179,6 +179,8 @@ module trc_capi
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_AVAILABLE_FUNCTIONALS
+   use trc_tables, only: TRC_ERI_LMAX => LMAX
+   use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_cart_perm, only: trc_cart_order_id
@@ -211,6 +213,7 @@ module trc_capi
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_set_ao_norm, trc_get_ao_norm
    public :: trc_set_force_cartesian, trc_is_spherical
+   public :: trc_max_angular_momentum
    public :: capi_scf
    public :: trc_cart_order
 
@@ -591,6 +594,21 @@ contains
       maxl = int(maxval(box%b%sh_l), c_int)
       status = TRC_OK
    end function trc_basis_maxl
+
+   function trc_max_angular_momentum(eri_lmax, df_lmax, df_lmax_aux) result(status) &
+      bind(c, name="trc_max_angular_momentum")
+      !! The angular-momentum ceilings THIS build was compiled for, so a host
+      !! can check a basis against them instead of hard-coding them: the
+      !! four-centre ERIs / SCF (TERCO_LMAX: 2 by default, 3 for f), and the
+      !! density-fitting orbital and auxiliary bases (TERCO_DF_LMAX; the
+      !! auxiliary one is one higher). Compare with trc_basis_maxl.
+      integer(c_int), intent(out) :: eri_lmax, df_lmax, df_lmax_aux
+      integer(c_int) :: status
+      eri_lmax = int(TRC_ERI_LMAX, c_int)
+      df_lmax = int(DF_LMAX, c_int)
+      df_lmax_aux = int(DF_LMAX_AUX, c_int)
+      status = TRC_OK
+   end function trc_max_angular_momentum
 
    function trc_multipole_count() result(n) &
       bind(c, name="trc_multipole_count")
@@ -2148,6 +2166,23 @@ contains
       if (cx%bb%b%spherical) then
          cx%message = "trc_run_rimp2: the orbital basis is spherical; RI-MP2 only "// &
                       "supports a Cartesian basis today -- set force_cartesian"
+         return
+      end if
+      ! A status, not the DF kernels' own error stop: a host passing an
+      ! auxiliary basis (a *-rifit set carries f/g on heavy atoms) above
+      ! what this build's density fitting was generated for gets a refusal
+      ! it can report, rather than the whole process -- every MPI rank --
+      ! stopping. trc_max_angular_momentum gives the ceilings up front.
+      if (maxval(cx%bb%b%sh_l) > DF_LMAX) then
+         cx%message = "trc_run_rimp2: the orbital basis has l = "// &
+                      trim(itoa(int(maxval(cx%bb%b%sh_l))))//", above this build's density-fitting "// &
+                      "ceiling "//trim(itoa(DF_LMAX))//" (TERCO_DF_LMAX)"
+         return
+      end if
+      if (maxval(cx%ab%b%sh_l) > DF_LMAX_AUX) then
+         cx%message = "trc_run_rimp2: the auxiliary basis has l = "// &
+                      trim(itoa(int(maxval(cx%ab%b%sh_l))))//", above this build's density-fitting "// &
+                      "auxiliary ceiling "//trim(itoa(DF_LMAX_AUX))//" (TERCO_DF_LMAX + 1)"
          return
       end if
       nfrozen = cx%nfrozen
