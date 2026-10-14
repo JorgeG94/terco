@@ -171,6 +171,9 @@ as `terco/check_pyscf_refs_fresh`, it runs in every CI config.
 | `rimp2_ref.py` | `rimp2.ref`, `rimp2_ccpvdz.ref` | `scf_rimp2.F90` |
 | `scf_robust_ref.py` | `scf_robust.ref` | `scf_robust.F90` |
 | `xc_ref.py` | `../reference_xc.dat` (unchanged location/format) | `check_xc.F90` (unchanged) |
+| (new, PCM) | `pcm_cavity_water.ref` | `check_pcm_cavity.F90` |
+| (new, PCM) | `pcm_ints_water_631gs.ref`, `pcm_ints_water_ccpvtz.ref` (LMAX=3 build) | `check_pcm_ints.F90` |
+| (new, PCM) | `pcm_scf_main.ref`, `pcm_scf_f.ref` (LMAX=3 build) | `scf_pcm.F90` |
 
 Every `terco/*_vs_pyscf_ref`/`*_ref` ctest entry these scripts used to back
 is gone; the single `terco/check_*`/`scf_*` entry now does both halves

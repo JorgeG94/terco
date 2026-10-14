@@ -503,6 +503,26 @@ set_tests_properties(
                            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# The SCF with a polarisable continuum against pyscf's .PCM(): converged
+# energies and E_diel, and both again at pyscf's own converged density
+# (test/pyscf_refs/pcm_scf_main.ref, pcm_scf_f.ref). `main` is water and
+# formamide (HF, B3LYP, wB97X-V; C-PCM and IEF-PCM), the OH radical
+# unrestricted, and one spherical case; `f` is water/cc-pVTZ, run for real at
+# TERCO_LMAX=3 and skipped below it.
+#
+add_executable(scf_pcm scf_pcm.F90)
+target_compile_definitions(scf_pcm PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_pcm PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io)
+target_include_directories(scf_pcm PRIVATE ${CMAKE_BINARY_DIR}/modules)
+foreach(set main f)
+  add_test(NAME terco/scf_pcm_${set} COMMAND scf_pcm ${set})
+  set_tests_properties(
+    terco/scf_pcm_${set} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+                                    SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+
+#
 # The hard-case set for SCF robustness (M2, Part B): A/EDIIS ahead of CDIIS
 # and canonical orthogonalisation at their measured defaults, on four small
 # systems chosen because plain damped DIIS is weak on each for a different

@@ -45,6 +45,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 | **One electron** | overlap, kinetic, nuclear attraction |
 | **Multipoles** | full Cartesian tensors through the **octupole** — 3 + 9 + 27 components |
 | **Density fitting** | two- and three-centre Coulomb integrals |
+| **Solvation** | C-PCM and IEF-PCM SCF energies (pyscf's SWIG cavity, term for term), RKS and UKS, any functional, CPU and GPU |
 | **Interfaces** | a Fortran API, and a `bind(c)` ABI for host codes built with another compiler |
 
 terco **ships no basis set**. A consumer passes exponents, coefficients and
@@ -140,6 +141,7 @@ terco oh.xyz -u 1 -f b3lyp                   # UKS doublet
 terco nh4.xyz -c 1                           # cation: SADQ guess by default
 terco water.xyz -b 6-31g --rimp2             # RHF + RI-MP2 (cc-pvdz-rifit)
 terco water.xyz --json result.json           # also write a JSON summary
+terco water.xyz -f b3lyp --pcm cpcm --eps 78.3553   # in water, C-PCM
 terco --help
 ```
 
@@ -152,6 +154,7 @@ terco --help
 | `--cart` | Cartesian AOs even for a basis defined spherical |
 | `--grid`, `--iterations`, `--econv`, `--gconv`, `--thresh` | DFT grid level and SCF/screening thresholds |
 | `--nlc-grid` | grid level for VV10 nonlocal correlation (`wb97x-v`), default 1 |
+| `--pcm`, `--eps` | polarisable continuum solvation, `cpcm` or `iefpcm`, with the solvent's dielectric constant (required; water is 78.3553) |
 | `--rimp2`, `--aux`, `--frozen` | RI-MP2 after a closed-shell SCF; runs Cartesian AOs, as RI-MP2 needs today |
 | `-s, --silent` | only the summary: no SCF iterations, timings or guess details |
 

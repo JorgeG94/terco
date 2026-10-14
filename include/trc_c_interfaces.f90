@@ -414,6 +414,28 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
       end function trc_set_nlc_grid
 
+      integer(c_int) function trc_set_pcm(handle, model, eps, lebedev, radii_scale) bind(c)
+         !! A polarisable continuum for every SCF from here on: model "cpcm" or
+         !! "iefpcm" ("" turns it off), the solvent dielectric eps (required,
+         !! > 1), Lebedev points per sphere and the radii scale (0 for either
+         !! takes 302 and 1.2).
+         import :: c_int, c_double, c_ptr, c_char
+         type(c_ptr), value :: handle
+         character(kind=c_char), intent(in) :: model(*)
+         real(c_double), value :: eps
+         integer(c_int), value :: lebedev
+         real(c_double), value :: radii_scale
+      end function trc_set_pcm
+
+      integer(c_int) function trc_pcm_energy(handle, e_diel, q_total, npoints) bind(c)
+         !! The last SCF's dielectric energy q.v/2 (included in trc_energy),
+         !! total surface charge and kept surface points; zeros without PCM.
+         import :: c_int, c_double, c_ptr
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: e_diel, q_total
+         integer(c_int), intent(out) :: npoints
+      end function trc_pcm_energy
+
       integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) bind(c)
          !! The SCF stops when the energy change is under conv_energy AND the
          !! commutator norm |X^T(FDS-SDF)X| is under conv_diis.
