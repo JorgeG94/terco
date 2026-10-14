@@ -146,7 +146,7 @@ terco --help
 |---|---|
 | `-b, --basis` | a Basis Set Exchange JSON file, or a name (default `def2-svp`) |
 | `-c, --chrg` / `-u, --uhf` | charge and number of unpaired electrons; else `.CHRG`/`.UHF` in the working directory, as xtb reads them |
-| `-f, --func` | `hf` (default), `lda`, `pbe`, `blyp`, `pbe0`, `b3lyp`, `b3lyp5`, `wb97x-v`, `wb97x`, `wb97` |
+| `-f, --func` | `hf` (default) or a functional (`lda`, `pbe`, `blyp`, `b3lyp`, `wb97x-v`, ...; `--help` lists every one that runs, [docs/functionals.md](docs/functionals.md) every one registered, including those that don't yet) |
 | `-g, --guess` | `sad` (default), `sadq` (default for an ion), `sap`, `gwh`, `core` |
 | `--cart` | Cartesian AOs even for a basis defined spherical |
 | `--grid`, `--iterations`, `--econv`, `--gconv`, `--thresh` | DFT grid level and SCF/screening thresholds |
