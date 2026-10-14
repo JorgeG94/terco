@@ -46,6 +46,12 @@ KERNELS = {
     "pbe_c": ("GGA_C_PBE", "gga"),
     "b88": ("GGA_X_B88", "gga"),
     "lyp": ("GGA_C_LYP", "gga"),
+    # HYB_GGA_XC_WB97X_V's libxc KERNEL is purely semilocal (GGA): the
+    # omega-attenuated SR exchange hole model, evaluated analytically, plus
+    # VV10's semilocal correlation partner. The exact-exchange mixing
+    # (exx/exx_lr in trc_xc_functional) and VV10's nonlocal term are both
+    # OUTSIDE this kernel, exactly as for pbe_x inside pbe0.
+    "wb97x_v_xc": ("WB97X_V", "gga"),
 }
 
 RHO = np.logspace(-9, 1, 11)
@@ -53,6 +59,41 @@ RHO = np.logspace(-9, 1, 11)
 S_RED = np.array([0.0, 1e-3, 0.1, 1.0, 10.0, 1e3])
 ZETA = np.array([0.0, 0.3, 0.7, 0.99])
 COS_AB = np.array([-0.8, 0.0, 0.6])
+
+# wb97x_v_xc's exchange part is Iikura-Tsuneda-Yanai's short-range exchange
+# hole, built from erf/exp of a = omega/(2*kF); for density rho (unpolarised)
+# or 2*rho_a / 2*rho_b per spin channel (polarised, by the exchange spin-
+# scaling relation), the kernel MERGEs to an asymptotic series once a >=
+# 1.35 to avoid cancellation in the direct erf/exp form. The switch sits at
+#   rho* = (C / 1.35)**3,  C = (9/pi)**(2/3) * omega * 3**(1/3) / 18
+# with omega = 0.3 -- about 4.633e-5 (unpolarised) or 2.316e-5 per spin
+# channel (polarised). Points straddling it exercise both branches AND the
+# boundary itself, where the two closed forms must agree to rounding.
+_C_SWITCH = (9.0 ** (2.0 / 3.0)) * (0.682784063255295503581 ** 2) * 0.3 * 1.442249570307408382321638310780109588392 / 18.0
+RHO_SWITCH = (_C_SWITCH / 1.35) ** 3
+RHO_A_SWITCH = RHO_SWITCH / 2.0
+_SWITCH_DELTA = np.array([-1e-3, -1e-6, 0.0, 1e-6, 1e-3])
+
+
+def wb97x_v_extra_points(polar):
+    """Points straddling the omega-attenuation branch switch, not on the
+    generic RHO/S_RED/ZETA grid (which does not land near rho* exactly)."""
+    if not polar:
+        pts = [(rho, s * rho ** (8.0 / 3.0))
+               for rho in RHO_SWITCH * (1.0 + _SWITCH_DELTA) for s in S_RED]
+        return np.array(pts)
+    pts = []
+    other = 1.0e-3  # a density far from its own switch (2*other << rho*)
+    for ra_is_switch in (True, False):
+        for d in _SWITCH_DELTA:
+            ra = RHO_A_SWITCH * (1.0 + d) if ra_is_switch else other
+            rb = other if ra_is_switch else RHO_A_SWITCH * (1.0 + d)
+            for s in S_RED[::2]:
+                saa = s * ra ** (8.0 / 3.0)
+                sbb = s * rb ** (8.0 / 3.0)
+                for c in COS_AB:
+                    pts.append((ra, rb, saa, c * np.sqrt(saa * sbb), sbb))
+    return np.array(pts)
 
 
 def unpolar_points(family):
@@ -115,6 +156,8 @@ def main():
     for stem, (name, family) in KERNELS.items():
         for polar in (0, 1):
             pts = polar_points(family) if polar else unpolar_points(family)
+            if stem == "wb97x_v_xc":
+                pts = np.concatenate([pts, wb97x_v_extra_points(polar == 1)])
             rho = libxc_rho(family, polar, pts)
             exc, vxc, fxc, _ = libxc.eval_xc(name, rho, spin=polar, deriv=2)
             cols = [exc]

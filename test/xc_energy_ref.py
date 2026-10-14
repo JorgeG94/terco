@@ -35,9 +35,20 @@ perm = ao_permutation(sh_l)
 inv = np.argsort(perm)
 
 # terco name -> pyscf name. b3lyp is libxc's (VWN_RPA); b3lyp5 is VWN5.
-NAMES = ['lda_x', 'svwn', 'pbe', 'blyp', 'b3lyp', 'b3lyp5']
+#
+# wb97x-v: ni.nr_rks (called below through NumInt) evaluates ONLY the
+# semilocal part of a functional -- eval_xc_eff on the grid -- never the
+# exact exchange or VV10's nonlocal term, which rks.get_veff adds
+# separately from hybrid_coeff/rsh_coeff and nlc_coeff. That is already
+# true of b3lyp/b3lyp5 above (both hybrids) and terco's trc_xc_rks matches
+# it: the kernel composition in trc_xc_functional carries only the
+# semilocal pieces, with exx/exx_lr/nlc_b/nlc_c applied outside it. So the
+# same comparison that already covers b3lyp's hybrid exchange covers
+# wb97x-v's range separation and VV10 the same way, no special-casing here.
+NAMES = ['lda_x', 'svwn', 'pbe', 'blyp', 'b3lyp', 'b3lyp5', 'wb97x-v']
 PYSCF = {'lda_x': 'LDA_X', 'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'blyp': 'BLYP',
-         'b3lyp': 'HYB_GGA_XC_B3LYP', 'b3lyp5': 'HYB_GGA_XC_B3LYP5'}
+         'b3lyp': 'HYB_GGA_XC_B3LYP', 'b3lyp5': 'HYB_GGA_XC_B3LYP5',
+         'wb97x-v': 'HYB_GGA_XC_WB97X_V'}
 
 f = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xc_probe.bin'), 'rb')
 npts, n, nfunc = np.fromfile(f, dtype=np.int64, count=3)
