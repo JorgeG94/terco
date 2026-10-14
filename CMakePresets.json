@@ -1,0 +1,51 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "perlmutter",
+      "displayName": "Perlmutter (PrgEnv-nvidia, A100)",
+      "description": "module load PrgEnv-nvidia cudatoolkit cray-libsci. Bare nvc/nvc++/nvfortran, Cray libsci for BLAS/LAPACK, cc80, and an explicit CUDA version so -cudalib finds math_libs/13.2/lib64.",
+      "binaryDir": "${sourceDir}/build",
+      "installDir": "${sourceDir}/../../install/terco",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_Fortran_COMPILER": "nvfortran",
+        "CMAKE_C_COMPILER": "nvc",
+        "CMAKE_CXX_COMPILER": "nvc++",
+        "TERCO_GPU_ARCH": "cc80",
+        "TERCO_CUDA_VERSION": "13.2",
+        "TERCO_ENABLE_MPI": "ON",
+        "TERCO_LMAX": "3",
+        "TERCO_DF_LMAX": "3",
+        "BLAS_LIBRARIES": "/opt/cray/pe/lib64/libsci_nvidia.so.6",
+        "LAPACK_LIBRARIES": "/opt/cray/pe/lib64/libsci_nvidia.so.6"
+      }
+    },
+    {
+      "name": "perlmutter-mpi",
+      "inherits": "perlmutter",
+      "displayName": "Perlmutter MPI (Cray MPICH, static libterco)",
+      "description": "Multi-rank runs. Cray MPICH needs pic-mpi's legacy `mpi` backend, and libterco must be STATIC: in libterco.so nvfortran binds MPI_IN_PLACE's common block (mpifcmb5_) locally, libmpifort sees the executable's copy, and every in-place allreduce segfaults (and nvfortran's handler spins on it). Run with MPICH_GPU_SUPPORT_ENABLED=0 and srun -u.",
+      "binaryDir": "${sourceDir}/build-mpi",
+      "cacheVariables": {
+        "TERCO_ENABLE_MPI": "ON",
+        "TERCO_BUILD_SHARED": "OFF",
+        "PIC_USE_LEGACY_MPI": "ON",
+        "PIC_MPICH_PERLMUTTER": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "perlmutter",
+      "configurePreset": "perlmutter",
+      "jobs": 32
+    },
+    {
+      "name": "perlmutter-mpi",
+      "configurePreset": "perlmutter-mpi",
+      "jobs": 32
+    }
+  ]
+}
