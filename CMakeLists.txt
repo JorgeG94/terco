@@ -375,9 +375,9 @@ endif()
 # pic-mpi backend (mpi_f08, legacy MPI, and the single-rank serial stand-in
 # PIC_ENABLE_MPI=OFF selects above) exports the same comm_from_handle, so
 # trc_capi's communicator handling compiles and runs unchanged either way.
-# TERCO_HAVE_MPI still exists as a TEST-ONLY define (test/CMakeLists.txt),
-# because the tests need `mpi_f08` themselves to build a Fortran handle to
-# hand the C API in the first place.
+# The tests do not branch either: they get the Fortran handle they hand the
+# C API from pic-mpi's comm_t%fortran_handle(), never from `use mpi_f08`,
+# which some MPIs (Cray MPICH under nvfortran) do not provide.
 #
 target_link_libraries(${main_lib} PUBLIC $<BUILD_INTERFACE:pic::pic>
                                          $<BUILD_INTERFACE:pic-blas::pic-blas>

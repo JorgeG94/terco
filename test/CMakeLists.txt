@@ -18,9 +18,6 @@
 # and they may as well share the code.
 #
 set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6 TRC_PERCLASS)
-if(TERCO_ENABLE_MPI)
-  list(APPEND TERCO_TEST_DEFS TERCO_HAVE_MPI)
-endif()
 
 add_library(terco_test_basis STATIC trc_test_basis.F90)
 target_compile_definitions(terco_test_basis PRIVATE ${TERCO_TEST_DEFS})
