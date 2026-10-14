@@ -50,6 +50,17 @@ needs them too.  `tval` IS the Rys argument and `pref` already carries
 against libcint through (dd|dd) on explore/rys-4c (not carried over here);
 what checks it in this tree is `test/check_rys_vs_hgp.F90`, comparing the
 Fock matrix this produces against HGP's on the same density.
+
+RANGE SEPARATION
+----------------
+`omega` and `theta` arrive already computed in the spliced HEAD (see
+scripts/gen_perclass.py's primitive loop): `tval` is already theta*T, and
+`pref` is scaled by sqrt(theta) once the roots/weights are in hand. The one
+thing this generator still has to get right itself is `u2` -- see the
+comment where it is built (`unrolled_energy_middle` and this module's
+`main`): t^2 -> theta*t^2 inside u2's own formula, NOT rho -> theta*rho the
+way HGP's VRR does, confirmed by comparing against pyscf's
+`mol.with_range_coulomb` (test/check_erf_fock_vs_pyscf.F90).
 """
 import argparse
 import importlib.util
