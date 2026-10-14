@@ -7,33 +7,23 @@
 # pinned revision can be switched from the CMake command line
 # (-DPIC_MPI_GIT_TAG=...) without editing this file.
 #
-# v0.6.6 is a release with `comm_from_handle`, which terco needs to
-# accept a caller's own communicator instead of only MPI_COMM_WORLD. It is
-# the commit terco pinned before (3374c5b: 0.6.3, which pins pic v0.9.2,
-# plus comm_from_handle) with only test changes on top, so the library terco
-# builds is unchanged. The module-directory fix below is the one consequence
-# of the step up from v0.6.0 that terco had to absorb.
+# v0.6.7 is the release with both directions between a plain Fortran
+# communicator handle and comm_t: `comm_from_handle` (handle -> comm_t),
+# which lets terco accept a caller's own communicator instead of only
+# MPI_COMM_WORLD, and `comm_t%fortran_handle()` (comm_t -> handle), which
+# app/main.F90 uses to hand its communicator to trc_set_comm. terco used to
+# patch the second in locally; it is upstream now, so nothing is patched.
 #
 set(PIC_MPI_GIT_TAG
-    "v0.6.6"
+    "v0.6.7"
     CACHE STRING "pic-mpi git ref (branch, tag or commit) to fetch")
 #
-# comm_t has no way back to the plain Fortran integer handle a handle-based
-# API (trc_set_comm here) takes -- comm_from_handle goes handle -> comm_t,
-# nothing in pic-mpi's public API goes the other way. Patched in locally as
-# `fortran_handle()` on comm_t (all three backends) until it lands upstream
-# (v0.6.6 does not have it);
-# see cmake/patches/pic-mpi-fortran-handle.patch for the exact diff this
-# proposes to github.com/JorgeG94/pic-mpi, and app/main.F90's use of it.
-#
-set(_patch "${CMAKE_CURRENT_LIST_DIR}/../patches/pic-mpi-fortran-handle.patch")
 set(_lib "pic-mpi")
 set(_url "https://github.com/JorgeG94/pic-mpi/")
 include("${CMAKE_CURRENT_LIST_DIR}/sample_utils.cmake")
-my_fetch_package("${_lib}" "${_url}" "${PIC_MPI_GIT_TAG}" "${_patch}" "comm_fortran_handle")
+my_fetch_package("${_lib}" "${_url}" "${PIC_MPI_GIT_TAG}")
 unset(_lib)
 unset(_url)
-unset(_patch)
 
 #
 # pic-mpi deliberately writes its OWN .mod files to its own build tree

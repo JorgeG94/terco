@@ -7,8 +7,8 @@ macro("my_fetch_package" package url)
   # Optional fourth and fifth arguments: a patch file (`patch -p1`) applied
   # to the fetched source right after it is cloned -- for a fix that has
   # not landed upstream yet -- and a symbol it adds, to tell an
-  # already-patched checkout from one that isn't on a reconfigure. See
-  # Findpic-mpi.cmake's use of this for why one exists.
+  # already-patched checkout from one that isn't on a reconfigure. Nothing
+  # uses it today; pic-mpi's fortran_handle was the last such patch.
   set(_patch_file "${ARGV3}")
   set(_patch_marker "${ARGV4}")
 
