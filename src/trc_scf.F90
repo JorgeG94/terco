@@ -301,6 +301,8 @@ module trc_scf_driver
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
       real(dp), allocatable :: grid_r(:, :)    !! (3, npts) the grid used, for a same-grid comparison
       real(dp), allocatable :: grid_w(:)
+      real(dp), allocatable :: grid_r_nlc(:, :)  !! VV10's own (coarser) grid, unallocated when the
+      real(dp), allocatable :: grid_w_nlc(:)     !! functional has no nonlocal correlation.
       character(len=256) :: message = ""
    end type trc_scf_result_t
 
@@ -628,6 +630,8 @@ contains
             call xg_nlc%build(grid_nlc%n_points, grid_nlc%coords, grid_nlc%weights, b, &
                               max_pts=opts%grid_max_pts)
             call xg_nlc%to_device()
+            res%grid_r_nlc = grid_nlc%coords
+            res%grid_w_nlc = grid_nlc%weights
          end if
          res%grid_r = grid%coords
          res%grid_w = grid%weights

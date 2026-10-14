@@ -3,9 +3,12 @@
 
 scf_rks.F90 writes `rks_probe.bin`: for each case the shells exactly as
 built (6-31G uncontracted to primitives), the electron counts, the grid
-when there is a functional, the converged energy and density. The same
+when there is a functional, VV10's own (coarser) grid when the functional
+has nonlocal correlation, the converged energy and density. The same
 basis is rebuilt here in the same order, pyscf's RHF/UHF/RKS/UKS is run
-on the same points from terco's density, and the energies are compared.
+on the same points from terco's density -- `mf.nlcgrids` set to terco's
+VV10 grid exactly as `mf.grids` is set to the semilocal one -- and the
+energies are compared.
 """
 
 import os
@@ -14,7 +17,8 @@ from pyscf import gto, scf, dft
 
 SYMBOL = {1: 'H', 6: 'C', 7: 'N', 8: 'O'}
 PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'blyp': 'BLYP', 'b3lyp': 'HYB_GGA_XC_B3LYP',
-         'b3lyp5': 'HYB_GGA_XC_B3LYP5', 'lda_x': 'LDA_X', 'pbe0': 'PBE0'}
+         'b3lyp5': 'HYB_GGA_XC_B3LYP5', 'lda_x': 'LDA_X', 'pbe0': 'PBE0',
+         'wb97x-v': 'wb97x-v', 'wb97x': 'wb97x', 'wb97': 'wb97'}
 
 f = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rks_probe.bin'), 'rb')
 ncase = int(np.fromfile(f, dtype=np.int64, count=1)[0])
@@ -33,6 +37,10 @@ for ic in range(ncase):
     if npts:
         pts = np.fromfile(f, dtype=np.float64, count=3*npts).reshape(3, npts, order='F').T
         w = np.fromfile(f, dtype=np.float64, count=npts)
+    npts_nlc = int(np.fromfile(f, dtype=np.int64, count=1)[0])
+    if npts_nlc:
+        pts_nlc = np.fromfile(f, dtype=np.float64, count=3*npts_nlc).reshape(3, npts_nlc, order='F').T
+        w_nlc = np.fromfile(f, dtype=np.float64, count=npts_nlc)
     e_t = np.fromfile(f, dtype=np.float64, count=1)[0]
     dm = np.fromfile(f, dtype=np.float64, count=n*n*nspin).reshape(n, n, nspin, order='F')
 
@@ -66,6 +74,14 @@ for ic in range(ncase):
         mf.grids.coords = np.ascontiguousarray(pts)
         mf.grids.weights = w
         mf.grids.non0tab = None
+        if npts_nlc:
+            # VV10's own grid, coarser by convention -- set exactly as the
+            # semilocal grid is, so pyscf's nonlocal pass runs on terco's
+            # points rather than building (and, if small_rho_cutoff were
+            # nonzero, pruning) its own; coords not None already skips that.
+            mf.nlcgrids.coords = np.ascontiguousarray(pts_nlc)
+            mf.nlcgrids.weights = w_nlc
+            mf.nlcgrids.non0tab = None
     else:
         mf = scf.RHF(mol) if nspin == 1 else scf.UHF(mol)
     mf.conv_tol = 1e-12
