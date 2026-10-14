@@ -299,6 +299,11 @@ contains
    pure subroutine one_quartet(iq, ir, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
+      !! McMurchie-Davidson on (ab|ab) with the full Coulomb operator, same as
+      !! every other quartet this module builds -- there is no omega here by
+      !! design. The Schwarz bound it feeds remains a valid (looser) upper
+      !! bound on the attenuated erf(omega*r12)/r12 integral for any omega:
+      !! see trc_screen.F90's module header for why.
       !$acc routine seq
       integer,  intent(in)    :: iq, ir, nchunk, nq, nbas, npp, nout
       integer,  intent(in)    :: q_i(nq), q_j(nq), q_k(nq), q_l(nq), q_off(nq)

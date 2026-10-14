@@ -170,7 +170,7 @@ contains
    ! most -- not over quartets.
    !
    subroutine fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_dens, &
-                        jfac, kfac, nosym, dsh, &
+                        jfac, kfac, omega, nosym, dsh, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                         qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                         sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -181,6 +181,10 @@ contains
       real(dp), intent(in)    :: thresh
       real(dp), intent(in)    :: jfac, kfac
       !! Coulomb and exchange scalings; 1 and 1 is Hartree-Fock.
+      real(dp), intent(in)    :: omega
+      !! Range-separation parameter, bohr^-1; zero is the Coulomb operator.
+      !! See scripts/gen_perclass.py's primitive loop for the substitution,
+      !! shared verbatim with the enumerated kernels below.
       logical,  intent(in)    :: nosym
       !! Contract a density that is NOT symmetric, through the enumerated
       !! kernel. Costs what folding bought; needed by the response Hessian.
@@ -349,7 +353,7 @@ contains
          ! the enumerated shared kernel instead.
          !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
          call fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, omega, dsh, &
                              nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                              ndens, dmat, jmat, kmat, rank, nranks)
@@ -463,14 +467,14 @@ contains
             ! never changes HGP's own dispatch, decode or launch geometry.
             if (rys_route(key2)) then
                call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                                 nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                                 sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                 ndens, dmat, jmat, rank, nranks)
             else
 #endif
             call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                              nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                              ndens, dmat, jmat, rank, nranks)
@@ -489,7 +493,7 @@ contains
 
       !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
       call fock_all(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
-                    b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                    b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                     pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
       !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
 
@@ -646,7 +650,7 @@ contains
    ! neighbouring threads almost always share a segment.
    !
    subroutine fock_all(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
-                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
       integer,  intent(in)    :: nseg, npair, nbas, npp, nao, rank, nranks
       integer(kind=8), intent(in) :: nwork
@@ -656,6 +660,7 @@ contains
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -705,14 +710,14 @@ contains
          seg = lo
          t = int(gt - sOff(seg))
          call one_bin_item(t, sD(seg), sA(seg), sNB(seg), sOA(seg), sOB(seg), &
-                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                            pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                            ndens, dmat, jmat, kmat)
       end do
    end subroutine fock_all
 
    subroutine fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
-                             npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, &
+                             npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, &
                              nbas, npp, nao, sh_l, ao_off, &
                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                              ndens, dmat, jmat, kmat, rank, nranks)
@@ -723,7 +728,7 @@ contains
       logical,  intent(in)    :: sD(nseg)
       integer(kind=8), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh, jfac, kfac
+      real(dp), intent(in)    :: sp_q(npair), thresh, jfac, kfac, omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -763,7 +768,7 @@ contains
          seg = lo
          t = int(gt - sOff(seg))
          call one_bin_item_nosym(t, sD(seg), sA(seg), sNB(seg), sOA(seg), sOB(seg), &
-                                 npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, &
+                                 npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, &
                                  nbas, npp, nao, sh_l, ao_off, &
                                  pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                                  ndens, dmat, jmat, kmat)
@@ -771,7 +776,7 @@ contains
    end subroutine fock_all_nosym
 
    subroutine fock_one_bin(nt, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
-                           sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                           sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                            pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                            ndens, dmat, jmat, kmat)
       integer,  intent(in)    :: nt, nA, nB, offA, offB, npair, nbas, npp, nao
@@ -779,6 +784,7 @@ contains
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -791,7 +797,7 @@ contains
 
       do concurrent(t=1:nt)
          call one_bin_item(t, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
-                           sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                           sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                            pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                            ndens, dmat, jmat, kmat)
       end do
@@ -822,7 +828,7 @@ contains
    ! built once per makeEFP; the SCF Fock a hundred times.
    !
    pure subroutine one_bin_item_nosym(t, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
-                                sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                                sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                                 pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                                 ndens, dmat, jmat, kmat)
       !$acc routine seq
@@ -831,6 +837,7 @@ contains
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -846,6 +853,7 @@ contains
       integer  :: kp, kq, m, d, x, cur, nxt, lim, dn
       integer  :: ia, ic, xd1, xd2, xc1, xc2, xac, ai, dd
       real(dp) :: zeta, eta, zpe, rho, tval, pref, wc, acc
+      real(dp) :: theta, rho_theta
       real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3)
       real(dp) :: pax, pay, paz, qcx, qcy, qcz
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
@@ -930,20 +938,35 @@ contains
             eta = pp_p(kq)
             zpe = zeta + eta
             rho = zeta*eta/zpe
+            ! RANGE SEPARATION -- same substitution as the generated kernels
+            ! (scripts/gen_perclass.py's primitive loop): erf(omega*r12)/r12
+            ! is the Coulomb integral with rho replaced everywhere by
+            ! rho_theta = theta*rho, theta = omega^2/(rho + omega^2), and the
+            ! prefactor scaled by sqrt(theta). omega == 0 sets theta = 1.0_dp
+            ! exactly, so every "theta*"/"rho_theta" below reproduces the
+            ! Coulomb value bit-for-bit -- there is no screen here to protect
+            ! (this whole bin pair already survived one at admission), so
+            ! theta is computed unconditionally rather than branched.
+            if (omega > 0.0_dp) then
+               theta = omega*omega/(rho + omega*omega)
+            else
+               theta = 1.0_dp
+            end if
+            rho_theta = theta*rho
             do d = 1, 3
                pq(d) = pp_r(kp, d) - pp_r(kq, d)
                wc = (zeta*pp_r(kp, d) + eta*pp_r(kq, d))/zpe
                pa(d) = pp_r(kp, d) - pp_ra(kp, d)
                qc(d) = pp_r(kq, d) - pp_ra(kq, d)
-               wp(d) = wc - pp_r(kp, d)
-               wq(d) = wc - pp_r(kq, d)
+               wp(d) = theta*(wc - pp_r(kp, d))
+               wq(d) = theta*(wc - pp_r(kq, d))
             end do
-            tval = rho*(pq(1)*pq(1) + pq(2)*pq(2) + pq(3)*pq(3))
+            tval = rho_theta*(pq(1)*pq(1) + pq(2)*pq(2) + pq(3)*pq(3))
             call boys_eval(lt, tval, f)
 
-            oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-            rz = rho/zeta; re = rho/eta
-            pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+            oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = theta*(0.5_dp/zpe)
+            rz = rho_theta/zeta; re = rho_theta/eta
+            pref = sqrt(theta)*TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
 
 #ifdef TRC_UNROLL_VRR
             !
@@ -1231,7 +1254,7 @@ contains
    end subroutine one_bin_item_nosym
 
    pure subroutine one_bin_item(t, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
-                                sp_q, thresh, jfac, kfac, dsh, nbas, npp, nao, sh_l, ao_off, &
+                                sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                                 pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                                 ndens, dmat, jmat, kmat)
       !$acc routine seq
@@ -1240,6 +1263,7 @@ contains
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -1255,6 +1279,7 @@ contains
       integer  :: kp, kq, m, d, x, cur, nxt, lim, dn
       integer  :: ia, ic, xd1, xd2, xc1, xc2, xac, ai, dd
       real(dp) :: zeta, eta, zpe, rho, tval, pref, wc, acc
+      real(dp) :: theta, rho_theta
       real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3)
       real(dp) :: pax, pay, paz, qcx, qcy, qcz
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
@@ -1339,20 +1364,35 @@ contains
             eta = pp_p(kq)
             zpe = zeta + eta
             rho = zeta*eta/zpe
+            ! RANGE SEPARATION -- same substitution as the generated kernels
+            ! (scripts/gen_perclass.py's primitive loop): erf(omega*r12)/r12
+            ! is the Coulomb integral with rho replaced everywhere by
+            ! rho_theta = theta*rho, theta = omega^2/(rho + omega^2), and the
+            ! prefactor scaled by sqrt(theta). omega == 0 sets theta = 1.0_dp
+            ! exactly, so every "theta*"/"rho_theta" below reproduces the
+            ! Coulomb value bit-for-bit -- there is no screen here to protect
+            ! (this whole bin pair already survived one at admission), so
+            ! theta is computed unconditionally rather than branched.
+            if (omega > 0.0_dp) then
+               theta = omega*omega/(rho + omega*omega)
+            else
+               theta = 1.0_dp
+            end if
+            rho_theta = theta*rho
             do d = 1, 3
                pq(d) = pp_r(kp, d) - pp_r(kq, d)
                wc = (zeta*pp_r(kp, d) + eta*pp_r(kq, d))/zpe
                pa(d) = pp_r(kp, d) - pp_ra(kp, d)
                qc(d) = pp_r(kq, d) - pp_ra(kq, d)
-               wp(d) = wc - pp_r(kp, d)
-               wq(d) = wc - pp_r(kq, d)
+               wp(d) = theta*(wc - pp_r(kp, d))
+               wq(d) = theta*(wc - pp_r(kq, d))
             end do
-            tval = rho*(pq(1)*pq(1) + pq(2)*pq(2) + pq(3)*pq(3))
+            tval = rho_theta*(pq(1)*pq(1) + pq(2)*pq(2) + pq(3)*pq(3))
             call boys_eval(lt, tval, f)
 
-            oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-            rz = rho/zeta; re = rho/eta
-            pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
+            oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = theta*(0.5_dp/zpe)
+            rz = rho_theta/zeta; re = rho_theta/eta
+            pref = sqrt(theta)*TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
 
 #ifdef TRC_UNROLL_VRR
             !

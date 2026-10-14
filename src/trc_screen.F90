@@ -11,6 +11,16 @@
 !      Rigorous (Cauchy-Schwarz on the Coulomb metric), so discarding below a
 !      threshold bounds the error rather than hoping.
 !
+!      Q is built with the full Coulomb operator here and nowhere adjusted for
+!      omega (trc_fock.F90's range-separation parameter): erf(omega r12)/r12
+!      is pointwise smaller than 1/r12 for every omega > 0 (theta < 1 in the
+!      kernels' own substitution, scripts/gen_perclass.py), so the Coulomb
+!      Schwarz bound is still an upper bound on the attenuated integral, just
+!      a looser one. Tightening it for a given omega would screen more
+!      quartets, not fewer, so leaving it alone costs accuracy nothing -- the
+!      prescreens in trc_batch.F90 and the generated kernels' `pcut` test are
+!      the same story, same reason.
+!
 !   3. DENSITY.  What actually matters is a quartet's contribution to the Fock
 !      matrix, not the integral's size, so the bound carries the largest
 !      density block the quartet can touch.  This is the screen that makes late
