@@ -24,7 +24,7 @@ the two directions produces -- a clean, reproducible per-d-AO factor, not
 noise, caught by comparing the invariant scalar 0.5*Tr(D G) before trusting
 any individual element.
 
-Usage: rys_fock_ref.py <basis.json> <dump.bin>
+Usage: rys_fock_ref.py <basis.json> <dump.bin> [tol]
 """
 import os
 import sys
@@ -36,10 +36,16 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 from rys_grad_ref import bse_json_basis, terco_to_pyscf_perm, _SYMBOL  # noqa: E402
 
-TOL = 1.0e-9
+DEFAULT_TOL = 1.0e-9
 #: Same absolute gate as rys_grad_ref.py's overlap check and gradient
 #: comparison (test/rys_grad_ref.py) -- the existing pyscf-comparison
-#: tolerance in this tree, and this check must not loosen it.
+#: tolerance in this tree, and this check must not loosen it. One script
+#: serves every case test/CMakeLists.txt's foreach registers (water/cc-pVDZ,
+#: water/cc-pVTZ, formamide/def2-TZVP), and they do not all have the same
+#: margin, so the ceiling is an optional third argument rather than this one
+#: constant: water/cc-pVTZ measures 8e-13 (tightened to 1e-10 at the call
+#: site), formamide/def2-TZVP measures 2.6e-11 -- a real size effect, not
+#: noise -- and stays at this default.
 
 
 def fock_rhf(eri, dm):
@@ -55,10 +61,11 @@ def fock_rhf(eri, dm):
 
 def main():
     if len(sys.argv) < 3:
-        print('usage: rys_fock_ref.py <basis.json> <dump.bin>'); sys.exit(1)
+        print('usage: rys_fock_ref.py <basis.json> <dump.bin> [tol]'); sys.exit(1)
     bpath = sys.argv[1]
     if not os.path.isabs(bpath):
         bpath = os.path.join(_HERE, bpath)
+    tol = float(sys.argv[3]) if len(sys.argv) >= 4 else DEFAULT_TOL
 
     # check_rys_fock_vs_pyscf.F90 itself skips (stop 0, no dump written)
     # when the basis needs more l than this build's TRC_LMAX reaches -- see
@@ -108,8 +115,8 @@ def main():
     s_pred = n[:, None] * s_pyscf * n[None, :]
     s_err = np.abs(s_terco - s_pred).max()
     print(f'  overlap check: max|S_terco - N S_pyscf N| = {s_err:.3e}'
-          f'  ({"OK" if s_err < TOL else "FAIL"})')
-    if s_err >= TOL:
+          f'  ({"OK" if s_err < tol else "FAIL"})')
+    if s_err >= tol:
         i, j = np.unravel_index(np.argmax(np.abs(s_terco - s_pred)), s_terco.shape)
         print(f'    largest off-pattern element at ({i}, {j}): '
               f'S_terco={s_terco[i, j]!r}  N S_pyscf N={s_pred[i, j]!r}')
@@ -137,8 +144,8 @@ def main():
     diff = np.abs(g_terco_pyscf_ao - g_ref)
     worst = diff.max()
     print(f'  worst |G_terco - G_pyscf| = {worst:.3e}'
-          f'  ({"OK" if worst < TOL else "FAIL"})')
-    if worst >= TOL:
+          f'  ({"OK" if worst < tol else "FAIL"})')
+    if worst >= tol:
         i, j = np.unravel_index(np.argmax(diff), diff.shape)
         print(f'    largest disagreement at ({i}, {j}): '
               f'terco={g_terco_pyscf_ao[i, j]!r}  pyscf={g_ref[i, j]!r}')

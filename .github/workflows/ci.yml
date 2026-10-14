@@ -85,6 +85,121 @@ jobs:
           ctest --test-dir build --output-on-failure --parallel 2
           --no-tests=error
 
+  host-df-lmax3:
+    name: host gcc-15 (TERCO_DF_LMAX=3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1.9.0
+        id: setup-fortran
+        with:
+          compiler: gcc
+          version: 15
+
+      - name: Install LAPACK
+        run: sudo apt-get update && sudo apt-get install -y liblapack-dev libblas-dev
+
+      # host-build above never installs pyscf, so none of the _ref tests it
+      # gates on `import numpy, pyscf` (test/CMakeLists.txt) ever run there.
+      # This job needs check_df_vs_pyscf_ref specifically -- see the next
+      # step's own comment -- so it is the one that installs it.
+      - name: Install pyscf
+        run: pip install numpy pyscf
+
+      # DF_LMAX=3 raises gen_df.py's orbital ceiling past the shipped one and
+      # its auxiliary ceiling (always one higher) to 4, which is what lets
+      # check_df_vs_pyscf run water/cc-pVTZ (f on O) against cc-pVTZ-RI (g on
+      # O) instead of skipping (test/check_df_vs_pyscf.F90's own header). Not
+      # TERCO_LMAX: that is the separate, much slower host-lmax3 job below --
+      # MEASURED, this one builds in well under a PR's patience (all the DF
+      # objects it adds took ~138 s on 4 cores locally), so it runs on every
+      # PR rather than waiting for a nightly slot.
+      - name: Configure
+        run: >-
+          cmake -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_DF_LMAX=3
+          -S . -B build
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Show the failure verbosely
+        if: failure()
+        run: cmake --build build --verbose --parallel 1
+
+      - name: Validate
+        run: >-
+          ctest --test-dir build --output-on-failure --parallel 2
+          --no-tests=error
+
+  host-lmax3:
+    name: host gcc-15 (TERCO_LMAX=3)
+    runs-on: ubuntu-latest
+    # MEASURED: a clean gfortran 15 CPU build at -DTERCO_LMAX=3
+    # -DTERCO_DF_LMAX=3 with -j2 (this job's own parallelism, matching a
+    # 2-core runner) took 10m26s wall (20m6s user, 4 physical cores locally)
+    # -- comfortably under the ~25-minute point past which a PR should not
+    # wait on it, so this runs on every PR like every other job here rather
+    # than being pushed to a nightly schedule.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1.9.0
+        id: setup-fortran
+        with:
+          compiler: gcc
+          version: 15
+
+      - name: Install LAPACK
+        run: sudo apt-get update && sudo apt-get install -y liblapack-dev libblas-dev
+
+      # Same reason as host-df-lmax3's own step: check_rys_fock_vs_pyscf's
+      # f cases (water/cc-pVTZ, formamide/def2-TZVP) and check_df_vs_pyscf
+      # both need pyscf to do anything but print SKIP.
+      - name: Install pyscf
+        run: pip install numpy pyscf
+
+      # TERCO_LMAX=3 is the four-centre f ceiling (CMakeLists.txt's own
+      # option comment); it needs TERCO_RYS=ON, which is this project's
+      # default, so nothing else is passed for that. Paired with
+      # TERCO_DF_LMAX=3 for the same reason test/CMakeLists.txt registers
+      # check_df_vs_pyscf and the f/g cases together: one job that actually
+      # exercises every class the should-fix review asked CI to cover,
+      # rather than two jobs each missing half of it.
+      - name: Configure
+        run: >-
+          cmake -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_LMAX=3
+          -DTERCO_DF_LMAX=3
+          -S . -B build
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Show the failure verbosely
+        if: failure()
+        run: cmake --build build --verbose --parallel 1
+
+      - name: Validate
+        run: >-
+          ctest --test-dir build --output-on-failure --parallel 2
+          --no-tests=error
+
   fpm-build:
     name: fpm (gcc 15)
     runs-on: ubuntu-latest

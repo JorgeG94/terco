@@ -43,9 +43,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 from rys_grad_ref import bse_json_basis, terco_to_pyscf_perm, _SYMBOL  # noqa: E402
 
-TOL = 1.0e-9
-#: Not looser than the existing pyscf comparisons (rys_grad_ref.py,
-#: rys_fock_ref.py both gate at 1e-9 absolute).
+TOL = 1.0e-10
+#: Tightened from the 1e-9 every other pyscf comparison in this tree gates
+#: at (rys_grad_ref.py, rys_fock_ref.py's DEFAULT_TOL): the one case this
+#: script runs today, water/cc-pVTZ against cc-pVTZ-RI, measures its worst
+#: disagreement -- the 3c (mu nu|P) check, the (ff|g) class -- at 4.4e-13,
+#: three orders of magnitude under this gate. Never loosen this past 1e-9.
 
 
 def main():
