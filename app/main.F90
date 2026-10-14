@@ -19,6 +19,7 @@ program terco_main
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
+   use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS
    use terco_app, only: read_xyz, resolve_basis, element_symbol, c_string, f_string, set_env, lower
    implicit none
 
@@ -51,8 +52,8 @@ program terco_main
    call cli%add_option("chrg", "molecular charge (default: a .CHRG file here, else 0)", short="c")
    call cli%add_option("uhf", "number of unpaired electrons (default: a .UHF file here, else 0 "// &
                        "or 1 by electron count)", short="u")
-   call cli%add_option("func", "hf (the default), or a functional: lda (svwn), pbe, blyp, pbe0, b3lyp, "// &
-                       "b3lyp5, wb97x-v, wb97x, wb97", short="f", default="hf")
+   call cli%add_option("func", "hf (the default), or a functional: "//XC_AVAILABLE_FUNCTIONALS, &
+                       short="f", default="hf")
    call cli%add_option("guess", "sad, sadq, sap, gwh or core (default: sad; sadq for an ion)", short="g")
    call cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call cli%add_option("grid", "DFT integration grid level (3)", default="3")

@@ -178,7 +178,7 @@ module trc_capi
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
-   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_AVAILABLE_FUNCTIONALS
    use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_cart_perm, only: trc_cart_order_id
@@ -1544,8 +1544,14 @@ contains
          if (.not. xc_functional_by_name(cx%opts%functional, func)) then
             status = TRC_ERR_UNSUPPORTED
             call refuse(cx, "trc_set_method: unknown functional '"//trim(cx%opts%functional)// &
-                        "'; terco has lda_x (slater), svwn, svwn_rpa, pbe, blyp, pbe0, b3lyp, b3lyp5, "// &
-                        "wb97x-v, wb97x, wb97, or an empty name for Hartree-Fock")
+                        "'; terco has "//XC_AVAILABLE_FUNCTIONALS//", or an empty name for Hartree-Fock")
+            cx%opts%functional = ""
+            return
+         end if
+         if (len_trim(func%missing) > 0) then
+            status = TRC_ERR_UNSUPPORTED
+            call refuse(cx, "trc_set_method: functional '"//trim(cx%opts%functional)// &
+                        "' is not available: "//trim(func%missing))
             cx%opts%functional = ""
             return
          end if
