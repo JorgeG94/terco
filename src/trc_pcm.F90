@@ -520,14 +520,25 @@ contains
 
    subroutine axpby(n, alpha, x, beta, y)
       !! y := alpha x + beta y, where the arrays are (the device, on GPU)
+      !!
+      !! beta = 0 does not read y, as BLAS does not: y may be freshly
+      !! allocated, and 0 times whatever NaN the heap left there is NaN.
+      !! (ifx found that one: IEF-PCM's scratch vector, a dozen SCFs into
+      !! a process, and the eigensolver refusing the Fock matrix after.)
       integer, intent(in) :: n
       real(dp), intent(in) :: alpha, beta
       real(dp), intent(in) :: x(n)
       real(dp), intent(inout) :: y(n)
       integer :: k
-      do concurrent(k = 1:n)
-         y(k) = alpha*x(k) + beta*y(k)
-      end do
+      if (beta == 0.0_dp) then
+         do concurrent(k = 1:n)
+            y(k) = alpha*x(k)
+         end do
+      else
+         do concurrent(k = 1:n)
+            y(k) = alpha*x(k) + beta*y(k)
+         end do
+      end if
    end subroutine axpby
 
    subroutine scale_shift(n, a, alpha, beta)
