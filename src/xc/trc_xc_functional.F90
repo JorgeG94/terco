@@ -22,18 +22,21 @@ module trc_xc_functional
    use trc_xc_pbe_c, only: pbe_c_exc_vxc_unpolar, pbe_c_exc_vxc_polar
    use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar
    use trc_xc_lyp, only: lyp_exc_vxc_unpolar, lyp_exc_vxc_polar
+   use trc_xc_wb97x_v_xc, only: wb97x_v_xc_exc_vxc_unpolar, wb97x_v_xc_exc_vxc_polar
    implicit none
    private
 
    public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name
    public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    public :: XC_K_SLATER, XC_K_VWN, XC_K_VWN_RPA, XC_K_PBE_X, XC_K_PBE_C, XC_K_B88, XC_K_LYP
+   public :: XC_K_WB97X_V
 
    integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2
    integer, parameter :: XC_MAX_KERNELS = 8
 
    integer, parameter :: XC_K_SLATER = 1, XC_K_VWN = 2, XC_K_VWN_RPA = 3
    integer, parameter :: XC_K_PBE_X = 4, XC_K_PBE_C = 5, XC_K_B88 = 6, XC_K_LYP = 7
+   integer, parameter :: XC_K_WB97X_V = 8
 
    type :: trc_xc_functional_t
       character(len=16) :: name = ""
@@ -42,6 +45,15 @@ module trc_xc_functional
       integer :: kid(XC_MAX_KERNELS) = 0
       real(dp) :: coef(XC_MAX_KERNELS) = 0.0_dp
       real(dp) :: exx = 0.0_dp   !! fraction of exact exchange the caller must add
+      !
+      ! Range-separated hybrids (currently only wB97X-V). `exx` keeps its
+      ! meaning above unchanged: the fraction of FULL-range exact exchange,
+      ! 1/r12. These four are zero for every other functional.
+      !
+      real(dp) :: exx_lr = 0.0_dp !! extra fraction of LONG-RANGE exact exchange, erf(omega r)/r
+      real(dp) :: omega  = 0.0_dp !! range-separation parameter, bohr^-1; 0 = none
+      real(dp) :: nlc_b  = 0.0_dp !! VV10 b; 0 = no nonlocal correlation
+      real(dp) :: nlc_c  = 0.0_dp !! VV10 C
    end type trc_xc_functional_t
 
 contains
@@ -70,6 +82,7 @@ contains
          case (XC_K_PBE_C); call pbe_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case (XC_K_B88); call b88_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case (XC_K_LYP); call lyp_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_WB97X_V); call wb97x_v_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case default; e = 0.0_dp; vr = 0.0_dp
          end select
          eps = eps + coef(k)*e
@@ -104,6 +117,8 @@ contains
          case (XC_K_PBE_C); call pbe_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
          case (XC_K_B88); call b88_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
          case (XC_K_LYP); call lyp_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
+         case (XC_K_WB97X_V)
+            call wb97x_v_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
          case default; e = 0.0_dp; va = 0.0_dp; vb = 0.0_dp
          end select
          eps = eps + coef(k)*e
@@ -155,6 +170,20 @@ contains
          call set(f, XC_FAMILY_GGA, [XC_K_SLATER, XC_K_B88, XC_K_VWN, XC_K_LYP], &
                   [0.08_dp, 0.72_dp, 0.19_dp, 0.81_dp])
          f%exx = 0.20_dp
+      case ("wb97x-v", "wb97xv", "wb97x_v")
+         ! libxc HYB_GGA_XC_WB97X_V. rsh_coeff (omega, alpha, beta) =
+         ! (0.3, 1.0, -0.833): alpha is the LONG-RANGE exact-exchange
+         ! fraction, hyb = alpha + beta the FULL-range one that multiplies
+         ! SR_HFX = K_full - K_erf. pyscf/libxc build
+         !   vk = hyb*K_full + (alpha - hyb)*K_erf(omega)
+         ! which is exx*K_full + exx_lr*K_erf with exx = hyb, exx_lr = alpha
+         ! - hyb. VV10 (nlc_b, nlc_c) from libxc's nlc_coeff, ((6.0, 0.01), 1).
+         call set(f, XC_FAMILY_GGA, [XC_K_WB97X_V], [1.0_dp])
+         f%exx = 0.167_dp
+         f%exx_lr = 0.833_dp
+         f%omega = 0.3_dp
+         f%nlc_b = 6.0_dp
+         f%nlc_c = 0.01_dp
       case default
          ok = .false.
       end select

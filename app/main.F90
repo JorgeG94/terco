@@ -51,8 +51,8 @@ program terco_main
    call cli%add_option("chrg", "molecular charge (default: a .CHRG file here, else 0)", short="c")
    call cli%add_option("uhf", "number of unpaired electrons (default: a .UHF file here, else 0 "// &
                        "or 1 by electron count)", short="u")
-   call cli%add_option("func", "hf (the default), or a functional: lda (svwn), pbe, blyp, pbe0, b3lyp, b3lyp5", &
-                       short="f", default="hf")
+   call cli%add_option("func", "hf (the default), or a functional: lda (svwn), pbe, blyp, pbe0, b3lyp, "// &
+                       "b3lyp5, wb97x-v", short="f", default="hf")
    call cli%add_option("guess", "sad, sadq, sap, gwh or core (default: sad; sadq for an ion)", short="g")
    call cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call cli%add_option("grid", "DFT integration grid level (3)", default="3")

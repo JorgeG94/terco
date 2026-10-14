@@ -72,6 +72,7 @@ target_sources(
           xc/trc_xc_pbe_c.F90
           xc/trc_xc_b88.F90
           xc/trc_xc_lyp.F90
+          xc/trc_xc_wb97x_v_xc.F90
           xc/trc_xc_functional.F90  # compositions, and the per-point dispatch
           xc/trc_collocation.F90    # basis functions and gradients at a point
           xc/trc_xc_batch.F90       # the grid, batched and screened
