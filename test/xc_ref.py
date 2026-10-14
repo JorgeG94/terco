@@ -31,13 +31,22 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
+from xc_kernel_discovery import DISAGREES_WITH_LIBXC  # noqa: E402
+
 try:
     from pyscf.dft import libxc
 except ImportError:
     print("pyscf is not importable; reference_xc.dat left as it is", file=sys.stderr)
     sys.exit(0)
 
-# terco kernel stem -> libxc name
+# terco kernel stem -> libxc name. A third element, when present, is the
+# `omega` libxc needs passed explicitly: the kernels built from a single
+# range-separation parameter baked in at translation time (ExchCXX ships one
+# header per fixed omega) rather than carried by a named hybrid functional
+# ID the way wb97x_v_xc's omega is. Found by matching terco's own output,
+# recomputed from the Maple arithmetic, against libxc swept over omega --
+# see the commit introducing these entries for the comparison.
 KERNELS = {
     "slater_exchange": ("LDA_X", "lda"),
     "vwn": ("LDA_C_VWN", "lda"),
@@ -57,7 +66,62 @@ KERNELS = {
     # same Iikura-Tsuneda-Yanai short-range hole plus VV10 correlation form.
     "wb97x_xc": ("WB97X", "gga"),
     "wb97_xc": ("WB97", "gga"),
+    # Grimme's empirical-dispersion wB97X variants: same ITYH exchange hole
+    # and VV10-shaped correlation form as wb97x_xc, different c_x/c_ss/c_ab
+    # and omega. The dispersion term itself is NOT in this kernel (nor in
+    # terco: see docs/functionals.md), exactly as wb97x_v_xc excludes VV10's
+    # nonlocal term.
+    "wb97x_d_xc": ("WB97X_D", "gga"),
+    "wb97x_d3_xc": ("WB97X_D3", "gga"),
+    # VWN3 (libxc's third, least-common parameterisation; see the top-of-file
+    # note in trc_xc_functional.F90 about how confused this family's naming
+    # is across codes).
+    "vwn3": ("LDA_C_VWN_3", "lda"),
+    "pz81": ("LDA_C_PZ", "lda"),
+    "pz81_mod": ("LDA_C_PZ_MOD", "lda"),
+    "pw91_lda": ("LDA_C_PW", "lda"),
+    "pw91_lda_mod": ("LDA_C_PW_MOD", "lda"),
+    "pw91_lda_rpa": ("LDA_C_PW_RPA", "lda"),
+    "rev_pbe_x": ("GGA_X_PBE_R", "gga"),
+    "rpbe_x": ("GGA_X_RPBE", "gga"),
+    "optx_x": ("GGA_X_OPTX", "gga"),
+    "mpw91_x": ("GGA_X_MPW91", "gga"),
+    "pw86_x": ("GGA_X_PW86", "gga"),
+    "pw91_x": ("GGA_X_PW91", "gga"),
+    "p86_c": ("GGA_C_P86", "gga"),
+    "p86vwn_ft_c": ("GGA_C_P86VWN_FT", "gga"),
+    "pw91_c": ("GGA_C_PW91", "gga"),
+    "pbe_sol_c": ("GGA_C_PBE_SOL", "gga"),
+    "bmk_c": ("GGA_C_BMK", "gga"),
+    "n12_c": ("GGA_C_N12", "gga"),
+    "n12_sx_c": ("GGA_C_N12_SX", "gga"),
+    "sogga11_x_c": ("GGA_C_SOGGA11_X", "gga"),
+    # A "hybrid GGA X" by libxc's own classification -- its exact-exchange
+    # fraction is metadata (hybrid_coeff) that eval_xc does not fold in, the
+    # same separation wb97x_v_xc relies on, so the plain name is enough.
+    "sogga11_x_x": ("HYB_GGA_X_SOGGA11_X", "gga"),
+    "b97_d": ("GGA_XC_B97_D", "gga"),
+    # The Iikura-Tsuneda-Yanai short-range exchange hole at a fixed omega:
+    # libxc's GGA_X_ITYH takes omega as a runtime parameter, so it is passed
+    # explicitly rather than looked up from the name.
+    "ityh_x": ("GGA_X_ITYH", "gga", 0.2),
+    "ityh_x_015": ("GGA_X_ITYH", "gga", 0.15),
+    "ityh_x_033": ("GGA_X_ITYH", "gga", 0.33),
+    # The Henderson-Janesko-Scuseria short-range PBE exchange hole, also a
+    # fixed omega per header: 0.11 bare (HSE's own, libxc's default), 0.3
+    # and 0.2 for the LRC-wPBE(h) range-separation points.
+    "hjs_pbe_x": ("GGA_X_HJS_PBE", "gga", 0.11),
+    "lrcwpbe_hjs_pbe_x": ("GGA_X_HJS_PBE", "gga", 0.3),
+    "lrcwpbeh_hjs_pbe_x": ("GGA_X_HJS_PBE", "gga", 0.2),
 }
+
+# hjs_pbe_x and its two LRC-wPBE(h) relatives, and the three bare ITYH
+# exchange-hole kernels (ityh_x, ityh_x_015, ityh_x_033), do NOT meet
+# check_xc's tolerance here even away from any density floor -- see
+# docs/functionals.md and the commit introducing these entries. They are
+# translated and reported (tools/exchcxx_to_fortran.py accepts them without
+# complaint), but trc_xc_functional marks every functional that would need
+# one of them `missing`, not loosened.
 
 RHO = np.logspace(-9, 1, 11)
 # sigma = s * rho^(8/3): s is the square of the reduced gradient, up to scale.
@@ -108,8 +172,16 @@ def wb97_extra_points(omega, polar):
     return np.array(pts)
 
 
-# terco stem -> its kernel's own omega, for the switch points above.
-_OMEGA = {"wb97x_v_xc": 0.3, "wb97x_xc": 0.3, "wb97_xc": 0.4}
+# terco stem -> its kernel's own omega, for the switch points above. The
+# bare ITYH kernels (ityh_x, ityh_x_015, ityh_x_033) carry the same
+# 1.35-boundary switch but are skipped here along with everything else in
+# DISAGREES_WITH_LIBXC: hjs_pbe_x and its LRC-wPBE(h) relatives use a
+# different short-range exchange hole (Henderson-Janesko-Scuseria) with no
+# such switch and are left to the generic grid below.
+_OMEGA = {
+    "wb97x_v_xc": 0.3, "wb97x_xc": 0.3, "wb97_xc": 0.4,
+    "wb97x_d_xc": 0.2, "wb97x_d3_xc": 0.25,
+}
 
 
 def unpolar_points(family):
@@ -169,13 +241,20 @@ def libxc_rho(family, polar, pts):
 def main():
     out = Path(__file__).with_name("reference_xc.dat")
     lines = ["# kernel family polar npts nin nout", "# libxc %s via pyscf" % libxc.libxc_version()]
-    for stem, (name, family) in KERNELS.items():
+    for stem, spec in KERNELS.items():
+        if stem in DISAGREES_WITH_LIBXC:
+            # check_xc does not build a case for this kernel (see
+            # tools/xc_kernel_discovery.py); skip it here too rather than
+            # record a reference block nothing reads.
+            continue
+        name, family = spec[0], spec[1]
+        eval_omega = spec[2] if len(spec) > 2 else None
         for polar in (0, 1):
             pts = polar_points(family) if polar else unpolar_points(family)
             if stem in _OMEGA:
                 pts = np.concatenate([pts, wb97_extra_points(_OMEGA[stem], polar == 1)])
             rho = libxc_rho(family, polar, pts)
-            exc, vxc, fxc, _ = libxc.eval_xc(name, rho, spin=polar, deriv=2)
+            exc, vxc, fxc, _ = libxc.eval_xc(name, rho, spin=polar, deriv=2, omega=eval_omega)
             cols = [exc]
             nv = 2 if polar else 1
             ns = 3 if polar else 1
