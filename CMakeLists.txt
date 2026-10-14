@@ -131,8 +131,26 @@ option(TERCO_BUILD_APP "Build and install the terco command line program" ON)
 # is identical either way and a build without MPI is rank 0 of 1.
 #
 option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" OFF)
+#
+# Two different "regenerate" switches:
+#
+# TERCO_REGENERATE rewrites the COMMITTED kernels in src/generated in place,
+# from the generators, so that a diff shows whether the committed set still
+# reproduces. It always runs its generators.
+#
+# TERCO_FORCE_REGENERATE is about the BUILD tree. Every configure
+# regenerates what it needs there (the Rys kernels; the whole kernel set
+# when TERCO_LMAX, TERCO_DF_LMAX, TERCO_CART_ORDER or TERCO_DF_FORCE_RYS
+# leave the shipped configuration) only when a generation stamp says the
+# generators, their inputs or their options changed (src/CMakeLists.txt,
+# GENERATION STAMPS). ON ignores the stamps for one configure and then
+# turns itself back OFF. Editing a generator needs neither: the next build
+# reconfigures and regenerates on its own.
+#
 option(TERCO_REGENERATE
        "Regenerate the committed kernels in-tree rather than using them" OFF)
+option(TERCO_FORCE_REGENERATE
+       "Regenerate the build-tree kernels once, ignoring the generation stamps" OFF)
 #
 # Rys quadrature, built by default: it is the only source of the analytic
 # two-electron gradient (eri%gradient), and the kernels the Fock build uses
