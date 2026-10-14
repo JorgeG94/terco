@@ -28,11 +28,13 @@ program check_erf_fock_vs_pyscf
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
    implicit none
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
    real(dp), parameter :: OMEGA_TEST = 0.3_dp
-   character(len=256) :: xyzfile, basis_json, dump, nosym_arg
+   real(dp), parameter :: TOL = 1.0e-9_dp
+   character(len=256) :: xyzfile, basis_json, dump, nosym_arg, case_name
    logical :: nosym
    type(trc_basis_t) :: bas
    type(trc_eri_t)   :: eri
@@ -53,6 +55,8 @@ program check_erf_fock_vs_pyscf
    call get_command_argument(3, dump)
    call get_command_argument(4, nosym_arg)
    nosym = (trim(nosym_arg) == '1')
+   case_name = 'water_ccpvdz'
+   if (command_argument_count() >= 5) call get_command_argument(5, case_name)
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
    call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
@@ -113,7 +117,39 @@ program check_erf_fock_vs_pyscf
    write (unit) smat
    close (unit)
    print '(a,i0,a,i0,a)', 'check_erf_fock_vs_pyscf: wrote '//trim(dump)//' (', &
-      nat, ' atoms, ', nao, ' AOs) for erf_fock_ref.py'
+      nat, ' atoms, ', nao, ' AOs) for the pyscf-reference comparison'
+
+   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   ! One reference file per (geometry, basis), shared by every kernel path
+   ! (hgp/nosym/rys) this program is built for -- see
+   ! test/pyscf_refs/generate.py's gen_erf_fock for why.
+   block
+      integer :: u, nat_ref, nao_ref, nfail
+      real(dp), allocatable :: s_ref(:, :), j_ref(:, :), k_ref(:, :)
+      real(dp) :: ds, worst_j, worst_k
+      call ref_require('erf_fock_'//trim(case_name)//'.ref', u)
+      call ref_read_int(u, 'NAT', nat_ref)
+      call ref_read_int(u, 'NAO', nao_ref)
+      if (nat_ref /= nat .or. nao_ref /= nao) then
+         print '(a)', 'check_erf_fock_vs_pyscf: pyscf reference shape does not match this build'; stop 1
+      end if
+      allocate (s_ref(nao, nao), j_ref(nao, nao), k_ref(nao, nao))
+      call ref_read_matrix(u, 'S', nao, nao, s_ref)
+      call ref_read_matrix(u, 'J', nao, nao, j_ref)
+      call ref_read_matrix(u, 'K', nao, nao, k_ref)
+      call ref_close(u)
+      nfail = 0
+      ds = maxval(abs(smat - s_ref))
+      call ref_report(nfail, ds < TOL, 'overlap check vs pyscf, max|diff|', ds)
+      worst_j = maxval(abs(gj - j_ref))
+      worst_k = maxval(abs(gk - k_ref))
+      call ref_report(nfail, worst_j < TOL, 'J(omega) vs pyscf, worst|diff|', worst_j)
+      call ref_report(nfail, worst_k < TOL, 'K(omega) vs pyscf, worst|diff|', worst_k)
+      if (nfail > 0) then
+         print '(a)', 'check_erf_fock_vs_pyscf: FAILED against the pyscf reference'; stop 1
+      end if
+      print '(a)', 'check_erf_fock_vs_pyscf: RESULT: PASS'
+   end block
 
    deallocate (at_z, r, d, gj, gk, smat, tmat, vmat)
 

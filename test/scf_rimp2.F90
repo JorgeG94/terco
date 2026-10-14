@@ -16,6 +16,7 @@ program scf_rimp2
    use trc_basis_json, only: trc_basis_from_json
    use trc_guess_json, only: trc_guess_from_json
    use trc_error, only: error_t
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_report
    implicit none
 
    integer :: natm, nsh, maxnp, nsha, maxnpa, unit, ish, dev, nocc
@@ -190,6 +191,36 @@ program scf_rimp2
       end do
       write (unit) res%energy, mp%e_os, mp%e_ss
       close (unit)
+
+      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+      ! test/pyscf_refs/generate.py's gen_rimp2 names each case's reference
+      ! after its own probe file, "<probe base>.ref" in place of
+      ! "<probe base>_probe.bin" -- rimp2_probe.bin -> rimp2.ref,
+      ! rimp2_ccpvdz_probe.bin -> rimp2_ccpvdz.ref.
+      block
+         integer :: u, iprobe
+         real(dp) :: e_scf_ref, e_os_ref, e_ss_ref
+         character(len=256) :: refname
+         iprobe = index(trim(probe), '_probe.bin')
+         if (iprobe == 0) then
+            print '(a)', 'scf_rimp2: cannot derive a reference name from '//trim(probe); stop 1
+         end if
+         refname = probe(1:iprobe - 1)//'.ref'
+         call ref_require(trim(refname), u)
+         call ref_read_real(u, 'E_SCF', e_scf_ref)
+         call ref_read_real(u, 'E_OS', e_os_ref)
+         call ref_read_real(u, 'E_SS', e_ss_ref)
+         call ref_close(u)
+         block
+            integer :: nfail
+            nfail = 0
+            call ref_report(nfail, abs(res%energy - e_scf_ref) < 1.0e-9_dp, 'E_RHF vs pyscf', &
+                            abs(res%energy - e_scf_ref))
+            call ref_report(nfail, abs(mp%e_os - e_os_ref) < 1.0e-9_dp, 'E_os vs pyscf', abs(mp%e_os - e_os_ref))
+            call ref_report(nfail, abs(mp%e_ss - e_ss_ref) < 1.0e-9_dp, 'E_ss vs pyscf', abs(mp%e_ss - e_ss_ref))
+            if (nfail > 0) ok = .false.
+         end block
+      end block
       print '(a)', merge("scf_rimp2: PASS", "scf_rimp2: FAIL", ok)
    end if
    call pl%release(); call aux%release(); call bas%release()

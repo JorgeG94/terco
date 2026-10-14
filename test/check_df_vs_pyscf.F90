@@ -36,6 +36,7 @@ program check_df_vs_pyscf
    use trc_basis_json, only: trc_basis_from_json
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
@@ -109,6 +110,37 @@ program check_df_vs_pyscf
    close (unit)
    print '(a,i0,a,i0,a,i0,a)', 'check_df_vs_pyscf: wrote '//trim(dump)//' (', &
       nat, ' atoms, ', nao, ' orbital AOs, ', naux, ' auxiliary AOs)'
+
+   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   block
+      real(dp), parameter :: TOL = 1.0e-10_dp
+      integer :: u, nat_ref, nao_ref, naux_ref, nfail
+      real(dp), allocatable :: o_ref(:, :), j_ref(:, :), tens_ref(:, :, :)
+      real(dp) :: do_, dj, dtens
+      call ref_require('df_vs_pyscf.ref', u)
+      call ref_read_int(u, 'NAT', nat_ref)
+      call ref_read_int(u, 'NAO', nao_ref)
+      call ref_read_int(u, 'NAUX', naux_ref)
+      if (nat_ref /= nat .or. nao_ref /= nao .or. naux_ref /= naux) then
+         print '(a)', 'check_df_vs_pyscf: pyscf reference shape does not match this build'; stop 1
+      end if
+      allocate (o_ref(nao, nao), j_ref(naux, naux), tens_ref(nao, nao, naux))
+      call ref_read_matrix(u, 'O', nao, nao, o_ref)
+      call ref_read_matrix(u, 'J', naux, naux, j_ref)
+      call ref_read_matrix3(u, 'TENS', nao, nao, naux, tens_ref)
+      call ref_close(u)
+      nfail = 0
+      do_ = maxval(abs(omat - o_ref))
+      call ref_report(nfail, do_ < TOL, 'orbital (i|j) metric vs pyscf, max|diff|', do_)
+      dj = maxval(abs(jmat - j_ref))
+      call ref_report(nfail, dj < TOL, '2c (P|Q) vs pyscf, max|diff|', dj)
+      dtens = maxval(abs(tens - tens_ref))
+      call ref_report(nfail, dtens < TOL, '3c (mu nu|P) vs pyscf, max|diff|', dtens)
+      if (nfail > 0) then
+         print '(a)', 'check_df_vs_pyscf: FAILED against the pyscf reference'; stop 1
+      end if
+      print '(a)', 'check_df_vs_pyscf: RESULT: PASS'
+   end block
 
    deallocate (at_z, r, omat, jmat, tens)
 

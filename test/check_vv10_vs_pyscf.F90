@@ -35,6 +35,7 @@ program check_vv10_vs_pyscf
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_matrix, ref_report
    implicit none
 
    real(dp), parameter :: VV10_B = 6.0_dp, VV10_C = 0.01_dp
@@ -45,24 +46,48 @@ program check_vv10_vs_pyscf
 
    character(len=*), parameter :: xyz_water = 'water.xyz', xyz_oh = 'oh.xyz'
    character(len=*), parameter :: bas_631gs = 'basis_sets/6-31gs.json', bas_ccpvdz = 'basis_sets/cc-pvdz.json'
-   integer :: unit
+   integer :: unit, refu, nfail, ncase_ref
+   logical :: has_ref
 
    open (newunit=unit, file='vv10_probe.bin', access='stream', form='unformatted', status='replace')
    write (unit) int(3, kind=8)   ! number of cases
 
-   call run_rks(unit, xyz_water, bas_631gs, 5)
-   call run_rks(unit, xyz_water, bas_ccpvdz, 5)
-   call run_uks(unit, xyz_oh, bas_ccpvdz, 5, 4)
+   ! Opened (not required) BEFORE the dump is written: a missing reference
+   ! must not stop this program before vv10_probe.bin exists, or
+   ! test/pyscf_refs/generate.py has nothing to bootstrap a fresh reference
+   ! from. The comparison below is what actually enforces ref_require's
+   ! contract -- FAIL, not silently skip, once the dump is safely written.
+   call ref_open('vv10.ref', refu, has_ref)
+   nfail = 0
+   if (has_ref) then
+      call ref_read_int(refu, 'NCASE', ncase_ref)
+      if (ncase_ref /= 3) then
+         print '(a)', 'check_vv10_vs_pyscf: pyscf reference case count does not match this build'; stop 1
+      end if
+   end if
+
+   call run_rks(unit, xyz_water, bas_631gs, 5, 0)
+   call run_rks(unit, xyz_water, bas_ccpvdz, 5, 1)
+   call run_uks(unit, xyz_oh, bas_ccpvdz, 5, 4, 2)
 
    close (unit)
-   print '(a)', 'check_vv10_vs_pyscf: wrote vv10_probe.bin; run vv10_ref.py for the pyscf comparison'
+   if (.not. has_ref) then
+      print '(a)', 'FAIL: missing reference pyscf_refs/vv10.ref -- run test/pyscf_refs/generate.py ' &
+         //'(see test/pyscf_refs/README.md)'
+      stop 1
+   end if
+   call ref_close(refu)
+   if (nfail > 0) then
+      print '(a,i0,a)', 'check_vv10_vs_pyscf: ', nfail, ' case(s) FAILED against the pyscf reference'; stop 1
+   end if
+   print '(a)', 'check_vv10_vs_pyscf: RESULT: PASS'
 
 contains
 
-   subroutine run_rks(unit, xyzfile, basjson, nocc)
+   subroutine run_rks(unit, xyzfile, basjson, nocc, ic)
       integer, intent(in) :: unit
       character(len=*), intent(in) :: xyzfile, basjson
-      integer, intent(in) :: nocc
+      integer, intent(in) :: nocc, ic
       type(trc_basis_t) :: bas
       type(trc_pairlist_t) :: pl
       type(dft_grid_t) :: grid
@@ -138,14 +163,32 @@ contains
       write (unit) e_nlc
       write (unit) vmat
 
+      if (has_ref) then
+         block
+            integer :: kind_ref
+            real(dp) :: e_nlc_ref, dv
+            real(dp), allocatable :: vmat_ref(:, :)
+            character(len=2) :: tag
+            write (tag, '(i0)') ic
+            call ref_read_int(refu, 'KIND_'//trim(tag), kind_ref)
+            call ref_read_real(refu, 'E_NLC_'//trim(tag), e_nlc_ref)
+            allocate (vmat_ref(nao, nao))
+            call ref_read_matrix(refu, 'VMAT_'//trim(tag), nao, nao, vmat_ref)
+            dv = maxval(abs((vmat - vmat0) - vmat_ref))
+            call ref_report(nfail, kind_ref == 0 .and. abs(e_nlc - e_nlc_ref) < 1.0e-9_dp .and. dv < 1.0e-9_dp, &
+                            trim(xyzfile)//'/'//trim(basjson)//': E_nlc/V_nlc (RKS) vs pyscf', &
+                            max(abs(e_nlc - e_nlc_ref), dv))
+         end block
+      end if
+
       call xg%release(); call grid%destroy(); call bas%release()
       deallocate (c, dmat, vmat0, vmat, smat, tmat, vnmat, at_z, at_r)
    end subroutine run_rks
 
-   subroutine run_uks(unit, xyzfile, basjson, nalpha, nbeta)
+   subroutine run_uks(unit, xyzfile, basjson, nalpha, nbeta, ic)
       integer, intent(in) :: unit
       character(len=*), intent(in) :: xyzfile, basjson
-      integer, intent(in) :: nalpha, nbeta
+      integer, intent(in) :: nalpha, nbeta, ic
       type(trc_basis_t) :: bas
       type(trc_pairlist_t) :: pl
       type(dft_grid_t) :: grid
@@ -230,6 +273,26 @@ contains
       write (unit) e_nlc
       write (unit) vmat_a
       write (unit) vmat_b
+
+      if (has_ref) then
+         block
+            integer :: kind_ref
+            real(dp) :: e_nlc_ref, dva, dvb
+            real(dp), allocatable :: vmat_ref(:, :)
+            character(len=2) :: tag
+            write (tag, '(i0)') ic
+            call ref_read_int(refu, 'KIND_'//trim(tag), kind_ref)
+            call ref_read_real(refu, 'E_NLC_'//trim(tag), e_nlc_ref)
+            allocate (vmat_ref(nao, nao))
+            call ref_read_matrix(refu, 'VMAT_'//trim(tag), nao, nao, vmat_ref)
+            dva = maxval(abs((vmat_a - vmat0_a) - vmat_ref))
+            dvb = maxval(abs((vmat_b - vmat0_b) - vmat_ref))
+            call ref_report(nfail, kind_ref == 1 .and. abs(e_nlc - e_nlc_ref) < 1.0e-9_dp .and. &
+                            dva < 1.0e-9_dp .and. dvb < 1.0e-9_dp, &
+                            trim(xyzfile)//'/'//trim(basjson)//': E_nlc/V_nlc (UKS) vs pyscf', &
+                            max(abs(e_nlc - e_nlc_ref), max(dva, dvb)))
+         end block
+      end if
 
       call xg%release(); call grid%destroy(); call bas%release()
       deallocate (ca, cb, dmat_a, dmat_b, vmat0_a, vmat0_b, vmat_a, vmat_b, smat, tmat, vnmat, at_z, at_r)

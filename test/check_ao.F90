@@ -44,6 +44,7 @@ program check_ao
    use trc_dft_prune, only: PRUNE_NONE
    use trc_collocation, only: shell_collocate, NCART_MAX
    use trc_xc_batch, only: trc_xc_grid_t
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
 
    integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NPROBE = 200
@@ -180,11 +181,40 @@ program check_ao
    call report(err_batch < 1.0e-9_dp, "batched/screened vs unscreened, max|dS|", err_batch)
 
    call xg%release(); call grid%destroy(); call pl%release(); call b%release()
+
+   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   block
+      integer :: u, npts_ref, nao_ref
+      real(dp), allocatable :: chi_ref(:, :), gchi_ref(:, :, :)
+      real(dp) :: d0, dmax, scale, s
+      character(len=1) :: axis(3)
+      integer :: k
+      call ref_require('ao.ref', u)
+      call ref_read_int(u, 'NPTS', npts_ref)
+      call ref_read_int(u, 'NAO', nao_ref)
+      if (npts_ref /= NPROBE .or. nao_ref /= nao) then
+         print '(a)', "check_ao: pyscf reference shape does not match this build"; stop 1
+      end if
+      allocate (chi_ref(NPROBE, nao), gchi_ref(NPROBE, nao, 3))
+      call ref_read_matrix(u, 'CHI', NPROBE, nao, chi_ref)
+      call ref_read_matrix3(u, 'GCHI', NPROBE, nao, 3, gchi_ref)
+      call ref_close(u)
+      scale = maxval(abs(chi_ref))
+      d0 = maxval(abs(chi - chi_ref))/scale
+      call ref_report(nfail, d0 < 1.0e-12_dp, "AO values vs pyscf, max|diff|/max", d0)
+      axis = ['x', 'y', 'z']
+      do k = 1, 3
+         s = max(maxval(abs(gchi_ref(:, :, k))), 1.0_dp)
+         dmax = maxval(abs(gchi(k, :, :) - gchi_ref(:, :, k)))/s
+         call ref_report(nfail, dmax < 1.0e-12_dp, "AO d/d"//axis(k)//" vs pyscf, max|diff|/max", dmax)
+      end do
+   end block
+
    if (nfail > 0) then
       print '(a,i0,a)', "check_ao: ", nfail, " check(s) FAILED"
       stop 1
    end if
-   print '(a)', "check_ao: internal checks passed; run ao_ref.py for the pyscf comparison"
+   print '(a)', "check_ao: internal checks (including the pyscf reference) passed; RESULT: PASS"
 
 contains
 
