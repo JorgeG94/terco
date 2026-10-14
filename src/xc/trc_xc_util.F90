@@ -4,9 +4,9 @@
 ! keeps in `impl/builtin/util.hpp` and `constants.hpp`.
 !
 ! The kernels themselves are GENERATED, by tools/exchcxx_to_fortran.py, from
-! ExchCXX's Maple-emitted C++ (MIT, Lawrence Berkeley National Laboratory and
-! Microsoft). This file is written by hand and is the only piece of the XC
-! functional layer that is.
+! ExchCXX's Maple-emitted C++ (BSD 3-clause, Lawrence Berkeley National
+! Laboratory and Microsoft). This file is written by hand and is the only
+! piece of the XC functional layer that is.
 !
 ! Everything here is `pure` and scalar, and marked `!$acc routine seq`, because
 ! it is called from inside `do concurrent` over grid points. Nothing here may
