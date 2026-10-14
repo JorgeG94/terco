@@ -243,6 +243,17 @@ if(Python3_FOUND)
       terco/check_xc_energy_vs_pyscf
       PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS
                  terco/check_xc_energy ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+    # VV10's E_nlc and potential on the same grid and density, against
+    # pyscf's numint.nr_nlc_vxc: water/6-31G* and water/cc-pVDZ (RKS),
+    # the OH radical/cc-pVDZ (UKS).
+    terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS)
+    add_test(NAME terco/check_vv10_vs_pyscf_ref
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/vv10_ref.py)
+    set_tests_properties(terco/check_vv10_vs_pyscf
+      PROPERTIES FIXTURES_SETUP vv10_probe)
+    set_tests_properties(terco/check_vv10_vs_pyscf_ref
+      PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                 FIXTURES_REQUIRED vv10_probe ENVIRONMENT "TERCO_CART_ORDER=${TERCO_CART_ORDER}")
     # The rotated-axis algebra itself, in Python and in float64, for every
     # ordered s/p class against int2e_cart, degenerate frames included. It
     # needs no build, so it is the first thing to break when the vendored
