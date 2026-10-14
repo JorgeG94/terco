@@ -12,14 +12,20 @@
 !      threshold bounds the error rather than hoping.
 !
 !      Q is built with the full Coulomb operator here and nowhere adjusted for
-!      omega (trc_fock.F90's range-separation parameter): erf(omega r12)/r12
-!      is pointwise smaller than 1/r12 for every omega > 0 (theta < 1 in the
-!      kernels' own substitution, scripts/gen_perclass.py), so the Coulomb
-!      Schwarz bound is still an upper bound on the attenuated integral, just
-!      a looser one. Tightening it for a given omega would screen more
-!      quartets, not fewer, so leaving it alone costs accuracy nothing -- the
-!      prescreens in trc_batch.F90 and the generated kernels' `pcut` test are
-!      the same story, same reason.
+!      omega (trc_fock.F90's range-separation parameter). The bound survives
+!      attenuation by a FOURIER argument, not a pointwise one on the real-
+!      space kernel (erf(omega r)/r is not pointwise <= 1/r everywhere; it is
+!      smaller at small r and the two cross): erf(omega r)/r has Fourier
+!      transform 4*pi/k^2 * exp(-k^2/(4 omega^2)), which is <= the Coulomb
+!      kernel's own 4*pi/k^2 at every k. (ab|ab) is the integral of the
+!      charge distribution rho_ab(r) rho_ab(r') against a kernel, which in
+!      k-space is the integral of |rho_ab_hat(k)|^2 times that kernel's
+!      transform -- a non-negative integrand against a pointwise-smaller
+!      transform, so (ab|ab)_erf <= (ab|ab)_Coulomb for ANY charge
+!      distribution, omega included. Tightening the bound for a given omega
+!      would screen more quartets, not fewer, so leaving it alone costs
+!      accuracy nothing -- the prescreens in trc_batch.F90 and the generated
+!      kernels' `pcut` test are the same story, same reason.
 !
 !   3. DENSITY.  What actually matters is a quartet's contribution to the Fock
 !      matrix, not the integral's size, so the bound carries the largest
