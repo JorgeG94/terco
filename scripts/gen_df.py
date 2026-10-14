@@ -51,6 +51,28 @@ is already addressed by offset, so nothing downstream needs reordering), then
 a small dispatcher -- host code, free to cross modules -- calls each
 non-empty class's own driver once.
 
+ABOVE THE CEILING: RYS
+-----------------------
+One module per class moves the wall; it does not remove it. At --lmax 3
+--lmax-aux 4, single-file compiles with real GPU flags measured (g|g) 2c at
+1m43s, (fd|g) 3c at 22m, and (ff|f)/(ff|g) 3c killed unfinished past 30-50m
+-- the written-out VRR+HRR's own code size, not the one-module-per-class
+split, is what nvfortran chokes on past a shell or two of f/g. Classes past
+SHIPPED_L/SHIPPED_LA (below this module's own `main`) use a RYS QUADRATURE
+body instead (`emit_class_rys`): the same algebra gen_rys.py already uses
+for the four-centre kernels above d, with the ket pinned to a single
+primitive (eta = gamma, Q = C, ld = 0 -- a three- or two-centre integral's
+ket is a lone shell, same observation the VRR/HRR body above already made).
+Reusing scripts/rys_inline.py rather than writing a second quadrature keeps
+the two Rys bodies (four-centre and this one) sharing one set of inlined
+roots/2D-recurrence/HRR emitters -- a bug fixed in one is fixed in both.
+Classes within the ceiling are untouched: `default_use_rys` returns False
+for every one of them regardless of --lmax/--lmax-aux, so the shipped
+--lmax 2 --lmax-aux 3 set keeps its written-out VRR+HRR, byte for byte.
+`--force-rys` (TESTING ONLY, never passed by src/CMakeLists.txt's normal
+configuration) overrides the policy per class, for comparing the two bodies
+against each other on classes where both exist.
+
 USAGE
     gen_df.py --lmax 3 --lmax-aux 4 --split src/generated
 """
@@ -72,6 +94,7 @@ def _load(name, path):
 HERE = os.path.dirname(os.path.abspath(__file__))
 gv = _load("gv", os.path.join(HERE, "gen_vrr.py"))
 gh = _load("gh", os.path.join(HERE, "gen_hrr.py"))
+ri = _load("ri", os.path.join(HERE, "rys_inline.py"))
 
 
 def cart(l, order="lexicographic"):
@@ -279,6 +302,252 @@ def emit_class(la, lb, lc, three, order="lexicographic"):
 """
 
 
+#
+# The shipped ceiling: the (--lmax, --lmax-aux) the committed src/generated
+# DF set was built at. NOT args.lmax/args.lmax_aux below, which is whatever
+# a non-default invocation asks for -- these two stay fixed so the classes
+# the "byte for byte" promise covers (docs/GENERATORS.md) never depend on a
+# LATER ceiling. A 3-centre class needs Rys once la, lb or lc goes past this;
+# a 2-centre one (both sides drawn from the AUXILIARY ceiling -- main()'s
+# loop runs la, lc over 0..LA for 2-centre) once la or lc does. See this
+# module's docstring for the nvfortran compile-time wall that makes this
+# necessary: (fd|g) 3c took 22 minutes to compile at LMAX=3/LMAX_AUX=4;
+# (ff|f) and (ff|g) did not finish in 30-50 minutes.
+#
+SHIPPED_L = 2
+SHIPPED_LA = 3
+
+
+def default_use_rys(la, lb, lc, three):
+    """The un-forced policy -- True once a class needs a shell this
+    project's GPU back end cannot compile a written-out VRR+HRR for in any
+    reasonable time. `--force-rys` (main()) can override this per class,
+    for the Rys-vs-HGP correctness comparison and other testing; the
+    shipped configuration (src/CMakeLists.txt) never passes it, so this
+    function is the only thing that decides for a normal build."""
+    if three:
+        return la > SHIPPED_L or lb > SHIPPED_L or lc > SHIPPED_LA
+    return la > SHIPPED_LA or lc > SHIPPED_LA
+
+
+def emit_class_rys(la, lb, lc, three, order, unroll_max):
+    """One class, RYS QUADRATURE body -- the above-ceiling twin of
+    `emit_class`. Same public signature (df_{tag}, same dummy arguments)
+    and the same digestion convention (`out` slot = 1 + ia + na*(ib + nb*ic)
+    for (ab|c), 1 + ia + na*ic for (a|c), both cartorder.py's own ordering),
+    so a caller cannot tell which body a given df_{tag} runs; only the
+    integral itself differs.
+
+    ALGEBRA: gen_rys.py's four-centre Rys middle (scripts/rys_inline.py's
+    inlined roots lookup, 2D recurrence and horizontal transfer), with the
+    ket pinned to a single primitive -- eta = gamma, Q = C, ld = 0
+    throughout (see gen_df.py's module docstring), so there is no ket HRR
+    and the ket's own "shell" is always the one-component s set (cart(0) =
+    [(0,0,0)]), addressed by the literal index 0 rather than a cnx3/cny3/
+    cnz3 table -- unlike the four-centre generator, which keeps ld generic.
+    nroots = (la+lb+lc)//2 + 1, the general nroots = (la+lb+lc+ld)//2 + 1
+    with ld = 0.
+
+    `out` IS the four-centre splice's `vbuf`, not `emit_class`'s `g`: the
+    horizontal transfer is linear in each axis's 2D table, but the final
+    digestion is the PRODUCT hx*hy*hz across the three axes, so the
+    per-root, per-primitive-quartet contribution has to land directly in
+    the output block. There is no g-then-HRR two-stage deferral the way
+    `emit_class`'s fully-3D VRR intermediate allows (its `g`, summed over
+    the auxiliary primitive kp, then transferred once per bra primitive ip
+    by `emit_bra_hrr`) -- a per-axis 1D quadrature only becomes additive
+    AFTER the x/y/z product, which is why this zeroes `out` once (like
+    `emit_class`) but accumulates into it inside BOTH primitive loops and
+    the root loop, like gen_rys.py's four-centre middle does into `vbuf`.
+
+    Heavy classes -- this function's entire reason to exist -- stay in the
+    array/loop form (rys_inline.py's UNROLLED MODE); `unroll_max` is the
+    SAME na*nb*nc <= threshold gen_rys.py's `--unroll-max-comp` already
+    uses for na*nb*nc*nd (nd = 1 here, ld = 0), not a new one -- see this
+    module's main() for where it comes from (CMake's TERCO_RYS_UNROLL_MAX,
+    threaded through unchanged)."""
+    ni, nk = la + lb, lc
+    nroots = (la + lb + lc)//2 + 1
+    na, nb, nc = len(cart(la)), len(cart(lb)), len(cart(lc))
+    nout = na*nb*nc if three else na*nc
+    unroll = na*nb*nc <= unroll_max
+
+    if three:
+        tag = f"3c{la}{lb}{lc}"
+        sig = ("npp, ppz, ppk, ppp, ppa, abx, aby, abz, "
+               "nprim_c, ec, cc_, rc, out")
+        decls = """      integer,  intent(in)  :: npp, nprim_c
+      real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
+      real(dp), intent(in)  :: abx, aby, abz
+      real(dp), intent(in)  :: ec(nprim_c), cc_(nprim_c), rc(3)"""
+        bra_loop_open = """      do ip = 1, npp
+         zeta = ppz(ip)
+         kab  = ppk(ip)
+         px = ppp(1, ip); py = ppp(2, ip); pz = ppp(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)"""
+        ab_axes = ("abx", "aby", "abz")
+    else:
+        tag = f"2c{la}{lc}"
+        sig = "nprim_a, ea, ca, ra, nprim_c, ec, cc_, rc, out"
+        decls = """      integer,  intent(in)  :: nprim_a, nprim_c
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a), ra(3)
+      real(dp), intent(in)  :: ec(nprim_c), cc_(nprim_c), rc(3)"""
+        bra_loop_open = """      do ip = 1, nprim_a
+         zeta = ea(ip)
+         kab = ca(ip)
+         px = ra(1); py = ra(2); pz = ra(3)
+         pax = 0.0_dp; pay = 0.0_dp; paz = 0.0_dp"""
+        ab_axes = ("0.0_dp", "0.0_dp", "0.0_dp")  # lb = 0: never multiplied
+
+    decl_new = (
+        # `oz`, not `k`: rys2d_hrr_decls (below, loop form) declares its own
+        # `k` for the 2D-recurrence axis loop, and a second `integer :: k`
+        # here would be a duplicate declaration in the same scope -- caught
+        # by compiling a forced-Rys loop-form class, which is also the ONLY
+        # form that reaches rys2d_hrr_decls (the unrolled branch never
+        # declares `k`, so it would not have caught this).
+        "      integer  :: ip, kp, oz\n"
+        "      real(dp) :: zeta, eta, zpe, rho, kab, pref\n"
+        "      real(dp) :: px, py, pz, pqx, pqy, pqz, tval\n"
+        "      real(dp) :: pax, pay, paz, qcx, qcy, qcz\n"
+        f"      real(dp) :: ru({nroots}), rw({nroots})\n"
+        "      real(dp) :: u2, dinv, b00r, b10r, bp01r, f00\n"
+        "      real(dp) :: c00x, c00y, c00z, cp0x, cp0y, cp0z\n"
+        + ri.roots_decls())
+    tabs = ""
+    if unroll:
+        decl_new += ri.unrolled_table_decls(ni, nk, la, lb, lc, 0, 6)
+    else:
+        decl_new += (
+            f"      real(dp) :: gx(0:{ni}, 0:{nk}), gy(0:{ni}, 0:{nk}), gz(0:{ni}, 0:{nk})\n"
+            f"      real(dp) :: hx(0:{la}, 0:{lb}, 0:{lc}, 0:0)\n"
+            f"      real(dp) :: hy(0:{la}, 0:{lb}, 0:{lc}, 0:0)\n"
+            f"      real(dp) :: hz(0:{la}, 0:{lb}, 0:{lc}, 0:0)\n"
+            "      integer  :: rr, aa, bb, cc, idx\n"
+            + ri.rys2d_hrr_decls(la, lb, 0, nk))
+        for cnm, ax in (("cnx", 0), ("cny", 1), ("cnz", 2)):
+            for which, l in enumerate((la, lb, lc)):
+                comps = cart(l, order)
+                vals = ", ".join(str(c[ax]) for c in comps)
+                tabs += f"   integer, parameter :: {cnm}{which}_{tag}({len(comps)}) = [{vals}]\n"
+
+    kp_head = f"""         do kp = 1, nprim_c
+            eta = ec(kp)
+            zpe = zeta + eta
+            rho = zeta*eta/zpe
+            ! The ket is a single shell, so Q = C and QC = 0 -- same as
+            ! emit_class's HGP body; ld = 0 throughout, so there is no ket
+            ! HRR either.
+            qcx = 0.0_dp; qcy = 0.0_dp; qcz = 0.0_dp
+            pqx = px - rc(1); pqy = py - rc(2); pqz = pz - rc(3)
+            tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+            ! K_cd = 1: a single Gaussian has no product exponential.
+            pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*kab*cc_(kp)
+"""
+
+    if unroll:
+        comps = [cart(l, order) for l in (la, lb, lc)]
+        pad = " "*12
+        mid = [ri.roots_inline_body(nroots, "tval", 12)]
+        for rr in range(1, nroots + 1):
+            mid.append(f"""\
+            u2 = ru({rr})/(1.0_dp - ru({rr}))*rho
+            dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+            b00r  = 0.5_dp*u2*dinv
+            b10r  = 0.5_dp*(eta + u2)*dinv
+            bp01r = 0.5_dp*(zeta + u2)*dinv
+            f00 = pref*rw({rr})
+            c00x = pax - u2*eta*dinv*pqx
+            c00y = pay - u2*eta*dinv*pqy
+            c00z = paz - u2*eta*dinv*pqz
+            cp0x = qcx + u2*zeta*dinv*pqx
+            cp0y = qcy + u2*zeta*dinv*pqy
+            cp0z = qcz + u2*zeta*dinv*pqz
+""")
+            mid.append(ri.rys2d_scalar_assignments(ni, nk, "c00x", "cp0x", "b00r", "b10r", "bp01r", "1.0_dp", "gx", 12))
+            mid.append(ri.rys2d_scalar_assignments(ni, nk, "c00y", "cp0y", "b00r", "b10r", "bp01r", "1.0_dp", "gy", 12))
+            mid.append(ri.rys2d_scalar_assignments(ni, nk, "c00z", "cp0z", "b00r", "b10r", "bp01r", "f00",    "gz", 12))
+            mid.append(ri.hrr_scalar_assignments(ni, nk, la, lb, lc, 0, "gx", ab_axes[0], "0.0_dp", "hx", 12))
+            mid.append(ri.hrr_scalar_assignments(ni, nk, la, lb, lc, 0, "gy", ab_axes[1], "0.0_dp", "hy", 12))
+            mid.append(ri.hrr_scalar_assignments(ni, nk, la, lb, lc, 0, "gz", ab_axes[2], "0.0_dp", "hz", 12))
+            idx = 0
+            acc = []
+            for icc in range(1, nc + 1):
+                for ibb in range(1, nb + 1):
+                    for iaa in range(1, na + 1):
+                        idx += 1
+                        eix, eiy, eiz = comps[0][iaa - 1]
+                        ejx, ejy, ejz = comps[1][ibb - 1]
+                        ekx, eky, ekz = comps[2][icc - 1]
+                        hxn = ri.nm("hx", eix, ejx, ekx, 0)
+                        hyn = ri.nm("hy", eiy, ejy, eky, 0)
+                        hzn = ri.nm("hz", eiz, ejz, ekz, 0)
+                        acc.append(f"{pad}out({idx}) = out({idx}) + {hxn}*{hyn}*{hzn}")
+            mid.append("\n".join(acc) + "\n")
+        kp_body = "".join(mid)
+    else:
+        kp_body = f"""\
+{ri.roots_inline_body(nroots, "tval", 12)}
+            do rr = 1, {nroots}
+               u2 = ru(rr)/(1.0_dp - ru(rr))*rho
+               dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+               b00r  = 0.5_dp*u2*dinv
+               b10r  = 0.5_dp*(eta + u2)*dinv
+               bp01r = 0.5_dp*(zeta + u2)*dinv
+               f00 = pref*rw(rr)
+               c00x = pax - u2*eta*dinv*pqx
+               c00y = pay - u2*eta*dinv*pqy
+               c00z = paz - u2*eta*dinv*pqz
+               cp0x = qcx + u2*zeta*dinv*pqx
+               cp0y = qcy + u2*zeta*dinv*pqy
+               cp0z = qcz + u2*zeta*dinv*pqz
+
+{ri.rys2d_inline_body(ni, nk, "c00x", "cp0x", "b00r", "b10r", "bp01r", "1.0_dp", "gx", 15)}
+{ri.rys2d_inline_body(ni, nk, "c00y", "cp0y", "b00r", "b10r", "bp01r", "1.0_dp", "gy", 15)}
+{ri.rys2d_inline_body(ni, nk, "c00z", "cp0z", "b00r", "b10r", "bp01r", "f00",    "gz", 15)}
+{ri.hrr_inline_body(ni, nk, la, lb, lc, 0, "gx", ab_axes[0], "0.0_dp", "hx", 15)}
+{ri.hrr_inline_body(ni, nk, la, lb, lc, 0, "gy", ab_axes[1], "0.0_dp", "hy", 15)}
+{ri.hrr_inline_body(ni, nk, la, lb, lc, 0, "gz", ab_axes[2], "0.0_dp", "hz", 15)}
+
+               idx = 0
+               do cc = 1, {nc}
+                  do bb = 1, {nb}
+                     do aa = 1, {na}
+                        idx = idx + 1
+                        out(idx) = out(idx) &
+                           + hx(cnx0_{tag}(aa), cnx1_{tag}(bb), cnx2_{tag}(cc), 0) &
+                           * hy(cny0_{tag}(aa), cny1_{tag}(bb), cny2_{tag}(cc), 0) &
+                           * hz(cnz0_{tag}(aa), cnz1_{tag}(bb), cnz2_{tag}(cc), 0)
+                     end do
+                  end do
+               end do
+            end do
+"""
+
+    body = f"""
+   pure subroutine df_{tag}({sig})
+      !! {'(ab|c)' if three else '(a|c)'} class ({la}{lb}|{lc}) -- Rys quadrature,
+      !! {nroots} root{'s' if nroots != 1 else ''}, {'loop' if not unroll else 'unrolled'} form.
+      !$acc routine seq
+{decls}
+      real(dp), intent(out) :: out({nout})
+
+{decl_new}
+      do oz = 1, {nout}
+         out(oz) = 0.0_dp
+      end do
+
+{bra_loop_open}
+
+{kp_head}
+{kp_body}
+         end do
+      end do
+   end subroutine df_{tag}
+"""
+    return body, tabs
+
+
 MOD_HEADER = """!
 ! {title}
 !
@@ -301,30 +570,45 @@ BOYS_USE = ("   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, "
             "BOYS_NGRID, BOYS_TMAX, BOYS_DTINV, BOYS_DT\n")
 
 
-def emit_2c_module(la, lc, L, LA, order, order_val, order_arg):
-    """trc_df_2c_k{la}{lc}: the (la|lc) class, its item routine and launch."""
+def emit_2c_module(la, lc, L, LA, order, order_val, order_arg, rys, unroll_max):
+    """trc_df_2c_k{la}{lc}: the (la|lc) class, its item routine and launch.
+
+    `rys` picks the integral body: False (shipped ceiling, every class
+    below SHIPPED_LA on both sides) keeps today's written-out VRR+HRR,
+    byte-for-byte; True (above the ceiling, or `--force-rys`) uses
+    `emit_class_rys` instead -- see that function and this module's
+    docstring. Everything else about the module -- the launch, the item
+    routine, the digestion -- is identical either way."""
     na, nc = len(cart(la)), len(cart(lc))
     mod = f"trc_df_2c_k{la}{lc}"
     drv = f"df_2c_k{la}{lc}"
     itm = f"df_2c_i{la}{lc}"
     kern = f"df_2c{la}{lc}"
-    kernel_body = emit_class(la, 0, lc, three=False, order=order)
+    if rys:
+        kernel_body, tabs = emit_class_rys(la, 0, lc, three=False, order=order,
+                                           unroll_max=unroll_max)
+        nroots = (la + lc)//2 + 1
+        use_block = "   use trc_boys, only: dp\n" + ri.roots_table_use(nroots)
+        boys_incl = ""
+    else:
+        kernel_body = emit_class(la, 0, lc, three=False, order=order)
+        tabs = ""
+        use_block = BOYS_USE
+        boys_incl = '#include "inc/trc_boys_eval.inc"\n\n'
 
     text = MOD_HEADER.format(
         title=f"Class ({la}|{lc}) two-centre Coulomb kernel.",
         L=L, LA=LA, order_arg=order_arg, order_val=order_val)
     text += f"""module {mod}
-{BOYS_USE}   implicit none
+{use_block}   implicit none
    private
    public :: {drv}
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
-
+{tabs}
 contains
 
-#include "inc/trc_boys_eval.inc"
-
-   subroutine {drv}(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+{boys_incl}   subroutine {drv}(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                     na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       !! ({la}|{lc}) launch: `do concurrent` over the na x nc cross product of
       !! two shell-index LISTS the caller built by grouping on angular
@@ -387,30 +671,41 @@ end module {mod}
     return mod, drv, text
 
 
-def emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg):
-    """trc_df_3c_k{la}{lb}{lc}: the (la,lb|lc) class, item routine, launch."""
+def emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, rys, unroll_max):
+    """trc_df_3c_k{la}{lb}{lc}: the (la,lb|lc) class, item routine, launch.
+
+    `rys` picks the integral body -- see `emit_2c_module`'s identical note.
+    """
     na, nb, nc = len(cart(la)), len(cart(lb)), len(cart(lc))
     mod = f"trc_df_3c_k{la}{lb}{lc}"
     drv = f"df_3c_k{la}{lb}{lc}"
     itm = f"df_3c_i{la}{lb}{lc}"
     kern = f"df_3c{la}{lb}{lc}"
-    kernel_body = emit_class(la, lb, lc, three=True, order=order)
+    if rys:
+        kernel_body, tabs = emit_class_rys(la, lb, lc, three=True, order=order,
+                                           unroll_max=unroll_max)
+        nroots = (la + lb + lc)//2 + 1
+        use_block = "   use trc_boys, only: dp\n" + ri.roots_table_use(nroots)
+        boys_incl = ""
+    else:
+        kernel_body = emit_class(la, lb, lc, three=True, order=order)
+        tabs = ""
+        use_block = BOYS_USE
+        boys_incl = '#include "inc/trc_boys_eval.inc"\n\n'
 
     text = MOD_HEADER.format(
         title=f"Class ({la}{lb}|{lc}) three-centre Coulomb kernel.",
         L=L, LA=LA, order_arg=order_arg, order_val=order_val)
     text += f"""module {mod}
-{BOYS_USE}   implicit none
+{use_block}   implicit none
    private
    public :: {drv}
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
-
+{tabs}
 contains
 
-#include "inc/trc_boys_eval.inc"
-
-   subroutine {drv}(nsh, nao, sh_ao, sh_r, &
+{boys_incl}   subroutine {drv}(nsh, nao, sh_ao, sh_r, &
                     npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                     npc, ord_p, &
                     nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, &
@@ -507,6 +802,26 @@ contains
 end module {mod}
 """
     return mod, drv, text
+
+
+def _parse_unroll_max(s):
+    """Same parsing as gen_rys.py's --unroll-max-comp: an int, or 'inf'/
+    'all' for no ceiling."""
+    if s.strip().lower() in ("inf", "all"):
+        return float("inf")
+    return int(s)
+
+
+def _parse_force_rys(s):
+    """--force-rys: '' (default, no forcing), 'all' (every class), or a
+    comma-separated set of raw class-digit tags -- see main()'s --force-rys
+    help for the two/three-digit convention."""
+    s = s.strip()
+    if not s:
+        return set()
+    if s.lower() == "all":
+        return "all"
+    return {t.strip() for t in s.split(",") if t.strip()}
 
 
 def emit_handoff(two, three, L, LA, order_arg, order_val):
@@ -763,6 +1078,25 @@ def main():
                          "trc_df_kernels.F90 hand-off module. The only mode: "
                          "see gen_df.py's module docstring for why a single "
                          "file does not scale past (dd|f).")
+    ap.add_argument("--unroll-max-comp", default="0",
+                    help="unroll a Rys class's root/component loops (see "
+                         "rys_inline.py's UNROLLED MODE) when its na*nb*nc "
+                         "is at most this; 'inf'/'all' unrolls every Rys "
+                         "class. Default 0: every Rys class keeps the "
+                         "array/loop form. The SAME threshold gen_rys.py's "
+                         "--unroll-max-comp takes (CMake's "
+                         "TERCO_RYS_UNROLL_MAX) -- pass that value here too, "
+                         "do not pick a different one.")
+    ap.add_argument("--force-rys", default="",
+                    help="TESTING ONLY, never passed by the shipped "
+                         "configuration: force the Rys body for classes "
+                         "that would otherwise keep the written-out "
+                         "VRR+HRR. 'all' forces every class; otherwise a "
+                         "comma-separated list of raw class-digit tags -- "
+                         "two digits 'la lc' for a two-centre class (e.g. "
+                         "33), three digits 'la lb lc' for a three-centre "
+                         "one (e.g. 223) -- unambiguous since every "
+                         "angular momentum here is one decimal digit.")
     args = ap.parse_args()
     L = args.lmax
     LA = args.lmax_aux if args.lmax_aux is not None else L + 1
@@ -772,23 +1106,37 @@ def main():
 
     os.makedirs(args.split, exist_ok=True)
 
+    unroll_max = _parse_unroll_max(args.unroll_max_comp)
+    force = _parse_force_rys(args.force_rys)
+
+    def use_rys(digits, la, lb, lc, three):
+        if force == "all" or digits in force:
+            return True
+        return default_use_rys(la, lb, lc, three)
+
     two, three = [], []
+    n_rys2 = n_rys3 = 0
     # Both sides of (a|c) are auxiliary shells: the metric (P|Q) needs the
     # bra up to LA as well, and a missing (f|f) case left the block unset and
     # the metric indefinite the first time an RI set with f functions was
     # tried.
     for la in range(LA + 1):
         for lc in range(LA + 1):
+            rys = use_rys(f"{la}{lc}", la, 0, lc, False)
+            n_rys2 += rys
             mod, drv, text = emit_2c_module(la, lc, L, LA, order, order_val,
-                                            order_arg)
+                                            order_arg, rys, unroll_max)
             with open(os.path.join(args.split, mod + ".F90"), "w") as fh:
                 fh.write(text)
             two.append((la, lc))
     for la in range(L + 1):
         for lb in range(L + 1):
             for lc in range(LA + 1):
+                rys = use_rys(f"{la}{lb}{lc}", la, lb, lc, True)
+                n_rys3 += rys
                 mod, drv, text = emit_3c_module(la, lb, lc, L, LA, order,
-                                                order_val, order_arg)
+                                                order_val, order_arg, rys,
+                                                unroll_max)
                 with open(os.path.join(args.split, mod + ".F90"), "w") as fh:
                     fh.write(text)
                 three.append((la, lb, lc))
@@ -798,8 +1146,9 @@ def main():
         fh.write(handoff)
 
     total_lines = handoff.count("\n")
-    print(f"wrote {len(two)} two-centre + {len(three)} three-centre class "
-          f"modules + trc_df_kernels.F90 into {args.split}")
+    print(f"wrote {len(two)} two-centre ({n_rys2} Rys) + {len(three)} "
+          f"three-centre ({n_rys3} Rys) class modules + trc_df_kernels.F90 "
+          f"into {args.split}")
 
 
 if __name__ == "__main__":
