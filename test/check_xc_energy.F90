@@ -53,9 +53,10 @@ program check_xc_energy
    use trc_cart_perm, only: build_ao_perm
    implicit none
 
-   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 7
+   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 9
    character(len=8), parameter :: names(NFUNC) = [character(len=8) :: &
-                                                  "lda_x", "svwn", "pbe", "blyp", "b3lyp", "b3lyp5", "wb97x-v"]
+                                                  "lda_x", "svwn", "pbe", "blyp", "b3lyp", "b3lyp5", "wb97x-v", &
+                                                  "wb97x", "wb97"]
    integer :: sh_l(NSH), sh_np(NSH), i, j, nao, ifn, unit, nfail
    real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
    real(dp) :: at_z(NATM), at_r(3, NATM), seed, exc, nelec, exc2, nelec2, trds

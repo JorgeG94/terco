@@ -44,6 +44,14 @@ program check_xc
                                 wb97x_v_xc_fxc_unpolar, wb97x_v_xc_vxc_fxc_unpolar, &
                                 wb97x_v_xc_exc_polar, wb97x_v_xc_exc_vxc_polar, &
                                 wb97x_v_xc_fxc_polar, wb97x_v_xc_vxc_fxc_polar
+   use trc_xc_wb97x_xc, only: wb97x_xc_exc_unpolar, wb97x_xc_exc_vxc_unpolar, &
+                              wb97x_xc_fxc_unpolar, wb97x_xc_vxc_fxc_unpolar, &
+                              wb97x_xc_exc_polar, wb97x_xc_exc_vxc_polar, &
+                              wb97x_xc_fxc_polar, wb97x_xc_vxc_fxc_polar
+   use trc_xc_wb97_xc, only: wb97_xc_exc_unpolar, wb97_xc_exc_vxc_unpolar, &
+                             wb97_xc_fxc_unpolar, wb97_xc_vxc_fxc_unpolar, &
+                             wb97_xc_exc_polar, wb97_xc_exc_vxc_polar, &
+                             wb97_xc_fxc_polar, wb97_xc_vxc_fxc_polar
    implicit none
 
    ! Two independent Maple derivations agree to this on energies and first
@@ -319,6 +327,40 @@ contains
             call wb97x_v_xc_fxc_unpolar(x(1), x(2), f(1), f(2), f(3))
             call wb97x_v_xc_exc_unpolar(x(1), x(2), e)
             call wb97x_v_xc_vxc_fxc_unpolar(x(1), x(2), v2(1), v2(2), f2(1), f2(2), f2(3))
+            nv = 2; nf = 3
+         end if
+      case ("wb97x_xc")
+         if (polar) then
+            call wb97x_xc_exc_vxc_polar(x(1), x(2), x(3), x(4), x(5), out(1), v(1), v(2), v(3), v(4), v(5))
+            call wb97x_xc_fxc_polar(x(1), x(2), x(3), x(4), x(5), f(1), f(2), f(3), f(4), f(5), f(6), &
+                                    f(7), f(8), f(9), f(10), f(11), f(12), f(13), f(14), f(15))
+            call wb97x_xc_exc_polar(x(1), x(2), x(3), x(4), x(5), e)
+            call wb97x_xc_vxc_fxc_polar(x(1), x(2), x(3), x(4), x(5), v2(1), v2(2), v2(3), v2(4), v2(5), &
+                                        f2(1), f2(2), f2(3), f2(4), f2(5), f2(6), f2(7), f2(8), f2(9), &
+                                        f2(10), f2(11), f2(12), f2(13), f2(14), f2(15))
+            nv = 5; nf = 15
+         else
+            call wb97x_xc_exc_vxc_unpolar(x(1), x(2), out(1), v(1), v(2))
+            call wb97x_xc_fxc_unpolar(x(1), x(2), f(1), f(2), f(3))
+            call wb97x_xc_exc_unpolar(x(1), x(2), e)
+            call wb97x_xc_vxc_fxc_unpolar(x(1), x(2), v2(1), v2(2), f2(1), f2(2), f2(3))
+            nv = 2; nf = 3
+         end if
+      case ("wb97_xc")
+         if (polar) then
+            call wb97_xc_exc_vxc_polar(x(1), x(2), x(3), x(4), x(5), out(1), v(1), v(2), v(3), v(4), v(5))
+            call wb97_xc_fxc_polar(x(1), x(2), x(3), x(4), x(5), f(1), f(2), f(3), f(4), f(5), f(6), &
+                                   f(7), f(8), f(9), f(10), f(11), f(12), f(13), f(14), f(15))
+            call wb97_xc_exc_polar(x(1), x(2), x(3), x(4), x(5), e)
+            call wb97_xc_vxc_fxc_polar(x(1), x(2), x(3), x(4), x(5), v2(1), v2(2), v2(3), v2(4), v2(5), &
+                                       f2(1), f2(2), f2(3), f2(4), f2(5), f2(6), f2(7), f2(8), f2(9), &
+                                       f2(10), f2(11), f2(12), f2(13), f2(14), f2(15))
+            nv = 5; nf = 15
+         else
+            call wb97_xc_exc_vxc_unpolar(x(1), x(2), out(1), v(1), v(2))
+            call wb97_xc_fxc_unpolar(x(1), x(2), f(1), f(2), f(3))
+            call wb97_xc_exc_unpolar(x(1), x(2), e)
+            call wb97_xc_vxc_fxc_unpolar(x(1), x(2), v2(1), v2(2), f2(1), f2(2), f2(3))
             nv = 2; nf = 3
          end if
       case default

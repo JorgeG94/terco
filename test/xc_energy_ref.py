@@ -45,10 +45,12 @@ inv = np.argsort(perm)
 # semilocal pieces, with exx/exx_lr/nlc_b/nlc_c applied outside it. So the
 # same comparison that already covers b3lyp's hybrid exchange covers
 # wb97x-v's range separation and VV10 the same way, no special-casing here.
-NAMES = ['lda_x', 'svwn', 'pbe', 'blyp', 'b3lyp', 'b3lyp5', 'wb97x-v']
+# wb97x and wb97 are the same shape (no VV10 at all, libxc's nlc_coeff
+# returns empty for both).
+NAMES = ['lda_x', 'svwn', 'pbe', 'blyp', 'b3lyp', 'b3lyp5', 'wb97x-v', 'wb97x', 'wb97']
 PYSCF = {'lda_x': 'LDA_X', 'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'blyp': 'BLYP',
          'b3lyp': 'HYB_GGA_XC_B3LYP', 'b3lyp5': 'HYB_GGA_XC_B3LYP5',
-         'wb97x-v': 'HYB_GGA_XC_WB97X_V'}
+         'wb97x-v': 'HYB_GGA_XC_WB97X_V', 'wb97x': 'HYB_GGA_XC_WB97X', 'wb97': 'HYB_GGA_XC_WB97'}
 
 f = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xc_probe.bin'), 'rb')
 npts, n, nfunc = np.fromfile(f, dtype=np.int64, count=3)
