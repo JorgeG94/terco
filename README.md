@@ -150,6 +150,7 @@ terco --help
 | `-g, --guess` | `sad` (default), `sadq` (default for an ion), `sap`, `gwh`, `core` |
 | `--cart` | Cartesian AOs even for a basis defined spherical |
 | `--grid`, `--iterations`, `--econv`, `--gconv`, `--thresh` | DFT grid level and SCF/screening thresholds |
+| `--nlc-grid` | grid level for VV10 nonlocal correlation (`wb97x-v`), default 1 |
 | `--rimp2`, `--aux`, `--frozen` | RI-MP2 after a closed-shell SCF; runs Cartesian AOs, as RI-MP2 needs today |
 | `-s, --silent` | only the summary: no SCF iterations, timings or guess details |
 

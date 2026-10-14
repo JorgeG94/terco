@@ -12,7 +12,7 @@ program terco_main
    use pic_error, only: error_t
    use pic_cli, only: cli_t
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
-                       trc_set_aux_json, trc_set_method, trc_set_convergence, trc_set_screening, &
+                       trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, &
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, trc_message, &
@@ -35,7 +35,7 @@ program terco_main
    character(len=:), allocatable :: sval
    integer, allocatable :: z(:)
    real(dp), allocatable :: xyz(:, :)
-   integer :: natm, chrg, uhf, nelec, mult, grid, maxiter, nfrozen, guess_kind, ia, dev
+   integer :: natm, chrg, uhf, nelec, mult, grid, nlc_grid, maxiter, nfrozen, guess_kind, ia, dev
    integer(c_int) :: st, nao, nspin, conv, niter, sph
    real(dp) :: econv, gconv, thresh
    real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess
@@ -57,6 +57,7 @@ program terco_main
    call cli%add_option("guess", "sad, sadq, sap, gwh or core (default: sad; sadq for an ion)", short="g")
    call cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call cli%add_option("grid", "DFT integration grid level (3)", default="3")
+   call cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")
    call cli%add_option("iterations", "maximum SCF iterations (100)", default="100")
    call cli%add_option("econv", "energy convergence, Eh (1e-10)", default="1e-10")
    call cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
@@ -120,6 +121,7 @@ program terco_main
    end select
 
    call cli%get("grid", grid, err); call check("--grid")
+   call cli%get("nlc-grid", nlc_grid, err); call check("--nlc-grid")
    call cli%get("iterations", maxiter, err); call check("--iterations")
    call cli%get("econv", econv, err); call check("--econv")
    call cli%get("gconv", gconv, err); call check("--gconv")
@@ -168,6 +170,7 @@ program terco_main
    call api(trc_set_basis_json(h, c_string(basis_path)))
    if (rimp2) call api(trc_set_aux_json(h, c_string(aux_path)))
    call api(trc_set_method(h, c_string(func), int(grid, c_int)))
+   call api(trc_set_nlc_grid(h, int(nlc_grid, c_int)))
    call api(trc_set_convergence(h, real(econv, c_double), real(gconv, c_double), int(maxiter, c_int), 10_c_int))
    call api(trc_set_screening(h, real(thresh, c_double)))
    call api(trc_set_guess(h, int(guess_kind, c_int), c_null_ptr, 1_c_int))

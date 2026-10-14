@@ -401,6 +401,13 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
       end function trc_set_method
 
+      integer(c_int) function trc_set_nlc_grid(handle, grid_level) bind(c)
+         !! Grid level for VV10 (default 1); only used by a functional with VV10.
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), value :: grid_level
+      end function trc_set_nlc_grid
+
       integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) bind(c)
          !! The SCF stops when the energy change is under conv_energy AND the
          !! commutator norm |X^T(FDS-SDF)X| is under conv_diis.

@@ -204,7 +204,7 @@ module trc_capi
    ! the C symbols are the ABI and are unchanged.
    public :: capi_fock, trc_fock_many, trc_fock_nosym
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
-             trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, &
+             trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
              trc_set_convergence, trc_set_screening, trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
@@ -1560,6 +1560,28 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_method
+
+   function trc_set_nlc_grid(handle, grid_level) result(status) bind(c, name="trc_set_nlc_grid")
+      !! Grid level for VV10's nonlocal correlation (default 1, coarser than
+      !! the semilocal grid: VV10 is a double sum over its points). Only
+      !! used by a functional with VV10, such as wB97X-V.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: grid_level
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (grid_level < 0) then
+         call refuse(cx, "trc_set_nlc_grid: grid_level "//trim(itoa(int(grid_level)))// &
+                     " -- terco builds its grids by level, 0 upward")
+         return
+      end if
+      cx%opts%nlc_grid_level = int(grid_level)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_nlc_grid
 
    function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) result(status) &
       bind(c, name="trc_set_convergence")
