@@ -112,7 +112,7 @@ program link_gfortran
    d = 2.0_dp*matmul(c(:, 1:nocc), transpose(c(:, 1:nocc)))
    eold = 0.0_dp
    do it = 1, 200
-      rc = trc_fock(heri, hbas, d, g, 1.0_c_double, 1.0_c_double, 1_c_int)
+      rc = trc_fock(heri, hbas, d, g, 1.0_c_double, 1.0_c_double, 1_c_int, 0.0_c_double)
       call must(rc, 'trc_fock')
       f = h + g
       escf = enuc + 0.5_dp*sum(d*(h + f))
@@ -236,7 +236,7 @@ contains
       ! the (ndens, nao, nao) layout at once: with the density index in the
       ! wrong position this reads across the wrong stride and disagrees.
       allocate (g1(nao, nao), gn(nao, nao), gm(2, nao, nao))
-      rc = trc_fock(heri, hbas, d, g1, 1.0_c_double, 1.0_c_double, 1_c_int)
+      rc = trc_fock(heri, hbas, d, g1, 1.0_c_double, 1.0_c_double, 1_c_int, 0.0_c_double)
       call must(rc, 'trc_fock')
       block
          real(dp), allocatable :: dm(:, :, :)
@@ -248,7 +248,7 @@ contains
             end do
          end do
          rc = trc_fock_many(heri, hbas, 2_c_int, dm, gm, 1.0_c_double, &
-                            1.0_c_double, 1_c_int)
+                            1.0_c_double, 1_c_int, 0.0_c_double)
          call must(rc, 'trc_fock_many')
          worst = 0.0_dp
          do j = 1, nao

@@ -357,7 +357,7 @@ contains
       rc = trc_density(h_shell, d_shell); call expect(ok, rc == TRC_OK, "fock: shell density")
       rc = trc_context_basis(h_shell, basis_shell); call expect(ok, rc == TRC_OK, "fock: shell context_basis")
       rc = trc_context_eri(h_shell, eri_shell); call expect(ok, rc == TRC_OK, "fock: shell context_eri")
-      rc = trc_fock(eri_shell, basis_shell, d_shell, f_shell, 1.0_c_double, 1.0_c_double, 1_c_int)
+      rc = trc_fock(eri_shell, basis_shell, d_shell, f_shell, 1.0_c_double, 1.0_c_double, 1_c_int, 0.0_c_double)
       call expect(ok, rc == TRC_OK, "fock: shell fock")
 
       ! D_unit = N^-1 D_shell N^-1: CONTRAVARIANT, the direction trc_density
@@ -380,7 +380,7 @@ contains
       rc = trc_context_basis(h_unit, basis_unit); call expect(ok, rc == TRC_OK, "fock: unit context_basis")
       rc = trc_context_eri(h_unit, eri_unit); call expect(ok, rc == TRC_OK, "fock: unit context_eri")
       d_unit = real(reshape(tmp, [nao*nao]), c_double)
-      rc = trc_fock(eri_unit, basis_unit, d_unit, f_unit, 1.0_c_double, 1.0_c_double, 1_c_int)
+      rc = trc_fock(eri_unit, basis_unit, d_unit, f_unit, 1.0_c_double, 1.0_c_double, 1_c_int, 0.0_c_double)
       call expect(ok, rc == TRC_OK, "fock: unit fock")
 
       ! F_unit must equal N F_shell N.

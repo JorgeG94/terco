@@ -154,7 +154,7 @@ program bench_binwater
    !$acc            copyin(jmat, kmat)
 
    call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
-                     1.0_dp, 1.0_dp, .false., dsh, &
+                     1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                   qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -186,7 +186,7 @@ program bench_binwater
       !$acc update device(jmat, kmat)
       call tick(t0)
       call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
-                     1.0_dp, 1.0_dp, .false., dsh, &
+                     1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                      qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &

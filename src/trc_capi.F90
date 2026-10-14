@@ -690,7 +690,7 @@ contains
    ! Hartree-Fock passes 1 and 1. Making them mandatory at the boundary also
    ! means a Kohn-Sham caller cannot forget them and silently get HF.
    !
-   function capi_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen) &
+   function capi_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen, omega) &
       result(status) bind(c, name="trc_fock")
       !! CONTRAVARIANT in (dmat), COVARIANT out (gmat), under `basis`'s own
       !! ao_norm_kind: this is GAMESS's own main caller (its Fock/J/K
@@ -709,6 +709,9 @@ contains
       !! as it does and the operator stops being a fixed linear map).
       !! An int rather than a logical: Fortran's logical has no guaranteed C
       !! representation and c_bool is one byte against C's four-byte int.
+      real(c_double), value :: omega
+      !! Range-separation parameter, bohr^-1; zero is the ordinary Coulomb
+      !! operator. See eri%fock.
       integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
@@ -723,7 +726,7 @@ contains
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          call fock_scale_in(bb, n, dmat, nrm, dscratch)
          call fock_shaped(bb%b, eb%e, n, dscratch, gmat, real(jfac, dp), &
-                          real(kfac, dp), dscreen /= 0)
+                          real(kfac, dp), dscreen /= 0, real(omega, dp))
          call fock_scale_out(nrm, n, gmat)
       else
          ! The zero-copy path, untouched: `dmat` and `gmat` are sequence
@@ -732,7 +735,7 @@ contains
          ! mode -- the default, so every existing caller -- pays nothing
          ! for this entry existing.
          call fock_shaped(bb%b, eb%e, n, dmat, gmat, real(jfac, dp), &
-                          real(kfac, dp), dscreen /= 0)
+                          real(kfac, dp), dscreen /= 0, real(omega, dp))
       end if
       status = TRC_OK
    end function capi_fock
@@ -781,7 +784,7 @@ contains
    ! capi_fock and trc_fock_nosym before/after this): an O(n^2) price only a
    ! caller who opted into UNIT mode pays, against an O(n^4) build.
    !
-   subroutine fock_shaped(b, e, n, d, g, jfac, kfac, dscreen)
+   subroutine fock_shaped(b, e, n, d, g, jfac, kfac, dscreen, omega)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: e
       integer, intent(in) :: n
@@ -789,7 +792,9 @@ contains
       real(dp), intent(out) :: g(n, n)
       real(dp), intent(in) :: jfac, kfac
       logical, intent(in) :: dscreen
-      call e%fock(b, d, g, k_scale=kfac, j_scale=jfac, density_screen=dscreen)
+      real(dp), intent(in) :: omega
+      call e%fock(b, d, g, k_scale=kfac, j_scale=jfac, density_screen=dscreen, &
+                 omega=omega)
    end subroutine fock_shaped
 
    !
@@ -802,7 +807,7 @@ contains
    ! paying past N = 4. The layout is part of the contract, so it is stated
    ! here rather than transposed silently.
    !
-   function trc_fock_many(eri, basis, ndens, dmats, gmats, jfac, kfac, dscreen) &
+   function trc_fock_many(eri, basis, ndens, dmats, gmats, jfac, kfac, dscreen, omega) &
       result(status) bind(c, name="trc_fock_many")
       !! CONTRAVARIANT in, COVARIANT out, under `basis`'s own ao_norm_kind
       !! -- see capi_fock; the density-index-fastest layout means the
@@ -814,6 +819,8 @@ contains
       real(c_double), intent(out) :: gmats(*)
       real(c_double), value :: jfac, kfac
       integer(c_int), value :: dscreen
+      real(c_double), value :: omega
+      !! See capi_fock.
       integer(c_int) :: status
       type(basis_box), pointer :: bb
       type(eri_box), pointer :: eb
@@ -832,16 +839,16 @@ contains
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          call fock_many_scale_in(bb, int(ndens), n, dmats, nrm, dscratch)
          call fock_many_shaped(bb%b, eb%e, int(ndens), n, dscratch, gmats, &
-                               real(jfac, dp), real(kfac, dp), dscreen /= 0)
+                               real(jfac, dp), real(kfac, dp), dscreen /= 0, real(omega, dp))
          call fock_many_scale_out(nrm, int(ndens), n, gmats)
       else
          call fock_many_shaped(bb%b, eb%e, int(ndens), n, dmats, gmats, &
-                               real(jfac, dp), real(kfac, dp), dscreen /= 0)
+                               real(jfac, dp), real(kfac, dp), dscreen /= 0, real(omega, dp))
       end if
       status = TRC_OK
    end function trc_fock_many
 
-   subroutine fock_many_shaped(b, e, nd, n, d, g, jfac, kfac, dscreen)
+   subroutine fock_many_shaped(b, e, nd, n, d, g, jfac, kfac, dscreen, omega)
       !! As `fock_shaped`, and for the same reason -- the batch is the case where
       !! the copy would have hurt most, being N times the size (in SHELL mode;
       !! UNIT mode already pays for a copy every entry that wires it, so this
@@ -853,8 +860,9 @@ contains
       real(dp), intent(out) :: g(nd, n, n)
       real(dp), intent(in) :: jfac, kfac
       logical, intent(in) :: dscreen
+      real(dp), intent(in) :: omega
       call e%fock_many(b, nd, d, g, k_scale=kfac, j_scale=jfac, &
-                       density_screen=dscreen)
+                       density_screen=dscreen, omega=omega)
    end subroutine fock_many_shaped
 
    subroutine fock_many_scale_in(bb, nd, n, dmats, nrm, dscratch)
