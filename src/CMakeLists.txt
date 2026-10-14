@@ -226,6 +226,142 @@ function(terco_sync_generated stage dest prune)
   endif()
 endfunction()
 
+# GENERATION STAMPS. The sync above stops an unchanged output from being
+# RECOMPILED; these stop it from being regenerated at all. Every configure
+# (`cmake ..`, or CMake's own re-run after a CMakeLists edit) used to run
+# every generator below -- the Rys template, ~150 gen_rys.py/gen_rys_grad.py
+# runs and both dispatchers, and with _regen the HGP, 1e, DF, Cartesian and
+# spherical sets too -- 40-90 s of Python for a reconfigure that changed
+# nothing.
+#
+# A block's generators are written once, as terco_gen calls inside a macro,
+# and the macro is run twice: first with TERCO_GEN_MODE "plan", which only
+# records each command line, then with "run", which executes them -- but
+# only if the stamp says it must. The stamp is a SHA256 over
+#   - every generator command line, exactly as it would run: the scripts'
+#     paths, the interpreter, every option that reaches a generator
+#     (TERCO_LMAX, TERCO_DF_LMAX, TERCO_CART_ORDER, TERCO_RYS_UNROLL_MAX,
+#     TERCO_DF_FORCE_RYS) and the class lists computed below, so no option
+#     can be left out of it by forgetting to list it; and
+#   - the contents of every script those commands run or load (passed as
+#     SCRIPTS: the scripts each block invokes plus what they import or load
+#     with importlib -- none of them reads any other committed file).
+# The stamp file also records the SHA256 of every file the block left in its
+# destination. A configure skips the block only if the stamp matches AND
+# that destination holds exactly those files with exactly those contents;
+# a deleted, edited or stray output regenerates.
+#
+# Editing a generator re-runs the configure on the next build
+# (CMAKE_CONFIGURE_DEPENDS), and the changed hash regenerates. Nothing here
+# applies to TERCO_REGENERATE's in-place refresh of src/generated, which
+# always runs: that is the CI check that the committed set reproduces. And
+# TERCO_FORCE_REGENERATE ignores every stamp for one configure.
+function(terco_gen what)
+  get_property(_mode GLOBAL PROPERTY TERCO_GEN_MODE)
+  if(_mode STREQUAL "plan")
+    string(JOIN " " _line ${ARGN})
+    set_property(GLOBAL APPEND PROPERTY TERCO_GEN_PLAN "${_line}")
+  else()
+    execute_process(COMMAND ${ARGN} RESULT_VARIABLE _rc OUTPUT_QUIET)
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR "${what} failed (${_rc})")
+    endif()
+  endif()
+endfunction()
+
+# The stamp's manifest: line 1 the stamp, then one "<sha256> <file>" per
+# file in `dest`.
+function(terco_gen_write_stamp stamp_file stamp dest)
+  file(GLOB _files LIST_DIRECTORIES false RELATIVE "${dest}" "${dest}/*")
+  list(SORT _files)
+  set(_text "${stamp}\n")
+  foreach(_f ${_files})
+    file(SHA256 "${dest}/${_f}" _h)
+    string(APPEND _text "${_h} ${_f}\n")
+  endforeach()
+  file(WRITE "${stamp_file}" "${_text}")
+endfunction()
+
+function(terco_gen_uptodate out stamp_file stamp dest)
+  set(${out} FALSE PARENT_SCOPE)
+  if(NOT EXISTS "${stamp_file}")
+    return()
+  endif()
+  file(STRINGS "${stamp_file}" _lines)
+  list(POP_FRONT _lines _first)
+  if(NOT _first STREQUAL "${stamp}")
+    return()
+  endif()
+  set(_want "")
+  foreach(_l ${_lines})
+    if(NOT _l MATCHES "^([0-9a-f]+) (.+)$")
+      return()
+    endif()
+    set(_h "${CMAKE_MATCH_1}")
+    set(_f "${CMAKE_MATCH_2}")
+    if(NOT EXISTS "${dest}/${_f}")
+      return()
+    endif()
+    file(SHA256 "${dest}/${_f}" _have)
+    if(NOT _have STREQUAL _h)
+      return()
+    endif()
+    list(APPEND _want "${_f}")
+  endforeach()
+  file(GLOB _files LIST_DIRECTORIES false RELATIVE "${dest}" "${dest}/*")
+  list(SORT _files)
+  list(SORT _want)
+  if(NOT _files STREQUAL _want)
+    return()
+  endif()
+  set(${out} TRUE PARENT_SCOPE)
+endfunction()
+
+# Plan, stamp, then run `gen_macro` (a macro of terco_gen calls) and sync
+# `stage` into `dest` -- or skip both. `stampable` OFF always runs (the
+# in-place src/generated refresh). The stamp is kept beside the stage, as
+# `${stage}.stamp`; `name` is only for the status lines.
+function(terco_generate name gen_macro stage dest prune stampable)
+  set(_tg_gen_deps ${ARGN})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_tg_gen_deps})
+
+  set_property(GLOBAL PROPERTY TERCO_GEN_MODE "plan")
+  set_property(GLOBAL PROPERTY TERCO_GEN_PLAN "")
+  cmake_language(CALL ${gen_macro})
+  get_property(_tg_plan GLOBAL PROPERTY TERCO_GEN_PLAN)
+
+  set(_tg_sig "dest ${dest}\nprune ${prune}\n")
+  foreach(_tg_s ${_tg_gen_deps})
+    file(SHA256 "${_tg_s}" _tg_h)
+    string(APPEND _tg_sig "script ${_tg_s} ${_tg_h}\n")
+  endforeach()
+  foreach(_tg_c ${_tg_plan})
+    string(APPEND _tg_sig "run ${_tg_c}\n")
+  endforeach()
+  string(SHA256 _tg_stamp "${_tg_sig}")
+  string(SUBSTRING "${_tg_stamp}" 0 12 _tg_short)
+  set(_tg_stamp_file "${stage}.stamp")
+
+  if(stampable AND NOT TERCO_FORCE_REGENERATE)
+    terco_gen_uptodate(_tg_ok "${_tg_stamp_file}" "${_tg_stamp}" "${dest}")
+    if(_tg_ok)
+      message(STATUS "terco: ${name} up to date (stamp ${_tg_short})")
+      return()
+    endif()
+  endif()
+
+  message(STATUS "terco: generating ${name} into ${dest} (stamp ${_tg_short})")
+  file(REMOVE "${_tg_stamp_file}")
+  file(REMOVE_RECURSE "${stage}")
+  file(MAKE_DIRECTORY "${stage}")
+  set_property(GLOBAL PROPERTY TERCO_GEN_MODE "run")
+  cmake_language(CALL ${gen_macro})
+  terco_sync_generated("${stage}" "${dest}" ${prune})
+  if(stampable)
+    terco_gen_write_stamp("${_tg_stamp_file}" "${_tg_stamp}" "${dest}")
+  endif()
+endfunction()
+
 set(_gen_dir "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 set(_regen OFF)
 if(NOT TERCO_LMAX STREQUAL "2")
@@ -272,12 +408,7 @@ endif()
 if(_regen)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   set(_gen_out "${CMAKE_BINARY_DIR}/stage/generated")
-  file(REMOVE_RECURSE "${_gen_out}")
-  file(MAKE_DIRECTORY "${_gen_out}")
   set(_scripts "${CMAKE_SOURCE_DIR}/scripts")
-
-  message(STATUS "terco: generating kernels for LMAX=${TERCO_LMAX} "
-                 "CART_ORDER=${TERCO_CART_ORDER} in ${_gen_dir}")
 
   # Four-centre, one module per (la,lb,lc,ld) class. `--split` matters: at
   # LMAX=2 a single module is a gigabyte of NVVM that does not finish. HGP
@@ -289,13 +420,7 @@ if(_regen)
   if(_hgp_lmax GREATER 2)
     set(_hgp_lmax 2)
   endif()
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py --lmax
-            ${_hgp_lmax} ${_order_flag} --split ${_gen_out}
-    RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_perclass.py failed (${_rc})")
-  endif()
+  # gen_perclass.py --split, in _terco_gen_main below.
 
   # One-electron, multipoles and density fitting carry angular momentum on two
   # or three centres rather than four, so they grow as L^2 or L^3 and can
@@ -308,18 +433,7 @@ if(_regen)
   # DF is the exception that proved too expensive at f: it follows
   # TERCO_DF_LMAX when that is set (see its comment in the top-level
   # CMakeLists.txt), and its entry points stop on a basis above it.
-  execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX}
-                          ${_order_flag} -o ${_gen_out}/trc_1e_kernels.F90
-                  RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_1e.py failed (${_rc})")
-  endif()
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX} --multipole
-            ${_gen_out}/trc_mult_kernels.F90 ${_order_flag} RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_1e.py --multipole failed (${_rc})")
-  endif()
+  # gen_1e.py (and --multipole), in _terco_gen_main below.
   set(_df_lmax ${TERCO_LMAX})
   if(NOT "${TERCO_DF_LMAX}" STREQUAL "")
     set(_df_lmax ${TERCO_DF_LMAX})
@@ -339,13 +453,7 @@ if(_regen)
   if(NOT "${TERCO_DF_FORCE_RYS}" STREQUAL "")
     set(_df_force_rys_flag "--force-rys" "${TERCO_DF_FORCE_RYS}")
   endif()
-  execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
-                          ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
-                          ${_df_force_rys_flag} --split ${_gen_out}
-                  RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_df.py failed (${_rc})")
-  endif()
+  # gen_df.py, in _terco_gen_main below.
 
   # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
   # `comp` and trc_batch.F90's `cart_pow`, the flat table
@@ -354,17 +462,7 @@ if(_regen)
   # externally-authored AO data. Needed at every TERCO_LMAX, unlike the
   # unrolled VRR/HRR includes below, because these call sites are not
   # conditional on TRC_UNROLL_VRR/HRR.
-  execute_process(
-    COMMAND
-      ${Python3_EXECUTABLE} ${_scripts}/gen_cartcomp.py ${_order_flag}
-      --comp-out ${_gen_out}/trc_cart_comp.inc --colloc-out
-      ${_gen_out}/trc_collocation_table.inc --perm-l2b-out
-      ${_gen_out}/trc_cart_perm_l2b.inc --perm-b2l-out
-      ${_gen_out}/trc_cart_perm_b2l.inc
-    RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_cartcomp.py failed (${_rc})")
-  endif()
+  # gen_cartcomp.py, in _terco_gen_main below.
 
   # The Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4
   # (src/trc_sph.F90's only consumer). Fixed at l<=4 regardless of
@@ -372,13 +470,7 @@ if(_regen)
   # and not TERCO_LMAX: f support (milestone M3) needs this table ready
   # before any four-centre kernel reaches f, and generating a small table
   # four levels higher than today's d ceiling costs nothing.
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag}
-            -o ${_gen_out}/trc_sph_tables.F90
-    RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_sph.py failed (${_rc})")
-  endif()
+  # gen_sph.py, in _terco_gen_main below.
 
   # The unrolled recurrences are textual includes, and only the shared kernel
   # uses them -- at LMAX<=1, for the reason the top-level CMakeLists gives.
@@ -389,20 +481,47 @@ if(_regen)
   # slots directly), so it also carries a `#if TRC_CART_ORDER != n` guard and
   # takes `--order`; gen_vrr.py's VRR intermediates are addressed only
   # internally and never reach an AO index, so it has no `--order` at all.
-  if(TERCO_LMAX LESS_EQUAL 1)
-    execute_process(
-      COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_vrr.py --lmax ${TERCO_LMAX}
-              --mode include -o ${_gen_out}/trc_vrr_cases.inc OUTPUT_QUIET)
-    execute_process(
-      COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_hrr.py --lmax ${TERCO_LMAX}
-              ${_order_flag} -o ${_gen_out}/trc_hrr_cases.inc OUTPUT_QUIET)
-  endif()
+  # gen_vrr.py/gen_hrr.py, in _terco_gen_main below.
 
+  # The generators themselves, in the order they always ran. A macro, not
+  # inline, so terco_generate can run it once to plan and once to execute.
+  macro(_terco_gen_main)
+    terco_gen("gen_perclass.py" ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py
+              --lmax ${_hgp_lmax} ${_order_flag} --split ${_gen_out})
+    terco_gen("gen_1e.py" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX}
+              ${_order_flag} -o ${_gen_out}/trc_1e_kernels.F90)
+    terco_gen("gen_1e.py --multipole" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --multipole ${_gen_out}/trc_mult_kernels.F90 ${_order_flag})
+    terco_gen("gen_df.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
+              ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
+              ${_df_force_rys_flag} --split ${_gen_out})
+    terco_gen("gen_cartcomp.py" ${Python3_EXECUTABLE} ${_scripts}/gen_cartcomp.py ${_order_flag}
+              --comp-out ${_gen_out}/trc_cart_comp.inc
+              --colloc-out ${_gen_out}/trc_collocation_table.inc
+              --perm-l2b-out ${_gen_out}/trc_cart_perm_l2b.inc
+              --perm-b2l-out ${_gen_out}/trc_cart_perm_b2l.inc)
+    terco_gen("gen_sph.py" ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag}
+              -o ${_gen_out}/trc_sph_tables.F90)
+    if(TERCO_LMAX LESS_EQUAL 1)
+      terco_gen("gen_vrr.py" ${Python3_EXECUTABLE} ${_scripts}/gen_vrr.py --lmax ${TERCO_LMAX}
+                --mode include -o ${_gen_out}/trc_vrr_cases.inc)
+      terco_gen("gen_hrr.py" ${Python3_EXECUTABLE} ${_scripts}/gen_hrr.py --lmax ${TERCO_LMAX}
+                ${_order_flag} -o ${_gen_out}/trc_hrr_cases.inc)
+    endif()
+  endmacro()
+
+  # src/generated (TERCO_REGENERATE) is refreshed in place, never pruned
+  # and never stamped: see GENERATION STAMPS above.
   set(_prune ON)
   if(_gen_dir STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/generated")
     set(_prune OFF)
   endif()
-  terco_sync_generated("${_gen_out}" "${_gen_dir}" ${_prune})
+  terco_generate(
+    "kernels for LMAX=${TERCO_LMAX}, ${TERCO_CART_ORDER} order" _terco_gen_main
+    "${_gen_out}" "${_gen_dir}" ${_prune} ${_prune}
+    ${_scripts}/gen_perclass.py ${_scripts}/gen_vrr.py ${_scripts}/gen_hrr.py
+    ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/rys_inline.py
+    ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/cartorder.py)
 endif()
 
 # Always on the include path, not just when regenerating for LMAX<=1: the
@@ -459,8 +578,6 @@ if(TERCO_RYS)
   # already keeps in-tree-regenerable for exactly this kind of drift.
   set(_rys_dir "${CMAKE_BINARY_DIR}/generated_rys")
   set(_rys_stage "${CMAKE_BINARY_DIR}/stage/generated_rys")
-  file(REMOVE_RECURSE "${_rys_stage}")
-  file(MAKE_DIRECTORY "${_rys_stage}")
 
   # The template the Rys generators splice from: a private SKELETON copy of
   # the HGP per-class kernels (gen_perclass.py --skeleton: every marker and
@@ -495,14 +612,6 @@ if(TERCO_RYS)
 
   set(_hgp_template "${CMAKE_BINARY_DIR}/hgp_template")
   file(MAKE_DIRECTORY "${_hgp_template}")
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_perclass.py
-            --lmax ${TERCO_LMAX} ${_order_flag} --classes ${_all_classes_csv}
-            --skeleton --split ${_hgp_template}
-    RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_perclass.py (Rys template) failed (${_rc})")
-  endif()
 
   # Every class with a shell of d or above, plus (pp|pp) and (pp|ps). Above
   # d these are the only kernels a class has (trc_rys_select.F90 routes
@@ -520,30 +629,12 @@ if(TERCO_RYS)
 
   set(_rys_sources "")
   foreach(_tag ${_rys_classes})
-    set(_rys_out "${_rys_stage}/trc_pc_rys${_tag}.F90")
-    execute_process(
-      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
-              ${_tag} ${_order_flag} --src-dir ${_hgp_template}
-              --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_out}
-      RESULT_VARIABLE _rc OUTPUT_QUIET)
-    if(NOT _rc EQUAL 0)
-      message(FATAL_ERROR "gen_rys.py ${_tag} failed (${_rc})")
-    endif()
     list(APPEND _rys_sources "${_rys_dir}/trc_pc_rys${_tag}.F90")
   endforeach()
-
   list(JOIN _rys_classes "," _rys_classes_csv)
-  set(_rys_disp "${_rys_stage}/trc_rys_kernels.F90")
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_dispatch.py
-            --classes ${_rys_classes_csv} -o ${_rys_disp}
-    RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_rys_dispatch.py failed (${_rc})")
-  endif()
 
   list(LENGTH _rys_sources _nrys)
-  message(STATUS "terco: ${_nrys} Rys class kernels generated into ${_rys_dir}")
+  message(STATUS "terco: ${_nrys} Rys class kernels in ${_rys_dir}")
   target_sources(${main_lib} PRIVATE ${_rys_sources} ${_rys_dir}/trc_rys_kernels.F90)
 
   # --- Rys GRADIENT kernels: all 81 classes up to (dd|dd), no HGP fallback --
@@ -571,32 +662,53 @@ if(TERCO_RYS)
 
   set(_rys_grad_sources "")
   foreach(_tag ${_rys_grad_classes})
-    set(_rys_grad_out "${_rys_stage}/trc_pc_rysg${_tag}.F90")
-    execute_process(
-      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py
-              ${_tag} ${_order_flag} --src-dir ${_hgp_template}
-              --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_grad_out}
-      RESULT_VARIABLE _rc OUTPUT_QUIET)
-    if(NOT _rc EQUAL 0)
-      message(FATAL_ERROR "gen_rys_grad.py ${_tag} failed (${_rc})")
-    endif()
     list(APPEND _rys_grad_sources "${_rys_dir}/trc_pc_rysg${_tag}.F90")
   endforeach()
-
   list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
-  set(_rys_grad_disp "${_rys_stage}/trc_rys_grad_kernels.F90")
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
-            --classes ${_rys_grad_classes_csv} -o ${_rys_grad_disp}
-    RESULT_VARIABLE _rc OUTPUT_QUIET)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "gen_rys_grad_dispatch.py failed (${_rc})")
-  endif()
 
   list(LENGTH _rys_grad_sources _nrysg)
-  message(STATUS "terco: ${_nrysg} Rys gradient class kernels generated into ${_rys_dir}")
+  message(STATUS "terco: ${_nrysg} Rys gradient class kernels in ${_rys_dir}")
   target_sources(${main_lib} PRIVATE ${_rys_grad_sources}
                                      ${_rys_dir}/trc_rys_grad_kernels.F90)
 
-  terco_sync_generated("${_rys_stage}" "${_rys_dir}" ON)
+  # The Rys generators, planned and run (or skipped) by terco_generate: the
+  # template first, since every splicer reads it, then one energy and one
+  # gradient kernel per class and the two dispatchers. The template is not
+  # part of the stamp's manifest -- it is an intermediate, rewritten
+  # whenever the Rys kernels are -- and is not needed when they are skipped.
+  macro(_terco_gen_rys)
+    terco_gen("gen_perclass.py (Rys template)" ${Python3_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/scripts/gen_perclass.py --lmax ${TERCO_LMAX} ${_order_flag}
+              --classes ${_all_classes_csv} --skeleton --split ${_hgp_template})
+    foreach(_tag ${_rys_classes})
+      terco_gen("gen_rys.py ${_tag}" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
+                ${_tag} ${_order_flag} --src-dir ${_hgp_template}
+                --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}.F90)
+    endforeach()
+    terco_gen("gen_rys_dispatch.py" ${Python3_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/scripts/gen_rys_dispatch.py --classes ${_rys_classes_csv}
+              -o ${_rys_stage}/trc_rys_kernels.F90)
+    foreach(_tag ${_rys_grad_classes})
+      terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag}
+                --src-dir ${_hgp_template} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
+                -o ${_rys_stage}/trc_pc_rysg${_tag}.F90)
+    endforeach()
+    terco_gen("gen_rys_grad_dispatch.py" ${Python3_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
+              --classes ${_rys_grad_classes_csv} -o ${_rys_stage}/trc_rys_grad_kernels.F90)
+  endmacro()
+  set(_s "${CMAKE_SOURCE_DIR}/scripts")
+  terco_generate(
+    "Rys kernels" _terco_gen_rys "${_rys_stage}" "${_rys_dir}" ON ON
+    ${_s}/gen_perclass.py ${_s}/gen_vrr.py ${_s}/gen_hrr.py ${_s}/gen_rys.py
+    ${_s}/gen_rys_grad.py ${_s}/rys_inline.py ${_s}/gen_rys_dispatch.py
+    ${_s}/gen_rys_grad_dispatch.py ${_s}/cartorder.py)
+endif()
+
+# TERCO_FORCE_REGENERATE is one-shot: having ignored the stamps for this
+# configure, it turns itself off so the next one trusts them again.
+if(TERCO_FORCE_REGENERATE)
+  set(TERCO_FORCE_REGENERATE OFF CACHE BOOL
+      "Regenerate the build-tree kernels once, ignoring the generation stamps" FORCE)
 endif()

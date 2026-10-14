@@ -105,6 +105,7 @@ ctest --test-dir build --output-on-failure
 | `TERCO_GPU_ARCH` | `cc70` | as nvfortran spells it |
 | `TERCO_BUILD_SHARED` | `ON` | `libterco.so`, which a host built with another compiler can link; `OFF` for a static library |
 | `TERCO_REGENERATE` | `OFF` | refresh the committed kernels in-tree |
+| `TERCO_FORCE_REGENERATE` | `OFF` | regenerate the build-tree kernels once, ignoring the generation stamps (a configure otherwise reruns a generator only when a generator, its inputs or its options changed) |
 | `TERCO_ENABLE_MPI` | `OFF` | split the Fock build over MPI ranks, one device each; `OFF` is the same code on pic-mpi's single-rank backend |
 | `TERCO_ENABLE_TESTING` | `ON` | |
 
