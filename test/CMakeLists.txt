@@ -127,6 +127,12 @@ terco_add_check(check_basis_631g_ref check_basis_631g_ref.F90 NEEDS_BASIS)
 terco_add_check(check_spherical check_spherical.F90 NEEDS_BASIS)
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
 terco_add_check(sadq_atoms sadq_atoms.F90 NEEDS_BASIS)
+# The spherical averaging itself (trc_sad.F90's `average_atom_density`):
+# determinism, block proportionality and trace preservation on a free
+# O/cc-pVTZ atom's s/p/d/f shells, plus Tr(D S) = Z through the full
+# trc_sad_build pipeline when this build's one-/two-electron ceiling
+# reaches f (see sad_sphavg.F90's own header).
+terco_add_check(sad_sphavg sad_sphavg.F90 NEEDS_BASIS)
 terco_add_check(sap_guess sap_guess.F90 NEEDS_BASIS)
 terco_add_check(sapcmp sapcmp.F90 NEEDS_BASIS)
 
