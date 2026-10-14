@@ -80,6 +80,9 @@ CONSTANT_NAMES = {
     "m_cbrt_2", "m_cbrt_3", "m_cbrt_4", "m_cbrt_6", "m_cbrt_pi", "m_pi",
     "m_one_ov_pi", "m_pi_sq", "m_cbrt_one_ov_pi", "m_cbrt_pi_sq",
     "x2s", "x_factor_c",
+    # Not a `constants::` member -- a bare libm macro like M_PI, present in
+    # kernels after the ones already translated (p86_c's `t118`, say).
+    "m_sqrt2",
 }
 
 LINE_WIDTH = 96
@@ -395,6 +398,19 @@ def emit_wrapper(k: Kernel, fn: Function) -> list[str]:
 def emit_module(k: Kernel, src: Path) -> str:
     used: set[str] = set()
     impls, wrappers, publics = [], [], []
+    # A kernel's own `static constexpr` parameters -- X2S and X_FACTOR_C
+    # chiefly -- can themselves be written in terms of trc_xc_util's
+    # constants (mpw91_x's `a`..`f` all divide by X2S, say). Those values
+    # are already translated by the time they reach here (parse_kernel
+    # calls translate_expr on each), so the same case-insensitive scan
+    # emit_impl runs over statement bodies has to run over them too, or the
+    # `use trc_xc_util` line below silently omits a name the parameter
+    # declarations need.
+    for _, val in k.params:
+        for nm in re.findall(r"[A-Za-z_]\w*", val):
+            nm_lower = nm.lower()
+            if nm_lower in UTIL_NAMES or nm_lower in CONSTANT_NAMES:
+                used.add(nm_lower)
     for fn in k.functions:
         impls.extend(emit_impl(k, fn, used))
         wrappers.extend(emit_wrapper(k, fn))

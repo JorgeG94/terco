@@ -46,6 +46,10 @@ module trc_xc_util
    real(dp), parameter, public :: m_cbrt_pi_sq     = 2.145029397111025470934e+00_dp
    real(dp), parameter, public :: x2s        = 0.1282782438530421943003109254455883701296_dp
    real(dp), parameter, public :: x_factor_c = 0.9305257363491000250020102180716672510262_dp
+   ! Not an ExchCXX `constants::` member: the bare libm macro M_PI already
+   ! above is one too, matched case-insensitively (see
+   ! tools/exchcxx_to_fortran.py's CONSTANT_NAMES comment); glibc's value.
+   real(dp), parameter, public :: m_sqrt2    = 1.41421356237309504880e+00_dp
 
 contains
 
