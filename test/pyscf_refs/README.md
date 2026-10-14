@@ -56,6 +56,41 @@ within-shell-order ones), but those three will show a shape/number
 mismatch against a gamess-order build; that is a known gap, not a bug (see
 "Left open" at the bottom).
 
+## Local-only references
+
+`df_vs_pyscf.ref` is the one reference NOT committed -- it is the (ff|g)
+3-centre tensor on water/cc-pVTZ x cc-pVTZ-RI, ~18 MB as `%.17e` text, and
+`.gitignore` excludes it (`test/pyscf_refs/df_vs_pyscf.ref`). Without it,
+`check_df_vs_pyscf` prints a `SKIP` line (ctest's `SKIP_REGULAR_EXPRESSION`
+reports it as Skipped, not Passed or Failed) in every configuration,
+including the `-DTERCO_DF_LMAX=3` CI job -- the one deliberate exception to
+"a missing reference fails loudly past the LMAX/DF_LMAX self-skip" that the
+rest of this directory holds to. `check_staleness.py` treats it the same
+way: absent is reported and skipped, not an error, but if it IS present its
+hash is still checked like every other reference.
+
+To regenerate it locally and run the comparison for real:
+
+```
+# 1. A DF_LMAX=3 build -- this case needs the g-shell auxiliary classes,
+#    which the shipped ceiling (DF_LMAX=2) does not have:
+FC=gfortran cmake -S . -B build-lmax3 -DCMAKE_BUILD_TYPE=Release \
+    -DTERCO_ENABLE_GPU=OFF -DTERCO_ENABLE_TESTING=ON \
+    -DTERCO_LMAX=3 -DTERCO_DF_LMAX=3
+cmake --build build-lmax3 -j4
+
+# 2. generate.py's positional arguments select cases by name -- df_vs_pyscf
+#    alone, not every case:
+TERCO_PYSCF_REF_BUILD=$PWD/build-lmax3 \
+    /home/jorge/dev/metalquicha/.venv/bin/python3.12 test/pyscf_refs/generate.py df_vs_pyscf
+
+# 3. Compare for real:
+ctest --test-dir build-lmax3 -R check_df_vs_pyscf --output-on-failure
+```
+
+Measured agreement (gfortran 15, CPU): 2.5e-13 against the 1e-10 gate, same
+as every run before this file stopped being committed.
+
 ## The convergence-refusal rule
 
 Every SCF comparison (`rks`, `scf_robust`, `rimp2`) converges pyscf
@@ -131,7 +166,7 @@ as `terco/check_pyscf_refs_fresh`, it runs in every CI config.
 | `rys_grad_ref.py` | `rys_grad_631gs.ref`, `rys_grad_ccpvdz.ref` | `check_rys_grad_vs_pyscf.F90` |
 | `rys_fock_ref.py` | `rys_fock_water_ccpvdz.ref`, `rys_fock_water_ccpvtz.ref`, `rys_fock_formamide_def2tzvp.ref` | `check_rys_fock_vs_pyscf.F90` |
 | `erf_fock_ref.py` | `erf_fock_water_631gs.ref`, `erf_fock_water_ccpvdz.ref`, `erf_fock_formamide_ccpvdz.ref` (shared by the hgp/nosym/rys kernel-path binaries) | `check_erf_fock_vs_pyscf.F90` |
-| `df_vs_pyscf_ref.py` | `df_vs_pyscf.ref` | `check_df_vs_pyscf.F90` |
+| `df_vs_pyscf_ref.py` | `df_vs_pyscf.ref` (local-only, see above) | `check_df_vs_pyscf.F90` |
 | `rks_ref.py` | `rks.ref` | `scf_rks.F90` |
 | `rimp2_ref.py` | `rimp2.ref`, `rimp2_ccpvdz.ref` | `scf_rimp2.F90` |
 | `scf_robust_ref.py` | `scf_robust.ref` | `scf_robust.F90` |

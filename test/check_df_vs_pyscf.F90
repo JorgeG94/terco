@@ -36,7 +36,7 @@ program check_df_vs_pyscf
    use trc_basis_json, only: trc_basis_from_json
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
@@ -112,12 +112,29 @@ program check_df_vs_pyscf
       nat, ' atoms, ', nao, ' orbital AOs, ', naux, ' auxiliary AOs)'
 
    ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   !
+   ! THE ONE DELIBERATE EXCEPTION to "a missing reference fails loudly past
+   ! the LMAX/DF_LMAX self-skip": df_vs_pyscf.ref is ~18 MB (the (ff|g)
+   ! 3-centre tensor, water/cc-pVTZ x cc-pVTZ-RI) and is not committed --
+   ! .gitignore excludes it, and test/pyscf_refs/README.md's "Local-only
+   ! references" section has the exact command to regenerate it. Its
+   ! absence is a local-setup fact, not a regression, so it prints SKIP and
+   ! stops 0, same convention (and the same SKIP_REGULAR_EXPRESSION
+   ! ctest property) as the LMAX/DF_LMAX self-skip above -- including in
+   ! the DF_LMAX=3 CI job, which never has this file either.
+   !
    block
       real(dp), parameter :: TOL = 1.0e-10_dp
       integer :: u, nat_ref, nao_ref, naux_ref, nfail
       real(dp), allocatable :: o_ref(:, :), j_ref(:, :), tens_ref(:, :, :)
       real(dp) :: do_, dj, dtens
-      call ref_require('df_vs_pyscf.ref', u)
+      logical :: has_ref
+      call ref_open('df_vs_pyscf.ref', u, has_ref)
+      if (.not. has_ref) then
+         print '(a)', '  SKIP: pyscf_refs/df_vs_pyscf.ref is not committed (it is ~18 MB) -- '// &
+            'see test/pyscf_refs/README.md, "Local-only references", to regenerate it locally.'
+         stop 0
+      end if
       call ref_read_int(u, 'NAT', nat_ref)
       call ref_read_int(u, 'NAO', nao_ref)
       call ref_read_int(u, 'NAUX', naux_ref)

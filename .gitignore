@@ -92,6 +92,12 @@ test/*.efp
 build*/
 .fpm/
 
+# test/pyscf_refs/df_vs_pyscf.ref is ~18 MB (the (ff|g) 3-centre tensor,
+# water/cc-pVTZ against cc-pVTZ-RI) -- local-only, regenerated with
+# test/pyscf_refs/generate.py df_vs_pyscf (see that directory's README.md).
+# check_df_vs_pyscf.F90 SKIPs, not fails, when it is absent.
+test/pyscf_refs/df_vs_pyscf.ref
+
 # Editor and OS droppings.
 *.orig
 *.rej

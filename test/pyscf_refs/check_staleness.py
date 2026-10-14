@@ -72,8 +72,21 @@ def check_one(path: Path) -> str | None:
     return None
 
 
+#: df_vs_pyscf.ref (~18 MB) is local-only -- .gitignore excludes it, and
+#: check_df_vs_pyscf.F90 SKIPs rather than fails when it is absent (see
+#: that program's own comment). Optional here in exactly the same sense:
+#: `sorted(HERE.glob("*.ref"))` below simply does not find it when it does
+#: not exist, so nothing special is needed to SKIP it -- but its absence
+#: is worth a line in the output, not silence, and if a developer HAS
+#: generated it locally, it is checked like every other reference.
+OPTIONAL_REFS = {"df_vs_pyscf.ref"}
+
+
 def main() -> int:
     targets = sorted(HERE.glob("*.ref"))
+    for name in sorted(OPTIONAL_REFS):
+        if not (HERE / name).exists():
+            print(f"  (absent, optional) {name}")
     xc_dat = TEST / "reference_xc.dat"
     if xc_dat.exists():
         targets.append(xc_dat)
