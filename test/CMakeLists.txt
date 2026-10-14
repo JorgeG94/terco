@@ -314,12 +314,21 @@ if(Python3_FOUND)
     # whoever raises TRC_LMAX to 3.
     #
     foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
+      # rys_fock_ref.py's gate is 1e-9 by default, tightened per case where
+      # measurement leaves ample margin (its own DEFAULT_TOL comment has the
+      # numbers): water/cc-pVTZ measures 8e-13, four orders of magnitude
+      # under even 1e-10, so it is passed explicitly here. Formamide/def2-TZVP
+      # measures 2.6e-11 -- a real size effect (more atoms, more AOs, not
+      # noise) -- and keeps the script's 1e-9 default rather than risk a false
+      # red on a larger system tested later.
+      set(tol "")
       if(case STREQUAL "water_ccpvdz")
         set(xyz water.xyz)
         set(json basis_sets/cc-pvdz.json)
       elseif(case STREQUAL "water_ccpvtz")
         set(xyz water.xyz)
         set(json basis_sets/cc-pvtz.json)
+        set(tol 1e-10)
       else()
         set(xyz formamide.xyz)
         set(json basis_sets/def2-tzvp.json)
@@ -329,7 +338,7 @@ if(Python3_FOUND)
                       NEEDS_BASIS ARGS ${xyz} ${json} ${dump})
       add_test(NAME terco/check_rys_fock_vs_pyscf_${case}_ref
                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/rys_fock_ref.py
-                       ${json} ${dump})
+                       ${json} ${dump} ${tol})
       set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}
         PROPERTIES FIXTURES_SETUP rys_fock_probe_${case})
       set_tests_properties(terco/check_rys_fock_vs_pyscf_${case}_ref
