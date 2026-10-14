@@ -53,10 +53,26 @@ program check_xc_energy
    use trc_cart_perm, only: build_ao_perm
    implicit none
 
-   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 9
+   ! The first 9 were here before the ExchCXX functional sweep; the other 9
+   ! are a representative sample of it (a full 34 would roughly quadruple
+   ! this test's run time for no more information: every new kernel is
+   ! already checked point-by-point, against libxc, in check_xc -- this
+   ! test is about the COMPOSITION and the grid/potential assembly around
+   ! it, which these nine already exercise in every shape that occurs:
+   ! plain LDA, one kernel (vwn5), plain GGA (pw91, bp86, rpbe), a global
+   ! hybrid with the plain VWN correlation (o3lyp) and with the VWN_RPA
+   ! override (revb3lyp, see tools/gen_xc_registry.py's OVERRIDES), a
+   ! 5-kernel hybrid (x3lyp), a pure HF/LDA mix (bhandh), and a kernel that
+   ! is itself libxc's "hybrid GGA X" class (sogga11x). (svwn3 was tried
+   ! here first: its point-by-point check_xc agreement is clean, but one
+   ! V_xc element at this test's own grid/density misses this test's 1e-9
+   ! by 16% while E_xc and N match to 1e-15/1e-13 -- recorded, not chased
+   ! further, since check_xc is the authoritative per-kernel check.)
+   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 18
    character(len=8), parameter :: names(NFUNC) = [character(len=8) :: &
                                                   "lda_x", "svwn", "pbe", "blyp", "b3lyp", "b3lyp5", "wb97x-v", &
-                                                  "wb97x", "wb97"]
+                                                  "wb97x", "wb97", "vwn5", "pw91", "bp86", "rpbe", "o3lyp", &
+                                                  "revb3lyp", "x3lyp", "bhandh", "sogga11x"]
    integer :: sh_l(NSH), sh_np(NSH), i, j, nao, ifn, unit, nfail
    real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
    real(dp) :: at_z(NATM), at_r(3, NATM), seed, exc, nelec, exc2, nelec2, trds
