@@ -384,6 +384,25 @@ if(Python3_FOUND)
 endif()
 
 #
+# Negative tests: trc_df_2c and trc_df_3c must refuse a basis above the
+# ceiling the DF dispatchers were generated for, by `error stop`, rather
+# than read an unwritten block. Nothing above exercises this -- every
+# check builds within the ceiling on purpose -- so without these nothing
+# notices if the guard in trc_api.F90 is ever lost. Each hands the entry
+# point a shell one l above THIS build's DF_LMAX/DF_LMAX_AUX
+# (trc_df_kernels), so the test is valid whatever the ceiling is, not only
+# at the shipped one. PASS_REGULAR_EXPRESSION matches the error-stop
+# message itself rather than WILL_FAIL, so a different crash -- a segfault
+# before the guard runs -- does not count as this test passing.
+#
+terco_add_check(check_df_2c_ceiling check_df_2c_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_df_2c_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_df_2c: auxiliary basis above DF_LMAX_AUX")
+terco_add_check(check_df_3c_ceiling check_df_3c_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_df_3c_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_df_3c: orbital basis above DF_LMAX")
+
+#
 # A complete RHF through the public API, and the makeEFP pathway on top of it.
 #
 # These need LAPACK and terco does not -- the eigenproblem is the CALLER's
