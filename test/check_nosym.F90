@@ -81,23 +81,7 @@ program check_nosym
    ! Any symmetric density will do; a deterministic one that is not sparse
    ! exercises more of the digestion than a converged one would.
    allocate (d(nao, nao), gs(nao, nao), gn(nao, nao))
-   !
-   ! Spelled out rather than as one expression. The one-liner,
-   ! 0.3*cos(real(2*i + 3*j)) + 0.1*real(min(i, j)), crashed nvfortran 26.5
-   ! and 26.9 at -fast -O3 with internal compiler errors that moved with
-   ! whatever else was in the build ("bitcast with differing sizes",
-   ! "unexpected type for intrinsic function"), always at this loop. The
-   ! values are the same to the bit.
-   !
-   do j = 1, nao
-      do i = 1, nao
-         x = real(2*i + 3*j, dp)
-         k = i
-         if (j < i) k = j
-         d(i, j) = 0.3_dp*cos(x) + 0.1_dp*real(k, dp)
-      end do
-   end do
-   d = 0.5_dp*(d + transpose(d))
+   call fill_density(nao, d)
 
    call eri%fock(bas, d, gs)
    call eri%fock_nosym(bas, d, gn)
@@ -128,4 +112,31 @@ program check_nosym
    end if
 
    call eri%release(); call pl%release(); call bas%release()
+contains
+
+   !
+   ! In its own routine, explicit-shape, not inline in the main program. The
+   ! one-liner 0.3*cos(real(2*i + 3*j)) + 0.1*real(min(i, j)) crashed
+   ! nvfortran 26.5 and 26.9 at -fast -O3 ("bitcast with differing sizes",
+   ! "unexpected type for intrinsic function"), and spelling it out inline
+   ! only moved the crash ("Errors in Lowering") as the rest of the program
+   ! changed. check_rys_fock_vs_pyscf.F90 builds its density the same way,
+   ! in a contained routine, and compiles. The values are the same to the bit.
+   !
+   subroutine fill_density(n, dd)
+      integer, intent(in) :: n
+      real(dp), intent(out) :: dd(n, n)
+      integer :: ii, jj, kk
+      real(dp) :: xx
+      do jj = 1, n
+         do ii = 1, n
+            xx = real(2*ii + 3*jj, dp)
+            kk = ii
+            if (jj < ii) kk = jj
+            dd(ii, jj) = 0.3_dp*cos(xx) + 0.1_dp*real(kk, dp)
+         end do
+      end do
+      dd = 0.5_dp*(dd + transpose(dd))
+   end subroutine fill_density
+
 end program check_nosym
