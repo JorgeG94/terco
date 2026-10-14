@@ -60,6 +60,11 @@ target_sources(
 # is another project's checkout, so the output is committed and the tool is
 # rerun by hand when a kernel is added. See src/xc/trc_xc_util.F90.
 #
+# trc_xc_functional.F90 (the kernel ids, the per-point dispatch, and the
+# name -> composition registry) is GENERATED from the same ExchCXX checkout
+# by tools/gen_xc_registry.py, likewise rerun by hand; see
+# docs/functionals.md for what it produced.
+#
 target_sources(
   ${main_lib}
   PRIVATE xc/bit_repro.f90          # bit-reproducible exp/log/pow/erfc/cbrt, vendored
