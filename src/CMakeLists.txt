@@ -116,6 +116,68 @@ target_sources(
           xc/trc_xc.F90             # the integrator: E_xc and V_xc
           xc/trc_vv10.F90)          # VV10 nonlocal correlation: E_nlc and its potential
 
+# ifx's default -fp-model=fast reassociates and contracts the translated
+# kernels' Maple power series, which were written assuming IEEE-strict
+# evaluation order. Measured on the host (ifx 2026.0, check_xc): with the
+# default flags, several kernels' own four evaluation routines
+# (eval_exc/eval_exc_vxc/eval_fxc/eval_vxc_fxc) disagree with EACH OTHER
+# past check_xc's 1e-12 "self" tolerance (p86vwn_ft_c, bmk_c, n12_c,
+# n12_sx_c, sogga11_x_c, pw91_c) even though every one of them is close to
+# libxc -- a sign of reassociated, path-dependent rounding, not a wrong
+# formula. wb97_xc and wb97x_d_xc go further: at small s (the reduced
+# density gradient, where their B97 power series has heavy cancellation),
+# -ffast-math-style contraction loses enough precision that vxc/fxc are off
+# by 1e-1 to 1 relative, not merely past a tight tolerance. Compiling these
+# translated kernels with -fp-model=precise (strict IEEE evaluation order,
+# no reassociation or contraction) fixed every one of them at check_xc's
+# UNCHANGED tolerances; gfortran and nvfortran need nothing extra because
+# neither reassociates by default.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
+  set_source_files_properties(
+    xc/trc_xc_slater_exchange.F90
+    xc/trc_xc_vwn.F90
+    xc/trc_xc_vwn_rpa.F90
+    xc/trc_xc_pbe_x.F90
+    xc/trc_xc_pbe_c.F90
+    xc/trc_xc_b88.F90
+    xc/trc_xc_lyp.F90
+    xc/trc_xc_wb97x_v_xc.F90
+    xc/trc_xc_wb97x_xc.F90
+    xc/trc_xc_wb97_xc.F90
+    xc/trc_xc_vwn3.F90
+    xc/trc_xc_pz81.F90
+    xc/trc_xc_pz81_mod.F90
+    xc/trc_xc_pw91_lda.F90
+    xc/trc_xc_pw91_lda_mod.F90
+    xc/trc_xc_pw91_lda_rpa.F90
+    xc/trc_xc_rev_pbe_x.F90
+    xc/trc_xc_rpbe_x.F90
+    xc/trc_xc_optx_x.F90
+    xc/trc_xc_mpw91_x.F90
+    xc/trc_xc_pw86_x.F90
+    xc/trc_xc_pw91_x.F90
+    xc/trc_xc_p86_c.F90
+    xc/trc_xc_p86vwn_ft_c.F90
+    xc/trc_xc_pw91_c.F90
+    xc/trc_xc_pbe_sol_c.F90
+    xc/trc_xc_bmk_c.F90
+    xc/trc_xc_n12_c.F90
+    xc/trc_xc_n12_sx_c.F90
+    xc/trc_xc_sogga11_x_c.F90
+    xc/trc_xc_sogga11_x_x.F90
+    xc/trc_xc_b97_d.F90
+    xc/trc_xc_ityh_x.F90
+    xc/trc_xc_ityh_x_015.F90
+    xc/trc_xc_ityh_x_033.F90
+    xc/trc_xc_hjs_pbe_x.F90
+    xc/trc_xc_lrcwpbe_hjs_pbe_x.F90
+    xc/trc_xc_lrcwpbeh_hjs_pbe_x.F90
+    xc/trc_xc_wb97x_d_xc.F90
+    xc/trc_xc_wb97x_d3_xc.F90
+    DIRECTORY ${PROJECT_SOURCE_DIR}
+    PROPERTIES COMPILE_OPTIONS "-fp-model=precise")
+endif()
+
 # `trc_binkernel.F90` textually includes the quartet body rather than calling
 # it. NVHPC will not inline an `!$acc routine seq` across a module boundary --
 # `v` has to be materialised in memory to cross the call and 35 kB of spill
