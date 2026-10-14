@@ -359,9 +359,12 @@ find_package("pic-blas" REQUIRED)
 set(PIC_ENABLE_MPI
     ${TERCO_ENABLE_MPI}
     CACHE BOOL "" FORCE)
+# Not forced: mpi_f08 is the default, but some MPIs need the legacy `mpi`
+# module (Cray MPICH on Perlmutter: -DPIC_USE_LEGACY_MPI=ON
+# -DPIC_MPICH_PERLMUTTER=ON), and the -D on the command line has to win.
 set(PIC_USE_LEGACY_MPI
     OFF
-    CACHE BOOL "" FORCE)
+    CACHE BOOL "Use pic-mpi's legacy mpi-module backend instead of mpi_f08")
 find_package("pic-mpi" REQUIRED)
 find_package("jsonfortran" REQUIRED)
 if(DEFINED TERCO_HOST_NVHPC_OPTIONS)
