@@ -240,6 +240,16 @@ class ConvergenceError(RuntimeError):
     commit. Refuse to write it -- see this file's own header."""
 
 
+def require_converged(mf, label):
+    """Refuse an mf whose own `converged` flag is unset. _pcm_converge's
+    check between its passes; converge_tight does the rest of the file's."""
+    if not mf.converged:
+        raise ConvergenceError(
+            f"{label}: pyscf SCF did not converge (conv_tol={mf.conv_tol}, "
+            f"conv_tol_grad={mf.conv_tol_grad}, max_cycle={mf.max_cycle}) -- "
+            f"refusing to write a reference from an unconverged energy.")
+
+
 def converge_tight(make_mf, dm0, label, conv_tol=1.0e-12, conv_tol_grad=1.0e-8, max_cycle=200):
     """Converge an SCF to BOTH an energy and a GRADIENT tolerance, refuse if
     it cannot, and verify the result with a fresh mf before trusting it.

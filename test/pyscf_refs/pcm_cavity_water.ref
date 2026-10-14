@@ -2,7 +2,7 @@
 # case: check_pcm_cavity
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: bc1bf1bc1bc718461127e3b117e95dd3ffa0981674c83bc44ffbbdc4264e24a0
+# hash: e465468371d63b9b33869045dcb8a2a12c9eb213a39ac7f6161260fbc0efe381
 # files: test/pyscf_refs/generate.py test/check_pcm_cavity.F90 test/water.xyz
 NPTS 556
 COORDS 3 556

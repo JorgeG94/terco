@@ -2,7 +2,7 @@
 # case: check_rys_fock_vs_pyscf_water_ccpvtz
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: 5a0a6ad67f786dd903cb7130302218f2e101630f6d30d087befd0f604f4f8816
+# hash: 4abe0a595d8b3358153a46b70c213d85729bf783b4db1af2d54a1f8e10fc782b
 # files: test/pyscf_refs/generate.py test/check_rys_fock_vs_pyscf.F90 test/basis_sets/cc-pvtz.json test/water.xyz
 NAT 3
 NAO 65

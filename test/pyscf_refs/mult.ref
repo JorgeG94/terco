@@ -2,7 +2,7 @@
 # case: check_mult
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: 4f5133feb31dc2436323daef6e3f12d3e3cc2a18b0cf115c389b37ff53848dcd
+# hash: 0501a6ca24dbafc72ec3999fe3dae4ab6dd2819c825e7abea57fe25475ee458b
 # files: test/pyscf_refs/generate.py test/check_mult.F90
 NAO 30
 NMULT 39
