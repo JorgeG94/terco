@@ -1,26 +1,34 @@
-program terco_main
-   !! The `terco` command: an SCF on an xyz file, from the shell.
+module terco_run
+   !! Everything `terco_main` (below) used to keep as internal (`contains`)
+   !! procedures, moved out to genuine module procedures that take the
+   !! run's state as an explicit argument (`run_t`) instead of reaching it
+   !! by host association.
    !!
-   !! `terco molecule.xyz [options]`, in the spirit of xtb's command line.
-   !!
-   !! Everything below the argument handling is the library's context API
-   !! (trc_capi): the guesses, the SCF, RI-MP2 and the energies are exactly
-   !! what a C or Python host gets. `terco --help` lists the options.
-   use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_null_ptr
+   !! This is not a style preference: an internal procedure ANYWHERE in this
+   !! executable -- even one that is never called, and even one with no
+   !! state in common with the SCF call at all -- corrupts the two-electron
+   !! part of the Fock build the moment `trc_run_scf` runs collectively
+   !! (more than one rank, this build's NVHPC 26.5 + this OpenMPI/HPCX):
+   !! `conv` and `niter` still look fine, but the two-electron energy comes
+   !! back as exactly 0 and the total is wrong, deterministically, on every
+   !! rank alike. Measured by elimination: the program (or procedure) that
+   !! makes the collective call must have NO sibling internal procedure at
+   !! all -- not "none that touch the same state", none, full stop -- and a
+   !! genuine module procedure (this file's old `contains` turned into
+   !! `terco_run`'s) does not trip it. Reproduced down to an EMPTY, never
+   !! invoked `contains subroutine noop(); end subroutine` in the same
+   !! program; unaffected by optimisation level, by `-acc`/`-stdpar=gpu` on
+   !! the caller, by MPI transport (ob1 vs UCX), or by UCX's memtype cache.
+   !! Looks like an NVHPC/OpenMPI codegen interaction specific to this
+   !! toolchain; worth a closer look (and a vendor report) on its own.
+   use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char
    use, intrinsic :: iso_fortran_env, only: output_unit, error_unit, int64
-   use pic_types, only: dp, default_int
+   use pic_types, only: dp
    use pic_error, only: error_t
    use pic_cli, only: cli_t
-   use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
-                       trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
-                       trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, &
-                       trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
-                       trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, trc_message, &
-                       TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
-                       TRC_GUESS_SADQ, TRC_GUESS_SAP
-   use trc_api, only: trc_bind_device
-   use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS
-   use terco_app, only: read_xyz, resolve_basis, element_symbol, c_string, f_string, set_env, lower
+   use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
+   use trc_capi, only: trc_message, TRC_OK
+   use terco_app, only: element_symbol, f_string
    implicit none
 
 #ifndef TERCO_VERSION
@@ -28,192 +36,51 @@ program terco_main
 #endif
    character(len=*), parameter :: VERSION = TERCO_VERSION
 
-   type(cli_t) :: cli
-   type(error_t) :: err
-   type(c_ptr) :: h
-   character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, func, guess, title, json
-   character(len=:), allocatable :: sval
-   integer, allocatable :: z(:)
-   real(dp), allocatable :: xyz(:, :)
-   integer :: natm, chrg, uhf, nelec, mult, grid, nlc_grid, maxiter, nfrozen, guess_kind, ia, dev
-   integer(c_int) :: st, nao, nspin, conv, niter, sph
-   real(dp) :: econv, gconv, thresh
-   real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess
-   logical :: rimp2, cart
-   integer(int64) :: t0, t1, rate
-
-   call system_clock(t0, rate)
-
-   ! ---- the interface ---------------------------------------------------
-   call cli%set_program("terco", "Hartree-Fock and Kohn-Sham DFT, in standard Fortran")
-   call cli%add_positional("geometry", "molecule in xyz format, Angstrom", required=.false.)
-   call cli%add_option("basis", "basis set: a Basis Set Exchange JSON file, or a name looked up "// &
-                       "in $TERCO_BASIS_PATH and then the installed basis sets (def2-svp)", short="b", default="def2-svp")
-   call cli%add_option("chrg", "molecular charge (default: a .CHRG file here, else 0)", short="c")
-   call cli%add_option("uhf", "number of unpaired electrons (default: a .UHF file here, else 0 "// &
-                       "or 1 by electron count)", short="u")
-   call cli%add_option("func", "hf (the default), or a functional: "//XC_AVAILABLE_FUNCTIONALS, &
-                       short="f", default="hf")
-   call cli%add_option("guess", "sad, sadq, sap, gwh or core (default: sad; sadq for an ion)", short="g")
-   call cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
-   call cli%add_option("grid", "DFT integration grid level (3)", default="3")
-   call cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")
-   call cli%add_option("iterations", "maximum SCF iterations (100)", default="100")
-   call cli%add_option("econv", "energy convergence, Eh (1e-10)", default="1e-10")
-   call cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
-   call cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
-   call cli%add_flag("rimp2", "RI-MP2 correlation energy after a closed-shell SCF")
-   call cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
-   call cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", default="-1")
-   call cli%add_option("json", "also write a JSON summary to this file")
-   call cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
-   call cli%add_flag("version", "print the version and stop")
-
-   call cli%parse(err)
-   if (err%has_error()) call die(err%get_message()//new_line("a")//"try 'terco --help'")
-   if (cli%help_requested()) then
-      write (output_unit, "(a)") cli%help_text()
-      stop
-   end if
-   if (cli%is_set("version")) then
-      write (output_unit, "(a)") "terco version "//VERSION
-      stop
-   end if
-   call cli%get("geometry", geom, err)
-   if (err%has_error() .or. len_trim(geom) == 0) &
-      call die("no geometry given: terco molecule.xyz [options]"//new_line("a")//"try 'terco --help'")
-
-   ! ---- inputs ----------------------------------------------------------
-   call read_xyz(geom, natm, z, xyz, title, err)
-   if (err%has_error()) call die(err%get_message())
-
-   call cli%get("basis", basis_arg, err)
-   call resolve_basis(basis_arg, basis_path, err)
-   if (err%has_error()) call die(err%get_message())
-
-   chrg = int_option("chrg", ".CHRG", 0)
-   nelec = sum(z) - chrg
-   if (nelec < 1) call die("charge "//itoa(chrg)//" leaves "//itoa(nelec)//" electrons")
-   uhf = int_option("uhf", ".UHF", mod(nelec, 2))
-   if (uhf < 0 .or. uhf > nelec .or. mod(nelec - uhf, 2) /= 0) &
-      call die("--uhf "//itoa(uhf)//" is impossible with "//itoa(nelec)//" electrons: the unpaired "// &
-               "count must be between 0 and the electron count, with the same parity")
-   mult = uhf + 1
-
-   call cli%get("func", sval, err)
-   func = lower(trim(sval))
-   if (func == "hf" .or. func == "rhf" .or. func == "uhf") func = ""
-
-   guess = "sad"
-   if (chrg /= 0) guess = "sadq"
-   if (cli%is_set("guess")) then
-      call cli%get("guess", sval, err)
-      guess = lower(trim(sval))
-   end if
-   select case (guess)
-   case ("sad"); guess_kind = TRC_GUESS_SAD
-   case ("sadq"); guess_kind = TRC_GUESS_SADQ
-   case ("sap"); guess_kind = TRC_GUESS_SAP
-   case ("gwh"); guess_kind = TRC_GUESS_GWH
-   case ("core", "hcore"); guess_kind = TRC_GUESS_CORE
-   case default
-      call die("unknown guess '"//guess//"': use sad, sadq, sap, gwh or core")
-   end select
-
-   call cli%get("grid", grid, err); call check("--grid")
-   call cli%get("nlc-grid", nlc_grid, err); call check("--nlc-grid")
-   call cli%get("iterations", maxiter, err); call check("--iterations")
-   call cli%get("econv", econv, err); call check("--econv")
-   call cli%get("gconv", gconv, err); call check("--gconv")
-   call cli%get("thresh", thresh, err); call check("--thresh")
-   call cli%get("frozen", nfrozen, err); call check("--frozen")
-   rimp2 = cli%is_set("rimp2")
-   cart = cli%is_set("cart")
-   if (rimp2) then
-      ! RI-MP2 is closed-shell and, today, Cartesian only: say so here rather
-      ! than after an SCF it cannot use.
-      if (mult /= 1) call die("--rimp2 needs a closed-shell reference, and this molecule has "// &
-                              itoa(uhf)//" unpaired electrons")
-      cart = .true.
-      call cli%get("aux", sval, err)
-      call resolve_basis(sval, aux_path, err)
-      if (err%has_error()) call die("--aux: "//err%get_message())
-   end if
-   json = ""
-   if (cli%is_set("json")) call cli%get("json", json, err)
-
-   ! SAP's fitted atomic potentials ship as a basis-format file; find it the
-   ! way a basis is found, unless the caller has already said where it is.
-   if (guess_kind == TRC_GUESS_SAP) then
-      block
-         character(len=1024) :: e
-         integer :: n, s
-         call get_environment_variable("TRC_SAP_BASIS", e, n, s)
-         if (s /= 0 .or. n == 0) then
-            call resolve_basis("sap_helfem_large", sval, err)
-            if (err%has_error()) call die("--guess sap needs its fitted potentials: "//err%get_message())
-            call set_env("TRC_SAP_BASIS", sval)
-         end if
-      end block
-   end if
-
-   call banner()
-
-   ! ---- the calculation -------------------------------------------------
-   ! One process, one device: the first. Before anything reaches the device,
-   ! as trc_bind_device asks; a host build has nothing to bind.
-   dev = trc_bind_device(0)
-   st = trc_create(h)
-   call api(trc_set_verbose(h, merge(0_c_int, 1_c_int, cli%is_set("silent"))))
-   call api(trc_set_molecule(h, int(natm, c_int), real(z, c_double), xyz, int(chrg, c_int), int(mult, c_int)))
-   call api(trc_set_force_cartesian(h, merge(1_c_int, 0_c_int, cart)))
-   call api(trc_set_basis_json(h, c_string(basis_path)))
-   if (rimp2) call api(trc_set_aux_json(h, c_string(aux_path)))
-   call api(trc_set_method(h, c_string(func), int(grid, c_int)))
-   call api(trc_set_nlc_grid(h, int(nlc_grid, c_int)))
-   call api(trc_set_convergence(h, real(econv, c_double), real(gconv, c_double), int(maxiter, c_int), 10_c_int))
-   call api(trc_set_screening(h, real(thresh, c_double)))
-   call api(trc_set_guess(h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
-   if (rimp2) call api(trc_set_rimp2(h, int(nfrozen, c_int), 0_c_int))
-
-   st = trc_run_scf(h)
-   if (st /= TRC_OK .and. st /= TRC_ERR_NOCONV) call api(st)
-   call api(trc_nao(h, nao))
-   call api(trc_is_spherical(h, sph))
-   call api(trc_nspin(h, nspin))
-   call api(trc_energy(h, etot))
-   call api(trc_energy_parts(h, enuc, eone, etwo, exc))
-   call api(trc_converged(h, conv))
-   call api(trc_iterations(h, niter))
-   eos = 0; ess = 0
-   if (rimp2 .and. conv /= 0) then
-      call api(trc_run_rimp2(h))
-      call api(trc_rimp2_energy(h, eos, ess))
-   end if
-
-   call system_clock(t1)
-   call summary()
-   if (len(json) > 0) call write_json(json)
-   st = trc_destroy(h)
-
-   if (conv == 0) then
-      write (error_unit, "(a)") "terco: the SCF did not converge in "//itoa(int(niter))//" iterations"
-      call quit(2)
-   end if
-   write (output_unit, "(/,a)") " normal termination of terco"
+   type :: run_t
+      !! Every setting and result `terco_main`'s procedures need, passed
+      !! explicitly -- see this module's own header comment for why.
+      type(cli_t) :: cli
+      type(error_t) :: err
+      type(c_ptr) :: h
+      character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, func, guess, title, json
+      integer, allocatable :: z(:)
+      integer :: natm, chrg, uhf, nelec, mult, grid
+      integer(c_int) :: nao, conv, niter, sph
+      real(dp) :: econv, gconv, thresh
+      real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess
+      logical :: rimp2
+      integer(int64) :: t0, t1, rate
+      type(comm_t) :: wcomm
+      integer :: nranks
+      logical :: rank0
+   end type run_t
 
 contains
 
-   subroutine die(msg)
+   subroutine die(r, msg)
+      !! Every caller of `die` in this file reaches it the same way on
+      !! every rank -- the same argv, the same files, the same collective
+      !! library status -- so printing on rank 0 alone says it once, not
+      !! `nranks` times, and every other rank is about to call `quit` with
+      !! the same `code` regardless.
+      type(run_t), intent(in) :: r
       character(len=*), intent(in) :: msg
-      write (error_unit, "(a)") "terco: "//msg
-      call quit(1)
+      if (r%rank0) write (error_unit, "(a)") "terco: "//msg
+      call quit(r, 1)
    end subroutine die
 
-   subroutine quit(code)
+   subroutine quit(r, code)
       !! End the process with exit status `code`, printing nothing more.
       !! `stop code, quiet=.true.` is the standard way to say this, but
       !! nvfortran rejects it, and a plain `stop code` prints the code.
+      !!
+      !! More than one rank and a non-zero code: `abort_comm` rather than a
+      !! clean `pic_mpi_finalize`, because a caller of `die` cannot promise
+      !! every OTHER rank reached the same conclusion the same way -- and
+      !! `MPI_Abort` tears down the whole job either way, so there is
+      !! nothing to wait for. One rank keeps today's path exactly: no pic-mpi
+      !! call before it that was not already a no-op there.
+      type(run_t), intent(in) :: r
       integer, intent(in) :: code
       interface
          subroutine c_exit(status) bind(c, name="exit")
@@ -223,35 +90,40 @@ contains
       end interface
       flush (output_unit)
       flush (error_unit)
+      if (code /= 0 .and. r%nranks > 1) call abort_comm(r%wcomm, code)
+      call pic_mpi_finalize()
       call c_exit(int(code, c_int))
    end subroutine quit
 
-   subroutine check(what)
+   subroutine check(r, what)
+      type(run_t), intent(in) :: r
       character(len=*), intent(in) :: what
-      if (err%has_error()) call die(what//": "//err%get_message())
+      if (r%err%has_error()) call die(r, what//": "//r%err%get_message())
    end subroutine check
 
-   subroutine api(status)
+   subroutine api(r, status)
       !! Stop on a failed library call, with the library's own explanation.
+      type(run_t), intent(in) :: r
       integer(c_int), intent(in) :: status
       character(kind=c_char) :: buf(1024)
       integer(c_int) :: s
       if (status == TRC_OK) return
-      s = trc_message(h, buf, int(size(buf), c_int))
-      call die(f_string(buf))
+      s = trc_message(r%h, buf, int(size(buf), c_int))
+      call die(r, f_string(buf))
    end subroutine api
 
-   integer function int_option(name, file, default) result(v)
+   integer function int_option(r, name, file, default) result(v)
       !! An integer option, else the first integer in `file` in the working
       !! directory (xtb's .CHRG/.UHF convention), else `default`.
+      type(run_t), intent(inout) :: r
       character(len=*), intent(in) :: name, file
       integer, intent(in) :: default
       integer :: u, ios
       logical :: there
       v = default
-      if (cli%is_set(name)) then
-         call cli%get(name, v, err)
-         call check("--"//name)
+      if (r%cli%is_set(name)) then
+         call r%cli%get(name, v, r%err)
+         call check(r, "--"//name)
          return
       end if
       inquire (file=file, exist=there)
@@ -260,7 +132,7 @@ contains
       if (ios /= 0) return
       read (u, *, iostat=ios) v
       close (u)
-      if (ios /= 0) call die(file//" does not start with an integer")
+      if (ios /= 0) call die(r, file//" does not start with an integer")
    end function int_option
 
    pure function itoa(i) result(s)
@@ -271,44 +143,48 @@ contains
       s = trim(b)
    end function itoa
 
-   function method() result(m)
+   function method(r) result(m)
+      type(run_t), intent(in) :: r
       character(len=:), allocatable :: m
-      if (len(func) == 0) then
-         m = merge("RHF", "UHF", mult == 1)
+      if (len(r%func) == 0) then
+         m = merge("RHF", "UHF", r%mult == 1)
       else
-         m = merge("RKS", "UKS", mult == 1)//"/"//func
+         m = merge("RKS", "UKS", r%mult == 1)//"/"//r%func
       end if
    end function method
 
-   subroutine banner()
+   subroutine banner(r)
+      type(run_t), intent(in) :: r
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") "      -----------------------------------------------------------"
       write (output_unit, "(a)") "     |                  t e r c o   "//VERSION
       write (output_unit, "(a)") "     |   Hartree-Fock and DFT through do concurrent, in Fortran"
       write (output_unit, "(a)") "      -----------------------------------------------------------"
       write (output_unit, "(a)") ""
-      write (output_unit, "(a,a)") "   geometry         : ", geom
-      if (len_trim(title) > 0) write (output_unit, "(a,a)") "   title            : ", trim(title)
-      write (output_unit, "(a,i0,a)", advance="no") "   atoms            : ", natm, "  ("
-      call formula()
+      write (output_unit, "(a,a)") "   geometry         : ", r%geom
+      if (len_trim(r%title) > 0) write (output_unit, "(a,a)") "   title            : ", trim(r%title)
+      write (output_unit, "(a,i0,a)", advance="no") "   atoms            : ", r%natm, "  ("
+      call formula(r%z, r%natm)
       write (output_unit, "(a)") ")"
-      write (output_unit, "(a,i0,a,i0,a,i0)") "   charge           : ", chrg, "   unpaired: ", uhf, &
-         "   electrons: ", nelec
-      write (output_unit, "(a,a)") "   method           : ", method()
-      write (output_unit, "(a,a)") "   basis            : ", basis_path
-      if (rimp2) write (output_unit, "(a,a)") "   auxiliary basis  : ", aux_path
-      if (rimp2 .and. .not. cli%is_set("cart")) &
+      write (output_unit, "(a,i0,a,i0,a,i0)") "   charge           : ", r%chrg, "   unpaired: ", r%uhf, &
+         "   electrons: ", r%nelec
+      if (r%nranks > 1) write (output_unit, "(a,i0,a)") "   ranks            : ", r%nranks, " (one GPU each)"
+      write (output_unit, "(a,a)") "   method           : ", method(r)
+      write (output_unit, "(a,a)") "   basis            : ", r%basis_path
+      if (r%rimp2) write (output_unit, "(a,a)") "   auxiliary basis  : ", r%aux_path
+      if (r%rimp2 .and. .not. r%cli%is_set("cart")) &
          write (output_unit, "(a)") "   AO space         : Cartesian (RI-MP2 does not support spherical AOs yet)"
-      write (output_unit, "(a,a)") "   guess            : ", guess
-      write (output_unit, "(a,es8.1,a,es8.1,a,es8.1)") "   convergence      : dE ", econv, &
-         "   |FDS-SDF| ", gconv, "   screening ", thresh
-      if (len(func) > 0) write (output_unit, "(a,i0)") "   grid level       : ", grid
+      write (output_unit, "(a,a)") "   guess            : ", r%guess
+      write (output_unit, "(a,es8.1,a,es8.1,a,es8.1)") "   convergence      : dE ", r%econv, &
+         "   |FDS-SDF| ", r%gconv, "   screening ", r%thresh
+      if (len(r%func) > 0) write (output_unit, "(a,i0)") "   grid level       : ", r%grid
    end subroutine banner
 
-   subroutine formula()
+   subroutine formula(z, natm)
       !! Hill order: with carbon, C then H then the rest alphabetically;
       !! without, everything alphabetically.
-      integer :: k, n, order(118)
+      integer, intent(in) :: z(:), natm
+      integer :: ia, k, n, order(118)
       n = 0
       if (any(z == 6)) then
          n = n + 1; order(n) = 6
@@ -342,36 +218,37 @@ contains
       end do
    end subroutine sort_by_symbol
 
-   subroutine summary()
+   subroutine summary(r)
+      type(run_t), intent(in) :: r
       character(len=*), parameter :: bar = "          ---------------------------------------------------"
       write (output_unit, "(a)") ""
-      write (output_unit, "(a,i0,a,a)") "   AO basis         : ", nao, " functions, ", &
-         merge("spherical", "Cartesian", sph /= 0)
-      write (output_unit, "(a,i0,a)") "   SCF              : ", niter, merge(" iterations, converged    ", &
-                                                                            " iterations, NOT converged", conv /= 0)
+      write (output_unit, "(a,i0,a,a)") "   AO basis         : ", r%nao, " functions, ", &
+         merge("spherical", "Cartesian", r%sph /= 0)
+      write (output_unit, "(a,i0,a)") "   SCF              : ", r%niter, merge(" iterations, converged    ", &
+                                                                              " iterations, NOT converged", r%conv /= 0)
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") bar
-      call line("TOTAL ENERGY", etot)
-      if (rimp2 .and. conv /= 0) then
-         call line("MP2 CORRELATION", eos + ess)
-         call line("TOTAL MP2 ENERGY", etot + eos + ess)
+      call line("TOTAL ENERGY", r%etot)
+      if (r%rimp2 .and. r%conv /= 0) then
+         call line("MP2 CORRELATION", r%eos + r%ess)
+         call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
       end if
       write (output_unit, "(a)") bar
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a)") "   ::"//repeat(" ", 21)//"SUMMARY"//repeat(" ", 22)//"::"
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
-      call row("total energy", etot)
-      call row("nuclear repulsion", enuc)
-      call row("one-electron energy", eone)
-      call row("two-electron energy", etwo)
-      if (len(func) > 0) call row("exchange-correlation", exc)
-      if (rimp2 .and. conv /= 0) then
-         call row("MP2 opposite spin", eos)
-         call row("MP2 same spin", ess)
+      call row("total energy", r%etot)
+      call row("nuclear repulsion", r%enuc)
+      call row("one-electron energy", r%eone)
+      call row("two-electron energy", r%etwo)
+      if (len(r%func) > 0) call row("exchange-correlation", r%exc)
+      if (r%rimp2 .and. r%conv /= 0) then
+         call row("MP2 opposite spin", r%eos)
+         call row("MP2 same spin", r%ess)
       end if
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
-      write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(t1 - t0, dp)/real(rate, dp), " s"
+      write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
    end subroutine summary
 
    subroutine line(label, e)
@@ -386,52 +263,283 @@ contains
       write (output_unit, "(a,a22,f22.12,a)") "   :: ", label, e, " Eh  ::"
    end subroutine row
 
-   pure function json_escape(t) result(r)
+   pure function json_escape(t) result(esc)
       !! `t` as the inside of a JSON string: backslash and quote escaped.
       character(len=*), intent(in) :: t
-      character(len=:), allocatable :: r
+      character(len=:), allocatable :: esc
       integer :: i
-      r = ""
+      esc = ""
       do i = 1, len(t)
          ! achar(92), not a literal: some compilers read a backslash in a
          ! string as an escape unless told otherwise.
          if (t(i:i) == '"' .or. t(i:i) == achar(92)) then
-            r = r//achar(92)//t(i:i)
+            esc = esc//achar(92)//t(i:i)
          else
-            r = r//t(i:i)
+            esc = esc//t(i:i)
          end if
       end do
    end function json_escape
 
-   subroutine write_json(path)
+   subroutine write_json(r, path)
+      type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       integer :: u, ios
       open (newunit=u, file=path, status="replace", action="write", iostat=ios)
-      if (ios /= 0) call die("cannot write "//path)
+      if (ios /= 0) call die(r, "cannot write "//path)
       write (u, "(a)") "{"
       write (u, "(a)") '  "program": "terco",'
       write (u, "(a)") '  "version": "'//VERSION//'",'
-      write (u, "(a)") '  "geometry": "'//json_escape(geom)//'",'
-      write (u, "(a)") '  "method": "'//json_escape(method())//'",'
-      write (u, "(a)") '  "basis": "'//json_escape(basis_path)//'",'
-      write (u, "(a)") '  "guess": "'//json_escape(guess)//'",'
-      write (u, "(a,i0,a)") '  "charge": ', chrg, ','
-      write (u, "(a,i0,a)") '  "unpaired electrons": ', uhf, ','
-      write (u, "(a,i0,a)") '  "number of basis functions": ', nao, ','
-      write (u, "(a,a,a)") '  "spherical": ', trim(merge("true ", "false", sph /= 0)), ','
-      write (u, "(a,i0,a)") '  "iterations": ', niter, ','
-      write (u, "(a,a,a)") '  "converged": ', trim(merge("true ", "false", conv /= 0)), ','
-      write (u, "(a,es23.15e3,a)") '  "nuclear repulsion energy": ', enuc, ','
-      write (u, "(a,es23.15e3,a)") '  "one-electron energy": ', eone, ','
-      write (u, "(a,es23.15e3,a)") '  "two-electron energy": ', etwo, ','
-      write (u, "(a,es23.15e3,a)") '  "exchange-correlation energy": ', exc, ','
-      if (rimp2 .and. conv /= 0) then
-         write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', eos, ','
-         write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', ess, ','
+      write (u, "(a)") '  "geometry": "'//json_escape(r%geom)//'",'
+      write (u, "(a)") '  "method": "'//json_escape(method(r))//'",'
+      write (u, "(a)") '  "basis": "'//json_escape(r%basis_path)//'",'
+      write (u, "(a)") '  "guess": "'//json_escape(r%guess)//'",'
+      write (u, "(a,i0,a)") '  "charge": ', r%chrg, ','
+      write (u, "(a,i0,a)") '  "unpaired electrons": ', r%uhf, ','
+      write (u, "(a,i0,a)") '  "number of basis functions": ', r%nao, ','
+      write (u, "(a,a,a)") '  "spherical": ', trim(merge("true ", "false", r%sph /= 0)), ','
+      write (u, "(a,i0,a)") '  "iterations": ', r%niter, ','
+      write (u, "(a,a,a)") '  "converged": ', trim(merge("true ", "false", r%conv /= 0)), ','
+      write (u, "(a,es23.15e3,a)") '  "nuclear repulsion energy": ', r%enuc, ','
+      write (u, "(a,es23.15e3,a)") '  "one-electron energy": ', r%eone, ','
+      write (u, "(a,es23.15e3,a)") '  "two-electron energy": ', r%etwo, ','
+      write (u, "(a,es23.15e3,a)") '  "exchange-correlation energy": ', r%exc, ','
+      if (r%rimp2 .and. r%conv /= 0) then
+         write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', r%eos, ','
+         write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', r%ess, ','
       end if
-      write (u, "(a,es23.15e3)") '  "total energy": ', etot
+      write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
       write (u, "(a)") "}"
       close (u)
    end subroutine write_json
+
+end module terco_run
+
+program terco_main
+   !! The `terco` command: an SCF on an xyz file, from the shell.
+   !!
+   !! `terco molecule.xyz [options]`, in the spirit of xtb's command line.
+   !!
+   !! Everything below the argument handling is the library's context API
+   !! (trc_capi): the guesses, the SCF, RI-MP2 and the energies are exactly
+   !! what a C or Python host gets. `terco --help` lists the options.
+   !!
+   !! This program itself has NO internal (`contains`) procedures -- see
+   !! terco_run's header comment for why that is load-bearing, not a style
+   !! choice, the moment more than one rank is involved.
+   use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
+   use, intrinsic :: iso_fortran_env, only: output_unit, error_unit, int64
+   use pic_types, only: dp
+   use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
+   use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
+                       trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
+                       trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
+                       trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
+                       trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
+                       TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
+                       TRC_GUESS_SADQ, TRC_GUESS_SAP
+   use trc_api, only: trc_bind_device
+   use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS
+   use terco_app, only: read_xyz, resolve_basis, c_string, set_env, lower
+   use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json
+   implicit none
+
+   type(run_t) :: r
+   character(len=:), allocatable :: sval
+   real(dp), allocatable :: xyz(:, :)
+   integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev
+   integer(c_int) :: st, nspin
+   logical :: cart
+
+   ! MPI, in every build: pic-mpi's single-rank backend (TERCO_ENABLE_MPI=OFF)
+   ! makes this a no-op, so the rest of the program need not branch on it.
+   ! `r%wcomm` and `r%nranks` answer everything the rest of this file needs
+   ! to know about ranks; `r%rank0` is what gates every print below so N
+   ! ranks produce ONE copy of the output, not N.
+   call pic_mpi_init()
+   r%wcomm = comm_world()
+   r%nranks = r%wcomm%size()
+   r%rank0 = r%wcomm%leader()
+
+   call system_clock(r%t0, r%rate)
+
+   ! ---- the interface ---------------------------------------------------
+   call r%cli%set_program("terco", "Hartree-Fock and Kohn-Sham DFT, in standard Fortran")
+   call r%cli%add_positional("geometry", "molecule in xyz format, Angstrom", required=.false.)
+   call r%cli%add_option("basis", "basis set: a Basis Set Exchange JSON file, or a name looked up "// &
+                         "in $TERCO_BASIS_PATH and then the installed basis sets (def2-svp)", short="b", &
+                         default="def2-svp")
+   call r%cli%add_option("chrg", "molecular charge (default: a .CHRG file here, else 0)", short="c")
+   call r%cli%add_option("uhf", "number of unpaired electrons (default: a .UHF file here, else 0 "// &
+                         "or 1 by electron count)", short="u")
+   call r%cli%add_option("func", "hf (the default), or a functional: "//XC_AVAILABLE_FUNCTIONALS, &
+                         short="f", default="hf")
+   call r%cli%add_option("guess", "sad, sadq, sap, gwh or core (default: sad; sadq for an ion)", short="g")
+   call r%cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
+   call r%cli%add_option("grid", "DFT integration grid level (3)", default="3")
+   call r%cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")
+   call r%cli%add_option("iterations", "maximum SCF iterations (100)", default="100")
+   call r%cli%add_option("econv", "energy convergence, Eh (1e-10)", default="1e-10")
+   call r%cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
+   call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
+   call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after a closed-shell SCF")
+   call r%cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
+   call r%cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", &
+                         default="-1")
+   call r%cli%add_option("json", "also write a JSON summary to this file")
+   call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
+   call r%cli%add_flag("version", "print the version and stop")
+
+   call r%cli%parse(r%err)
+   if (r%err%has_error()) call die(r, r%err%get_message()//new_line("a")//"try 'terco --help'")
+   if (r%cli%help_requested()) then
+      if (r%rank0) write (output_unit, "(a)") r%cli%help_text()
+      call quit(r, 0)
+   end if
+   if (r%cli%is_set("version")) then
+      if (r%rank0) write (output_unit, "(a)") "terco version "//VERSION
+      call quit(r, 0)
+   end if
+   call r%cli%get("geometry", r%geom, r%err)
+   if (r%err%has_error() .or. len_trim(r%geom) == 0) &
+      call die(r, "no geometry given: terco molecule.xyz [options]"//new_line("a")//"try 'terco --help'")
+
+   ! ---- inputs ----------------------------------------------------------
+   call read_xyz(r%geom, r%natm, r%z, xyz, r%title, r%err)
+   if (r%err%has_error()) call die(r, r%err%get_message())
+
+   call r%cli%get("basis", r%basis_arg, r%err)
+   call resolve_basis(r%basis_arg, r%basis_path, r%err)
+   if (r%err%has_error()) call die(r, r%err%get_message())
+
+   r%chrg = int_option(r, "chrg", ".CHRG", 0)
+   r%nelec = sum(r%z) - r%chrg
+   if (r%nelec < 1) call die(r, "charge "//itoa(r%chrg)//" leaves "//itoa(r%nelec)//" electrons")
+   r%uhf = int_option(r, "uhf", ".UHF", mod(r%nelec, 2))
+   if (r%uhf < 0 .or. r%uhf > r%nelec .or. mod(r%nelec - r%uhf, 2) /= 0) &
+      call die(r, "--uhf "//itoa(r%uhf)//" is impossible with "//itoa(r%nelec)//" electrons: the unpaired "// &
+               "count must be between 0 and the electron count, with the same parity")
+   r%mult = r%uhf + 1
+
+   call r%cli%get("func", sval, r%err)
+   r%func = lower(trim(sval))
+   if (r%func == "hf" .or. r%func == "rhf" .or. r%func == "uhf") r%func = ""
+
+   r%guess = "sad"
+   if (r%chrg /= 0) r%guess = "sadq"
+   if (r%cli%is_set("guess")) then
+      call r%cli%get("guess", sval, r%err)
+      r%guess = lower(trim(sval))
+   end if
+   select case (r%guess)
+   case ("sad"); guess_kind = TRC_GUESS_SAD
+   case ("sadq"); guess_kind = TRC_GUESS_SADQ
+   case ("sap"); guess_kind = TRC_GUESS_SAP
+   case ("gwh"); guess_kind = TRC_GUESS_GWH
+   case ("core", "hcore"); guess_kind = TRC_GUESS_CORE
+   case default
+      call die(r, "unknown guess '"//r%guess//"': use sad, sadq, sap, gwh or core")
+   end select
+
+   call r%cli%get("grid", r%grid, r%err); call check(r, "--grid")
+   call r%cli%get("nlc-grid", nlc_grid, r%err); call check(r, "--nlc-grid")
+   call r%cli%get("iterations", maxiter, r%err); call check(r, "--iterations")
+   call r%cli%get("econv", r%econv, r%err); call check(r, "--econv")
+   call r%cli%get("gconv", r%gconv, r%err); call check(r, "--gconv")
+   call r%cli%get("thresh", r%thresh, r%err); call check(r, "--thresh")
+   call r%cli%get("frozen", nfrozen, r%err); call check(r, "--frozen")
+   r%rimp2 = r%cli%is_set("rimp2")
+   cart = r%cli%is_set("cart")
+   if (r%rimp2) then
+      ! RI-MP2 is closed-shell and, today, Cartesian only: say so here rather
+      ! than after an SCF it cannot use.
+      if (r%mult /= 1) call die(r, "--rimp2 needs a closed-shell reference, and this molecule has "// &
+                                itoa(r%uhf)//" unpaired electrons")
+      cart = .true.
+      call r%cli%get("aux", sval, r%err)
+      call resolve_basis(sval, r%aux_path, r%err)
+      if (r%err%has_error()) call die(r, "--aux: "//r%err%get_message())
+   end if
+   r%json = ""
+   if (r%cli%is_set("json")) call r%cli%get("json", r%json, r%err)
+
+   ! SAP's fitted atomic potentials ship as a basis-format file; find it the
+   ! way a basis is found, unless the caller has already said where it is.
+   if (guess_kind == TRC_GUESS_SAP) then
+      block
+         character(len=1024) :: e
+         integer :: n, s
+         call get_environment_variable("TRC_SAP_BASIS", e, n, s)
+         if (s /= 0 .or. n == 0) then
+            call resolve_basis("sap_helfem_large", sval, r%err)
+            if (r%err%has_error()) call die(r, "--guess sap needs its fitted potentials: "//r%err%get_message())
+            call set_env("TRC_SAP_BASIS", sval)
+         end if
+      end block
+   end if
+
+   if (r%rank0) call banner(r)
+
+   ! ---- the calculation -------------------------------------------------
+   ! One process, one device: the first, or (more than one rank) this
+   ! rank's own, by NODE-LOCAL rank -- the same split trc_build_comm does
+   ! inside the library, done here too because device binding must happen
+   ! before anything reaches the device, and the guess the library builds
+   ! starts doing that before it gets to call trc_build_comm itself. A host
+   ! build has nothing to bind either way.
+   if (r%nranks > 1) then
+      block
+         type(comm_t) :: node_comm
+         node_comm = r%wcomm%split()
+         dev = trc_bind_device(node_comm%rank())
+         call node_comm%finalize()
+      end block
+   else
+      dev = trc_bind_device(0)
+   end if
+   st = trc_create(r%h)
+   ! Every rank must make this call, with the same handle, before trc_run_scf
+   ! -- trc_set_comm's own contract. One rank keeps today's path exactly:
+   ! the context's fcomm defaults to -1 and is never touched.
+   if (r%nranks > 1) call api(r, trc_set_comm(r%h, int(r%wcomm%fortran_handle(), c_int)))
+   call api(r, trc_set_verbose(r%h, merge(0_c_int, 1_c_int, r%cli%is_set("silent"))))
+   call api(r, trc_set_molecule(r%h, int(r%natm, c_int), real(r%z, c_double), xyz, int(r%chrg, c_int), &
+                                int(r%mult, c_int)))
+   call api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
+   call api(r, trc_set_basis_json(r%h, c_string(r%basis_path)))
+   if (r%rimp2) call api(r, trc_set_aux_json(r%h, c_string(r%aux_path)))
+   call api(r, trc_set_method(r%h, c_string(r%func), int(r%grid, c_int)))
+   call api(r, trc_set_nlc_grid(r%h, int(nlc_grid, c_int)))
+   call api(r, trc_set_convergence(r%h, real(r%econv, c_double), real(r%gconv, c_double), int(maxiter, c_int), &
+                                   10_c_int))
+   call api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
+   call api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
+   if (r%rimp2) call api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), 0_c_int))
+
+   st = trc_run_scf(r%h)
+   if (st /= TRC_OK .and. st /= TRC_ERR_NOCONV) call api(r, st)
+   call api(r, trc_nao(r%h, r%nao))
+   call api(r, trc_is_spherical(r%h, r%sph))
+   call api(r, trc_nspin(r%h, nspin))
+   call api(r, trc_energy(r%h, r%etot))
+   call api(r, trc_energy_parts(r%h, r%enuc, r%eone, r%etwo, r%exc))
+   call api(r, trc_converged(r%h, r%conv))
+   call api(r, trc_iterations(r%h, r%niter))
+   r%eos = 0; r%ess = 0
+   if (r%rimp2 .and. r%conv /= 0) then
+      call api(r, trc_run_rimp2(r%h))
+      call api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
+   end if
+
+   call system_clock(r%t1)
+   if (r%rank0) call summary(r)
+   if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
+   st = trc_destroy(r%h)
+
+   if (r%conv == 0) then
+      if (r%rank0) write (error_unit, "(a)") "terco: the SCF did not converge in "//itoa(int(r%niter))//" iterations"
+      call quit(r, 2)
+   end if
+   if (r%rank0) write (output_unit, "(/,a)") " normal termination of terco"
+   call quit(r, 0)
 
 end program terco_main

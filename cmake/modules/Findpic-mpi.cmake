@@ -20,12 +20,22 @@
 set(PIC_MPI_GIT_TAG
     "3374c5bf58c21c1fd744bf97a570b52882963687"
     CACHE STRING "pic-mpi git ref (branch, tag or commit) to fetch")
+#
+# comm_t has no way back to the plain Fortran integer handle a handle-based
+# API (trc_set_comm here) takes -- comm_from_handle goes handle -> comm_t,
+# nothing in pic-mpi's public API goes the other way. Patched in locally as
+# `fortran_handle()` on comm_t (all three backends) until it lands upstream;
+# see cmake/patches/pic-mpi-fortran-handle.patch for the exact diff this
+# proposes to github.com/JorgeG94/pic-mpi, and app/main.F90's use of it.
+#
+set(_patch "${CMAKE_CURRENT_LIST_DIR}/../patches/pic-mpi-fortran-handle.patch")
 set(_lib "pic-mpi")
 set(_url "https://github.com/JorgeG94/pic-mpi/")
 include("${CMAKE_CURRENT_LIST_DIR}/sample_utils.cmake")
-my_fetch_package("${_lib}" "${_url}" "${PIC_MPI_GIT_TAG}")
+my_fetch_package("${_lib}" "${_url}" "${PIC_MPI_GIT_TAG}" "${_patch}" "comm_fortran_handle")
 unset(_lib)
 unset(_url)
+unset(_patch)
 
 #
 # pic-mpi deliberately writes its OWN .mod files to its own build tree
