@@ -336,7 +336,13 @@ contains
       w0tmp = c*(gi/(ri*ri))**2
       w0 = sqrt(w0tmp + PI43*ri)
       dw0dr = (0.5_dp*PI43*ri - 2.0_dp*w0tmp)/w0
-      dw0dg = w0tmp*ri/(gi*w0)
+      ! Algebraically w0tmp*ri/(gi*w0) = c*(gi/ri**2)**2*ri/(gi*w0)
+      ! = c*gi/(ri**3*w0): the gi in the numerator and denominator cancel
+      ! down to one power rather than none, which is what makes this form
+      ! finite at sigma = 0 (gi = 0, ri >= VV10_RHO_TOL): the old form was
+      ! literally 0/0 there, since w0tmp ~ gi**2 vanishes together with the
+      ! gi it was divided by.
+      dw0dg = c*gi/(ri**3*w0)
       kk = kvv*ri**(1.0_dp/6.0_dp)
       dkdr = kk/6.0_dp
 
