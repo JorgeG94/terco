@@ -549,7 +549,7 @@ def chunked_rhf_item_text(tag, item, comps, inside):
     kfac_line = "         kfac_eff = merge(0.25_dp, 0.5_dp, ndens == 1)*kfac\n"
     i_kfac = item.index(kfac_line)
     i_k1 = item.index("            do k1 = 1, nab\n")
-    tval_line = "tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
+    tval_line = "tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
     i_tv = item.index(tval_line, i_k1) + len(tval_line)
     i_at = item.index("\n         !$acc atomic update\n")
     pre = _strip_dead_decls(item[:i_kfac])
@@ -924,6 +924,53 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     return screen + compact
 
 
+#: `pcsi{tag}`'s primitive-quartet head now computes the wB97X-V long-range
+#: exchange substitution (rho_theta = theta*rho, theta from `omega`) -- see
+#: scripts/gen_perclass.py. The gradient has no range-separated operator and
+#: no `omega` dummy argument (`eri%gradient` error-stops if ever given one),
+#: so the splice below removes that substitution instead of inheriting an
+#: undeclared `omega` into the spliced text: `rho_theta` collapses back to
+#: plain `rho`, and the two attenuation multiplies on wpx/wqx (omega == 0's
+#: theta == 1.0_dp, so removing them is the identical specialisation, not an
+#: approximation) go with it.
+_RANGE_SEP_BLOCK = """                  ! RANGE SEPARATION. erf(omega*r12)/r12 is the Coulomb
+                  ! integral with rho replaced everywhere by
+                  ! rho_theta = theta*rho, theta = omega^2/(rho + omega^2) --
+                  ! the W centre (wpx/wqx below), the Boys argument tval, and
+                  ! the oo2ze/rz/re VRR coefficients -- and the prefactor
+                  ! picks up a sqrt(theta) factor. oo2z and oo2e come from
+                  ! zeta and eta alone and are not touched: the kernels do
+                  ! NOT use rho consistently, and those two are the
+                  ! quantities that only equal a rho expression through
+                  ! rho*(zeta+eta) = zeta*eta, not through rho itself.
+                  !
+                  ! omega == 0 sets theta = 1.0_dp exactly, so
+                  ! rho_theta equals rho bit-for-bit and every "theta*" below
+                  ! is an exact multiply by one: the attenuated path costs
+                  ! this one branch and is otherwise identical to the
+                  ! Coulomb result, to the last bit.
+                  if (omega > 0.0_dp) then
+                     theta = omega*omega/(rho + omega*omega)
+                  else
+                     theta = 1.0_dp
+                  end if
+                  rho_theta = theta*rho
+"""
+_RANGE_SEP_WP_WQ = ("                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz\n"
+                    "                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz\n")
+
+
+def _degauge_range_separation(text):
+    """Specialise the spliced head to omega == 0 (see `_RANGE_SEP_BLOCK`)."""
+    n = text.count(_RANGE_SEP_BLOCK)
+    assert n == 1, n
+    text = text.replace(_RANGE_SEP_BLOCK, "                  rho_theta = rho\n")
+    n = text.count(_RANGE_SEP_WP_WQ)
+    assert n == 1, n
+    text = text.replace(_RANGE_SEP_WP_WQ, "")
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("class_tag", help="four digits, e.g. 1111 or 2222")
@@ -971,9 +1018,10 @@ def main():
     whole = src[:i_end]
     assert i_item < i_end
 
-    tval_line = "tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
+    tval_line = "tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
     i_tval = whole.index(tval_line) + len(tval_line)
     head = whole[:i_tval]
+    head = _degauge_range_separation(head)
 
     # --- 1. thread qp_a (the bra/ket primitive's own exponent) through the
     #     signatures and the one call between them, exactly like qp_z. ---

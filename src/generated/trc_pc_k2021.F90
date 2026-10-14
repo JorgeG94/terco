@@ -27,7 +27,7 @@ module trc_pc_k2021
 
 contains
    subroutine pcs2021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat, rank, nranks)
@@ -51,10 +51,25 @@ contains
       !! function. It is a fraction of `thresh`, and a runtime argument
       !! rather than a literal so the fraction can be measured against the
       !! energy it costs instead of guessed once.
+      !!
+      !! Tested against the UNATTENUATED prefactor (the primitive loop below
+      !! computes `pref` before `theta`, deliberately): erf(omega*r12)/r12 is
+      !! pointwise smaller than 1/r12, so the Coulomb prefactor bounds the
+      !! attenuated integral too, just loosely at omega > 0. Still a valid
+      !! prescreen, never a missed quartet -- see trc_screen.F90 for the
+      !! Schwarz bound's identical reasoning.
       real(dp), intent(in)    :: jfac, kfac
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
+      real(dp), intent(in)    :: omega
+      !! Range-separation parameter, bohr^-1. Zero (the default every caller
+      !! but wB97X-V's long-range exchange pass uses) is today's Coulomb
+      !! operator; omega > 0 attenuates it to erf(omega*r12)/r12. A plain
+      !! scalar, not optional, so it costs one comparison per primitive
+      !! quartet and nothing else -- see the primitive loop below, where
+      !! omega == 0 makes every quantity it touches bit-identical to the
+      !! unattenuated value.
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: nqp
@@ -93,14 +108,14 @@ contains
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
          call pcsi2021(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                        nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine pcs2021
 
    pure subroutine pcsi2021(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, sh_l, ao_off, &
+                      npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                       ndens, dmat, jmat)
@@ -122,10 +137,25 @@ contains
       !! function. It is a fraction of `thresh`, and a runtime argument
       !! rather than a literal so the fraction can be measured against the
       !! energy it costs instead of guessed once.
+      !!
+      !! Tested against the UNATTENUATED prefactor (the primitive loop below
+      !! computes `pref` before `theta`, deliberately): erf(omega*r12)/r12 is
+      !! pointwise smaller than 1/r12, so the Coulomb prefactor bounds the
+      !! attenuated integral too, just loosely at omega > 0. Still a valid
+      !! prescreen, never a missed quartet -- see trc_screen.F90 for the
+      !! Schwarz bound's identical reasoning.
       real(dp), intent(in)    :: jfac, kfac
       !! Coulomb and exchange scalings. Per call, so they fold into the six
       !! atomic updates and the digestion stays folded -- separating J and K
       !! into two matrices to scale them would give back FOCK6's 22%.
+      real(dp), intent(in)    :: omega
+      !! Range-separation parameter, bohr^-1. Zero (the default every caller
+      !! but wB97X-V's long-range exchange pass uses) is today's Coulomb
+      !! operator; omega > 0 attenuates it to erf(omega*r12)/r12. A plain
+      !! scalar, not optional, so it costs one comparison per primitive
+      !! quartet and nothing else -- see the primitive loop below, where
+      !! omega == 0 makes every quantity it touches bit-identical to the
+      !! unattenuated value.
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: nqp
@@ -152,6 +182,7 @@ contains
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl
       logical :: dij, dkl, dpq
       real(dp) :: zeta, eta, zpe, rho, tval, pref, wc
+      real(dp) :: theta, rho_theta
       real(dp) :: pqx, pqy, pqz, pax, pay, paz, qcx, qcy, qcz
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
       real(dp) :: oo2z, oo2e, oo2ze, rz, re, sc, vv
@@ -289,6 +320,28 @@ contains
                   reta = 1.0_dp/eta
                   rzpe = 1.0_dp/zpe
                   rho = zeta*eta*rzpe
+                  ! RANGE SEPARATION. erf(omega*r12)/r12 is the Coulomb
+                  ! integral with rho replaced everywhere by
+                  ! rho_theta = theta*rho, theta = omega^2/(rho + omega^2) --
+                  ! the W centre (wpx/wqx below), the Boys argument tval, and
+                  ! the oo2ze/rz/re VRR coefficients -- and the prefactor
+                  ! picks up a sqrt(theta) factor. oo2z and oo2e come from
+                  ! zeta and eta alone and are not touched: the kernels do
+                  ! NOT use rho consistently, and those two are the
+                  ! quantities that only equal a rho expression through
+                  ! rho*(zeta+eta) = zeta*eta, not through rho itself.
+                  !
+                  ! omega == 0 sets theta = 1.0_dp exactly, so
+                  ! rho_theta equals rho bit-for-bit and every "theta*" below
+                  ! is an exact multiply by one: the attenuated path costs
+                  ! this one branch and is otherwise identical to the
+                  ! Coulomb result, to the last bit.
+                  if (omega > 0.0_dp) then
+                     theta = omega*omega/(rho + omega*omega)
+                  else
+                     theta = 1.0_dp
+                  end if
+                  rho_theta = theta*rho
                   pqx = rpx - qp_px(kq)
                   pqy = rpy - qp_py(kq)
                   pqz = rpz - qp_pz(kq)
@@ -301,7 +354,9 @@ contains
                   wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
                   wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
+                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
                   btt = 1.0_dp/tval
@@ -335,8 +390,9 @@ contains
                   f(0) = (btt*f(1) + bet)*(1.0_dp)
                end if
 
-                  oo2e = 0.5_dp*reta; oo2ze = 0.5_dp*rzpe
-                  rz = rho*rzeta; re = rho*reta
+                  pref = pref*sqrt(theta)
+                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta; re = rho_theta*reta
 
                ! --- level m = 5 ---
             v(1,0) = pref*f(5)
