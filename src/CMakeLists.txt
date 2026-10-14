@@ -75,6 +75,36 @@ target_sources(
           xc/trc_xc_wb97x_v_xc.F90
           xc/trc_xc_wb97x_xc.F90
           xc/trc_xc_wb97_xc.F90
+          xc/trc_xc_vwn3.F90
+          xc/trc_xc_pz81.F90
+          xc/trc_xc_pz81_mod.F90
+          xc/trc_xc_pw91_lda.F90
+          xc/trc_xc_pw91_lda_mod.F90
+          xc/trc_xc_pw91_lda_rpa.F90
+          xc/trc_xc_rev_pbe_x.F90
+          xc/trc_xc_rpbe_x.F90
+          xc/trc_xc_optx_x.F90
+          xc/trc_xc_mpw91_x.F90
+          xc/trc_xc_pw86_x.F90
+          xc/trc_xc_pw91_x.F90
+          xc/trc_xc_p86_c.F90
+          xc/trc_xc_p86vwn_ft_c.F90
+          xc/trc_xc_pw91_c.F90
+          xc/trc_xc_pbe_sol_c.F90
+          xc/trc_xc_bmk_c.F90
+          xc/trc_xc_n12_c.F90
+          xc/trc_xc_n12_sx_c.F90
+          xc/trc_xc_sogga11_x_c.F90
+          xc/trc_xc_sogga11_x_x.F90
+          xc/trc_xc_b97_d.F90
+          xc/trc_xc_ityh_x.F90
+          xc/trc_xc_ityh_x_015.F90
+          xc/trc_xc_ityh_x_033.F90
+          xc/trc_xc_hjs_pbe_x.F90
+          xc/trc_xc_lrcwpbe_hjs_pbe_x.F90
+          xc/trc_xc_lrcwpbeh_hjs_pbe_x.F90
+          xc/trc_xc_wb97x_d_xc.F90
+          xc/trc_xc_wb97x_d3_xc.F90
           xc/trc_xc_functional.F90  # compositions, and the per-point dispatch
           xc/trc_collocation.F90    # basis functions and gradients at a point
           xc/trc_xc_batch.F90       # the grid, batched and screened
