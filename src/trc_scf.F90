@@ -446,7 +446,9 @@ contains
       ! stays byte-for-byte unchanged.
       real(dp), allocatable :: s_c(:, :), h_c(:, :)
       real(dp), allocatable :: d_c(:, :, :), gmat_c(:, :, :), vxc_c(:, :, :)
-      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), w1_c(:, :)
+      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), w1_c(:, :), klr_c(:, :)
+      !! klr_c: the long-range exchange of a range-separated hybrid, built
+      !! by its own pass (erf(omega r12)/r12) and added into G.
       real(dp), allocatable :: dref_c(:, :), gacc_c(:, :), ddif_c(:, :)
       logical :: incr_now
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
@@ -470,6 +472,9 @@ contains
       type(trc_linalg_t) :: la
       type(error_t) :: err
       logical :: dft, talk, diis_on
+      real(dp) :: exx_lr, omega
+      !! A range-separated hybrid's extra long-range exchange fraction and
+      !! its omega: K_total = exx*K + exx_lr*K_erf(omega). Zero otherwise.
       real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ, errmax
       real(dp), allocatable :: ofrac(:)
       integer :: nfrac, ndamp
@@ -492,6 +497,7 @@ contains
       dft = len_trim(opts%functional) > 0
       nlc = .false.
       exx = 1.0_dp
+      exx_lr = 0.0_dp; omega = 0.0_dp
       if (dft) then
          if (.not. xc_functional_by_name(opts%functional, func)) then
             res%message = "trc_scf: unknown functional "//trim(opts%functional)
@@ -507,14 +513,8 @@ contains
                return
             end if
          end if
-         ! Range-separated exchange and VV10 are not wired into this loop
-         ! yet; running with exx alone would converge on a wrong functional
-         ! without complaint.
-         if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
-            res%message = "trc_scf: "//trim(opts%functional)// &
-                          " needs range-separated exchange, not yet in the SCF"
-            return
-         end if
+         exx_lr = func%exx_lr
+         omega = func%omega
       end if
       nspin = 1
       if ((nalpha /= nbeta .or. opts%unrestricted) .and. .not. (opts%frac_occ .and. .not. opts%unrestricted)) nspin = 2
@@ -531,7 +531,7 @@ contains
       allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin))
       allocate (s_c(nao_c, nao_c), h_c(nao_c, nao_c))
       allocate (d_c(nao_c, nao_c, nspin), gmat_c(nao_c, nao_c, nspin), vxc_c(nao_c, nao_c, nspin))
-      allocate (dtot_c(nao_c, nao_c), jmat_c(nao_c, nao_c), w1_c(nao_c, nao_c))
+      allocate (dtot_c(nao_c, nao_c), jmat_c(nao_c, nao_c), w1_c(nao_c, nao_c), klr_c(nao_c, nao_c))
       allocate (dref_c(nao_c, nao_c), gacc_c(nao_c, nao_c), ddif_c(nao_c, nao_c))
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
@@ -652,12 +652,12 @@ contains
       fock = 0.0_dp; gmat = 0.0_dp; vxc = 0.0_dp; dold = 0.0_dp; errv = 0.0_dp
       fstore = 0.0_dp; estore = 0.0_dp
       w1 = 0.0_dp; w2 = 0.0_dp; w3 = 0.0_dp
-      d_c = 0.0_dp; gmat_c = 0.0_dp; vxc_c = 0.0_dp; dtot_c = 0.0_dp; jmat_c = 0.0_dp; w1_c = 0.0_dp
+      d_c = 0.0_dp; gmat_c = 0.0_dp; vxc_c = 0.0_dp; dtot_c = 0.0_dp; jmat_c = 0.0_dp; w1_c = 0.0_dp; klr_c = 0.0_dp
 
       !$acc enter data copyin(ofrac)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
-      !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c) &
+      !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
       !$acc            create(dref_c, gacc_c, ddif_c)
       if (opts%adiis) then
          !$acc enter data copyin(fstore_a, dstore_a)
@@ -764,6 +764,12 @@ contains
                   thresh0 = eri%thresh
                   eri%thresh = thresh0*incr_thresh_scale_env(opts%incr_thresh_scale)
                   call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
+                  if (exx_lr /= 0.0_dp) then
+                     call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                     do concurrent(i=1:nao_c, j=1:nao_c)
+                        gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
+                     end do
+                  end if
                   eri%thresh = thresh0
                end block
                do concurrent(i=1:nao_c, j=1:nao_c)
@@ -773,6 +779,12 @@ contains
                end do
             else
                call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
+               if (exx_lr /= 0.0_dp) then
+                  call eri%fock_resident(b, d_c(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
+                  end do
+               end if
                do concurrent(i=1:nao_c, j=1:nao_c)
                   gacc_c(i, j) = gmat_c(i, j, 1)
                   dref_c(i, j) = d_c(i, j, 1)
@@ -784,11 +796,17 @@ contains
             end do
             call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
             do s = 1, 2
-               if (exx /= 0.0_dp) then
+               if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
                   do concurrent(i=1:nao_c, j=1:nao_c)
                      w1_c(i, j) = 2.0_dp*d_c(i, j, s)
                   end do
                   call eri%fock_resident(b, w1_c, gmat_c(:, :, s), j_scale=0.0_dp, k_scale=exx)
+                  if (exx_lr /= 0.0_dp) then
+                     call eri%fock_resident(b, w1_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                     do concurrent(i=1:nao_c, j=1:nao_c)
+                        gmat_c(i, j, s) = gmat_c(i, j, s) + klr_c(i, j)
+                     end do
+                  end if
                   do concurrent(i=1:nao_c, j=1:nao_c)
                      gmat_c(i, j, s) = gmat_c(i, j, s) + jmat_c(i, j)
                   end do
@@ -1099,7 +1117,7 @@ contains
       !$acc exit data delete(ofrac)
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
-      !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c) &
+      !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
       !$acc           delete(dref_c, gacc_c, ddif_c)
       if (opts%adiis) then
          !$acc exit data delete(fstore_a, dstore_a)
