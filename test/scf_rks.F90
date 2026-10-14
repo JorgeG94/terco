@@ -99,6 +99,12 @@ program scf_rks
       opts%grid_level = 3
       opts%conv_energy = 1.0e-11_dp
       opts%conv_density = 1.0e-8_dp
+      ! conv_density no longer gates (trc_scf.F90); the commutator norm does.
+      ! At its default 1e-5 the slow UKS wB97X-V case could stop up to ~2e-7
+      ! above its minimum (seen under ifx), past the 1e-8 gate below, while
+      ! terco's energy AT pyscf's density agreed to 2.5e-11. Converge to the
+      ! gate's own precision instead.
+      opts%conv_diis = 1.0e-8_dp
       call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts, res)
       if (.not. res%converged) then
          print '(a,a)', "  NOT CONVERGED: ", trim(res%message)
@@ -140,13 +146,20 @@ program scf_rks
       block
          character(len=16) :: name_ref
          integer :: nspin_ref, nao_ref
-         real(dp) :: e_ref, de, dat
+         real(dp) :: e_ref, de, dat, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
          real(dp), allocatable :: dm_ref(:, :, :)
          write (tag, '(i0)') ic - 1
          call ref_read_str(refu, 'NAME_'//trim(tag), name_ref)
          call ref_read_int(refu, 'NSPIN_'//trim(tag), nspin_ref)
          call ref_read_int(refu, 'NAO_'//trim(tag), nao_ref)
          call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+         ! Provenance only (not asserted on here): the pyscf convergence
+         ! this energy was committed at -- see generate.py's converge_tight,
+         ! which refuses a case whose gradient norm does not clear
+         ! conv_tol_grad, tighter than pyscf's own sqrt(conv_tol) default.
+         call ref_read_real(refu, 'CONV_TOL_'//trim(tag), pyscf_conv_tol)
+         call ref_read_real(refu, 'CONV_TOL_GRAD_'//trim(tag), pyscf_conv_tol_grad)
+         call ref_read_real(refu, 'GRAD_NORM_'//trim(tag), pyscf_grad_norm)
          if (nspin_ref /= res%nspin .or. nao_ref /= bas%nao) then
             print '(a)', 'scf_rks: pyscf reference shape does not match this build'; stop 1
          end if
@@ -163,6 +176,8 @@ program scf_rks
          opts2%max_iter = 1
          call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts2, res2, dguess=dm_ref)
          dat = abs(res2%energy - e_ref)
+         print '(a,a,a,es10.2,a,es10.2)', '    ', trim(name_ref), &
+            ': de(converged) ', de, '  de(at pyscf D) ', dat
          call ref_report(nfail, de < 1.0e-8_dp .and. dat < 1.0e-8_dp, &
                          trim(name_ref)//': E(converged) and E(terco at pyscf D) vs pyscf', max(de, dat))
          deallocate (dm_ref)

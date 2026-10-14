@@ -200,6 +200,7 @@ program scf_rimp2
       block
          integer :: u, iprobe
          real(dp) :: e_scf_ref, e_os_ref, e_ss_ref
+         real(dp) :: pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
          character(len=256) :: refname
          iprobe = index(trim(probe), '_probe.bin')
          if (iprobe == 0) then
@@ -210,6 +211,10 @@ program scf_rimp2
          call ref_read_real(u, 'E_SCF', e_scf_ref)
          call ref_read_real(u, 'E_OS', e_os_ref)
          call ref_read_real(u, 'E_SS', e_ss_ref)
+         ! Provenance only -- see scf_rks.F90's own comment on the same tags.
+         call ref_read_real(u, 'CONV_TOL', pyscf_conv_tol)
+         call ref_read_real(u, 'CONV_TOL_GRAD', pyscf_conv_tol_grad)
+         call ref_read_real(u, 'GRAD_NORM', pyscf_grad_norm)
          call ref_close(u)
          block
             integer :: nfail

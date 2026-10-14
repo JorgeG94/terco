@@ -153,11 +153,15 @@ program scf_robust
       if (has_ref) then
       block
          character(len=16) :: xyz_ref, bas_ref
-         real(dp) :: e_ref, de
+         real(dp) :: e_ref, de, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
          write (tag, '(i0)') ic - 1
          call ref_read_str(refu, 'XYZ_'//trim(tag), xyz_ref)
          call ref_read_str(refu, 'BAS_'//trim(tag), bas_ref)
          call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+         ! Provenance only -- see scf_rks.F90's own comment on the same tags.
+         call ref_read_real(refu, 'CONV_TOL_'//trim(tag), pyscf_conv_tol)
+         call ref_read_real(refu, 'CONV_TOL_GRAD_'//trim(tag), pyscf_conv_tol_grad)
+         call ref_read_real(refu, 'GRAD_NORM_'//trim(tag), pyscf_grad_norm)
          if (trim(xyz_ref) /= trim(xyzf(ic)) .or. trim(bas_ref) /= trim(basf(ic))) then
             print '(a)', 'scf_robust: pyscf reference case order does not match this build'; stop 1
          end if

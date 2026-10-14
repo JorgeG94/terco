@@ -240,14 +240,81 @@ class ConvergenceError(RuntimeError):
     commit. Refuse to write it -- see this file's own header."""
 
 
-def require_converged(mf, label):
+def converge_tight(make_mf, dm0, label, conv_tol=1.0e-12, conv_tol_grad=1.0e-8, max_cycle=200):
+    """Converge an SCF to BOTH an energy and a GRADIENT tolerance, refuse if
+    it cannot, and verify the result with a fresh mf before trusting it.
+
+    pyscf's own convergence test is |dE| < conv_tol AND |g| < conv_tol_grad
+    (default conv_tol_grad = sqrt(conv_tol) ~ 1e-6 at conv_tol=1e-12) --
+    loose enough that a slow case (OH/wB97X-V UKS, measured) can stop up to
+    ~1e-8 above its true minimum while still reporting `converged`. That is
+    exactly what test/scf_rks.F90's own at-density control exposed: terco's
+    energy AT the cached density agreed with pyscf to 2.5e-11 on every
+    compiler, but the CACHED energy itself was the under-converged one by
+    ~1.2e-8, past the 1e-8 gate the Fortran side holds the comparison to.
+    An SCF energy is variational -- under-convergence only leaves it too
+    HIGH -- so a comparison this tight needs `conv_tol_grad` explicit and
+    tight, not pyscf's default.
+
+    `make_mf()` must return a FRESH mf object (new instance, same mol/xc/
+    grids) each call: once to do the actual convergence, once after it, at
+    the SAME converged density, to cross-check `energy_tot(dm)` reproduces
+    `e_tot` from an mf that never iterated at all -- catching a stale
+    intermediate (cached J/K, grids,...) on the FIRST mf that the energy
+    alone would not. Falls back to `.newton()` (second-order) when the
+    first-order DIIS solver does not reach `conv_tol_grad` -- OH/PBE-UKS and
+    OH/wB97X-V-UKS have both needed it, measured.
+
+    Returns (mf, grad_norm). Raises ConvergenceError (never returns an
+    unconverged or unverified result) otherwise.
+    """
+    mf = make_mf()
+    mf.conv_tol = conv_tol
+    mf.conv_tol_grad = conv_tol_grad
+    mf.max_cycle = max_cycle
+    mf.verbose = 0
+    mf.kernel(dm0=dm0)
+    if not mf.converged:
+        mf2 = mf.newton()
+        mf2.conv_tol = conv_tol
+        mf2.conv_tol_grad = conv_tol_grad
+        mf2.max_cycle = max_cycle
+        mf2.kernel(dm0=dm0)
+        mf = mf2
     if not mf.converged:
         raise ConvergenceError(
-            f"{label}: pyscf SCF did not converge (conv_tol={mf.conv_tol}, "
-            f"max_cycle={mf.max_cycle}) -- refusing to write a reference "
-            f"from an unconverged energy. Tighten conv_tol/max_cycle, add a "
-            f"level shift, or use .newton() (see this module's VV10/UKS "
-            f"notes) and rerun.")
+            f"{label}: pyscf SCF did not reach conv_tol={conv_tol}, "
+            f"conv_tol_grad={conv_tol_grad} (DIIS and .newton() both tried) "
+            f"-- refusing to write a reference from an under-converged "
+            f"energy.")
+    dm_final = mf.make_rdm1()
+    # get_grad's third positional argument is a FOCK matrix, not a density
+    # -- omit it and let pyscf build both from mo_coeff/mo_occ itself,
+    # consistent with dm_final (mf.make_rdm1() with no arguments uses the
+    # same mo_coeff/mo_occ).
+    grad = mf.get_grad(mf.mo_coeff, mf.mo_occ)
+    grad_norm = float(np.linalg.norm(grad))
+    if grad_norm > conv_tol_grad:
+        # Belt and suspenders: pyscf's own `converged` flag already implies
+        # this, but the achieved norm is recorded in the reference header
+        # regardless, so a future tightening of conv_tol_grad has a number
+        # to check against instead of only a pass/fail.
+        raise ConvergenceError(
+            f"{label}: converged=True but |g|={grad_norm:.3e} > "
+            f"conv_tol_grad={conv_tol_grad:.3e} -- pyscf's own check and "
+            f"this one disagree; investigate before trusting either.")
+    mf_fresh = make_mf()
+    mf_fresh.verbose = 0
+    e_fresh = mf_fresh.energy_tot(dm_final)
+    if abs(e_fresh - mf.e_tot) > 1.0e-11:
+        raise ConvergenceError(
+            f"{label}: self-check failed -- a FRESH mf's energy_tot(dm) at "
+            f"the converged density ({e_fresh:.14f}) disagrees with the "
+            f"converged mf's own e_tot ({mf.e_tot:.14f}) by "
+            f"{abs(e_fresh - mf.e_tot):.3e}, past 1e-11. Something the "
+            f"converged mf cached (grids, J/K, ...) is not reproduced by a "
+            f"plain energy_tot call -- investigate before trusting e_tot.")
+    return mf, grad_norm
 
 
 def run_bin(relexe, args, env_extra=None):
@@ -909,31 +976,25 @@ def gen_rks():
         inv_perm = np.argsort(perm)
         dm_pyscf_order = dm[perm][:, perm]
 
-        if name:
-            mf = dft.RKS(mol) if nspin == 1 else dft.UKS(mol)
-            mf.xc = PYSCF[name]
-            mf.grids.coords = np.ascontiguousarray(pts)
-            mf.grids.weights = wts
-            mf.grids.non0tab = None
-            if npts_nlc:
-                mf.nlcgrids.coords = np.ascontiguousarray(pts_nlc)
-                mf.nlcgrids.weights = wts_nlc
-                mf.nlcgrids.non0tab = None
-        else:
-            mf = scf.RHF(mol) if nspin == 1 else scf.UHF(mol)
-        mf.conv_tol = 1e-12
-        mf.max_cycle = 200
-        mf.verbose = 0
-        dm0 = dm_pyscf_order[:, :, 0] if nspin == 1 else (dm_pyscf_order[:, :, 0], dm_pyscf_order[:, :, 1])
-        e_p = mf.kernel(dm0=dm0)
-        if not mf.converged:
-            # PBE0/UKS-with-VV10-shaped cases have needed the second-order
-            # solver before; try it once rather than refuse immediately.
-            mf = mf.newton()
-            mf.conv_tol = 1e-12
-            e_p = mf.kernel(dm0=dm0)
+        def make_mf():
+            if name:
+                m = dft.RKS(mol) if nspin == 1 else dft.UKS(mol)
+                m.xc = PYSCF[name]
+                m.grids.coords = np.ascontiguousarray(pts)
+                m.grids.weights = wts
+                m.grids.non0tab = None
+                if npts_nlc:
+                    m.nlcgrids.coords = np.ascontiguousarray(pts_nlc)
+                    m.nlcgrids.weights = wts_nlc
+                    m.nlcgrids.non0tab = None
+            else:
+                m = scf.RHF(mol) if nspin == 1 else scf.UHF(mol)
+            return m
+
         label = (name or 'hf') + ('/U' if nspin == 2 else '/R')
-        require_converged(mf, f"rks case {ic} ({label})")
+        dm0 = dm_pyscf_order[:, :, 0] if nspin == 1 else (dm_pyscf_order[:, :, 0], dm_pyscf_order[:, :, 1])
+        mf, grad_norm = converge_tight(make_mf, dm0, f"rks case {ic} ({label})")
+        e_p = mf.e_tot
 
         dm_conv = mf.make_rdm1()
         if nspin == 1:
@@ -946,10 +1007,13 @@ def gen_rks():
         w.int_(f"NSPIN_{ic}", nspin)
         w.int_(f"NAO_{ic}", n)
         w.real(f"E_{ic}", e_p)
+        w.real(f"CONV_TOL_{ic}", mf.conv_tol)
+        w.real(f"CONV_TOL_GRAD_{ic}", mf.conv_tol_grad)
+        w.real(f"GRAD_NORM_{ic}", grad_norm)
         w.matrix3(f"DM_{ic}", dm_conv_terco)
         de = abs(e_t - e_p)
         print(f"  rks case {ic:2d} {label:9s} E(terco,old-live-compare) {e_t:18.12f}  "
-              f"E(pyscf,converged) {e_p:18.12f}  |dE| {de:.2e}")
+              f"E(pyscf,converged) {e_p:18.12f}  |dE| {de:.2e}  |g| {grad_norm:.2e}")
     w.end()
     w.write()
     dump.unlink()
@@ -994,22 +1058,20 @@ def gen_scf_robust():
         if mol.nao_nr() != n:
             raise RuntimeError(f"gen_scf_robust {xyzname}/{basname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
 
-        mf = scf.UHF(mol) if nspin == 2 else scf.RHF(mol)
-        mf.conv_tol = 1e-12
-        mf.max_cycle = 200
-        mf.verbose = 0
-        e_py = mf.kernel()
-        if not mf.converged:
-            mf = mf.newton()
-            mf.conv_tol = 1e-12
-            e_py = mf.kernel()
-        require_converged(mf, f"scf_robust {xyzname}/{basname}")
+        def make_mf():
+            return scf.UHF(mol) if nspin == 2 else scf.RHF(mol)
+
+        mf, grad_norm = converge_tight(make_mf, None, f"scf_robust {xyzname}/{basname}")
+        e_py = mf.e_tot
 
         w.str_(f"XYZ_{ic}", xyzname)
         w.str_(f"BAS_{ic}", basname)
         w.real(f"E_{ic}", e_py)
+        w.real(f"CONV_TOL_{ic}", mf.conv_tol)
+        w.real(f"CONV_TOL_GRAD_{ic}", mf.conv_tol_grad)
+        w.real(f"GRAD_NORM_{ic}", grad_norm)
         print(f"  scf_robust {xyzname:14s} {basname:14s}  E(terco,old) {e_terco:20.10f}  "
-              f"E(pyscf,converged) {e_py:20.10f}  |diff| {abs(e_terco - e_py):10.3e}")
+              f"E(pyscf,converged) {e_py:20.10f}  |diff| {abs(e_terco - e_py):10.3e}  |g| {grad_norm:.2e}")
     w.end()
     w.write()
     dump.unlink()
@@ -1046,11 +1108,10 @@ def _gen_rimp2_one(probe_relname, out_relname):
     mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Bohr', verbose=0)
     if mol.nao_nr() != n:
         raise RuntimeError(f"gen_rimp2 {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
-    mf = scf.RHF(mol)
-    mf.conv_tol = 1e-12
-    mf.verbose = 0
-    mf.kernel()
-    require_converged(mf, f"rimp2 {probe_relname} RHF")
+    def make_mf():
+        return scf.RHF(mol)
+
+    mf, grad_norm = converge_tight(make_mf, None, f"rimp2 {probe_relname} RHF")
     pt = mp.dfmp2.DFMP2(mf)
     pt.with_df = df.DF(mol, auxbasis=auxbas)
     pt.verbose = 0
@@ -1062,10 +1123,13 @@ def _gen_rimp2_one(probe_relname, out_relname):
     w.real("E_SCF", mf.e_tot)
     w.real("E_OS", ref_os)
     w.real("E_SS", ref_ss)
+    w.real("CONV_TOL", mf.conv_tol)
+    w.real("CONV_TOL_GRAD", mf.conv_tol_grad)
+    w.real("GRAD_NORM", grad_norm)
     w.end()
     w.write()
     print(f"  rimp2 {probe_relname}: E_RHF(terco,old) {e_scf:20.12f}  E_RHF(pyscf) {mf.e_tot:20.12f}  "
-          f"|diff| {abs(e_scf - mf.e_tot):9.2e}")
+          f"|diff| {abs(e_scf - mf.e_tot):9.2e}  |g| {grad_norm:.2e}")
     print(f"             E_os(terco,old) {e_os:20.12f}  E_os(pyscf) {ref_os:20.12f}  "
           f"|diff| {abs(e_os - ref_os):9.2e}")
     print(f"             E_ss(terco,old) {e_ss:20.12f}  E_ss(pyscf) {ref_ss:20.12f}  "
