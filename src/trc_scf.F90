@@ -488,6 +488,14 @@ contains
             return
          end if
          exx = func%exx
+         ! Range-separated exchange and VV10 are not wired into this loop
+         ! yet; running with exx alone would converge on a wrong functional
+         ! without complaint.
+         if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp .or. func%nlc_b /= 0.0_dp) then
+            res%message = "trc_scf: "//trim(opts%functional)// &
+                          " needs range-separated exchange and VV10, not yet in the SCF"
+            return
+         end if
       end if
       nspin = 1
       if ((nalpha /= nbeta .or. opts%unrestricted) .and. .not. (opts%frac_occ .and. .not. opts%unrestricted)) nspin = 2
