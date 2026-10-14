@@ -7,15 +7,17 @@
 # pinned revision can be switched from the CMake command line
 # (-DPIC_MPI_GIT_TAG=...) without editing this file.
 #
-# v0.6.7 is the release with both directions between a plain Fortran
-# communicator handle and comm_t: `comm_from_handle` (handle -> comm_t),
+# v0.6.8 has both directions between a plain Fortran communicator handle
+# and comm_t (since v0.6.7): `comm_from_handle` (handle -> comm_t),
 # which lets terco accept a caller's own communicator instead of only
 # MPI_COMM_WORLD, and `comm_t%fortran_handle()` (comm_t -> handle), which
 # app/main.F90 uses to hand its communicator to trc_set_comm. terco used to
 # patch the second in locally; it is upstream now, so nothing is patched.
+# v0.6.8 also prints the selected backend and PIC_MPICH_PERLMUTTER in its
+# configure summary, so a log shows whether the Perlmutter flags took.
 #
 set(PIC_MPI_GIT_TAG
-    "v0.6.7"
+    "v0.6.8"
     CACHE STRING "pic-mpi git ref (branch, tag or commit) to fetch")
 #
 set(_lib "pic-mpi")
