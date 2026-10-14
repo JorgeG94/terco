@@ -61,6 +61,24 @@ set(TERCO_DF_LMAX
     CACHE STRING "Density-fitting orbital angular momentum ceiling (empty: TERCO_LMAX)")
 
 #
+# TESTING ONLY -- never set by a shipped build. gen_df.py routes a class
+# above gen_df.py's SHIPPED_L/SHIPPED_LA (la > 2, lb > 2 or lc > 3 for a
+# three-centre class; la > 3 or lc > 3 for a two-centre one) to a Rys
+# quadrature body instead of the written-out VRR+HRR -- see that script's
+# module docstring. This forces the Rys body onto classes that would
+# otherwise keep the VRR+HRR, so the two can be compared element-wise on
+# exactly the same (shell pair, auxiliary shell): 'all' forces every class,
+# or a comma-separated list of gen_df.py's own class-digit tags (--force-rys
+# --help). Threaded straight through to gen_df.py --force-rys; empty means
+# "don't pass the flag at all", which is what every normal configuration
+# does.
+#
+set(TERCO_DF_FORCE_RYS
+    ""
+    CACHE STRING "TESTING ONLY: force gen_df.py's Rys body onto these classes ('' / 'all' / tag list)")
+mark_as_advanced(TERCO_DF_FORCE_RYS)
+
+#
 # The within-shell Cartesian component order every AO-indexed quantity terco
 # produces uses: Fock/J/K, the one-electron matrices, multipoles, DF tensors,
 # AO values on the grid, and the density blocks read back in. ORDER ONLY --

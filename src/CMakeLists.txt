@@ -144,6 +144,14 @@ elseif(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND NOT TERCO_DF_LMAX STREQUAL "2")
   # higher-ceiling set -- the mistake this branch exists to make impossible.
   set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
   set(_regen ON)
+elseif(NOT "${TERCO_DF_FORCE_RYS}" STREQUAL "")
+  # TESTING ONLY (see the top-level CMakeLists.txt's own comment on this
+  # cache var): forcing the Rys body onto classes that would otherwise keep
+  # the VRR+HRR still has to go through the generator, so it needs the same
+  # build-tree routing as every other non-default DF configuration above --
+  # never src/generated, for the same reason.
+  set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
+  set(_regen ON)
 elseif(TERCO_REGENERATE)
   set(_regen ON)
 endif()
@@ -217,9 +225,22 @@ if(_regen)
   endif()
   # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
   # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
-  # module did not finish compiling on the GPU back end.
+  # module did not finish compiling on the GPU back end. Classes above
+  # gen_df.py's own SHIPPED_L/SHIPPED_LA get a Rys quadrature body instead
+  # of the written-out VRR+HRR -- same reason, see that script's module
+  # docstring -- so it takes the SAME unroll threshold gen_rys.py's
+  # four-centre Rys classes do (TERCO_RYS_UNROLL_MAX), not a new one; the
+  # header this embeds (MOD_HEADER) never includes either flag, so this
+  # does not disturb the shipped set's byte-for-byte regeneration.
+  # TERCO_DF_FORCE_RYS is TESTING ONLY and empty in every normal build (see
+  # its own comment, top-level CMakeLists.txt).
+  set(_df_force_rys_flag "")
+  if(NOT "${TERCO_DF_FORCE_RYS}" STREQUAL "")
+    set(_df_force_rys_flag "--force-rys" "${TERCO_DF_FORCE_RYS}")
+  endif()
   execute_process(COMMAND ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
-                          ${_order_flag} --split ${_gen_out}
+                          ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
+                          ${_df_force_rys_flag} --split ${_gen_out}
                   RESULT_VARIABLE _rc OUTPUT_QUIET)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "gen_df.py failed (${_rc})")
