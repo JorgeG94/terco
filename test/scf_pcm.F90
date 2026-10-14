@@ -7,7 +7,7 @@
 ! Each case is compared two ways against test/pyscf_refs/pcm_scf*.ref
 ! (generate.py's gen_pcm_scf: pyscf's own RHF/UHF/RKS/UKS with .PCM(),
 ! same radii, scale, Lebedev order and dielectric, converged to conv_tol
-! 1e-12 and conv_tol_grad 1e-9 on terco's own DFT grid):
+! 1e-12 and conv_tol_grad 1e-8 on terco's own DFT grid):
 !
 !   converged:   terco's converged total energy and E_diel against pyscf's;
 !   at-density:  terco's energy and E_diel AT pyscf's converged density --
@@ -20,10 +20,21 @@
 ! The sets, chosen by the first argument:
 !
 !   main  water and formamide, 6-31G* Cartesian: HF, B3LYP and wB97X-V, each
-!         C-PCM and IEF-PCM (restricted); the OH radical UHF C-PCM and
-!         B3LYP IEF-PCM (unrestricted); water/cc-pVDZ in its own spherical
-!         AO space, HF C-PCM (converged energies only: pyscf's spherical
-!         AO convention is not terco's, so its density is not carried over)
+!         C-PCM and IEF-PCM (restricted); the OH and NH2 radicals, UHF
+!         C-PCM and B3LYP IEF-PCM (unrestricted); water/cc-pVDZ in its own
+!         spherical AO space, HF C-PCM (converged energies only: pyscf's
+!         spherical AO convention is not terco's, so its density is not
+!         carried over)
+!
+! OH's converged run starts from pyscf's converged density rather than
+! from GWH. Its pi pair is degenerate in vacuum and only split by the
+! Lebedev cavity (and the DFT grid), so the energy along the rotation
+! between the two singly occupied choices is flat to 3e-8 Eh (UHF) and
+! 4e-7 Eh (B3LYP), with a stationary point at each end: gfortran's terco
+! settled in one, ifx's in the other, from the same guess. Started inside
+! pyscf's basin, the converged comparison still tests that terco's own
+! iterations hold pyscf's solution to 1e-8; NH2, whose singly occupied
+! orbital is not degenerate, is converged from GWH like every other case.
 !   f     water/cc-pVTZ Cartesian, f on oxygen: HF C-PCM and B3LYP IEF-PCM;
 !         skips (SKIP, exit 0) below TERCO_LMAX=3
 !
@@ -46,42 +57,47 @@ program scf_pcm
 
    real(dp), parameter :: EPS_WATER = 78.3553_dp
    real(dp), parameter :: TOL_E = 1.0e-8_dp
-   integer, parameter :: NMAIN = 15, NF = 2
+   integer, parameter :: NMAIN = 17, NF = 2
    character(len=16), parameter :: main_xyz(NMAIN) = [character(len=16) :: &
                                                       "water", "water", "water", "water", "water", "water", &
                                                       "formamide", "formamide", "formamide", "formamide", &
-                                                      "formamide", "formamide", "oh", "oh", "water"]
+                                                      "formamide", "formamide", "oh", "oh", "nh2", "nh2", "water"]
    character(len=32), parameter :: main_bas(NMAIN) = [character(len=32) :: &
                                                       "6-31gs", "6-31gs", "6-31gs", "6-31gs", "6-31gs", "6-31gs", &
                                                       "6-31gs", "6-31gs", "6-31gs", "6-31gs", "6-31gs", "6-31gs", &
-                                                      "6-31gs", "6-31gs", "cc-pvdz"]
+                                                      "6-31gs", "6-31gs", "6-31gs", "6-31gs", "cc-pvdz"]
    character(len=8), parameter :: main_fn(NMAIN) = [character(len=8) :: &
                                                     "", "", "b3lyp", "b3lyp", "wb97x-v", "wb97x-v", &
                                                     "", "", "b3lyp", "b3lyp", "wb97x-v", "wb97x-v", &
-                                                    "", "b3lyp", ""]
+                                                    "", "b3lyp", "", "b3lyp", ""]
    character(len=8), parameter :: main_pcm(NMAIN) = [character(len=8) :: &
                                                      "cpcm", "iefpcm", "cpcm", "iefpcm", "cpcm", "iefpcm", &
                                                      "cpcm", "iefpcm", "cpcm", "iefpcm", "cpcm", "iefpcm", &
-                                                     "cpcm", "iefpcm", "cpcm"]
-   integer, parameter :: main_na(NMAIN) = [5, 5, 5, 5, 5, 5, 12, 12, 12, 12, 12, 12, 5, 5, 5]
-   integer, parameter :: main_nb(NMAIN) = [5, 5, 5, 5, 5, 5, 12, 12, 12, 12, 12, 12, 4, 4, 5]
+                                                     "cpcm", "iefpcm", "cpcm", "iefpcm", "cpcm"]
+   integer, parameter :: main_na(NMAIN) = [5, 5, 5, 5, 5, 5, 12, 12, 12, 12, 12, 12, 5, 5, 5, 5, 5]
+   integer, parameter :: main_nb(NMAIN) = [5, 5, 5, 5, 5, 5, 12, 12, 12, 12, 12, 12, 4, 4, 4, 4, 5]
    logical, parameter :: main_sph(NMAIN) = [.false., .false., .false., .false., .false., .false., &
                                             .false., .false., .false., .false., .false., .false., &
-                                            .false., .false., .true.]
+                                            .false., .false., .false., .false., .true.]
+   logical, parameter :: main_seed(NMAIN) = [.false., .false., .false., .false., .false., .false., &
+                                             .false., .false., .false., .false., .false., .false., &
+                                             .true., .true., .false., .false., .false.]
+   !! converge from pyscf's density (see the header: OH's degenerate pi pair)
    character(len=16), parameter :: f_xyz(NF) = [character(len=16) :: "water", "water"]
    character(len=32), parameter :: f_bas(NF) = [character(len=32) :: "cc-pvtz", "cc-pvtz"]
    character(len=8), parameter :: f_fn(NF) = [character(len=8) :: "", "b3lyp"]
    character(len=8), parameter :: f_pcm(NF) = [character(len=8) :: "cpcm", "iefpcm"]
    integer, parameter :: f_na(NF) = [5, 5], f_nb(NF) = [5, 5]
    logical, parameter :: f_sph(NF) = [.false., .false.]
+   logical, parameter :: f_seed(NF) = [.false., .false.]
 
    character(len=16) :: set, tag
    character(len=16), allocatable :: cxyz(:)
    character(len=32), allocatable :: cbas(:)
    character(len=8), allocatable :: cfn(:), cpcm(:)
    integer, allocatable :: cna(:), cnb(:)
-   logical, allocatable :: csph(:)
-   integer :: ncase, ic, unit, natm, refu, nfail, ncase_ref
+   logical, allocatable :: csph(:), cseed(:)
+   integer :: ncase, ic, unit, natm, refu, nfail, ncase_ref, nspin, nao_scf
    integer, allocatable :: zint(:)
    real(dp), allocatable :: at_r(:, :)
    type(trc_basis_t) :: bas
@@ -89,6 +105,10 @@ program scf_pcm
    type(trc_scf_result_t) :: res, res2
    type(error_t) :: err
    logical :: has_ref, all_ok
+   integer :: nspin_ref, nao_ref
+   real(dp) :: e_ref, ep_ref, e_dm, ep_dm, de, dat, dp_c, dp_at
+   real(dp), allocatable :: dm_ref(:, :, :)
+   character(len=48) :: what
 
    set = "main"
    if (command_argument_count() >= 1) call get_command_argument(1, set)
@@ -96,11 +116,11 @@ program scf_pcm
    case ("main")
       ncase = NMAIN
       cxyz = main_xyz; cbas = main_bas; cfn = main_fn; cpcm = main_pcm
-      cna = main_na; cnb = main_nb; csph = main_sph
+      cna = main_na; cnb = main_nb; csph = main_sph; cseed = main_seed
    case ("f")
       ncase = NF
       cxyz = f_xyz; cbas = f_bas; cfn = f_fn; cpcm = f_pcm
-      cna = f_na; cnb = f_nb; csph = f_sph
+      cna = f_na; cnb = f_nb; csph = f_sph; cseed = f_seed
    case default
       print '(a)', 'usage: scf_pcm [main|f]'; stop 1
    end select
@@ -133,6 +153,27 @@ program scf_pcm
       end if
       bas%spherical = csph(ic)
       call bas%to_device()
+      nspin = merge(2, 1, cna(ic) /= cnb(ic))
+      nao_scf = merge(bas%nao_sph, bas%nao, csph(ic))
+
+      ! The reference first: a seeded case starts from its density.
+      if (has_ref) then
+         write (tag, '(i0)') ic - 1
+         call ref_read_int(refu, 'NSPIN_'//trim(tag), nspin_ref)
+         call ref_read_int(refu, 'NAO_'//trim(tag), nao_ref)
+         call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+         call ref_read_real(refu, 'EPCM_'//trim(tag), ep_ref)
+         if (nspin_ref /= nspin .or. nao_ref /= nao_scf) then
+            print '(a)', 'scf_pcm: pyscf reference shape does not match this build'; stop 1
+         end if
+         if (.not. csph(ic)) then
+            call ref_read_real(refu, 'EDM_'//trim(tag), e_dm)
+            call ref_read_real(refu, 'EPCMDM_'//trim(tag), ep_dm)
+            if (allocated(dm_ref)) deallocate (dm_ref)
+            allocate (dm_ref(bas%nao, bas%nao, nspin))
+            call ref_read_matrix3(refu, 'DM_'//trim(tag), bas%nao, bas%nao, nspin, dm_ref)
+         end if
+      end if
 
       opts = trc_scf_options_t()
       opts%functional = cfn(ic)
@@ -147,7 +188,11 @@ program scf_pcm
       opts%max_iter = 200
       opts%pcm_model = cpcm(ic)
       opts%pcm_eps = EPS_WATER
-      call trc_scf_run(bas, cna(ic), cnb(ic), opts, res)
+      if (cseed(ic) .and. has_ref) then
+         call trc_scf_run(bas, cna(ic), cnb(ic), opts, res, dguess=dm_ref)
+      else
+         call trc_scf_run(bas, cna(ic), cnb(ic), opts, res)
+      end if
       if (.not. res%converged) then
          print '(a,a)', "  NOT CONVERGED: ", trim(res%message)
          all_ok = .false.
@@ -191,46 +236,27 @@ program scf_pcm
       end block
       write (unit) res%energy, res%e_pcm
       ! The converged density, as scf_rks writes its own: generate.py starts
-      ! pyscf from it, so both codes settle in the same basin. The OH
-      ! radical needs that -- its pi pair is degenerate in a Lebedev cavity
-      ! as in vacuum, and the rotation between the two singly occupied
-      ! choices is so flat that UHF finds stationary points 3e-8 Eh apart.
+      ! pyscf from it, so both codes settle in the same basin (see the
+      ! header on OH).
       write (unit) res%dmat
 
       if (has_ref) then
-         block
-            integer :: nspin_ref, nao_ref
-            real(dp) :: e_ref, ep_ref, e_dm, ep_dm, de, dat, dp_c, dp_at
-            real(dp), allocatable :: dm_ref(:, :, :)
-            character(len=48) :: what
-            write (tag, '(i0)') ic - 1
-            call ref_read_int(refu, 'NSPIN_'//trim(tag), nspin_ref)
-            call ref_read_int(refu, 'NAO_'//trim(tag), nao_ref)
-            call ref_read_real(refu, 'E_'//trim(tag), e_ref)
-            call ref_read_real(refu, 'EPCM_'//trim(tag), ep_ref)
-            if (nspin_ref /= res%nspin .or. nao_ref /= merge(bas%nao_sph, bas%nao, csph(ic))) then
-               print '(a)', 'scf_pcm: pyscf reference shape does not match this build'; stop 1
-            end if
-            what = trim(cxyz(ic))//'/'//trim(cbas(ic))//' '//trim(merge(cfn(ic), 'hf      ', &
-                   len_trim(cfn(ic)) > 0))//' '//trim(cpcm(ic))
-            de = abs(res%energy - e_ref)
-            dp_c = abs(res%e_pcm - ep_ref)
-            call ref_report(nfail, de < TOL_E, trim(what)//': E converged', de)
-            call ref_report(nfail, dp_c < TOL_E, trim(what)//': E_diel converged', dp_c)
-            if (.not. csph(ic)) then
-               call ref_read_real(refu, 'EDM_'//trim(tag), e_dm)
-               call ref_read_real(refu, 'EPCMDM_'//trim(tag), ep_dm)
-               allocate (dm_ref(bas%nao, bas%nao, res%nspin))
-               call ref_read_matrix3(refu, 'DM_'//trim(tag), bas%nao, bas%nao, res%nspin, dm_ref)
-               opts2 = opts
-               opts2%max_iter = 1
-               call trc_scf_run(bas, cna(ic), cnb(ic), opts2, res2, dguess=dm_ref)
-               dat = abs(res2%energy - e_dm)
-               dp_at = abs(res2%e_pcm - ep_dm)
-               call ref_report(nfail, dat < TOL_E, trim(what)//': E at pyscf''s D', dat)
-               call ref_report(nfail, dp_at < 1.0e-9_dp, trim(what)//': E_diel at pyscf''s D', dp_at)
-            end if
-         end block
+         what = trim(cxyz(ic))//'/'//trim(cbas(ic))//' '//trim(merge(cfn(ic), 'hf      ', &
+                len_trim(cfn(ic)) > 0))//' '//trim(cpcm(ic))
+         if (cseed(ic)) what = trim(what)//' (from pyscf''s D)'
+         de = abs(res%energy - e_ref)
+         dp_c = abs(res%e_pcm - ep_ref)
+         call ref_report(nfail, de < TOL_E, trim(what)//': E converged', de)
+         call ref_report(nfail, dp_c < TOL_E, trim(what)//': E_diel converged', dp_c)
+         if (.not. csph(ic)) then
+            opts2 = opts
+            opts2%max_iter = 1
+            call trc_scf_run(bas, cna(ic), cnb(ic), opts2, res2, dguess=dm_ref)
+            dat = abs(res2%energy - e_dm)
+            dp_at = abs(res2%e_pcm - ep_dm)
+            call ref_report(nfail, dat < TOL_E, trim(what)//': E at pyscf''s D', dat)
+            call ref_report(nfail, dp_at < 1.0e-9_dp, trim(what)//': E_diel at pyscf''s D', dp_at)
+         end if
       end if
       call bas%release()
    end do

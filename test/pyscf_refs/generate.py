@@ -1543,6 +1543,7 @@ def gen_pcm_scf(set_name):
     w = RefWriter(f"pcm_scf_{set_name}.ref")
     w.header("scf_pcm " + set_name,
              [ROOT / "test" / "scf_pcm.F90", TEST / "water.xyz", TEST / "formamide.xyz", TEST / "oh.xyz",
+              TEST / "nh2.xyz",
               TEST / "basis_sets" / "6-31gs.json", TEST / "basis_sets" / "cc-pvdz.json",
               TEST / "basis_sets" / "cc-pvtz.json"])
     w.comment(f"CONV_TOL {PCM_CONV_TOL:g}")
@@ -1598,9 +1599,10 @@ def gen_pcm_scf(set_name):
         label = f"{xyzname}/{basname} {fn or 'hf'} {model} {'U' if nspin == 2 else 'R'}"
         # Started from terco's converged density, as gen_rks starts its
         # cases: the OH radical's degenerate pi pair leaves UHF stationary
-        # points 3e-8 Eh apart in a Lebedev cavity, and the comparison is
-        # only meaningful within one basin. pyscf still converges on its
-        # own to conv_tol_grad; the start only picks the basin. A spherical
+        # points 3e-8 Eh apart in a Lebedev cavity (4e-7 for B3LYP), and the
+        # comparison is only meaningful within one basin (scf_pcm.F90's
+        # header). pyscf still converges on its own to conv_tol_grad; the
+        # start only picks the basin. A spherical
         # case has no AO map to pyscf's spherical convention here and keeps
         # pyscf's own guess (closed-shell water: one basin).
         dm0 = None
