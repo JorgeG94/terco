@@ -624,6 +624,13 @@ contains
             call build_dft_grid(b%at_r, nint(b%at_z), grid_nlc, err, level=opts%nlc_grid_level)
             if (err%has_error()) then
                res%message = "trc_scf: "//err%get_message()
+               ! The semilocal grid/grid-object pair is already built and on
+               ! the device at this point (xg%build/xg%to_device, just
+               ! above) -- only the VV10 (nlc) grid failed. Release it too,
+               ! or its device allocation and `grid`'s host arrays leak on
+               ! this early return, same as the success path does at the
+               ! end of this routine.
+               call xg%release(); call grid%destroy()
                call eri%release(); call pl%release()
                return
             end if
