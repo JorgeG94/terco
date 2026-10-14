@@ -338,6 +338,66 @@ if(Python3_FOUND)
     endforeach()
 
     #
+    # omega > 0 (erf(0.3*r12)/r12, wB97X-V's long-range exchange operator)
+    # against pyscf's own range-separated J/K (mol.with_range_coulomb,
+    # scf.hf.get_jk) -- check_erf_fock_vs_pyscf.F90's own header has the
+    # J/K-isolation trick. water/6-31G* and water/cc-pVDZ exercise s/p only;
+    # formamide/cc-pVDZ puts d functions on every heavy atom. Each case runs
+    # three ways: eri%fock through HGP (the default), eri%fock through Rys
+    # (TRC_RYS_CLASSES=all), and eri%fock_nosym (the enumerated/general
+    # path) -- the same substitution has to be right in all three.
+    #
+    foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+      if(case STREQUAL "water_631gs")
+        set(xyz water.xyz)
+        set(json basis_sets/6-31gs.json)
+      elseif(case STREQUAL "water_ccpvdz")
+        set(xyz water.xyz)
+        set(json basis_sets/cc-pvdz.json)
+      else()
+        set(xyz formamide.xyz)
+        set(json basis_sets/cc-pvdz.json)
+      endif()
+      foreach(path hgp nosym)
+        set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_${path}.bin)
+        if(path STREQUAL "nosym")
+          set(nosym_flag 1)
+        else()
+          set(nosym_flag 0)
+        endif()
+        terco_add_check(check_erf_fock_vs_pyscf_${case}_${path}
+                        check_erf_fock_vs_pyscf.F90
+                        NEEDS_BASIS ARGS ${xyz} ${json} ${dump} ${nosym_flag})
+        add_test(NAME terco/check_erf_fock_vs_pyscf_${case}_${path}_ref
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/erf_fock_ref.py
+                         ${json} ${dump})
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_${path}
+          PROPERTIES FIXTURES_SETUP erf_fock_probe_${case}_${path})
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_${path}_ref
+          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     FIXTURES_REQUIRED erf_fock_probe_${case}_${path})
+      endforeach()
+      if(TERCO_RYS)
+        # Same as the "hgp" case above, but routed through the Rys kernels
+        # instead of HGP's -- TRC_RYS_CLASSES=all is only meaningful under
+        # TERCO_RYS (see check_rys_vs_hgp's own comment).
+        set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_rys.bin)
+        terco_add_check(check_erf_fock_vs_pyscf_${case}_rys
+                        check_erf_fock_vs_pyscf.F90
+                        NEEDS_BASIS ARGS ${xyz} ${json} ${dump} 0)
+        add_test(NAME terco/check_erf_fock_vs_pyscf_${case}_rys_ref
+                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/erf_fock_ref.py
+                         ${json} ${dump})
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys
+          PROPERTIES FIXTURES_SETUP erf_fock_probe_${case}_rys
+                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=all")
+        set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys_ref
+          PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     FIXTURES_REQUIRED erf_fock_probe_${case}_rys)
+      endif()
+    endforeach()
+
+    #
     # trc_df_2c ((P|Q)) and trc_df_3c ((mu nu|P)) against pyscf's
     # int2c2e/aux_e2(int3c2e) -- the density-fitting analogue of the
     # eri%fock comparison above, and the first one that can exercise a g
