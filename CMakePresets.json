@@ -5,7 +5,7 @@
     {
       "name": "perlmutter",
       "displayName": "Perlmutter (PrgEnv-nvidia, A100)",
-      "description": "module load PrgEnv-nvidia cudatoolkit cray-libsci. Bare nvc/nvc++/nvfortran, Cray libsci for BLAS/LAPACK, cc80, and an explicit CUDA version so -cudalib finds math_libs/13.2/lib64.",
+      "description": "module load PrgEnv-nvidia cudatoolkit cray-libsci. Single rank (TERCO_ENABLE_MPI=OFF: pic-mpi's serial backend; perlmutter-mpi is the multi-rank build). Bare nvc/nvc++/nvfortran, Cray libsci for BLAS/LAPACK, cc80, and an explicit CUDA version so -cudalib finds math_libs/13.2/lib64.",
       "binaryDir": "${sourceDir}/build",
       "installDir": "${sourceDir}/../../install/terco",
       "cacheVariables": {
@@ -15,7 +15,7 @@
         "CMAKE_CXX_COMPILER": "nvc++",
         "TERCO_GPU_ARCH": "cc80",
         "TERCO_CUDA_VERSION": "13.2",
-        "TERCO_ENABLE_MPI": "ON",
+        "TERCO_ENABLE_MPI": "OFF",
         "TERCO_LMAX": "3",
         "TERCO_DF_LMAX": "3",
         "BLAS_LIBRARIES": "/opt/cray/pe/lib64/libsci_nvidia.so.6",
