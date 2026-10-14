@@ -205,53 +205,10 @@ by reading whatever was in the register.
 use trc_c_interfaces
 rc = trc_basis_create_libcint(atm, natm, bas, nbas, env, nenv, 1, hbas)
 rc = trc_eri_create(hbas, 1.0e-10_dp, heri)
-rc = trc_fock(heri, hbas, d, g, 1.0d0, 1.0d0, 1)
+rc = trc_fock(heri, hbas, d, g, 1.0d0, 1.0d0, 1, 0.0d0)   ! last: omega, 0 = Coulomb
 ```
 
 This hasn't been tested thoroughly so be wary! 
-
----
-
-## Validation
-
-Nothing here asserts a number terco produced and then froze.
-
-`check_selftest` needs **no external program and no recorded data** — closed
-forms and identities only, so it runs anywhere:
-
-| | |
-|---|---|
-| Overlap against the closed form for `(s\|s)` | **3.3e-16** |
-| Overlap, kinetic, nuclear attraction and the Fock matrix under a **translation of every centre** | **1.7e-15** to **1.8e-14** |
-| Dipole **origin shift** against the overlap, `mu(O+a) = mu(O) - a S` | **4.4e-16** |
-| `G` symmetric for a symmetric density | **exact** |
-| Batched build against the same densities singly | **5.6e-17** |
-
-Translational invariance is the one that earns its place: absolute positions
-do appear, in the Gaussian product centre, so it is not automatic, and it
-exercises the pair list, the screening, the bins, the kernels and the
-digestion in one number.
-
-The rest compare against an independent implementation, which is the only
-thing that catches a shared misunderstanding:
-
-| | |
-|---|---|
-| Four-centre integrals and the Fock digestion | **4.3e-13** against libfint |
-| Fock matrix at 2773 functions | **1e-8** against gpu4pyscf |
-| Overlap, kinetic, nuclear attraction | **2.2e-15**, **1.2e-14**, **6.2e-13** against libfint |
-| Two- and three-centre Coulomb | **4.5e-13** against libfint |
-| Cartesian multipoles | **39 of 39** components against pyscf's `int1e_r`/`_rr`/`_rrr` |
-| RHF through the public API | matches pyscf; water `-75.983974469890` |
-| Folded vs enumerated digestion | **6.7e-15** on a symmetric density, where they must agree |
-
-The multipole comparison refuses to judge a single component until the
-**overlap** agrees first. That control exists because two days once went into a
-disagreement that turned out to be in the oracle, not the kernel: the reference
-system had a contracted shell, and pyscf renormalises contracted shells where
-the reference did not. An oracle gets validated on a quantity you already trust
-before it is allowed to convict anything.
-
 
 ---
 
