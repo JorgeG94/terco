@@ -23,13 +23,15 @@ module trc_xc_functional
    use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar
    use trc_xc_lyp, only: lyp_exc_vxc_unpolar, lyp_exc_vxc_polar
    use trc_xc_wb97x_v_xc, only: wb97x_v_xc_exc_vxc_unpolar, wb97x_v_xc_exc_vxc_polar
+   use trc_xc_wb97x_xc, only: wb97x_xc_exc_vxc_unpolar, wb97x_xc_exc_vxc_polar
+   use trc_xc_wb97_xc, only: wb97_xc_exc_vxc_unpolar, wb97_xc_exc_vxc_polar
    implicit none
    private
 
    public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name
    public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    public :: XC_K_SLATER, XC_K_VWN, XC_K_VWN_RPA, XC_K_PBE_X, XC_K_PBE_C, XC_K_B88, XC_K_LYP
-   public :: XC_K_WB97X_V
+   public :: XC_K_WB97X_V, XC_K_WB97X, XC_K_WB97
 
    integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2
    integer, parameter :: XC_MAX_KERNELS = 8
@@ -37,6 +39,7 @@ module trc_xc_functional
    integer, parameter :: XC_K_SLATER = 1, XC_K_VWN = 2, XC_K_VWN_RPA = 3
    integer, parameter :: XC_K_PBE_X = 4, XC_K_PBE_C = 5, XC_K_B88 = 6, XC_K_LYP = 7
    integer, parameter :: XC_K_WB97X_V = 8
+   integer, parameter :: XC_K_WB97X = 9, XC_K_WB97 = 10
 
    type :: trc_xc_functional_t
       character(len=16) :: name = ""
@@ -83,6 +86,8 @@ contains
          case (XC_K_B88); call b88_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case (XC_K_LYP); call lyp_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case (XC_K_WB97X_V); call wb97x_v_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_WB97X); call wb97x_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_WB97); call wb97_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
          case default; e = 0.0_dp; vr = 0.0_dp
          end select
          eps = eps + coef(k)*e
@@ -119,6 +124,10 @@ contains
          case (XC_K_LYP); call lyp_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
          case (XC_K_WB97X_V)
             call wb97x_v_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
+         case (XC_K_WB97X)
+            call wb97x_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
+         case (XC_K_WB97)
+            call wb97_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)
          case default; e = 0.0_dp; va = 0.0_dp; vb = 0.0_dp
          end select
          eps = eps + coef(k)*e
@@ -184,6 +193,25 @@ contains
          f%omega = 0.3_dp
          f%nlc_b = 6.0_dp
          f%nlc_c = 0.01_dp
+      case ("wb97x")
+         ! libxc HYB_GGA_XC_WB97X. rsh_coeff (omega, alpha, beta) =
+         ! (0.3, 1.0, -0.842294); hyb = alpha + beta = 0.157706, exx_lr =
+         ! alpha - hyb = 0.842294. No VV10 (nlc_coeff returns empty). The
+         ! kernel's own translated `beta` parameter is -0.842294 exactly,
+         ! the same direct cross-check wb97x-v's gave.
+         call set(f, XC_FAMILY_GGA, [XC_K_WB97X], [1.0_dp])
+         f%exx = 0.157706_dp
+         f%exx_lr = 0.842294_dp
+         f%omega = 0.3_dp
+      case ("wb97")
+         ! libxc HYB_GGA_XC_WB97. rsh_coeff (omega, alpha, beta) =
+         ! (0.4, 1.0, -1.0); hyb = alpha + beta = 0, exx_lr = alpha - hyb =
+         ! 1 -- a pure range-separated functional, no global HF mixing. No
+         ! VV10. The kernel's own translated `beta` is -1.0 exactly.
+         call set(f, XC_FAMILY_GGA, [XC_K_WB97], [1.0_dp])
+         f%exx = 0.0_dp
+         f%exx_lr = 1.0_dp
+         f%omega = 0.4_dp
       case default
          ok = .false.
       end select

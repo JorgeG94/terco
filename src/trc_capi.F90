@@ -1537,7 +1537,7 @@ contains
             status = TRC_ERR_UNSUPPORTED
             call refuse(cx, "trc_set_method: unknown functional '"//trim(cx%opts%functional)// &
                         "'; terco has lda_x (slater), svwn, svwn_rpa, pbe, blyp, pbe0, b3lyp, b3lyp5, "// &
-                        "wb97x-v, or an empty name for Hartree-Fock")
+                        "wb97x-v, wb97x, wb97, or an empty name for Hartree-Fock")
             cx%opts%functional = ""
             return
          end if
