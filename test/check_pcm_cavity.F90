@@ -116,7 +116,11 @@ contains
       do k = 1, ctx%surface%n_points
          v(k) = erf(ctx%surface%zeta(k)*norm2(ctx%surface%coords(:, k)))/norm2(ctx%surface%coords(:, k))
       end do
+      ! solve's vectors live where K does: on the device under the GPU build
+      !$acc enter data copyin(v) create(q)
       call ctx%solve(v, q)
+      !$acc update self(q)
+      !$acc exit data delete(v, q)
       e = 0.5_dp*dot_product(q, v)
       qt = sum(q)
       call ctx%release()
@@ -248,7 +252,10 @@ contains
          do k = 1, n
             v(k) = vfix(ctx%surface%coords(:, k))
          end do
+         !$acc enter data copyin(v) create(q)
          call ctx%solve(v, q)
+         !$acc update self(q)
+         !$acc exit data delete(v, q)
          e = 0.5_dp*dot_product(q, v)
          if (model == PCM_MODEL_CPCM) then
             call ref_read_vector(u, 'Q_CPCM', n, rv)

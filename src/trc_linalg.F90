@@ -53,6 +53,9 @@ module trc_linalg
       procedure :: gemm => linalg_gemm
       procedure :: gemm_strided => linalg_gemm_strided
       procedure :: potrf => linalg_potrf
+      procedure :: getrf => linalg_getrf
+      procedure :: getrs => linalg_getrs
+      procedure :: gemv => linalg_gemv
       procedure :: trsm => linalg_trsm
       procedure :: syev => linalg_syev
       procedure :: dot => linalg_dot
@@ -223,6 +226,109 @@ contains
       if (info /= 0) error stop "trc_linalg: dpotrf: matrix not positive definite"
 #endif
    end subroutine linalg_potrf
+
+   ! LU factorisation with partial pivoting, A = P L U, in place; `ipiv` is
+   ! LAPACK's (1-based rows). The pivots live where A does: on the device
+   ! under the OpenACC build, so `ipiv` must be present there too.
+   subroutine linalg_getrf(this, n, a, lda, ipiv, info)
+      class(trc_linalg_t), intent(inout) :: this
+      integer, intent(in) :: n, lda
+      real(dp), intent(inout) :: a(lda, *)
+      integer, intent(out) :: ipiv(*)
+      integer, intent(out) :: info   !! 0, or the first zero pivot as LAPACK reports it
+#ifdef _OPENACC
+      integer :: st, lw
+      real(dp), allocatable :: work(:)
+      !$acc host_data use_device(a)
+      st = cusolverDnDgetrf_bufferSize(this%hs, n, n, a, lda, lw)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDgetrf_bufferSize failed"
+      allocate (work(max(lw, 1)))
+      !$acc data create(work)
+      !$acc host_data use_device(a, work, ipiv, this%devinfo)
+      st = cusolverDnDgetrf(this%hs, n, n, a, lda, work, ipiv, this%devinfo)
+      !$acc end host_data
+      !$acc end data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDgetrf failed"
+      !$acc update self(this%devinfo)
+      info = this%devinfo
+#else
+      interface
+         subroutine dgetrf(m, n, a, lda, ipiv, info)
+            import :: dp
+            integer, intent(in) :: m, n, lda
+            real(dp), intent(inout) :: a(lda, *)
+            integer, intent(out) :: ipiv(*)
+            integer, intent(out) :: info
+         end subroutine dgetrf
+      end interface
+      call dgetrf(n, n, a, lda, ipiv, info)
+#endif
+   end subroutine linalg_getrf
+
+   ! Solve op(A) X = B ('N' or 'T') from getrf's factors; B (n x nrhs) is
+   ! overwritten with X.
+   subroutine linalg_getrs(this, trans, n, nrhs, a, lda, ipiv, b, ldb)
+      class(trc_linalg_t), intent(inout) :: this
+      character, intent(in) :: trans
+      integer, intent(in) :: n, nrhs, lda, ldb
+      real(dp), intent(in) :: a(lda, *)
+      integer, intent(in) :: ipiv(*)
+      real(dp), intent(inout) :: b(ldb, *)
+#ifdef _OPENACC
+      integer :: st, ct
+      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == 'T' .or. trans == 't')
+      !$acc host_data use_device(a, ipiv, b, this%devinfo)
+      st = cusolverDnDgetrs(this%hs, ct, n, nrhs, a, lda, ipiv, b, ldb, this%devinfo)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDgetrs failed"
+#else
+      integer :: info
+      interface
+         subroutine dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
+            import :: dp
+            character, intent(in) :: trans
+            integer, intent(in) :: n, nrhs, lda, ldb
+            real(dp), intent(in) :: a(lda, *)
+            integer, intent(in) :: ipiv(*)
+            real(dp), intent(inout) :: b(ldb, *)
+            integer, intent(out) :: info
+         end subroutine dgetrs
+      end interface
+      call dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
+      if (info /= 0) error stop "trc_linalg: dgetrs failed"
+#endif
+   end subroutine linalg_getrs
+
+   ! y = alpha op(A) x + beta y, A m x n, op 'N' or 'T'.
+   subroutine linalg_gemv(this, trans, m, n, alpha, a, lda, x, beta, y)
+      class(trc_linalg_t), intent(in) :: this
+      character, intent(in) :: trans
+      integer, intent(in) :: m, n, lda
+      real(dp), intent(in) :: alpha, beta
+      real(dp), intent(in) :: a(lda, *), x(*)
+      real(dp), intent(inout) :: y(*)
+#ifdef _OPENACC
+      integer :: st, ct
+      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == 'T' .or. trans == 't')
+      !$acc host_data use_device(a, x, y)
+      st = cublasDgemv_v2(this%hb, ct, m, n, alpha, a, lda, x, 1, beta, y, 1)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cublasDgemv failed"
+#else
+      interface
+         subroutine dgemv(trans, m, n, alpha, a, lda, x, incx, beta, y, incy)
+            import :: dp
+            character, intent(in) :: trans
+            integer, intent(in) :: m, n, lda, incx, incy
+            real(dp), intent(in) :: alpha, beta
+            real(dp), intent(in) :: a(lda, *), x(*)
+            real(dp), intent(inout) :: y(*)
+         end subroutine dgemv
+      end interface
+      call dgemv(trans, m, n, alpha, a, lda, x, 1, beta, y, 1)
+#endif
+   end subroutine linalg_gemv
 
    ! Triangular solve: op(A) X = alpha B ('L') or X op(A) = alpha B ('R'),
    ! A lower ('L') or upper ('U') triangular, op 'N' or 'T', unit diagonal

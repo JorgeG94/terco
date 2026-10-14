@@ -38,8 +38,13 @@
 !
 ! THE SOLVE, AND WHAT IT COSTS
 ! ----------------------------
-! Dense: K is formed once per geometry and LU-factored on the host, and
-! each SCF iteration is then two triangular solves. That is O(n^2) memory
+! Dense: K is formed once per geometry and LU-factored, and each SCF
+! iteration is then two triangular solves. All of it through trc_linalg --
+! cuSOLVER and cuBLAS on matrices that stay on the device under the GPU
+! build, LAPACK on the host otherwise -- so an iteration moves n numbers
+! across the bus, not n^2, and never meets the host BLAS's threading
+! (threaded MKL and NVHPC's OpenMP runtime do not share a process). That
+! is O(n^2) memory
 ! in the number of surface points n -- 8 n^2 bytes for C-PCM's K, three
 ! such matrices while IEF-PCM's are being formed -- which is fine to a few
 ! thousand points per molecule (a 100-atom solute at 302 points per sphere
@@ -51,9 +56,7 @@
 !
 module trc_pcm
    use trc_boys, only: dp
-   use pic_types, only: default_int
-   use pic_blas_interfaces, only: pic_gemm, pic_gemv
-   use pic_lapack_interfaces, only: pic_getrf, pic_getrs
+   use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid, lebedev_is_available
    use trc_pcm_radii, only: pcm_cavity_radius
@@ -123,16 +126,18 @@ module trc_pcm
       real(dp) :: eps = 0.0_dp                  !! solvent dielectric constant
       real(dp) :: f_eps = 0.0_dp                !! the model's dielectric scale factor
       type(pcm_surface_t) :: surface
-      real(dp), allocatable :: kmat(:, :)       !! K, LU-factored in place (host)
-      integer(default_int), allocatable :: ipiv(:)
-      real(dp), allocatable :: rmat(:, :)       !! R, IEF-PCM only (host)
+      real(dp), allocatable :: kmat(:, :)       !! K, LU-factored in place
+      integer, allocatable :: ipiv(:)           !! its pivots
+      real(dp), allocatable :: rmat(:, :)       !! R, IEF-PCM only
       real(dp), allocatable :: v_nuc(:)         !! nuclear potential at the points
       real(dp), allocatable :: v(:)             !! last solute potential, v_nuc - v_elec
       real(dp), allocatable :: q(:)             !! last symmetrised charges
       real(dp), allocatable :: wq(:)            !! -q: what the Fock kernel is handed
       real(dp) :: e_diel = 0.0_dp               !! q . v / 2 at the last density
       real(dp) :: q_total = 0.0_dp              !! total apparent surface charge
-      logical :: on_device = .false.
+      type(trc_linalg_t) :: la                  !! the LU, solves and products
+      logical :: on_device = .false.            !! `this` is mapped; every array
+                                                !! above follows it as it is made
    contains
       procedure :: init => pcm_init
       procedure :: build => pcm_build
@@ -323,31 +328,53 @@ contains
       end if
    end function d_elem
 
+   subroutine s_fill(n, coords, zeta, switch_f, smat)
+      !! S, on arrays already where the build computes (the device, on GPU)
+      !!
+      !! Every element is independent, so the matrix is one `do concurrent`
+      !! over the square: at 10^4 points that is 10^8 erf evaluations.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: coords(3, n), zeta(n), switch_f(n)
+      real(dp), intent(out) :: smat(n, n)
+      integer :: i, j
+      do concurrent(j = 1:n, i = 1:n)
+         smat(i, j) = s_elem(i, j, n, coords, zeta, switch_f)
+      end do
+   end subroutine s_fill
+
+   subroutine da_fill(n, coords, normals, zeta, r_parent, area, dmat)
+      !! D A: D with its columns scaled by the point areas, as s_fill
+      integer, intent(in) :: n
+      real(dp), intent(in) :: coords(3, n), normals(3, n), zeta(n), r_parent(n), area(n)
+      real(dp), intent(out) :: dmat(n, n)
+      integer :: i, j
+      do concurrent(j = 1:n, i = 1:n)
+         dmat(i, j) = d_elem(i, j, n, coords, normals, zeta, r_parent)*area(j)
+      end do
+   end subroutine da_fill
+
    subroutine pcm_sd_matrices(n, coords, normals, zeta, switch_f, r_parent, smat, dmat)
       !! S, and D when it is present, for a surface; host arrays in and out
       !!
-      !! Every element is independent, so each matrix is one `do concurrent`
-      !! over the square, on the device under the GPU build: at 10^4 points
-      !! that is 10^8 erf evaluations, which the host does not want.
+      !! The element builders K is formed from (s_fill, da_fill), wrapped for
+      !! a caller that wants the matrices themselves -- check_pcm_cavity
+      !! compares them with pyscf's. D here is D itself: unit areas.
       integer, intent(in) :: n
       real(dp), intent(in) :: coords(3, n), normals(3, n), zeta(n), switch_f(n), r_parent(n)
       real(dp), intent(out) :: smat(n, n)
       real(dp), intent(out), optional :: dmat(n, n)
-      integer :: i, j
-
+      real(dp), allocatable :: ones(:)
       !$acc enter data copyin(coords, normals, zeta, switch_f, r_parent) create(smat)
-      do concurrent(j = 1:n, i = 1:n)
-         smat(i, j) = s_elem(i, j, n, coords, zeta, switch_f)
-      end do
+      call s_fill(n, coords, zeta, switch_f, smat)
       !$acc update self(smat)
       !$acc exit data delete(smat)
       if (present(dmat)) then
-         !$acc enter data create(dmat)
-         do concurrent(j = 1:n, i = 1:n)
-            dmat(i, j) = d_elem(i, j, n, coords, normals, zeta, r_parent)
-         end do
+         allocate (ones(n))
+         ones = 1.0_dp
+         !$acc enter data copyin(ones) create(dmat)
+         call da_fill(n, coords, normals, zeta, r_parent, ones, dmat)
          !$acc update self(dmat)
-         !$acc exit data delete(dmat)
+         !$acc exit data delete(ones, dmat)
       end if
       !$acc exit data delete(coords, normals, zeta, switch_f, r_parent)
    end subroutine pcm_sd_matrices
@@ -367,7 +394,6 @@ contains
                         "greater than one (water is 78.3553)")
          return
       end if
-      this%eps = eps
       select case (model)
       case (PCM_MODEL_CPCM)
          this%f_eps = (eps - 1.0_dp)/eps
@@ -379,14 +405,20 @@ contains
                         "models with different energies, so neither stands in for the other")
          return
       end select
+      this%eps = eps
       this%model = model
+      ! Parent first, as the basis does (trc_api's basis_to_device); each
+      ! array is then mapped as it is made, and released in reverse. That
+      ! includes the linear-algebra handle's own device scalars, so it is
+      ! initialised after `this` is mapped, not before (the other order
+      ! leaves `this` partially present).
+      !$acc enter data copyin(this)
+      call this%la%init(1)
+      this%on_device = .true.
    end subroutine pcm_init
 
    subroutine pcm_build(this, b, angular_points, radii_scale, error)
       !! Cavity, operators and nuclear potential, once per geometry
-      !!
-      !! Leaves the point centres, exponents, potential and charges on the
-      !! device for `operator`.
       class(trc_pcm_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: angular_points
@@ -414,7 +446,7 @@ contains
       ! Gaussian of exponent zeta**2 against a point nucleus integrates to
       ! erf(zeta d)/d exactly.
       n = this%surface%n_points
-      allocate (this%v_nuc(n), this%v(n), this%q(n), this%wq(n))
+      allocate (this%v_nuc(n))
       this%v_nuc = 0.0_dp
       do k = 1, n
          do ia = 1, b%natm
@@ -422,102 +454,124 @@ contains
             this%v_nuc(k) = this%v_nuc(k) + b%at_z(ia)*erf(this%surface%zeta(k)*d)/d
          end do
       end do
-      this%v = 0.0_dp; this%q = 0.0_dp; this%wq = 0.0_dp
-      ! Parent first, then the components the kernels read, as the basis
-      ! does (trc_api's basis_to_device); the reverse on the way out.
-      !$acc enter data copyin(this)
-      !$acc enter data copyin(this%surface%coords, this%surface%zeta, this%v, this%wq)
-      this%on_device = .true.
+      !$acc enter data copyin(this%v_nuc)
    end subroutine pcm_build
 
    subroutine pcm_build_operators(this, error)
       !! Form K from the surface, factor it, and keep R where the model has one
+      !!
+      !! On the device under the GPU build, from the S and D builds through
+      !! the D A S product to the LU; only the pivot status comes back.
       class(trc_pcm_t), intent(inout) :: this
       type(error_t), intent(inout) :: error
 
-      real(dp), allocatable :: smat(:, :), dmat(:, :)
-      integer(default_int) :: info
-      integer :: n, j
+      real(dp), allocatable :: smat(:, :)
+      integer :: n, info
+      real(dp) :: f, f2pi
       character(len=16) :: num
 
       if (error%has_error()) return
+      if (.not. this%on_device) then
+         call error%set(ERROR_VALIDATION, "PCM: build_operators before init"); return
+      end if
       n = this%surface%n_points
-      associate (s => this%surface)
-         allocate (smat(n, n))
+      f = this%f_eps
+      f2pi = f/(2.0_dp*PI)
+      allocate (this%kmat(n, n), this%ipiv(n), this%v(n), this%q(n), this%wq(n))
+      this%v = 0.0_dp; this%q = 0.0_dp; this%wq = 0.0_dp
+      !$acc enter data copyin(this%surface%coords, this%surface%normals, this%surface%zeta) &
+      !$acc            copyin(this%surface%switch_f, this%surface%r_parent, this%surface%area) &
+      !$acc            create(this%kmat, this%ipiv) copyin(this%v, this%q, this%wq)
+      associate (sf => this%surface)
          if (this%model == PCM_MODEL_IEFPCM) then
-            allocate (dmat(n, n))
-            call pcm_sd_matrices(n, s%coords, s%normals, s%zeta, s%switch_f, s%r_parent, smat, dmat)
+            ! S into a scratch copy, D A into R's storage; then
+            ! K = S - f/(2 pi) (D A) S, and R = -f (I - D A/(2 pi)) in place.
+            allocate (smat(n, n), this%rmat(n, n))
+            !$acc enter data create(smat, this%rmat)
+            call s_fill(n, sf%coords, sf%zeta, sf%switch_f, smat)
+            call da_fill(n, sf%coords, sf%normals, sf%zeta, sf%r_parent, sf%area, this%rmat)
+            call copy_square(n, smat, this%kmat)
+            call this%la%gemm('N', 'N', n, n, n, -f2pi, this%rmat, n, smat, n, 1.0_dp, this%kmat, n)
+            !$acc exit data delete(smat)
+            deallocate (smat)
+            call scale_shift(n, this%rmat, f2pi, -f)
          else
-            call pcm_sd_matrices(n, s%coords, s%normals, s%zeta, s%switch_f, s%r_parent, smat)
+            call s_fill(n, sf%coords, sf%zeta, sf%switch_f, this%kmat)
          end if
       end associate
-
-      if (this%model == PCM_MODEL_IEFPCM) then
-         ! D becomes D A in place -- a column scaling, A weighting the charge
-         ! each point stands for -- and then feeds both K and R.
-         do j = 1, n
-            dmat(:, j) = dmat(:, j)*this%surface%area(j)
-         end do
-         allocate (this%kmat(n, n))
-         this%kmat = smat
-         call pic_gemm(dmat, smat, this%kmat, alpha=-this%f_eps/(2.0_dp*PI), beta=1.0_dp)
-         deallocate (smat)
-         ! R = -f_eps (I - D A/(2 pi)), dense: IEF-PCM's right-hand side mixes
-         ! the potentials, so the solve needs all of it.
-         call move_alloc(dmat, this%rmat)
-         this%rmat = this%rmat*(this%f_eps/(2.0_dp*PI))
-         do j = 1, n
-            this%rmat(j, j) = this%rmat(j, j) - this%f_eps
-         end do
-      else
-         call move_alloc(smat, this%kmat)
-      end if
-
-      allocate (this%ipiv(n))
-      call pic_getrf(this%kmat, this%ipiv, info)
+      call this%la%getrf(n, this%kmat, n, this%ipiv, info)
       if (info /= 0) then
          write (num, '(i0)') info
-         call error%set(ERROR_VALIDATION, "PCM: K is singular (dgetrf info = "//trim(num)// &
+         call error%set(ERROR_VALIDATION, "PCM: K is singular (getrf info = "//trim(num)// &
                         "), which a physical cavity does not produce; two surface points "// &
                         "may coincide -- check the geometry")
       end if
    end subroutine pcm_build_operators
+
+   subroutine copy_square(n, a, b)
+      integer, intent(in) :: n
+      real(dp), intent(in) :: a(n, n)
+      real(dp), intent(out) :: b(n, n)
+      integer :: i, j
+      do concurrent(j = 1:n, i = 1:n)
+         b(i, j) = a(i, j)
+      end do
+   end subroutine copy_square
+
+   subroutine axpby(n, alpha, x, beta, y)
+      !! y := alpha x + beta y, where the arrays are (the device, on GPU)
+      integer, intent(in) :: n
+      real(dp), intent(in) :: alpha, beta
+      real(dp), intent(in) :: x(n)
+      real(dp), intent(inout) :: y(n)
+      integer :: k
+      do concurrent(k = 1:n)
+         y(k) = alpha*x(k) + beta*y(k)
+      end do
+   end subroutine axpby
+
+   subroutine scale_shift(n, a, alpha, beta)
+      !! a := alpha a + beta I
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: a(n, n)
+      real(dp), intent(in) :: alpha, beta
+      integer :: i, j
+      do concurrent(j = 1:n, i = 1:n)
+         a(i, j) = alpha*a(i, j) + merge(beta, 0.0_dp, i == j)
+      end do
+   end subroutine scale_shift
 
    subroutine pcm_solve(this, v, q)
       !! Symmetrised apparent surface charges for one solute potential
       !!
       !! `K q = R v`, and for IEF-PCM's nonsymmetric K also `q_t = R^T K^-T v`,
       !! averaged as pyscf does. C-PCM's K is symmetric and R a scalar, so
-      !! one solve is both. The one place K is used per iteration: a
-      !! matrix-free solve replaces this and build_operators, nothing else.
+      !! one solve is both. `v` and `q` live where K does (present on the
+      !! device under the GPU build). The one place K is used per iteration:
+      !! a matrix-free solve replaces this and build_operators, nothing else.
       class(trc_pcm_t), intent(inout) :: this
-      real(dp), intent(in) :: v(:)
-      real(dp), intent(out) :: q(:)
+      real(dp), intent(in) :: v(this%surface%n_points)
+      real(dp), intent(inout) :: q(this%surface%n_points)
 
-      real(dp), allocatable :: rhs(:, :), adj(:, :), qt(:)
-      integer(default_int) :: info
+      real(dp), allocatable :: adj(:)
       integer :: n
+      real(dp) :: f
 
       n = this%surface%n_points
-      allocate (rhs(n, 1))
+      f = this%f_eps
       if (this%model == PCM_MODEL_IEFPCM) then
-         rhs(:, 1) = 0.0_dp
-         call pic_gemv(this%rmat, v, rhs(:, 1))
+         call this%la%gemv('N', n, n, 1.0_dp, this%rmat, n, v, 0.0_dp, q)
+         call this%la%getrs('N', n, 1, this%kmat, n, this%ipiv, q, n)
+         allocate (adj(n))
+         !$acc enter data create(adj)
+         call axpby(n, 1.0_dp, v, 0.0_dp, adj)
+         call this%la%getrs('T', n, 1, this%kmat, n, this%ipiv, adj, n)
+         ! q := (q + R^T adj)/2
+         call this%la%gemv('T', n, n, 0.5_dp, this%rmat, n, adj, 0.5_dp, q)
+         !$acc exit data delete(adj)
       else
-         rhs(:, 1) = -this%f_eps*v
-      end if
-      call pic_getrs(this%kmat, this%ipiv, rhs, info=info)
-      if (info /= 0) error stop "terco: trc_pcm: dgetrs failed on the factored K"
-      if (this%model == PCM_MODEL_IEFPCM) then
-         allocate (adj(n, 1), qt(n))
-         adj(:, 1) = v
-         call pic_getrs(this%kmat, this%ipiv, adj, trans="T", info=info)
-         if (info /= 0) error stop "terco: trc_pcm: dgetrs failed on the factored K^T"
-         qt = 0.0_dp
-         call pic_gemv(this%rmat, adj(:, 1), qt, trans_a="T")
-         q = 0.5_dp*(rhs(:, 1) + qt)
-      else
-         q = rhs(:, 1)
+         call axpby(n, -f, v, 0.0_dp, q)
+         call this%la%getrs('N', n, 1, this%kmat, n, this%ipiv, q, n)
       end if
    end subroutine pcm_solve
 
@@ -527,8 +581,8 @@ contains
       !! `dtot` (the total density, alpha plus beta) and `vmat` are Cartesian
       !! and device-resident. `vmat` is overwritten with the full operator
       !! the charges add to the Fock matrix; `e_diel` already carries the
-      !! half. Both kernels run on the device; only the potential and the
-      !! charges, n numbers each, cross the bus for the host solve.
+      !! half. Everything stays on the device; the charges come back (n
+      !! numbers) only for their total.
       class(trc_pcm_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
@@ -539,27 +593,37 @@ contains
 
       n = this%surface%n_points
       call trc_pcm_potential(b, pl, n, this%surface%coords, this%surface%zeta, dtot, this%v)
-      !$acc update self(this%v)
       ! Nuclei push the potential up, electrons pull it down.
-      this%v = this%v_nuc - this%v
+      call axpby(n, 1.0_dp, this%v_nuc, -1.0_dp, this%v)
       call this%solve(this%v, this%q)
-      this%e_diel = 0.5_dp*dot_product(this%q, this%v)
-      this%q_total = sum(this%q)
+      this%e_diel = 0.5_dp*this%la%dot(n, this%q, this%v)
       e_diel = this%e_diel
       ! The electron's charge against the apparent charges' potential.
-      this%wq = -this%q
-      !$acc update device(this%wq)
+      call axpby(n, -1.0_dp, this%q, 0.0_dp, this%wq)
       do concurrent(i = 1:b%nao, j = 1:b%nao)
          vmat(i, j) = 0.0_dp
       end do
       call trc_pcm_fock(b, pl, n, this%surface%coords, this%surface%zeta, this%wq, vmat)
+      !$acc update self(this%q)
+      this%q_total = sum(this%q)
    end subroutine pcm_operator
 
    subroutine pcm_release(this)
       !! Release everything; reusable after another `init`
       class(trc_pcm_t), intent(inout) :: this
       if (this%on_device) then
-         !$acc exit data delete(this%surface%coords, this%surface%zeta, this%v, this%wq)
+         if (allocated(this%kmat)) then
+            !$acc exit data delete(this%surface%coords, this%surface%normals, this%surface%zeta) &
+            !$acc           delete(this%surface%switch_f, this%surface%r_parent, this%surface%area) &
+            !$acc           delete(this%kmat, this%ipiv, this%v, this%q, this%wq)
+         end if
+         if (allocated(this%rmat)) then
+            !$acc exit data delete(this%rmat)
+         end if
+         if (allocated(this%v_nuc)) then
+            !$acc exit data delete(this%v_nuc)
+         end if
+         call this%la%release()
          !$acc exit data delete(this)
          this%on_device = .false.
       end if
