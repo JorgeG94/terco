@@ -625,18 +625,24 @@ def emit_pcm_class(la, lb, order="lexicographic"):
             end do
 """
     return f"""
-   pure subroutine pcm_{tag}(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! ({la}|{lb}) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_{tag}(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! ({la}|{lb}) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk({na*nb})
 
-      integer  :: ip, ic, k{im}
+      integer  :: ip, ic, kk, k{im}
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref{rthm}
       real(dp) :: vn({nvn},0:{lab}), vacc({nvn})
@@ -651,14 +657,15 @@ def emit_pcm_class(la, lb, order="lexicographic"):
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval({lab}, tval, f)
-{scale}            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+{scale}            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
 {vrr}
 
@@ -712,6 +719,10 @@ module trc_pcm_kernels
    integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
    !! Largest Cartesian block a shell pair produces; the drivers' per-item
    !! buffer is this size because `do concurrent` locals are fixed.
+   integer, parameter :: PCM_PT_CHUNK = 128
+   !! Points per Fock-term work item, roughly (inc/trc_pcm_driver.inc)
+   integer, parameter :: PCM_PAIR_CHUNK = 256
+   !! Shell pairs per potential work item
 
 contains
 
@@ -725,17 +736,17 @@ contains
             names.append((la, lb))
     parts.append("""
    pure subroutine pcm_dispatch(la, lb, npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                                npt, cpt, zk, wq, blk)
+                                npt, k0, kstep, cpt, zk, wq, blk)
       !$acc routine seq
-      integer,  intent(in)  :: la, lb, npp, npt
+      integer,  intent(in)  :: la, lb, npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt), zk(npt), wq(npt)
+      real(dp), intent(in)  :: cpt(3, *), zk(*), wq(*)
       real(dp), intent(out) :: blk(*)
       select case (la*ONE_E_RADIX + lb)""")
     for la, lb in names:
         parts.append(f"""      case ({la*ONE_E_RADIX + lb}); call pcm_{la}{lb}(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)""")
+                          npt, k0, kstep, cpt, zk, wq, blk)""")
     parts.append("""      case default
          !! No kernel for this class: the basis is above PCM_LMAX. A
          !! sentinel rather than silence, as in one_e_dispatch; trc_pcm

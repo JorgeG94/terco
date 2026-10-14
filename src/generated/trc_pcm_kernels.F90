@@ -33,6 +33,10 @@ module trc_pcm_kernels
    integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
    !! Largest Cartesian block a shell pair produces; the drivers' per-item
    !! buffer is this size because `do concurrent` locals are fixed.
+   integer, parameter :: PCM_PT_CHUNK = 128
+   !! Points per Fock-term work item, roughly (inc/trc_pcm_driver.inc)
+   integer, parameter :: PCM_PAIR_CHUNK = 256
+   !! Shell pairs per potential work item
 
 contains
 
@@ -40,18 +44,24 @@ contains
 #include "inc/trc_pcm_driver.inc"
 
 
-   pure subroutine pcm_00(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (0|0) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_00(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (0|0) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(1)
 
-      integer  :: ip, ic, k
+      integer  :: ip, ic, kk, k
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref
       real(dp) :: vn(1,0:0), vacc(1)
@@ -66,14 +76,15 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(0, tval, f)
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 0 ---
             vn(1,0) = vpref*f(0)
@@ -88,18 +99,24 @@ contains
    end subroutine pcm_00
 
 
-   pure subroutine pcm_01(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (0|1) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_01(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (0|1) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(3)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(4,0:1), vacc(4)
@@ -114,10 +131,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(1, tval, f)
@@ -126,7 +144,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 1 ---
             vn(1,1) = vpref*f(1)
@@ -151,18 +169,24 @@ contains
    end subroutine pcm_01
 
 
-   pure subroutine pcm_02(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (0|2) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_02(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (0|2) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(6)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(10,0:2), vacc(10)
@@ -177,10 +201,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(2, tval, f)
@@ -189,7 +214,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 2 ---
             vn(1,2) = vpref*f(2)
@@ -243,18 +268,24 @@ contains
    end subroutine pcm_02
 
 
-   pure subroutine pcm_10(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (1|0) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_10(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (1|0) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(3)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(4,0:1), vacc(4)
@@ -269,10 +300,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(1, tval, f)
@@ -281,7 +313,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 1 ---
             vn(1,1) = vpref*f(1)
@@ -303,18 +335,24 @@ contains
    end subroutine pcm_10
 
 
-   pure subroutine pcm_11(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (1|1) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_11(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (1|1) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(9)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(10,0:2), vacc(10)
@@ -329,10 +367,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(2, tval, f)
@@ -341,7 +380,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 2 ---
             vn(1,2) = vpref*f(2)
@@ -392,18 +431,24 @@ contains
    end subroutine pcm_11
 
 
-   pure subroutine pcm_12(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (1|2) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_12(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (1|2) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(18)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(20,0:3), vacc(20)
@@ -418,10 +463,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(3, tval, f)
@@ -430,7 +476,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 3 ---
             vn(1,3) = vpref*f(3)
@@ -556,18 +602,24 @@ contains
    end subroutine pcm_12
 
 
-   pure subroutine pcm_20(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (2|0) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_20(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (2|0) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(6)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(10,0:2), vacc(10)
@@ -582,10 +634,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(2, tval, f)
@@ -594,7 +647,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 2 ---
             vn(1,2) = vpref*f(2)
@@ -633,18 +686,24 @@ contains
    end subroutine pcm_20
 
 
-   pure subroutine pcm_21(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (2|1) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_21(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (2|1) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(18)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(20,0:3), vacc(20)
@@ -659,10 +718,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(3, tval, f)
@@ -671,7 +731,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 3 ---
             vn(1,3) = vpref*f(3)
@@ -770,18 +830,24 @@ contains
    end subroutine pcm_21
 
 
-   pure subroutine pcm_22(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, cpt, zk, wq, blk)
-      !! (2|2) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k|.
+   pure subroutine pcm_22(npp, ppz, ppk, ppp, ppa, abx, aby, abz, npt, k0, kstep, cpt, zk, wq, blk)
+      !! (2|2) block of sum_k wq_k erf(zeta_k|r - C_k|)/|r - C_k| over the
+      !! npt points k = k0, k0 + kstep, ...
+      !!
+      !! Strided rather than a contiguous run so that the drivers can deal a
+      !! pair's points out round-robin: neighbouring threads then read
+      !! neighbouring points, coalesced, where contiguous chunks put each
+      !! thread's reads a chunk apart (measured 6x slower on the Fock term).
       !$acc routine seq
-      integer,  intent(in)  :: npp, npt
+      integer,  intent(in)  :: npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt)   !! point centres
-      real(dp), intent(in)  :: zk(npt)       !! zeta_k; the Gaussian exponent is zeta_k^2
-      real(dp), intent(in)  :: wq(npt)       !! weight per point (a charge, or 1)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      real(dp), intent(in)  :: wq(*)         !! weight per point (a charge, or 1)
       real(dp), intent(out) :: blk(36)
 
-      integer  :: ip, ic, k, m
+      integer  :: ip, ic, kk, k, m
       real(dp) :: zeta, oo2z, pax, pay, paz, pcx, pcy, pcz
       real(dp) :: w2, theta, tval, vpref, thm
       real(dp) :: vn(35,0:4), vacc(35)
@@ -796,10 +862,11 @@ contains
          oo2z = 0.5_dp/zeta
          pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
-            pcx = ppp(1, ip) - cpt(1, ic)
-            pcy = ppp(2, ip) - cpt(2, ic)
-            pcz = ppp(3, ip) - cpt(3, ic)
-            w2 = zk(ic)*zk(ic)
+            kk = k0 + (ic - 1)*kstep
+            pcx = ppp(1, ip) - cpt(1, kk)
+            pcy = ppp(2, ip) - cpt(2, kk)
+            pcz = ppp(3, ip) - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
             theta = w2/(w2 + zeta)
             tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval(4, tval, f)
@@ -808,7 +875,7 @@ contains
                thm = thm*theta
                f(m) = f(m)*thm
             end do
-            vpref = wq(ic)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
+            vpref = wq(kk)*ppk(ip)*(2.0_dp*PI/zeta)*sqrt(theta)
 
             ! --- m = 4 ---
             vn(1,4) = vpref*f(4)
@@ -1053,32 +1120,32 @@ contains
 
 
    pure subroutine pcm_dispatch(la, lb, npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                                npt, cpt, zk, wq, blk)
+                                npt, k0, kstep, cpt, zk, wq, blk)
       !$acc routine seq
-      integer,  intent(in)  :: la, lb, npp, npt
+      integer,  intent(in)  :: la, lb, npp, npt, k0, kstep
       real(dp), intent(in)  :: ppz(npp), ppk(npp), ppp(3, npp), ppa(3, npp)
       real(dp), intent(in)  :: abx, aby, abz
-      real(dp), intent(in)  :: cpt(3, npt), zk(npt), wq(npt)
+      real(dp), intent(in)  :: cpt(3, *), zk(*), wq(*)
       real(dp), intent(out) :: blk(*)
       select case (la*ONE_E_RADIX + lb)
       case (0); call pcm_00(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (1); call pcm_01(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (2); call pcm_02(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (11); call pcm_10(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (12); call pcm_11(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (13); call pcm_12(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (22); call pcm_20(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (23); call pcm_21(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case (24); call pcm_22(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
-                          npt, cpt, zk, wq, blk)
+                          npt, k0, kstep, cpt, zk, wq, blk)
       case default
          !! No kernel for this class: the basis is above PCM_LMAX. A
          !! sentinel rather than silence, as in one_e_dispatch; trc_pcm

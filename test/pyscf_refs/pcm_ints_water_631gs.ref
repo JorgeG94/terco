@@ -2,7 +2,7 @@
 # case: check_pcm_ints_water_631gs
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: 7427c794ad35e29f84d58314f5d33169b9e3c699f2c9e58a2fa0faa78b10062c
+# hash: bfc7a887626d9cb09e19638ea696d0d4b6e6aebdda7f6c33a9d6acc15e746042
 # files: test/pyscf_refs/generate.py test/check_pcm_ints.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAO 19
 NPTS 564
