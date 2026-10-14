@@ -1299,6 +1299,172 @@ def gen_xc_kernels():
     print(f"  wrote {out.relative_to(ROOT)}")
 
 
+# =========================================================================
+# The polarisable continuum (src/trc_pcm.F90 and the --pcm kernels).
+#
+# Every case uses pyscf.solvent.pcm's own machinery -- gen_surface, get_D_S,
+# the PCM object's K/R, _get_v/_get_vmat (int3c2e against
+# fakemol_for_charges, pyscf's own surface-integral path) -- so what is
+# committed is pyscf's continuum, not a re-derivation of it.
+# =========================================================================
+
+PCM_EPS = 78.3553          #: pyscf's PCM default (water); also the tests'
+PCM_ANG = 1.8897261254578281
+#: trc_test_basis.F90's ANG: the cavity cases read water.xyz themselves
+#: (there is no binary to run for them), so they convert Angstrom to bohr
+#: with the SAME constant read_xyz does, and hand pyscf bohr.
+
+
+def _xyz_bohr(xyzname):
+    atoms = []
+    with open(TEST / xyzname) as g:
+        nat = int(g.readline())
+        g.readline()
+        for _ in range(nat):
+            parts = g.readline().split()
+            atoms.append((parts[0], tuple(float(c) * PCM_ANG for c in parts[1:4])))
+    return atoms
+
+
+def gen_pcm_cavity():
+    """check_pcm_cavity.F90: water's cavity at 302 points per sphere (points,
+    weights, exponents, switching values, areas, normals; S x and D x for a
+    fixed x; both models' symmetrised charges and q.v/2 for a fixed v), and
+    S and D element by element at 110 points per sphere, small enough to
+    commit whole. The fixed x and v are the closed forms check_pcm_cavity.F90
+    evaluates on its own points (xfix/vfix there) -- functions of position,
+    so pyscf's point order needs no matching here; the Fortran side matches
+    points by position before comparing."""
+    from pyscf.solvent import pcm
+    atoms = _xyz_bohr("water.xyz")
+    mol = gto.M(atom=atoms, basis='sto-3g', unit='Bohr', verbose=0)
+    rad = pcm.modified_Bondi * 1.2
+
+    def vfix(c):
+        return (1.0 / np.linalg.norm(c - [0.1, 0.2, 0.3], axis=1)
+                + 0.5 / np.linalg.norm(c - [-0.5, 0.4, -0.2], axis=1))
+
+    def xfix(c):
+        return np.cos(1.3 * c[:, 0]) + np.sin(0.7 * c[:, 1]) + 0.2 * c[:, 2]
+
+    surf = pcm.gen_surface(mol, ng=302, rad=rad)
+    c = surf['grid_coords']
+    D, S = pcm.get_D_S(surf, with_S=True, with_D=True)
+    x = xfix(c)
+    v = vfix(c)
+
+    w = RefWriter("pcm_cavity_water.ref")
+    w.header("check_pcm_cavity", [ROOT / "test" / "check_pcm_cavity.F90", TEST / "water.xyz"])
+    w.int_("NPTS", c.shape[0])
+    w.matrix("COORDS", c.T)
+    w.vector("WEIGHTS", surf['weights'])
+    w.vector("ZETA", surf['charge_exp'])
+    w.vector("SWITCH", surf['switch_fun'])
+    w.vector("AREA", surf['area'])
+    w.matrix("NORMALS", surf['norm_vec'].T)
+    w.vector("SX", S @ x)
+    w.vector("DX", D @ x)
+    for method, tag in (("C-PCM", "CPCM"), ("IEF-PCM", "IEFPCM")):
+        sol = pcm.PCM(mol)
+        sol.method = method
+        sol.eps = PCM_EPS
+        sol.lebedev_order = 29
+        sol.vdw_scale = 1.2
+        sol.build()
+        assert np.allclose(sol.surface['grid_coords'], c, atol=0, rtol=0)
+        K, R = sol._intermediates['K'], sol._intermediates['R']
+        q = np.linalg.solve(K, R @ v)
+        qt = R.T @ np.linalg.solve(K.T, v)
+        qs = 0.5 * (q + qt)
+        w.vector(f"Q_{tag}", qs)
+        w.real(f"E_{tag}", 0.5 * qs @ v)
+        print(f"  pcm_cavity: {method:8s} {c.shape[0]} points, q.v/2 = {0.5 * qs @ v:.12f}")
+
+    surf = pcm.gen_surface(mol, ng=110, rad=rad)
+    D, S = pcm.get_D_S(surf, with_S=True, with_D=True)
+    w.int_("NPTS110", surf['grid_coords'].shape[0])
+    w.matrix("COORDS110", surf['grid_coords'].T)
+    w.matrix("S110", S)
+    w.matrix("D110", D)
+    w.end()
+    w.write()
+
+
+def _pcm_v_nj(mol, coords, zeta):
+    """(nao, nao, npts) <i|erf(zeta_k|r - C_k|)/|r - C_k||j>, pyscf.solvent.pcm's
+    own way (PCM._get_v/_get_vmat: int3c2e against fakemol_for_charges)."""
+    from pyscf.gto import mole
+    fakemol = mole.fakemol_for_charges(coords, expnt=zeta**2)
+    fakemol.cart = mol.cart
+    return df.incore.aux_e2(mol, fakemol, intor='int3c2e', aosym='s1')
+
+
+def gen_pcm_ints(case, xyz, json_rel):
+    """check_pcm_ints.F90: the PCM surface-integral kernels on fixed inputs
+    (its own cavity points plus eight off-cavity ones, a fixed density,
+    fixed charges). Committed: v_k = D . I_k and F = sum_k q_k I_k from
+    pyscf's int3c2e/fakemol path, after checking that path against
+    int1e_grids under mol.with_range_coulomb(zeta), one zeta group at a
+    time -- the two pyscf routes to the same erf(zeta r)/r integral."""
+    dump = TEST / f"pcm_ints_probe_{case}.bin"
+    run_bin("check_pcm_ints_" + case, [xyz, json_rel, dump.name, case])
+    if not dump.exists():
+        print(f"  pcm_ints {case}: binary self-skipped (LMAX too low for this build); not regenerating")
+        return
+    r = BinReader(dump)
+    nat, nao, npts = r.i8(), r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+    zeta = r.f8(npts)
+    q = r.f8(npts)
+    d_terco = r.mat(nao)
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_pcm_ints {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    d_terco_p = d_terco[np.ix_(inv_perm, inv_perm)]
+    n, s_err = ao_norm_from_overlap(s_terco_p, mol.intor('int1e_ovlp'))
+    if s_err >= 1e-10:
+        raise RuntimeError(f"gen_pcm_ints {case}: overlap check failed, {s_err:.3e}")
+    d_pyscf = n[:, None] * d_terco_p * n[None, :]
+
+    v_nj = _pcm_v_nj(mol, pts, zeta)
+    worst = 0.0
+    for z in np.unique(zeta):
+        idx = np.where(zeta == z)[0]
+        with mol.with_range_coulomb(z):
+            g = mol.intor('int1e_grids', grids=pts[idx])        # (ng, nao, nao)
+        worst = max(worst, np.abs(np.transpose(g, (1, 2, 0)) - v_nj[:, :, idx]).max())
+    if worst > 1e-12:
+        raise RuntimeError(f"gen_pcm_ints {case}: int3c2e/fakemol and int1e_grids "
+                           f"disagree by {worst:.3e}")
+    print(f"  pcm_ints {case}: int3c2e/fakemol vs int1e_grids(range_coulomb): {worst:.2e}")
+    v = np.einsum('ijL,ij->L', v_nj, d_pyscf)
+    f_pyscf = np.einsum('ijL,L->ij', v_nj, q)
+    f_terco = (f_pyscf * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+
+    w = RefWriter(f"pcm_ints_{case}.ref")
+    w.header("check_pcm_ints_" + case,
+             [ROOT / "test" / "check_pcm_ints.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAO", nao)
+    w.int_("NPTS", npts)
+    w.matrix("S", s_terco)
+    w.vector("V", v)
+    w.matrix("F", f_terco)
+    w.end()
+    w.write()
+    dump.unlink()
+
+
 CASES = {
     "mult": gen_mult,
     "ao": gen_ao,
@@ -1318,6 +1484,9 @@ CASES = {
     "scf_robust": gen_scf_robust,
     "rimp2": gen_rimp2,
     "xc_kernels": gen_xc_kernels,
+    "pcm_cavity": gen_pcm_cavity,
+    "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
+    "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
 }
 
 

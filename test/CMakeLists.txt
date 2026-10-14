@@ -430,6 +430,30 @@ set_tests_properties(terco/check_df_vs_pyscf
   PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# The polarisable continuum's cavity, S and D, and charge solve, with no
+# integrals: Born-ion and sphere identities, the refusals, and pyscf's own
+# surface arrays from test/pyscf_refs/pcm_cavity_water.ref.
+#
+terco_add_check(check_pcm_cavity check_pcm_cavity.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+#
+# Its solute-surface integrals (gen_1e.py's --pcm kernels) on fixed inputs
+# against pyscf's int3c2e/fakemol path: water/6-31G* (d) at every ceiling,
+# water/cc-pVTZ (f on O) for real at TERCO_LMAX=3 and skipped below it, the
+# same convention as check_rys_fock_vs_pyscf.
+#
+foreach(case water_631gs water_ccpvtz)
+  if(case STREQUAL "water_631gs")
+    set(json basis_sets/6-31gs.json)
+  else()
+    set(json basis_sets/cc-pvtz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/pcm_ints_probe_${case}.bin)
+  terco_add_check(check_pcm_ints_${case} check_pcm_ints.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS water.xyz ${json} ${dump} ${case})
+  set_tests_properties(terco/check_pcm_ints_${case} PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+
+#
 # Negative tests: trc_df_2c and trc_df_3c must refuse a basis above the
 # ceiling the DF dispatchers were generated for, by `error stop`, rather
 # than read an unwritten block. Nothing above exercises this -- every

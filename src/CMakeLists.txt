@@ -22,6 +22,8 @@ target_sources(
           trc_decontract.F90 # splitting a general contraction into primitives
           trc_fock.F90       # the four-centre Fock builds
           trc_linalg.F90     # dense linear algebra on device-resident matrices
+          trc_pcm_radii.F90  # cavity radii for the polarisable continuum
+          trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
           trc_scf.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           trc_rimp2.F90      # RI-MP2 on the RHF reference, resident
           trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
