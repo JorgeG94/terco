@@ -574,14 +574,9 @@ contains
       diis_start = opts%diis_start
       if (diis_start < 0.0_dp) diis_start = merge(0.5_dp, huge(1.0_dp), nspin == 2)
       pcm_on = pcm_model_from_name(opts%pcm_model) /= PCM_MODEL_NONE
-      ! The continuum is built and solved whole on one device; over ranks
-      ! every rank would repeat all of it, so refuse until it is split.
-      if (pcm_on .and. present(comm)) then
-         if (comm%size() > 1) then
-            res%message = "trc_scf: PCM solvation is not available over MPI ranks"
-            return
-         end if
-      end if
+      ! The cavity, K and its LU are built and solved whole on every rank
+      ! (replicated: cheap next to the integrals); pcm%operator splits the
+      ! two integral passes over the ranks itself, given `comm`.
       epcm = 0.0_dp; t_pcm = 0.0_dp; t_pcm_setup = 0.0_dp
 
       allocate (smat(nao, nao), hcore(nao, nao), x(nao, nao))
@@ -956,10 +951,18 @@ contains
          ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
          ! too: one set of charges, one operator added to both spins) -----
          if (pcm_on) then
-            if (nspin == 1) then
-               call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm)
+            if (present(comm)) then
+               if (nspin == 1) then
+                  call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm, comm)
+               else
+                  call pcm%operator(b, pl, dtot_c, vpcm_c, epcm, comm)
+               end if
             else
-               call pcm%operator(b, pl, dtot_c, vpcm_c, epcm)
+               if (nspin == 1) then
+                  call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm)
+               else
+                  call pcm%operator(b, pl, dtot_c, vpcm_c, epcm)
+               end if
             end if
             if (sph) then
                call sph_cart_to_sph(b, vpcm_c, vpcm)
