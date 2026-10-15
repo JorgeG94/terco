@@ -240,6 +240,16 @@ class ConvergenceError(RuntimeError):
     commit. Refuse to write it -- see this file's own header."""
 
 
+def require_converged(mf, label):
+    """Refuse an mf whose own `converged` flag is unset. _pcm_converge's
+    check between its passes; converge_tight does the rest of the file's."""
+    if not mf.converged:
+        raise ConvergenceError(
+            f"{label}: pyscf SCF did not converge (conv_tol={mf.conv_tol}, "
+            f"conv_tol_grad={mf.conv_tol_grad}, max_cycle={mf.max_cycle}) -- "
+            f"refusing to write a reference from an unconverged energy.")
+
+
 def converge_tight(make_mf, dm0, label, conv_tol=1.0e-12, conv_tol_grad=1.0e-8, max_cycle=200):
     """Converge an SCF to BOTH an energy and a GRADIENT tolerance, refuse if
     it cannot, and verify the result with a fresh mf before trusting it.
@@ -1299,6 +1309,349 @@ def gen_xc_kernels():
     print(f"  wrote {out.relative_to(ROOT)}")
 
 
+# =========================================================================
+# The polarisable continuum (src/trc_pcm.F90 and the --pcm kernels).
+#
+# Every case uses pyscf.solvent.pcm's own machinery -- gen_surface, get_D_S,
+# the PCM object's K/R, _get_v/_get_vmat (int3c2e against
+# fakemol_for_charges, pyscf's own surface-integral path) -- so what is
+# committed is pyscf's continuum, not a re-derivation of it.
+# =========================================================================
+
+PCM_EPS = 78.3553          #: pyscf's PCM default (water); also the tests'
+PCM_ANG = 1.8897261254578281
+#: trc_test_basis.F90's ANG: the cavity cases read water.xyz themselves
+#: (there is no binary to run for them), so they convert Angstrom to bohr
+#: with the SAME constant read_xyz does, and hand pyscf bohr.
+
+
+def _xyz_bohr(xyzname):
+    atoms = []
+    with open(TEST / xyzname) as g:
+        nat = int(g.readline())
+        g.readline()
+        for _ in range(nat):
+            parts = g.readline().split()
+            atoms.append((parts[0], tuple(float(c) * PCM_ANG for c in parts[1:4])))
+    return atoms
+
+
+def gen_pcm_cavity():
+    """check_pcm_cavity.F90: water's cavity at 302 points per sphere (points,
+    weights, exponents, switching values, areas, normals; S x and D x for a
+    fixed x; both models' symmetrised charges and q.v/2 for a fixed v), and
+    S and D element by element at 110 points per sphere, small enough to
+    commit whole. The fixed x and v are the closed forms check_pcm_cavity.F90
+    evaluates on its own points (xfix/vfix there) -- functions of position,
+    so pyscf's point order needs no matching here; the Fortran side matches
+    points by position before comparing."""
+    from pyscf.solvent import pcm
+    atoms = _xyz_bohr("water.xyz")
+    mol = gto.M(atom=atoms, basis='sto-3g', unit='Bohr', verbose=0)
+    rad = pcm.modified_Bondi * 1.2
+
+    def vfix(c):
+        return (1.0 / np.linalg.norm(c - [0.1, 0.2, 0.3], axis=1)
+                + 0.5 / np.linalg.norm(c - [-0.5, 0.4, -0.2], axis=1))
+
+    def xfix(c):
+        return np.cos(1.3 * c[:, 0]) + np.sin(0.7 * c[:, 1]) + 0.2 * c[:, 2]
+
+    surf = pcm.gen_surface(mol, ng=302, rad=rad)
+    c = surf['grid_coords']
+    D, S = pcm.get_D_S(surf, with_S=True, with_D=True)
+    x = xfix(c)
+    v = vfix(c)
+
+    w = RefWriter("pcm_cavity_water.ref")
+    w.header("check_pcm_cavity", [ROOT / "test" / "check_pcm_cavity.F90", TEST / "water.xyz"])
+    w.int_("NPTS", c.shape[0])
+    w.matrix("COORDS", c.T)
+    w.vector("WEIGHTS", surf['weights'])
+    w.vector("ZETA", surf['charge_exp'])
+    w.vector("SWITCH", surf['switch_fun'])
+    w.vector("AREA", surf['area'])
+    w.matrix("NORMALS", surf['norm_vec'].T)
+    w.vector("SX", S @ x)
+    w.vector("DX", D @ x)
+    for method, tag in (("C-PCM", "CPCM"), ("IEF-PCM", "IEFPCM")):
+        sol = pcm.PCM(mol)
+        sol.method = method
+        sol.eps = PCM_EPS
+        sol.lebedev_order = 29
+        sol.vdw_scale = 1.2
+        sol.build()
+        assert np.allclose(sol.surface['grid_coords'], c, atol=0, rtol=0)
+        K, R = sol._intermediates['K'], sol._intermediates['R']
+        q = np.linalg.solve(K, R @ v)
+        qt = R.T @ np.linalg.solve(K.T, v)
+        qs = 0.5 * (q + qt)
+        w.vector(f"Q_{tag}", qs)
+        w.real(f"E_{tag}", 0.5 * qs @ v)
+        print(f"  pcm_cavity: {method:8s} {c.shape[0]} points, q.v/2 = {0.5 * qs @ v:.12f}")
+
+    surf = pcm.gen_surface(mol, ng=110, rad=rad)
+    D, S = pcm.get_D_S(surf, with_S=True, with_D=True)
+    w.int_("NPTS110", surf['grid_coords'].shape[0])
+    w.matrix("COORDS110", surf['grid_coords'].T)
+    w.matrix("S110", S)
+    w.matrix("D110", D)
+    w.end()
+    w.write()
+
+
+def _pcm_v_nj(mol, coords, zeta):
+    """(nao, nao, npts) <i|erf(zeta_k|r - C_k|)/|r - C_k||j>, pyscf.solvent.pcm's
+    own way (PCM._get_v/_get_vmat: int3c2e against fakemol_for_charges)."""
+    from pyscf.gto import mole
+    fakemol = mole.fakemol_for_charges(coords, expnt=zeta**2)
+    fakemol.cart = mol.cart
+    return df.incore.aux_e2(mol, fakemol, intor='int3c2e', aosym='s1')
+
+
+def gen_pcm_ints(case, xyz, json_rel):
+    """check_pcm_ints.F90: the PCM surface-integral kernels on fixed inputs
+    (its own cavity points plus eight off-cavity ones, a fixed density,
+    fixed charges). Committed: v_k = D . I_k and F = sum_k q_k I_k from
+    pyscf's int3c2e/fakemol path, after checking that path against
+    int1e_grids under mol.with_range_coulomb(zeta), one zeta group at a
+    time -- the two pyscf routes to the same erf(zeta r)/r integral."""
+    dump = TEST / f"pcm_ints_probe_{case}.bin"
+    run_bin("check_pcm_ints_" + case, [xyz, json_rel, dump.name, case])
+    if not dump.exists():
+        print(f"  pcm_ints {case}: binary self-skipped (LMAX too low for this build); not regenerating")
+        return
+    r = BinReader(dump)
+    nat, nao, npts = r.i8(), r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+    zeta = r.f8(npts)
+    q = r.f8(npts)
+    d_terco = r.mat(nao)
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_pcm_ints {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    d_terco_p = d_terco[np.ix_(inv_perm, inv_perm)]
+    n, s_err = ao_norm_from_overlap(s_terco_p, mol.intor('int1e_ovlp'))
+    if s_err >= 1e-10:
+        raise RuntimeError(f"gen_pcm_ints {case}: overlap check failed, {s_err:.3e}")
+    d_pyscf = n[:, None] * d_terco_p * n[None, :]
+
+    v_nj = _pcm_v_nj(mol, pts, zeta)
+    worst = 0.0
+    for z in np.unique(zeta):
+        idx = np.where(zeta == z)[0]
+        with mol.with_range_coulomb(z):
+            g = mol.intor('int1e_grids', grids=pts[idx])        # (ng, nao, nao)
+        worst = max(worst, np.abs(np.transpose(g, (1, 2, 0)) - v_nj[:, :, idx]).max())
+    if worst > 1e-12:
+        raise RuntimeError(f"gen_pcm_ints {case}: int3c2e/fakemol and int1e_grids "
+                           f"disagree by {worst:.3e}")
+    print(f"  pcm_ints {case}: int3c2e/fakemol vs int1e_grids(range_coulomb): {worst:.2e}")
+    v = np.einsum('ijL,ij->L', v_nj, d_pyscf)
+    f_pyscf = np.einsum('ijL,L->ij', v_nj, q)
+    f_terco = (f_pyscf * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+
+    w = RefWriter(f"pcm_ints_{case}.ref")
+    w.header("check_pcm_ints_" + case,
+             [ROOT / "test" / "check_pcm_ints.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAO", nao)
+    w.int_("NPTS", npts)
+    w.matrix("S", s_terco)
+    w.vector("V", v)
+    w.matrix("F", f_terco)
+    w.end()
+    w.write()
+    dump.unlink()
+
+
+PCM_CONV_TOL = 1e-12
+PCM_CONV_TOL_GRAD = 1e-8
+
+
+def _pcm_converge(mf, label, dm0=None):
+    """Converge one PCM SCF reference tightly or refuse it: conv_tol 1e-12
+    AND conv_tol_grad 1e-8, a second-order (.newton()) retry when the
+    first-order solver does not get there, then two self-checks -- the
+    orbital-gradient norm actually under the gate, and energy_tot at the
+    converged density reproducing e_tot (the at-density control compares
+    against the former and the converged energy against the latter, so
+    they must be the same number). Returns (mf, grad_norm)."""
+    mf.conv_tol = PCM_CONV_TOL
+    mf.conv_tol_grad = PCM_CONV_TOL_GRAD
+    mf.max_cycle = 300
+    mf.verbose = 0
+    mf.kernel(dm0=dm0)
+    if not mf.converged:
+        mo, occ = mf.mo_coeff, mf.mo_occ
+        mf = mf.newton()
+        mf.conv_tol = PCM_CONV_TOL
+        mf.conv_tol_grad = PCM_CONV_TOL_GRAD
+        mf.max_cycle = 300
+        mf.kernel(mo, occ)
+    require_converged(mf, label)
+
+    def grad_norm():
+        # The Fock matrix handed in explicitly: get_grad's own fallback
+        # builds it from get_hcore + get_veff, which leaves out the
+        # solvent's potential (SCFWithSolvent adds it in get_fock).
+        fock = mf.get_fock(dm=mf.make_rdm1())
+        return float(np.linalg.norm(mf.get_grad(mf.mo_coeff, mf.mo_occ, fock)))
+
+    # pyscf's own test reads the gradient of the step BEFORE the last one,
+    # so the final density can sit just above conv_tol_grad with the flag
+    # set. Then keep going, from there, at a tenfold tighter gate -- never
+    # accept the larger number.
+    gnorm = grad_norm()
+    for _ in range(3):
+        if gnorm <= PCM_CONV_TOL_GRAD:
+            break
+        mf.conv_tol_grad = 0.1 * PCM_CONV_TOL_GRAD
+        mf.kernel(dm0=mf.make_rdm1())
+        require_converged(mf, label)
+        gnorm = grad_norm()
+    if gnorm > PCM_CONV_TOL_GRAD:
+        raise ConvergenceError(f"{label}: |g| = {gnorm:.2e} > {PCM_CONV_TOL_GRAD} after converging")
+    de = abs(mf.energy_tot(mf.make_rdm1()) - mf.e_tot)
+    if de > 1e-10:
+        raise ConvergenceError(f"{label}: energy_tot(dm) differs from e_tot by {de:.2e}")
+    return mf, gnorm
+
+
+def gen_pcm_scf(set_name):
+    """scf_pcm.F90's cases: pyscf's own RHF/UHF/RKS/UKS with .PCM() (same
+    model, dielectric, radii scale and Lebedev order), on terco's own DFT
+    grid (and VV10 grid), converged by _pcm_converge (conv_tol 1e-12 AND
+    conv_tol_grad 1e-8, refused if not). Commits the converged total energy and E_diel
+    (scf_summary['e_solvent'], the one that went into e_tot), with each
+    case's orbital-gradient norm in a comment, and, for every
+    Cartesian case, pyscf's converged density in terco's AO order and
+    normalisation with energy_tot(dm) and E_diel at that density -- the
+    at-density control (see scf_rks.F90/gen_rks for the pattern)."""
+    from pyscf.dft import gen_grid
+    PYSCF_XC = {'b3lyp': 'HYB_GGA_XC_B3LYP', 'wb97x-v': 'wb97x-v', 'pbe': 'PBE'}
+    PYSCF_PCM = {'cpcm': 'C-PCM', 'iefpcm': 'IEF-PCM'}
+    LEB_ORDER = {npts: order for order, npts in gen_grid.LEBEDEV_ORDER.items()}
+
+    run_bin("scf_pcm", [set_name])
+    dump = TEST / f"pcm_scf_probe_{set_name}.bin"
+    if not dump.exists():
+        print(f"  pcm_scf {set_name}: binary self-skipped (LMAX too low for this build); not regenerating")
+        return
+    r = BinReader(dump)
+    ncase = r.i8()
+    w = RefWriter(f"pcm_scf_{set_name}.ref")
+    w.header("scf_pcm " + set_name,
+             [ROOT / "test" / "scf_pcm.F90", TEST / "water.xyz", TEST / "formamide.xyz", TEST / "oh.xyz",
+              TEST / "nh2.xyz",
+              TEST / "basis_sets" / "6-31gs.json", TEST / "basis_sets" / "cc-pvdz.json",
+              TEST / "basis_sets" / "cc-pvtz.json"])
+    w.comment(f"CONV_TOL {PCM_CONV_TOL:g}")
+    w.comment(f"CONV_TOL_GRAD {PCM_CONV_TOL_GRAD:g}")
+    w.int_("NCASE", ncase)
+    for ic in range(ncase):
+        nao_c, nao_scf, natm, nspin, na, nb, sph = (r.i8() for _ in range(7))
+        xyzname, basname, fn, model = r.str_(16), r.str_(32), r.str_(8), r.str_(8)
+        eps = r.f8(1)[0]
+        leb = r.i8()
+        rscale = r.f8(1)[0]
+        zint = r.i8(natm)
+        rr = r.f8(3 * natm).reshape(3, natm, order='F').T
+        npts = r.i8()
+        if npts:
+            pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+            wts = r.f8(npts)
+        npts_nlc = r.i8()
+        if npts_nlc:
+            pts_nlc = r.f8(3 * npts_nlc).reshape(3, npts_nlc, order='F').T
+            wts_nlc = r.f8(npts_nlc)
+        s_terco = r.mat(nao_c)
+        e_t, ep_t = r.f8(2)
+        dm_t_conv = r.f8(nao_scf * nao_scf * nspin).reshape(nao_scf, nao_scf, nspin, order='F')
+
+        elements = {_SYMBOL[int(z)]: int(z) for z in zint}
+        basis_arg = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+        atoms = [(_SYMBOL[int(z)], tuple(rr[i])) for i, z in enumerate(zint)]
+        charge = int(sum(zint)) - (na + nb)
+        mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=not sph, charge=charge,
+                    spin=na - nb, verbose=0)
+        if mol.nao_nr() != nao_scf:
+            raise RuntimeError(f"gen_pcm_scf case {ic}: nao mismatch terco {nao_scf} pyscf {mol.nao_nr()}")
+
+        if fn:
+            mf = dft.RKS(mol) if nspin == 1 else dft.UKS(mol)
+            mf.xc = PYSCF_XC[fn]
+        else:
+            mf = scf.RHF(mol) if nspin == 1 else scf.UHF(mol)
+        mf = mf.PCM()
+        mf.with_solvent.method = PYSCF_PCM[model]
+        mf.with_solvent.eps = eps
+        mf.with_solvent.lebedev_order = LEB_ORDER[leb]
+        mf.with_solvent.vdw_scale = rscale
+        if fn:
+            mf.grids.coords = np.ascontiguousarray(pts)
+            mf.grids.weights = wts
+            mf.grids.non0tab = None
+            if npts_nlc:
+                mf.nlcgrids.coords = np.ascontiguousarray(pts_nlc)
+                mf.nlcgrids.weights = wts_nlc
+                mf.nlcgrids.non0tab = None
+        label = f"{xyzname}/{basname} {fn or 'hf'} {model} {'U' if nspin == 2 else 'R'}"
+        # Started from terco's converged density, as gen_rks starts its
+        # cases: the OH radical's degenerate pi pair leaves UHF stationary
+        # points 3e-8 Eh apart in a Lebedev cavity (4e-7 for B3LYP), and the
+        # comparison is only meaningful within one basin (scf_pcm.F90's
+        # header). pyscf still converges on its own to conv_tol_grad; the
+        # start only picks the basin. A spherical
+        # case has no AO map to pyscf's spherical convention here and keeps
+        # pyscf's own guess (closed-shell water: one basin).
+        dm0 = None
+        if not sph:
+            perm = terco_to_pyscf_perm(atoms, basis_arg)
+            inv_perm = np.argsort(perm)
+            n, s_err = ao_norm_from_overlap(s_terco[np.ix_(inv_perm, inv_perm)], mol.intor('int1e_ovlp'))
+            if s_err >= 1e-10:
+                raise RuntimeError(f"gen_pcm_scf case {ic}: overlap check failed, {s_err:.3e}")
+            nn = n[:, None] * n[None, :]
+            dmp = [nn * dm_t_conv[:, :, k][np.ix_(inv_perm, inv_perm)] for k in range(nspin)]
+            dm0 = dmp[0] if nspin == 1 else np.stack(dmp)
+        mf, gnorm = _pcm_converge(mf, f"pcm_scf {set_name} case {ic} ({label})", dm0)
+        e_p = mf.e_tot
+        ep_p = mf.scf_summary['e_solvent']
+
+        w.comment(f"case {ic}: {label}, GRAD_NORM {gnorm:.3e}")
+        w.int_(f"NSPIN_{ic}", nspin)
+        w.int_(f"NAO_{ic}", nao_scf)
+        w.real(f"E_{ic}", e_p)
+        w.real(f"EPCM_{ic}", ep_p)
+        extra = ""
+        if not sph:
+            dm = mf.make_rdm1()
+            e_dm = mf.energy_tot(dm)
+            ep_dm = mf.with_solvent.kernel(dm)[0]
+            dms = [dm] if nspin == 1 else [dm[0], dm[1]]
+            dm_t = np.stack([(d / nn)[np.ix_(perm, perm)] for d in dms], axis=2)
+            w.real(f"EDM_{ic}", e_dm)
+            w.real(f"EPCMDM_{ic}", ep_dm)
+            w.matrix3(f"DM_{ic}", dm_t)
+            extra = f"  E(dm) - E {e_dm - e_p:.1e}"
+        print(f"  pcm_scf {ic:2d} {label:34s} E {e_p:18.12f} (terco {e_t - e_p:+.1e})  "
+              f"E_diel {ep_p:.12f} (terco {ep_t - ep_p:+.1e}){extra}")
+    w.end()
+    w.write()
+    dump.unlink()
+
+
 CASES = {
     "mult": gen_mult,
     "ao": gen_ao,
@@ -1318,6 +1671,11 @@ CASES = {
     "scf_robust": gen_scf_robust,
     "rimp2": gen_rimp2,
     "xc_kernels": gen_xc_kernels,
+    "pcm_cavity": gen_pcm_cavity,
+    "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
+    "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
+    "pcm_scf_main": lambda: gen_pcm_scf("main"),
+    "pcm_scf_f": lambda: gen_pcm_scf("f"),
 }
 
 

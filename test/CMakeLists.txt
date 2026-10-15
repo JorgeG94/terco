@@ -430,6 +430,30 @@ set_tests_properties(terco/check_df_vs_pyscf
   PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# The polarisable continuum's cavity, S and D, and charge solve, with no
+# integrals: Born-ion and sphere identities, the refusals, and pyscf's own
+# surface arrays from test/pyscf_refs/pcm_cavity_water.ref.
+#
+terco_add_check(check_pcm_cavity check_pcm_cavity.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+#
+# Its solute-surface integrals (gen_1e.py's --pcm kernels) on fixed inputs
+# against pyscf's int3c2e/fakemol path: water/6-31G* (d) at every ceiling,
+# water/cc-pVTZ (f on O) for real at TERCO_LMAX=3 and skipped below it, the
+# same convention as check_rys_fock_vs_pyscf.
+#
+foreach(case water_631gs water_ccpvtz)
+  if(case STREQUAL "water_631gs")
+    set(json basis_sets/6-31gs.json)
+  else()
+    set(json basis_sets/cc-pvtz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/pcm_ints_probe_${case}.bin)
+  terco_add_check(check_pcm_ints_${case} check_pcm_ints.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS water.xyz ${json} ${dump} ${case})
+  set_tests_properties(terco/check_pcm_ints_${case} PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+
+#
 # Negative tests: trc_df_2c and trc_df_3c must refuse a basis above the
 # ceiling the DF dispatchers were generated for, by `error stop`, rather
 # than read an unwritten block. Nothing above exercises this -- every
@@ -477,6 +501,26 @@ add_test(NAME terco/scf_rks COMMAND scf_rks)
 set_tests_properties(
   terco/scf_rks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# The SCF with a polarisable continuum against pyscf's .PCM(): converged
+# energies and E_diel, and both again at pyscf's own converged density
+# (test/pyscf_refs/pcm_scf_main.ref, pcm_scf_f.ref). `main` is water and
+# formamide (HF, B3LYP, wB97X-V; C-PCM and IEF-PCM), the OH radical
+# unrestricted, and one spherical case; `f` is water/cc-pVTZ, run for real at
+# TERCO_LMAX=3 and skipped below it.
+#
+add_executable(scf_pcm scf_pcm.F90)
+target_compile_definitions(scf_pcm PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_pcm PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io)
+target_include_directories(scf_pcm PRIVATE ${CMAKE_BINARY_DIR}/modules)
+foreach(set main f)
+  add_test(NAME terco/scf_pcm_${set} COMMAND scf_pcm ${set})
+  set_tests_properties(
+    terco/scf_pcm_${set} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+                                    SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
 
 #
 # The hard-case set for SCF robustness (M2, Part B): A/EDIIS ahead of CDIIS

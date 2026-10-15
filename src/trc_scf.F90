@@ -100,6 +100,17 @@
 ! handle of its own to carry `spherical` through the way SAD's atomic
 ! subsets do.
 !
+! POLARISABLE CONTINUUM
+! ---------------------
+! With `pcm_model` set, trc_pcm builds the cavity, K and the nuclear
+! potential on the surface once, and every iteration, at the density the
+! energy is evaluated at: the surface potential of that (total, Cartesian)
+! density, the charges, q.v/2 into the energy and the charges' full
+! operator into the Fock matrix of each spin -- pyscf.solvent.pcm's
+! SCFWithSolvent, which adds it before DIIS too. It is rebuilt in full every
+! iteration rather than incrementally: two passes of the surface kernels
+! and two triangular solves, independent of the incremental-ERI path.
+!
 module trc_scf_driver
    use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp
@@ -113,6 +124,8 @@ module trc_scf_driver
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
+   use trc_pcm, only: trc_pcm_t, pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV
+   use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use pic_types, only: default_int
    use pic_mpi_lib, only: comm_t, bcast, allreduce, MPI_SUM
    implicit none
@@ -280,6 +293,20 @@ module trc_scf_driver
       !! already resolved by the time a basis reaches here (the caller,
       !! trc_capi.F90's `basis_json`, is what applies this option to a
       !! freshly loaded JSON basis's own flag).
+      character(len=8) :: pcm_model = ""
+      !! Polarisable continuum: "" (off, the default), "cpcm" or "iefpcm"
+      !! (trc_pcm). The surface, K and the nuclear potential are built once
+      !! per run; each iteration solves for the charges at the current
+      !! density and adds their full potential to the Fock matrix (both
+      !! spins), and q.v/2 to the energy.
+      real(dp) :: pcm_eps = 0.0_dp
+      !! Solvent dielectric constant; required, > 1, when pcm_model is set
+      !! (water is 78.3553). No solvent-name table, so nothing is assumed.
+      integer :: pcm_lebedev = PCM_DEFAULT_LEBEDEV
+      !! Lebedev points per atomic sphere; one of the orders with a fitted
+      !! SWIG exponent (302, pyscf's default, here too)
+      real(dp) :: pcm_radii_scale = PCM_DEFAULT_RADII_SCALE
+      !! van der Waals radius to cavity radius (1.2, as pyscf and Q-Chem)
    end type trc_scf_options_t
 
    type :: trc_scf_result_t
@@ -292,6 +319,9 @@ module trc_scf_driver
       real(dp) :: e_two = 0.0_dp       !! Coulomb and exact exchange
       real(dp) :: e_xc = 0.0_dp
       real(dp) :: nelec_grid = 0.0_dp  !! what the grid integrated the density to
+      real(dp) :: e_pcm = 0.0_dp       !! PCM dielectric energy q.v/2, included in `energy`
+      real(dp) :: pcm_qtotal = 0.0_dp  !! total apparent surface charge
+      integer :: pcm_npoints = 0       !! surface points the cavity kept
       integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see
@@ -473,6 +503,12 @@ contains
       type(trc_xc_functional_t) :: func
       type(trc_linalg_t) :: la
       type(error_t) :: err
+      type(trc_pcm_t) :: pcm
+      logical :: pcm_on
+      real(dp) :: epcm, t_pcm, t_pcm_setup
+      real(dp), allocatable :: vpcm_c(:, :), vpcm(:, :)
+      !! the continuum's operator, Cartesian as its kernels make it and in
+      !! the SCF's own space; the same for both spins
       logical :: dft, talk, diis_on
       real(dp) :: exx_lr, omega
       !! A range-separated hybrid's extra long-range exchange fraction and
@@ -537,6 +573,16 @@ contains
       if (ndamp < 0) ndamp = merge(4, 0, nspin == 2)
       diis_start = opts%diis_start
       if (diis_start < 0.0_dp) diis_start = merge(0.5_dp, huge(1.0_dp), nspin == 2)
+      pcm_on = pcm_model_from_name(opts%pcm_model) /= PCM_MODEL_NONE
+      ! The continuum is built and solved whole on one device; over ranks
+      ! every rank would repeat all of it, so refuse until it is split.
+      if (pcm_on .and. present(comm)) then
+         if (comm%size() > 1) then
+            res%message = "trc_scf: PCM solvation is not available over MPI ranks"
+            return
+         end if
+      end if
+      epcm = 0.0_dp; t_pcm = 0.0_dp; t_pcm_setup = 0.0_dp
 
       allocate (smat(nao, nao), hcore(nao, nao), x(nao, nao))
       allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin))
@@ -600,6 +646,26 @@ contains
          " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
       t_setup = wall() - tw0
 
+      ! --- the continuum: cavity, K and the nuclear potential, once -------
+      allocate (vpcm_c(nao_c, nao_c), vpcm(nao, nao))
+      vpcm_c = 0.0_dp; vpcm = 0.0_dp
+      if (pcm_on) then
+         tw0 = wall()
+         call pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err)
+         call pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
+         if (err%has_error()) then
+            res%message = "trc_scf: "//err%get_message()
+            call pcm%release(); call la%release()
+            call eri%release(); call pl%release()
+            return
+         end if
+         res%pcm_npoints = pcm%surface%n_points
+         t_pcm_setup = wall() - tw0
+         if (talk) print '(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)', "   pcm: ", trim(opts%pcm_model), &
+            ", eps ", opts%pcm_eps, ", ", opts%pcm_lebedev, " points per sphere, ", &
+            pcm%surface%n_points, " kept; setup ", t_pcm_setup, " s"
+      end if
+
       if (dft) then
          tw0 = wall()
          ! The partition is split over the ranks; the summed cell weights are
@@ -612,6 +678,7 @@ contains
          end if
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
+            call pcm%release()
             call eri%release(); call pl%release()
             return
          end if
@@ -631,6 +698,7 @@ contains
                ! this early return, same as the success path does at the
                ! end of this routine.
                call xg%release(); call grid%destroy()
+               call pcm%release()
                call eri%release(); call pl%release()
                return
             end if
@@ -678,7 +746,7 @@ contains
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
       !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
-      !$acc            create(dref_c, gacc_c, ddif_c)
+      !$acc            create(dref_c, gacc_c, ddif_c) copyin(vpcm_c, vpcm)
       if (opts%adiis) then
          !$acc enter data copyin(fstore_a, dstore_a)
       end if
@@ -885,13 +953,32 @@ contains
          tw0 = wall()
          t_xc = t_xc + (tw0 - tw1)
          tx_it = tw0 - tw1
+         ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
+         ! too: one set of charges, one operator added to both spins) -----
+         if (pcm_on) then
+            if (nspin == 1) then
+               call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm)
+            else
+               call pcm%operator(b, pl, dtot_c, vpcm_c, epcm)
+            end if
+            if (sph) then
+               call sph_cart_to_sph(b, vpcm_c, vpcm)
+            else
+               do concurrent(i=1:nao, j=1:nao)
+                  vpcm(i, j) = vpcm_c(i, j)
+               end do
+            end if
+            tw1 = wall()
+            t_pcm = t_pcm + (tw1 - tw0)
+            tw0 = tw1
+         end if
          ! --- energy at this density -----------------------------------------
          e1 = 0.0_dp; e2 = 0.0_dp
          do s = 1, nspin
             e1 = e1 + la%dot(n2, res%dmat(:, :, s), hcore)
             e2 = e2 + 0.5_dp*la%dot(n2, res%dmat(:, :, s), gmat(:, :, s))
          end do
-         etot = e1 + e2 + exc + res%e_nuc
+         etot = e1 + e2 + exc + res%e_nuc + epcm
          ! --- Fock and its commutator, per spin ------------------------------
          do s = 1, nspin
             if (dft) then
@@ -901,6 +988,11 @@ contains
             else
                do concurrent(i=1:nao, j=1:nao)
                   fock(i, j, s) = hcore(i, j) + gmat(i, j, s)
+               end do
+            end if
+            if (pcm_on) then
+               do concurrent(i=1:nao, j=1:nao)
+                  fock(i, j, s) = fock(i, j, s) + vpcm(i, j)
                end do
             end if
             ! w2 = F D S - S D F
@@ -1138,7 +1230,7 @@ contains
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
       !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
-      !$acc           delete(dref_c, gacc_c, ddif_c)
+      !$acc           delete(dref_c, gacc_c, ddif_c, vpcm_c, vpcm)
       if (opts%adiis) then
          !$acc exit data delete(fstore_a, dstore_a)
       end if
@@ -1148,11 +1240,17 @@ contains
       res%e_two = e2
       res%e_xc = exc
       res%nelec_grid = ngrid
+      res%e_pcm = epcm
+      res%pcm_qtotal = pcm%q_total
       if (.not. res%converged) res%message = "trc_scf: not converged"
       if (talk) then
          print '(a)', "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis"
          print '(a,7f10.3)', "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+         if (pcm_on) print '(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)', "   pcm: E_diel = ", epcm, &
+            "  q_total = ", pcm%q_total, "  setup ", t_pcm_setup, " s, ", &
+            t_pcm/real(max(1, res%iterations), dp), " s per iteration"
       end if
+      call pcm%release()
       call la%release()
       call eri%release(); call pl%release()
       if (dft) then
