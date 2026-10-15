@@ -238,6 +238,15 @@ contains
       end subroutine swap_pair
    end subroutine build_pairs_hgp
 
+   !
+   ! Not class-specialised -- unlike pc_dispatch's generated kernels, which
+   ! only exist up to d (trc_rys_select.F90's HGP_LMAX), this runs hgp_quartet
+   ! at whatever (la,lb,lc,ld) its arguments carry, up to the build's own
+   ! LMAX. trc_screen.F90's schwarz_bounds_hgp is a second caller for exactly
+   ! that reason: the Schwarz bound needs (ab|ab) at every class the build
+   ! supports, f included, even for a class the production Fock path routes
+   ! to Rys instead of HGP.
+   !
    subroutine hgp_batch(lo, hi, nq, nbas, npp, nout, &
                         q_i, q_j, q_k, q_l, q_off, sh_l, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out)

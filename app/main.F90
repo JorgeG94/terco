@@ -339,8 +339,10 @@ program terco_main
    use, intrinsic :: iso_fortran_env, only: output_unit, error_unit, int64
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
+   use pic_knowledge, only: get_knowledge
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
+                       trc_set_incremental, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
@@ -391,6 +393,7 @@ program terco_main
    call r%cli%add_option("econv", "energy convergence, Eh (1e-10)", default="1e-10")
    call r%cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
+   call r%cli%add_flag("no-incremental", "full Fock builds every iteration, not from the density difference")
    call r%cli%add_option("pcm", "polarisable continuum solvation: cpcm or iefpcm (pyscf's SWIG "// &
                          "cavity, 302 points per sphere, radii 1.2 x Bondi); needs --eps")
    call r%cli%add_option("eps", "solvent dielectric constant for --pcm, e.g. 78.3553 for water")
@@ -538,6 +541,9 @@ program terco_main
    call api(r, trc_set_convergence(r%h, real(r%econv, c_double), real(r%gconv, c_double), int(maxiter, c_int), &
                                    10_c_int))
    call api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
+   ! On unless asked otherwise: the library's default is off, so a host
+   ! code keeps the build it had, but a command-line run gets the speed.
+   call api(r, trc_set_incremental(r%h, merge(0_c_int, 1_c_int, r%cli%is_set("no-incremental"))))
    call api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
    if (r%rimp2) call api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), 0_c_int))
 
@@ -567,6 +573,10 @@ program terco_main
       call quit(r, 2)
    end if
    if (r%rank0) write (output_unit, "(/,a)") " normal termination of terco"
+   ! A line of pic's collected lore, as metalquicha prints at the end of a
+   ! successful run: rank 0 only, and not under --silent, whose promise is
+   ! the summary and nothing else.
+   if (r%rank0 .and. .not. r%cli%is_set("silent")) call get_knowledge()
    call quit(r, 0)
 
 end program terco_main

@@ -1322,8 +1322,8 @@ contains
          write (line, '(a,6f10.3)') "          ", ts
          call global_logger%performance(trim(line))
          call global_logger%performance( &
-            "   eri (s)    pairs   schwarz  hgp pairs      bins  quartets    upload")
-         write (line, '(a,6f10.3)') "          ", eri%t_build
+            "   eri (s) hgp pairs   schwarz      bins  quartets    upload")
+         write (line, '(a,5f10.3)') "          ", eri%t_build
          call global_logger%performance(trim(line))
       end subroutine report_timing
 

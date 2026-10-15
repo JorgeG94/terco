@@ -451,6 +451,14 @@ module trc_c_interfaces
          real(c_double), value :: thresh
       end function trc_set_screening
 
+      integer(c_int) function trc_set_incremental(handle, on) bind(c)
+         !! Incremental (difference-density) Fock builds: 0 off (the
+         !! library default), nonzero on (the terco CLI's default).
+         import :: c_int, c_ptr
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+      end function trc_set_incremental
+
       integer(c_int) function trc_set_batching(handle, res) bind(c)
          !! How finely shell pairs are batched by their Schwarz bound, in
          !! buckets per decade. The pre-launch screen admits a pair of

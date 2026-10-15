@@ -153,6 +153,7 @@ terco --help
 | `-g, --guess` | `sad` (default), `sadq` (default for an ion), `sap`, `gwh`, `core` |
 | `--cart` | Cartesian AOs even for a basis defined spherical |
 | `--grid`, `--iterations`, `--econv`, `--gconv`, `--thresh` | DFT grid level and SCF/screening thresholds |
+| `--no-incremental` | full Fock builds every iteration; by default the CLI builds later iterations from the density difference (`trc_set_incremental`; the library default is off) |
 | `--nlc-grid` | grid level for VV10 nonlocal correlation (`wb97x-v`), default 1 |
 | `--pcm`, `--eps` | polarisable continuum solvation, `cpcm` or `iefpcm`, with the solvent's dielectric constant (required; water is 78.3553) |
 | `--rimp2`, `--aux`, `--frozen` | RI-MP2 after a closed-shell SCF; runs Cartesian AOs, as RI-MP2 needs today |

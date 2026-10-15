@@ -50,10 +50,11 @@ module trc_screen
    use trc_boys, only: dp
    use trc_tables, only: LTOT, NHERM_MAX
    use trc_batch, only: eri_batch, ncart
+   use trc_hgp, only: hgp_batch
    implicit none
    private
 
-   public :: schwarz_bounds, pair_index, build_worklist, density_blockmax
+   public :: schwarz_bounds, schwarz_bounds_hgp, pair_index, build_worklist, density_blockmax
 
 contains
 
@@ -189,6 +190,135 @@ contains
 
       deallocate (d_i, d_j, d_k, d_l, d_off, d_q, out, rscr, qc)
    end subroutine schwarz_bounds
+
+   !
+   ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, computed from
+   ! the SAME contracted HGP primitive pairs (hp_*) the Fock kernels read --
+   ! not a second, MMD-only primitive-pair set built and thrown away just to
+   ! feed the bound (that was `schwarz_bounds` above, fed by trc_batch.F90's
+   ! `build_pairs`; the production build no longer calls either).
+   !
+   ! THE SCALE, AND WHY THIS IS NOT JUST A FASTER COPY OF THE OLD ROUTINE.
+   ! `build_pairs` (MMD) multiplies `common_fac_sp(li)` into the coefficient
+   ! of every primitive it stores, unconditionally. `build_pairs_hgp` does
+   ! NOT: trc_fock.F90's `build_structures` passes it cfac = 1, because the
+   ! basis it is handed (`trc_api`'s `basis_build`) already folded
+   ! common_fac_sp into `sh_c` once. Handed that same already-folded basis,
+   ! the old MMD route folded it a SECOND time -- common_fac_sp(0) =
+   ! 0.2820948, common_fac_sp(1) = 0.4886025, common_fac_sp(l>=2) = 1 -- so
+   ! every bound touching an s or p shell came out too SMALL by that factor
+   ! for each such shell, which is not a conservative error: a Cauchy-Schwarz
+   ! bound that is too small can screen away a quartet large enough to
+   ! matter. Reading hp_c as the kernels do removes the extra fold along with
+   ! the separate pair set, rather than reproducing it.
+   !
+   ! hgp_quartet (trc_hgp.F90) is the same Obara-Saika recursion the
+   ! generated per-class kernels (pc_dispatch) were generated from, and,
+   ! unlike those kernels -- which stop at d (trc_rys_select.F90's HGP_LMAX)
+   ! -- it is not class-specialised: its scratch is sized by LCMAX = 2*LMAX,
+   ! the same compile-time ceiling trc_cart.F90 uses everywhere, not by
+   ! HGP_LMAX. So it is correct at every class the build supports, f
+   ! included, even though the production Fock path routes an f-containing
+   ! class to Rys instead of HGP -- the bound does not need to be computed
+   ! the same way the kernel that will consume it is.
+   !
+   ! `hp_off`/`hp_n`/`hp_p`/`hp_r`/`hp_ra`/`hp_rb`/`hp_c` are expected
+   ! ALREADY device-resident (the caller enters them before calling, because
+   ! they stay resident for the Fock kernels afterwards regardless -- see
+   ! build_structures). Staging a fresh device copy here, the way the MMD
+   ! route staged its own `pp_*` every chunk, is exactly the implicit
+   ! per-launch transfer this routine exists to avoid.
+   !
+   subroutine schwarz_bounds_hgp(nbas, nhpp, sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
+      integer,  intent(in)  :: nbas, nhpp
+      integer,  intent(in)  :: sh_l(nbas)
+      integer,  intent(in)  :: hp_off(nbas*nbas), hp_n(nbas*nbas)
+      real(dp), intent(in)  :: hp_p(nhpp), hp_r(nhpp, 3), hp_ra(nhpp, 3), hp_rb(nhpp, 3), hp_c(nhpp)
+      real(dp), intent(out) :: q(nbas*(nbas + 1)/2)
+
+      integer, allocatable :: d_i(:), d_j(:), d_k(:), d_l(:), d_off(:), d_q(:)
+      real(dp), allocatable :: out(:), qc(:)
+      integer :: npair, i, j, n, nout, nb, m, na, nlive, c0, c1, nc, key
+      real(dp) :: vmax
+      ! Same launch-width reasoning as schwarz_bounds above: one thread per
+      ! shell pair, chunked so the scratch stays affordable. hgp_quartet needs
+      ! no external R scratch (unlike eri_batch's rscr), so the chunk only
+      ! bounds `out`.
+      integer, parameter :: CHUNK = 65536
+
+      npair = nbas*(nbas + 1)/2
+      q = 0.0_dp
+      allocate (d_i(npair), d_j(npair), d_k(npair), d_l(npair), d_off(npair), d_q(npair))
+      nlive = 0
+      do i = 1, nbas
+         do j = 1, i
+            key = (i - 1)*nbas + j
+            if (hp_n(key) == 0) cycle
+            nlive = nlive + 1
+            d_i(nlive) = i; d_j(nlive) = j; d_k(nlive) = i; d_l(nlive) = j
+            d_q(nlive) = pair_index(i, j)
+         end do
+      end do
+      ! Longest first, same reason as schwarz_bounds: a general contraction's
+      ! primitive-pair count spans orders of magnitude across shell pairs.
+      call order_by_work(nlive, nbas, hp_n, d_i, d_j, d_k, d_l, d_q)
+      if (nlive == 0) then
+         deallocate (d_i, d_j, d_k, d_l, d_off, d_q)
+         return
+      end if
+      nout = 0
+      do c0 = 1, nlive, CHUNK
+         c1 = min(c0 + CHUNK - 1, nlive)
+         m = 0
+         do n = c0, c1
+            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            m = m + nb*nb
+         end do
+         nout = max(nout, m)
+      end do
+      allocate (out(nout), qc(min(nlive, CHUNK)))
+
+      ! d_i/d_j/d_k/d_l/d_off/sh_l/out/qc are this routine's own small
+      ! scratch -- entered and exited here, same as schwarz_bounds. hp_* are
+      ! NOT entered here: see the header comment above.
+      !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, out, qc)
+      do c0 = 1, nlive, CHUNK
+         c1 = min(c0 + CHUNK - 1, nlive)
+         nc = c1 - c0 + 1
+         m = 0
+         do n = c0, c1
+            d_off(n) = m
+            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            m = m + nb*nb
+         end do
+         !$acc update device(d_off(c0:c1))
+         do concurrent(na = 1:m)
+            out(na) = 0.0_dp
+         end do
+         call hgp_batch(c0, c1, nlive, nbas, nhpp, m, &
+                        d_i, d_j, d_k, d_l, d_off, sh_l, &
+                        hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, out)
+         ! The diagonal elements (ab|ab) are what Cauchy-Schwarz needs; the
+         ! max over the block is a valid, looser bound (same choice
+         ! schwarz_bounds makes) and avoids the strided walk to the diagonal
+         ! proper. Reduced here so `out` never leaves the device.
+         do concurrent(n = 1:nc) local(na, nb, vmax)
+            na = ncart(sh_l(d_i(c0 + n - 1)))*ncart(sh_l(d_j(c0 + n - 1)))
+            vmax = 0.0_dp
+            do nb = 1, na*na
+               vmax = max(vmax, abs(out(d_off(c0 + n - 1) + nb)))
+            end do
+            qc(n) = sqrt(vmax)
+         end do
+         !$acc update self(qc(1:nc))
+         do n = 1, nc
+            q(d_q(c0 + n - 1)) = qc(n)
+         end do
+      end do
+      !$acc exit data delete(d_i, d_j, d_k, d_l, d_off, sh_l, out, qc)
+
+      deallocate (d_i, d_j, d_k, d_l, d_off, d_q, out, qc)
+   end subroutine schwarz_bounds_hgp
 
    !
    ! Reorder the live diagonal pairs so the expensive ones come first.
