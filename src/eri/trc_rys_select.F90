@@ -11,7 +11,7 @@
 ! momentum and nothing to regenerate if LMAX or TRC_CART_ORDER changes.
 !
 ! READ ONCE PER FOCK BUILD, ON THE HOST. `rys_select_init` is an ordinary
-! subroutine called from trc_fock.F90 before any kernel launches; the result
+! subroutine called from trc_eri.F90 before any kernel launches; the result
 ! is a plain logical table that `rys_route` turns into one branch at each
 ! launch site in trc_binkernel.F90, before a `do concurrent` starts. Nothing
 ! here runs on the device, and no kernel's own do-concurrent-only rule is

@@ -925,7 +925,7 @@ def gen_rks():
     AND its own converged density (in terco's AO order) -- the at-density
     control is then: terco evaluates ITS energy at that committed density
     (trc_scf_run with max_iter=1 and dguess=this density; see
-    src/trc_scf.F90's own comment '# --- energy at this density ---',
+    src/scf/trc_scf_driver.F90's own comment '# --- energy at this density ---',
     which is exactly pyscf's energy_tot(dm0) equivalent -- a single
     iteration's etot is computed from the density the iteration STARTED
     with, before the Roothaan step updates it) and compares to the SAME
@@ -1310,7 +1310,7 @@ def gen_xc_kernels():
 
 
 # =========================================================================
-# The polarisable continuum (src/trc_pcm.F90 and the --pcm kernels).
+# The polarisable continuum (src/solvation/trc_pcm.F90 and the --pcm kernels).
 #
 # Every case uses pyscf.solvent.pcm's own machinery -- gen_surface, get_D_S,
 # the PCM object's K/R, _get_v/_get_vmat (int3c2e against

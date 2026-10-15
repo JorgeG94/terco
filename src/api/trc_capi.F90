@@ -323,7 +323,7 @@ contains
    ! write -- trc_nao, trc_density, trc_mo_coefficients, trc_mo_energies,
    ! trc_set_guess, trc_run_scf. `nao_sph` when the basis this box holds is
    ! spherical, `nao` (Cartesian) otherwise -- the same choice
-   ! trc_scf_driver itself makes (trc_scf.F90's own `sph`/`nao` split), so
+   ! trc_scf_driver itself makes (trc_scf_driver.F90's own `sph`/`nao` split), so
    ! this is the one place that choice is restated at the C boundary rather
    ! than copied into every entry that needs it. The raw-basis-handle
    ! family (trc_basis_nao, trc_compute_1e, capi_fock and friends) does NOT
@@ -750,7 +750,7 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
       if (.not. (omega >= 0.0_c_double)) then
-         ! A negative omega reaches trc_fock.F90's `error stop`, which kills
+         ! A negative omega reaches trc_eri.F90's `error stop`, which kills
          ! the host process; a NaN omega returns TRC_OK with an unattenuated
          ! K (the `ow < 0` guard there never fires for NaN). Catch both at
          ! the boundary instead. No context handle here (only `eri`/`basis`

@@ -70,7 +70,7 @@
 ! from the Fock/XC calls that density feeds, folded back up by
 ! `sph_cart_to_sph` before the rest of the iteration ever sees them).
 !
-! `sph_sph_to_cart`/`sph_cart_to_sph` (src/trc_sph.F90) are block-sparse
+! `sph_sph_to_cart`/`sph_cart_to_sph` (src/core/trc_sph.F90) are block-sparse
 ! over shell pairs, not a dense (nao, nao_sph) GEMM -- see that module's
 ! own header for why -- and when `b%spherical` is false this module takes
 ! exactly the branch it always has (`sph` guards every call into

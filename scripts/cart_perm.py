@@ -1,7 +1,7 @@
 """AO permutation between LEXICOGRAPHIC order (libcint's, and what pyscf
 always speaks -- it has no GAMESS mode) and terco's build's own order.
 
-The Fortran-side counterpart is src/trc_cart_perm.F90, generated from the
+The Fortran-side counterpart is src/core/trc_cart_perm.F90, generated from the
 same cartorder.py tables; this module is the Python side, for the *_ref.py
 scripts that compare a terco probe file against a live pyscf array. Neither
 reimplements the permutation independently of cartorder.py -- both are

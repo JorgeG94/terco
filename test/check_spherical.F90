@@ -4,8 +4,8 @@
 ! def2-SVP and cc-pVDZ are both spherical families in BSE (their d shells
 ! are tagged "gto_spherical"), so trc_basis_from_json now runs them in the
 ! spherical AO space by default (trc_api.F90's `b%spherical`, scripts/
-! gen_sph.py's transform blocks, src/trc_sph.F90's application in
-! trc_scf.F90) -- where before this feature every basis ran Cartesian
+! gen_sph.py's transform blocks, src/core/trc_sph.F90's application in
+! trc_scf_driver.F90) -- where before this feature every basis ran Cartesian
 ! regardless, which is pyscf's cart=True basis, not the one "def2-SVP" or
 ! "cc-pVDZ" ordinarily means.
 !

@@ -246,7 +246,7 @@ V100s. Nothing is committed; see the list at the end.
 - GPU: `build-xc-gpu` (nvfortran, cc70, LMAX=2). Every XC check and the
   RKS pass on device 0 with the host's numbers; NV_ACC_NOTIFY shows the
   point kernel launched over the whole grid, one thread per point.
-- `src/xc/bit_repro.f90` + `bit_repro_helpers.f90`: Jorge's bit-reproducible
+- `src/xc/vendor/bit_repro.f90` + `bit_repro_helpers.f90`: Jorge's bit-reproducible
   transcendentals, vendored from `~/nci/learning_tools/ci_enabled/bitwise_adventures`
   with an `!$acc routine seq` beside each `!$omp declare target`. `xc_cbrt`
   is now `cuberoot` and `xc_erfcx` is `exp_reprod(x*x)*erfc_reprod(x)`.
@@ -285,8 +285,8 @@ V100s. Nothing is committed; see the list at the end.
 
 ### The SCF driver (later the same day)
 
-- `src/trc_scf.F90` (module `trc_scf_driver`): HF and Kohn-Sham, R and U,
-  DIIS, every matrix resident on the device; `src/trc_linalg.F90` is
+- `src/scf/trc_scf_driver.F90` (module `trc_scf_driver`): HF and Kohn-Sham, R and U,
+  DIIS, every matrix resident on the device; `src/core/trc_linalg.F90` is
   cuSOLVER + cuBLAS under -acc (through NVHPC's `cublas`/`cusolverdn`
   modules and `host_data use_device`, `-cudalib=cublas,cusolver`) and
   LAPACK/BLAS on the host. The library now links LAPACK in every build.
@@ -522,7 +522,7 @@ ExchCXX wb97x_xc.hpp, wb97x_d, lcwpbe/hse wPBEh SR exchange (GGA) through
 the translator (expect a day on the attenuation helpers), functional
 records with alpha, beta, omega; PySCF wB97X / CAM-B3LYP.
 
-## Status 2026-09-04: RI-MP2 landed (src/trc_rimp2.F90)
+## Status 2026-09-04: RI-MP2 landed (src/post_hf/rimp2/trc_rimp2_driver.F90)
 
 - trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm):
   (P|Q) potrf on device, (mu nu|P) in aux-shell blocks via trc_basis_t%subset,
@@ -539,7 +539,7 @@ records with alpha, beta, omega; PySCF wB97X / CAM-B3LYP.
   need a real RI basis reader in the tests.
 - Deferred (Jorge, 2026-09-05): make the BSE JSON basis reader a small
   library of its own (json-fortran behind it, thin adapters in mqc and
-  terco) instead of the port in src/trc_basis_json.F90. Not now.
+  terco) instead of the port in src/basis/trc_basis_json.F90. Not now.
 
 ## Status 2026-09-05 (late): what is slow and what is not
 

@@ -6,7 +6,7 @@ now the durable copy. Hashes and paths in it refer to libfint as it was then;
 scripts/rotaxis/VENDORED.md maps the rewritten hashes. Some advice here was
 later measured and overturned in terco: see the rotaxis commits (e2b401a,
 ebfbb6a) for the GPU numbers, and note that GAMESS also needs a
-per-component rescale, not only a reorder (src/trc_ao_norm.F90).
+per-component rescale, not only a reorder (src/core/trc_ao_norm.F90).
 -->
 
 # libfint's kernel generators — a guide for the terco session

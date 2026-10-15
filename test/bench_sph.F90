@@ -3,7 +3,7 @@ program bench_sph
    !! and a spherical basis:  bench_sph <xyz> <basis.json> [reps]
    !!
    !! `sph_sph_to_cart`/`sph_cart_to_sph` run once per Fock build already (one
-   !! of each, trc_scf.F90's per-iteration D_cart/G_sph steps); this times
+   !! of each, trc_scf_driver.F90's per-iteration D_cart/G_sph steps); this times
    !! `reps` of BOTH back to back against one `eri%fock_resident`, on a
    !! basis large enough (1000+ AO) that the O(nao^4) build and the
    !! O(nshell^2) transform are not both too small to time honestly.

@@ -40,7 +40,7 @@ hole curvature bound) and nothing needs them yet.
 
 Usage:
     python tools/exchcxx_to_fortran.py --exchcxx ~/dev/ExchCXX \
-        -o src/xc slater_exchange vwn vwn_rpa pbe_x pbe_c b88 lyp wb97x_v_xc
+        -o src/xc/functionals slater_exchange vwn vwn_rpa pbe_x pbe_c b88 lyp wb97x_v_xc
 """
 
 from __future__ import annotations
