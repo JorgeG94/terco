@@ -46,9 +46,8 @@ module trc_eri
    use trc_boys, only: dp, boys_init
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
-   use trc_batch, only: build_pairs
    use trc_hgp, only: build_pairs_hgp
-   use trc_screen, only: schwarz_bounds, pair_index
+   use trc_screen, only: schwarz_bounds_hgp, pair_index
    use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
@@ -116,10 +115,15 @@ module trc_eri
       !! summed across ranks. One rank is rank 0 of 1 and no communicator.
       integer :: rank = 0, nranks = 1
       logical :: distributed = .false.
-      real(dp) :: t_build(6) = 0.0_dp
-      !! Wall seconds of the last build's stages: primitive pairs, Schwarz
-      !! bounds, HGP pairs, bins, pair quartets, upload to the device.
-      !! trc_scf reports them with the rest of its setup.
+      real(dp) :: t_build(5) = 0.0_dp
+      !! Wall seconds of the last build's stages: HGP pairs, Schwarz bounds,
+      !! bins, pair quartets, upload to the device. trc_scf reports them with
+      !! the rest of its setup.
+      !!
+      !! Used to be six: a separate MMD primitive-pair pass fed Schwarz
+      !! before the HGP pairs existed. Schwarz is now computed from the HGP
+      !! pairs themselves (trc_screen.F90's schwarz_bounds_hgp), so that pass
+      !! and its stage are both gone -- see build_structures.
    contains
       procedure :: build   => eri_build
       procedure :: fock      => eri_fock
@@ -135,11 +139,13 @@ contains
    !
    ! Everything that depends on the geometry and not on the density.
    !
-   ! Three structures, all of which the four-centre path needs and none of
-   ! which a caller should have to assemble: the MMD primitive pairs (only so
-   ! Schwarz bounds can be formed from them), the Schwarz vector itself, and
-   ! the HGP primitive pairs the kernels read. The MMD set is discarded once
-   ! the bounds exist.
+   ! Two structures, both of which the four-centre path needs and neither of
+   ! which a caller should have to assemble: the HGP primitive pairs the
+   ! kernels read, and the Schwarz vector, now formed from THOSE pairs
+   ! directly (trc_screen.F90's schwarz_bounds_hgp) rather than from a second,
+   ! MMD-only primitive-pair set built and discarded just to feed it -- see
+   ! that routine's header for why this is not only faster but also closes a
+   ! scale mismatch the MMD route had.
    !
    subroutine eri_build(this, b, thresh, comm, batch_res)
       class(trc_eri_t), intent(inout) :: this
@@ -246,9 +252,7 @@ contains
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bres
 
-      integer :: npp, i, j
-      integer,  allocatable :: pp_off(:), pp_n(:)
-      real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
+      integer :: i, j
       real(dp), allocatable :: qs(:), one(:)
       integer,  allocatable :: hp_ki(:), hp_kj(:)
       ! Stage timing, kept in this%t_build: `build` is five routines with
@@ -259,11 +263,11 @@ contains
       this%t_build = 0.0_dp
       call tm%start()
 
-      ! All three, not just Boys. The Schwarz bounds go through the MMD path,
-      ! which reads the Hermite and Cartesian index tables; without them the
-      ! bounds come back identically zero, every pair is pre-screened away and
-      ! the Fock matrix is silently empty. That is what happened the first
-      ! time this ran.
+      ! All three, not just Boys: the HGP primitive pairs and the Schwarz
+      ! bounds now computed from them both read the Cartesian index tables.
+      ! Without them the bounds come back identically zero, every pair is
+      ! pre-screened away and the Fock matrix is silently empty. That is what
+      ! happened the first time this ran.
       call boys_init()
       call tables_init()
       call cart_init()
@@ -276,20 +280,44 @@ contains
       this%sh_at  = b%sh_at
 
       ! The basis already folded common_fac_sp into its coefficients, so the
-      ! separate per-shell factor these builders expect is unity. Passing the
-      ! factor twice is the classic way to be wrong by a smooth number here.
+      ! separate per-shell factor build_pairs_hgp expects is unity. Passing
+      ! the factor twice is the classic way to be wrong by a smooth number
+      ! here -- see schwarz_bounds_hgp's header for the MMD route that used
+      ! to get this wrong.
       allocate (one(b%nshell))
       one = 1.0_dp
 
-      call build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, thresh, &
-                       pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
+      ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
+      ! the prune judges by. The cutoff sits three orders below the
+      ! screening threshold.
+      call build_pairs_hgp(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           one, b%sh_c, thresh*1.0e-3_dp, &
+                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                           this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp, &
+                           pp_a=this%hp_a)
       this%t_build(1) = tm%get_elapsed_time()
       call tm%start()
 
+      ! The contracted kernels fold the coefficients into hp_c and never
+      ! ask which primitive a pair came from.
+      deallocate (hp_ki, hp_kj)
+
+      !
+      ! THE HGP PAIRS GO ON THE DEVICE ONCE, HERE -- NOT IMPLICITLY, PER
+      ! SCHWARZ LAUNCH.
+      !
+      ! They stay resident for the Fock kernels regardless of what Schwarz
+      ! does with them, so entering them before computing the bound (instead
+      ! of after, alongside everything else below) costs nothing extra and
+      ! is what lets schwarz_bounds_hgp read them without a transfer of its
+      ! own. The exit pairing these before `eri_release` is unchanged.
+      !
+      !$acc enter data copyin(this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+      !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
-      call schwarz_bounds(b%nshell, npp, b%sh_l, pp_off, pp_n, pp_p, pp_r, &
-                          pp_c, pp_e, qs)
+      call schwarz_bounds_hgp(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
+                              this%hp_p, this%hp_r, this%hp_ra, this%hp_rb, this%hp_c, qs)
       this%t_build(2) = tm%get_elapsed_time()
       call tm%start()
 
@@ -303,7 +331,7 @@ contains
       ! that turns one into the other; see build_maps in trc_decontract
       ! for the measurement that says it is worth 1.04e-05 Ha on water.
       !
-      ! Scaled here rather than inside schwarz_bounds so that routine
+      ! Scaled here rather than inside schwarz_bounds_hgp so that routine
       ! stays a statement about integrals, and because both consumers --
       ! the pair prune in build_binned_pairs and the exact per-quartet
       ! test in the kernel, which reads sp_q -- then get it for free.
@@ -317,26 +345,9 @@ contains
          end do
       end if
 
-      deallocate (pp_off, pp_n, pp_p, pp_r, pp_c, pp_e)
-
-      ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
-      ! the prune judges by. The cutoff sits three orders below the
-      ! screening threshold, as the pair prefilter in build_pairs does.
-      call build_pairs_hgp(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                           one, b%sh_c, thresh*1.0e-3_dp, &
-                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                           this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp, &
-                           pp_a=this%hp_a)
-      this%t_build(3) = tm%get_elapsed_time()
-      call tm%start()
-
-      ! The contracted kernels fold the coefficients into hp_c and never
-      ! ask which primitive a pair came from.
-      deallocate (hp_ki, hp_kj)
-
       call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                               this%bins, pp_n=this%hp_n, res=bres)
-      this%t_build(4) = tm%get_elapsed_time()
+      this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
       call build_pair_quartets(this%bins, b%nshell, this%nhpp, &
@@ -347,7 +358,7 @@ contains
                                this%sq_ax, this%sq_ay, this%sq_az, &
                                this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                                pp_a=this%hp_a, qp_a=this%qp_a)
-      this%t_build(5) = tm%get_elapsed_time()
+      this%t_build(4) = tm%get_elapsed_time()
       call tm%start()
 
       allocate (this%dsh(b%nshell, b%nshell))
@@ -355,6 +366,8 @@ contains
 
       deallocate (qs, one)
 
+      ! this%hp_* are already device-resident -- entered above, before
+      ! schwarz_bounds_hgp ran.
       !$acc enter data copyin(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
@@ -362,11 +375,9 @@ contains
       !$acc                   this%qp_px, this%qp_py, this%qp_pz, &
       !$acc                   this%sq_ax, this%sq_ay, this%sq_az, &
       !$acc                   this%sq_abx, this%sq_aby, this%sq_abz, &
-      !$acc                   this%sq_n, &
-      !$acc                   this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-      !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
+      !$acc                   this%sq_n)
       this%on_device = .true.
-      this%t_build(6) = tm%get_elapsed_time()
+      this%t_build(5) = tm%get_elapsed_time()
    end subroutine build_structures
 
    !
