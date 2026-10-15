@@ -61,6 +61,7 @@ module trc_pcm
    use trc_lebedev, only: lebedev_grid, lebedev_is_available
    use trc_pcm_radii, only: pcm_cavity_radius
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_pcm_potential, trc_pcm_fock, PCM_LMAX
+   use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
 
@@ -586,7 +587,42 @@ contains
       end if
    end subroutine pcm_solve
 
-   subroutine pcm_operator(this, b, pl, dtot, vmat, e_diel)
+   subroutine pcm_point_range(n, rank, nranks, k0, k1)
+      !! Rank `rank` (0-based) of `nranks`'s contiguous share of points 1..n
+      !!
+      !! Balanced to within one point: the first `mod(n, nranks)` ranks get
+      !! `n/nranks + 1`, the rest `n/nranks`. More ranks than points leaves
+      !! some ranks with an empty share, signalled by k1 < k0 -- the
+      !! caller's job to skip, not to call the integral drivers with zero
+      !! points.
+      integer, intent(in) :: n, rank, nranks
+      integer, intent(out) :: k0, k1
+      integer :: base, extra
+      base = n/nranks
+      extra = mod(n, nranks)
+      if (rank < extra) then
+         k0 = rank*(base + 1) + 1
+         k1 = k0 + base
+      else
+         k0 = extra*(base + 1) + (rank - extra)*base + 1
+         k1 = k0 + base - 1
+      end if
+   end subroutine pcm_point_range
+
+   subroutine pcm_sum_ranks(comm, g, n)
+      !! Sum a contiguous array over the ranks, in place, then rank 0's
+      !! copy everywhere -- an explicit-shape `g(n)` so a 2-D actual (vmat)
+      !! and a 1-D one (this%v) both bind by element sequence, the same
+      !! reduce-then-broadcast trc_scf's sum_flat and trc_fock's sum_ranks
+      !! use for the other matrices an iteration reduces.
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: g(n)
+      call allreduce(comm, g, op=MPI_SUM)
+      call bcast(comm, g, n, 0)
+   end subroutine pcm_sum_ranks
+
+   subroutine pcm_operator(this, b, pl, dtot, vmat, e_diel, comm)
       !! One SCF iteration's continuum: charges from this density, then their operator
       !!
       !! `dtot` (the total density, alpha plus beta) and `vmat` are Cartesian
@@ -594,16 +630,46 @@ contains
       !! the charges add to the Fock matrix; `e_diel` already carries the
       !! half. Everything stays on the device; the charges come back (n
       !! numbers) only for their total.
+      !!
+      !! `comm`, when present with more than one rank, splits the two
+      !! integral passes -- trc_pcm_potential and trc_pcm_fock, the only
+      !! parts of an iteration that scale with the integral work rather
+      !! than with the (replicated, cheap) cavity solve -- over a
+      !! contiguous range of surface points per rank (pcm_point_range).
+      !! Each rank computes its own range into the full-length vector,
+      !! zero elsewhere; summing those across ranks (adding exact zeros)
+      !! reproduces the single-rank vector, and the broadcast after makes
+      !! every rank's bits agree, the same reduce-then-broadcast
+      !! trc_fock's sum_ranks uses for the real Fock matrix. The solve, the
+      !! energy and everything after need no communication: once `this%v`
+      !! agrees, they are identical, replicated work on every rank.
+      !! Absent `comm`, or a single rank, this is exactly the unsplit path.
       class(trc_pcm_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       real(dp), intent(in) :: dtot(b%nao, b%nao)
       real(dp), intent(out) :: vmat(b%nao, b%nao)
       real(dp), intent(out) :: e_diel
-      integer :: n, i, j
+      type(comm_t), intent(in), optional :: comm
+      integer :: n, i, j, k0, k1, nranks
 
       n = this%surface%n_points
-      call trc_pcm_potential(b, pl, n, this%surface%coords, this%surface%zeta, dtot, this%v)
+      nranks = 1
+      if (present(comm)) nranks = comm%size()
+
+      if (nranks > 1) then
+         call pcm_point_range(n, comm%rank(), nranks, k0, k1)
+         do concurrent(i = 1:n)
+            this%v(i) = 0.0_dp
+         end do
+         if (k1 >= k0) call trc_pcm_potential(b, pl, k1 - k0 + 1, this%surface%coords(:, k0:k1), &
+                                              this%surface%zeta(k0:k1), dtot, this%v(k0:k1))
+         !$acc update self(this%v)
+         call pcm_sum_ranks(comm, this%v, n)
+         !$acc update device(this%v)
+      else
+         call trc_pcm_potential(b, pl, n, this%surface%coords, this%surface%zeta, dtot, this%v)
+      end if
       ! Nuclei push the potential up, electrons pull it down.
       call axpby(n, 1.0_dp, this%v_nuc, -1.0_dp, this%v)
       call this%solve(this%v, this%q)
@@ -614,7 +680,17 @@ contains
       do concurrent(i = 1:b%nao, j = 1:b%nao)
          vmat(i, j) = 0.0_dp
       end do
-      call trc_pcm_fock(b, pl, n, this%surface%coords, this%surface%zeta, this%wq, vmat)
+      if (nranks > 1) then
+         ! Same range as the potential pass, above; each rank's call adds
+         ! only its share of points into vmat (zeroed just above it).
+         if (k1 >= k0) call trc_pcm_fock(b, pl, k1 - k0 + 1, this%surface%coords(:, k0:k1), &
+                                         this%surface%zeta(k0:k1), this%wq(k0:k1), vmat)
+         !$acc update self(vmat)
+         call pcm_sum_ranks(comm, vmat, b%nao*b%nao)
+         !$acc update device(vmat)
+      else
+         call trc_pcm_fock(b, pl, n, this%surface%coords, this%surface%zeta, this%wq, vmat)
+      end if
       !$acc update self(this%q)
       this%q_total = sum(this%q)
    end subroutine pcm_operator

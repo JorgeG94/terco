@@ -19,6 +19,13 @@
 ! the more sensitive of the two to it). The tolerance stays 1e-8: it is a
 ! correctness check, not a place to absorb a basis change by loosening it.
 !
+! A second case afterward: water/6-31G*, C-PCM (HF) and IEF-PCM (B3LYP),
+! eps 78.3553. trc_pcm's pcm_operator splits its own way -- every rank
+! keeps the whole cavity and K replicated (cheap next to the integrals)
+! and only the two solute-surface integral passes are split by point
+! range -- so this checks both the total energy and E_diel (res%e_pcm)
+! against this program's own np 1 water/6-31G* values (2026-10-15).
+!
 program scf_mpi
    use trc_boys, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, MPI_MAX, MPI_MIN
@@ -33,6 +40,12 @@ program scf_mpi
    !! trc_basis_from_json's own 6-31G water values, 2026-10-08.
    real(dp), parameter :: E_PBE = -76.298105565582_dp
    !! Same date, same basis path.
+   real(dp), parameter :: PCM_EPS = 78.3553_dp
+   real(dp), parameter :: E_HF_CPCM = -76.022097922513_dp
+   !! water/6-31G*, this program's own np 1 values, 2026-10-15.
+   real(dp), parameter :: ED_HF_CPCM = -0.012745024061_dp
+   real(dp), parameter :: E_B3LYP_IEFPCM = -76.418997382217_dp
+   real(dp), parameter :: ED_B3LYP_IEFPCM = -0.011333511625_dp
    type(comm_t) :: comm
    integer :: natm, nsh, maxnp, dev, ic
    integer, allocatable :: zint(:), sh_l(:), sh_np(:)
@@ -99,6 +112,61 @@ program scf_mpi
       if (.not. res%converged .or. emax - emin > 1.0e-12_dp) ok = .false.
       if (trim(xyz) == 'water.xyz' .and. abs(e(ic) - ref) > 1.0e-8_dp) ok = .false.
    end do
+
+   ! --- PCM: water/6-31G*, C-PCM (HF) and IEF-PCM (B3LYP) -----------------
+   !
+   ! pcm%operator (src/trc_pcm.F90) splits the two solute-surface integral
+   ! passes over a contiguous range of points per rank; the cavity and K
+   ! stay whole and replicated. Both the total energy AND E_diel (res%e_pcm)
+   ! must land on this program's own np 1 values on every rank count.
+   block
+      type(trc_basis_t) :: bas_pcm
+      type(trc_scf_options_t) :: opts_pcm
+      type(trc_scf_result_t) :: res_pcm
+      integer :: natm_pcm, jc
+      integer, allocatable :: zint_pcm(:)
+      real(dp), allocatable :: at_r_pcm(:, :), at_z_pcm(:)
+      real(dp) :: ep(2), edp(2), emaxp, eminp, refe, refd
+      character(len=8), parameter :: pcm_model(2) = [character(len=8) :: "cpcm", "iefpcm"]
+      character(len=8), parameter :: pcm_fn(2) = [character(len=8) :: "", "b3lyp"]
+      character(len=5), parameter :: pcm_tag(2) = [character(len=5) :: "cpcm ", "iefpc"]
+      type(error_t) :: err_pcm
+
+      call read_xyz('water.xyz', natm_pcm, zint_pcm, at_r_pcm)
+      allocate (at_z_pcm(natm_pcm)); at_z_pcm = real(zint_pcm, dp)
+      call trc_basis_from_json('basis_sets/6-31gs.json', natm_pcm, zint_pcm, at_r_pcm, bas_pcm, err_pcm)
+      if (err_pcm%has_error()) then
+         print '(a)', 'scf_mpi: '//err_pcm%get_message(); stop 1
+      end if
+      call bas_pcm%to_device()
+
+      do jc = 1, 2
+         opts_pcm = trc_scf_options_t()
+         opts_pcm%functional = pcm_fn(jc)
+         opts_pcm%pcm_model = pcm_model(jc)
+         opts_pcm%pcm_eps = PCM_EPS
+         call trc_scf_run(bas_pcm, nint(sum(at_z_pcm))/2, nint(sum(at_z_pcm))/2, opts_pcm, res_pcm, comm=comm)
+         ep(jc) = res_pcm%energy
+         edp(jc) = res_pcm%e_pcm
+         emaxp = ep(jc); eminp = ep(jc)
+         if (comm%size() > 1) then
+            call allreduce(comm, emaxp, op=MPI_MAX)
+            call allreduce(comm, eminp, op=MPI_MIN)
+         end if
+         refe = merge(E_HF_CPCM, E_B3LYP_IEFPCM, jc == 1)
+         refd = merge(ED_HF_CPCM, ED_B3LYP_IEFPCM, jc == 1)
+         if (comm%rank() == 0) then
+            print '(a,i0,a,a5,a,f20.12,a,f16.12,a,i0,a,es9.2,a,es9.2)', "scf_mpi: ", comm%size(), &
+               " rank(s)  ", pcm_tag(jc), "  E = ", ep(jc), "  E_diel = ", edp(jc), "  iter ", &
+               res_pcm%iterations, "  spread over ranks ", emaxp - eminp, "  vs reference ", &
+               abs(ep(jc) - refe)
+         end if
+         if (.not. res_pcm%converged .or. emaxp - eminp > 1.0e-12_dp) ok = .false.
+         if (abs(ep(jc) - refe) > 1.0e-8_dp) ok = .false.
+         if (abs(edp(jc) - refd) > 1.0e-8_dp) ok = .false.
+      end do
+      call bas_pcm%release()
+   end block
 
    ! The same two runs through the C entry mqc uses, trc_scf_mpi, handed the
    ! world communicator's Fortran handle. It binds the device itself and

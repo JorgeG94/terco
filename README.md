@@ -175,15 +175,18 @@ mpiexec -np 4 terco water.xyz -b 6-31g*       # one GPU per rank
 `terco` initialises and finalises MPI itself (through pic-mpi; a build with
 `TERCO_ENABLE_MPI=OFF` makes this a no-op, so the command is the same either
 way). Every rank binds its own device and runs the same input; the Fock
-build and RI-MP2 (`--rimp2`) split across ranks, the SCF/guess/summary
-output prints once (rank 0), and the energies agree with a single-rank run
-to the same tolerance `test/scf_mpi.F90` checks (1e-8). The exchange-
+build, RI-MP2 (`--rimp2`) and PCM solvation (`--pcm`) split across ranks --
+PCM keeps the whole cavity and its LU replicated on every rank (cheap next
+to the integrals) and splits only its two solute-surface integral passes,
+over a contiguous range of surface points per rank -- and the SCF/guess/
+summary output prints once (rank 0); the energies agree with a single-rank
+run to the same tolerance `test/scf_mpi.F90` checks (1e-8). The exchange-
 correlation quadrature does **not** split -- it runs whole on every rank --
-and VV10 nonlocal correlation (`wb97x-v`) and PCM solvation (`--pcm`) are
-refused outright over more than one rank rather than running it wrong; every rank reports the
-refusal and the process exits non-zero. An error on any rank (a bad
-argument, a missing basis file, an unsupported functional) ends every rank,
-not just the one that saw it.
+and VV10 nonlocal correlation (`wb97x-v`) is refused outright over more
+than one rank rather than running it wrong; every rank reports the refusal
+and the process exits non-zero. An error on any rank (a bad argument, a
+missing basis file, an unsupported functional) ends every rank, not just
+the one that saw it.
 
 ### From Fortran
 
