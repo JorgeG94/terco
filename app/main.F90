@@ -339,6 +339,7 @@ program terco_main
    use, intrinsic :: iso_fortran_env, only: output_unit, error_unit, int64
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
+   use pic_knowledge, only: get_knowledge
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
                        trc_set_incremental, &
@@ -572,6 +573,10 @@ program terco_main
       call quit(r, 2)
    end if
    if (r%rank0) write (output_unit, "(/,a)") " normal termination of terco"
+   ! A line of pic's collected lore, as metalquicha prints at the end of a
+   ! successful run: rank 0 only, and not under --silent, whose promise is
+   ! the summary and nothing else.
+   if (r%rank0 .and. .not. r%cli%is_set("silent")) call get_knowledge()
    call quit(r, 0)
 
 end program terco_main
