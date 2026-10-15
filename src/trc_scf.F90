@@ -672,7 +672,7 @@ contains
       vpcm_c = 0.0_dp; vpcm = 0.0_dp
       if (pcm_on) then
          tw0 = wall()
-         call pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err)
+         call pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err, la=lp)
          call pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
