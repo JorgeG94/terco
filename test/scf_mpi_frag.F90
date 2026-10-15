@@ -48,23 +48,21 @@
 !
 program scf_mpi_frag
    use trc_boys, only: dp
-   use pic_mpi_lib, only: pic_mpi_init, pic_mpi_finalize
+   use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, &
+                          allgather, MPI_MAX, MPI_MIN
    use trc_test_basis, only: read_xyz, unpack_basis
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
    use trc_c_interfaces, only: trc_basis_create, trc_basis_destroy, trc_basis_nao, trc_scf_mpi, TRC_OK
-#ifdef TERCO_HAVE_MPI
-   ! Everything here is raw mpi_f08, on purpose: this test plays the part of
-   ! the CALLER (GAMESS's DDI, or a fragment driver), and a caller reaches
-   ! terco only through the Fortran handle of a communicator it built with
-   ! ordinary MPI calls. pic_mpi_lib is used only for pic_mpi_init/finalize,
-   ! same as every other MPI test in this suite.
-   use mpi_f08, only: MPI_COMM_WORLD, MPI_Comm, MPI_Comm_rank, MPI_Comm_size, MPI_Comm_split, &
-                      MPI_Comm_free, MPI_Barrier, MPI_Allreduce, MPI_Allgather, MPI_INTEGER, &
-                      MPI_DOUBLE_PRECISION, MPI_SUM, MPI_MAX, MPI_MIN
-#endif
+   ! This test plays the part of the CALLER (GAMESS's DDI, or a fragment
+   ! driver), and a caller reaches terco only through the plain Fortran
+   ! handle of a communicator it built itself. It builds those communicators
+   ! with pic-mpi rather than `use mpi_f08`, and hands terco
+   ! comm%fortran_handle(): the same integer MPI_Comm_c2f or the legacy
+   ! `mpi` module would give, and the only way to build on every backend --
+   ! some MPIs (Cray MPICH under nvfortran) offer no mpi_f08 module at all.
 #ifdef _OPENACC
    use openacc, only: acc_get_device_num, acc_device_nvidia
 #endif
@@ -131,25 +129,23 @@ program scf_mpi_frag
    ! as an MPI_Comm_dup/MPI_Comm_free crash deep in OpenMPI on a later call.
    allocate (dmat_o(nao_o*nao_o*2), eps_o(nao_o*2))
 
-#ifndef TERCO_HAVE_MPI
-   ! No MPI in this build: the DDI and fragment topologies below need real
-   ! ranks to mean anything, so there is nothing left to check. Not
-   ! registered as a ctest in this configuration either (see
-   ! test/CMakeLists.txt) -- this branch only keeps the source building
+   ! With no MPI (pic-mpi's serial backend) there is one rank, so the size
+   ! check below skips: the DDI and fragment topologies need real ranks to
+   ! mean anything. Not registered as a ctest in that configuration either
+   ! (see test/CMakeLists.txt) -- it only keeps the source building
    ! everywhere, in the house style.
-   print '(a)', "scf_mpi_frag: no MPI in this build, nothing to imitate -- SKIP"
-#else
    block
-      type(MPI_Comm) :: sub_comm
-      integer :: wrank, wsize, ierr, color, sum_ranks
+      type(comm_t) :: world, sub_comm
+      integer :: wrank, wsize, color, sum_ranks
       integer(c_int) :: fcomm
       real(c_double) :: e_ref, e_xc, e_a, e_b, spread_max, spread_min
       integer :: niter
       integer :: dev_a, dev_b
       integer :: all_dev_a(4), all_dev_b(4)
 
-      call MPI_Comm_rank(MPI_COMM_WORLD, wrank, ierr)
-      call MPI_Comm_size(MPI_COMM_WORLD, wsize, ierr)
+      world = comm_world()
+      wrank = world%rank()
+      wsize = world%size()
       if (wsize /= 4) then
          if (wrank == 0) print '(a,i0,a)', "scf_mpi_frag: needs 4 ranks, got ", wsize, " -- SKIP"
       else
@@ -160,11 +156,11 @@ program scf_mpi_frag
          ! never touch terco.
          !
          color = merge(0, 1, wrank < 2)
-         call MPI_Comm_split(MPI_COMM_WORLD, color, wrank, sub_comm, ierr)
-         if (ierr /= 0) ok = .false.
+         sub_comm = world%split_by(color)
+         if (sub_comm%is_null()) ok = .false.
 
          if (wrank < 2) then
-            fcomm = sub_comm%mpi_val
+            fcomm = int(sub_comm%fortran_handle(), c_int)
             ! This rank's own single-rank reference, for the same molecule.
             rc = trc_scf_mpi(-1_c_int, hbas_w, 5_c_int, 5_c_int, c_null_char, 3_c_int, &
                              1.0e-10_c_double, 1.0e-7_c_double, 100_c_int, c_null_ptr, 0_c_int, &
@@ -188,40 +184,38 @@ program scf_mpi_frag
             ! (c) OWNERSHIP: the compute communicator terco just duplicated
             ! and finalized its own copy of is still this program's, and an
             ! ordinary collective on it still works.
-            call MPI_Allreduce(wrank, sum_ranks, 1, MPI_INTEGER, MPI_SUM, sub_comm, ierr)
-            if (ierr /= 0 .or. sum_ranks /= 1) ok = .false.  ! ranks 0 + 1
-            call MPI_Allreduce(e_a, spread_max, 1, MPI_DOUBLE_PRECISION, MPI_MAX, sub_comm, ierr)
-            if (ierr /= 0) ok = .false.
-            call MPI_Allreduce(e_a, spread_min, 1, MPI_DOUBLE_PRECISION, MPI_MIN, sub_comm, ierr)
-            if (ierr /= 0) ok = .false.
+            sum_ranks = wrank
+            call allreduce(sub_comm, sum_ranks)
+            if (sum_ranks /= 1) ok = .false.  ! ranks 0 + 1
+            spread_max = e_a
+            call allreduce(sub_comm, spread_max, MPI_MAX)
+            spread_min = e_a
+            call allreduce(sub_comm, spread_min, MPI_MIN)
             if (spread_max - spread_min > 1.0e-12_dp) ok = .false.
             ! This program frees the communicator it made, itself; terco
             ! freed only the duplicate it made from the handle.
-            call MPI_Comm_free(sub_comm, ierr)
-            if (ierr /= 0) ok = .false.
+            call sub_comm%finalize()
          else
             ! The "servers": a real DDI server loop would be off doing its
             ! own thing right now. This one has nothing to do, so it frees
             ! its half of the split immediately and heads straight for the
             ! barrier below, where it waits for compute to catch up.
-            call MPI_Comm_free(sub_comm, ierr)
-            if (ierr /= 0) ok = .false.
+            call sub_comm%finalize()
          end if
          ! Every rank reaches this together only once compute's run above
          ! has returned -- the servers were already here. A hang anywhere
          ! in (a) shows up as this barrier never completing; the ctest
          ! TIMEOUT is the backstop.
-         call MPI_Barrier(MPI_COMM_WORLD, ierr)
-         if (ierr /= 0) ok = .false.
+         call world%barrier()
 
          !
          ! (b) FRAGMENTS. Two 2-rank groups, two different molecules, at the
          ! same time: water on 0-1 again, the OH radical (UHF) on 2-3.
          !
          color = merge(0, 1, wrank < 2)
-         call MPI_Comm_split(MPI_COMM_WORLD, color, wrank, sub_comm, ierr)
-         if (ierr /= 0) ok = .false.
-         fcomm = sub_comm%mpi_val
+         sub_comm = world%split_by(color)
+         if (sub_comm%is_null()) ok = .false.
+         fcomm = int(sub_comm%fortran_handle(), c_int)
 
          if (wrank < 2) then
             rc = trc_scf_mpi(-1_c_int, hbas_w, 5_c_int, 5_c_int, c_null_char, 3_c_int, &
@@ -247,13 +241,12 @@ program scf_mpi_frag
 #endif
 
          ! (c) OWNERSHIP again, for the fragment communicator.
-         call MPI_Allreduce(e_b, spread_max, 1, MPI_DOUBLE_PRECISION, MPI_MAX, sub_comm, ierr)
-         if (ierr /= 0) ok = .false.
-         call MPI_Allreduce(e_b, spread_min, 1, MPI_DOUBLE_PRECISION, MPI_MIN, sub_comm, ierr)
-         if (ierr /= 0) ok = .false.
+         spread_max = e_b
+         call allreduce(sub_comm, spread_max, MPI_MAX)
+         spread_min = e_b
+         call allreduce(sub_comm, spread_min, MPI_MIN)
          if (spread_max - spread_min > 1.0e-12_dp) ok = .false.
-         call MPI_Comm_free(sub_comm, ierr)
-         if (ierr /= 0) ok = .false.
+         call sub_comm%finalize()
 
          !
          ! (d) GPU BINDING. Gather every rank's device for both scenarios
@@ -265,10 +258,8 @@ program scf_mpi_frag
          ! devices -- the whole point of binding by node-local rank instead
          ! of by comm%rank() in whatever communicator the caller handed in.
          !
-         call MPI_Allgather(dev_a, 1, MPI_INTEGER, all_dev_a, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
-         if (ierr /= 0) ok = .false.
-         call MPI_Allgather(dev_b, 1, MPI_INTEGER, all_dev_b, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
-         if (ierr /= 0) ok = .false.
+         call allgather(world, dev_a, all_dev_a)
+         call allgather(world, dev_b, all_dev_b)
          if (wrank == 0) then
             block
                integer :: i
@@ -289,8 +280,8 @@ program scf_mpi_frag
                abs(e_a - e_ref), "  (b) fragments  spread ", spread_max - spread_min
          end if
       end if
+      call world%finalize()
    end block
-#endif
 
    rc = trc_basis_destroy(hbas_w)
    if (rc /= TRC_OK) ok = .false.

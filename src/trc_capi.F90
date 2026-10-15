@@ -218,7 +218,7 @@ module trc_capi
    public :: trc_set_ao_norm, trc_get_ao_norm
    public :: trc_set_force_cartesian, trc_is_spherical
    public :: trc_max_angular_momentum
-   public :: capi_scf
+   public :: capi_scf, capi_scf_mpi, capi_rimp2
    public :: trc_cart_order
 
    ! Status codes. Zero is success; everything else is a reason.

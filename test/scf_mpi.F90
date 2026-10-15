@@ -106,27 +106,18 @@ program scf_mpi
    block
       use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
       use trc_c_interfaces, only: trc_basis_create, trc_basis_destroy, trc_scf_mpi, TRC_OK
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
       integer(c_int) :: fcomm, rc, niter, nocc
       integer(c_int), allocatable :: lc(:), npc(:)
       real(c_double), allocatable :: zat(:), d_lib(:, :), eps_lib(:)
       real(c_double) :: e_lib, e_xc, e_c(2)
       type(c_ptr) :: hbas
       integer :: nao
-#ifdef TERCO_HAVE_MPI
-      fcomm = MPI_COMM_WORLD%mpi_val
-#else
-      ! Any handle but -1 exercises the "collective" path even with no real
-      ! MPI (pic-mpi's serial backend gives back rank 0 of 1). NOT 0: that is
-      ! pic-mpi's own stand-in for MPI_COMM_NULL in this backend
-      ! (MPI_COMM_NULL = MPI_Comm(0), pic_mpi_serial.F90), and
-      ! comm_from_handle correctly refuses it as the null communicator --
-      ! which trc_build_comm now surfaces as TRC_ERR_BADARG instead of
-      ! silently treating every non-MPI handle alike.
-      fcomm = 1
-#endif
+      ! The handle comes from pic-mpi, not from `use mpi_f08`, so this
+      ! builds on every backend -- including the legacy `mpi` module, which
+      ! is all some MPIs (Cray MPICH under nvfortran) offer. On the serial
+      ! backend it is a non-null placeholder, so the "collective" path is
+      ! still exercised with no real MPI (rank 0 of 1).
+      fcomm = int(comm%fortran_handle(), c_int)
       allocate (zat(natm), lc(nsh), npc(nsh))
       zat = real(at_z, c_double); lc = int(sh_l, c_int); npc = int(sh_np, c_int)
       rc = trc_basis_create(int(nsh, c_int), int(maxnp, c_int), lc, npc, sh_e, sh_c, sh_r, &

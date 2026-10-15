@@ -132,18 +132,13 @@ program scf_rimp2
    block
       use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
       use trc_c_interfaces, only: trc_basis_create, trc_basis_destroy, trc_scf_mpi, trc_rimp2, TRC_OK
-#ifdef TERCO_HAVE_MPI
-      use mpi_f08, only: MPI_COMM_WORLD
-#endif
       integer(c_int) :: fcomm, rc, niter
       integer(c_int), allocatable :: lc(:), npc(:), lca(:), npca(:)
       real(c_double), allocatable :: zat(:), d_lib(:, :), eps_lib(:)
       real(c_double) :: e_lib, e_xc, c_os, c_ss
       type(c_ptr) :: hbas, haux
       fcomm = -1
-#ifdef TERCO_HAVE_MPI
-      if (comm%size() > 1) fcomm = MPI_COMM_WORLD%mpi_val
-#endif
+      if (comm%size() > 1) fcomm = int(comm%fortran_handle(), c_int)
       allocate (zat(natm), lc(nsh), npc(nsh), lca(nsha), npca(nsha))
       zat = real(at_z, c_double); lc = int(sh_l, c_int); npc = int(sh_np, c_int)
       lca = int(ax_l, c_int); npca = int(ax_np, c_int)
