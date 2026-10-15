@@ -50,7 +50,8 @@ module trc_screen
    use trc_boys, only: dp
    use trc_tables, only: LTOT, NHERM_MAX
    use trc_batch, only: eri_batch, ncart
-   use trc_hgp, only: hgp_batch
+   use, intrinsic :: iso_fortran_env, only: int64
+   use trc_hgp, only: hgp_batch, hgp_scratch_size
    implicit none
    private
 
@@ -236,15 +237,20 @@ contains
       real(dp), intent(in)  :: hp_p(nhpp), hp_r(nhpp, 3), hp_ra(nhpp, 3), hp_rb(nhpp, 3), hp_c(nhpp)
       real(dp), intent(out) :: q(nbas*(nbas + 1)/2)
 
-      integer, allocatable :: d_i(:), d_j(:), d_k(:), d_l(:), d_off(:), d_q(:)
-      real(dp), allocatable :: out(:), qc(:)
-      integer :: npair, i, j, n, nout, nb, m, na, nlive, c0, c1, nc, key
+      integer, allocatable :: d_i(:), d_j(:), d_k(:), d_l(:), d_off(:), d_q(:), cst(:)
+      integer(int64), allocatable :: w_off(:)
+      real(dp), allocatable :: out(:), qc(:), work(:)
+      integer :: npair, i, j, n, nout, nb, m, na, nlive, c0, c1, nc, key, lab, nchunk, ic
+      integer(int64) :: nw, nwmax, need
       real(dp) :: vmax
       ! Same launch-width reasoning as schwarz_bounds above: one thread per
-      ! shell pair, chunked so the scratch stays affordable. hgp_quartet needs
-      ! no external R scratch (unlike eri_batch's rscr), so the chunk only
-      ! bounds `out`.
+      ! shell pair, chunked. A chunk also ends before its VRR scratch (which
+      ! hgp_batch takes from `work`, sized per quartet, rather than from each
+      ! thread's stack) would pass WBUDGET doubles: 64 M, 512 MB. An (ss|ss)
+      ! pair needs 3 doubles of it and an (ff|ff) one 21168, so a chunk of
+      ! light pairs stays at CHUNK and one of f pairs is about 3000 wide.
       integer, parameter :: CHUNK = 65536
+      integer(int64), parameter :: WBUDGET = 64_int64*1024*1024
 
       npair = nbas*(nbas + 1)/2
       q = 0.0_dp
@@ -266,38 +272,55 @@ contains
          deallocate (d_i, d_j, d_k, d_l, d_off, d_q)
          return
       end if
-      nout = 0
-      do c0 = 1, nlive, CHUNK
-         c1 = min(c0 + CHUNK - 1, nlive)
-         m = 0
-         do n = c0, c1
+
+      ! The chunks: starts in cst(1:nchunk), cst(nchunk + 1) = nlive + 1.
+      allocate (cst(nlive + 1), w_off(nlive))
+      nchunk = 0; nout = 0; nwmax = 0
+      c0 = 1
+      do while (c0 <= nlive)
+         nchunk = nchunk + 1
+         cst(nchunk) = c0
+         m = 0; nw = 0
+         c1 = c0 - 1
+         do n = c0, min(c0 + CHUNK - 1, nlive)
+            lab = sh_l(d_i(n)) + sh_l(d_j(n))
+            need = hgp_scratch_size(lab, lab)
+            if (n > c0 .and. nw + need > WBUDGET) exit
             nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
             m = m + nb*nb
+            nw = nw + need
+            c1 = n
          end do
-         nout = max(nout, m)
+         nout = max(nout, m); nwmax = max(nwmax, nw)
+         c0 = c1 + 1
       end do
-      allocate (out(nout), qc(min(nlive, CHUNK)))
+      cst(nchunk + 1) = nlive + 1
+      allocate (out(nout), qc(min(nlive, CHUNK)), work(nwmax))
 
-      ! d_i/d_j/d_k/d_l/d_off/sh_l/out/qc are this routine's own small
+      ! d_i/d_j/d_k/d_l/d_off/w_off/sh_l/out/qc/work are this routine's own
       ! scratch -- entered and exited here, same as schwarz_bounds. hp_* are
       ! NOT entered here: see the header comment above.
-      !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, out, qc)
-      do c0 = 1, nlive, CHUNK
-         c1 = min(c0 + CHUNK - 1, nlive)
+      !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, w_off, out, qc, work)
+      do ic = 1, nchunk
+         c0 = cst(ic); c1 = cst(ic + 1) - 1
          nc = c1 - c0 + 1
-         m = 0
+         m = 0; nw = 0
          do n = c0, c1
             d_off(n) = m
+            w_off(n) = nw
             nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
             m = m + nb*nb
+            lab = sh_l(d_i(n)) + sh_l(d_j(n))
+            nw = nw + hgp_scratch_size(lab, lab)
          end do
-         !$acc update device(d_off(c0:c1))
+         !$acc update device(d_off(c0:c1), w_off(c0:c1))
          do concurrent(na = 1:m)
             out(na) = 0.0_dp
          end do
          call hgp_batch(c0, c1, nlive, nbas, nhpp, m, &
                         d_i, d_j, d_k, d_l, d_off, sh_l, &
-                        hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, out)
+                        hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, out, &
+                        nwmax, w_off, work)
          ! The diagonal elements (ab|ab) are what Cauchy-Schwarz needs; the
          ! max over the block is a valid, looser bound (same choice
          ! schwarz_bounds makes) and avoids the strided walk to the diagonal
@@ -315,9 +338,9 @@ contains
             q(d_q(c0 + n - 1)) = qc(n)
          end do
       end do
-      !$acc exit data delete(d_i, d_j, d_k, d_l, d_off, sh_l, out, qc)
+      !$acc exit data delete(d_i, d_j, d_k, d_l, d_off, w_off, sh_l, out, qc, work)
 
-      deallocate (d_i, d_j, d_k, d_l, d_off, d_q, out, qc)
+      deallocate (d_i, d_j, d_k, d_l, d_off, d_q, cst, w_off, out, qc, work)
    end subroutine schwarz_bounds_hgp
 
    !

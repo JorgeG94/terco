@@ -37,6 +37,7 @@
 ! per quartet rather than per primitive pair.
 !
 module trc_hgp
+   use, intrinsic :: iso_fortran_env, only: int64
    use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: LCMAX, NCUM, cidx, cnx, cny, cnz, cll, &
@@ -44,7 +45,7 @@ module trc_hgp
    implicit none
    private
 
-   public :: hgp_batch, build_pairs_hgp, comp, binom, powi
+   public :: hgp_batch, hgp_scratch_size, build_pairs_hgp, comp, binom, powi
 
    integer, parameter :: NPRIM_MAX = 1
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
@@ -249,23 +250,47 @@ contains
    !
    subroutine hgp_batch(lo, hi, nq, nbas, npp, nout, &
                         q_i, q_j, q_k, q_l, q_off, sh_l, &
-                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out)
+                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out, &
+                        nwork, w_off, work)
+      !! Quartets lo..hi, each into `out` at q_off; VRR scratch is `work`
+      !! at w_off, hgp_scratch_size(la+lb, lc+ld) doubles per quartet.
+      !!
+      !! THE SCRATCH IS THE CALLER'S, NOT THE THREAD'S. It used to be two
+      !! local arrays sized NCUM*NCUM for the build's largest class, so
+      !! every thread of every launch carried them on its stack -- 169.6 KB
+      !! at TERCO_LMAX=3 (NCUM = 84) even for an (ss|ss) quartet, and CUDA
+      !! reserves a kernel's per-thread stack for every thread the device can
+      !! hold at once: 27.8 GB on a V100, 37.5 GB of an A100's 40, the moment
+      !! this ran (it computes the Schwarz bounds, so every SCF). Sized per
+      !! quartet from the caller's array, the stack is small and the scratch
+      !! is what the quartets actually need.
       integer,  intent(in)    :: lo, hi, nq, nbas, npp, nout
       integer,  intent(in)    :: q_i(nq), q_j(nq), q_k(nq), q_l(nq), q_off(nq)
       integer,  intent(in)    :: sh_l(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
       real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
       real(dp), intent(inout) :: out(nout)
+      integer(int64), intent(in) :: nwork
+      integer(int64), intent(in) :: w_off(nq)  !! each quartet's base in `work`
+      real(dp), intent(inout) :: work(nwork)
       integer :: iq
       do concurrent(iq=lo:hi)
          call hgp_quartet(iq, nq, nbas, npp, nout, q_i, q_j, q_k, q_l, q_off, sh_l, &
-                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out)
+                          pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out, nwork, w_off, work)
       end do
    end subroutine hgp_batch
 
+   pure integer function hgp_scratch_size(lab, lcd) result(n)
+      !! Doubles of VRR scratch one (lab|lcd) quartet needs in hgp_batch:
+      !! two m levels and the contracted accumulator, each ncum(lab) x ncum(lcd)
+      integer, intent(in) :: lab, lcd
+      n = 3*ncum_of(lab)*ncum_of(lcd)
+   end function hgp_scratch_size
+
    pure subroutine hgp_quartet(iq, nq, nbas, npp, nout, &
                                q_i, q_j, q_k, q_l, q_off, sh_l, &
-                               pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out)
+                               pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out, &
+                               nwork, w_off, work)
       !$acc routine seq
       integer,  intent(in)    :: iq, nq, nbas, npp, nout
       integer,  intent(in)    :: q_i(nq), q_j(nq), q_k(nq), q_l(nq), q_off(nq)
@@ -273,33 +298,36 @@ contains
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
       real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
       real(dp), intent(inout) :: out(nout)
+      integer(int64), intent(in) :: nwork
+      integer(int64), intent(in) :: w_off(nq)
+      real(dp), intent(inout) :: work(nwork)
 
-      integer  :: la, lb, lc, ld, lab, lcd, lt, nca, ncc
+      integer  :: la, lb, lc, ld, lab, lcd, lt, nca, ncc, n1
+      integer(int64) :: vb, gb
       integer  :: keyab, keycd, offab, offcd, nab, ncd
       integer  :: kp, kq, m, d, x, cur, nxt
       real(dp) :: zeta, eta, zpe, rho, tval, pref
       real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3), wc
       real(dp) :: oo2z, oo2e, oo2ze, rz, re
       real(dp) :: f(0:BOYS_MMAX)
-      ! [a0|c0]^m, two m levels ping-ponged, plus the contracted accumulator.
-      ! At LMAX=1 (s,p -- what 6-31G is) NCUM=10, so this is 10x10x2 + 10x10
-      ! doubles and stays small; at LMAX=2 it is 35x35 and does not.  That
-      ! crossover is the thing worth measuring.
-      real(dp) :: v(NCUM*NCUM, 0:1)
-      real(dp) :: g(NCUM*NCUM)
+      ! [a0|c0]^m, two m levels ping-ponged (v, at vb), plus the contracted
+      ! accumulator (g, at gb): this quartet's own slice of `work`, nca*ncc
+      ! each, laid out as v(nca*ncc, 0:1) then g(nca*ncc). See hgp_batch.
 
       la = sh_l(q_i(iq)); lb = sh_l(q_j(iq))
       lc = sh_l(q_k(iq)); ld = sh_l(q_l(iq))
       lab = la + lb; lcd = lc + ld; lt = lab + lcd
       nca = ncum_of(lab); ncc = ncum_of(lcd)
+      n1 = nca*ncc
+      vb = w_off(iq); gb = vb + 2*n1
 
       keyab = (q_i(iq) - 1)*nbas + q_j(iq)
       keycd = (q_k(iq) - 1)*nbas + q_l(iq)
       offab = pp_off(keyab); nab = pp_n(keyab)
       offcd = pp_off(keycd); ncd = pp_n(keycd)
 
-      do x = 1, nca*ncc
-         g(x) = 0.0_dp
+      do x = 1, n1
+         work(gb + x) = 0.0_dp
       end do
 
       do kp = offab + 1, offab + nab
@@ -326,16 +354,16 @@ contains
 
             ! VRR, sweeping m downward so level m reads only level m+1.
             cur = 0
-            v(1, cur) = pref*f(lt)
+            work(vb + 1) = pref*f(lt)
             do m = lt - 1, 0, -1
                nxt = 1 - cur
-               call vrr_level(lt - m, nca, ncc, v, nxt, cur, pref*f(m), &
+               call vrr_level(lt - m, nca, ncc, work(vb + 1), nxt, cur, pref*f(m), &
                               pa, qc, wp, wq, oo2z, oo2e, oo2ze, rz, re)
                cur = nxt
             end do
 
-            do x = 1, nca*ncc
-               g(x) = g(x) + v(x, cur)
+            do x = 1, n1
+               work(gb + x) = work(gb + x) + work(vb + x + cur*n1)
             end do
          end do
       end do
@@ -346,7 +374,7 @@ contains
                      pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3), &
                      pp_ra(offcd + 1, 1) - pp_rb(offcd + 1, 1), &
                      pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2), &
-                     pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3), g, out)
+                     pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3), work(gb + 1), out)
    end subroutine hgp_quartet
 
    !
@@ -360,7 +388,7 @@ contains
                              pa, qc, wp, wq, oo2z, oo2e, oo2ze, rz, re)
       !$acc routine seq
       integer,  intent(in)    :: lim, nca, ncc, dst, src
-      real(dp), intent(inout) :: v(NCUM*NCUM, 0:1)
+      real(dp), intent(inout) :: v(nca*ncc, 0:1)
       real(dp), intent(in)    :: seed, pa(3), qc(3), wp(3), wq(3)
       real(dp), intent(in)    :: oo2z, oo2e, oo2ze, rz, re
 
@@ -413,7 +441,7 @@ contains
       integer,  intent(in)    :: iq, nq, nout, la, lb, lc, ld, nca
       integer,  intent(in)    :: q_off(nq)
       real(dp), intent(in)    :: abx, aby, abz, cdx, cdy, cdz
-      real(dp), intent(in)    :: g(NCUM*NCUM)
+      real(dp), intent(in)    :: g(*)
       real(dp), intent(inout) :: out(nout)
 
       integer  :: na, nb, nc, nd, ia, ib, ic, id, idx, base
