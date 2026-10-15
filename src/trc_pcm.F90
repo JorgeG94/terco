@@ -136,7 +136,10 @@ module trc_pcm
       real(dp), allocatable :: wq(:)            !! -q: what the Fock kernel is handed
       real(dp) :: e_diel = 0.0_dp               !! q . v / 2 at the last density
       real(dp) :: q_total = 0.0_dp              !! total apparent surface charge
-      type(trc_linalg_t) :: la                  !! the LU, solves and products
+      type(trc_linalg_t), pointer :: la => null()
+      !! the LU, solves and products: the caller's handles (the SCF's, made
+      !! once per calculation) when init is given them, else PCM's own
+      logical :: own_la = .false.               !! `la` was allocated here
       logical :: on_device = .false.            !! `this` is mapped; every array
                                                 !! above follows it as it is made
    contains
@@ -380,12 +383,15 @@ contains
       !$acc exit data delete(coords, normals, zeta, switch_f, r_parent)
    end subroutine pcm_sd_matrices
 
-   subroutine pcm_init(this, model, eps, error)
+   subroutine pcm_init(this, model, eps, error, la)
       !! Settle the model and its dielectric scale factor
       class(trc_pcm_t), intent(inout) :: this
       integer, intent(in) :: model           !! PCM_MODEL_CPCM or PCM_MODEL_IEFPCM
       real(dp), intent(in) :: eps            !! solvent dielectric constant
       type(error_t), intent(inout) :: error
+      type(trc_linalg_t), intent(inout), target, optional :: la
+      !! cuBLAS/cuSOLVER handles to borrow (trc_linalg's init is create-once,
+      !! so PCM adds none of its own); absent, PCM makes and releases its own
 
       if (error%has_error()) return
       call this%release()
@@ -409,11 +415,18 @@ contains
       this%eps = eps
       this%model = model
       ! Parent first, as the basis does (trc_api's basis_to_device); each
-      ! array is then mapped as it is made, and released in reverse. That
-      ! includes the linear-algebra handle's own device scalars, so it is
-      ! initialised after `this` is mapped, not before (the other order
-      ! leaves `this` partially present).
+      ! array is then mapped as it is made, and released in reverse. The
+      ! handles live outside `this` (a pointer, to the caller's object or to
+      ! one allocated here), so their device scalars are never part of
+      ! `this`'s mapping.
       !$acc enter data copyin(this)
+      if (present(la)) then
+         this%la => la
+         this%own_la = .false.
+      else
+         allocate (this%la)
+         this%own_la = .true.
+      end if
       call this%la%init(1)
       this%on_device = .true.
    end subroutine pcm_init
@@ -710,7 +723,12 @@ contains
          if (allocated(this%v_nuc)) then
             !$acc exit data delete(this%v_nuc)
          end if
-         call this%la%release()
+         if (this%own_la) then
+            call this%la%release()
+            deallocate (this%la)
+         end if
+         nullify (this%la)
+         this%own_la = .false.
          !$acc exit data delete(this)
          this%on_device = .false.
       end if
