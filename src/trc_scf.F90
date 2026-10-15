@@ -127,6 +127,8 @@ module trc_scf_driver
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use pic_types, only: default_int
+   use pic_logger, only: global_logger
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, bcast, allreduce, MPI_SUM
    implicit none
    private
@@ -445,7 +447,7 @@ contains
    ! basis must already be on the device. `dguess` is (nao, nao, nspin) in
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
-   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess, comm, hguess)
+   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess, comm, hguess, la)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: opts
@@ -462,6 +464,10 @@ contains
       !! the quartets are split across them and the Fock matrix summed
       !! back, so the density stays identical everywhere. Bind devices
       !! first (trc_bind_device). The XC batches are split across ranks too.
+      type(trc_linalg_t), intent(inout), optional, target :: la
+      !! cuBLAS/cuSOLVER handles made once by the caller and carried through
+      !! the calculation (trc_linalg's init is create-once and grows the
+      !! workspace to nao). Absent, the run makes its own and releases them.
 
       integer :: nao, nao_c, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
       logical :: ok, sph
@@ -501,7 +507,8 @@ contains
       logical :: nlc
       real(dp) :: e_nlc
       type(trc_xc_functional_t) :: func
-      type(trc_linalg_t) :: la
+      type(trc_linalg_t), target :: la_own
+      type(trc_linalg_t), pointer :: lp
       type(error_t) :: err
       type(trc_pcm_t) :: pcm
       logical :: pcm_on
@@ -509,7 +516,8 @@ contains
       real(dp), allocatable :: vpcm_c(:, :), vpcm(:, :)
       !! the continuum's operator, Cartesian as its kernels make it and in
       !! the SCF's own space; the same for both spins
-      logical :: dft, talk, diis_on
+      logical :: dft, talk, diis_on, root
+      real(dp) :: ctl(2)
       real(dp) :: exx_lr, omega
       !! A range-separated hybrid's extra long-range exchange fraction and
       !! its omega: K_total = exx*K + exx_lr*K_erf(omega). Zero otherwise.
@@ -517,6 +525,10 @@ contains
       real(dp), allocatable :: ofrac(:)
       integer :: nfrac, ndamp
       real(dp) :: diis_start
+      type(timer_type) :: tm
+      real(dp) :: ts(6)
+      !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
+      !! linear-algebra handles, orthogonaliser (printed with the timing table)
       real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
       real(dp) :: tf_it, tx_it
       !! This iteration's share of the two totals, so the table says where
@@ -531,7 +543,9 @@ contains
       nao = merge(b%nao_sph, nao_c, sph)
       n2 = nao*nao
       talk = opts%verbose
-      if (present(comm)) talk = talk .and. comm%rank() == 0
+      root = .true.
+      if (present(comm)) root = comm%rank() == 0
+      talk = talk .and. root
       dft = len_trim(opts%functional) > 0
       nlc = .false.
       exx = 1.0_dp
@@ -604,9 +618,11 @@ contains
       tf_it = 0.0_dp; tx_it = 0.0_dp
       tx_pts = 0.0_dp; tx_prs = 0.0_dp
       tw0 = wall()
+      call tm%start()
       ! --- once per geometry, on the host ------------------------------------
       call pl%build(b, eri_thresh_env(opts%eri_thresh))
       call pl%to_device()
+      ts(1) = tm%get_elapsed_time(); call tm%start()
       ! The one-electron integrals are always Cartesian (trc_1e never
       ! changes); `s_c`/`h_c` are folded up to the SCF's own space once,
       ! here, for the whole run -- S and H never change after this. The
@@ -615,6 +631,7 @@ contains
       ! fourth Cartesian array kept for nothing afterward.
       call trc_1e(b, pl, s_c, h_c, w1_c)
       h_c = h_c + w1_c
+      ts(2) = tm%get_elapsed_time(); call tm%start()
       if (sph) then
          ! `smat`/`hcore` are not entered onto the device until the big
          ! block below (they are reused, host and device, across the
@@ -628,17 +645,26 @@ contains
       else
          smat = s_c; hcore = h_c
       end if
+      ts(3) = tm%get_elapsed_time(); call tm%start()
       if (present(comm)) then
          call eri%build(b, eri_thresh_env(opts%eri_thresh), comm, batch_res=opts%batch_res)
       else
          call eri%build(b, eri_thresh_env(opts%eri_thresh), batch_res=opts%batch_res)
       end if
       res%e_nuc = nuclear_repulsion(b)
-      call la%init(nao)
-      call sym_orthog(la, nao, smat, x, opts%lindep_thresh, res%n_lindep)
+      ts(4) = tm%get_elapsed_time(); call tm%start()
+      if (present(la)) then
+         lp => la
+      else
+         lp => la_own
+      end if
+      call lp%init(nao)
+      ts(5) = tm%get_elapsed_time(); call tm%start()
+      call sym_orthog(lp, nao, smat, x, opts%lindep_thresh, res%n_lindep)
       if (talk .and. res%n_lindep > 0) print '(a,i0,a,es9.2,a)', &
          "   canonical orthogonalisation: ", res%n_lindep, &
          " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
+      ts(6) = tm%get_elapsed_time()
       t_setup = wall() - tw0
 
       ! --- the continuum: cavity, K and the nuclear potential, once -------
@@ -650,7 +676,7 @@ contains
          call pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
-            call pcm%release(); call la%release()
+            call pcm%release(); if (.not. present(la)) call lp%release()
             call eri%release(); call pl%release()
             return
          end if
@@ -918,10 +944,10 @@ contains
          if (dft) then
             if (nspin == 1) then
                call trc_xc_rks(b, xg, func, d_c(:, :, 1), vxc_c(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol, &
-                               comm=comm, t_points=tp1, t_pairs=tq1, la=la)
+                               comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
             else
                call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=opts%rho_tol, &
-                               comm=comm, t_points=tp1, t_pairs=tq1, la=la)
+                               comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
             end if
             ! VV10 adds its energy to exc and its potential into vxc_c, on
             ! its own (coarser) grid, before the spherical transform below.
@@ -971,8 +997,8 @@ contains
          ! --- energy at this density -----------------------------------------
          e1 = 0.0_dp; e2 = 0.0_dp
          do s = 1, nspin
-            e1 = e1 + la%dot(n2, res%dmat(:, :, s), hcore)
-            e2 = e2 + 0.5_dp*la%dot(n2, res%dmat(:, :, s), gmat(:, :, s))
+            e1 = e1 + lp%dot(n2, res%dmat(:, :, s), hcore)
+            e2 = e2 + 0.5_dp*lp%dot(n2, res%dmat(:, :, s), gmat(:, :, s))
          end do
          etot = e1 + e2 + exc + res%e_nuc + epcm
          ! --- Fock and its commutator, per spin ------------------------------
@@ -992,19 +1018,30 @@ contains
                end do
             end if
             ! w2 = F D S - S D F
-            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
-            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-            call la%gemm('N', 'N', nao, nao, nao, -1.0_dp, w1, nao, fock(:, :, s), nao, 1.0_dp, w2, nao)
+            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+            call lp%gemm('N', 'N', nao, nao, nao, -1.0_dp, w1, nao, fock(:, :, s), nao, 1.0_dp, w2, nao)
             ! errv = X^T w2 X
-            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, w2, nao, x, nao, 0.0_dp, w1, nao)
-            call la%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, errv(:, :, s), nao)
+            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, w2, nao, x, nao, 0.0_dp, w1, nao)
+            call lp%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, errv(:, :, s), nao)
          end do
          do concurrent(i=1:nao, j=1:nao, s=1:nspin)
             dold(i, j, s) = res%dmat(i, j, s)
          end do
          ! --- DIIS, once the commutator is small enough to extrapolate from --
-         errmax = sqrt(la%dot(n2*nspin, errv, errv))
+         errmax = sqrt(lp%dot(n2*nspin, errv, errv))
+         ! Over ranks the Fock matrices agree only to the XC atomics' 1e-13,
+         ! so the numbers every branch below and the convergence test read
+         ! are rank 0's, on every rank: one rank leaving the loop while
+         ! another iterates on would hang the next collective.
+         if (present(comm)) then
+            if (comm%size() > 1) then
+               ctl = [etot, errmax]
+               call bcast_flat(comm, ctl, 2)
+               etot = ctl(1); errmax = ctl(2)
+            end if
+         end if
          if (.not. diis_on .and. it > ndamp) diis_on = errmax < diis_start
          !
          ! A/EDIIS WHILE DAMPING HAS ENDED BUT THE COMMUTATOR IS STILL TOO
@@ -1026,150 +1063,158 @@ contains
          ! one that did not converge at all.
          !
          adiis_active = opts%adiis .and. .not. diis_on .and. it > ndamp
-         if (adiis_active) then
-            if (nadiis_used < opts%ndiis) then
-               nadiis_used = nadiis_used + 1
-            else
-               do k = 1, opts%ndiis - 1
-                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                     fstore_a(i, j, s, k) = fstore_a(i, j, s, k + 1)
-                     dstore_a(i, j, s, k) = dstore_a(i, j, s, k + 1)
-                  end do
-               end do
-            end if
-            k = nadiis_used
-            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-               fstore_a(i, j, s, k) = fock(i, j, s)
-               dstore_a(i, j, s, k) = dold(i, j, s)
-            end do
-            ! One entry: the simplex is a point, c = 1 on it, a no-op.
-            ! Skip the solve and leave `fock` as it is, which is also what
-            ! `adiis_coeffs` would return from "start at the newest entry"
-            ! after finding no improving step.
-            if (nadiis_used > 1) then
-               call adiis_coeffs(nadiis_used, cad(1:nadiis_used))
-               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                  fock(i, j, s) = 0.0_dp
-               end do
-               do k = 1, nadiis_used
-                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                     fock(i, j, s) = fock(i, j, s) + cad(k)*fstore_a(i, j, s, k)
-                  end do
-               end do
-            end if
-         end if
-         ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
-         if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
-            do s = 1, nspin
-               call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-               call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
-               do concurrent(i=1:nao, j=1:nao)
-                  fock(i, j, s) = fock(i, j, s) + opts%level_shift*(smat(i, j) - w2(i, j)/occ)
-               end do
-            end do
-         end if
-         if (diis_on) then
-            if (ndiis_used < opts%ndiis) then
-               ndiis_used = ndiis_used + 1
-            else
-               ! Slot by slot, IN ORDER: slot k reads slot k+1 and slot k+1 is
-               ! written next, so the slot loop carries a dependence. It was a
-               ! `do concurrent` over k as well, and on the device that let a
-               ! slot be overwritten before it was read: the history went
-               ! wrong exactly when the subspace filled, and the commutator
-               ! climbed for eight iterations on cholesterol before DIIS
-               ! recovered. The host ran the loop in order and never saw it.
-               do k = 1, opts%ndiis - 1
-                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                     fstore(i, j, s, k) = fstore(i, j, s, k + 1)
-                     estore(i, j, s, k) = estore(i, j, s, k + 1)
-                  end do
-               end do
-            end if
-            k = ndiis_used
-            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-               fstore(i, j, s, k) = fock(i, j, s)
-               estore(i, j, s, k) = errv(i, j, s)
-            end do
-            !
-            ! AN ILL-CONDITIONED SUBSPACE LOSES ITS OLDEST ENTRY, NOT THE STEP.
-            !
-            ! When the solve fails, extrapolating from nothing and taking the
-            ! plain Roothaan step instead is not neutral. On water/def2-SVP
-            ! PBE0 the history holds errors of order 1 next to the newest at
-            ! 1e-7, B's scaled pivots drop under solve_diis's 1e-14, and the
-            ! plain steps that follow grow the commutator by x1.28 per
-            ! iteration along one direction. Errors along one direction make
-            ! B singular in turn, so the solve keeps failing: 65 iterations
-            ! of runaway to |FDS-SDF| ~ 2 before the nonlinearity broke it,
-            ! and past max_iter whenever it broke later. Dropping the oldest
-            ! entries until the system solves keeps the extrapolation; two
-            ! distinct error vectors always give a solvable system, and that
-            ! two-term step is exactly what cancels one growing mode.
-            !
-            do
-               m = ndiis_used + 1
-               bmat = -1.0_dp
-               bmat(m, m) = 0.0_dp
-               do j = 1, ndiis_used
-                  do i = 1, j
-                     bmat(i, j) = la%dot(n2*nspin, estore(:, :, :, i), estore(:, :, :, j))
-                     bmat(j, i) = bmat(i, j)
-                  end do
-               end do
-               call solve_diis(m, bmat(1:m, 1:m), rhs(1:m), ok)
-               if (ok .or. ndiis_used <= 2) exit
-               do k = 1, ndiis_used - 1
-                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                     fstore(i, j, s, k) = fstore(i, j, s, k + 1)
-                     estore(i, j, s, k) = estore(i, j, s, k + 1)
-                  end do
-               end do
-               ndiis_used = ndiis_used - 1
-            end do
-            if (ok) then
-               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                  fock(i, j, s) = 0.0_dp
-               end do
-               do k = 1, ndiis_used
-                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                     fock(i, j, s) = fock(i, j, s) + rhs(k)*fstore(i, j, s, k)
-                  end do
-               end do
-            end if
-         end if
-         ! --- diagonalise, per spin, and the new density ---------------------
-         do s = 1, nspin
-            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, x, nao, 0.0_dp, w1, nao)
-            call la%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, w2, nao)
-            call la%syev(nao, w2, nao, res%eps(:, s))
-            call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, w2, nao, 0.0_dp, res%cmo(:, :, s), nao)
-            if (opts%frac_occ) then
-               ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
-               !$acc update self(res%eps(:, s))
-               if (nspin == 1) then
-                  call frac_occupations(nao, res%eps(:, s), opts%nelec_frac, 2.0_dp, ofrac, nfrac)
+         ! THE NEW DENSITY IS RANK 0'S ALONE. Extrapolation, the eigensolve
+         ! and the density run on one device and the density is broadcast:
+         ! dsyevd need not return the same vectors on two devices (a
+         ! degenerate pair can come back rotated), and the other ranks'
+         ! copies were thrown away for rank 0's anyway. Their orbitals and
+         ! energies come over once, after the loop.
+         if (root) then
+            if (adiis_active) then
+               if (nadiis_used < opts%ndiis) then
+                  nadiis_used = nadiis_used + 1
                else
-                  call frac_occupations(nao, res%eps(:, s), real(nocc(s), dp), 1.0_dp, ofrac, nfrac)
+                  do k = 1, opts%ndiis - 1
+                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                        fstore_a(i, j, s, k) = fstore_a(i, j, s, k + 1)
+                        dstore_a(i, j, s, k) = dstore_a(i, j, s, k + 1)
+                     end do
+                  end do
                end if
-               !$acc update device(ofrac)
-               do concurrent(i=1:nao, j=1:nao)
-                  w1(i, j) = res%cmo(i, j, s)*sqrt(ofrac(j))
+               k = nadiis_used
+               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                  fstore_a(i, j, s, k) = fock(i, j, s)
+                  dstore_a(i, j, s, k) = dold(i, j, s)
                end do
-               call la%gemm('N', 'T', nao, nao, nfrac, 1.0_dp, w1, nao, w1, nao, 0.0_dp, res%dmat(:, :, s), nao)
-            else if (nocc(s) > 0) then
-               call la%gemm('N', 'T', nao, nao, nocc(s), occ, res%cmo(:, :, s), nao, res%cmo(:, :, s), nao, &
-                            0.0_dp, res%dmat(:, :, s), nao)
-            else
-               do concurrent(i=1:nao, j=1:nao)
-                  res%dmat(i, j, s) = 0.0_dp
+               ! One entry: the simplex is a point, c = 1 on it, a no-op.
+               ! Skip the solve and leave `fock` as it is, which is also what
+               ! `adiis_coeffs` would return from "start at the newest entry"
+               ! after finding no improving step.
+               if (nadiis_used > 1) then
+                  call adiis_coeffs(nadiis_used, cad(1:nadiis_used))
+                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                     fock(i, j, s) = 0.0_dp
+                  end do
+                  do k = 1, nadiis_used
+                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                        fock(i, j, s) = fock(i, j, s) + cad(k)*fstore_a(i, j, s, k)
+                     end do
+                  end do
+               end if
+            end if
+            ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
+            if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
+               do s = 1, nspin
+                  call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+                  call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+                  do concurrent(i=1:nao, j=1:nao)
+                     fock(i, j, s) = fock(i, j, s) + opts%level_shift*(smat(i, j) - w2(i, j)/occ)
+                  end do
                end do
             end if
-         end do
-         if (.not. diis_on .and. .not. adiis_active) then
-            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-               res%dmat(i, j, s) = opts%damp*res%dmat(i, j, s) + (1.0_dp - opts%damp)*dold(i, j, s)
+            if (diis_on) then
+               if (ndiis_used < opts%ndiis) then
+                  ndiis_used = ndiis_used + 1
+               else
+                  ! Slot by slot, IN ORDER: slot k reads slot k+1 and slot k+1 is
+                  ! written next, so the slot loop carries a dependence. It was a
+                  ! `do concurrent` over k as well, and on the device that let a
+                  ! slot be overwritten before it was read: the history went
+                  ! wrong exactly when the subspace filled, and the commutator
+                  ! climbed for eight iterations on cholesterol before DIIS
+                  ! recovered. The host ran the loop in order and never saw it.
+                  do k = 1, opts%ndiis - 1
+                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                        fstore(i, j, s, k) = fstore(i, j, s, k + 1)
+                        estore(i, j, s, k) = estore(i, j, s, k + 1)
+                     end do
+                  end do
+               end if
+               k = ndiis_used
+               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                  fstore(i, j, s, k) = fock(i, j, s)
+                  estore(i, j, s, k) = errv(i, j, s)
+               end do
+               !
+               ! AN ILL-CONDITIONED SUBSPACE LOSES ITS OLDEST ENTRY, NOT THE STEP.
+               !
+               ! When the solve fails, extrapolating from nothing and taking the
+               ! plain Roothaan step instead is not neutral. On water/def2-SVP
+               ! PBE0 the history holds errors of order 1 next to the newest at
+               ! 1e-7, B's scaled pivots drop under solve_diis's 1e-14, and the
+               ! plain steps that follow grow the commutator by x1.28 per
+               ! iteration along one direction. Errors along one direction make
+               ! B singular in turn, so the solve keeps failing: 65 iterations
+               ! of runaway to |FDS-SDF| ~ 2 before the nonlinearity broke it,
+               ! and past max_iter whenever it broke later. Dropping the oldest
+               ! entries until the system solves keeps the extrapolation; two
+               ! distinct error vectors always give a solvable system, and that
+               ! two-term step is exactly what cancels one growing mode.
+               !
+               do
+                  m = ndiis_used + 1
+                  bmat = -1.0_dp
+                  bmat(m, m) = 0.0_dp
+                  do j = 1, ndiis_used
+                     do i = 1, j
+                        bmat(i, j) = lp%dot(n2*nspin, estore(:, :, :, i), estore(:, :, :, j))
+                        bmat(j, i) = bmat(i, j)
+                     end do
+                  end do
+                  call solve_diis(m, bmat(1:m, 1:m), rhs(1:m), ok)
+                  if (ok .or. ndiis_used <= 2) exit
+                  do k = 1, ndiis_used - 1
+                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                        fstore(i, j, s, k) = fstore(i, j, s, k + 1)
+                        estore(i, j, s, k) = estore(i, j, s, k + 1)
+                     end do
+                  end do
+                  ndiis_used = ndiis_used - 1
+               end do
+               if (ok) then
+                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                     fock(i, j, s) = 0.0_dp
+                  end do
+                  do k = 1, ndiis_used
+                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                        fock(i, j, s) = fock(i, j, s) + rhs(k)*fstore(i, j, s, k)
+                     end do
+                  end do
+               end if
+            end if
+            ! --- diagonalise, per spin, and the new density ---------------------
+            do s = 1, nspin
+               call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, x, nao, 0.0_dp, w1, nao)
+               call lp%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, w2, nao)
+               call lp%syev(nao, w2, nao, res%eps(:, s))
+               call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, w2, nao, 0.0_dp, res%cmo(:, :, s), nao)
+               if (opts%frac_occ) then
+                  ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
+                  !$acc update self(res%eps(:, s))
+                  if (nspin == 1) then
+                     call frac_occupations(nao, res%eps(:, s), opts%nelec_frac, 2.0_dp, ofrac, nfrac)
+                  else
+                     call frac_occupations(nao, res%eps(:, s), real(nocc(s), dp), 1.0_dp, ofrac, nfrac)
+                  end if
+                  !$acc update device(ofrac)
+                  do concurrent(i=1:nao, j=1:nao)
+                     w1(i, j) = res%cmo(i, j, s)*sqrt(ofrac(j))
+                  end do
+                  call lp%gemm('N', 'T', nao, nao, nfrac, 1.0_dp, w1, nao, w1, nao, 0.0_dp, res%dmat(:, :, s), nao)
+               else if (nocc(s) > 0) then
+                  call lp%gemm('N', 'T', nao, nao, nocc(s), occ, res%cmo(:, :, s), nao, res%cmo(:, :, s), nao, &
+                               0.0_dp, res%dmat(:, :, s), nao)
+               else
+                  do concurrent(i=1:nao, j=1:nao)
+                     res%dmat(i, j, s) = 0.0_dp
+                  end do
+               end if
             end do
+            if (.not. diis_on .and. .not. adiis_active) then
+               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+                  res%dmat(i, j, s) = opts%damp*res%dmat(i, j, s) + (1.0_dp - opts%damp)*dold(i, j, s)
+               end do
+            end if
          end if
          ! Every rank must hold the same density to the bit. The Fock sum is
          ! broadcast already; the XC potential is accumulated with atomics
@@ -1185,7 +1230,7 @@ contains
          do concurrent(i=1:nao, j=1:nao, s=1:nspin)
             errv(i, j, s) = res%dmat(i, j, s) - dold(i, j, s)
          end do
-         drms = sqrt(la%dot(n2*nspin, errv, errv))/real(nao, dp)
+         drms = sqrt(lp%dot(n2*nspin, errv, errv))/real(nao, dp)
          t_rest = t_rest + (wall() - tw0)
          if (talk) then
             if (dft) then
@@ -1222,6 +1267,12 @@ contains
 
       ! The density the energy was evaluated at, and the orbitals that made it.
       !$acc update self(dold, res%cmo, res%eps)
+      if (present(comm)) then
+         if (comm%size() > 1) then
+            call bcast_flat(comm, res%cmo, n2*nspin)
+            call bcast_flat(comm, res%eps, nao*nspin)
+         end if
+      end if
       !$acc exit data delete(ofrac)
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
@@ -1240,14 +1291,13 @@ contains
       res%pcm_qtotal = pcm%q_total
       if (.not. res%converged) res%message = "trc_scf: not converged"
       if (talk) then
-         print '(a)', "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis"
-         print '(a,7f10.3)', "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+         call report_timing()
          if (pcm_on) print '(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)', "   pcm: E_diel = ", epcm, &
             "  q_total = ", pcm%q_total, "  setup ", t_pcm_setup, " s, ", &
             t_pcm/real(max(1, res%iterations), dp), " s per iteration"
       end if
       call pcm%release()
-      call la%release()
+      if (.not. present(la)) call lp%release()
       call eri%release(); call pl%release()
       if (dft) then
          call xg%release(); call grid%destroy()
@@ -1257,6 +1307,25 @@ contains
       end if
 
    contains
+
+      subroutine report_timing()
+         !! Where the run's time went, through pic's logger at PERFORMANCE,
+         !! which its default INFO level shows: the phases, then setup and
+         !! the ERI engine's build broken into their steps.
+         character(len=160) :: line
+         write (line, '(a,7f10.3)') "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+         call global_logger%performance( &
+            "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis")
+         call global_logger%performance(trim(line))
+         call global_logger%performance( &
+            "   setup (s)  pairs        1e   sph fold       eri    linalg    orthog")
+         write (line, '(a,6f10.3)') "          ", ts
+         call global_logger%performance(trim(line))
+         call global_logger%performance( &
+            "   eri (s)    pairs   schwarz  hgp pairs      bins  quartets    upload")
+         write (line, '(a,6f10.3)') "          ", eri%t_build
+         call global_logger%performance(trim(line))
+      end subroutine report_timing
 
       function wall() result(t)
          real(dp) :: t
@@ -1274,12 +1343,12 @@ contains
          real(dp), allocatable :: fp(:, :), c(:, :), t(:, :), e(:), d(:, :)
          allocate (fp(nao, nao), c(nao, nao), t(nao, nao), e(nao), d(nao, nao))
          !$acc data copyin(h, x) create(fp, c, t, e) copyout(d)
-         call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, h, nao, x, nao, 0.0_dp, t, nao)
-         call la%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
-         call la%syev(nao, fp, nao, e)
-         call la%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, c, nao)
+         call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, h, nao, x, nao, 0.0_dp, t, nao)
+         call lp%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
+         call lp%syev(nao, fp, nao, e)
+         call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, c, nao)
          if (nocc_s > 0) then
-            call la%gemm('N', 'T', nao, nao, nocc_s, occ, c, nao, c, nao, 0.0_dp, d, nao)
+            call lp%gemm('N', 'T', nao, nao, nocc_s, occ, c, nao, c, nao, 0.0_dp, d, nao)
          else
             call zero_dev(nao, d)
          end if
@@ -1336,7 +1405,7 @@ contains
 
       !
       ! ADIIS coefficients over the first `m` slots of fstore_a/dstore_a
-      ! (host association: trc_scf_run's locals, same way `la`/`n2`/`nspin`
+      ! (host association: trc_scf_run's locals, same way `lp`/`n2`/`nspin`
       ! are reached here). Slot `m` is always the newest -- the ADIIS
       ! history above is appended the same way CDIIS's is, at the top of
       ! the used range, not cycled -- so Hu & Yang's "entry n" is simply
@@ -1349,7 +1418,7 @@ contains
       !
       ! by projected gradient with backtracking: m <= ndiis, so this is a
       ! few hundred flops on the host once the dot products (device, via
-      ! `la%dot`, the same call the CDIIS B matrix above uses) are in
+      ! `lp%dot`, the same call the CDIIS B matrix above uses) are in
       ! hand. Starting from all weight on the newest entry means a step
       ! that makes no progress degrades to the plain Roothaan step rather
       ! than to nonsense.
@@ -1361,13 +1430,13 @@ contains
          integer :: ii, jj, itr, ls
          logical :: improved
          do ii = 1, m
-            dvec(ii) = la%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                       - la%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+            dvec(ii) = lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
+                       - lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
             do jj = 1, m
-               amat(ii, jj) = la%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, jj)) &
-                              - la%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                              - la%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, jj)) &
-                              + la%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+               amat(ii, jj) = lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, jj)) &
+                              - lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
+                              - lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, jj)) &
+                              + lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
             end do
          end do
          c = 0.0_dp; c(m) = 1.0_dp

@@ -51,6 +51,7 @@ module trc_eri
    use trc_screen, only: schwarz_bounds, pair_index
    use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
+   use pic_timer, only: timer_type
    use trc_binkernel, only: fock_bins
 #ifdef TERCO_RYS
    use trc_grad, only: grad_bins
@@ -115,6 +116,10 @@ module trc_eri
       !! summed across ranks. One rank is rank 0 of 1 and no communicator.
       integer :: rank = 0, nranks = 1
       logical :: distributed = .false.
+      real(dp) :: t_build(6) = 0.0_dp
+      !! Wall seconds of the last build's stages: primitive pairs, Schwarz
+      !! bounds, HGP pairs, bins, pair quartets, upload to the device.
+      !! trc_scf reports them with the rest of its setup.
    contains
       procedure :: build   => eri_build
       procedure :: fock      => eri_fock
@@ -246,17 +251,13 @@ contains
       real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
       real(dp), allocatable :: qs(:), one(:)
       integer,  allocatable :: hp_ki(:), hp_kj(:)
-      ! Stage timing, printed only when TRC_BUILD_TIMING is set. `build` is
-      ! four routines with very different costs and no way to tell from the
-      ! outside which one is the slow one.
-      logical :: btime
-      integer :: bt_c0, bt_c1, bt_rate
-      character(len=8) :: bt_env
+      ! Stage timing, kept in this%t_build: `build` is five routines with
+      ! very different costs and no way to tell from the outside which one
+      ! is the slow one.
+      type(timer_type) :: tm
 
-      bt_env = ' '
-      call get_environment_variable('TRC_BUILD_TIMING', bt_env)
-      btime = len_trim(bt_env) > 0
-      call system_clock(bt_c0, bt_rate)
+      this%t_build = 0.0_dp
+      call tm%start()
 
       ! All three, not just Boys. The Schwarz bounds go through the MMD path,
       ! which reads the Hermite and Cartesian index tables; without them the
@@ -282,21 +283,15 @@ contains
 
       call build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, thresh, &
                        pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
-      if (btime) then
-         call system_clock(bt_c1)
-         print '(a,a,f9.3,a)', '  [build] ', 'build_pairs       ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
-         bt_c0 = bt_c1
-      end if
+      this%t_build(1) = tm%get_elapsed_time()
+      call tm%start()
 
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
       call schwarz_bounds(b%nshell, npp, b%sh_l, pp_off, pp_n, pp_p, pp_r, &
                           pp_c, pp_e, qs)
-      if (btime) then
-         call system_clock(bt_c1)
-         print '(a,a,f9.3,a)', '  [build] ', 'schwarz_bounds    ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
-         bt_c0 = bt_c1
-      end if
+      this%t_build(2) = tm%get_elapsed_time()
+      call tm%start()
 
       !
       ! ON A SPLIT BASIS THE BOUND CARRIES THE TRANSFORM'S AMPLITUDE.
@@ -332,11 +327,8 @@ contains
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                            this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp, &
                            pp_a=this%hp_a)
-      if (btime) then
-         call system_clock(bt_c1)
-         print '(a,a,f9.3,a)', '  [build] ', 'build_pairs_hgp   ', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
-         bt_c0 = bt_c1
-      end if
+      this%t_build(3) = tm%get_elapsed_time()
+      call tm%start()
 
       ! The contracted kernels fold the coefficients into hp_c and never
       ! ask which primitive a pair came from.
@@ -344,11 +336,8 @@ contains
 
       call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                               this%bins, pp_n=this%hp_n, res=bres)
-      if (btime) then
-         call system_clock(bt_c1)
-         print '(a,a,f9.3,a)', '  [build] ', 'build_binned_pairs', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
-         bt_c0 = bt_c1
-      end if
+      this%t_build(4) = tm%get_elapsed_time()
+      call tm%start()
 
       call build_pair_quartets(this%bins, b%nshell, this%nhpp, &
                                this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -358,11 +347,8 @@ contains
                                this%sq_ax, this%sq_ay, this%sq_az, &
                                this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                                pp_a=this%hp_a, qp_a=this%qp_a)
-      if (btime) then
-         call system_clock(bt_c1)
-         print '(a,a,f9.3,a)', '  [build] ', 'build_pair_quartets', real(bt_c1 - bt_c0, dp)/real(bt_rate, dp), ' s'
-         bt_c0 = bt_c1
-      end if
+      this%t_build(5) = tm%get_elapsed_time()
+      call tm%start()
 
       allocate (this%dsh(b%nshell, b%nshell))
       this%dsh = huge(1.0_dp)*1.0e-30_dp
@@ -380,6 +366,7 @@ contains
       !$acc                   this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
       this%on_device = .true.
+      this%t_build(6) = tm%get_elapsed_time()
    end subroutine build_structures
 
    !
