@@ -216,10 +216,10 @@ contains
    ! hgp_quartet (trc_hgp.F90) is the same Obara-Saika recursion the
    ! generated per-class kernels (pc_dispatch) were generated from, and,
    ! unlike those kernels -- which stop at d (trc_rys_select.F90's HGP_LMAX)
-   ! -- it is not class-specialised: its scratch is sized by LCMAX = 2*LMAX,
-   ! the same compile-time ceiling trc_cart.F90 uses everywhere, not by
-   ! HGP_LMAX. So it is correct at every class the build supports, f
-   ! included, even though the production Fock path routes an f-containing
+   ! -- it is not class-specialised: each quartet's scratch is sized from its
+   ! own class (hgp_scratch_size) in a `work` array this routine allocates,
+   ! so nothing ties it to HGP_LMAX. It is correct at every class the build
+   ! supports, f included, even though the production Fock path routes an f-containing
    ! class to Rys instead of HGP -- the bound does not need to be computed
    ! the same way the kernel that will consume it is.
    !
