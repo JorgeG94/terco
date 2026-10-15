@@ -951,18 +951,11 @@ contains
          ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
          ! too: one set of charges, one operator added to both spins) -----
          if (pcm_on) then
-            if (present(comm)) then
-               if (nspin == 1) then
-                  call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm, comm)
-               else
-                  call pcm%operator(b, pl, dtot_c, vpcm_c, epcm, comm)
-               end if
+            ! An absent `comm` passes through as absent: one rank, unsplit.
+            if (nspin == 1) then
+               call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm, comm)
             else
-               if (nspin == 1) then
-                  call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm)
-               else
-                  call pcm%operator(b, pl, dtot_c, vpcm_c, epcm)
-               end if
+               call pcm%operator(b, pl, dtot_c, vpcm_c, epcm, comm)
             end if
             if (sph) then
                call sph_cart_to_sph(b, vpcm_c, vpcm)
