@@ -122,7 +122,7 @@ The SCF comparisons (`rks`, `scf_robust`, `rimp2`) are the one place a
 `rks.ref` commits pyscf's converged energy AND its converged density (in
 terco's AO order); the Fortran side's "at-density control" calls
 `trc_scf_run` with `max_iter=1` and that committed density as `dguess`,
-which runs exactly one Roothaan iteration -- `src/trc_scf.F90`'s own
+which runs exactly one Roothaan iteration -- `src/scf/trc_scf_driver.F90`'s own
 "energy at this density" comment -- so the returned energy is terco's
 functional evaluated at pyscf's density, equivalent to pyscf's own
 `energy_tot(dm0)`, never an iterated answer.

@@ -9,32 +9,32 @@
 # --- hand written -----------------------------------------------------------
 target_sources(
   ${main_lib}
-  PRIVATE trc_boys.F90       # Boys function, tabulated and asymptotic
-          trc_tables.F90     # Cartesian index tables
-          trc_cart.F90
-          trc_batch.F90      # primitive-pair batching
-          trc_hgp.F90        # Head-Gordon-Pople driver
-          trc_screen.F90     # Schwarz bounds
-          trc_bins.F90       # the binned shell-pair container
-          trc_binkernel.F90  # the shared quartet kernel and the digestion
-          trc_grad.F90       # two-electron gradient launch plan, Rys only
-          trc_api.F90        # basis, pair list, 1e, multipoles, DF
-          trc_decontract.F90 # splitting a general contraction into primitives
-          trc_fock.F90       # the four-centre Fock builds
-          trc_linalg.F90     # dense linear algebra on device-resident matrices
-          trc_pcm_radii.F90  # cavity radii for the polarisable continuum
-          trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
-          trc_scf.F90        # the SCF: HF and Kohn-Sham, R and U, resident
-          trc_rimp2.F90      # RI-MP2 on the RHF reference, resident
-          trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
-          trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
-          trc_sad.F90 # the SAD guess built here, one atomic SCF per element
-          trc_sap.F90 # SAP: free-atom potentials, superposed on a quadrature
-          trc_capi.F90       # the bind(c) skin
-          trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
-          trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
-          trc_sph.F90        # the spherical (pure) AO space: block-sparse Cartesian <-> spherical transforms
-          trc_acc_shim.F90)  # see the file: this one is not optional
+  PRIVATE core/trc_boys.F90       # Boys function, tabulated and asymptotic
+          core/trc_tables.F90     # Cartesian index tables
+          core/trc_cart.F90
+          eri/trc_batch.F90      # primitive-pair batching
+          eri/trc_hgp.F90        # Head-Gordon-Pople driver
+          eri/trc_screen.F90     # Schwarz bounds
+          eri/trc_bins.F90       # the binned shell-pair container
+          eri/trc_binkernel.F90  # the shared quartet kernel and the digestion
+          eri/trc_grad.F90       # two-electron gradient launch plan, Rys only
+          api/trc_api.F90        # basis, pair list, 1e, multipoles, DF
+          basis/trc_decontract.F90 # splitting a general contraction into primitives
+          eri/trc_eri.F90       # the four-centre Fock builds
+          core/trc_linalg.F90     # dense linear algebra on device-resident matrices
+          solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
+          solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
+          scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
+          post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
+          basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
+          scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
+          scf/trc_sad.F90 # the SAD guess built here, one atomic SCF per element
+          scf/trc_sap.F90 # SAP: free-atom potentials, superposed on a quadrature
+          api/trc_capi.F90       # the bind(c) skin
+          core/trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
+          core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
+          core/trc_sph.F90        # the spherical (pure) AO space: block-sparse Cartesian <-> spherical transforms
+          core/trc_acc_shim.F90)  # see the file: this one is not optional
 
 # --- the molecular quadrature -------------------------------------------------
 #
@@ -45,7 +45,7 @@ target_sources(
 #
 target_sources(
   ${main_lib}
-  PRIVATE grid/trc_error.F90
+  PRIVATE core/trc_error.F90
           grid/trc_lebedev_data.F90
           grid/trc_lebedev.F90
           grid/trc_dft_radial_data.F90
@@ -69,49 +69,49 @@ target_sources(
 #
 target_sources(
   ${main_lib}
-  PRIVATE xc/bit_repro.f90          # bit-reproducible exp/log/pow/erfc/cbrt, vendored
-          xc/bit_repro_helpers.f90  # its submodule
+  PRIVATE xc/vendor/bit_repro.f90          # bit-reproducible exp/log/pow/erfc/cbrt, vendored
+          xc/vendor/bit_repro_helpers.f90  # its submodule
           xc/trc_xc_util.F90
-          xc/trc_xc_slater_exchange.F90
-          xc/trc_xc_vwn.F90
-          xc/trc_xc_vwn_rpa.F90
-          xc/trc_xc_pbe_x.F90
-          xc/trc_xc_pbe_c.F90
-          xc/trc_xc_b88.F90
-          xc/trc_xc_lyp.F90
-          xc/trc_xc_wb97x_v_xc.F90
-          xc/trc_xc_wb97x_xc.F90
-          xc/trc_xc_wb97_xc.F90
-          xc/trc_xc_vwn3.F90
-          xc/trc_xc_pz81.F90
-          xc/trc_xc_pz81_mod.F90
-          xc/trc_xc_pw91_lda.F90
-          xc/trc_xc_pw91_lda_mod.F90
-          xc/trc_xc_pw91_lda_rpa.F90
-          xc/trc_xc_rev_pbe_x.F90
-          xc/trc_xc_rpbe_x.F90
-          xc/trc_xc_optx_x.F90
-          xc/trc_xc_mpw91_x.F90
-          xc/trc_xc_pw86_x.F90
-          xc/trc_xc_pw91_x.F90
-          xc/trc_xc_p86_c.F90
-          xc/trc_xc_p86vwn_ft_c.F90
-          xc/trc_xc_pw91_c.F90
-          xc/trc_xc_pbe_sol_c.F90
-          xc/trc_xc_bmk_c.F90
-          xc/trc_xc_n12_c.F90
-          xc/trc_xc_n12_sx_c.F90
-          xc/trc_xc_sogga11_x_c.F90
-          xc/trc_xc_sogga11_x_x.F90
-          xc/trc_xc_b97_d.F90
-          xc/trc_xc_ityh_x.F90
-          xc/trc_xc_ityh_x_015.F90
-          xc/trc_xc_ityh_x_033.F90
-          xc/trc_xc_hjs_pbe_x.F90
-          xc/trc_xc_lrcwpbe_hjs_pbe_x.F90
-          xc/trc_xc_lrcwpbeh_hjs_pbe_x.F90
-          xc/trc_xc_wb97x_d_xc.F90
-          xc/trc_xc_wb97x_d3_xc.F90
+          xc/functionals/trc_xc_slater_exchange.F90
+          xc/functionals/trc_xc_vwn.F90
+          xc/functionals/trc_xc_vwn_rpa.F90
+          xc/functionals/trc_xc_pbe_x.F90
+          xc/functionals/trc_xc_pbe_c.F90
+          xc/functionals/trc_xc_b88.F90
+          xc/functionals/trc_xc_lyp.F90
+          xc/functionals/trc_xc_wb97x_v_xc.F90
+          xc/functionals/trc_xc_wb97x_xc.F90
+          xc/functionals/trc_xc_wb97_xc.F90
+          xc/functionals/trc_xc_vwn3.F90
+          xc/functionals/trc_xc_pz81.F90
+          xc/functionals/trc_xc_pz81_mod.F90
+          xc/functionals/trc_xc_pw91_lda.F90
+          xc/functionals/trc_xc_pw91_lda_mod.F90
+          xc/functionals/trc_xc_pw91_lda_rpa.F90
+          xc/functionals/trc_xc_rev_pbe_x.F90
+          xc/functionals/trc_xc_rpbe_x.F90
+          xc/functionals/trc_xc_optx_x.F90
+          xc/functionals/trc_xc_mpw91_x.F90
+          xc/functionals/trc_xc_pw86_x.F90
+          xc/functionals/trc_xc_pw91_x.F90
+          xc/functionals/trc_xc_p86_c.F90
+          xc/functionals/trc_xc_p86vwn_ft_c.F90
+          xc/functionals/trc_xc_pw91_c.F90
+          xc/functionals/trc_xc_pbe_sol_c.F90
+          xc/functionals/trc_xc_bmk_c.F90
+          xc/functionals/trc_xc_n12_c.F90
+          xc/functionals/trc_xc_n12_sx_c.F90
+          xc/functionals/trc_xc_sogga11_x_c.F90
+          xc/functionals/trc_xc_sogga11_x_x.F90
+          xc/functionals/trc_xc_b97_d.F90
+          xc/functionals/trc_xc_ityh_x.F90
+          xc/functionals/trc_xc_ityh_x_015.F90
+          xc/functionals/trc_xc_ityh_x_033.F90
+          xc/functionals/trc_xc_hjs_pbe_x.F90
+          xc/functionals/trc_xc_lrcwpbe_hjs_pbe_x.F90
+          xc/functionals/trc_xc_lrcwpbeh_hjs_pbe_x.F90
+          xc/functionals/trc_xc_wb97x_d_xc.F90
+          xc/functionals/trc_xc_wb97x_d3_xc.F90
           xc/trc_xc_functional.F90  # compositions, and the per-point dispatch
           xc/trc_collocation.F90    # basis functions and gradients at a point
           xc/trc_xc_batch.F90       # the grid, batched and screened
@@ -136,46 +136,46 @@ target_sources(
 # neither reassociates by default.
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
   set_source_files_properties(
-    xc/trc_xc_slater_exchange.F90
-    xc/trc_xc_vwn.F90
-    xc/trc_xc_vwn_rpa.F90
-    xc/trc_xc_pbe_x.F90
-    xc/trc_xc_pbe_c.F90
-    xc/trc_xc_b88.F90
-    xc/trc_xc_lyp.F90
-    xc/trc_xc_wb97x_v_xc.F90
-    xc/trc_xc_wb97x_xc.F90
-    xc/trc_xc_wb97_xc.F90
-    xc/trc_xc_vwn3.F90
-    xc/trc_xc_pz81.F90
-    xc/trc_xc_pz81_mod.F90
-    xc/trc_xc_pw91_lda.F90
-    xc/trc_xc_pw91_lda_mod.F90
-    xc/trc_xc_pw91_lda_rpa.F90
-    xc/trc_xc_rev_pbe_x.F90
-    xc/trc_xc_rpbe_x.F90
-    xc/trc_xc_optx_x.F90
-    xc/trc_xc_mpw91_x.F90
-    xc/trc_xc_pw86_x.F90
-    xc/trc_xc_pw91_x.F90
-    xc/trc_xc_p86_c.F90
-    xc/trc_xc_p86vwn_ft_c.F90
-    xc/trc_xc_pw91_c.F90
-    xc/trc_xc_pbe_sol_c.F90
-    xc/trc_xc_bmk_c.F90
-    xc/trc_xc_n12_c.F90
-    xc/trc_xc_n12_sx_c.F90
-    xc/trc_xc_sogga11_x_c.F90
-    xc/trc_xc_sogga11_x_x.F90
-    xc/trc_xc_b97_d.F90
-    xc/trc_xc_ityh_x.F90
-    xc/trc_xc_ityh_x_015.F90
-    xc/trc_xc_ityh_x_033.F90
-    xc/trc_xc_hjs_pbe_x.F90
-    xc/trc_xc_lrcwpbe_hjs_pbe_x.F90
-    xc/trc_xc_lrcwpbeh_hjs_pbe_x.F90
-    xc/trc_xc_wb97x_d_xc.F90
-    xc/trc_xc_wb97x_d3_xc.F90
+    xc/functionals/trc_xc_slater_exchange.F90
+    xc/functionals/trc_xc_vwn.F90
+    xc/functionals/trc_xc_vwn_rpa.F90
+    xc/functionals/trc_xc_pbe_x.F90
+    xc/functionals/trc_xc_pbe_c.F90
+    xc/functionals/trc_xc_b88.F90
+    xc/functionals/trc_xc_lyp.F90
+    xc/functionals/trc_xc_wb97x_v_xc.F90
+    xc/functionals/trc_xc_wb97x_xc.F90
+    xc/functionals/trc_xc_wb97_xc.F90
+    xc/functionals/trc_xc_vwn3.F90
+    xc/functionals/trc_xc_pz81.F90
+    xc/functionals/trc_xc_pz81_mod.F90
+    xc/functionals/trc_xc_pw91_lda.F90
+    xc/functionals/trc_xc_pw91_lda_mod.F90
+    xc/functionals/trc_xc_pw91_lda_rpa.F90
+    xc/functionals/trc_xc_rev_pbe_x.F90
+    xc/functionals/trc_xc_rpbe_x.F90
+    xc/functionals/trc_xc_optx_x.F90
+    xc/functionals/trc_xc_mpw91_x.F90
+    xc/functionals/trc_xc_pw86_x.F90
+    xc/functionals/trc_xc_pw91_x.F90
+    xc/functionals/trc_xc_p86_c.F90
+    xc/functionals/trc_xc_p86vwn_ft_c.F90
+    xc/functionals/trc_xc_pw91_c.F90
+    xc/functionals/trc_xc_pbe_sol_c.F90
+    xc/functionals/trc_xc_bmk_c.F90
+    xc/functionals/trc_xc_n12_c.F90
+    xc/functionals/trc_xc_n12_sx_c.F90
+    xc/functionals/trc_xc_sogga11_x_c.F90
+    xc/functionals/trc_xc_sogga11_x_x.F90
+    xc/functionals/trc_xc_b97_d.F90
+    xc/functionals/trc_xc_ityh_x.F90
+    xc/functionals/trc_xc_ityh_x_015.F90
+    xc/functionals/trc_xc_ityh_x_033.F90
+    xc/functionals/trc_xc_hjs_pbe_x.F90
+    xc/functionals/trc_xc_lrcwpbe_hjs_pbe_x.F90
+    xc/functionals/trc_xc_lrcwpbeh_hjs_pbe_x.F90
+    xc/functionals/trc_xc_wb97x_d_xc.F90
+    xc/functionals/trc_xc_wb97x_d3_xc.F90
     DIRECTORY ${PROJECT_SOURCE_DIR}
     PROPERTIES COMPILE_OPTIONS "-fp-model=precise")
 endif()
@@ -489,7 +489,7 @@ if(_regen)
               --perm-b2l-out ${_gen_out}/trc_cart_perm_b2l.inc)
 
     # The Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4
-    # (src/trc_sph.F90's only consumer). Fixed at l<=4 regardless of
+    # (src/core/trc_sph.F90's only consumer). Fixed at l<=4 regardless of
     # TERCO_LMAX or TRC_MAXL, for the same reason gen_cartcomp.py's CEIL is 4
     # and not TERCO_LMAX: f support (milestone M3) needs this table ready
     # before any four-centre kernel reaches f, and generating a small table
@@ -566,7 +566,7 @@ if(TERCO_RYS)
   # is not recursive -- never picks them up, ON or OFF.
   target_sources(
     ${main_lib}
-    PRIVATE trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
+    PRIVATE eri/trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
             generated/rys/trc_rys_table1.F90
             generated/rys/trc_rys_table2.F90
             generated/rys/trc_rys_table3.F90

@@ -4,7 +4,7 @@
 !
 ! The library does NOT ship a basis set -- a caller supplies exponents and
 ! coefficients, and the ONE way a terco test does that is
-! `trc_basis_from_json` (`src/trc_basis_json.F90`) against a file under
+! `trc_basis_from_json` (`src/basis/trc_basis_json.F90`) against a file under
 ! `basis_sets/`. `build_631g` below is NOT a second way to do this: it is a
 ! literal, hand-transcribed copy of 6-31G kept so one check
 ! (test/check_basis_631g_ref.F90) can prove the JSON path right against a

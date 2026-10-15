@@ -5,7 +5,7 @@
 ! d shell's six components share one constant, so <XY|XY> is 1/3, not 1.
 ! GAMESS normalises every component INDIVIDUALLY to 1. trc_set_ao_norm
 ! switches trc_capi's own AO-indexed entries between the two; see
-! src/trc_ao_norm.F90's header for the closed form and src/trc_capi.F90's
+! src/core/trc_ao_norm.F90's header for the closed form and src/api/trc_capi.F90's
 ! "AO NORMALISATION" section for exactly which entries convert.
 !
 ! FORCED CARTESIAN. cc-pVDZ's d shells are tagged "gto_spherical" in BSE, so

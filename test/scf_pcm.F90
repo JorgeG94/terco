@@ -13,7 +13,7 @@
 !   at-density:  terco's energy and E_diel AT pyscf's converged density --
 !                trc_scf_run with max_iter=1 and that density as dguess,
 !                whose energy is evaluated at dguess before the Roothaan
-!                step (the "energy at this density" in src/trc_scf.F90),
+!                step (the "energy at this density" in src/scf/trc_scf_driver.F90),
 !                i.e. pyscf's energy_tot(dm) -- so a disagreement there is
 !                the functional, not the convergence.
 !

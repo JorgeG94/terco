@@ -2,7 +2,7 @@
 
 This is the numerically-verified recipe for a Fortran rotaxis emitter that
 targets terco's per-class kernel ABI (`src/generated/trc_pc_kLLLL.F90`,
-`src/trc_hgp.F90`'s `build_pairs_hgp`). Every claim below was checked by
+`src/eri/trc_hgp.F90`'s `build_pairs_hgp`). Every claim below was checked by
 `scripts/rotaxis/check_numeric.py` against `pyscf`'s `int2e_cart` on all 16
 ordered s/p classes, including the degenerate geometries; see the report
 handed back with this file for the run output. Nothing here is derived by
@@ -101,7 +101,7 @@ scaled, actual worst measured `3.07e-14`, i.e. double-precision noise):
 
 ## 2. Bra primitive pair, in terms of terco's `pp_*`
 
-terco's bra pair table comes from `build_pairs_hgp` (`src/trc_hgp.F90:83`)
+terco's bra pair table comes from `build_pairs_hgp` (`src/eri/trc_hgp.F90:83`)
 called on the bra shell pair `(si, sj)`. For primitive pair `kp` in
 `[pp_off(key)+1, pp_off(key)+pp_n(key)]`, `key = (si-1)*nbas + sj`:
 
@@ -135,10 +135,10 @@ kab(kp) = pp_c(kp) / pp_p(kp)
 ```
 
 `pp_c(kp)` already **is** `c_i c_j exp(-mu R_AB^2)` (verified from
-`src/trc_hgp.F90:179`: `pp_c(k) = sh_c(ki,i)*cfac(i)*sh_c(kj,j)*cfac(j)*
+`src/eri/trc_hgp.F90:179`: `pp_c(k) = sh_c(ki,i)*cfac(i)*sh_c(kj,j)*cfac(j)*
 exp(-mu*ab2)`, with `cfac` always 1.0 on terco's per-class kernel path
 because `trc_decontract` has already split every shell to one column
-before this table is built -- see `src/trc_fock.F90:306-309`, which passes
+before this table is built -- see `src/eri/trc_eri.F90:306-309`, which passes
 `one` for `cfac`). `sh_c` is **not** the raw basis-file coefficient: see
 section 4 for what it already carries.
 
@@ -194,8 +194,8 @@ kab(kp) * kcd(kq) * B_0
 ```
 
 which is **bit-for-bit the same grouping** terco's own HGP kernel already
-computes (`src/trc_hgp.F90:306`, `src/trc_binkernel.F90:900`,
-`src/trc_batch.F90:386`):
+computes (`src/eri/trc_hgp.F90:306`, `src/eri/trc_binkernel.F90:900`,
+`src/eri/trc_batch.F90:386`):
 
 ```fortran
 pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
@@ -214,7 +214,7 @@ There is **no separate per-l normalisation step** to apply afterward the
 way libfint's driver applies `cint_common_fac_sp` post-kernel
 (`cint_rotaxis_2e.f90:one_block`, the `fc(...)` array) -- terco folds
 `common_fac_sp` into `sh_c` **once, at basis-build time**
-(`src/trc_api.F90:284`, `docs/GENERATORS.md` "Shared conventions"), so it
+(`src/api/trc_api.F90:284`, `docs/GENERATORS.md` "Shared conventions"), so it
 is already inside `pp_c` and therefore already inside `kab`/`kcd` above.
 **Do not apply `common_fac_sp` a second time in the kernel or the driver.**
 This is the one place terco's convention differs from libfint's own

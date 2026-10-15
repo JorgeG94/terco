@@ -10,7 +10,7 @@
 ! them is not the same basis pyscf's default (cart=False) or GAMESS mean
 ! when they say "def2-SVP" -- it is pyscf's cart=True basis instead. This
 ! module is the boundary: it turns a Cartesian (nao, nao) matrix into a
-! spherical (nao_sph, nao_sph) one and back, so the SCF (trc_scf.F90) can
+! spherical (nao_sph, nao_sph) one and back, so the SCF (trc_scf_driver.F90) can
 ! run its own matrices -- S, H, D, F, C, eps -- at nao_sph while every
 ! integral underneath them is still built at nao.
 !
@@ -33,7 +33,7 @@
 ! WHERE THE TRANSFORMS RUN
 ! --------------------------
 ! On the device, where S, H, D and F already live for the whole SCF
-! iteration (trc_scf.F90's module header: "every matrix resident on the
+! iteration (trc_scf_driver.F90's module header: "every matrix resident on the
 ! device"). `cart_to_sph`/`sph_to_cart` are `do concurrent` over a FLATTENED
 ! shell-pair index, for the same reason trc_decontract.F90's
 ! `expand_kernel`/`fold_kernel` are: a two-dimensional `do concurrent`

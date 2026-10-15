@@ -99,7 +99,7 @@ program scf_rks
       opts%grid_level = 3
       opts%conv_energy = 1.0e-11_dp
       opts%conv_density = 1.0e-8_dp
-      ! conv_density no longer gates (trc_scf.F90); the commutator norm does.
+      ! conv_density no longer gates (trc_scf_driver.F90); the commutator norm does.
       ! At its default 1e-5 the slow UKS wB97X-V case could stop up to ~2e-7
       ! above its minimum (seen under ifx), past the 1e-8 gate below, while
       ! terco's energy AT pyscf's density agreed to 2.5e-11. Converge to the
@@ -168,7 +168,7 @@ program scf_rks
          de = abs(res%energy - e_ref)
          ! The at-density control: terco's OWN energy at pyscf's committed,
          ! converged density -- max_iter=1 with dguess runs exactly one
-         ! Roothaan iteration, whose etot (src/trc_scf.F90's own "energy at
+         ! Roothaan iteration, whose etot (src/scf/trc_scf_driver.F90's own "energy at
          ! this density" comment) is computed from dguess BEFORE the
          ! diagonalisation updates it, i.e. exactly energy_tot(dm0)'s
          ! equivalent -- never an iterated answer.

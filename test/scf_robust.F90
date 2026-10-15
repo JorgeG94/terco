@@ -75,7 +75,7 @@ program scf_robust
    !! (1e-8) for everything but the diffuse case, which needs it loosened
    !! to reach the S eigenvalues a doubly-augmented basis actually has.
    !! A/EDIIS is a no-op for the two closed-shell cases: `diis_start` is
-   !! already infinite there (see trc_scf.F90), so `diis_on` is true from
+   !! already infinite there (see trc_scf_driver.F90), so `diis_on` is true from
    !! the first post-damping iteration and `adiis_active` can never fire.
    !! Asking for it anyway on every case, rather than only the two it can
    !! change, is the point: the option has to be inert where it has

@@ -12,7 +12,7 @@
 !      threshold bounds the error rather than hoping.
 !
 !      Q is built with the full Coulomb operator here and nowhere adjusted for
-!      omega (trc_fock.F90's range-separation parameter). The bound survives
+!      omega (trc_eri.F90's range-separation parameter). The bound survives
 !      attenuation by a FOURIER argument, not a pointwise one on the real-
 !      space kernel (erf(omega r)/r is not pointwise <= 1/r everywhere; it is
 !      smaller at small r and the two cross): erf(omega r)/r has Fourier
@@ -202,7 +202,7 @@ contains
    ! THE SCALE, AND WHY THIS IS NOT JUST A FASTER COPY OF THE OLD ROUTINE.
    ! `build_pairs` (MMD) multiplies `common_fac_sp(li)` into the coefficient
    ! of every primitive it stores, unconditionally. `build_pairs_hgp` does
-   ! NOT: trc_fock.F90's `build_structures` passes it cfac = 1, because the
+   ! NOT: trc_eri.F90's `build_structures` passes it cfac = 1, because the
    ! basis it is handed (`trc_api`'s `basis_build`) already folded
    ! common_fac_sp into `sh_c` once. Handed that same already-folded basis,
    ! the old MMD route folded it a SECOND time -- common_fac_sp(0) =

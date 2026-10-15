@@ -1,6 +1,6 @@
 !
 ! eri%fock (the two-electron Fock build, J - K/2 for the total density, see
-! src/trc_fock.F90's own header for that convention) against pyscf's raw
+! src/eri/trc_eri.F90's own header for that convention) against pyscf's raw
 ! int2e, on a fixed, deterministic, non-SCF density -- the first class to
 ! exercise an f shell (l=3) in a four-centre test.
 !

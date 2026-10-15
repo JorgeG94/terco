@@ -2,7 +2,7 @@
 # case: scf_rks
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: 2bd330215932d2bfdd9635054d6cfc505942d3a0442fa7b53fd290a8ff743fbc
+# hash: 4f170dbebb9e4e6eb532c5a75dd1823e4d26fe0522dcd694f901d33c5856074b
 # files: test/pyscf_refs/generate.py test/scf_rks.F90 test/basis_sets/6-31g.json test/water.xyz test/oh.xyz
 NCASE 12
 NAME_0 hf

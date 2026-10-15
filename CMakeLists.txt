@@ -247,7 +247,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 #
 # PIC, for one thing: `sort_index` on 64-bit Morton codes, to order the shell
 # pairs inside each bin spatially. See `sort_bins_spatially` in
-# `src/trc_bins.F90` for why that ordering is worth a sort.
+# `src/eri/trc_bins.F90` for why that ordering is worth a sort.
 #
 # PIC carries these sorts precisely because the Fortran stdlib does not build
 # with the NVIDIA compilers, which is the situation terco is permanently in.
@@ -326,7 +326,7 @@ add_subdirectory(src)
 
 #
 # cuSOLVER and cuBLAS, for the SCF's eigenproblem and products
-# (src/trc_linalg.F90). A LINK option on terco's own target, PUBLIC so that
+# (src/core/trc_linalg.F90). A LINK option on terco's own target, PUBLIC so that
 # anything linking libterco with nvfortran gets it too -- and NOT in
 # CMAKE_Fortran_FLAGS, where it reached every target in the tree: pic's own
 # `app`, fetched as a dependency, was then asked to link CUDA math libraries
@@ -339,7 +339,7 @@ if(TERCO_ENABLE_GPU)
 endif()
 
 #
-# pic-blas, for the SCF driver (src/trc_scf.F90): the orthogonaliser and the
+# pic-blas, for the SCF driver (src/scf/trc_scf_driver.F90): the orthogonaliser and the
 # core guess go through its explicit-interface wrappers in every build, and
 # under a host build so do the eigenproblem, the products and the dot
 # products of the iteration. The GPU build does those on the device;

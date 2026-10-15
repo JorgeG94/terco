@@ -6,7 +6,7 @@ three factorisation levels a generated Fortran kernel would (see
 scripts/rotaxis/factor.py and libfint's scripts/rotaxis_mmd/emit.py), using
 Python floats instead of Fortran statements, starting from the same
 per-primitive-pair quantities terco's own kernels are handed (the pp_p,
-pp_r, pp_ra, pp_rb, pp_c arrays built by src/trc_hgp.F90's
+pp_r, pp_ra, pp_rb, pp_c arrays built by src/eri/trc_hgp.F90's
 build_pairs_hgp), and compares the lab-frame, terco-normalised result
 against pyscf's int2e_cart on random contracted shells and geometries,
 including the degenerate frames a GPU kernel must not choke on.
@@ -16,7 +16,7 @@ Exits nonzero if any quartet's scaled error exceeds the tolerance.
 
 WHERE THE NUMBERS COME FROM
 ----------------------------
-terco's pp_* convention (read from src/trc_hgp.F90, src/trc_api.F90,
+terco's pp_* convention (read from src/eri/trc_hgp.F90, src/api/trc_api.F90,
 src/generated/trc_pc_k1111.F90 -- see FRAME.md for the derivation in full):
 
   pp_p(k)      p = a + b                    (bra) / q = c + d        (ket)
@@ -28,7 +28,7 @@ src/generated/trc_pc_k1111.F90 -- see FRAME.md for the derivation in full):
   where c_i is terco's sh_c: the shell's contraction coefficient already
   multiplied by the primitive's own normalisation AND by libcint's
   common_fac_sp(l) (0.282094791773878143 for l=0, 0.488602511902919921 for
-  l=1) -- see src/trc_api.F90:223-230,284 and docs/GENERATORS.md section
+  l=1) -- see src/api/trc_api.F90:223-230,284 and docs/GENERATORS.md section
   "Shared conventions". This is verified empirically below by
   `verify_pp_c_convention`, run once at start-up: pyscf's own _env
   coefficients are the primitive+contraction-normalised value alone (no

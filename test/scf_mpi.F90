@@ -115,7 +115,7 @@ program scf_mpi
 
    ! --- PCM: water/6-31G*, C-PCM (HF) and IEF-PCM (B3LYP) -----------------
    !
-   ! pcm%operator (src/trc_pcm.F90) splits the two solute-surface integral
+   ! pcm%operator (src/solvation/trc_pcm.F90) splits the two solute-surface integral
    ! passes over a contiguous range of points per rank; the cavity and K
    ! stay whole and replicated. Both the total energy AND E_diel (res%e_pcm)
    ! must land on this program's own np 1 values on every rank count.
