@@ -2067,7 +2067,7 @@ contains
       type(error_t) :: err
       real(dp), allocatable :: dsad(:, :), dg(:, :, :), hsap(:, :)
       integer :: nelec, nunp, nalpha, nbeta, nspin, n, nc
-      logical :: collective
+      logical :: collective, talk
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2095,6 +2095,14 @@ contains
          return
       end if
       nspin = merge(2, 1, nalpha /= nbeta .or. cx%opts%unrestricted)
+      ! The communicator first, so the guess below binds the same device
+      ! the SCF will and says what it did once, on rank 0, not once per
+      ! rank. Every `return` from here on frees it.
+      call trc_build_comm(cx%fcomm, comm, collective, status)
+      if (status /= TRC_OK) return
+      status = TRC_ERR_BADARG   ! what the guess's own failures below report
+      talk = cx%opts%verbose
+      if (collective) talk = talk .and. comm%rank() == 0
       opts = cx%opts
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
@@ -2107,12 +2115,13 @@ contains
          ! one thing SAD never looks at. On a neutral molecule the two are
          ! the same density; see trc_sad.
          if (cx%guess_kind == TRC_GUESS_SADQ) then
-            call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=cx%opts%verbose)
+            call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=talk)
          else
-            call trc_sad_build(cx%bb%b, dsad, err, verbose=cx%opts%verbose)
+            call trc_sad_build(cx%bb%b, dsad, err, verbose=talk)
          end if
          if (err%has_error()) then
             cx%message = err%get_message()
+            if (collective) call comm%finalize()
             return
          end if
          allocate (dg(n, n, nspin))
@@ -2146,7 +2155,7 @@ contains
             call trc_1e(cx%bb%b, pl, s1, t1, v1)
             !$acc update self(s1, t1, v1)
             !$acc exit data delete(s1, t1, v1)
-            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap_c, err, verbose=cx%opts%verbose)
+            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap_c, err, verbose=talk)
             call pl%release()
             deallocate (s1, t1, v1)
             if (.not. err%has_error()) then
@@ -2168,22 +2177,23 @@ contains
          end block
          if (err%has_error()) then
             cx%message = err%get_message()
+            if (collective) call comm%finalize()
             return
          end if
       case (TRC_GUESS_GIVEN)
          if (.not. allocated(cx%dguess)) then
             cx%message = "trc_run_scf: guess GIVEN but no density was given"
             status = TRC_ERR_STATE
+            if (collective) call comm%finalize()
             return
          end if
          if (size(cx%dguess, 3) /= nspin) then
             cx%message = "trc_run_scf: the given density has the wrong spin count for this molecule"
+            if (collective) call comm%finalize()
             return
          end if
          dg = cx%dguess
       end select
-      call trc_build_comm(cx%fcomm, comm, collective, status)
-      if (status /= TRC_OK) return
       if (allocated(dg)) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm)
