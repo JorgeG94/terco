@@ -146,7 +146,8 @@
 !
 !   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
 !     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
-!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nspin, trc_message
+!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nspin, trc_message,
+!     trc_set_pcm, trc_pcm_energy
 !
 !   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
 !   the handle's own ao_norm_kind is what a later entry reads):
@@ -187,6 +188,8 @@ module trc_capi
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
                           ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
    use trc_sph, only: sph_cart_to_sph
+   use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
+   use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    implicit none
    private
 
@@ -211,6 +214,7 @@ module trc_capi
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
+   public :: trc_set_pcm, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
    public :: trc_set_force_cartesian, trc_is_spherical
    public :: trc_max_angular_momentum
@@ -1617,6 +1621,97 @@ contains
       status = TRC_OK
    end function trc_set_nlc_grid
 
+   !
+   ! A polarisable continuum around the molecule for every SCF this context
+   ! runs from here on (trc_pcm): `model` is "cpcm" or "iefpcm", or an empty
+   ! string to turn it off again. `eps` is the solvent's dielectric constant
+   ! and is required (water: 78.3553); there is no solvent-name table, so
+   ! nothing is assumed from a name. `lebedev` is the points per atomic
+   ! sphere and `radii_scale` the van der Waals radius to cavity radius
+   ! factor; 0 for either takes the default (302 and 1.2, pyscf's). Additive:
+   ! a context that never calls this runs exactly as before.
+   !
+   function trc_set_pcm(handle, model, eps, lebedev, radii_scale) result(status) bind(c, name="trc_set_pcm")
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: model(*)
+      real(c_double), value :: eps, radii_scale
+      integer(c_int), value :: lebedev
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=16) :: name
+      integer :: i, kind, leb
+      real(dp) :: scale
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      name = ""
+      do i = 1, len(name)
+         if (model(i) == c_null_char) exit
+         name(i:i) = model(i)
+      end do
+      kind = pcm_model_from_name(name)
+      status = TRC_ERR_UNSUPPORTED
+      if (kind < 0) then
+         call refuse(cx, "trc_set_pcm: model '"//trim(name)//"' -- terco solves 'cpcm' "// &
+                     "(conductor-like) and 'iefpcm' (integral equation formalism), or '' for none; "// &
+                     "they are different models, so neither stands in for another")
+         return
+      end if
+      status = TRC_ERR_BADARG
+      if (kind == PCM_MODEL_NONE) then
+         cx%opts%pcm_model = ""
+         call invalidate_runs(cx)
+         status = TRC_OK
+         return
+      end if
+      if (eps <= 1.0_c_double) then
+         call refuse(cx, "trc_set_pcm: the dielectric constant must be greater than one "// &
+                     "(water is 78.3553); there is no default, which would silently pick a solvent")
+         return
+      end if
+      leb = int(lebedev)
+      if (leb == 0) leb = PCM_DEFAULT_LEBEDEV
+      if (.not. any(PCM_XI_ORDERS == leb)) then
+         call refuse(cx, "trc_set_pcm: "//trim(itoa(leb))//" points per sphere has no fitted SWIG "// &
+                     "exponent; use 0 (302) or one of 6, 14, 26, 38, 50, 86, 110, 146, 170, 194, "// &
+                     "302, 350, 434, 590, 770, 974, ... 5810")
+         return
+      end if
+      scale = real(radii_scale, dp)
+      if (scale == 0.0_dp) scale = PCM_DEFAULT_RADII_SCALE
+      if (scale < 0.0_dp) then
+         call refuse(cx, "trc_set_pcm: radii_scale must be positive, or 0 for the default 1.2")
+         return
+      end if
+      cx%opts%pcm_model = trim(name)
+      cx%opts%pcm_eps = real(eps, dp)
+      cx%opts%pcm_lebedev = leb
+      cx%opts%pcm_radii_scale = scale
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_pcm
+
+   function trc_pcm_energy(handle, e_diel, q_total, npoints) result(status) bind(c, name="trc_pcm_energy")
+      !! The continuum's part of the last SCF: E_diel = q.v/2 (already in
+      !! trc_energy's total), the total apparent surface charge, and the
+      !! surface points the cavity kept. Zeros when no continuum was set.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: e_diel, q_total
+      integer(c_int), intent(out) :: npoints
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      e_diel = 0.0_c_double; q_total = 0.0_c_double; npoints = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      e_diel = real(cx%res%e_pcm, c_double)
+      q_total = real(cx%res%pcm_qtotal, c_double)
+      npoints = int(cx%res%pcm_npoints, c_int)
+      status = TRC_OK
+   end function trc_pcm_energy
+
    function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) result(status) &
       bind(c, name="trc_set_convergence")
       type(c_ptr), value :: handle
@@ -1972,7 +2067,7 @@ contains
       type(error_t) :: err
       real(dp), allocatable :: dsad(:, :), dg(:, :, :), hsap(:, :)
       integer :: nelec, nunp, nalpha, nbeta, nspin, n, nc
-      logical :: collective
+      logical :: collective, talk
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2000,6 +2095,14 @@ contains
          return
       end if
       nspin = merge(2, 1, nalpha /= nbeta .or. cx%opts%unrestricted)
+      ! The communicator first, so the guess below binds the same device
+      ! the SCF will and says what it did once, on rank 0, not once per
+      ! rank. Every `return` from here on frees it.
+      call trc_build_comm(cx%fcomm, comm, collective, status)
+      if (status /= TRC_OK) return
+      status = TRC_ERR_BADARG   ! what the guess's own failures below report
+      talk = cx%opts%verbose
+      if (collective) talk = talk .and. comm%rank() == 0
       opts = cx%opts
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
@@ -2012,12 +2115,13 @@ contains
          ! one thing SAD never looks at. On a neutral molecule the two are
          ! the same density; see trc_sad.
          if (cx%guess_kind == TRC_GUESS_SADQ) then
-            call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=cx%opts%verbose)
+            call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=talk)
          else
-            call trc_sad_build(cx%bb%b, dsad, err, verbose=cx%opts%verbose)
+            call trc_sad_build(cx%bb%b, dsad, err, verbose=talk)
          end if
          if (err%has_error()) then
             cx%message = err%get_message()
+            if (collective) call comm%finalize()
             return
          end if
          allocate (dg(n, n, nspin))
@@ -2051,7 +2155,7 @@ contains
             call trc_1e(cx%bb%b, pl, s1, t1, v1)
             !$acc update self(s1, t1, v1)
             !$acc exit data delete(s1, t1, v1)
-            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap_c, err, verbose=cx%opts%verbose)
+            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap_c, err, verbose=talk)
             call pl%release()
             deallocate (s1, t1, v1)
             if (.not. err%has_error()) then
@@ -2073,22 +2177,23 @@ contains
          end block
          if (err%has_error()) then
             cx%message = err%get_message()
+            if (collective) call comm%finalize()
             return
          end if
       case (TRC_GUESS_GIVEN)
          if (.not. allocated(cx%dguess)) then
             cx%message = "trc_run_scf: guess GIVEN but no density was given"
             status = TRC_ERR_STATE
+            if (collective) call comm%finalize()
             return
          end if
          if (size(cx%dguess, 3) /= nspin) then
             cx%message = "trc_run_scf: the given density has the wrong spin count for this molecule"
+            if (collective) call comm%finalize()
             return
          end if
          dg = cx%dguess
       end select
-      call trc_build_comm(cx%fcomm, comm, collective, status)
-      if (status /= TRC_OK) return
       if (allocated(dg)) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm)

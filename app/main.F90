@@ -43,11 +43,12 @@ module terco_run
       type(error_t) :: err
       type(c_ptr) :: h
       character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, func, guess, title, json
+      character(len=:), allocatable :: pcm
       integer, allocatable :: z(:)
       integer :: natm, chrg, uhf, nelec, mult, grid
-      integer(c_int) :: nao, conv, niter, sph
-      real(dp) :: econv, gconv, thresh
-      real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess
+      integer(c_int) :: nao, conv, niter, sph, npcm
+      real(dp) :: econv, gconv, thresh, eps
+      real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2
       integer(int64) :: t0, t1, rate
       type(comm_t) :: wcomm
@@ -178,6 +179,7 @@ contains
       write (output_unit, "(a,es8.1,a,es8.1,a,es8.1)") "   convergence      : dE ", r%econv, &
          "   |FDS-SDF| ", r%gconv, "   screening ", r%thresh
       if (len(r%func) > 0) write (output_unit, "(a,i0)") "   grid level       : ", r%grid
+      if (len(r%pcm) > 0) write (output_unit, "(a,a,a,f0.4)") "   solvation        : ", r%pcm, ", eps ", r%eps
    end subroutine banner
 
    subroutine formula(z, natm)
@@ -243,6 +245,7 @@ contains
       call row("one-electron energy", r%eone)
       call row("two-electron energy", r%etwo)
       if (len(r%func) > 0) call row("exchange-correlation", r%exc)
+      if (len(r%pcm) > 0) call row("solvation (E_diel)", r%epcm)
       if (r%rimp2 .and. r%conv /= 0) then
          call row("MP2 opposite spin", r%eos)
          call row("MP2 same spin", r%ess)
@@ -303,6 +306,12 @@ contains
       write (u, "(a,es23.15e3,a)") '  "one-electron energy": ', r%eone, ','
       write (u, "(a,es23.15e3,a)") '  "two-electron energy": ', r%etwo, ','
       write (u, "(a,es23.15e3,a)") '  "exchange-correlation energy": ', r%exc, ','
+      if (len(r%pcm) > 0) then
+         write (u, "(a,a,a)") '  "solvation model": "', r%pcm, '",'
+         write (u, "(a,es23.15e3,a)") '  "dielectric constant": ', r%eps, ','
+         write (u, "(a,es23.15e3,a)") '  "solvation energy": ', r%epcm, ','
+         write (u, "(a,i0,a)") '  "solvation surface points": ', r%npcm, ','
+      end if
       if (r%rimp2 .and. r%conv /= 0) then
          write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', r%eos, ','
          write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', r%ess, ','
@@ -335,6 +344,7 @@ program terco_main
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
+                       trc_set_pcm, trc_pcm_energy, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
@@ -381,6 +391,9 @@ program terco_main
    call r%cli%add_option("econv", "energy convergence, Eh (1e-10)", default="1e-10")
    call r%cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
+   call r%cli%add_option("pcm", "polarisable continuum solvation: cpcm or iefpcm (pyscf's SWIG "// &
+                         "cavity, 302 points per sphere, radii 1.2 x Bondi); needs --eps")
+   call r%cli%add_option("eps", "solvent dielectric constant for --pcm, e.g. 78.3553 for water")
    call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after a closed-shell SCF")
    call r%cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", &
@@ -449,6 +462,18 @@ program terco_main
    call r%cli%get("frozen", nfrozen, r%err); call check(r, "--frozen")
    r%rimp2 = r%cli%is_set("rimp2")
    cart = r%cli%is_set("cart")
+   r%pcm = ""
+   r%eps = 0.0_dp
+   if (r%cli%is_set("pcm")) then
+      call r%cli%get("pcm", sval, r%err)
+      r%pcm = lower(trim(sval))
+      if (r%pcm /= "cpcm" .and. r%pcm /= "iefpcm") call die(r, "unknown --pcm '"//r%pcm//"': use cpcm or iefpcm")
+      if (.not. r%cli%is_set("eps")) call die(r, "--pcm needs the solvent's dielectric constant: "// &
+                                              "--eps 78.3553 for water; nothing is assumed")
+      call r%cli%get("eps", r%eps, r%err); call check(r, "--eps")
+   else if (r%cli%is_set("eps")) then
+      call die(r, "--eps is the dielectric constant for --pcm, which was not given")
+   end if
    if (r%rimp2) then
       ! RI-MP2 is closed-shell and, today, Cartesian only: say so here rather
       ! than after an SCF it cannot use.
@@ -509,6 +534,7 @@ program terco_main
    if (r%rimp2) call api(r, trc_set_aux_json(r%h, c_string(r%aux_path)))
    call api(r, trc_set_method(r%h, c_string(r%func), int(r%grid, c_int)))
    call api(r, trc_set_nlc_grid(r%h, int(nlc_grid, c_int)))
+   if (len(r%pcm) > 0) call api(r, trc_set_pcm(r%h, c_string(r%pcm), real(r%eps, c_double), 0_c_int, 0.0_c_double))
    call api(r, trc_set_convergence(r%h, real(r%econv, c_double), real(r%gconv, c_double), int(maxiter, c_int), &
                                    10_c_int))
    call api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
@@ -524,6 +550,7 @@ program terco_main
    call api(r, trc_energy_parts(r%h, r%enuc, r%eone, r%etwo, r%exc))
    call api(r, trc_converged(r%h, r%conv))
    call api(r, trc_iterations(r%h, r%niter))
+   call api(r, trc_pcm_energy(r%h, r%epcm, r%qpcm, r%npcm))
    r%eos = 0; r%ess = 0
    if (r%rimp2 .and. r%conv /= 0) then
       call api(r, trc_run_rimp2(r%h))
