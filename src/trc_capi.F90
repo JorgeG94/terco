@@ -211,7 +211,8 @@ module trc_capi
    public :: capi_fock, trc_fock_many, trc_fock_nosym
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
-             trc_set_convergence, trc_set_screening, trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
+             trc_set_convergence, trc_set_screening, trc_set_incremental, &
+             trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
@@ -1767,6 +1768,27 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_screening
+
+   !
+   ! Incremental Fock builds: after the first iterations, G is accumulated
+   ! from the density DIFFERENCE, which screens far harder as the SCF
+   ! converges (trc_scf_options_t%incremental has the measurements and the
+   ! safeguards: a 1e-4 tighter screen on each difference build, a start
+   ! gated on the commutator, a full rebuild every 20). 0 off, the library's
+   ! default; nonzero on, the terco CLI's default.
+   !
+   function trc_set_incremental(handle, on) result(status) bind(c, name="trc_set_incremental")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%opts%incremental = on /= 0
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_incremental
 
    !
    ! How finely the shell pairs are batched by their Schwarz bound: `res`
