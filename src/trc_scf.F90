@@ -470,6 +470,7 @@ contains
       !! workspace to nao). Absent, the run makes its own and releases them.
 
       integer :: nao, nao_c, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
+      integer :: nxc, nxc_c, nu_c, nlr_c, nin_c   !! full size, or 1 when unused (see the allocations)
       logical :: ok, sph
       real(dp), allocatable :: smat(:, :), hcore(:, :), x(:, :)
       real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :)
@@ -516,7 +517,7 @@ contains
       real(dp), allocatable :: vpcm_c(:, :), vpcm(:, :)
       !! the continuum's operator, Cartesian as its kernels make it and in
       !! the SCF's own space; the same for both spins
-      logical :: dft, talk, diis_on, root
+      logical :: dft, talk, diis_on, root, incr_on
       real(dp) :: ctl(2)
       real(dp) :: exx_lr, omega
       !! A range-separated hybrid's extra long-range exchange fraction and
@@ -593,15 +594,28 @@ contains
       ! two integral passes over the ranks itself, given `comm`.
       epcm = 0.0_dp; t_pcm = 0.0_dp; t_pcm_setup = 0.0_dp
 
+      ! ONLY WHAT THIS RUN USES IS FULL SIZE. Every array below is mapped
+      ! to the device for the whole run (the `enter data` after the
+      ! guess), so one that a run never touches is nao^2 of device memory
+      ! for nothing: on ionic05 in aug-cc-pVTZ (4255 functions, 4950
+      ! Cartesian) an HF run carried ~2.4 GB of XC, unrestricted,
+      ! range-separated, incremental and PCM matrices it had no use for.
+      ! Those are allocated 1 x 1 instead, so every clause and dummy that
+      ! names them stays as it is.
+      incr_on = (opts%incremental .or. incr_env()) .and. nspin == 1
+      nxc = merge(nao, 1, dft); nxc_c = merge(nao_c, 1, dft)
+      nu_c = merge(nao_c, 1, nspin == 2)
+      nlr_c = merge(nao_c, 1, exx_lr /= 0.0_dp)
+      nin_c = merge(nao_c, 1, incr_on)
       allocate (smat(nao, nao), hcore(nao, nao), x(nao, nao))
-      allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nao, nao, nspin))
+      allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nxc, nxc, nspin))
       allocate (s_c(nao_c, nao_c), h_c(nao_c, nao_c))
-      allocate (d_c(nao_c, nao_c, nspin), gmat_c(nao_c, nao_c, nspin), vxc_c(nao_c, nao_c, nspin))
-      allocate (dtot_c(nao_c, nao_c), jmat_c(nao_c, nao_c), w1_c(nao_c, nao_c), klr_c(nao_c, nao_c))
-      allocate (dref_c(nao_c, nao_c), gacc_c(nao_c, nao_c), ddif_c(nao_c, nao_c))
+      allocate (d_c(nao_c, nao_c, nspin), gmat_c(nao_c, nao_c, nspin), vxc_c(nxc_c, nxc_c, nspin))
+      allocate (dtot_c(nu_c, nu_c), jmat_c(nu_c, nu_c), w1_c(nao_c, nao_c), klr_c(nlr_c, nlr_c))
+      allocate (dref_c(nin_c, nin_c), gacc_c(nin_c, nin_c), ddif_c(nin_c, nin_c))
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
-      allocate (w1(nao, nao), w2(nao, nao), w3(nao, nao))
+      allocate (w1(nao, nao), w2(nao, nao), w3(1, 1))
       allocate (ofrac(nao)); ofrac = 0.0_dp
       allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
@@ -668,7 +682,8 @@ contains
       t_setup = wall() - tw0
 
       ! --- the continuum: cavity, K and the nuclear potential, once -------
-      allocate (vpcm_c(nao_c, nao_c), vpcm(nao, nao))
+      allocate (vpcm_c(merge(nao_c, 1, pcm_on), merge(nao_c, 1, pcm_on)), &
+                vpcm(merge(nao, 1, pcm_on), merge(nao, 1, pcm_on)))
       vpcm_c = 0.0_dp; vpcm = 0.0_dp
       if (pcm_on) then
          tw0 = wall()
@@ -815,7 +830,7 @@ contains
             ! screens on the density it is handed, and the difference is
             ! small and getting smaller while the density is neither.
             !
-            incr_now = (opts%incremental .or. incr_env()) .and. it > 1 &
+            incr_now = incr_on .and. it > 1 &
                        .and. errmax < incr_start_env(opts%incr_start) &
                        .and. mod(it - 1, max(1, incr_reset_env(opts%incr_reset))) /= 0
             if (incr_now) then
@@ -894,10 +909,14 @@ contains
                      gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
                   end do
                end if
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gacc_c(i, j) = gmat_c(i, j, 1)
-                  dref_c(i, j) = d_c(i, j, 1)
-               end do
+               ! The reference for the next increment, kept only when there
+               ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
+               if (incr_on) then
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     gacc_c(i, j) = gmat_c(i, j, 1)
+                     dref_c(i, j) = d_c(i, j, 1)
+                  end do
+               end if
             end if
          else
             do concurrent(i=1:nao_c, j=1:nao_c)
