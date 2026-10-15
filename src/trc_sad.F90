@@ -44,6 +44,7 @@ module trc_sad
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_linalg, only: trc_linalg_t
    use trc_sph_tables, only: SPH_T
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
@@ -52,16 +53,18 @@ module trc_sad
 
 contains
 
-   subroutine trc_sad_build(b, dguess, error, verbose)
+   subroutine trc_sad_build(b, dguess, error, verbose, la)
       !! `dguess(nao, nao)`: the total density, block diagonal over atoms.
       type(trc_basis_t), intent(in) :: b
       real(dp), allocatable, intent(out) :: dguess(:, :)
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: verbose
-      call build_atomic(b, dguess, error, verbose)
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! the calculation's cuBLAS/cuSOLVER handles, for the atomic SCFs
+      call build_atomic(b, dguess, error, verbose, la=la)
    end subroutine trc_sad_build
 
-   subroutine trc_sadq_build(b, nelec, dguess, error, verbose, qatom)
+   subroutine trc_sadq_build(b, nelec, dguess, error, verbose, qatom, la)
       !! SADQ: SAD with the atoms carrying the molecule's charge.
       !!
       !! `nelec` is the MOLECULE's electron count, so the charge it has to
@@ -82,6 +85,8 @@ contains
       real(dp), allocatable, intent(out) :: dguess(:, :)
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: verbose
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! the calculation's cuBLAS/cuSOLVER handles, for the atomic SCFs
       real(dp), intent(in), optional :: qatom(:)
       !! Per-atom charge, positive for electrons removed. Overrides the
       !! proportional split; must have one entry per atom.
@@ -111,7 +116,7 @@ contains
             return
          end if
       end do
-      call build_atomic(b, dguess, error, verbose, nel=nel)
+      call build_atomic(b, dguess, error, verbose, nel=nel, la=la)
    end subroutine trc_sadq_build
 
    !
@@ -121,11 +126,13 @@ contains
    ! that many electrons on that atom, restricted with fractional
    ! occupations, which is what a non-integer count needs.
    !
-   subroutine build_atomic(b, dguess, error, verbose, nel)
+   subroutine build_atomic(b, dguess, error, verbose, nel, la)
       type(trc_basis_t), intent(in) :: b
       real(dp), allocatable, intent(out) :: dguess(:, :)
       type(error_t), intent(inout) :: error
       logical,  intent(in), optional :: verbose
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! the calculation's cuBLAS/cuSOLVER handles, for the atomic SCFs
       real(dp), intent(in), optional :: nel(:)
 
       integer, allocatable :: atom_of(:), first(:), last(:)
@@ -223,7 +230,7 @@ contains
                nel_i = int(want/2.0_dp)
                na = nel_i; nb = nel_i
             end if
-            call trc_scf_run(ab, na, nb, opts, res)
+            call trc_scf_run(ab, na, nb, opts, res, la=la)
             if (.not. res%converged) then
                call error%set(ERROR_VALIDATION, merge("trc_sadq", "trc_sad ", sadq)// &
                               ": the atomic SCF for Z = "//trim(itoa(z))//" did not converge: "// &

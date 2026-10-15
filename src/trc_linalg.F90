@@ -68,22 +68,45 @@ contains
    ! library streams set to the OpenACC synchronous queue so a kernel that
    ! wrote a matrix has finished before cuBLAS reads it.
    !
+   ! CREATED ONCE. A second init on a ready object keeps its handles and only
+   ! grows the eigensolver's workspace if n is larger than any seen so far,
+   ! so one object can be made at the start of a calculation and carried
+   ! through all of it -- the SAD atoms, the SCF, the XC quadrature, RI-MP2 --
+   ! instead of each of them creating and destroying cuBLAS and cuSOLVER.
+   !
    subroutine linalg_init(this, n)
+      class(trc_linalg_t), intent(inout) :: this
+      integer, intent(in) :: n
+#ifdef _OPENACC
+      integer :: st
+#endif
+      if (.not. this%ready) then
+#ifdef _OPENACC
+         st = cublasCreate(this%hb)
+         if (st /= 0) error stop "trc_linalg: cublasCreate failed"
+         st = cusolverDnCreate(this%hs)
+         if (st /= 0) error stop "trc_linalg: cusolverDnCreate failed"
+         st = cublasSetStream(this%hb, acc_get_cuda_stream(acc_async_sync))
+         st = cusolverDnSetStream(this%hs, acc_get_cuda_stream(acc_async_sync))
+         !$acc enter data create(this%devinfo)
+#endif
+         this%n = 0
+         this%ready = .true.
+      end if
+      if (n > this%n) call grow_workspace(this, n)
+   end subroutine linalg_init
+
+   ! The dsyevd workspace for n x n, replacing a smaller one.
+   subroutine grow_workspace(this, n)
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n
 #ifdef _OPENACC
       real(dp), allocatable :: a(:, :), w(:)
       integer :: st
-#endif
-      call this%release()
-      this%n = n
-#ifdef _OPENACC
-      st = cublasCreate(this%hb)
-      if (st /= 0) error stop "trc_linalg: cublasCreate failed"
-      st = cusolverDnCreate(this%hs)
-      if (st /= 0) error stop "trc_linalg: cusolverDnCreate failed"
-      st = cublasSetStream(this%hb, acc_get_cuda_stream(acc_async_sync))
-      st = cusolverDnSetStream(this%hs, acc_get_cuda_stream(acc_async_sync))
+      if (allocated(this%dwork)) then
+         !$acc exit data delete(this%dwork)
+         deallocate (this%dwork)
+      end if
       allocate (a(n, n), w(n))
       !$acc enter data create(a, w)
       !$acc host_data use_device(a, w)
@@ -93,18 +116,21 @@ contains
       !$acc exit data delete(a, w)
       if (st /= 0) error stop "trc_linalg: cusolverDnDsyevd_bufferSize failed"
       allocate (this%dwork(max(this%lwork, 1)))
-      !$acc enter data create(this%dwork, this%devinfo)
+      !$acc enter data create(this%dwork)
 #endif
-      this%ready = .true.
-   end subroutine linalg_init
+      this%n = n
+   end subroutine grow_workspace
 
    subroutine linalg_release(this)
       class(trc_linalg_t), intent(inout) :: this
 #ifdef _OPENACC
       integer :: st
       if (this%ready) then
-         !$acc exit data delete(this%dwork, this%devinfo)
-         deallocate (this%dwork)
+         if (allocated(this%dwork)) then
+            !$acc exit data delete(this%dwork)
+            deallocate (this%dwork)
+         end if
+         !$acc exit data delete(this%devinfo)
          st = cublasDestroy(this%hb)
          st = cusolverDnDestroy(this%hs)
       end if

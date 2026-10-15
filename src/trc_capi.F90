@@ -183,6 +183,7 @@ module trc_capi
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
+   use trc_linalg, only: trc_linalg_t
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -301,6 +302,11 @@ module trc_capi
       integer :: ao_norm_kind = TRC_AO_NORM_SHELL
       ! the ERI context, only if something borrows it
       type(eri_box), allocatable :: eb
+      ! cuBLAS/cuSOLVER handles, created at this context's first run (after
+      ! the device is bound) and carried through every run after it: the
+      ! SAD atoms, the SCF, XC and RI-MP2 all use these, never their own.
+      ! Destroyed with the context.
+      type(trc_linalg_t) :: la
       ! results
       type(trc_scf_result_t) :: res
       integer :: nalpha = 0, nbeta = 0
@@ -1278,6 +1284,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       call drop_eri(cx)
+      call cx%la%release()
       if (cx%have_basis) call cx%bb%b%release()
       if (cx%have_aux) call cx%ab%b%release()
       deallocate (cx)
@@ -2103,6 +2110,8 @@ contains
       status = TRC_ERR_BADARG   ! what the guess's own failures below report
       talk = cx%opts%verbose
       if (collective) talk = talk .and. comm%rank() == 0
+      ! Once per context; a later run only grows the workspace to n.
+      call cx%la%init(n)
       opts = cx%opts
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
@@ -2115,9 +2124,9 @@ contains
          ! one thing SAD never looks at. On a neutral molecule the two are
          ! the same density; see trc_sad.
          if (cx%guess_kind == TRC_GUESS_SADQ) then
-            call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=talk)
+            call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=talk, la=cx%la)
          else
-            call trc_sad_build(cx%bb%b, dsad, err, verbose=talk)
+            call trc_sad_build(cx%bb%b, dsad, err, verbose=talk, la=cx%la)
          end if
          if (err%has_error()) then
             cx%message = err%get_message()
@@ -2196,21 +2205,21 @@ contains
       end select
       if (allocated(dg)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la)
          end if
       else if (allocated(hsap)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la)
          end if
       else
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la)
          end if
       end if
       if (collective) call comm%finalize()
@@ -2326,11 +2335,11 @@ contains
       call pl%to_device()
       if (collective) then
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
-                            nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose)
+                            nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la)
          call comm%finalize()
       else
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
-                            nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose)
+                            nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
       end if
       call pl%release()
       cx%e_os = res%e_os; cx%e_ss = res%e_ss

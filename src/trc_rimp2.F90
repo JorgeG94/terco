@@ -131,9 +131,10 @@ contains
       if (present(la)) then
          lp => la
       else
-         call la_own%init(naux)
          lp => la_own
       end if
+      ! Create-once: a caller's handles are kept, the workspace only grows.
+      call lp%init(naux)
 
       talk = .false.
       if (present(verbose)) talk = verbose .and. rank == 0
