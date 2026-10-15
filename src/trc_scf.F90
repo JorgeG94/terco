@@ -127,6 +127,8 @@ module trc_scf_driver
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use pic_types, only: default_int
+   use pic_logger, only: global_logger
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, bcast, allreduce, MPI_SUM
    implicit none
    private
@@ -517,6 +519,10 @@ contains
       real(dp), allocatable :: ofrac(:)
       integer :: nfrac, ndamp
       real(dp) :: diis_start
+      type(timer_type) :: tm
+      real(dp) :: ts(6)
+      !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
+      !! linear-algebra handles, orthogonaliser (printed with the timing table)
       real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
       real(dp) :: tf_it, tx_it
       !! This iteration's share of the two totals, so the table says where
@@ -609,9 +615,11 @@ contains
       tf_it = 0.0_dp; tx_it = 0.0_dp
       tx_pts = 0.0_dp; tx_prs = 0.0_dp
       tw0 = wall()
+      call tm%start()
       ! --- once per geometry, on the host ------------------------------------
       call pl%build(b, eri_thresh_env(opts%eri_thresh))
       call pl%to_device()
+      ts(1) = tm%get_elapsed_time(); call tm%start()
       ! The one-electron integrals are always Cartesian (trc_1e never
       ! changes); `s_c`/`h_c` are folded up to the SCF's own space once,
       ! here, for the whole run -- S and H never change after this. The
@@ -620,6 +628,7 @@ contains
       ! fourth Cartesian array kept for nothing afterward.
       call trc_1e(b, pl, s_c, h_c, w1_c)
       h_c = h_c + w1_c
+      ts(2) = tm%get_elapsed_time(); call tm%start()
       if (sph) then
          ! `smat`/`hcore` are not entered onto the device until the big
          ! block below (they are reused, host and device, across the
@@ -633,17 +642,21 @@ contains
       else
          smat = s_c; hcore = h_c
       end if
+      ts(3) = tm%get_elapsed_time(); call tm%start()
       if (present(comm)) then
          call eri%build(b, eri_thresh_env(opts%eri_thresh), comm, batch_res=opts%batch_res)
       else
          call eri%build(b, eri_thresh_env(opts%eri_thresh), batch_res=opts%batch_res)
       end if
       res%e_nuc = nuclear_repulsion(b)
+      ts(4) = tm%get_elapsed_time(); call tm%start()
       call la%init(nao)
+      ts(5) = tm%get_elapsed_time(); call tm%start()
       call sym_orthog(la, nao, smat, x, opts%lindep_thresh, res%n_lindep)
       if (talk .and. res%n_lindep > 0) print '(a,i0,a,es9.2,a)', &
          "   canonical orthogonalisation: ", res%n_lindep, &
          " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
+      ts(6) = tm%get_elapsed_time()
       t_setup = wall() - tw0
 
       ! --- the continuum: cavity, K and the nuclear potential, once -------
@@ -1244,8 +1257,7 @@ contains
       res%pcm_qtotal = pcm%q_total
       if (.not. res%converged) res%message = "trc_scf: not converged"
       if (talk) then
-         print '(a)', "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis"
-         print '(a,7f10.3)', "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+         call report_timing()
          if (pcm_on) print '(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)', "   pcm: E_diel = ", epcm, &
             "  q_total = ", pcm%q_total, "  setup ", t_pcm_setup, " s, ", &
             t_pcm/real(max(1, res%iterations), dp), " s per iteration"
@@ -1261,6 +1273,25 @@ contains
       end if
 
    contains
+
+      subroutine report_timing()
+         !! Where the run's time went, through pic's logger at PERFORMANCE,
+         !! which its default INFO level shows: the phases, then setup and
+         !! the ERI engine's build broken into their steps.
+         character(len=160) :: line
+         write (line, '(a,7f10.3)') "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+         call global_logger%performance( &
+            "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis")
+         call global_logger%performance(trim(line))
+         call global_logger%performance( &
+            "   setup (s)  pairs        1e   sph fold       eri    linalg    orthog")
+         write (line, '(a,6f10.3)') "          ", ts
+         call global_logger%performance(trim(line))
+         call global_logger%performance( &
+            "   eri (s)    pairs   schwarz  hgp pairs      bins  quartets    upload")
+         write (line, '(a,6f10.3)') "          ", eri%t_build
+         call global_logger%performance(trim(line))
+      end subroutine report_timing
 
       function wall() result(t)
          real(dp) :: t
