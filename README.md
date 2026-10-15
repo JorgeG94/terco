@@ -38,7 +38,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 
 | | |
 |---|---|
-| **Four-centre ERIs and Fock builds** | Head-Gordon–Pople, through **d** |
+| **Four-centre ERIs and Fock builds** | Head-Gordon–Pople through **d**, Rys through **f** (`TERCO_LMAX=3`) |
 | | single density, **batched over N densities in one integral pass**, non-symmetric density, and a device-resident entry point |
 | | `j_scale` / `k_scale`, so a hybrid functional or a response solve needs no second routine |
 | **Screening** | Schwarz bounds and optional density weighting, over a binned shell-pair container |
@@ -54,22 +54,21 @@ the basis object, the shell-pair container and the screening tables from that.
 
 ## What it does not do
 
-Stated plainly, because a library that fails quietly is worse than one that
-refuses:
+- **Angular momentum above f, on four centres.** `TERCO_LMAX=3` builds f: any
+  class with a shell above d runs on a Rys kernel. g needs `TERCO_LMAX=4`,
+  which the build does not offer yet.
+- **VV10 over more than one GPU.** The Fock build and the exchange-correlation
+  integration both split over MPI ranks with one device each
+  (`TERCO_ENABLE_MPI`, `trc_bind_device`, a communicator to `eri%build` or
+  `trc_scf_run`). VV10 nonlocal correlation (`wb97x-v`) needs the whole grid
+  on one device, so it is refused over more than one rank.
 
-- **Angular momentum above d, on four centres.** The four-centre kernels are
-  generated one per `(la,lb,lc,ld)` class, so they grow as `L⁴`: 16 classes at
-  p, 81 at d, and `(dd|dd)` alone is twenty thousand lines. The Boys table
-  already caps `la+lb+lc+ld` at 16, which covers g (`(gg|gg)` needs 16); the
-  remaining obstacle to f and g is the generated volume, not the table.
-- **Spherical harmonics.** Cartesian only. A caller passing a spherical basis
-  is refused rather than silently reinterpreted, because reinterpreting it
-  gives wrong numbers instead of an error.
-- **Range separation.** No erf-attenuated kernel.
-- **More than one GPU for the XC integration.** The Fock build splits over
-  MPI ranks with one device each (`TERCO_ENABLE_MPI`, `trc_bind_device`, a
-  communicator to `eri%build` or `trc_scf_run`); the exchange-correlation
-  integration still runs whole on every rank.
+Spherical harmonics and range separation are supported:
+
+- a spherical basis is computed in Cartesians and transformed, and `--cart`
+  keeps a basis Cartesian;
+- range-separated hybrids use an erf-attenuated `erf(ωr₁₂)/r₁₂` exchange
+  kernel.
 
 A host code is expected to check before it commits: `trc_basis_maxl` answers
 before anything expensive is built.
@@ -89,6 +88,10 @@ newer**, ifx, or nvfortran. gfortran 15 is a floor rather than a preference:
 build is not a fallback to run production on — it is how the library is
 validated without a GPU, and it must give the same integrals, because a number
 that depends on the offload model is a bug in the offload model.
+
+In theory `do concurrent` can be parallelised over CPU threads: ifx, flang and
+nvfortran will do it. This is not tested in CI at the moment. Work is underway
+in gfortran to enable it.
 
 ### CMake
 
@@ -182,8 +185,8 @@ to the integrals) and splits only its two solute-surface integral passes,
 over a contiguous range of surface points per rank -- and the SCF/guess/
 summary output prints once (rank 0); the energies agree with a single-rank
 run to the same tolerance `test/scf_mpi.F90` checks (1e-8). The exchange-
-correlation quadrature does **not** split -- it runs whole on every rank --
-and VV10 nonlocal correlation (`wb97x-v`) is refused outright over more
+correlation quadrature splits too, its grid batches dealt across ranks, but
+VV10 nonlocal correlation (`wb97x-v`) is refused outright over more
 than one rank rather than running it wrong; every rank reports the refusal
 and the process exits non-zero. An error on any rank (a bad argument, a
 missing basis file, an unsupported functional) ends every rank, not just
