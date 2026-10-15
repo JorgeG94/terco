@@ -255,15 +255,16 @@ contains
       !! Quartets lo..hi, each into `out` at q_off; VRR scratch is `work`
       !! at w_off, hgp_scratch_size(la+lb, lc+ld) doubles per quartet.
       !!
-      !! THE SCRATCH IS THE CALLER'S, NOT THE THREAD'S. It used to be two
-      !! local arrays sized NCUM*NCUM for the build's largest class, so
-      !! every thread of every launch carried them on its stack -- 169.6 KB
-      !! at TERCO_LMAX=3 (NCUM = 84) even for an (ss|ss) quartet, and CUDA
-      !! reserves a kernel's per-thread stack for every thread the device can
-      !! hold at once: 27.8 GB on a V100, 37.5 GB of an A100's 40, the moment
-      !! this ran (it computes the Schwarz bounds, so every SCF). Sized per
-      !! quartet from the caller's array, the stack is small and the scratch
-      !! is what the quartets actually need.
+      !! The scratch is the caller's, not the thread's. CUDA reserves a
+      !! kernel's per-thread stack for every thread the device can hold, so
+      !! stack arrays sized for the build's largest class (169.6 KB per
+      !! thread at TERCO_LMAX=3, NCUM = 84) would reserve 27.8 GB on a V100
+      !! and 37.5 GB on an A100 at the first launch. Sized per quartet from
+      !! `work`, the stack stays small and the scratch is what each class needs.
+      !!
+      !! The caller guarantees each quartet's slice fits and does not overlap
+      !! another's: w_off(iq) + hgp_scratch_size(la+lb, lc+ld) <= nwork.
+      !! Nothing here checks it.
       integer,  intent(in)    :: lo, hi, nq, nbas, npp, nout
       integer,  intent(in)    :: q_i(nq), q_j(nq), q_k(nq), q_l(nq), q_off(nq)
       integer,  intent(in)    :: sh_l(nbas)
