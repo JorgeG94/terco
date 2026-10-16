@@ -26,7 +26,7 @@
 !     sweep can read level n+1 with no ordering hazard.
 !
 module trc_tables
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
 
@@ -76,15 +76,15 @@ module trc_tables
 
 contains
 
-   pure integer function nherm(l)
+   pure integer function nherm(l) result(res)
       integer, intent(in) :: l
-      nherm = (l + 1)*(l + 2)*(l + 3)/6
+      res = (l + 1)*(l + 2)*(l + 3)/6
    end function nherm
 
-   pure integer function herm_index(t, u, v)
+   pure integer function herm_index(t, u, v) result(res)
       !$acc routine seq
       integer, intent(in) :: t, u, v
-      herm_index = hidx(t, u, v)
+      res = hidx(t, u, v)
    end function herm_index
 
    !
@@ -94,8 +94,16 @@ contains
    subroutine tables_init()
       integer :: n, t, u, v, h
 
-      hidx = 0; hdir = 0; hm1 = 0; hm2 = 0; hcf = 0.0_dp
-      ht = 0; hu = 0; hv = 0; hsgn = 0.0_dp; hshift = 0
+      hidx = 0
+      hdir = 0
+      hm1 = 0
+      hm2 = 0
+      hcf = 0.0_dp
+      ht = 0
+      hu = 0
+      hv = 0
+      hsgn = 0.0_dp
+      hshift = 0
 
       h = 0
       do n = 0, LTOT
@@ -104,7 +112,9 @@ contains
                v = n - t - u
                h = h + 1
                hidx(t, u, v) = h
-               ht(h) = t; hu(h) = u; hv(h) = v
+               ht(h) = t
+               hu(h) = u
+               hv(h) = v
                hsgn(h) = 1.0_dp
                if (mod(n, 2) == 1) hsgn(h) = -1.0_dp
 

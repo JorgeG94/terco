@@ -30,7 +30,7 @@ module trc_dft_partition
    !! which reduces to a = (1/chi - chi)/4. Treutler's variant uses the square
    !! roots of the radii instead. Both are available; the choice changes the
    !! weights slightly and must match whatever a reference is being compared to.
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_dft_radial, only: bragg_radius
    implicit none
@@ -119,7 +119,7 @@ contains
       !! loop is O(active^2) per point instead of O(n_atoms^2). Pass a value
       !! >= 1 for no screening; check_grid measures the difference. Default
       !! PARTITION_NU_MAX, or STRATMANN_A under that scheme.
-      integer(kind=8), intent(in), optional :: budget
+      integer(int64), intent(in), optional :: budget
       !! Scratch budget in doubles, default 2^26 (512 MB): sets how many
       !! points a chunk holds, 2^26 / (3 n_atoms).
       integer, intent(in), optional :: first, last
@@ -131,7 +131,7 @@ contains
       real(dp), allocatable :: atom_r(:, :), cell(:, :)
       integer, allocatable :: active(:, :), mark(:, :)
       integer :: n_atoms, n_points, i, j, k0, n, chunk, g, k_lo, k_hi
-      integer(kind=8) :: cap
+      integer(int64) :: cap
       real(dp) :: numax
 
       n_atoms = size(atom_coords, 2)
@@ -154,7 +154,8 @@ contains
          return
       end if
 
-      k_lo = 1; k_hi = n_points
+      k_lo = 1
+      k_hi = n_points
       if (present(first)) k_lo = max(first, 1)
       if (present(last)) k_hi = min(last, n_points)
       weights = 0.0_dp
@@ -171,9 +172,9 @@ contains
       ! screening is exact and nothing tighter buys anything.
       if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
       if (present(nu_max)) numax = nu_max
-      cap = 67108864_8
-      if (present(budget)) cap = max(budget, int(3*n_atoms, 8))
-      chunk = int(min(int(n_points, 8), max(1_8, cap/int(3*n_atoms, 8))))
+      cap = 67108864_int64
+      if (present(budget)) cap = max(budget, int(3*n_atoms, int64))
+      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(3*n_atoms, int64))))
 
       allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
       call size_adjustment(atomic_numbers, adjust, shift)

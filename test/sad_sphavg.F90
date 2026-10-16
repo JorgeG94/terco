@@ -24,7 +24,7 @@
 ! Part 1 above is what covers f there.
 !
 program sad_sphavg
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device, TRC_MAXL
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_sph_tables, only: SPH_T

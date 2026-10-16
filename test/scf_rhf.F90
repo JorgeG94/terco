@@ -28,7 +28,7 @@
 ! benchmark's four-fold accumulation bug was found.
 !
 program scf_rhf
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
    use trc_test_basis, only: read_xyz
@@ -118,7 +118,7 @@ program scf_rhf
       block
          character(len=256) :: dmf
          integer :: ud
-         integer(kind=8) :: nchk
+         integer(int64) :: nchk
          call get_command_argument(5, dmf)
          open (newunit=ud, file=trim(dmf), access='stream', &
                form='unformatted', status='old')
@@ -276,7 +276,7 @@ contains
 
    subroutine tick(t)
       real(dp), intent(out) :: t
-      integer(kind=8) :: cc, rate
+      integer(int64) :: cc, rate
       call system_clock(cc, rate)
       t = real(cc, dp)/real(rate, dp)
    end subroutine tick

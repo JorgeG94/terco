@@ -5,8 +5,8 @@ ordered s/p class (`{s,p}^4`, 16 classes, see FRAME.md section 0 -- no
 canonicalisation). It reuses the scaffolding gen_perclass.py already built
 for the HGP per-class kernels (segment locate/decode, the exact Schwarz and
 density-weighted screens, same_ab/same_cd/same_pair, the scalar-path AO
-decode, the block-accumulated density-batched digestion and its
-TRC_NO_DIGEST branch, the scalar launch driver, the item routine signature,
+decode, the block-accumulated density-batched digestion, the scalar
+launch driver, the item routine signature,
 and the inline Chebyshev Boys evaluation) rather than re-implementing any of
 it -- see the functions imported from `gen_perclass` below, and
 docs/GENERATORS.md's "Shared conventions" for why an independent copy would
@@ -876,8 +876,8 @@ def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True, ket_inner=T
 ! defaulting.)
 !
 module {mod}
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
@@ -923,8 +923,7 @@ def emit_dispatcher(cmd):
          '#error "trc_ra_kernels.F90 needs TRC_PERCLASS (it imports CLASS_RADIX from trc_pc_kernels)."',
          "#endif",
          "module trc_ra_kernels",
-         "   use, intrinsic :: iso_fortran_env, only: int64",
-         "   use trc_boys, only: dp",
+         "   use pic_types, only: dp, int64",
          "   use trc_pc_kernels, only: CLASS_RADIX"]
     for tag, _k in mods:
         o.append(f"   use trc_ra_k{tag}, only: ras{tag}")

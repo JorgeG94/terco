@@ -3,42 +3,10 @@
 ! ships under basis_sets/, so a terco run can take the orbital and auxiliary
 ! sets mqc would hand it without mqc in the process.
 !
-! Ported from metalquicha's mqc_json_basis_reader, with the same reading:
-! one shell per COEFFICIENT COLUMN, so an SP shell becomes an s and a p
-! shell and a general contraction (cc-pVDZ oxygen: nine s primitives, three
-! columns) becomes three shells over the same primitives -- which is the
-! segmentation terco's kernels want and what the mqc bridge does before
-! handing a basis over. Values are read one at a time by indexed path: BSE
-! stores them as strings to keep every digit.
-!
-! Coefficients are normalised as metalquicha and pyscf normalise them: each
-! primitive to unit self-overlap, then the contraction to unit self-overlap
-! -- and then divided by libcint's `common_fac_sp(l)` (`normalise` below),
-! because `trc_basis_t%build` folds that factor in once more and every
-! other caller of `build` (the hardcoded 6-31G, a decontracted shell) hands
-! it a coefficient that is missing the factor for exactly that reason. Skip
-! that extra division and `build`'s fold applies common_fac_sp TWICE to an s
-! or p shell -- which integrates fine on its own (a per-AO rescale is a
-! no-op for F C = S C eps) but silently loosens the Schwarz screen, giving
-! answers that are right on one water and wrong by hundreds of Hartree on
-! twenty. See `normalise`'s own comment for the measurements.
-! The function_type ("gto_spherical" on a d shell, BSE's own per-shell tag)
-! decides whether the basis this call hands back is SPHERICAL
-! (`b%spherical`, trc_api.F90) -- any shell tagged "gto_spherical" is enough,
-! since a real basis set is consistently one family or the other once l>=2,
-! and s/p carry no such tag either way (a Cartesian and a spherical s or p
-! function are the identical thing, trc_sph.F90's own header). `force_cart`
-! overrides this to Cartesian regardless of what the file says, for a
-! caller comparing against pyscf's cart=True or running one of terco's own
-! existing Cartesian-only tests -- see trc_scf_options_t%force_cartesian
-! and trc_capi's TRC_FORCE_CARTESIAN for how a caller reaches it. Without
-! either tag present (a pure-s/p basis, or a cartesian-only family such as
-! 6-31G's "gto_cartesian"), the basis comes back Cartesian: today's
-! behaviour, byte for byte, which is the default every existing test and
-! reference was built against.
+! Ported from metalquicha's mqc_json_basis_reader
 !
 module trc_basis_json
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use json_module, only: json_file
@@ -103,7 +71,9 @@ contains
          ok = .false.
          do ie = 1, nel
             if (el(ie)%z == at_z(ia)) then
-               which(ia) = ie; ok = .true.; exit
+               which(ia) = ie
+               ok = .true.
+               exit
             end if
          end do
          if (ok) cycle
@@ -117,7 +87,8 @@ contains
       end do
       call json%destroy()
 
-      nsh = 0; maxnp = 1
+      nsh = 0
+      maxnp = 1
       do ia = 1, natm
          nsh = nsh + el(which(ia))%nshell
          do is = 1, el(which(ia))%nshell
@@ -125,7 +96,8 @@ contains
          end do
       end do
       allocate (sh_l(nsh), sh_np(nsh), sh_e(maxnp, nsh), sh_c(maxnp, nsh), sh_r(3, nsh), z(natm))
-      sh_e = 0.0_dp; sh_c = 0.0_dp
+      sh_e = 0.0_dp
+      sh_c = 0.0_dp
       k = 0
       do ia = 1, natm
          ie = which(ia)
@@ -178,7 +150,8 @@ contains
       call json%load_file(filename=trim(path))
       if (json%failed()) then
          call error%set(ERROR_VALIDATION, "trc_basis_json: cannot read "//trim(path))
-         call json%destroy(); return
+         call json%destroy()
+         return
       end if
       call read_element(json, path, z, el, error, raw=.true.)
       call json%destroy()
@@ -335,31 +308,6 @@ contains
    ! construction, so the single fold inside `build` lands on the right
    ! number.
    !
-   ! This routine used to hand `build` the complete, CFS-already-folded-in
-   ! BSE/pyscf coefficient instead, and `build`'s own fold then multiplied
-   ! it by common_fac_sp(l) A SECOND TIME -- scaling every s shell's
-   ! coefficients down by 0.282094791773878 and every p shell's by
-   ! 0.488602511902920, with d and higher untouched (common_fac_sp(l>=2) =
-   ! 1, which is why a JSON 6-31G*'s polarization function was never the
-   ! problem).
-   !
-   ! A per-shell constant rescaling of one AO changes nothing on its own --
-   ! F C = S C eps is invariant to it, same as any other diagonal congruence
-   ! (trc_ao_norm.F90's header works through exactly this invariance). What
-   ! it broke was the ABSOLUTE Schwarz threshold: shrinking an s or p shell's
-   ! integrals by that factor shrinks their Schwarz bound by its square
-   ! while the density-matrix element that will multiply a dropped
-   ! integral back up is correspondingly LARGER by its inverse square, so a
-   ! fixed `eri_thresh` silently screens away pairs that matter more than it
-   ! thinks. Invisible on one water (too few near-threshold pairs to
-   ! matter: 4e-8 Eh at w1-w3), 1.1e-5 Eh on five, and total SCF failure on
-   ! twenty (-822 Eh against a correct -1519) -- because the error is a
-   ! coherent per-shell-type bias, not a random one, and it accumulates with
-   ! the pair count rather than averaging out. The fix is to divide the
-   ! final coefficient by the same `common_fac_sp(l)` here, so this routine
-   ! hands `build` the CFS-free coefficient every other caller hands it, and
-   ! `build`'s single fold is once again the only one.
-   !
    pure subroutine normalise(l, np, e, c)
       integer, intent(in) :: l, np
       real(dp), intent(in) :: e(np)
@@ -383,7 +331,7 @@ contains
       end do
    end subroutine normalise
 
-   pure real(dp) function common_fac_sp(l)
+   pure real(dp) function common_fac_sp(l) result(res)
       !! Duplicated from trc_api.F90 (and trc_ao_norm.F90, and trc_batch.F90)
       !! rather than imported -- see those modules' own comments on the same
       !! duplication. `build` folds this in once; this routine has to undo the
@@ -391,23 +339,26 @@ contains
       !! two folds net to exactly one.
       integer, intent(in) :: l
       select case (l)
-      case (0); common_fac_sp = 0.282094791773878143_dp
-      case (1); common_fac_sp = 0.488602511902919921_dp
-      case default; common_fac_sp = 1.0_dp
+      case (0)
+      res = 0.282094791773878143_dp
+      case (1)
+      res = 0.488602511902919921_dp
+      case default
+      res = 1.0_dp
       end select
    end function common_fac_sp
 
    pure function rtoa(x) result(t)
       real(dp), intent(in) :: x
       character(len=24) :: t
-      write (t, '(f0.6)') x
+      write (t, "(f0.6)") x
    end function rtoa
 
    pure function itoa(i) result(t)
       integer, intent(in) :: i
       character(len=:), allocatable :: t
       character(len=16) :: buf
-      write (buf, '(i0)') i
+      write (buf, "(i0)") i
       t = trim(buf)
    end function itoa
 

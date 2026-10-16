@@ -11,7 +11,7 @@ its own derivation (scripts/rotaxis/{derive,factor}.py) and its own emission
 (scripts/rotaxis/emit_docon.py). Everything BESIDES the integral core --
 segment locate/decode, the exact Schwarz and density-weighted screens, the
 same_ab/same_cd/same_pair logic, the scalar-path AO decode, the block-
-accumulated density-batched digestion (and its TRC_NO_DIGEST branch), the
+accumulated density-batched digestion, the
 scalar launch driver and the item routine signature -- is the SAME text
 gen_perclass.py already emits, called from the same functions; see
 emit_docon.py's module docstring.

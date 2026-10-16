@@ -1,7 +1,7 @@
 !
 ! Rys against HGP, class by class, on the SAME density and screening.
 !
-! With TRC_RYS_CLASSES=all, every class TERCO_RYS generated a kernel for
+! With TRC_RYS_CLASSES=all, every class the build generated a kernel for
 ! routes through Rys instead of
 ! HGP (trc_rys_select%rys_route); everything else -- including classes this
 ! build never generated a Rys kernel for -- still goes through HGP. Building
@@ -23,7 +23,7 @@
 !
 program check_rys_vs_hgp
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json

@@ -44,7 +44,7 @@
 ! reference fails only after that is safely written.
 !
 program scf_pcm
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_tables, only: LMAX
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -134,7 +134,7 @@ program scf_pcm
 
    open (newunit=unit, file='pcm_scf_probe_'//trim(set)//'.bin', access='stream', &
          form='unformatted', status='replace')
-   write (unit) int(ncase, kind=8)
+   write (unit) int(ncase, int64)
    call ref_open('pcm_scf_'//trim(set)//'.ref', refu, has_ref)
    if (has_ref) then
       call ref_read_int(refu, 'NCASE', ncase_ref)
@@ -201,23 +201,23 @@ program scf_pcm
          trim(cpcm(ic)), " nspin ", res%nspin, " iter ", res%iterations, "  E = ", res%energy, &
          "  E_diel = ", res%e_pcm, "  points ", res%pcm_npoints
 
-      write (unit) int(bas%nao, kind=8), int(merge(bas%nao_sph, bas%nao, csph(ic)), kind=8), &
-         int(natm, kind=8), int(res%nspin, kind=8), int(cna(ic), kind=8), int(cnb(ic), kind=8), &
-         int(merge(1, 0, csph(ic)), kind=8)
+      write (unit) int(bas%nao, int64), int(merge(bas%nao_sph, bas%nao, csph(ic)), int64), &
+         int(natm, int64), int(res%nspin, int64), int(cna(ic), int64), int(cnb(ic), int64), &
+         int(merge(1, 0, csph(ic)), int64)
       write (unit) cxyz(ic), cbas(ic), cfn(ic), cpcm(ic)
-      write (unit) EPS_WATER, int(opts%pcm_lebedev, kind=8), opts%pcm_radii_scale
-      write (unit) int(zint, kind=8), at_r
+      write (unit) EPS_WATER, int(opts%pcm_lebedev, int64), opts%pcm_radii_scale
+      write (unit) int(zint, int64), at_r
       if (len_trim(cfn(ic)) > 0) then
-         write (unit) int(size(res%grid_w), kind=8)
+         write (unit) int(size(res%grid_w), int64)
          write (unit) res%grid_r, res%grid_w
       else
-         write (unit) 0_8
+         write (unit) 0_int64
       end if
       if (allocated(res%grid_w_nlc)) then
-         write (unit) int(size(res%grid_w_nlc), kind=8)
+         write (unit) int(size(res%grid_w_nlc), int64)
          write (unit) res%grid_r_nlc, res%grid_w_nlc
       else
-         write (unit) 0_8
+         write (unit) 0_int64
       end if
       ! The Cartesian overlap, for the per-AO normalisation the generator
       ! carries pyscf's density across with.

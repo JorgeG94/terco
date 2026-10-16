@@ -1,49 +1,27 @@
 !
-! Binned shell-pair container: quartets formed ON THE DEVICE.
+! Binned shell-pair container: quartets formed on the device.
 !
-! WHY THIS REPLACES THE WORK LIST
-! -------------------------------
-! At 75 waters / 6-31G the materialised quartet list cost 26 s of host time and
-! 11.7 GB, against 15 s of GPU.  The host had become the bottleneck and the
-! memory did not extrapolate: 150 waters would have wanted ~47 GB and ~105 s.
+! Materialising the quartet list was the bottleneck (75 waters / 6-31G: 26 s
+! host time and 11.7 GB against 15 s of GPU). Following Galvez Vallejo et al.
+! [1], quartets are never enumerated: the O(N^2) shell-pair list is binned and
+! each kernel launch covers the cross product of two bins, each thread
+! deriving its own (ab, cd) from its index.
 !
-! The fix, from Galvez Vallejo et al. (EXESS), is to never enumerate quartets.
-! Keep the O(N^2) shell-pair list, bin it, and let each kernel launch cover the
-! cross product of two bins -- a thread derives its own (ab, cd) from its index.
-! Quartet formation moves to the device and costs nothing to store.
-!
-! THE SCREENING TRICK
-! -------------------
-! Bin pairs by TYPE (la, lb) and by SIZE, the Schwarz bound bucketed into
-! decades:
-!
-!     s_ab = int(-log10(Q_ab))          Q_ab = sqrt(max |(ab|ab)|)
-!
-! Then, since |(ab|cd)| <= Q_ab Q_cd,
-!
-!     keep the bin pair  <=>  s_ab + s_cd <= -log10(tau)
-!
-! is an INTEGER test on two bin indices, evaluated once per bin pair on the
-! host.  A whole cross product is admitted or rejected together, so the kernel
-! contains no screening conditional at all -- which is the point EXESS makes:
-! conditionals in the kernel cost thread divergence, and here there are none.
-!
-! Truncation direction matters and is safe: int() rounds toward zero, so
-! s_ab + s_cd <= -log10(Q_ab Q_cd).  A bin pair that should be kept therefore
-! always passes.  The test is conservative -- it can admit slightly more than
-! the threshold demands, never less.
-!
-! Binning by type as well as size is not free of charge either: it means every
-! thread in a launch shares (la, lb, lc, ld), which is the class-sorting win
-! from earlier arriving as a side effect of the data structure.
-!
+! Pairs are binned by type (la, lb) and by size, the Schwarz bound
+! Q_ab = sqrt(max |(ab|ab)|) bucketed as s_ab = int(-log10(Q_ab)). Since
+! |(ab|cd)| <= Q_ab Q_cd, a bin pair is kept iff s_ab + s_cd <= -log10(tau),
+! an integer test done once per bin pair on the host. Whole cross products are
+! admitted or rejected together, so kernels contain no screening conditional.
+! int() truncates toward zero, so the test is conservative: it may admit
+! slightly more than tau demands, never less. Binning by type also means every
+! thread in a launch shares (la, lb, lc, ld).
 !
 ! [1] J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
 !     "High-performance GPU-accelerated evaluation of electron repulsion
 !     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
 !
 module trc_bins
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_tables, only: LMAX
    use pic_types, only: int64, int_index
    use pic_sorting, only: sort_index
@@ -54,15 +32,9 @@ module trc_bins
    public :: build_pair_quartets
 
    !
-   ! BATCH MAGNITUDES. A pair's size bucket is the decade of its Schwarz
-   ! bound, and a bin pair is admitted when the two buckets sum below the
-   ! threshold's decade. Whole decades are a coarse test: the paper this
-   ! follows takes magnitudes of tau^(i/n), sized so that a batch holds a
-   ! useful number of pairs and the product of two batch magnitudes lands
-   ! on the threshold rather than a decade above it. `res` is that n, at
-   ! run time rather than compiled in, so a caller can trade launch count
-   ! against how much the pre-launch screen catches. res = 1 is decades,
-   ! which is what this always did.
+   ! Size buckets are 1/`res` of a decade (runtime, up to SMAX_RES), as in the
+   ! paper; res = 1 is whole decades. Finer buckets trade launch count against
+   ! how much the pre-launch screen catches.
    !
    integer, parameter :: SMAX_RES = 4   !! largest resolution the bins are sized for
    integer, parameter :: SDEC = 9       !! decades of Schwarz bound worth binning
@@ -85,7 +57,7 @@ module trc_bins
       integer, allocatable :: bin_off(:)           !! first pair of bin b
       integer, allocatable :: bin_cnt(:)           !! pairs in bin b
       integer, allocatable :: bin_s(:)             !! size index of bin b
-      integer, allocatable :: bin_la(:), bin_lb(:) !! type of bin b
+      integer, allocatable :: bin_la(:), bin_lb(:)  !! type of bin b
       integer, allocatable :: bin_g(:)             !! 1 if a pair of bin b has a general side
       integer, allocatable :: live(:)              !! indices of non-empty bins
       integer :: nlive = 0
@@ -110,9 +82,9 @@ contains
    ! kernel, or all multi-column, and goes to the blocked one -- no launch
    ! carries both, so neither pays the other's registers or divergence.
    !
-   pure integer function bin_key(la, lb, kab, s, g)
+   pure integer function bin_key(la, lb, kab, s, g) result(res)
       integer, intent(in) :: la, lb, kab, s, g
-      bin_key = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*2 + g + 1
+      res = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*2 + g + 1
    end function bin_key
 
    !
@@ -231,14 +203,20 @@ contains
 #endif
 
       ! bin metadata and the live list
-      b%bin_s = -1; b%bin_la = -1; b%bin_lb = -1; b%bin_g = 0
+      b%bin_s = -1
+      b%bin_la = -1
+      b%bin_lb = -1
+      b%bin_g = 0
       do i = 0, LMAX
          do j = 0, LMAX
             do k = 0, KCAP
                do s = 0, SDEC*sres
                   do gg = 0, 1
                      key = bin_key(i, j, k, s, gg)
-                     b%bin_la(key) = i; b%bin_lb(key) = j; b%bin_s(key) = s; b%bin_g(key) = gg
+                     b%bin_la(key) = i
+                     b%bin_lb(key) = j
+                     b%bin_s(key) = s
+                     b%bin_g(key) = gg
                   end do
                end do
             end do
@@ -263,18 +241,20 @@ contains
          integer, intent(in) :: i_, j_
          integer, intent(out) :: a_, b_
          if (sh_l(j_) > sh_l(i_)) then
-            a_ = j_; b_ = i_
+            a_ = j_
+            b_ = i_
          else
-            a_ = i_; b_ = j_
+            a_ = i_
+            b_ = j_
          end if
       end subroutine lorder
 
-      pure integer function kab_of(i, j)
+      pure integer function kab_of(i, j) result(res)
          integer, intent(in) :: i, j
          if (present(pp_n)) then
-            kab_of = pp_n((i - 1)*nbas + j)
+            res = pp_n((i - 1)*nbas + j)
          else
-            kab_of = sh_np(i)*sh_np(j)
+            res = sh_np(i)*sh_np(j)
          end if
       end function kab_of
    end subroutine build_binned_pairs
@@ -347,7 +327,8 @@ contains
          allocate (sq_abx(b%npair), sq_aby(b%npair), sq_abz(b%npair))
          allocate (sq_n(b%npair))
       end if
-      bin_pbase = 0; bin_k = 0
+      bin_pbase = 0
+      bin_k = 0
 
       ! Per pair slot: the A centre, A - B, and the real kept count -- what
       ! pp_off(key)/pp_n(key) gave the kernel before, read here once rather
@@ -355,7 +336,9 @@ contains
       do p = 1, b%npair
          key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
          off = pp_off(key)
-         sq_ax(p) = pp_ra(off + 1, 1); sq_ay(p) = pp_ra(off + 1, 2); sq_az(p) = pp_ra(off + 1, 3)
+         sq_ax(p) = pp_ra(off + 1, 1)
+         sq_ay(p) = pp_ra(off + 1, 2)
+         sq_az(p) = pp_ra(off + 1, 3)
          sq_abx(p) = pp_ra(off + 1, 1) - pp_rb(off + 1, 1)
          sq_aby(p) = pp_ra(off + 1, 2) - pp_rb(off + 1, 2)
          sq_abz(p) = pp_ra(off + 1, 3) - pp_rb(off + 1, 3)
@@ -398,14 +381,18 @@ contains
             do k1 = 1, bin_k(bb)
                ix = bin_pbase(bb) + (k1 - 1)*b%bin_cnt(bb) + s
                if (k1 <= kreal) then
-                  qp_z(ix) = pp_p(off + k1); qp_c(ix) = pp_c(off + k1)
+                  qp_z(ix) = pp_p(off + k1)
+                  qp_c(ix) = pp_c(off + k1)
                   qp_px(ix) = pp_r(off + k1, 1)
                   qp_py(ix) = pp_r(off + k1, 2)
                   qp_pz(ix) = pp_r(off + k1, 3)
                   if (present(qp_a)) qp_a(ix) = pp_a(off + k1)
                else
-                  qp_z(ix) = 1.0_dp; qp_c(ix) = 0.0_dp
-                  qp_px(ix) = sq_ax(p); qp_py(ix) = sq_ay(p); qp_pz(ix) = sq_az(p)
+                  qp_z(ix) = 1.0_dp
+                  qp_c(ix) = 0.0_dp
+                  qp_px(ix) = sq_ax(p)
+                  qp_py(ix) = sq_ay(p)
+                  qp_pz(ix) = sq_az(p)
                   if (present(qp_a)) qp_a(ix) = 0.0_dp
                end if
             end do
@@ -508,7 +495,9 @@ contains
          code(p) = int(1.0e6_dp*min(30.0_dp, -log10(max(w, 1.0e-30_dp)/wmax)), int64)
       end do
 
-      ti = b%sp_i; tj = b%sp_j; tq = b%sp_q
+      ti = b%sp_i
+      tj = b%sp_j
+      tq = b%sp_q
       allocate (kbuf(maxval(b%bin_cnt)), idx(maxval(b%bin_cnt)))
       do k = 1, b%nbin
          n = b%bin_cnt(k)
@@ -528,14 +517,14 @@ contains
       deallocate (code, kbuf, idx, ti, tj, tq)
 
    contains
-      logical function qkey_only()
+      logical function qkey_only() result(res)
          !! Key on the Schwarz bound alone rather than on the product with the
          !! density block. The bound correlates with distance, so this keeps
          !! more of the spatial locality the natural order has, at the cost of
          !! a less faithful prediction of which threads will screen out.
          character(len=8) :: v
          call get_environment_variable("TRC_BIN_SORT_Q", v)
-         qkey_only = (trim(v) == "1")
+         res = (trim(v) == "1")
       end function qkey_only
    end subroutine sort_bins_by_weight
 
@@ -550,7 +539,8 @@ contains
       real(dp), intent(in) :: sh_r(3, nbas)
 
       integer :: k, p, lo, n, m
-      real(dp) :: lo3(3), hi3(3), span, c(3)
+      real(dp) :: span
+      real(dp) :: lo3(3), hi3(3), c(3)
       integer(int64), allocatable :: code(:), kbuf(:)
       integer(int_index), allocatable :: idx(:)
       integer, allocatable :: ti(:), tj(:)
@@ -560,7 +550,8 @@ contains
 
       ! bounding box over all shell centres, so the quantisation is global and
       ! bins remain comparable to one another
-      lo3 = sh_r(:, 1); hi3 = sh_r(:, 1)
+      lo3 = sh_r(:, 1)
+      hi3 = sh_r(:, 1)
       do p = 2, nbas
          lo3 = min(lo3, sh_r(:, p))
          hi3 = max(hi3, sh_r(:, p))
@@ -577,7 +568,9 @@ contains
       end do
 
       allocate (ti(b%npair), tj(b%npair), tq(b%npair))
-      ti = b%sp_i; tj = b%sp_j; tq = b%sp_q
+      ti = b%sp_i
+      tj = b%sp_j
+      tq = b%sp_q
 
       allocate (kbuf(maxval(b%bin_cnt)), idx(maxval(b%bin_cnt)))
       do k = 1, b%nbin
@@ -599,18 +592,18 @@ contains
       deallocate (code, kbuf, idx, ti, tj, tq)
    end subroutine sort_bins_spatially
 
-   pure integer(int64) function morton3(ix, iy, iz)
+   pure integer(int64) function morton3(ix, iy, iz) result(res)
       !! Interleave the low ten bits of three coordinates.
       integer, intent(in) :: ix, iy, iz
       integer :: t, bit
-      morton3 = 0_8
+      res = 0_int64
       do bit = 0, 9
          t = ibits(max(0, min(1023, ix)), bit, 1)
-         if (t /= 0) morton3 = ibset(morton3, 3*bit)
+         if (t /= 0) res = ibset(res, 3*bit)
          t = ibits(max(0, min(1023, iy)), bit, 1)
-         if (t /= 0) morton3 = ibset(morton3, 3*bit + 1)
+         if (t /= 0) res = ibset(res, 3*bit + 1)
          t = ibits(max(0, min(1023, iz)), bit, 1)
-         if (t /= 0) morton3 = ibset(morton3, 3*bit + 2)
+         if (t /= 0) res = ibset(res, 3*bit + 2)
       end do
    end function morton3
 
@@ -641,7 +634,8 @@ contains
          if (b%bin_cnt(k) == 0) cycle
          m = 0.0_dp
          do p = b%bin_off(k) + 1, b%bin_off(k) + b%bin_cnt(k)
-            i = b%sp_i(p); j = b%sp_j(p)
+            i = b%sp_i(p)
+            j = b%sp_j(p)
             do a = 0, (sh_l(i) + 1)*(sh_l(i) + 2)/2 - 1
                do c = 0, (sh_l(j) + 1)*(sh_l(j) + 2)/2 - 1
                   m = max(m, abs(dmat(ao_off(i) + a, ao_off(j) + c)))
@@ -674,15 +668,15 @@ contains
    ! less and hands that work back. So res is a knob for accuracy at the
    ! pre-launch screen, not for speed, and 1 stays the default.
    !
-   pure integer function size_index(qq, res)
+   pure integer function size_index(qq, res) result(res_)
       real(dp), intent(in) :: qq
       integer, intent(in) :: res
       real(dp) :: v
       if (qq >= 1.0_dp) then
-         size_index = 0
+         res_ = 0
       else
          v = -log10(qq)*real(res, dp)
-         size_index = min(SDEC*res, int(ceiling(v)))
+         res_ = min(SDEC*res, int(ceiling(v)))
       end if
    end function size_index
 

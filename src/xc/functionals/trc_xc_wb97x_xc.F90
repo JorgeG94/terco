@@ -21,7 +21,7 @@
 ! integrand is rho * eps.
 !
 module trc_xc_wb97x_xc
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_xc_util, only: enforce_polar_sigma_constraints, m_cbrt_2, m_cbrt_3, m_cbrt_4, &
       m_cbrt_one_ov_pi, m_pi, pow_3_2, xc_cbrt, xc_erf
    implicit none

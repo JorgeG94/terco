@@ -13,7 +13,7 @@
 ! not registered as a test.
 !
 program bench_xc
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -39,7 +39,7 @@ program bench_xc
    type(error_t) :: err
    real(dp) :: exc, nelec, seed, t0, t1, tp, tq, sp, sq, tmin
    integer :: nsk
-   integer(kind=8) :: lcg
+   integer(int64) :: lcg
    logical :: ok
 
    level = 3; reps = 5; max_pts = 512; bas_json = ''
@@ -92,10 +92,10 @@ program bench_xc
       '   (batching ', t1 - t0, ' s)'
 
    allocate (c(nao, 8), dmat(nao, nao), vxc(nao, nao))
-   lcg = 61_8
+   lcg = 61_int64
    do j = 1, 8
       do i = 1, nao
-         lcg = mod(48271_8*lcg, 2147483647_8)
+         lcg = mod(48271_int64*lcg, 2147483647_int64)
          seed = real(lcg, dp)/2147483647.0_dp
          c(i, j) = 0.3_dp*(seed - 0.5_dp)
       end do
@@ -126,7 +126,7 @@ contains
 
    function wall() result(t)
       real(dp) :: t
-      integer(kind=8) :: cc, rate
+      integer(int64) :: cc, rate
       call system_clock(cc, rate)
       t = real(cc, dp)/real(rate, dp)
    end function wall

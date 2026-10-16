@@ -15,7 +15,8 @@
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_df_3c_k122
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DTINV, BOYS_DT
+   use pic_types, only: dp, int64
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DTINV, BOYS_DT
    implicit none
    private
    public :: df_3c_k122
@@ -49,10 +50,10 @@ contains
       integer,  intent(in)    :: ord_a(nac)
       real(dp), intent(inout) :: tens(nao, nao, nax)
 
-      integer(kind=8) :: t
+      integer(int64) :: t
 
       if (npc <= 0 .or. nac <= 0) return
-      do concurrent(t = 0:int(npc, 8)*nac - 1)
+      do concurrent(t = 0:int(npc, int64)*nac - 1)
          call df_3c_i122(t, nsh, nao, sh_ao, sh_r, &
                    npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                    npc, ord_p, &
@@ -69,7 +70,7 @@ contains
                          nac, ord_a, &
                          tens)
       !$acc routine seq
-      integer(kind=8), intent(in) :: t
+      integer(int64), intent(in) :: t
       integer,  intent(in)    :: nsh, nao, npair, npp, npc, nsx, nax, mnx, nac
       integer,  intent(in)    :: sh_ao(nsh)
       real(dp), intent(in)    :: sh_r(3, nsh)
@@ -85,7 +86,7 @@ contains
       integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, o
       real(dp) :: blk(108), abx, aby, abz
 
-      ip = ord_p(int(mod(t, int(npc, 8))) + 1)
+      ip = ord_p(int(mod(t, int(npc, int64))) + 1)
       kk = ord_a(int(t/npc) + 1)
       ii = p_i(ip); jj = p_j(ip)
       abx = sh_r(1, ii) - sh_r(1, jj)

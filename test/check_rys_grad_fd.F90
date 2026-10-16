@@ -30,7 +30,7 @@
 ! finite difference.
 !
 program check_rys_grad_fd
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json

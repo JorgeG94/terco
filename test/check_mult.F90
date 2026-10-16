@@ -21,7 +21,7 @@
 ! the possible ordering errors are invisible.
 !
 program check_mult
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
@@ -70,7 +70,7 @@ program check_mult
 
    open (newunit=u, file='mult_probe.bin', access='stream', &
          form='unformatted', status='replace')
-   write (u) int(nao, kind=8), int(TRC_NMULT, kind=8)
+   write (u) int(nao, int64), int(TRC_NMULT, int64)
    write (u) s
    write (u) mm
    close (u)

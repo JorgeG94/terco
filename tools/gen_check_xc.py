@@ -63,7 +63,7 @@ HEADER = '''!
 ! from -- one block per kernel, mechanical, so neither is hand-maintained.
 !
 program check_xc
-   use trc_boys, only: dp
+   use pic_types, only: dp
 {uses}
    implicit none
 

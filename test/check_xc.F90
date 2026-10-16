@@ -24,7 +24,7 @@
 ! from -- one block per kernel, mechanical, so neither is hand-maintained.
 !
 program check_xc
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_xc_b88, only: b88_exc_unpolar, b88_exc_vxc_unpolar, b88_fxc_unpolar, &
       b88_vxc_fxc_unpolar, b88_exc_polar, b88_exc_vxc_polar, b88_fxc_polar, b88_vxc_fxc_polar
    use trc_xc_b97_d, only: b97_d_exc_unpolar, b97_d_exc_vxc_unpolar, b97_d_fxc_unpolar, &

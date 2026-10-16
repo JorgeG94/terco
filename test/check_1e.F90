@@ -20,7 +20,8 @@
 ! failures out of exact results.
 !
 program check_1e
-   use trc_boys, only: dp, boys_init
+   use pic_types, only: dp
+   use trc_boys, only: boys_init
    use trc_1e_kernels, only: one_e_dispatch, ONE_E_LMAX
    use trc_cart_perm, only: cart_perm_b2l
    implicit none

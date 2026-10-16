@@ -25,7 +25,7 @@
 !   bench_many <xyz> <density-file> [nmax] [thresh]
 !
 program bench_many
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_eri, only: trc_eri_t
    use trc_test_basis, only: read_xyz
@@ -138,7 +138,7 @@ contains
 
    subroutine tick(t)
       real(dp), intent(out) :: t
-      integer(kind=8) :: c, rate
+      integer(int64) :: c, rate
       call system_clock(c, rate)
       t = real(c, dp)/real(rate, dp)
    end subroutine tick
@@ -148,7 +148,7 @@ contains
       integer, intent(in) :: nao
       real(dp), intent(out) :: d(nao, nao)
       integer :: u, ios
-      integer(kind=8) :: nchk
+      integer(int64) :: nchk
       open (newunit=u, file=fn, access='stream', form='unformatted', &
             status='old', iostat=ios)
       if (ios /= 0) then

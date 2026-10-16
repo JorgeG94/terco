@@ -26,7 +26,7 @@
 ! radius rather than to the eighth digit.
 !
 module trc_pcm_radii
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
@@ -42,8 +42,8 @@ module trc_pcm_radii
       !! pyscf's `radii.BOHR`, deliberately; see the header
    real(dp), parameter :: VDW_ANGSTROM(PCM_MAX_ELEMENT) = [ &
                           1.10_dp, 1.40_dp, &                                              ! H  He
-                          1.82_dp, 1.53_dp, 1.92_dp, 1.70_dp, 1.55_dp, 1.52_dp, 1.47_dp, 1.54_dp, & ! Li..Ne
-                          2.27_dp, 1.73_dp, 1.84_dp, 2.10_dp, 1.80_dp, 1.80_dp, 1.75_dp, 1.88_dp, & ! Na..Ar
+                          1.82_dp, 1.53_dp, 1.92_dp, 1.70_dp, 1.55_dp, 1.52_dp, 1.47_dp, 1.54_dp, &  ! Li..Ne
+                          2.27_dp, 1.73_dp, 1.84_dp, 2.10_dp, 1.80_dp, 1.80_dp, 1.75_dp, 1.88_dp, &  ! Na..Ar
                           2.75_dp, 2.31_dp]                                                ! K  Ca
       !! van der Waals radii in Angstrom, indexed by atomic number
 
@@ -59,7 +59,7 @@ contains
 
       radius = 0.0_dp
       if (atomic_number < 1 .or. atomic_number > PCM_MAX_ELEMENT) then
-         write (num, '(i0)') atomic_number
+         write (num, "(i0)") atomic_number
          call error%set(ERROR_VALIDATION, "PCM: no cavity radius for element "//trim(num)// &
                         "; the continuum carries van der Waals radii for hydrogen through "// &
                         "calcium only, and refuses rather than guesses one (a wrong radius "// &

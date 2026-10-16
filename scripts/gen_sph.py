@@ -230,7 +230,7 @@ def emit(order, order_val, cmd):
 !
 {_guard(order_val)}
 module trc_sph_tables
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
    public :: SPH_LMAX, SPH_NCART_MAX, SPH_NSPH_MAX, SPH_T

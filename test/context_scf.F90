@@ -10,7 +10,7 @@ program context_scf
    !! which is what keeps this test exercising the API it always has rather
    !! than failing on that refusal.
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char, c_char
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t

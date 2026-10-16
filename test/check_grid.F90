@@ -22,7 +22,7 @@
 ! pass: level 3 reaches 5.7e-9 on the Gaussian sum and the bound is 1e-8.
 !
 program check_grid
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use trc_error, only: error_t
    use trc_lebedev, only: lebedev_grid, lebedev_available_orders, lebedev_has_negative_weights
    use trc_dft_radial, only: treutler_ahlrichs_radial, radial_volume_weights
@@ -273,7 +273,7 @@ contains
       type(dft_grid_t) :: grid
       type(error_t) :: err
       real(dp) :: dmax, rmax, t0, t1, t2, g_scr, g_full, wscale
-      integer(kind=8) :: cc, rate
+      integer(int64) :: cc, rate
 
       call read_xyz('gly10.xyz', nat, z, coords)
       call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)

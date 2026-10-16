@@ -24,7 +24,7 @@
 ! the semilocal grid is set as `grids`.
 !
 program scf_rks
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_test_basis, only: read_xyz, uncontract_basis
@@ -56,7 +56,7 @@ program scf_rks
    logical :: has_ref
 
    open (newunit=unit, file='rks_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(NCASE, kind=8)
+   write (unit) int(NCASE, int64)
    all_ok = .true.
    current = ""
 
@@ -119,24 +119,24 @@ program scf_rks
       end if
 
       ! Everything pyscf needs to reproduce this case.
-      write (unit) int(bas%nao, kind=8), int(natm, kind=8), int(nsh, kind=8), int(res%nspin, kind=8), &
-         int(nalpha(ic), kind=8), int(nbeta(ic), kind=8)
+      write (unit) int(bas%nao, int64), int(natm, int64), int(nsh, int64), int(res%nspin, int64), &
+         int(nalpha(ic), int64), int(nbeta(ic), int64)
       write (unit) at_z, at_r
       do ish = 1, nsh
-         write (unit) int(centre_of(ish), kind=8), int(sh_l(ish), kind=8), sh_e(1, ish)
+         write (unit) int(centre_of(ish), int64), int(sh_l(ish), int64), sh_e(1, ish)
       end do
       write (unit) fn(ic)
       if (len_trim(fn(ic)) > 0) then
-         write (unit) int(size(res%grid_w), kind=8)
+         write (unit) int(size(res%grid_w), int64)
          write (unit) res%grid_r, res%grid_w
       else
-         write (unit) 0_8
+         write (unit) 0_int64
       end if
       if (allocated(res%grid_w_nlc)) then
-         write (unit) int(size(res%grid_w_nlc), kind=8)
+         write (unit) int(size(res%grid_w_nlc), int64)
          write (unit) res%grid_r_nlc, res%grid_w_nlc
       else
-         write (unit) 0_8
+         write (unit) 0_int64
       end if
       write (unit) res%energy
       write (unit) res%dmat

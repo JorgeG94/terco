@@ -40,6 +40,7 @@ module terco_app
    interface
       function c_setenv(name, value, overwrite) result(rc) bind(c, name="setenv")
          import :: c_char, c_int
+         implicit none
          character(kind=c_char), intent(in) :: name(*), value(*)
          integer(c_int), value :: overwrite
          integer(c_int) :: rc
@@ -62,7 +63,7 @@ contains
       r = s
       do i = 1, len(s)
          c = iachar(s(i:i))
-         if (c >= iachar('A') .and. c <= iachar('Z')) r(i:i) = achar(c + 32)
+         if (c >= iachar("A") .and. c <= iachar("Z")) r(i:i) = achar(c + 32)
       end do
    end function lower
 
@@ -90,7 +91,8 @@ contains
       s = lower(adjustl(tok))
       do i = 1, NELEM
          if (lower(SYMBOLS(i)) == s) then
-            z = i; return
+            z = i
+            return
          end if
       end do
    end function atomic_number
@@ -121,7 +123,8 @@ contains
       if (ios /= 0 .or. natm < 1) then
          call err%set(int(ERROR_PARSE, default_int), trim(path)// &
                       ": the first line must be the number of atoms (an xyz file)")
-         close (u); return
+         close (u)
+         return
       end if
       read (u, "(a)", iostat=ios) line
       title = trim(line)
@@ -131,19 +134,22 @@ contains
          if (ios /= 0) then
             call err%set(int(ERROR_PARSE, default_int), trim(path)//": expected "// &
                          itoa(natm)//" atoms, the file ends after "//itoa(i - 1))
-            close (u); return
+            close (u)
+            return
          end if
          read (line, *, iostat=ios) tok, r
          if (ios /= 0) then
             call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//itoa(i)// &
                          " is not 'symbol x y z': '"//trim(line)//"'")
-            close (u); return
+            close (u)
+            return
          end if
          z(i) = atomic_number(tok)
          if (z(i) == 0) then
             call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//itoa(i)// &
                          ": unknown element '"//trim(tok)//"'")
-            close (u); return
+            close (u)
+            return
          end if
          xyz(:, i) = r*BOHR_PER_ANGSTROM
       end do
@@ -167,7 +173,8 @@ contains
 
       path = ""
       if (exists(name)) then
-         path = trim(name); return
+         path = trim(name)
+         return
       end if
       file = lower(trim(name))
       if (len(file) < 5) then
@@ -198,7 +205,8 @@ contains
          end if
          if (i1 > i0) then
             if (exists(dirs(i0:i1 - 1)//"/"//file)) then
-               path = dirs(i0:i1 - 1)//"/"//file; return
+               path = dirs(i0:i1 - 1)//"/"//file
+               return
             end if
             tried = tried//new_line("a")//"    "//dirs(i0:i1 - 1)//"/"//file
          end if
@@ -214,9 +222,9 @@ contains
       end if
    end subroutine resolve_basis
 
-   logical function exists(path)
+   logical function exists(path) result(res)
       character(len=*), intent(in) :: path
-      inquire (file=trim(path), exist=exists)
+      inquire (file=trim(path), exist=res)
    end function exists
 
    pure function c_string(s) result(cs)
@@ -234,7 +242,8 @@ contains
       n = size(buf)
       do i = 1, size(buf)
          if (buf(i) == c_null_char) then
-            n = i - 1; exit
+            n = i - 1
+            exit
          end if
       end do
       allocate (character(len=n) :: s)

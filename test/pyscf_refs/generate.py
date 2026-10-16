@@ -711,8 +711,7 @@ def gen_erf_fock(case, xyz, json_rel):
     OMEGA = 0.3
     dump = TEST / f"erf_fock_probe_{case}.bin"
     # Any of the three kernel-path binaries (hgp/nosym/rys) builds the
-    # identical fixed density and basis -- "_hgp" is simply the one that
-    # always exists (the "_rys" variant only when TERCO_RYS is on).
+    # identical fixed density and basis; "_hgp" is the one used here.
     run_bin(f"check_erf_fock_vs_pyscf_{case}_hgp", [xyz, json_rel, dump.name, "0"])
     if not dump.exists():
         print(f"  erf_fock {case}: binary self-skipped (LMAX too low for this build); not regenerating")

@@ -22,7 +22,7 @@
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_mult_kernels
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
    public :: multipole_dispatch, mult_driver, TRC_NMULT, MULT_LMAX

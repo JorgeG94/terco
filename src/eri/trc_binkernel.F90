@@ -18,7 +18,8 @@
 !     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
 !
 module trc_binkernel
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp, int64
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
@@ -26,10 +27,8 @@ module trc_binkernel
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
 #endif
-#ifdef TERCO_RYS
    use trc_rys_select, only: rys_select_init, rys_route
    use trc_rys_kernels, only: rys_dispatch
-#endif
    implicit none
    private
 
@@ -64,11 +63,11 @@ module trc_binkernel
    !
    type, public :: trc_plan_t
       integer :: nseg = 0, nlaunch = 0
-      integer(kind=8) :: nwork = 0
+      integer(int64) :: nwork = 0
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
-      integer(kind=8), allocatable :: sOff(:)
+      integer(int64), allocatable :: sOff(:)
       logical :: on_device = .false.
    contains
       procedure :: build   => plan_build
@@ -78,34 +77,34 @@ module trc_binkernel
 
 contains
 
-   integer(kind=8) function launch_cap()
+   integer(int64) function launch_cap() result(res)
       !! The one-time pair ordering, off unless asked for. See the comment at
       !! its call site for what it costs and buys.
       !! TRC_LAUNCH_CAP caps the quartets in one launch; 0 (default) is one
       !! launch per angular-momentum class.
       character(len=32) :: e
       integer :: ios
-      e = ' '
-      call get_environment_variable('TRC_LAUNCH_CAP', e)
-      launch_cap = 0_8
+      e = " "
+      call get_environment_variable("TRC_LAUNCH_CAP", e)
+      res = 0_int64
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) launch_cap
-         if (ios /= 0) launch_cap = 0_8
+         read (e, *, iostat=ios) res
+         if (ios /= 0) res = 0_int64
       end if
    end function launch_cap
 
-   logical function seg_stats_on()
+   logical function seg_stats_on() result(res)
       !! TRC_SEG_STATS=1 prints the segment shape of each Fock build.
       character(len=8) :: e
-      e = ' '
-      call get_environment_variable('TRC_SEG_STATS', e)
-      seg_stats_on = len_trim(e) > 0
+      e = " "
+      call get_environment_variable("TRC_SEG_STATS", e)
+      res = len_trim(e) > 0
    end function seg_stats_on
 
-   logical function bin_sort_on()
+   logical function bin_sort_on() result(res)
       character(len=8) :: v
       call get_environment_variable("TRC_BIN_SORT", v)
-      bin_sort_on = (trim(v) == "1")
+      res = (trim(v) == "1")
    end function bin_sort_on
 
    subroutine trc_set_prim_margin(f)
@@ -141,7 +140,7 @@ contains
 #include "trc_cart_comp.inc"
    end subroutine comp
 
-   pure real(dp) function binom(n, k)
+   pure real(dp) function binom(n, k) result(res)
       !$acc routine seq
       integer, intent(in) :: n, k
       integer :: i
@@ -150,17 +149,17 @@ contains
       do i = 1, k
          r = r*real(n - k + i, dp)/real(i, dp)
       end do
-      binom = r
+      res = r
    end function binom
 
-   pure real(dp) function powi(x, n)
+   pure real(dp) function powi(x, n) result(res)
       !$acc routine seq
       real(dp), intent(in) :: x
       integer,  intent(in) :: n
       integer :: i
-      powi = 1.0_dp
+      res = 1.0_dp
       do i = 1, n
-         powi = powi*x
+         res = res*x
       end do
    end function powi
 
@@ -210,17 +209,17 @@ contains
       !! This rank's share of the sorted work list: every nranks-th item from
       !! rank. The caller reduces the result across ranks.
       integer,  intent(out)   :: nlaunch
-      integer(kind=8), intent(out) :: nwork
-      integer(kind=8), intent(out), optional :: nkept
+      integer(int64), intent(out) :: nwork
+      integer(int64), intent(out), optional :: nkept
       !! Diagnostic: how many of `nwork` actually survive the in-kernel
       !! Schwarz and density tests.  Costs a separate cheap pass, so it is
       !! optional and off in the timed path.
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(kind=8) :: nt
+      integer(int64) :: nt
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sPA(:), sPB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
-      integer(kind=8), allocatable :: sOff(:)
+      integer(int64), allocatable :: sOff(:)
 
       ! Order the pairs inside each bin by how much they matter, once, so
       ! that neighbouring threads of a warp agree about screening. The
@@ -303,9 +302,9 @@ contains
             sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
             sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
             if (ka == kb) then
-               nt = int(nA, 8)*int(nA + 1, 8)/2
+               nt = int(nA, int64)*int(nA + 1, int64)/2
             else
-               nt = int(nA, 8)*int(nB, 8)
+               nt = int(nA, int64)*int(nB, int64)
             end if
             !
             ! one_bin_item takes its within-segment index as a default integer,
@@ -316,7 +315,7 @@ contains
             ! because widening the index costs registers in the hot kernel and
             ! the register budget is already the binding constraint.
             !
-            if (nt > 2147483000_8) error stop &
+            if (nt > 2147483000_int64) error stop &
                "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"
             sOff(is + 1) = sOff(is) + nt
          end do
@@ -333,17 +332,17 @@ contains
       if (seg_stats_on()) then
          block
             integer :: q, nsmall
-            integer(kind=8) :: mn, mx, sz
-            mn = huge(0_8); mx = 0_8; nsmall = 0
+            integer(int64) :: mn, mx, sz
+            mn = huge(0_int64); mx = 0_int64; nsmall = 0
             do q = 1, nseg
                sz = sOff(q + 1) - sOff(q)
                mn = min(mn, sz); mx = max(mx, sz)
                if (sz < 32) nsmall = nsmall + 1
             end do
-            print '(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)', &
-               '  [seg] nseg ', nseg, '  work ', nwork, '  min ', mn, '  max ', mx, &
-               '  mean ', real(nwork, dp)/max(nseg, 1), '  <32 ', nsmall, &
-               '  boundary warps ', 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), '% of threads'
+            print "(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)", &
+               "  [seg] nseg ", nseg, "  work ", nwork, "  min ", mn, "  max ", mx, &
+               "  mean ", real(nwork, dp)/max(nseg, 1), "  <32 ", nsmall, &
+               "  boundary warps ", 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), "% of threads"
          end block
       end if
       if (nwork == 0) return
@@ -371,18 +370,16 @@ contains
       ! exactly its (la,lb,lc,ld) -- no select case, and ptxas budgets registers
       ! per class instead of for the worst class across all of them.
       !
-#ifdef TERCO_RYS
       ! TRC_RYS_CLASSES, read once per Fock build -- `fock_bins` IS one Fock
       ! build, called once per SCF iteration (or once, standalone, by a
       ! correctness check) -- not once per launch below. See trc_rys_select.
       call rys_select_init()
-#endif
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl, key2
-         integer(kind=8) :: lcap
+         integer(int64) :: lcap
          logical :: l2
-         integer(kind=8) :: o2
+         integer(int64) :: o2
          ! The trivial primitive-shell view used to be built here -- eight
          ! arrays, allocated, filled, and pushed to the device on every Fock
          ! build -- purely to fill dummy arguments the scalar kernel never
@@ -416,36 +413,7 @@ contains
                                              b%sp_q, thresh, dsh, nbas, nkept)
          nl = 0
          c0 = 1
-         ! Quartets per launch. Zero (the default) is one launch per class,
-         ! however much work that is; a cap splits a class at segment
-         ! boundaries.
-         !
-         ! gmshpc and EXESS cap a bra batch at 2560 SHELL PAIRS and launch
-         ! per batch pair, so a launch of theirs covers bra x ket = 2560^2 =
-         ! 6.5M quartets. That is the number to compare against, not 2560.
-         ! Swept on the 123-atom silica slice, Fock seconds:
-         !
-         !   cap        launches   cc-pVDZ   6-31G*
-         !   none (0)         21     5.257    2.874
-         !   6553600         396     5.257    2.869     <- their granularity
-         !   3000000         703     5.266    2.888
-         !   1000000        1402     5.333
-         !    100000        3953     5.569
-         !     10000        7027     5.844
-         !
-         ! So at their batch size we are already at the same throughput, to
-         ! three digits, and the flat region runs from 21 launches to about
-         ! 400. Only below ~1M quartets a launch does it cost anything, and
-         ! then it is 1-11%, not the 12x an early note claimed -- that
-         ! measurement was taken on a contracted basis, where work per
-         ! quartet was wildly uneven, and at 2200 items a launch, which is
-         ! 1.3% of one wave on a V100. It measured starvation, not batching.
-         !
-         ! The reason a cap cannot WIN here is that batching buys throughput
-         ! by keeping many kernels in flight at once, and `do concurrent`
-         ! gives no way to overlap launches. One launch at a time makes a
-         ! larger launch weakly better. Kept as a knob so the claim stays
-         ! measured.
+
          lcap = launch_cap()
          do while (c0 <= nseg)
             c1 = c0
@@ -460,27 +428,25 @@ contains
             nl = nl + 1
             key2 = ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                     + sLC(c0))*CLASS_RADIX + sLD(c0)
-#ifdef TERCO_RYS
             ! TRC_RYS_CLASSES routes this launch's whole class run to the
             ! Rys kernel instead of HGP's, for classes that have one --
             ! `rys_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
             if (rys_route(key2)) then
                call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
+                                 b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
+                                 omega, dsh, nbas, nao, sh_l, ao_off, &
+                                 nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                                 sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                                 ndens, dmat, jmat, rank, nranks)
+            else
+               call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
+                                omega, dsh, nbas, nao, sh_l, ao_off, &
                                 nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                                 sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                 ndens, dmat, jmat, rank, nranks)
-            else
-#endif
-            call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
-                             nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                             ndens, dmat, jmat, rank, nranks)
-#ifdef TERCO_RYS
             end if
-#endif
             c0 = c1 + 1
          end do
          nlaunch = nl
@@ -520,19 +486,19 @@ contains
    ! block between the two bins' shell sets, which is not a per-bin
    ! quantity. The per-quartet test in the kernel, which reads dsh for all
    ! six blocks, is the one that screens on the density.
-   pure logical function dens_reject(b, ka, kb, thresh)
+   pure logical function dens_reject(b, ka, kb, thresh) result(res)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in) :: ka, kb
       real(dp), intent(in) :: thresh
       real(dp) :: qq, dd
-      dens_reject = .false.
+      res = .false.
       if (.not. allocated(b%bin_dm)) return
       ! bound on Q_ab Q_cd from the two size buckets, back off one decade each
       ! because the bucket is a ceiling
       qq = 10.0_dp**(-real(max(0, b%bin_s(ka) - 1), dp)) &
            *10.0_dp**(-real(max(0, b%bin_s(kb) - 1), dp))
       dd = 4.0_dp*max(b%bin_dm(ka), b%bin_dm(kb))
-      dens_reject = (qq*dd <= thresh)
+      res = (qq*dd <= thresh)
    end function dens_reject
 
    !
@@ -547,15 +513,16 @@ contains
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
                          npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, nkept)
       integer,  intent(in) :: nseg, npair, nbas
-      integer(kind=8), intent(in) :: nwork
+      integer(int64), intent(in) :: nwork
       integer,  intent(in) :: sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in) :: sD(nseg)
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in) :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in) :: sp_q(npair), thresh, dsh(nbas, nbas)
-      integer(kind=8), intent(out) :: nkept
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
+      integer(int64), intent(out) :: nkept
 
-      integer(kind=8) :: gt, nk
+      integer(int64) :: gt, nk
       integer :: lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl
       real(dp) :: qcut
 
@@ -610,15 +577,16 @@ contains
 
    subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
       !! Apply a permutation to the segment descriptor arrays, in place.
-      integer, intent(in) :: n, ord(n)
+      integer, intent(in) :: n
+      integer, intent(in) :: ord(n)
       integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
       integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
       logical, intent(inout) :: sD(n)
-      integer(kind=8), intent(inout) :: sOff(n + 1)
+      integer(int64), intent(inout) :: sOff(n + 1)
       integer :: k
       integer, allocatable :: t(:)
       logical, allocatable :: tl(:)
-      integer(kind=8), allocatable :: to(:)
+      integer(int64), allocatable :: to(:)
       allocate (t(n), tl(n), to(n + 1))
       t = sA(ord);  sA = t
       t = sNB(ord); sNB = t
@@ -635,9 +603,9 @@ contains
       to(1) = 0
       do k = 1, n
          if (sD(k)) then
-            to(k + 1) = to(k) + int(sA(k), 8)*int(sA(k) + 1, 8)/2
+            to(k + 1) = to(k) + int(sA(k), int64)*int(sA(k) + 1, int64)/2
          else
-            to(k + 1) = to(k) + int(sA(k), 8)*int(sNB(k), 8)
+            to(k + 1) = to(k) + int(sA(k), int64)*int(sNB(k), int64)
          end if
       end do
       sOff = to
@@ -653,12 +621,13 @@ contains
                        npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
       integer,  intent(in)    :: nseg, npair, nbas, npp, nao, rank, nranks
-      integer(kind=8), intent(in) :: nwork
+      integer(int64), intent(in) :: nwork
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -669,7 +638,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-      integer(kind=8) :: gt, nr, i
+      integer(int64) :: gt, nr, i
       integer :: lo, hi, mid, seg, t
 
       !
@@ -723,12 +692,13 @@ contains
                              ndens, dmat, jmat, kmat, rank, nranks)
       !! Whole-worklist driver for the general-density kernel.
       integer,  intent(in)    :: nseg, npair, nbas, npp, nao, ndens, rank, nranks
-      integer(kind=8), intent(in) :: nwork
+      integer(int64), intent(in) :: nwork
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh, jfac, kfac, omega
+      real(dp), intent(in) :: thresh, jfac, kfac, omega
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -736,7 +706,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-      integer(kind=8) :: gt, nr, i
+      integer(int64) :: gt, nr, i
       integer :: lo, hi, mid, seg, t
 
       ! `local()` is NOT optional here, and the reason is worth stating.
@@ -782,7 +752,8 @@ contains
       integer,  intent(in)    :: nt, nA, nB, offA, offB, npair, nbas, npp, nao
       logical,  intent(in)    :: diag
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -835,7 +806,8 @@ contains
       integer,  intent(in)    :: t, nA, nB, offA, offB, npair, nbas, npp, nao
       logical,  intent(in)    :: diag
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -863,7 +835,7 @@ contains
       integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
-      real(dp) :: cb, cdc, vv, jsink, sc
+      real(dp) :: cb, cdc, vv
       integer  :: idens
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
       integer  :: mui, nuj, lamk, sigl
@@ -927,7 +899,6 @@ contains
       offab = pp_off(keyab); nab = pp_n(keyab)
       offcd = pp_off(keycd); ncd = pp_n(keycd)
 
-      jsink = 0.0_dp
       do x = 1, nca*ncc
          g(x) = 0.0_dp
       end do
@@ -1069,62 +1040,53 @@ contains
          mu = mui + ia
          idx = idx + 1
          vv = vbuf(idx)
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
-         FG_ATOMIC
+         !$acc atomic update
          jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
-         FG_ATOMIC
+         !$acc atomic update
          kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
          if (dij) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
          end if
          if (dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
          end if
          if (dij .and. dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
          end if
          if (dpq) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
             end if
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
             end if
          end if
-#endif
       end do
       end do
       end do
@@ -1171,85 +1133,57 @@ contains
          end do
          vv = acc
 
-!
-! DIAGNOSTIC ABLATIONS -- both produce WRONG RESULTS on purpose.
-!
-!   -DTRC_NO_ATOMIC   same stores, no atomic directives.  Isolates the cost
-!                       of the atomic instruction itself from the address
-!                       arithmetic around it.  Races, so J and K are garbage.
-!   -DTRC_NO_DIGEST   no scatter at all, just a scalar accumulation.
-!                       Isolates the whole digestion, addresses included.
-!
-! Only ever for reading `ptxas` register counts and kernel timings.  Neither is
-! a correctness path and check_binfock will fail on both, which is the point.
-!
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
-         FG_ATOMIC
+         !$acc atomic update
          jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
-         FG_ATOMIC
+         !$acc atomic update
          kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
          if (dij) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
          end if
          if (dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
          end if
          if (dij .and. dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
          end if
          if (dpq) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
             end if
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
             end if
          end if
-#endif
       end do
       end do
       end do
       end do
-#endif
-#if defined(TRC_NO_DIGEST)
-      ! keep jsink live so the whole evaluation is not dead-code eliminated
-      if (jsink /= 0.0_dp) then
-         !$acc atomic update
-         jmat(1, 1) = jmat(1, 1) + jsink*1.0e-300_dp
-      end if
 #endif
    end subroutine one_bin_item_nosym
 
@@ -1261,7 +1195,8 @@ contains
       integer,  intent(in)    :: t, nA, nB, offA, offB, npair, nbas, npp, nao
       logical,  intent(in)    :: diag
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -1289,7 +1224,7 @@ contains
       integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
-      real(dp) :: cb, cdc, vv, jsink, sc
+      real(dp) :: cb, cdc, vv, sc
       integer  :: idens
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
       integer  :: mui, nuj, lamk, sigl
@@ -1353,7 +1288,6 @@ contains
       offab = pp_off(keyab); nab = pp_n(keyab)
       offcd = pp_off(keycd); ncd = pp_n(keycd)
 
-      jsink = 0.0_dp
       do x = 1, nca*ncc
          g(x) = 0.0_dp
       end do
@@ -1533,62 +1467,53 @@ contains
          jmat(idens, nu, sig) = jmat(idens, nu, sig) - kfac*sc*dmat(idens, mu, lam)
       end do
 #else
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
-         FG_ATOMIC
+         !$acc atomic update
          jmat(mu, nu) = jmat(mu, nu) + vv*dmat(lam, sig)
-         FG_ATOMIC
+         !$acc atomic update
          kmat(mu, lam) = kmat(mu, lam) + vv*dmat(nu, sig)
          if (dij) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(nu, mu) = jmat(nu, mu) + vv*dmat(lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(nu, lam) = kmat(nu, lam) + vv*dmat(mu, sig)
          end if
          if (dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(mu, nu) = jmat(mu, nu) + vv*dmat(sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(mu, sig) = kmat(mu, sig) + vv*dmat(nu, lam)
          end if
          if (dij .and. dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(nu, mu) = jmat(nu, mu) + vv*dmat(sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(nu, sig) = kmat(nu, sig) + vv*dmat(mu, lam)
          end if
          if (dpq) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(lam, sig) = jmat(lam, sig) + vv*dmat(mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(lam, mu) = kmat(lam, mu) + vv*dmat(sig, nu)
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(sig, lam) = jmat(sig, lam) + vv*dmat(mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(sig, mu) = kmat(sig, mu) + vv*dmat(lam, nu)
             end if
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(lam, sig) = jmat(lam, sig) + vv*dmat(nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(lam, nu) = kmat(lam, nu) + vv*dmat(sig, mu)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(sig, lam) = jmat(sig, lam) + vv*dmat(nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(sig, nu) = kmat(sig, nu) + vv*dmat(lam, mu)
             end if
          end if
-#endif
 #endif
       end do
       end do
@@ -1636,26 +1561,6 @@ contains
          end do
          vv = acc
 
-!
-! DIAGNOSTIC ABLATIONS -- both produce WRONG RESULTS on purpose.
-!
-!   -DTRC_NO_ATOMIC   same stores, no atomic directives.  Isolates the cost
-!                       of the atomic instruction itself from the address
-!                       arithmetic around it.  Races, so J and K are garbage.
-!   -DTRC_NO_DIGEST   no scatter at all, just a scalar accumulation.
-!                       Isolates the whole digestion, addresses included.
-!
-! Only ever for reading `ptxas` register counts and kernel timings.  Neither is
-! a correctness path and check_binfock will fail on both, which is the point.
-!
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
 #if defined(TRC_FOCK6)
          !
@@ -1679,19 +1584,19 @@ contains
          if (.not. dkl) sc = sc*0.5_dp
          if (.not. dpq) sc = sc*0.5_dp
          do dn = 1, ndens
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, nu) = jmat(dn, mu, nu) &
                                + 4.0_dp*jfac*sc*dmat(dn, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, lam, sig) = jmat(dn, lam, sig) &
                                  + 4.0_dp*jfac*sc*dmat(dn, mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, lam) = jmat(dn, mu, lam) - kfac*sc*dmat(dn, nu, sig)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, sig) = jmat(dn, mu, sig) - kfac*sc*dmat(dn, nu, lam)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, nu, lam) = jmat(dn, nu, lam) - kfac*sc*dmat(dn, mu, sig)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, nu, sig) = jmat(dn, nu, sig) - kfac*sc*dmat(dn, mu, lam)
          end do
 #else
@@ -1713,66 +1618,58 @@ contains
          ! an error, and warnings scroll past.
          !
          do dn = 1, ndens
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, nu) = jmat(dn, mu, nu) + vv*dmat(dn, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(dn, mu, lam) = kmat(dn, mu, lam) + vv*dmat(dn, nu, sig)
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, nu, mu) = jmat(dn, nu, mu) + vv*dmat(dn, lam, sig)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, nu, lam) = kmat(dn, nu, lam) + vv*dmat(dn, mu, sig)
             end if
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, mu, nu) = jmat(dn, mu, nu) + vv*dmat(dn, sig, lam)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, mu, sig) = kmat(dn, mu, sig) + vv*dmat(dn, nu, lam)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, nu, mu) = jmat(dn, nu, mu) + vv*dmat(dn, sig, lam)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, nu, sig) = kmat(dn, nu, sig) + vv*dmat(dn, mu, lam)
             end if
             if (dpq) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, lam, sig) = jmat(dn, lam, sig) + vv*dmat(dn, mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, lam, mu) = kmat(dn, lam, mu) + vv*dmat(dn, sig, nu)
                if (dkl) then
-                  FG_ATOMIC
+                  !$acc atomic update
                   jmat(dn, sig, lam) = jmat(dn, sig, lam) + vv*dmat(dn, mu, nu)
-                  FG_ATOMIC
+                  !$acc atomic update
                   kmat(dn, sig, mu) = kmat(dn, sig, mu) + vv*dmat(dn, lam, nu)
                end if
                if (dij) then
-                  FG_ATOMIC
+                  !$acc atomic update
                   jmat(dn, lam, sig) = jmat(dn, lam, sig) + vv*dmat(dn, nu, mu)
-                  FG_ATOMIC
+                  !$acc atomic update
                   kmat(dn, lam, nu) = kmat(dn, lam, nu) + vv*dmat(dn, sig, mu)
                end if
                if (dij .and. dkl) then
-                  FG_ATOMIC
+                  !$acc atomic update
                   jmat(dn, sig, lam) = jmat(dn, sig, lam) + vv*dmat(dn, nu, mu)
-                  FG_ATOMIC
+                  !$acc atomic update
                   kmat(dn, sig, nu) = kmat(dn, sig, nu) + vv*dmat(dn, lam, mu)
                end if
             end if
          end do
 #endif
-#endif
       end do
       end do
       end do
       end do
-#endif
-#if defined(TRC_NO_DIGEST)
-      ! keep jsink live so the whole evaluation is not dead-code eliminated
-      if (jsink /= 0.0_dp) then
-         !$acc atomic update
-         jmat(1, 1) = jmat(1, 1) + jsink*1.0e-300_dp
-      end if
 #endif
    end subroutine one_bin_item
 
@@ -1784,11 +1681,11 @@ contains
       logical, intent(in)  :: use_dens
 
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(kind=8) :: nt
+      integer(int64) :: nt
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
-      integer(kind=8), allocatable :: sOff(:)
+      integer(int64), allocatable :: sOff(:)
 
       call this%release()
 
@@ -1842,9 +1739,9 @@ contains
             sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
             sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
             if (ka == kb) then
-               nt = int(nA, 8)*int(nA + 1, 8)/2
+               nt = int(nA, int64)*int(nA + 1, int64)/2
             else
-               nt = int(nA, 8)*int(nB, 8)
+               nt = int(nA, int64)*int(nB, int64)
             end if
             !
             ! one_bin_item takes its within-segment index as a default integer,
@@ -1855,7 +1752,7 @@ contains
             ! because widening the index costs registers in the hot kernel and
             ! the register budget is already the binding constraint.
             !
-            if (nt > 2147483000_8) error stop &
+            if (nt > 2147483000_int64) error stop &
                "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"
             sOff(is + 1) = sOff(is) + nt
          end do

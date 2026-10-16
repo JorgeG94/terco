@@ -199,7 +199,7 @@ def main():
 ! parameter arrays of this kind, and the same caution applies here.
 !
 module trc_rys_table{n}
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
    public :: RYS_NROOTS{n}, RYS_DEGREE{n}, RYS_NINT{n}, RYS_WIDTH{n}, RYS_XMAX{n}

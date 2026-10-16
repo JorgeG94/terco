@@ -345,7 +345,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         "! not touch.",
         "!",
         "module trc_xc_functional",
-        f"{INDENT}use trc_boys, only: dp",
+        f"{INDENT}use pic_types, only: dp",
     ]
     for stem in available_kernels:
         lines.append(f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar")

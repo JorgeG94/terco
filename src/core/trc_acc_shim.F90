@@ -40,7 +40,7 @@
 ! GPU library changes how its OpenMP runtime is consulted.
 !
 module trc_acc_shim
-   use, intrinsic :: iso_c_binding
+   use, intrinsic :: iso_c_binding, only: c_associated, c_ptr
    implicit none
    private
    public :: acc_register_library

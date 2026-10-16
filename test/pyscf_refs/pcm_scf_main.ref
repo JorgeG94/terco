@@ -2,7 +2,7 @@
 # case: scf_pcm main
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: 28a1bc531a72d257c3bc49d005c7547d205942178d28c4e84b3235ecf877b278
+# hash: 5a1f297cf17b6240a8e1f43333e5cb8729746aaaf2e8e815de61f145dfa2b06e
 # files: test/pyscf_refs/generate.py test/scf_pcm.F90 test/water.xyz test/formamide.xyz test/oh.xyz test/nh2.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json test/basis_sets/cc-pvtz.json
 # CONV_TOL 1e-12
 # CONV_TOL_GRAD 1e-08

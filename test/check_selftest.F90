@@ -39,7 +39,7 @@
 !      what N separate passes give, set for set.
 !
 program check_selftest
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
