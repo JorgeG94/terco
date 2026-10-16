@@ -50,6 +50,7 @@ module trc_scf_file
 
    character(len=8), parameter :: MAGIC = "TERCOSCF"
    integer(int32), parameter :: VERSION = 1
+   integer, parameter :: N_SCALARS = 8   !! energy, e_nuc, e_one, e_two, e_xc, e_pcm, pcm_qtotal, nelec_grid
 
    ! The molecule is read from the same xyz the original run read, through
    ! the same conversion, so its positions come back bit-identical; the
@@ -84,7 +85,8 @@ contains
          return
       end if
       n = size(res%cmo, 1)
-      fname = functional; pname = pcm_model
+      fname = functional
+      pname = pcm_model
       open (newunit=u, file=path, access="stream", form="unformatted", status="replace", &
             action="write", iostat=ios)
       if (ios /= 0) then
@@ -131,7 +133,8 @@ contains
       character(len=16) :: f_fname
       integer(int32) :: ver, f_natm, f_nshell, f_maxnp, f_nao, f_n, f_sph, f_order, f_nspin, &
                         f_nalpha, f_nbeta, f_charge, f_mult, f_conv, f_iter, f_lindep, f_npcm
-      real(real64) :: f_pcm_eps, sc(8)
+      real(real64) :: f_pcm_eps
+      real(real64) :: sc(N_SCALARS)
       real(real64), allocatable :: f_z(:), f_r(:, :), f_e(:, :), f_c(:, :), f_sr(:, :)
       integer(int32), allocatable :: f_l(:), f_np(:)
       real(dp), allocatable :: eps(:, :), cmo(:, :, :), dmat(:, :, :)
@@ -253,8 +256,14 @@ contains
       res%converged = f_conv /= 0
       res%iterations = int(f_iter)
       res%nspin = int(f_nspin)
-      res%energy = sc(1); res%e_nuc = sc(2); res%e_one = sc(3); res%e_two = sc(4)
-      res%e_xc = sc(5); res%e_pcm = sc(6); res%pcm_qtotal = sc(7); res%nelec_grid = sc(8)
+      res%energy = sc(1)
+      res%e_nuc = sc(2)
+      res%e_one = sc(3)
+      res%e_two = sc(4)
+      res%e_xc = sc(5)
+      res%e_pcm = sc(6)
+      res%pcm_qtotal = sc(7)
+      res%nelec_grid = sc(8)
       res%pcm_npoints = int(f_npcm)
       res%n_lindep = int(f_lindep)
       res%message = ""
@@ -276,20 +285,23 @@ contains
       close (u)
    end subroutine refuse
 
-   pure integer(int32) function i32(i)
+   pure function i32(i) result(res)
       integer, intent(in) :: i
-      i32 = int(i, int32)
+      integer(int32) :: res
+      res = int(i, int32)
    end function i32
 
-   pure logical function close_rel(a, b)
+   pure function close_rel(a, b) result(res)
       real(dp), intent(in) :: a, b
-      close_rel = abs(a - b) <= TOL_REL*max(abs(a), abs(b))
+      logical :: res
+      res = abs(a - b) <= TOL_REL*max(abs(a), abs(b))
    end function close_rel
 
-   pure logical function all_close(a, b)
+   pure function all_close(a, b) result(res)
       real(real64), intent(in) :: a(:, :)
       real(dp), intent(in) :: b(:, :)
-      all_close = all(abs(a - b) <= TOL_REL*max(abs(a), abs(b)))
+      logical :: res
+      res = all(abs(a - b) <= TOL_REL*max(abs(a), abs(b)))
    end function all_close
 
    pure function method_name(f) result(s)

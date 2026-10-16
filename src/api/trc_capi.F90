@@ -2446,7 +2446,8 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
-      cx%scf_ok = .false.; cx%rimp2_ok = .false.
+      cx%scf_ok = .false.
+      cx%rimp2_ok = .false.
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_load_scf: set the molecule and the basis first"
@@ -2455,7 +2456,8 @@ contains
       ! The same electron count and spin trc_run_scf would use.
       nelec = nint(sum(cx%at_z)) - cx%charge
       nunp = cx%multiplicity - 1
-      nalpha = (nelec + nunp)/2; nbeta = nelec - nalpha
+      nalpha = (nelec + nunp)/2
+      nbeta = nelec - nalpha
       nspin = merge(2, 1, nalpha /= nbeta .or. cx%opts%unrestricted)
       status = TRC_ERR_BADARG
       call trc_scf_load(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, nspin, &
@@ -2465,9 +2467,12 @@ contains
       n = scf_space_nao(cx%bb)
       if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
       allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
-      cx%bb%cmo = cx%res%cmo; cx%bb%eps = cx%res%eps
-      cx%bb%nalpha = nalpha; cx%bb%nbeta = nbeta
-      cx%nalpha = nalpha; cx%nbeta = nbeta
+      cx%bb%cmo = cx%res%cmo
+      cx%bb%eps = cx%res%eps
+      cx%bb%nalpha = nalpha
+      cx%bb%nbeta = nbeta
+      cx%nalpha = nalpha
+      cx%nbeta = nbeta
       cx%scf_ok = .true.
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_load_scf
