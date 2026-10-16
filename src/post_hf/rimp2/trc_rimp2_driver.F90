@@ -22,9 +22,14 @@
 !   3. (ia|P) = C_occ^T (mu nu|P) C_vir: two GEMMs per P, into X(ia, P)
 !      with a fastest.
 !   4. B = X L^-T: one triangular solve from the right.
-!   5. Per occupied i, K_i(a, jb) = sum_Q B(ia, Q) B(jb, Q): one GEMM
-!      (nvir x naux) (naux x nocc nvir); then a kernel over (j, b) summing
-!      a with the denominators. Both (ia|jb) and (ib|ja) are in K_i.
+!   5. Per occupied i, K_i(a, jb) = sum_Q B(ia, Q) B(jb, Q) for j >= i only:
+!      one GEMM (nvir x naux) (naux x (nocc - i + 1) nvir); then a kernel
+!      over (j, b) summing a with the denominators, an i /= j pair counted
+!      twice. Both (ia|jb) and (ib|ja) are in K_i. The pair energy is
+!      symmetric -- swapping i with j and a with b leaves (ia|jb)^2/D and
+!      (ia|jb)(ib|ja)/D as they were -- so the j < i half is the j > i
+!      half again, and skipping it takes the GEMMs, which are nearly all
+!      of RI-MP2, to (nocc + 1)/(2 nocc) of the work.
 !   6. Ranks: i dealt round-robin, E_os and E_ss allreduced. Everything
 !      before step 5 is replicated -- it is the cheap part -- so the ranks
 !      never communicate a tensor.
@@ -106,7 +111,7 @@ contains
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: blk
-      integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks
+      integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks, nji
       real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), x(:, :), tens(:, :, :), tmp(:, :)
       real(dp), allocatable :: ki(:, :), part(:), eo(:), ev(:)
       real(dp) :: e_os, e_ss, es(2)
@@ -232,19 +237,24 @@ contains
       ev = eps(nocc + 1:nao)
       !$acc enter data create(ki, part) copyin(eo, ev)
       e_os = 0.0_dp; e_ss = 0.0_dp
+      ! Round-robin over i still balances the ranks: i's share shrinks with
+      ! i, and each rank takes every nranks-th one from the top.
       do i = 1 + rank, no, nranks
-         ! K_i(a, jb) = sum_Q B(ia, Q) B(jb, Q); rows ia of X start at (i-1) nv + 1
+         ! K_i(a, jb) = sum_Q B(ia, Q) B(jb, Q) for j = i..no: rows ia of X
+         ! start at (i-1) nv + 1, and so do the rows jb of the j >= i block.
+         nji = (no - i + 1)*nv
          call step_on(lp, ST_KGEMM, tc)
-         call lp%gemm('N', 'T', nv, nov, naux, 1.0_dp, x((i - 1)*nv + 1, 1), nov, x, nov, 0.0_dp, ki, nv)
+         call lp%gemm('N', 'T', nv, nji, naux, 1.0_dp, x((i - 1)*nv + 1, 1), nov, &
+                      x((i - 1)*nv + 1, 1), nov, 0.0_dp, ki, nv)
          call step_off(lp, ST_KGEMM, tc, t_step)
-         call fl(ST_KGEMM)%add(2*nv8*nov8*naux8)
+         call fl(ST_KGEMM)%add(2*nv8*int(nji, int64)*naux8)
          call step_on(lp, ST_PAIR, tc)
-         call pair_energy(i, no, nv, nov, eo, ev, ki, part)
-         !$acc update self(part)
+         call pair_energy(i, no, nv, nji, eo, ev, ki, part)
+         !$acc update self(part(1:2*nji))
          call step_off(lp, ST_PAIR, tc, t_step)
-         call fl(ST_PAIR)%add(10*nv8*nov8)
-         e_os = e_os + sum(part(1:2*nov:2))
-         e_ss = e_ss + sum(part(2:2*nov:2))
+         call fl(ST_PAIR)%add(10*nv8*int(nji, int64))
+         e_os = e_os + sum(part(1:2*nji:2))
+         e_ss = e_ss + sum(part(2:2*nji:2))
       end do
       !$acc exit data delete(ki, part, eo, ev, x, tmp, cocc, cvir, jm)
       if (nranks > 1) then
@@ -343,40 +353,46 @@ contains
    end function ncart
 
    !
-   ! For occupied i: part(2 jb - 1) = sum_a (ia|jb)^2 / D, part(2 jb) =
-   ! sum_a [(ia|jb)^2 - (ia|jb)(ib|ja)] / D -- one thread per (j, b), a summed
-   ! inside, so no reduction crosses threads and the host adds nov numbers.
-   ! Diagonal terms are in the sum: (ia|ib)^2 - (ia|ib)(ib|ia) = 0 for the
-   ! same-spin part, as it must, and i = j counts once as in the closed formula.
+   ! For occupied i and the pairs j >= i: part(2 jb - 1) = w sum_a (ia|jb)^2 / D,
+   ! part(2 jb) = w sum_a [(ia|jb)^2 - (ia|jb)(ib|ja)] / D, with jb counting
+   ! (j, b) from j = i and w = 2 for j > i, 1 for j = i -- the j < i pairs
+   ! are the same numbers again. One thread per (j, b), a summed inside, so
+   ! no reduction crosses threads and the host adds 2 nji numbers. Diagonal
+   ! terms are in the sum: (ia|ib)^2 - (ia|ib)(ib|ia) = 0 for the same-spin
+   ! part, as it must.
    !
-   subroutine pair_energy(i, no, nv, nov, eo, ev, ki, part)
-      integer, intent(in) :: i, no, nv, nov
-      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nov)
-      real(dp), intent(out) :: part(2*nov)
+   subroutine pair_energy(i, no, nv, nji, eo, ev, ki, part)
+      integer, intent(in) :: i, no, nv, nji
+      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji)
+      real(dp), intent(out) :: part(*)
       integer :: jb
-      do concurrent(jb=1:nov)
-         call pair_energy_body(i, jb, no, nv, nov, eo, ev, ki, part(2*jb - 1), part(2*jb))
+      do concurrent(jb=1:nji)
+         call pair_energy_body(i, jb, no, nv, nji, eo, ev, ki, part(2*jb - 1), part(2*jb))
       end do
    end subroutine pair_energy
 
-   pure subroutine pair_energy_body(i, jb, no, nv, nov, eo, ev, ki, pos, pss)
+   pure subroutine pair_energy_body(i, jb, no, nv, nji, eo, ev, ki, pos, pss)
       !$acc routine seq
-      integer, intent(in) :: i, jb, no, nv, nov
-      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nov)
+      integer, intent(in) :: i, jb, no, nv, nji
+      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji)
       real(dp), intent(out) :: pos, pss
-      integer :: j, bb, a
-      real(dp) :: t, u, d, eij
-      j = (jb - 1)/nv + 1
-      bb = jb - (j - 1)*nv
+      integer :: jj, j, bb, a
+      real(dp) :: t, u, d, eij, w
+      jj = (jb - 1)/nv               ! j - i
+      j = i + jj
+      bb = jb - jj*nv
       eij = eo(i) + eo(j)
+      w = merge(1.0_dp, 2.0_dp, jj == 0)
       pos = 0.0_dp; pss = 0.0_dp
       do a = 1, nv
          t = ki(a, jb)                       ! (ia|jb)
-         u = ki(bb, (j - 1)*nv + a)          ! (ib|ja)
+         u = ki(bb, jj*nv + a)               ! (ib|ja)
          d = eij - ev(a) - ev(bb)
          pos = pos + t*t/d
          pss = pss + (t*t - t*u)/d
       end do
+      pos = w*pos
+      pss = w*pss
    end subroutine pair_energy_body
 
 end module trc_rimp2_driver
