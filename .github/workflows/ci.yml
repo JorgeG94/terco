@@ -413,3 +413,26 @@ jobs:
 
       - name: fortitude check
         run: fortitude check --output-format github
+
+  pic-reuse:
+    name: pic reuse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # docs/pic_api.md is what the pr-review skill checks new code against,
+      # so it has to describe the pic terco pins. Regenerate and compare.
+      - name: pic API map is current
+        run: python3 tools/pic_api.py --check
+
+      # Added lines only: a timer, sort, number formatter or statistic that
+      # pic already provides. Existing code is not re-checked. Device code
+      # is waived with `! pic-reuse: <reason>`.
+      - name: New code uses pic
+        if: github.event_name == 'pull_request'
+        run: python3 tools/pic_reuse_check.py "origin/${{ github.base_ref }}"
