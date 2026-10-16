@@ -176,6 +176,7 @@ module trc_capi
                         TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_settings, only: scf_spin_rule
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
@@ -2120,6 +2121,7 @@ contains
       type(error_t) :: err
       real(dp), allocatable :: dsad(:, :), dg(:, :, :), hsap(:, :)
       integer :: nelec, nunp, nalpha, nbeta, nspin, n, nc
+      integer :: nocc(2)
       logical :: collective, talk
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -2149,7 +2151,7 @@ contains
          cx%message = "trc_run_scf: more electrons than functions"
          return
       end if
-      nspin = merge(2, 1, nalpha /= nbeta .or. cx%opts%unrestricted)
+      call scf_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
       ! The communicator first, so the guess below binds the same device
       ! the SCF will and says what it did once, on rank 0, not once per
       ! rank. Every `return` from here on frees it.
@@ -2443,6 +2445,7 @@ contains
       type(context_box), pointer :: cx
       character(len=256) :: msg
       integer :: nelec, nunp, nalpha, nbeta, nspin, n
+      integer :: nocc(2)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2458,7 +2461,7 @@ contains
       nunp = cx%multiplicity - 1
       nalpha = (nelec + nunp)/2
       nbeta = nelec - nalpha
-      nspin = merge(2, 1, nalpha /= nbeta .or. cx%opts%unrestricted)
+      call scf_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
       status = TRC_ERR_BADARG
       call trc_scf_load(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, nspin, &
                         cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, cx%res, msg)

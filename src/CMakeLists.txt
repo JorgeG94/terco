@@ -24,6 +24,7 @@ target_sources(
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
           solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
+          scf/trc_scf_settings.F90      # trc_scf_options_t/result_t and the options a run resolves them to
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
