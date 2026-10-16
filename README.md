@@ -54,6 +54,8 @@ the basis object, the shell-pair container and the screening tables from that.
 
 ## What it does not do
 
+**The code has not been tested on AMD or Intel GPUs**. This is future work, if anyone is happy to try.
+
 - **Angular momentum above f, on four centres.** `TERCO_LMAX=3` builds f: any
   class with a shell above d runs on a Rys kernel. g needs `TERCO_LMAX=4`,
   which the build does not offer yet.
@@ -96,9 +98,7 @@ in gfortran to enable it.
 ### CMake
 
 ```sh
-cmake -S . -B build \
-  -DCMAKE_Fortran_COMPILER=nvfortran \
-  -DTERCO_GPU_ARCH=cc70
+cmake -S . -B build -DCMAKE_Fortran_COMPILER=nvfortran -DTERCO_GPU_ARCH=cc70
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
