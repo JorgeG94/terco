@@ -437,16 +437,16 @@ contains
          ! once, after the loop.
          if (root) then
             if (adiis_active) then
-               call adiis%push(nao, nspin, st%fock, st%dold)
-               call adiis%extrapolate(lp, nao, nspin, st%fock)
+               call adiis%push(lp, nao, nspin, st%fock, st%dold)
+               call adiis%extrapolate(nao, nspin, st%fock)
             end if
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
                call level_shift(lp, nao, nspin, opts%level_shift, occ, ctx%smat, res%dmat, st%w1, st%w2, st%fock)
             end if
             if (diis_on) then
-               call cdiis%push(nao, nspin, st%fock, st%errv)
-               call cdiis%extrapolate(lp, nao, nspin, st%fock, ok)
+               call cdiis%push(lp, nao, nspin, st%fock, st%errv)
+               call cdiis%extrapolate(nao, nspin, st%fock, ok)
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
             do s = 1, nspin

@@ -6,8 +6,27 @@
 ! theory. This module owns their histories, pushes a new iterate into
 ! them, and extrapolates/combines a step, plus the plain subroutines both
 ! share: the DIIS linear solve, the level shift and the damped step while
-! neither extrapolation is active, and the one sequential history-shift
-! loop both histories use.
+! neither extrapolation is active.
+!
+! RING BUFFER. Neither history is ever shifted. `head` is the physical
+! slot the newest entry landed in; a push advances it one slot (wrapping
+! at `ndiis`) and writes there, so the oldest entry's slot is simply the
+! one about to be overwritten -- nothing else moves. `ring_phys(head,
+! n_used, ndiis, l)` maps a LOGICAL position (1 = oldest, n_used = newest)
+! to the physical slot holding it; every loop that used to assume slot k
+! IS logical position k now goes through it instead.
+!
+! CACHED B / P. cdiis_t's `bcache(ndiis,ndiis)` and adiis_t's
+! `pcache(ndiis,ndiis)` hold every dot product <e_i,e_j> / <D_i,F_j> this
+! run has ever needed, indexed by PHYSICAL slot, kept across iterations.
+! A push computes only the new row and column against whatever is
+! currently in the window (cdiis: one triangle, symmetric; adiis: both,
+! P is not), reusing every older pair untouched since nothing about an
+! entry still in the window has changed. CDIIS dropping its oldest entry
+! on a failed solve (see cdiis_extrapolate's own comment) is then just
+! `n_used = n_used - 1` -- the window shrinks, no data moves, and the
+! freed slot's stale cache entries are silently overwritten the next time
+! a push lands there.
 !
 ! EXPLICIT-SHAPE DUMMIES. Every one of these takes `fock`/`dold`/`errv`/
 ! history arrays as plain arguments, never touching `st%anything` or a
@@ -17,6 +36,9 @@
 ! folding into trc_scf_state's single one: the two histories are built
 ! only when DIIS/ADIIS actually run (ADIIS not at all unless `opts%adiis`),
 ! so trc_scf_run maps them separately, exactly as the original code did.
+! `bcache`/`pcache`, like `bmat`/`rhs`/`cad`, are host-only: trc_linalg's
+! dot returns its result to the host regardless of build, so nothing here
+! needs `!$acc enter data`.
 !
 module trc_scf_diis
    use pic_types, only: dp
@@ -29,8 +51,10 @@ module trc_scf_diis
    type :: cdiis_t
       real(dp), allocatable :: fstore(:, :, :, :), estore(:, :, :, :)
       real(dp), allocatable :: bmat(:, :), rhs(:)
+      real(dp), allocatable :: bcache(:, :)   !! <e_i,e_j> by physical slot, see this module's own header
       integer :: n_used = 0
       integer :: ndiis = 0
+      integer :: head = 0   !! physical slot of the newest entry, 0 before the first push
    contains
       procedure :: alloc => cdiis_alloc
       procedure :: to_device => cdiis_to_device
@@ -42,8 +66,10 @@ module trc_scf_diis
    type :: adiis_t
       real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :)
       real(dp), allocatable :: cad(:)
+      real(dp), allocatable :: pcache(:, :)   !! <D_i,F_j> by physical slot, see this module's own header
       integer :: n_used = 0
       integer :: ndiis = 0
+      integer :: head = 0
    contains
       procedure :: alloc => adiis_alloc
       procedure :: to_device => adiis_to_device
@@ -59,10 +85,13 @@ contains
       integer, intent(in) :: nao, nspin, ndiis
       this%ndiis = ndiis
       this%n_used = 0
+      this%head = 0
       allocate (this%fstore(nao, nao, nspin, ndiis), this%estore(nao, nao, nspin, ndiis))
       allocate (this%bmat(ndiis + 1, ndiis + 1), this%rhs(ndiis + 1))
+      allocate (this%bcache(ndiis, ndiis))
       this%fstore = 0.0_dp
       this%estore = 0.0_dp
+      this%bcache = 0.0_dp
    end subroutine cdiis_alloc
 
    subroutine cdiis_to_device(this)
@@ -75,21 +104,30 @@ contains
       !$acc exit data delete(this%fstore, this%estore)
    end subroutine cdiis_release_device
 
-   subroutine cdiis_push(this, nao, nspin, fock, errv)
-      !! Slot n_used+1 <- (fock, errv), dropping the oldest entry first
-      !! once the history is full.
+   subroutine cdiis_push(this, lp, nao, nspin, fock, errv)
+      !! The ring advances one slot (wrapping at ndiis, overwriting the
+      !! oldest entry once the history is full) and (fock, errv) land
+      !! there; bcache's new row/column against the rest of the window
+      !! is the only part of it this push computes -- see this module's
+      !! own header.
       class(cdiis_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
       real(dp), intent(in) :: fock(nao, nao, nspin), errv(nao, nao, nspin)
-      if (this%n_used < this%ndiis) then
-         this%n_used = this%n_used + 1
-      else
-         call shift_history(nao, nspin, this%ndiis, this%fstore, this%estore)
-      end if
-      call diis_store(nao, nspin, this%n_used, fock, errv, this%fstore, this%estore)
+      integer :: l, p
+      this%head = modulo(this%head, this%ndiis) + 1
+      if (this%n_used < this%ndiis) this%n_used = this%n_used + 1
+      call diis_store(nao, nspin, this%head, fock, errv, this%fstore, this%estore)
+      ! dot argument order as the old full rebuild used: the older-or-self
+      ! entry first, the new one (head) second -- see this module's header.
+      do l = 1, this%n_used
+         p = ring_phys(this%head, this%n_used, this%ndiis, l)
+         this%bcache(p, this%head) = lp%dot_3d(this%estore(:, :, :, p), this%estore(:, :, :, this%head))
+         this%bcache(this%head, p) = this%bcache(p, this%head)
+      end do
    end subroutine cdiis_push
 
-   subroutine cdiis_extrapolate(this, lp, nao, nspin, fock, ok)
+   subroutine cdiis_extrapolate(this, nao, nspin, fock, ok)
       !!
       !! An ill-conditioned subspace loses its oldest entry, not the step.
       !! A failed solve followed by a plain Roothaan step is not neutral: on
@@ -102,27 +140,30 @@ contains
       !! growing mode.
       !!
       class(cdiis_t), intent(inout) :: this
-      type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
       real(dp), intent(inout) :: fock(nao, nao, nspin)
       logical, intent(out) :: ok
-      integer :: m, i, j
+      integer :: m, i, j, pi, pj
       do
          m = this%n_used + 1
          this%bmat = -1.0_dp
          this%bmat(m, m) = 0.0_dp
          do j = 1, this%n_used
+            pj = ring_phys(this%head, this%n_used, this%ndiis, j)
             do i = 1, j
-               this%bmat(i, j) = lp%dot_3d(this%estore(:, :, :, i), this%estore(:, :, :, j))
+               pi = ring_phys(this%head, this%n_used, this%ndiis, i)
+               this%bmat(i, j) = this%bcache(pi, pj)
                this%bmat(j, i) = this%bmat(i, j)
             end do
          end do
          call solve_diis(m, this%bmat(1:m, 1:m), this%rhs(1:m), ok)
          if (ok .or. this%n_used <= 2) exit
-         call shift_history(nao, nspin, this%n_used, this%fstore, this%estore)
+         ! Drop the oldest: the window shrinks by one logical position: no
+         ! data moves, since ring_phys reads head/n_used fresh every call.
          this%n_used = this%n_used - 1
       end do
-      if (ok) call diis_combine(nao, nspin, this%n_used, this%rhs(1:this%n_used), this%fstore, fock)
+      if (ok) call diis_combine(nao, nspin, this%n_used, this%rhs(1:this%n_used), this%fstore, this%head, &
+                                this%ndiis, fock)
    end subroutine cdiis_extrapolate
 
    subroutine adiis_alloc(this, nao, nspin, ndiis)
@@ -130,10 +171,13 @@ contains
       integer, intent(in) :: nao, nspin, ndiis
       this%ndiis = ndiis
       this%n_used = 0
+      this%head = 0
       allocate (this%fstore_a(nao, nao, nspin, ndiis), this%dstore_a(nao, nao, nspin, ndiis))
       allocate (this%cad(ndiis))
+      allocate (this%pcache(ndiis, ndiis))
       this%fstore_a = 0.0_dp
       this%dstore_a = 0.0_dp
+      this%pcache = 0.0_dp
    end subroutine adiis_alloc
 
    subroutine adiis_to_device(this)
@@ -146,33 +190,44 @@ contains
       !$acc exit data delete(this%fstore_a, this%dstore_a)
    end subroutine adiis_release_device
 
-   subroutine adiis_push(this, nao, nspin, fock, dold)
-      !! Slot n_used+1 <- (fock, dold): the Fock/density pair ADIIS's convex
-      !! combination runs over, kept apart from cdiis_t's own history (see
-      !! trc_scf_options_t%adiis's own comment on why).
+   subroutine adiis_push(this, lp, nao, nspin, fock, dold)
+      !! The ring advances and stores (fock, dold) -- the Fock/density pair
+      !! ADIIS's convex combination runs over, kept apart from cdiis_t's own
+      !! history (see trc_scf_options_t%adiis's own comment on why) -- then
+      !! pcache gets the new row AND column P(head,:)/P(:,head): P is not
+      !! symmetric (D first, F second, always -- see this module's header),
+      !! so, unlike bcache, both are needed.
       class(adiis_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
       real(dp), intent(in) :: fock(nao, nao, nspin), dold(nao, nao, nspin)
-      if (this%n_used < this%ndiis) then
-         this%n_used = this%n_used + 1
-      else
-         call shift_history(nao, nspin, this%ndiis, this%fstore_a, this%dstore_a)
-      end if
-      call diis_store(nao, nspin, this%n_used, fock, dold, this%fstore_a, this%dstore_a)
+      integer :: l, p
+      this%head = modulo(this%head, this%ndiis) + 1
+      if (this%n_used < this%ndiis) this%n_used = this%n_used + 1
+      call diis_store(nao, nspin, this%head, fock, dold, this%fstore_a, this%dstore_a)
+      do l = 1, this%n_used
+         p = ring_phys(this%head, this%n_used, this%ndiis, l)
+         if (p /= this%head) then
+            this%pcache(p, this%head) = lp%dot_3d(this%dstore_a(:, :, :, p), this%fstore_a(:, :, :, this%head))
+            this%pcache(this%head, p) = lp%dot_3d(this%dstore_a(:, :, :, this%head), this%fstore_a(:, :, :, p))
+         end if
+      end do
+      this%pcache(this%head, this%head) = lp%dot_3d(this%dstore_a(:, :, :, this%head), &
+                                                     this%fstore_a(:, :, :, this%head))
    end subroutine adiis_push
 
-   subroutine adiis_extrapolate(this, lp, nao, nspin, fock)
+   subroutine adiis_extrapolate(this, nao, nspin, fock)
       !! One entry: the simplex is a point, c = 1 on it, a no-op. Skip the
       !! solve and leave `fock` as it is, which is also what `adiis_coeffs`
       !! would return from "start at the newest entry" after finding no
       !! improving step.
       class(adiis_t), intent(inout) :: this
-      type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
       real(dp), intent(inout) :: fock(nao, nao, nspin)
       if (this%n_used > 1) then
-         call adiis_coeffs(lp, this%n_used, this%fstore_a, this%dstore_a, this%cad(1:this%n_used))
-         call diis_combine(nao, nspin, this%n_used, this%cad(1:this%n_used), this%fstore_a, fock)
+         call adiis_coeffs(this%n_used, this%pcache, this%head, this%ndiis, this%cad(1:this%n_used))
+         call diis_combine(nao, nspin, this%n_used, this%cad(1:this%n_used), this%fstore_a, this%head, &
+                           this%ndiis, fock)
       end if
    end subroutine adiis_extrapolate
 
@@ -190,21 +245,25 @@ contains
       end do
    end subroutine diis_store
 
-   subroutine diis_combine(nao, nspin, m, coeff, fstore, fock)
-      !! fock := sum_k coeff(k) * fstore(:,:,:,k), the extrapolated/combined
-      !! step both CDIIS (coeff = the solved weights) and ADIIS (coeff = the
-      !! simplex coefficients) take once they have more than one history slot.
-      integer, intent(in) :: nao, nspin, m
+   subroutine diis_combine(nao, nspin, m, coeff, fstore, head, ndiis, fock)
+      !! fock := sum_l coeff(l) * fstore(:,:,:,ring_phys(l)), the
+      !! extrapolated/combined step both CDIIS (coeff = the solved weights)
+      !! and ADIIS (coeff = the simplex coefficients) take once they have
+      !! more than one history slot; coeff is indexed by LOGICAL position
+      !! (1 = oldest), fstore by physical slot, so this maps one to the
+      !! other through `head`/`ndiis` rather than assuming they coincide.
+      integer, intent(in) :: nao, nspin, m, head, ndiis
       real(dp), intent(in) :: coeff(m)
       real(dp), intent(in) :: fstore(nao, nao, nspin, *)
       real(dp), intent(inout) :: fock(nao, nao, nspin)
-      integer :: i, j, s, k
+      integer :: i, j, s, k, p
       do concurrent(i=1:nao, j=1:nao, s=1:nspin)
          fock(i, j, s) = 0.0_dp
       end do
       do k = 1, m
+         p = ring_phys(head, m, ndiis, k)
          do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-            fock(i, j, s) = fock(i, j, s) + coeff(k)*fstore(i, j, s, k)
+            fock(i, j, s) = fock(i, j, s) + coeff(k)*fstore(i, j, s, p)
          end do
       end do
    end subroutine diis_combine
@@ -241,57 +300,48 @@ contains
       end do
    end subroutine damp
 
-   subroutine shift_history(nao, nspin, n, a, bb)
-      !! Slot k <- slot k+1 for k = 1..n-1 in two histories at once, which
-      !! drops the oldest entry and frees slot n.
-      integer, intent(in) :: nao, nspin, n
-      real(dp), intent(inout) :: a(nao, nao, nspin, *), bb(nao, nao, nspin, *)
-      integer :: i, j, s, k
-      ! Slot by slot, in order: slot k reads slot k+1, so the slot loop
-      ! carries a dependence. As a `do concurrent` over k, a device slot
-      ! was overwritten before being read and the commutator climbed for
-      ! eight iterations on cholesterol; the host never saw it.
-      do k = 1, n - 1
-         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-            a(i, j, s, k) = a(i, j, s, k + 1)
-            bb(i, j, s, k) = bb(i, j, s, k + 1)
-         end do
-      end do
-   end subroutine shift_history
+   pure function ring_phys(head, n_used, ndiis, l) result(p)
+      !! The physical slot holding logical position `l` (1 = oldest, n_used
+      !! = newest) of a ring buffer of `ndiis` slots whose newest entry is
+      !! at physical slot `head`. `modulo`, not `mod`: head - n_used + l - 1
+      !! is negative whenever l is not the newest position and the ring has
+      !! wrapped, and modulo is the one that stays in 0..ndiis-1 there.
+      integer, intent(in) :: head, n_used, ndiis, l
+      integer :: p
+      p = modulo(head - n_used + l - 1, ndiis) + 1
+   end function ring_phys
 
    !
-   ! ADIIS coefficients over the first `m` slots of fstore_a/dstore_a. Slot
-   ! `m` is the newest, so Hu & Yang's "entry n" is the last index.
-   ! Minimises over the simplex {c >= 0, sum c = 1}
+   ! ADIIS coefficients over the `m` logical positions cached in `pcache`
+   ! (physical slots, see this module's own header). Logical position `m`
+   ! is the newest, so Hu & Yang's "entry n" is the last index. Minimises
+   ! over the simplex {c >= 0, sum c = 1}
    !
    !     f(c) = 2 sum_i c_i <D_i - D_m, F_m>
    !            + sum_ij c_i c_j <D_i - D_m, F_j - F_m>
    !
-   ! by projected gradient with backtracking (a few hundred host flops once the
-   ! device dot products are in hand). Starting with all weight on the newest
-   ! entry means no progress degrades to the plain Roothaan step.
+   ! read off pcache(i,j) = <D_i,F_j> as pcache(i,j) - pcache(i,m) -
+   ! pcache(m,j) + pcache(m,m) -- the same values combined in the same
+   ! expression as the un-cached form -- by projected gradient with
+   ! backtracking (a few hundred host flops once the dot products are in
+   ! hand). Starting with all weight on the newest entry means no progress
+   ! degrades to the plain Roothaan step.
    !
-   subroutine adiis_coeffs(lp, m, fstore_a, dstore_a, c)
-      type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: m
-      !! CONTIGUOUS: dot_3d below takes a trailing-index section of each --
-      !! fstore_a(:,:,:,jj) -- which is only provably contiguous (no copy,
-      !! no device/host mismatch) when the whole array it is sliced from
-      !! is declared contiguous; see trc_linalg's own header.
-      real(dp), intent(in), contiguous :: fstore_a(:, :, :, :), dstore_a(:, :, :, :)
+   subroutine adiis_coeffs(m, pcache, head, ndiis, c)
+      integer, intent(in) :: m, head, ndiis
+      real(dp), intent(in) :: pcache(ndiis, ndiis)
       real(dp), intent(out) :: c(m)
       real(dp) :: f, ft, step
       real(dp) :: dvec(m), amat(m, m), g(m), trial(m)
-      integer :: ii, jj, itr, ls
+      integer :: ii, jj, itr, ls, pii, pjj, pm
       logical :: improved
+      pm = head   !! logical position m (the newest) is always at head
       do ii = 1, m
-         dvec(ii) = lp%dot_3d(dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                    - lp%dot_3d(dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+         pii = ring_phys(head, m, ndiis, ii)
+         dvec(ii) = pcache(pii, pm) - pcache(pm, pm)
          do jj = 1, m
-            amat(ii, jj) = lp%dot_3d(dstore_a(:, :, :, ii), fstore_a(:, :, :, jj)) &
-                           - lp%dot_3d(dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                           - lp%dot_3d(dstore_a(:, :, :, m), fstore_a(:, :, :, jj)) &
-                           + lp%dot_3d(dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+            pjj = ring_phys(head, m, ndiis, jj)
+            amat(ii, jj) = pcache(pii, pjj) - pcache(pii, pm) - pcache(pm, pjj) + pcache(pm, pm)
          end do
       end do
       c = 0.0_dp
