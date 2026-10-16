@@ -302,6 +302,22 @@ elseif(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
                       "got '${TERCO_CART_ORDER}'")
 endif()
 #
+# TRC_MPI_DEVICE: MPI is handed device buffers directly (a CUDA-aware MPI)
+# rather than staged through the host. The default for a run; the
+# environment variable TERCO_MPI_DEVICE=0/1 overrides it (trc_mpi_device).
+# Defined only when on, like TRC_CART_ORDER: an undefined name reads as 0.
+#
+if(TERCO_ENABLE_GPU AND TERCO_ENABLE_MPI)
+  set(_terco_mpi_device_default ON)
+else()
+  set(_terco_mpi_device_default OFF)
+endif()
+option(TERCO_MPI_DEVICE "Hand MPI device buffers directly (CUDA-aware MPI)"
+       ${_terco_mpi_device_default})
+if(TERCO_MPI_DEVICE)
+  target_compile_definitions(${main_lib} PRIVATE TRC_MPI_DEVICE=1)
+endif()
+#
 # The unrolled VRR/HRR go into the SHARED kernel only, and only at LMAX<=1.
 #
 # That kernel holds two copies of the recurrence, so unrolling it at LMAX=2
