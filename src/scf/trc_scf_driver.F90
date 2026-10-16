@@ -87,16 +87,14 @@
 module trc_scf_driver
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
-   use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
-   use trc_eri, only: trc_eri_t
    use trc_error, only: error_t
-   use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_xc_functional, only: trc_xc_functional_t
-   use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t
    use trc_scf_context, only: scf_ctx_t, bcast_flat
    use trc_scf_state, only: scf_state_t, scf_timers_t
+   use trc_scf_fock, only: build_g, build_vxc, build_pcm, scf_energy, assemble_fock, &
+                           commutator_error, to_cart, to_sph
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_mpi_lib, only: comm_t
@@ -190,7 +188,6 @@ contains
       integer :: nadiis_used
       logical :: adiis_active
       logical :: nlc
-      real(dp) :: e_nlc
       type(trc_xc_functional_t) :: func
       type(trc_linalg_t), pointer :: lp
       type(error_t) :: err
@@ -372,7 +369,7 @@ contains
          ! header on why that keeps the Cartesian path byte-for-byte
          ! unchanged rather than merely numerically equivalent.
          do s = 1, nspin
-            call to_cart(res%dmat(:, :, s), st%d_c(:, :, s))
+            call to_cart(b, sph, nao, nao_c, res%dmat(:, :, s), st%d_c(:, :, s))
          end do
          ! --- two-electron part, resident, entirely in Cartesian space -------
          !
@@ -391,34 +388,15 @@ contains
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in.
          do s = 1, nspin
-            call to_sph(st%gmat_c(:, :, s), st%gmat(:, :, s))
+            call to_sph(b, sph, nao, nao_c, st%gmat_c(:, :, s), st%gmat(:, :, s))
          end do
          tw1 = wall()
          tmr%t_fock = tmr%t_fock + (tw1 - tw0)
          tmr%tf_it = tw1 - tw0
          ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (dft) then
-            if (nspin == 1) then
-               call trc_xc_rks(b, ctx%xg, func, st%d_c(:, :, 1), st%vxc_c(:, :, 1), exc, ngrid, &
-                               rho_tol=opts%rho_tol, comm=comm, t_points=tmr%tx_pts, t_pairs=tmr%tx_prs, la=lp)
-            else
-               call trc_xc_uks(b, ctx%xg, func, st%d_c, st%vxc_c, exc, ngrid, rho_tol=opts%rho_tol, &
-                               comm=comm, t_points=tmr%tx_pts, t_pairs=tmr%tx_prs, la=lp)
-            end if
-            ! VV10 adds its energy to exc and its potential into vxc_c, on
-            ! its own (coarser) grid, before the spherical transform below.
-            if (nlc) then
-               if (nspin == 1) then
-                  call trc_vv10_rks(b, ctx%xg_nlc, st%d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, st%vxc_c(:, :, 1))
-               else
-                  call trc_vv10_uks(b, ctx%xg_nlc, st%d_c(:, :, 1), st%d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
-                                    st%vxc_c(:, :, 1), st%vxc_c(:, :, 2))
-               end if
-               exc = exc + e_nlc
-            end if
-            do s = 1, nspin
-               call to_sph(st%vxc_c(:, :, s), st%vxc(:, :, s))
-            end do
+            call build_vxc(b, ctx%xg, ctx%xg_nlc, func, nlc, nspin, nao_c, nao, sph, opts%rho_tol, comm, lp, &
+                           st%d_c, st%vxc_c, st%vxc, exc, ngrid, tmr%tx_pts, tmr%tx_prs)
          end if
          tw0 = wall()
          tmr%t_xc = tmr%t_xc + (tw0 - tw1)
@@ -426,38 +404,17 @@ contains
          ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
          ! too: one set of charges, one operator added to both spins) -----
          if (pcm_on) then
-            ! An absent `comm` passes through as absent: one rank, unsplit.
-            if (nspin == 1) then
-               call ctx%pcm%operator(b, ctx%pl, st%d_c(:, :, 1), st%vpcm_c, epcm, comm)
-            else
-               call ctx%pcm%operator(b, ctx%pl, st%dtot_c, st%vpcm_c, epcm, comm)
-            end if
-            call to_sph(st%vpcm_c, st%vpcm)
+            call build_pcm(b, ctx%pcm, ctx%pl, nspin, nao_c, nu_c, nao, sph, &
+                           st%d_c, st%dtot_c, st%vpcm_c, st%vpcm, epcm, comm)
             tw1 = wall()
             tmr%t_pcm = tmr%t_pcm + (tw1 - tw0)
             tw0 = tw1
          end if
          ! --- energy at this density -----------------------------------------
-         e1 = 0.0_dp
-         e2 = 0.0_dp
-         do s = 1, nspin
-            e1 = e1 + lp%dot(n2, res%dmat(:, :, s), ctx%hcore)
-            e2 = e2 + 0.5_dp*lp%dot(n2, res%dmat(:, :, s), st%gmat(:, :, s))
-         end do
-         etot = e1 + e2 + exc + res%e_nuc + epcm
+         call scf_energy(lp, nao, nspin, res%dmat, ctx%hcore, st%gmat, res%e_nuc, exc, epcm, e1, e2, etot)
          ! --- Fock and its commutator, per spin ------------------------------
          call assemble_fock(nao, nxc, npcm, nspin, dft, pcm_on, ctx%hcore, st%gmat, st%vxc, st%vpcm, st%fock)
-         do s = 1, nspin
-            ! w2 = F D S - S D F
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, st%fock(:, :, s), nao, res%dmat(:, :, s), nao, &
-                         0.0_dp, st%w1, nao)
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, st%w1, nao, ctx%smat, nao, 0.0_dp, st%w2, nao)
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, ctx%smat, nao, res%dmat(:, :, s), nao, 0.0_dp, st%w1, nao)
-            call lp%gemm("N", "N", nao, nao, nao, -1.0_dp, st%w1, nao, st%fock(:, :, s), nao, 1.0_dp, st%w2, nao)
-            ! errv = X^T w2 X
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, st%w2, nao, ctx%x, nao, 0.0_dp, st%w1, nao)
-            call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, ctx%x, nao, st%w1, nao, 0.0_dp, st%errv(:, :, s), nao)
-         end do
+         call commutator_error(lp, nao, nspin, st%fock, res%dmat, ctx%smat, ctx%x, st%w1, st%w2, st%errv)
          ! `dold` must hold `res%dmat` from BEFORE DIIS/diagonalisation touch
          ! it -- see trc_scf_state's own header.
          call st%save_dold(nao, nspin, res%dmat)
@@ -717,37 +674,6 @@ contains
          end if
       end subroutine orbitals_and_density
 
-      subroutine to_cart(a, a_c)
-         !! A matrix from the SCF's space to the Cartesian one the kernels run
-         !! in: T A T^T when the basis is spherical, a plain copy when it is not
-         !! (no transform call at all on the Cartesian path, see this module's
-         !! header). `a` and `a_c` are the same size then.
-         real(dp), intent(in) :: a(nao, nao)
-         real(dp), intent(out) :: a_c(nao_c, nao_c)
-         integer :: i, j
-         if (sph) then
-            call sph_sph_to_cart(b, a, a_c)
-         else
-            do concurrent(i=1:nao_c, j=1:nao_c)
-               a_c(i, j) = a(i, j)
-            end do
-         end if
-      end subroutine to_cart
-
-      subroutine to_sph(a_c, a)
-         !! The reverse fold: T^T A_cart T into the SCF's space, or a plain copy.
-         real(dp), intent(in) :: a_c(nao_c, nao_c)
-         real(dp), intent(out) :: a(nao, nao)
-         integer :: i, j
-         if (sph) then
-            call sph_cart_to_sph(b, a_c, a)
-         else
-            do concurrent(i=1:nao, j=1:nao)
-               a(i, j) = a_c(i, j)
-            end do
-         end if
-      end subroutine to_sph
-
       subroutine shift_history(n, a, bb)
          !! Slot k <- slot k+1 for k = 1..n-1 in two histories at once, which
          !! drops the oldest entry and frees slot n.
@@ -937,152 +863,6 @@ contains
       end subroutine sort_desc
 
    end subroutine trc_scf_run
-
-   !
-   ! The two-electron build, resident and entirely in Cartesian space:
-   ! g_rks (nspin = 1, a full build), g_rks_incremental (nspin = 1, from the
-   ! density DIFFERENCE, see trc_scf_run's own header) and g_uks (nspin = 2),
-   ! dispatched on `nspin`/`incr_now` rather than three separately-named
-   ! entry points, since the caller already has exactly one of them to ask
-   ! for. Every array here is an explicit-shape dummy -- `nu_c`/`nlr_c`/
-   ! `nin_c` carry the TRUE size of `dtot_c`/`jmat_c`, `klr_c`, and
-   ! `dref_c`/`gacc_c`/`ddif_c` respectively (1 when this run has no use for
-   ! them) -- so this compiles correctly once the caller's arrays are
-   ! `trc_scf_state` components instead of plain locals: a `do concurrent`
-   ! body here never names `st%anything`, only its own dummies.
-   !
-   subroutine build_g(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
-                      exx, exx_lr, omega, incr_scale_run, &
-                      d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c)
-      type(trc_basis_t), intent(in) :: b
-      type(trc_eri_t), intent(inout) :: eri
-      integer, intent(in) :: nao_c, nspin, nu_c, nlr_c, nin_c
-      logical, intent(in) :: incr_now, incr_on
-      real(dp), intent(in) :: exx, exx_lr, omega, incr_scale_run
-      real(dp), intent(in) :: d_c(nao_c, nao_c, nspin)
-      real(dp), intent(inout) :: gmat_c(nao_c, nao_c, nspin)
-      real(dp), intent(inout) :: dtot_c(nu_c, nu_c), jmat_c(nu_c, nu_c)
-      real(dp), intent(inout) :: w1_c(nao_c, nao_c), klr_c(nlr_c, nlr_c)
-      real(dp), intent(inout) :: gacc_c(nin_c, nin_c), dref_c(nin_c, nin_c), ddif_c(nin_c, nin_c)
-      integer :: i, j, s
-
-      if (nspin == 1) then
-         if (incr_now) then
-            do concurrent(i=1:nao_c, j=1:nao_c)
-               ddif_c(i, j) = d_c(i, j, 1) - dref_c(i, j)
-            end do
-            !
-            ! A fixed, tighter threshold on the increment, not one tracking ddif.
-            !
-            ! The Schwarz/density screen drops a quartet whose bound qq*dd is below
-            ! an absolute threshold: fine for a full build, where dd is O(1). On
-            ! ddif, quartets sit at the edge of the test, and which ones changes
-            ! each iteration because ddif is a difference of iterates with a
-            ! changing shape. The dropped sets differ and the errors do not average
-            ! down as the full build's (always the same negligible quartets) do. On
-            ! w172/6-31G (450 atoms, 1950 AOs) RMS(D) reaches 1e-10 while the
-            ! energy bounces by 1e-4 to 1e-6 Eh per iteration.
-            !
-            ! Scaling `thresh` by ||ddif||/||dref|| is backwards: it loosens as
-            ! ddif shrinks and loses the speed (25.6 s against 24.4 s baseline).
-            ! A fixed tighter factor, `incr_thresh_scale` (default 1e-4), keeps
-            ! the error floor low enough that |dE| clears 1e-8 at every reset
-            ! through iteration 20, while each increment stays a few times cheaper
-            ! than a full build.
-            !
-            block
-               real(dp) :: thresh0
-               thresh0 = eri%thresh
-               eri%thresh = thresh0*incr_scale_run
-               call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
-               if (exx_lr /= 0.0_dp) then
-                  call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
-                  end do
-               end if
-               eri%thresh = thresh0
-            end block
-            do concurrent(i=1:nao_c, j=1:nao_c)
-               gacc_c(i, j) = gacc_c(i, j) + gmat_c(i, j, 1)
-               gmat_c(i, j, 1) = gacc_c(i, j)
-               dref_c(i, j) = d_c(i, j, 1)
-            end do
-         else
-            call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
-            if (exx_lr /= 0.0_dp) then
-               call eri%fock_resident(b, d_c(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
-               end do
-            end if
-            ! The reference for the next increment, kept only when there
-            ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
-            if (incr_on) then
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gacc_c(i, j) = gmat_c(i, j, 1)
-                  dref_c(i, j) = d_c(i, j, 1)
-               end do
-            end if
-         end if
-      else
-         do concurrent(i=1:nao_c, j=1:nao_c)
-            dtot_c(i, j) = d_c(i, j, 1) + d_c(i, j, 2)
-         end do
-         call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
-         do s = 1, 2
-            if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  w1_c(i, j) = 2.0_dp*d_c(i, j, s)
-               end do
-               call eri%fock_resident(b, w1_c, gmat_c(:, :, s), j_scale=0.0_dp, k_scale=exx)
-               if (exx_lr /= 0.0_dp) then
-                  call eri%fock_resident(b, w1_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gmat_c(i, j, s) = gmat_c(i, j, s) + klr_c(i, j)
-                  end do
-               end if
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gmat_c(i, j, s) = gmat_c(i, j, s) + jmat_c(i, j)
-               end do
-            else
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gmat_c(i, j, s) = jmat_c(i, j)
-               end do
-            end if
-         end do
-      end if
-   end subroutine build_g
-
-   subroutine assemble_fock(nao, nxc, npcm, nspin, dft, pcm_on, hcore, gmat, vxc, vpcm, fock)
-      !! F = H + G (+ V_xc, + the continuum's operator), per spin. `vxc` is
-      !! 1 x 1 (unused) when `.not. dft`, `vpcm` 1 x 1 when `.not. pcm_on`;
-      !! `nxc`/`npcm` are their true sizes, so the explicit-shape dummies
-      !! below match whichever the caller actually allocated.
-      integer, intent(in) :: nao, nxc, npcm, nspin
-      logical, intent(in) :: dft, pcm_on
-      real(dp), intent(in) :: hcore(nao, nao)
-      real(dp), intent(in) :: gmat(nao, nao, nspin), vxc(nxc, nxc, nspin)
-      real(dp), intent(in) :: vpcm(npcm, npcm)
-      real(dp), intent(inout) :: fock(nao, nao, nspin)
-      integer :: i, j, s
-      do s = 1, nspin
-         if (dft) then
-            do concurrent(i=1:nao, j=1:nao)
-               fock(i, j, s) = hcore(i, j) + gmat(i, j, s) + vxc(i, j, s)
-            end do
-         else
-            do concurrent(i=1:nao, j=1:nao)
-               fock(i, j, s) = hcore(i, j) + gmat(i, j, s)
-            end do
-         end if
-         if (pcm_on) then
-            do concurrent(i=1:nao, j=1:nao)
-               fock(i, j, s) = fock(i, j, s) + vpcm(i, j)
-            end do
-         end if
-      end do
-   end subroutine assemble_fock
 
    subroutine diis_store(nao, nspin, k, fock, companion, fstore, cstore)
       !! One push, shared by CDIIS (companion = the commutator `errv`) and
