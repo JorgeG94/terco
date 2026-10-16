@@ -34,6 +34,38 @@
         "PIC_USE_LEGACY_MPI": "ON",
         "PIC_MPICH_PERLMUTTER": "ON"
       }
+    },
+    {
+      "name": "gadi",
+      "displayName": "Gadi (nvidia-hpc-sdk, V100)",
+      "description": "source gadi_envsh (nvidia-hpc-sdk, openmpi/5.0.5, intel-mkl, cmake/3.31.12). Single rank (TERCO_ENABLE_MPI=OFF). nvfortran/nvc/nvc++ wrappers, sequential LP64 MKL for BLAS/LAPACK, cc70 for the gpuvolta V100s.",
+      "binaryDir": "${sourceDir}/build-gadi",
+      "installDir": "${sourceDir}/../../install/terco",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_Fortran_COMPILER": "nvfortran",
+        "CMAKE_C_COMPILER": "nvc",
+        "CMAKE_CXX_COMPILER": "nvc++",
+        "TERCO_GPU_ARCH": "cc70",
+        "TERCO_ENABLE_MPI": "OFF",
+        "TERCO_LMAX": "3",
+        "TERCO_DF_LMAX": "3",
+        "BLAS_LIBRARIES": "/apps/restricted/intel-ct/2018.1.163/mkl/lib/intel64_lin/libmkl_intel_lp64.so;/apps/restricted/intel-ct/2018.1.163/mkl/lib/intel64_lin/libmkl_sequential.so;/apps/restricted/intel-ct/2018.1.163/mkl/lib/intel64_lin/libmkl_core.so;-lm;-ldl",
+        "LAPACK_LIBRARIES": "/apps/restricted/intel-ct/2018.1.163/mkl/lib/intel64_lin/libmkl_intel_lp64.so;/apps/restricted/intel-ct/2018.1.163/mkl/lib/intel64_lin/libmkl_sequential.so;/apps/restricted/intel-ct/2018.1.163/mkl/lib/intel64_lin/libmkl_core.so;-lm;-ldl"
+      }
+    },
+    {
+      "name": "gadi-mpi",
+      "inherits": "gadi",
+      "displayName": "Gadi MPI (OpenMPI 5.0.5)",
+      "description": "Multi-rank runs. OpenMPI's mpifort/mpicc/mpic++ wrappers (nvfortran underneath, nvidia mpi_f08 bindings), so pic-mpi's default mpi_f08 backend is used.",
+      "binaryDir": "${sourceDir}/build-gadi-mpi",
+      "cacheVariables": {
+        "CMAKE_Fortran_COMPILER": "mpifort",
+        "CMAKE_C_COMPILER": "mpicc",
+        "CMAKE_CXX_COMPILER": "mpic++",
+        "TERCO_ENABLE_MPI": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -46,6 +78,16 @@
       "name": "perlmutter-mpi",
       "configurePreset": "perlmutter-mpi",
       "jobs": 32
+    },
+    {
+      "name": "gadi",
+      "configurePreset": "gadi",
+      "jobs": 16
+    },
+    {
+      "name": "gadi-mpi",
+      "configurePreset": "gadi-mpi",
+      "jobs": 16
     }
   ]
 }
