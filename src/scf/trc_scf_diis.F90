@@ -106,15 +106,14 @@ contains
       integer, intent(in) :: nao, nspin
       real(dp), intent(inout) :: fock(nao, nao, nspin)
       logical, intent(out) :: ok
-      integer :: n2, m, i, j
-      n2 = nao*nao
+      integer :: m, i, j
       do
          m = this%n_used + 1
          this%bmat = -1.0_dp
          this%bmat(m, m) = 0.0_dp
          do j = 1, this%n_used
             do i = 1, j
-               this%bmat(i, j) = lp%dot(n2*nspin, this%estore(:, :, :, i), this%estore(:, :, :, j))
+               this%bmat(i, j) = lp%dot_3d(this%estore(:, :, :, i), this%estore(:, :, :, j))
                this%bmat(j, i) = this%bmat(i, j)
             end do
          end do
@@ -172,7 +171,7 @@ contains
       integer, intent(in) :: nao, nspin
       real(dp), intent(inout) :: fock(nao, nao, nspin)
       if (this%n_used > 1) then
-         call adiis_coeffs(lp, nao*nao, nspin, this%n_used, this%fstore_a, this%dstore_a, this%cad(1:this%n_used))
+         call adiis_coeffs(lp, this%n_used, this%fstore_a, this%dstore_a, this%cad(1:this%n_used))
          call diis_combine(nao, nspin, this%n_used, this%cad(1:this%n_used), this%fstore_a, fock)
       end if
    end subroutine adiis_extrapolate
@@ -221,8 +220,8 @@ contains
       real(dp), intent(inout) :: fock(nao, nao, nspin)
       integer :: i, j, s
       do s = 1, nspin
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, dmat(:, :, s), nao, 0.0_dp, w1, nao)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+         call lp%gemm_mat(smat, dmat(:, :, s), w1)
+         call lp%gemm_mat(w1, smat, w2)
          do concurrent(i=1:nao, j=1:nao)
             fock(i, j, s) = fock(i, j, s) + mu*(smat(i, j) - w2(i, j)/occ)
          end do
@@ -272,23 +271,27 @@ contains
    ! device dot products are in hand). Starting with all weight on the newest
    ! entry means no progress degrades to the plain Roothaan step.
    !
-   subroutine adiis_coeffs(lp, n2, nspin, m, fstore_a, dstore_a, c)
+   subroutine adiis_coeffs(lp, m, fstore_a, dstore_a, c)
       type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: n2, nspin, m
-      real(dp), intent(in) :: fstore_a(:, :, :, :), dstore_a(:, :, :, :)
+      integer, intent(in) :: m
+      !! CONTIGUOUS: dot_3d below takes a trailing-index section of each --
+      !! fstore_a(:,:,:,jj) -- which is only provably contiguous (no copy,
+      !! no device/host mismatch) when the whole array it is sliced from
+      !! is declared contiguous; see trc_linalg's own header.
+      real(dp), intent(in), contiguous :: fstore_a(:, :, :, :), dstore_a(:, :, :, :)
       real(dp), intent(out) :: c(m)
       real(dp) :: f, ft, step
       real(dp) :: dvec(m), amat(m, m), g(m), trial(m)
       integer :: ii, jj, itr, ls
       logical :: improved
       do ii = 1, m
-         dvec(ii) = lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                    - lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+         dvec(ii) = lp%dot_3d(dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
+                    - lp%dot_3d(dstore_a(:, :, :, m), fstore_a(:, :, :, m))
          do jj = 1, m
-            amat(ii, jj) = lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, jj)) &
-                           - lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                           - lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, jj)) &
-                           + lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
+            amat(ii, jj) = lp%dot_3d(dstore_a(:, :, :, ii), fstore_a(:, :, :, jj)) &
+                           - lp%dot_3d(dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
+                           - lp%dot_3d(dstore_a(:, :, :, m), fstore_a(:, :, :, jj)) &
+                           + lp%dot_3d(dstore_a(:, :, :, m), fstore_a(:, :, :, m))
          end do
       end do
       c = 0.0_dp

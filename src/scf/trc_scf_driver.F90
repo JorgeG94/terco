@@ -406,7 +406,7 @@ contains
          ! it -- see trc_scf_state's own header.
          call st%save_dold(nao, nspin, res%dmat)
          ! --- DIIS, once the commutator is small enough to extrapolate from --
-         errmax = sqrt(lp%dot(n2*nspin, st%errv, st%errv))
+         errmax = sqrt(lp%dot_3d(st%errv, st%errv))
          ! Over ranks the Fock matrices agree only to the XC atomics' 1e-13,
          ! so the numbers every branch below and the convergence test read
          ! are rank 0's, on every rank: one rank leaving the loop while
@@ -467,7 +467,7 @@ contains
             end if
          end if
          call st%update_errv(nao, nspin, res%dmat)
-         drms = sqrt(lp%dot(n2*nspin, st%errv, st%errv))/real(nao, dp)
+         drms = sqrt(lp%dot_3d(st%errv, st%errv))/real(nao, dp)
          tmr%t_rest = tmr%t_rest + (wall() - tw0)
          if (talk) then
             if (dft) then
@@ -592,10 +592,11 @@ contains
          real(dp), intent(inout) :: eps_s(nao), cmo_s(nao, nao), d_s(nao, nao)
          real(dp), intent(inout) :: ofrac(nao)
          integer :: i, j
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, f, nao, ctx%x, nao, 0.0_dp, t, nao)
-         call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, ctx%x, nao, t, nao, 0.0_dp, fp, nao)
-         call lp%syev(nao, fp, nao, eps_s)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, ctx%x, nao, fp, nao, 0.0_dp, cmo_s, nao)
+         ! F' = X^T F X: the same two GEMMs lp%sandwich does (work = F X,
+         ! out = X^T work), so this reaches the identical raw calls.
+         call lp%sandwich(ctx%x, f, fp, t)
+         call lp%syev(fp, eps_s)
+         call lp%gemm_mat(ctx%x, fp, cmo_s)
          if (frac) then
             ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
             !$acc update self(eps_s)
@@ -608,11 +609,14 @@ contains
             do concurrent(i=1:nao, j=1:nao)
                t(i, j) = cmo_s(i, j)*sqrt(ofrac(j))
             end do
-            call lp%gemm("N", "T", nao, nao, nfrac, 1.0_dp, t, nao, t, nao, 0.0_dp, d_s, nao)
-         else if (nocc_s > 0) then
-            call lp%gemm("N", "T", nao, nao, nocc_s, occ, cmo_s, nao, cmo_s, nao, 0.0_dp, d_s, nao)
+            ! D = occ * C(:,1:k) C(:,1:k)^T with occ = 1, k = nfrac, on the
+            ! column-scaled copy -- the same GEMM lp%density does on t with
+            ! those arguments (A(1:nao,1:nfrac) is the same block either way).
+            call lp%density(t, nfrac, 1.0_dp, d_s)
          else
-            call zero_dev(nao, d_s)
+            ! k <= 0 is lp%density's own zeroing branch (do concurrent),
+            ! replacing zero_dev.
+            call lp%density(cmo_s, nocc_s, occ, d_s)
          end if
       end subroutine orbitals_and_density
 
@@ -656,15 +660,6 @@ contains
          o(g0:g1) = share
          nocc_out = g1
       end subroutine frac_occupations
-
-      subroutine zero_dev(n, a)
-         integer, intent(in) :: n
-         real(dp), intent(inout) :: a(n, n)
-         integer :: i, j
-         do concurrent(i=1:n, j=1:n)
-            a(i, j) = 0.0_dp
-         end do
-      end subroutine zero_dev
 
    end subroutine trc_scf_run
 

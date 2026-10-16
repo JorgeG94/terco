@@ -239,7 +239,7 @@ contains
       thr = 0.0_dp
       if (present(lindep_thresh)) thr = lindep_thresh
       !$acc data copy(u) create(w) copyout(x)
-      call la%syev(n, u, n, w)
+      call la%syev(u, w)
       !$acc update self(w)
       ! w is ascending (LAPACK/cuSOLVER convention), so the near-null modes
       ! -- the ones canonical orthogonalisation drops -- are the leading
@@ -265,7 +265,7 @@ contains
             u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
          end if
       end do
-      call la%gemm("N", "T", n, n, n, 1.0_dp, u, n, u, n, 0.0_dp, x, n)
+      call la%gemm_mat(u, u, x, transb="T")
       !$acc end data
    end subroutine sym_orthog
 

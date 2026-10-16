@@ -232,13 +232,12 @@ contains
       real(dp), intent(in) :: dmat(nao, nao, nspin), hcore(nao, nao), gmat(nao, nao, nspin)
       real(dp), intent(in) :: e_nuc, exc, epcm
       real(dp), intent(out) :: e1, e2, etot
-      integer :: s, n2
-      n2 = nao*nao
+      integer :: s
       e1 = 0.0_dp
       e2 = 0.0_dp
       do s = 1, nspin
-         e1 = e1 + lp%dot(n2, dmat(:, :, s), hcore)
-         e2 = e2 + 0.5_dp*lp%dot(n2, dmat(:, :, s), gmat(:, :, s))
+         e1 = e1 + lp%dot_2d(dmat(:, :, s), hcore)
+         e2 = e2 + 0.5_dp*lp%dot_2d(dmat(:, :, s), gmat(:, :, s))
       end do
       etot = e1 + e2 + exc + e_nuc + epcm
    end subroutine scf_energy
@@ -285,13 +284,13 @@ contains
       integer :: s
       do s = 1, nspin
          ! w2 = F D S - S D F
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, fock(:, :, s), nao, dmat(:, :, s), nao, 0.0_dp, w1, nao)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, dmat(:, :, s), nao, 0.0_dp, w1, nao)
-         call lp%gemm("N", "N", nao, nao, nao, -1.0_dp, w1, nao, fock(:, :, s), nao, 1.0_dp, w2, nao)
-         ! errv = X^T w2 X
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w2, nao, x, nao, 0.0_dp, w1, nao)
-         call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, errv(:, :, s), nao)
+         call lp%gemm_mat(fock(:, :, s), dmat(:, :, s), w1)
+         call lp%gemm_mat(w1, smat, w2)
+         call lp%gemm_mat(smat, dmat(:, :, s), w1)
+         call lp%gemm_mat(w1, fock(:, :, s), w2, alpha=-1.0_dp, beta=1.0_dp)
+         ! errv = X^T w2 X, the same two GEMMs lp%sandwich does (work = w2 X,
+         ! out = X^T work), so this reaches the identical raw calls.
+         call lp%sandwich(x, w2, errv(:, :, s), w1)
       end do
    end subroutine commutator_error
 
