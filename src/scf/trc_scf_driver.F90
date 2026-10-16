@@ -43,10 +43,11 @@
 ! Cartesian: `trc_1e`, `trc_eri_t%fock_resident`, and the XC integrator.
 ! Cartesian-sized scratch matrices (suffix `_c`: `s_c`, `h_c`, `d_c`,
 ! `gmat_c`, `vxc_c`, ...) sit between the kernels and the SCF's own matrices,
-! built once per geometry (`s_c`/`h_c`) or once per iteration (`d_c` from the
-! current density; `gmat_c`/`vxc_c` from the Fock/XC calls), and folded by
-! `sph_cart_to_sph`. `sph` guards every call into trc_sph.F90, so the
-! Cartesian path is the same code path as before spherical support existed.
+! built once per geometry (`s_c`/`h_c`, now `trc_scf_context`'s `smat`/`hcore`)
+! or once per iteration (`d_c` from the current density; `gmat_c`/`vxc_c` from
+! the Fock/XC calls, now `trc_scf_state`'s), and folded by `sph_cart_to_sph`.
+! `sph` guards every call into trc_sph.F90, so the Cartesian path is the same
+! code path as before spherical support existed.
 !
 ! The XC integrator gets `d_c`, the Cartesian density rebuilt from `res%dmat`
 ! each iteration, not spherical AO values on the grid: the transform is shared
@@ -68,25 +69,37 @@
 ! pyscf.solvent.pcm's SCFWithSolvent, which also adds it before DIIS). It is
 ! rebuilt in full each iteration, independent of the incremental-ERI path.
 !
+! MODULES
+! -------
+! `trc_scf_settings` resolves `trc_scf_options_t` into what the loop reads
+! (`scf_settings_t`, "cfg" below); `trc_scf_context` builds everything once
+! per geometry (`scf_ctx_t`, "ctx": the pair list, S/H, the ERI engine, the
+! linear-algebra handles, the orthogonaliser, and -- when asked for -- the
+! PCM cavity and the DFT grid); `trc_scf_state` owns the per-iteration arrays
+! (`scf_state_t`, "st") and the one enter/exit pair that puts them, `ctx`'s
+! own matrices and `res` on the device together. `build_g`/`assemble_fock`
+! and the DIIS push/combine helpers below stay in THIS file for now (they
+! are not yet split into `trc_scf_fock`/`trc_scf_diis`): every one of them
+! already takes its arrays as explicit-shape dummies rather than touching
+! `ctx`/`st` inside a `do concurrent` body, which is what lets this compile
+! correctly once those arrays are struct components instead of plain locals.
 !
 module trc_scf_driver
    use pic_types, only: dp, int64
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
+   use trc_api, only: trc_basis_t
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_eri, only: trc_eri_t
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
-   use trc_xc_batch, only: trc_xc_grid_t
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_xc_functional, only: trc_xc_functional_t
    use trc_xc, only: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
    use trc_linalg, only: trc_linalg_t
-   use trc_pcm, only: trc_pcm_t, pcm_model_from_name
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t
+   use trc_scf_context, only: scf_ctx_t, bcast_flat
+   use trc_scf_state, only: scf_state_t, scf_timers_t
    use pic_types, only: default_int
    use pic_logger, only: global_logger
-   use pic_timer, only: timer_type
-   use pic_mpi_lib, only: comm_t, bcast, allreduce, MPI_SUM
+   use pic_mpi_lib, only: comm_t
    implicit none
    private
 
@@ -155,30 +168,19 @@ contains
 
       integer :: nao, nao_c, nspin, s, it, ndiis_used, i, j, k, n2, m
       integer :: nocc(2)
-      integer :: nxc, nxc_c, nu_c, nlr_c, nin_c   !! full size, or 1 when unused (see the allocations)
+      integer :: nxc, nu_c, nlr_c, nin_c, npcm   !! full size, or 1 when unused (see trc_scf_state%alloc)
       logical :: ok, sph
       type(scf_settings_t) :: cfg
+      type(scf_ctx_t), target :: ctx
+      !! TARGET: ctx%setup points ctx%lp at ctx%la_own when the caller gives
+      !! no linalg handles of its own; that pointer must stay valid for the
+      !! rest of this routine, which needs ctx itself to carry TARGET.
+      type(scf_state_t) :: st
+      type(scf_timers_t) :: tmr
       character(len=256) :: msg
-      real(dp), allocatable :: smat(:, :), hcore(:, :), x(:, :)
-      real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :)
-      ! CARTESIAN scratch: the one-electron setup (`s_c`/`h_c`), and the
-      ! per-iteration density/Fock/XC quantities the kernels actually
-      ! operate on (`d_c`, `gmat_c`, `vxc_c`, and the Cartesian-only
-      ! intermediates the unrestricted and incremental paths already
-      ! needed, now sized here instead of at `nao`). See this module's own
-      ! header. All of it is exactly `b%nao` in size regardless of `sph`;
-      ! when `sph` is false, `nao_c == nao` and every transform call below
-      ! is simply not taken, which is the whole of how the Cartesian path
-      ! stays byte-for-byte unchanged.
-      real(dp), allocatable :: s_c(:, :), h_c(:, :)
-      real(dp), allocatable :: d_c(:, :, :), gmat_c(:, :, :), vxc_c(:, :, :)
-      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), w1_c(:, :), klr_c(:, :)
-      !! klr_c: the long-range exchange of a range-separated hybrid, built
-      !! by its own pass (erf(omega r12)/r12) and added into G.
-      real(dp), allocatable :: dref_c(:, :), gacc_c(:, :), ddif_c(:, :)
       logical :: incr_now
-      real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
-      real(dp), allocatable :: w1(:, :), w2(:, :), bmat(:, :), rhs(:)
+      real(dp), allocatable :: fstore(:, :, :, :), estore(:, :, :, :)
+      real(dp), allocatable :: bmat(:, :), rhs(:)
       real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :), cad(:)
       !! ADIIS history (fock, density) and its own slot count, kept apart
       !! from the CDIIS `fstore`/`estore` above: ADIIS runs exactly in the
@@ -187,44 +189,27 @@ contains
       !! leaves the CDIIS path untouched, to the bit.
       integer :: nadiis_used
       logical :: adiis_active
-      type(trc_pairlist_t) :: pl
-      type(trc_eri_t) :: eri
-      type(dft_grid_t) :: grid
-      type(trc_xc_grid_t) :: xg, xg_nlc
-      type(dft_grid_t) :: grid_nlc
       logical :: nlc
       real(dp) :: e_nlc
       type(trc_xc_functional_t) :: func
-      type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
       type(error_t) :: err
-      type(trc_pcm_t) :: pcm
       logical :: pcm_on
-      real(dp) :: epcm, t_pcm, t_pcm_setup
-      real(dp), allocatable :: vpcm_c(:, :), vpcm(:, :)
-      !! the continuum's operator, Cartesian as its kernels make it and in
-      !! the SCF's own space; the same for both spins
+      real(dp) :: epcm
       logical :: dft, talk, diis_on, root, incr_on
       real(dp) :: ctl(2)
       real(dp) :: exx_lr, omega
       !! A range-separated hybrid's extra long-range exchange fraction and
       !! its omega: K_total = exx*K + exx_lr*K_erf(omega). Zero otherwise.
       real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ, errmax
-      real(dp), allocatable :: ofrac(:)
       integer :: nfrac, ndamp
       real(dp) :: diis_start
-      type(timer_type) :: tm
-      integer, parameter :: NSETUP = 6
-      real(dp) :: ts(NSETUP)
-      !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
-      !! linear-algebra handles, orthogonaliser (printed with the timing table)
-      real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
+      real(dp) :: tw0, tw1
       ! The TRC_* experiment hooks (incr_*_env, eri_thresh_env), read once
       ! per run: they only reread the environment, and the loop asked for
       ! the same answer every iteration.
       real(dp) :: eri_thresh_run, incr_start_run, incr_scale_run
       integer :: incr_reset_run
-      real(dp) :: tf_it, tx_it
       !! This iteration's share of the two totals, so the table says where
       !! the time went while it is going rather than only at the end. A
       !! Fock build is not the same cost twice: the SAD guess is atomic, so
@@ -232,10 +217,6 @@ contains
       !! per-iteration cost then climbs to a plateau. Comparing two runs by
       !! total/iterations is therefore only valid at equal iteration counts.
 
-      nao_c = b%nao
-      sph = b%spherical
-      nao = merge(b%nao_sph, nao_c, sph)
-      n2 = nao*nao
       ! Everything `opts` resolves to before the loop starts: the functional
       ! lookup and its rejections, the spin rule, the by-spin damping/DIIS
       ! defaults, and the env-hook overrides (trc_scf_settings). `cfg` is
@@ -270,33 +251,48 @@ contains
       ! (replicated: cheap next to the integrals); pcm%operator splits the
       ! two integral passes over the ranks itself, given `comm`.
       epcm = 0.0_dp
-      t_pcm = 0.0_dp
-      t_pcm_setup = 0.0_dp
 
-      ! ONLY WHAT THIS RUN USES IS FULL SIZE. Every array below is mapped
-      ! to the device for the whole run (the `enter data` after the
-      ! guess), so one that a run never touches is nao^2 of device memory
-      ! for nothing: on ionic05 in aug-cc-pVTZ (4255 functions, 4950
+      ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
+      ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
+      call ctx%setup(b, opts, cfg, err, comm=comm, la=la)
+      if (err%has_error()) then
+         res%message = "trc_scf: "//err%get_message()
+         return
+      end if
+      nao = ctx%nao
+      nao_c = ctx%nao_c
+      sph = ctx%sph
+      n2 = nao*nao
+      lp => ctx%lp
+      res%e_nuc = ctx%e_nuc
+      res%n_lindep = ctx%n_lindep
+      if (pcm_on) res%pcm_npoints = ctx%pcm%surface%n_points
+      if (dft) then
+         res%grid_r = ctx%grid%coords
+         res%grid_w = ctx%grid%weights
+         if (nlc) then
+            res%grid_r_nlc = ctx%grid_nlc%coords
+            res%grid_w_nlc = ctx%grid_nlc%weights
+         end if
+      end if
+
+      ! ONLY WHAT THIS RUN USES IS FULL SIZE (trc_scf_state%alloc owns the
+      ! array sizes; `nu_c`/`nlr_c`/`nin_c`/`nxc`/`npcm` below are the same
+      ! sizes again, for the calls into `build_g`/`assemble_fock`, which take
+      ! explicit-shape dummies and so must be told how big a 1 x 1 "unused"
+      ! array really is). One that a run never touches is nao^2 of device
+      ! memory for nothing: on ionic05 in aug-cc-pVTZ (4255 functions, 4950
       ! Cartesian) an HF run carried ~2.4 GB of XC, unrestricted,
       ! range-separated, incremental and PCM matrices it had no use for.
-      ! Those are allocated 1 x 1 instead, so every clause and dummy that
-      ! names them stays as it is.
       nxc = merge(nao, 1, dft)
-      nxc_c = merge(nao_c, 1, dft)
       nu_c = merge(nao_c, 1, nspin == 2)
       nlr_c = merge(nao_c, 1, exx_lr /= 0.0_dp)
       nin_c = merge(nao_c, 1, incr_on)
-      allocate (smat(nao, nao), hcore(nao, nao), x(nao, nao))
-      allocate (fock(nao, nao, nspin), gmat(nao, nao, nspin), vxc(nxc, nxc, nspin))
-      allocate (s_c(nao_c, nao_c), h_c(nao_c, nao_c))
-      allocate (d_c(nao_c, nao_c, nspin), gmat_c(nao_c, nao_c, nspin), vxc_c(nxc_c, nxc_c, nspin))
-      allocate (dtot_c(nu_c, nu_c), jmat_c(nu_c, nu_c), w1_c(nao_c, nao_c), klr_c(nlr_c, nlr_c))
-      allocate (dref_c(nin_c, nin_c), gacc_c(nin_c, nin_c), ddif_c(nin_c, nin_c))
-      allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
+      npcm = merge(nao, 1, pcm_on)
+      call st%alloc(ctx, cfg)
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
-      allocate (w1(nao, nao), w2(nao, nao))
-      allocate (ofrac(nao))
-      ofrac = 0.0_dp
+      fstore = 0.0_dp
+      estore = 0.0_dp
       allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
       ! Only when asked for: a second ndiis-deep history the size of
@@ -309,147 +305,6 @@ contains
          dstore_a = 0.0_dp
       end if
 
-      t_setup = 0.0_dp
-      t_grid = 0.0_dp
-      t_fock = 0.0_dp
-      t_xc = 0.0_dp
-      t_rest = 0.0_dp
-      tf_it = 0.0_dp
-      tx_it = 0.0_dp
-      tx_pts = 0.0_dp
-      tx_prs = 0.0_dp
-      tw0 = wall()
-      call tm%start()
-      ! --- once per geometry, on the host ------------------------------------
-      call pl%build(b, eri_thresh_run)
-      call pl%to_device()
-      ts(1) = tm%get_elapsed_time()
-      call tm%start()
-      ! The one-electron integrals are always Cartesian (trc_1e never
-      ! changes); `s_c`/`h_c` are folded up to the SCF's own space once,
-      ! here, for the whole run -- S and H never change after this. The
-      ! nuclear attraction matrix is only needed to form `h_c` and reuses
-      ! `w1_c` (otherwise idle until the iterations start) rather than a
-      ! fourth Cartesian array kept for nothing afterward.
-      call trc_1e(b, pl, s_c, h_c, w1_c)
-      h_c = h_c + w1_c
-      ts(2) = tm%get_elapsed_time()
-      call tm%start()
-      if (sph) then
-         ! `smat`/`hcore` are not entered onto the device until the big
-         ! block below (they are reused, host and device, across the
-         ! whole run) -- so the transform's own OUTPUT needs its own
-         ! `create` here, or `update self` has nothing to read from.
-         !$acc enter data copyin(s_c, h_c) create(smat, hcore)
-         call sph_cart_to_sph(b, s_c, smat)
-         call sph_cart_to_sph(b, h_c, hcore)
-         !$acc update self(smat, hcore)
-         !$acc exit data delete(s_c, h_c, smat, hcore)
-      else
-         smat = s_c
-         hcore = h_c
-      end if
-      ts(3) = tm%get_elapsed_time()
-      call tm%start()
-      if (present(comm)) then
-         call eri%build(b, eri_thresh_run, comm, batch_res=opts%batch_res)
-      else
-         call eri%build(b, eri_thresh_run, batch_res=opts%batch_res)
-      end if
-      res%e_nuc = nuclear_repulsion(b)
-      ts(4) = tm%get_elapsed_time()
-      call tm%start()
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
-      end if
-      call lp%init(nao)
-      ts(5) = tm%get_elapsed_time()
-      call tm%start()
-      call sym_orthog(lp, nao, smat, x, opts%lindep_thresh, res%n_lindep)
-      if (talk .and. res%n_lindep > 0) print "(a,i0,a,es9.2,a)", &
-         "   canonical orthogonalisation: ", res%n_lindep, &
-         " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
-      ts(6) = tm%get_elapsed_time()
-      t_setup = wall() - tw0
-
-      ! --- the continuum: cavity, K and the nuclear potential, once -------
-      allocate (vpcm_c(merge(nao_c, 1, pcm_on), merge(nao_c, 1, pcm_on)), &
-                vpcm(merge(nao, 1, pcm_on), merge(nao, 1, pcm_on)))
-      vpcm_c = 0.0_dp
-      vpcm = 0.0_dp
-      if (pcm_on) then
-         tw0 = wall()
-         call pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err, la=lp)
-         call pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
-         if (err%has_error()) then
-            res%message = "trc_scf: "//err%get_message()
-            call pcm%release()
-            if (.not. present(la)) call lp%release()
-            call eri%release()
-            call pl%release()
-            return
-         end if
-         res%pcm_npoints = pcm%surface%n_points
-         t_pcm_setup = wall() - tw0
-         if (talk) print "(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)", "   pcm: ", trim(opts%pcm_model), &
-            ", eps ", opts%pcm_eps, ", ", opts%pcm_lebedev, " points per sphere, ", &
-            pcm%surface%n_points, " kept; setup ", t_pcm_setup, " s"
-      end if
-
-      if (dft) then
-         tw0 = wall()
-         ! The partition is split over the ranks; the summed cell weights are
-         ! then rank 0's everywhere, as every reduced quantity is.
-         if (present(comm)) then
-            call build_dft_grid_block(b%at_r, nint(b%at_z), grid, err, comm%rank(), comm%size(), &
-                                      level=opts%grid_level)
-         else
-            call build_dft_grid(b%at_r, nint(b%at_z), grid, err, level=opts%grid_level)
-         end if
-         if (err%has_error()) then
-            res%message = "trc_scf: "//err%get_message()
-            call pcm%release()
-            if (.not. present(la)) call lp%release()
-            call eri%release()
-            call pl%release()
-            return
-         end if
-         if (present(comm)) then
-            if (comm%size() > 1) call sum_flat(comm, grid%weights, grid%n_points)
-         end if
-         call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=opts%grid_max_pts)
-         call xg%to_device()
-         if (nlc) then
-            call build_dft_grid(b%at_r, nint(b%at_z), grid_nlc, err, level=opts%nlc_grid_level)
-            if (err%has_error()) then
-               res%message = "trc_scf: "//err%get_message()
-               ! The semilocal grid/grid-object pair is already built and on
-               ! the device at this point (xg%build/xg%to_device, just
-               ! above) -- only the VV10 (nlc) grid failed. Release it too,
-               ! or its device allocation and `grid`'s host arrays leak on
-               ! this early return, same as the success path does at the
-               ! end of this routine.
-               call xg%release()
-               call grid%destroy()
-               call pcm%release()
-               if (.not. present(la)) call lp%release()
-               call eri%release()
-               call pl%release()
-               return
-            end if
-            call xg_nlc%build(grid_nlc%n_points, grid_nlc%coords, grid_nlc%weights, b, &
-                              max_pts=opts%grid_max_pts)
-            call xg_nlc%to_device()
-            res%grid_r_nlc = grid_nlc%coords
-            res%grid_w_nlc = grid_nlc%weights
-         end if
-         res%grid_r = grid%coords
-         res%grid_w = grid%weights
-         t_grid = wall() - tw0
-      end if
-
       ! --- the guess, on the host, then everything goes up -------------------
       if (present(dguess)) then
          res%dmat = dguess
@@ -459,44 +314,25 @@ contains
          end do
       else if (opts%guess == "core") then
          do s = 1, nspin
-            call guess_from(hcore, nocc(s), res%dmat(:, :, s))
+            call guess_from(ctx%hcore, nocc(s), res%dmat(:, :, s))
          end do
       else
          ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
          do j = 1, nao
             do i = 1, nao
-               w1(i, j) = 0.875_dp*smat(i, j)*(hcore(i, i) + hcore(j, j))
+               st%w1(i, j) = 0.875_dp*ctx%smat(i, j)*(ctx%hcore(i, i) + ctx%hcore(j, j))
             end do
-            w1(j, j) = hcore(j, j)
+            st%w1(j, j) = ctx%hcore(j, j)
          end do
          do s = 1, nspin
-            call guess_from(w1, nocc(s), res%dmat(:, :, s))
+            call guess_from(st%w1, nocc(s), res%dmat(:, :, s))
          end do
       end if
       res%cmo = 0.0_dp
       res%eps = 0.0_dp
-      fock = 0.0_dp
-      gmat = 0.0_dp
-      vxc = 0.0_dp
-      dold = 0.0_dp
-      errv = 0.0_dp
-      fstore = 0.0_dp
-      estore = 0.0_dp
-      w1 = 0.0_dp
-      w2 = 0.0_dp
-      d_c = 0.0_dp
-      gmat_c = 0.0_dp
-      vxc_c = 0.0_dp
-      dtot_c = 0.0_dp
-      jmat_c = 0.0_dp
-      w1_c = 0.0_dp
-      klr_c = 0.0_dp
 
-      !$acc enter data copyin(ofrac)
-      !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2) &
-      !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
-      !$acc            create(dref_c, gacc_c, ddif_c) copyin(vpcm_c, vpcm)
+      call st%to_device(ctx, res)
+      !$acc enter data copyin(fstore, estore)
       if (opts%adiis) then
          !$acc enter data copyin(fstore_a, dstore_a)
       end if
@@ -536,193 +372,97 @@ contains
          ! header on why that keeps the Cartesian path byte-for-byte
          ! unchanged rather than merely numerically equivalent.
          do s = 1, nspin
-            call to_cart(res%dmat(:, :, s), d_c(:, :, s))
+            call to_cart(res%dmat(:, :, s), st%d_c(:, :, s))
          end do
          ! --- two-electron part, resident, entirely in Cartesian space -------
-         if (nspin == 1) then
-            !
-            ! INCREMENTAL. G(D) = G(D_ref) + G(D - D_ref), exactly, because
-            ! G is linear in D. The point is the screening: the kernel
-            ! screens on the density it is handed, and the difference is
-            ! small and getting smaller while the density is neither.
-            !
-            incr_now = incr_on .and. it > 1 &
-                       .and. errmax < incr_start_run &
-                       .and. mod(it - 1, max(1, incr_reset_run)) /= 0
-            if (incr_now) then
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  ddif_c(i, j) = d_c(i, j, 1) - dref_c(i, j)
-               end do
-               !
-               ! A fixed, tighter threshold on the increment, not one tracking ddif.
-               !
-               ! The Schwarz/density screen drops a quartet whose bound qq*dd is below
-               ! an absolute threshold: fine for a full build, where dd is O(1). On
-               ! ddif, quartets sit at the edge of the test, and which ones changes
-               ! each iteration because ddif is a difference of iterates with a
-               ! changing shape. The dropped sets differ and the errors do not average
-               ! down as the full build's (always the same negligible quartets) do. On
-               ! w172/6-31G (450 atoms, 1950 AOs) RMS(D) reaches 1e-10 while the
-               ! energy bounces by 1e-4 to 1e-6 Eh per iteration.
-               !
-               ! Scaling `thresh` by ||ddif||/||dref|| is backwards: it loosens as
-               ! ddif shrinks and loses the speed (25.6 s against 24.4 s baseline).
-               ! A fixed tighter factor, `incr_thresh_scale` (default 1e-4), keeps
-               ! the error floor low enough that |dE| clears 1e-8 at every reset
-               ! through iteration 20, while each increment stays a few times cheaper
-               ! than a full build.
-               !
-               block
-                  real(dp) :: thresh0
-                  thresh0 = eri%thresh
-                  eri%thresh = thresh0*incr_scale_run
-                  call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
-                  if (exx_lr /= 0.0_dp) then
-                     call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-                     do concurrent(i=1:nao_c, j=1:nao_c)
-                        gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
-                     end do
-                  end if
-                  eri%thresh = thresh0
-               end block
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gacc_c(i, j) = gacc_c(i, j) + gmat_c(i, j, 1)
-                  gmat_c(i, j, 1) = gacc_c(i, j)
-                  dref_c(i, j) = d_c(i, j, 1)
-               end do
-            else
-               call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
-               if (exx_lr /= 0.0_dp) then
-                  call eri%fock_resident(b, d_c(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
-                  end do
-               end if
-               ! The reference for the next increment, kept only when there
-               ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
-               if (incr_on) then
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gacc_c(i, j) = gmat_c(i, j, 1)
-                     dref_c(i, j) = d_c(i, j, 1)
-                  end do
-               end if
-            end if
-         else
-            do concurrent(i=1:nao_c, j=1:nao_c)
-               dtot_c(i, j) = d_c(i, j, 1) + d_c(i, j, 2)
-            end do
-            call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
-            do s = 1, 2
-               if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     w1_c(i, j) = 2.0_dp*d_c(i, j, s)
-                  end do
-                  call eri%fock_resident(b, w1_c, gmat_c(:, :, s), j_scale=0.0_dp, k_scale=exx)
-                  if (exx_lr /= 0.0_dp) then
-                     call eri%fock_resident(b, w1_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-                     do concurrent(i=1:nao_c, j=1:nao_c)
-                        gmat_c(i, j, s) = gmat_c(i, j, s) + klr_c(i, j)
-                     end do
-                  end if
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gmat_c(i, j, s) = gmat_c(i, j, s) + jmat_c(i, j)
-                  end do
-               else
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gmat_c(i, j, s) = jmat_c(i, j)
-                  end do
-               end if
-            end do
-         end if
+         !
+         ! INCREMENTAL. G(D) = G(D_ref) + G(D - D_ref), exactly, because G is
+         ! linear in D. The point is the screening: the kernel screens on the
+         ! density it is handed, and the difference is small and getting
+         ! smaller while the density is neither. See `build_g`'s own header.
+         !
+         incr_now = incr_on .and. it > 1 &
+                    .and. errmax < incr_start_run &
+                    .and. mod(it - 1, max(1, incr_reset_run)) /= 0
+         call build_g(b, ctx%eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
+                      exx, exx_lr, omega, incr_scale_run, &
+                      st%d_c, st%gmat_c, st%dtot_c, st%jmat_c, st%w1_c, st%klr_c, &
+                      st%gacc_c, st%dref_c, st%ddif_c)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in.
          do s = 1, nspin
-            call to_sph(gmat_c(:, :, s), gmat(:, :, s))
+            call to_sph(st%gmat_c(:, :, s), st%gmat(:, :, s))
          end do
          tw1 = wall()
-         t_fock = t_fock + (tw1 - tw0)
-         tf_it = tw1 - tw0
+         tmr%t_fock = tmr%t_fock + (tw1 - tw0)
+         tmr%tf_it = tw1 - tw0
          ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (dft) then
             if (nspin == 1) then
-               call trc_xc_rks(b, xg, func, d_c(:, :, 1), vxc_c(:, :, 1), exc, ngrid, rho_tol=opts%rho_tol, &
-                               comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
+               call trc_xc_rks(b, ctx%xg, func, st%d_c(:, :, 1), st%vxc_c(:, :, 1), exc, ngrid, &
+                               rho_tol=opts%rho_tol, comm=comm, t_points=tmr%tx_pts, t_pairs=tmr%tx_prs, la=lp)
             else
-               call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=opts%rho_tol, &
-                               comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
+               call trc_xc_uks(b, ctx%xg, func, st%d_c, st%vxc_c, exc, ngrid, rho_tol=opts%rho_tol, &
+                               comm=comm, t_points=tmr%tx_pts, t_pairs=tmr%tx_prs, la=lp)
             end if
             ! VV10 adds its energy to exc and its potential into vxc_c, on
             ! its own (coarser) grid, before the spherical transform below.
             if (nlc) then
                if (nspin == 1) then
-                  call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1))
+                  call trc_vv10_rks(b, ctx%xg_nlc, st%d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, st%vxc_c(:, :, 1))
                else
-                  call trc_vv10_uks(b, xg_nlc, d_c(:, :, 1), d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
-                                    vxc_c(:, :, 1), vxc_c(:, :, 2))
+                  call trc_vv10_uks(b, ctx%xg_nlc, st%d_c(:, :, 1), st%d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
+                                    st%vxc_c(:, :, 1), st%vxc_c(:, :, 2))
                end if
                exc = exc + e_nlc
             end if
-            tx_pts = tx_pts + tp1
-            tx_prs = tx_prs + tq1
             do s = 1, nspin
-               call to_sph(vxc_c(:, :, s), vxc(:, :, s))
+               call to_sph(st%vxc_c(:, :, s), st%vxc(:, :, s))
             end do
          end if
          tw0 = wall()
-         t_xc = t_xc + (tw0 - tw1)
-         tx_it = tw0 - tw1
+         tmr%t_xc = tmr%t_xc + (tw0 - tw1)
+         tmr%tx_it = tw0 - tw1
          ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
          ! too: one set of charges, one operator added to both spins) -----
          if (pcm_on) then
             ! An absent `comm` passes through as absent: one rank, unsplit.
             if (nspin == 1) then
-               call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm, comm)
+               call ctx%pcm%operator(b, ctx%pl, st%d_c(:, :, 1), st%vpcm_c, epcm, comm)
             else
-               call pcm%operator(b, pl, dtot_c, vpcm_c, epcm, comm)
+               call ctx%pcm%operator(b, ctx%pl, st%dtot_c, st%vpcm_c, epcm, comm)
             end if
-            call to_sph(vpcm_c, vpcm)
+            call to_sph(st%vpcm_c, st%vpcm)
             tw1 = wall()
-            t_pcm = t_pcm + (tw1 - tw0)
+            tmr%t_pcm = tmr%t_pcm + (tw1 - tw0)
             tw0 = tw1
          end if
          ! --- energy at this density -----------------------------------------
          e1 = 0.0_dp
          e2 = 0.0_dp
          do s = 1, nspin
-            e1 = e1 + lp%dot(n2, res%dmat(:, :, s), hcore)
-            e2 = e2 + 0.5_dp*lp%dot(n2, res%dmat(:, :, s), gmat(:, :, s))
+            e1 = e1 + lp%dot(n2, res%dmat(:, :, s), ctx%hcore)
+            e2 = e2 + 0.5_dp*lp%dot(n2, res%dmat(:, :, s), st%gmat(:, :, s))
          end do
          etot = e1 + e2 + exc + res%e_nuc + epcm
          ! --- Fock and its commutator, per spin ------------------------------
+         call assemble_fock(nao, nxc, npcm, nspin, dft, pcm_on, ctx%hcore, st%gmat, st%vxc, st%vpcm, st%fock)
          do s = 1, nspin
-            if (dft) then
-               do concurrent(i=1:nao, j=1:nao)
-                  fock(i, j, s) = hcore(i, j) + gmat(i, j, s) + vxc(i, j, s)
-               end do
-            else
-               do concurrent(i=1:nao, j=1:nao)
-                  fock(i, j, s) = hcore(i, j) + gmat(i, j, s)
-               end do
-            end if
-            if (pcm_on) then
-               do concurrent(i=1:nao, j=1:nao)
-                  fock(i, j, s) = fock(i, j, s) + vpcm(i, j)
-               end do
-            end if
             ! w2 = F D S - S D F
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, fock(:, :, s), nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-            call lp%gemm("N", "N", nao, nao, nao, -1.0_dp, w1, nao, fock(:, :, s), nao, 1.0_dp, w2, nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, st%fock(:, :, s), nao, res%dmat(:, :, s), nao, &
+                         0.0_dp, st%w1, nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, st%w1, nao, ctx%smat, nao, 0.0_dp, st%w2, nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, ctx%smat, nao, res%dmat(:, :, s), nao, 0.0_dp, st%w1, nao)
+            call lp%gemm("N", "N", nao, nao, nao, -1.0_dp, st%w1, nao, st%fock(:, :, s), nao, 1.0_dp, st%w2, nao)
             ! errv = X^T w2 X
-            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w2, nao, x, nao, 0.0_dp, w1, nao)
-            call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, errv(:, :, s), nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, st%w2, nao, ctx%x, nao, 0.0_dp, st%w1, nao)
+            call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, ctx%x, nao, st%w1, nao, 0.0_dp, st%errv(:, :, s), nao)
          end do
-         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-            dold(i, j, s) = res%dmat(i, j, s)
-         end do
+         ! `dold` must hold `res%dmat` from BEFORE DIIS/diagonalisation touch
+         ! it -- see trc_scf_state's own header.
+         call st%save_dold(nao, nspin, res%dmat)
          ! --- DIIS, once the commutator is small enough to extrapolate from --
-         errmax = sqrt(lp%dot(n2*nspin, errv, errv))
+         errmax = sqrt(lp%dot(n2*nspin, st%errv, st%errv))
          ! Over ranks the Fock matrices agree only to the XC atomics' 1e-13,
          ! so the numbers every branch below and the convergence test read
          ! are rank 0's, on every rank: one rank leaving the loop while
@@ -758,36 +498,19 @@ contains
                else
                   call shift_history(opts%ndiis, fstore_a, dstore_a)
                end if
-               k = nadiis_used
-               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                  fstore_a(i, j, s, k) = fock(i, j, s)
-                  dstore_a(i, j, s, k) = dold(i, j, s)
-               end do
+               call diis_store(nao, nspin, nadiis_used, st%fock, st%dold, fstore_a, dstore_a)
                ! One entry: the simplex is a point, c = 1 on it, a no-op.
                ! Skip the solve and leave `fock` as it is, which is also what
                ! `adiis_coeffs` would return from "start at the newest entry"
                ! after finding no improving step.
                if (nadiis_used > 1) then
                   call adiis_coeffs(nadiis_used, cad(1:nadiis_used))
-                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                     fock(i, j, s) = 0.0_dp
-                  end do
-                  do k = 1, nadiis_used
-                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                        fock(i, j, s) = fock(i, j, s) + cad(k)*fstore_a(i, j, s, k)
-                     end do
-                  end do
+                  call diis_combine(nao, nspin, nadiis_used, cad(1:nadiis_used), fstore_a, st%fock)
                end if
             end if
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
-               do s = 1, nspin
-                  call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-                  call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
-                  do concurrent(i=1:nao, j=1:nao)
-                     fock(i, j, s) = fock(i, j, s) + opts%level_shift*(smat(i, j) - w2(i, j)/occ)
-                  end do
-               end do
+               call level_shift(lp, nao, nspin, opts%level_shift, occ, ctx%smat, res%dmat, st%w1, st%w2, st%fock)
             end if
             if (diis_on) then
                if (ndiis_used < opts%ndiis) then
@@ -795,11 +518,7 @@ contains
                else
                   call shift_history(opts%ndiis, fstore, estore)
                end if
-               k = ndiis_used
-               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                  fstore(i, j, s, k) = fock(i, j, s)
-                  estore(i, j, s, k) = errv(i, j, s)
-               end do
+               call diis_store(nao, nspin, ndiis_used, st%fock, st%errv, fstore, estore)
                !
                ! An ill-conditioned subspace loses its oldest entry, not the step.
                ! A failed solve followed by a plain Roothaan step is not neutral: on
@@ -826,27 +545,14 @@ contains
                   call shift_history(ndiis_used, fstore, estore)
                   ndiis_used = ndiis_used - 1
                end do
-               if (ok) then
-                  do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                     fock(i, j, s) = 0.0_dp
-                  end do
-                  do k = 1, ndiis_used
-                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                        fock(i, j, s) = fock(i, j, s) + rhs(k)*fstore(i, j, s, k)
-                     end do
-                  end do
-               end if
+               if (ok) call diis_combine(nao, nspin, ndiis_used, rhs(1:ndiis_used), fstore, st%fock)
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
             do s = 1, nspin
-               call orbitals_and_density(fock(:, :, s), nocc(s), opts%frac_occ, w1, w2, &
-                                         res%eps(:, s), res%cmo(:, :, s), res%dmat(:, :, s))
+               call orbitals_and_density(st%fock(:, :, s), nocc(s), opts%frac_occ, st%w1, st%w2, &
+                                         res%eps(:, s), res%cmo(:, :, s), res%dmat(:, :, s), st%ofrac)
             end do
-            if (.not. diis_on .and. .not. adiis_active) then
-               do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                  res%dmat(i, j, s) = opts%damp*res%dmat(i, j, s) + (1.0_dp - opts%damp)*dold(i, j, s)
-               end do
-            end if
+            if (.not. diis_on .and. .not. adiis_active) call damp(nao, nspin, opts%damp, st%dold, res%dmat)
          end if
          ! Every rank must hold the same density to the bit. The Fock sum is
          ! broadcast already; the XC potential is accumulated with atomics
@@ -859,18 +565,16 @@ contains
                !$acc update device(res%dmat)
             end if
          end if
-         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-            errv(i, j, s) = res%dmat(i, j, s) - dold(i, j, s)
-         end do
-         drms = sqrt(lp%dot(n2*nspin, errv, errv))/real(nao, dp)
-         t_rest = t_rest + (wall() - tw0)
+         call st%update_errv(nao, nspin, res%dmat)
+         drms = sqrt(lp%dot(n2*nspin, st%errv, st%errv))/real(nao, dp)
+         tmr%t_rest = tmr%t_rest + (wall() - tw0)
          if (talk) then
             if (dft) then
                print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3)", &
-                  it, etot, etot - eold, drms, errmax, tf_it, tx_it
+                  it, etot, etot - eold, drms, errmax, tmr%tf_it, tmr%tx_it
             else
                print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3)", &
-                  it, etot, etot - eold, drms, errmax, tf_it
+                  it, etot, etot - eold, drms, errmax, tmr%tf_it
             end if
          end if
          res%iterations = it
@@ -898,48 +602,34 @@ contains
       end do
 
       ! The density the energy was evaluated at, and the orbitals that made it.
-      !$acc update self(dold, res%cmo, res%eps)
+      !$acc update self(st%dold, res%cmo, res%eps)
       if (present(comm)) then
          if (comm%size() > 1) then
             call bcast_flat(comm, res%cmo, n2*nspin)
             call bcast_flat(comm, res%eps, nao*nspin)
          end if
       end if
-      !$acc exit data delete(ofrac)
-      !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2) &
-      !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
-      !$acc           delete(dref_c, gacc_c, ddif_c, vpcm_c, vpcm)
+      call st%release_device(ctx, res)
+      !$acc exit data delete(fstore, estore)
       if (opts%adiis) then
          !$acc exit data delete(fstore_a, dstore_a)
       end if
-      res%dmat = dold
+      res%dmat = st%dold
       res%energy = etot
       res%e_one = e1
       res%e_two = e2
       res%e_xc = exc
       res%nelec_grid = ngrid
       res%e_pcm = epcm
-      res%pcm_qtotal = pcm%q_total
+      res%pcm_qtotal = ctx%pcm%q_total
       if (.not. res%converged) res%message = "trc_scf: not converged"
       if (talk) then
          call report_timing()
          if (pcm_on) print "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)", "   pcm: E_diel = ", epcm, &
-            "  q_total = ", pcm%q_total, "  setup ", t_pcm_setup, " s, ", &
-            t_pcm/real(max(1, res%iterations), dp), " s per iteration"
+            "  q_total = ", ctx%pcm%q_total, "  setup ", ctx%t_pcm_setup, " s, ", &
+            tmr%t_pcm/real(max(1, res%iterations), dp), " s per iteration"
       end if
-      call pcm%release()
-      if (.not. present(la)) call lp%release()
-      call eri%release()
-      call pl%release()
-      if (dft) then
-         call xg%release()
-         call grid%destroy()
-         if (nlc) then
-            call xg_nlc%release()
-            call grid_nlc%destroy()
-         end if
-      end if
+      call ctx%release()
 
    contains
 
@@ -948,17 +638,18 @@ contains
          !! which its default INFO level shows: the phases, then setup and
          !! the ERI engine's build broken into their steps.
          character(len=160) :: line
-         write (line, "(a,7f10.3)") "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+         write (line, "(a,7f10.3)") "          ", ctx%t_setup, ctx%t_grid, tmr%t_fock, tmr%t_xc, &
+            tmr%tx_pts, tmr%tx_prs, tmr%t_rest
          call global_logger%performance( &
             "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis")
          call global_logger%performance(trim(line))
          call global_logger%performance( &
             "   setup (s)  pairs        1e   sph fold       eri    linalg    orthog")
-         write (line, "(a,6f10.3)") "          ", ts
+         write (line, "(a,6f10.3)") "          ", ctx%ts
          call global_logger%performance(trim(line))
          call global_logger%performance( &
             "   eri (s) hgp pairs   schwarz      bins  quartets    upload")
-         write (line, "(a,5f10.3)") "          ", eri%t_build
+         write (line, "(a,5f10.3)") "          ", ctx%eri%t_build
          call global_logger%performance(trim(line))
       end subroutine report_timing
 
@@ -979,29 +670,33 @@ contains
          real(dp), intent(out) :: dout(nao, nao)
          real(dp), allocatable :: fp(:, :), c(:, :), t(:, :), e(:), d(:, :)
          allocate (fp(nao, nao), c(nao, nao), t(nao, nao), e(nao), d(nao, nao))
-         !$acc data copyin(h, x) create(fp, c, t, e) copyout(d)
-         call orbitals_and_density(h, nocc_s, .false., t, fp, e, c, d)
+         !$acc data copyin(h, ctx%x) create(fp, c, t, e) copyout(d)
+         call orbitals_and_density(h, nocc_s, .false., t, fp, e, c, d, st%ofrac)
          !$acc end data
          dout = d
       end subroutine guess_from
 
-      subroutine orbitals_and_density(f, nocc_s, frac, t, fp, eps_s, cmo_s, d_s)
+      subroutine orbitals_and_density(f, nocc_s, frac, t, fp, eps_s, cmo_s, d_s, ofrac)
          !! One spin's step from a Fock-like matrix to its density: F' = X^T F X,
          !! its eigenvectors, C = X C', then D = occ C(:,1:nocc) C(:,1:nocc)^T
          !! (or, with `frac`, the fractional occupations of the free-atom runs).
          !! Everything is on the device already (the loop's resident arrays, or
          !! the data region of `guess_from`); `t` and `fp` are the caller's
-         !! n x n workspaces, which hold nothing on return that matters.
+         !! n x n workspaces, which hold nothing on return that matters. `ofrac`
+         !! is an explicit argument (not host-associated from `st%ofrac`
+         !! directly) so the `frac` branch's `do concurrent` below never names
+         !! a derived-type component.
          real(dp), intent(in) :: f(nao, nao)
          integer, intent(in) :: nocc_s
          logical, intent(in) :: frac
          real(dp), intent(inout) :: t(nao, nao), fp(nao, nao)
          real(dp), intent(inout) :: eps_s(nao), cmo_s(nao, nao), d_s(nao, nao)
+         real(dp), intent(inout) :: ofrac(nao)
          integer :: i, j
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, f, nao, x, nao, 0.0_dp, t, nao)
-         call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, f, nao, ctx%x, nao, 0.0_dp, t, nao)
+         call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, ctx%x, nao, t, nao, 0.0_dp, fp, nao)
          call lp%syev(nao, fp, nao, eps_s)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, cmo_s, nao)
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, ctx%x, nao, fp, nao, 0.0_dp, cmo_s, nao)
          if (frac) then
             ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
             !$acc update self(eps_s)
@@ -1243,83 +938,216 @@ contains
 
    end subroutine trc_scf_run
 
-   ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
-   subroutine sum_flat(comm, g, n)
-      type(comm_t), intent(in) :: comm
-      integer, intent(in) :: n
-      real(dp), intent(inout) :: g(n)
-      call allreduce(comm, g, op=MPI_SUM)
-      call bcast(comm, g, n, 0)
-   end subroutine sum_flat
-
-   ! Broadcast rank 0's copy of a contiguous array of any rank.
-   subroutine bcast_flat(comm, g, n)
-      type(comm_t), intent(in) :: comm
-      integer, intent(in) :: n
-      real(dp), intent(inout) :: g(n)
-      call bcast(comm, g, n, 0)
-   end subroutine bcast_flat
-
-   real(dp) function nuclear_repulsion(b) result(e)
+   !
+   ! The two-electron build, resident and entirely in Cartesian space:
+   ! g_rks (nspin = 1, a full build), g_rks_incremental (nspin = 1, from the
+   ! density DIFFERENCE, see trc_scf_run's own header) and g_uks (nspin = 2),
+   ! dispatched on `nspin`/`incr_now` rather than three separately-named
+   ! entry points, since the caller already has exactly one of them to ask
+   ! for. Every array here is an explicit-shape dummy -- `nu_c`/`nlr_c`/
+   ! `nin_c` carry the TRUE size of `dtot_c`/`jmat_c`, `klr_c`, and
+   ! `dref_c`/`gacc_c`/`ddif_c` respectively (1 when this run has no use for
+   ! them) -- so this compiles correctly once the caller's arrays are
+   ! `trc_scf_state` components instead of plain locals: a `do concurrent`
+   ! body here never names `st%anything`, only its own dummies.
+   !
+   subroutine build_g(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
+                      exx, exx_lr, omega, incr_scale_run, &
+                      d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c)
       type(trc_basis_t), intent(in) :: b
-      integer :: a, c
-      e = 0.0_dp
-      do a = 1, b%natm
-         do c = a + 1, b%natm
-            e = e + b%at_z(a)*b%at_z(c)/norm2(b%at_r(:, a) - b%at_r(:, c))
-         end do
-      end do
-   end function nuclear_repulsion
+      type(trc_eri_t), intent(inout) :: eri
+      integer, intent(in) :: nao_c, nspin, nu_c, nlr_c, nin_c
+      logical, intent(in) :: incr_now, incr_on
+      real(dp), intent(in) :: exx, exx_lr, omega, incr_scale_run
+      real(dp), intent(in) :: d_c(nao_c, nao_c, nspin)
+      real(dp), intent(inout) :: gmat_c(nao_c, nao_c, nspin)
+      real(dp), intent(inout) :: dtot_c(nu_c, nu_c), jmat_c(nu_c, nu_c)
+      real(dp), intent(inout) :: w1_c(nao_c, nao_c), klr_c(nlr_c, nlr_c)
+      real(dp), intent(inout) :: gacc_c(nin_c, nin_c), dref_c(nin_c, nin_c), ddif_c(nin_c, nin_c)
+      integer :: i, j, s
 
-   ! X = S^(-1/2), symmetric orthogonalisation, or, once `lindep_thresh` is positive
-   ! and some S eigenvalue falls below it, CANONICAL orthogonalisation: those
-   ! columns of U are zeroed rather than divided by sqrt(sqrt(w)), which is what
-   ! makes symmetric orthogonalisation diverge on a near-null mode. A zeroed column
-   ! decouples that mode from X^T F X. Once per geometry, on the host side.
-   subroutine sym_orthog(la, n, s, x, lindep_thresh, ndropped)
-      type(trc_linalg_t), intent(inout) :: la
-      integer, intent(in) :: n
-      real(dp), intent(in) :: s(n, n)
-      real(dp), intent(out) :: x(n, n)
-      real(dp), intent(in), optional :: lindep_thresh
-      integer, intent(out), optional :: ndropped
-      real(dp), allocatable :: u(:, :), w(:)
-      real(dp) :: thr
-      integer :: i, k, ndrop
-      allocate (u(n, n), w(n))
-      u = s
-      thr = 0.0_dp
-      if (present(lindep_thresh)) thr = lindep_thresh
-      !$acc data copy(u) create(w) copyout(x)
-      call la%syev(n, u, n, w)
-      !$acc update self(w)
-      ! w is ascending (LAPACK/cuSOLVER convention), so the near-null modes
-      ! -- the ones canonical orthogonalisation drops -- are the leading
-      ! entries, the same ones the old unconditional check read as w(1).
-      ndrop = 0
-      if (thr > 0.0_dp) then
-         do k = 1, n
-            if (w(k) < thr) ndrop = ndrop + 1
-         end do
-      else if (w(1) <= 0.0_dp) then
-         error stop "trc_scf: the overlap is not positive definite"
-      end if
-      if (present(ndropped)) ndropped = ndrop
-      ! Columns scaled by w^-1/4 on the device, then X = U U^T; the first
-      ! `ndrop` columns -- the near-null modes -- are zeroed instead, so
-      ! they carry no weight into X^T F X and never has to divide by a
-      ! near-zero w.
-      !$acc update device(w)
-      do concurrent(i=1:n, k=1:n)
-         if (k <= ndrop) then
-            u(i, k) = 0.0_dp
+      if (nspin == 1) then
+         if (incr_now) then
+            do concurrent(i=1:nao_c, j=1:nao_c)
+               ddif_c(i, j) = d_c(i, j, 1) - dref_c(i, j)
+            end do
+            !
+            ! A fixed, tighter threshold on the increment, not one tracking ddif.
+            !
+            ! The Schwarz/density screen drops a quartet whose bound qq*dd is below
+            ! an absolute threshold: fine for a full build, where dd is O(1). On
+            ! ddif, quartets sit at the edge of the test, and which ones changes
+            ! each iteration because ddif is a difference of iterates with a
+            ! changing shape. The dropped sets differ and the errors do not average
+            ! down as the full build's (always the same negligible quartets) do. On
+            ! w172/6-31G (450 atoms, 1950 AOs) RMS(D) reaches 1e-10 while the
+            ! energy bounces by 1e-4 to 1e-6 Eh per iteration.
+            !
+            ! Scaling `thresh` by ||ddif||/||dref|| is backwards: it loosens as
+            ! ddif shrinks and loses the speed (25.6 s against 24.4 s baseline).
+            ! A fixed tighter factor, `incr_thresh_scale` (default 1e-4), keeps
+            ! the error floor low enough that |dE| clears 1e-8 at every reset
+            ! through iteration 20, while each increment stays a few times cheaper
+            ! than a full build.
+            !
+            block
+               real(dp) :: thresh0
+               thresh0 = eri%thresh
+               eri%thresh = thresh0*incr_scale_run
+               call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
+               if (exx_lr /= 0.0_dp) then
+                  call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
+                  end do
+               end if
+               eri%thresh = thresh0
+            end block
+            do concurrent(i=1:nao_c, j=1:nao_c)
+               gacc_c(i, j) = gacc_c(i, j) + gmat_c(i, j, 1)
+               gmat_c(i, j, 1) = gacc_c(i, j)
+               dref_c(i, j) = d_c(i, j, 1)
+            end do
          else
-            u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
+            call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
+            if (exx_lr /= 0.0_dp) then
+               call eri%fock_resident(b, d_c(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
+               end do
+            end if
+            ! The reference for the next increment, kept only when there
+            ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
+            if (incr_on) then
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  gacc_c(i, j) = gmat_c(i, j, 1)
+                  dref_c(i, j) = d_c(i, j, 1)
+               end do
+            end if
+         end if
+      else
+         do concurrent(i=1:nao_c, j=1:nao_c)
+            dtot_c(i, j) = d_c(i, j, 1) + d_c(i, j, 2)
+         end do
+         call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
+         do s = 1, 2
+            if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  w1_c(i, j) = 2.0_dp*d_c(i, j, s)
+               end do
+               call eri%fock_resident(b, w1_c, gmat_c(:, :, s), j_scale=0.0_dp, k_scale=exx)
+               if (exx_lr /= 0.0_dp) then
+                  call eri%fock_resident(b, w1_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                  do concurrent(i=1:nao_c, j=1:nao_c)
+                     gmat_c(i, j, s) = gmat_c(i, j, s) + klr_c(i, j)
+                  end do
+               end if
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  gmat_c(i, j, s) = gmat_c(i, j, s) + jmat_c(i, j)
+               end do
+            else
+               do concurrent(i=1:nao_c, j=1:nao_c)
+                  gmat_c(i, j, s) = jmat_c(i, j)
+               end do
+            end if
+         end do
+      end if
+   end subroutine build_g
+
+   subroutine assemble_fock(nao, nxc, npcm, nspin, dft, pcm_on, hcore, gmat, vxc, vpcm, fock)
+      !! F = H + G (+ V_xc, + the continuum's operator), per spin. `vxc` is
+      !! 1 x 1 (unused) when `.not. dft`, `vpcm` 1 x 1 when `.not. pcm_on`;
+      !! `nxc`/`npcm` are their true sizes, so the explicit-shape dummies
+      !! below match whichever the caller actually allocated.
+      integer, intent(in) :: nao, nxc, npcm, nspin
+      logical, intent(in) :: dft, pcm_on
+      real(dp), intent(in) :: hcore(nao, nao)
+      real(dp), intent(in) :: gmat(nao, nao, nspin), vxc(nxc, nxc, nspin)
+      real(dp), intent(in) :: vpcm(npcm, npcm)
+      real(dp), intent(inout) :: fock(nao, nao, nspin)
+      integer :: i, j, s
+      do s = 1, nspin
+         if (dft) then
+            do concurrent(i=1:nao, j=1:nao)
+               fock(i, j, s) = hcore(i, j) + gmat(i, j, s) + vxc(i, j, s)
+            end do
+         else
+            do concurrent(i=1:nao, j=1:nao)
+               fock(i, j, s) = hcore(i, j) + gmat(i, j, s)
+            end do
+         end if
+         if (pcm_on) then
+            do concurrent(i=1:nao, j=1:nao)
+               fock(i, j, s) = fock(i, j, s) + vpcm(i, j)
+            end do
          end if
       end do
-      call la%gemm("N", "T", n, n, n, 1.0_dp, u, n, u, n, 0.0_dp, x, n)
-      !$acc end data
-   end subroutine sym_orthog
+   end subroutine assemble_fock
+
+   subroutine diis_store(nao, nspin, k, fock, companion, fstore, cstore)
+      !! One push, shared by CDIIS (companion = the commutator `errv`) and
+      !! ADIIS (companion = the density `dold`): slot k <- the current
+      !! iterate in both histories at once.
+      integer, intent(in) :: nao, nspin, k
+      real(dp), intent(in) :: fock(nao, nao, nspin), companion(nao, nao, nspin)
+      real(dp), intent(inout) :: fstore(nao, nao, nspin, *), cstore(nao, nao, nspin, *)
+      integer :: i, j, s
+      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+         fstore(i, j, s, k) = fock(i, j, s)
+         cstore(i, j, s, k) = companion(i, j, s)
+      end do
+   end subroutine diis_store
+
+   subroutine diis_combine(nao, nspin, m, coeff, fstore, fock)
+      !! fock := sum_k coeff(k) * fstore(:,:,:,k), the extrapolated/combined
+      !! step both CDIIS (coeff = the solved weights) and ADIIS (coeff = the
+      !! simplex coefficients) take once they have more than one history slot.
+      integer, intent(in) :: nao, nspin, m
+      real(dp), intent(in) :: coeff(m)
+      real(dp), intent(in) :: fstore(nao, nao, nspin, *)
+      real(dp), intent(inout) :: fock(nao, nao, nspin)
+      integer :: i, j, s, k
+      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+         fock(i, j, s) = 0.0_dp
+      end do
+      do k = 1, m
+         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+            fock(i, j, s) = fock(i, j, s) + coeff(k)*fstore(i, j, s, k)
+         end do
+      end do
+   end subroutine diis_combine
+
+   subroutine level_shift(lp, nao, nspin, mu, occ, smat, dmat, w1, w2, fock)
+      !! F += mu (S - S D S / occ) on the virtual space while DIIS is off,
+      !! per spin: see trc_scf_options_t%level_shift's own comment.
+      type(trc_linalg_t), intent(inout) :: lp
+      integer, intent(in) :: nao, nspin
+      real(dp), intent(in) :: mu, occ
+      real(dp), intent(in) :: smat(nao, nao), dmat(nao, nao, nspin)
+      real(dp), intent(inout) :: w1(nao, nao), w2(nao, nao)
+      real(dp), intent(inout) :: fock(nao, nao, nspin)
+      integer :: i, j, s
+      do s = 1, nspin
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, dmat(:, :, s), nao, 0.0_dp, w1, nao)
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+         do concurrent(i=1:nao, j=1:nao)
+            fock(i, j, s) = fock(i, j, s) + mu*(smat(i, j) - w2(i, j)/occ)
+         end do
+      end do
+   end subroutine level_shift
+
+   subroutine damp(nao, nspin, alpha, dold, dmat)
+      !! The damped step while DIIS/A-DIIS are off: dmat := alpha*dmat +
+      !! (1 - alpha)*dold, the weight `alpha` given to the new density.
+      integer, intent(in) :: nao, nspin
+      real(dp), intent(in) :: alpha
+      real(dp), intent(in) :: dold(nao, nao, nspin)
+      real(dp), intent(inout) :: dmat(nao, nao, nspin)
+      integer :: i, j, s
+      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+         dmat(i, j, s) = alpha*dmat(i, j, s) + (1.0_dp - alpha)*dold(i, j, s)
+      end do
+   end subroutine damp
 
    !
    ! The DIIS system B c = (0, ..., 0, -1), pivoted elimination on the host,
