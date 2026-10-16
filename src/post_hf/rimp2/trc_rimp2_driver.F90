@@ -113,7 +113,7 @@ contains
       type(trc_basis_t) :: blk
       integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks, nji
       real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), x(:, :), tens(:, :, :), tmp(:, :)
-      real(dp), allocatable :: ki(:, :), part(:), eo(:), ev(:)
+      real(dp), allocatable :: ki(:, :), kt(:, :), part(:), eo(:), ev(:)
       real(dp) :: e_os, e_ss, es(2)
       real(dp) :: t_step(NSTEP), tc
       type(flop_recorder_type) :: fl(NSTEP)
@@ -232,10 +232,10 @@ contains
       tw1 = tick(lp)
 
       ! --- 5. the pair energies, one occupied i at a time ------------------
-      allocate (ki(nv, nov), part(2*nov), eo(no), ev(nv))
+      allocate (ki(nv, nov), kt(nov, nv), part(2*nov), eo(no), ev(nv))
       eo = eps(nfz + 1:nocc)
       ev = eps(nocc + 1:nao)
-      !$acc enter data create(ki, part) copyin(eo, ev)
+      !$acc enter data create(ki, kt, part) copyin(eo, ev)
       e_os = 0.0_dp; e_ss = 0.0_dp
       ! Round-robin over i still balances the ranks: i's share shrinks with
       ! i, and each rank takes every nranks-th one from the top.
@@ -249,14 +249,16 @@ contains
          call step_off(lp, ST_KGEMM, tc, t_step)
          call fl(ST_KGEMM)%add(2*nv8*int(nji, int64)*naux8)
          call step_on(lp, ST_PAIR, tc)
-         call pair_energy(i, no, nv, nji, eo, ev, ki, part)
+         ! K_i^T, so the kernel reads (ia|jb) and (ib|ja) both coalesced
+         call lp%transpose(nv, nji, ki, nv, kt, nov)
+         call pair_energy(i, no, nv, nov, nji, eo, ev, ki, kt, part)
          !$acc update self(part(1:2*nji))
          call step_off(lp, ST_PAIR, tc, t_step)
          call fl(ST_PAIR)%add(10*nv8*int(nji, int64))
          e_os = e_os + sum(part(1:2*nji:2))
          e_ss = e_ss + sum(part(2:2*nji:2))
       end do
-      !$acc exit data delete(ki, part, eo, ev, x, tmp, cocc, cvir, jm)
+      !$acc exit data delete(ki, kt, part, eo, ev, x, tmp, cocc, cvir, jm)
       if (nranks > 1) then
          es = [e_os, e_ss]
          call allreduce(comm, es, op=MPI_SUM)
@@ -353,43 +355,49 @@ contains
    end function ncart
 
    !
-   ! For occupied i and the pairs j >= i: part(2 jb - 1) = w sum_a (ia|jb)^2 / D,
-   ! part(2 jb) = w sum_a [(ia|jb)^2 - (ia|jb)(ib|ja)] / D, with jb counting
-   ! (j, b) from j = i and w = 2 for j > i, 1 for j = i -- the j < i pairs
-   ! are the same numbers again. One thread per (j, b), a summed inside, so
-   ! no reduction crosses threads and the host adds 2 nji numbers. Diagonal
-   ! terms are in the sum: (ia|ib)^2 - (ia|ib)(ib|ia) = 0 for the same-spin
-   ! part, as it must.
+   ! For occupied i and the pairs j >= i, one thread per (j, a), with a
+   ! fastest and b summed inside: part(2 ja - 1) = w sum_b (ia|jb)^2 / D and
+   ! part(2 ja) = w sum_b [(ia|jb)^2 - (ia|jb)(ib|ja)] / D, ja counting
+   ! (j, a) from j = i, w = 2 for j > i and 1 for j = i -- the j < i pairs
+   ! are the same numbers again. No reduction crosses threads; the host adds
+   ! 2 nji numbers. Diagonal terms are in the sum: (ia|ia)^2 - (ia|ia)^2 = 0
+   ! for the same-spin part, as it must.
    !
-   subroutine pair_energy(i, no, nv, nji, eo, ev, ki, part)
-      integer, intent(in) :: i, no, nv, nji
-      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji)
+   ! (ia|jb) is K_i(a, jb) and (ib|ja) is K_i(b, ja) = K_i^T(ja, b): with a
+   ! fastest across threads, both are unit-stride reads. From K_i alone one
+   ! of the two is always strided by nv across a warp, which held this
+   ! kernel to a fifth of the device's bandwidth.
+   !
+   subroutine pair_energy(i, no, nv, ldt, nji, eo, ev, ki, kt, part)
+      integer, intent(in) :: i, no, nv, ldt, nji
+      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji), kt(ldt, nv)
       real(dp), intent(out) :: part(*)
-      integer :: jb
-      do concurrent(jb=1:nji)
-         call pair_energy_body(i, jb, no, nv, nji, eo, ev, ki, part(2*jb - 1), part(2*jb))
+      integer :: ja
+      do concurrent(ja=1:nji)
+         call pair_energy_body(i, ja, no, nv, ldt, nji, eo, ev, ki, kt, part(2*ja - 1), part(2*ja))
       end do
    end subroutine pair_energy
 
-   pure subroutine pair_energy_body(i, jb, no, nv, nji, eo, ev, ki, pos, pss)
+   pure subroutine pair_energy_body(i, ja, no, nv, ldt, nji, eo, ev, ki, kt, pos, pss)
       !$acc routine seq
-      integer, intent(in) :: i, jb, no, nv, nji
-      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji)
+      integer, intent(in) :: i, ja, no, nv, ldt, nji
+      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji), kt(ldt, nv)
       real(dp), intent(out) :: pos, pss
-      integer :: jj, j, bb, a
-      real(dp) :: t, u, d, eij, w
-      jj = (jb - 1)/nv               ! j - i
+      integer :: jj, j, a, b
+      real(dp) :: t, u, r, eija, w
+      jj = (ja - 1)/nv               ! j - i
       j = i + jj
-      bb = jb - jj*nv
-      eij = eo(i) + eo(j)
+      a = ja - jj*nv
+      eija = eo(i) + eo(j) - ev(a)
       w = merge(1.0_dp, 2.0_dp, jj == 0)
-      pos = 0.0_dp; pss = 0.0_dp
-      do a = 1, nv
-         t = ki(a, jb)                       ! (ia|jb)
-         u = ki(bb, jj*nv + a)               ! (ib|ja)
-         d = eij - ev(a) - ev(bb)
-         pos = pos + t*t/d
-         pss = pss + (t*t - t*u)/d
+      pos = 0.0_dp
+      pss = 0.0_dp
+      do b = 1, nv
+         t = ki(a, jj*nv + b)                ! (ia|jb)
+         u = kt(ja, b)                       ! (ib|ja)
+         r = 1.0_dp/(eija - ev(b))
+         pos = pos + t*t*r
+         pss = pss + (t*t - t*u)*r
       end do
       pos = w*pos
       pss = w*pss
