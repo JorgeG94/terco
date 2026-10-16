@@ -699,11 +699,11 @@ contains
          res%dmat = dguess
       else if (present(hguess)) then
          do s = 1, nspin
-            call guess_from(hguess, nocc(s))
+            call guess_from(hguess, nocc(s), res%dmat(:, :, s))
          end do
       else if (opts%guess == "core") then
          do s = 1, nspin
-            call guess_from(hcore, nocc(s))
+            call guess_from(hcore, nocc(s), res%dmat(:, :, s))
          end do
       else
          ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
@@ -714,7 +714,7 @@ contains
             w1(j, j) = hcore(j, j)
          end do
          do s = 1, nspin
-            call guess_from(w1, nocc(s))
+            call guess_from(w1, nocc(s), res%dmat(:, :, s))
          end do
       end if
       res%cmo = 0.0_dp
@@ -776,13 +776,7 @@ contains
          ! header on why that keeps the Cartesian path byte-for-byte
          ! unchanged rather than merely numerically equivalent.
          do s = 1, nspin
-            if (sph) then
-               call sph_sph_to_cart(b, res%dmat(:, :, s), d_c(:, :, s))
-            else
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  d_c(i, j, s) = res%dmat(i, j, s)
-               end do
-            end if
+            call to_cart(res%dmat(:, :, s), d_c(:, :, s))
          end do
          ! --- two-electron part, resident, entirely in Cartesian space -------
          if (nspin == 1) then
@@ -883,13 +877,7 @@ contains
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in.
          do s = 1, nspin
-            if (sph) then
-               call sph_cart_to_sph(b, gmat_c(:, :, s), gmat(:, :, s))
-            else
-               do concurrent(i=1:nao, j=1:nao)
-                  gmat(i, j, s) = gmat_c(i, j, s)
-               end do
-            end if
+            call to_sph(gmat_c(:, :, s), gmat(:, :, s))
          end do
          tw1 = wall()
          t_fock = t_fock + (tw1 - tw0)
@@ -917,13 +905,7 @@ contains
             tx_pts = tx_pts + tp1
             tx_prs = tx_prs + tq1
             do s = 1, nspin
-               if (sph) then
-                  call sph_cart_to_sph(b, vxc_c(:, :, s), vxc(:, :, s))
-               else
-                  do concurrent(i=1:nao, j=1:nao)
-                     vxc(i, j, s) = vxc_c(i, j, s)
-                  end do
-               end if
+               call to_sph(vxc_c(:, :, s), vxc(:, :, s))
             end do
          end if
          tw0 = wall()
@@ -938,13 +920,7 @@ contains
             else
                call pcm%operator(b, pl, dtot_c, vpcm_c, epcm, comm)
             end if
-            if (sph) then
-               call sph_cart_to_sph(b, vpcm_c, vpcm)
-            else
-               do concurrent(i=1:nao, j=1:nao)
-                  vpcm(i, j) = vpcm_c(i, j)
-               end do
-            end if
+            call to_sph(vpcm_c, vpcm)
             tw1 = wall()
             t_pcm = t_pcm + (tw1 - tw0)
             tw0 = tw1
@@ -1020,12 +996,7 @@ contains
                if (nadiis_used < opts%ndiis) then
                   nadiis_used = nadiis_used + 1
                else
-                  do k = 1, opts%ndiis - 1
-                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                        fstore_a(i, j, s, k) = fstore_a(i, j, s, k + 1)
-                        dstore_a(i, j, s, k) = dstore_a(i, j, s, k + 1)
-                     end do
-                  end do
+                  call shift_history(opts%ndiis, fstore_a, dstore_a)
                end if
                k = nadiis_used
                do concurrent(i=1:nao, j=1:nao, s=1:nspin)
@@ -1062,16 +1033,7 @@ contains
                if (ndiis_used < opts%ndiis) then
                   ndiis_used = ndiis_used + 1
                else
-                  ! Slot by slot, in order: slot k reads slot k+1, so the slot loop
-                  ! carries a dependence. As a `do concurrent` over k, a device slot
-                  ! was overwritten before being read and the commutator climbed for
-                  ! eight iterations on cholesterol; the host never saw it.
-                  do k = 1, opts%ndiis - 1
-                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                        fstore(i, j, s, k) = fstore(i, j, s, k + 1)
-                        estore(i, j, s, k) = estore(i, j, s, k + 1)
-                     end do
-                  end do
+                  call shift_history(opts%ndiis, fstore, estore)
                end if
                k = ndiis_used
                do concurrent(i=1:nao, j=1:nao, s=1:nspin)
@@ -1101,12 +1063,7 @@ contains
                   end do
                   call solve_diis(m, bmat(1:m, 1:m), rhs(1:m), ok)
                   if (ok .or. ndiis_used <= 2) exit
-                  do k = 1, ndiis_used - 1
-                     do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-                        fstore(i, j, s, k) = fstore(i, j, s, k + 1)
-                        estore(i, j, s, k) = estore(i, j, s, k + 1)
-                     end do
-                  end do
+                  call shift_history(ndiis_used, fstore, estore)
                   ndiis_used = ndiis_used - 1
                end do
                if (ok) then
@@ -1122,31 +1079,8 @@ contains
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
             do s = 1, nspin
-               call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, fock(:, :, s), nao, x, nao, 0.0_dp, w1, nao)
-               call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, w2, nao)
-               call lp%syev(nao, w2, nao, res%eps(:, s))
-               call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, x, nao, w2, nao, 0.0_dp, res%cmo(:, :, s), nao)
-               if (opts%frac_occ) then
-                  ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
-                  !$acc update self(res%eps(:, s))
-                  if (nspin == 1) then
-                     call frac_occupations(nao, res%eps(:, s), opts%nelec_frac, 2.0_dp, ofrac, nfrac)
-                  else
-                     call frac_occupations(nao, res%eps(:, s), real(nocc(s), dp), 1.0_dp, ofrac, nfrac)
-                  end if
-                  !$acc update device(ofrac)
-                  do concurrent(i=1:nao, j=1:nao)
-                     w1(i, j) = res%cmo(i, j, s)*sqrt(ofrac(j))
-                  end do
-                  call lp%gemm("N", "T", nao, nao, nfrac, 1.0_dp, w1, nao, w1, nao, 0.0_dp, res%dmat(:, :, s), nao)
-               else if (nocc(s) > 0) then
-                  call lp%gemm("N", "T", nao, nao, nocc(s), occ, res%cmo(:, :, s), nao, res%cmo(:, :, s), nao, &
-                               0.0_dp, res%dmat(:, :, s), nao)
-               else
-                  do concurrent(i=1:nao, j=1:nao)
-                     res%dmat(i, j, s) = 0.0_dp
-                  end do
-               end if
+               call orbitals_and_density(fock(:, :, s), nocc(s), opts%frac_occ, w1, w2, &
+                                         res%eps(:, s), res%cmo(:, :, s), res%dmat(:, :, s))
             end do
             if (.not. diis_on .and. .not. adiis_active) then
                do concurrent(i=1:nao, j=1:nao, s=1:nspin)
@@ -1275,27 +1209,107 @@ contains
          t = real(cc, dp)/real(rate, dp)
       end function wall
 
-      ! Guess for one spin from a Fock-like h, into res%dmat(:,:,s): the
-      ! eigenproblem and the products on the device, the result copied back
-      ! for the resident copy made below.
-      subroutine guess_from(h, nocc_s)
+      ! Guess for one spin from a Fock-like h, into `dout`: the eigenproblem
+      ! and the products on the device, the result copied back for the
+      ! resident copy made below. h and x are host arrays here, copied up for
+      ! the region; the loop runs the same sequence on resident ones.
+      subroutine guess_from(h, nocc_s, dout)
          real(dp), intent(in) :: h(nao, nao)
          integer, intent(in) :: nocc_s
+         real(dp), intent(out) :: dout(nao, nao)
          real(dp), allocatable :: fp(:, :), c(:, :), t(:, :), e(:), d(:, :)
          allocate (fp(nao, nao), c(nao, nao), t(nao, nao), e(nao), d(nao, nao))
          !$acc data copyin(h, x) create(fp, c, t, e) copyout(d)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, h, nao, x, nao, 0.0_dp, t, nao)
-         call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
-         call lp%syev(nao, fp, nao, e)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, c, nao)
-         if (nocc_s > 0) then
-            call lp%gemm("N", "T", nao, nao, nocc_s, occ, c, nao, c, nao, 0.0_dp, d, nao)
-         else
-            call zero_dev(nao, d)
-         end if
+         call orbitals_and_density(h, nocc_s, .false., t, fp, e, c, d)
          !$acc end data
-         res%dmat(:, :, s) = d
+         dout = d
       end subroutine guess_from
+
+      subroutine orbitals_and_density(f, nocc_s, frac, t, fp, eps_s, cmo_s, d_s)
+         !! One spin's step from a Fock-like matrix to its density: F' = X^T F X,
+         !! its eigenvectors, C = X C', then D = occ C(:,1:nocc) C(:,1:nocc)^T
+         !! (or, with `frac`, the fractional occupations of the free-atom runs).
+         !! Everything is on the device already (the loop's resident arrays, or
+         !! the data region of `guess_from`); `t` and `fp` are the caller's
+         !! n x n workspaces, which hold nothing on return that matters.
+         real(dp), intent(in) :: f(nao, nao)
+         integer, intent(in) :: nocc_s
+         logical, intent(in) :: frac
+         real(dp), intent(inout) :: t(nao, nao), fp(nao, nao)
+         real(dp), intent(inout) :: eps_s(nao), cmo_s(nao, nao), d_s(nao, nao)
+         integer :: i, j
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, f, nao, x, nao, 0.0_dp, t, nao)
+         call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
+         call lp%syev(nao, fp, nao, eps_s)
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, cmo_s, nao)
+         if (frac) then
+            ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
+            !$acc update self(eps_s)
+            if (nspin == 1) then
+               call frac_occupations(nao, eps_s, opts%nelec_frac, 2.0_dp, ofrac, nfrac)
+            else
+               call frac_occupations(nao, eps_s, real(nocc_s, dp), 1.0_dp, ofrac, nfrac)
+            end if
+            !$acc update device(ofrac)
+            do concurrent(i=1:nao, j=1:nao)
+               t(i, j) = cmo_s(i, j)*sqrt(ofrac(j))
+            end do
+            call lp%gemm("N", "T", nao, nao, nfrac, 1.0_dp, t, nao, t, nao, 0.0_dp, d_s, nao)
+         else if (nocc_s > 0) then
+            call lp%gemm("N", "T", nao, nao, nocc_s, occ, cmo_s, nao, cmo_s, nao, 0.0_dp, d_s, nao)
+         else
+            call zero_dev(nao, d_s)
+         end if
+      end subroutine orbitals_and_density
+
+      subroutine to_cart(a, a_c)
+         !! A matrix from the SCF's space to the Cartesian one the kernels run
+         !! in: T A T^T when the basis is spherical, a plain copy when it is not
+         !! (no transform call at all on the Cartesian path, see this module's
+         !! header). `a` and `a_c` are the same size then.
+         real(dp), intent(in) :: a(nao, nao)
+         real(dp), intent(out) :: a_c(nao_c, nao_c)
+         integer :: i, j
+         if (sph) then
+            call sph_sph_to_cart(b, a, a_c)
+         else
+            do concurrent(i=1:nao_c, j=1:nao_c)
+               a_c(i, j) = a(i, j)
+            end do
+         end if
+      end subroutine to_cart
+
+      subroutine to_sph(a_c, a)
+         !! The reverse fold: T^T A_cart T into the SCF's space, or a plain copy.
+         real(dp), intent(in) :: a_c(nao_c, nao_c)
+         real(dp), intent(out) :: a(nao, nao)
+         integer :: i, j
+         if (sph) then
+            call sph_cart_to_sph(b, a_c, a)
+         else
+            do concurrent(i=1:nao, j=1:nao)
+               a(i, j) = a_c(i, j)
+            end do
+         end if
+      end subroutine to_sph
+
+      subroutine shift_history(n, a, bb)
+         !! Slot k <- slot k+1 for k = 1..n-1 in two histories at once, which
+         !! drops the oldest entry and frees slot n.
+         integer, intent(in) :: n
+         real(dp), intent(inout) :: a(nao, nao, nspin, *), bb(nao, nao, nspin, *)
+         integer :: i, j, s, k
+         ! Slot by slot, in order: slot k reads slot k+1, so the slot loop
+         ! carries a dependence. As a `do concurrent` over k, a device slot
+         ! was overwritten before being read and the commutator climbed for
+         ! eight iterations on cholesterol; the host never saw it.
+         do k = 1, n - 1
+            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
+               a(i, j, s, k) = a(i, j, s, k + 1)
+               bb(i, j, s, k) = bb(i, j, s, k + 1)
+            end do
+         end do
+      end subroutine shift_history
 
       pure subroutine frac_occupations(n, eps, nelec, omax, o, nocc_out)
          !! Aufbau over the eigenvalues, `omax` per orbital (2 restricted, 1 per
