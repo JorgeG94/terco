@@ -8,6 +8,12 @@ project(
 set(project_name terco)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# GNUInstallDirs picks lib or lib64 from the pointer size, which CMake takes
+# from a language's ABI probe. NVHPC's Fortran probe (26.3, aarch64) leaves it
+# unset, so GNUInstallDirs warns and cannot choose. terco is 64-bit only.
+if(NOT CMAKE_SIZEOF_VOID_P)
+  set(CMAKE_SIZEOF_VOID_P 8)
+endif()
 include(GNUInstallDirs)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 # Named for the project, not `print_status`: PIC ships a module by that name
