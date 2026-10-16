@@ -1,46 +1,30 @@
 module trc_sad
    !! Guesses built from free-atom calculations: SAD, and SADQ for ions
    !!
-   !! Two entry points over the same machinery.
+   !! `trc_sad_build` is SAD, the superposition of atomic densities.
+   !! `trc_sadq_build` is SADQ: the same construction with the atoms CHARGED,
+   !! each atom's density coming from a free-atom SCF at its own fractional
+   !! electron count. SAD hands a cation the neutral atoms' density (as PySCF
+   !! does) and leaves the first iteration to absorb the difference, a long way
+   !! to come back from for a highly charged system. On a neutral molecule the
+   !! two agree.
    !!
-   !! `trc_sad_build` is SAD, the superposition of atomic densities, and is
-   !! described below.
-   !!
-   !! `trc_sadq_build` is SADQ, the same construction with the atoms CHARGED:
-   !! the molecule's charge is spread over its atoms and each one's density
-   !! comes from a free-atom SCF at its own fractional electron count. SAD
-   !! hands a cation the neutral atoms' density and lets the first iteration
-   !! absorb the difference, which for a highly charged system is a long way
-   !! to come back from. On a neutral molecule the two agree by construction.
-   !!
-   !! SAD's own description, which SADQ inherits except for the occupations:
-   !!
-   !! One Hartree-Fock run per element in that element's own shells --
-   !! UNRESTRICTED with integer, Hund's-rule occupations for a neutral
-   !! atom asking for its own Z (see `build_atomic`'s "WHICH ATOM TO RUN"
-   !! comment: spin-restricting oxygen costs 0.124 Ha and an extra SCF
-   !! iteration for water), restricted with fractional occupations for a
-   !! SADQ atom carrying a non-integer charge -- then SPHERICALLY AVERAGED
-   !! (`average_atom_density`, below) before it is placed on the diagonal
-   !! of the molecular density, in the molecule's function order. An open
-   !! Hund shell (O's 2p, say) is not itself spherical: its minority-spin
-   !! electron sits in whichever orientation the eigensolver's degenerate
-   !! subspace happened to return, which is not reproducible across GPUs,
-   !! compilers or cuSOLVER versions, only the atom's total ENERGY is.
-   !! Averaging removes that orientation after the fact, keeping the lower
-   !! Hund energy and the atom's electron count exactly, so the guess
-   !! (and the SCF path it starts) is deterministic again. Cached per
-   !! element, so cholesterol runs four atomic SCFs, not seventy-four.
+   !! One Hartree-Fock run per element in that element's own shells:
+   !! unrestricted with integer Hund's-rule occupations for a neutral atom (see
+   !! `build_atomic`'s "WHICH ATOM TO RUN"), restricted with fractional
+   !! occupations for a SADQ atom with a non-integer charge. The result is
+   !! SPHERICALLY AVERAGED (`average_atom_density`) and placed on the diagonal
+   !! of the molecular density in the molecule's function order. An open Hund
+   !! shell's orientation is whatever the eigensolver's degenerate subspace
+   !! returned, which is not reproducible across GPUs, compilers or cuSOLVER
+   !! versions (only the energy is); averaging removes it, keeping the Hund
+   !! energy and electron count, so the guess is deterministic. Cached per
+   !! element: cholesterol runs four atomic SCFs, not seventy-four.
    !!
    !! The atomic basis is `subset` of the molecular one over the atom's shell
-   !! range, with the atom list cut down to that one nucleus; `subset` copies
-   !! the folded coefficients as they are, which is the point of using it.
-   !! The shells of one atom are assumed contiguous, which every reader here
-   !! produces; a basis that interleaves atoms is refused.
-   !!
-   !! Charged molecules get the neutral atoms' density unscaled, as PySCF
-   !! does; the first SCF iteration absorbs the difference. That sentence is
-   !! why SADQ exists -- it is the one thing SAD will not do for an ion.
+   !! range, with the atom list cut to that nucleus; `subset` copies the folded
+   !! coefficients as they are. An atom's shells must be contiguous (every
+   !! reader here guarantees it); an interleaved basis is refused.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -67,19 +51,14 @@ contains
    subroutine trc_sadq_build(b, nelec, dguess, error, verbose, qatom, la)
       !! SADQ: SAD with the atoms carrying the molecule's charge.
       !!
-      !! `nelec` is the MOLECULE's electron count, so the charge it has to
-      !! place is sum(Z) - nelec. Without `qatom` that charge goes onto the
-      !! atoms in proportion to Z, which is the only parameter-free split
-      !! there is: it gets the total electron count and a monotone ordering
-      !! right and claims nothing about chemistry. It is not a charge model
-      !! -- a cation's electron does not leave uniformly, it leaves the
-      !! least electronegative atom -- so `qatom` is there for a caller who
-      !! knows better, and a caller who does should use it.
-      !!
-      !! On a neutral molecule this is SAD, up to the occupations: the
-      !! atomic SCF runs restricted with fractional occupations rather than
-      !! unrestricted with Hund's rule, because a fractional electron count
-      !! has no integer per-spin split to give it.
+      !! `nelec` is the MOLECULE's electron count, so the charge to place is
+      !! sum(Z) - nelec. Without `qatom` it is spread in proportion to Z, the
+      !! only parameter-free split: it gets the total count and a monotone
+      !! ordering right but is not a charge model (a cation's electron leaves the
+      !! least electronegative atom), so a caller who knows better should pass
+      !! `qatom`. On a neutral molecule this is SAD up to occupations: a
+      !! fractional count has no integer per-spin split, so the atomic SCF is
+      !! restricted with fractional occupations.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nelec
       real(dp), allocatable, intent(out) :: dguess(:, :)
@@ -120,11 +99,9 @@ contains
    end subroutine trc_sadq_build
 
    !
-   ! SAD and SADQ differ only in what each free atom is asked to hold, so they
-   ! are one routine. `nel` absent is SAD: the neutral atom, unrestricted,
-   ! Hund's rule, spread over the degenerate frontier. `nel` present is SADQ:
-   ! that many electrons on that atom, restricted with fractional
-   ! occupations, which is what a non-integer count needs.
+   ! SAD and SADQ differ only in what each free atom holds. `nel` absent is SAD:
+   ! the neutral atom, unrestricted, Hund's rule. `nel` present is SADQ: that
+   ! many electrons, restricted with fractional occupations.
    !
    subroutine build_atomic(b, dguess, error, verbose, nel, la)
       type(trc_basis_t), intent(in) :: b
@@ -152,14 +129,10 @@ contains
       talk = .false.
       if (present(verbose)) talk = verbose
       sadq = present(nel)
-      ! `dguess` is in whatever AO space `b` itself exposes to the SCF
-      ! (trc_api.F90's `spherical`/`nao_sph`): a spherical molecular basis
-      ! gets a spherical SAD guess, built from spherical ATOMIC SCFs below,
-      ! because `b%subset` (and so every `ab` built from it) carries the
-      ! same `spherical` flag -- `trc_scf_run(ab, ...)` on a spherical atom
-      ! already returns `res%dmat` at `ab%nao_sph`, not at the atom's
-      ! CARTESIAN function count, so the block this routine places into
-      ! `dguess` has to be addressed and sized to match.
+      ! `dguess` is in whatever AO space `b` exposes to the SCF: a spherical
+      ! molecular basis gets spherical atomic SCFs (`b%subset` carries the
+      ! `spherical` flag), so each block is sized at `ab%nao_sph`, not the
+      ! Cartesian count.
       sph = b%spherical
       allocate (dguess(merge(b%nao_sph, b%nao, sph), merge(b%nao_sph, b%nao, sph)))
       dguess = 0.0_dp
@@ -208,18 +181,11 @@ contains
             ab%at_r(:, 1) = b%at_r(:, ia)
             call ab%to_device()
             opts%nelec_frac = want
-            !
-            ! WHICH ATOM TO RUN, DECIDED PER ATOM.
-            !
-            ! An atom asked for its own Z has an integer count and an
-            ! integer per-spin split, so it gets the unrestricted Hund atom
-            ! -- which is a BETTER atom: spin-restricting oxygen costs it
-            ! 0.124 Ha, and starting water from the restricted atoms cost an
-            ! extra SCF iteration. Only a fractional count needs the
-            ! restricted fractional path, and it is the only one that has
-            ! it. So SADQ on a neutral molecule is SAD exactly, rather than
-            ! approximately, and differs only where it has something to say.
-            !
+            ! WHICH ATOM TO RUN, PER ATOM: an atom asked for its own Z has an
+            ! integer per-spin split, so it gets the unrestricted Hund atom, a
+            ! better atom (spin-restricting oxygen costs 0.124 Ha and an extra SCF
+            ! iteration for water). Only a fractional count needs the restricted
+            ! fractional path, so SADQ on a neutral molecule is SAD exactly.
             hund = abs(want - real(z, dp)) < 1.0e-12_dp
             opts%unrestricted = hund
             if (hund) then
@@ -255,11 +221,9 @@ contains
             else
                cache(ncached)%d = res%dmat(:, :, 1)
             end if
-            ! SPHERICALLY AVERAGE. Run unconditionally -- a closed-shell or
-            ! SADQ-fractional atom is already (to SCF convergence) exactly
-            ! what this produces, so averaging it is a no-op; a Hund atom
-            ! is not, and this is the one place that gets fixed. See
-            ! `average_atom_density`'s own header for the derivation.
+            ! SPHERICALLY AVERAGE, unconditionally: a no-op for closed-shell or
+            ! SADQ-fractional atoms, and the fix for Hund atoms (see
+            ! `average_atom_density`).
             call average_atom_density(ab, sph, cache(ncached)%d)
             call ab%release()
             k = ncached
@@ -303,70 +267,32 @@ contains
    end subroutine trc_atom_ranges
 
    !
-   ! SPHERICAL AVERAGING. `d`, the atom's own total (alpha+beta) density in
-   ! `ab`'s AO space, is replaced in place by its rotational average over
-   ! every shell pair: zero for an (l_i, l_j) pair with l_i /= l_j, and
-   ! (trace/(2l+1)) times the identity for one with l_i == l_j.
+   ! SPHERICAL AVERAGING. `d`, the atom's total (alpha+beta) density in `ab`'s
+   ! AO space, is replaced in place by its rotational average over every shell
+   ! pair: zero where l_i /= l_j, and (trace/(2l+1)) times the identity where
+   ! l_i == l_j.
    !
-   ! WHY THIS IS THE RIGHT AVERAGE. Two shells of an isolated atom with the
-   ! same l are two copies of the same SO(3) irreducible representation (the
-   ! angular integral of two real solid harmonics factors out of their
-   ! radial overlap and is a Kronecker delta in m, REGARDLESS of either
-   ! shell's radial part), so the atom's own overlap S restricted to that
-   ! shell pair is already exactly a scalar times the identity -- Schur's
-   ! lemma, the only SO(3)-invariant map between two copies of one
-   ! irreducible representation. Two shells with l_i /= l_j are
-   ! INEQUIVALENT irreps and admit no invariant map at all: that block of S
-   ! is exactly zero. A rotational average of ANY operator commutes with
-   ! every rotation by construction, so the averaged density must look like
-   ! S block by block: a multiple of the identity where l_i == l_j, zero
-   ! elsewhere -- and the multiple that preserves the block's own trace
-   ! (hence preserves Tr(D_block S_block) = (scalar)*Tr(D_block), hence the
-   ! atom's electron count Tr(D S) exactly, summed over every block) is
-   ! trace/(2l+1). A different-l block already contributes zero to Tr(D S)
-   ! before this runs (S is zero there), so zeroing it costs nothing either.
+   ! Why: by Schur's lemma the atom's overlap S is a scalar times the identity
+   ! on an l_i == l_j shell pair and exactly zero for l_i /= l_j. A rotational
+   ! average commutes with every rotation, so the averaged density must look
+   ! like S block by block, and the multiple that preserves the block trace
+   ! (hence Tr(D S), the electron count) is trace/(2l+1). Zeroing l_i /= l_j
+   ! blocks costs nothing, since S is zero there.
    !
-   ! CARTESIAN ATOMS, AND WHY THIS ADDS A DELTA RATHER THAN REPLACING `d`.
-   ! A Cartesian shell's six d (or ten f, ...) components are not the
-   ! orthonormal-per-m basis the identity above needs: six Cartesian d =
-   ! five spherical d + an s-type CONTAMINANT (x^2+y^2+z^2), ten Cartesian
-   ! f = seven spherical f + a p-type contaminant (r^2 x, r^2 y, r^2 z), and
-   ! so on -- see trc_sph.F90's own header. T = SPH_T (the block trc_sph.F90
-   ! applies to S/H/D/F) embeds only the PURE l component into the Cartesian
-   ! shell, so
-   ! T^T T is NOT the identity for l >= 2 (checked numerically against a
-   ! real shell's own Cartesian overlap: T^T S T = I holds -- T IS correctly
-   ! normalised against the atom's own metric -- but T^T T alone does not),
-   ! and replacing `d` outright by T * average(T^T d T) * T^T would both
-   ! DISCARD the contaminant's electron density (a real, non-zero
-   ! contribution once a Cartesian f shell polarises into an occupied p
-   ! orbital, say) and fail to reproduce `d` itself on the *clean* round
-   ! trip T^T d T when `d` already has no contaminant -- either way, Tr(d S)
-   ! would move.
-   !
-   ! The fix is to apply only the DELTA the averaging makes in the pure
-   ! representation, through T, and leave the rest of `d` (whatever is not
-   ! pure-spherical -- the contaminant, and anything T^T(.)T cannot see)
-   ! untouched:
+   ! Cartesian atoms: six Cartesian d = five spherical d + an s-type
+   ! contaminant (x^2+y^2+z^2), and likewise for f and up (see trc_sph.F90).
+   ! SPH_T embeds only the pure l component, so T^T T /= I for l >= 2, and
+   ! replacing `d` by T * average(T^T d T) * T^T would discard the contaminant's
+   ! density and move Tr(d S). Instead only the delta the averaging makes is
+   ! applied, through T:
    !
    !     d := d + T * (average(T^T d T) - T^T d T) * T^T
    !
-   ! This preserves Tr(d S) EXACTLY, for any T, any metric, any contaminant,
-   ! because it only needs that S_sph := T^T S T is exactly zero for an
-   ! (l_i, l_j) pair with l_i /= l_j and exactly s_ij*(identity) for one
-   ! with l_i == l_j -- true by the same angular-orthogonality argument as
-   ! above, applied to PURE embeddings only, regardless of either shell's
-   ! contaminant -- and that the delta itself has EXACTLY ZERO trace on
-   ! every (l_i, l_j) block with l_i == l_j (it is average(block) minus
-   ! block, and average(block) was built to have the same trace) and is
-   ! multiplied by a ZERO S_sph block whenever l_i /= l_j. Tr(delta * S_sph)
-   ! is a sum of terms that are each either `scalar * 0` or `0 * Tr(delta
-   ! block) = 0`, so it is exactly zero, and Tr((d + T delta T^T) S) =
-   ! Tr(d S) + Tr(delta * S_sph) = Tr(d S). `cart_to_sph_atom`/
-   ! `sph_to_cart_atom` are a plain host copy of trc_sph.F90's own T-block
-   ! contraction (no `do concurrent`, no device data assumed -- this runs
-   ! once per cached element on an atom-sized matrix, never inside a device
-   ! region).
+   ! This preserves Tr(d S) exactly for any T, because S_sph = T^T S T is zero
+   ! for l_i /= l_j and scalar*identity for l_i == l_j, while the delta has zero
+   ! trace on every l_i == l_j block. `cart_to_sph_atom`/`sph_to_cart_atom` are
+   ! plain host copies of trc_sph.F90's block contraction (no `do concurrent`;
+   ! this runs once per cached element on an atom-sized matrix).
    !
    subroutine average_atom_density(ab, sph, d)
       type(trc_basis_t), intent(in) :: ab
@@ -422,11 +348,8 @@ contains
    end subroutine average_sph_blocks
 
    subroutine cart_to_sph_atom(ab, dc, ds)
-      !! ds := T^T dc T, shell pair by shell pair -- the same contraction
-      !! trc_sph.F90's `cart_to_sph_driver` runs, as a plain sequential
-      !! host loop (no `do concurrent`, no device data assumed): see
-      !! `average_atom_density`'s header for why this is its own copy
-      !! rather than a call into that module.
+      !! ds := T^T dc T, shell pair by shell pair: a sequential host copy of
+      !! trc_sph.F90's contraction (no device data; see `average_atom_density`).
       type(trc_basis_t), intent(in) :: ab
       real(dp), intent(in)  :: dc(ab%nao, ab%nao)
       real(dp), intent(out) :: ds(ab%nao_sph, ab%nao_sph)
@@ -493,12 +416,9 @@ contains
 
    pure subroutine hund_split(z, na, nb)
       !! Alpha and beta counts of the free atom's ground state: closed shells
-      !! paired, the open subshell filled by Hund's rule, one spin first.
-      !! Subshell order and capacities are the aufbau ones -- the spread over
-      !! the degenerate frontier gives the right trace per block but not yet
-      !! a spherical atom (an open shell's degenerate occupation can land in
-      !! any orientation); `average_atom_density`, above, is what makes the
-      !! atom (and so the guess) spherical and orientation-independent.
+      !! paired, the open subshell filled by Hund's rule, one spin first, in aufbau
+      !! order. The degenerate spread is not yet spherical; `average_atom_density`
+      !! makes it so.
       integer, intent(in) :: z
       integer, intent(out) :: na, nb
       integer, parameter :: cap(19) = [2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 14, 10, 6]

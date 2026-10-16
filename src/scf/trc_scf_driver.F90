@@ -1,115 +1,73 @@
 !
-! The SCF: a basis and an electron count in, a converged energy and
-! density out, with every matrix resident on the device.
 !
-! terco's contract used to stop at the matrices -- give me a density, get
-! a Fock matrix -- and the iteration was the caller's. This module is the
-! other half of that contract, so a host code can hand over a basis and a
-! guess and receive a result: Hartree-Fock, or Kohn-Sham with any of the
-! functionals in trc_xc_functional, restricted or unrestricted.
+! The SCF: a basis and an electron count in, a converged energy and
+! density out, with every matrix resident on the device. Hartree-Fock or
+! Kohn-Sham (any functional in trc_xc_functional), restricted or unrestricted.
 !
 ! WHAT CROSSES THE BUS
 ! --------------------
 ! Per iteration: two energies, a norm, and a DIIS matrix of at most ten by
-! ten. The density, the Fock matrices, the orbitals, the DIIS history and
-! the orthogonaliser are put on the device once and stay there; the Fock
-! build is the resident driver, the XC integrator finds its density already
-! present, and the products, the commutator and the eigenproblem are
-! trc_linalg, which is cuBLAS and cuSOLVER under the OpenACC build. That
-! is the design metalquicha's device SCF settled on after measuring host
-! LAPACK plus copies at three times the cost of the GPU Fock build, and it
-! is followed here rather than rediscovered.
-!
-! Under a host build the same source runs on host arrays with LAPACK, and
-! the numbers agree to rounding; that is what makes the host suite a test
-! of this module.
+! ten. The density, Fock matrices, orbitals, DIIS history and orthogonaliser
+! stay on the device; the Fock build is the resident driver, the XC integrator
+! finds its density already present, and the products, commutator and
+! eigenproblem are trc_linalg (cuBLAS/cuSOLVER under OpenACC). This follows
+! metalquicha's device SCF, which measured host LAPACK plus copies at three
+! times the cost of the GPU Fock build. A host build runs the same source with
+! LAPACK, and the numbers agree to rounding, so the host suite tests this module.
 !
 ! THE ITERATION
 ! -------------
 ! A few damped steps from the guess, then Pulay's DIIS on the commutator
-! FDS - SDF in the orthogonal basis, per spin with one set of coefficients
-! for both. Converged when the energy change and the RMS density change
-! are both below their thresholds. The DIIS system is at most eleven by
-! eleven and is solved here by pivoted elimination, as metalquicha's
-! mqc_diis does, with the error block scaled to order one against the
-! constraint border first: near convergence the overlaps are 1e-16 and an
-! unscaled elimination makes the weights noise, which shows not as a
-! blow-up but as a density that drifts from the fixed point while the
-! energy sits flat.
+! FDS - SDF in the orthogonal basis, per spin with one set of coefficients.
+! Converged when the energy change and the RMS density change are both below
+! threshold. The DIIS system (at most 11 by 11) is solved by pivoted
+! elimination as in metalquicha's mqc_diis, with the error block scaled to
+! order one against the constraint border first: near convergence the overlaps
+! are 1e-16 and an unscaled elimination makes the weights noise, showing as a
+! density that drifts from the fixed point while the energy sits flat.
 !
 ! UNRESTRICTED
 ! ------------
 ! F_s = H + J[D_a + D_b] - a_x K[D_s] + V_xc,s. The Fock driver returns
-! j J[D] - k K[D]/2 for a density it takes to be a total, so J comes from
-! one call on D_a + D_b with k = 0, and -a_x K[D_s] from one call on 2 D_s
-! with j = 0 and k = a_x. Three builds per iteration where the restricted
-! case needs one; a batched build over the three densities is the obvious
-! improvement and is not done here.
+! j J[D] - k K[D]/2 for a density it takes to be a total, so J is one call on
+! D_a + D_b with k = 0 and -a_x K[D_s] one call on 2 D_s with j = 0, k = a_x:
+! three builds per iteration against one restricted. A batched build over the
+! three densities is the obvious improvement and is not done.
 !
 ! SPHERICAL BASES
-! ----------------
-! `b%spherical` (trc_api.F90, set from a JSON basis's own function_type by
-! trc_basis_json.F90) is the only new input here, and it changes the SIZE
-! of every matrix this module itself owns -- S, H, D, F, C, eps, X, the
-! DIIS history -- from `b%nao` (Cartesian) to `b%nao_sph`, with everything
-! that already operated on those matrices (sym_orthog, the commutator, the
-! DIIS solve, the eigenproblem, the damped/level-shifted update) left
-! completely alone: it is still exactly the SCF this header describes,
-! just at a different, smaller `nao`.
+! ---------------
+! `b%spherical` (trc_api.F90, from a JSON basis's function_type) changes the
+! size of every matrix this module owns (S, H, D, F, C, eps, X, the DIIS
+! history) from `b%nao` to `b%nao_sph`; everything operating on them is
+! unchanged, just at a smaller `nao`. Everything touching a kernel stays
+! Cartesian: `trc_1e`, `trc_eri_t%fock_resident`, and the XC integrator.
+! Cartesian-sized scratch matrices (suffix `_c`: `s_c`, `h_c`, `d_c`,
+! `gmat_c`, `vxc_c`, ...) sit between the kernels and the SCF's own matrices,
+! built once per geometry (`s_c`/`h_c`) or once per iteration (`d_c` from the
+! current density; `gmat_c`/`vxc_c` from the Fock/XC calls), and folded by
+! `sph_cart_to_sph`. `sph` guards every call into trc_sph.F90, so the
+! Cartesian path is the same code path as before spherical support existed.
 !
-! What DOES still run Cartesian, unconditionally, is every quantity that
-! touches an actual kernel: the one-electron integrals (`trc_1e`), the
-! two-electron Fock build (`trc_eri_t%fock_resident`), and the XC
-! integrator (`trc_xc_rks`/`trc_xc_uks`) -- docs/GENERATORS.md's "Cartesian
-! ordering is libcint's" extends to this module exactly as far as it says
-! and no further. A handful of CARTESIAN-sized scratch matrices (named
-! with a `_c` suffix below: `s_c`, `h_c`, `d_c`, `gmat_c`, `vxc_c`, ...)
-! sit between the kernels and the SCF's own matrices, built once per
-! geometry (`s_c`/`h_c`, folded into `smat`/`hcore` by `sph_cart_to_sph`)
-! or once per iteration (`d_c` from the current density, `gmat_c`/`vxc_c`
-! from the Fock/XC calls that density feeds, folded back up by
-! `sph_cart_to_sph` before the rest of the iteration ever sees them).
+! The XC integrator gets `d_c`, the Cartesian density rebuilt from `res%dmat`
+! each iteration, not spherical AO values on the grid: the transform is shared
+! with the Coulomb/exchange build, and `shell_collocate` evaluates Cartesian
+! components straight off a flat table, so a second AO space there would
+! duplicate trc_sph.F90's block structure.
 !
-! `sph_sph_to_cart`/`sph_cart_to_sph` (src/core/trc_sph.F90) are block-sparse
-! over shell pairs, not a dense (nao, nao_sph) GEMM -- see that module's
-! own header for why -- and when `b%spherical` is false this module takes
-! exactly the branch it always has (`sph` guards every call into
-! trc_sph.F90; see each call site below), so the Cartesian path is not
-! merely numerically equivalent, it is the SAME CODE PATH as before this
-! feature existed, which is what makes it byte-for-byte unchanged rather
-! than unchanged up to a transform that happens to be the identity.
-!
-! The density fed to the XC integrator is `d_c`, the CARTESIAN density
-! rebuilt from `res%dmat` every iteration -- not a transform of AO values
-! on the grid to spherical. Two reasons: it is the one transform the
-! Coulomb/exchange build already needs for the same iteration, so sharing
-! it costs nothing extra; and `shell_collocate` (src/xc/trc_collocation.F90)
-! evaluates a shell's Cartesian components directly off a flat generated
-! table with no AO-space indirection at all today, so teaching it a second,
-! spherical AO space would duplicate exactly the block structure
-! trc_sph.F90 already owns.
-!
-! SAD and GWH both reach this module already in the right space: SAD
-! (trc_sad.F90) builds its guess from atomic sub-SCFs run on a `subset`
-! basis that carries `spherical` itself, so `trc_sad_build`'s returned
-! density is `nao_sph`-sized whenever the molecular one is; GWH is built
-! here, from `hcore`, which is already spherical by the time the guess
-! code touches it. SAP (trc_sap.F90) is not: it stays Cartesian
-! throughout and is transformed once, at the trc_capi.F90 call site that
-! builds it, because its one-electron/quadrature machinery has no basis
-! handle of its own to carry `spherical` through the way SAD's atomic
-! subsets do.
+! SAD and GWH reach this module already in the right space (SAD's atomic
+! sub-SCFs run on a `subset` basis carrying `spherical`; GWH is built here from
+! `hcore`). SAP stays Cartesian and is transformed once at the trc_capi.F90
+! call site, as it has no basis handle to carry `spherical`.
 !
 ! POLARISABLE CONTINUUM
 ! ---------------------
-! With `pcm_model` set, trc_pcm builds the cavity, K and the nuclear
-! potential on the surface once, and every iteration, at the density the
-! energy is evaluated at: the surface potential of that (total, Cartesian)
-! density, the charges, q.v/2 into the energy and the charges' full
-! operator into the Fock matrix of each spin -- pyscf.solvent.pcm's
-! SCFWithSolvent, which adds it before DIIS too. It is rebuilt in full every
-! iteration rather than incrementally: two passes of the surface kernels
-! and two triangular solves, independent of the incremental-ERI path.
+! With `pcm_model` set, trc_pcm builds the cavity, K and the nuclear potential
+! once. Every iteration, at the density the energy is evaluated at, the surface
+! potential of the total Cartesian density gives the charges, q.v/2 into the
+! energy and the charges' full operator into each spin's Fock matrix (as
+! pyscf.solvent.pcm's SCFWithSolvent, which also adds it before DIIS). It is
+! rebuilt in full each iteration, independent of the incremental-ERI path.
+!
 !
 module trc_scf_driver
    use, intrinsic :: iso_fortran_env, only: int64
@@ -146,24 +104,20 @@ module trc_scf_driver
       real(dp) :: conv_energy = 1.0e-10_dp
       real(dp) :: conv_density = 1.0e-7_dp   !! RMS change per element, printed; no longer gates
       real(dp) :: conv_diis = 1.0e-5_dp
-      !! Frobenius norm of the orthogonalised commutator X^T (FDS - SDF) X,
-      !! the DIIS error, below which the SCF is converged once the energy
-      !! change is too. The density change was the gate before, and on
-      !! cholesterol/PBE it sat at the noise floor of the quadrature and the
-      !! integral screen: energy converged to 1e-11 by iteration 40, then 37
-      !! more iterations waiting for an RMS change under 1e-7 that wandered
-      !! between 1e-7 and 1e-6. PySCF stops on the gradient norm at
-      !! sqrt(conv_tol) for the same reason.
+      !! Frobenius norm of the orthogonalised commutator X^T (FDS - SDF) X, the DIIS
+      !! error, below which the SCF is converged once the energy change is too. The
+      !! density change used to gate and on cholesterol/PBE sat at the quadrature and
+      !! screening noise floor: energy converged by iteration 40, then 37 more
+      !! iterations waiting on an RMS change wandering between 1e-7 and 1e-6. PySCF
+      !! stops on the gradient norm at sqrt(conv_tol) for the same reason.
       logical :: frac_occ = .false.
-      !! FRACTIONAL OCCUPATIONS, for the free-atom runs behind the SAD guess.
-      !! Each iteration the orbitals of a spin channel are filled by aufbau on
-      !! their own eigenvalues, and the degenerate set at the frontier shares
-      !! what is left evenly, so the atom comes out spherical. Restricted
-      !! (`unrestricted` off) fills `nelec_frac` electrons two per orbital;
-      !! unrestricted fills `nalpha` and `nbeta` one per orbital in their own
-      !! channels, a proper spin-polarised atom (carbon: two alpha thirds in
-      !! each p, no beta p). `nalpha`/`nbeta` are ignored for the count only
-      !! in the restricted case.
+      !! FRACTIONAL OCCUPATIONS, for the free-atom runs behind the SAD guess. Each
+      !! iteration fills a spin channel by aufbau, the degenerate frontier sharing
+      !! what is left evenly, so the atom comes out spherical. Restricted fills
+      !! `nelec_frac` electrons two per orbital; unrestricted fills `nalpha` and
+      !! `nbeta` one per orbital in their own channels (carbon: two alpha thirds in
+      !! each p, no beta p). `nalpha`/`nbeta` are ignored for the count only in the
+      !! restricted case.
       real(dp) :: nelec_frac = 0.0_dp
       integer :: max_iter = 100
       integer :: batch_res = 1
@@ -172,105 +126,67 @@ module trc_scf_driver
       !! did; higher values make the pre-launch screen finer, at more and
       !! smaller batches. Settable through trc_set_batching.
       logical :: incremental = .false.
-      !! Rebuild the two-electron matrix from the DENSITY DIFFERENCE rather
-      !! than the density, accumulating onto the last one. G is linear in D,
-      !! so this is exact arithmetic; what it buys is screening, because the
-      !! difference shrinks as the SCF converges while the density does not.
-      !! On a 123-atom silica slice the later iterations are where the time
-      !! goes, and they are exactly the ones the difference screens hardest.
-      !! A full build is taken every `incr_reset` iterations as a backstop
-      !! against long-run drift, though at the measured `incr_thresh_scale`
-      !! and `incr_start` below a single increment's own error is already
-      !! inside `conv_energy` and the backstop rarely has to do any work.
+      !! Rebuild the two-electron matrix from the DENSITY DIFFERENCE, accumulating
+      !! onto the last one. G is linear in D so this is exact; it buys screening,
+      !! because the difference shrinks as the SCF converges while D does not. On a
+      !! 123-atom silica slice the late iterations dominate the time and are the ones
+      !! the difference screens hardest. A full build is taken every `incr_reset`
+      !! iterations as a drift backstop. TRC_INCREMENTAL=1 turns it on without a
+      !! rebuild.
       !!
-      !! WHY THIS WAS OFF, AND WHAT CHANGED. Handing the difference density
-      !! to the SAME absolute screening threshold a full build uses was the
-      !! bug, not the idea: the dropped quartets are bounded in absolute
-      !! terms, which is right when the density hanging over them is O(1),
-      !! and is not a bound that shrinks with a difference that is heading
-      !! to zero. On w172/6-31G (450 atoms, 1950 AOs) that showed up as
-      !! RMS(D) reaching 1e-10 while the energy kept bouncing by 1e-4 to
-      !! 1e-6 Eh every iteration with every full rebuild agreeing with every
-      !! other to 1e-9 -- consistent, so the dropped set IS the same one
-      !! every full build, but each DIFFERENCE build drops a different set,
-      !! because ddif's spatial pattern changes iteration to iteration the
-      !! way D's does not, and those errors do not cancel. `incr_thresh_scale`
-      !! and `incr_start` below are the fix, measured on the same case:
-      !! 200 iterations, not converged, becomes 20, converged to the same
-      !! energy as incremental-off (-11395.98363707 against -11395.98363707,
-      !! both well inside 1e-8), in 23.3 s against the 24.4 s reference.
-      !! Set TRC_INCREMENTAL=1 to turn it on without a rebuild.
+      !! It was off because the difference density was given the same absolute
+      !! screening threshold as a full build: the dropped quartets are bounded
+      !! absolutely, which is no bound once the density is heading to zero. On
+      !! w172/6-31G (450 atoms, 1950 AOs) the energy bounced by 1e-4 to 1e-6 Eh per
+      !! iteration while RMS(D) reached 1e-10, since each difference build drops a
+      !! different set and those errors do not cancel. `incr_thresh_scale` and
+      !! `incr_start` are the fix: 200 unconverged iterations became 20, at the same
+      !! energy as incremental-off (-11395.98363707), in 23.3 s against 24.4 s.
       integer :: incr_reset = 20
       real(dp) :: incr_thresh_scale = 1.0e-4_dp
-      !! Multiplies `eri_thresh` for an incremental Fock build only, so its
-      !! screen is tighter than the full build's by this fixed factor
-      !! rather than tracking how small the increment itself has become --
-      !! that was tried first (scale by ||ddif||/||dref||) and is backwards:
-      !! it loosens towards "keep everything" as ddif shrinks, which buys
-      !! back the accuracy at the cost of the speed an increment build
-      !! exists for (measured on w172: 25.6 s, slower than incremental off).
-      !! A FIXED tighter floor keeps the per-quartet error small enough,
-      !! every time, that an unlucky run of iterations whose dropped sets
-      !! do not cancel still cannot add up past `conv_energy`. 1e-4,
-      !! measured on w172/6-31G (450 atoms, 1950 AOs), reproduces the
-      !! incremental-off energy to 2e-10 (comfortably inside `conv_energy`
-      !! at 1e-8) while still costing less than a full build once the
-      !! density difference is small enough for `incr_start` to have let
-      !! incrementing start.
+      !! Multiplies `eri_thresh` for an incremental build only, a fixed tighter
+      !! screen. Scaling by ||ddif||/||dref|| was tried first and is backwards: it
+      !! loosens as ddif shrinks, losing the speed an increment exists for (25.6 s
+      !! on w172). A fixed floor keeps per-quartet error small enough that unlucky
+      !! non-cancelling drops cannot add up past `conv_energy`. 1e-4 reproduces the
+      !! incremental-off energy to 2e-10 on w172 while costing less than a full build.
       real(dp) :: incr_start = 1.0e-2_dp
-      !! Do not increment until the PREVIOUS iteration's commutator norm
-      !! is already below this. Early on, before CDIIS has settled, D
-      !! swings by a large fraction of itself iteration to iteration --
-      !! on w172 the energy jumps 1267 Eh between iterations 3 and 4 -- so
-      !! ddif is no smaller than D itself, and `incr_thresh_scale`'s fixed
-      !! floor then makes an increment survey MORE quartets than a full
-      !! build would, not fewer (the floor is tight against a bound, dd,
-      !! that is not small yet). A handful of full builds while the
-      !! commutator is still large costs less than that: measured on
-      !! w172, gating the fixed-scale increment on `errmax < incr_start`
-      !! rather than starting it at iteration 2 turns a 34 s run (slower
-      !! than incremental off) into a 23.3 s one (faster than the 24.4 s
-      !! reference), at the same energy.
+      !! Do not increment until the previous iteration's commutator norm is below
+      !! this. Early on D swings by a large fraction of itself (on w172 the energy
+      !! jumps 1267 Eh between iterations 3 and 4), so ddif is no smaller than D and
+      !! the fixed floor makes an increment survey more quartets than a full build.
+      !! Gating on `errmax < incr_start` turned a 34 s run into 23.3 s (reference
+      !! 24.4 s) at the same energy.
       integer :: ndiis = 10
       integer :: ndamp = -1                  !! damped steps before DIIS, at least
-      !! The damped start, -1 meaning "by spin": a closed shell goes to DIIS
-      !! from the first iteration -- damping only delayed it until the
-      !! commutator fell under `diis_start`, which took cholesterol from 29
-      !! iterations to 51 and water from 10 to 19 -- while an open shell
-      !! keeps four damped steps and a 0.5 start, because UHF on the OH
-      !! radical from GWH oscillates for a hundred iterations without them.
-      !! Any value >= 0 here, or a finite `diis_start`, is taken as given.
+      !! The damped start, -1 meaning "by spin": a closed shell goes to DIIS from
+      !! the first iteration (damping took cholesterol from 29 iterations to 51 and
+      !! water from 10 to 19), while an open shell keeps four damped steps and a 0.5
+      !! start, since UHF on OH from GWH oscillates for a hundred iterations without
+      !! them. Any value >= 0 here, or a finite `diis_start`, is taken as given.
       real(dp) :: diis_start = -1.0_dp     !! commutator norm below which DIIS may start; -1 by spin
       !! DIIS also waits until the largest commutator element is below this;
       !! extrapolating from a wild guess wanders, damping does not.
       real(dp) :: damp = 0.3_dp              !! weight of the new density while damping
       logical :: adiis = .false.
       !! ADIIS (Hu & Yang, JCP 132, 054109) while damping has ended but the
-      !! commutator is still too large for CDIIS (see `diis_start`):
-      !! minimise an energy functional over the convex hull of the
-      !! Fock/density history instead of taking the level-shifted Roothaan
-      !! step. Off by default -- measured against the existing suite,
-      !! where `ndamp`/`level_shift` already reach the CDIIS window in the
-      !! same iteration count, so turning it on there only pays for the
-      !! history bookkeeping. Where it earns its keep is the hard cases
-      !! (stretched bonds, small gaps, charged open shells) that plain
-      !! damping oscillates on; see the robustness test set.
+      !! commutator is still too large for CDIIS (see `diis_start`): minimise an
+      !! energy functional over the convex hull of the Fock/density history instead
+      !! of the level-shifted Roothaan step. Off by default: `ndamp`/`level_shift`
+      !! already reach the CDIIS window in the same iteration count on the existing
+      !! suite. It earns its keep on hard cases (stretched bonds, small gaps,
+      !! charged open shells); see the robustness test set.
       real(dp) :: level_shift = 1.0_dp
       !! Level shift on the virtual space while DIIS is off, in hartree.
       !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
       !! its answer and a damped Roothaan step alone throws it 300 hartree
       !! away; raising the virtuals keeps the occupied space from collapsing.
       real(dp) :: lindep_thresh = 1.0e-8_dp
-      !! Canonical orthogonalisation: an eigenvalue of S below this is
-      !! LINEAR DEPENDENCE, and that direction is projected out of X rather
-      !! than scaled by S^-1/4, which would divide by (nearly) zero. A
-      !! compact double-zeta basis never gets near this; a diffuse one
-      !! does -- def2-TZVPD and aug-cc-pVDZ put several S eigenvalues below
-      !! 1e-8 on anything but a single atom, because two diffuse shells on
-      !! neighbouring centres are nearly the same function. 0 restores the
-      !! old behaviour: `error stop` the first time S is not numerically
-      !! positive definite, which is what every existing test still gets
-      !! since none of them is diffuse enough to reach this threshold.
+      !! Canonical orthogonalisation: an eigenvalue of S below this is linear
+      !! dependence, projected out of X rather than scaled by S^-1/4 (which would
+      !! divide by nearly zero). Diffuse bases (def2-TZVPD, aug-cc-pVDZ) put several
+      !! S eigenvalues below 1e-8 on anything but a single atom. 0 restores the old
+      !! `error stop` when S is not numerically positive definite.
       real(dp) :: eri_thresh = 1.0e-12_dp
       integer :: grid_level = 3
       integer :: nlc_grid_level = 1
@@ -283,18 +199,11 @@ module trc_scf_driver
       logical :: verbose = .false.
       logical :: force_cartesian = .false.
       !! Run the Cartesian AO space even when the basis says spherical
-      !! (`trc_basis_t%spherical`, set from a JSON basis's own
-      !! "gto_spherical" function_type -- trc_basis_json.F90). For
-      !! comparison against pyscf's cart=True, or against one of terco's
-      !! own existing Cartesian-only references: this does not change
-      !! which basis functions are USED (every test and reference built
-      !! before this option existed is Cartesian regardless), only what a
-      !! spherical-tagged file like cc-pVDZ's does by default now that
-      !! there is a spherical path to default TO. `trc_scf_run` itself
-      !! does not read this field -- it reads `b%spherical`, which is
-      !! already resolved by the time a basis reaches here (the caller,
-      !! trc_capi.F90's `basis_json`, is what applies this option to a
-      !! freshly loaded JSON basis's own flag).
+      !! (`trc_basis_t%spherical`, from a JSON basis's "gto_spherical"), for
+      !! comparison against pyscf's cart=True or terco's Cartesian-only references.
+      !! `trc_scf_run` does not read this: it reads `b%spherical`, already resolved
+      !! by the caller (trc_capi.F90's `basis_json` applies this option to the
+      !! loaded basis).
       character(len=8) :: pcm_model = ""
       !! Polarisable continuum: "" (off, the default), "cpcm" or "iefpcm"
       !! (trc_pcm). The surface, K and the nuclear potential are built once
@@ -838,50 +747,23 @@ contains
                   ddif_c(i, j) = d_c(i, j, 1) - dref_c(i, j)
                end do
                !
-               ! A FIXED, TIGHTER THRESHOLD ON THE INCREMENT -- not one
-               ! that tracks how small ddif has become.
+               ! A fixed, tighter threshold on the increment, not one tracking ddif.
                !
-               ! `eri`'s Schwarz/density screen drops a quartet whose
-               ! bound, qq*dd, is below an ABSOLUTE threshold: right for a
-               ! full build, where dd comes from a density of order one
-               ! and the dropped piece really is negligible against the
-               ! matrix being formed. Handed the same threshold on ddif
-               ! instead, dd is the bound of a density that is getting
-               ! small, so quartets the full build would never have kept
-               ! survive here on sufferance, right at the edge of the
-               ! test -- and WHICH quartets sit at that edge changes from
-               ! one iteration's ddif to the next, because ddif's shape
-               ! changes (it is a difference of two iterates, not a
-               ! density that settles into one spatial pattern the way D
-               ! does). So the quartets this build drops are not the same
-               ! set the last one dropped, each drop is an independent
-               ! truncation of a comparable size, and the errors do not
-               ! average down across iterations the way the full build's
-               ! -- which drops the SAME negligible quartets every time --
-               ! does. Measured on w172/6-31G (450 atoms, 1950 AOs): RMS(D)
-               ! reaches 1e-10 while the energy keeps bouncing by 1e-4 to
-               ! 1e-6 Eh every iteration, with no downward trend, which is
-               ! exactly what an error that does not shrink with ddif
-               ! looks like.
+               ! The Schwarz/density screen drops a quartet whose bound qq*dd is below
+               ! an absolute threshold: fine for a full build, where dd is O(1). On
+               ! ddif, quartets sit at the edge of the test, and which ones changes
+               ! each iteration because ddif is a difference of iterates with a
+               ! changing shape. The dropped sets differ and the errors do not average
+               ! down as the full build's (always the same negligible quartets) do. On
+               ! w172/6-31G (450 atoms, 1950 AOs) RMS(D) reaches 1e-10 while the
+               ! energy bounces by 1e-4 to 1e-6 Eh per iteration.
                !
-               ! The fix is not to chase ddif's shrinking scale -- that
-               ! was tried, scaling `thresh` down by ||ddif||/||dref|| makes
-               ! the screen loosen towards "keep everything" as ddif gets
-               ! small, which is backwards: it buys back the accuracy at
-               ! the cost of all of the speed an increment build exists
-               ! for, measured on this case as 25.6 s against the 24.4 s
-               ! baseline, i.e. no win at all. What works is a threshold
-               ! that is simply TIGHTER, by a fixed factor, for every
-               ! increment, so the per-quartet error floor itself is
-               ! small enough that an unlucky run of iterations whose
-               ! dropped sets do not cancel still cannot add up past
-               ! `conv_energy`. `incr_thresh_scale` is that factor,
-               ! default 1e-4: measured on the same case, tight enough
-               ! that |dE| clears 1e-8 at every reset through iteration
-               ! 20 (matching the incremental-off reference to the same
-               ! energy), while the kept-quartet count stays low enough
-               ! that each incremental build is still a few times
-               ! cheaper than a full one, not equal to it.
+               ! Scaling `thresh` by ||ddif||/||dref|| is backwards: it loosens as
+               ! ddif shrinks and loses the speed (25.6 s against 24.4 s baseline).
+               ! A fixed tighter factor, `incr_thresh_scale` (default 1e-4), keeps
+               ! the error floor low enough that |dE| clears 1e-8 at every reset
+               ! through iteration 20, while each increment stays a few times cheaper
+               ! than a full build.
                !
                block
                   real(dp) :: thresh0
@@ -1063,31 +945,20 @@ contains
          end if
          if (.not. diis_on .and. it > ndamp) diis_on = errmax < diis_start
          !
-         ! A/EDIIS WHILE DAMPING HAS ENDED BUT THE COMMUTATOR IS STILL TOO
-         ! LARGE FOR CDIIS.
-         !
-         ! CDIIS minimises an error norm with no constraint on its
-         ! coefficients, which is exactly why `diis_start` gates it: far
-         ! from convergence the error vectors are not yet meaningful, and
-         ! an unconstrained extrapolation from them can overshoot or head
-         ! for a saddle rather than downhill. ADIIS (Hu & Yang, JCP 132,
-         ! 054109) instead minimises an energy functional over the convex
-         ! hull of the Fock/density history -- coefficients confined to
-         ! the simplex {c >= 0, sum c = 1}, so the step can only move
-         ! towards a density already visited, never away from all of
-         ! them. That makes it reliable exactly where CDIIS is not, and
-         ! slow exactly where CDIIS is fast, which is why the two SWITCH
-         ! rather than blend: gmshpc measured a blended step turning a
-         ! stretched-water case that converged in 21 CDIIS iterations into
-         ! one that did not converge at all.
+         ! A/EDIIS while damping has ended but the commutator is still too large for
+         ! CDIIS. CDIIS has no constraint on its coefficients, hence the
+         ! `diis_start` gate: far from convergence it can overshoot. ADIIS (Hu &
+         ! Yang, JCP 132, 054109) minimises an energy functional over the convex
+         ! hull of the history, so it only moves towards a visited density: reliable
+         ! where CDIIS is not and slow where CDIIS is fast, hence the two switch
+         ! rather than blend (gmshpc: a blended step turned a stretched-water case
+         ! converging in 21 CDIIS iterations into one that never converged).
          !
          adiis_active = opts%adiis .and. .not. diis_on .and. it > ndamp
-         ! THE NEW DENSITY IS RANK 0'S ALONE. Extrapolation, the eigensolve
-         ! and the density run on one device and the density is broadcast:
-         ! dsyevd need not return the same vectors on two devices (a
-         ! degenerate pair can come back rotated), and the other ranks'
-         ! copies were thrown away for rank 0's anyway. Their orbitals and
-         ! energies come over once, after the loop.
+         ! The new density is rank 0's alone: extrapolation, eigensolve and density
+         ! run on one device and the density is broadcast, since dsyevd need not
+         ! return the same vectors on two devices. Orbitals and energies come over
+         ! once, after the loop.
          if (root) then
             if (adiis_active) then
                if (nadiis_used < opts%ndiis) then
@@ -1135,13 +1006,10 @@ contains
                if (ndiis_used < opts%ndiis) then
                   ndiis_used = ndiis_used + 1
                else
-                  ! Slot by slot, IN ORDER: slot k reads slot k+1 and slot k+1 is
-                  ! written next, so the slot loop carries a dependence. It was a
-                  ! `do concurrent` over k as well, and on the device that let a
-                  ! slot be overwritten before it was read: the history went
-                  ! wrong exactly when the subspace filled, and the commutator
-                  ! climbed for eight iterations on cholesterol before DIIS
-                  ! recovered. The host ran the loop in order and never saw it.
+                  ! Slot by slot, in order: slot k reads slot k+1, so the slot loop
+                  ! carries a dependence. As a `do concurrent` over k, a device slot
+                  ! was overwritten before being read and the commutator climbed for
+                  ! eight iterations on cholesterol; the host never saw it.
                   do k = 1, opts%ndiis - 1
                      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
                         fstore(i, j, s, k) = fstore(i, j, s, k + 1)
@@ -1155,20 +1023,15 @@ contains
                   estore(i, j, s, k) = errv(i, j, s)
                end do
                !
-               ! AN ILL-CONDITIONED SUBSPACE LOSES ITS OLDEST ENTRY, NOT THE STEP.
-               !
-               ! When the solve fails, extrapolating from nothing and taking the
-               ! plain Roothaan step instead is not neutral. On water/def2-SVP
-               ! PBE0 the history holds errors of order 1 next to the newest at
-               ! 1e-7, B's scaled pivots drop under solve_diis's 1e-14, and the
-               ! plain steps that follow grow the commutator by x1.28 per
-               ! iteration along one direction. Errors along one direction make
-               ! B singular in turn, so the solve keeps failing: 65 iterations
-               ! of runaway to |FDS-SDF| ~ 2 before the nonlinearity broke it,
-               ! and past max_iter whenever it broke later. Dropping the oldest
-               ! entries until the system solves keeps the extrapolation; two
-               ! distinct error vectors always give a solvable system, and that
-               ! two-term step is exactly what cancels one growing mode.
+               ! An ill-conditioned subspace loses its oldest entry, not the step.
+               ! A failed solve followed by a plain Roothaan step is not neutral: on
+               ! water/def2-SVP PBE0 the history holds errors of order 1 next to the
+               ! newest at 1e-7, B's scaled pivots drop under solve_diis's 1e-14, and
+               ! plain steps grow the commutator x1.28 per iteration along one
+               ! direction, which keeps B singular: 65 iterations of runaway. Dropping
+               ! the oldest entries until the system solves keeps the extrapolation;
+               ! two distinct error vectors always solve, and that step cancels one
+               ! growing mode.
                !
                do
                   m = ndiis_used + 1
@@ -1423,24 +1286,16 @@ contains
       end subroutine zero_dev
 
       !
-      ! ADIIS coefficients over the first `m` slots of fstore_a/dstore_a
-      ! (host association: trc_scf_run's locals, same way `lp`/`n2`/`nspin`
-      ! are reached here). Slot `m` is always the newest -- the ADIIS
-      ! history above is appended the same way CDIIS's is, at the top of
-      ! the used range, not cycled -- so Hu & Yang's "entry n" is simply
-      ! the last index.
-      !
-      ! Minimises, over the simplex {c >= 0, sum c = 1},
+      ! ADIIS coefficients over the first `m` slots of fstore_a/dstore_a (host
+      ! association). Slot `m` is the newest, so Hu & Yang's "entry n" is the last
+      ! index. Minimises over the simplex {c >= 0, sum c = 1}
       !
       !     f(c) = 2 sum_i c_i <D_i - D_m, F_m>
       !            + sum_ij c_i c_j <D_i - D_m, F_j - F_m>
       !
-      ! by projected gradient with backtracking: m <= ndiis, so this is a
-      ! few hundred flops on the host once the dot products (device, via
-      ! `lp%dot`, the same call the CDIIS B matrix above uses) are in
-      ! hand. Starting from all weight on the newest entry means a step
-      ! that makes no progress degrades to the plain Roothaan step rather
-      ! than to nonsense.
+      ! by projected gradient with backtracking (a few hundred host flops once the
+      ! device dot products are in hand). Starting with all weight on the newest
+      ! entry means no progress degrades to the plain Roothaan step.
       !
       subroutine adiis_coeffs(m, c)
          integer, intent(in) :: m
@@ -1570,16 +1425,11 @@ contains
       end do
    end function nuclear_repulsion
 
-   ! X = S^(-1/2), symmetric orthogonalisation -- or, once `lindep_thresh`
-   ! is positive and some S eigenvalue falls below it, CANONICAL
-   ! orthogonalisation: those columns of U are set to zero rather than
-   ! divided by sqrt(sqrt(w)), which is what symmetric orthogonalisation
-   ! does to a near-null mode and is why it diverges first. A zeroed column
-   ! of X contributes nothing to X^T F X either, so that mode decouples
-   ! from the eigenproblem instead of blowing it up; the eigenvectors that
-   ! come back from it are an exact, orthogonal, physically unused
-   ! complement, not noise that has to be swept up afterwards. Still once
-   ! per geometry, on the host side of the call.
+   ! X = S^(-1/2), symmetric orthogonalisation, or, once `lindep_thresh` is positive
+   ! and some S eigenvalue falls below it, CANONICAL orthogonalisation: those
+   ! columns of U are zeroed rather than divided by sqrt(sqrt(w)), which is what
+   ! makes symmetric orthogonalisation diverge on a near-null mode. A zeroed column
+   ! decouples that mode from X^T F X. Once per geometry, on the host side.
    subroutine sym_orthog(la, n, s, x, lindep_thresh, ndropped)
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n

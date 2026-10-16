@@ -1,38 +1,17 @@
 !
-! The AO-index permutation between LEXICOGRAPHIC order (libcint's own, and
-! what every source of AO-indexed data from OUTSIDE this build is authored
-! in, regardless of TRC_CART_ORDER -- libfint's reference*.dat, pyscf, mqc's
-! SAD JSON guesses) and this build's own Cartesian order.
+! AO-index permutation between LEXICOGRAPHIC order (libcint's; what all
+! externally authored AO data is in, regardless of TRC_CART_ORDER: libfint
+! references, pyscf, SAD JSON guesses) and this build's own Cartesian order.
 !
-! WHY THIS EXISTS
-! ----------------
-! A gamess build's own physics agrees with a lexicographic one exactly (the
-! SiH4 RHF energy comparison in docs/GENERATORS.md-adjacent test notes) --
-! the two differ only by which slot each d/f component lands in. So every
-! place that reads AO-indexed numbers authored OUTSIDE this build has to
-! know that those numbers are lexicographic and land them on the right slot,
-! or it is comparing two different bases and calling the difference a bug.
-! This module is the ONE place that permutation is computed, from the same
-! generated tables `trc_cart_comp.inc` uses, so a reader cannot reimplement
-! it slightly wrong.
+! The two orders give identical physics and differ only in which slot each
+! d/f component lands in, so any reader of external AO-indexed data must
+! permute it. This module is the one place that permutation is computed,
+! from the same generated tables as `trc_cart_comp.inc`.
 !
-! TWO USES
-! --------
-!   * A LIBRARY reader of externally-authored data: trc_guess_json.F90's SAD
-!     guess is the one in production; permute on the way in, once, and every
-!     caller downstream sees an ordinary build-order density.
-!   * A TEST comparing against a stored oracle or a live pyscf array: the
-!     oracle stays lexicographic (it is not this build's business to know
-!     TRC_CART_ORDER when it was written -- it wasn't), and the test permutes
-!     either the oracle's index on the way in (Fortran) or its own array on
-!     the way in/out (Python, via scripts/cart_perm.py, the same idea against
-!     the same cartorder.py tables).
+! Users: trc_guess_json.F90 (permutes the SAD guess on the way in) and tests
+! (permute the lexicographic oracle, or via scripts/cart_perm.py in Python).
 !
-! WHAT THIS IS NOT
-! ----------------
-! Not a normalisation fix. GAMESS's sqrt3/sqrt5 per-component scale is a
-! separate, later decision at an API boundary (see cartorder.py's
-! `gamess_norm`/`gamess_norm_sq`) and nothing here applies it.
+! Not a normalisation fix: see trc_ao_norm.F90 for the GAMESS scale.
 !
 module trc_cart_perm
    use trc_boys, only: dp

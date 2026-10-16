@@ -1,19 +1,13 @@
 !
 ! A superposition-of-atomic-densities guess from a JSON file, so a terco
-! run can start where an mqc run would start without mqc in the process.
+! run can start where an mqc run would without mqc in the process.
 !
-! The file holds one density block per element for one basis set, in that
-! element's own function order -- the shells as trc_basis_json builds them
-! from the same basis file, Cartesian components in LEXICOGRAPHIC order, a
-! FIXED CONVENTION: mqc always writes lexicographic, regardless of which
-! order this build was built with (mqc has no notion of TRC_CART_ORDER),
-! and there is no field in the format to say so because it never varies.
-! trc_cart_perm permutes each block's components into THIS build's own
-! order on the way in, below, so every caller downstream sees an ordinary
-! build-order density -- the guess for a molecule is those blocks placed on
-! the diagonal, atom by atom, in the molecule's atom order. mqc writes it
-! from its atomic guess (spherically averaged, restricted), one file per
-! basis:
+! The file holds one density block per element for one basis, in that
+! element's function order (shells as trc_basis_json builds them), Cartesian
+! components always LEXICOGRAPHIC: mqc has no notion of TRC_CART_ORDER, so
+! the format carries no field for it. trc_cart_perm permutes each block into
+! this build's order on the way in. The guess for a molecule is those blocks
+! on the diagonal in atom order. One file per basis:
 !
 !   {
 !     "basis": "cc-pvdz",
@@ -23,40 +17,22 @@
 !     }
 !   }
 !
-! The density is the TOTAL (alpha + beta) density: it is what a restricted
-! SCF starts from, and an unrestricted caller halves it per spin. A block
-! whose size does not match the basis's count for that element is refused,
-! since a mismatch means a different basis and a silently wrong start.
+! The density is the TOTAL (alpha + beta) density; an unrestricted caller
+! halves it per spin. A block whose size does not match the basis's count for
+! that element is refused: it means a different basis and a silently wrong start.
 !
-! CONVENTION. The two codes scale a Cartesian function x^l e^{-a r^2}
-! differently for d and up, and neither is uniform in l on its own. mqc's
-! S_ii is 1 for s and p, 4 pi/5 for d, 4 pi/7 for f (measured). terco's own
-! raw S_ii is 1 for s and p too -- `trc_basis_t%build` folds libcint's
-! `common_fac_sp` into an s or p shell's coefficients, but every builder
-! that feeds it (this file's `trc_basis_json`, test/trc_test_basis.F90's
-! `build_631g`) hands it a coefficient already divided by that factor, so
-! the two cancel and terco's raw <s|s>/<p_x|p_x> come out 1, matching mqc
-! (and pyscf/libcint) directly: no conversion needed for s or p. `build`
-! does not touch d and up (common_fac_sp(l>=2) = 1), so terco's OWN d/f
-! stays at 1 while mqc's is 4 pi/5, 4 pi/7 -- a REAL difference, needing a
-! REAL conversion there. The ratio is 4 pi/(2l+1), so a block element is
-! divided by f(l_i) f(l_j) with f(l) = sqrt((2l+1)/(4 pi)) / common_fac_sp(l)
-! on the way in -- the common_fac_sp divide makes f(l) = 1 for s and p
-! (nothing to convert) and leaves it sqrt((2l+1)/(4 pi)) for d and up
-! (common_fac_sp(l>=2) = 1, a no-op divide there).
+! Normalisation: mqc's S_ii is 1 for s and p, 4 pi/5 for d and 4 pi/7 for f;
+! terco's raw S_ii is 1 for all (`common_fac_sp` is cancelled by the basis
+! builders, and is 1 for l >= 2). So s and p need no conversion, and a block
+! element is divided by f(l_i) f(l_j), f(l) = sqrt((2l+1)/(4 pi)) /
+! common_fac_sp(l), which is 1 for s and p.
 !
-! THIS MODULE USED TO DIVIDE BY sqrt((2l+1)/(4 pi)) ALONE, s and p included
-! -- which happened to be the right number only because trc_basis_json had
-! its OWN bug of the same shape (folding common_fac_sp twice into an s or p
-! shell, making terco's raw S_ii for those come out 1/(4 pi) and 3/(4 pi)
-! for real, not 1). Two bugs the same shape, canceling: that is also why
-! Tr(D S) came out right (10.0046 for cc-pVDZ, see below) despite both. The
-! common_fac_sp divide was added here the moment trc_basis_json's fold was
-! fixed and this module's own conversion stopped canceling it. Energies
-! cannot see a function's scale; a density can: Tr(D S) came out at 1.43
-! electrons for water before the s and p factors were understood, and at
-! 10.0046 for cc-pVDZ before the d one was, with every energy check passing
-! both times. That is why scf_sad integrates the guess against S.
+! History: this module once divided by sqrt((2l+1)/(4 pi)) alone, which was only
+! right because trc_basis_json double-folded `common_fac_sp` (two matching
+! bugs); the divide was added when that was fixed. Energies cannot see a
+! function's scale but a density can: Tr(D S) was 1.43 electrons for water and
+! 10.0046 for cc-pVDZ with every energy check passing, which is why scf_sad
+! integrates the guess against S.
 !
 module trc_guess_json
    use trc_boys, only: dp
@@ -74,10 +50,8 @@ module trc_guess_json
 contains
 
    !
-   ! `dguess` (nao, nao) comes back allocated, the block-diagonal total
-   ! density of the atoms of `b`. `at_z` are the atomic numbers in the order
-   ! the basis was built; `b%sh_r` against `b%at_r` says which shells belong
-   ! to which atom.
+   ! `dguess` (nao, nao) comes back allocated: the block-diagonal total density
+   ! of the atoms of `b`. `at_z` are the atomic numbers in basis order.
    !
    subroutine trc_guess_from_json(path, b, at_z, dguess, error)
       character(len=*), intent(in) :: path
@@ -95,9 +69,7 @@ contains
       logical :: found
       character(len=16) :: buf
 
-      ! Functions per atom and where each atom's block starts, from the
-      ! shell centres: shells are built atom by atom in atom order. And the
-      ! scale of every function, for the convention above.
+      ! Functions per atom, where each atom's block starts, and each function's scale.
       allocate (nfun(b%natm), first(b%natm), fac(b%nao))
       nfun = 0
       do ish = 1, b%nshell
@@ -124,12 +96,9 @@ contains
          return
       end if
 
-      ! LEXICOGRAPHIC -> this build's order, global AO index -> global AO
-      ! index (see the module header). `first(ia) + i - 1` for a LOCAL,
-      ! lexicographic-order `i` (mqc's own convention, 1-based) is the
-      ! correct GLOBAL LEXICOGRAPHIC AO index regardless of TRC_CART_ORDER:
-      ! shell order by atom does not change, only the within-shell component
-      ! order does, and `first`/`nfun` above are built from counts alone.
+      ! Lexicographic -> build order, global AO index to global AO index (see the
+      ! module header). `first(ia) + i - 1` is the global lexicographic index for any
+      ! TRC_CART_ORDER, since only within-shell order changes.
       allocate (perm_l2b(b%nao), perm_b2l(b%nao))
       call build_ao_perm(b%nshell, b%sh_l, b%sh_ao, b%nao, perm_l2b, perm_b2l)
 
@@ -158,10 +127,7 @@ contains
          do j = 1, n
             do i = 1, n
                k = k + 1
-               ! (i, j) are LOCAL, LEXICOGRAPHIC (mqc's file). Map to this
-               ! build's global AO indices before placing the element, so
-               ! `dguess` comes back ordinary build-order data like every
-               ! other AO-indexed quantity this library produces.
+               ! (i, j) are local, lexicographic; map to global build-order AO indices.
                gi = perm_l2b(first(ia) + i - 1)
                gj = perm_l2b(first(ia) + j - 1)
                dguess(gi, gj) = blk(k)/(fac(gi)*fac(gj))

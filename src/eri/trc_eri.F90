@@ -1,46 +1,24 @@
 !
 ! The four-centre Fock build, behind one object.
 !
-! WHY THIS EXISTS
-! ---------------
-! The four-centre path and the one-electron/DF API grew separately and speak
-! different languages: `fock_bins` wants a `pair_bins_t`, the `hp_*` primitive
-! arrays and a Schwarz vector, all built by three different routines with
-! different argument conventions, while the API wants an `trc_basis_t`. A
-! caller wanting both had to build two containers over one geometry and know
-! which routine fills which array.
-!
-! This closes that. `trc_eri_t` is built from a basis and a threshold, owns
-! every four-centre structure, stays device-resident, and exposes one call:
+! `trc_eri_t` is built from a basis and a threshold, owns every four-centre
+! structure (pair bins, HGP primitive pairs, Schwarz bounds), stays
+! device-resident, and replaces three differently-conventioned build routines:
 !
 !     call eri%build(basis, thresh)
 !     do while (.not. converged)
-!        call eri%fock(basis, dmat, gmat)      ! G = 2J - K
-!        ! diagonalise, DIIS, new density -- the caller's
+!        call eri%fock(basis, dmat, vhf)
+!        ! F = Hcore + vhf; diagonalise, DIIS, new density -- the caller's
 !     end do
 !     call eri%release()
 !
-! WHAT `fock` RETURNS
-! -------------------
-! The two-electron part of the RHF Fock matrix,
-!
-!     vhf = J - K/2        for the TOTAL density D (trace = nelec)
-!
-! so the caller writes `F = Hcore + vhf` with no factor to remember. NOT the
-! full Fock matrix: Hcore does not change between iterations, and folding it
-! in here would mean either recomputing it every time or storing it in an
-! object with no reason to hold it.
-!
-! The convention matters and is easy to get wrong. `2J - K` is equally common
-! and is what the internal kernel and the benchmarks produce -- it is twice
-! this. The first SCF written against this API used it and converged smoothly
-! to -98.50 for water instead of -75.99, which is the failure mode worth
-! designing out: a factor of two in the two-electron energy does not diverge,
-! it converges to the wrong answer.
-!
-! Internally the kernel accumulates a folded half-matrix at twice scale, so
-! vhf = (raw + raw^T)/8. Both factors are applied here; neither is the
-! caller's business.
+! `fock` returns the two-electron part only, vhf = J - K/2 for the TOTAL
+! density D (trace = nelec). NOT 2J - K, which is twice this and is what the
+! internal kernel and benchmarks produce: an SCF written against 2J - K
+! converged smoothly to -98.50 for water instead of -75.99, since a factor of
+! two in the two-electron energy does not diverge. The kernel accumulates a
+! folded half-matrix at twice scale, so vhf = (raw + raw^T)/8; both factors
+! are applied here.
 !
 module trc_eri
    use trc_boys, only: dp, boys_init

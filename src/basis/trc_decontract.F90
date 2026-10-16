@@ -2,68 +2,6 @@
 ! Splitting a general contraction into primitive shells, and carrying the
 ! contraction as a matrix transform instead.
 !
-! WHY THIS EXISTS
-! ---------------
-! A correlation-consistent basis lists one exponent set under several
-! contraction columns. cc-pVDZ silicon is 12 s primitives under four columns;
-! carbon and oxygen are nine under three. terco splits those columns into
-! separate shells, so the same exponent pair is rebuilt once per column pair
-! and the primitive quartet behind it is evaluated once per column quartet.
-! Nothing in the kernels is wrong -- the work is simply replicated. Measured
-! on a 123-atom silica slice, cc-pVDZ costs five times 6-31G* per Fock build,
-! against 1.3x of real integral work, and the primitive-quartets-per-output
-! integral ratio is 5002 for (ss|ss) in cc-pVDZ against 96 in 6-31G*.
-!
-! The fix is not in the kernels. Evaluate the integrals over SINGLE-PRIMITIVE
-! shells, where no exponent pair is ever repeated, and move the contraction to
-! the density and the Fock matrix, which are small:
-!
-!     D_p = C D C^T        (nao_p x nao_p, before the build)
-!     G   = C^T G_p C      (nao_c x nao_c, after it)
-!
-! C is the contraction coefficients, block diagonal in the Cartesian component
-! and extremely sparse -- 4350 nonzeros for 2307 x 1417 on the silica slice --
-! so both transforms are a few tens of megaflops against a Fock build of
-! teraflops. The identity is exact: G_p holds every primitive block, and
-! folding it reproduces the contracted G to the screening threshold.
-!
-! This is what GPU4PySCF does (`_VHFOpt.build` -> `SortedGTO.from_mol(...,
-! decontract=True)` -> `_optimize_contraction`), and it is why its cc-pVDZ
-! Fock build is FASTER than its 6-31G* one despite 13% more functions: after
-! the transform cc-pVDZ is nearly primitive while 6-31G* keeps its six-
-! primitive cores. Two HGP codes that do not do this, terco and gmshpc, both
-! pay the penalty, gmshpc 10.8x and terco 5.1x. It is a basis-representation
-! choice made before any kernel runs, not a kernel decomposition problem.
-!
-! WHICH SHELLS GET SPLIT
-! ----------------------
-! Only shells that actually share exponents with another shell, which is what
-! a general contraction is. A segmented basis reaches this module and leaves
-! unchanged, with `active` false and not one array allocated -- 6-31G* keeps
-! its six-primitive s and p shells, exactly as GPU4PySCF keeps them, because
-! splitting them would ADD work rather than remove it.
-!
-! Shells at one centre with one angular momentum are grouped by shared
-! exponents (transitively). Within a group:
-!
-!   - one shell only: a segmented shell. Left alone.
-!   - one column holds more than one compact primitive: that column is kept
-!     whole and the others are split. This is the cc-pVDZ oxygen p case, four
-!     primitives under two columns where the second column is the diffuse
-!     primitive alone; the three-primitive contraction survives.
-!   - otherwise: every column is split into single-primitive shells, one per
-!     distinct exponent in the group. This is the cc-pVDZ silicon s case.
-!
-! "Compact" means an exponent above `cutoff`; a diffuse primitive contributes
-! little to the contraction's cost and splitting on it is what lets the
-! oxygen case keep its contraction. The default matches GPU4PySCF's 0.3.
-!
-! The split basis is deliberately allowed to be linearly dependent -- a
-! primitive kept inside a surviving contraction may also appear as a shell of
-! its own. That costs a few extra shells and is harmless here: nothing in this
-! path diagonalises in the primitive basis, it only evaluates integrals over
-! it, and the fold back to the contracted basis is exact either way.
-!
 module trc_decontract
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
@@ -80,41 +18,7 @@ module trc_decontract
    !
    integer, parameter :: DECON_MINPRIM_DEFAULT = 0
    !! SPLIT ONLY THE GROUPS THAT PAY FOR IT -- OFF BY DEFAULT.
-   !!
-   !! A group is split only if some contracted shell in it holds at least
-   !! this many compact primitives; 0 splits every general contraction,
-   !! which is what this module did before the gate existed and what the
-   !! default still does.
-   !!
-   !! The gate exists because the split is not always worth its screen.
-   !! Splitting buys back the duplicated primitive work of a general
-   !! contraction and costs a screen tightened by the transform's amplitude
-   !! (see `amp` in build_maps). Measured on one card, Fock seconds for
-   !! three iterations at thresh 1e-12, with setup beside it:
-   !!
-   !!                   split all      Si only (10)    split none
-   !!   msn  28 Si    2.00 / 27.38    6.10 / 30.73    9.67 / 39.51
-   !!   w150  no Si   5.19 / 20.44        (= none)    6.87 / 15.15
-   !!
-   !! There is NO setting that is best for both. msn wants everything
-   !! split -- gating O out of it costs 3.3 s, and the unsplit Si shells
-   !! cost another 9 -- while w150, whose only general contraction is O's
-   !! 9-primitive s, is 26% faster not splitting at all. Same element,
-   !! opposite sign in two molecules, so the discriminator is the
-   !! molecule's screening structure and not its basis, and a static rule
-   !! cannot read it. The default therefore stays where the measurements
-   !! that drove this work were taken, and this is the knob for the other
-   !! case: TRC_DECON_MINPRIM=10 on a water cluster.
 
-   !
-   ! The transform between the contracted basis a caller speaks and the
-   ! primitive basis the integrals are evaluated over.
-   !
-   ! Stored twice, once in each direction, because both are gathers and a
-   ! gather needs no atomics. `f_*` maps a primitive AO to the contracted AOs
-   ! that feed it (for D_p = C D C^T); `t_*` maps a contracted AO to the
-   ! primitive AOs that carry it (for G = C^T G_p C). Both are CSR.
-   !
    type :: decon_t
       logical :: active = .false.
       integer :: nao_c = 0, nao_p = 0, nnz = 0

@@ -1,42 +1,20 @@
 !
-! Binned shell-pair container: quartets formed ON THE DEVICE.
+! Binned shell-pair container: quartets formed on the device.
 !
-! WHY THIS REPLACES THE WORK LIST
-! -------------------------------
-! At 75 waters / 6-31G the materialised quartet list cost 26 s of host time and
-! 11.7 GB, against 15 s of GPU.  The host had become the bottleneck and the
-! memory did not extrapolate: 150 waters would have wanted ~47 GB and ~105 s.
+! Materialising the quartet list was the bottleneck (75 waters / 6-31G: 26 s
+! host time and 11.7 GB against 15 s of GPU). Following Galvez Vallejo et al.
+! [1], quartets are never enumerated: the O(N^2) shell-pair list is binned and
+! each kernel launch covers the cross product of two bins, each thread
+! deriving its own (ab, cd) from its index.
 !
-! The fix, from Galvez Vallejo et al. (EXESS), is to never enumerate quartets.
-! Keep the O(N^2) shell-pair list, bin it, and let each kernel launch cover the
-! cross product of two bins -- a thread derives its own (ab, cd) from its index.
-! Quartet formation moves to the device and costs nothing to store.
-!
-! THE SCREENING TRICK
-! -------------------
-! Bin pairs by TYPE (la, lb) and by SIZE, the Schwarz bound bucketed into
-! decades:
-!
-!     s_ab = int(-log10(Q_ab))          Q_ab = sqrt(max |(ab|ab)|)
-!
-! Then, since |(ab|cd)| <= Q_ab Q_cd,
-!
-!     keep the bin pair  <=>  s_ab + s_cd <= -log10(tau)
-!
-! is an INTEGER test on two bin indices, evaluated once per bin pair on the
-! host.  A whole cross product is admitted or rejected together, so the kernel
-! contains no screening conditional at all -- which is the point EXESS makes:
-! conditionals in the kernel cost thread divergence, and here there are none.
-!
-! Truncation direction matters and is safe: int() rounds toward zero, so
-! s_ab + s_cd <= -log10(Q_ab Q_cd).  A bin pair that should be kept therefore
-! always passes.  The test is conservative -- it can admit slightly more than
-! the threshold demands, never less.
-!
-! Binning by type as well as size is not free of charge either: it means every
-! thread in a launch shares (la, lb, lc, ld), which is the class-sorting win
-! from earlier arriving as a side effect of the data structure.
-!
+! Pairs are binned by type (la, lb) and by size, the Schwarz bound
+! Q_ab = sqrt(max |(ab|ab)|) bucketed as s_ab = int(-log10(Q_ab)). Since
+! |(ab|cd)| <= Q_ab Q_cd, a bin pair is kept iff s_ab + s_cd <= -log10(tau),
+! an integer test done once per bin pair on the host. Whole cross products are
+! admitted or rejected together, so kernels contain no screening conditional.
+! int() truncates toward zero, so the test is conservative: it may admit
+! slightly more than tau demands, never less. Binning by type also means every
+! thread in a launch shares (la, lb, lc, ld).
 !
 ! [1] J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
 !     "High-performance GPU-accelerated evaluation of electron repulsion
@@ -54,15 +32,9 @@ module trc_bins
    public :: build_pair_quartets
 
    !
-   ! BATCH MAGNITUDES. A pair's size bucket is the decade of its Schwarz
-   ! bound, and a bin pair is admitted when the two buckets sum below the
-   ! threshold's decade. Whole decades are a coarse test: the paper this
-   ! follows takes magnitudes of tau^(i/n), sized so that a batch holds a
-   ! useful number of pairs and the product of two batch magnitudes lands
-   ! on the threshold rather than a decade above it. `res` is that n, at
-   ! run time rather than compiled in, so a caller can trade launch count
-   ! against how much the pre-launch screen catches. res = 1 is decades,
-   ! which is what this always did.
+   ! Size buckets are 1/`res` of a decade (runtime, up to SMAX_RES), as in the
+   ! paper; res = 1 is whole decades. Finer buckets trade launch count against
+   ! how much the pre-launch screen catches.
    !
    integer, parameter :: SMAX_RES = 4   !! largest resolution the bins are sized for
    integer, parameter :: SDEC = 9       !! decades of Schwarz bound worth binning

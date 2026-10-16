@@ -1,38 +1,29 @@
 module trc_sap
    !! The superposition-of-atomic-potentials guess
    !!
-   !! SAP builds a one-electron Hamiltonian out of free-atom potentials and
-   !! diagonalises it, rather than superposing free-atom densities and
-   !! diagonalising the Fock matrix that density makes. Lehtola's point (JCTC
-   !! 15 1593, 2019) is that the atomic POTENTIAL is the better thing to
-   !! superpose: it is what an electron in the molecule actually sees, and it
-   !! carries the atomic shell structure into the guess orbitals directly
-   !! instead of through one Fock build.
+   !! SAP builds a one-electron Hamiltonian from free-atom potentials and
+   !! diagonalises it, rather than superposing densities and diagonalising the
+   !! Fock matrix they make. Lehtola (JCTC 15 1593, 2019): the atomic potential is
+   !! what an electron in the molecule sees, and carries the atomic shell
+   !! structure into the guess orbitals directly.
    !!
    !!   H_sap = T + V_ne + sum_A Vscr_A(|r - R_A|)
    !!
-   !! TWO HONEST QUALIFICATIONS.
+   !! Two qualifications. First, this is not the cheap SAP: Lehtola's uses
+   !! tabulated potentials with no atomic calculation. No table is in this tree
+   !! (and inventing one is not to be done quietly), so `Vscr_A` comes from the
+   !! free-atom SCF SAD already runs and caches, and SAP costs SAD plus a
+   !! quadrature: it is for guess quality, not speed. A real table would change
+   !! only `atom_screen`.
    !!
-   !! First, this is not the cheap SAP. Lehtola's is cheap because the atomic
-   !! potentials are TABULATED, so the guess needs no atomic calculation at
-   !! all. There is no such table in this tree and inventing one is not a
-   !! thing to do quietly, so `Vscr_A` is derived from the same free-atom SCF
-   !! that SAD already runs and caches. SAP therefore costs SAD plus a
-   !! quadrature: it is here for guess QUALITY, not for speed. Dropping a
-   !! real table in later would make it cheaper than SAD, and `atom_screen`
-   !! is the only routine that would have to change.
+   !! Second, a Hartree-Fock atom's effective potential is nonlocal; this uses a
+   !! local approximation (the atom's Hartree potential plus the Dirac-Slater
+   !! exchange of its density), as the tabulated potentials do. That is why SAP is
+   !! a guess and not a method.
    !!
-   !! Second, the atomic effective potential of a Hartree-Fock atom is
-   !! nonlocal, and this uses a local approximation to it -- the atom's own
-   !! Hartree potential plus the Dirac-Slater exchange potential of its
-   !! density. That is the same approximation the tabulated potentials embody
-   !! and it is the reason SAP is a guess and not a method.
-   !!
-   !! WHAT IS ON THE GRID, AND WHAT IS NOT. The nuclear attraction -Z/r is
-   !! singular and is already available exactly, so it is NOT quadratured: T
-   !! and V_ne come in as the analytic one-electron matrices and only the
-   !! SCREENING potential, which is smooth and short ranged, is integrated.
-   !! Putting -Z/r on a grid instead would be both slower and worse.
+   !! The nuclear attraction -Z/r is singular and already exact, so it is not
+   !! quadratured: T and V_ne come in as analytic matrices and only the smooth,
+   !! short-ranged screening potential is integrated.
    use trc_boys, only: dp
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
@@ -51,40 +42,32 @@ module trc_sap
    public :: trc_sap_build, trc_sap_grid, trc_sap_screen_table, SAP_BASIS_DEFAULT
 
    integer, parameter :: SAP_NRAD = 400
-   !! Radial nodes per element for the screening table. The potential is
-   !! smooth, and the M4 mapping puts the nodes where it bends, so this is
-   !! generous rather than tuned; the table is built once per element.
+   !! Radial nodes per element for the screening table: generous rather than
+   !! tuned (the potential is smooth, M4 puts nodes where it bends); built once.
 
    integer, parameter :: SAP_NANG = 26
    !! Angular order for the spherical average of the atomic density. The
-   !! free-atom density is already spherical -- fractional occupations over
-   !! the degenerate frontier are what make it so -- but averaging costs
-   !! nothing here and means a non-spherical atom degrades the guess instead
-   !! of silently tilting it.
+   !! free-atom density is already spherical; averaging is free and makes a
+   !! non-spherical atom degrade the guess rather than silently tilt it.
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    character(len=*), parameter :: SAP_BASIS_DEFAULT = "basis_sets/sap_helfem_large.json"
-   !! The fitted potential set, unless a caller names another. Lehtola's
-   !! fully numerical HelFEM fit; the GRASP sets are relativistic and buy
-   !! nothing below the heavy elements.
+   !! The fitted potential set, unless a caller names another: Lehtola's fully
+   !! numerical HelFEM fit (the GRASP sets are relativistic, no gain below heavy elements).
 
    integer(kind=8), parameter :: SAP_TENSOR_BYTES = 2147483648_8
    !! Device bytes the three-centre tensor may take at once.
    !!
-   !! `trc_df_3c` hands back the whole (nao, nao, naux) tensor and naux is
-   !! one function per atom, so asking for every atom at once wants
-   !! nao^2 * natm doubles -- 17 GB on a 150-molecule water cluster in
-   !! cc-pVDZ. The sum over atoms does not care how it is grouped, so it is
-   !! grouped to fit in this.
+   !! `trc_df_3c` returns the whole (nao, nao, naux) tensor with naux one function
+   !! per atom, so all atoms at once wants nao^2 * natm doubles (17 GB for 150
+   !! waters in cc-pVDZ). The sum over atoms is order-free, so it is grouped to
+   !! fit here.
    !!
-   !! It is a MEMORY budget and nothing more. I expected the pass count to
-   !! matter -- each pass looked like a full traversal of the shell-pair
-   !! list -- and it does not: the silica slice goes from sixteen passes to
-   !! one and the guess takes 21.78 s against 21.77. The three-centre
-   !! integrals are the whole cost and how they are grouped is free. Kept as
-   !! a budget anyway, because the tensor still has to fit, and set well
-   !! under a card since the SCF's resident arrays are already on it.
+   !! A memory budget only: pass count does not matter (silica slice, sixteen
+   !! passes to one: 21.78 s against 21.77), since the three-centre integrals are
+   !! the whole cost. Set well under a card because the SCF's resident arrays
+   !! are already on it.
 
    integer, parameter :: SAP_BATCH = 128
    !! Points per quadrature batch for the assembly.
@@ -93,13 +76,10 @@ module trc_sap
    integer, parameter :: SAP_GRID_LEVEL = 3
    !! Quadrature level for the screening integral.
    !!
-   !! This is the DFT default, and it is NOT a lazy inheritance -- a cheaper
-   !! grid was tried first, on the reasoning that a guess thrown away after
-   !! one diagonalisation cannot need a grid chosen to converge an
-   !! exchange-correlation energy. That reasoning is wrong. Quadrature error
-   !! in a matrix element is not a small perturbation of the guess, it is a
-   !! wrong operator, and the orbitals it produces are worse rather than
-   !! approximate. On the 123-atom silica slice, cc-pVDZ, at iteration 12:
+   !! This is the DFT default, deliberately. A cheaper grid was tried first, on
+   !! the reasoning that a throwaway guess needs no converged XC grid, but
+   !! quadrature error here is a wrong operator, not a small perturbation. On the
+   !! 123-atom silica slice, cc-pVDZ, at iteration 12:
    !!
    !!              E(12)                 dE(12)     guess cost
    !!   level 0    -11194.245761258     -9.5e-05      7 s
@@ -107,19 +87,14 @@ module trc_sap
    !!   level 3    -11194.245774662     -3.3e-10     80 s
    !!   SAD        -11194.245774661     -6.0e-09      <1 s
    !!
-   !! Level 3 is a better guess than SAD, by about one iteration. Levels 0
-   !! and 1 are not converging at all by iteration 12 -- worse than SAD and
-   !! cheaper than nothing is worth.
+   !! Level 3 beats SAD by about one iteration; levels 0 and 1 are not converging.
+   !! So SAP is currently a loss at this size (it saves ~12 s and costs 80, of
+   !! which 18 is `assemble` and 4 the per-point potential, both host-side and
+   !! single-threaded). The fix is to move those to the device as trc_xc does, not
+   !! to coarsen the grid. On small molecules it earns its place (water/6-31G: 9
+   !! iterations against 10, no measurable cost).
    !!
-   !! WHICH MEANS SAP IS CURRENTLY A LOSS AT THIS SIZE. The one iteration it
-   !! saves is ~12 s and the guess costs 80, of which 18 is `assemble` and 4
-   !! the per-point potential, both host-side and single-threaded. The fix is
-   !! to put those on the device the way trc_xc does, not to coarsen the
-   !! grid; until then SAP earns its place on small molecules (water/6-31G:
-   !! 9 iterations against 10, at no measurable cost) and not on slabs.
-   !!
-   !! TRC_SAP_LEVEL overrides it so the trade can be re-measured without a
-   !! rebuild, and an explicit `level` argument overrides both.
+   !! TRC_SAP_LEVEL overrides it, and an explicit `level` argument overrides both.
 
 contains
 
@@ -139,11 +114,9 @@ contains
    !   V_H(r) = 4 pi [ (1/r) int_0^r s^2 rho ds + int_r^inf s rho ds ]
    !   v_x(r) = -(3 rho / pi)^(1/3)                      Dirac-Slater
    !
-   ! `nel` comes back as 4 pi int r^2 rho dr, the electron count the table
-   ! actually integrates to. It is both a check on the quadrature and the
-   ! coefficient of the r -> infinity tail: past the last node the atom looks
-   ! like a point charge of -nel, so Vscr = nel/r, and V_ne + Vscr then goes
-   ! to zero for a neutral atom instead of to a constant.
+   ! `nel` comes back as 4 pi int r^2 rho dr: a check on the quadrature and the
+   ! coefficient of the tail, since past the last node the atom is a point charge
+   ! -nel, so Vscr = nel/r and V_ne + Vscr goes to zero for a neutral atom.
    !
    subroutine trc_sap_screen_table(b, ish0, ish1, centre, z, dblk, r, vscr, nel, error)
       type(trc_basis_t), intent(in) :: b
@@ -229,11 +202,9 @@ contains
    end subroutine trc_sap_screen_table
 
    !
-   ! Vscr of one element at an arbitrary distance.
-   !
-   ! Linear between nodes; nel/rr past the last one, where the atom is a
-   ! point charge; the first node's value inside it, which is a region no
-   ! molecular grid resolves and where the nuclear term dominates anyway.
+   ! Vscr of one element at an arbitrary distance: linear between nodes, nel/rr
+   ! past the last one (a point charge), and the first node's value inside it
+   ! (unresolved by any molecular grid; the nuclear term dominates there).
    !
    pure real(dp) function interp(r, v, nel, rr)
       real(dp), intent(in) :: r(:), v(:), nel, rr
@@ -261,47 +232,37 @@ contains
    !
    ! The screening potential from FITTED atomic charge distributions.
    !
-   ! Lehtola published the SAP potentials as Gaussian fits as well as
-   ! tables, and the fitted form makes this a three-centre contraction
-   ! instead of a quadrature:
+   ! Lehtola's Gaussian fits make this a three-centre contraction instead of a
+   ! quadrature:
    !
    !   Vscr(mu,nu) = sum_A (mu nu | rho_A),   rho_A = sum_p c_p g_p
    !
-   ! with one contracted s shell per atom, so naux is the atom count. That
-   ! is the same integral density fitting already does, on the device, and
-   ! it replaces a host-side grid assembly that cost 80 s on a 123-atom
-   ! slab -- see the grid path below, which this supersedes and which stays
-   ! only as the independent check that this agrees with it.
+   ! with one contracted s shell per atom (naux = atom count). It is the same
+   ! integral density fitting does, on the device, and replaces a host-side grid
+   ! assembly that cost 80 s on a 123-atom slab; the grid path below is kept as
+   ! the independent check.
    !
-   ! THE NORMALISATION, WHICH IS THE WHOLE TRAP.
+   ! NORMALISATION, THE TRAP. The published coefficients are charges over
+   ! unit-normalised distributions, summing to -Z (checked by
+   ! trc_fitted_shell_from_json). Two things must happen:
    !
-   ! The published coefficients are CHARGES over unit-normalised charge
-   ! distributions: they sum to -Z for every element, which is what
-   ! trc_fitted_shell_from_json checks. Two things have to happen to them.
+   ! Sign: `(mu nu | P)` is for a POSITIVE unit charge, but an electron in the
+   ! field of Z electrons has energy +Z/R, so the coefficient passed is
+   ! -c_published and the far field is +Z/R.
    !
-   ! The sign. A distribution carrying -Z of charge is the electrons, and
-   ! `(mu nu | P)` is written for a POSITIVE unit charge -- it goes to
-   ! S_mu_nu / R at long range. An electron in the field of Z electrons has
-   ! potential energy +Z/R, so the coefficient handed to the integral is
-   ! -c_published, and the far-field limit is +Z/R rather than -Z/R.
-   !
-   ! The normalisation. `basis_build` multiplies by common_fac_sp(l) and
-   ! nothing else, so the function the engine integrates is
-   ! (sh_c / common_fac_sp) exp(-alpha r^2). A unit charge distribution is
-   ! (alpha/pi)^(3/2) exp(-alpha r^2). So the coefficient passed in is
-   ! -c_published * (alpha/pi)^(3/2), and NOT the (2 alpha/pi)^(3/4) that a
-   ! wavefunction would want. Using the wavefunction normalisation here --
-   ! which is what every other basis this code reads is given -- makes the
-   ! potential wrong by a smooth, exponent-dependent factor that converges
-   ! to the same energy a few iterations later and announces nothing.
+   ! Normalisation: `basis_build` multiplies by common_fac_sp(l) only, so the
+   ! engine integrates (sh_c / common_fac_sp) exp(-alpha r^2), and a unit charge
+   ! distribution is (alpha/pi)^(3/2) exp(-alpha r^2). The coefficient passed is
+   ! therefore -c_published * (alpha/pi)^(3/2), NOT the wavefunction
+   ! normalisation (2 alpha/pi)^(3/4) used for every other basis, which gives a
+   ! smooth exponent-dependent error that still converges, silently.
    !
    subroutine trc_sap_build(b, pl, tmat, vmat, hsap, error, verbose, path)
       type(trc_basis_t),    intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       real(dp), intent(in)  :: tmat(b%nao, b%nao), vmat(b%nao, b%nao)
-      !! The analytic one-electron matrices. T and V_ne are exact and
-      !! already built; only the screening potential is an integral over a
-      !! fitted distribution, so only it is computed here.
+      !! The analytic one-electron matrices; only the screening potential is
+      !! computed here.
       real(dp), intent(out) :: hsap(b%nao, b%nao)
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: verbose
@@ -339,20 +300,13 @@ contains
       end do
 
       !
-      ! WHAT THE BUILDER DOES TO A COEFFICIENT, ASKED RATHER THAN ASSUMED.
-      !
-      ! `basis_build` folds common_fac_sp(l) in, so the number the engine
-      ! integrates against is not the number passed in. Rather than restate
-      ! that constant here -- a second copy of a fact that lives in trc_api,
-      ! which would go stale silently -- one probe shell is built with a
-      ! coefficient of 1 and the factor is read back off it. trc_decontract
-      ! derives its own scaling from the built basis for the same reason.
-      !
-      ! Worth a probe because getting it wrong is invisible: the first
-      ! version of this divided by the factor instead of multiplying, the
-      ! potential came out a uniform 2*sqrt(pi) = 3.54 too weak, and the SCF
-      ! converged to the same energy a few iterations later saying nothing
-      ! about it. Only comparing against the grid construction found it.
+      ! What the builder does to a coefficient, asked rather than assumed:
+      ! `basis_build` folds common_fac_sp(l) in, so one probe shell with
+      ! coefficient 1 is built and the factor read back, instead of restating a
+      ! constant from trc_api that could go stale (as trc_decontract does too).
+      ! Worth it because the error is invisible: dividing instead of multiplying
+      ! made the potential a uniform 2*sqrt(pi) too weak and the SCF still
+      ! converged to the same energy; only the grid construction caught it.
       !
       block
          real(dp) :: p_e(1, 1), p_c(1, 1), p_r(3, 1), p_z(1)
@@ -393,17 +347,14 @@ contains
                a_c(k, ish) = -c(k)*(e(k)/PI)**1.5_dp/cfac
             end do
          end do
-         ! One nucleus per aux shell is a fiction the builder never looks at;
-         ! the aux centres are what matter and they are the real ones.
+         ! The aux centres are the real ones; the builder ignores the nucleus.
          call aux%build(nch, a_l, a_np, a_e, a_c, a_r, nch, b%at_z(n0:n1), a_r, nmax)
          call aux%to_device()
          allocate (tens(b%nao, b%nao, aux%nao))
          !$acc enter data create(tens)
          call trc_df_3c(b, pl, aux, tens)
-         ! Reduced WHERE IT WAS COMPUTED. The tensor is nao^2 per atom and
-         ! only its sum over atoms is ever wanted, so bringing it down to add
-         ! it up moved gigabytes across the bus to produce a matrix of a few
-         ! megabytes. Only hsap crosses now, once, at the end.
+         ! Reduced where it was computed: only the sum over atoms is wanted, so
+         ! only hsap crosses the bus, once, at the end.
          naux = aux%nao
          do concurrent(j=1:nao, i=1:nao) local(acc, k)
             acc = 0.0_dp
@@ -424,10 +375,8 @@ contains
    !
    ! H_sap = T + V_ne + sum_A Vscr_A.
    !
-   ! `tmat` and `vmat` are the analytic one-electron matrices the caller
-   ! already has from trc_1e. `nelec` present selects SADQ atoms -- charge
-   ! spread over the atoms -- rather than SAD's neutral ones, which is worth
-   ! having for an ion for the same reason it is worth having in SADQ.
+   ! `tmat` and `vmat` are the analytic matrices from trc_1e. `nelec` present
+   ! selects SADQ atoms (charge spread over the atoms) rather than neutral SAD ones.
    !
    subroutine trc_sap_grid(b, tmat, vmat, hsap, error, verbose, nelec, level)
       type(trc_basis_t), intent(in) :: b
@@ -518,11 +467,9 @@ contains
       if (talk) print '(a,i0,a,i0,a)', "  sap: quadrature level ", lv, ", ", &
          g%n_points, " points"
 
-      ! The potential is a scalar on the grid, and every atom contributes to
-      ! every point: nothing is screened here because Vscr falls off as
-      ! nel/r, which is not small at molecular distances -- it is the
-      ! long-range neutrality of V_ne + Vscr, and dropping it would leave a
-      ! spurious charge behind.
+      ! Every atom contributes to every point and nothing is screened: Vscr falls
+      ! off as nel/r, which is the long-range neutrality of V_ne + Vscr, and
+      ! dropping it would leave a spurious charge.
       call stage('grid         ')
       allocate (vpt(g%n_points))
       do ip = 1, g%n_points
@@ -565,12 +512,9 @@ contains
    !
    ! H_munu += sum_g wv(g) chi_mu(g) chi_nu(g).
    !
-   ! Batched through `trc_xc_grid_t`, which is the structure the XC
-   ! integrator already uses for exactly this shape of sum: it hands back,
-   ! per batch, the shells that reach it and a local function numbering, so
-   ! the inner matrix is the batch's own few functions rather than the
-   ! molecule's. Without that this is nao^2 per point and hopeless past a
-   ! few atoms.
+   ! Batched through `trc_xc_grid_t`, as the XC integrator does: per batch it
+   ! returns the shells that reach it and a local numbering, so the inner matrix
+   ! is the batch's few functions, not nao^2 per point.
    !
    subroutine assemble(b, g, wv, h, error)
       type(trc_basis_t), intent(in) :: b
@@ -584,10 +528,8 @@ contains
       real(dp) :: chi(NCART_MAX), gchi(3, NCART_MAX), d(3), acc
       integer :: ib, p0, p1, npb, s0, s1, nloc, is, ish, np, nc, i, j, ip, l, mu, nu
 
-      ! The batcher wants the weight it will carry; this one already has the
-      ! potential folded in, and a point whose product is zero is no use to
-      ! anyone, so it is passed as the weight and the screening it does on
-      ! magnitude is screening on the right thing.
+      ! The batcher screens on the weight it carries, so pass the product with the
+      ! potential already folded in.
       call xg%build(g%n_points, g%coords, wv, b, SAP_BATCH, 1.0e-12_dp, 0.0_dp)
 
       do ib = 1, xg%nbatch
@@ -615,15 +557,11 @@ contains
             end do
          end do
          !
-         ! hloc = phi^T diag(wb) phi, THROUGH A GEMM.
-         !
-         ! Written out as a triple loop first, and that was the whole cost of
-         ! the guess: nloc runs into the hundreds on a dense slab, so this is
-         ! npts * nloc^2 and on the 123-atom silica slice it took the SAP
-         ! guess to 188 s against SAD's 7.3. The arithmetic is a GEMM and
-         ! BLAS does it two orders of magnitude faster; scaling one copy of
-         ! phi by the weight keeps it a single call and sidesteps the sign
-         ! split a syrk would need, since w*V is not positive.
+         ! hloc = phi^T diag(wb) phi, through a GEMM. A triple loop was the whole cost
+         ! of the guess (nloc runs into the hundreds on a dense slab: 188 s against
+         ! SAD's 7.3 on the 123-atom silica slice). Scaling one copy of phi by the
+         ! weight keeps it a single call and avoids the sign split a syrk would
+         ! need, since w*V is not positive.
          !
          do j = 1, nloc
             do ip = 1, npb

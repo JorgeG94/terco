@@ -416,36 +416,7 @@ contains
                                              b%sp_q, thresh, dsh, nbas, nkept)
          nl = 0
          c0 = 1
-         ! Quartets per launch. Zero (the default) is one launch per class,
-         ! however much work that is; a cap splits a class at segment
-         ! boundaries.
-         !
-         ! gmshpc and EXESS cap a bra batch at 2560 SHELL PAIRS and launch
-         ! per batch pair, so a launch of theirs covers bra x ket = 2560^2 =
-         ! 6.5M quartets. That is the number to compare against, not 2560.
-         ! Swept on the 123-atom silica slice, Fock seconds:
-         !
-         !   cap        launches   cc-pVDZ   6-31G*
-         !   none (0)         21     5.257    2.874
-         !   6553600         396     5.257    2.869     <- their granularity
-         !   3000000         703     5.266    2.888
-         !   1000000        1402     5.333
-         !    100000        3953     5.569
-         !     10000        7027     5.844
-         !
-         ! So at their batch size we are already at the same throughput, to
-         ! three digits, and the flat region runs from 21 launches to about
-         ! 400. Only below ~1M quartets a launch does it cost anything, and
-         ! then it is 1-11%, not the 12x an early note claimed -- that
-         ! measurement was taken on a contracted basis, where work per
-         ! quartet was wildly uneven, and at 2200 items a launch, which is
-         ! 1.3% of one wave on a V100. It measured starvation, not batching.
-         !
-         ! The reason a cap cannot WIN here is that batching buys throughput
-         ! by keeping many kernels in flight at once, and `do concurrent`
-         ! gives no way to overlap launches. One launch at a time makes a
-         ! larger launch weakly better. Kept as a knob so the claim stays
-         ! measured.
+
          lcap = launch_cap()
          do while (c0 <= nseg)
             c1 = c0
