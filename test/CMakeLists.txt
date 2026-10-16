@@ -86,6 +86,14 @@ endfunction()
 terco_add_check(check_selftest check_selftest.F90)
 
 #
+# trc_linalg's shape-inferred forms (gemm_mat, dot_2d/3d, syev_mat, sandwich,
+# density) against the raw forms they must stay bitwise identical to -- see
+# check_linalg_mat.F90's own header. No basis, no pyscf: it is dense linear
+# algebra, not integrals.
+#
+terco_add_check(check_linalg_mat check_linalg_mat.F90)
+
+#
 # The staleness guard over every committed pyscf reference under
 # test/pyscf_refs/ (see that directory's README.md and check_staleness.py's
 # own header). Standard-library Python only -- no pyscf, no numpy -- so it
