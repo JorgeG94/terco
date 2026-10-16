@@ -112,7 +112,7 @@ contains
       type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: blk
       integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks, nji
-      real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), x(:, :), tens(:, :, :), tmp(:, :)
+      real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), x(:, :), tens(:, :, :), half(:, :, :)
       real(dp), allocatable :: ki(:, :), kt(:, :), part(:), eo(:), ev(:)
       real(dp) :: e_os, e_ss, es(2)
       real(dp) :: t_step(NSTEP), tc
@@ -186,10 +186,10 @@ contains
       if (talk) print '(a,i0,a,f8.2,a)', "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
 
       ! --- 3. (ia|P) for every P, a block of auxiliary shells at a time ----
-      allocate (cocc(nao, no), cvir(nao, nv), x(nov, naux), tmp(no, nao))
+      allocate (cocc(nao, no), cvir(nao, nv), x(nov, naux))
       cocc = cmo(:, nfz + 1:nocc)
       cvir = cmo(:, nocc + 1:nao)
-      !$acc enter data copyin(cocc, cvir) create(x, tmp)
+      !$acc enter data copyin(cocc, cvir) create(x)
       s0 = 1
       do while (s0 <= aux%nshell)
          ! Shells s0..s1 hold at most nblk functions (and at least one shell).
@@ -202,21 +202,25 @@ contains
          np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
          call aux%subset(s0, s1, blk)
          call blk%to_device()
-         allocate (tens(nao, nao, np))
-         !$acc enter data create(tens)
+         allocate (tens(nao, nao, np), half(no, nao, np))
+         !$acc enter data create(tens, half)
          call step_on(lp, ST_3C, tc)
          call trc_df_3c(b, pl, blk, tens)
          call step_off(lp, ST_3C, tc, t_step)
          call step_on(lp, ST_TRANS, tc)
-         do q = 1, np
-            ! tmp = C_occ^T T_q  (no x nao), then X(:, P) = (C_vir^T tmp^T) = (nv x no), a fastest
-            call lp%gemm('T', 'N', no, nao, nao, 1.0_dp, cocc, nao, tens(1, 1, q), nao, 0.0_dp, tmp, no)
-            call lp%gemm('T', 'T', nv, no, nao, 1.0_dp, cvir, nao, tmp, no, 0.0_dp, x(1, p0 + q - 1), nv)
-         end do
+         ! Two library calls per block, not two per auxiliary function: the
+         ! occupied side of the whole block is one GEMM,
+         !   half(i, nu q) = sum_mu C_occ(mu, i) T(mu, nu q)   (no x nao np),
+         ! and the virtual side one strided batch over q with C_vir shared,
+         !   X(:, P) = C_vir^T half_q^T                        (nv x no, a fastest).
+         ! 2 x 3840 calls at w40 cc-pVDZ ran at 41% of the device's peak.
+         call lp%gemm('T', 'N', no, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, no)
+         call lp%gemm_strided('T', 'T', nv, no, nao, 1.0_dp, cvir, nao, 0_int64, half, no, no8*nao8, &
+                              0.0_dp, x(1, p0), nv, nov8, np)
          call step_off(lp, ST_TRANS, tc, t_step)
          call fl(ST_TRANS)%add(int(np, int64)*(2*no8*nao8*nao8 + 2*nv8*no8*nao8))
-         !$acc exit data delete(tens)
-         deallocate (tens)
+         !$acc exit data delete(tens, half)
+         deallocate (tens, half)
          call blk%release()
          s0 = s1 + 1
       end do
@@ -258,7 +262,7 @@ contains
          e_os = e_os + sum(part(1:2*nji:2))
          e_ss = e_ss + sum(part(2:2*nji:2))
       end do
-      !$acc exit data delete(ki, kt, part, eo, ev, x, tmp, cocc, cvir, jm)
+      !$acc exit data delete(ki, kt, part, eo, ev, x, cocc, cvir, jm)
       if (nranks > 1) then
          es = [e_os, e_ss]
          call allreduce(comm, es, op=MPI_SUM)
