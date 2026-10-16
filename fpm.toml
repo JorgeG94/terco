@@ -35,7 +35,9 @@ macros = ["TRC_LMAX=2", "TRC_FOCK6", "TRC_PERCLASS"]
 source-dir = "src"
 # `#include "inc/..."` and the generated .inc files, as CMake's include directories.
 include-dir = ["src", "src/generated"]
-type = "static"
+# No `type = "static"`: fpm 0.13 then archives each package on its own and
+# links -lterco after its dependencies, which leaves the app unresolved.
+# The default bundles terco and its dependencies into one archive.
 
 [build]
 auto-executables = false
