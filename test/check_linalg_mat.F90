@@ -31,8 +31,8 @@
 !   2. dot_2d and dot_3d vs the raw dot, including a section
 !      estore(:,:,:,k) of a rank-4 array.
 !   3. syev_mat vs the raw syev.
-!   4. sandwich vs two raw gemms done by hand; density vs one raw gemm done
-!      by hand; density with k = 0 against zero.
+!   4. density vs one raw gemm done by hand; density with k = 0 against
+!      zero.
 !   5. A conformance mismatch is NOT exercised here: gemm_mat's `error
 !      stop` on a shape mismatch would simply end this program, not report
 !      a FAIL, so there is nothing a test could usefully assert.
@@ -51,7 +51,7 @@ program check_linalg_mat
    call test_gemm_mat()
    call test_dot_mat()
    call test_syev_mat()
-   call test_sandwich_density()
+   call test_density()
 
    call lp%release()
 
@@ -263,35 +263,13 @@ contains
    end subroutine test_syev_mat
 
    ! =======================================================================
-   ! 4. sandwich vs two raw gemms; density vs one raw gemm; density(k<=0)
+   ! 4. density vs one raw gemm; density(k<=0)
    ! =======================================================================
-   subroutine test_sandwich_density()
+   subroutine test_density()
       integer, parameter :: N = 5, NC = 4, K = 3
-      real(dp), allocatable :: x(:, :), f(:, :), out_s(:, :), work_s(:, :)
-      real(dp), allocatable :: out_r(:, :), work_r(:, :)
       real(dp), allocatable :: c(:, :), d_mat(:, :), d_raw(:, :), d_zero(:, :)
       real(dp) :: occ
       integer :: i, j
-
-      allocate (x(N, N), f(N, N), out_s(N, N), work_s(N, N), out_r(N, N), work_r(N, N))
-      do j = 1, N
-         do i = 1, N
-            x(i, j) = fill(50, i, j)
-            f(i, j) = fill(60, i, j)
-         end do
-      end do
-      f = 0.5_dp*(f + transpose(f))
-      out_s = 0.0_dp; work_s = 0.0_dp; out_r = 0.0_dp; work_r = 0.0_dp
-
-      !$acc enter data copyin(x, f, out_s, work_s, out_r, work_r)
-      call lp%sandwich(x, f, out_s, work_s)
-      call lp%gemm("N", "N", N, N, N, 1.0_dp, f, N, x, N, 0.0_dp, work_r, N)
-      call lp%gemm("T", "N", N, N, N, 1.0_dp, x, N, work_r, N, 0.0_dp, out_r, N)
-      !$acc update self(out_s, work_s, out_r, work_r)
-      !$acc exit data delete(x, f, out_s, work_s, out_r, work_r)
-
-      call report('sandwich vs two raw gemms', all(out_s == out_r))
-      deallocate (x, f, out_s, work_s, out_r, work_r)
 
       ! density: D = occ * C(:,1:k) C(:,1:k)^T, C wider than K columns so
       ! C(:,1:k) is a genuine section, not the whole array.
@@ -315,6 +293,6 @@ contains
       call report('density vs raw gemm', all(d_mat == d_raw))
       call report('density(k<=0) is zero', all(d_zero == 0.0_dp))
       deallocate (c, d_mat, d_raw, d_zero)
-   end subroutine test_sandwich_density
+   end subroutine test_density
 
 end program check_linalg_mat

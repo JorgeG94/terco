@@ -288,9 +288,9 @@ contains
          call lp%gemm_mat(w1, smat, w2)
          call lp%gemm_mat(smat, dmat(:, :, s), w1)
          call lp%gemm_mat(w1, fock(:, :, s), w2, alpha=-1.0_dp, beta=1.0_dp)
-         ! errv = X^T w2 X, the same two GEMMs lp%sandwich does (work = w2 X,
-         ! out = X^T work), so this reaches the identical raw calls.
-         call lp%sandwich(x, w2, errv(:, :, s), w1)
+         ! errv = X^T w2 X
+         call lp%gemm_mat(w2, x, w1)
+         call lp%gemm_mat(x, w1, errv(:, :, s), transa="T")
       end do
    end subroutine commutator_error
 

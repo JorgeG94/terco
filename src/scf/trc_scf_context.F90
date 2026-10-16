@@ -75,7 +75,7 @@ contains
       type(comm_t), intent(in), optional :: comm
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(timer_type) :: tm
-      real(dp) :: tw0
+      type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
 
       this%nao_c = b%nao
       this%sph = b%spherical
@@ -89,7 +89,7 @@ contains
       end if
 
       ! --- once per geometry, on the host ------------------------------------
-      tw0 = wall()
+      call tphase%start()
       call tm%start()
       call this%pl%build(b, cfg%eri_thresh_run)
       call this%pl%to_device()
@@ -134,25 +134,25 @@ contains
          "   canonical orthogonalisation: ", this%n_lindep, &
          " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
       this%ts(6) = tm%get_elapsed_time()
-      this%t_setup = wall() - tw0
+      this%t_setup = tphase%get_elapsed_time()
 
       ! --- the continuum: cavity, K and the nuclear potential, once -------
       if (cfg%pcm_on) then
-         tw0 = wall()
+         call tphase%start()
          call this%pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err, la=this%lp)
          call this%pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
          if (err%has_error()) then
             call this%release()
             return
          end if
-         this%t_pcm_setup = wall() - tw0
+         this%t_pcm_setup = tphase%get_elapsed_time()
          if (cfg%talk) print "(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)", "   pcm: ", trim(opts%pcm_model), &
             ", eps ", opts%pcm_eps, ", ", opts%pcm_lebedev, " points per sphere, ", &
             this%pcm%surface%n_points, " kept; setup ", this%t_pcm_setup, " s"
       end if
 
       if (cfg%dft) then
-         tw0 = wall()
+         call tphase%start()
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
@@ -182,7 +182,7 @@ contains
             call this%xg_nlc%to_device()
             this%nlc_built = .true.
          end if
-         this%t_grid = wall() - tw0
+         this%t_grid = tphase%get_elapsed_time()
       end if
    end subroutine scf_ctx_setup
 
@@ -287,12 +287,4 @@ contains
       real(dp), intent(inout) :: g(n)
       call bcast(comm, g, n, 0)
    end subroutine bcast_flat
-
-   function wall() result(t)
-      real(dp) :: t
-      integer(int64) :: cc, rate
-      call system_clock(cc, rate)
-      t = real(cc, dp)/real(rate, dp)
-   end function wall
-
 end module trc_scf_context

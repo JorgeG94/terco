@@ -42,6 +42,7 @@
 !
 module trc_scf_diis
    use pic_types, only: dp
+   use pic_sorting, only: sort
    use trc_linalg, only: trc_linalg_t
    implicit none
    private
@@ -398,7 +399,7 @@ contains
       real(dp) :: u(m)
       integer :: ii, rho
       u = c
-      call sort_desc(m, u)
+      call sort(u, reverse=.true.)
       css = 0.0_dp
       theta = 0.0_dp
       rho = 0
@@ -416,24 +417,6 @@ contains
       end if
       c = max(c - theta, 0.0_dp)
    end subroutine project_simplex
-
-   ! Insertion sort, descending: m <= ndiis, so this is never worth more
-   ! than a handful of compares.
-   pure subroutine sort_desc(m, u)
-      integer, intent(in) :: m
-      real(dp), intent(inout) :: u(m)
-      integer :: ii, jj
-      real(dp) :: t
-      do ii = 1, m - 1
-         do jj = ii + 1, m
-            if (u(jj) > u(ii)) then
-               t = u(ii)
-               u(ii) = u(jj)
-               u(jj) = t
-            end if
-         end do
-      end do
-   end subroutine sort_desc
 
    !
    ! The DIIS system B c = (0, ..., 0, -1), pivoted elimination on the host,

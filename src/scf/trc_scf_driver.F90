@@ -191,7 +191,6 @@ contains
       real(dp) :: ctl(2)
       real(dp) :: etot, eold, drms, e1, e2, exc, ngrid, errmax
       integer :: nfrac
-      real(dp) :: tw0, tw1
       !! This iteration's share of the two totals, so the table says where
       !! the time went while it is going rather than only at the end. A
       !! Fock build is not the same cost twice: the SAD guess is atomic, so
@@ -316,7 +315,7 @@ contains
          end if
       end if
       do it = 1, opts%max_iter
-         tw0 = wall()
+         call tmr%fock%start()
          ! --- D_cart := T D_sph T^T, the one transform every Cartesian
          ! quantity below (the Fock build, the XC density) is built from.
          ! Not taken at all when `sph` is false -- see this module's own
@@ -344,25 +343,26 @@ contains
          do s = 1, cfg%nspin
             call to_sph(b, sph, nao, nao_c, st%gmat_c(:, :, s), st%gmat(:, :, s))
          end do
-         tw1 = wall()
-         tmr%t_fock = tmr%t_fock + (tw1 - tw0)
-         tmr%tf_it = tw1 - tw0
+         tmr%tf_it = tmr%fock%get_elapsed_time()
+         tmr%t_fock = tmr%t_fock + tmr%tf_it
+         call tmr%xc%start()
          ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (cfg%dft) then
             call build_vxc(b, ctx%xg, ctx%xg_nlc, cfg%func, cfg%nlc, cfg%nspin, nao_c, nao, sph, opts%rho_tol, comm, lp, &
                            st%d_c, st%vxc_c, st%vxc, exc, ngrid, tmr%tx_pts, tmr%tx_prs)
          end if
-         tw0 = wall()
-         tmr%t_xc = tmr%t_xc + (tw0 - tw1)
-         tmr%tx_it = tw0 - tw1
+         tmr%tx_it = tmr%xc%get_elapsed_time()
+         tmr%t_xc = tmr%t_xc + tmr%tx_it
+         call tmr%rest%start()
          ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
          ! too: one set of charges, one operator added to both spins) -----
          if (cfg%pcm_on) then
+            call tmr%pcm%start()
             call build_pcm(b, ctx%pcm, ctx%pl, cfg%nspin, nao_c, nu_c, nao, sph, &
                            st%d_c, st%dtot_c, st%vpcm_c, st%vpcm, epcm, comm)
-            tw1 = wall()
-            tmr%t_pcm = tmr%t_pcm + (tw1 - tw0)
-            tw0 = tw1
+            tmr%t_pcm = tmr%t_pcm + tmr%pcm%get_elapsed_time()
+            ! the PCM step is its own column, not part of the rest
+            call tmr%rest%start()
          end if
          ! --- energy at this density -----------------------------------------
          call scf_energy(lp, nao, cfg%nspin, res%dmat, ctx%hcore, st%gmat, res%e_nuc, exc, epcm, e1, e2, etot)
@@ -435,7 +435,7 @@ contains
          end if
          call st%update_errv(nao, cfg%nspin, res%dmat)
          drms = sqrt(lp%dot_3d(st%errv, st%errv))/real(nao, dp)
-         tmr%t_rest = tmr%t_rest + (wall() - tw0)
+         tmr%t_rest = tmr%t_rest + tmr%rest%get_elapsed_time()
          if (cfg%talk) then
             if (cfg%dft) then
                print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3)", &
@@ -519,13 +519,6 @@ contains
          call global_logger%performance(trim(line))
       end subroutine report_timing
 
-      function wall() result(t)
-         real(dp) :: t
-         integer(int64) :: cc, rate
-         call system_clock(cc, rate)
-         t = real(cc, dp)/real(rate, dp)
-      end function wall
-
       ! Guess for one spin from a Fock-like h, into `dout`: the eigenproblem
       ! and the products on the device, the result copied back for the
       ! resident copy made below. h and x are host arrays here, copied up for
@@ -559,9 +552,9 @@ contains
          real(dp), intent(inout) :: eps_s(nao), cmo_s(nao, nao), d_s(nao, nao)
          real(dp), intent(inout) :: ofrac(nao)
          integer :: i, j
-         ! F' = X^T F X: the same two GEMMs lp%sandwich does (work = F X,
-         ! out = X^T work), so this reaches the identical raw calls.
-         call lp%sandwich(ctx%x, f, fp, t)
+         ! F' = X^T F X
+         call lp%gemm_mat(f, ctx%x, t)
+         call lp%gemm_mat(ctx%x, t, fp, transa="T")
          call lp%syev(fp, eps_s)
          call lp%gemm_mat(ctx%x, fp, cmo_s)
          if (frac) then

@@ -13,6 +13,7 @@
 !
 module trc_scf_state
    use pic_types, only: dp
+   use pic_timer, only: timer_type
    use trc_scf_context, only: scf_ctx_t
    use trc_scf_settings, only: scf_settings_t, trc_scf_result_t
    implicit none
@@ -21,13 +22,15 @@ module trc_scf_state
    public :: scf_state_t, scf_timers_t
 
    type :: scf_timers_t
-      !! The loop's own running totals (`trc_scf_context`'s `scf_ctx_t` owns
-      !! the once-per-geometry setup timings). Plain scalars accumulated
-      !! straight in the loop, never inside a `do concurrent`, so there is
-      !! nothing here to wrap -- only to bundle, for `report_timing` to
-      !! print. `tf_it`/`tx_it` are this iteration's own share, not a
-      !! running total (see `trc_scf_driver`'s own header on why that
-      !! differs between SAD's first iteration and its plateau).
+      !! The loop's phases, one pic timer each, started at the phase's
+      !! first statement and read at its last, and their running totals
+      !! (`trc_scf_context`'s `scf_ctx_t` owns the once-per-geometry setup
+      !! timings). A pic timer measures one interval, so the totals over
+      !! iterations are kept beside it. `tf_it`/`tx_it` are this
+      !! iteration's own share, not a running total (see `trc_scf_driver`'s
+      !! own header on why that differs between SAD's first iteration and
+      !! its plateau).
+      type(timer_type) :: fock, xc, pcm, rest
       real(dp) :: t_fock = 0.0_dp, t_xc = 0.0_dp, t_rest = 0.0_dp
       real(dp) :: t_pcm = 0.0_dp
       real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp

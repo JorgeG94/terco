@@ -85,7 +85,6 @@ module trc_linalg
       procedure :: dot => linalg_dot_raw
       procedure :: dot_2d => linalg_dot_2d
       procedure :: dot_3d => linalg_dot_3d
-      procedure :: sandwich => linalg_sandwich
       procedure :: density => linalg_density
       procedure :: sync => linalg_sync
    end type trc_linalg_t
@@ -634,23 +633,6 @@ contains
       n = size(a, 1)
       call this%linalg_syev_raw(n, a, n, w)
    end subroutine linalg_syev_mat
-
-   !!
-   !! The orthogonalised Fock matrix: out = X^T F X, computed as the two
-   !! GEMMs work = F X then out = X^T work. X, F, out and work are square,
-   !! contiguous and the same size n = size(x,1). Calls the same raw gemm
-   !! twice with alpha = 1, beta = 0, so the result is bitwise identical to
-   !! doing those two calls by hand.
-   !!
-   subroutine linalg_sandwich(this, x, f, out, work)
-      class(trc_linalg_t), intent(in) :: this
-      real(dp), intent(in), contiguous :: x(:, :), f(:, :)
-      real(dp), intent(inout), contiguous :: out(:, :), work(:, :)
-      integer :: n
-      n = size(x, 1)
-      call this%gemm("N", "N", n, n, n, 1.0_dp, f, n, x, n, 0.0_dp, work, n)
-      call this%gemm("T", "N", n, n, n, 1.0_dp, x, n, work, n, 0.0_dp, out, n)
-   end subroutine linalg_sandwich
 
    !!
    !! The density matrix built from the occupied columns of C: D = occ *
