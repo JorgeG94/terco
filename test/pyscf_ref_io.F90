@@ -30,7 +30,7 @@
 ! array to what it reads here directly, no permutation needed.
 !
 module pyscf_ref_io
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
 

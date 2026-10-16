@@ -289,8 +289,7 @@ def _unroll_combos(txt, ncab):
 #: keeping a second copy: the segment locate/decode, the exact Schwarz and
 #: density-weighted screens, the same_ab/same_cd/same_pair canonicalisation,
 #: the pair-table offset lookup, the scalar-path degeneracy/AO-offset decode,
-#: and the block-accumulated, density-batched digestion (plus its
-#: TRC_NO_DIGEST timing branch) do not depend on WHICH integral core fills
+#: and the block-accumulated, density-batched digestion do not depend on WHICH integral core fills
 #: `vbuf` -- HGP's VRR/HRR or rotaxis's frame-and-three-levels -- only on the
 #: pair tables and the four shells' Cartesian counts. Factoring them out is
 #: what makes "byte-identical before and after" a meaningful check: this
@@ -469,33 +468,19 @@ def emit_scalar_decode():
 """
 
 
+#: First line of every emitted digestion; gen_rys.py and the block-form
+#: splice below cut the kernel text there.
+DIGEST_MARKER = "         ! BLOCK-ACCUMULATED DIGESTION.\n"
+
+
 def emit_digestion(na, nb, nc, nd):
-    """Block-accumulated, density-batched Fock digestion from `vbuf`, plus
-    the TRC_NO_DIGEST timing branch. Parameterised only by the four shells'
-    Cartesian counts, so it is the same text for every kernel -- HGP or
+    """Block-accumulated, density-batched Fock digestion from `vbuf`.
+    Its second line is DIGEST_MARKER, which the splicing generators search
+    for. Parameterised only by the four shells' Cartesian counts, so it is the same text for every kernel -- HGP or
     rotaxis -- that fills `vbuf(1:na*nb*nc*nd)` in the ia-fastest order this
     reads (FRAME.md section 6 confirms rotaxis's derivation order already
     matches it, so no remapping is needed to reuse this)."""
-    ncomp = na*nb*nc*nd
-    return f"""#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, {ncomp}
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
-         !
+    return f"""         !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
          ! The previous form did six atomic updates and six scattered `dmat`
@@ -641,7 +626,6 @@ def emit_digestion(na, nb, nc, nd):
          end do
 
          end do   ! idens
-#endif
 """
 
 
@@ -1399,7 +1383,7 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
                   ", ".join(str(c) for c in role["comps"]) + "]\n")
 
     prims, hd = pieces["prims"], pieces["hrr_and_digest"]
-    ihrr_end = hd.index("#ifdef TRC_NO_DIGEST")
+    ihrr_end = hd.index(DIGEST_MARKER) - len("         !\n")
     digest = hd[ihrr_end:]
     ivrr = prims.index(vrr)
     acc_old = (f"                  do x = 1, {nv}\n"
@@ -1509,7 +1493,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     assert igl > 0 and "g(x, 1, 1) = g1(x)" in prims[igl:]
     prims = prims[:igl]
     ihrr = txt_l.index("         ! --- HRR ---\n")
-    idig = txt_l.index("#ifdef TRC_NO_DIGEST")
+    idig = txt_l.index(DIGEST_MARKER) - len("         !\n")
     iend = txt_l.index("         end do   ! qab\n")
     hrr_and_digest = txt_l[ihrr:iend]
     decode = emit_scalar_decode()
@@ -1729,8 +1713,8 @@ def main():
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_pc_kernels
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                         BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                         BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
@@ -1872,8 +1856,8 @@ end module trc_pc_kernels
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module {mod}
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
@@ -1911,8 +1895,7 @@ end module {mod}
 ! each class module instead, where the order-dependent digestion actually is.
 !
 module trc_pc_kernels
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_tables, only: LMAX
 """ + "\n".join(use_lines) + """
    implicit none

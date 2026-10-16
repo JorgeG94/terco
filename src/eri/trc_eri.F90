@@ -1,49 +1,28 @@
 !
 ! The four-centre Fock build, behind one object.
 !
-! WHY THIS EXISTS
-! ---------------
-! The four-centre path and the one-electron/DF API grew separately and speak
-! different languages: `fock_bins` wants a `pair_bins_t`, the `hp_*` primitive
-! arrays and a Schwarz vector, all built by three different routines with
-! different argument conventions, while the API wants an `trc_basis_t`. A
-! caller wanting both had to build two containers over one geometry and know
-! which routine fills which array.
-!
-! This closes that. `trc_eri_t` is built from a basis and a threshold, owns
-! every four-centre structure, stays device-resident, and exposes one call:
+! `trc_eri_t` is built from a basis and a threshold, owns every four-centre
+! structure (pair bins, HGP primitive pairs, Schwarz bounds), stays
+! device-resident, and replaces three differently-conventioned build routines:
 !
 !     call eri%build(basis, thresh)
 !     do while (.not. converged)
-!        call eri%fock(basis, dmat, gmat)      ! G = 2J - K
-!        ! diagonalise, DIIS, new density -- the caller's
+!        call eri%fock(basis, dmat, vhf)
+!        ! F = Hcore + vhf; diagonalise, DIIS, new density -- the caller's
 !     end do
 !     call eri%release()
 !
-! WHAT `fock` RETURNS
-! -------------------
-! The two-electron part of the RHF Fock matrix,
-!
-!     vhf = J - K/2        for the TOTAL density D (trace = nelec)
-!
-! so the caller writes `F = Hcore + vhf` with no factor to remember. NOT the
-! full Fock matrix: Hcore does not change between iterations, and folding it
-! in here would mean either recomputing it every time or storing it in an
-! object with no reason to hold it.
-!
-! The convention matters and is easy to get wrong. `2J - K` is equally common
-! and is what the internal kernel and the benchmarks produce -- it is twice
-! this. The first SCF written against this API used it and converged smoothly
-! to -98.50 for water instead of -75.99, which is the failure mode worth
-! designing out: a factor of two in the two-electron energy does not diverge,
-! it converges to the wrong answer.
-!
-! Internally the kernel accumulates a folded half-matrix at twice scale, so
-! vhf = (raw + raw^T)/8. Both factors are applied here; neither is the
-! caller's business.
+! `fock` returns the two-electron part only, vhf = J - K/2 for the TOTAL
+! density D (trace = nelec). NOT 2J - K, which is twice this and is what the
+! internal kernel and benchmarks produce: an SCF written against 2J - K
+! converged smoothly to -98.50 for water instead of -75.99, since a factor of
+! two in the two-electron energy does not diverge. The kernel accumulates a
+! folded half-matrix at twice scale, so vhf = (raw + raw^T)/8; both factors
+! are applied here.
 !
 module trc_eri
-   use trc_boys, only: dp, boys_init
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_init
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
    use trc_hgp, only: build_pairs_hgp
@@ -52,9 +31,7 @@ module trc_eri
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use trc_binkernel, only: fock_bins
-#ifdef TERCO_RYS
    use trc_grad, only: grad_bins
-#endif
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
@@ -62,6 +39,8 @@ module trc_eri
    implicit none
    private
    public :: trc_eri_t
+
+   integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
    type :: trc_eri_t
       real(dp) :: thresh = 1.0e-10_dp
@@ -104,18 +83,18 @@ module trc_eri
       integer :: nao_w = 0
       logical :: on_device = .false.
       integer :: nlaunch = 0
-      integer(kind=8) :: nkept = 0
+      integer(int64) :: nkept = 0
       !! Quartets that survive both screens in the last build, counted only
       !! when fock_resident is asked for it. Diagnostic: it costs a full
       !! extra enumeration pass.
-      integer(kind=8) :: nwork = 0
+      integer(int64) :: nwork = 0
       type(comm_t) :: comm
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then
       !! summed across ranks. One rank is rank 0 of 1 and no communicator.
       integer :: rank = 0, nranks = 1
       logical :: distributed = .false.
-      real(dp) :: t_build(5) = 0.0_dp
+      real(dp) :: t_build(NBUILD_STAGES) = 0.0_dp
       !! Wall seconds of the last build's stages: HGP pairs, Schwarz bounds,
       !! bins, pair quartets, upload to the device. trc_scf reports them with
       !! the rest of its setup.
@@ -160,7 +139,9 @@ contains
       integer :: bres
       character(len=8) :: bt_env
 
-      this%rank = 0; this%nranks = 1; this%distributed = .false.
+      this%rank = 0
+      this%nranks = 1
+      this%distributed = .false.
       if (present(comm)) then
          this%comm = comm
          this%rank = comm%rank()
@@ -186,8 +167,8 @@ contains
       !
       ! TRC_NO_DECONTRACT=1 forces the old path, for bisecting a discrepancy.
       !
-      bt_env = ' '
-      call get_environment_variable('TRC_NO_DECONTRACT', bt_env)
+      bt_env = " "
+      call get_environment_variable("TRC_NO_DECONTRACT", bt_env)
       if (len_trim(bt_env) == 0) then
          ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
          ! uses, so the rule can be swept without a rebuild.
@@ -216,33 +197,33 @@ contains
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
-   real(dp) function decon_cutoff()
+   real(dp) function decon_cutoff() result(res)
       !! Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
       !! unless TRC_DECON_CUTOFF says otherwise.
       character(len=32) :: e
       integer :: ios
-      e = ' '
-      call get_environment_variable('TRC_DECON_CUTOFF', e)
-      decon_cutoff = DECON_CUTOFF_DEFAULT
+      e = " "
+      call get_environment_variable("TRC_DECON_CUTOFF", e)
+      res = DECON_CUTOFF_DEFAULT
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) decon_cutoff
-         if (ios /= 0) decon_cutoff = DECON_CUTOFF_DEFAULT
+         read (e, *, iostat=ios) res
+         if (ios /= 0) res = DECON_CUTOFF_DEFAULT
       end if
    end function decon_cutoff
 
-   integer function decon_minprim()
+   integer function decon_minprim() result(res)
       !! Smallest compact primitive count a general contraction must have for
       !! the split to be worth its tightened screen. TRC_DECON_MINPRIM
       !! overrides it, so the gate can be swept without a rebuild; 0 splits
       !! every group, as this module did before the gate existed.
       character(len=32) :: e
       integer :: ios
-      e = ' '
-      call get_environment_variable('TRC_DECON_MINPRIM', e)
-      decon_minprim = DECON_MINPRIM_DEFAULT
+      e = " "
+      call get_environment_variable("TRC_DECON_MINPRIM", e)
+      res = DECON_MINPRIM_DEFAULT
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) decon_minprim
-         if (ios /= 0) decon_minprim = DECON_MINPRIM_DEFAULT
+         read (e, *, iostat=ios) res
+         if (ios /= 0) res = DECON_MINPRIM_DEFAULT
       end if
    end function decon_minprim
 
@@ -435,7 +416,9 @@ contains
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -554,9 +537,6 @@ contains
       integer :: ndens, nw, id
       real(dp) :: jfac, kfac
 
-#ifndef TERCO_RYS
-      error stop "terco: eri%gradient needs a TERCO_RYS=ON build"
-#else
       if (present(omega)) then
          if (omega /= 0.0_dp) error stop &
             "terco: eri%gradient: no range-separated gradient; omega must be absent or zero"
@@ -571,7 +551,8 @@ contains
       if (any(this%sh_at == 0)) error stop &
          "terco: eri%gradient: a shell centre matches no atom coordinate exactly"
 
-      jfac = 1.0_dp; kfac = 1.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
 
@@ -608,7 +589,6 @@ contains
       deallocate (dwork)
 
       if (this%distributed) call sum_ranks(this, grad, 3*b%natm)
-#endif
    end subroutine eri_gradient
 
    subroutine sum_ranks(this, g, n)
@@ -671,7 +651,9 @@ contains
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -687,7 +669,8 @@ contains
          dp_w = dmat
       end if
       dwork(1, :, :) = dp_w
-      jmat = 0.0_dp; kmat = 0.0_dp
+      jmat = 0.0_dp
+      kmat = 0.0_dp
       if (screen_on(density_screen)) then
          call density_blocks(this, dwork, 1)
       else
@@ -777,7 +760,9 @@ contains
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -831,8 +816,8 @@ contains
       block
          character(len=8) :: ke
          logical :: want
-         ke = ' '
-         call get_environment_variable('TRC_KEPT_STATS', ke)
+         ke = " "
+         call get_environment_variable("TRC_KEPT_STATS", ke)
          want = len_trim(ke) > 0
          if (present(count_survivors)) want = want .or. count_survivors
          if (want) then
@@ -847,9 +832,9 @@ contains
                            this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                            1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
                            nkept=this%nkept)
-            if (len_trim(ke) > 0) print '(a,i0,a,i0,a,f6.2,a)', &
-               '  [kept] nwork ', this%nwork, '  nkept ', this%nkept, '  survive ', &
-               100.0_dp*real(this%nkept, dp)/max(real(this%nwork, dp), 1.0_dp), '%'
+            if (len_trim(ke) > 0) print "(a,i0,a,i0,a,f6.2,a)", &
+               "  [kept] nwork ", this%nwork, "  nkept ", this%nkept, "  survive ", &
+               100.0_dp*real(this%nkept, dp)/max(real(this%nwork, dp), 1.0_dp), "%"
          end if
       end block
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
@@ -900,7 +885,7 @@ contains
    ! shell pair, each scanning its own block, writing `dsh` in place while it
    ! is device-resident.
    !
-   pure logical function screen_on(flag)
+   pure logical function screen_on(flag) result(res)
       !! `density_screen` with its default applied, in one place.
       !!
       !! Written as a function rather than repeated three times because the
@@ -909,8 +894,8 @@ contains
       !! CPHF that will not converge for a reason nothing in the output points
       !! at. One place to read the default is one place to get it wrong.
       logical, intent(in), optional :: flag
-      screen_on = .true.
-      if (present(flag)) screen_on = flag
+      res = .true.
+      if (present(flag)) res = flag
    end function screen_on
 
    subroutine density_blocks_device(nshell, nao, sh_l, sh_ao, dmat, dsh)
@@ -1003,7 +988,9 @@ contains
       integer :: n, nw, i, j, d
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -1114,7 +1101,10 @@ contains
       if (allocated(this%sh_at))  deallocate (this%sh_at)
       call decon_release(this%dec)
       call this%pb%release()
-      this%nbas = 0; this%nao = 0; this%nao_w = 0; this%nhpp = 0
+      this%nbas = 0
+      this%nao = 0
+      this%nao_w = 0
+      this%nhpp = 0
    end subroutine eri_release
 
 end module trc_eri

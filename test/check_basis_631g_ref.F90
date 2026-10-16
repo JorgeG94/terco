@@ -23,7 +23,7 @@
 ! trusting a single geometry's agreement.
 !
 program check_basis_631g_ref
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_test_basis, only: read_xyz, build_631g

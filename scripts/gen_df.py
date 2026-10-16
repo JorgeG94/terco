@@ -566,7 +566,8 @@ MOD_HEADER = """!
 #endif
 """
 
-BOYS_USE = ("   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, "
+BOYS_USE = ("   use pic_types, only: dp, int64\n"
+            "   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, "
             "BOYS_NGRID, BOYS_TMAX, BOYS_DTINV, BOYS_DT\n")
 
 
@@ -588,7 +589,7 @@ def emit_2c_module(la, lc, L, LA, order, order_val, order_arg, rys, unroll_max):
         kernel_body, tabs = emit_class_rys(la, 0, lc, three=False, order=order,
                                            unroll_max=unroll_max)
         nroots = (la + lc)//2 + 1
-        use_block = "   use trc_boys, only: dp\n" + ri.roots_table_use(nroots)
+        use_block = "   use pic_types, only: dp, int64\n" + ri.roots_table_use(nroots)
         boys_incl = ""
     else:
         kernel_body = emit_class(la, 0, lc, three=False, order=order)
@@ -621,9 +622,9 @@ contains
       integer,  intent(in)    :: ord_a(na), ord_c(nc)
       real(dp), intent(inout) :: jmat(nao, nao)
 
-      integer(kind=8) :: t
+      integer(int64) :: t
 
-      do concurrent(t = 0:int(na, 8)*nc - 1)
+      do concurrent(t = 0:int(na, int64)*nc - 1)
          call {itm}(t, nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                    na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       end do
@@ -632,7 +633,7 @@ contains
    pure subroutine {itm}(t, nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                          na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       !$acc routine seq
-      integer(kind=8), intent(in) :: t
+      integer(int64), intent(in) :: t
       integer,  intent(in)    :: nshell, maxnp, na, nc, nao
       integer,  intent(in)    :: sh_np(nshell), sh_ao(nshell)
       real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
@@ -643,7 +644,7 @@ contains
       integer  :: ii, jj, a, c, mu, nu
       real(dp) :: blk({na*nc})
 
-      ii = ord_a(int(mod(t, int(na, 8))) + 1)
+      ii = ord_a(int(mod(t, int(na, int64))) + 1)
       jj = ord_c(int(t/na) + 1)
       call {kern}(sh_np(ii), sh_e(:, ii), sh_c(:, ii), sh_r(:, ii), &
                  sh_np(jj), sh_e(:, jj), sh_c(:, jj), sh_r(:, jj), blk)
@@ -685,7 +686,7 @@ def emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, rys, unroll_m
         kernel_body, tabs = emit_class_rys(la, lb, lc, three=True, order=order,
                                            unroll_max=unroll_max)
         nroots = (la + lb + lc)//2 + 1
-        use_block = "   use trc_boys, only: dp\n" + ri.roots_table_use(nroots)
+        use_block = "   use pic_types, only: dp, int64\n" + ri.roots_table_use(nroots)
         boys_incl = ""
     else:
         kernel_body = emit_class(la, lb, lc, three=True, order=order)
@@ -728,10 +729,10 @@ contains
       integer,  intent(in)    :: ord_a(nac)
       real(dp), intent(inout) :: tens(nao, nao, nax)
 
-      integer(kind=8) :: t
+      integer(int64) :: t
 
       if (npc <= 0 .or. nac <= 0) return
-      do concurrent(t = 0:int(npc, 8)*nac - 1)
+      do concurrent(t = 0:int(npc, int64)*nac - 1)
          call {itm}(t, nsh, nao, sh_ao, sh_r, &
                    npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                    npc, ord_p, &
@@ -748,7 +749,7 @@ contains
                          nac, ord_a, &
                          tens)
       !$acc routine seq
-      integer(kind=8), intent(in) :: t
+      integer(int64), intent(in) :: t
       integer,  intent(in)    :: nsh, nao, npair, npp, npc, nsx, nax, mnx, nac
       integer,  intent(in)    :: sh_ao(nsh)
       real(dp), intent(in)    :: sh_r(3, nsh)
@@ -764,7 +765,7 @@ contains
       integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, o
       real(dp) :: blk({na*nb*nc}), abx, aby, abz
 
-      ip = ord_p(int(mod(t, int(npc, 8))) + 1)
+      ip = ord_p(int(mod(t, int(npc, int64))) + 1)
       kk = ord_a(int(t/npc) + 1)
       ii = p_i(ip); jj = p_j(ip)
       abx = sh_r(1, ii) - sh_r(1, jj)
@@ -905,7 +906,7 @@ def emit_handoff(two, three, L, LA, order_arg, order_val):
 ! module, where the order-dependent digestion actually is.
 !
 module trc_df_kernels
-   use trc_boys, only: dp
+   use pic_types, only: dp
 {use2}
 {use3}
    implicit none

@@ -45,7 +45,7 @@
 ! energy on a hard case", not a bit-level fold convention.
 !
 program scf_robust
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_test_basis, only: read_xyz
@@ -95,7 +95,7 @@ program scf_robust
 
    dev = trc_bind_device(0)
    open (newunit=unit, file='scf_robust_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(NCASE, kind=8)
+   write (unit) int(NCASE, int64)
    all_ok = .true.
 
    ! Opened (not required) before any case runs -- see scf_rks.F90's own
@@ -143,8 +143,8 @@ program scf_robust
          all_ok = .false.
       end if
 
-      write (unit) int(bas%nao, kind=8), int(natm, kind=8), int(res%nspin, kind=8), &
-         int(nalpha, kind=8), int(nbeta, kind=8), int(charge(ic), kind=8)
+      write (unit) int(bas%nao, int64), int(natm, int64), int(res%nspin, int64), &
+         int(nalpha, int64), int(nbeta, int64), int(charge(ic), int64)
       write (unit) xyzf(ic), basf(ic)
       write (unit) res%energy
       call bas%release()

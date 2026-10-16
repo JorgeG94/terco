@@ -108,3 +108,6 @@ test/pyscf_refs/df_vs_pyscf.ref
 # A converted tree left behind by tools/acc_to_omp.py or tools/dc_to_omp.py
 # run with --write outside CI.
 *.acc_backup
+
+# tools/fpm_generate.sh output
+src/generated/fpm/

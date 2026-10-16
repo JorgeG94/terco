@@ -14,8 +14,8 @@
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_pc_k2221
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
@@ -6854,24 +6854,6 @@ contains
             + cdz*g1(350) &
             + g1(700)
 
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 648
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -7018,7 +7000,6 @@ contains
          end do
 
          end do   ! idens
-#endif
    end subroutine pcsi2221
 
    subroutine pcr2221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
@@ -9077,24 +9058,6 @@ contains
             + 2.0_dp*abz*g1(109) &
             + cdz*g1(31) &
             + g1(124)
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 108
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -9248,7 +9211,6 @@ contains
          end do
 
          end do   ! idens
-#endif
          case (2)
             do x = 1, 124
                g1(x) = 0.0_dp
@@ -11221,24 +11183,6 @@ contains
             + 2.0_dp*abz*g1(109) &
             + cdz*g1(31) &
             + g1(124)
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 108
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -11392,7 +11336,6 @@ contains
          end do
 
          end do   ! idens
-#endif
          case (3)
             do x = 1, 124
                g1(x) = 0.0_dp
@@ -13398,24 +13341,6 @@ contains
             + 2.0_dp*abz*g1(109) &
             + cdz*g1(31) &
             + g1(124)
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 108
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -13569,7 +13494,6 @@ contains
          end do
 
          end do   ! idens
-#endif
          case (4)
             do x = 1, 124
                g1(x) = 0.0_dp
@@ -15372,24 +15296,6 @@ contains
             + 2.0_dp*abz*g1(109) &
             + cdz*g1(31) &
             + g1(124)
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 108
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -15543,7 +15449,6 @@ contains
          end do
 
          end do   ! idens
-#endif
          case (5)
             do x = 1, 124
                g1(x) = 0.0_dp
@@ -17523,24 +17428,6 @@ contains
             + 2.0_dp*abz*g1(109) &
             + cdz*g1(31) &
             + g1(124)
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 108
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -17694,7 +17581,6 @@ contains
          end do
 
          end do   ! idens
-#endif
          case (6)
             do x = 1, 124
                g1(x) = 0.0_dp
@@ -19345,24 +19231,6 @@ contains
             + 2.0_dp*abz*g1(109) &
             + cdz*g1(31) &
             + g1(124)
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 108
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -19516,7 +19384,6 @@ contains
          end do
 
          end do   ! idens
-#endif
          end select
    end subroutine pcri2221
 

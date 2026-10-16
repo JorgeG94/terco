@@ -27,7 +27,7 @@
 ! does: permute, then rescale by n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)).
 !
 program check_vv10_vs_pyscf
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_basis_json, only: trc_basis_from_json
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -50,7 +50,7 @@ program check_vv10_vs_pyscf
    logical :: has_ref
 
    open (newunit=unit, file='vv10_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(3, kind=8)   ! number of cases
+   write (unit) int(3, int64)   ! number of cases
 
    ! Opened (not required) BEFORE the dump is written: a missing reference
    ! must not stop this program before vv10_probe.bin exists, or
@@ -98,7 +98,7 @@ contains
       real(dp), allocatable :: at_r(:, :), c(:, :), dmat(:, :), vmat0(:, :), vmat(:, :)
       real(dp), allocatable :: smat(:, :), tmat(:, :), vnmat(:, :)
       real(dp) :: e_nlc
-      integer(kind=8) :: lcg
+      integer(int64) :: lcg
       real(dp) :: seed
 
       call read_xyz(xyzfile, nat, at_z, at_r)
@@ -128,10 +128,10 @@ contains
       call xg%to_device()
 
       allocate (c(nao, nocc), dmat(nao, nao), vmat0(nao, nao), vmat(nao, nao))
-      lcg = 97_8
+      lcg = 97_int64
       do j = 1, nocc
          do i = 1, nao
-            lcg = mod(48271_8*lcg, 2147483647_8)
+            lcg = mod(48271_int64*lcg, 2147483647_int64)
             seed = real(lcg, dp)/2147483647.0_dp
             c(i, j) = 0.16_dp*(seed - 0.5_dp)
          end do
@@ -151,9 +151,9 @@ contains
       print '(a,a,a,a,a,i0,a,i0,a,f20.14)', '  ', trim(xyzfile), ' / ', trim(basjson), &
          ': nao ', nao, ' points ', grid%n_points, '  E_nlc(terco) = ', e_nlc
 
-      write (unit) int(0, kind=8)   ! 0 = RKS case
-      write (unit) int(nat, kind=8), int(nao, kind=8), int(grid%n_points, kind=8)
-      write (unit) int(at_z, kind=8)
+      write (unit) int(0, int64)   ! 0 = RKS case
+      write (unit) int(nat, int64), int(nao, int64), int(grid%n_points, int64)
+      write (unit) int(at_z, int64)
       write (unit) at_r
       write (unit) grid%coords
       write (unit) grid%weights
@@ -200,7 +200,7 @@ contains
       real(dp), allocatable :: dmat_a(:, :), dmat_b(:, :), vmat0_a(:, :), vmat0_b(:, :), vmat_a(:, :), vmat_b(:, :)
       real(dp), allocatable :: smat(:, :), tmat(:, :), vnmat(:, :)
       real(dp) :: e_nlc
-      integer(kind=8) :: lcg
+      integer(int64) :: lcg
       real(dp) :: seed
 
       call read_xyz(xyzfile, nat, at_z, at_r)
@@ -227,17 +227,17 @@ contains
       allocate (ca(nao, nalpha), cb(nao, nbeta))
       allocate (dmat_a(nao, nao), dmat_b(nao, nao))
       allocate (vmat0_a(nao, nao), vmat0_b(nao, nao), vmat_a(nao, nao), vmat_b(nao, nao))
-      lcg = 131_8
+      lcg = 131_int64
       do j = 1, nalpha
          do i = 1, nao
-            lcg = mod(48271_8*lcg, 2147483647_8)
+            lcg = mod(48271_int64*lcg, 2147483647_int64)
             seed = real(lcg, dp)/2147483647.0_dp
             ca(i, j) = 0.16_dp*(seed - 0.5_dp)
          end do
       end do
       do j = 1, nbeta
          do i = 1, nao
-            lcg = mod(48271_8*lcg, 2147483647_8)
+            lcg = mod(48271_int64*lcg, 2147483647_int64)
             seed = real(lcg, dp)/2147483647.0_dp
             cb(i, j) = 0.18_dp*(seed - 0.5_dp)
          end do
@@ -259,9 +259,9 @@ contains
       print '(a,a,a,a,a,i0,a,i0,a,f20.14)', '  ', trim(xyzfile), ' / ', trim(basjson), &
          ': nao ', nao, ' points ', grid%n_points, '  E_nlc(terco, UKS) = ', e_nlc
 
-      write (unit) int(1, kind=8)   ! 1 = UKS case
-      write (unit) int(nat, kind=8), int(nao, kind=8), int(grid%n_points, kind=8)
-      write (unit) int(at_z, kind=8)
+      write (unit) int(1, int64)   ! 1 = UKS case
+      write (unit) int(nat, int64), int(nao, int64), int(grid%n_points, int64)
+      write (unit) int(at_z, int64)
       write (unit) at_r
       write (unit) grid%coords
       write (unit) grid%weights

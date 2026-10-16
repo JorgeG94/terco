@@ -32,7 +32,8 @@
 ! the work list by class and size per class.  Left until it is measured.
 !
 module trc_batch
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX, LTOT, NHERM_MAX, NHERM_PAIR, nherm, tables_init, &
                            hidx, hdir, hm1, hm2, hcf, nherm_of, &
                            ht, hu, hv, hsgn, hshift
@@ -52,10 +53,10 @@ contains
 
 #include "inc/trc_boys_eval.inc"
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       !$acc routine seq
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
@@ -63,22 +64,25 @@ contains
    ! sqrt(3/4pi) for p, and 1 from d up, so its Cartesian d functions are
    ! deliberately not unit-normalised.
    !
-   pure real(dp) function common_fac_sp(l)
+   pure real(dp) function common_fac_sp(l) result(res)
       integer, intent(in) :: l
       select case (l)
-      case (0); common_fac_sp = 0.282094791773878143_dp
-      case (1); common_fac_sp = 0.488602511902919921_dp
-      case default; common_fac_sp = 1.0_dp
+      case (0)
+      res = 0.282094791773878143_dp
+      case (1)
+      res = 0.488602511902919921_dp
+      case default
+      res = 1.0_dp
       end select
    end function common_fac_sp
 
    !
    ! Offset of E(i,j,t,d) within one primitive pair's block.  1-based.
    !
-   pure integer function e_off(i, j, t, d)
+   pure integer function e_off(i, j, t, d) result(res)
       !$acc routine seq
       integer, intent(in) :: i, j, t, d
-      e_off = (d - 1)*(2*LMAX + 1)*(LMAX + 1)*(LMAX + 1) &
+      res = (d - 1)*(2*LMAX + 1)*(LMAX + 1)*(LMAX + 1) &
               + t*(LMAX + 1)*(LMAX + 1) + j*(LMAX + 1) + i + 1
    end function e_off
 
@@ -136,8 +140,8 @@ contains
       ! Gaussian, so a thousandfold tighter cutoff moves the distance at which
       ! pairs die by very little.
       !
-      bp_env = ' '
-      call get_environment_variable('TRC_BUILD_TIMING', bp_env)
+      bp_env = " "
+      call get_environment_variable("TRC_BUILD_TIMING", bp_env)
       bp_t = len_trim(bp_env) > 0
       call system_clock(bp_c0, bp_rate)
       cut = thresh*1.0e-3_dp
@@ -150,7 +154,8 @@ contains
             amp = 0.0_dp
             do ki = 1, sh_np(i)
                do kj = 1, sh_np(j)
-                  a = sh_e(ki, i); b = sh_e(kj, j)
+                  a = sh_e(ki, i)
+                  b = sh_e(kj, j)
                   amp = max(amp, abs(sh_c(ki, i)*sh_c(kj, j)) &
                                  *exp(-(a*b/(a + b))*rab2))
                end do
@@ -166,8 +171,8 @@ contains
 
       if (bp_t) then
          call system_clock(bp_c1)
-         print '(a,f9.3,a,i0,a,i0)', '    [pairs] count   ', &
-            real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), ' s   npp ', npp, '  ne ', NE_PAIR
+         print "(a,f9.3,a,i0,a,i0)", "    [pairs] count   ", &
+            real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s   npp ", npp, "  ne ", NE_PAIR
          bp_c0 = bp_c1
       end if
       allocate (pp_p(npp), pp_r(npp, 3), pp_c(npp), pp_e(npp, NE_PAIR))
@@ -180,21 +185,25 @@ contains
       ! zeroing has to come back.
       if (bp_t) then
          call system_clock(bp_c1)
-         print '(a,f9.3,a)', '    [pairs] alloc   ', real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), ' s'
+         print "(a,f9.3,a)", "    [pairs] alloc   ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
          bp_c0 = bp_c1
       end if
 
       do i = 1, nbas
-         li = sh_l(i); ra = sh_r(:, i)
+         li = sh_l(i)
+         ra = sh_r(:, i)
          do j = 1, nbas
-            lj = sh_l(j); rb = sh_r(:, j)
+            lj = sh_l(j)
+            rb = sh_r(:, j)
             key = (i - 1)*nbas + j
             if (pp_n(key) == 0) cycle    ! skipped by the prefilter above
             k = pp_off(key)
             do ki = 1, sh_np(i)
-               a = sh_e(ki, i); ci = sh_c(ki, i)*common_fac_sp(li)
+               a = sh_e(ki, i)
+               ci = sh_c(ki, i)*common_fac_sp(li)
                do kj = 1, sh_np(j)
-                  b = sh_e(kj, j); cj = sh_c(kj, j)*common_fac_sp(lj)
+                  b = sh_e(kj, j)
+                  cj = sh_c(kj, j)*common_fac_sp(lj)
                   k = k + 1
                   p = a + b
                   mu = a*b/p
@@ -225,7 +234,7 @@ contains
       end do
       if (bp_t) then
          call system_clock(bp_c1)
-         print '(a,f9.3,a)', '    [pairs] fill    ', real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), ' s'
+         print "(a,f9.3,a)", "    [pairs] fill    ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
       end if
    end subroutine build_pairs
 
@@ -327,18 +336,28 @@ contains
       ! these are indexed by a pair's Hermite index and the wrong bound cost
       ! 2.6 kB of stack frame per thread.
       real(dp) :: tvec(NHERM_PAIR), ecdv(NHERM_PAIR)
-      real(dp) :: pqx, pqy, pqz, pqd(3)
+      real(dp) :: pqx, pqy, pqz
+      real(dp) :: pqd(3)
       real(dp) :: f(0:BOYS_MMAX)
 
-      la = sh_l(q_i(iq)); lb = sh_l(q_j(iq))
-      lc = sh_l(q_k(iq)); ld = sh_l(q_l(iq))
-      lab = la + lb; lcd = lc + ld; lt = lab + lcd
-      na = ncart(la); nb = ncart(lb); nc = ncart(lc); nd = ncart(ld)
+      la = sh_l(q_i(iq))
+      lb = sh_l(q_j(iq))
+      lc = sh_l(q_k(iq))
+      ld = sh_l(q_l(iq))
+      lab = la + lb
+      lcd = lc + ld
+      lt = lab + lcd
+      na = ncart(la)
+      nb = ncart(lb)
+      nc = ncart(lc)
+      nd = ncart(ld)
 
       keyab = (q_i(iq) - 1)*nbas + q_j(iq)
       keycd = (q_k(iq) - 1)*nbas + q_l(iq)
-      offab = pp_off(keyab); nab = pp_n(keyab)
-      offcd = pp_off(keycd); ncd = pp_n(keycd)
+      offab = pp_off(keyab)
+      nab = pp_n(keyab)
+      offcd = pp_off(keycd)
+      ncd = pp_n(keycd)
 
       do kp = offab + 1, offab + nab
          p = pp_p(kp)
@@ -348,7 +367,9 @@ contains
             pqx = pp_r(kp, 1) - pp_r(kq, 1)
             pqy = pp_r(kp, 2) - pp_r(kq, 2)
             pqz = pp_r(kp, 3) - pp_r(kq, 3)
-            pqd(1) = pqx; pqd(2) = pqy; pqd(3) = pqz
+            pqd(1) = pqx
+            pqd(2) = pqy
+            pqd(3) = pqz
             tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)
 
             call boys_eval(lt, tval, f)
@@ -380,9 +401,10 @@ contains
                deg = nherm_of(lt - n)
                do h = 2, deg
                   rscr(ir, basen + h) = pqd(hdir(h))*rscr(ir, base1 + hm1(h))
-                  if (hm2(h) > 0) &
-                     rscr(ir, basen + h) = rscr(ir, basen + h) &
+                  if (hm2(h) > 0) then
+                    rscr(ir, basen + h) = rscr(ir, basen + h) &
                                            + hcf(h)*rscr(ir, base1 + hm2(h))
+                  end if
                end do
                cur = nxt
             end do
@@ -530,8 +552,10 @@ contains
       integer  :: mu, nu, lam, sig
       real(dp) :: v
 
-      na = ncart(sh_l(q_i(iq))); nb = ncart(sh_l(q_j(iq)))
-      nc = ncart(sh_l(q_k(iq))); nd = ncart(sh_l(q_l(iq)))
+      na = ncart(sh_l(q_i(iq)))
+      nb = ncart(sh_l(q_j(iq)))
+      nc = ncart(sh_l(q_k(iq)))
+      nd = ncart(sh_l(q_l(iq)))
       base = q_off(iq)
 
       idx = 0
@@ -620,9 +644,14 @@ contains
       logical  :: dij, dkl, dpq
       real(dp) :: v
 
-      si = q_i(iq); sj = q_j(iq); sk = q_k(iq); sl = q_l(iq)
-      na = ncart(sh_l(si)); nb = ncart(sh_l(sj))
-      nc = ncart(sh_l(sk)); nd = ncart(sh_l(sl))
+      si = q_i(iq)
+      sj = q_j(iq)
+      sk = q_k(iq)
+      sl = q_l(iq)
+      na = ncart(sh_l(si))
+      nb = ncart(sh_l(sj))
+      nc = ncart(sh_l(sk))
+      nd = ncart(sh_l(sl))
       base = q_off(iq)
 
       pij = si*(si - 1)/2 + sj

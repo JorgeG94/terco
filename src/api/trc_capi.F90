@@ -168,8 +168,9 @@
 !         TRC_AO_NORM_SHELL.
 !
 module trc_capi
-   use, intrinsic :: iso_c_binding
-   use trc_boys, only: dp
+   use, intrinsic :: iso_c_binding, only: c_associated, c_char, c_double, c_f_pointer, c_int, c_loc, &
+                                          c_null_char, c_null_ptr, c_ptr
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
@@ -489,7 +490,9 @@ contains
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
          call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
-         call ao_scale_cov(nrm, s); call ao_scale_cov(nrm, t); call ao_scale_cov(nrm, v)
+         call ao_scale_cov(nrm, s)
+         call ao_scale_cov(nrm, t)
+         call ao_scale_cov(nrm, v)
          deallocate (nrm)
       end if
       smat(1:n*n) = reshape(s, [n*n])
@@ -545,7 +548,7 @@ contains
       call trc_df_3c(bb%b, pb%p, ab%b, t)
       !$acc update self(t)
       !$acc exit data delete(t)
-      tens(1:int(n, 8)*n*m) = reshape(t, [n*n*m])
+      tens(1:int(n, int64)*n*m) = reshape(t, [n*n*m])
       deallocate (t)
       status = TRC_OK
    end function trc_compute_df3c
@@ -650,14 +653,14 @@ contains
       type(pairs_box), pointer :: pb
       real(dp), allocatable :: m(:, :, :), nrm(:)
       integer :: n, k
-      integer(kind=8) :: ntot
+      integer(int64) :: ntot
 
       status = TRC_ERR_NULL
       if (.not. c_associated(basis) .or. .not. c_associated(pairs)) return
       call c_f_pointer(basis, bb)
       call c_f_pointer(pairs, pb)
       n = bb%b%nao
-      ntot = int(n, 8)*int(n, 8)*int(TRC_NMULT, 8)
+      ntot = int(n, int64)*int(n, int64)*int(TRC_NMULT, int64)
       allocate (m(n, n, TRC_NMULT))
       !$acc enter data create(m)
       call trc_multipoles(bb%b, pb%p, real(origin, dp), m)
@@ -1068,7 +1071,9 @@ contains
       logical :: collective
       call trc_build_comm(fcomm, comm, collective, status)
       if (status /= TRC_OK) then
-         energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
+         energy = 0.0_c_double
+         e_xc = 0.0_c_double
+         niter = 0
          return
       end if
       if (.not. collective) then
@@ -1107,7 +1112,8 @@ contains
       integer :: nblk
       logical :: collective
 
-      e_os = 0.0_c_double; e_ss = 0.0_c_double
+      e_os = 0.0_c_double
+      e_ss = 0.0_c_double
       status = TRC_ERR_NULL
       if (.not. c_associated(basis) .or. .not. c_associated(aux)) return
       call c_f_pointer(basis, bb)
@@ -1168,7 +1174,9 @@ contains
       logical :: unit_mode
 
       status = TRC_ERR_NULL
-      energy = 0.0_c_double; e_xc = 0.0_c_double; niter = 0
+      energy = 0.0_c_double
+      e_xc = 0.0_c_double
+      niter = 0
       if (.not. c_associated(basis)) return
       call c_f_pointer(basis, bb)
       n = bb%b%nao
@@ -1261,7 +1269,8 @@ contains
       if (allocated(bb%cmo)) deallocate (bb%cmo, bb%eps)
       call move_alloc(res%cmo, bb%cmo)
       call move_alloc(res%eps, bb%eps)
-      bb%nalpha = int(nalpha); bb%nbeta = int(nbeta)
+      bb%nalpha = int(nalpha)
+      bb%nbeta = int(nbeta)
       status = merge(TRC_OK, TRC_ERR_NOCONV, res%converged)
    end function scf_entry
 
@@ -1314,13 +1323,14 @@ contains
    pure function itoa(i) result(t)
       integer, intent(in) :: i
       character(len=16) :: t
-      write (t, '(i0)') i
+      write (t, "(i0)") i
    end function itoa
 
    subroutine invalidate_runs(cx)
       !! A setting the results depended on changed.
       type(context_box), intent(inout) :: cx
-      cx%scf_ok = .false.; cx%rimp2_ok = .false.
+      cx%scf_ok = .false.
+      cx%rimp2_ok = .false.
       cx%message = ""
    end subroutine invalidate_runs
 
@@ -1352,7 +1362,9 @@ contains
          cx%at_z(i) = real(z(i), dp)
          cx%at_r(:, i) = real(xyz(3*i - 2:3*i), dp)
       end do
-      cx%natm = int(natm); cx%charge = int(charge); cx%multiplicity = int(multiplicity)
+      cx%natm = int(natm)
+      cx%charge = int(charge)
+      cx%multiplicity = int(multiplicity)
       cx%have_mol = .true.
       call invalidate_runs(cx)
       status = TRC_OK
@@ -1377,15 +1389,15 @@ contains
          cx%rimp2_ok = .false.
          call b%release()
          return
-      else
-         if (cx%have_basis) call cx%bb%b%release()
-         cx%bb%b = b
-         call cx%bb%b%to_device()
-         cx%bb%ao_norm_kind = cx%ao_norm_kind
-         if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
-         cx%have_basis = .true.
-         call drop_eri(cx)
       end if
+
+      if (cx%have_basis) call cx%bb%b%release()
+      cx%bb%b = b
+      call cx%bb%b%to_device()
+      cx%bb%ao_norm_kind = cx%ao_norm_kind
+      if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
+      cx%have_basis = .true.
+      call drop_eri(cx)
       call b%release()
       call invalidate_runs(cx)
    end subroutine take_basis
@@ -1710,7 +1722,9 @@ contains
       integer(c_int), intent(out) :: npoints
       integer(c_int) :: status
       type(context_box), pointer :: cx
-      e_diel = 0.0_c_double; q_total = 0.0_c_double; npoints = 0
+      e_diel = 0.0_c_double
+      q_total = 0.0_c_double
+      npoints = 0
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -1734,16 +1748,20 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
       if (conv_energy <= 0.0_c_double) then
-         call refuse(cx, "trc_set_convergence: conv_energy must be positive"); return
+         call refuse(cx, "trc_set_convergence: conv_energy must be positive")
+         return
       end if
       if (conv_diis <= 0.0_c_double) then
-         call refuse(cx, "trc_set_convergence: conv_diis must be positive (the commutator norm gate)"); return
+         call refuse(cx, "trc_set_convergence: conv_diis must be positive (the commutator norm gate)")
+         return
       end if
       if (max_iter < 1) then
-         call refuse(cx, "trc_set_convergence: max_iter must be at least 1, got "//trim(itoa(int(max_iter)))); return
+         call refuse(cx, "trc_set_convergence: max_iter must be at least 1, got "//trim(itoa(int(max_iter))))
+         return
       end if
       if (ndiis < 1) then
-         call refuse(cx, "trc_set_convergence: ndiis must be at least 1, got "//trim(itoa(int(ndiis)))); return
+         call refuse(cx, "trc_set_convergence: ndiis must be at least 1, got "//trim(itoa(int(ndiis))))
+         return
       end if
       cx%opts%conv_energy = real(conv_energy, dp)
       cx%opts%conv_diis = real(conv_diis, dp)
@@ -1877,10 +1895,12 @@ contains
       if (allocated(cx%dguess)) deallocate (cx%dguess)
       if (kind == TRC_GUESS_GIVEN) then
          if (.not. c_associated(dguess)) then
-            call refuse(cx, "trc_set_guess: kind 3 (given) needs a density pointer"); return
+            call refuse(cx, "trc_set_guess: kind 3 (given) needs a density pointer")
+            return
          end if
          if (nspin < 1 .or. nspin > 2) then
-            call refuse(cx, "trc_set_guess: nspin must be 1 or 2, got "//trim(itoa(int(nspin)))); return
+            call refuse(cx, "trc_set_guess: nspin must be 1 or 2, got "//trim(itoa(int(nspin))))
+            return
          end if
          status = TRC_ERR_STATE
          if (.not. cx%have_basis) then
@@ -2021,7 +2041,8 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
-      cx%nfrozen = int(nfrozen); cx%aux_block = int(aux_block)
+      cx%nfrozen = int(nfrozen)
+      cx%aux_block = int(aux_block)
       cx%rimp2_ok = .false.
       status = TRC_OK
    end function trc_set_rimp2
@@ -2074,7 +2095,8 @@ contains
       integer(c_int), intent(out) :: status
       type(comm_t) :: node_comm
       integer :: dev
-      ok = .false.; status = TRC_OK
+      ok = .false.
+      status = TRC_OK
       if (fcomm == -1) return
       comm = comm_from_handle(int(fcomm))
       if (comm%is_null()) then
@@ -2102,7 +2124,8 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
-      cx%scf_ok = .false.; cx%rimp2_ok = .false.
+      cx%scf_ok = .false.
+      cx%rimp2_ok = .false.
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_run_scf: set the molecule and the basis first"
@@ -2120,7 +2143,8 @@ contains
          cx%message = "trc_run_scf: charge and multiplicity do not fit the electron count"
          return
       end if
-      nalpha = (nelec + nunp)/2; nbeta = nelec - nalpha
+      nalpha = (nelec + nunp)/2
+      nbeta = nelec - nalpha
       if (nalpha > n) then
          cx%message = "trc_run_scf: more electrons than functions"
          return
@@ -2161,7 +2185,8 @@ contains
          if (nspin == 1) then
             dg(:, :, 1) = dsad
          else
-            dg(:, :, 1) = 0.5_dp*dsad; dg(:, :, 2) = 0.5_dp*dsad
+            dg(:, :, 1) = 0.5_dp*dsad
+            dg(:, :, 2) = 0.5_dp*dsad
          end if
       case (TRC_GUESS_SAP)
          ! SAP hands back a one-electron operator, not a density, so it goes
@@ -2226,6 +2251,10 @@ contains
             return
          end if
          dg = cx%dguess
+      case default
+         cx%message = "trc_run_scf: unknown guess kind"
+         if (collective) call comm%finalize()
+         return
       end select
       if (allocated(dg)) then
          if (collective) then
@@ -2255,30 +2284,33 @@ contains
       ! the orbitals, where the old RI-MP2 entry also looks for them
       if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
       allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
-      cx%bb%cmo = cx%res%cmo; cx%bb%eps = cx%res%eps
-      cx%bb%nalpha = nalpha; cx%bb%nbeta = nbeta
-      cx%nalpha = nalpha; cx%nbeta = nbeta
+      cx%bb%cmo = cx%res%cmo
+      cx%bb%eps = cx%res%eps
+      cx%bb%nalpha = nalpha
+      cx%bb%nbeta = nbeta
+      cx%nalpha = nalpha
+      cx%nbeta = nbeta
       cx%scf_ok = .true.
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
 
-   pure integer function core_orbitals(z)
+   pure integer function core_orbitals(z) result(res)
       !! Frozen-core orbitals for one element, by period.
       real(dp), intent(in) :: z
       integer :: iz
       iz = nint(z)
       if (iz <= 2) then
-         core_orbitals = 0
+         res = 0
       else if (iz <= 10) then
-         core_orbitals = 1
+         res = 1
       else if (iz <= 18) then
-         core_orbitals = 5
+         res = 5
       else if (iz <= 36) then
-         core_orbitals = 9
+         res = 9
       else if (iz <= 54) then
-         core_orbitals = 18
+         res = 18
       else
-         core_orbitals = 27
+         res = 27
       end if
    end function core_orbitals
 
@@ -2366,7 +2398,8 @@ contains
                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
       end if
       call pl%release()
-      cx%e_os = res%e_os; cx%e_ss = res%e_ss
+      cx%e_os = res%e_os
+      cx%e_ss = res%e_ss
       cx%rimp2_ok = .true.
       status = TRC_OK
    end function trc_run_rimp2
@@ -2537,14 +2570,19 @@ contains
       real(c_double), intent(out) :: e_nuc, e_one, e_two, e_xc
       integer(c_int) :: status
       type(context_box), pointer :: cx
-      e_nuc = 0.0_c_double; e_one = 0.0_c_double; e_two = 0.0_c_double; e_xc = 0.0_c_double
+      e_nuc = 0.0_c_double
+      e_one = 0.0_c_double
+      e_two = 0.0_c_double
+      e_xc = 0.0_c_double
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
-      e_nuc = real(cx%res%e_nuc, c_double); e_one = real(cx%res%e_one, c_double)
-      e_two = real(cx%res%e_two, c_double); e_xc = real(cx%res%e_xc, c_double)
+      e_nuc = real(cx%res%e_nuc, c_double)
+      e_one = real(cx%res%e_one, c_double)
+      e_two = real(cx%res%e_two, c_double)
+      e_xc = real(cx%res%e_xc, c_double)
       status = TRC_OK
    end function trc_energy_parts
 
@@ -2596,7 +2634,8 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
-      n = scf_space_nao(cx%bb); ns = cx%res%nspin
+      n = scf_space_nao(cx%bb)
+      ns = cx%res%nspin
       d = cx%res%dmat
       if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
@@ -2625,7 +2664,8 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
-      n = scf_space_nao(cx%bb); ns = cx%res%nspin
+      n = scf_space_nao(cx%bb)
+      ns = cx%res%nspin
       c = cx%res%cmo
       if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
@@ -2650,7 +2690,8 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
-      n = scf_space_nao(cx%bb); ns = cx%res%nspin
+      n = scf_space_nao(cx%bb)
+      ns = cx%res%nspin
       eps(1:n*ns) = real(reshape(cx%res%eps, [n*ns]), c_double)
       status = TRC_OK
    end function trc_mo_energies
@@ -2660,13 +2701,15 @@ contains
       real(c_double), intent(out) :: e_os, e_ss
       integer(c_int) :: status
       type(context_box), pointer :: cx
-      e_os = 0.0_c_double; e_ss = 0.0_c_double
+      e_os = 0.0_c_double
+      e_ss = 0.0_c_double
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%rimp2_ok) return
-      e_os = real(cx%e_os, c_double); e_ss = real(cx%e_ss, c_double)
+      e_os = real(cx%e_os, c_double)
+      e_ss = real(cx%e_ss, c_double)
       status = TRC_OK
    end function trc_rimp2_energy
 

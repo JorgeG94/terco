@@ -21,7 +21,7 @@
 ! integrand is rho * eps.
 !
 module trc_xc_pz81_mod
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_xc_util, only: m_cbrt_2, m_cbrt_3, m_cbrt_4, m_cbrt_one_ov_pi, xc_cbrt
    implicit none
    private

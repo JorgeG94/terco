@@ -17,7 +17,8 @@
 ! screening unrepresentatively effective.
 !
 program bench_binwater
-   use trc_boys, only: dp, boys_init
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_cart, only: cart_init
    use trc_batch, only: build_pairs, eri_batch, ncart, common_fac_sp
@@ -53,9 +54,9 @@ program bench_binwater
    real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :), hp_c(:)
    integer, allocatable :: q_i(:), q_j(:), q_k(:), q_l(:), q_off(:)
    real(dp), allocatable :: out(:), rscr(:, :), qs(:), dmax(:, :)
-   integer(kind=8) :: nrect
+   integer(int64) :: nrect
    integer :: nout, r, nchunk, ic, c, l0, h0, nlaunch
-   integer(kind=8) :: nwork, nkept
+   integer(int64) :: nwork, nkept
    type(pair_bins_t) :: bins
    integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
    !! Bin-interleaved second copy of the hp_* data (build_pair_quartets);
@@ -134,14 +135,14 @@ program bench_binwater
       '   live bins ', bins%nlive
    block
       integer :: kk, mx
-      integer(kind=8) :: seg
+      integer(int64) :: seg
       mx = 0
       do kk = 1, bins%nbin
          mx = max(mx, bins%bin_cnt(kk))
       end do
-      seg = int(mx, 8)*int(mx + 1, 8)/2
+      seg = int(mx, int64)*int(mx + 1, int64)/2
       print '(a,i0,a,i0,a,l1)', '  largest bin ', mx, '  -> max segment ', seg, &
-         '   fits int32: ', seg < 2147483647_8
+         '   fits int32: ', seg < 2147483647_int64
    end block
    print '(a,es9.2)', '  schwarz thresh  ', THRESH
    print '(a)', ''
@@ -207,7 +208,7 @@ program bench_binwater
 
    print '(a,i0,a,i0)', '  kernel launches ', nlaunch, '   work items ', nwork
    print '(a,i0,a,f6.2,a)', '  survive screen  ', nkept, '  (', &
-      100.0_dp*real(nkept, dp)/real(max(nwork, 1_8), dp), '% of work items)'
+      100.0_dp*real(nkept, dp)/real(max(nwork, 1_int64), dp), '% of work items)'
    print '(a,f9.4,a,f5.1,a)', '  FOCK BUILD      ', best, ' s   [+', &
       100.0_dp*(worst/best - 1.0_dp), '%]'
    print '(a,es10.3)', '  quartets/s      ', real(nwork, dp)/best
@@ -245,7 +246,7 @@ program bench_binwater
          integer :: ug
          open (newunit=ug, file=trim(GFILE), status='replace', &
                access='stream', form='unformatted')
-         write (ug) int(nao, kind=8)
+         write (ug) int(nao, int64)
          write (ug) jmat
          close (ug)
          print '(a,a)', '  wrote G to      ', trim(GFILE)
@@ -366,7 +367,7 @@ contains
    !
    subroutine read_density()
       integer :: u, ios, ii, jj
-      integer(kind=8) :: nao_file
+      integer(int64) :: nao_file
       real(dp) :: amax, amean
       open (newunit=u, file=trim(DMFILE), status='old', action='read', &
             access='stream', form='unformatted', iostat=ios)
@@ -538,7 +539,7 @@ contains
 
    subroutine tick(tt)
       real(dp), intent(out) :: tt
-      integer(kind=8) :: c, rate
+      integer(int64) :: c, rate
       call system_clock(c, rate)
       tt = real(c, dp)/real(rate, dp)
    end subroutine tick

@@ -27,7 +27,7 @@
 ! against this program's own np 1 water/6-31G* values (2026-10-15).
 !
 program scf_mpi
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, MPI_MAX, MPI_MIN
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -58,7 +58,7 @@ program scf_mpi
    logical :: ok
    character(len=256) :: xyz, xyz_arg
    real(dp) :: t0, t1
-   integer(kind=8) :: cc, rate
+   integer(int64) :: cc, rate
 
    call pic_mpi_init()
    comm = comm_world()

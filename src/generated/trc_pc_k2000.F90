@@ -14,8 +14,8 @@
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_pc_k2000
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
@@ -430,24 +430,6 @@ contains
          vbuf(5) = g1(9)
          vbuf(6) = g1(10)
 
-#ifdef TRC_NO_DIGEST
-         !
-         ! Evaluation only, for like-for-like comparison against published
-         ! numbers that were measured with digestion removed (the libERI paper
-         ! edits QUICK's source to strip it, so its Tables 2 and 3 are ERI
-         ! evaluation alone).  Every integral is still formed -- the whole VRR
-         ! and HRR run and every component of vbuf is read, so nothing is
-         ! dead-code eliminated -- but the density loads and the atomic
-         ! scatters into the Fock matrix are gone.  The guard is opaque to the
-         ! compiler and never fires, so jmat is untouched and the ANSWER IS
-         ! DELIBERATELY WRONG.  Timing only.
-         !
-         sc = 0.0_dp
-         do idx = 1, 6
-            sc = sc + vbuf(idx)
-         end do
-         if (sc == huge(1.0_dp)) jmat(1, 1, 1) = sc
-#else
          !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -594,7 +576,6 @@ contains
          end do
 
          end do   ! idens
-#endif
    end subroutine pcsi2000
 
 end module trc_pc_k2000

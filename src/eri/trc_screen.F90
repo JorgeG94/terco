@@ -1,56 +1,38 @@
 !
 ! Screening and the compacted, symmetry-reduced work list.
 !
-! Three reductions, applied in this order because each makes the next cheaper:
+! Three reductions, in this order because each makes the next cheaper:
 !
-!   1. PERMUTATIONAL SYMMETRY, 8-fold.  Only canonical quartets are stored:
-!      i >= j, k >= l, and pair(i,j) >= pair(k,l).  Not an optimisation -- an
-!      8x factor is the difference between a calculation and a stunt.
+!   1. PERMUTATIONAL SYMMETRY, 8-fold: only canonical quartets are stored
+!      (i >= j, k >= l, pair(i,j) >= pair(k,l)).
 !
-!   2. SCHWARZ.  |(ij|kl)| <= Q(ij) Q(kl) with Q(ij) = sqrt(max |(ij|ij)|).
-!      Rigorous (Cauchy-Schwarz on the Coulomb metric), so discarding below a
-!      threshold bounds the error rather than hoping.
+!   2. SCHWARZ: |(ij|kl)| <= Q(ij) Q(kl), Q(ij) = sqrt(max |(ij|ij)|).
+!      Rigorous (Cauchy-Schwarz), so discarding below a threshold bounds the
+!      error. Q is built with the full Coulomb operator and never adjusted for
+!      the range-separation omega: in k-space erf(omega r)/r has transform
+!      4*pi/k^2 * exp(-k^2/(4 omega^2)) <= 4*pi/k^2, so (ab|ab)_erf <=
+!      (ab|ab)_Coulomb for any charge distribution. A tighter omega-specific
+!      bound would only screen more, so this costs no accuracy. The prescreens
+!      in trc_batch.F90 and the generated kernels' `pcut` rest on the same fact.
 !
-!      Q is built with the full Coulomb operator here and nowhere adjusted for
-!      omega (trc_eri.F90's range-separation parameter). The bound survives
-!      attenuation by a FOURIER argument, not a pointwise one on the real-
-!      space kernel (erf(omega r)/r is not pointwise <= 1/r everywhere; it is
-!      smaller at small r and the two cross): erf(omega r)/r has Fourier
-!      transform 4*pi/k^2 * exp(-k^2/(4 omega^2)), which is <= the Coulomb
-!      kernel's own 4*pi/k^2 at every k. (ab|ab) is the integral of the
-!      charge distribution rho_ab(r) rho_ab(r') against a kernel, which in
-!      k-space is the integral of |rho_ab_hat(k)|^2 times that kernel's
-!      transform -- a non-negative integrand against a pointwise-smaller
-!      transform, so (ab|ab)_erf <= (ab|ab)_Coulomb for ANY charge
-!      distribution, omega included. Tightening the bound for a given omega
-!      would screen more quartets, not fewer, so leaving it alone costs
-!      accuracy nothing -- the prescreens in trc_batch.F90 and the generated
-!      kernels' `pcut` test are the same story, same reason.
+!   3. DENSITY: a quartet's Fock contribution, not the integral's size, is what
+!      matters, so the bound carries the largest density block the quartet can
+!      touch. This makes late SCF iterations cheap and is redone whenever D
+!      changes.
 !
-!   3. DENSITY.  What actually matters is a quartet's contribution to the Fock
-!      matrix, not the integral's size, so the bound carries the largest
-!      density block the quartet can touch.  This is the screen that makes late
-!      SCF iterations cheap, and it has to be redone whenever D changes.
+! The list is built once on the host and only real quartets reach the device;
+! screening inside a kernel would not help, since an early-exiting GPU thread
+! still holds its warp for the busiest lane.
 !
-! The list is built ONCE on the host and only real quartets reach the device.
-! Screening inside the kernel would not help: a GPU thread that exits early has
-! already been scheduled, and its warp still waits for the busiest lane.  That
-! is the whole point of section 0.2.
-!
-! WHY NOT libfint FOR THE BOUNDS
-! ------------------------------
-! It cannot be linked here -- libfint is gfortran-only (real128 is -1 under
-! nvfortran, see NOTES.md), and in any case a library that needed a second
-! integral package at runtime to screen would be a poor thing.  Q is computed
-! with our own engine on the diagonal quartets, which is O(N^2) and reuses code
-! that is already validated.  libfint's role stays what it has been: the oracle
-! that proves the bounds are right, in check_screen.
+! Q comes from our own engine on the diagonal quartets (O(N^2)), not libfint,
+! which is gfortran-only (see NOTES.md). libfint remains the oracle that
+! checks the bounds, in check_screen.
 !
 module trc_screen
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_tables, only: LTOT, NHERM_MAX
    use trc_batch, only: eri_batch, ncart
-   use, intrinsic :: iso_fortran_env, only: int64
+   use pic_types, only: int64
    use trc_hgp, only: hgp_batch, hgp_scratch_size
    implicit none
    private
@@ -62,10 +44,10 @@ contains
    !
    ! Canonical compound index of a shell pair, i >= j, 1-based.
    !
-   pure integer function pair_index(i, j)
+   pure integer function pair_index(i, j) result(res)
       !$acc routine seq
       integer, intent(in) :: i, j
-      pair_index = i*(i - 1)/2 + j
+      res = i*(i - 1)/2 + j
    end function pair_index
 
    !
@@ -115,7 +97,10 @@ contains
             key = (i - 1)*nbas + j
             if (pp_n(key) == 0) cycle
             nlive = nlive + 1
-            d_i(nlive) = i; d_j(nlive) = j; d_k(nlive) = i; d_l(nlive) = j
+            d_i(nlive) = i
+            d_j(nlive) = j
+            d_k(nlive) = i
+            d_l(nlive) = j
             d_q(nlive) = pair_index(i, j)
          end do
       end do
@@ -194,41 +179,23 @@ contains
 
    !
    ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, computed from
-   ! the SAME contracted HGP primitive pairs (hp_*) the Fock kernels read --
-   ! not a second, MMD-only primitive-pair set built and thrown away just to
-   ! feed the bound (that was `schwarz_bounds` above, fed by trc_batch.F90's
-   ! `build_pairs`; the production build no longer calls either).
+   ! the same contracted HGP primitive pairs (hp_*) the Fock kernels read, so no
+   ! second primitive-pair set is built (unlike `schwarz_bounds` above, which is
+   ! no longer called in production).
    !
-   ! THE SCALE, AND WHY THIS IS NOT JUST A FASTER COPY OF THE OLD ROUTINE.
-   ! `build_pairs` (MMD) multiplies `common_fac_sp(li)` into the coefficient
-   ! of every primitive it stores, unconditionally. `build_pairs_hgp` does
-   ! NOT: trc_eri.F90's `build_structures` passes it cfac = 1, because the
-   ! basis it is handed (`trc_api`'s `basis_build`) already folded
-   ! common_fac_sp into `sh_c` once. Handed that same already-folded basis,
-   ! the old MMD route folded it a SECOND time -- common_fac_sp(0) =
-   ! 0.2820948, common_fac_sp(1) = 0.4886025, common_fac_sp(l>=2) = 1 -- so
-   ! every bound touching an s or p shell came out too SMALL by that factor
-   ! for each such shell, which is not a conservative error: a Cauchy-Schwarz
-   ! bound that is too small can screen away a quartet large enough to
-   ! matter. Reading hp_c as the kernels do removes the extra fold along with
-   ! the separate pair set, rather than reproducing it.
+   ! Scale: `build_pairs` (MMD) multiplied `common_fac_sp` into every primitive
+   ! coefficient, but `basis_build` already folds it into `sh_c`, so the old
+   ! route folded it twice and s/p bounds came out too small. That is not
+   ! conservative: a too-small Cauchy-Schwarz bound can screen away a quartet
+   ! that matters. Reading hp_c as the kernels do (build_structures passes
+   ! cfac = 1) avoids it.
    !
-   ! hgp_quartet (trc_hgp.F90) is the same Obara-Saika recursion the
-   ! generated per-class kernels (pc_dispatch) were generated from, and,
-   ! unlike those kernels -- which stop at d (trc_rys_select.F90's HGP_LMAX)
-   ! -- it is not class-specialised: each quartet's scratch is sized from its
-   ! own class (hgp_scratch_size) in a `work` array this routine allocates,
-   ! so nothing ties it to HGP_LMAX. It is correct at every class the build
-   ! supports, f included, even though the production Fock path routes an f-containing
-   ! class to Rys instead of HGP -- the bound does not need to be computed
-   ! the same way the kernel that will consume it is.
+   ! `hgp_quartet` is not class-specialised (its scratch is sized per class in
+   ! `work`), so it is correct for every class including f, even though
+   ! production routes f classes to Rys.
    !
-   ! `hp_off`/`hp_n`/`hp_p`/`hp_r`/`hp_ra`/`hp_rb`/`hp_c` are expected
-   ! ALREADY device-resident (the caller enters them before calling, because
-   ! they stay resident for the Fock kernels afterwards regardless -- see
-   ! build_structures). Staging a fresh device copy here, the way the MMD
-   ! route staged its own `pp_*` every chunk, is exactly the implicit
-   ! per-launch transfer this routine exists to avoid.
+   ! `hp_*` must already be device-resident (they stay resident for the Fock
+   ! kernels); staging a copy here would be an implicit per-launch transfer.
    !
    subroutine schwarz_bounds_hgp(nbas, nhpp, sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
       integer,  intent(in)  :: nbas, nhpp
@@ -261,7 +228,10 @@ contains
             key = (i - 1)*nbas + j
             if (hp_n(key) == 0) cycle
             nlive = nlive + 1
-            d_i(nlive) = i; d_j(nlive) = j; d_k(nlive) = i; d_l(nlive) = j
+            d_i(nlive) = i
+            d_j(nlive) = j
+            d_k(nlive) = i
+            d_l(nlive) = j
             d_q(nlive) = pair_index(i, j)
          end do
       end do
@@ -275,12 +245,15 @@ contains
 
       ! The chunks: starts in cst(1:nchunk), cst(nchunk + 1) = nlive + 1.
       allocate (cst(nlive + 1), w_off(nlive))
-      nchunk = 0; nout = 0; nwmax = 0
+      nchunk = 0
+      nout = 0
+      nwmax = 0
       c0 = 1
       do while (c0 <= nlive)
          nchunk = nchunk + 1
          cst(nchunk) = c0
-         m = 0; nw = 0
+         m = 0
+         nw = 0
          c1 = c0 - 1
          do n = c0, min(c0 + CHUNK - 1, nlive)
             lab = sh_l(d_i(n)) + sh_l(d_j(n))
@@ -291,7 +264,8 @@ contains
             nw = nw + need
             c1 = n
          end do
-         nout = max(nout, m); nwmax = max(nwmax, nw)
+         nout = max(nout, m)
+         nwmax = max(nwmax, nw)
          c0 = c1 + 1
       end do
       cst(nchunk + 1) = nlive + 1
@@ -302,9 +276,11 @@ contains
       ! NOT entered here: see the header comment above.
       !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, w_off, out, qc, work)
       do ic = 1, nchunk
-         c0 = cst(ic); c1 = cst(ic + 1) - 1
+         c0 = cst(ic)
+         c1 = cst(ic + 1) - 1
          nc = c1 - c0 + 1
-         m = 0; nw = 0
+         m = 0
+         nw = 0
          do n = c0, c1
             d_off(n) = m
             w_off(n) = nw
@@ -356,7 +332,8 @@ contains
       integer, intent(inout) :: d_i(*), d_j(*), d_k(*), d_l(*), d_q(*)
 
       integer, parameter :: NB = 32
-      integer :: cnt(NB), start(NB), n, b, p, key
+      integer :: n, b, p, key
+      integer :: cnt(NB), start(NB)
       integer, allocatable :: bkt(:), si(:), sj(:), sq(:)
 
       allocate (bkt(nlive), si(nlive), sj(nlive), sq(nlive))
@@ -366,7 +343,8 @@ contains
          p = pp_n(key)
          b = 1
          do while (p > 1 .and. b < NB)
-            p = p/2; b = b + 1
+            p = p/2
+            b = b + 1
          end do
          bkt(n) = NB + 1 - b          ! largest count first
          cnt(bkt(n)) = cnt(bkt(n)) + 1
@@ -377,11 +355,16 @@ contains
       end do
       do n = 1, nlive
          b = bkt(n)
-         si(start(b)) = d_i(n); sj(start(b)) = d_j(n); sq(start(b)) = d_q(n)
+         si(start(b)) = d_i(n)
+         sj(start(b)) = d_j(n)
+         sq(start(b)) = d_q(n)
          start(b) = start(b) + 1
       end do
       do n = 1, nlive
-         d_i(n) = si(n); d_j(n) = sj(n); d_k(n) = si(n); d_l(n) = sj(n)
+         d_i(n) = si(n)
+         d_j(n) = sj(n)
+         d_k(n) = si(n)
+         d_l(n) = sj(n)
          d_q(n) = sq(n)
       end do
       deallocate (bkt, si, sj, sq)
@@ -453,7 +436,9 @@ contains
          do j = 1, i
             if (q(pair_index(i, j))*qmax > thresh) then
                np = np + 1
-               pi(np) = i; pj(np) = j; pq(np) = q(pair_index(i, j))
+               pi(np) = i
+               pj(np) = j
+               pq(np) = q(pair_index(i, j))
             end if
          end do
       end do
@@ -465,7 +450,10 @@ contains
             bound = pq(a)*pq(b)
             if (bound <= thresh) cycle
             if (use_density) then
-               i = pi(a); j = pj(a); k = pi(b); l = pj(b)
+               i = pi(a)
+               j = pj(a)
+               k = pi(b)
+               l = pj(b)
                dfac = max(4.0_dp*dmax(i, j), 4.0_dp*dmax(k, l), &
                           dmax(i, k), dmax(i, l), dmax(j, k), dmax(j, l))
                if (bound*dfac <= thresh) cycle
@@ -480,14 +468,20 @@ contains
          do b = 1, a
             bound = pq(a)*pq(b)
             if (bound <= thresh) cycle
-            i = pi(a); j = pj(a); k = pi(b); l = pj(b)
+            i = pi(a)
+            j = pj(a)
+            k = pi(b)
+            l = pj(b)
             if (use_density) then
                dfac = max(4.0_dp*dmax(i, j), 4.0_dp*dmax(k, l), &
                           dmax(i, k), dmax(i, l), dmax(j, k), dmax(j, l))
                if (bound*dfac <= thresh) cycle
             end if
             nq = nq + 1
-            q_i(nq) = i; q_j(nq) = j; q_k(nq) = k; q_l(nq) = l
+            q_i(nq) = i
+            q_j(nq) = j
+            q_k(nq) = k
+            q_l(nq) = l
          end do
       end do
 
@@ -536,11 +530,16 @@ contains
       do n = 1, nq
          key = keyv(n)
          pos(key) = pos(key) + 1
-         ti(pos(key)) = q_i(n); tj(pos(key)) = q_j(n)
-         tk(pos(key)) = q_k(n); tl(pos(key)) = q_l(n)
+         ti(pos(key)) = q_i(n)
+         tj(pos(key)) = q_j(n)
+         tk(pos(key)) = q_k(n)
+         tl(pos(key)) = q_l(n)
       end do
 
-      q_i = ti; q_j = tj; q_k = tk; q_l = tl
+      q_i = ti
+      q_j = tj
+      q_k = tk
+      q_l = tl
       deallocate (cnt, pos, keyv, ti, tj, tk, tl)
    end subroutine sort_by_class
 

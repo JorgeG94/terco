@@ -4,58 +4,42 @@
 !
 ! The smooth switching/Gaussian (SWIG) discretisation of Lange and Herbert
 ! [J. Chem. Phys. 133, 244111 (2010)], solved as C-PCM or IEF-PCM, following
-! pyscf's `pyscf.solvent.pcm` term for term: the same Lebedev points per
-! sphere, the same switching function, per-point Gaussian exponents from
-! the fitted xi of Table II in [J. Chem. Phys. 122, 194110 (2005)], and the
-! same S and D matrices. Ported from metalquicha's mqc_czt_pcm, which
-! follows pyscf the same way; what changed on the way is where the
-! solute-surface integrals come from (terco's own kernels, trc_pcm_potential
-! and trc_pcm_fock, rather than libcint's int1e_grids) and that the matrix
-! builds are `do concurrent`.
+! pyscf's `pyscf.solvent.pcm` term for term (Lebedev points, switching
+! function, per-point exponents from the fitted xi of Table II in [J. Chem.
+! Phys. 122, 194110 (2005)], S and D matrices). Ported from metalquicha's
+! mqc_czt_pcm; the solute-surface integrals come from terco's own kernels
+! (trc_pcm_potential, trc_pcm_fock) rather than libcint's int1e_grids, and the
+! matrix builds are `do concurrent`.
 !
-! WHAT A SURFACE POINT IS
-! -----------------------
-! Not a point charge but a normalised spherical Gaussian of exponent
-! zeta**2. That keeps every matrix element finite as two points approach,
-! and the cavity smooth as a point fades through the switching region. Its
-! potential at distance d is erf(zeta d)/d, which is what the integral
-! kernels evaluate against the basis and what v_nuc evaluates against the
-! nuclei.
+! A surface point is a normalised spherical Gaussian of exponent zeta**2, not a
+! point charge. That keeps every element finite as points approach and the
+! cavity smooth through the switching region. Its potential at distance d is
+! erf(zeta d)/d.
 !
-! THE MODELS
-! ----------
 !     C-PCM:   K = S                          R = -f_eps I
 !     IEF-PCM: K = S - f_eps/(2 pi) D A S     R = -f_eps (I - D A/(2 pi))
 !
 ! with f_eps = (eps - 1)/eps for C-PCM and (eps - 1)/(eps + 1) for IEF-PCM,
 ! A the point areas, S carrying erf(zeta_ij r)/r off the diagonal and D its
-! normal derivative (eqs. 3.35-3.43 of the SWIG paper as pyscf writes them).
-! The charges solve K q = R v for the solute potential v on the surface;
-! for IEF-PCM's nonsymmetric K the transposed system is solved too and the
-! two averaged, as pyscf does, which is what makes E = q.v/2 a variational
-! functional of the density. The Fock matrix takes the FULL potential of
-! the charges (the half does not survive the derivative).
+! normal derivative (SWIG eqs. 3.35-3.43 as pyscf writes them). The charges
+! solve K q = R v for the surface potential v; for IEF-PCM's nonsymmetric K the
+! transposed system is solved too and the two averaged, as pyscf does, which
+! makes E = q.v/2 variational in the density. The Fock matrix takes the FULL
+! potential of the charges (the half does not survive the derivative).
 !
-! THE SOLVE, AND WHAT IT COSTS
-! ----------------------------
-! Dense: K is formed once per geometry and LU-factored, and each SCF
-! iteration is then two triangular solves. All of it through trc_linalg --
-! cuSOLVER and cuBLAS on matrices that stay on the device under the GPU
-! build, LAPACK on the host otherwise -- so an iteration moves n numbers
-! across the bus, not n^2, and never meets the host BLAS's threading
-! (threaded MKL and NVHPC's OpenMP runtime do not share a process). That
-! is O(n^2) memory
-! in the number of surface points n -- 8 n^2 bytes for C-PCM's K, three
-! such matrices while IEF-PCM's are being formed -- which is fine to a few
-! thousand points per molecule (a 100-atom solute at 302 points per sphere
-! is ~10^4 points, ~1 GB) and is the wall for large clusters. Everything
-! that touches K goes through `solve` and `build_operators`, so a
-! matrix-free K q (recomputing S's elements, as the builds below already
-! do one at a time) under a conjugate-gradient solve can replace both
-! without the SCF noticing.
+! The solve is dense: K is formed once per geometry and LU-factored, then each
+! SCF iteration is two triangular solves, all through trc_linalg (cuSOLVER and
+! cuBLAS on device-resident matrices, LAPACK on the host), so an iteration moves
+! n numbers across the bus, not n^2, and avoids host BLAS threading (threaded
+! MKL and NVHPC's OpenMP runtime do not share a process). Memory is 8 n^2
+! bytes for C-PCM's K (three such matrices while IEF-PCM's are formed): fine
+! to a few thousand surface points (a 100-atom solute at 302 points per sphere
+! is ~10^4 points, ~1 GB) and the wall for large clusters. Everything touching
+! K goes through `solve` and `build_operators`, so a matrix-free K q under
+! conjugate gradients could replace both without the SCF noticing.
 !
 module trc_pcm
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid, lebedev_is_available
@@ -199,7 +183,8 @@ contains
       real(dp), allocatable :: radii(:), r_switch(:), r_inner(:)
       real(dp), allocatable :: pt(:, :), nrm(:, :), zet(:), wgt(:), swf(:)
       integer, allocatable :: own(:)
-      real(dp) :: point(3), xi, ratio, alpha, w, f, d
+      real(dp) :: xi, ratio, alpha, w, f, d
+      real(dp) :: point(3)
       integer :: natm, iatom, jatom, ipt, n_kept, ix, i
       character(len=16) :: num
 
@@ -216,7 +201,7 @@ contains
          if (PCM_XI_ORDERS(i) == angular_points) ix = i
       end do
       if (ix == 0 .or. .not. lebedev_is_available(angular_points)) then
-         write (num, '(i0)') angular_points
+         write (num, "(i0)") angular_points
          call error%set(ERROR_VALIDATION, "PCM: "//trim(num)//" points per sphere has no "// &
                         "fitted SWIG exponent [J. Chem. Phys. 122, 194110 (2005), Table II]; "// &
                         "use one of 6, 14, 26, 38, 50, 86, 110, 146, 170, 194, 302 (the "// &
@@ -294,32 +279,32 @@ contains
       end do
    end subroutine build_pcm_surface
 
-   pure real(dp) function s_elem(i, j, n, coords, zeta, switch_f)
+   pure real(dp) function s_elem(i, j, n, coords, zeta, switch_f) result(res)
       !! One element of S: erf(zeta_ij r)/r off the diagonal, zeta sqrt(2/pi)/F on it
       !$acc routine seq
       integer, intent(in) :: i, j, n
       real(dp), intent(in) :: coords(3, n), zeta(n), switch_f(n)
       real(dp) :: dx, dy, dz, r, zij
       if (i == j) then
-         s_elem = zeta(i)*sqrt(2.0_dp/PI)/switch_f(i)
+         res = zeta(i)*sqrt(2.0_dp/PI)/switch_f(i)
       else
          dx = coords(1, i) - coords(1, j)
          dy = coords(2, i) - coords(2, j)
          dz = coords(3, i) - coords(3, j)
          r = sqrt(dx*dx + dy*dy + dz*dz)
          zij = zeta(i)*zeta(j)/sqrt(zeta(i)**2 + zeta(j)**2)
-         s_elem = erf(zij*r)/r
+         res = erf(zij*r)/r
       end if
    end function s_elem
 
-   pure real(dp) function d_elem(i, j, n, coords, normals, zeta, r_parent)
+   pure real(dp) function d_elem(i, j, n, coords, normals, zeta, r_parent) result(res)
       !! One element of D, S's derivative along the normal of point j
       !$acc routine seq
       integer, intent(in) :: i, j, n
       real(dp), intent(in) :: coords(3, n), normals(3, n), zeta(n), r_parent(n)
       real(dp) :: dx, dy, dz, r, zij, xr, nr
       if (i == j) then
-         d_elem = -zeta(i)*sqrt(2.0_dp/PI)/(2.0_dp*r_parent(i))
+         res = -zeta(i)*sqrt(2.0_dp/PI)/(2.0_dp*r_parent(i))
       else
          dx = coords(1, i) - coords(1, j)
          dy = coords(2, i) - coords(2, j)
@@ -328,7 +313,7 @@ contains
          zij = zeta(i)*zeta(j)/sqrt(zeta(i)**2 + zeta(j)**2)
          xr = zij*r
          nr = dx*normals(1, j) + dy*normals(2, j) + dz*normals(3, j)
-         d_elem = erf(xr)/r*nr/r**2 - 2.0_dp*xr/sqrt(PI)*exp(-xr*xr)*nr/r**3
+         res = erf(xr)/r*nr/r**2 - 2.0_dp*xr/sqrt(PI)*exp(-xr*xr)*nr/r**3
       end if
    end function d_elem
 
@@ -505,7 +490,7 @@ contains
             call s_fill(n, sf%coords, sf%zeta, sf%switch_f, smat)
             call da_fill(n, sf%coords, sf%normals, sf%zeta, sf%r_parent, sf%area, this%rmat)
             call copy_square(n, smat, this%kmat)
-            call this%la%gemm('N', 'N', n, n, n, -f2pi, this%rmat, n, smat, n, 1.0_dp, this%kmat, n)
+            call this%la%gemm("N", "N", n, n, n, -f2pi, this%rmat, n, smat, n, 1.0_dp, this%kmat, n)
             !$acc exit data delete(smat)
             deallocate (smat)
             call scale_shift(n, this%rmat, f2pi, -f)
@@ -515,7 +500,7 @@ contains
       end associate
       call this%la%getrf(n, this%kmat, n, this%ipiv, info)
       if (info /= 0) then
-         write (num, '(i0)') info
+         write (num, "(i0)") info
          call error%set(ERROR_VALIDATION, "PCM: K is singular (getrf info = "//trim(num)// &
                         "), which a physical cavity does not produce; two surface points "// &
                         "may coincide -- check the geometry")
@@ -585,18 +570,18 @@ contains
       n = this%surface%n_points
       f = this%f_eps
       if (this%model == PCM_MODEL_IEFPCM) then
-         call this%la%gemv('N', n, n, 1.0_dp, this%rmat, n, v, 0.0_dp, q)
-         call this%la%getrs('N', n, 1, this%kmat, n, this%ipiv, q, n)
+         call this%la%gemv("N", n, n, 1.0_dp, this%rmat, n, v, 0.0_dp, q)
+         call this%la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
          allocate (adj(n))
          !$acc enter data create(adj)
          call axpby(n, 1.0_dp, v, 0.0_dp, adj)
-         call this%la%getrs('T', n, 1, this%kmat, n, this%ipiv, adj, n)
+         call this%la%getrs("T", n, 1, this%kmat, n, this%ipiv, adj, n)
          ! q := (q + R^T adj)/2
-         call this%la%gemv('T', n, n, 0.5_dp, this%rmat, n, adj, 0.5_dp, q)
+         call this%la%gemv("T", n, n, 0.5_dp, this%rmat, n, adj, 0.5_dp, q)
          !$acc exit data delete(adj)
       else
          call axpby(n, -f, v, 0.0_dp, q)
-         call this%la%getrs('N', n, 1, this%kmat, n, this%ipiv, q, n)
+         call this%la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
       end if
    end subroutine pcm_solve
 
@@ -642,18 +627,15 @@ contains
       !! and device-resident. `vmat` is overwritten with the full operator
       !! the charges add to the Fock matrix; `e_diel` already carries the
       !! half. Everything stays on the device; the charges come back (n
-      !! numbers) only for their total.
-      !!
-      !! `comm`, when present with more than one rank, splits the two
-      !! integral passes -- trc_pcm_potential and trc_pcm_fock, the only
-      !! parts of an iteration that scale with the integral work rather
-      !! than with the (replicated, cheap) cavity solve -- over a
-      !! contiguous range of surface points per rank (pcm_point_range).
-      !! Each rank computes its own range into the full-length vector,
-      !! zero elsewhere; summing those across ranks (adding exact zeros)
-      !! reproduces the single-rank vector, and the broadcast after makes
-      !! every rank's bits agree, the same reduce-then-broadcast
-      !! trc_fock's sum_ranks uses for the real Fock matrix. The solve, the
+      !! `comm`, when present with more than one rank, splits the two integral
+      !! passes (trc_pcm_potential and trc_pcm_fock, the parts that scale with
+      !! integral work rather than the replicated cavity solve) over a contiguous
+      !! range of surface points per rank (pcm_point_range). Each rank fills its
+      !! range of the full-length vector, zero elsewhere; summing across ranks
+      !! (adding exact zeros) reproduces the single-rank vector, and the broadcast
+      !! makes every rank's bits agree, as trc_fock's sum_ranks does. The solve and
+      !! energy are then identical replicated work. Absent `comm`, or one rank, this
+      !! is the unsplit path.
       !! energy and everything after need no communication: once `this%v`
       !! agrees, they are identical, replicated work on every rank.
       !! Absent `comm`, or a single rank, this is exactly the unsplit path.

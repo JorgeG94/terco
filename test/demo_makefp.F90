@@ -51,7 +51,7 @@
 !   demo_makefp <xyz> [charge] [thresh] [ncore]
 !
 program demo_makefp
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
@@ -228,7 +228,7 @@ contains
 
    subroutine tick(t)
       real(dp), intent(out) :: t
-      integer(kind=8) :: c, rate
+      integer(int64) :: c, rate
       call system_clock(c, rate)
       t = real(c, dp)/real(rate, dp)
    end subroutine tick

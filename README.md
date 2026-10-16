@@ -118,15 +118,17 @@ Consume it with `find_package(terco)` and link `terco::terco`.
 ### fpm
 
 ```sh
-fpm build --compiler nvfortran \
-  --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate -Mpreprocess \
-          -DTRC_LMAX=2 -DTRC_FOCK6 -DTRC_PERCLASS"
+tools/fpm_generate.sh                     # the Rys kernels, into src/generated/fpm/
+fpm build --compiler mpifort --flag "-ffree-line-length-none"            # gfortran
+fpm build --compiler mpifort --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate"  # nvfortran
 ```
 
-fpm builds the **shipped configuration and only that one**. fpm cannot run a
-code generator and most of this library is generated, so `src/generated/` holds
-one committed set — `TRC_LMAX=2` — and that is what fpm compiles. Any other
-ceiling needs CMake.
+fpm builds the **shipped configuration and only that one**: `TRC_LMAX=2`. fpm
+cannot run a code generator and most of this library is generated, so
+`src/generated/` holds the committed HGP kernels, and `tools/fpm_generate.sh`
+generates the Rys kernels (energy and gradient) that CMake would generate at
+configure time. Rerun it after changing `scripts/`. Any other ceiling needs
+CMake.
 
 ---
 

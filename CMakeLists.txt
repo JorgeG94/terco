@@ -31,7 +31,7 @@ include(terco_print_status)
 #
 # HGP stops at d. LMAX=3 keeps HGP's d set exactly as at LMAX=2 and builds
 # every class with an f shell as a Rys kernel only (trc_rys_select.F90's
-# HGP_LMAX), so it needs TERCO_RYS=ON.
+# HGP_LMAX).
 #
 # 2 is the shipped configuration and the one whose generated sources are in the
 # repository. Anything else is regenerated into the build tree, which needs
@@ -152,23 +152,14 @@ option(TERCO_REGENERATE
 option(TERCO_FORCE_REGENERATE
        "Regenerate the build-tree kernels once, ignoring the generation stamps" OFF)
 #
-# Rys quadrature, built by default: it is the only source of the analytic
-# two-electron gradient (eri%gradient), and the kernels the Fock build uses
-# do not change -- HGP stays the energy path for every class unless
-# TRC_RYS_CLASSES routes one to Rys at runtime (trc_rys_select.F90). OFF
-# builds a library without the gradient: no root tables, no per-class Rys
-# kernels, no dispatchers, and eri%gradient stops with an error. The cost
-# of ON is compile time -- roughly 25 CPU-minutes of extra nvfortran GPU
-# compilation, measured per object (the chunked heavy gradient classes run to
-# 1-3 min each) -- and Python 3 at configure time, which generates the
-# per-class kernels into the build tree.
-#
-option(TERCO_RYS
-       "Build the Rys kernel family: the analytic gradient, and per-class Rys energies" ON)
-if(TERCO_LMAX GREATER 2 AND NOT TERCO_RYS)
-  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX} needs TERCO_RYS=ON: every class "
-                      "with a shell above d is a Rys kernel, HGP has none.")
-endif()
+# Rys quadrature is always built: it is the only source of the analytic
+# two-electron gradient (eri%gradient) and every class above d. HGP stays
+# the energy path for every class it has unless TRC_RYS_CLASSES routes one
+# to Rys at runtime (trc_rys_select.F90). Its cost is compile time --
+# roughly 25 CPU-minutes of extra nvfortran GPU compilation, measured per
+# object (the chunked heavy gradient classes run to 1-3 min each) -- and
+# Python 3 at configure time, which generates the per-class kernels into
+# the build tree.
 #
 # Unroll the Rys kernels' root and component loops (scripts/rys_inline.py's
 # UNROLLED MODE) for every class whose Cartesian component count na*nb*nc*nd
@@ -281,14 +272,6 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 #
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
                                                TRC_FOCK6 TRC_PERCLASS)
-#
-# TERCO_RYS: see the option's own comment above. Only this define is
-# conditional; TRC_LMAX, TRC_FOCK6 and TRC_PERCLASS above are not options at
-# all, so they stay unconditional defines.
-#
-if(TERCO_RYS)
-  target_compile_definitions(${main_lib} PRIVATE TERCO_RYS)
-endif()
 #
 # TRC_CART_ORDER: 0 = lexicographic, 1 = gamess. Defined ONLY for gamess, left
 # UNDEFINED for the default: every guard this feature adds reads as

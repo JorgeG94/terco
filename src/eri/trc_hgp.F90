@@ -37,8 +37,8 @@
 ! per quartet rather than per primitive pair.
 !
 module trc_hgp
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp, int64
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: LCMAX, NCUM, cidx, cnx, cny, cnz, cll, &
                          cdir, cdn1, cdn2, cf2, ncum_of, ncart_of
@@ -135,7 +135,8 @@ contains
                ab2 = ab2 + (sh_r(d, i) - sh_r(d, j))**2
             end do
             pp_n(key) = 0
-            a = emin(i); b = emin(j)
+            a = emin(i)
+            b = emin(j)
             p = a + b
             if (amax(i)*amax(j)*exp(-(a*b/p)*ab2)*SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) <= cut) then
                cycle
@@ -178,7 +179,8 @@ contains
                   mu = a*b/p
                   pp_p(k) = p
                   if (present(pp_a)) pp_a(k) = a
-                  pp_ki(k) = ki; pp_kj(k) = kj
+                  pp_ki(k) = ki
+                  pp_kj(k) = kj
                   do d = 1, 3
                      pp_r(k, d) = (a*sh_r(d, i) + b*sh_r(d, j))/p
                      pp_ra(k, d) = sh_r(d, i)
@@ -212,7 +214,8 @@ contains
                do k2 = k1 + 1, pp_off(key) + pp_n(key)
                   ukey = abs(camp(pp_ki(k2), i)*camp(pp_kj(k2), j)*pp_c(k2))/pp_p(k2)
                   if (ukey > ubest) then
-                     ubest = ukey; kb = k2
+                     ubest = ukey
+                     kb = k2
                   end if
                end do
                if (kb /= k1) call swap_pair(k1, kb)
@@ -224,18 +227,34 @@ contains
          integer, intent(in) :: x, y
          real(dp) :: t
          integer :: it, dd
-         t = pp_p(x); pp_p(x) = pp_p(y); pp_p(y) = t
-         t = pp_c(x); pp_c(x) = pp_c(y); pp_c(y) = t
+         t = pp_p(x)
+         pp_p(x) = pp_p(y)
+         pp_p(y) = t
+         t = pp_c(x)
+         pp_c(x) = pp_c(y)
+         pp_c(y) = t
          if (present(pp_a)) then
-            t = pp_a(x); pp_a(x) = pp_a(y); pp_a(y) = t
+            t = pp_a(x)
+            pp_a(x) = pp_a(y)
+            pp_a(y) = t
          end if
          do dd = 1, 3
-            t = pp_r(x, dd); pp_r(x, dd) = pp_r(y, dd); pp_r(y, dd) = t
-            t = pp_ra(x, dd); pp_ra(x, dd) = pp_ra(y, dd); pp_ra(y, dd) = t
-            t = pp_rb(x, dd); pp_rb(x, dd) = pp_rb(y, dd); pp_rb(y, dd) = t
+            t = pp_r(x, dd)
+            pp_r(x, dd) = pp_r(y, dd)
+            pp_r(y, dd) = t
+            t = pp_ra(x, dd)
+            pp_ra(x, dd) = pp_ra(y, dd)
+            pp_ra(y, dd) = t
+            t = pp_rb(x, dd)
+            pp_rb(x, dd) = pp_rb(y, dd)
+            pp_rb(y, dd) = t
          end do
-         it = pp_ki(x); pp_ki(x) = pp_ki(y); pp_ki(y) = it
-         it = pp_kj(x); pp_kj(x) = pp_kj(y); pp_kj(y) = it
+         it = pp_ki(x)
+         pp_ki(x) = pp_ki(y)
+         pp_ki(y) = it
+         it = pp_kj(x)
+         pp_kj(x) = pp_kj(y)
+         pp_kj(y) = it
       end subroutine swap_pair
    end subroutine build_pairs_hgp
 
@@ -308,24 +327,33 @@ contains
       integer  :: keyab, keycd, offab, offcd, nab, ncd
       integer  :: kp, kq, m, d, x, cur, nxt
       real(dp) :: zeta, eta, zpe, rho, tval, pref
-      real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3), wc
+      real(dp) :: wc
+      real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3)
       real(dp) :: oo2z, oo2e, oo2ze, rz, re
       real(dp) :: f(0:BOYS_MMAX)
       ! [a0|c0]^m, two m levels ping-ponged (v, at vb), plus the contracted
       ! accumulator (g, at gb): this quartet's own slice of `work`, nca*ncc
       ! each, laid out as v(nca*ncc, 0:1) then g(nca*ncc). See hgp_batch.
 
-      la = sh_l(q_i(iq)); lb = sh_l(q_j(iq))
-      lc = sh_l(q_k(iq)); ld = sh_l(q_l(iq))
-      lab = la + lb; lcd = lc + ld; lt = lab + lcd
-      nca = ncum_of(lab); ncc = ncum_of(lcd)
+      la = sh_l(q_i(iq))
+      lb = sh_l(q_j(iq))
+      lc = sh_l(q_k(iq))
+      ld = sh_l(q_l(iq))
+      lab = la + lb
+      lcd = lc + ld
+      lt = lab + lcd
+      nca = ncum_of(lab)
+      ncc = ncum_of(lcd)
       n1 = nca*ncc
-      vb = w_off(iq); gb = vb + 2*n1
+      vb = w_off(iq)
+      gb = vb + 2*n1
 
       keyab = (q_i(iq) - 1)*nbas + q_j(iq)
       keycd = (q_k(iq) - 1)*nbas + q_l(iq)
-      offab = pp_off(keyab); nab = pp_n(keyab)
-      offcd = pp_off(keycd); ncd = pp_n(keycd)
+      offab = pp_off(keyab)
+      nab = pp_n(keyab)
+      offcd = pp_off(keycd)
+      ncd = pp_n(keycd)
 
       do x = 1, n1
          work(gb + x) = 0.0_dp
@@ -349,8 +377,11 @@ contains
 
             call boys_eval(lt, tval, f)
 
-            oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
-            rz = rho/zeta; re = rho/eta
+            oo2z = 0.5_dp/zeta
+            oo2e = 0.5_dp/eta
+            oo2ze = 0.5_dp/zpe
+            rz = rho/zeta
+            re = rho/eta
             pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
 
             ! VRR, sweeping m downward so level m reads only level m+1.
@@ -390,7 +421,8 @@ contains
       !$acc routine seq
       integer,  intent(in)    :: lim, nca, ncc, dst, src
       real(dp), intent(inout) :: v(nca*ncc, 0:1)
-      real(dp), intent(in)    :: seed, pa(3), qc(3), wp(3), wq(3)
+      real(dp), intent(in) :: seed
+      real(dp), intent(in) :: pa(3), qc(3), wp(3), wq(3)
       real(dp), intent(in)    :: oo2z, oo2e, oo2ze, rz, re
 
       integer  :: ia, ic, d, x, xd1, xd2, xc1, xc2, xac, ai
@@ -401,7 +433,9 @@ contains
       ! a, at c = 0
       do ia = 2, nca
          if (cll(ia) > lim) exit
-         d = cdir(ia); xd1 = cdn1(ia); xd2 = cdn2(ia)
+         d = cdir(ia)
+         xd1 = cdn1(ia)
+         xd2 = cdn2(ia)
          acc = pa(d)*v(xd1, dst) + wp(d)*v(xd1, src)
          if (xd2 > 0) acc = acc + cf2(ia)*oo2z*(v(xd2, dst) - rz*v(xd2, src))
          v(ia, dst) = acc
@@ -410,7 +444,9 @@ contains
       ! c, for every a
       do ic = 2, ncc
          if (cll(ic) > lim) exit
-         d = cdir(ic); xc1 = cdn1(ic); xc2 = cdn2(ic)
+         d = cdir(ic)
+         xc1 = cdn1(ic)
+         xc2 = cdn2(ic)
          do ia = 1, nca
             if (cll(ia) + cll(ic) > lim) exit
             x = ia + (ic - 1)*nca
@@ -418,13 +454,17 @@ contains
             if (xc2 > 0) acc = acc + cf2(ic)*oo2e* &
                                (v(ia + (xc2 - 1)*nca, dst) - re*v(ia + (xc2 - 1)*nca, src))
             ! cross term a_d/(2(zeta+eta)) [a-1_d,0|c-1_d,0]^(m+1)
-            ai = 0; xac = 0
+            ai = 0
+            xac = 0
             if (d == 1) then
-               ai = cnx(ia); if (ai > 0) xac = cidx(cnx(ia) - 1, cny(ia), cnz(ia))
+               ai = cnx(ia)
+               if (ai > 0) xac = cidx(cnx(ia) - 1, cny(ia), cnz(ia))
             else if (d == 2) then
-               ai = cny(ia); if (ai > 0) xac = cidx(cnx(ia), cny(ia) - 1, cnz(ia))
+               ai = cny(ia)
+               if (ai > 0) xac = cidx(cnx(ia), cny(ia) - 1, cnz(ia))
             else
-               ai = cnz(ia); if (ai > 0) xac = cidx(cnx(ia), cny(ia), cnz(ia) - 1)
+               ai = cnz(ia)
+               if (ai > 0) xac = cidx(cnx(ia), cny(ia), cnz(ia) - 1)
             end if
             if (xac > 0) acc = acc + real(ai, dp)*oo2ze*v(xac + (xc1 - 1)*nca, src)
             v(x, dst) = acc
@@ -450,8 +490,10 @@ contains
       integer  :: px, py, pz, qx, qy, qz, ja, jc
       real(dp) :: acc, cb, cdc
 
-      na = ncart_of(la); nb = ncart_of(lb)
-      nc = ncart_of(lc); nd = ncart_of(ld)
+      na = ncart_of(la)
+      nb = ncart_of(lb)
+      nc = ncart_of(lc)
+      nd = ncart_of(ld)
       base = q_off(iq)
 
       idx = 0
@@ -507,7 +549,7 @@ contains
 #include "trc_cart_comp.inc"
    end subroutine comp
 
-   pure real(dp) function binom(n, k)
+   pure real(dp) function binom(n, k) result(res)
       !$acc routine seq
       integer, intent(in) :: n, k
       integer :: i
@@ -516,17 +558,17 @@ contains
       do i = 1, k
          r = r*real(n - k + i, dp)/real(i, dp)
       end do
-      binom = r
+      res = r
    end function binom
 
-   pure real(dp) function powi(x, n)
+   pure real(dp) function powi(x, n) result(res)
       !$acc routine seq
       real(dp), intent(in) :: x
       integer,  intent(in) :: n
       integer :: i
-      powi = 1.0_dp
+      res = 1.0_dp
       do i = 1, n
-         powi = powi*x
+         res = res*x
       end do
    end function powi
 

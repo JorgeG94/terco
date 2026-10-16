@@ -16,7 +16,7 @@ program sap_guess
    !! would say nothing. The second is the sharper of the two: it is the only
    !! statement about the OUTWARD integral, which is the one accumulated
    !! backwards and the one a plausible-looking implementation gets wrong.
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_basis_json, only: trc_basis_from_json

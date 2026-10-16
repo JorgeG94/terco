@@ -39,7 +39,7 @@
 ! spherical path's own validation rather than re-proving the Cartesian one.
 !
 program check_spherical
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run

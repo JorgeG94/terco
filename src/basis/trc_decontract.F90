@@ -2,70 +2,8 @@
 ! Splitting a general contraction into primitive shells, and carrying the
 ! contraction as a matrix transform instead.
 !
-! WHY THIS EXISTS
-! ---------------
-! A correlation-consistent basis lists one exponent set under several
-! contraction columns. cc-pVDZ silicon is 12 s primitives under four columns;
-! carbon and oxygen are nine under three. terco splits those columns into
-! separate shells, so the same exponent pair is rebuilt once per column pair
-! and the primitive quartet behind it is evaluated once per column quartet.
-! Nothing in the kernels is wrong -- the work is simply replicated. Measured
-! on a 123-atom silica slice, cc-pVDZ costs five times 6-31G* per Fock build,
-! against 1.3x of real integral work, and the primitive-quartets-per-output
-! integral ratio is 5002 for (ss|ss) in cc-pVDZ against 96 in 6-31G*.
-!
-! The fix is not in the kernels. Evaluate the integrals over SINGLE-PRIMITIVE
-! shells, where no exponent pair is ever repeated, and move the contraction to
-! the density and the Fock matrix, which are small:
-!
-!     D_p = C D C^T        (nao_p x nao_p, before the build)
-!     G   = C^T G_p C      (nao_c x nao_c, after it)
-!
-! C is the contraction coefficients, block diagonal in the Cartesian component
-! and extremely sparse -- 4350 nonzeros for 2307 x 1417 on the silica slice --
-! so both transforms are a few tens of megaflops against a Fock build of
-! teraflops. The identity is exact: G_p holds every primitive block, and
-! folding it reproduces the contracted G to the screening threshold.
-!
-! This is what GPU4PySCF does (`_VHFOpt.build` -> `SortedGTO.from_mol(...,
-! decontract=True)` -> `_optimize_contraction`), and it is why its cc-pVDZ
-! Fock build is FASTER than its 6-31G* one despite 13% more functions: after
-! the transform cc-pVDZ is nearly primitive while 6-31G* keeps its six-
-! primitive cores. Two HGP codes that do not do this, terco and gmshpc, both
-! pay the penalty, gmshpc 10.8x and terco 5.1x. It is a basis-representation
-! choice made before any kernel runs, not a kernel decomposition problem.
-!
-! WHICH SHELLS GET SPLIT
-! ----------------------
-! Only shells that actually share exponents with another shell, which is what
-! a general contraction is. A segmented basis reaches this module and leaves
-! unchanged, with `active` false and not one array allocated -- 6-31G* keeps
-! its six-primitive s and p shells, exactly as GPU4PySCF keeps them, because
-! splitting them would ADD work rather than remove it.
-!
-! Shells at one centre with one angular momentum are grouped by shared
-! exponents (transitively). Within a group:
-!
-!   - one shell only: a segmented shell. Left alone.
-!   - one column holds more than one compact primitive: that column is kept
-!     whole and the others are split. This is the cc-pVDZ oxygen p case, four
-!     primitives under two columns where the second column is the diffuse
-!     primitive alone; the three-primitive contraction survives.
-!   - otherwise: every column is split into single-primitive shells, one per
-!     distinct exponent in the group. This is the cc-pVDZ silicon s case.
-!
-! "Compact" means an exponent above `cutoff`; a diffuse primitive contributes
-! little to the contraction's cost and splitting on it is what lets the
-! oxygen case keep its contraction. The default matches GPU4PySCF's 0.3.
-!
-! The split basis is deliberately allowed to be linearly dependent -- a
-! primitive kept inside a surviving contraction may also appear as a shell of
-! its own. That costs a few extra shells and is harmless here: nothing in this
-! path diagonalises in the primitive basis, it only evaluates integrals over
-! it, and the fold back to the contracted basis is exact either way.
-!
 module trc_decontract
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    implicit none
    private
@@ -80,41 +18,7 @@ module trc_decontract
    !
    integer, parameter :: DECON_MINPRIM_DEFAULT = 0
    !! SPLIT ONLY THE GROUPS THAT PAY FOR IT -- OFF BY DEFAULT.
-   !!
-   !! A group is split only if some contracted shell in it holds at least
-   !! this many compact primitives; 0 splits every general contraction,
-   !! which is what this module did before the gate existed and what the
-   !! default still does.
-   !!
-   !! The gate exists because the split is not always worth its screen.
-   !! Splitting buys back the duplicated primitive work of a general
-   !! contraction and costs a screen tightened by the transform's amplitude
-   !! (see `amp` in build_maps). Measured on one card, Fock seconds for
-   !! three iterations at thresh 1e-12, with setup beside it:
-   !!
-   !!                   split all      Si only (10)    split none
-   !!   msn  28 Si    2.00 / 27.38    6.10 / 30.73    9.67 / 39.51
-   !!   w150  no Si   5.19 / 20.44        (= none)    6.87 / 15.15
-   !!
-   !! There is NO setting that is best for both. msn wants everything
-   !! split -- gating O out of it costs 3.3 s, and the unsplit Si shells
-   !! cost another 9 -- while w150, whose only general contraction is O's
-   !! 9-primitive s, is 26% faster not splitting at all. Same element,
-   !! opposite sign in two molecules, so the discriminator is the
-   !! molecule's screening structure and not its basis, and a static rule
-   !! cannot read it. The default therefore stays where the measurements
-   !! that drove this work were taken, and this is the knob for the other
-   !! case: TRC_DECON_MINPRIM=10 on a water cluster.
 
-   !
-   ! The transform between the contracted basis a caller speaks and the
-   ! primitive basis the integrals are evaluated over.
-   !
-   ! Stored twice, once in each direction, because both are gathers and a
-   ! gather needs no atomics. `f_*` maps a primitive AO to the contracted AOs
-   ! that feed it (for D_p = C D C^T); `t_*` maps a contracted AO to the
-   ! primitive AOs that carry it (for G = C^T G_p C). Both are CSR.
-   !
    type :: decon_t
       logical :: active = .false.
       integer :: nao_c = 0, nao_p = 0, nnz = 0
@@ -135,9 +39,9 @@ module trc_decontract
 
 contains
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
@@ -167,7 +71,8 @@ contains
       integer :: ntr, nsh_p, maxnp_p
       integer :: ng, g, i, n
       real(dp) :: cut
-      real(dp) :: fl(0:8)
+      integer, parameter :: LTOP = 8
+      real(dp) :: fl(0:LTOP)
       integer :: mnp
 
       cut = DECON_CUTOFF_DEFAULT
@@ -195,8 +100,10 @@ contains
       allocate (p_e(b%maxnp, n + b%nshell), p_c(b%maxnp, n + b%nshell))
       allocate (tr_mu(n + b%nshell), tr_s(n + b%nshell), tr_a(n + b%nshell))
       allocate (tr_whole(n + b%nshell))
-      p_e = 0.0_dp; p_c = 0.0_dp
-      nsh_p = 0; ntr = 0
+      p_e = 0.0_dp
+      p_c = 0.0_dp
+      nsh_p = 0
+      ntr = 0
 
       do g = 1, ng
          call split_group(b, grp, g, cut, mnp, p_l, p_np, p_e, p_c, p_r, nsh_p, &
@@ -254,10 +161,11 @@ contains
          character(len=8) :: dbge
          integer :: c, k
          real(dp) :: amx, asum, smx
-         dbge = ' '
-         call get_environment_variable('TRC_BUILD_TIMING', dbge)
+         dbge = " "
+         call get_environment_variable("TRC_BUILD_TIMING", dbge)
          if (len_trim(dbge) > 0) then
-            amx = 0.0_dp; smx = 0.0_dp
+            amx = 0.0_dp
+            smx = 0.0_dp
             do c = 1, m%nao_c
                asum = 0.0_dp
                do k = m%t_off(c), m%t_off(c + 1) - 1
@@ -266,11 +174,11 @@ contains
                end do
                smx = max(smx, asum)
             end do
-            print '(a,i0,a,i0,a,i0,a,i0,a,es10.3,a,es10.3,a,f6.2)', &
-               '  [decon] shells ', b%nshell, ' -> ', pb%nshell, &
-               '   nao ', m%nao_c, ' -> ', m%nao_p, &
-               '   max|C| ', amx, '   max col sum|C| ', smx, &
-               '   max amp ', maxval(m%amp)
+            print "(a,i0,a,i0,a,i0,a,i0,a,es10.3,a,es10.3,a,f6.2)", &
+               "  [decon] shells ", b%nshell, " -> ", pb%nshell, &
+               "   nao ", m%nao_c, " -> ", m%nao_p, &
+               "   max|C| ", amx, "   max col sum|C| ", smx, &
+               "   max amp ", maxval(m%amp)
          end if
       end block
       deallocate (p_l, p_np, p_e, p_c, p_r, tr_mu, tr_s, tr_a, tr_whole, grp)
@@ -298,12 +206,14 @@ contains
             if (b%sh_l(i) /= b%sh_l(j)) cycle
             if (maxval(abs(b%sh_r(:, i) - b%sh_r(:, j))) > 1.0e-10_dp) cycle
             if (.not. shares_exponent(b, i, j)) cycle
-            gi = find(root, i); gj = find(root, j)
+            gi = find(root, i)
+            gj = find(root, j)
             if (gi /= gj) root(gj) = gi
          end do
       end do
       ! Compact the roots into 1..ng.
-      grp = 0; ng = 0
+      grp = 0
+      ng = 0
       do i = 1, b%nshell
          gi = find(root, i)
          if (grp(gi) == 0) then
@@ -328,24 +238,24 @@ contains
       end if
    end function find
 
-   logical function shares_exponent(b, i, j)
+   logical function shares_exponent(b, i, j) result(res)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: i, j
       integer :: ki, kj
-      shares_exponent = .false.
+      res = .false.
       do ki = 1, b%sh_np(i)
          do kj = 1, b%sh_np(j)
             if (same_exp(b%sh_e(ki, i), b%sh_e(kj, j))) then
-               shares_exponent = .true.
+               res = .true.
                return
             end if
          end do
       end do
    end function shares_exponent
 
-   pure logical function same_exp(a, c)
+   pure logical function same_exp(a, c) result(res)
       real(dp), intent(in) :: a, c
-      same_exp = abs(a - c) <= 1.0e-10_dp*max(1.0_dp, abs(a))
+      res = abs(a - c) <= 1.0e-10_dp*max(1.0_dp, abs(a))
    end function same_exp
 
    !
@@ -353,15 +263,16 @@ contains
    ! has, and a segmented run is bit-for-bit what it was before this module
    ! existed.
    !
-   logical function any_group_splits(b, grp, ng, cut, minprim)
+   logical function any_group_splits(b, grp, ng, cut, minprim) result(res)
       type(trc_basis_t), intent(in) :: b
-      integer, intent(in) :: grp(:), ng, minprim
+      integer, intent(in) :: ng, minprim
+      integer, intent(in) :: grp(:)
       real(dp), intent(in) :: cut
       integer :: g
-      any_group_splits = .false.
+      res = .false.
       do g = 1, ng
          if (group_pays(b, grp, g, cut, minprim)) then
-            any_group_splits = .true.
+            res = .true.
             return
          end if
       end do
@@ -378,12 +289,14 @@ contains
    ! and `schwarz_bounds`, where msn's setup went 2.0 s -> 9.7 s with the
    ! split off. See DECON_MINPRIM_DEFAULT for the measurement.
    !
-   logical function group_pays(b, grp, g, cut, minprim)
+   logical function group_pays(b, grp, g, cut, minprim) result(res)
       type(trc_basis_t), intent(in) :: b
-      integer, intent(in) :: grp(:), g, minprim
+      integer, intent(in) :: g, minprim
+      integer, intent(in) :: grp(:)
       real(dp), intent(in) :: cut
       integer :: i, k, nmem, ncomp, best
-      nmem = 0; best = 0
+      nmem = 0
+      best = 0
       do i = 1, b%nshell
          if (grp(i) /= g) cycle
          nmem = nmem + 1
@@ -393,7 +306,7 @@ contains
          end do
          best = max(best, ncomp)
       end do
-      group_pays = (nmem > 1) .and. (best >= minprim)
+      res = (nmem > 1) .and. (best >= minprim)
    end function group_pays
 
    !
@@ -403,13 +316,16 @@ contains
    subroutine split_group(b, grp, g, cut, minprim, p_l, p_np, p_e, p_c, p_r, nsh_p, &
                           tr_mu, tr_s, tr_a, tr_whole, ntr)
       type(trc_basis_t), intent(in) :: b
-      integer,  intent(in) :: grp(:), g, minprim
+      integer,  intent(in) :: g, minprim
+      integer,  intent(in) :: grp(:)
       real(dp), intent(in) :: cut
-      integer,  intent(inout) :: p_l(:), p_np(:), nsh_p, tr_mu(:), tr_s(:), ntr
+      integer,  intent(inout) :: nsh_p, ntr
+      integer,  intent(inout) :: p_l(:), p_np(:), tr_mu(:), tr_s(:)
       real(dp), intent(inout) :: p_e(:, :), p_c(:, :), p_r(:, :), tr_a(:)
       logical,  intent(inout) :: tr_whole(:)
 
-      integer :: mem(b%nshell), nmem, i, mu, k, kk, kc, s, ncomp, nmulti, i0
+      integer :: nmem, i, mu, k, kk, kc, s, ncomp, nmulti, i0
+      integer :: mem(b%nshell)
       real(dp) :: e, cbig
       logical :: seen
 
@@ -433,7 +349,8 @@ contains
       end if
 
       ! Does exactly one column hold more than one compact primitive?
-      nmulti = 0; i0 = 0
+      nmulti = 0
+      i0 = 0
       do i = 1, nmem
          mu = mem(i)
          ncomp = 0
@@ -484,8 +401,10 @@ contains
                   end do
                end do
                nsh_p = nsh_p + 1
-               p_l(nsh_p) = b%sh_l(mu); p_np(nsh_p) = 1
-               p_e(1, nsh_p) = e; p_c(1, nsh_p) = cbig
+               p_l(nsh_p) = b%sh_l(mu)
+               p_np(nsh_p) = 1
+               p_e(1, nsh_p) = e
+               p_c(1, nsh_p) = cbig
                p_r(:, nsh_p) = b%sh_r(:, mu)
                s = nsh_p
             end if
@@ -493,8 +412,10 @@ contains
             ! emitted shell actually ends up with, filled in by the caller
             ! once the basis is built.
             ntr = ntr + 1
-            tr_mu(ntr) = mu; tr_s(ntr) = s
-            tr_a(ntr) = b%sh_c(k, mu); tr_whole(ntr) = .false.
+            tr_mu(ntr) = mu
+            tr_s(ntr) = s
+            tr_a(ntr) = b%sh_c(k, mu)
+            tr_whole(ntr) = .false.
          end do
       end do
    end subroutine split_group
@@ -503,12 +424,14 @@ contains
                          tr_mu, tr_s, tr_a, tr_whole, ntr)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: mu
-      integer,  intent(inout) :: p_l(:), p_np(:), nsh_p, tr_mu(:), tr_s(:), ntr
+      integer,  intent(inout) :: nsh_p, ntr
+      integer,  intent(inout) :: p_l(:), p_np(:), tr_mu(:), tr_s(:)
       real(dp), intent(inout) :: p_e(:, :), p_c(:, :), p_r(:, :), tr_a(:)
       logical,  intent(inout) :: tr_whole(:)
       integer :: k
       nsh_p = nsh_p + 1
-      p_l(nsh_p) = b%sh_l(mu); p_np(nsh_p) = b%sh_np(mu)
+      p_l(nsh_p) = b%sh_l(mu)
+      p_np(nsh_p) = b%sh_np(mu)
       p_r(:, nsh_p) = b%sh_r(:, mu)
       do k = 1, b%sh_np(mu)
          p_e(k, nsh_p) = b%sh_e(k, mu)
@@ -523,7 +446,9 @@ contains
       ! out by 0.28 and 0.49 and was invisible to check_gc, which compares
       ! terco's two paths to each other and not to anything external.
       ntr = ntr + 1
-      tr_mu(ntr) = mu; tr_s(ntr) = nsh_p; tr_a(ntr) = b%sh_c(1, mu)
+      tr_mu(ntr) = mu
+      tr_s(ntr) = nsh_p
+      tr_a(ntr) = b%sh_c(1, mu)
       tr_whole(ntr) = .true.
    end subroutine emit_whole
 
@@ -532,14 +457,16 @@ contains
    !
    subroutine build_maps(b, pb, tr_mu, tr_s, tr_a, ntr, m)
       type(trc_basis_t), intent(in) :: b, pb
-      integer,  intent(in) :: tr_mu(:), tr_s(:), ntr
+      integer,  intent(in) :: ntr
+      integer,  intent(in) :: tr_mu(:), tr_s(:)
       real(dp), intent(in) :: tr_a(:)
       type(decon_t), intent(inout) :: m
 
       integer :: t, comp, nc, nnz, p, c, i
       integer, allocatable :: cnt(:), pos(:)
 
-      m%nao_c = b%nao; m%nao_p = pb%nao
+      m%nao_c = b%nao
+      m%nao_p = pb%nao
       nnz = 0
       do t = 1, ntr
          nnz = nnz + ncart(b%sh_l(tr_mu(t)))
@@ -568,7 +495,8 @@ contains
          do comp = 0, nc - 1
             p = pb%sh_ao(tr_s(t)) + comp
             c = b%sh_ao(tr_mu(t)) + comp
-            m%f_c(pos(p)) = c; m%f_a(pos(p)) = tr_a(t)
+            m%f_c(pos(p)) = c
+            m%f_a(pos(p)) = tr_a(t)
             pos(p) = pos(p) + 1
          end do
       end do
@@ -592,7 +520,8 @@ contains
          do comp = 0, nc - 1
             p = pb%sh_ao(tr_s(t)) + comp
             c = b%sh_ao(tr_mu(t)) + comp
-            m%t_p(pos(c)) = p; m%t_a(pos(c)) = tr_a(t)
+            m%t_p(pos(c)) = p
+            m%t_a(pos(c)) = tr_a(t)
             pos(c) = pos(c) + 1
          end do
       end do
@@ -646,7 +575,8 @@ contains
             end do
          end do
          do t = 1, ntr
-            mu = tr_mu(t); sp = tr_s(t)
+            mu = tr_mu(t)
+            sp = tr_s(t)
             na = ncart(b%sh_l(mu))
             amu = maxval(acol(b%sh_ao(mu):b%sh_ao(mu) + na - 1))
             m%amp(sp) = m%amp(sp) + amu
@@ -795,7 +725,10 @@ contains
       if (allocated(m%f_off)) deallocate (m%f_off, m%f_c, m%f_a)
       if (allocated(m%t_off)) deallocate (m%t_off, m%t_p, m%t_a)
       if (allocated(m%amp)) deallocate (m%amp)
-      m%active = .false.; m%nao_c = 0; m%nao_p = 0; m%nnz = 0
+      m%active = .false.
+      m%nao_c = 0
+      m%nao_p = 0
+      m%nnz = 0
    end subroutine decon_release
 
 end module trc_decontract

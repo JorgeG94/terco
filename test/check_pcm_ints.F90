@@ -24,7 +24,7 @@
 ! does; past that guard a missing reference is a FAIL.
 !
 program check_pcm_ints
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_pcm_potential, trc_pcm_fock, PCM_LMAX
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -111,8 +111,8 @@ program check_pcm_ints
    call bas%release()
 
    open (newunit=unit, file=trim(dump), access='stream', form='unformatted', status='replace')
-   write (unit) int(nat, kind=8), int(nao, kind=8), int(npts, kind=8)
-   write (unit) int(at_z, kind=8)
+   write (unit) int(nat, int64), int(nao, int64), int(npts, int64)
+   write (unit) int(at_z, int64)
    write (unit) r
    write (unit) pts, zeta, q
    write (unit) d

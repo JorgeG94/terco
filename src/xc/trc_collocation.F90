@@ -27,7 +27,7 @@
 ! extra multiply per primitive and nothing else.
 !
 module trc_collocation
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
 
@@ -74,7 +74,9 @@ contains
          drad = drad - 2.0_dp*e(p)*ex
       end do
 
-      xp(0) = 1.0_dp; yp(0) = 1.0_dp; zp(0) = 1.0_dp
+      xp(0) = 1.0_dp
+      yp(0) = 1.0_dp
+      zp(0) = 1.0_dp
       do m = 1, l + 1
          xp(m) = xp(m - 1)*d(1)
          yp(m) = yp(m - 1)*d(2)

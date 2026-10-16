@@ -18,7 +18,7 @@ module trc_dft_grid
    !! chosen per element period. These are the same tables PySCF uses, which is
    !! what makes a level-for-level comparison meaningful. Level 3 is the usual
    !! default and is the one a production calculation should start from.
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid
    use trc_dft_radial, only: treutler_ahlrichs_radial
@@ -323,8 +323,8 @@ contains
       allocate (cell(grid%n_points))
       if (present(my_rank) .and. present(n_ranks)) then
          ! Contiguous blocks: the chunks inside are contiguous too.
-         k_lo = int((int(grid%n_points, 8)*my_rank)/n_ranks) + 1
-         k_hi = int((int(grid%n_points, 8)*(my_rank + 1))/n_ranks)
+         k_lo = int((int(grid%n_points, int64)*my_rank)/n_ranks) + 1
+         k_hi = int((int(grid%n_points, int64)*(my_rank + 1))/n_ranks)
          call becke_partition_weights(grid%coords, atom_coords, atomic_numbers, &
                                       grid%atom, scheme, adjust, cell, error, first=k_lo, last=k_hi)
       else

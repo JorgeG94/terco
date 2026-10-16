@@ -8,8 +8,7 @@
 ! each class module instead, where the order-dependent digestion actually is.
 !
 module trc_pc_kernels
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_tables, only: LMAX
    use trc_pc_k0000, only: pcs0000
    use trc_pc_k0001, only: pcs0001

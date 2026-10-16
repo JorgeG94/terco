@@ -19,7 +19,7 @@
 ! segfault before the guard runs, must not count as this test passing.
 !
 program check_df_2c_ceiling
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_df_2c
    use trc_df_kernels, only: DF_LMAX_AUX
    use trc_test_basis, only: build_aux

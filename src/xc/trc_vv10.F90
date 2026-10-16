@@ -85,7 +85,7 @@
 ! vsigma(i)) and need no such split.
 !
 module trc_vv10
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: shell_collocate, NCART_MAX
@@ -264,7 +264,10 @@ contains
       real(dp) :: dd
 
       ib = batch_of(g)
-      rho_g = 0.0_dp; gx = 0.0_dp; gy = 0.0_dp; gz = 0.0_dp
+      rho_g = 0.0_dp
+      gx = 0.0_dp
+      gy = 0.0_dp
+      gz = 0.0_dp
       do ku = b_shoff(ib), b_shoff(ib + 1) - 1
          ishu = b_sh(ku)
          iaou0 = b_shao(ku)
@@ -363,7 +366,9 @@ contains
       real(dp) :: rp, gp, w0ptmp, w0p, kp, rpw, dx, dy, dz, r2
       real(dp) :: gg, ggp, gt, tt, t2, fsum, usum, wsum, ff
 
-      vrho_i = 0.0_dp; vsigma_i = 0.0_dp; eg_i = 0.0_dp
+      vrho_i = 0.0_dp
+      vsigma_i = 0.0_dp
+      eg_i = 0.0_dp
       ri = rho(i)
       if (ri < VV10_RHO_TOL) return
       gi = sigma(i)
@@ -380,7 +385,9 @@ contains
       kk = kvv*ri**(1.0_dp/6.0_dp)
       dkdr = kk/6.0_dp
 
-      fsum = 0.0_dp; usum = 0.0_dp; wsum = 0.0_dp
+      fsum = 0.0_dp
+      usum = 0.0_dp
+      wsum = 0.0_dp
       do j = 1, npts
          rp = rho(j)
          if (rp < VV10_RHO_TOL) cycle

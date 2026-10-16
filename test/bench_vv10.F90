@@ -10,7 +10,7 @@
 ! pass, so this is built and not registered as a test.
 !
 program bench_vv10
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -30,7 +30,7 @@ program bench_vv10
    type(trc_xc_grid_t) :: xg
    type(error_t) :: err
    real(dp) :: e_nlc, seed, t0, t1
-   integer(kind=8) :: lcg
+   integer(int64) :: lcg
    integer, parameter :: nocc = 100
 
    level = 1; bas_json = ''
@@ -72,10 +72,10 @@ program bench_vv10
    print '(a,i0,a,f8.3,a)', '  batching ', xg%nbatch, ' s ', t1 - t0, ' s'
 
    allocate (c(nao, min(nocc, nao)), dmat(nao, nao), vmat(nao, nao))
-   lcg = 7_8
+   lcg = 7_int64
    do j = 1, min(nocc, nao)
       do i = 1, nao
-         lcg = mod(48271_8*lcg, 2147483647_8)
+         lcg = mod(48271_int64*lcg, 2147483647_int64)
          seed = real(lcg, dp)/2147483647.0_dp
          c(i, j) = 0.1_dp*(seed - 0.5_dp)
       end do
@@ -98,7 +98,7 @@ contains
 
    function wall() result(t)
       real(dp) :: t
-      integer(kind=8) :: cc, rate
+      integer(int64) :: cc, rate
       call system_clock(cc, rate)
       t = real(cc, dp)/real(rate, dp)
    end function wall

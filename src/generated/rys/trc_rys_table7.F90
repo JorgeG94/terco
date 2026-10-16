@@ -19,7 +19,7 @@
 ! parameter arrays of this kind, and the same caution applies here.
 !
 module trc_rys_table7
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
    public :: RYS_NROOTS7, RYS_DEGREE7, RYS_NINT7, RYS_WIDTH7, RYS_XMAX7

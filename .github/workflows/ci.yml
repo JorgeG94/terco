@@ -178,8 +178,7 @@ jobs:
       # not a Skipped.
 
       # TERCO_LMAX=3 is the four-centre f ceiling (CMakeLists.txt's own
-      # option comment); it needs TERCO_RYS=ON, which is this project's
-      # default, so nothing else is passed for that. Paired with
+      # option comment); Rys, which it needs, is always built. Paired with
       # TERCO_DF_LMAX=3 for the same reason test/CMakeLists.txt registers
       # check_df_vs_pyscf and the f/g cases together: one job that actually
       # exercises every class the should-fix review asked CI to cover,
@@ -261,14 +260,16 @@ jobs:
 
       # The fpm build exists so that `fpm install terco` works for someone who
       # does not want CMake. It compiles the COMMITTED kernels in
-      # `src/generated` -- fpm cannot run the generators -- so this checks that
-      # shipped configuration and nothing else. The generators job next door is
-      # what keeps those files honest.
+      # `src/generated` plus the Rys kernels tools/fpm_generate.sh writes to
+      # src/generated/fpm -- fpm cannot run the generators itself.
       #
       # No GPU flags: without `-stdpar=gpu` this is a correct, slow CPU
       # library, which is exactly what a runner can check.
+      - name: Generate the Rys kernels
+        run: tools/fpm_generate.sh
+
       - name: fpm build
-        run: fpm build --compiler gfortran --profile release
+        run: fpm build --compiler mpifort --profile release --flag "-ffree-line-length-none"
 
   generators:
     name: generated sources are up to date
@@ -394,3 +395,21 @@ jobs:
           # while the enumerated Fock digestion was silently wrong.
           OMP_NUM_THREADS=4 ctest --test-dir build-omp --output-on-failure \
             --no-tests=error
+
+  fortitude:
+    name: fortitude lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Rules, excludes and per-file ignores live in fpm.toml's
+      # [extra.fortitude.check]. Pinned, so a new fortitude release cannot
+      # turn main red with no code change; bump it on purpose.
+      - name: Install fortitude
+        run: pip install fortitude-lint==0.9.2
+
+      - name: fortitude check
+        run: fortitude check --output-format github

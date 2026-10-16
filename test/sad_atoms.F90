@@ -9,7 +9,7 @@ program sad_atoms
    !! about the SAD algorithm (electron count, beating GWH), not about which
    !! AO space it runs in, so it forces Cartesian rather than growing a
    !! parallel spherical path for a one-off check.
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_basis_json, only: trc_basis_from_json

@@ -16,7 +16,7 @@
 ! count as this test passing.
 !
 program check_df_3c_ceiling
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_3c
    use trc_df_kernels, only: DF_LMAX
    use trc_test_basis, only: build_aux

@@ -407,7 +407,8 @@ def main():
 ! measures 29.6 of 32 threads active).  It removes instructions and loads.
 !
 module trc_vrr_unrolled
-   use trc_boys, only: dp, BOYS_MMAX
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX
    implicit none
    private
    public :: vrr_dispatch, VRR_LMAX
