@@ -57,7 +57,7 @@ module trc_bins
       integer, allocatable :: bin_off(:)           !! first pair of bin b
       integer, allocatable :: bin_cnt(:)           !! pairs in bin b
       integer, allocatable :: bin_s(:)             !! size index of bin b
-      integer, allocatable :: bin_la(:), bin_lb(:) !! type of bin b
+      integer, allocatable :: bin_la(:), bin_lb(:)  !! type of bin b
       integer, allocatable :: bin_g(:)             !! 1 if a pair of bin b has a general side
       integer, allocatable :: live(:)              !! indices of non-empty bins
       integer :: nlive = 0
@@ -203,14 +203,20 @@ contains
 #endif
 
       ! bin metadata and the live list
-      b%bin_s = -1; b%bin_la = -1; b%bin_lb = -1; b%bin_g = 0
+      b%bin_s = -1
+      b%bin_la = -1
+      b%bin_lb = -1
+      b%bin_g = 0
       do i = 0, LMAX
          do j = 0, LMAX
             do k = 0, KCAP
                do s = 0, SDEC*sres
                   do gg = 0, 1
                      key = bin_key(i, j, k, s, gg)
-                     b%bin_la(key) = i; b%bin_lb(key) = j; b%bin_s(key) = s; b%bin_g(key) = gg
+                     b%bin_la(key) = i
+                     b%bin_lb(key) = j
+                     b%bin_s(key) = s
+                     b%bin_g(key) = gg
                   end do
                end do
             end do
@@ -235,9 +241,11 @@ contains
          integer, intent(in) :: i_, j_
          integer, intent(out) :: a_, b_
          if (sh_l(j_) > sh_l(i_)) then
-            a_ = j_; b_ = i_
+            a_ = j_
+            b_ = i_
          else
-            a_ = i_; b_ = j_
+            a_ = i_
+            b_ = j_
          end if
       end subroutine lorder
 
@@ -319,7 +327,8 @@ contains
          allocate (sq_abx(b%npair), sq_aby(b%npair), sq_abz(b%npair))
          allocate (sq_n(b%npair))
       end if
-      bin_pbase = 0; bin_k = 0
+      bin_pbase = 0
+      bin_k = 0
 
       ! Per pair slot: the A centre, A - B, and the real kept count -- what
       ! pp_off(key)/pp_n(key) gave the kernel before, read here once rather
@@ -327,7 +336,9 @@ contains
       do p = 1, b%npair
          key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
          off = pp_off(key)
-         sq_ax(p) = pp_ra(off + 1, 1); sq_ay(p) = pp_ra(off + 1, 2); sq_az(p) = pp_ra(off + 1, 3)
+         sq_ax(p) = pp_ra(off + 1, 1)
+         sq_ay(p) = pp_ra(off + 1, 2)
+         sq_az(p) = pp_ra(off + 1, 3)
          sq_abx(p) = pp_ra(off + 1, 1) - pp_rb(off + 1, 1)
          sq_aby(p) = pp_ra(off + 1, 2) - pp_rb(off + 1, 2)
          sq_abz(p) = pp_ra(off + 1, 3) - pp_rb(off + 1, 3)
@@ -370,14 +381,18 @@ contains
             do k1 = 1, bin_k(bb)
                ix = bin_pbase(bb) + (k1 - 1)*b%bin_cnt(bb) + s
                if (k1 <= kreal) then
-                  qp_z(ix) = pp_p(off + k1); qp_c(ix) = pp_c(off + k1)
+                  qp_z(ix) = pp_p(off + k1)
+                  qp_c(ix) = pp_c(off + k1)
                   qp_px(ix) = pp_r(off + k1, 1)
                   qp_py(ix) = pp_r(off + k1, 2)
                   qp_pz(ix) = pp_r(off + k1, 3)
                   if (present(qp_a)) qp_a(ix) = pp_a(off + k1)
                else
-                  qp_z(ix) = 1.0_dp; qp_c(ix) = 0.0_dp
-                  qp_px(ix) = sq_ax(p); qp_py(ix) = sq_ay(p); qp_pz(ix) = sq_az(p)
+                  qp_z(ix) = 1.0_dp
+                  qp_c(ix) = 0.0_dp
+                  qp_px(ix) = sq_ax(p)
+                  qp_py(ix) = sq_ay(p)
+                  qp_pz(ix) = sq_az(p)
                   if (present(qp_a)) qp_a(ix) = 0.0_dp
                end if
             end do
@@ -480,7 +495,9 @@ contains
          code(p) = int(1.0e6_dp*min(30.0_dp, -log10(max(w, 1.0e-30_dp)/wmax)), int64)
       end do
 
-      ti = b%sp_i; tj = b%sp_j; tq = b%sp_q
+      ti = b%sp_i
+      tj = b%sp_j
+      tq = b%sp_q
       allocate (kbuf(maxval(b%bin_cnt)), idx(maxval(b%bin_cnt)))
       do k = 1, b%nbin
          n = b%bin_cnt(k)
@@ -532,7 +549,8 @@ contains
 
       ! bounding box over all shell centres, so the quantisation is global and
       ! bins remain comparable to one another
-      lo3 = sh_r(:, 1); hi3 = sh_r(:, 1)
+      lo3 = sh_r(:, 1)
+      hi3 = sh_r(:, 1)
       do p = 2, nbas
          lo3 = min(lo3, sh_r(:, p))
          hi3 = max(hi3, sh_r(:, p))
@@ -549,7 +567,9 @@ contains
       end do
 
       allocate (ti(b%npair), tj(b%npair), tq(b%npair))
-      ti = b%sp_i; tj = b%sp_j; tq = b%sp_q
+      ti = b%sp_i
+      tj = b%sp_j
+      tq = b%sp_q
 
       allocate (kbuf(maxval(b%bin_cnt)), idx(maxval(b%bin_cnt)))
       do k = 1, b%nbin
@@ -613,7 +633,8 @@ contains
          if (b%bin_cnt(k) == 0) cycle
          m = 0.0_dp
          do p = b%bin_off(k) + 1, b%bin_off(k) + b%bin_cnt(k)
-            i = b%sp_i(p); j = b%sp_j(p)
+            i = b%sp_i(p)
+            j = b%sp_j(p)
             do a = 0, (sh_l(i) + 1)*(sh_l(i) + 2)/2 - 1
                do c = 0, (sh_l(j) + 1)*(sh_l(j) + 2)/2 - 1
                   m = max(m, abs(dmat(ao_off(i) + a, ao_off(j) + c)))

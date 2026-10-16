@@ -97,7 +97,10 @@ contains
             key = (i - 1)*nbas + j
             if (pp_n(key) == 0) cycle
             nlive = nlive + 1
-            d_i(nlive) = i; d_j(nlive) = j; d_k(nlive) = i; d_l(nlive) = j
+            d_i(nlive) = i
+            d_j(nlive) = j
+            d_k(nlive) = i
+            d_l(nlive) = j
             d_q(nlive) = pair_index(i, j)
          end do
       end do
@@ -225,7 +228,10 @@ contains
             key = (i - 1)*nbas + j
             if (hp_n(key) == 0) cycle
             nlive = nlive + 1
-            d_i(nlive) = i; d_j(nlive) = j; d_k(nlive) = i; d_l(nlive) = j
+            d_i(nlive) = i
+            d_j(nlive) = j
+            d_k(nlive) = i
+            d_l(nlive) = j
             d_q(nlive) = pair_index(i, j)
          end do
       end do
@@ -239,12 +245,15 @@ contains
 
       ! The chunks: starts in cst(1:nchunk), cst(nchunk + 1) = nlive + 1.
       allocate (cst(nlive + 1), w_off(nlive))
-      nchunk = 0; nout = 0; nwmax = 0
+      nchunk = 0
+      nout = 0
+      nwmax = 0
       c0 = 1
       do while (c0 <= nlive)
          nchunk = nchunk + 1
          cst(nchunk) = c0
-         m = 0; nw = 0
+         m = 0
+         nw = 0
          c1 = c0 - 1
          do n = c0, min(c0 + CHUNK - 1, nlive)
             lab = sh_l(d_i(n)) + sh_l(d_j(n))
@@ -255,7 +264,8 @@ contains
             nw = nw + need
             c1 = n
          end do
-         nout = max(nout, m); nwmax = max(nwmax, nw)
+         nout = max(nout, m)
+         nwmax = max(nwmax, nw)
          c0 = c1 + 1
       end do
       cst(nchunk + 1) = nlive + 1
@@ -266,9 +276,11 @@ contains
       ! NOT entered here: see the header comment above.
       !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, w_off, out, qc, work)
       do ic = 1, nchunk
-         c0 = cst(ic); c1 = cst(ic + 1) - 1
+         c0 = cst(ic)
+         c1 = cst(ic + 1) - 1
          nc = c1 - c0 + 1
-         m = 0; nw = 0
+         m = 0
+         nw = 0
          do n = c0, c1
             d_off(n) = m
             w_off(n) = nw
@@ -330,7 +342,8 @@ contains
          p = pp_n(key)
          b = 1
          do while (p > 1 .and. b < NB)
-            p = p/2; b = b + 1
+            p = p/2
+            b = b + 1
          end do
          bkt(n) = NB + 1 - b          ! largest count first
          cnt(bkt(n)) = cnt(bkt(n)) + 1
@@ -341,11 +354,16 @@ contains
       end do
       do n = 1, nlive
          b = bkt(n)
-         si(start(b)) = d_i(n); sj(start(b)) = d_j(n); sq(start(b)) = d_q(n)
+         si(start(b)) = d_i(n)
+         sj(start(b)) = d_j(n)
+         sq(start(b)) = d_q(n)
          start(b) = start(b) + 1
       end do
       do n = 1, nlive
-         d_i(n) = si(n); d_j(n) = sj(n); d_k(n) = si(n); d_l(n) = sj(n)
+         d_i(n) = si(n)
+         d_j(n) = sj(n)
+         d_k(n) = si(n)
+         d_l(n) = sj(n)
          d_q(n) = sq(n)
       end do
       deallocate (bkt, si, sj, sq)
@@ -417,7 +435,9 @@ contains
          do j = 1, i
             if (q(pair_index(i, j))*qmax > thresh) then
                np = np + 1
-               pi(np) = i; pj(np) = j; pq(np) = q(pair_index(i, j))
+               pi(np) = i
+               pj(np) = j
+               pq(np) = q(pair_index(i, j))
             end if
          end do
       end do
@@ -429,7 +449,10 @@ contains
             bound = pq(a)*pq(b)
             if (bound <= thresh) cycle
             if (use_density) then
-               i = pi(a); j = pj(a); k = pi(b); l = pj(b)
+               i = pi(a)
+               j = pj(a)
+               k = pi(b)
+               l = pj(b)
                dfac = max(4.0_dp*dmax(i, j), 4.0_dp*dmax(k, l), &
                           dmax(i, k), dmax(i, l), dmax(j, k), dmax(j, l))
                if (bound*dfac <= thresh) cycle
@@ -444,14 +467,20 @@ contains
          do b = 1, a
             bound = pq(a)*pq(b)
             if (bound <= thresh) cycle
-            i = pi(a); j = pj(a); k = pi(b); l = pj(b)
+            i = pi(a)
+            j = pj(a)
+            k = pi(b)
+            l = pj(b)
             if (use_density) then
                dfac = max(4.0_dp*dmax(i, j), 4.0_dp*dmax(k, l), &
                           dmax(i, k), dmax(i, l), dmax(j, k), dmax(j, l))
                if (bound*dfac <= thresh) cycle
             end if
             nq = nq + 1
-            q_i(nq) = i; q_j(nq) = j; q_k(nq) = k; q_l(nq) = l
+            q_i(nq) = i
+            q_j(nq) = j
+            q_k(nq) = k
+            q_l(nq) = l
          end do
       end do
 
@@ -500,11 +529,16 @@ contains
       do n = 1, nq
          key = keyv(n)
          pos(key) = pos(key) + 1
-         ti(pos(key)) = q_i(n); tj(pos(key)) = q_j(n)
-         tk(pos(key)) = q_k(n); tl(pos(key)) = q_l(n)
+         ti(pos(key)) = q_i(n)
+         tj(pos(key)) = q_j(n)
+         tk(pos(key)) = q_k(n)
+         tl(pos(key)) = q_l(n)
       end do
 
-      q_i = ti; q_j = tj; q_k = tk; q_l = tl
+      q_i = ti
+      q_j = tj
+      q_k = tk
+      q_l = tl
       deallocate (cnt, pos, keyv, ti, tj, tk, tl)
    end subroutine sort_by_class
 

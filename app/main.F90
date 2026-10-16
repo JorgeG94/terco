@@ -173,8 +173,9 @@ contains
       write (output_unit, "(a,a)") "   method           : ", method(r)
       write (output_unit, "(a,a)") "   basis            : ", r%basis_path
       if (r%rimp2) write (output_unit, "(a,a)") "   auxiliary basis  : ", r%aux_path
-      if (r%rimp2 .and. .not. r%cli%is_set("cart")) &
-         write (output_unit, "(a)") "   AO space         : Cartesian (RI-MP2 does not support spherical AOs yet)"
+      if (r%rimp2 .and. .not. r%cli%is_set("cart")) then
+        write (output_unit, "(a)") "   AO space         : Cartesian (RI-MP2 does not support spherical AOs yet)"
+      end if
       write (output_unit, "(a,a)") "   guess            : ", r%guess
       write (output_unit, "(a,es8.1,a,es8.1,a,es8.1)") "   convergence      : dE ", r%econv, &
          "   |FDS-SDF| ", r%gconv, "   screening ", r%thresh
@@ -189,15 +190,18 @@ contains
       integer :: ia, k, n, order(118)
       n = 0
       if (any(z == 6)) then
-         n = n + 1; order(n) = 6
+         n = n + 1
+         order(n) = 6
          if (any(z == 1)) then
-            n = n + 1; order(n) = 1
+            n = n + 1
+            order(n) = 1
          end if
       end if
       k = n
       do ia = 1, 118
          if (any(z == ia) .and. .not. any(order(:k) == ia)) then
-            n = n + 1; order(n) = ia
+            n = n + 1
+            order(n) = ia
          end if
       end do
       call sort_by_symbol(order(k + 1:n))
@@ -211,10 +215,12 @@ contains
       integer, intent(inout) :: a(:)
       integer :: i, j, t
       do i = 2, size(a)
-         t = a(i); j = i - 1
+         t = a(i)
+         j = i - 1
          do while (j >= 1)
             if (element_symbol(a(j)) <= element_symbol(t)) exit
-            a(j + 1) = a(j); j = j - 1
+            a(j + 1) = a(j)
+            j = j - 1
          end do
          a(j + 1) = t
       end do
@@ -296,25 +302,25 @@ contains
       write (u, "(a)") '  "method": "'//json_escape(method(r))//'",'
       write (u, "(a)") '  "basis": "'//json_escape(r%basis_path)//'",'
       write (u, "(a)") '  "guess": "'//json_escape(r%guess)//'",'
-      write (u, "(a,i0,a)") '  "charge": ', r%chrg, ','
-      write (u, "(a,i0,a)") '  "unpaired electrons": ', r%uhf, ','
-      write (u, "(a,i0,a)") '  "number of basis functions": ', r%nao, ','
-      write (u, "(a,a,a)") '  "spherical": ', trim(merge("true ", "false", r%sph /= 0)), ','
-      write (u, "(a,i0,a)") '  "iterations": ', r%niter, ','
-      write (u, "(a,a,a)") '  "converged": ', trim(merge("true ", "false", r%conv /= 0)), ','
-      write (u, "(a,es23.15e3,a)") '  "nuclear repulsion energy": ', r%enuc, ','
-      write (u, "(a,es23.15e3,a)") '  "one-electron energy": ', r%eone, ','
-      write (u, "(a,es23.15e3,a)") '  "two-electron energy": ', r%etwo, ','
-      write (u, "(a,es23.15e3,a)") '  "exchange-correlation energy": ', r%exc, ','
+      write (u, "(a,i0,a)") '  "charge": ', r%chrg, ","
+      write (u, "(a,i0,a)") '  "unpaired electrons": ', r%uhf, ","
+      write (u, "(a,i0,a)") '  "number of basis functions": ', r%nao, ","
+      write (u, "(a,a,a)") '  "spherical": ', trim(merge("true ", "false", r%sph /= 0)), ","
+      write (u, "(a,i0,a)") '  "iterations": ', r%niter, ","
+      write (u, "(a,a,a)") '  "converged": ', trim(merge("true ", "false", r%conv /= 0)), ","
+      write (u, "(a,es23.15e3,a)") '  "nuclear repulsion energy": ', r%enuc, ","
+      write (u, "(a,es23.15e3,a)") '  "one-electron energy": ', r%eone, ","
+      write (u, "(a,es23.15e3,a)") '  "two-electron energy": ', r%etwo, ","
+      write (u, "(a,es23.15e3,a)") '  "exchange-correlation energy": ', r%exc, ","
       if (len(r%pcm) > 0) then
          write (u, "(a,a,a)") '  "solvation model": "', r%pcm, '",'
-         write (u, "(a,es23.15e3,a)") '  "dielectric constant": ', r%eps, ','
-         write (u, "(a,es23.15e3,a)") '  "solvation energy": ', r%epcm, ','
-         write (u, "(a,i0,a)") '  "solvation surface points": ', r%npcm, ','
+         write (u, "(a,es23.15e3,a)") '  "dielectric constant": ', r%eps, ","
+         write (u, "(a,es23.15e3,a)") '  "solvation energy": ', r%epcm, ","
+         write (u, "(a,i0,a)") '  "solvation surface points": ', r%npcm, ","
       end if
       if (r%rimp2 .and. r%conv /= 0) then
-         write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', r%eos, ','
-         write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', r%ess, ','
+         write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', r%eos, ","
+         write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', r%ess, ","
       end if
       write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
       write (u, "(a)") "}"
@@ -416,8 +422,9 @@ program terco_main
       call quit(r, 0)
    end if
    call r%cli%get("geometry", r%geom, r%err)
-   if (r%err%has_error() .or. len_trim(r%geom) == 0) &
-      call die(r, "no geometry given: terco molecule.xyz [options]"//new_line("a")//"try 'terco --help'")
+   if (r%err%has_error() .or. len_trim(r%geom) == 0) then
+     call die(r, "no geometry given: terco molecule.xyz [options]"//new_line("a")//"try 'terco --help'")
+   end if
 
    ! ---- inputs ----------------------------------------------------------
    call read_xyz(r%geom, r%natm, r%z, xyz, r%title, r%err)
@@ -431,9 +438,10 @@ program terco_main
    r%nelec = sum(r%z) - r%chrg
    if (r%nelec < 1) call die(r, "charge "//itoa(r%chrg)//" leaves "//itoa(r%nelec)//" electrons")
    r%uhf = int_option(r, "uhf", ".UHF", mod(r%nelec, 2))
-   if (r%uhf < 0 .or. r%uhf > r%nelec .or. mod(r%nelec - r%uhf, 2) /= 0) &
-      call die(r, "--uhf "//itoa(r%uhf)//" is impossible with "//itoa(r%nelec)//" electrons: the unpaired "// &
+   if (r%uhf < 0 .or. r%uhf > r%nelec .or. mod(r%nelec - r%uhf, 2) /= 0) then
+     call die(r, "--uhf "//itoa(r%uhf)//" is impossible with "//itoa(r%nelec)//" electrons: the unpaired "// &
                "count must be between 0 and the electron count, with the same parity")
+   end if
    r%mult = r%uhf + 1
 
    call r%cli%get("func", sval, r%err)
@@ -447,22 +455,34 @@ program terco_main
       r%guess = lower(trim(sval))
    end if
    select case (r%guess)
-   case ("sad"); guess_kind = TRC_GUESS_SAD
-   case ("sadq"); guess_kind = TRC_GUESS_SADQ
-   case ("sap"); guess_kind = TRC_GUESS_SAP
-   case ("gwh"); guess_kind = TRC_GUESS_GWH
-   case ("core", "hcore"); guess_kind = TRC_GUESS_CORE
+   case ("sad")
+   guess_kind = TRC_GUESS_SAD
+   case ("sadq")
+   guess_kind = TRC_GUESS_SADQ
+   case ("sap")
+   guess_kind = TRC_GUESS_SAP
+   case ("gwh")
+   guess_kind = TRC_GUESS_GWH
+   case ("core", "hcore")
+   guess_kind = TRC_GUESS_CORE
    case default
       call die(r, "unknown guess '"//r%guess//"': use sad, sadq, sap, gwh or core")
    end select
 
-   call r%cli%get("grid", r%grid, r%err); call check(r, "--grid")
-   call r%cli%get("nlc-grid", nlc_grid, r%err); call check(r, "--nlc-grid")
-   call r%cli%get("iterations", maxiter, r%err); call check(r, "--iterations")
-   call r%cli%get("econv", r%econv, r%err); call check(r, "--econv")
-   call r%cli%get("gconv", r%gconv, r%err); call check(r, "--gconv")
-   call r%cli%get("thresh", r%thresh, r%err); call check(r, "--thresh")
-   call r%cli%get("frozen", nfrozen, r%err); call check(r, "--frozen")
+   call r%cli%get("grid", r%grid, r%err)
+   call check(r, "--grid")
+   call r%cli%get("nlc-grid", nlc_grid, r%err)
+   call check(r, "--nlc-grid")
+   call r%cli%get("iterations", maxiter, r%err)
+   call check(r, "--iterations")
+   call r%cli%get("econv", r%econv, r%err)
+   call check(r, "--econv")
+   call r%cli%get("gconv", r%gconv, r%err)
+   call check(r, "--gconv")
+   call r%cli%get("thresh", r%thresh, r%err)
+   call check(r, "--thresh")
+   call r%cli%get("frozen", nfrozen, r%err)
+   call check(r, "--frozen")
    r%rimp2 = r%cli%is_set("rimp2")
    cart = r%cli%is_set("cart")
    r%pcm = ""
@@ -473,7 +493,8 @@ program terco_main
       if (r%pcm /= "cpcm" .and. r%pcm /= "iefpcm") call die(r, "unknown --pcm '"//r%pcm//"': use cpcm or iefpcm")
       if (.not. r%cli%is_set("eps")) call die(r, "--pcm needs the solvent's dielectric constant: "// &
                                               "--eps 78.3553 for water; nothing is assumed")
-      call r%cli%get("eps", r%eps, r%err); call check(r, "--eps")
+      call r%cli%get("eps", r%eps, r%err)
+      call check(r, "--eps")
    else if (r%cli%is_set("eps")) then
       call die(r, "--eps is the dielectric constant for --pcm, which was not given")
    end if
@@ -557,7 +578,8 @@ program terco_main
    call api(r, trc_converged(r%h, r%conv))
    call api(r, trc_iterations(r%h, r%niter))
    call api(r, trc_pcm_energy(r%h, r%epcm, r%qpcm, r%npcm))
-   r%eos = 0; r%ess = 0
+   r%eos = 0
+   r%ess = 0
    if (r%rimp2 .and. r%conv /= 0) then
       call api(r, trc_run_rimp2(r%h))
       call api(r, trc_rimp2_energy(r%h, r%eos, r%ess))

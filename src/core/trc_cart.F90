@@ -50,8 +50,16 @@ contains
    subroutine cart_init()
       integer :: l, lx, ly, lz, h, d, nx, ny, nz
 
-      cidx = 0; cnx = 0; cny = 0; cnz = 0; cll = 0
-      cdir = 0; cdn1 = 0; cdn2 = 0; cf2 = 0.0_dp; cup = 0
+      cidx = 0
+      cnx = 0
+      cny = 0
+      cnz = 0
+      cll = 0
+      cdir = 0
+      cdn1 = 0
+      cdn2 = 0
+      cf2 = 0.0_dp
+      cup = 0
 
       h = 0
       do l = 0, LCMAX
@@ -60,7 +68,10 @@ contains
                lz = l - lx - ly
                h = h + 1
                cidx(lx, ly, lz) = h
-               cnx(h) = lx; cny(h) = ly; cnz(h) = lz; cll(h) = l
+               cnx(h) = lx
+               cny(h) = ly
+               cnz(h) = lz
+               cll(h) = l
             end do
          end do
          ncum_of(l) = h
@@ -68,7 +79,9 @@ contains
 
       ! Neighbours, now that every index exists.
       do h = 1, NCUM
-         lx = cnx(h); ly = cny(h); lz = cnz(h)
+         lx = cnx(h)
+         ly = cny(h)
+         lz = cnz(h)
 
          ! VRR decrement direction: first non-zero, x then y then z.  The
          ! choice only has to be consistent.
@@ -97,7 +110,9 @@ contains
 
          ! Increment in each direction -- the HRR walks upward.
          do d = 1, 3
-            nx = lx; ny = ly; nz = lz
+            nx = lx
+            ny = ly
+            nz = lz
             if (d == 1) nx = nx + 1
             if (d == 2) ny = ny + 1
             if (d == 3) nz = nz + 1

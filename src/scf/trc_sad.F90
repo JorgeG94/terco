@@ -194,7 +194,8 @@ contains
                ! nspin is 1 here, and `nocc` is taken from nelec_frac, so
                ! these two only have to be legal.
                nel_i = int(want/2.0_dp)
-               na = nel_i; nb = nel_i
+               na = nel_i
+               nb = nel_i
             end if
             call trc_scf_run(ab, na, nb, opts, res, la=la)
             if (.not. res%converged) then
@@ -206,15 +207,17 @@ contains
             end if
             if (talk) then
                if (sadq .and. .not. hund) then
-                  print '(a,i0,a,i0,a,f10.6,a,f16.8,a,i0,a)', "  sadq: Z = ", z, " (", nz, &
+                  print "(a,i0,a,i0,a,f10.6,a,f16.8,a,i0,a)", "  sadq: Z = ", z, " (", nz, &
                      " functions) n = ", want, " E = ", res%energy, " in ", res%iterations, " iterations"
                else
-                  print '(a,i0,a,i0,a,f16.8,a,i0,a)', "  sad: Z = ", z, " (", nz, " functions) E = ", &
+                  print "(a,i0,a,i0,a,f16.8,a,i0,a)", "  sad: Z = ", z, " (", nz, " functions) E = ", &
                      res%energy, " in ", res%iterations, " iterations"
                end if
             end if
             ncached = ncached + 1
-            cache_z(ncached) = z; cache_n(ncached) = nz; cache_e(ncached) = want
+            cache_z(ncached) = z
+            cache_n(ncached) = nz
+            cache_e(ncached) = want
             allocate (cache(ncached)%d(nz, nz))
             if (hund) then
                cache(ncached)%d = res%dmat(:, :, 1) + res%dmat(:, :, 2)
@@ -242,7 +245,8 @@ contains
       integer :: ish, ia
 
       allocate (atom_of(b%nshell), first(b%natm), last(b%natm))
-      first = 0; last = 0
+      first = 0
+      last = 0
       do ish = 1, b%nshell
          atom_of(ish) = 0
          do ia = 1, b%natm
@@ -327,9 +331,12 @@ contains
 
       do jsh = 1, nshell
          do ish = 1, nshell
-            li = sh_l(ish); lj = sh_l(jsh)
-            bi = sh_a(ish); bj = sh_a(jsh)
-            nsi = 2*li + 1; nsj = 2*lj + 1
+            li = sh_l(ish)
+            lj = sh_l(jsh)
+            bi = sh_a(ish)
+            bj = sh_a(jsh)
+            nsi = 2*li + 1
+            nsj = 2*lj + 1
             if (li /= lj) then
                d(bi:bi + nsi - 1, bj:bj + nsj - 1) = 0.0_dp
             else
@@ -359,11 +366,16 @@ contains
       ds = 0.0_dp
       do jsh = 1, ab%nshell
          do ish = 1, ab%nshell
-            li = ab%sh_l(ish); lj = ab%sh_l(jsh)
-            nci = ncart(li); ncj = ncart(lj)
-            nsi = 2*li + 1; nsj = 2*lj + 1
-            ai = ab%sh_ao(ish); aj = ab%sh_ao(jsh)
-            bi = ab%sh_ao_sph(ish); bj = ab%sh_ao_sph(jsh)
+            li = ab%sh_l(ish)
+            lj = ab%sh_l(jsh)
+            nci = ncart(li)
+            ncj = ncart(lj)
+            nsi = 2*li + 1
+            nsj = 2*lj + 1
+            ai = ab%sh_ao(ish)
+            aj = ab%sh_ao(jsh)
+            bi = ab%sh_ao_sph(ish)
+            bj = ab%sh_ao_sph(jsh)
             do s = 1, nsj
                do r = 1, nsi
                   acc = 0.0_dp
@@ -392,11 +404,16 @@ contains
       dc = 0.0_dp
       do jsh = 1, ab%nshell
          do ish = 1, ab%nshell
-            li = ab%sh_l(ish); lj = ab%sh_l(jsh)
-            nci = ncart(li); ncj = ncart(lj)
-            nsi = 2*li + 1; nsj = 2*lj + 1
-            ai = ab%sh_ao(ish); aj = ab%sh_ao(jsh)
-            bi = ab%sh_ao_sph(ish); bj = ab%sh_ao_sph(jsh)
+            li = ab%sh_l(ish)
+            lj = ab%sh_l(jsh)
+            nci = ncart(li)
+            ncj = ncart(lj)
+            nsi = 2*li + 1
+            nsj = 2*lj + 1
+            ai = ab%sh_ao(ish)
+            aj = ab%sh_ao(jsh)
+            bi = ab%sh_ao_sph(ish)
+            bj = ab%sh_ao_sph(jsh)
             do q = 1, ncj
                do p = 1, nci
                   acc = 0.0_dp
@@ -423,7 +440,9 @@ contains
       integer, intent(out) :: na, nb
       integer, parameter :: cap(19) = [2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 14, 10, 6]
       integer :: left, i, half, part
-      left = z; na = 0; nb = 0
+      left = z
+      na = 0
+      nb = 0
       do i = 1, size(cap)
          if (left <= 0) exit
          part = min(left, cap(i))
@@ -437,7 +456,8 @@ contains
          left = left - part
       end do
       ! whatever is beyond the table, paired
-      na = na + (left + 1)/2; nb = nb + left/2
+      na = na + (left + 1)/2
+      nb = nb + left/2
    end subroutine hund_split
 
    pure integer function ncart(l)
@@ -448,7 +468,7 @@ contains
    pure function itoa(i) result(t)
       integer, intent(in) :: i
       character(len=12) :: t
-      write (t, '(i0)') i
+      write (t, "(i0)") i
    end function itoa
 
 end module trc_sad

@@ -115,7 +115,8 @@ contains
       allocate (sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg))
       allocate (sPA(nseg), sPB(nseg), sOff(nseg + 1))
 
-      is = 0; sOff(1) = 0
+      is = 0
+      sOff(1) = 0
       do ia = 1, b%nlive
          ka = b%live(ia)
          nA = b%bin_cnt(ka)
@@ -125,12 +126,17 @@ contains
             nB = b%bin_cnt(kb)
             if (nA == 0 .or. nB == 0) cycle
             is = is + 1
-            sA(is) = nA; sNB(is) = nB
-            sOA(is) = b%bin_off(ka); sOB(is) = b%bin_off(kb)
-            sPA(is) = qp_bin_pbase(ka); sPB(is) = qp_bin_pbase(kb)
+            sA(is) = nA
+            sNB(is) = nB
+            sOA(is) = b%bin_off(ka)
+            sOB(is) = b%bin_off(kb)
+            sPA(is) = qp_bin_pbase(ka)
+            sPB(is) = qp_bin_pbase(kb)
             sD(is) = (ka == kb)
-            sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
-            sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
+            sLA(is) = b%bin_la(ka)
+            sLB(is) = b%bin_lb(ka)
+            sLC(is) = b%bin_la(kb)
+            sLD(is) = b%bin_lb(kb)
             if (ka == kb) then
                nt = int(nA, int64)*int(nA + 1, int64)/2
             else
@@ -168,7 +174,8 @@ contains
             b2 = a2 - 1
             do while (b2 >= 1)
                if (ckey(ord(b2)) <= ckey(t2)) exit
-               ord(b2 + 1) = ord(b2); b2 = b2 - 1
+               ord(b2 + 1) = ord(b2)
+               b2 = b2 - 1
             end do
             ord(b2 + 1) = t2
          end do
@@ -235,17 +242,28 @@ contains
       logical, allocatable :: tl(:)
       integer(int64), allocatable :: to(:)
       allocate (t(n), tl(n), to(n + 1))
-      t = sA(ord);  sA = t
-      t = sNB(ord); sNB = t
-      t = sOA(ord); sOA = t
-      t = sOB(ord); sOB = t
-      t = sPA(ord); sPA = t
-      t = sPB(ord); sPB = t
-      t = sLA(ord); sLA = t
-      t = sLB(ord); sLB = t
-      t = sLC(ord); sLC = t
-      t = sLD(ord); sLD = t
-      tl = sD(ord); sD = tl
+      t = sA(ord)
+      sA = t
+      t = sNB(ord)
+      sNB = t
+      t = sOA(ord)
+      sOA = t
+      t = sOB(ord)
+      sOB = t
+      t = sPA(ord)
+      sPA = t
+      t = sPB(ord)
+      sPB = t
+      t = sLA(ord)
+      sLA = t
+      t = sLB(ord)
+      sLB = t
+      t = sLC(ord)
+      sLC = t
+      t = sLD(ord)
+      sLD = t
+      tl = sD(ord)
+      sD = tl
       to(1) = 0
       do k = 1, n
          if (sD(k)) then
@@ -338,7 +356,8 @@ contains
          ! Batches of more than one segment are at most GRAD_COMPACT_CAP
          ! work items by construction, so this inner loop runs more than
          ! once only for a single segment larger than that.
-         w0 = sOff(b0) + 1; gend = sOff(b1 + 1)
+         w0 = sOff(b0) + 1
+         gend = sOff(b1 + 1)
          do while (w0 <= gend)
             w1 = min(gend, w0 + GRAD_COMPACT_CAP - 1)
             nmax = int(w1 - w0 + 1)

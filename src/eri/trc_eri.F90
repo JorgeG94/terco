@@ -139,7 +139,9 @@ contains
       integer :: bres
       character(len=8) :: bt_env
 
-      this%rank = 0; this%nranks = 1; this%distributed = .false.
+      this%rank = 0
+      this%nranks = 1
+      this%distributed = .false.
       if (present(comm)) then
          this%comm = comm
          this%rank = comm%rank()
@@ -165,8 +167,8 @@ contains
       !
       ! TRC_NO_DECONTRACT=1 forces the old path, for bisecting a discrepancy.
       !
-      bt_env = ' '
-      call get_environment_variable('TRC_NO_DECONTRACT', bt_env)
+      bt_env = " "
+      call get_environment_variable("TRC_NO_DECONTRACT", bt_env)
       if (len_trim(bt_env) == 0) then
          ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
          ! uses, so the rule can be swept without a rebuild.
@@ -200,8 +202,8 @@ contains
       !! unless TRC_DECON_CUTOFF says otherwise.
       character(len=32) :: e
       integer :: ios
-      e = ' '
-      call get_environment_variable('TRC_DECON_CUTOFF', e)
+      e = " "
+      call get_environment_variable("TRC_DECON_CUTOFF", e)
       decon_cutoff = DECON_CUTOFF_DEFAULT
       if (len_trim(e) > 0) then
          read (e, *, iostat=ios) decon_cutoff
@@ -216,8 +218,8 @@ contains
       !! every group, as this module did before the gate existed.
       character(len=32) :: e
       integer :: ios
-      e = ' '
-      call get_environment_variable('TRC_DECON_MINPRIM', e)
+      e = " "
+      call get_environment_variable("TRC_DECON_MINPRIM", e)
       decon_minprim = DECON_MINPRIM_DEFAULT
       if (len_trim(e) > 0) then
          read (e, *, iostat=ios) decon_minprim
@@ -414,7 +416,9 @@ contains
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -550,7 +554,8 @@ contains
       if (any(this%sh_at == 0)) error stop &
          "terco: eri%gradient: a shell centre matches no atom coordinate exactly"
 
-      jfac = 1.0_dp; kfac = 1.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
 
@@ -650,7 +655,9 @@ contains
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -666,7 +673,8 @@ contains
          dp_w = dmat
       end if
       dwork(1, :, :) = dp_w
-      jmat = 0.0_dp; kmat = 0.0_dp
+      jmat = 0.0_dp
+      kmat = 0.0_dp
       if (screen_on(density_screen)) then
          call density_blocks(this, dwork, 1)
       else
@@ -756,7 +764,9 @@ contains
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -810,8 +820,8 @@ contains
       block
          character(len=8) :: ke
          logical :: want
-         ke = ' '
-         call get_environment_variable('TRC_KEPT_STATS', ke)
+         ke = " "
+         call get_environment_variable("TRC_KEPT_STATS", ke)
          want = len_trim(ke) > 0
          if (present(count_survivors)) want = want .or. count_survivors
          if (want) then
@@ -826,9 +836,9 @@ contains
                            this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                            1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
                            nkept=this%nkept)
-            if (len_trim(ke) > 0) print '(a,i0,a,i0,a,f6.2,a)', &
-               '  [kept] nwork ', this%nwork, '  nkept ', this%nkept, '  survive ', &
-               100.0_dp*real(this%nkept, dp)/max(real(this%nwork, dp), 1.0_dp), '%'
+            if (len_trim(ke) > 0) print "(a,i0,a,i0,a,f6.2,a)", &
+               "  [kept] nwork ", this%nwork, "  nkept ", this%nkept, "  survive ", &
+               100.0_dp*real(this%nkept, dp)/max(real(this%nwork, dp), 1.0_dp), "%"
          end if
       end block
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
@@ -982,7 +992,9 @@ contains
       integer :: n, nw, i, j, d
       real(dp) :: jfac, kfac, ow
 
-      jfac = 1.0_dp; kfac = 1.0_dp; ow = 0.0_dp
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
@@ -1093,7 +1105,10 @@ contains
       if (allocated(this%sh_at))  deallocate (this%sh_at)
       call decon_release(this%dec)
       call this%pb%release()
-      this%nbas = 0; this%nao = 0; this%nao_w = 0; this%nhpp = 0
+      this%nbas = 0
+      this%nao = 0
+      this%nao_w = 0
+      this%nhpp = 0
    end subroutine eri_release
 
 end module trc_eri

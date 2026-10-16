@@ -84,11 +84,16 @@ contains
       do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, s, acc, inner)
          jsh = ij/nshell + 1
          ish = ij - (jsh - 1)*nshell + 1
-         li = sh_l(ish); lj = sh_l(jsh)
-         nci = (li + 1)*(li + 2)/2; ncj = (lj + 1)*(lj + 2)/2
-         nsi = 2*li + 1; nsj = 2*lj + 1
-         ai = sh_ao(ish); aj = sh_ao(jsh)
-         bi = sh_ao_sph(ish); bj = sh_ao_sph(jsh)
+         li = sh_l(ish)
+         lj = sh_l(jsh)
+         nci = (li + 1)*(li + 2)/2
+         ncj = (lj + 1)*(lj + 2)/2
+         nsi = 2*li + 1
+         nsj = 2*lj + 1
+         ai = sh_ao(ish)
+         aj = sh_ao(jsh)
+         bi = sh_ao_sph(ish)
+         bj = sh_ao_sph(jsh)
          do s = 1, nsj
             do r = 1, nsi
                acc = 0.0_dp
@@ -121,11 +126,16 @@ contains
       do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, s, acc, inner)
          jsh = ij/nshell + 1
          ish = ij - (jsh - 1)*nshell + 1
-         li = sh_l(ish); lj = sh_l(jsh)
-         nci = (li + 1)*(li + 2)/2; ncj = (lj + 1)*(lj + 2)/2
-         nsi = 2*li + 1; nsj = 2*lj + 1
-         ai = sh_ao(ish); aj = sh_ao(jsh)
-         bi = sh_ao_sph(ish); bj = sh_ao_sph(jsh)
+         li = sh_l(ish)
+         lj = sh_l(jsh)
+         nci = (li + 1)*(li + 2)/2
+         ncj = (lj + 1)*(lj + 2)/2
+         nsi = 2*li + 1
+         nsj = 2*lj + 1
+         ai = sh_ao(ish)
+         aj = sh_ao(jsh)
+         bi = sh_ao_sph(ish)
+         bj = sh_ao_sph(jsh)
          do q = 1, ncj
             do p = 1, nci
                acc = 0.0_dp

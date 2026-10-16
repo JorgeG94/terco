@@ -215,7 +215,8 @@ contains
       else if (rr >= r(size(r))) then
          interp = nel/rr
       else
-         lo = 1; hi = size(r)
+         lo = 1
+         hi = size(r)
          do while (hi - lo > 1)
             mid = (lo + hi)/2
             if (r(mid) > rr) then
@@ -283,8 +284,8 @@ contains
       bpath = SAP_BASIS_DEFAULT
       block
          character(len=512) :: pe
-         pe = ' '
-         call get_environment_variable('TRC_SAP_BASIS', pe)
+         pe = " "
+         call get_environment_variable("TRC_SAP_BASIS", pe)
          if (len_trim(pe) > 0) bpath = trim(pe)
       end block
       if (present(path)) bpath = path
@@ -312,7 +313,12 @@ contains
          real(dp) :: p_e(1, 1), p_c(1, 1), p_r(3, 1), p_z(1)
          integer :: p_l(1), p_np(1)
          type(trc_basis_t) :: probe
-         p_l = 0; p_np = 1; p_e = 1.0_dp; p_c = 1.0_dp; p_r = 0.0_dp; p_z = 1.0_dp
+         p_l = 0
+         p_np = 1
+         p_e = 1.0_dp
+         p_c = 1.0_dp
+         p_r = 0.0_dp
+         p_z = 1.0_dp
          call probe%build(1, p_l, p_np, p_e, p_c, p_r, 1, p_z, p_r, 1)
          cfac = probe%sh_c(1, 1)
          call probe%release()
@@ -321,23 +327,26 @@ contains
          call error%set(ERROR_VALIDATION, "trc_sap: the basis builder zeroed a unit coefficient")
          return
       end if
-      if (talk) print '(a,a,a,i0,a)', "  sap: fitted potentials from ", trim(bpath), &
+      if (talk) print "(a,a,a,i0,a)", "  sap: fitted potentials from ", trim(bpath), &
          ", up to ", nmax, " primitives per atom"
 
       chunk = int(max(1_int64, SAP_TENSOR_BYTES/(int(nao, int64)*int(nao, int64)*8_int64)))
       chunk = min(chunk, b%natm)
-      if (talk) print '(a,i0,a,i0,a)', "  sap: ", (b%natm + chunk - 1)/chunk, &
+      if (talk) print "(a,i0,a,i0,a)", "  sap: ", (b%natm + chunk - 1)/chunk, &
          " three-centre pass(es), ", chunk, " atoms each"
       do n0 = 1, b%natm, chunk
          n1 = min(n0 + chunk - 1, b%natm)
          nch = n1 - n0 + 1
          allocate (a_l(nch), a_np(nch), a_e(nmax, nch), a_c(nmax, nch), a_r(3, nch))
-         a_l = 0; a_e = 0.0_dp; a_c = 0.0_dp
+         a_l = 0
+         a_e = 0.0_dp
+         a_c = 0.0_dp
          do ish = 1, nch
             ia = n0 + ish - 1
             call trc_fitted_shell_from_json(bpath, nint(b%at_z(ia)), e, c, error)
             if (error%has_error()) then
-               deallocate (a_l, a_np, a_e, a_c, a_r); return
+               deallocate (a_l, a_np, a_e, a_c, a_r)
+               return
             end if
             np = size(e)
             a_np(ish) = np
@@ -417,7 +426,7 @@ contains
       if (error%has_error()) return
       call trc_atom_ranges(b, atom_of, first, last, error)
       if (error%has_error()) return
-      call stage('free atoms   ')
+      call stage("free atoms   ")
 
       ! --- one screening table per distinct (element, function count) ------
       allocate (tab(b%natm), tab_of(b%natm), zint(b%natm))
@@ -438,8 +447,9 @@ contains
                                       dguess(a0:a1, a0:a1), tab(ntab)%r, tab(ntab)%v, &
                                       tab(ntab)%nel, error)
             if (error%has_error()) return
-            tab(ntab)%z = zint(ia); tab(ntab)%nz = nz
-            if (talk) print '(a,i0,a,f12.8,a,f12.8)', "  sap: Z = ", zint(ia), &
+            tab(ntab)%z = zint(ia)
+            tab(ntab)%nz = nz
+            if (talk) print "(a,i0,a,f12.8,a,f12.8)", "  sap: Z = ", zint(ia), &
                "  radial density integrates to ", tab(ntab)%nel, &
                "   r*Vscr at the last node ", tab(ntab)%r(size(tab(ntab)%r))* &
                tab(ntab)%v(size(tab(ntab)%v))
@@ -447,7 +457,7 @@ contains
          end if
       end do
 
-      call stage('screen tables')
+      call stage("screen tables")
 
       ! --- the molecular quadrature ---------------------------------------
       lv = SAP_GRID_LEVEL
@@ -455,8 +465,8 @@ contains
       block
          character(len=16) :: e
          integer :: ios, lv_env
-         e = ' '
-         call get_environment_variable('TRC_SAP_LEVEL', e)
+         e = " "
+         call get_environment_variable("TRC_SAP_LEVEL", e)
          if (len_trim(e) > 0 .and. .not. present(level)) then
             read (e, *, iostat=ios) lv_env
             if (ios == 0) lv = lv_env
@@ -464,13 +474,13 @@ contains
       end block
       call build_dft_grid(b%at_r(:, 1:b%natm), zint, g, error, level=lv)
       if (error%has_error()) return
-      if (talk) print '(a,i0,a,i0,a)', "  sap: quadrature level ", lv, ", ", &
+      if (talk) print "(a,i0,a,i0,a)", "  sap: quadrature level ", lv, ", ", &
          g%n_points, " points"
 
       ! Every atom contributes to every point and nothing is screened: Vscr falls
       ! off as nel/r, which is the long-range neutrality of V_ne + Vscr, and
       ! dropping it would leave a spurious charge.
-      call stage('grid         ')
+      call stage("grid         ")
       allocate (vpt(g%n_points))
       do ip = 1, g%n_points
          vpt(ip) = 0.0_dp
@@ -483,10 +493,10 @@ contains
          vpt(ip) = vpt(ip)*g%weights(ip)
       end do
 
-      call stage('potential    ')
+      call stage("potential    ")
       call assemble(b, g, vpt, hsap, error)
       if (error%has_error()) return
-      call stage('assemble     ')
+      call stage("assemble     ")
 
       hsap = hsap + tmat + vmat
       call g%destroy()
@@ -500,11 +510,11 @@ contains
          !! no way to tell from the outside which one is slow.
          character(len=*), intent(in) :: what
          character(len=8) :: e
-         e = ' '
-         call get_environment_variable('TRC_BUILD_TIMING', e)
+         e = " "
+         call get_environment_variable("TRC_BUILD_TIMING", e)
          call system_clock(c1)
-         if (len_trim(e) > 0) print '(a,a,f9.3,a)', '  [sap] ', what, &
-            real(c1 - c0, dp)/real(crate, dp), ' s'
+         if (len_trim(e) > 0) print "(a,a,f9.3,a)", "  [sap] ", what, &
+            real(c1 - c0, dp)/real(crate, dp), " s"
          c0 = c1
       end subroutine stage
    end subroutine trc_sap_grid
@@ -533,9 +543,11 @@ contains
       call xg%build(g%n_points, g%coords, wv, b, SAP_BATCH, 1.0e-12_dp, 0.0_dp)
 
       do ib = 1, xg%nbatch
-         p0 = xg%b_off(ib); p1 = xg%b_off(ib + 1) - 1
+         p0 = xg%b_off(ib)
+         p1 = xg%b_off(ib + 1) - 1
          npb = p1 - p0 + 1
-         s0 = xg%b_shoff(ib); s1 = xg%b_shoff(ib + 1) - 1
+         s0 = xg%b_shoff(ib)
+         s1 = xg%b_shoff(ib + 1) - 1
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          if (npb <= 0 .or. nloc <= 0) cycle
          allocate (phi(npb, nloc), phiw(npb, nloc), hloc(nloc, nloc), wb(npb))
@@ -569,7 +581,7 @@ contains
             end do
          end do
          hloc = 0.0_dp
-         call pic_gemm(phiw, phi, hloc, transa='T', transb='N')
+         call pic_gemm(phiw, phi, hloc, transa="T", transb="N")
          do j = 1, nloc
             nu = xg%b_ao(xg%b_aooff(ib) + j - 1)
             do i = 1, nloc

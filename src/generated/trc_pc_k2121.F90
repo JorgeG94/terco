@@ -10,7 +10,7 @@
 ! TRC_CART_ORDER GUARD -- see this generator's non-split header (above, in
 ! gen_perclass.py) for the full explanation; same guard, one per class file.
 !
-#if TRC_CART_ORDER != 0
+#if TRC_CART_ORDER  != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_pc_k2121
@@ -200,7 +200,8 @@ contains
       real(dp) :: dad(18), dbc(18), dbd(9)
 
       ! locate the segment
-         p = lo; q = hi
+         p = lo
+         q = hi
          do while (p < q)
             mid = (p + q + 1)/2
             if (sOff(mid) < gt) then
@@ -247,8 +248,10 @@ contains
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
 
-         si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
-         sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
+         si = sp_i(sOA(seg) + iab)
+         sj = sp_j(sOA(seg) + iab)
+         sk = sp_i(sOB(seg) + icd)
+         sl = sp_j(sOB(seg) + icd)
 
          ! Density-weighted screen.  What actually enters the Fock matrix is
          ! Q_ab Q_cd times a density block, so a quartet whose integrals are
@@ -261,14 +264,21 @@ contains
                       dsh(si, sk), dsh(si, sl), &
                       dsh(sj, sk), dsh(sj, sl)) <= thresh) return
 
-         same_ab = (si == sj); same_cd = (sk == sl)
+         same_ab = (si == sj)
+         same_cd = (sk == sl)
          same_pair = sD(seg) .and. (iab == icd)
 
-         slotab = sOA(seg) + iab; slotcd = sOB(seg) + icd
-         nab = sq_n(slotab); ncd = sq_n(slotcd)
+         slotab = sOA(seg) + iab
+         slotcd = sOB(seg) + icd
+         nab = sq_n(slotab)
+         ncd = sq_n(slotcd)
 
-         abx = sq_abx(slotab); aby = sq_aby(slotab); abz = sq_abz(slotab)
-         cdx = sq_abx(slotcd); cdy = sq_aby(slotcd); cdz = sq_abz(slotcd)
+         abx = sq_abx(slotab)
+         aby = sq_aby(slotab)
+         abz = sq_abz(slotab)
+         cdx = sq_abx(slotcd)
+         cdy = sq_aby(slotcd)
+         cdz = sq_abz(slotcd)
 
             do x = 1, 400
                g1(x) = 0.0_dp
@@ -286,7 +296,9 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               rpx = qp_px(kp)
+               rpy = qp_py(kp)
+               rpz = qp_pz(kp)
                pax = rpx - sq_ax(slotab)
                pay = rpy - sq_ay(slotab)
                paz = rpz - sq_az(slotab)
@@ -349,13 +361,20 @@ contains
                   qcy = qp_py(kq) - sq_ay(slotcd)
                   qcz = qp_pz(kq) - sq_az(slotcd)
                   wc = (zeta*rpx + eta*qp_px(kq))*rzpe
-                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wpx = wc - qp_px(kp)
+                  wqx = wc - qp_px(kq)
                   wc = (zeta*rpy + eta*qp_py(kq))*rzpe
-                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wpy = wc - qp_py(kp)
+                  wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
-                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
-                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  wpz = wc - qp_pz(kp)
+                  wqz = wc - qp_pz(kq)
+                  wpx = theta*wpx
+                  wpy = theta*wpy
+                  wpz = theta*wpz
+                  wqx = theta*wqx
+                  wqy = theta*wqy
+                  wqz = theta*wqz
                   tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -377,10 +396,18 @@ contains
                   bj = bbase + 6*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2)
+                  b2 = b1
+                  b1 = b0
                   f(6) = bx*b1 - b2 + boys_table(bj + 1)
                   bet = exp(-tval)
                   btt = 2.0_dp*tval
@@ -393,8 +420,10 @@ contains
                end if
 
                   pref = pref*sqrt(theta)
-                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
-                  rz = rho_theta*rzeta; re = rho_theta*reta
+                  oo2e = 0.5_dp*reta
+                  oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta
+                  re = rho_theta*reta
 
                ! --- level m = 6 ---
             v(1,0) = pref*f(6)
@@ -1426,7 +1455,10 @@ contains
          dij = .not. same_ab
          dkl = .not. same_cd
          dpq = .not. same_pair
-         mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
+         mui = ao_off(si)
+         nuj = ao_off(sj)
+         lamk = ao_off(sk)
+         sigl = ao_off(sl)
 
          ! --- HRR ---
          vbuf(1) = abx*cdx*g1(85) &
@@ -3097,7 +3129,8 @@ contains
       integer, parameter :: rc4(1) = [4]
       integer, parameter :: rc5(1) = [5]
       ! locate the segment
-         p = lo; q = hi
+         p = lo
+         q = hi
          do while (p < q)
             mid = (p + q + 1)/2
             if (sOff(mid) < gt) then
@@ -3144,8 +3177,10 @@ contains
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut <= thresh) return
 
-         si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
-         sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
+         si = sp_i(sOA(seg) + iab)
+         sj = sp_j(sOA(seg) + iab)
+         sk = sp_i(sOB(seg) + icd)
+         sl = sp_j(sOB(seg) + icd)
 
          ! Density-weighted screen.  What actually enters the Fock matrix is
          ! Q_ab Q_cd times a density block, so a quartet whose integrals are
@@ -3158,21 +3193,31 @@ contains
                       dsh(si, sk), dsh(si, sl), &
                       dsh(sj, sk), dsh(sj, sl)) <= thresh) return
 
-         same_ab = (si == sj); same_cd = (sk == sl)
+         same_ab = (si == sj)
+         same_cd = (sk == sl)
          same_pair = sD(seg) .and. (iab == icd)
 
-         slotab = sOA(seg) + iab; slotcd = sOB(seg) + icd
-         nab = sq_n(slotab); ncd = sq_n(slotcd)
+         slotab = sOA(seg) + iab
+         slotcd = sOB(seg) + icd
+         nab = sq_n(slotab)
+         ncd = sq_n(slotcd)
 
-         abx = sq_abx(slotab); aby = sq_aby(slotab); abz = sq_abz(slotab)
-         cdx = sq_abx(slotcd); cdy = sq_aby(slotcd); cdz = sq_abz(slotcd)
+         abx = sq_abx(slotab)
+         aby = sq_aby(slotab)
+         abz = sq_abz(slotab)
+         cdx = sq_abx(slotcd)
+         cdy = sq_aby(slotcd)
+         cdz = sq_abz(slotcd)
 
          ! Single column on every side: the canonical enumeration and the
          ! degeneracy weights are the pair-level ones.
          dij = .not. same_ab
          dkl = .not. same_cd
          dpq = .not. same_pair
-         mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)
+         mui = ao_off(si)
+         nuj = ao_off(sj)
+         lamk = ao_off(sk)
+         sigl = ao_off(sl)
 
          select case (role)
          case (1)
@@ -3192,7 +3237,9 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               rpx = qp_px(kp)
+               rpy = qp_py(kp)
+               rpz = qp_pz(kp)
                pax = rpx - sq_ax(slotab)
                pay = rpy - sq_ay(slotab)
                paz = rpz - sq_az(slotab)
@@ -3255,13 +3302,20 @@ contains
                   qcy = qp_py(kq) - sq_ay(slotcd)
                   qcz = qp_pz(kq) - sq_az(slotcd)
                   wc = (zeta*rpx + eta*qp_px(kq))*rzpe
-                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wpx = wc - qp_px(kp)
+                  wqx = wc - qp_px(kq)
                   wc = (zeta*rpy + eta*qp_py(kq))*rzpe
-                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wpy = wc - qp_py(kp)
+                  wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
-                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
-                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  wpz = wc - qp_pz(kp)
+                  wqz = wc - qp_pz(kq)
+                  wpx = theta*wpx
+                  wpy = theta*wpy
+                  wpz = theta*wpz
+                  wqx = theta*wqx
+                  wqy = theta*wqy
+                  wqz = theta*wqz
                   tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -3283,10 +3337,18 @@ contains
                   bj = bbase + 6*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2)
+                  b2 = b1
+                  b1 = b0
                   f(6) = bx*b1 - b2 + boys_table(bj + 1)
                   bet = exp(-tval)
                   btt = 2.0_dp*tval
@@ -3299,8 +3361,10 @@ contains
                end if
 
                   pref = pref*sqrt(theta)
-                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
-                  rz = rho_theta*rzeta; re = rho_theta*reta
+                  oo2e = 0.5_dp*reta
+                  oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta
+                  re = rho_theta*reta
 
                v(1,0) = pref*f(6)
             v(1,1) = pref*f(5)
@@ -4180,7 +4244,9 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               rpx = qp_px(kp)
+               rpy = qp_py(kp)
+               rpz = qp_pz(kp)
                pax = rpx - sq_ax(slotab)
                pay = rpy - sq_ay(slotab)
                paz = rpz - sq_az(slotab)
@@ -4243,13 +4309,20 @@ contains
                   qcy = qp_py(kq) - sq_ay(slotcd)
                   qcz = qp_pz(kq) - sq_az(slotcd)
                   wc = (zeta*rpx + eta*qp_px(kq))*rzpe
-                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wpx = wc - qp_px(kp)
+                  wqx = wc - qp_px(kq)
                   wc = (zeta*rpy + eta*qp_py(kq))*rzpe
-                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wpy = wc - qp_py(kp)
+                  wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
-                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
-                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  wpz = wc - qp_pz(kp)
+                  wqz = wc - qp_pz(kq)
+                  wpx = theta*wpx
+                  wpy = theta*wpy
+                  wpz = theta*wpz
+                  wqx = theta*wqx
+                  wqy = theta*wqy
+                  wqz = theta*wqz
                   tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -4271,10 +4344,18 @@ contains
                   bj = bbase + 6*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2)
+                  b2 = b1
+                  b1 = b0
                   f(6) = bx*b1 - b2 + boys_table(bj + 1)
                   bet = exp(-tval)
                   btt = 2.0_dp*tval
@@ -4287,8 +4368,10 @@ contains
                end if
 
                   pref = pref*sqrt(theta)
-                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
-                  rz = rho_theta*rzeta; re = rho_theta*reta
+                  oo2e = 0.5_dp*reta
+                  oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta
+                  re = rho_theta*reta
 
                v(1,0) = pref*f(6)
             v(1,1) = pref*f(5)
@@ -5295,7 +5378,9 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               rpx = qp_px(kp)
+               rpy = qp_py(kp)
+               rpz = qp_pz(kp)
                pax = rpx - sq_ax(slotab)
                pay = rpy - sq_ay(slotab)
                paz = rpz - sq_az(slotab)
@@ -5358,13 +5443,20 @@ contains
                   qcy = qp_py(kq) - sq_ay(slotcd)
                   qcz = qp_pz(kq) - sq_az(slotcd)
                   wc = (zeta*rpx + eta*qp_px(kq))*rzpe
-                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wpx = wc - qp_px(kp)
+                  wqx = wc - qp_px(kq)
                   wc = (zeta*rpy + eta*qp_py(kq))*rzpe
-                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wpy = wc - qp_py(kp)
+                  wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
-                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
-                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  wpz = wc - qp_pz(kp)
+                  wqz = wc - qp_pz(kq)
+                  wpx = theta*wpx
+                  wpy = theta*wpy
+                  wpz = theta*wpz
+                  wqx = theta*wqx
+                  wqy = theta*wqy
+                  wqz = theta*wqz
                   tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -5386,10 +5478,18 @@ contains
                   bj = bbase + 6*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2)
+                  b2 = b1
+                  b1 = b0
                   f(6) = bx*b1 - b2 + boys_table(bj + 1)
                   bet = exp(-tval)
                   btt = 2.0_dp*tval
@@ -5402,8 +5502,10 @@ contains
                end if
 
                   pref = pref*sqrt(theta)
-                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
-                  rz = rho_theta*rzeta; re = rho_theta*reta
+                  oo2e = 0.5_dp*reta
+                  oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta
+                  re = rho_theta*reta
 
                v(1,0) = pref*f(6)
             v(1,1) = pref*f(5)
@@ -6397,7 +6499,9 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               rpx = qp_px(kp)
+               rpy = qp_py(kp)
+               rpz = qp_pz(kp)
                pax = rpx - sq_ax(slotab)
                pay = rpy - sq_ay(slotab)
                paz = rpz - sq_az(slotab)
@@ -6460,13 +6564,20 @@ contains
                   qcy = qp_py(kq) - sq_ay(slotcd)
                   qcz = qp_pz(kq) - sq_az(slotcd)
                   wc = (zeta*rpx + eta*qp_px(kq))*rzpe
-                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wpx = wc - qp_px(kp)
+                  wqx = wc - qp_px(kq)
                   wc = (zeta*rpy + eta*qp_py(kq))*rzpe
-                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wpy = wc - qp_py(kp)
+                  wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
-                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
-                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  wpz = wc - qp_pz(kp)
+                  wqz = wc - qp_pz(kq)
+                  wpx = theta*wpx
+                  wpy = theta*wpy
+                  wpz = theta*wpz
+                  wqx = theta*wqx
+                  wqy = theta*wqy
+                  wqz = theta*wqz
                   tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -6488,10 +6599,18 @@ contains
                   bj = bbase + 6*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2)
+                  b2 = b1
+                  b1 = b0
                   f(6) = bx*b1 - b2 + boys_table(bj + 1)
                   bet = exp(-tval)
                   btt = 2.0_dp*tval
@@ -6504,8 +6623,10 @@ contains
                end if
 
                   pref = pref*sqrt(theta)
-                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
-                  rz = rho_theta*rzeta; re = rho_theta*reta
+                  oo2e = 0.5_dp*reta
+                  oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta
+                  re = rho_theta*reta
 
                v(1,0) = pref*f(6)
             v(1,1) = pref*f(5)
@@ -7422,7 +7543,9 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               rpx = qp_px(kp)
+               rpy = qp_py(kp)
+               rpz = qp_pz(kp)
                pax = rpx - sq_ax(slotab)
                pay = rpy - sq_ay(slotab)
                paz = rpz - sq_az(slotab)
@@ -7485,13 +7608,20 @@ contains
                   qcy = qp_py(kq) - sq_ay(slotcd)
                   qcz = qp_pz(kq) - sq_az(slotcd)
                   wc = (zeta*rpx + eta*qp_px(kq))*rzpe
-                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wpx = wc - qp_px(kp)
+                  wqx = wc - qp_px(kq)
                   wc = (zeta*rpy + eta*qp_py(kq))*rzpe
-                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wpy = wc - qp_py(kp)
+                  wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
-                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
-                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  wpz = wc - qp_pz(kp)
+                  wqz = wc - qp_pz(kq)
+                  wpx = theta*wpx
+                  wpy = theta*wpy
+                  wpz = theta*wpz
+                  wqx = theta*wqx
+                  wqy = theta*wqy
+                  wqz = theta*wqz
                   tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -7513,10 +7643,18 @@ contains
                   bj = bbase + 6*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2)
+                  b2 = b1
+                  b1 = b0
                   f(6) = bx*b1 - b2 + boys_table(bj + 1)
                   bet = exp(-tval)
                   btt = 2.0_dp*tval
@@ -7529,8 +7667,10 @@ contains
                end if
 
                   pref = pref*sqrt(theta)
-                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
-                  rz = rho_theta*rzeta; re = rho_theta*reta
+                  oo2e = 0.5_dp*reta
+                  oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta
+                  re = rho_theta*reta
 
                v(1,0) = pref*f(6)
             v(1,1) = pref*f(5)
@@ -8535,7 +8675,9 @@ contains
                ! loads invariant. Measured on (ps|ss) of the silica slice in
                ! cc-pVDZ: 3.21 s -> 2.29 s, with every other class in the
                ! same profile flat.
-               rpx = qp_px(kp); rpy = qp_py(kp); rpz = qp_pz(kp)
+               rpx = qp_px(kp)
+               rpy = qp_py(kp)
+               rpz = qp_pz(kp)
                pax = rpx - sq_ax(slotab)
                pay = rpy - sq_ay(slotab)
                paz = rpz - sq_az(slotab)
@@ -8598,13 +8740,20 @@ contains
                   qcy = qp_py(kq) - sq_ay(slotcd)
                   qcz = qp_pz(kq) - sq_az(slotcd)
                   wc = (zeta*rpx + eta*qp_px(kq))*rzpe
-                  wpx = wc - qp_px(kp); wqx = wc - qp_px(kq)
+                  wpx = wc - qp_px(kp)
+                  wqx = wc - qp_px(kq)
                   wc = (zeta*rpy + eta*qp_py(kq))*rzpe
-                  wpy = wc - qp_py(kp); wqy = wc - qp_py(kq)
+                  wpy = wc - qp_py(kp)
+                  wqy = wc - qp_py(kq)
                   wc = (zeta*rpz + eta*qp_pz(kq))*rzpe
-                  wpz = wc - qp_pz(kp); wqz = wc - qp_pz(kq)
-                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz
-                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz
+                  wpz = wc - qp_pz(kp)
+                  wqz = wc - qp_pz(kq)
+                  wpx = theta*wpx
+                  wpy = theta*wpy
+                  wpz = theta*wpz
+                  wqx = theta*wqx
+                  wqy = theta*wqy
+                  wqz = theta*wqz
                   tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)
 
                   if (tval >= BOYS_TMAX) then
@@ -8626,10 +8775,18 @@ contains
                   bj = bbase + 6*(BOYS_NCHEB + 1)
                   b1 = boys_table(bj + BOYS_NCHEB + 1)
                   b2 = 0.0_dp
-                  b0 = bx2*b1 - b2 + boys_table(bj + 5); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 4); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 3); b2 = b1; b1 = b0
-                  b0 = bx2*b1 - b2 + boys_table(bj + 2); b2 = b1; b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 5)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 4)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 3)
+                  b2 = b1
+                  b1 = b0
+                  b0 = bx2*b1 - b2 + boys_table(bj + 2)
+                  b2 = b1
+                  b1 = b0
                   f(6) = bx*b1 - b2 + boys_table(bj + 1)
                   bet = exp(-tval)
                   btt = 2.0_dp*tval
@@ -8642,8 +8799,10 @@ contains
                end if
 
                   pref = pref*sqrt(theta)
-                  oo2e = 0.5_dp*reta; oo2ze = theta*(0.5_dp*rzpe)
-                  rz = rho_theta*rzeta; re = rho_theta*reta
+                  oo2e = 0.5_dp*reta
+                  oo2ze = theta*(0.5_dp*rzpe)
+                  rz = rho_theta*rzeta
+                  re = rho_theta*reta
 
                v(1,0) = pref*f(6)
             v(1,1) = pref*f(5)

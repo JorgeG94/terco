@@ -122,7 +122,7 @@ module trc_xc_functional
       "spw92        ", "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", "tpss         ", &
       "tpss0        ", "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", &
       "wb97x        ", "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", &
-      "x3lyp        ", "xlyp         " ]
+      "x3lyp        ", "xlyp         "]
    character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bp86, bp86vwn, hf-lyp, hf_lyp, hflyp, lda, lda_x, mpw1k, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
 
    type :: trc_xc_functional_t
@@ -137,10 +137,10 @@ module trc_xc_functional
       ! the fraction of FULL-range exact exchange, 1/r12. These four are
       ! zero for every functional that is not one.
       !
-      real(dp) :: exx_lr = 0.0_dp !! extra fraction of LONG-RANGE exact exchange, erf(omega r)/r
-      real(dp) :: omega  = 0.0_dp !! range-separation parameter, bohr^-1; 0 = none
-      real(dp) :: nlc_b  = 0.0_dp !! VV10 b; 0 = no nonlocal correlation
-      real(dp) :: nlc_c  = 0.0_dp !! VV10 C
+      real(dp) :: exx_lr = 0.0_dp  !! extra fraction of LONG-RANGE exact exchange, erf(omega r)/r
+      real(dp) :: omega  = 0.0_dp  !! range-separation parameter, bohr^-1; 0 = none
+      real(dp) :: nlc_b  = 0.0_dp  !! VV10 b; 0 = no nonlocal correlation
+      real(dp) :: nlc_c  = 0.0_dp  !! VV10 C
       !! Empty when the functional runs; otherwise exactly what it needs
       !! that terco does not have, e.g. "needs TPSS_X: meta-GGA kernels
       !! are not translated yet". Selecting it by name still succeeds;
@@ -163,43 +163,79 @@ contains
       real(dp) :: e, vr, vs
       integer :: k
 
-      eps = 0.0_dp; vrho = 0.0_dp; vsigma = 0.0_dp
+      eps = 0.0_dp
+      vrho = 0.0_dp
+      vsigma = 0.0_dp
       do k = 1, nk
          vs = 0.0_dp
          select case (kid(k))
-         case (XC_K_B88); call b88_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_B97_D); call b97_d_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_BMK_C); call bmk_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_LYP); call lyp_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_MPW91_X); call mpw91_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_N12_C); call n12_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_N12_SX_C); call n12_sx_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_OPTX_X); call optx_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_P86_C); call p86_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_P86VWN_FT_C); call p86vwn_ft_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_PBE_C); call pbe_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_PBE_SOL_C); call pbe_sol_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_PBE_X); call pbe_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_PW86_X); call pw86_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_PW91_C); call pw91_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_PW91_LDA); call pw91_lda_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_PW91_LDA_MOD); call pw91_lda_mod_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_PW91_LDA_RPA); call pw91_lda_rpa_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_PW91_X); call pw91_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_PZ81); call pz81_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_PZ81_MOD); call pz81_mod_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_REV_PBE_X); call rev_pbe_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_RPBE_X); call rpbe_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_SLATER_EXCHANGE); call slater_exchange_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_SOGGA11_X_C); call sogga11_x_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_SOGGA11_X_X); call sogga11_x_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_VWN); call vwn_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_VWN_RPA); call vwn_rpa_exc_vxc_unpolar(rho, e, vr)
-         case (XC_K_WB97_XC); call wb97_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_WB97X_D_XC); call wb97x_d_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_WB97X_V_XC); call wb97x_v_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case (XC_K_WB97X_XC); call wb97x_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
-         case default; e = 0.0_dp; vr = 0.0_dp
+         case (XC_K_B88)
+         call b88_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_B97_D)
+         call b97_d_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_BMK_C)
+         call bmk_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_LYP)
+         call lyp_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_MPW91_X)
+         call mpw91_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_N12_C)
+         call n12_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_N12_SX_C)
+         call n12_sx_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_OPTX_X)
+         call optx_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_P86_C)
+         call p86_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_P86VWN_FT_C)
+         call p86vwn_ft_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PBE_C)
+         call pbe_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PBE_SOL_C)
+         call pbe_sol_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PBE_X)
+         call pbe_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PW86_X)
+         call pw86_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PW91_C)
+         call pw91_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PW91_LDA)
+         call pw91_lda_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_PW91_LDA_MOD)
+         call pw91_lda_mod_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_PW91_LDA_RPA)
+         call pw91_lda_rpa_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_PW91_X)
+         call pw91_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PZ81)
+         call pz81_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_PZ81_MOD)
+         call pz81_mod_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_REV_PBE_X)
+         call rev_pbe_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_RPBE_X)
+         call rpbe_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_SLATER_EXCHANGE)
+         call slater_exchange_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_SOGGA11_X_C)
+         call sogga11_x_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_SOGGA11_X_X)
+         call sogga11_x_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_VWN)
+         call vwn_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_VWN_RPA)
+         call vwn_rpa_exc_vxc_unpolar(rho, e, vr)
+         case (XC_K_WB97_XC)
+         call wb97_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_WB97X_D_XC)
+         call wb97x_d_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_WB97X_V_XC)
+         call wb97x_v_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_WB97X_XC)
+         call wb97x_xc_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case default
+         e = 0.0_dp
+         vr = 0.0_dp
          end select
          eps = eps + coef(k)*e
          vrho = vrho + coef(k)*vr
@@ -221,69 +257,110 @@ contains
       real(dp) :: e, va, vb, saa, sab, sbb
       integer :: k
 
-      eps = 0.0_dp; vrho_a = 0.0_dp; vrho_b = 0.0_dp
-      vs_aa = 0.0_dp; vs_ab = 0.0_dp; vs_bb = 0.0_dp
+      eps = 0.0_dp
+      vrho_a = 0.0_dp
+      vrho_b = 0.0_dp
+      vs_aa = 0.0_dp
+      vs_ab = 0.0_dp
+      vs_bb = 0.0_dp
       do k = 1, nk
-         saa = 0.0_dp; sab = 0.0_dp; sbb = 0.0_dp
+         saa = 0.0_dp
+         sab = 0.0_dp
+         sbb = 0.0_dp
          select case (kid(k))
-         case (XC_K_B88); call b88_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, &
+         case (XC_K_B88)
+         call b88_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, &
             saa, sab, sbb)
-         case (XC_K_B97_D); call b97_d_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_B97_D)
+         call b97_d_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_BMK_C); call bmk_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_BMK_C)
+         call bmk_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_LYP); call lyp_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, &
+         case (XC_K_LYP)
+         call lyp_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, &
             saa, sab, sbb)
-         case (XC_K_MPW91_X); call mpw91_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
+         case (XC_K_MPW91_X)
+         call mpw91_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
             va, vb, saa, sab, sbb)
-         case (XC_K_N12_C); call n12_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_N12_C)
+         call n12_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_N12_SX_C); call n12_sx_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
+         case (XC_K_N12_SX_C)
+         call n12_sx_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
             va, vb, saa, sab, sbb)
-         case (XC_K_OPTX_X); call optx_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_OPTX_X)
+         call optx_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_P86_C); call p86_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_P86_C)
+         call p86_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_P86VWN_FT_C); call p86vwn_ft_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
+         case (XC_K_P86VWN_FT_C)
+         call p86vwn_ft_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
             s_bb, e, va, vb, saa, sab, sbb)
-         case (XC_K_PBE_C); call pbe_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_PBE_C)
+         call pbe_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_PBE_SOL_C); call pbe_sol_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+         case (XC_K_PBE_SOL_C)
+         call pbe_sol_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
             e, va, vb, saa, sab, sbb)
-         case (XC_K_PBE_X); call pbe_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_PBE_X)
+         call pbe_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_PW86_X); call pw86_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_PW86_X)
+         call pw86_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_PW91_C); call pw91_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_PW91_C)
+         call pw91_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_PW91_LDA); call pw91_lda_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_PW91_LDA_MOD); call pw91_lda_mod_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_PW91_LDA_RPA); call pw91_lda_rpa_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_PW91_X); call pw91_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_PW91_LDA)
+         call pw91_lda_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_PW91_LDA_MOD)
+         call pw91_lda_mod_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_PW91_LDA_RPA)
+         call pw91_lda_rpa_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_PW91_X)
+         call pw91_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_PZ81); call pz81_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_PZ81_MOD); call pz81_mod_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_REV_PBE_X); call rev_pbe_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+         case (XC_K_PZ81)
+         call pz81_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_PZ81_MOD)
+         call pz81_mod_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_REV_PBE_X)
+         call rev_pbe_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
             e, va, vb, saa, sab, sbb)
-         case (XC_K_RPBE_X); call rpbe_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+         case (XC_K_RPBE_X)
+         call rpbe_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
             vb, saa, sab, sbb)
-         case (XC_K_SLATER_EXCHANGE); call slater_exchange_exc_vxc_polar(rho_a, rho_b, e, va, &
+         case (XC_K_SLATER_EXCHANGE)
+         call slater_exchange_exc_vxc_polar(rho_a, rho_b, e, va, &
             vb)
-         case (XC_K_SOGGA11_X_C); call sogga11_x_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
+         case (XC_K_SOGGA11_X_C)
+         call sogga11_x_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
             s_bb, e, va, vb, saa, sab, sbb)
-         case (XC_K_SOGGA11_X_X); call sogga11_x_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
+         case (XC_K_SOGGA11_X_X)
+         call sogga11_x_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
             s_bb, e, va, vb, saa, sab, sbb)
-         case (XC_K_VWN); call vwn_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_VWN_RPA); call vwn_rpa_exc_vxc_polar(rho_a, rho_b, e, va, vb)
-         case (XC_K_WB97_XC); call wb97_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
+         case (XC_K_VWN)
+         call vwn_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_VWN_RPA)
+         call vwn_rpa_exc_vxc_polar(rho_a, rho_b, e, va, vb)
+         case (XC_K_WB97_XC)
+         call wb97_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
             va, vb, saa, sab, sbb)
-         case (XC_K_WB97X_D_XC); call wb97x_d_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+         case (XC_K_WB97X_D_XC)
+         call wb97x_d_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
             e, va, vb, saa, sab, sbb)
-         case (XC_K_WB97X_V_XC); call wb97x_v_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+         case (XC_K_WB97X_V_XC)
+         call wb97x_v_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
             e, va, vb, saa, sab, sbb)
-         case (XC_K_WB97X_XC); call wb97x_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
+         case (XC_K_WB97X_XC)
+         call wb97x_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, &
             va, vb, saa, sab, sbb)
-         case default; e = 0.0_dp; va = 0.0_dp; vb = 0.0_dp
+         case default
+         e = 0.0_dp
+         va = 0.0_dp
+         vb = 0.0_dp
          end select
          eps = eps + coef(k)*e
          vrho_a = vrho_a + coef(k)*va
@@ -308,7 +385,7 @@ contains
 
       key = name
       do i = 1, len_trim(key)
-         if (key(i:i) >= 'A' .and. key(i:i) <= 'Z') key(i:i) = achar(iachar(key(i:i)) + 32)
+         if (key(i:i) >= "A" .and. key(i:i) <= "Z") key(i:i) = achar(iachar(key(i:i)) + 32)
       end do
       f%name = key
       ok = .true.
@@ -543,7 +620,8 @@ contains
          real(dp), intent(in) :: coef(:)
          f%family = family
          f%nk = size(kid)
-         f%kid = 0; f%coef = 0.0_dp
+         f%kid = 0
+         f%coef = 0.0_dp
          f%kid(1:f%nk) = kid
          f%coef(1:f%nk) = coef
       end subroutine set

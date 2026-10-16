@@ -10,8 +10,8 @@ implicit none
 integer, parameter :: fraclen = 52  !! Bits in the fraction (mantissa)
 integer, parameter :: explen  = 11  !! Bits in the exponent
 integer, parameter :: signbit = 63  !! Position of the sign bit
-integer, parameter :: expbit  = fraclen !! Position of the lowest exponent bit
-integer(kind=int64), parameter :: bias = 1023_int64 !! Exponent bias
+integer, parameter :: expbit  = fraclen  !! Position of the lowest exponent bit
+integer(kind=int64), parameter :: bias = 1023_int64  !! Exponent bias
 
 contains
 
@@ -24,13 +24,18 @@ elemental module subroutine norm_split(x, m, k)
   !$acc routine seq
   real(wp), intent(in)  :: x  !! The argument, x > 0, finite
   real(wp), intent(out) :: m  !! fraction(x), in [0.5, 1)
-  integer, intent(out) :: k !! exponent(x), corrected for denormals
+  integer, intent(out) :: k  !! exponent(x), corrected for denormals
   real(wp), parameter :: two_p54 = 18014398509481984.0_wp  ! 2**54, exact
   real(wp) :: xn
   integer :: kb
-  xn = x ; kb = 0
-  if (xn < tiny(xn)) then ; xn = xn * two_p54 ; kb = -54 ; endif
-  k = exponent(xn) + kb ; m = fraction(xn)
+  xn = x
+  kb = 0
+  if (xn < tiny(xn)) then
+  xn = xn * two_p54
+  kb = -54
+  end if
+  k = exponent(xn) + kb
+  m = fraction(xn)
 end subroutine norm_split
 
 elemental function scale_reprod(v, n) result(sv)
@@ -51,11 +56,11 @@ elemental function scale_reprod(v, n) result(sv)
   real(wp), parameter :: two_p64 = 2.0_wp**64     ! exact
   if (n > 960) then
     sv = scale(v, n - 64) * two_p64
-  elseif (n >= -960) then
+  else if (n >= -960) then
     sv = scale(v, n)
   else
     sv = scale(v, n + 64) * two_m64
-  endif
+  end if
 end function scale_reprod
 
 elemental module function ipow(x, n) result(p)
@@ -64,24 +69,25 @@ elemental module function ipow(x, n) result(p)
   !$omp declare target
   !$acc routine seq
   real(wp), intent(in) :: x    !! The base
-  integer, intent(in) :: n !! The non-negative exponent
+  integer, intent(in) :: n  !! The non-negative exponent
   real(wp) :: p                !! x**|n|, or its reciprocal for n < 0
 
   real(wp) :: b    ! Running square
-  integer :: m ! Remaining exponent bits
+  integer :: m  ! Remaining exponent bits
 
   m = abs(n)
   if (m == 0) then
     p = 1.0_wp
   else
-    p = 1.0_wp ; b = x
+    p = 1.0_wp
+    b = x
     do while (m > 1)
       if (btest(m, 0)) p = p * b
       b = b * b
       m = shiftr(m, 1)
-    enddo
+    end do
     p = p * b
-  endif
+  end if
   if (n < 0) p = 1.0_wp / p
 end function ipow
 
@@ -111,9 +117,11 @@ elemental module subroutine two_prod(a, b, p, e)
   real(wp) :: a1, a2, b1, b2, ta, tb
   p = a * b
   ta = splitter * a
-  a1 = ta - (ta - a) ; a2 = a - a1
+  a1 = ta - (ta - a)
+  a2 = a - a1
   tb = splitter * b
-  b1 = tb - (tb - b) ; b2 = b - b1
+  b1 = tb - (tb - b)
+  b2 = b - b1
   e = ((a1*b1 - p) + a1*b2 + a2*b1) + a2*b2
 end subroutine two_prod
 
@@ -127,7 +135,7 @@ elemental module subroutine log2_dd(x, h, l)
   real(wp), intent(out) :: h  !! High part of log2(x)
   real(wp), intent(out) :: l  !! Low part of log2(x)
 
-  real(wp), parameter :: sqrt2_2 = 0.70710678118654752440_wp ! sqrt(1/2)
+  real(wp), parameter :: sqrt2_2 = 0.70710678118654752440_wp  ! sqrt(1/2)
   ! 2/ln(2) as a double-double constant
   real(wp), parameter :: two_invln2_hi = 2.8853900817779268_wp
   real(wp), parameter :: two_invln2_lo = 4.0710547481862066e-17_wp
@@ -142,13 +150,16 @@ elemental module subroutine log2_dd(x, h, l)
   real(wp) :: ph, pe     ! two_prod scratch
   real(wp) :: lh2, ll2   ! Leading term (2/ln2)*s as a dd pair
   real(wp) :: rv         ! 1/vh, so the routine needs only one division
-  real(wp) :: s2, s4, s8 ! Powers of s for the Estrin evaluation
+  real(wp) :: s2, s4, s8  ! Powers of s for the Estrin evaluation
   real(wp) :: tail       ! The series tail (double precision suffices)
   real(wp) :: h1, l1     ! Intermediate dd sum
   integer :: k       ! Binary exponent of x
 
   call norm_split(x, m, k)
-  if (m < sqrt2_2) then ; m = m + m ; k = k - 1 ; endif
+  if (m < sqrt2_2) then
+  m = m + m
+  k = k - 1
+  end if
 
   u = m - 1.0_wp                       ! exact: m in [0.70, 1.42)
   call two_sum(m, 1.0_wp, vh, vl)      ! v = m + 1 exactly as (vh, vl)
@@ -164,9 +175,11 @@ elemental module subroutine log2_dd(x, h, l)
   ! Series tail: L * s2*P(s2), |tail| <= 0.005, double is ample.  P is evaluated
   ! in a FIXED Estrin grouping (explicit parentheses; this order is part of the
   ! reproducibility contract) to shorten the dependency chain.
-  s2 = s*s ; s4 = s2*s2 ; s8 = s4*s4
-  tail = lh2 * (s2 * ( ((a3 + s2*a5) + s4*(a7 + s2*a9)) + &
-                       s8*(((a11 + s2*a13) + s4*(a15 + s2*a17)) + s8*(a19 + s2*a21)) ))
+  s2 = s*s
+  s4 = s2*s2
+  s8 = s4*s4
+  tail = lh2 * (s2 * (((a3 + s2*a5) + s4*(a7 + s2*a9)) + &
+                       s8*(((a11 + s2*a13) + s4*(a15 + s2*a17)) + s8*(a19 + s2*a21))))
 
   call two_sum(lh2, tail, h1, l1)
   l1 = l1 + ll2
@@ -195,7 +208,7 @@ elemental module function exp2_pair(h, l) result(e2)
     1.4142135623730951_wp, 1.4451808069770467_wp, 1.4768261459394993_wp, 1.5091644275934228_wp, &
     1.5422108254079407_wp, 1.5759808451078865_wp, 1.6104903319492543_wp, 1.645755478153965_wp, &
     1.681792830507429_wp, 1.718619298122478_wp, 1.7562521603732995_wp, 1.7947090750031072_wp, &
-    1.8340080864093424_wp, 1.8741676341103_wp, 1.9152065613971474_wp, 1.9571441241754002_wp ]
+    1.8340080864093424_wp, 1.8741676341103_wp, 1.9152065613971474_wp, 1.9571441241754002_wp]
   real(wp), parameter :: t2lo(0:31) = [ &
     0.0_wp, 5.109225028973444e-17_wp, 8.551889705537965e-17_wp, -7.899853966841582e-17_wp, &
     -3.046782079812471e-17_wp, 1.0410278456845571e-16_wp, 8.912812676025408e-17_wp, 3.8292048369240935e-17_wp, &
@@ -204,7 +217,7 @@ elemental module function exp2_pair(h, l) result(e2)
     -9.667293313452913e-17_wp, -3.0237581349939873e-17_wp, -3.483994556892796e-17_wp, -1.016455327754295e-16_wp, &
     7.949834809697621e-17_wp, -1.0136916471278304e-17_wp, 2.4707192569797888e-17_wp, -1.0125679913674773e-16_wp, &
     8.199010020581497e-17_wp, -1.851380418263111e-17_wp, 2.960140695448873e-17_wp, 1.8227458427912087e-17_wp, &
-    3.283107224245627e-17_wp, -6.122763413004143e-17_wp, -1.0619946056195963e-16_wp, 8.960767791036668e-17_wp ]
+    3.283107224245627e-17_wp, -6.122763413004143e-17_wp, -1.0619946056195963e-16_wp, 8.960767791036668e-17_wp]
   ! Coefficients ln2**j / j! for 2**r over |r| <= 1/64
   real(wp), parameter :: e2c1 = 0.6931471805599453_wp,    e2c2 = 0.24022650695910072_wp
   real(wp), parameter :: e2c3 = 0.05550410866482158_wp,   e2c4 = 0.009618129107628477_wp
@@ -218,7 +231,7 @@ elemental module function exp2_pair(h, l) result(e2)
   if (h > 1100.0_wp) then
     e2 = huge(h)                     ! +Inf via runtime IEEE overflow (a constant
     e2 = e2 * 2.0_wp                    ! expression here is a compile error on gfortran)
-  elseif (h < -1130.0_wp) then
+  else if (h < -1130.0_wp) then
     e2 = 0.0_wp
   else
     w = h * 32.0_wp
@@ -234,7 +247,7 @@ elemental module function exp2_pair(h, l) result(e2)
     q = r*(e2c1 + r*(e2c2 + r*(e2c3 + r*(e2c4 + r*(e2c5 + r*e2c6)))))
     v = t2hi(idx) + (t2hi(idx)*q + t2lo(idx))
     e2 = scale_reprod(v + v*(l*e2c1), n)
-  endif
+  end if
 end function exp2_pair
 
 pure module subroutine rescale_cbrt(a, x, e_r, s_a)
@@ -243,13 +256,13 @@ pure module subroutine rescale_cbrt(a, x, e_r, s_a)
   !$omp declare target
   !$acc routine seq
   real(wp), intent(in) :: a  !! The number to be rescaled for cube-root computation
-  real(wp), intent(out) :: x !! The rescaled value of `a` in the range [0.125, 1)
-  integer(kind=int64), intent(out) :: e_r !! The integral component of the cube-root exponent of `a`
-  integer(kind=int64), intent(out) :: s_a !! Sign bit of `a`; nonzero indicates negative
+  real(wp), intent(out) :: x  !! The rescaled value of `a` in the range [0.125, 1)
+  integer(kind=int64), intent(out) :: e_r  !! The integral component of the cube-root exponent of `a`
+  integer(kind=int64), intent(out) :: s_a  !! Sign bit of `a`; nonzero indicates negative
 
   integer(kind=int64) :: xb  ! Bit representation of `a`
-  integer(kind=int64) :: e_a ! Exponent of `a`
-  integer(kind=int64) :: e_x ! Exponent of `x`
+  integer(kind=int64) :: e_a  ! Exponent of `a`
+  integer(kind=int64) :: e_x  ! Exponent of `x`
 
   xb = transfer(a, 1_int64)
   s_a = ibits(xb, signbit, 1)
@@ -265,13 +278,13 @@ pure module function descale(x, e_a, s_a) result(a)
    !! Undo the rescaling of a real number back to its original base.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x !! The rescaled value which is to be restored
-  integer(kind=int64), intent(in) :: e_a !! Exponent of the unscaled value
-  integer(kind=int64), intent(in) :: s_a !! Sign bit of the unscaled value
-  real(wp) :: a !! Restored value with the corrected exponent and sign
+  real(wp), intent(in) :: x  !! The rescaled value which is to be restored
+  integer(kind=int64), intent(in) :: e_a  !! Exponent of the unscaled value
+  integer(kind=int64), intent(in) :: s_a  !! Sign bit of the unscaled value
+  real(wp) :: a  !! Restored value with the corrected exponent and sign
 
   integer(kind=int64) :: xb  ! Bit representation
-  integer(kind=int64) :: e_x ! Biased exponent of x
+  integer(kind=int64) :: e_x  ! Biased exponent of x
 
   xb = transfer(x, 1_int64)
   e_x = ibits(xb, expbit, explen)

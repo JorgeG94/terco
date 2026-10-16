@@ -236,9 +236,13 @@ contains
 
       ! Ranks: cost-sorted round-robin ownership. A batch another rank owns
       ! starts inactive here and is never even bounded.
-      rank = 0; nranks = 1; split = .false.
+      rank = 0
+      nranks = 1
+      split = .false.
       if (present(comm)) then
-         rank = comm%rank(); nranks = comm%size(); split = nranks > 1
+         rank = comm%rank()
+         nranks = comm%size()
+         split = nranks > 1
       end if
       active = 1
       if (split) then
@@ -339,7 +343,8 @@ contains
          k0 = 1
          do while (k0 <= nb)
             ib = ord(k0)
-            mp = npp(ib); ml = nlp(ib)
+            mp = npp(ib)
+            ml = nlp(ib)
             k1 = k0
             do while (k1 < nb)
                if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
@@ -347,9 +352,10 @@ contains
             end do
             cnt = k1 - k0 + 1
             if (ml > 0) then
-               sa = int(mp, int64)*int(ml, int64); sb = int(ml, int64)*int(ml, int64)
+               sa = int(mp, int64)*int(ml, int64)
+               sb = int(ml, int64)*int(ml, int64)
                do s = 1, nspin
-                  call lp%gemm_strided('N', 'N', mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
+                  call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
                                        dloc(pr_off(ib) + 1, s), ml, sb, 0.0_dp, xt(c_off(ib) + 1, s), mp, sa, cnt)
                end do
             end if
@@ -367,7 +373,8 @@ contains
          k0 = 1
          do while (k0 <= nb)
             ib = ord(k0)
-            mp = npp(ib); ml = nlp(ib)
+            mp = npp(ib)
+            ml = nlp(ib)
             k1 = k0
             do while (k1 < nb)
                if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
@@ -375,9 +382,10 @@ contains
             end do
             cnt = k1 - k0 + 1
             if (ml > 0) then
-               sa = int(mp, int64)*int(ml, int64); sc = int(ml, int64)*int(ml, int64)
+               sa = int(mp, int64)*int(ml, int64)
+               sc = int(ml, int64)*int(ml, int64)
                do s = 1, nspin
-                  call lp%gemm_strided('T', 'N', ml, ml, mp, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
+                  call lp%gemm_strided("T", "N", ml, ml, mp, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
                                        zt(c_off(ib) + 1, s), mp, sa, 0.0_dp, vloc(pr_off(ib) + 1, s), ml, sc, cnt)
                end do
             end if
@@ -405,7 +413,8 @@ contains
          !$acc update device(vxc) if_present
          es = [exc, nelec]
          call sum_ranks(comm, es, 2)
-         exc = es(1); nelec = es(2)
+         exc = es(1)
+         nelec = es(2)
       end if
    end subroutine xc_drive
 
@@ -523,7 +532,8 @@ contains
       integer, intent(in) :: pb_off(nb + 1)
       integer, intent(out) :: k, tt
       integer :: lo, hi, mid
-      lo = 1; hi = nb
+      lo = 1
+      hi = nb
       do while (lo < hi)
          mid = (lo + hi + 1)/2
          if (pb_off(mid) < t) then

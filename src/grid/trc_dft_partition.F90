@@ -154,7 +154,8 @@ contains
          return
       end if
 
-      k_lo = 1; k_hi = n_points
+      k_lo = 1
+      k_hi = n_points
       if (present(first)) k_lo = max(first, 1)
       if (present(last)) k_hi = min(last, n_points)
       weights = 0.0_dp

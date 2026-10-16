@@ -107,7 +107,9 @@ contains
       no = nocc - nfz
       nv = nao - nocc
       nov = no*nv
-      res%naux = naux; res%nocc = no; res%nvir = nv
+      res%naux = naux
+      res%nocc = no
+      res%nvir = nv
       if (no < 1 .or. nv < 1) then
          res%message = "trc_rimp2: nothing to correlate"
          return
@@ -124,9 +126,11 @@ contains
       end if
       nblk = naux
       if (present(aux_block)) nblk = max(aux_block, 1)
-      rank = 0; nranks = 1
+      rank = 0
+      nranks = 1
       if (present(comm)) then
-         rank = comm%rank(); nranks = comm%size()
+         rank = comm%rank()
+         nranks = comm%size()
       end if
       if (present(la)) then
          lp => la
@@ -144,8 +148,9 @@ contains
       !$acc enter data create(jm)
       call trc_df_2c(aux, jm)
       call lp%potrf(naux, jm, naux)
-      if (talk) print '(a,i0,a,f8.2,a)', "  rimp2: metric (", naux, ") and Cholesky ", wall() - tw0, " s"
-      t_int = 0.0_dp; t_tr = 0.0_dp
+      if (talk) print "(a,i0,a,f8.2,a)", "  rimp2: metric (", naux, ") and Cholesky ", wall() - tw0, " s"
+      t_int = 0.0_dp
+      t_tr = 0.0_dp
 
       ! --- 3. (ia|P) for every P, a block of auxiliary shells at a time ----
       allocate (cocc(nao, no), cvir(nao, nv), x(nov, naux), tmp(no, nao))
@@ -172,8 +177,8 @@ contains
          tw1 = wall()
          do q = 1, np
             ! tmp = C_occ^T T_q  (no x nao), then X(:, P) = (C_vir^T tmp^T) = (nv x no), a fastest
-            call lp%gemm('T', 'N', no, nao, nao, 1.0_dp, cocc, nao, tens(1, 1, q), nao, 0.0_dp, tmp, no)
-            call lp%gemm('T', 'T', nv, no, nao, 1.0_dp, cvir, nao, tmp, no, 0.0_dp, x(1, p0 + q - 1), nv)
+            call lp%gemm("T", "N", no, nao, nao, 1.0_dp, cocc, nao, tens(1, 1, q), nao, 0.0_dp, tmp, no)
+            call lp%gemm("T", "T", nv, no, nao, 1.0_dp, cvir, nao, tmp, no, 0.0_dp, x(1, p0 + q - 1), nv)
          end do
          t_tr = t_tr + (wall() - tw1)
          !$acc exit data delete(tens)
@@ -181,12 +186,12 @@ contains
          call blk%release()
          s0 = s1 + 1
       end do
-      if (talk) print '(a,f8.2,a,f8.2,a)', "  rimp2: (mu nu|P) ", t_int, " s, transform to (ia|P) ", t_tr, " s"
+      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2: (mu nu|P) ", t_int, " s, transform to (ia|P) ", t_tr, " s"
       tw1 = wall()
 
       ! --- 4. B = X L^-T: solve B L^T = X from the right ---------------------
-      call lp%trsm('R', 'L', 'T', nov, naux, 1.0_dp, jm, naux, x, nov)
-      if (talk) print '(a,f8.2,a)', "  rimp2: B = X L^-T ", wall() - tw1, " s"
+      call lp%trsm("R", "L", "T", nov, naux, 1.0_dp, jm, naux, x, nov)
+      if (talk) print "(a,f8.2,a)", "  rimp2: B = X L^-T ", wall() - tw1, " s"
       tw1 = wall()
 
       ! --- 5. the pair energies, one occupied i at a time ------------------
@@ -194,10 +199,11 @@ contains
       eo = eps(nfz + 1:nocc)
       ev = eps(nocc + 1:nao)
       !$acc enter data create(ki, part) copyin(eo, ev)
-      e_os = 0.0_dp; e_ss = 0.0_dp
+      e_os = 0.0_dp
+      e_ss = 0.0_dp
       do i = 1 + rank, no, nranks
          ! K_i(a, jb) = sum_Q B(ia, Q) B(jb, Q); rows ia of X start at (i-1) nv + 1
-         call lp%gemm('N', 'T', nv, nov, naux, 1.0_dp, x((i - 1)*nv + 1, 1), nov, x, nov, 0.0_dp, ki, nv)
+         call lp%gemm("N", "T", nv, nov, naux, 1.0_dp, x((i - 1)*nv + 1, 1), nov, x, nov, 0.0_dp, ki, nv)
          call pair_energy(i, no, nv, nov, eo, ev, ki, part)
          !$acc update self(part)
          e_os = e_os + sum(part(1:2*nov:2))
@@ -208,9 +214,10 @@ contains
          es = [e_os, e_ss]
          call allreduce(comm, es, op=MPI_SUM)
          call bcast(comm, es, 2, 0)
-         e_os = es(1); e_ss = es(2)
+         e_os = es(1)
+         e_ss = es(2)
       end if
-      if (talk) print '(a,f8.2,a,f8.2,a)', "  rimp2: pair energies ", wall() - tw1, " s;  total ", wall() - tw0, " s"
+      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2: pair energies ", wall() - tw1, " s;  total ", wall() - tw0, " s"
       res%e_os = e_os
       res%e_ss = e_ss
       res%e_corr = e_os + e_ss
@@ -256,7 +263,8 @@ contains
       j = (jb - 1)/nv + 1
       bb = jb - (j - 1)*nv
       eij = eo(i) + eo(j)
-      pos = 0.0_dp; pss = 0.0_dp
+      pos = 0.0_dp
+      pss = 0.0_dp
       do a = 1, nv
          t = ki(a, jb)                       ! (ia|jb)
          u = ki(bb, (j - 1)*nv + a)          ! (ib|ja)

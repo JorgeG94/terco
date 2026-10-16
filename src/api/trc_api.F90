@@ -258,9 +258,12 @@ contains
    pure real(dp) function common_fac_sp(l)
       integer, intent(in) :: l
       select case (l)
-      case (0); common_fac_sp = 0.282094791773878143_dp
-      case (1); common_fac_sp = 0.488602511902919921_dp
-      case default; common_fac_sp = 1.0_dp
+      case (0)
+      common_fac_sp = 0.282094791773878143_dp
+      case (1)
+      common_fac_sp = 0.488602511902919921_dp
+      case default
+      common_fac_sp = 1.0_dp
       end select
    end function common_fac_sp
 
@@ -296,7 +299,8 @@ contains
       allocate (this%sh_e(maxnp, nshell), this%sh_c(maxnp, nshell))
       allocate (this%sh_r(3, nshell), this%sh_at(nshell))
       allocate (this%at_z(natm), this%at_r(3, natm))
-      this%sh_e = 0.0_dp; this%sh_c = 0.0_dp
+      this%sh_e = 0.0_dp
+      this%sh_c = 0.0_dp
 
       this%at_z = at_z
       this%at_r = at_r
@@ -392,7 +396,8 @@ contains
       ! hands back slots straight into the molecular one with no further
       ! conversion at that boundary.
       out%spherical = this%spherical
-      out%nao = 0; out%nao_sph = 0
+      out%nao = 0
+      out%nao_sph = 0
       do i = 1, n
          out%sh_ao(i) = out%nao + 1
          out%nao = out%nao + ncart(out%sh_l(i))
@@ -419,7 +424,8 @@ contains
       allocate (l(nshell), nprim(nshell), r(3, nshell))
       allocate (e(maxnp, nshell), c(maxnp, nshell))
       allocate (z(natm), rat(3, natm))
-      e = 0.0_dp; c = 0.0_dp
+      e = 0.0_dp
+      c = 0.0_dp
 
       do ia = 1, natm
          z(ia) = real(atm(ATM_SLOTS*(ia - 1) + CHARGE_OF), dp)
@@ -479,7 +485,10 @@ contains
       if (allocated(this%sh_at)) deallocate (this%sh_at)
       if (allocated(this%at_z))  deallocate (this%at_z)
       if (allocated(this%at_r))  deallocate (this%at_r)
-      this%nshell = 0; this%nao = 0; this%natm = 0; this%nao_sph = 0
+      this%nshell = 0
+      this%nao = 0
+      this%natm = 0
+      this%nao_sph = 0
       this%spherical = .false.
    end subroutine basis_release
 
@@ -511,7 +520,8 @@ contains
                dy = b%sh_r(2, i) - b%sh_r(2, j)
                dz = b%sh_r(3, i) - b%sh_r(3, j)
                r2 = dx*dx + dy*dy + dz*dz
-               sb = 0.0_dp; vb = 0.0_dp
+               sb = 0.0_dp
+               vb = 0.0_dp
                do ki = 1, b%sh_np(i)
                   al = b%sh_e(ki, i)
                   do kj = 1, b%sh_np(j)
@@ -526,8 +536,10 @@ contains
                if (max(sb, vb*zsum) <= thresh) cycle
                n = n + 1
                if (pass == 2) then
-                  this%p_i(n) = i; this%p_j(n) = j
-                  this%p_s(n) = sb; this%p_v(n) = vb
+                  this%p_i(n) = i
+                  this%p_j(n) = j
+                  this%p_s(n) = sb
+                  this%p_v(n) = vb
                   this%p_n(n) = b%sh_np(i)*b%sh_np(j)
                end if
             end do
@@ -552,7 +564,8 @@ contains
 
       np = 0
       do n = 1, this%npair
-         i = this%p_i(n); j = this%p_j(n)
+         i = this%p_i(n)
+         j = this%p_j(n)
          r2 = 0.0_dp
          do d = 1, 3
             r2 = r2 + (b%sh_r(d, i) - b%sh_r(d, j))**2
@@ -605,7 +618,8 @@ contains
       if (allocated(this%pp_k)) deallocate (this%pp_k)
       if (allocated(this%pp_p)) deallocate (this%pp_p)
       if (allocated(this%pp_a)) deallocate (this%pp_a)
-      this%npair = 0; this%npp = 0
+      this%npair = 0
+      this%npp = 0
    end subroutine pairs_release
 
    !

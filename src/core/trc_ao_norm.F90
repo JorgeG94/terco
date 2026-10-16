@@ -140,7 +140,8 @@ contains
       real(dp), intent(in) :: nrm(:)
       real(dp), intent(inout) :: mat(:, :)
       integer :: i, j, n, ncol
-      n = size(nrm); ncol = size(mat, 2)
+      n = size(nrm)
+      ncol = size(mat, 2)
       do j = 1, ncol
          do i = 1, n
             mat(i, j) = mat(i, j)/nrm(i)

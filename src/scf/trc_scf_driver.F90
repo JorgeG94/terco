@@ -261,8 +261,8 @@ contains
       if (len_trim(path) == 0) return
       ! The atomic SCFs of a SAD guess come through here too, and would
       ! overwrite the molecular density with a 5x5 one. Keep the largest.
-      open (newunit=u, file=trim(path), access='stream', form='unformatted', &
-            status='old', iostat=ios)
+      open (newunit=u, file=trim(path), access="stream", form="unformatted", &
+            status="old", iostat=ios)
       if (ios == 0) then
          read (u, iostat=ios) prev
          close (u)
@@ -270,13 +270,13 @@ contains
             if (prev >= int(nao, int64)) return
          end if
       end if
-      open (newunit=u, file=trim(path), access='stream', form='unformatted', &
-            status='replace', iostat=ios)
+      open (newunit=u, file=trim(path), access="stream", form="unformatted", &
+            status="replace", iostat=ios)
       if (ios /= 0) return
       write (u) int(nao, int64)
       write (u) d
       close (u)
-      print '(a,a,a,i0,a)', "   [density dumped to ", trim(path), ", nao ", nao, "]"
+      print "(a,a,a,i0,a)", "   [density dumped to ", trim(path), ", nao ", nao, "]"
    end subroutine dump_density
 
    logical function incr_env()
@@ -458,7 +458,8 @@ contains
       dft = len_trim(opts%functional) > 0
       nlc = .false.
       exx = 1.0_dp
-      exx_lr = 0.0_dp; omega = 0.0_dp
+      exx_lr = 0.0_dp
+      omega = 0.0_dp
       if (dft) then
          if (.not. xc_functional_by_name(opts%functional, func)) then
             res%message = "trc_scf: unknown functional "//trim(opts%functional)
@@ -500,7 +501,9 @@ contains
       ! The cavity, K and its LU are built and solved whole on every rank
       ! (replicated: cheap next to the integrals); pcm%operator splits the
       ! two integral passes over the ranks itself, given `comm`.
-      epcm = 0.0_dp; t_pcm = 0.0_dp; t_pcm_setup = 0.0_dp
+      epcm = 0.0_dp
+      t_pcm = 0.0_dp
+      t_pcm_setup = 0.0_dp
 
       ! ONLY WHAT THIS RUN USES IS FULL SIZE. Every array below is mapped
       ! to the device for the whole run (the `enter data` after the
@@ -511,7 +514,8 @@ contains
       ! Those are allocated 1 x 1 instead, so every clause and dummy that
       ! names them stays as it is.
       incr_on = (opts%incremental .or. incr_env()) .and. nspin == 1
-      nxc = merge(nao, 1, dft); nxc_c = merge(nao_c, 1, dft)
+      nxc = merge(nao, 1, dft)
+      nxc_c = merge(nao_c, 1, dft)
       nu_c = merge(nao_c, 1, nspin == 2)
       nlr_c = merge(nao_c, 1, exx_lr /= 0.0_dp)
       nin_c = merge(nao_c, 1, incr_on)
@@ -524,7 +528,8 @@ contains
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
       allocate (w1(nao, nao), w2(nao, nao), w3(1, 1))
-      allocate (ofrac(nao)); ofrac = 0.0_dp
+      allocate (ofrac(nao))
+      ofrac = 0.0_dp
       allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
       ! Only when asked for: a second ndiis-deep history the size of
@@ -533,18 +538,26 @@ contains
       if (opts%adiis) then
          allocate (fstore_a(nao, nao, nspin, opts%ndiis), dstore_a(nao, nao, nspin, opts%ndiis))
          allocate (cad(opts%ndiis))
-         fstore_a = 0.0_dp; dstore_a = 0.0_dp
+         fstore_a = 0.0_dp
+         dstore_a = 0.0_dp
       end if
 
-      t_setup = 0.0_dp; t_grid = 0.0_dp; t_fock = 0.0_dp; t_xc = 0.0_dp; t_rest = 0.0_dp
-      tf_it = 0.0_dp; tx_it = 0.0_dp
-      tx_pts = 0.0_dp; tx_prs = 0.0_dp
+      t_setup = 0.0_dp
+      t_grid = 0.0_dp
+      t_fock = 0.0_dp
+      t_xc = 0.0_dp
+      t_rest = 0.0_dp
+      tf_it = 0.0_dp
+      tx_it = 0.0_dp
+      tx_pts = 0.0_dp
+      tx_prs = 0.0_dp
       tw0 = wall()
       call tm%start()
       ! --- once per geometry, on the host ------------------------------------
       call pl%build(b, eri_thresh_env(opts%eri_thresh))
       call pl%to_device()
-      ts(1) = tm%get_elapsed_time(); call tm%start()
+      ts(1) = tm%get_elapsed_time()
+      call tm%start()
       ! The one-electron integrals are always Cartesian (trc_1e never
       ! changes); `s_c`/`h_c` are folded up to the SCF's own space once,
       ! here, for the whole run -- S and H never change after this. The
@@ -553,7 +566,8 @@ contains
       ! fourth Cartesian array kept for nothing afterward.
       call trc_1e(b, pl, s_c, h_c, w1_c)
       h_c = h_c + w1_c
-      ts(2) = tm%get_elapsed_time(); call tm%start()
+      ts(2) = tm%get_elapsed_time()
+      call tm%start()
       if (sph) then
          ! `smat`/`hcore` are not entered onto the device until the big
          ! block below (they are reused, host and device, across the
@@ -565,25 +579,29 @@ contains
          !$acc update self(smat, hcore)
          !$acc exit data delete(s_c, h_c, smat, hcore)
       else
-         smat = s_c; hcore = h_c
+         smat = s_c
+         hcore = h_c
       end if
-      ts(3) = tm%get_elapsed_time(); call tm%start()
+      ts(3) = tm%get_elapsed_time()
+      call tm%start()
       if (present(comm)) then
          call eri%build(b, eri_thresh_env(opts%eri_thresh), comm, batch_res=opts%batch_res)
       else
          call eri%build(b, eri_thresh_env(opts%eri_thresh), batch_res=opts%batch_res)
       end if
       res%e_nuc = nuclear_repulsion(b)
-      ts(4) = tm%get_elapsed_time(); call tm%start()
+      ts(4) = tm%get_elapsed_time()
+      call tm%start()
       if (present(la)) then
          lp => la
       else
          lp => la_own
       end if
       call lp%init(nao)
-      ts(5) = tm%get_elapsed_time(); call tm%start()
+      ts(5) = tm%get_elapsed_time()
+      call tm%start()
       call sym_orthog(lp, nao, smat, x, opts%lindep_thresh, res%n_lindep)
-      if (talk .and. res%n_lindep > 0) print '(a,i0,a,es9.2,a)', &
+      if (talk .and. res%n_lindep > 0) print "(a,i0,a,es9.2,a)", &
          "   canonical orthogonalisation: ", res%n_lindep, &
          " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
       ts(6) = tm%get_elapsed_time()
@@ -592,20 +610,23 @@ contains
       ! --- the continuum: cavity, K and the nuclear potential, once -------
       allocate (vpcm_c(merge(nao_c, 1, pcm_on), merge(nao_c, 1, pcm_on)), &
                 vpcm(merge(nao, 1, pcm_on), merge(nao, 1, pcm_on)))
-      vpcm_c = 0.0_dp; vpcm = 0.0_dp
+      vpcm_c = 0.0_dp
+      vpcm = 0.0_dp
       if (pcm_on) then
          tw0 = wall()
          call pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err, la=lp)
          call pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
-            call pcm%release(); if (.not. present(la)) call lp%release()
-            call eri%release(); call pl%release()
+            call pcm%release()
+            if (.not. present(la)) call lp%release()
+            call eri%release()
+            call pl%release()
             return
          end if
          res%pcm_npoints = pcm%surface%n_points
          t_pcm_setup = wall() - tw0
-         if (talk) print '(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)', "   pcm: ", trim(opts%pcm_model), &
+         if (talk) print "(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)", "   pcm: ", trim(opts%pcm_model), &
             ", eps ", opts%pcm_eps, ", ", opts%pcm_lebedev, " points per sphere, ", &
             pcm%surface%n_points, " kept; setup ", t_pcm_setup, " s"
       end if
@@ -623,7 +644,8 @@ contains
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
             call pcm%release()
-            call eri%release(); call pl%release()
+            call eri%release()
+            call pl%release()
             return
          end if
          if (present(comm)) then
@@ -641,9 +663,11 @@ contains
                ! or its device allocation and `grid`'s host arrays leak on
                ! this early return, same as the success path does at the
                ! end of this routine.
-               call xg%release(); call grid%destroy()
+               call xg%release()
+               call grid%destroy()
                call pcm%release()
-               call eri%release(); call pl%release()
+               call eri%release()
+               call pl%release()
                return
             end if
             call xg_nlc%build(grid_nlc%n_points, grid_nlc%coords, grid_nlc%weights, b, &
@@ -680,11 +704,25 @@ contains
             call guess_from(w1, nocc(s))
          end do
       end if
-      res%cmo = 0.0_dp; res%eps = 0.0_dp
-      fock = 0.0_dp; gmat = 0.0_dp; vxc = 0.0_dp; dold = 0.0_dp; errv = 0.0_dp
-      fstore = 0.0_dp; estore = 0.0_dp
-      w1 = 0.0_dp; w2 = 0.0_dp; w3 = 0.0_dp
-      d_c = 0.0_dp; gmat_c = 0.0_dp; vxc_c = 0.0_dp; dtot_c = 0.0_dp; jmat_c = 0.0_dp; w1_c = 0.0_dp; klr_c = 0.0_dp
+      res%cmo = 0.0_dp
+      res%eps = 0.0_dp
+      fock = 0.0_dp
+      gmat = 0.0_dp
+      vxc = 0.0_dp
+      dold = 0.0_dp
+      errv = 0.0_dp
+      fstore = 0.0_dp
+      estore = 0.0_dp
+      w1 = 0.0_dp
+      w2 = 0.0_dp
+      w3 = 0.0_dp
+      d_c = 0.0_dp
+      gmat_c = 0.0_dp
+      vxc_c = 0.0_dp
+      dtot_c = 0.0_dp
+      jmat_c = 0.0_dp
+      w1_c = 0.0_dp
+      klr_c = 0.0_dp
 
       !$acc enter data copyin(ofrac)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
@@ -699,18 +737,19 @@ contains
       ndiis_used = 0
       nadiis_used = 0
       diis_on = .false.
-      exc = 0.0_dp; ngrid = 0.0_dp
+      exc = 0.0_dp
+      ngrid = 0.0_dp
       ! What the SCF is actually running on. Two callers can hand over the
       ! same molecule and basis name and different shells -- one had a
       ! reader that kept dead primitives -- and that only shows here.
-      if (talk) print '(a,i0,a,i0,a,i0,a,i0)', "   basis: ", nao, " functions, ", b%nshell, &
+      if (talk) print "(a,i0,a,i0,a,i0,a,i0)", "   basis: ", nao, " functions, ", b%nshell, &
          " shells, ", sum(b%sh_np), " primitives, max ", maxval(b%sh_np)
       if (talk) then
          if (dft) then
-            print '(a)', "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
+            print "(a)", "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
                //"   fock(s)     xc(s)"
          else
-            print '(a)', "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
+            print "(a)", "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
                //"   fock(s)"
          end if
       end if
@@ -860,7 +899,8 @@ contains
                end if
                exc = exc + e_nlc
             end if
-            tx_pts = tx_pts + tp1; tx_prs = tx_prs + tq1
+            tx_pts = tx_pts + tp1
+            tx_prs = tx_prs + tq1
             do s = 1, nspin
                if (sph) then
                   call sph_cart_to_sph(b, vxc_c(:, :, s), vxc(:, :, s))
@@ -895,7 +935,8 @@ contains
             tw0 = tw1
          end if
          ! --- energy at this density -----------------------------------------
-         e1 = 0.0_dp; e2 = 0.0_dp
+         e1 = 0.0_dp
+         e2 = 0.0_dp
          do s = 1, nspin
             e1 = e1 + lp%dot(n2, res%dmat(:, :, s), hcore)
             e2 = e2 + 0.5_dp*lp%dot(n2, res%dmat(:, :, s), gmat(:, :, s))
@@ -918,13 +959,13 @@ contains
                end do
             end if
             ! w2 = F D S - S D F
-            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
-            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-            call lp%gemm('N', 'N', nao, nao, nao, -1.0_dp, w1, nao, fock(:, :, s), nao, 1.0_dp, w2, nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, fock(:, :, s), nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+            call lp%gemm("N", "N", nao, nao, nao, -1.0_dp, w1, nao, fock(:, :, s), nao, 1.0_dp, w2, nao)
             ! errv = X^T w2 X
-            call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, w2, nao, x, nao, 0.0_dp, w1, nao)
-            call lp%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, errv(:, :, s), nao)
+            call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w2, nao, x, nao, 0.0_dp, w1, nao)
+            call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, errv(:, :, s), nao)
          end do
          do concurrent(i=1:nao, j=1:nao, s=1:nspin)
             dold(i, j, s) = res%dmat(i, j, s)
@@ -939,7 +980,8 @@ contains
             if (comm%size() > 1) then
                ctl = [etot, errmax]
                call bcast_flat(comm, ctl, 2)
-               etot = ctl(1); errmax = ctl(2)
+               etot = ctl(1)
+               errmax = ctl(2)
             end if
          end if
          if (.not. diis_on .and. it > ndamp) diis_on = errmax < diis_start
@@ -994,8 +1036,8 @@ contains
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
                do s = 1, nspin
-                  call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
-                  call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
+                  call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, res%dmat(:, :, s), nao, 0.0_dp, w1, nao)
+                  call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
                   do concurrent(i=1:nao, j=1:nao)
                      fock(i, j, s) = fock(i, j, s) + opts%level_shift*(smat(i, j) - w2(i, j)/occ)
                   end do
@@ -1065,10 +1107,10 @@ contains
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
             do s = 1, nspin
-               call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, fock(:, :, s), nao, x, nao, 0.0_dp, w1, nao)
-               call lp%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, w2, nao)
+               call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, fock(:, :, s), nao, x, nao, 0.0_dp, w1, nao)
+               call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, w1, nao, 0.0_dp, w2, nao)
                call lp%syev(nao, w2, nao, res%eps(:, s))
-               call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, w2, nao, 0.0_dp, res%cmo(:, :, s), nao)
+               call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, x, nao, w2, nao, 0.0_dp, res%cmo(:, :, s), nao)
                if (opts%frac_occ) then
                   ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
                   !$acc update self(res%eps(:, s))
@@ -1081,9 +1123,9 @@ contains
                   do concurrent(i=1:nao, j=1:nao)
                      w1(i, j) = res%cmo(i, j, s)*sqrt(ofrac(j))
                   end do
-                  call lp%gemm('N', 'T', nao, nao, nfrac, 1.0_dp, w1, nao, w1, nao, 0.0_dp, res%dmat(:, :, s), nao)
+                  call lp%gemm("N", "T", nao, nao, nfrac, 1.0_dp, w1, nao, w1, nao, 0.0_dp, res%dmat(:, :, s), nao)
                else if (nocc(s) > 0) then
-                  call lp%gemm('N', 'T', nao, nao, nocc(s), occ, res%cmo(:, :, s), nao, res%cmo(:, :, s), nao, &
+                  call lp%gemm("N", "T", nao, nao, nocc(s), occ, res%cmo(:, :, s), nao, res%cmo(:, :, s), nao, &
                                0.0_dp, res%dmat(:, :, s), nao)
                else
                   do concurrent(i=1:nao, j=1:nao)
@@ -1115,10 +1157,10 @@ contains
          t_rest = t_rest + (wall() - tw0)
          if (talk) then
             if (dft) then
-               print '(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3)', &
+               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3)", &
                   it, etot, etot - eold, drms, errmax, tf_it, tx_it
             else
-               print '(i5,f22.12,es14.4,es14.4,es14.4,f10.3)', &
+               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3)", &
                   it, etot, etot - eold, drms, errmax, tf_it
             end if
          end if
@@ -1173,17 +1215,20 @@ contains
       if (.not. res%converged) res%message = "trc_scf: not converged"
       if (talk) then
          call report_timing()
-         if (pcm_on) print '(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)', "   pcm: E_diel = ", epcm, &
+         if (pcm_on) print "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)", "   pcm: E_diel = ", epcm, &
             "  q_total = ", pcm%q_total, "  setup ", t_pcm_setup, " s, ", &
             t_pcm/real(max(1, res%iterations), dp), " s per iteration"
       end if
       call pcm%release()
       if (.not. present(la)) call lp%release()
-      call eri%release(); call pl%release()
+      call eri%release()
+      call pl%release()
       if (dft) then
-         call xg%release(); call grid%destroy()
+         call xg%release()
+         call grid%destroy()
          if (nlc) then
-            call xg_nlc%release(); call grid_nlc%destroy()
+            call xg_nlc%release()
+            call grid_nlc%destroy()
          end if
       end if
 
@@ -1194,17 +1239,17 @@ contains
          !! which its default INFO level shows: the phases, then setup and
          !! the ERI engine's build broken into their steps.
          character(len=160) :: line
-         write (line, '(a,7f10.3)') "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
+         write (line, "(a,7f10.3)") "          ", t_setup, t_grid, t_fock, t_xc, tx_pts, tx_prs, t_rest
          call global_logger%performance( &
             "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis")
          call global_logger%performance(trim(line))
          call global_logger%performance( &
             "   setup (s)  pairs        1e   sph fold       eri    linalg    orthog")
-         write (line, '(a,6f10.3)') "          ", ts
+         write (line, "(a,6f10.3)") "          ", ts
          call global_logger%performance(trim(line))
          call global_logger%performance( &
             "   eri (s) hgp pairs   schwarz      bins  quartets    upload")
-         write (line, '(a,5f10.3)') "          ", eri%t_build
+         write (line, "(a,5f10.3)") "          ", eri%t_build
          call global_logger%performance(trim(line))
       end subroutine report_timing
 
@@ -1224,12 +1269,12 @@ contains
          real(dp), allocatable :: fp(:, :), c(:, :), t(:, :), e(:), d(:, :)
          allocate (fp(nao, nao), c(nao, nao), t(nao, nao), e(nao), d(nao, nao))
          !$acc data copyin(h, x) create(fp, c, t, e) copyout(d)
-         call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, h, nao, x, nao, 0.0_dp, t, nao)
-         call lp%gemm('T', 'N', nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, h, nao, x, nao, 0.0_dp, t, nao)
+         call lp%gemm("T", "N", nao, nao, nao, 1.0_dp, x, nao, t, nao, 0.0_dp, fp, nao)
          call lp%syev(nao, fp, nao, e)
-         call lp%gemm('N', 'N', nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, c, nao)
+         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, x, nao, fp, nao, 0.0_dp, c, nao)
          if (nocc_s > 0) then
-            call lp%gemm('N', 'T', nao, nao, nocc_s, occ, c, nao, c, nao, 0.0_dp, d, nao)
+            call lp%gemm("N", "T", nao, nao, nocc_s, occ, c, nao, c, nao, 0.0_dp, d, nao)
          else
             call zero_dev(nao, d)
          end if
@@ -1262,10 +1307,12 @@ contains
          else
             ef = eps(nfull)
          end if
-         g0 = n + 1; g1 = 0
+         g0 = n + 1
+         g1 = 0
          do i = 1, n
             if (abs(eps(i) - ef) < FRAC_TOL) then
-               g0 = min(g0, i); g1 = max(g1, i)
+               g0 = min(g0, i)
+               g1 = max(g1, i)
             end if
          end do
          if (g1 < g0) return
@@ -1312,7 +1359,8 @@ contains
                               + lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
             end do
          end do
-         c = 0.0_dp; c(m) = 1.0_dp
+         c = 0.0_dp
+         c(m) = 1.0_dp
          f = adiis_value(m, dvec, amat, c)
          step = 1.0_dp
          do itr = 1, 200
@@ -1328,7 +1376,9 @@ contains
                call project_simplex(m, trial)
                ft = adiis_value(m, dvec, amat, trial)
                if (ft < f - 1.0e-14_dp) then
-                  c = trial; f = ft; improved = .true.
+                  c = trial
+                  f = ft
+                  improved = .true.
                   exit
                end if
                step = step*0.5_dp
@@ -1363,12 +1413,15 @@ contains
          integer :: ii, rho
          u = c
          call sort_desc(m, u)
-         css = 0.0_dp; theta = 0.0_dp; rho = 0
+         css = 0.0_dp
+         theta = 0.0_dp
+         rho = 0
          do ii = 1, m
             css = css + u(ii)
             t = (css - 1.0_dp)/real(ii, dp)
             if (u(ii) - t > 0.0_dp) then
-               rho = ii; theta = t
+               rho = ii
+               theta = t
             end if
          end do
          if (rho == 0) then
@@ -1388,7 +1441,9 @@ contains
          do ii = 1, m - 1
             do jj = ii + 1, m
                if (u(jj) > u(ii)) then
-                  t = u(ii); u(ii) = u(jj); u(jj) = t
+                  t = u(ii)
+                  u(ii) = u(jj)
+                  u(jj) = t
                end if
             end do
          end do
@@ -1470,7 +1525,7 @@ contains
             u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
          end if
       end do
-      call la%gemm('N', 'T', n, n, n, 1.0_dp, u, n, u, n, 0.0_dp, x, n)
+      call la%gemm("N", "T", n, n, n, 1.0_dp, u, n, u, n, 0.0_dp, x, n)
       !$acc end data
    end subroutine sym_orthog
 

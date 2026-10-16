@@ -105,7 +105,7 @@ contains
       allocate (dguess(b%nao, b%nao))
       dguess = 0.0_dp
       do ia = 1, b%natm
-         write (buf, '(i0)') at_z(ia)
+         write (buf, "(i0)") at_z(ia)
          key = "elements."//trim(buf)
          call json%get(key//".nao", n, found)
          if (.not. found) then
@@ -155,7 +155,7 @@ contains
       integer, intent(in) :: i
       character(len=:), allocatable :: t
       character(len=16) :: buf
-      write (buf, '(i0)') i
+      write (buf, "(i0)") i
       t = trim(buf)
    end function itoa
 
@@ -166,9 +166,12 @@ contains
       !! and p, per this module's own header.
       integer, intent(in) :: l
       select case (l)
-      case (0); common_fac_sp = 0.282094791773878143_dp
-      case (1); common_fac_sp = 0.488602511902919921_dp
-      case default; common_fac_sp = 1.0_dp
+      case (0)
+      common_fac_sp = 0.282094791773878143_dp
+      case (1)
+      common_fac_sp = 0.488602511902919921_dp
+      case default
+      common_fac_sp = 1.0_dp
       end select
    end function common_fac_sp
 

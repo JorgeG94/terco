@@ -94,8 +94,16 @@ contains
    subroutine tables_init()
       integer :: n, t, u, v, h
 
-      hidx = 0; hdir = 0; hm1 = 0; hm2 = 0; hcf = 0.0_dp
-      ht = 0; hu = 0; hv = 0; hsgn = 0.0_dp; hshift = 0
+      hidx = 0
+      hdir = 0
+      hm1 = 0
+      hm2 = 0
+      hcf = 0.0_dp
+      ht = 0
+      hu = 0
+      hv = 0
+      hsgn = 0.0_dp
+      hshift = 0
 
       h = 0
       do n = 0, LTOT
@@ -104,7 +112,9 @@ contains
                v = n - t - u
                h = h + 1
                hidx(t, u, v) = h
-               ht(h) = t; hu(h) = u; hv(h) = v
+               ht(h) = t
+               hu(h) = u
+               hv(h) = v
                hsgn(h) = 1.0_dp
                if (mod(n, 2) == 1) hsgn(h) = -1.0_dp
 

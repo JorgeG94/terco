@@ -158,15 +158,20 @@ contains
       allocate (b_lo(n), b_hi(n))   ! at most n batches
       nb = 0
       top = 1
-      st_lo(1) = 1; st_hi(1) = n
+      st_lo(1) = 1
+      st_hi(1) = n
       do while (top > 0)
-         lo = st_lo(top); hi = st_hi(top); top = top - 1
+         lo = st_lo(top)
+         hi = st_hi(top)
+         top = top - 1
          if (hi - lo + 1 <= maxp) then
             nb = nb + 1
-            b_lo(nb) = lo; b_hi(nb) = hi
+            b_lo(nb) = lo
+            b_hi(nb) = hi
             cycle
          end if
-         lo3 = huge(1.0_dp); hi3 = -huge(1.0_dp)
+         lo3 = huge(1.0_dp)
+         hi3 = -huge(1.0_dp)
          do k = lo, hi
             lo3 = min(lo3, coords(:, idx(k)))
             hi3 = max(hi3, coords(:, idx(k)))
@@ -174,12 +179,15 @@ contains
          axis = maxloc(hi3 - lo3, dim=1)
          mid = 0.5_dp*(lo3(axis) + hi3(axis))
          ! Partition idx(lo:hi): below the midpoint first.
-         i = lo; j = hi
+         i = lo
+         j = hi
          do while (i <= j)
             if (coords(axis, idx(i)) < mid) then
                i = i + 1
             else
-               k = idx(i); idx(i) = idx(j); idx(j) = k
+               k = idx(i)
+               idx(i) = idx(j)
+               idx(j) = k
                j = j - 1
             end if
          end do
@@ -187,8 +195,12 @@ contains
          ! points cannot be split by value; split it by count instead.
          if (i <= lo .or. i > hi) i = (lo + hi)/2 + 1
          if (top + 2 > size(st_lo)) call grow_stack()
-         top = top + 1; st_lo(top) = lo; st_hi(top) = i - 1
-         top = top + 1; st_lo(top) = i; st_hi(top) = hi
+         top = top + 1
+         st_lo(top) = lo
+         st_hi(top) = i - 1
+         top = top + 1
+         st_lo(top) = i
+         st_hi(top) = hi
       end do
       this%nbatch = nb
 
@@ -215,7 +227,8 @@ contains
       ! --- 3. the local basis of every batch ---------------------------------
       allocate (bmin(3, nb), bmax(3, nb))
       do ib = 1, nb
-         bmin(:, ib) = huge(1.0_dp); bmax(:, ib) = -huge(1.0_dp)
+         bmin(:, ib) = huge(1.0_dp)
+         bmax(:, ib) = -huge(1.0_dp)
          do k = this%b_off(ib), this%b_off(ib + 1) - 1
             bmin(:, ib) = min(bmin(:, ib), this%r(:, k))
             bmax(:, ib) = max(bmax(:, ib), this%r(:, k))
@@ -223,10 +236,12 @@ contains
       end do
       allocate (this%b_shoff(nb + 1), this%b_aooff(nb + 1))
       ! Count, then fill.
-      this%b_shoff(1) = 1; this%b_aooff(1) = 1
+      this%b_shoff(1) = 1
+      this%b_aooff(1) = 1
       this%max_nloc = 0
       do ib = 1, nb
-         nsh_b = 0; nao_b = 0
+         nsh_b = 0
+         nao_b = 0
          do ish = 1, b%nshell
             if (reaches(ish, ib)) then
                nsh_b = nsh_b + 1
@@ -370,7 +385,9 @@ contains
       if (allocated(this%b_aooff)) deallocate (this%b_aooff)
       if (allocated(this%b_ao)) deallocate (this%b_ao)
       if (allocated(this%b_amax)) deallocate (this%b_amax)
-      this%npts = 0; this%nbatch = 0; this%max_nloc = 0
+      this%npts = 0
+      this%nbatch = 0
+      this%max_nloc = 0
    end subroutine xcgrid_release
 
 end module trc_xc_batch

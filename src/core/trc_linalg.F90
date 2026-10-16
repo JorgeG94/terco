@@ -147,8 +147,8 @@ contains
       real(dp), intent(in) :: a(lda, *), b(ldb, *)
       real(dp), intent(inout) :: c(ldc, *)
       logical :: tra, trb
-      tra = ta == 'T' .or. ta == 't'
-      trb = tb == 'T' .or. tb == 't'
+      tra = ta == "T" .or. ta == "t"
+      trb = tb == "T" .or. tb == "t"
 #ifdef _OPENACC
       block
          integer :: st, oa, ob
@@ -163,13 +163,13 @@ contains
       ! op(A) is m x k and op(B) is k x n; the stored block of a transposed
       ! operand has those extents the other way round.
       if (.not. tra .and. .not. trb) then
-         call pic_gemm(a(1:m, 1:k), b(1:k, 1:n), c(1:m, 1:n), 'N', 'N', alpha, beta)
+         call pic_gemm(a(1:m, 1:k), b(1:k, 1:n), c(1:m, 1:n), "N", "N", alpha, beta)
       else if (tra .and. .not. trb) then
-         call pic_gemm(a(1:k, 1:m), b(1:k, 1:n), c(1:m, 1:n), 'T', 'N', alpha, beta)
+         call pic_gemm(a(1:k, 1:m), b(1:k, 1:n), c(1:m, 1:n), "T", "N", alpha, beta)
       else if (.not. tra .and. trb) then
-         call pic_gemm(a(1:m, 1:k), b(1:n, 1:k), c(1:m, 1:n), 'N', 'T', alpha, beta)
+         call pic_gemm(a(1:m, 1:k), b(1:n, 1:k), c(1:m, 1:n), "N", "T", alpha, beta)
       else
-         call pic_gemm(a(1:k, 1:m), b(1:n, 1:k), c(1:m, 1:n), 'T', 'T', alpha, beta)
+         call pic_gemm(a(1:k, 1:m), b(1:n, 1:k), c(1:m, 1:n), "T", "T", alpha, beta)
       end if
 #endif
    end subroutine linalg_gemm
@@ -187,8 +187,8 @@ contains
       real(dp), intent(in) :: a(*), b(*)
       real(dp), intent(inout) :: c(*)
       logical :: tra, trb
-      tra = ta == 'T' .or. ta == 't'
-      trb = tb == 'T' .or. tb == 't'
+      tra = ta == "T" .or. ta == "t"
+      trb = tb == "T" .or. tb == "t"
       if (count < 1) return
 #ifdef _OPENACC
       block
@@ -206,7 +206,9 @@ contains
          integer :: i
          integer(int64) :: oa, ob, oc
          do i = 1, count
-            oa = int(i - 1, int64)*sa; ob = int(i - 1, int64)*sb; oc = int(i - 1, int64)*sc
+            oa = int(i - 1, int64)*sa
+            ob = int(i - 1, int64)*sb
+            oc = int(i - 1, int64)*sc
             call this%gemm(ta, tb, m, n, k, alpha, a(oa + 1), lda, b(ob + 1), ldb, beta, c(oc + 1), ldc)
          end do
       end block
@@ -247,7 +249,7 @@ contains
             integer, intent(out) :: info
          end subroutine dpotrf
       end interface
-      call dpotrf('L', n, a, lda, info)
+      call dpotrf("L", n, a, lda, info)
       if (info /= 0) error stop "trc_linalg: dpotrf: matrix not positive definite"
 #endif
    end subroutine linalg_potrf
@@ -302,7 +304,7 @@ contains
       real(dp), intent(inout) :: b(ldb, *)
 #ifdef _OPENACC
       integer :: st, ct
-      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == 'T' .or. trans == 't')
+      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
       !$acc host_data use_device(a, ipiv, b, this%devinfo)
       st = cusolverDnDgetrs(this%hs, ct, n, nrhs, a, lda, ipiv, b, ldb, this%devinfo)
       !$acc end host_data
@@ -335,7 +337,7 @@ contains
       real(dp), intent(inout) :: y(*)
 #ifdef _OPENACC
       integer :: st, ct
-      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == 'T' .or. trans == 't')
+      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
       !$acc host_data use_device(a, x, y)
       st = cublasDgemv_v2(this%hb, ct, m, n, alpha, a, lda, x, 1, beta, y, 1)
       !$acc end host_data
@@ -367,9 +369,9 @@ contains
       real(dp), intent(inout) :: b(ldb, *)
 #ifdef _OPENACC
       integer :: st, cs, cu, ct
-      cs = merge(CUBLAS_SIDE_RIGHT, CUBLAS_SIDE_LEFT, side == 'R' .or. side == 'r')
-      cu = merge(CUBLAS_FILL_MODE_UPPER, CUBLAS_FILL_MODE_LOWER, uplo == 'U' .or. uplo == 'u')
-      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == 'T' .or. trans == 't')
+      cs = merge(CUBLAS_SIDE_RIGHT, CUBLAS_SIDE_LEFT, side == "R" .or. side == "r")
+      cu = merge(CUBLAS_FILL_MODE_UPPER, CUBLAS_FILL_MODE_LOWER, uplo == "U" .or. uplo == "u")
+      ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
       !$acc host_data use_device(a, b)
       st = cublasDtrsm_v2(this%hb, cs, cu, ct, CUBLAS_DIAG_NON_UNIT, m, n, alpha, a, lda, b, ldb)
       !$acc end host_data
@@ -385,7 +387,7 @@ contains
             real(dp), intent(inout) :: b(ldb, *)
          end subroutine dtrsm
       end interface
-      call dtrsm(side, uplo, trans, 'N', m, n, alpha, a, lda, b, ldb)
+      call dtrsm(side, uplo, trans, "N", m, n, alpha, a, lda, b, ldb)
 #endif
    end subroutine linalg_trsm
 
@@ -410,7 +412,7 @@ contains
       if (info /= 0) error stop "trc_linalg: cusolverDnDsyevd did not converge"
 #else
       integer(default_int) :: info
-      call pic_syev(a(1:n, 1:n), w(1:n), 'V', 'U', info)
+      call pic_syev(a(1:n, 1:n), w(1:n), "V", "U", info)
       if (info /= 0) error stop "trc_linalg: pic_syev failed"
 #endif
    end subroutine linalg_syev

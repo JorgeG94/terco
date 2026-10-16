@@ -13,7 +13,8 @@ module bit_repro
    !!  - as fast as possible subject to all of the above
 
 use, intrinsic :: iso_fortran_env, only : int64, real64
-implicit none ; private
+implicit none
+private
 
 integer, parameter :: wp = real64
 !! Working precision: the library is kind-explicit (every declaration and
@@ -27,7 +28,7 @@ real(wp), parameter :: erf_mac(0:15) = [ &
     0.00012055332981789664_wp, -1.492565035840625e-05_wp, 1.6462114365889248e-06_wp, &
     -1.6365844691234924e-07_wp, 1.4807192815879218e-08_wp, -1.2290555301717928e-09_wp, &
     9.422759064650411e-11_wp, -6.7113668551641105e-12_wp, 4.4632242632864775e-13_wp, &
-    -2.7835162072109215e-14_wp ]
+    -2.7835162072109215e-14_wp]
 real(wp), parameter :: cxB(0:23) = [ &
     0.4062917348653128_wp, -0.18151089830658812_wp, 0.036282977131463424_wp, &
     -0.0066414453256516195_wp, 0.0011300743535714113_wp, -0.0001806468989853791_wp, &
@@ -36,7 +37,7 @@ real(wp), parameter :: cxB(0:23) = [ &
     1.367848537001346e-10_wp, -1.591764656641901e-11_wp, 1.802051255167746e-12_wp, &
     -1.9878778583973728e-13_wp, 2.1397210370699588e-14_wp, -2.2501737469358202e-15_wp, &
     2.3145069843923556e-16_wp, -2.3309339983129675e-17_wp, 2.300571581031184e-18_wp, &
-    -2.227132705200476e-19_wp, 2.1164143036953425e-20_wp, -1.9756603241087112e-21_wp ]
+    -2.227132705200476e-19_wp, 2.1164143036953425e-20_wp, -1.9756603241087112e-21_wp]
 real(wp), parameter :: cxC(0:31) = [ &
     0.14343982965978574_wp, -0.08130645231062354_wp, 0.022452024071075903_wp, &
     -0.006052234353050054_wp, 0.0015951792668183191_wp, -0.0004116660363681922_wp, &
@@ -48,7 +49,7 @@ real(wp), parameter :: cxC(0:31) = [ &
     -1.8217553228327414e-14_wp, 3.688175647160491e-15_wp, -7.390023395686382e-16_wp, &
     1.4659202020335926e-16_wp, -2.879495205656065e-17_wp, 5.60233695521311e-18_wp, &
     -1.0798634228268147e-18_wp, 2.0625765454436175e-19_wp, -3.9046600929478305e-20_wp, &
-    7.327811665218642e-21_wp, -1.3635318363407182e-21_wp ]
+    7.327811665218642e-21_wp, -1.3635318363407182e-21_wp]
 real(wp), parameter :: asyD(0:20) = [ &
     1.0_wp, -0.5_wp, 0.75_wp, &
     -1.875_wp, 6.5625_wp, -29.53125_wp, &
@@ -56,7 +57,7 @@ real(wp), parameter :: asyD(0:20) = [ &
     -67303.564453125_wp, 639383.8623046875_wp, -6713530.554199219_wp, &
     77205601.37329102_wp, -965070017.1661377_wp, 13028445231.742859_wp, &
     -188912455860.27145_wp, 2928143065834.2075_wp, -48314360586264.42_wp, &
-    845501310259627.4_wp, -1.5641774239803108e+16_wp, 3.050145976761606e+17_wp ]
+    845501310259627.4_wp, -1.5641774239803108e+16_wp, 3.050145976761606e+17_wp]
 real(wp), parameter :: one_over_sqrtpi = 0.5641895835477563_wp
 real(wp), parameter :: t2hi(0:31) = [ &
     1.0_wp, 1.0218971486541166_wp, 1.0442737824274138_wp, 1.0671404006768237_wp, &
@@ -66,7 +67,7 @@ real(wp), parameter :: t2hi(0:31) = [ &
     1.4142135623730951_wp, 1.4451808069770467_wp, 1.4768261459394993_wp, 1.5091644275934228_wp, &
     1.5422108254079407_wp, 1.5759808451078865_wp, 1.6104903319492543_wp, 1.645755478153965_wp, &
     1.681792830507429_wp, 1.718619298122478_wp, 1.7562521603732995_wp, 1.7947090750031072_wp, &
-    1.8340080864093424_wp, 1.8741676341103_wp, 1.9152065613971474_wp, 1.9571441241754002_wp ]
+    1.8340080864093424_wp, 1.8741676341103_wp, 1.9152065613971474_wp, 1.9571441241754002_wp]
 real(wp), parameter :: t2lo(0:31) = [ &
     0.0_wp, 5.109225028973444e-17_wp, 8.551889705537965e-17_wp, -7.899853966841582e-17_wp, &
     -3.046782079812471e-17_wp, 1.0410278456845571e-16_wp, 8.912812676025408e-17_wp, 3.8292048369240935e-17_wp, &
@@ -75,7 +76,7 @@ real(wp), parameter :: t2lo(0:31) = [ &
     -9.667293313452913e-17_wp, -3.0237581349939873e-17_wp, -3.483994556892796e-17_wp, -1.016455327754295e-16_wp, &
     7.949834809697621e-17_wp, -1.0136916471278304e-17_wp, 2.4707192569797888e-17_wp, -1.0125679913674773e-16_wp, &
     8.199010020581497e-17_wp, -1.851380418263111e-17_wp, 2.960140695448873e-17_wp, 1.8227458427912087e-17_wp, &
-    3.283107224245627e-17_wp, -6.122763413004143e-17_wp, -1.0619946056195963e-16_wp, 8.960767791036668e-17_wp ]
+    3.283107224245627e-17_wp, -6.122763413004143e-17_wp, -1.0619946056195963e-16_wp, 8.960767791036668e-17_wp]
 
 ! Shared constants for the erfc family (scalar, branch-free, and 8-wide
 ! variants) and its inlined exp2 cores.
@@ -184,17 +185,17 @@ elemental function exp_reprod(x) result(ex)
 
   if (x /= x) then
     ex = x
-  elseif (x > 710.0_wp) then       ! exp overflows past 709.78...; covers +Inf
+  else if (x > 710.0_wp) then       ! exp overflows past 709.78...; covers +Inf
     ex = huge(x)
     ex = ex * 2.0_wp                ! +Inf via runtime IEEE overflow (a constant
                                  ! expression here is a compile error on gfortran)
-  elseif (x < -746.0_wp) then      ! exp underflows to zero past -745.2; covers -Inf
+  else if (x < -746.0_wp) then      ! exp underflows to zero past -745.2; covers -Inf
     ex = 0.0_wp
   else
     call two_prod(x, log2e_hi, h, t)
     l = t + x*log2e_lo
     ex = exp2_pair(h, l)
-  endif
+  end if
 end function exp_reprod
 
 elemental function log_reprod(x) result(lx)
@@ -214,20 +215,23 @@ elemental function log_reprod(x) result(lx)
   real(wp), parameter :: ln2_hi = 0.6931471805599453_wp
   real(wp), parameter :: ln2_lo = 2.3190468138462996e-17_wp
   real(wp) :: h, l   ! log2(x) as a double-double pair
-  real(wp) :: ph, pe ! two_prod parts of h*ln2_hi
+  real(wp) :: ph, pe  ! two_prod parts of h*ln2_hi
 
   if (.not. (x > 0.0_wp)) then          ! zero, negative, or NaN
-    if (x /= x) then ; lx = x                     ! NaN passes through
-    elseif (x == 0.0_wp) then ; lx = -1.0_wp / abs(x)  ! -Inf, raising divideByZero
-    else ; lx = (x - x) / (x - x)                 ! negative: NaN, raising invalid
-    endif
-  elseif (x > huge(x)) then
+    if (x /= x) then
+    lx = x                     ! NaN passes through
+    else if (x == 0.0_wp) then
+    lx = -1.0_wp / abs(x)  ! -Inf, raising divideByZero
+    else
+    lx = (x - x) / (x - x)                 ! negative: NaN, raising invalid
+    end if
+  else if (x > huge(x)) then
     lx = x                                        ! log(+Inf) = +Inf
   else
     call log2_dd(x, h, l)
     call two_prod(h, ln2_hi, ph, pe)
     lx = ph + (pe + (h*ln2_lo + l*ln2_hi))
-  endif
+  end if
 end function log_reprod
 
 elemental function pow_reprod_explog(x, y) result(p)
@@ -268,7 +272,7 @@ elemental function pow_reprod(x, y) result(p)
   real(wp) :: ax     ! |x|
   real(wp) :: sgn    ! Sign to apply to the result (negative base, odd integral y)
   real(wp) :: h, l   ! y*log2(|x|) as a double-double pair
-  real(wp) :: lh, ll ! log2(|x|) as a double-double pair
+  real(wp) :: lh, ll  ! log2(|x|) as a double-double pair
   real(wp) :: t      ! Scratch for the dd product y*(lh,ll)
   logical :: y_integral, y_odd
 
@@ -280,19 +284,22 @@ elemental function pow_reprod(x, y) result(p)
   ! --- IEEE special-value matrix (mirrors C99/IEEE-754 pow) ------------------
   if (y == 0.0_wp) then                    ! pow(x, 0) = 1 for every x, even NaN
     p = 1.0_wp
-  elseif (x == 1.0_wp) then                ! pow(1, y) = 1 for every y, even NaN
+  else if (x == 1.0_wp) then                ! pow(1, y) = 1 for every y, even NaN
     p = 1.0_wp
-  elseif (x /= x .or. y /= y) then      ! any other NaN in -> NaN out
+  else if (x /= x .or. y /= y) then      ! any other NaN in -> NaN out
     p = x + y
-  elseif (y == 1.0_wp) then
+  else if (y == 1.0_wp) then
     p = x
-  elseif (abs(y) > huge(y)) then        ! y = +-Inf
+  else if (abs(y) > huge(y)) then        ! y = +-Inf
     ax = abs(x)
-    if (ax == 1.0_wp) then ; p = 1.0_wp
-    elseif ((ax > 1.0_wp) .eqv. (y > 0.0_wp)) then ; p = abs(y)  ! +Inf
-    else ; p = 0.0_wp
-    endif
-  elseif (x == 0.0_wp) then                ! +-0 base
+    if (ax == 1.0_wp) then
+    p = 1.0_wp
+    else if ((ax > 1.0_wp) .eqv. (y > 0.0_wp)) then
+    p = abs(y)  ! +Inf
+    else
+    p = 0.0_wp
+    end if
+  else if (x == 0.0_wp) then                ! +-0 base
     if (y > 0.0_wp) then
       p = merge(x, 0.0_wp, y_odd)          ! preserves -0 for odd integral y
     else
@@ -302,16 +309,16 @@ elemental function pow_reprod(x, y) result(p)
         p = -1.0_wp / abs(x)               ! pow(-0, negative odd int) = -Inf
       else
         p = 1.0_wp / abs(x)                ! +Inf
-      endif
-    endif
-  elseif (abs(x) > huge(x)) then        ! x = +-Inf
+      end if
+    end if
+  else if (abs(x) > huge(x)) then        ! x = +-Inf
     if (x > 0.0_wp) then
       p = merge(abs(x), 0.0_wp, y > 0.0_wp)
     else
       sgn = merge(-1.0_wp, 1.0_wp, y_odd)
       p = merge(sgn*abs(x), sgn*0.0_wp, y > 0.0_wp)
-    endif
-  elseif (x < 0.0_wp .and. .not. y_integral) then
+    end if
+  else if (x < 0.0_wp .and. .not. y_integral) then
     p = (x - x) / (x - x)               ! NaN: negative base, non-integral power
   else
     ! --- computational paths, on ax = |x| with the sign restored at the end --
@@ -327,17 +334,17 @@ elemental function pow_reprod(x, y) result(p)
     ! property sqrt(pow(x,2)) == x.
     if (y_integral .and. y >= 0.0_wp .and. y <= 4.0_wp) then
       p = sgn * ipow(ax, nint(y))
-    elseif (y == -1.0_wp) then
+    else if (y == -1.0_wp) then
       p = sgn * (1.0_wp / ax)
-    elseif (y == 0.5_wp) then
+    else if (y == 0.5_wp) then
       p = sqrt(ax)
-    elseif (y == -0.5_wp) then
+    else if (y == -0.5_wp) then
       p = 1.0_wp / sqrt(ax)
-    elseif (y == 0.25_wp) then
+    else if (y == 0.25_wp) then
       p = sqrt(sqrt(ax))
-    elseif (y == -0.25_wp) then
+    else if (y == -0.25_wp) then
       p = 1.0_wp / sqrt(sqrt(ax))
-    elseif ((2.0_wp*y == aint(2.0_wp*y)) .and. y >= 0.5_wp .and. y <= 4.5_wp) then
+    else if ((2.0_wp*y == aint(2.0_wp*y)) .and. y >= 0.5_wp .and. y <= 4.5_wp) then
       ! positive half-integral: x**(n+0.5) = ipow(x,n) * sqrt(x)
       p = ipow(ax, nint(y - 0.5_wp)) * sqrt(ax)
     else
@@ -353,9 +360,9 @@ elemental function pow_reprod(x, y) result(p)
         call two_prod(y, lh, h, t)
         l = t + y*ll
         p = sgn * exp2_pair(h, l)
-      endif
-    endif
-  endif
+      end if
+    end if
+  end if
 end function pow_reprod
 
 elemental function erfc_reprod(x) result(ec)
@@ -387,15 +394,15 @@ elemental function erfc_reprod(x) result(ec)
   real(wp) :: ex2    ! exp(-x**2), dd-corrected
   real(wp) :: t      ! polynomial/Clenshaw value
   real(wp) :: tt     ! Clenshaw abscissa in [-1, 1]
-  real(wp) :: b1, b2, bt ! Clenshaw recurrence carries
+  real(wp) :: b1, b2, bt  ! Clenshaw recurrence carries
   real(wp) :: s      ! 1/x**2 for the asymptotic band
   integer :: j
 
   if (x /= x) then
     ec = x
-  elseif (x >= 28.0_wp) then
+  else if (x >= 28.0_wp) then
     ec = 0.0_wp
-  elseif (x <= -28.0_wp) then
+  else if (x <= -28.0_wp) then
     ec = 2.0_wp
   else
     ax = abs(x)
@@ -404,27 +411,31 @@ elemental function erfc_reprod(x) result(ec)
       t = erf_mac(15)
       do j = 14, 0, -1
         t = erf_mac(j) + u*t
-      enddo
+      end do
       ec = 1.0_wp - x*t
     else
       call two_prod(ax, ax, p, e)
       ex2 = exp_reprod(-p) * (1.0_wp - e)
       if (ax <= 2.0_wp) then
         tt = (2.0_wp*ax - 2.46875_wp) / 1.53125_wp   ! both constants exact in binary
-        b1 = 0.0_wp ; b2 = 0.0_wp
+        b1 = 0.0_wp
+        b2 = 0.0_wp
         do j = 23, 1, -1
           bt = 2.0_wp*tt*b1 - b2 + cxB(j)
-          b2 = b1 ; b1 = bt
-        enddo
+          b2 = b1
+          b1 = bt
+        end do
         t = tt*b1 - b2 + cxB(0)
         ec = ex2 * t
-      elseif (ax <= 7.0_wp) then
+      else if (ax <= 7.0_wp) then
         tt = (2.0_wp*ax - 9.0_wp) / 5.0_wp
-        b1 = 0.0_wp ; b2 = 0.0_wp
+        b1 = 0.0_wp
+        b2 = 0.0_wp
         do j = 31, 1, -1
           bt = 2.0_wp*tt*b1 - b2 + cxC(j)
-          b2 = b1 ; b1 = bt
-        enddo
+          b2 = b1
+          b1 = bt
+        end do
         t = tt*b1 - b2 + cxC(0)
         ec = ex2 * t
       else
@@ -432,12 +443,12 @@ elemental function erfc_reprod(x) result(ec)
         t = asyD(20)
         do j = 19, 0, -1
           t = asyD(j) + s*t
-        enddo
+        end do
         ec = ex2 * (one_over_sqrtpi * t) / ax
-      endif
+      end if
       if (x < 0.0_wp) ec = 2.0_wp - ec
-    endif
-  endif
+    end if
+  end if
 end function erfc_reprod
 
 
@@ -469,16 +480,16 @@ elemental function erf_reprod(x) result(ef)
   integer :: j
   if (x /= x) then
     ef = x
-  elseif (abs(x) <= 0.46875_wp) then
+  else if (abs(x) <= 0.46875_wp) then
     u = x*x
     t = erf_mac(15)
     do j = 14, 0, -1
       t = erf_mac(j) + u*t
-    enddo
+    end do
     ef = x*t
   else
     ef = 1.0_wp - erfc_reprod(x)
-  endif
+  end if
 end function erf_reprod
 
 
@@ -510,7 +521,7 @@ elemental function erfc_reprod_bf(x) result(ec)
   tmac = erf_mac(15)
   do j = 14, 0, -1
     tmac = erf_mac(j) + u*tmac
-  enddo
+  end do
   tmac = 1.0_wp - xm*tmac
   ! --- shared exp(-x**2) on the clamped magnitude ---------------------------
   axc = min(max(ax, 0.46875_wp), 27.9_wp)
@@ -529,26 +540,30 @@ elemental function erfc_reprod_bf(x) result(ec)
   ex2 = ex2 * (1.0_wp - e)
   ! --- band B Clenshaw on the clamped abscissa ------------------------------
   ttB = max(min((2.0_wp*axc - 2.46875_wp) / 1.53125_wp, 1.0_wp), -1.0_wp)
-  b1B = 0.0_wp ; b2B = 0.0_wp
+  b1B = 0.0_wp
+  b2B = 0.0_wp
   do j = 23, 1, -1
     btB = 2.0_wp*ttB*b1B - b2B + cxB(j)
-    b2B = b1B ; b1B = btB
-  enddo
+    b2B = b1B
+    b1B = btB
+  end do
   tB = ttB*b1B - b2B + cxB(0)
   ! --- band C Clenshaw ------------------------------------------------------
   ttC = max(min((2.0_wp*axc - 9.0_wp) / 5.0_wp, 1.0_wp), -1.0_wp)
-  b1C = 0.0_wp ; b2C = 0.0_wp
+  b1C = 0.0_wp
+  b2C = 0.0_wp
   do j = 31, 1, -1
     btC = 2.0_wp*ttC*b1C - b2C + cxC(j)
-    b2C = b1C ; b1C = btC
-  enddo
+    b2C = b1C
+    b1C = btC
+  end do
   tC = ttC*b1C - b2C + cxC(0)
   ! --- asymptotic arm -------------------------------------------------------
   sA = 1.0_wp / max(p, 49.0_wp)
   tA = asyD(20)
   do j = 19, 0, -1
     tA = asyD(j) + sA*tA
-  enddo
+  end do
   ! --- branch-free selection ------------------------------------------------
   ecp = merge(ex2*tB, merge(ex2*tC, ex2*(one_over_sqrtpi*tA)/axc, ax <= 7.0_wp), ax <= 2.0_wp)
   ecp = merge(2.0_wp - ecp, ecp, x < 0.0_wp)
@@ -592,20 +607,23 @@ subroutine erfc_reprod_v(x, r)
     tmac = erf_mac(15)
     do j = 14, 0, -1
       tmac = erf_mac(j) + u*tmac
-    enddo
+    end do
     tmac = 1.0_wp - xm*tmac
     ! --- exact x**2 via inline Veltkamp (identical op sequence to two_prod) --
     axc = min(max(ax, 0.46875_wp), 27.9_wp)
     p = axc*axc
     ta = splitter*axc
-    aa1 = ta - (ta - axc) ; aa2 = axc - aa1
+    aa1 = ta - (ta - axc)
+    aa2 = axc - aa1
     e = ((aa1*aa1 - p) + aa1*aa2 + aa2*aa1) + aa2*aa2
     ! --- -x**2 * log2(e) as a dd pair ---------------------------------------
     ph = p*log2e_hi_c
     ta = splitter*p
-    aa1 = ta - (ta - p) ; aa2 = p - aa1
+    aa1 = ta - (ta - p)
+    aa2 = p - aa1
     ta = splitter*log2e_hi_c
-    bb1 = ta - (ta - log2e_hi_c) ; bb2 = log2e_hi_c - bb1
+    bb1 = ta - (ta - log2e_hi_c)
+    bb2 = log2e_hi_c - bb1
     pe = ((aa1*bb1 - ph) + aa1*bb2 + aa2*bb1) + aa2*bb2
     h = -ph
     l = -(pe + p*log2e_lo_c)
@@ -628,26 +646,30 @@ subroutine erfc_reprod_v(x, r)
     ex2 = ex2 * (1.0_wp - e)
     ! --- band B Clenshaw ----------------------------------------------------
     ttB = max(min((2.0_wp*axc - 2.46875_wp) / 1.53125_wp, 1.0_wp), -1.0_wp)
-    c1 = 0.0_wp ; c2 = 0.0_wp
+    c1 = 0.0_wp
+    c2 = 0.0_wp
     do j = 23, 1, -1
       ct = 2.0_wp*ttB*c1 - c2 + cxB(j)
-      c2 = c1 ; c1 = ct
-    enddo
+      c2 = c1
+      c1 = ct
+    end do
     tB = ttB*c1 - c2 + cxB(0)
     ! --- band C Clenshaw ----------------------------------------------------
     ttC = max(min((2.0_wp*axc - 9.0_wp) / 5.0_wp, 1.0_wp), -1.0_wp)
-    c1 = 0.0_wp ; c2 = 0.0_wp
+    c1 = 0.0_wp
+    c2 = 0.0_wp
     do j = 31, 1, -1
       ct = 2.0_wp*ttC*c1 - c2 + cxC(j)
-      c2 = c1 ; c1 = ct
-    enddo
+      c2 = c1
+      c1 = ct
+    end do
     tC = ttC*c1 - c2 + cxC(0)
     ! --- asymptotic arm -----------------------------------------------------
     sAs = 1.0_wp / max(p, 49.0_wp)
     tAs = asyD(20)
     do j = 19, 0, -1
       tAs = asyD(j) + sAs*tAs
-    enddo
+    end do
     ! --- selection ----------------------------------------------------------
     ecp = merge(ex2*tB, merge(ex2*tC, ex2*(one_over_sqrtpi*tAs)/axc, ax <= 7.0_wp), ax <= 2.0_wp)
     ecp = merge(2.0_wp - ecp, ecp, xv < 0.0_wp)
@@ -656,11 +678,11 @@ subroutine erfc_reprod_v(x, r)
     ec  = merge(2.0_wp, ec, xv <= -28.0_wp)
     ec  = merge(xv, ec, xv /= xv)
     r(i:i+W-1) = ec
-  enddo
+  end do
   ! remainder: scalar path, bit-identical
   do i = (m/W)*W + 1, m
     r(i) = erfc_reprod(x(i))
-  enddo
+  end do
 end subroutine erfc_reprod_v
 
 elemental function cuberoot(x) result(root)
@@ -670,20 +692,20 @@ elemental function cuberoot(x) result(root)
    !! manipulation plus division-free Halley iterations and one Newton polish.
   !$omp declare target
   !$acc routine seq
-  real(wp), intent(in) :: x !! The argument of cuberoot
-  real(wp) :: root !! The real cube root of x
+  real(wp), intent(in) :: x  !! The argument of cuberoot
+  real(wp) :: root  !! The real cube root of x
 
-  real(wp) :: asx ! |x| rescaled by an integer power of 8 into 0.125 < asx <= 1.0
-  real(wp) :: root_asx ! The cube root of asx
-  real(wp) :: ra_3 ! root_asx cubed
-  real(wp) :: num, den ! Evolving estimate numerator/denominator
-  real(wp) :: num_prev, den_prev ! Previous iteration values
-  real(wp) :: np_3, dp_3 ! Cubes of the previous values
-  real(wp) :: r0, r0_3 ! Initial estimate and its cube
+  real(wp) :: asx  ! |x| rescaled by an integer power of 8 into 0.125 < asx <= 1.0
+  real(wp) :: root_asx  ! The cube root of asx
+  real(wp) :: ra_3  ! root_asx cubed
+  real(wp) :: num, den  ! Evolving estimate numerator/denominator
+  real(wp) :: num_prev, den_prev  ! Previous iteration values
+  real(wp) :: np_3, dp_3  ! Cubes of the previous values
+  real(wp) :: r0, r0_3  ! Initial estimate and its cube
   integer :: itt
   integer(kind=int64) :: e_x, s_x
   real(wp) :: xs        ! x, pre-scaled to normal range if x is denormal
-  logical :: denorm ! True for denormal x
+  logical :: denorm  ! True for denormal x
   real(wp), parameter :: two_p54 = 18014398509481984.0_wp  ! 2**54 = (2**18)**3, exact
 
   if (x /= x) then
@@ -694,10 +716,10 @@ elemental function cuberoot(x) result(root)
     ! NaN's bit pattern into the exponent arithmetic below (measured: a finite
     ! ~6.7e102 on macOS arm64).
     root = x
-  elseif (x == 0.0_wp) then
+  else if (x == 0.0_wp) then
     ! +-0, sign preserved.
     root = x
-  elseif (abs(x) > huge(x)) then
+  else if (abs(x) > huge(x)) then
     ! The cube root of +-Inf is +-Inf.  Without this guard the exponent-field
     ! arithmetic below reads Inf's bit pattern as 2**1024 and returns a finite
     ! ~5.6e102 -- and that ill-defined path is where x86 and arm64 disagreed.
@@ -717,19 +739,20 @@ elemental function cuberoot(x) result(root)
     num = r0 * (r0_3 + 2.0_wp * asx)
     den = 2.0_wp * r0_3 + asx
     do itt=1,2
-      num_prev = num ; den_prev = den
+      num_prev = num
+      den_prev = den
       np_3 = num_prev * num_prev * num_prev
       dp_3 = den_prev * den_prev * den_prev
       num = num_prev * (np_3 + 2.0_wp * asx * dp_3)
       den = den_prev * (2.0_wp * np_3 + asx * dp_3)
-    enddo
+    end do
     root_asx = num / den
     ! One Newton polish to within the last bit.
     ra_3 = root_asx * root_asx * root_asx
     root_asx = root_asx - (ra_3 - asx) / (3.0_wp * (root_asx * root_asx))
     root = descale(root_asx, e_x, s_x)
     if (denorm) root = scale(root, -18)
-  endif
+  end if
 end function cuberoot
 
 end module bit_repro

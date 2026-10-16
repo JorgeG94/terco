@@ -71,7 +71,9 @@ contains
          ok = .false.
          do ie = 1, nel
             if (el(ie)%z == at_z(ia)) then
-               which(ia) = ie; ok = .true.; exit
+               which(ia) = ie
+               ok = .true.
+               exit
             end if
          end do
          if (ok) cycle
@@ -85,7 +87,8 @@ contains
       end do
       call json%destroy()
 
-      nsh = 0; maxnp = 1
+      nsh = 0
+      maxnp = 1
       do ia = 1, natm
          nsh = nsh + el(which(ia))%nshell
          do is = 1, el(which(ia))%nshell
@@ -93,7 +96,8 @@ contains
          end do
       end do
       allocate (sh_l(nsh), sh_np(nsh), sh_e(maxnp, nsh), sh_c(maxnp, nsh), sh_r(3, nsh), z(natm))
-      sh_e = 0.0_dp; sh_c = 0.0_dp
+      sh_e = 0.0_dp
+      sh_c = 0.0_dp
       k = 0
       do ia = 1, natm
          ie = which(ia)
@@ -146,7 +150,8 @@ contains
       call json%load_file(filename=trim(path))
       if (json%failed()) then
          call error%set(ERROR_VALIDATION, "trc_basis_json: cannot read "//trim(path))
-         call json%destroy(); return
+         call json%destroy()
+         return
       end if
       call read_element(json, path, z, el, error, raw=.true.)
       call json%destroy()
@@ -334,23 +339,26 @@ contains
       !! two folds net to exactly one.
       integer, intent(in) :: l
       select case (l)
-      case (0); common_fac_sp = 0.282094791773878143_dp
-      case (1); common_fac_sp = 0.488602511902919921_dp
-      case default; common_fac_sp = 1.0_dp
+      case (0)
+      common_fac_sp = 0.282094791773878143_dp
+      case (1)
+      common_fac_sp = 0.488602511902919921_dp
+      case default
+      common_fac_sp = 1.0_dp
       end select
    end function common_fac_sp
 
    pure function rtoa(x) result(t)
       real(dp), intent(in) :: x
       character(len=24) :: t
-      write (t, '(f0.6)') x
+      write (t, "(f0.6)") x
    end function rtoa
 
    pure function itoa(i) result(t)
       integer, intent(in) :: i
       character(len=:), allocatable :: t
       character(len=16) :: buf
-      write (buf, '(i0)') i
+      write (buf, "(i0)") i
       t = trim(buf)
    end function itoa
 

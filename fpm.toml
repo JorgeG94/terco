@@ -55,3 +55,19 @@ pic-blas = { git = "https://github.com/JorgeG94/pic-blas", tag = "v0.3.1" }
 # mpi_f08, so under fpm this dependency needs an MPI for the compiler in
 # use: `fpm build --compiler mpifort`. The CMake build has a serial backend.
 pic-mpi = { git = "https://github.com/JorgeG94/pic-mpi", tag = "v0.6.8" }
+
+[extra.fortitude.check]
+select = ["C", "E", "S", "PORT", "OB041"]
+
+# S212 is the warning that a program and a module are in the same file, this would make our tests stupid
+# C003 is 'implicit none' missing 'external', this does not always work with other compilers, so we ignore it
+# C072 is character '{name}' has assumed size but does not have intent(in), since this is a bit too much
+ignore = ["C003", "C072", "S212", "C142", "C183", "C181"]
+
+exclude = ["test/*"]
+line-length = 132
+
+# Scoped to this one rule in this one file so a real missing intent anywhere
+# else, including elsewhere in this file for any other rule, still fails.
+[extra.fortitude.check.per-file-ignores]
+"backends/cenzontle/derivatives/mqc_czt_gradient.f90" = ["C061"]

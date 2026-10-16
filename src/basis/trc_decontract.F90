@@ -99,8 +99,10 @@ contains
       allocate (p_e(b%maxnp, n + b%nshell), p_c(b%maxnp, n + b%nshell))
       allocate (tr_mu(n + b%nshell), tr_s(n + b%nshell), tr_a(n + b%nshell))
       allocate (tr_whole(n + b%nshell))
-      p_e = 0.0_dp; p_c = 0.0_dp
-      nsh_p = 0; ntr = 0
+      p_e = 0.0_dp
+      p_c = 0.0_dp
+      nsh_p = 0
+      ntr = 0
 
       do g = 1, ng
          call split_group(b, grp, g, cut, mnp, p_l, p_np, p_e, p_c, p_r, nsh_p, &
@@ -158,10 +160,11 @@ contains
          character(len=8) :: dbge
          integer :: c, k
          real(dp) :: amx, asum, smx
-         dbge = ' '
-         call get_environment_variable('TRC_BUILD_TIMING', dbge)
+         dbge = " "
+         call get_environment_variable("TRC_BUILD_TIMING", dbge)
          if (len_trim(dbge) > 0) then
-            amx = 0.0_dp; smx = 0.0_dp
+            amx = 0.0_dp
+            smx = 0.0_dp
             do c = 1, m%nao_c
                asum = 0.0_dp
                do k = m%t_off(c), m%t_off(c + 1) - 1
@@ -170,11 +173,11 @@ contains
                end do
                smx = max(smx, asum)
             end do
-            print '(a,i0,a,i0,a,i0,a,i0,a,es10.3,a,es10.3,a,f6.2)', &
-               '  [decon] shells ', b%nshell, ' -> ', pb%nshell, &
-               '   nao ', m%nao_c, ' -> ', m%nao_p, &
-               '   max|C| ', amx, '   max col sum|C| ', smx, &
-               '   max amp ', maxval(m%amp)
+            print "(a,i0,a,i0,a,i0,a,i0,a,es10.3,a,es10.3,a,f6.2)", &
+               "  [decon] shells ", b%nshell, " -> ", pb%nshell, &
+               "   nao ", m%nao_c, " -> ", m%nao_p, &
+               "   max|C| ", amx, "   max col sum|C| ", smx, &
+               "   max amp ", maxval(m%amp)
          end if
       end block
       deallocate (p_l, p_np, p_e, p_c, p_r, tr_mu, tr_s, tr_a, tr_whole, grp)
@@ -202,12 +205,14 @@ contains
             if (b%sh_l(i) /= b%sh_l(j)) cycle
             if (maxval(abs(b%sh_r(:, i) - b%sh_r(:, j))) > 1.0e-10_dp) cycle
             if (.not. shares_exponent(b, i, j)) cycle
-            gi = find(root, i); gj = find(root, j)
+            gi = find(root, i)
+            gj = find(root, j)
             if (gi /= gj) root(gj) = gi
          end do
       end do
       ! Compact the roots into 1..ng.
-      grp = 0; ng = 0
+      grp = 0
+      ng = 0
       do i = 1, b%nshell
          gi = find(root, i)
          if (grp(gi) == 0) then
@@ -287,7 +292,8 @@ contains
       integer, intent(in) :: grp(:), g, minprim
       real(dp), intent(in) :: cut
       integer :: i, k, nmem, ncomp, best
-      nmem = 0; best = 0
+      nmem = 0
+      best = 0
       do i = 1, b%nshell
          if (grp(i) /= g) cycle
          nmem = nmem + 1
@@ -337,7 +343,8 @@ contains
       end if
 
       ! Does exactly one column hold more than one compact primitive?
-      nmulti = 0; i0 = 0
+      nmulti = 0
+      i0 = 0
       do i = 1, nmem
          mu = mem(i)
          ncomp = 0
@@ -388,8 +395,10 @@ contains
                   end do
                end do
                nsh_p = nsh_p + 1
-               p_l(nsh_p) = b%sh_l(mu); p_np(nsh_p) = 1
-               p_e(1, nsh_p) = e; p_c(1, nsh_p) = cbig
+               p_l(nsh_p) = b%sh_l(mu)
+               p_np(nsh_p) = 1
+               p_e(1, nsh_p) = e
+               p_c(1, nsh_p) = cbig
                p_r(:, nsh_p) = b%sh_r(:, mu)
                s = nsh_p
             end if
@@ -397,8 +406,10 @@ contains
             ! emitted shell actually ends up with, filled in by the caller
             ! once the basis is built.
             ntr = ntr + 1
-            tr_mu(ntr) = mu; tr_s(ntr) = s
-            tr_a(ntr) = b%sh_c(k, mu); tr_whole(ntr) = .false.
+            tr_mu(ntr) = mu
+            tr_s(ntr) = s
+            tr_a(ntr) = b%sh_c(k, mu)
+            tr_whole(ntr) = .false.
          end do
       end do
    end subroutine split_group
@@ -412,7 +423,8 @@ contains
       logical,  intent(inout) :: tr_whole(:)
       integer :: k
       nsh_p = nsh_p + 1
-      p_l(nsh_p) = b%sh_l(mu); p_np(nsh_p) = b%sh_np(mu)
+      p_l(nsh_p) = b%sh_l(mu)
+      p_np(nsh_p) = b%sh_np(mu)
       p_r(:, nsh_p) = b%sh_r(:, mu)
       do k = 1, b%sh_np(mu)
          p_e(k, nsh_p) = b%sh_e(k, mu)
@@ -427,7 +439,9 @@ contains
       ! out by 0.28 and 0.49 and was invisible to check_gc, which compares
       ! terco's two paths to each other and not to anything external.
       ntr = ntr + 1
-      tr_mu(ntr) = mu; tr_s(ntr) = nsh_p; tr_a(ntr) = b%sh_c(1, mu)
+      tr_mu(ntr) = mu
+      tr_s(ntr) = nsh_p
+      tr_a(ntr) = b%sh_c(1, mu)
       tr_whole(ntr) = .true.
    end subroutine emit_whole
 
@@ -443,7 +457,8 @@ contains
       integer :: t, comp, nc, nnz, p, c, i
       integer, allocatable :: cnt(:), pos(:)
 
-      m%nao_c = b%nao; m%nao_p = pb%nao
+      m%nao_c = b%nao
+      m%nao_p = pb%nao
       nnz = 0
       do t = 1, ntr
          nnz = nnz + ncart(b%sh_l(tr_mu(t)))
@@ -472,7 +487,8 @@ contains
          do comp = 0, nc - 1
             p = pb%sh_ao(tr_s(t)) + comp
             c = b%sh_ao(tr_mu(t)) + comp
-            m%f_c(pos(p)) = c; m%f_a(pos(p)) = tr_a(t)
+            m%f_c(pos(p)) = c
+            m%f_a(pos(p)) = tr_a(t)
             pos(p) = pos(p) + 1
          end do
       end do
@@ -496,7 +512,8 @@ contains
          do comp = 0, nc - 1
             p = pb%sh_ao(tr_s(t)) + comp
             c = b%sh_ao(tr_mu(t)) + comp
-            m%t_p(pos(c)) = p; m%t_a(pos(c)) = tr_a(t)
+            m%t_p(pos(c)) = p
+            m%t_a(pos(c)) = tr_a(t)
             pos(c) = pos(c) + 1
          end do
       end do
@@ -550,7 +567,8 @@ contains
             end do
          end do
          do t = 1, ntr
-            mu = tr_mu(t); sp = tr_s(t)
+            mu = tr_mu(t)
+            sp = tr_s(t)
             na = ncart(b%sh_l(mu))
             amu = maxval(acol(b%sh_ao(mu):b%sh_ao(mu) + na - 1))
             m%amp(sp) = m%amp(sp) + amu
@@ -699,7 +717,10 @@ contains
       if (allocated(m%f_off)) deallocate (m%f_off, m%f_c, m%f_a)
       if (allocated(m%t_off)) deallocate (m%t_off, m%t_p, m%t_a)
       if (allocated(m%amp)) deallocate (m%amp)
-      m%active = .false.; m%nao_c = 0; m%nao_p = 0; m%nnz = 0
+      m%active = .false.
+      m%nao_c = 0
+      m%nao_p = 0
+      m%nnz = 0
    end subroutine decon_release
 
 end module trc_decontract
