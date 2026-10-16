@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review a terco pull request — correctness of integrals and SCF first, then the do concurrent / OpenACC rules, generated code, tests, performance claims, and FORD-only doc comments (no Doxygen). Use when asked to review a PR or a diff in this repository.
+description: Review a terco pull request — correctness of integrals and SCF first, then the do concurrent / OpenACC rules, generated code, tests (including stale pyscf reference hashes), performance claims, kinds from pic_types, fortitude lint, and FORD-only doc comments (no Doxygen). Use when asked to review a PR or a diff in this repository.
 ---
 
 # Reviewing a terco pull request
@@ -21,8 +21,8 @@ standard Fortran.
 2. Rank findings by severity: correctness, then GPU rules, then generated code,
    then tests, then performance claims, then style. Report problems, not
    praise. If there are none, say so in one line. Always also run the
-   documentation check in section 7: it is must-fix whatever else the PR
-   contains.
+   documentation check in section 7 and the kinds check in section 8: both
+   are must-fix whatever else the PR contains.
 3. Post line-specific findings as inline comments and one summary comment.
    Every finding states the concrete failure: which input, what goes wrong.
    Don't post a finding you can't tie to a line and a consequence.
@@ -78,6 +78,15 @@ standard Fortran.
   - Arrays updated on the host after they were mapped need an
     `!$acc update device`.
   - Reallocating a mapped array invalidates its mapping.
+- **A `do concurrent` body calls only intrinsics and same-module `routine
+  seq` item routines**, never a procedure from another module.
+- **Derived-type components in a body are fine** (`st%fock(i, j)`), but with
+  `mem:separate` the parent object must be on the device and the component
+  attached: `!$acc enter data copyin(st)` and then `copyin(st%fock)` (the
+  pattern `trc_linalg` uses for `this%dwork`). Check that every component a
+  body reads or writes is mapped this way, and released in reverse order on
+  every path out. A missing attach is an illegal address at run time, not a
+  compile error, and the host build won't show it.
 - **Item routines** called from a `do concurrent` body must be `pure`, carry
   `!$acc routine seq`, and live in the same module as their driver so they
   inline. A separate device procedure measured 2.4× slower.
@@ -95,6 +104,11 @@ standard Fortran.
   derived type that is mapped whole by `!$acc enter data copyin(obj, ...)`
   has triggered an nvfortran 26.5 internal compiler error. Prefer flat
   arrays.
+- **MPI and internal procedures.** A program or procedure that makes a
+  collective MPI call must have no internal (`contains`) procedures at all:
+  under NVHPC 26.5 with HPC-X, even an unused sibling internal procedure
+  zeroed the two-electron part of the Fock build at more than one rank (see
+  app/main.F90's `terco_run` header). New MPI-path helpers go in modules.
 - **The host build must stay correct.** CI has no GPU. It builds for the host,
   where `do concurrent` is a serial loop and OpenACC directives are inert, and
   runs the whole suite. Code that is correct only on the device is a bug.
@@ -120,6 +134,22 @@ standard Fortran.
 
 - New behaviour needs a check in `test/` that would fail without the change,
   against an external reference where one exists.
+- **Committed pyscf references go stale on ANY edit to their inputs.** Each
+  `test/pyscf_refs/*.ref` records a hash of `generate.py` plus every file on
+  its `# files:` line, which usually includes the test program that writes
+  its probe (e.g. `test/scf_rimp2.F90` for `rimp2.ref` and
+  `rimp2_ccpvdz.ref`). `terco/check_pyscf_refs_fresh` fails CI on every host
+  job until they are refreshed, even when the edit cannot change the numbers
+  (this turned #65 red). So:
+  - list every `.ref` whose `files:` names a file the PR touches
+    (`grep -l '<path>' test/pyscf_refs/*.ref`); the PR must update them,
+    or `python3 test/pyscf_refs/check_staleness.py` (run from `test/`) must
+    still pass;
+  - if only the hash line changes, the PR should say why the values still
+    hold (the probe the test writes is unchanged), ideally checked by
+    regenerating with `generate.py <case>`;
+  - if the values change, they must come from `generate.py`, never a hand
+    edit, and the PR must say what moved them.
 - Tests must pass on the host build.
 - Don't accept a test that only checks a run completes.
 
@@ -177,6 +207,42 @@ gh pr diff <N> | grep -nE '^\+.*[@\\](brief|param|returns?|details|note|see)\b'
 
 Then read each added `!!` block with its surrounding lines to check its
 placement; grep cannot tell which declaration a block is about.
+
+## 8. Kinds from pic_types, and the lint CI enforces
+
+- **Kinds come from `pic_types`.** `dp`, `sp`, `int32`, `int64` (and
+  `default_int`, `int_index`) are `use pic_types, only: ...`. These are
+  must-fix:
+  - `dp` taken from another terco module (`use trc_boys, only: dp` was the
+    old way; trc_boys keeps its `dp` private now, so it also fails to build);
+  - `iso_fortran_env`'s kinds (`real64`, `int64`) or a literal kind
+    (`integer(kind=8)`, `real(8)`, `1.0d0`) in new code. Its units
+    (`output_unit`, `error_unit`) are fine;
+  - `iso_c_binding` kinds (`c_int`, `c_double`, `c_ptr`) away from the C
+    boundary. They belong in `bind(c)` interfaces and `trc_capi`, not in
+    computational code.
+
+  To find candidates on the added lines (read each hit: an
+  `iso_fortran_env, only: output_unit` line is fine):
+
+  ```sh
+  gh pr diff <N> | grep -nE '^\+.*(use trc_boys, only: *dp|iso_fortran_env|kind *= *[0-9]|real\([0-9]\)|[0-9]d[-+]?[0-9])'
+  ```
+- **fortitude must pass.** CI's `fortitude lint` job runs
+  `fortitude check` (fortitude-lint 0.9.2, rules in `fpm.toml`'s
+  `[extra.fortitude.check]`; `test/` and `src/generated/` are excluded) and
+  fails the PR. Run it on the PR's tree. A PR must fix the code, not add
+  ignores to `fpm.toml` or per-line suppressions, unless it argues for the
+  rule change. The common ones in new code: one statement per line (S082),
+  double-quoted strings (S241), one entity kind per declaration (S262),
+  `result()` on functions (S221), named constants for array sizes (C031).
+
+## 9. Commits
+
+- No claude.ai session links (`Claude-Session:` lines or
+  `claude.ai/code/session_...` URLs) in commit messages or PR bodies. A
+  `Co-Authored-By:` trailer is fine.
+- Never mention "kgen" in commits, comments, docs or file headers.
 
 ## Output
 
