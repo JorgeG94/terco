@@ -22,6 +22,7 @@ target_sources(
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_eri.F90       # the four-centre Fock builds
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
+          core/trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
           solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
           scf/trc_scf_settings.F90      # trc_scf_options_t/result_t and the options a run resolves them to

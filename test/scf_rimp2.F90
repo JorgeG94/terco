@@ -2,13 +2,13 @@
 ! RI-MP2 on water: RHF through the driver, then the correlation energy
 ! through trc_rimp2 with a synthetic auxiliary basis, once as a single
 ! auxiliary block and once in blocks of 20 functions (bit-identical
-! required), on every rank of the communicator when there is one. Writes
+! required). One process: RI-MP2 over ranks is checked through the
+! command line, by app/cli_mpi_check.py. Writes
 ! `rimp2_probe.bin` for rimp2_ref.py, which runs pyscf's RHF and DF-MP2 on
 ! the same orbital and auxiliary sets and compares E_os, E_ss and E_corr.
 !
 program scf_rimp2
    use pic_types, only: dp, int64
-   use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
@@ -28,15 +28,12 @@ program scf_rimp2
    type(trc_scf_options_t) :: opts
    type(trc_scf_result_t) :: res
    type(trc_rimp2_result_t) :: mp, mp2
-   type(comm_t) :: comm
    type(error_t) :: err
    logical :: ok
    character(len=256) :: xyz, bas_json, aux_json, probe, guess_json
    real(dp), allocatable :: dguess(:, :), dg3(:, :, :)
 
-   call pic_mpi_init()
-   comm = comm_world()
-   dev = trc_bind_device(comm%rank())
+   dev = trc_bind_device(0)
 
    ! Arguments: xyz [basis.json aux.json [probe [sad.json]]]. Without files,
    ! primitive 6-31G and the synthetic auxiliary ladder; with them, both sets
@@ -106,29 +103,19 @@ program scf_rimp2
       call get_environment_variable("TERCO_VERBOSE", env, status=st)
       opts%verbose = st == 0
    end block
-   if (comm%size() > 1) then
-      if (allocated(dg3)) then
-         call trc_scf_run(bas, nocc, nocc, opts, res, dguess=dg3, comm=comm)
-      else
-         call trc_scf_run(bas, nocc, nocc, opts, res, comm=comm)
-      end if
-      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, comm=comm, verbose=opts%verbose)
-      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20, comm=comm)
+   if (allocated(dg3)) then
+      call trc_scf_run(bas, nocc, nocc, opts, res, dguess=dg3)
    else
-      if (allocated(dg3)) then
-         call trc_scf_run(bas, nocc, nocc, opts, res, dguess=dg3)
-      else
-         call trc_scf_run(bas, nocc, nocc, opts, res)
-      end if
-      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, verbose=opts%verbose)
-      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20)
+      call trc_scf_run(bas, nocc, nocc, opts, res)
    end if
+   call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, verbose=opts%verbose)
+   call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20)
    ok = res%converged .and. len_trim(mp%message) == 0
-   if (len_trim(mp%message) > 0 .and. comm%rank() == 0) print '(a)', "scf_rimp2: "//trim(mp%message)
+   if (len_trim(mp%message) > 0) print '(a)', "scf_rimp2: "//trim(mp%message)
    if (abs(mp%e_corr - mp2%e_corr) > 1.0e-13_dp .or. abs(mp%e_os - mp2%e_os) > 1.0e-13_dp) ok = .false.
 
    ! The same through the C entries mqc uses: trc_scf_mpi then trc_rimp2 on
-   ! the orbitals it kept, collectively when there are ranks.
+   ! the orbitals it kept, with no communicator (fcomm = -1).
    block
       use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
       use trc_c_interfaces, only: trc_basis_create, trc_basis_destroy, trc_scf_mpi, trc_rimp2, TRC_OK
@@ -138,7 +125,6 @@ program scf_rimp2
       real(c_double) :: e_lib, e_xc, c_os, c_ss
       type(c_ptr) :: hbas, haux
       fcomm = -1
-      if (comm%size() > 1) fcomm = int(comm%fortran_handle(), c_int)
       allocate (zat(natm), lc(nsh), npc(nsh), lca(nsha), npca(nsha))
       zat = real(at_z, c_double); lc = int(sh_l, c_int); npc = int(sh_np, c_int)
       lca = int(ax_l, c_int); npca = int(ax_np, c_int)
@@ -155,7 +141,7 @@ program scf_rimp2
       if (rc /= TRC_OK) ok = .false.
       rc = trc_rimp2(fcomm, hbas, haux, 0_c_int, 20_c_int, c_os, c_ss)
       if (rc /= TRC_OK) ok = .false.
-      if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "  C entries vs driver:  E_RHF ", abs(e_lib - res%energy), &
+      print '(a,es9.2,a,es9.2)', "  C entries vs driver:  E_RHF ", abs(e_lib - res%energy), &
          "   E_corr ", abs(c_os + c_ss - mp%e_corr)
       ! Two SCFs converged separately, then two RI-MP2s over their orbitals:
       ! the atomic accumulation order alone puts ~1e-10 between them.
@@ -163,68 +149,65 @@ program scf_rimp2
       rc = trc_basis_destroy(haux); rc = trc_basis_destroy(hbas)
    end block
 
-   if (comm%rank() == 0) then
-      print '(a,i0,a,i0,a,i0)', "scf_rimp2: nao ", bas%nao, "  naux ", aux%nao, "  ranks ", comm%size()
-      print '(a,f20.12,a,i0)', "  E_RHF   = ", res%energy, "   iter ", res%iterations
-      print '(a,f20.12,a,f20.12)', "  E_os    = ", mp%e_os, "   E_ss = ", mp%e_ss
-      print '(a,f20.12,a,es9.2)', "  E_corr  = ", mp%e_corr, "   blocked vs whole ", abs(mp%e_corr - mp2%e_corr)
-      open (newunit=unit, file=trim(probe), access='stream', form='unformatted', status='replace')
-      write (unit) int(bas%nao, int64), int(natm, int64), int(nsh, int64), int(nsha, int64), int(nocc, int64)
-      write (unit) at_z, at_r
-      ! Shells as the JSON gives them: raw coefficients when read from a
-      ! file, so pyscf normalises them its own way; unit-weight primitives
-      ! for the synthetic sets, where the coefficient is the normalisation.
-      do ish = 1, nsh
-         write (unit) int(centre_of(sh_r(:, ish)), int64), int(sh_l(ish), int64), int(sh_np(ish), int64)
-         write (unit) sh_e(1:sh_np(ish), ish), raw_coef(sh_l(ish), sh_np(ish), sh_e(1:sh_np(ish), ish), &
-            sh_c(1:sh_np(ish), ish), len_trim(bas_json) > 0)
-      end do
-      do ish = 1, nsha
-         write (unit) int(centre_of(ax_r(:, ish)), int64), int(ax_l(ish), int64), int(ax_np(ish), int64)
-         write (unit) ax_e(1:ax_np(ish), ish), raw_coef(ax_l(ish), ax_np(ish), ax_e(1:ax_np(ish), ish), &
-            ax_c(1:ax_np(ish), ish), len_trim(aux_json) > 0)
-      end do
-      write (unit) res%energy, mp%e_os, mp%e_ss
-      close (unit)
+   print '(a,i0,a,i0)', "scf_rimp2: nao ", bas%nao, "  naux ", aux%nao
+   print '(a,f20.12,a,i0)', "  E_RHF   = ", res%energy, "   iter ", res%iterations
+   print '(a,f20.12,a,f20.12)', "  E_os    = ", mp%e_os, "   E_ss = ", mp%e_ss
+   print '(a,f20.12,a,es9.2)', "  E_corr  = ", mp%e_corr, "   blocked vs whole ", abs(mp%e_corr - mp2%e_corr)
+   open (newunit=unit, file=trim(probe), access='stream', form='unformatted', status='replace')
+   write (unit) int(bas%nao, int64), int(natm, int64), int(nsh, int64), int(nsha, int64), int(nocc, int64)
+   write (unit) at_z, at_r
+   ! Shells as the JSON gives them: raw coefficients when read from a
+   ! file, so pyscf normalises them its own way; unit-weight primitives
+   ! for the synthetic sets, where the coefficient is the normalisation.
+   do ish = 1, nsh
+      write (unit) int(centre_of(sh_r(:, ish)), int64), int(sh_l(ish), int64), int(sh_np(ish), int64)
+      write (unit) sh_e(1:sh_np(ish), ish), raw_coef(sh_l(ish), sh_np(ish), sh_e(1:sh_np(ish), ish), &
+         sh_c(1:sh_np(ish), ish), len_trim(bas_json) > 0)
+   end do
+   do ish = 1, nsha
+      write (unit) int(centre_of(ax_r(:, ish)), int64), int(ax_l(ish), int64), int(ax_np(ish), int64)
+      write (unit) ax_e(1:ax_np(ish), ish), raw_coef(ax_l(ish), ax_np(ish), ax_e(1:ax_np(ish), ish), &
+         ax_c(1:ax_np(ish), ish), len_trim(aux_json) > 0)
+   end do
+   write (unit) res%energy, mp%e_os, mp%e_ss
+   close (unit)
 
-      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
-      ! test/pyscf_refs/generate.py's gen_rimp2 names each case's reference
-      ! after its own probe file, "<probe base>.ref" in place of
-      ! "<probe base>_probe.bin" -- rimp2_probe.bin -> rimp2.ref,
-      ! rimp2_ccpvdz_probe.bin -> rimp2_ccpvdz.ref.
+   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   ! test/pyscf_refs/generate.py's gen_rimp2 names each case's reference
+   ! after its own probe file, "<probe base>.ref" in place of
+   ! "<probe base>_probe.bin" -- rimp2_probe.bin -> rimp2.ref,
+   ! rimp2_ccpvdz_probe.bin -> rimp2_ccpvdz.ref.
+   block
+      integer :: u, iprobe
+      real(dp) :: e_scf_ref, e_os_ref, e_ss_ref
+      real(dp) :: pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
+      character(len=256) :: refname
+      iprobe = index(trim(probe), '_probe.bin')
+      if (iprobe == 0) then
+         print '(a)', 'scf_rimp2: cannot derive a reference name from '//trim(probe); stop 1
+      end if
+      refname = probe(1:iprobe - 1)//'.ref'
+      call ref_require(trim(refname), u)
+      call ref_read_real(u, 'E_SCF', e_scf_ref)
+      call ref_read_real(u, 'E_OS', e_os_ref)
+      call ref_read_real(u, 'E_SS', e_ss_ref)
+      ! Provenance only -- see scf_rks.F90's own comment on the same tags.
+      call ref_read_real(u, 'CONV_TOL', pyscf_conv_tol)
+      call ref_read_real(u, 'CONV_TOL_GRAD', pyscf_conv_tol_grad)
+      call ref_read_real(u, 'GRAD_NORM', pyscf_grad_norm)
+      call ref_close(u)
       block
-         integer :: u, iprobe
-         real(dp) :: e_scf_ref, e_os_ref, e_ss_ref
-         real(dp) :: pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
-         character(len=256) :: refname
-         iprobe = index(trim(probe), '_probe.bin')
-         if (iprobe == 0) then
-            print '(a)', 'scf_rimp2: cannot derive a reference name from '//trim(probe); stop 1
-         end if
-         refname = probe(1:iprobe - 1)//'.ref'
-         call ref_require(trim(refname), u)
-         call ref_read_real(u, 'E_SCF', e_scf_ref)
-         call ref_read_real(u, 'E_OS', e_os_ref)
-         call ref_read_real(u, 'E_SS', e_ss_ref)
-         ! Provenance only -- see scf_rks.F90's own comment on the same tags.
-         call ref_read_real(u, 'CONV_TOL', pyscf_conv_tol)
-         call ref_read_real(u, 'CONV_TOL_GRAD', pyscf_conv_tol_grad)
-         call ref_read_real(u, 'GRAD_NORM', pyscf_grad_norm)
-         call ref_close(u)
-         block
-            integer :: nfail
-            nfail = 0
-            call ref_report(nfail, abs(res%energy - e_scf_ref) < 1.0e-9_dp, 'E_RHF vs pyscf', &
-                            abs(res%energy - e_scf_ref))
-            call ref_report(nfail, abs(mp%e_os - e_os_ref) < 1.0e-9_dp, 'E_os vs pyscf', abs(mp%e_os - e_os_ref))
-            call ref_report(nfail, abs(mp%e_ss - e_ss_ref) < 1.0e-9_dp, 'E_ss vs pyscf', abs(mp%e_ss - e_ss_ref))
-            if (nfail > 0) ok = .false.
-         end block
+         integer :: nfail
+         nfail = 0
+         call ref_report(nfail, abs(res%energy - e_scf_ref) < 1.0e-9_dp, 'E_RHF vs pyscf', &
+                         abs(res%energy - e_scf_ref))
+         call ref_report(nfail, abs(mp%e_os - e_os_ref) < 1.0e-9_dp, 'E_os vs pyscf', abs(mp%e_os - e_os_ref))
+         call ref_report(nfail, abs(mp%e_ss - e_ss_ref) < 1.0e-9_dp, 'E_ss vs pyscf', abs(mp%e_ss - e_ss_ref))
+         if (nfail > 0) ok = .false.
       end block
-      print '(a)', merge("scf_rimp2: PASS", "scf_rimp2: FAIL", ok)
-   end if
+   end block
+   print '(a)', merge("scf_rimp2: PASS", "scf_rimp2: FAIL", ok)
    call pl%release(); call aux%release(); call bas%release()
-   call pic_mpi_finalize()
    if (.not. ok) stop 1
 
 contains

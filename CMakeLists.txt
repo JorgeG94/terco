@@ -8,6 +8,12 @@ project(
 set(project_name terco)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# GNUInstallDirs picks lib or lib64 from the pointer size, which CMake takes
+# from a language's ABI probe. NVHPC's Fortran probe (26.3, aarch64) leaves it
+# unset, so GNUInstallDirs warns and cannot choose. terco is 64-bit only.
+if(NOT CMAKE_SIZEOF_VOID_P)
+  set(CMAKE_SIZEOF_VOID_P 8)
+endif()
 include(GNUInstallDirs)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 # Named for the project, not `print_status`: PIC ships a module by that name
@@ -252,6 +258,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(PIC_ENABLE_TESTING
     OFF
     CACHE BOOL "" FORCE)
+# NVTX ranges for Nsight Systems, through pic's profiler (pic_profiler):
+# each RI-MP2 step is a named range on the timeline. Off by default; the
+# calls are no-ops then. pic sets only its compile define, so the NVTX
+# library is linked below, on terco's own target.
+option(TERCO_NVTX "NVTX ranges for Nsight Systems (NVHPC builds)" OFF)
+if(TERCO_NVTX)
+  set(PIC_USE_NVTX
+      ON
+      CACHE BOOL "" FORCE)
+endif()
 find_package("pic" REQUIRED)
 
 set(main_lib terco)
@@ -292,6 +308,22 @@ elseif(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
                       "got '${TERCO_CART_ORDER}'")
 endif()
 #
+# TRC_MPI_DEVICE: MPI is handed device buffers directly (a CUDA-aware MPI)
+# rather than staged through the host. The default for a run; the
+# environment variable TERCO_MPI_DEVICE=0/1 overrides it (trc_mpi_device).
+# Defined only when on, like TRC_CART_ORDER: an undefined name reads as 0.
+#
+if(TERCO_ENABLE_GPU AND TERCO_ENABLE_MPI)
+  set(_terco_mpi_device_default ON)
+else()
+  set(_terco_mpi_device_default OFF)
+endif()
+option(TERCO_MPI_DEVICE "Hand MPI device buffers directly (CUDA-aware MPI)"
+       ${_terco_mpi_device_default})
+if(TERCO_MPI_DEVICE)
+  target_compile_definitions(${main_lib} PRIVATE TRC_MPI_DEVICE=1)
+endif()
+#
 # The unrolled VRR/HRR go into the SHARED kernel only, and only at LMAX<=1.
 #
 # That kernel holds two copies of the recurrence, so unrolling it at LMAX=2
@@ -318,7 +350,11 @@ add_subdirectory(src)
 # the compiler's include path and need nothing at compile time.
 #
 if(TERCO_ENABLE_GPU)
-  target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
+  if(TERCO_NVTX)
+    target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver,nvtx)
+  else()
+    target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
+  endif()
 endif()
 
 #
