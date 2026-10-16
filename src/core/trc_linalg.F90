@@ -133,8 +133,10 @@ contains
       class(trc_linalg_t), intent(in) :: this
 #ifdef _OPENACC
       interface
-         integer(c_int) function cudaDeviceSynchronize() bind(c, name="cudaDeviceSynchronize")
+         function cudaDeviceSynchronize() result(res) bind(c, name="cudaDeviceSynchronize")
             import :: c_int
+            implicit none
+            integer(c_int) :: res
          end function cudaDeviceSynchronize
       end interface
       integer(c_int) :: st

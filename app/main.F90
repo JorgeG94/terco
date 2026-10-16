@@ -605,7 +605,8 @@ program terco_main
       ! cc-pVDZ-RIFIT basis is 30 GB. 2 GB a block leaves the device for the
       ! transformed tensor, which is the one RI-MP2 cannot split.
       if (r%cli%is_set("aux-block")) then
-         call r%cli%get("aux-block", aux_block, r%err); call check(r, "--aux-block")
+         call r%cli%get("aux-block", aux_block, r%err)
+         call check(r, "--aux-block")
          if (aux_block < 1) call die(r, "--aux-block must be at least 1")
       else
          call api(r, trc_nao(r%h, r%nao))

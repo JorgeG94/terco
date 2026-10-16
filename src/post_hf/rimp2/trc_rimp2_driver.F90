@@ -114,8 +114,10 @@ contains
       integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks, nji, ng, ldk, ig, i0, i1, off
       real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), x(:, :), tens(:, :, :), half(:, :, :)
       real(dp), allocatable :: ki(:, :), kt(:, :), part(:), eo(:), ev(:)
-      real(dp) :: e_os, e_ss, es(2)
-      real(dp) :: t_step(NSTEP), tc
+      real(dp) :: e_os, e_ss
+      real(dp) :: es(2)
+      real(dp) :: t_step(NSTEP)
+      real(dp) :: tc
       type(flop_recorder_type) :: fl(NSTEP)
       integer(int64) :: no8, nv8, nao8, naux8, nov8
 
@@ -139,7 +141,9 @@ contains
       no = nocc - nfz
       nv = nao - nocc
       nov = no*nv
-      res%naux = naux; res%nocc = no; res%nvir = nv
+      res%naux = naux
+      res%nocc = no
+      res%nvir = nv
       if (no < 1 .or. nv < 1) then
          res%message = "trc_rimp2: nothing to correlate"
          return
@@ -156,9 +160,11 @@ contains
       end if
       nblk = naux
       if (present(aux_block)) nblk = max(aux_block, 1)
-      rank = 0; nranks = 1
+      rank = 0
+      nranks = 1
       if (present(comm)) then
-         rank = comm%rank(); nranks = comm%size()
+         rank = comm%rank()
+         nranks = comm%size()
       end if
       if (present(la)) then
          lp => la
@@ -170,7 +176,11 @@ contains
 
       talk = .false.
       if (present(verbose)) talk = verbose .and. rank == 0
-      no8 = no; nv8 = nv; nao8 = nao; naux8 = naux; nov8 = nov
+      no8 = no
+      nv8 = nv
+      nao8 = nao
+      naux8 = naux
+      nov8 = nov
       t_step = 0.0_dp
       tw0 = tick(lp)
       ! --- 1. the metric and its Cholesky factor ---------------------------
@@ -183,7 +193,7 @@ contains
       call lp%potrf(naux, jm, naux)
       call step_off(lp, ST_CHOL, tc, t_step)
       call fl(ST_CHOL)%add(naux8**3/3)
-      if (talk) print '(a,i0,a,f8.2,a)', "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+      if (talk) print "(a,i0,a,f8.2,a)", "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
 
       ! --- 3. (ia|P) for every P, a block of auxiliary shells at a time ----
       allocate (cocc(nao, no), cvir(nao, nv), x(nov, naux))
@@ -214,8 +224,8 @@ contains
          ! and the virtual side one strided batch over q with C_vir shared,
          !   X(:, P) = C_vir^T half_q^T                        (nv x no, a fastest).
          ! 2 x 3840 calls at w40 cc-pVDZ ran at 41% of the device's peak.
-         call lp%gemm('T', 'N', no, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, no)
-         call lp%gemm_strided('T', 'T', nv, no, nao, 1.0_dp, cvir, nao, 0_int64, half, no, no8*nao8, &
+         call lp%gemm("T", "N", no, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, no)
+         call lp%gemm_strided("T", "T", nv, no, nao, 1.0_dp, cvir, nao, 0_int64, half, no, no8*nao8, &
                               0.0_dp, x(1, p0), nv, nov8, np)
          call step_off(lp, ST_TRANS, tc, t_step)
          call fl(ST_TRANS)%add(int(np, int64)*(2*no8*nao8*nao8 + 2*nv8*no8*nao8))
@@ -224,26 +234,27 @@ contains
          call blk%release()
          s0 = s1 + 1
       end do
-      if (talk) print '(a,f8.2,a,f8.2,a)', "  rimp2: (mu nu|P) ", t_step(ST_3C), " s, transform to (ia|P) ", &
+      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2: (mu nu|P) ", t_step(ST_3C), " s, transform to (ia|P) ", &
          t_step(ST_TRANS), " s"
 
       ! --- 4. B = X L^-T: solve B L^T = X from the right ---------------------
       call step_on(lp, ST_TRSM, tc)
-      call lp%trsm('R', 'L', 'T', nov, naux, 1.0_dp, jm, naux, x, nov)
+      call lp%trsm("R", "L", "T", nov, naux, 1.0_dp, jm, naux, x, nov)
       call step_off(lp, ST_TRSM, tc, t_step)
       call fl(ST_TRSM)%add(nov8*naux8*naux8)
-      if (talk) print '(a,f8.2,a)', "  rimp2: B = X L^-T ", t_step(ST_TRSM), " s"
+      if (talk) print "(a,f8.2,a)", "  rimp2: B = X L^-T ", t_step(ST_TRSM), " s"
       tw1 = tick(lp)
 
       ! --- 5. the pair energies, one occupied i at a time ------------------
       ng = k_group(no, nv, nov)
       ldk = ng*nv
-      if (talk) print '(a,i0,a)', "  rimp2: K GEMMs over ", ng, " occupied orbitals at a time"
+      if (talk) print "(a,i0,a)", "  rimp2: K GEMMs over ", ng, " occupied orbitals at a time"
       allocate (ki(ldk, nov), kt(nov, nv), part(2*nov), eo(no), ev(nv))
       eo = eps(nfz + 1:nocc)
       ev = eps(nocc + 1:nao)
       !$acc enter data create(ki, kt, part) copyin(eo, ev)
-      e_os = 0.0_dp; e_ss = 0.0_dp
+      e_os = 0.0_dp
+      e_ss = 0.0_dp
       ! Groups of `ng` occupied orbitals, dealt round-robin over the ranks.
       ! One GEMM per group, K(i a, jb) for i in the group and j >= i0, the
       ! group's first: (ng nv) rows instead of nv, so cuBLAS gets a taller
@@ -255,7 +266,7 @@ contains
          i1 = min(no, i0 + ng - 1)
          nji = (no - i0 + 1)*nv
          call step_on(lp, ST_KGEMM, tc)
-         call lp%gemm('N', 'T', (i1 - i0 + 1)*nv, nji, naux, 1.0_dp, x((i0 - 1)*nv + 1, 1), nov, &
+         call lp%gemm("N", "T", (i1 - i0 + 1)*nv, nji, naux, 1.0_dp, x((i0 - 1)*nv + 1, 1), nov, &
                       x((i0 - 1)*nv + 1, 1), nov, 0.0_dp, ki, ldk)
          call step_off(lp, ST_KGEMM, tc, t_step)
          call fl(ST_KGEMM)%add(2*int(i1 - i0 + 1, int64)*nv8*int(nji, int64)*naux8)
@@ -280,10 +291,11 @@ contains
          es = [e_os, e_ss]
          call allreduce(comm, es, op=MPI_SUM)
          call bcast(comm, es, 2, 0)
-         e_os = es(1); e_ss = es(2)
+         e_os = es(1)
+         e_ss = es(2)
       end if
       if (talk) then
-         print '(a,f8.2,a,f8.2,a)', "  rimp2: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+         print "(a,f8.2,a,f8.2,a)", "  rimp2: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
          call report_steps(t_step, fl, tick(lp) - tw0, rank, nranks)
       end if
       res%e_os = e_os
@@ -294,7 +306,7 @@ contains
 
    function wall() result(t)
       real(dp) :: t
-      integer(kind=8) :: cc, rate
+      integer(int64) :: cc, rate
       call system_clock(cc, rate)
       t = real(cc, dp)/real(rate, dp)
    end function wall
@@ -338,24 +350,25 @@ contains
    ! several ranks: the pair steps are split over them, the rest replicated.
    !
    subroutine report_steps(t_step, fl, t_total, rank, nranks)
-      real(dp), intent(in) :: t_step(NSTEP), t_total
+      real(dp), intent(in) :: t_step(NSTEP)
+      real(dp), intent(in) :: t_total
       type(flop_recorder_type), intent(in) :: fl(NSTEP)
       integer, intent(in) :: rank, nranks
       integer :: k
       real(dp) :: gf, tg, fg
-      print '(a)', "  rimp2: step                   time (s)        GFLOP     GFLOP/s"
+      print "(a)", "  rimp2: step                   time (s)        GFLOP     GFLOP/s"
       do k = 1, NSTEP
          gf = real(fl(k)%get(), dp)*1.0e-9_dp
          if (fl(k)%get() > 0 .and. t_step(k) > 0.0_dp) then
-            print '(a,a18,f14.3,f13.1,f12.1)', "  rimp2:   ", STEP_NAME(k), t_step(k), gf, gf/t_step(k)
+            print "(a,a18,f14.3,f13.1,f12.1)", "  rimp2:   ", STEP_NAME(k), t_step(k), gf, gf/t_step(k)
          else
-            print '(a,a18,f14.3,a13,a12)', "  rimp2:   ", STEP_NAME(k), t_step(k), "-", "-"
+            print "(a,a18,f14.3,a13,a12)", "  rimp2:   ", STEP_NAME(k), t_step(k), "-", "-"
          end if
       end do
       tg = t_step(ST_CHOL) + t_step(ST_TRANS) + t_step(ST_TRSM) + t_step(ST_KGEMM)
       fg = real(fl(ST_CHOL)%get() + fl(ST_TRANS)%get() + fl(ST_TRSM)%get() + fl(ST_KGEMM)%get(), dp)*1.0e-9_dp
-      if (tg > 0.0_dp) print '(a,a18,f14.3,f13.1,f12.1)', "  rimp2:   ", label("all dense algebra"), tg, fg, fg/tg
-      print '(a,a18,f14.3,a,i0,a,i0)', "  rimp2:   ", label("total"), t_total, "   rank ", rank, " of ", nranks
+      if (tg > 0.0_dp) print "(a,a18,f14.3,f13.1,f12.1)", "  rimp2:   ", label("all dense algebra"), tg, fg, fg/tg
+      print "(a,a18,f14.3,a,i0,a,i0)", "  rimp2:   ", label("total"), t_total, "   rank ", rank, " of ", nranks
    end subroutine report_steps
 
    pure function label(t) result(l)
@@ -396,9 +409,9 @@ contains
       ng = max(1, min(ng, no))
    end function k_group
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
