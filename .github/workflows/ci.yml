@@ -260,14 +260,16 @@ jobs:
 
       # The fpm build exists so that `fpm install terco` works for someone who
       # does not want CMake. It compiles the COMMITTED kernels in
-      # `src/generated` -- fpm cannot run the generators -- so this checks that
-      # shipped configuration and nothing else. The generators job next door is
-      # what keeps those files honest.
+      # `src/generated` plus the Rys kernels tools/fpm_generate.sh writes to
+      # src/generated/fpm -- fpm cannot run the generators itself.
       #
       # No GPU flags: without `-stdpar=gpu` this is a correct, slow CPU
       # library, which is exactly what a runner can check.
+      - name: Generate the Rys kernels
+        run: tools/fpm_generate.sh
+
       - name: fpm build
-        run: fpm build --compiler gfortran --profile release
+        run: fpm build --compiler mpifort --profile release --flag "-ffree-line-length-none"
 
   generators:
     name: generated sources are up to date
