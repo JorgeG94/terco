@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review a terco pull request — correctness of integrals and SCF first, then the do concurrent / OpenACC rules, generated code, tests (including stale pyscf reference hashes), performance claims, kinds from pic_types, pic reuse over local copies, fortitude lint, and FORD-only doc comments (no Doxygen). Use when asked to review a PR or a diff in this repository.
+description: Review a terco pull request — correctness of integrals and SCF first, then the do concurrent / OpenACC rules, generated code, tests (including stale pyscf reference hashes), performance claims, kinds from pic_types, pic reuse over local copies, overlapping PRs and merges across refactors, fortitude lint, and FORD-only doc comments (no Doxygen). Use when asked to review a PR or a diff in this repository.
 ---
 
 # Reviewing a terco pull request
@@ -276,6 +276,37 @@ unless the PR says why pic cannot do it:
   ```sh
   gh pr diff <N> | grep -nE '^\+.*(system_clock|cpu_time|date_and_time|omp_get_wtime|function +(itoa|int2str|to_str)|(subroutine|function) +(sort\w*|\w+_sort)\b|"\(i0\)")'
   ```
+
+## 11. Overlapping PRs and merges across a refactor
+
+A clean textual merge is not a clean merge. When #71 (a print in the SCF
+loop) and #72 (the SCF driver split into modules) were both open, git
+auto-merged #71's banner into the refactored driver, where the helpers it
+called were no longer imported: no conflict marker, and code that does not
+compile. So:
+
+- **List the overlap.** For the PR under review, list the other open PRs
+  that touch the same files:
+
+  ```sh
+  gh pr list --state open --json number,title,files \
+    --jq '.[] | select(.number != <N>) | "\(.number) \(.title): \([.files[].path] | join(" "))"'
+  ```
+
+  For each one that shares a file, say which should merge first and what
+  the second will have to redo. Prefer landing the larger refactor first and
+  rebuilding the small change on top. This is a summary item, not a must-fix.
+- **A refactor's removed names.** When the PR moves, renames or stops
+  importing procedures or variables, list the old names and grep the other
+  open PRs' diffs for them (`gh pr diff <M> | grep -nE '^\+.*\b(name1|name2)\b'`).
+  Any hit is a merge that will auto-resolve into a build failure; name the
+  PR and the line.
+- **A PR that merges `main` in** (a merge commit in its history): read the
+  merge commit's own diff (`git show <merge>`), not only the PR's net diff.
+  For every auto-merged hunk in a file the other side restructured, check
+  that each name it uses still exists and is still imported there. Then
+  rely on CI to build it; never approve a merge resolution that CI has not
+  built.
 
 ## Output
 
