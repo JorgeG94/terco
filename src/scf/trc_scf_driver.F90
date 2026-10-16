@@ -400,7 +400,7 @@ contains
       real(dp), allocatable :: dref_c(:, :), gacc_c(:, :), ddif_c(:, :)
       logical :: incr_now
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :), fstore(:, :, :, :), estore(:, :, :, :)
-      real(dp), allocatable :: w1(:, :), w2(:, :), w3(:, :), bmat(:, :), rhs(:)
+      real(dp), allocatable :: w1(:, :), w2(:, :), bmat(:, :), rhs(:)
       real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :), cad(:)
       !! ADIIS history (fock, density) and its own slot count, kept apart
       !! from the CDIIS `fstore`/`estore` above: ADIIS runs exactly in the
@@ -441,6 +441,11 @@ contains
       !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
       !! linear-algebra handles, orthogonaliser (printed with the timing table)
       real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
+      ! The TRC_* experiment hooks (incr_*_env, eri_thresh_env), read once
+      ! per run: they only reread the environment, and the loop asked for
+      ! the same answer every iteration.
+      real(dp) :: eri_thresh_run, incr_start_run, incr_scale_run
+      integer :: incr_reset_run
       real(dp) :: tf_it, tx_it
       !! This iteration's share of the two totals, so the table says where
       !! the time went while it is going rather than only at the end. A
@@ -529,7 +534,7 @@ contains
       allocate (dref_c(nin_c, nin_c), gacc_c(nin_c, nin_c), ddif_c(nin_c, nin_c))
       allocate (dold(nao, nao, nspin), errv(nao, nao, nspin))
       allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
-      allocate (w1(nao, nao), w2(nao, nao), w3(1, 1))
+      allocate (w1(nao, nao), w2(nao, nao))
       allocate (ofrac(nao))
       ofrac = 0.0_dp
       allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
@@ -556,7 +561,11 @@ contains
       tw0 = wall()
       call tm%start()
       ! --- once per geometry, on the host ------------------------------------
-      call pl%build(b, eri_thresh_env(opts%eri_thresh))
+      eri_thresh_run = eri_thresh_env(opts%eri_thresh)
+      incr_start_run = incr_start_env(opts%incr_start)
+      incr_reset_run = incr_reset_env(opts%incr_reset)
+      incr_scale_run = incr_thresh_scale_env(opts%incr_thresh_scale)
+      call pl%build(b, eri_thresh_run)
       call pl%to_device()
       ts(1) = tm%get_elapsed_time()
       call tm%start()
@@ -587,9 +596,9 @@ contains
       ts(3) = tm%get_elapsed_time()
       call tm%start()
       if (present(comm)) then
-         call eri%build(b, eri_thresh_env(opts%eri_thresh), comm, batch_res=opts%batch_res)
+         call eri%build(b, eri_thresh_run, comm, batch_res=opts%batch_res)
       else
-         call eri%build(b, eri_thresh_env(opts%eri_thresh), batch_res=opts%batch_res)
+         call eri%build(b, eri_thresh_run, batch_res=opts%batch_res)
       end if
       res%e_nuc = nuclear_repulsion(b)
       ts(4) = tm%get_elapsed_time()
@@ -646,6 +655,7 @@ contains
          if (err%has_error()) then
             res%message = "trc_scf: "//err%get_message()
             call pcm%release()
+            if (.not. present(la)) call lp%release()
             call eri%release()
             call pl%release()
             return
@@ -668,6 +678,7 @@ contains
                call xg%release()
                call grid%destroy()
                call pcm%release()
+               if (.not. present(la)) call lp%release()
                call eri%release()
                call pl%release()
                return
@@ -717,7 +728,6 @@ contains
       estore = 0.0_dp
       w1 = 0.0_dp
       w2 = 0.0_dp
-      w3 = 0.0_dp
       d_c = 0.0_dp
       gmat_c = 0.0_dp
       vxc_c = 0.0_dp
@@ -728,7 +738,7 @@ contains
 
       !$acc enter data copyin(ofrac)
       !$acc enter data copyin(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
+      !$acc            copyin(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2) &
       !$acc            copyin(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
       !$acc            create(dref_c, gacc_c, ddif_c) copyin(vpcm_c, vpcm)
       if (opts%adiis) then
@@ -736,6 +746,9 @@ contains
       end if
 
       eold = 0.0_dp
+      ! Read by the first iteration's `incr_now` before any commutator exists
+      ! (Fortran's .and. does not short-circuit), so give it a value.
+      errmax = huge(1.0_dp)
       ndiis_used = 0
       nadiis_used = 0
       diis_on = .false.
@@ -780,8 +793,8 @@ contains
             ! small and getting smaller while the density is neither.
             !
             incr_now = incr_on .and. it > 1 &
-                       .and. errmax < incr_start_env(opts%incr_start) &
-                       .and. mod(it - 1, max(1, incr_reset_env(opts%incr_reset))) /= 0
+                       .and. errmax < incr_start_run &
+                       .and. mod(it - 1, max(1, incr_reset_run)) /= 0
             if (incr_now) then
                do concurrent(i=1:nao_c, j=1:nao_c)
                   ddif_c(i, j) = d_c(i, j, 1) - dref_c(i, j)
@@ -808,7 +821,7 @@ contains
                block
                   real(dp) :: thresh0
                   thresh0 = eri%thresh
-                  eri%thresh = thresh0*incr_thresh_scale_env(opts%incr_thresh_scale)
+                  eri%thresh = thresh0*incr_scale_run
                   call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
                   if (exx_lr /= 0.0_dp) then
                      call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
@@ -1200,7 +1213,7 @@ contains
       end if
       !$acc exit data delete(ofrac)
       !$acc exit data delete(hcore, smat, x, res%dmat, res%cmo, res%eps) &
-      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2, w3) &
+      !$acc           delete(fock, gmat, vxc, dold, errv, fstore, estore, w1, w2) &
       !$acc           delete(d_c, gmat_c, vxc_c, dtot_c, jmat_c, w1_c, klr_c) &
       !$acc           delete(dref_c, gacc_c, ddif_c, vpcm_c, vpcm)
       if (opts%adiis) then
