@@ -23,6 +23,7 @@
 ! and that is by design: it cannot pass silently.
 !
 module trc_linalg
+   use, intrinsic :: iso_c_binding, only: c_int
    use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm, pic_dot
    use pic_lapack_interfaces, only: pic_syev
@@ -58,6 +59,7 @@ module trc_linalg
       procedure :: trsm => linalg_trsm
       procedure :: syev => linalg_syev
       procedure :: dot => linalg_dot
+      procedure :: sync => linalg_sync
    end type trc_linalg_t
 
 contains
@@ -119,6 +121,28 @@ contains
 #endif
       this%n = n
    end subroutine grow_workspace
+
+   !
+   ! Wait for everything this object's library calls queued on the device.
+   ! cuBLAS and cuSOLVER return to the host before their kernels finish, so a
+   ! host timer around them measures the launch; this is what a timer calls
+   ! before it reads the clock. A no-op on the host build.
+   !
+   subroutine linalg_sync(this)
+      class(trc_linalg_t), intent(in) :: this
+#ifdef _OPENACC
+      interface
+         integer(c_int) function cudaDeviceSynchronize() bind(c, name="cudaDeviceSynchronize")
+            import :: c_int
+         end function cudaDeviceSynchronize
+      end interface
+      integer(c_int) :: st
+      if (.not. this%ready) return
+      st = cudaDeviceSynchronize()
+#else
+      if (.not. this%ready) return
+#endif
+   end subroutine linalg_sync
 
    subroutine linalg_release(this)
       class(trc_linalg_t), intent(inout) :: this

@@ -363,6 +363,7 @@ program terco_main
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
    use pic_knowledge, only: get_knowledge
+   use pic_profiler, only: profiler_init
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
                        trc_set_incremental, &
@@ -381,7 +382,7 @@ program terco_main
    type(run_t) :: r
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
-   integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev
+   integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev, aux_block
    integer(c_int) :: st, nspin
    logical :: cart
 
@@ -391,6 +392,10 @@ program terco_main
    ! to know about ranks; `r%rank0` is what gates every print below so N
    ! ranks produce ONE copy of the output, not N.
    call pic_mpi_init()
+   ! pic's region profiler, which is what puts the library's named NVTX
+   ! ranges on an Nsight Systems timeline (a TERCO_NVTX build); without NVTX
+   ! it only keeps host wall times nobody reads, so it is always on.
+   call profiler_init()
    r%wcomm = comm_world()
    r%nranks = r%wcomm%size()
    r%rank0 = r%wcomm%leader()
@@ -424,6 +429,8 @@ program terco_main
    call r%cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", &
                          default="-1")
+   call r%cli%add_option("aux-block", "auxiliary functions per three-index block for --rimp2 (default: as many "// &
+                         "as keep the block under 2 GB)")
    call r%cli%add_option("save-scf", "write the SCF result (orbitals, density, energies) to this file, "// &
                          "for a later --restart")
    call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
@@ -591,7 +598,21 @@ program terco_main
    ! code keeps the build it had, but a command-line run gets the speed.
    call api(r, trc_set_incremental(r%h, merge(0_c_int, 1_c_int, r%cli%is_set("no-incremental"))))
    call api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
-   if (r%rimp2) call api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), 0_c_int))
+   if (r%rimp2) then
+      ! The three-index tensor (mu nu|P) is nao^2 per auxiliary function and
+      ! is held one block of them at a time; the library's own default is
+      ! one block of all of them, which at a thousand functions and a
+      ! cc-pVDZ-RIFIT basis is 30 GB. 2 GB a block leaves the device for the
+      ! transformed tensor, which is the one RI-MP2 cannot split.
+      if (r%cli%is_set("aux-block")) then
+         call r%cli%get("aux-block", aux_block, r%err); call check(r, "--aux-block")
+         if (aux_block < 1) call die(r, "--aux-block must be at least 1")
+      else
+         call api(r, trc_nao(r%h, r%nao))
+         aux_block = int(max(16.0_dp, min(real(huge(1), dp), 2.0e9_dp/(8.0_dp*real(r%nao, dp)**2))))
+      end if
+      call api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), int(aux_block, c_int)))
+   end if
 
    if (len(r%restart) > 0) then
       st = trc_load_scf(r%h, c_string(r%restart))

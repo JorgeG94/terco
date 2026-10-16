@@ -252,6 +252,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(PIC_ENABLE_TESTING
     OFF
     CACHE BOOL "" FORCE)
+# NVTX ranges for Nsight Systems, through pic's profiler (pic_profiler):
+# each RI-MP2 step is a named range on the timeline. Off by default; the
+# calls are no-ops then. pic sets only its compile define, so the NVTX
+# library is linked below, on terco's own target.
+option(TERCO_NVTX "NVTX ranges for Nsight Systems (NVHPC builds)" OFF)
+if(TERCO_NVTX)
+  set(PIC_USE_NVTX
+      ON
+      CACHE BOOL "" FORCE)
+endif()
 find_package("pic" REQUIRED)
 
 set(main_lib terco)
@@ -318,7 +328,11 @@ add_subdirectory(src)
 # the compiler's include path and need nothing at compile time.
 #
 if(TERCO_ENABLE_GPU)
-  target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
+  if(TERCO_NVTX)
+    target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver,nvtx)
+  else()
+    target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
+  endif()
 endif()
 
 #
