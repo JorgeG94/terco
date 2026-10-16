@@ -746,6 +746,12 @@ contains
       ! reader that kept dead primitives -- and that only shows here.
       if (talk) print "(a,i0,a,i0,a,i0,a,i0)", "   basis: ", nao, " functions, ", b%nshell, &
          " shells, ", sum(b%sh_np), " primitives, max ", maxval(b%sh_np)
+      ! Say so when increments are on: they are opt-in and change the timings.
+      ! An `i` after an iteration's line marks a Fock matrix built from the
+      ! density difference.
+      if (talk .and. incr_on) print "(a,es8.1,a,i0,a)", &
+         "   incremental Fock: from |FDS-SDF| < ", incr_start_env(opts%incr_start), &
+         ", full build every ", max(1, incr_reset_env(opts%incr_reset)), " iterations (marked i)"
       if (talk) then
          if (dft) then
             print "(a)", "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
@@ -757,6 +763,7 @@ contains
       end if
       do it = 1, opts%max_iter
          tw0 = wall()
+         incr_now = .false.
          ! --- D_cart := T D_sph T^T, the one transform every Cartesian
          ! quantity below (the Fock build, the XC density) is built from.
          ! Not taken at all when `sph` is false -- see this module's own
@@ -1159,11 +1166,11 @@ contains
          t_rest = t_rest + (wall() - tw0)
          if (talk) then
             if (dft) then
-               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3)", &
-                  it, etot, etot - eold, drms, errmax, tf_it, tx_it
+               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3,a)", &
+                  it, etot, etot - eold, drms, errmax, tf_it, tx_it, merge(" i", "  ", incr_now)
             else
-               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3)", &
-                  it, etot, etot - eold, drms, errmax, tf_it
+               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,a)", &
+                  it, etot, etot - eold, drms, errmax, tf_it, merge(" i", "  ", incr_now)
             end if
          end if
          res%iterations = it
