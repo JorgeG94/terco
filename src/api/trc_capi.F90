@@ -185,6 +185,7 @@ module trc_capi
    use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_linalg, only: trc_linalg_t
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
                           ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
@@ -216,6 +217,7 @@ module trc_capi
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
+   public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
    public :: trc_set_force_cartesian, trc_is_spherical
@@ -2368,6 +2370,89 @@ contains
       cx%rimp2_ok = .true.
       status = TRC_OK
    end function trc_run_rimp2
+
+   function trc_save_scf(handle, path) result(status) bind(c, name="trc_save_scf")
+      !! Write the context's SCF result -- orbitals, orbital energies,
+      !! density, energies -- to `path` (NUL-terminated), with the molecule,
+      !! basis and method it belongs to; trc_load_scf reads it back. One
+      !! rank is enough: every rank holds the same result.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=256) :: msg
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_save_scf: run the SCF first"
+         return
+      end if
+      call trc_scf_save(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, &
+                        cx%nalpha, cx%nbeta, cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, &
+                        cx%res, msg)
+      cx%message = msg
+      status = merge(TRC_OK, TRC_ERR_BADARG, len_trim(msg) == 0)
+   end function trc_save_scf
+
+   function trc_load_scf(handle, path) result(status) bind(c, name="trc_load_scf")
+      !! In place of trc_run_scf: take the SCF result from a file
+      !! trc_save_scf wrote, so a correlated step (trc_run_rimp2) can follow
+      !! without repeating the SCF. The molecule, basis, method and solvent
+      !! must be set as for trc_run_scf, and must be the ones the file was
+      !! made with; anything else is refused, naming the difference. Every
+      !! rank reads the file itself. TRC_ERR_NOCONV if the saved SCF had not
+      !! converged, as trc_run_scf would have said.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=256) :: msg
+      integer :: nelec, nunp, nalpha, nbeta, nspin, n
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%scf_ok = .false.; cx%rimp2_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. (cx%have_mol .and. cx%have_basis)) then
+         cx%message = "trc_load_scf: set the molecule and the basis first"
+         return
+      end if
+      ! The same electron count and spin trc_run_scf would use.
+      nelec = nint(sum(cx%at_z)) - cx%charge
+      nunp = cx%multiplicity - 1
+      nalpha = (nelec + nunp)/2; nbeta = nelec - nalpha
+      nspin = merge(2, 1, nalpha /= nbeta .or. cx%opts%unrestricted)
+      status = TRC_ERR_BADARG
+      call trc_scf_load(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, nspin, &
+                        cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, cx%res, msg)
+      cx%message = msg
+      if (len_trim(msg) > 0) return
+      n = scf_space_nao(cx%bb)
+      if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
+      allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
+      cx%bb%cmo = cx%res%cmo; cx%bb%eps = cx%res%eps
+      cx%bb%nalpha = nalpha; cx%bb%nbeta = nbeta
+      cx%nalpha = nalpha; cx%nbeta = nbeta
+      cx%scf_ok = .true.
+      status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
+   end function trc_load_scf
+
+   function c_path(path) result(fpath)
+      !! A NUL-terminated C path as a Fortran string.
+      character(kind=c_char), intent(in) :: path(*)
+      character(len=:), allocatable :: fpath
+      integer :: i
+      i = 0
+      do while (path(i + 1) /= c_null_char)
+         i = i + 1
+      end do
+      allocate (character(len=i) :: fpath)
+      do i = 1, len(fpath)
+         fpath(i:i) = path(i)
+      end do
+   end function c_path
 
    ! ---- read back ---------------------------------------------------------
 

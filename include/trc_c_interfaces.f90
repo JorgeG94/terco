@@ -550,6 +550,23 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
       end function trc_run_rimp2
 
+      integer(c_int) function trc_save_scf(handle, path) bind(c)
+         !! The SCF result (orbitals, orbital energies, density, energies)
+         !! to a file, NUL-terminated path, with the molecule, basis and
+         !! method it belongs to.
+         import :: c_int, c_ptr, c_char
+         type(c_ptr), value :: handle
+         character(kind=c_char), intent(in) :: path(*)
+      end function trc_save_scf
+
+      integer(c_int) function trc_load_scf(handle, path) bind(c)
+         !! In place of trc_run_scf: the result trc_save_scf wrote, refused
+         !! unless the molecule, basis, method and solvent set here match.
+         import :: c_int, c_ptr, c_char
+         type(c_ptr), value :: handle
+         character(kind=c_char), intent(in) :: path(*)
+      end function trc_load_scf
+
       integer(c_int) function trc_nao(handle, nao) bind(c)
          !! The AO count every SCF-facing entry below sizes its arrays by
          !! (trc_density, trc_mo_coefficients, trc_mo_energies,
