@@ -79,12 +79,14 @@ standard Fortran.
     `!$acc update device`.
   - Reallocating a mapped array invalidates its mapping.
 - **A `do concurrent` body calls only intrinsics and same-module `routine
-  seq` item routines.** Never a procedure from another module, and never a
-  derived-type component by name (`st%fock(i, j)` inside the body): pass the
-  component as an actual argument to a helper with explicit-shape dummies,
-  so the loop sees a plain array. nvfortran maps a component reference
-  inside an offloaded body differently from a dummy, and the host build
-  will not show the difference.
+  seq` item routines**, never a procedure from another module.
+- **Derived-type components in a body are fine** (`st%fock(i, j)`), but with
+  `mem:separate` the parent object must be on the device and the component
+  attached: `!$acc enter data copyin(st)` and then `copyin(st%fock)` (the
+  pattern `trc_linalg` uses for `this%dwork`). Check that every component a
+  body reads or writes is mapped this way, and released in reverse order on
+  every path out. A missing attach is an illegal address at run time, not a
+  compile error, and the host build won't show it.
 - **Item routines** called from a `do concurrent` body must be `pure`, carry
   `!$acc routine seq`, and live in the same module as their driver so they
   inline. A separate device procedure measured 2.4× slower.
