@@ -22,8 +22,8 @@ module terco_run
    !! Looks like an NVHPC/OpenMPI codegen interaction specific to this
    !! toolchain; worth a closer look (and a vendor report) on its own.
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char
-   use, intrinsic :: iso_fortran_env, only: output_unit, error_unit, int64
-   use pic_types, only: dp
+   use, intrinsic :: iso_fortran_env, only: output_unit, error_unit
+   use pic_types, only: dp, int64
    use pic_error, only: error_t
    use pic_cli, only: cli_t
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
@@ -336,7 +336,7 @@ program terco_main
    !! terco_run's header comment for why that is load-bearing, not a style
    !! choice, the moment more than one rank is involved.
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
-   use, intrinsic :: iso_fortran_env, only: output_unit, error_unit, int64
+   use, intrinsic :: iso_fortran_env, only: output_unit, error_unit
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
    use pic_knowledge, only: get_knowledge

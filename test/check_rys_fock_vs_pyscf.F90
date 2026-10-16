@@ -26,8 +26,7 @@
 ! quirk.
 !
 program check_rys_fock_vs_pyscf
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
    use trc_tables, only: LMAX
@@ -113,8 +112,8 @@ program check_rys_fock_vs_pyscf
 
    open (newunit=unit, file=trim(dump), access='stream', &
          form='unformatted', status='replace')
-   write (unit) int(nat, kind=8), int(nao, kind=8)
-   write (unit) int(at_z, kind=8)
+   write (unit) int(nat, int64), int(nao, int64)
+   write (unit) int(at_z, int64)
    write (unit) r
    write (unit) d
    write (unit) g

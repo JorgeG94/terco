@@ -12,7 +12,7 @@
 ! still pass, because they never use the container.
 !
 program check_api
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_df_3c, &
                       trc_multipoles, TRC_NMULT
    use trc_cart_perm, only: cart_perm_l2b
@@ -143,7 +143,7 @@ contains
             !$acc exit data delete(mm)
             open (newunit=um, file='multipole_probe.bin', access='stream', &
                   form='unformatted', status='replace')
-            write (um) int(nao, kind=8), int(TRC_NMULT, kind=8)
+            write (um) int(nao, int64), int(TRC_NMULT, int64)
             write (um) mm
             ! S alongside, as the control: if pyscf's rebuild of this system
             ! disagrees on the OVERLAP, the fault is in the test system and

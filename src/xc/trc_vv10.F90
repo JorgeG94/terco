@@ -85,7 +85,7 @@
 ! vsigma(i)) and need no such split.
 !
 module trc_vv10
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: shell_collocate, NCART_MAX

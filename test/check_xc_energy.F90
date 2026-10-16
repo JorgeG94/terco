@@ -42,7 +42,7 @@
 !     boundary is exercised, and the two must agree to rounding.
 !
 program check_xc_energy
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -78,7 +78,7 @@ program check_xc_energy
    integer :: sh_l(NSH), sh_np(NSH), i, j, nao, ifn, unit, nfail
    real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
    real(dp) :: at_z(NATM), at_r(3, NATM), seed, exc, nelec, exc2, nelec2, trds
-   integer(kind=8) :: lcg
+   integer(int64) :: lcg
    real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), c(:, :), dmat(:, :), vxc(:, :), vxc2(:, :)
    real(dp), allocatable :: cb(:, :), dm2(:, :, :), vx2(:, :, :), vx3(:, :, :)
    real(dp), allocatable :: c_lex(:, :), cb_lex(:, :)
@@ -139,10 +139,10 @@ program check_xc_energy
    allocate (c(nao, NOCC), c_lex(nao, NOCC), dmat(nao, nao), vxc(nao, nao), vxc2(nao, nao))
    allocate (perm_l2b(nao), perm_b2l(nao))
    call build_ao_perm(b%nshell, b%sh_l, b%sh_ao, nao, perm_l2b, perm_b2l)
-   lcg = 61_8
+   lcg = 61_int64
    do j = 1, NOCC
       do i = 1, nao
-         lcg = mod(48271_8*lcg, 2147483647_8)
+         lcg = mod(48271_int64*lcg, 2147483647_int64)
          seed = real(lcg, dp)/2147483647.0_dp
          c_lex(i, j) = 0.16_dp*(seed - 0.5_dp)
       end do
@@ -169,7 +169,7 @@ program check_xc_energy
    call xg%to_device()
 
    open (newunit=unit, file='xc_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(grid%n_points, kind=8), int(nao, kind=8), int(NFUNC, kind=8)
+   write (unit) int(grid%n_points, int64), int(nao, int64), int(NFUNC, int64)
    write (unit) grid%coords
    write (unit) grid%weights
    write (unit) dmat
@@ -193,7 +193,7 @@ program check_xc_energy
    allocate (dm2(nao, nao, 2), vx2(nao, nao, 2), vx3(nao, nao, 2))
    do j = 1, NOCC - 1
       do i = 1, nao
-         lcg = mod(48271_8*lcg, 2147483647_8)
+         lcg = mod(48271_int64*lcg, 2147483647_int64)
          seed = real(lcg, dp)/2147483647.0_dp
          cb_lex(i, j) = 0.2_dp*(seed - 0.5_dp)
       end do
@@ -270,7 +270,7 @@ contains
                      max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
          if (ifn == 1) print '(a,i0,a,i0,a)', "  density screening skips ", nsk, " of ", xg%nbatch, " batches"
          ! Chunk boundaries everywhere: one batch per chunk.
-         call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, budget=1_8)
+         call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, budget=1_int64)
          write (unit) exc, nelec
          write (unit) vxc
          exc_all(ifn) = exc; n_all(ifn) = nelec; vxc_all(:, :, ifn) = vxc
@@ -300,7 +300,7 @@ contains
                      trim(names(ifn))//": UKS at D/2, D/2 reproduces RKS", &
                      max(abs(exc - exc2)/abs(exc), maxval(abs(vx2(:, :, 1) - vxc))/maxval(abs(vxc))))
          call trc_xc_uks(b, xg, func, dm2, vx2, exc3, nelec3)
-         call trc_xc_uks(b, xg, func, dm2, vx3, exc2, nelec2, budget=1_8)
+         call trc_xc_uks(b, xg, func, dm2, vx3, exc2, nelec2, budget=1_int64)
          write (unit) exc3, nelec3
          write (unit) vx2
          uexc_all(ifn) = exc3; un_all(ifn) = nelec3; uvxc_all(:, :, :, ifn) = vx2

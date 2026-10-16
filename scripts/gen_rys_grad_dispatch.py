@@ -69,8 +69,7 @@ def main():
 ! scripts/gen_rys_grad.py's screen_and_compact_text for the technique.
 !
 module trc_rys_grad_kernels
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_tables, only: LMAX
 {chr(10).join(use_lines)}
    implicit none

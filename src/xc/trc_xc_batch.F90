@@ -26,7 +26,7 @@
 ! neighbours in space. `batch_of` maps a point back to its batch.
 !
 module trc_xc_batch
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_collocation, only: shell_collocate, NCART_MAX
    implicit none
@@ -71,6 +71,7 @@ contains
       integer, intent(in) :: l, np
       real(dp), intent(in) :: e(np), c(np), tol
       real(dp) :: rcut
+      integer, parameter :: MAX_BISECT = 60   !! bisection cap; the 1e-6 bracket usually exits first
       real(dp) :: lo, hi, mid, f, ac
       integer :: p, it
 
@@ -84,7 +85,7 @@ contains
          do while (envelope(hi) >= tol)
             hi = 2.0_dp*hi + 1.0_dp
          end do
-         do it = 1, 60
+         do it = 1, MAX_BISECT
             mid = 0.5_dp*(lo + hi)
             f = envelope(mid)
             if (f >= tol) then

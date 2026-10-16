@@ -20,7 +20,8 @@
 ! cost of atomics, not a defect.
 !
 program check_binfock
-   use trc_boys, only: dp, boys_init
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_batch, only: build_pairs, ncart, common_fac_sp
    use trc_cart, only: cart_init
@@ -127,7 +128,7 @@ contains
       integer, allocatable :: sq_n(:)
       type(pair_bins_t) :: bins
       integer :: nhpp, nlaunch
-      integer(kind=8) :: nwork
+      integer(int64) :: nwork
       integer :: npp, maxnp, nq, nout, nao, i, j, k, l, iat, iq, m
       integer :: sh(4), d(4), nc4, nqrt
       integer :: na, nb, nc, nd, ia, ib, ic, id, idx

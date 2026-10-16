@@ -40,7 +40,7 @@
 ! symbol trc_rimp2, and a binding label may not equal a module name
 ! (F2018 19.2); gfortran silently resolves the call to the wrong thing.
 module trc_rimp2_driver
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
@@ -219,7 +219,7 @@ contains
 
    function wall() result(t)
       real(dp) :: t
-      integer(kind=8) :: cc, rate
+      integer(int64) :: cc, rate
       call system_clock(cc, rate)
       t = real(cc, dp)/real(rate, dp)
    end function wall

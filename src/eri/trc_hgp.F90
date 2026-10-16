@@ -37,8 +37,8 @@
 ! per quartet rather than per primitive pair.
 !
 module trc_hgp
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp, int64
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: LCMAX, NCUM, cidx, cnx, cny, cnz, cll, &
                          cdir, cdn1, cdn2, cf2, ncum_of, ncart_of

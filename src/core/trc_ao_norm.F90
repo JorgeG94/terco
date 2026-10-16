@@ -28,7 +28,7 @@
 ! See trc_capi.F90's header for how every AO-indexed C API entry is classified.
 !
 module trc_ao_norm
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_batch, only: cart_pow
    implicit none
    private

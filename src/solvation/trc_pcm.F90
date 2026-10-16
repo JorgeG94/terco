@@ -39,7 +39,7 @@
 ! conjugate gradients could replace both without the SCF noticing.
 !
 module trc_pcm
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid, lebedev_is_available

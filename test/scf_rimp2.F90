@@ -7,7 +7,7 @@
 ! the same orbital and auxiliary sets and compares E_os, E_ss and E_corr.
 !
 program scf_rimp2
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -169,18 +169,18 @@ program scf_rimp2
       print '(a,f20.12,a,f20.12)', "  E_os    = ", mp%e_os, "   E_ss = ", mp%e_ss
       print '(a,f20.12,a,es9.2)', "  E_corr  = ", mp%e_corr, "   blocked vs whole ", abs(mp%e_corr - mp2%e_corr)
       open (newunit=unit, file=trim(probe), access='stream', form='unformatted', status='replace')
-      write (unit) int(bas%nao, kind=8), int(natm, kind=8), int(nsh, kind=8), int(nsha, kind=8), int(nocc, kind=8)
+      write (unit) int(bas%nao, int64), int(natm, int64), int(nsh, int64), int(nsha, int64), int(nocc, int64)
       write (unit) at_z, at_r
       ! Shells as the JSON gives them: raw coefficients when read from a
       ! file, so pyscf normalises them its own way; unit-weight primitives
       ! for the synthetic sets, where the coefficient is the normalisation.
       do ish = 1, nsh
-         write (unit) int(centre_of(sh_r(:, ish)), kind=8), int(sh_l(ish), kind=8), int(sh_np(ish), kind=8)
+         write (unit) int(centre_of(sh_r(:, ish)), int64), int(sh_l(ish), int64), int(sh_np(ish), int64)
          write (unit) sh_e(1:sh_np(ish), ish), raw_coef(sh_l(ish), sh_np(ish), sh_e(1:sh_np(ish), ish), &
             sh_c(1:sh_np(ish), ish), len_trim(bas_json) > 0)
       end do
       do ish = 1, nsha
-         write (unit) int(centre_of(ax_r(:, ish)), kind=8), int(ax_l(ish), kind=8), int(ax_np(ish), kind=8)
+         write (unit) int(centre_of(ax_r(:, ish)), int64), int(ax_l(ish), int64), int(ax_np(ish), int64)
          write (unit) ax_e(1:ax_np(ish), ish), raw_coef(ax_l(ish), ax_np(ish), ax_e(1:ax_np(ish), ish), &
             ax_c(1:ax_np(ish), ish), len_trim(aux_json) > 0)
       end do

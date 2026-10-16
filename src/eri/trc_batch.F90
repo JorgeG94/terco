@@ -32,7 +32,8 @@
 ! the work list by class and size per class.  Left until it is measured.
 !
 module trc_batch
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX, LTOT, NHERM_MAX, NHERM_PAIR, nherm, tables_init, &
                            hidx, hdir, hm1, hm2, hcf, nherm_of, &
                            ht, hu, hv, hsgn, hshift

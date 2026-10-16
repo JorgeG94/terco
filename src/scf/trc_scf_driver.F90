@@ -70,8 +70,7 @@
 !
 !
 module trc_scf_driver
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_eri, only: trc_eri_t
@@ -1211,7 +1210,7 @@ contains
 
       function wall() result(t)
          real(dp) :: t
-         integer(kind=8) :: cc, rate
+         integer(int64) :: cc, rate
          call system_clock(cc, rate)
          t = real(cc, dp)/real(rate, dp)
       end function wall

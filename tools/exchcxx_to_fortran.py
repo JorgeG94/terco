@@ -442,7 +442,7 @@ def emit_module(k: Kernel, src: Path) -> str:
         "! integrand is rho * eps.",
         "!",
         f"module {mod}",
-        f"{INDENT}use trc_boys, only: dp",
+        f"{INDENT}use pic_types, only: dp",
     ]
     imports = sorted(used)
     if imports:

@@ -169,7 +169,7 @@
 !
 module trc_capi
    use, intrinsic :: iso_c_binding
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
@@ -543,7 +543,7 @@ contains
       call trc_df_3c(bb%b, pb%p, ab%b, t)
       !$acc update self(t)
       !$acc exit data delete(t)
-      tens(1:int(n, 8)*n*m) = reshape(t, [n*n*m])
+      tens(1:int(n, int64)*n*m) = reshape(t, [n*n*m])
       deallocate (t)
       status = TRC_OK
    end function trc_compute_df3c
@@ -648,14 +648,14 @@ contains
       type(pairs_box), pointer :: pb
       real(dp), allocatable :: m(:, :, :), nrm(:)
       integer :: n, k
-      integer(kind=8) :: ntot
+      integer(int64) :: ntot
 
       status = TRC_ERR_NULL
       if (.not. c_associated(basis) .or. .not. c_associated(pairs)) return
       call c_f_pointer(basis, bb)
       call c_f_pointer(pairs, pb)
       n = bb%b%nao
-      ntot = int(n, 8)*int(n, 8)*int(TRC_NMULT, 8)
+      ntot = int(n, int64)*int(n, int64)*int(TRC_NMULT, int64)
       allocate (m(n, n, TRC_NMULT))
       !$acc enter data create(m)
       call trc_multipoles(bb%b, pb%p, real(origin, dp), m)

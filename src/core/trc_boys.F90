@@ -24,9 +24,9 @@
 !     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
 !
 module trc_boys
+   use pic_types, only: dp
    implicit none
    private
-   integer, parameter, public :: dp = selected_real_kind(15, 307)
    public :: boys_eval, boys_init
    integer,  parameter, public :: BOYS_MMAX   = 16
    integer,  parameter, public :: BOYS_NCHEB  = 5

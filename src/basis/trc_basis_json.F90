@@ -6,7 +6,7 @@
 ! Ported from metalquicha's mqc_json_basis_reader
 !
 module trc_basis_json
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use json_module, only: json_file

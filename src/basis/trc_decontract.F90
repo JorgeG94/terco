@@ -3,7 +3,7 @@
 ! contraction as a matrix transform instead.
 !
 module trc_decontract
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    implicit none
    private

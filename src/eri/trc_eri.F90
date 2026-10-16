@@ -21,7 +21,8 @@
 ! are applied here.
 !
 module trc_eri
-   use trc_boys, only: dp, boys_init
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_init
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
    use trc_hgp, only: build_pairs_hgp
@@ -82,11 +83,11 @@ module trc_eri
       integer :: nao_w = 0
       logical :: on_device = .false.
       integer :: nlaunch = 0
-      integer(kind=8) :: nkept = 0
+      integer(int64) :: nkept = 0
       !! Quartets that survive both screens in the last build, counted only
       !! when fock_resident is asked for it. Diagnostic: it costs a full
       !! extra enumeration pass.
-      integer(kind=8) :: nwork = 0
+      integer(int64) :: nwork = 0
       type(comm_t) :: comm
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then

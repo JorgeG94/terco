@@ -15,7 +15,7 @@
 !     a subtraction rather than a search.
 !
 module trc_cart
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_tables, only: LMAX
    implicit none
    private

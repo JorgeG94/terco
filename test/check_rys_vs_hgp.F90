@@ -23,7 +23,7 @@
 !
 program check_rys_vs_hgp
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json

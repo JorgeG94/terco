@@ -25,7 +25,7 @@ module trc_sad
    !! range, with the atom list cut to that nucleus; `subset` copies the folded
    !! coefficients as they are. An atom's shells must be contiguous (every
    !! reader here guarantees it); an interleaved basis is refused.
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_linalg, only: trc_linalg_t

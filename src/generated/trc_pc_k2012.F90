@@ -14,8 +14,8 @@
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_pc_k2012
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX

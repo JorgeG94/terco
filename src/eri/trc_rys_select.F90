@@ -18,7 +18,7 @@
 ! touched by it.
 !
 module trc_rys_select
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_rys_kernels, only: rys_has_class
    implicit none
    private

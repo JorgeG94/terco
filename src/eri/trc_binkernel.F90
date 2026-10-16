@@ -18,7 +18,8 @@
 !     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
 !
 module trc_binkernel
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp, int64
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
@@ -64,11 +65,11 @@ module trc_binkernel
    !
    type, public :: trc_plan_t
       integer :: nseg = 0, nlaunch = 0
-      integer(kind=8) :: nwork = 0
+      integer(int64) :: nwork = 0
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
-      integer(kind=8), allocatable :: sOff(:)
+      integer(int64), allocatable :: sOff(:)
       logical :: on_device = .false.
    contains
       procedure :: build   => plan_build
@@ -78,7 +79,7 @@ module trc_binkernel
 
 contains
 
-   integer(kind=8) function launch_cap()
+   integer(int64) function launch_cap()
       !! The one-time pair ordering, off unless asked for. See the comment at
       !! its call site for what it costs and buys.
       !! TRC_LAUNCH_CAP caps the quartets in one launch; 0 (default) is one
@@ -87,10 +88,10 @@ contains
       integer :: ios
       e = ' '
       call get_environment_variable('TRC_LAUNCH_CAP', e)
-      launch_cap = 0_8
+      launch_cap = 0_int64
       if (len_trim(e) > 0) then
          read (e, *, iostat=ios) launch_cap
-         if (ios /= 0) launch_cap = 0_8
+         if (ios /= 0) launch_cap = 0_int64
       end if
    end function launch_cap
 
@@ -210,17 +211,17 @@ contains
       !! This rank's share of the sorted work list: every nranks-th item from
       !! rank. The caller reduces the result across ranks.
       integer,  intent(out)   :: nlaunch
-      integer(kind=8), intent(out) :: nwork
-      integer(kind=8), intent(out), optional :: nkept
+      integer(int64), intent(out) :: nwork
+      integer(int64), intent(out), optional :: nkept
       !! Diagnostic: how many of `nwork` actually survive the in-kernel
       !! Schwarz and density tests.  Costs a separate cheap pass, so it is
       !! optional and off in the timed path.
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(kind=8) :: nt
+      integer(int64) :: nt
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sPA(:), sPB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
-      integer(kind=8), allocatable :: sOff(:)
+      integer(int64), allocatable :: sOff(:)
 
       ! Order the pairs inside each bin by how much they matter, once, so
       ! that neighbouring threads of a warp agree about screening. The
@@ -303,9 +304,9 @@ contains
             sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
             sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
             if (ka == kb) then
-               nt = int(nA, 8)*int(nA + 1, 8)/2
+               nt = int(nA, int64)*int(nA + 1, int64)/2
             else
-               nt = int(nA, 8)*int(nB, 8)
+               nt = int(nA, int64)*int(nB, int64)
             end if
             !
             ! one_bin_item takes its within-segment index as a default integer,
@@ -316,7 +317,7 @@ contains
             ! because widening the index costs registers in the hot kernel and
             ! the register budget is already the binding constraint.
             !
-            if (nt > 2147483000_8) error stop &
+            if (nt > 2147483000_int64) error stop &
                "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"
             sOff(is + 1) = sOff(is) + nt
          end do
@@ -333,8 +334,8 @@ contains
       if (seg_stats_on()) then
          block
             integer :: q, nsmall
-            integer(kind=8) :: mn, mx, sz
-            mn = huge(0_8); mx = 0_8; nsmall = 0
+            integer(int64) :: mn, mx, sz
+            mn = huge(0_int64); mx = 0_int64; nsmall = 0
             do q = 1, nseg
                sz = sOff(q + 1) - sOff(q)
                mn = min(mn, sz); mx = max(mx, sz)
@@ -380,9 +381,9 @@ contains
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl, key2
-         integer(kind=8) :: lcap
+         integer(int64) :: lcap
          logical :: l2
-         integer(kind=8) :: o2
+         integer(int64) :: o2
          ! The trivial primitive-shell view used to be built here -- eight
          ! arrays, allocated, filled, and pushed to the device on every Fock
          ! build -- purely to fill dummy arguments the scalar kernel never
@@ -518,15 +519,15 @@ contains
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
                          npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, nkept)
       integer,  intent(in) :: nseg, npair, nbas
-      integer(kind=8), intent(in) :: nwork
+      integer(int64), intent(in) :: nwork
       integer,  intent(in) :: sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in) :: sD(nseg)
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in) :: sp_i(npair), sp_j(npair)
       real(dp), intent(in) :: sp_q(npair), thresh, dsh(nbas, nbas)
-      integer(kind=8), intent(out) :: nkept
+      integer(int64), intent(out) :: nkept
 
-      integer(kind=8) :: gt, nk
+      integer(int64) :: gt, nk
       integer :: lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl
       real(dp) :: qcut
 
@@ -585,11 +586,11 @@ contains
       integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
       integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
       logical, intent(inout) :: sD(n)
-      integer(kind=8), intent(inout) :: sOff(n + 1)
+      integer(int64), intent(inout) :: sOff(n + 1)
       integer :: k
       integer, allocatable :: t(:)
       logical, allocatable :: tl(:)
-      integer(kind=8), allocatable :: to(:)
+      integer(int64), allocatable :: to(:)
       allocate (t(n), tl(n), to(n + 1))
       t = sA(ord);  sA = t
       t = sNB(ord); sNB = t
@@ -606,9 +607,9 @@ contains
       to(1) = 0
       do k = 1, n
          if (sD(k)) then
-            to(k + 1) = to(k) + int(sA(k), 8)*int(sA(k) + 1, 8)/2
+            to(k + 1) = to(k) + int(sA(k), int64)*int(sA(k) + 1, int64)/2
          else
-            to(k + 1) = to(k) + int(sA(k), 8)*int(sNB(k), 8)
+            to(k + 1) = to(k) + int(sA(k), int64)*int(sNB(k), int64)
          end if
       end do
       sOff = to
@@ -624,10 +625,10 @@ contains
                        npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
       integer,  intent(in)    :: nseg, npair, nbas, npp, nao, rank, nranks
-      integer(kind=8), intent(in) :: nwork
+      integer(int64), intent(in) :: nwork
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: jfac, kfac
@@ -640,7 +641,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-      integer(kind=8) :: gt, nr, i
+      integer(int64) :: gt, nr, i
       integer :: lo, hi, mid, seg, t
 
       !
@@ -694,10 +695,10 @@ contains
                              ndens, dmat, jmat, kmat, rank, nranks)
       !! Whole-worklist driver for the general-density kernel.
       integer,  intent(in)    :: nseg, npair, nbas, npp, nao, ndens, rank, nranks
-      integer(kind=8), intent(in) :: nwork
+      integer(int64), intent(in) :: nwork
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       logical,  intent(in)    :: sD(nseg)
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh, jfac, kfac, omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -707,7 +708,7 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-      integer(kind=8) :: gt, nr, i
+      integer(int64) :: gt, nr, i
       integer :: lo, hi, mid, seg, t
 
       ! `local()` is NOT optional here, and the reason is worth stating.
@@ -1755,11 +1756,11 @@ contains
       logical, intent(in)  :: use_dens
 
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(kind=8) :: nt
+      integer(int64) :: nt
       integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
-      integer(kind=8), allocatable :: sOff(:)
+      integer(int64), allocatable :: sOff(:)
 
       call this%release()
 
@@ -1813,9 +1814,9 @@ contains
             sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
             sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
             if (ka == kb) then
-               nt = int(nA, 8)*int(nA + 1, 8)/2
+               nt = int(nA, int64)*int(nA + 1, int64)/2
             else
-               nt = int(nA, 8)*int(nB, 8)
+               nt = int(nA, int64)*int(nB, int64)
             end if
             !
             ! one_bin_item takes its within-segment index as a default integer,
@@ -1826,7 +1827,7 @@ contains
             ! because widening the index costs registers in the hot kernel and
             ! the register budget is already the binding constraint.
             !
-            if (nt > 2147483000_8) error stop &
+            if (nt > 2147483000_int64) error stop &
                "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"
             sOff(is + 1) = sOff(is) + nt
          end do

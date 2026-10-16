@@ -26,7 +26,7 @@
 ! radius rather than to the eighth digit.
 !
 module trc_pcm_radii
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private

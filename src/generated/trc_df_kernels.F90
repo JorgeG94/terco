@@ -18,7 +18,7 @@
 ! module, where the order-dependent digestion actually is.
 !
 module trc_df_kernels
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_df_2c_k00, only: df_2c_k00
    use trc_df_2c_k01, only: df_2c_k01
    use trc_df_2c_k02, only: df_2c_k02

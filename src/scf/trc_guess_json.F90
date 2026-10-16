@@ -35,7 +35,7 @@
 ! integrates the guess against S.
 !
 module trc_guess_json
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_cart_perm, only: build_ao_perm

@@ -26,7 +26,7 @@
 ! not touch.
 !
 module trc_xc_functional
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar
    use trc_xc_b97_d, only: b97_d_exc_vxc_unpolar, b97_d_exc_vxc_polar
    use trc_xc_bmk_c, only: bmk_c_exc_vxc_unpolar, bmk_c_exc_vxc_polar

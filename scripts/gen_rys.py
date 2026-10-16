@@ -267,7 +267,7 @@ def main():
     # No Boys function; the root lookup replaces it, inlined (see
     # rys_inline.py) rather than called.
     head, n1 = re.subn(r"   use trc_boys, only:.*?BOYS_DT, BOYS_DTINV\n",
-                       f"   use trc_boys, only: dp\n" + ri.roots_table_use(nroots),
+                       ri.roots_table_use(nroots),
                        head, count=1, flags=re.S)
     assert n1 == 1
 

@@ -26,7 +26,7 @@
 !     sweep can read level n+1 with no ordering hazard.
 !
 module trc_tables
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
 

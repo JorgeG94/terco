@@ -5,7 +5,7 @@ program bench_gc
    !! One density, a decaying band as check_gc uses, so that neither path
    !! gets to screen on a block-diagonal guess. Reports the build time, the
    !! per-Fock time of each path, and how far the two Fock matrices differ.
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json
@@ -111,9 +111,9 @@ program bench_gc
       '   relative ', maxval(abs(g1 - gref))/max(1.0_dp, maxval(abs(gref)))
    worst = maxval(abs(g1 - g2))
    print '(a,f8.3,a,f9.3,a,i0,a,i0,a,i0)', '  segmented : build ', tb1, ' s   fock ', tf1, &
-      ' s   launches ', e1%nlaunch, '   Mquartets enum ', int(e1%nwork/1000000_8), ' kept ', int(e1%nkept/1000000_8)
+      ' s   launches ', e1%nlaunch, '   Mquartets enum ', int(e1%nwork/1000000_int64), ' kept ', int(e1%nkept/1000000_int64)
    print '(a,f8.3,a,f9.3,a,i0,a,i0,a,i0)', '  general   : build ', tb2, ' s   fock ', tf2, &
-      ' s   launches ', e2%nlaunch, '   Mquartets enum ', int(e2%nwork/1000000_8), ' kept ', int(e2%nkept/1000000_8)
+      ' s   launches ', e2%nlaunch, '   Mquartets enum ', int(e2%nwork/1000000_int64), ' kept ', int(e2%nkept/1000000_int64)
    print '(a,es10.2,a,es10.2)', '  worst |G_seg - G_gen| ', worst, '  scale ', maxval(abs(g1))
 contains
 
@@ -122,7 +122,7 @@ contains
       integer, intent(in) :: nao
       real(dp), intent(out) :: d(nao, nao)
       integer :: u, ios
-      integer(kind=8) :: nchk
+      integer(int64) :: nchk
       open (newunit=u, file=fn, access='stream', form='unformatted', &
             status='old', iostat=ios)
       if (ios /= 0) then
@@ -137,7 +137,7 @@ contains
    end subroutine read_density
    subroutine tick(t)
       real(dp), intent(out) :: t
-      integer(kind=8) :: c, rate
+      integer(int64) :: c, rate
       call system_clock(c, rate)
       t = real(c, dp)/real(rate, dp)
    end subroutine tick

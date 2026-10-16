@@ -14,7 +14,7 @@
 ! Not a normalisation fix: see trc_ao_norm.F90 for the GAMESS scale.
 !
 module trc_cart_perm
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
 

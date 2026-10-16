@@ -24,7 +24,7 @@
 ! matching of their own.
 !
 program check_pcm_cavity
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_error, only: error_t
    use trc_pcm, only: trc_pcm_t, pcm_surface_t, build_pcm_surface, pcm_sd_matrices, &
                       pcm_switch_h, pcm_model_from_name, PCM_MODEL_CPCM, PCM_MODEL_IEFPCM

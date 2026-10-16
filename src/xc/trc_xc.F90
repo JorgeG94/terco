@@ -103,7 +103,7 @@
 ! the traffic is nothing next to the values.
 !
 module trc_xc
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, XC_MAX_KERNELS
@@ -138,7 +138,7 @@ contains
       real(dp), intent(in) :: dmat(b%nao, b%nao)
       real(dp), intent(out) :: vxc(b%nao, b%nao)
       real(dp), intent(out) :: exc, nelec
-      integer(kind=8), intent(in), optional :: budget
+      integer(int64), intent(in), optional :: budget
       real(dp), intent(out), optional :: t_points, t_pairs
       !! Wall time spent in the two kernels, for the benchmark. A `do
       !! concurrent` under -stdpar returns when the device is done, so the
@@ -150,11 +150,11 @@ contains
       type(comm_t), intent(in), optional :: comm     !! split the batches over its ranks
       type(trc_linalg_t), intent(inout), optional :: la  !! GEMM handles; made and released here if absent
       real(dp) :: tp, tq, rtol
-      integer(kind=8) :: cap
+      integer(int64) :: cap
       integer :: nsk
 
-      cap = 8388608_8
-      if (present(budget)) cap = max(budget, 1_8)
+      cap = 8388608_int64
+      if (present(budget)) cap = max(budget, 1_int64)
       rtol = XC_RHO_TOL
       if (present(rho_tol)) rtol = rho_tol
       call xc_drive(b, xg, func, 1, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk, comm, la)
@@ -174,18 +174,18 @@ contains
       real(dp), intent(in) :: dmat(b%nao, b%nao, 2)
       real(dp), intent(out) :: vxc(b%nao, b%nao, 2)
       real(dp), intent(out) :: exc, nelec
-      integer(kind=8), intent(in), optional :: budget
+      integer(int64), intent(in), optional :: budget
       real(dp), intent(out), optional :: t_points, t_pairs
       real(dp), intent(in), optional :: rho_tol
       integer, intent(out), optional :: n_skipped
       type(comm_t), intent(in), optional :: comm
       type(trc_linalg_t), intent(inout), optional :: la
       real(dp) :: tp, tq, rtol
-      integer(kind=8) :: cap
+      integer(int64) :: cap
       integer :: nsk
 
-      cap = 8388608_8
-      if (present(budget)) cap = max(budget, 1_8)
+      cap = 8388608_int64
+      if (present(budget)) cap = max(budget, 1_int64)
       rtol = XC_RHO_TOL
       if (present(rho_tol)) rtol = rho_tol
       call xc_drive(b, xg, func, 2, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk, comm, la)
@@ -202,13 +202,13 @@ contains
       real(dp), intent(in) :: dmat(b%nao, b%nao, nspin)
       real(dp), intent(out) :: vxc(b%nao, b%nao, nspin)
       real(dp), intent(out) :: exc, nelec, t_points, t_pairs
-      integer(kind=8), intent(in) :: cap
+      integer(int64), intent(in) :: cap
       real(dp), intent(in) :: rho_tol
       integer, intent(out) :: n_skipped
       type(comm_t), intent(in), optional :: comm
       type(trc_linalg_t), intent(inout), optional, target :: la
 
-      integer(kind=8) :: need, nchi, sa, sb, sc
+      integer(int64) :: need, nchi, sa, sb, sc
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, rank, nranks, k, s, nb, k0, k1, cnt, mp, ml
       integer, allocatable :: c_off(:), pr_off(:), active(:), order(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
       integer :: nwork
@@ -288,11 +288,11 @@ contains
          need = 0
          b1 = b0 - 1
          do ib = b0, xg%nbatch
-            if (need + int(npp(ib), 8)*int(nlp(ib), 8) > cap .and. ib > b0) exit
-            need = need + int(npp(ib), 8)*int(nlp(ib), 8)
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > cap .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
             b1 = ib
          end do
-         nchi = max(need, 1_8)
+         nchi = max(need, 1_int64)
          p0 = xg%b_off(b0)
          np = xg%b_off(b1 + 1) - p0
          nb = b1 - b0 + 1
@@ -312,7 +312,7 @@ contains
             ib = ord(k)
             c_off(ib) = int(need)
             pr_off(ib) = npairs
-            need = need + int(npp(ib), 8)*int(nlp(ib), 8)
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
             npairs = npairs + nlp(ib)*nlp(ib)
             pb_off(k + 1) = npairs
             ! Collocation work items: (shell, point) of every active batch,
@@ -347,7 +347,7 @@ contains
             end do
             cnt = k1 - k0 + 1
             if (ml > 0) then
-               sa = int(mp, 8)*int(ml, 8); sb = int(ml, 8)*int(ml, 8)
+               sa = int(mp, int64)*int(ml, int64); sb = int(ml, int64)*int(ml, int64)
                do s = 1, nspin
                   call lp%gemm_strided('N', 'N', mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
                                        dloc(pr_off(ib) + 1, s), ml, sb, 0.0_dp, xt(c_off(ib) + 1, s), mp, sa, cnt)
@@ -375,7 +375,7 @@ contains
             end do
             cnt = k1 - k0 + 1
             if (ml > 0) then
-               sa = int(mp, 8)*int(ml, 8); sc = int(ml, 8)*int(ml, 8)
+               sa = int(mp, int64)*int(ml, int64); sc = int(ml, int64)*int(ml, int64)
                do s = 1, nspin
                   call lp%gemm_strided('T', 'N', ml, ml, mp, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
                                        zt(c_off(ib) + 1, s), mp, sa, 0.0_dp, vloc(pr_off(ib) + 1, s), ml, sc, cnt)
@@ -508,7 +508,7 @@ contains
 
    function wall() result(t)
       real(dp) :: t
-      integer(kind=8) :: cc, rate
+      integer(int64) :: cc, rate
       call system_clock(cc, rate)
       t = real(cc, dp)/real(rate, dp)
    end function wall
@@ -538,10 +538,10 @@ contains
 
    ! Zero the tiles whose padding the GEMMs read.
    subroutine xc_zero(nchi, nspin, chi, zt)
-      integer(kind=8), intent(in) :: nchi
+      integer(int64), intent(in) :: nchi
       integer, intent(in) :: nspin
       real(dp), intent(out) :: chi(nchi), zt(nchi, nspin)
-      integer(kind=8) :: i
+      integer(int64) :: i
       integer :: s
       do concurrent(i=1:nchi)
          chi(i) = 0.0_dp
@@ -568,7 +568,7 @@ contains
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
       integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
       integer, intent(in) :: c_off(nbatch + 1), npp(nbatch)
-      integer(kind=8), intent(in) :: nchi
+      integer(int64), intent(in) :: nchi
       real(dp), intent(inout) :: chi(nchi), gchi(nchi, 3)
       integer :: t
 
@@ -587,7 +587,7 @@ contains
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
       integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
       integer, intent(in) :: c_off(nbatch + 1), npp(nbatch)
-      integer(kind=8), intent(in) :: nchi
+      integer(int64), intent(in) :: nchi
       real(dp), intent(inout) :: chi(nchi), gchi(nchi, 3)
       integer :: k, ib, tt, npb, ks, gl, gg, ish, l, nc, m, ld, off, iao
       real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX)
@@ -670,7 +670,7 @@ contains
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
       integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
       real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      integer(kind=8), intent(in) :: nchi
+      integer(int64), intent(in) :: nchi
       real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, nspin)
       real(dp), intent(inout) :: zt(nchi, nspin)
       real(dp), intent(out) :: eg(np), ng(np)
@@ -690,7 +690,7 @@ contains
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
       integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
       real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      integer(kind=8), intent(in) :: nchi
+      integer(int64), intent(in) :: nchi
       real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, nspin)
       real(dp), intent(inout) :: zt(nchi, nspin)
       real(dp), intent(out) :: eg, ng

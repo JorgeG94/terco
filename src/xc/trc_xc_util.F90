@@ -23,7 +23,7 @@
 ! CPU-vs-GPU bit identity is only as good as the flags until that is settled.
 !
 module trc_xc_util
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use bit_repro, only: erfc_reprod, erf_reprod, exp_reprod, cuberoot
    implicit none
    private

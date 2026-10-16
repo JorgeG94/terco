@@ -876,8 +876,8 @@ def emit_class_module(kinds, cmd, scalarize=False, bra_fastest=True, ket_inner=T
 ! defaulting.)
 !
 module {mod}
-   use, intrinsic :: iso_fortran_env, only: int64
-   use trc_boys, only: dp, boys_eval, BOYS_MMAX, boys_table, &
+   use pic_types, only: dp, int64
+   use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &
                          BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
@@ -923,8 +923,7 @@ def emit_dispatcher(cmd):
          '#error "trc_ra_kernels.F90 needs TRC_PERCLASS (it imports CLASS_RADIX from trc_pc_kernels)."',
          "#endif",
          "module trc_ra_kernels",
-         "   use, intrinsic :: iso_fortran_env, only: int64",
-         "   use trc_boys, only: dp",
+         "   use pic_types, only: dp, int64",
          "   use trc_pc_kernels, only: CLASS_RADIX"]
     for tag, _k in mods:
         o.append(f"   use trc_ra_k{tag}, only: ras{tag}")

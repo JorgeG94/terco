@@ -11,7 +11,7 @@
 ! compare against.
 !
 program scf_sad
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_basis_json, only: trc_basis_from_json
@@ -54,7 +54,7 @@ program scf_sad
       block
          integer :: u
          open (newunit=u, file='sad_dump_'//trim(bases(ib))//'.bin', access='stream', form='unformatted', status='replace')
-         write (u) int(bas%nao, 8), int(bas%nshell, 8), int(bas%sh_l, 8), int(bas%sh_ao, 8); write (u) smat, dguess
+         write (u) int(bas%nao, int64), int(bas%nshell, int64), int(bas%sh_l, int64), int(bas%sh_ao, int64); write (u) smat, dguess
          close (u)
       end block
       allocate (dg3(bas%nao, bas%nao, 1)); dg3(:, :, 1) = dguess

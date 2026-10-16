@@ -21,7 +21,7 @@
 !     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
 !
 module trc_bins
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_tables, only: LMAX
    use pic_types, only: int64, int_index
    use pic_sorting, only: sort_index
@@ -575,7 +575,7 @@ contains
       !! Interleave the low ten bits of three coordinates.
       integer, intent(in) :: ix, iy, iz
       integer :: t, bit
-      morton3 = 0_8
+      morton3 = 0_int64
       do bit = 0, 9
          t = ibits(max(0, min(1023, ix)), bit, 1)
          if (t /= 0) morton3 = ibset(morton3, 3*bit)

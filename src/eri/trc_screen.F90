@@ -29,10 +29,10 @@
 ! checks the bounds, in check_screen.
 !
 module trc_screen
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_tables, only: LTOT, NHERM_MAX
    use trc_batch, only: eri_batch, ncart
-   use, intrinsic :: iso_fortran_env, only: int64
+   use pic_types, only: int64
    use trc_hgp, only: hgp_batch, hgp_scratch_size
    implicit none
    private

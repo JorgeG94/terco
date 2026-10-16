@@ -16,7 +16,7 @@
 ! precisely because none of it is part of the library.
 !
 module trc_test_basis
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    implicit none
    public

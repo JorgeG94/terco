@@ -27,7 +27,7 @@
 ! extra multiply per primitive and nothing else.
 !
 module trc_collocation
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
 

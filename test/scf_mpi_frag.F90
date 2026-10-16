@@ -47,7 +47,7 @@
 ! communicator must reproduce trc_scf on one rank -- not a frozen literal.
 !
 program scf_mpi_frag
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, &
                           allgather, MPI_MAX, MPI_MIN
    use trc_test_basis, only: read_xyz, unpack_basis

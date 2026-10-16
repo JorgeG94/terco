@@ -15,7 +15,8 @@
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_df_2c_k21
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DTINV, BOYS_DT
+   use pic_types, only: dp, int64
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DTINV, BOYS_DT
    implicit none
    private
    public :: df_2c_k21
@@ -39,9 +40,9 @@ contains
       integer,  intent(in)    :: ord_a(na), ord_c(nc)
       real(dp), intent(inout) :: jmat(nao, nao)
 
-      integer(kind=8) :: t
+      integer(int64) :: t
 
-      do concurrent(t = 0:int(na, 8)*nc - 1)
+      do concurrent(t = 0:int(na, int64)*nc - 1)
          call df_2c_i21(t, nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                    na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       end do
@@ -50,7 +51,7 @@ contains
    pure subroutine df_2c_i21(t, nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                          na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       !$acc routine seq
-      integer(kind=8), intent(in) :: t
+      integer(int64), intent(in) :: t
       integer,  intent(in)    :: nshell, maxnp, na, nc, nao
       integer,  intent(in)    :: sh_np(nshell), sh_ao(nshell)
       real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
@@ -61,7 +62,7 @@ contains
       integer  :: ii, jj, a, c, mu, nu
       real(dp) :: blk(18)
 
-      ii = ord_a(int(mod(t, int(na, 8))) + 1)
+      ii = ord_a(int(mod(t, int(na, int64))) + 1)
       jj = ord_c(int(t/na) + 1)
       call df_2c21(sh_np(ii), sh_e(:, ii), sh_c(:, ii), sh_r(:, ii), &
                  sh_np(jj), sh_e(:, jj), sh_c(:, jj), sh_r(:, jj), blk)

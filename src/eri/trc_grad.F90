@@ -19,7 +19,7 @@
 ! optimisation's max-force criterion (1.5e-5).
 !
 module trc_grad
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_bins, only: pair_bins_t
 #ifdef TERCO_RYS
    use trc_rys_grad_kernels, only: rysg_has_class, rysg_screen_dispatch, &
@@ -34,7 +34,7 @@ module trc_grad
    !! literal rather than imported, for the same reason: importing would
    !! pull in a module this one has no other use for, for one integer.
 
-   integer(kind=8), parameter :: GRAD_COMPACT_CAP = 2_8**25
+   integer(int64), parameter :: GRAD_COMPACT_CAP = 2_int64**25
    !! Memory bound for ORDERED SURVIVOR COMPACTION's per-batch survivor-list
    !! scratch (out_seg/out_iab/out_icd: three 4-byte integer arrays, plus an
    !! 8-byte atomic counter). A class run is walked in segment-aligned
@@ -91,12 +91,12 @@ contains
       integer,  intent(in)    :: rank, nranks
 
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(kind=8) :: nt
+      integer(int64) :: nt
       integer, allocatable :: sA(:), sOA(:), sOB(:), sNB(:), sPA(:), sPB(:)
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       logical, allocatable :: sD(:)
-      integer(kind=8), allocatable :: sOff(:)
-      integer(kind=8) :: nwork
+      integer(int64), allocatable :: sOff(:)
+      integer(int64) :: nwork
 
       smax_keep = int(-log10(thresh))*b%sres
 
@@ -132,11 +132,11 @@ contains
             sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
             sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
             if (ka == kb) then
-               nt = int(nA, 8)*int(nA + 1, 8)/2
+               nt = int(nA, int64)*int(nA + 1, int64)/2
             else
-               nt = int(nA, 8)*int(nB, 8)
+               nt = int(nA, int64)*int(nB, int64)
             end if
-            if (nt > 2147483000_8) error stop &
+            if (nt > 2147483000_int64) error stop &
                "terco: bin-pair segment exceeds a default integer in grad_bins"
             sOff(is + 1) = sOff(is) + nt
          end do
@@ -229,11 +229,11 @@ contains
       integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
       integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
       logical, intent(inout) :: sD(n)
-      integer(kind=8), intent(inout) :: sOff(n + 1)
+      integer(int64), intent(inout) :: sOff(n + 1)
       integer :: k
       integer, allocatable :: t(:)
       logical, allocatable :: tl(:)
-      integer(kind=8), allocatable :: to(:)
+      integer(int64), allocatable :: to(:)
       allocate (t(n), tl(n), to(n + 1))
       t = sA(ord);  sA = t
       t = sNB(ord); sNB = t
@@ -249,9 +249,9 @@ contains
       to(1) = 0
       do k = 1, n
          if (sD(k)) then
-            to(k + 1) = to(k) + int(sA(k), 8)*int(sA(k) + 1, 8)/2
+            to(k + 1) = to(k) + int(sA(k), int64)*int(sA(k) + 1, int64)/2
          else
-            to(k + 1) = to(k) + int(sA(k), 8)*int(sNB(k), 8)
+            to(k + 1) = to(k) + int(sA(k), int64)*int(sNB(k), int64)
          end if
       end do
       sOff = to
@@ -293,7 +293,7 @@ contains
                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                  ndens, dmat, gp, rank, nranks)
       integer,  intent(in)    :: key, c0, c1, nseg, npair, nbas, nao, natm
-      integer(kind=8), intent(in) :: sOff(nseg + 1)
+      integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
@@ -315,16 +315,16 @@ contains
       integer :: nseg_run, seg_lo, seg_hi, b0, b1
       integer, allocatable :: out_seg(:), out_iab(:), out_icd(:)
       integer :: nmax
-      integer(kind=8) :: w0, w1, gend, nout
-      integer(kind=8) :: ctr(1)
+      integer(int64) :: w0, w1, gend, nout
+      integer(int64) :: ctr(1)
       !! A 1-element array, not a bare scalar: nvfortran's mem:separate
       !! present-table lookup for an atomic-capture target threaded through
       !! two subroutine layers hangs on a bare scalar here (same finding as
       !! the (ps|ss) prototype's own ctr).
 
       nseg_run = c1 - c0 + 1
-      seg_lo = c0 + int((int(rank, 8)*int(nseg_run, 8))/int(nranks, 8))
-      seg_hi = c0 + int((int(rank + 1, 8)*int(nseg_run, 8))/int(nranks, 8)) - 1
+      seg_lo = c0 + int((int(rank, int64)*int(nseg_run, int64))/int(nranks, int64))
+      seg_hi = c0 + int((int(rank + 1, int64)*int(nseg_run, int64))/int(nranks, int64)) - 1
       if (seg_hi < seg_lo) return
 
       b0 = seg_lo
@@ -343,13 +343,13 @@ contains
             w1 = min(gend, w0 + GRAD_COMPACT_CAP - 1)
             nmax = int(w1 - w0 + 1)
             allocate (out_seg(nmax), out_iab(nmax), out_icd(nmax))
-            ctr(1) = 0_8
+            ctr(1) = 0_int64
             !$acc enter data create(out_seg, out_iab, out_icd) copyin(ctr)
             call rysg_screen_dispatch(key, b0, b1, w0, w1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                       npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
                                       out_seg, out_iab, out_icd, nmax, ctr)
             !$acc update host(ctr)
-            nout = min(ctr(1), int(nmax, 8))
+            nout = min(ctr(1), int(nmax, int64))
             call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                       npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
                                       nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &

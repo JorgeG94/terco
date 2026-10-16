@@ -38,7 +38,8 @@
 ! into six overlapping blocks per quartet.
 !
 module trc_api
-   use trc_boys, only: dp, boys_init
+   use pic_types, only: dp
+   use trc_boys, only: boys_init
    use trc_tables, only: LMAX
    use trc_1e_kernels, only: one_e_driver, ONE_E_LMAX
    use trc_mult_kernels, only: mult_driver, TRC_NMULT, MULT_LMAX

@@ -24,7 +24,7 @@ module trc_sap
    !! The nuclear attraction -Z/r is singular and already exact, so it is not
    !! quadratured: T and V_ne come in as analytic matrices and only the smooth,
    !! short-ranged screening potential is integrated.
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
@@ -56,7 +56,7 @@ module trc_sap
    !! The fitted potential set, unless a caller names another: Lehtola's fully
    !! numerical HelFEM fit (the GRASP sets are relativistic, no gain below heavy elements).
 
-   integer(kind=8), parameter :: SAP_TENSOR_BYTES = 2147483648_8
+   integer(int64), parameter :: SAP_TENSOR_BYTES = 2147483648_int64
    !! Device bytes the three-centre tensor may take at once.
    !!
    !! `trc_df_3c` returns the whole (nao, nao, naux) tensor with naux one function
@@ -324,7 +324,7 @@ contains
       if (talk) print '(a,a,a,i0,a)', "  sap: fitted potentials from ", trim(bpath), &
          ", up to ", nmax, " primitives per atom"
 
-      chunk = int(max(1_8, SAP_TENSOR_BYTES/(int(nao, 8)*int(nao, 8)*8_8)))
+      chunk = int(max(1_int64, SAP_TENSOR_BYTES/(int(nao, int64)*int(nao, int64)*8_int64)))
       chunk = min(chunk, b%natm)
       if (talk) print '(a,i0,a,i0,a)', "  sap: ", (b%natm + chunk - 1)/chunk, &
          " three-centre pass(es), ", chunk, " atoms each"

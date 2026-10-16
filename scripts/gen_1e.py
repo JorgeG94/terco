@@ -456,7 +456,7 @@ def emit_multipole_module(L, path, order="lexicographic"):
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_mult_kernels
-   use trc_boys, only: dp
+   use pic_types, only: dp
    implicit none
    private
    public :: multipole_dispatch, mult_driver, TRC_NMULT, MULT_LMAX
@@ -706,7 +706,8 @@ def emit_pcm_module(L, path, order="lexicographic"):
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_pcm_kernels
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none
    private
    public :: pcm_dispatch, pcm_potential_driver, pcm_fock_driver, PCM_LMAX
@@ -824,7 +825,8 @@ def main():
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_1e_kernels
-   use trc_boys, only: dp, BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none
    private
    public :: one_e_dispatch, one_e_driver, ONE_E_LMAX, TRC_NMULT

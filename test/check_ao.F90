@@ -37,7 +37,7 @@
 ! wrongly dropped from a batch changes S by the size of that shell.
 !
 program check_ao
-   use trc_boys, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -52,7 +52,7 @@ program check_ao
    real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
    real(dp) :: at_z(NATM), at_r(3, NATM)
    real(dp) :: pt(3), d(3), cs(NCART_MAX), gs(3, NCART_MAX), seed
-   integer(kind=8) :: lcg
+   integer(int64) :: lcg
    real(dp), allocatable :: probe(:, :), chi(:, :), gchi(:, :, :)
    real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), s_num(:, :), s_bat(:, :), col(:)
    type(trc_basis_t) :: b
@@ -86,10 +86,10 @@ program check_ao
 
    ! --- 1. values and gradients at a cloud of points, for pyscf ------------
    allocate (probe(3, NPROBE), chi(NPROBE, nao), gchi(3, NPROBE, nao))
-   lcg = 37_8
+   lcg = 37_int64
    do k = 1, NPROBE
       do i = 1, 3
-         lcg = mod(48271_8*lcg, 2147483647_8)
+         lcg = mod(48271_int64*lcg, 2147483647_int64)
          seed = real(lcg, dp)/2147483647.0_dp
          probe(i, k) = -3.0_dp + 7.0_dp*seed
       end do
@@ -106,7 +106,7 @@ program check_ao
       end do
    end do
    open (newunit=unit, file='ao_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(NPROBE, kind=8), int(nao, kind=8)
+   write (unit) int(NPROBE, int64), int(nao, int64)
    write (unit) probe
    write (unit) chi
    write (unit) gchi

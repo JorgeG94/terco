@@ -23,8 +23,7 @@
 ! and that is by design: it cannot pass silently.
 !
 module trc_linalg
-   use trc_boys, only: dp
-   use pic_types, only: default_int
+   use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm, pic_dot
    use pic_lapack_interfaces, only: pic_syev
 #ifdef _OPENACC
@@ -183,7 +182,7 @@ contains
       class(trc_linalg_t), intent(in) :: this
       character, intent(in) :: ta, tb
       integer, intent(in) :: m, n, k, lda, ldb, ldc, count
-      integer(kind=8), intent(in) :: sa, sb, sc
+      integer(int64), intent(in) :: sa, sb, sc
       real(dp), intent(in) :: alpha, beta
       real(dp), intent(in) :: a(*), b(*)
       real(dp), intent(inout) :: c(*)
@@ -205,9 +204,9 @@ contains
 #else
       block
          integer :: i
-         integer(kind=8) :: oa, ob, oc
+         integer(int64) :: oa, ob, oc
          do i = 1, count
-            oa = int(i - 1, 8)*sa; ob = int(i - 1, 8)*sb; oc = int(i - 1, 8)*sc
+            oa = int(i - 1, int64)*sa; ob = int(i - 1, int64)*sb; oc = int(i - 1, int64)*sc
             call this%gemm(ta, tb, m, n, k, alpha, a(oa + 1), lda, b(ob + 1), ldb, beta, c(oc + 1), ldc)
          end do
       end block
