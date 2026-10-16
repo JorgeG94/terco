@@ -88,7 +88,6 @@ module trc_scf_driver
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t
-   use trc_xc_functional, only: trc_xc_functional_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t
    use trc_scf_context, only: scf_ctx_t, bcast_flat
@@ -165,8 +164,7 @@ contains
       !! the calculation (trc_linalg's init is create-once and grows the
       !! workspace to nao). Absent, the run makes its own and releases them.
 
-      integer :: nao, nao_c, nspin, s, it, i, j, n2
-      integer :: nocc(2)
+      integer :: nao, nao_c, s, it, i, j, n2
       integer :: nxc, nu_c, nlr_c, nin_c, npcm   !! full size, or 1 when unused (see trc_scf_state%alloc)
       logical :: ok, sph
       type(scf_settings_t) :: cfg
@@ -186,26 +184,14 @@ contains
       !! separate means `opts%adiis = .false.` leaves the CDIIS path
       !! untouched, to the bit.
       logical :: adiis_active
-      logical :: nlc
-      type(trc_xc_functional_t) :: func
       type(trc_linalg_t), pointer :: lp
       type(error_t) :: err
-      logical :: pcm_on
       real(dp) :: epcm
-      logical :: dft, talk, diis_on, root, incr_on
+      logical :: diis_on
       real(dp) :: ctl(2)
-      real(dp) :: exx_lr, omega
-      !! A range-separated hybrid's extra long-range exchange fraction and
-      !! its omega: K_total = exx*K + exx_lr*K_erf(omega). Zero otherwise.
-      real(dp) :: exx, etot, eold, drms, e1, e2, exc, ngrid, occ, errmax
-      integer :: nfrac, ndamp
-      real(dp) :: diis_start
+      real(dp) :: etot, eold, drms, e1, e2, exc, ngrid, errmax
+      integer :: nfrac
       real(dp) :: tw0, tw1
-      ! The TRC_* experiment hooks (incr_*_env, eri_thresh_env), read once
-      ! per run: they only reread the environment, and the loop asked for
-      ! the same answer every iteration.
-      real(dp) :: eri_thresh_run, incr_start_run, incr_scale_run
-      integer :: incr_reset_run
       !! This iteration's share of the two totals, so the table says where
       !! the time went while it is going rather than only at the end. A
       !! Fock build is not the same cost twice: the SAD guess is atomic, so
@@ -216,33 +202,14 @@ contains
       ! Everything `opts` resolves to before the loop starts: the functional
       ! lookup and its rejections, the spin rule, the by-spin damping/DIIS
       ! defaults, and the env-hook overrides (trc_scf_settings). `cfg` is
-      ! immutable from here on; the local copies below are what the rest of
-      ! this routine already read them as, unchanged by the move.
+      ! immutable from here on, and the rest of this routine reads it
+      ! directly.
       ok = cfg%resolve(opts, nalpha, nbeta, msg=msg, comm=comm)
       if (.not. ok) then
          res%message = msg
          return
       end if
-      talk = cfg%talk
-      root = cfg%root
-      dft = cfg%dft
-      nlc = cfg%nlc
-      exx = cfg%exx
-      exx_lr = cfg%exx_lr
-      omega = cfg%omega
-      func = cfg%func
-      nspin = cfg%nspin
-      nocc = cfg%nocc
-      occ = cfg%occ
-      res%nspin = nspin
-      ndamp = cfg%ndamp
-      diis_start = cfg%diis_start
-      pcm_on = cfg%pcm_on
-      incr_on = cfg%incr_on
-      eri_thresh_run = cfg%eri_thresh_run
-      incr_start_run = cfg%incr_start_run
-      incr_reset_run = cfg%incr_reset_run
-      incr_scale_run = cfg%incr_scale_run
+      res%nspin = cfg%nspin
       ! The cavity, K and its LU are built and solved whole on every rank
       ! (replicated: cheap next to the integrals); pcm%operator splits the
       ! two integral passes over the ranks itself, given `comm`.
@@ -262,11 +229,11 @@ contains
       lp => ctx%lp
       res%e_nuc = ctx%e_nuc
       res%n_lindep = ctx%n_lindep
-      if (pcm_on) res%pcm_npoints = ctx%pcm%surface%n_points
-      if (dft) then
+      if (cfg%pcm_on) res%pcm_npoints = ctx%pcm%surface%n_points
+      if (cfg%dft) then
          res%grid_r = ctx%grid%coords
          res%grid_w = ctx%grid%weights
-         if (nlc) then
+         if (cfg%nlc) then
             res%grid_r_nlc = ctx%grid_nlc%coords
             res%grid_w_nlc = ctx%grid_nlc%weights
          end if
@@ -280,29 +247,29 @@ contains
       ! memory for nothing: on ionic05 in aug-cc-pVTZ (4255 functions, 4950
       ! Cartesian) an HF run carried ~2.4 GB of XC, unrestricted,
       ! range-separated, incremental and PCM matrices it had no use for.
-      nxc = merge(nao, 1, dft)
-      nu_c = merge(nao_c, 1, nspin == 2)
-      nlr_c = merge(nao_c, 1, exx_lr /= 0.0_dp)
-      nin_c = merge(nao_c, 1, incr_on)
-      npcm = merge(nao, 1, pcm_on)
+      nxc = merge(nao, 1, cfg%dft)
+      nu_c = merge(nao_c, 1, cfg%nspin == 2)
+      nlr_c = merge(nao_c, 1, cfg%exx_lr /= 0.0_dp)
+      nin_c = merge(nao_c, 1, cfg%incr_on)
+      npcm = merge(nao, 1, cfg%pcm_on)
       call st%alloc(ctx, cfg)
-      call cdiis%alloc(nao, nspin, opts%ndiis)
-      allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
+      call cdiis%alloc(nao, cfg%nspin, opts%ndiis)
+      allocate (res%dmat(nao, nao, cfg%nspin), res%cmo(nao, nao, cfg%nspin), res%eps(nao, cfg%nspin))
       ! Only when asked for: a second ndiis-deep history the size of
       ! cdiis's own, which matters on a system the size of w172, where
       ! one nao^2*ndiis block is already hundreds of megabytes.
-      if (opts%adiis) call adiis%alloc(nao, nspin, opts%ndiis)
+      if (opts%adiis) call adiis%alloc(nao, cfg%nspin, opts%ndiis)
 
       ! --- the guess, on the host, then everything goes up -------------------
       if (present(dguess)) then
          res%dmat = dguess
       else if (present(hguess)) then
-         do s = 1, nspin
-            call guess_from(hguess, nocc(s), res%dmat(:, :, s))
+         do s = 1, cfg%nspin
+            call guess_from(hguess, cfg%nocc(s), res%dmat(:, :, s))
          end do
       else if (opts%guess == "core") then
-         do s = 1, nspin
-            call guess_from(ctx%hcore, nocc(s), res%dmat(:, :, s))
+         do s = 1, cfg%nspin
+            call guess_from(ctx%hcore, cfg%nocc(s), res%dmat(:, :, s))
          end do
       else
          ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
@@ -312,8 +279,8 @@ contains
             end do
             st%w1(j, j) = ctx%hcore(j, j)
          end do
-         do s = 1, nspin
-            call guess_from(st%w1, nocc(s), res%dmat(:, :, s))
+         do s = 1, cfg%nspin
+            call guess_from(st%w1, cfg%nocc(s), res%dmat(:, :, s))
          end do
       end if
       res%cmo = 0.0_dp
@@ -337,10 +304,10 @@ contains
       ! What the SCF is actually running on. Two callers can hand over the
       ! same molecule and basis name and different shells -- one had a
       ! reader that kept dead primitives -- and that only shows here.
-      if (talk) print "(a,i0,a,i0,a,i0,a,i0)", "   basis: ", nao, " functions, ", b%nshell, &
+      if (cfg%talk) print "(a,i0,a,i0,a,i0,a,i0)", "   basis: ", nao, " functions, ", b%nshell, &
          " shells, ", sum(b%sh_np), " primitives, max ", maxval(b%sh_np)
-      if (talk) then
-         if (dft) then
+      if (cfg%talk) then
+         if (cfg%dft) then
             print "(a)", "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
                //"   fock(s)     xc(s)"
          else
@@ -355,7 +322,7 @@ contains
          ! Not taken at all when `sph` is false -- see this module's own
          ! header on why that keeps the Cartesian path byte-for-byte
          ! unchanged rather than merely numerically equivalent.
-         do s = 1, nspin
+         do s = 1, cfg%nspin
             call to_cart(b, sph, nao, nao_c, res%dmat(:, :, s), st%d_c(:, :, s))
          end do
          ! --- two-electron part, resident, entirely in Cartesian space -------
@@ -365,24 +332,24 @@ contains
          ! density it is handed, and the difference is small and getting
          ! smaller while the density is neither. See `build_g`'s own header.
          !
-         incr_now = incr_on .and. it > 1 &
-                    .and. errmax < incr_start_run &
-                    .and. mod(it - 1, max(1, incr_reset_run)) /= 0
-         call build_g(b, ctx%eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
-                      exx, exx_lr, omega, incr_scale_run, &
+         incr_now = cfg%incr_on .and. it > 1 &
+                    .and. errmax < cfg%incr_start_run &
+                    .and. mod(it - 1, max(1, cfg%incr_reset_run)) /= 0
+         call build_g(b, ctx%eri, nao_c, cfg%nspin, nu_c, nlr_c, nin_c, incr_now, cfg%incr_on, &
+                      cfg%exx, cfg%exx_lr, cfg%omega, cfg%incr_scale_run, &
                       st%d_c, st%gmat_c, st%dtot_c, st%jmat_c, st%w1_c, st%klr_c, &
                       st%gacc_c, st%dref_c, st%ddif_c)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in.
-         do s = 1, nspin
+         do s = 1, cfg%nspin
             call to_sph(b, sph, nao, nao_c, st%gmat_c(:, :, s), st%gmat(:, :, s))
          end do
          tw1 = wall()
          tmr%t_fock = tmr%t_fock + (tw1 - tw0)
          tmr%tf_it = tw1 - tw0
          ! --- exchange-correlation: finds its (Cartesian) density present ----
-         if (dft) then
-            call build_vxc(b, ctx%xg, ctx%xg_nlc, func, nlc, nspin, nao_c, nao, sph, opts%rho_tol, comm, lp, &
+         if (cfg%dft) then
+            call build_vxc(b, ctx%xg, ctx%xg_nlc, cfg%func, cfg%nlc, cfg%nspin, nao_c, nao, sph, opts%rho_tol, comm, lp, &
                            st%d_c, st%vxc_c, st%vxc, exc, ngrid, tmr%tx_pts, tmr%tx_prs)
          end if
          tw0 = wall()
@@ -390,21 +357,21 @@ contains
          tmr%tx_it = tw0 - tw1
          ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
          ! too: one set of charges, one operator added to both spins) -----
-         if (pcm_on) then
-            call build_pcm(b, ctx%pcm, ctx%pl, nspin, nao_c, nu_c, nao, sph, &
+         if (cfg%pcm_on) then
+            call build_pcm(b, ctx%pcm, ctx%pl, cfg%nspin, nao_c, nu_c, nao, sph, &
                            st%d_c, st%dtot_c, st%vpcm_c, st%vpcm, epcm, comm)
             tw1 = wall()
             tmr%t_pcm = tmr%t_pcm + (tw1 - tw0)
             tw0 = tw1
          end if
          ! --- energy at this density -----------------------------------------
-         call scf_energy(lp, nao, nspin, res%dmat, ctx%hcore, st%gmat, res%e_nuc, exc, epcm, e1, e2, etot)
+         call scf_energy(lp, nao, cfg%nspin, res%dmat, ctx%hcore, st%gmat, res%e_nuc, exc, epcm, e1, e2, etot)
          ! --- Fock and its commutator, per spin ------------------------------
-         call assemble_fock(nao, nxc, npcm, nspin, dft, pcm_on, ctx%hcore, st%gmat, st%vxc, st%vpcm, st%fock)
-         call commutator_error(lp, nao, nspin, st%fock, res%dmat, ctx%smat, ctx%x, st%w1, st%w2, st%errv)
+         call assemble_fock(nao, nxc, npcm, cfg%nspin, cfg%dft, cfg%pcm_on, ctx%hcore, st%gmat, st%vxc, st%vpcm, st%fock)
+         call commutator_error(lp, nao, cfg%nspin, st%fock, res%dmat, ctx%smat, ctx%x, st%w1, st%w2, st%errv)
          ! `dold` must hold `res%dmat` from BEFORE DIIS/diagonalisation touch
          ! it -- see trc_scf_state's own header.
-         call st%save_dold(nao, nspin, res%dmat)
+         call st%save_dold(nao, cfg%nspin, res%dmat)
          ! --- DIIS, once the commutator is small enough to extrapolate from --
          errmax = sqrt(lp%dot_3d(st%errv, st%errv))
          ! Over ranks the Fock matrices agree only to the XC atomics' 1e-13,
@@ -419,7 +386,7 @@ contains
                errmax = ctl(2)
             end if
          end if
-         if (.not. diis_on .and. it > ndamp) diis_on = errmax < diis_start
+         if (.not. diis_on .and. it > cfg%ndamp) diis_on = errmax < cfg%diis_start
          !
          ! A/EDIIS while damping has ended but the commutator is still too large for
          ! CDIIS. CDIIS has no constraint on its coefficients, hence the
@@ -430,30 +397,30 @@ contains
          ! rather than blend (gmshpc: a blended step turned a stretched-water case
          ! converging in 21 CDIIS iterations into one that never converged).
          !
-         adiis_active = opts%adiis .and. .not. diis_on .and. it > ndamp
+         adiis_active = opts%adiis .and. .not. diis_on .and. it > cfg%ndamp
          ! The new density is rank 0's alone: extrapolation, eigensolve and density
          ! run on one device and the density is broadcast, since dsyevd need not
          ! return the same vectors on two devices. Orbitals and energies come over
          ! once, after the loop.
-         if (root) then
+         if (cfg%root) then
             if (adiis_active) then
-               call adiis%push(lp, nao, nspin, st%fock, st%dold)
-               call adiis%extrapolate(nao, nspin, st%fock)
+               call adiis%push(lp, nao, cfg%nspin, st%fock, st%dold)
+               call adiis%extrapolate(nao, cfg%nspin, st%fock)
             end if
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
-               call level_shift(lp, nao, nspin, opts%level_shift, occ, ctx%smat, res%dmat, st%w1, st%w2, st%fock)
+               call level_shift(lp, nao, cfg%nspin, opts%level_shift, cfg%occ, ctx%smat, res%dmat, st%w1, st%w2, st%fock)
             end if
             if (diis_on) then
-               call cdiis%push(lp, nao, nspin, st%fock, st%errv)
-               call cdiis%extrapolate(nao, nspin, st%fock, ok)
+               call cdiis%push(lp, nao, cfg%nspin, st%fock, st%errv)
+               call cdiis%extrapolate(nao, cfg%nspin, st%fock, ok)
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
-            do s = 1, nspin
-               call orbitals_and_density(st%fock(:, :, s), nocc(s), opts%frac_occ, st%w1, st%w2, &
+            do s = 1, cfg%nspin
+               call orbitals_and_density(st%fock(:, :, s), cfg%nocc(s), opts%frac_occ, st%w1, st%w2, &
                                          res%eps(:, s), res%cmo(:, :, s), res%dmat(:, :, s), st%ofrac)
             end do
-            if (.not. diis_on .and. .not. adiis_active) call damp(nao, nspin, opts%damp, st%dold, res%dmat)
+            if (.not. diis_on .and. .not. adiis_active) call damp(nao, cfg%nspin, opts%damp, st%dold, res%dmat)
          end if
          ! Every rank must hold the same density to the bit. The Fock sum is
          ! broadcast already; the XC potential is accumulated with atomics
@@ -462,15 +429,15 @@ contains
          if (present(comm)) then
             if (comm%size() > 1) then
                !$acc update self(res%dmat)
-               call bcast_flat(comm, res%dmat, n2*nspin)
+               call bcast_flat(comm, res%dmat, n2*cfg%nspin)
                !$acc update device(res%dmat)
             end if
          end if
-         call st%update_errv(nao, nspin, res%dmat)
+         call st%update_errv(nao, cfg%nspin, res%dmat)
          drms = sqrt(lp%dot_3d(st%errv, st%errv))/real(nao, dp)
          tmr%t_rest = tmr%t_rest + (wall() - tw0)
-         if (talk) then
-            if (dft) then
+         if (cfg%talk) then
+            if (cfg%dft) then
                print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3)", &
                   it, etot, etot - eold, drms, errmax, tmr%tf_it, tmr%tx_it
             else
@@ -506,8 +473,8 @@ contains
       !$acc update self(st%dold, res%cmo, res%eps)
       if (present(comm)) then
          if (comm%size() > 1) then
-            call bcast_flat(comm, res%cmo, n2*nspin)
-            call bcast_flat(comm, res%eps, nao*nspin)
+            call bcast_flat(comm, res%cmo, n2*cfg%nspin)
+            call bcast_flat(comm, res%eps, nao*cfg%nspin)
          end if
       end if
       call st%release_device(ctx, res)
@@ -522,9 +489,9 @@ contains
       res%e_pcm = epcm
       res%pcm_qtotal = ctx%pcm%q_total
       if (.not. res%converged) res%message = "trc_scf: not converged"
-      if (talk) then
+      if (cfg%talk) then
          call report_timing()
-         if (pcm_on) print "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)", "   pcm: E_diel = ", epcm, &
+         if (cfg%pcm_on) print "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)", "   pcm: E_diel = ", epcm, &
             "  q_total = ", ctx%pcm%q_total, "  setup ", ctx%t_pcm_setup, " s, ", &
             tmr%t_pcm/real(max(1, res%iterations), dp), " s per iteration"
       end if
@@ -600,7 +567,7 @@ contains
          if (frac) then
             ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
             !$acc update self(eps_s)
-            if (nspin == 1) then
+            if (cfg%nspin == 1) then
                call frac_occupations(nao, eps_s, opts%nelec_frac, 2.0_dp, ofrac, nfrac)
             else
                call frac_occupations(nao, eps_s, real(nocc_s, dp), 1.0_dp, ofrac, nfrac)
@@ -616,7 +583,7 @@ contains
          else
             ! k <= 0 is lp%density's own zeroing branch (do concurrent),
             ! replacing zero_dev.
-            call lp%density(cmo_s, nocc_s, occ, d_s)
+            call lp%density(cmo_s, nocc_s, cfg%occ, d_s)
          end if
       end subroutine orbitals_and_density
 
