@@ -272,8 +272,25 @@ contains
       end do
    end subroutine assemble_fock
 
-   ! W = F D S - S D F, errv = X^T W X, per spin: the orthogonalised
-   ! commutator DIIS extrapolates on, and whose norm gates DIIS/A-DIIS.
+   !!
+   !! W = F D S, Y = X^T W X, errv = Y - Y^T, per spin: the orthogonalised
+   !! commutator DIIS extrapolates on, and whose norm gates DIIS/A-DIIS, in
+   !! 4 GEMMs instead of the 6 that build F D S - S D F directly and then
+   !! project it. The identity behind the saving:
+   !!
+   !!   Y^T = (X^T F D S X)^T = X^T S^T D^T F^T X = X^T S D F X
+   !!
+   !! because F, D, S and X are all symmetric (S^T = S, D^T = D, F^T = F,
+   !! and (X^T W X)^T = X^T W^T X since (X^T)^T = X) -- so Y^T already IS
+   !! the orthogonalised S D F term, bit for bit, and
+   !! errv = X^T(FDS)X - X^T(SDF)X = Y - Y^T exactly, with no need to ever
+   !! build S D F at all.
+   !!
+   !! CHANGES FLOATING-POINT ORDER (A7): this reaches the same mathematical
+   !! quantity through a different sequence of roundings than building
+   !! F D S - S D F directly, so it is NOT bitwise against that form --
+   !! see trc_scf_driver's own header on the tolerance gate that covers it.
+   !!
    subroutine commutator_error(lp, nao, nspin, fock, dmat, smat, x, w1, w2, errv)
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
@@ -281,16 +298,25 @@ contains
       real(dp), intent(in) :: smat(nao, nao), x(nao, nao)
       real(dp), intent(inout) :: w1(nao, nao), w2(nao, nao)
       real(dp), intent(inout) :: errv(nao, nao, nspin)
-      integer :: s
+      integer :: s, i, j
       do s = 1, nspin
-         ! w2 = F D S - S D F
-         call lp%gemm_mat(fock(:, :, s), dmat(:, :, s), w1)
-         call lp%gemm_mat(w1, smat, w2)
-         call lp%gemm_mat(smat, dmat(:, :, s), w1)
-         call lp%gemm_mat(w1, fock(:, :, s), w2, alpha=-1.0_dp, beta=1.0_dp)
-         ! errv = X^T w2 X, the same two GEMMs lp%sandwich does (work = w2 X,
-         ! out = X^T work), so this reaches the identical raw calls.
+         call lp%gemm_mat(fock(:, :, s), dmat(:, :, s), w1)   ! w1 = F D
+         call lp%gemm_mat(w1, smat, w2)                        ! w2 = F D S = W
+         ! Y = X^T W X: f = w2 (read), work = w1 (overwritten -- its old F D
+         ! is no longer needed), out = errv(:,:,s) -- three distinct arrays,
+         ! no aliasing.
          call lp%sandwich(x, w2, errv(:, :, s), w1)
+         ! errv := Y - Y^T. Not in place against Y directly: that would
+         ! read errv(j,i,s) that another `do concurrent` iteration may
+         ! already have overwritten as errv(i,j,s) -- the same race
+         ! shift_history's old comment warned about. w2 (free since W's
+         ! last read, above) holds the snapshot the second loop reads.
+         do concurrent(i=1:nao, j=1:nao)
+            w2(i, j) = errv(i, j, s)
+         end do
+         do concurrent(i=1:nao, j=1:nao)
+            errv(i, j, s) = w2(i, j) - w2(j, i)
+         end do
       end do
    end subroutine commutator_error
 
