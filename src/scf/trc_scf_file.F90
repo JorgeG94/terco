@@ -39,7 +39,7 @@
 !
 module trc_scf_file
    use, intrinsic :: iso_fortran_env, only: int32, real64
-   use trc_boys, only: dp
+   use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_result_t
    use trc_cart_perm, only: trc_cart_order_id
