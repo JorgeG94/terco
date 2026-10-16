@@ -222,53 +222,37 @@ contains
       integer,  intent(in)    :: ord_a(na), ord_c(nc)
       real(dp), intent(inout) :: jmat(nao, nao)
       select case (la*(DF_LMAX_AUX + 1) + lc)
-      case (0)
-      call df_2c_k00(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (0); call df_2c_k00(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (1)
-      call df_2c_k01(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (1); call df_2c_k01(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (2)
-      call df_2c_k02(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (2); call df_2c_k02(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (3)
-      call df_2c_k03(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (3); call df_2c_k03(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (4)
-      call df_2c_k10(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (4); call df_2c_k10(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (5)
-      call df_2c_k11(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (5); call df_2c_k11(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (6)
-      call df_2c_k12(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (6); call df_2c_k12(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (7)
-      call df_2c_k13(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (7); call df_2c_k13(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (8)
-      call df_2c_k20(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (8); call df_2c_k20(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (9)
-      call df_2c_k21(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (9); call df_2c_k21(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (10)
-      call df_2c_k22(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (10); call df_2c_k22(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (11)
-      call df_2c_k23(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (11); call df_2c_k23(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (12)
-      call df_2c_k30(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (12); call df_2c_k30(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (13)
-      call df_2c_k31(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (13); call df_2c_k31(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (14)
-      call df_2c_k32(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (14); call df_2c_k32(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
-      case (15)
-      call df_2c_k33(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+      case (15); call df_2c_k33(nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                           na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       end select
    end subroutine df_2c_dispatch
@@ -292,183 +276,147 @@ contains
       integer,  intent(in)    :: ord_a(nac)
       real(dp), intent(inout) :: tens(nao, nao, nax)
       select case ((la*(DF_LMAX + 1) + lb)*(DF_LMAX_AUX + 1) + lc)
-      case (0)
-      call df_3c_k000(nsh, nao, sh_ao, sh_r, &
+      case (0); call df_3c_k000(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (1)
-      call df_3c_k001(nsh, nao, sh_ao, sh_r, &
+      case (1); call df_3c_k001(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (2)
-      call df_3c_k002(nsh, nao, sh_ao, sh_r, &
+      case (2); call df_3c_k002(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (3)
-      call df_3c_k003(nsh, nao, sh_ao, sh_r, &
+      case (3); call df_3c_k003(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (4)
-      call df_3c_k010(nsh, nao, sh_ao, sh_r, &
+      case (4); call df_3c_k010(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (5)
-      call df_3c_k011(nsh, nao, sh_ao, sh_r, &
+      case (5); call df_3c_k011(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (6)
-      call df_3c_k012(nsh, nao, sh_ao, sh_r, &
+      case (6); call df_3c_k012(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (7)
-      call df_3c_k013(nsh, nao, sh_ao, sh_r, &
+      case (7); call df_3c_k013(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (8)
-      call df_3c_k020(nsh, nao, sh_ao, sh_r, &
+      case (8); call df_3c_k020(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (9)
-      call df_3c_k021(nsh, nao, sh_ao, sh_r, &
+      case (9); call df_3c_k021(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (10)
-      call df_3c_k022(nsh, nao, sh_ao, sh_r, &
+      case (10); call df_3c_k022(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (11)
-      call df_3c_k023(nsh, nao, sh_ao, sh_r, &
+      case (11); call df_3c_k023(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (12)
-      call df_3c_k100(nsh, nao, sh_ao, sh_r, &
+      case (12); call df_3c_k100(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (13)
-      call df_3c_k101(nsh, nao, sh_ao, sh_r, &
+      case (13); call df_3c_k101(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (14)
-      call df_3c_k102(nsh, nao, sh_ao, sh_r, &
+      case (14); call df_3c_k102(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (15)
-      call df_3c_k103(nsh, nao, sh_ao, sh_r, &
+      case (15); call df_3c_k103(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (16)
-      call df_3c_k110(nsh, nao, sh_ao, sh_r, &
+      case (16); call df_3c_k110(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (17)
-      call df_3c_k111(nsh, nao, sh_ao, sh_r, &
+      case (17); call df_3c_k111(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (18)
-      call df_3c_k112(nsh, nao, sh_ao, sh_r, &
+      case (18); call df_3c_k112(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (19)
-      call df_3c_k113(nsh, nao, sh_ao, sh_r, &
+      case (19); call df_3c_k113(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (20)
-      call df_3c_k120(nsh, nao, sh_ao, sh_r, &
+      case (20); call df_3c_k120(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (21)
-      call df_3c_k121(nsh, nao, sh_ao, sh_r, &
+      case (21); call df_3c_k121(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (22)
-      call df_3c_k122(nsh, nao, sh_ao, sh_r, &
+      case (22); call df_3c_k122(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (23)
-      call df_3c_k123(nsh, nao, sh_ao, sh_r, &
+      case (23); call df_3c_k123(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (24)
-      call df_3c_k200(nsh, nao, sh_ao, sh_r, &
+      case (24); call df_3c_k200(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (25)
-      call df_3c_k201(nsh, nao, sh_ao, sh_r, &
+      case (25); call df_3c_k201(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (26)
-      call df_3c_k202(nsh, nao, sh_ao, sh_r, &
+      case (26); call df_3c_k202(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (27)
-      call df_3c_k203(nsh, nao, sh_ao, sh_r, &
+      case (27); call df_3c_k203(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (28)
-      call df_3c_k210(nsh, nao, sh_ao, sh_r, &
+      case (28); call df_3c_k210(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (29)
-      call df_3c_k211(nsh, nao, sh_ao, sh_r, &
+      case (29); call df_3c_k211(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (30)
-      call df_3c_k212(nsh, nao, sh_ao, sh_r, &
+      case (30); call df_3c_k212(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (31)
-      call df_3c_k213(nsh, nao, sh_ao, sh_r, &
+      case (31); call df_3c_k213(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (32)
-      call df_3c_k220(nsh, nao, sh_ao, sh_r, &
+      case (32); call df_3c_k220(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (33)
-      call df_3c_k221(nsh, nao, sh_ao, sh_r, &
+      case (33); call df_3c_k221(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (34)
-      call df_3c_k222(nsh, nao, sh_ao, sh_r, &
+      case (34); call df_3c_k222(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)
-      case (35)
-      call df_3c_k223(nsh, nao, sh_ao, sh_r, &
+      case (35); call df_3c_k223(nsh, nao, sh_ao, sh_r, &
                           npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                           npc, ord_p, nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, nac, ord_a, &
                           tens)

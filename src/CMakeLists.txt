@@ -551,170 +551,167 @@ list(LENGTH _generated _ngen)
 message(STATUS "terco: ${_ngen} generated kernel modules from ${_gen_dir}")
 target_sources(${main_lib} PRIVATE ${_generated})
 
-# --- Rys (on by default) -----------------------------------------------------
+# --- Rys ----------------------------------------------------------------------
 #
-# See the TERCO_RYS option's own comment (top-level CMakeLists.txt). OFF
-# adds nothing: no root tables, no per-class kernel, no dispatcher, and
-# nothing above this line is affected either way.
+# Always built; see the comment above the TERCO_RYS_UNROLL_MAX setting in the
+# top-level CMakeLists.txt.
 #
-if(TERCO_RYS)
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-  # The root/weight tables: committed, like the Boys table, because they
-  # need mpmath to regenerate and this project's generators otherwise run
-  # on a bare Python. In their own subdirectory so the GLOB above -- which
-  # is not recursive -- never picks them up, ON or OFF.
-  target_sources(
-    ${main_lib}
-    PRIVATE eri/trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
-            generated/rys/trc_rys_table1.F90
-            generated/rys/trc_rys_table2.F90
-            generated/rys/trc_rys_table3.F90
-            generated/rys/trc_rys_table4.F90
-            generated/rys/trc_rys_table5.F90
-            generated/rys/trc_rys_table6.F90
-            generated/rys/trc_rys_table7.F90
-            generated/rys/trc_rys_table8.F90
-            generated/rys/trc_rys_table9.F90)
+# The root/weight tables: committed, like the Boys table, because they
+# need mpmath to regenerate and this project's generators otherwise run
+# on a bare Python. In their own subdirectory so the GLOB above -- which
+# is not recursive -- never picks them up, ON or OFF.
+target_sources(
+  ${main_lib}
+  PRIVATE eri/trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
+          generated/rys/trc_rys_table1.F90
+          generated/rys/trc_rys_table2.F90
+          generated/rys/trc_rys_table3.F90
+          generated/rys/trc_rys_table4.F90
+          generated/rys/trc_rys_table5.F90
+          generated/rys/trc_rys_table6.F90
+          generated/rys/trc_rys_table7.F90
+          generated/rys/trc_rys_table8.F90
+          generated/rys/trc_rys_table9.F90)
 
-  # Every class with at least one d shell, plus (pp|pp) and (pp|ps) as the
-  # light end of the HGP/Rys comparison: measured on a 450-atom water cluster
-  # in 6-31G*, Rys only beats HGP at (dd|dd) (1.11x) and is 1.1-7.4x slower
-  # everywhere below, (pp|pp) the slowest, which is why HGP stays the energy
-  # default for every class. The gradient family covers all 81. Regenerated
-  # at configure time into the build tree, never committed: unlike the root
-  # tables above, a per-class kernel needs no mpmath, and it is only ever as
-  # current as the HGP scalar kernel it is spliced from, which this project
-  # already keeps in-tree-regenerable for exactly this kind of drift.
-  set(_rys_dir "${CMAKE_BINARY_DIR}/generated_rys")
-  set(_rys_stage "${CMAKE_BINARY_DIR}/stage/generated_rys")
+# Every class with at least one d shell, plus (pp|pp) and (pp|ps) as the
+# light end of the HGP/Rys comparison: measured on a 450-atom water cluster
+# in 6-31G*, Rys only beats HGP at (dd|dd) (1.11x) and is 1.1-7.4x slower
+# everywhere below, (pp|pp) the slowest, which is why HGP stays the energy
+# default for every class. The gradient family covers all 81. Regenerated
+# at configure time into the build tree, never committed: unlike the root
+# tables above, a per-class kernel needs no mpmath, and it is only ever as
+# current as the HGP scalar kernel it is spliced from, which this project
+# already keeps in-tree-regenerable for exactly this kind of drift.
+set(_rys_dir "${CMAKE_BINARY_DIR}/generated_rys")
+set(_rys_stage "${CMAKE_BINARY_DIR}/stage/generated_rys")
 
-  # The template the Rys generators splice from: a private SKELETON copy of
-  # the HGP per-class kernels (gen_perclass.py --skeleton: every marker and
-  # size the splicers read, without HGP's VRR/HRR body they discard),
-  # written here rather than read out of ${_gen_dir},
-  # because gen_rys.py and gen_rys_grad.py slice those files on literal
-  # anchors (`pure subroutine pcsi...`, `!$acc atomic update`) and anything
-  # that edits src/ in place -- CI's OpenMP port strips `pure` and rewrites
-  # `!$acc` before configuring -- removes them. Same flags as the ${_gen_dir}
-  # set, so in an unedited tree the Rys kernels spliced from it are
-  # byte-identical to ones spliced from the full HGP text (checked for all
-  # 81 classes up to d, energy and gradient). The skeleton is what makes f
-  # affordable: the full HGP text at --lmax 3 takes over six minutes and
-  # 136 MB to write, the skeleton well under a second.
-  #
-  # The Rys kernels themselves are deliberately NOT converted: under
-  # -fopenmp their `do concurrent` is a serial loop and their `!$acc` lines
-  # comments, and that is correct because the Rys dispatchers are only ever
-  # called from the sequential class loops in trc_binkernel.F90 and
-  # trc_grad.F90, never from inside a converted parallel region.
-  set(_all_classes "")
-  foreach(la RANGE 0 ${TERCO_LMAX})
-    foreach(lb RANGE 0 ${TERCO_LMAX})
-      foreach(lc RANGE 0 ${TERCO_LMAX})
-        foreach(ld RANGE 0 ${TERCO_LMAX})
-          list(APPEND _all_classes "${la}${lb}${lc}${ld}")
-        endforeach()
+# The template the Rys generators splice from: a private SKELETON copy of
+# the HGP per-class kernels (gen_perclass.py --skeleton: every marker and
+# size the splicers read, without HGP's VRR/HRR body they discard),
+# written here rather than read out of ${_gen_dir},
+# because gen_rys.py and gen_rys_grad.py slice those files on literal
+# anchors (`pure subroutine pcsi...`, `!$acc atomic update`) and anything
+# that edits src/ in place -- CI's OpenMP port strips `pure` and rewrites
+# `!$acc` before configuring -- removes them. Same flags as the ${_gen_dir}
+# set, so in an unedited tree the Rys kernels spliced from it are
+# byte-identical to ones spliced from the full HGP text (checked for all
+# 81 classes up to d, energy and gradient). The skeleton is what makes f
+# affordable: the full HGP text at --lmax 3 takes over six minutes and
+# 136 MB to write, the skeleton well under a second.
+#
+# The Rys kernels themselves are deliberately NOT converted: under
+# -fopenmp their `do concurrent` is a serial loop and their `!$acc` lines
+# comments, and that is correct because the Rys dispatchers are only ever
+# called from the sequential class loops in trc_binkernel.F90 and
+# trc_grad.F90, never from inside a converted parallel region.
+set(_all_classes "")
+foreach(la RANGE 0 ${TERCO_LMAX})
+  foreach(lb RANGE 0 ${TERCO_LMAX})
+    foreach(lc RANGE 0 ${TERCO_LMAX})
+      foreach(ld RANGE 0 ${TERCO_LMAX})
+        list(APPEND _all_classes "${la}${lb}${lc}${ld}")
       endforeach()
     endforeach()
   endforeach()
-  list(JOIN _all_classes "," _all_classes_csv)
+endforeach()
+list(JOIN _all_classes "," _all_classes_csv)
 
-  set(_hgp_template "${CMAKE_BINARY_DIR}/hgp_template")
-  file(MAKE_DIRECTORY "${_hgp_template}")
+set(_hgp_template "${CMAKE_BINARY_DIR}/hgp_template")
+file(MAKE_DIRECTORY "${_hgp_template}")
 
-  # Every class with a shell of d or above, plus (pp|pp) and (pp|ps). Above
-  # d these are the only kernels a class has (trc_rys_select.F90 routes
-  # them unconditionally); up to d, HGP stays the default and these exist
-  # for TRC_RYS_CLASSES.
-  set(_rys_classes "")
-  foreach(_tag ${_all_classes})
-    string(REGEX MATCH "[2-9]" _has_d "${_tag}")
-    if(_has_d
-       OR _tag STREQUAL "1111"
-       OR _tag STREQUAL "1110")
-      list(APPEND _rys_classes "${_tag}")
-    endif()
-  endforeach()
-
-  set(_rys_sources "")
-  foreach(_tag ${_rys_classes})
-    list(APPEND _rys_sources "${_rys_dir}/trc_pc_rys${_tag}.F90")
-  endforeach()
-  list(JOIN _rys_classes "," _rys_classes_csv)
-
-  list(LENGTH _rys_sources _nrys)
-  message(STATUS "terco: ${_nrys} Rys class kernels in ${_rys_dir}")
-  target_sources(${main_lib} PRIVATE ${_rys_sources} ${_rys_dir}/trc_rys_kernels.F90)
-
-  # --- Rys GRADIENT kernels: all 81 classes up to (dd|dd), no HGP fallback --
-  #
-  # Unlike the energy kernel above (generated only where Rys measures faster
-  # than HGP), the gradient has no HGP counterpart to fall back to -- an HGP
-  # gradient is out of scope -- so every class a basis up to LMAX=2 can form
-  # needs one. Not above d yet: gen_rys_grad.py stops at five roots, so an f
-  # gradient stops in grad_bins (rysg_has_class) rather than running.
-  #
-  set(_grad_lmax ${TERCO_LMAX})
-  if(_grad_lmax GREATER 2)
-    set(_grad_lmax 2)
+# Every class with a shell of d or above, plus (pp|pp) and (pp|ps). Above
+# d these are the only kernels a class has (trc_rys_select.F90 routes
+# them unconditionally); up to d, HGP stays the default and these exist
+# for TRC_RYS_CLASSES.
+set(_rys_classes "")
+foreach(_tag ${_all_classes})
+  string(REGEX MATCH "[2-9]" _has_d "${_tag}")
+  if(_has_d
+     OR _tag STREQUAL "1111"
+     OR _tag STREQUAL "1110")
+    list(APPEND _rys_classes "${_tag}")
   endif()
-  set(_rys_grad_classes "")
-  foreach(la RANGE 0 ${_grad_lmax})
-    foreach(lb RANGE 0 ${_grad_lmax})
-      foreach(lc RANGE 0 ${_grad_lmax})
-        foreach(ld RANGE 0 ${_grad_lmax})
-          list(APPEND _rys_grad_classes "${la}${lb}${lc}${ld}")
-        endforeach()
+endforeach()
+
+set(_rys_sources "")
+foreach(_tag ${_rys_classes})
+  list(APPEND _rys_sources "${_rys_dir}/trc_pc_rys${_tag}.F90")
+endforeach()
+list(JOIN _rys_classes "," _rys_classes_csv)
+
+list(LENGTH _rys_sources _nrys)
+message(STATUS "terco: ${_nrys} Rys class kernels in ${_rys_dir}")
+target_sources(${main_lib} PRIVATE ${_rys_sources} ${_rys_dir}/trc_rys_kernels.F90)
+
+# --- Rys GRADIENT kernels: all 81 classes up to (dd|dd), no HGP fallback --
+#
+# Unlike the energy kernel above (generated only where Rys measures faster
+# than HGP), the gradient has no HGP counterpart to fall back to -- an HGP
+# gradient is out of scope -- so every class a basis up to LMAX=2 can form
+# needs one. Not above d yet: gen_rys_grad.py stops at five roots, so an f
+# gradient stops in grad_bins (rysg_has_class) rather than running.
+#
+set(_grad_lmax ${TERCO_LMAX})
+if(_grad_lmax GREATER 2)
+  set(_grad_lmax 2)
+endif()
+set(_rys_grad_classes "")
+foreach(la RANGE 0 ${_grad_lmax})
+  foreach(lb RANGE 0 ${_grad_lmax})
+    foreach(lc RANGE 0 ${_grad_lmax})
+      foreach(ld RANGE 0 ${_grad_lmax})
+        list(APPEND _rys_grad_classes "${la}${lb}${lc}${ld}")
       endforeach()
     endforeach()
   endforeach()
+endforeach()
 
-  set(_rys_grad_sources "")
-  foreach(_tag ${_rys_grad_classes})
-    list(APPEND _rys_grad_sources "${_rys_dir}/trc_pc_rysg${_tag}.F90")
+set(_rys_grad_sources "")
+foreach(_tag ${_rys_grad_classes})
+  list(APPEND _rys_grad_sources "${_rys_dir}/trc_pc_rysg${_tag}.F90")
+endforeach()
+list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
+
+list(LENGTH _rys_grad_sources _nrysg)
+message(STATUS "terco: ${_nrysg} Rys gradient class kernels in ${_rys_dir}")
+target_sources(${main_lib} PRIVATE ${_rys_grad_sources}
+                                   ${_rys_dir}/trc_rys_grad_kernels.F90)
+
+# The Rys generators, planned and run (or skipped) by terco_generate: the
+# template first, since every splicer reads it, then one energy and one
+# gradient kernel per class and the two dispatchers. The template is not
+# part of the stamp's manifest -- it is an intermediate, rewritten
+# whenever the Rys kernels are -- and is not needed when they are skipped.
+macro(_terco_gen_rys)
+  terco_gen("gen_perclass.py (Rys template)" ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/scripts/gen_perclass.py --lmax ${TERCO_LMAX} ${_order_flag}
+            --classes ${_all_classes_csv} --skeleton --split ${_hgp_template})
+  foreach(_tag ${_rys_classes})
+    terco_gen("gen_rys.py ${_tag}" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
+              ${_tag} ${_order_flag} --src-dir ${_hgp_template}
+              --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}.F90)
   endforeach()
-  list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
-
-  list(LENGTH _rys_grad_sources _nrysg)
-  message(STATUS "terco: ${_nrysg} Rys gradient class kernels in ${_rys_dir}")
-  target_sources(${main_lib} PRIVATE ${_rys_grad_sources}
-                                     ${_rys_dir}/trc_rys_grad_kernels.F90)
-
-  # The Rys generators, planned and run (or skipped) by terco_generate: the
-  # template first, since every splicer reads it, then one energy and one
-  # gradient kernel per class and the two dispatchers. The template is not
-  # part of the stamp's manifest -- it is an intermediate, rewritten
-  # whenever the Rys kernels are -- and is not needed when they are skipped.
-  macro(_terco_gen_rys)
-    terco_gen("gen_perclass.py (Rys template)" ${Python3_EXECUTABLE}
-              ${CMAKE_SOURCE_DIR}/scripts/gen_perclass.py --lmax ${TERCO_LMAX} ${_order_flag}
-              --classes ${_all_classes_csv} --skeleton --split ${_hgp_template})
-    foreach(_tag ${_rys_classes})
-      terco_gen("gen_rys.py ${_tag}" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
-                ${_tag} ${_order_flag} --src-dir ${_hgp_template}
-                --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}.F90)
-    endforeach()
-    terco_gen("gen_rys_dispatch.py" ${Python3_EXECUTABLE}
-              ${CMAKE_SOURCE_DIR}/scripts/gen_rys_dispatch.py --classes ${_rys_classes_csv}
-              -o ${_rys_stage}/trc_rys_kernels.F90)
-    foreach(_tag ${_rys_grad_classes})
-      terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag}
-                --src-dir ${_hgp_template} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
-                -o ${_rys_stage}/trc_pc_rysg${_tag}.F90)
-    endforeach()
-    terco_gen("gen_rys_grad_dispatch.py" ${Python3_EXECUTABLE}
-              ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
-              --classes ${_rys_grad_classes_csv} -o ${_rys_stage}/trc_rys_grad_kernels.F90)
-  endmacro()
-  set(_s "${CMAKE_SOURCE_DIR}/scripts")
-  terco_generate(
-    "Rys kernels" _terco_gen_rys "${_rys_stage}" "${_rys_dir}" ON ON
-    ${_s}/gen_perclass.py ${_s}/gen_vrr.py ${_s}/gen_hrr.py ${_s}/gen_rys.py
-    ${_s}/gen_rys_grad.py ${_s}/rys_inline.py ${_s}/gen_rys_dispatch.py
-    ${_s}/gen_rys_grad_dispatch.py ${_s}/cartorder.py)
-endif()
+  terco_gen("gen_rys_dispatch.py" ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/scripts/gen_rys_dispatch.py --classes ${_rys_classes_csv}
+            -o ${_rys_stage}/trc_rys_kernels.F90)
+  foreach(_tag ${_rys_grad_classes})
+    terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag}
+              --src-dir ${_hgp_template} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
+              -o ${_rys_stage}/trc_pc_rysg${_tag}.F90)
+  endforeach()
+  terco_gen("gen_rys_grad_dispatch.py" ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
+            --classes ${_rys_grad_classes_csv} -o ${_rys_stage}/trc_rys_grad_kernels.F90)
+endmacro()
+set(_s "${CMAKE_SOURCE_DIR}/scripts")
+terco_generate(
+  "Rys kernels" _terco_gen_rys "${_rys_stage}" "${_rys_dir}" ON ON
+  ${_s}/gen_perclass.py ${_s}/gen_vrr.py ${_s}/gen_hrr.py ${_s}/gen_rys.py
+  ${_s}/gen_rys_grad.py ${_s}/rys_inline.py ${_s}/gen_rys_dispatch.py
+  ${_s}/gen_rys_grad_dispatch.py ${_s}/cartorder.py)
 
 # TERCO_FORCE_REGENERATE is one-shot: having ignored the stamps for this
 # configure, it turns itself off so the next one trusts them again.

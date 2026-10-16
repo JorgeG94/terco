@@ -22,7 +22,7 @@ uses does not carry over unchanged:
     has every piece they need (si/sj/sk/sl, same_ab/same_cd/same_pair, the
     AO offsets) and right before the primitive loop starts. This is new
     text, not copied from HGP's tail -- the energy digestion's "Single
-    column..." decode and `#ifdef TRC_NO_DIGEST` block are not reused at
+    column..." decode and block digestion are not reused at
     all.
   - MIDDLE replaces the Rys integral build exactly like the energy splice,
     except it builds ONE extended horizontal-transfer table per axis,

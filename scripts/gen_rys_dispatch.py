@@ -78,7 +78,7 @@ contains
    pure logical function rys_has_class(key)
       !! Is there a generated Rys kernel for this class key? `trc_rys_select`
       !! checks this before ever calling `rys_dispatch`, so a class the user
-      !! asked for in TRC_RYS_CLASSES but that TERCO_RYS did not generate a
+      !! asked for in TRC_RYS_CLASSES but that the build did not generate a
       !! kernel for falls back to HGP instead of landing on an unbuilt
       !! reference or a silent no-op.
       integer, intent(in) :: key

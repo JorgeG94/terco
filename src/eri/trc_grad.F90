@@ -21,10 +21,8 @@
 module trc_grad
    use pic_types, only: dp, int64
    use trc_bins, only: pair_bins_t
-#ifdef TERCO_RYS
    use trc_rys_grad_kernels, only: rysg_has_class, rysg_screen_dispatch, &
                                    rysg_compact_dispatch
-#endif
    implicit none
    private
    public :: grad_bins
@@ -154,7 +152,6 @@ contains
          return
       end if
 
-#ifdef TERCO_RYS
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, key2, ga, gc, gs
@@ -201,7 +198,7 @@ contains
             key2 = ((sLA(c0)*GCLASS_RADIX + sLB(c0))*GCLASS_RADIX &
                     + sLC(c0))*GCLASS_RADIX + sLD(c0)
             if (.not. rysg_has_class(key2)) error stop &
-               "terco: grad_bins met a class TERCO_RYS did not generate a gradient kernel for"
+               "terco: grad_bins met a class the build did not generate a gradient kernel for"
             call grad_class_compact(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                     b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*1.0e-3_dp, &
                                     jfac, kfac, dsh, nbas, nao, ao_off, sh_at, natm, &
@@ -224,9 +221,6 @@ contains
          !$acc exit data delete(sA, sNB, sOA, sOB, sPA, sPB, sD, sOff)
          deallocate (ord, ckey)
       end block
-#else
-      error stop "terco: grad_bins called without TERCO_RYS -- there is no HGP gradient"
-#endif
       deallocate (sA, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
    end subroutine grad_bins
 
@@ -304,7 +298,6 @@ contains
    ! bounds the survivor-list scratch's memory however large a class run
    ! or a single segment is -- see GRAD_COMPACT_CAP's own comment.
    !
-#ifdef TERCO_RYS
    subroutine grad_class_compact(key, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                  npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, &
                                  dsh, nbas, nao, ao_off, sh_at, natm, &
@@ -383,6 +376,5 @@ contains
          b0 = b1 + 1
       end do
    end subroutine grad_class_compact
-#endif
 
 end module trc_grad

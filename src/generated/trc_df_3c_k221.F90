@@ -11,7 +11,7 @@
 ! TRC_CART_ORDER GUARD -- see gen_perclass.py's non-split header for the full
 ! explanation; same guard, one per class file.
 !
-#if TRC_CART_ORDER  != 0
+#if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_df_3c_k221
@@ -88,8 +88,7 @@ contains
 
       ip = ord_p(int(mod(t, int(npc, int64))) + 1)
       kk = ord_a(int(t/npc) + 1)
-      ii = p_i(ip)
-      jj = p_j(ip)
+      ii = p_i(ip); jj = p_j(ip)
       abx = sh_r(1, ii) - sh_r(1, jj)
       aby = sh_r(2, ii) - sh_r(2, jj)
       abz = sh_r(3, ii) - sh_r(3, jj)
@@ -148,12 +147,8 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          kab  = ppk(ip)
-         px = ppp(1, ip)
-         py = ppp(2, ip)
-         pz = ppp(3, ip)
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         px = ppp(1, ip); py = ppp(2, ip); pz = ppp(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
 
          do k = 1, 140
             g(k) = 0.0_dp
@@ -167,26 +162,13 @@ contains
             ! The ket is a single shell, so Q = C and QC = 0. Kept as
             ! variables rather than folded away because the VRR is emitted
             ! by the four-centre generator and expects them.
-            qcx = 0.0_dp
-            qcy = 0.0_dp
-            qcz = 0.0_dp
-            pqx = px - rc(1)
-            pqy = py - rc(2)
-            pqz = pz - rc(3)
-            wc = (zeta*px + eta*rc(1))/zpe
-            wpx = wc - px
-            wqx = wc - rc(1)
-            wc = (zeta*py + eta*rc(2))/zpe
-            wpy = wc - py
-            wqy = wc - rc(2)
-            wc = (zeta*pz + eta*rc(3))/zpe
-            wpz = wc - pz
-            wqz = wc - rc(3)
-            oo2z = 0.5_dp/zeta
-            oo2e = 0.5_dp/eta
-            oo2ze = 0.5_dp/zpe
-            rz = rho/zeta
-            re = rho/eta
+            qcx = 0.0_dp; qcy = 0.0_dp; qcz = 0.0_dp
+            pqx = px - rc(1); pqy = py - rc(2); pqz = pz - rc(3)
+            wc = (zeta*px + eta*rc(1))/zpe; wpx = wc - px; wqx = wc - rc(1)
+            wc = (zeta*py + eta*rc(2))/zpe; wpy = wc - py; wqy = wc - rc(2)
+            wc = (zeta*pz + eta*rc(3))/zpe; wpz = wc - pz; wqz = wc - rc(3)
+            oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = 0.5_dp/zpe
+            rz = rho/zeta; re = rho/eta
             tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
             ! K_cd = 1: a single Gaussian has no product exponential.
             pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*kab*cc_(kp)

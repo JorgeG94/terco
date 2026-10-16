@@ -21,7 +21,7 @@
 ! build needs no new -D flag. Same idea as docs/GENERATORS.md's TRC_LMAX
 ! guard, for a different compile-time constant.
 !
-#if TRC_CART_ORDER  != 0
+#if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_1e_kernels
@@ -75,15 +75,11 @@ contains
       real(dp) :: vn(1,0:0), vn0(1), vtmp(1)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 1
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -99,12 +95,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -184,15 +176,11 @@ contains
       real(dp) :: vn(4,0:1), vn0(4), vtmp(3)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 3
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -208,12 +196,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -317,15 +301,11 @@ contains
       real(dp) :: vn(10,0:2), vn0(10), vtmp(6)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 6
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -341,12 +321,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -497,15 +473,11 @@ contains
       real(dp) :: vn(4,0:1), vn0(4), vtmp(3)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 3
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -521,12 +493,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -633,15 +601,11 @@ contains
       real(dp) :: vn(10,0:2), vn0(10), vtmp(9)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 9
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -657,12 +621,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -834,15 +794,11 @@ contains
       real(dp) :: vn(20,0:3), vn0(20), vtmp(18)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 18
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -858,12 +814,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -1158,15 +1110,11 @@ contains
       real(dp) :: vn(10,0:2), vn0(10), vtmp(6)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 6
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -1182,12 +1130,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -1335,15 +1279,11 @@ contains
       real(dp) :: vn(20,0:3), vn0(20), vtmp(18)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 18
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -1359,12 +1299,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -1638,15 +1574,11 @@ contains
       real(dp) :: vn(35,0:4), vn0(35), vtmp(36)
       real(dp) :: f(0:BOYS_MMAX)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
       rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, 36
-         sout(k) = 0.0_dp
-         tout(k) = 0.0_dp
-         vout(k) = 0.0_dp
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
       end do
 
       do ip = 1, nprim_a
@@ -1662,12 +1594,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
 
          ! 1-D Gaussian-product prefactors; their product is
          ! (pi/zeta)^(3/2) exp(-xi |AB|^2), the 3-D overlap of two s functions.
@@ -2162,32 +2090,23 @@ contains
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(out) :: sout(*), tout(*), vout(*)
       select case (la*ONE_E_RADIX + lb)
-      case (0)
-      call one_e_00(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (0); call one_e_00(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (1)
-      call one_e_01(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (1); call one_e_01(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (2)
-      call one_e_02(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (2); call one_e_02(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (11)
-      call one_e_10(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (11); call one_e_10(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (12)
-      call one_e_11(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (12); call one_e_11(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (13)
-      call one_e_12(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (13); call one_e_12(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (22)
-      call one_e_20(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (22); call one_e_20(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (23)
-      call one_e_21(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (23); call one_e_21(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
-      case (24)
-      call one_e_22(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (24); call one_e_22(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, sout, tout, vout)
       case default
          !! No kernel for this class -- ONE_E_LMAX is below the basis. A

@@ -18,7 +18,7 @@
 ! flag; see docs/GENERATORS.md's TRC_LMAX guard for the failure mode this
 ! prevents.
 !
-#if TRC_CART_ORDER  != 0
+#if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_mult_kernels
@@ -62,12 +62,8 @@ contains
       real(dp) :: mx2(0:0,0:0), my2(0:0,0:0), mz2(0:0,0:0)
       real(dp) :: mx3(0:0,0:0), my3(0:0,0:0), mz3(0:0,0:0)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 1
@@ -86,12 +82,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -224,12 +216,8 @@ contains
       real(dp) :: mx2(0:0,0:1), my2(0:0,0:1), mz2(0:0,0:1)
       real(dp) :: mx3(0:0,0:1), my3(0:0,0:1), mz3(0:0,0:1)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 3
@@ -248,12 +236,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -503,12 +487,8 @@ contains
       real(dp) :: mx2(0:0,0:2), my2(0:0,0:2), mz2(0:0,0:2)
       real(dp) :: mx3(0:0,0:2), my3(0:0,0:2), mz3(0:0,0:2)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 6
@@ -527,12 +507,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -938,12 +914,8 @@ contains
       real(dp) :: mx2(0:1,0:0), my2(0:1,0:0), mz2(0:1,0:0)
       real(dp) :: mx3(0:1,0:0), my3(0:1,0:0), mz3(0:1,0:0)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 3
@@ -962,12 +934,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -1214,12 +1182,8 @@ contains
       real(dp) :: mx2(0:1,0:1), my2(0:1,0:1), mz2(0:1,0:1)
       real(dp) :: mx3(0:1,0:1), my3(0:1,0:1), mz3(0:1,0:1)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 9
@@ -1238,12 +1202,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -1793,12 +1753,8 @@ contains
       real(dp) :: mx2(0:1,0:2), my2(0:1,0:2), mz2(0:1,0:2)
       real(dp) :: mx3(0:1,0:2), my3(0:1,0:2), mz3(0:1,0:2)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 18
@@ -1817,12 +1773,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -2792,12 +2744,8 @@ contains
       real(dp) :: mx2(0:2,0:0), my2(0:2,0:0), mz2(0:2,0:0)
       real(dp) :: mx3(0:2,0:0), my3(0:2,0:0), mz3(0:2,0:0)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 6
@@ -2816,12 +2764,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -3221,12 +3165,8 @@ contains
       real(dp) :: mx2(0:2,0:1), my2(0:2,0:1), mz2(0:2,0:1)
       real(dp) :: mx3(0:2,0:1), my3(0:2,0:1), mz3(0:2,0:1)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 18
@@ -3245,12 +3185,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -4217,12 +4153,8 @@ contains
       real(dp) :: mx2(0:2,0:2), my2(0:2,0:2), mz2(0:2,0:2)
       real(dp) :: mx3(0:2,0:2), my3(0:2,0:2), mz3(0:2,0:2)
 
-      abx = ra(1) - rb(1)
-      aby = ra(2) - rb(2)
-      abz = ra(3) - rb(3)
-      ox = ra(1) - orig(1)
-      oy = ra(2) - orig(2)
-      oz = ra(3) - orig(3)
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      ox = ra(1) - orig(1); oy = ra(2) - orig(2); oz = ra(3) - orig(3)
 
       do ic = 1, 39
          do k = 1, 36
@@ -4241,12 +4173,8 @@ contains
          px = (al*ra(1) + bet*rb(1))/zeta
          py = (al*ra(2) + bet*rb(2))/zeta
          pz = (al*ra(3) + bet*rb(3))/zeta
-         pax = px - ra(1)
-         pay = py - ra(2)
-         paz = pz - ra(3)
-         pbx = px - rb(1)
-         pby = py - rb(2)
-         pbz = pz - rb(3)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
          e0x = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abx*abx)
          e0y = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*aby*aby)
          e0z = sqrt(3.14159265358979323846_dp/zeta)*exp(-xi*abz*abz)
@@ -6003,32 +5931,23 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3), orig(3)
       real(dp), intent(out) :: mout(*)
       select case (la*ONE_E_RADIX + lb)
-      case (0)
-      call mult_00(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (0); call mult_00(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (1)
-      call mult_01(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (1); call mult_01(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (2)
-      call mult_02(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (2); call mult_02(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (11)
-      call mult_10(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (11); call mult_10(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (12)
-      call mult_11(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (12); call mult_11(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (13)
-      call mult_12(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (13); call mult_12(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (22)
-      call mult_20(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (22); call mult_20(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (23)
-      call mult_21(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (23); call mult_21(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
-      case (24)
-      call mult_22(nprim_a, nprim_b, ea, ca, eb, cb, &
+      case (24); call mult_22(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, orig, mout)
       case default
          !! No kernel for this class. A sentinel rather than silence: `mout`

@@ -34,7 +34,7 @@ misalign the splice:
      the final Cartesian block straight into `vbuf`, so there is no
      separate HRR pass afterward.
   3. TAIL: the degeneracy/AO-offset decode (`! Single column on every
-     side:`), the digestion (`#ifdef TRC_NO_DIGEST ... #endif`), and
+     side:`), the digestion (from `! BLOCK-ACCUMULATED DIGESTION.`), and
      `end subroutine`. Scheme-independent, kept verbatim. HGP's own
      "--- HRR ---" text, which sits between the decode and the digestion in
      the source file, is dropped: Rys's vbuf is already the transferred
@@ -211,7 +211,7 @@ def main():
 
     decode_marker = "         ! Single column on every side:"
     hrr_marker = "         ! --- HRR ---\n"
-    dig_marker = "#ifdef TRC_NO_DIGEST"
+    dig_marker = "         !\n         ! BLOCK-ACCUMULATED DIGESTION.\n"
     i_decode = whole.index(decode_marker)
     i_hrr = whole.index(hrr_marker)
     i_dig = whole.index(dig_marker)

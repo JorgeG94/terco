@@ -209,37 +209,33 @@ set_tests_properties(terco/check_nosym_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKI
 
 #
 # Rys against HGP, same density and screening, on water/6-31G* and
-# water/cc-pVDZ. Only meaningful under TERCO_RYS=ON -- off, TRC_RYS_CLASSES
-# has no kernel to route to and the two builds this check compares are the
-# same build twice. GPU 2, not the fleet default of
+# water/cc-pVDZ. GPU 2, not the fleet default of
 # 0 `terco_add_check` otherwise sets, to stay off the GPUs other work on
 # this host uses.
 #
-if(TERCO_RYS)
-  terco_add_check(check_rys_vs_hgp_631gs check_rys_vs_hgp.F90 NEEDS_BASIS
-                  ARGS basis_sets/6-31gs.json)
-  terco_add_check(check_rys_vs_hgp_ccpvdz check_rys_vs_hgp.F90 NEEDS_BASIS
-                  ARGS basis_sets/cc-pvdz.json)
-  set_tests_properties(
-    terco/check_rys_vs_hgp_631gs terco/check_rys_vs_hgp_ccpvdz
-    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+terco_add_check(check_rys_vs_hgp_631gs check_rys_vs_hgp.F90 NEEDS_BASIS
+                ARGS basis_sets/6-31gs.json)
+terco_add_check(check_rys_vs_hgp_ccpvdz check_rys_vs_hgp.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvdz.json)
+set_tests_properties(
+  terco/check_rys_vs_hgp_631gs terco/check_rys_vs_hgp_ccpvdz
+  PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
-  #
-  # eri%gradient (Rys, the only scheme it has) against a central difference
-  # of eri%fock's (HGP by default) energy, RHF and UHF, water/6-31G* and
-  # water/cc-pVDZ. No
-  # TRC_RYS_CLASSES override here, deliberately -- the finite-difference
-  # reference goes through HGP, so this cross-validates the gradient's
-  # algebra against an UNRELATED energy path, not Rys against itself.
-  #
-  terco_add_check(check_rys_grad_fd_631gs check_rys_grad_fd.F90 NEEDS_BASIS
-                  ARGS basis_sets/6-31gs.json)
-  terco_add_check(check_rys_grad_fd_ccpvdz check_rys_grad_fd.F90 NEEDS_BASIS
-                  ARGS basis_sets/cc-pvdz.json)
-  set_tests_properties(
-    terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
-    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
-endif()
+#
+# eri%gradient (Rys, the only scheme it has) against a central difference
+# of eri%fock's (HGP by default) energy, RHF and UHF, water/6-31G* and
+# water/cc-pVDZ. No
+# TRC_RYS_CLASSES override here, deliberately -- the finite-difference
+# reference goes through HGP, so this cross-validates the gradient's
+# algebra against an UNRELATED energy path, not Rys against itself.
+#
+terco_add_check(check_rys_grad_fd_631gs check_rys_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/6-31gs.json)
+terco_add_check(check_rys_grad_fd_ccpvdz check_rys_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvdz.json)
+set_tests_properties(
+  terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
+  PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
 #
 # Cartesian multipoles through the octupole, against a reference
@@ -288,22 +284,20 @@ endif()
 # radical/cc-pVDZ (UKS).
 terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 
-if(TERCO_RYS)
-  # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
-  # own Gradients class assumes a converged SCF density; this is a fixed,
-  # non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,
-  # water/6-31G* and water/cc-pVDZ.
-  foreach(b 631gs ccpvdz)
-    if(b STREQUAL "631gs")
-      set(json basis_sets/6-31gs.json)
-    else()
-      set(json basis_sets/cc-pvdz.json)
-    endif()
-    set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
-    terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
-                    NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
-  endforeach()
-endif()
+# eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
+# own Gradients class assumes a converged SCF density; this is a fixed,
+# non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,
+# water/6-31G* and water/cc-pVDZ.
+foreach(b 631gs ccpvdz)
+  if(b STREQUAL "631gs")
+    set(json basis_sets/6-31gs.json)
+  else()
+    set(json basis_sets/cc-pvdz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
+  terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
+endforeach()
 
 #
 # eri%fock against a committed pyscf raw int2e reference, on a fixed
@@ -311,8 +305,7 @@ endif()
 # check_rys_fock_vs_pyscf.F90 skips itself (stop 0, after printing SKIP)
 # when the basis needs more l than this build's TRC_LMAX reaches, exactly
 # the way check_nosym_f does, so it is registered unconditionally and at
-# every ceiling: a build that CAN reach f always runs it, and nothing here
-# depends on TERCO_RYS -- this exercises the ordinary eri%fock dispatch,
+# every ceiling: a build that CAN reach f always runs it -- this exercises the ordinary eri%fock dispatch,
 # whichever scheme ends up routing an f class once TERCO_LMAX reaches 3.
 #
 # water/cc-pVDZ has no f on O and passes TODAY, at LMAX=2: the proof that
@@ -391,17 +384,14 @@ foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
                     check_erf_fock_vs_pyscf.F90
                     NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${nosym_flag} ${case})
   endforeach()
-  if(TERCO_RYS)
-    # Same as the "hgp" case above, but routed through the Rys kernels
-    # instead of HGP's -- TRC_RYS_CLASSES=all is only meaningful under
-    # TERCO_RYS (see check_rys_vs_hgp's own comment).
-    set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_rys.bin)
-    terco_add_check(check_erf_fock_vs_pyscf_${case}_rys
-                    check_erf_fock_vs_pyscf.F90
-                    NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} 0 ${case})
-    set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys
-      PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=all")
-  endif()
+  # Same as the "hgp" case above, but routed through the Rys kernels
+  # instead of HGP's (TRC_RYS_CLASSES=all).
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_rys.bin)
+  terco_add_check(check_erf_fock_vs_pyscf_${case}_rys
+                  check_erf_fock_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} 0 ${case})
+  set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys
+    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=all")
 endforeach()
 
 #

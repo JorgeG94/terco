@@ -27,10 +27,8 @@ module trc_binkernel
 #ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
 #endif
-#ifdef TERCO_RYS
    use trc_rys_select, only: rys_select_init, rys_route
    use trc_rys_kernels, only: rys_dispatch
-#endif
    implicit none
    private
 
@@ -372,16 +370,13 @@ contains
       ! exactly its (la,lb,lc,ld) -- no select case, and ptxas budgets registers
       ! per class instead of for the worst class across all of them.
       !
-#ifdef TERCO_RYS
       ! TRC_RYS_CLASSES, read once per Fock build -- `fock_bins` IS one Fock
       ! build, called once per SCF iteration (or once, standalone, by a
       ! correctness check) -- not once per launch below. See trc_rys_select.
       call rys_select_init()
-#endif
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl, key2
-         logical :: use_rys
          integer(int64) :: lcap
          logical :: l2
          integer(int64) :: o2
@@ -437,20 +432,13 @@ contains
             ! Rys kernel instead of HGP's, for classes that have one --
             ! `rys_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
-#ifdef TERCO_RYS
-            use_rys = rys_route(key2)
-#else
-            use_rys = .false.
-#endif
-            if (use_rys) then
-#ifdef TERCO_RYS
+            if (rys_route(key2)) then
                call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                  b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
                                  omega, dsh, nbas, nao, sh_l, ao_off, &
                                  nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                  ndens, dmat, jmat, rank, nranks)
-#endif
             else
                call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                 b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
@@ -847,7 +835,7 @@ contains
       integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
-      real(dp) :: cb, cdc, vv, jsink, sc
+      real(dp) :: cb, cdc, vv
       integer  :: idens
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
       integer  :: mui, nuj, lamk, sigl
@@ -911,7 +899,6 @@ contains
       offab = pp_off(keyab); nab = pp_n(keyab)
       offcd = pp_off(keycd); ncd = pp_n(keycd)
 
-      jsink = 0.0_dp
       do x = 1, nca*ncc
          g(x) = 0.0_dp
       end do
@@ -1053,62 +1040,53 @@ contains
          mu = mui + ia
          idx = idx + 1
          vv = vbuf(idx)
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
-         FG_ATOMIC
+         !$acc atomic update
          jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
-         FG_ATOMIC
+         !$acc atomic update
          kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
          if (dij) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
          end if
          if (dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
          end if
          if (dij .and. dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
          end if
          if (dpq) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
             end if
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
             end if
          end if
-#endif
       end do
       end do
       end do
@@ -1155,85 +1133,57 @@ contains
          end do
          vv = acc
 
-!
-! DIAGNOSTIC ABLATIONS -- both produce WRONG RESULTS on purpose.
-!
-!   -DTRC_NO_ATOMIC   same stores, no atomic directives.  Isolates the cost
-!                       of the atomic instruction itself from the address
-!                       arithmetic around it.  Races, so J and K are garbage.
-!   -DTRC_NO_DIGEST   no scatter at all, just a scalar accumulation.
-!                       Isolates the whole digestion, addresses included.
-!
-! Only ever for reading `ptxas` register counts and kernel timings.  Neither is
-! a correctness path and check_binfock will fail on both, which is the point.
-!
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
-         FG_ATOMIC
+         !$acc atomic update
          jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
-         FG_ATOMIC
+         !$acc atomic update
          kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
          if (dij) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
          end if
          if (dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
          end if
          if (dij .and. dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
          end if
          if (dpq) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
             end if
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
             end if
          end if
-#endif
       end do
       end do
       end do
       end do
-#endif
-#if defined(TRC_NO_DIGEST)
-      ! keep jsink live so the whole evaluation is not dead-code eliminated
-      if (jsink /= 0.0_dp) then
-         !$acc atomic update
-         jmat(1, 1) = jmat(1, 1) + jsink*1.0e-300_dp
-      end if
 #endif
    end subroutine one_bin_item_nosym
 
@@ -1274,7 +1224,7 @@ contains
       integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
-      real(dp) :: cb, cdc, vv, jsink, sc
+      real(dp) :: cb, cdc, vv, sc
       integer  :: idens
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
       integer  :: mui, nuj, lamk, sigl
@@ -1338,7 +1288,6 @@ contains
       offab = pp_off(keyab); nab = pp_n(keyab)
       offcd = pp_off(keycd); ncd = pp_n(keycd)
 
-      jsink = 0.0_dp
       do x = 1, nca*ncc
          g(x) = 0.0_dp
       end do
@@ -1518,62 +1467,53 @@ contains
          jmat(idens, nu, sig) = jmat(idens, nu, sig) - kfac*sc*dmat(idens, mu, lam)
       end do
 #else
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
-         FG_ATOMIC
+         !$acc atomic update
          jmat(mu, nu) = jmat(mu, nu) + vv*dmat(lam, sig)
-         FG_ATOMIC
+         !$acc atomic update
          kmat(mu, lam) = kmat(mu, lam) + vv*dmat(nu, sig)
          if (dij) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(nu, mu) = jmat(nu, mu) + vv*dmat(lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(nu, lam) = kmat(nu, lam) + vv*dmat(mu, sig)
          end if
          if (dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(mu, nu) = jmat(mu, nu) + vv*dmat(sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(mu, sig) = kmat(mu, sig) + vv*dmat(nu, lam)
          end if
          if (dij .and. dkl) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(nu, mu) = jmat(nu, mu) + vv*dmat(sig, lam)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(nu, sig) = kmat(nu, sig) + vv*dmat(mu, lam)
          end if
          if (dpq) then
-            FG_ATOMIC
+            !$acc atomic update
             jmat(lam, sig) = jmat(lam, sig) + vv*dmat(mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(lam, mu) = kmat(lam, mu) + vv*dmat(sig, nu)
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(sig, lam) = jmat(sig, lam) + vv*dmat(mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(sig, mu) = kmat(sig, mu) + vv*dmat(lam, nu)
             end if
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(lam, sig) = jmat(lam, sig) + vv*dmat(nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(lam, nu) = kmat(lam, nu) + vv*dmat(sig, mu)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(sig, lam) = jmat(sig, lam) + vv*dmat(nu, mu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(sig, nu) = kmat(sig, nu) + vv*dmat(lam, mu)
             end if
          end if
-#endif
 #endif
       end do
       end do
@@ -1621,26 +1561,6 @@ contains
          end do
          vv = acc
 
-!
-! DIAGNOSTIC ABLATIONS -- both produce WRONG RESULTS on purpose.
-!
-!   -DTRC_NO_ATOMIC   same stores, no atomic directives.  Isolates the cost
-!                       of the atomic instruction itself from the address
-!                       arithmetic around it.  Races, so J and K are garbage.
-!   -DTRC_NO_DIGEST   no scatter at all, just a scalar accumulation.
-!                       Isolates the whole digestion, addresses included.
-!
-! Only ever for reading `ptxas` register counts and kernel timings.  Neither is
-! a correctness path and check_binfock will fail on both, which is the point.
-!
-#if defined(TRC_NO_DIGEST)
-         jsink = jsink + vv
-#else
-#if defined(TRC_NO_ATOMIC)
-#define FG_ATOMIC
-#else
-#define FG_ATOMIC !$acc atomic update
-#endif
 
 #if defined(TRC_FOCK6)
          !
@@ -1664,19 +1584,19 @@ contains
          if (.not. dkl) sc = sc*0.5_dp
          if (.not. dpq) sc = sc*0.5_dp
          do dn = 1, ndens
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, nu) = jmat(dn, mu, nu) &
                                + 4.0_dp*jfac*sc*dmat(dn, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, lam, sig) = jmat(dn, lam, sig) &
                                  + 4.0_dp*jfac*sc*dmat(dn, mu, nu)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, lam) = jmat(dn, mu, lam) - kfac*sc*dmat(dn, nu, sig)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, sig) = jmat(dn, mu, sig) - kfac*sc*dmat(dn, nu, lam)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, nu, lam) = jmat(dn, nu, lam) - kfac*sc*dmat(dn, mu, sig)
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, nu, sig) = jmat(dn, nu, sig) - kfac*sc*dmat(dn, mu, lam)
          end do
 #else
@@ -1698,66 +1618,58 @@ contains
          ! an error, and warnings scroll past.
          !
          do dn = 1, ndens
-            FG_ATOMIC
+            !$acc atomic update
             jmat(dn, mu, nu) = jmat(dn, mu, nu) + vv*dmat(dn, lam, sig)
-            FG_ATOMIC
+            !$acc atomic update
             kmat(dn, mu, lam) = kmat(dn, mu, lam) + vv*dmat(dn, nu, sig)
             if (dij) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, nu, mu) = jmat(dn, nu, mu) + vv*dmat(dn, lam, sig)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, nu, lam) = kmat(dn, nu, lam) + vv*dmat(dn, mu, sig)
             end if
             if (dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, mu, nu) = jmat(dn, mu, nu) + vv*dmat(dn, sig, lam)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, mu, sig) = kmat(dn, mu, sig) + vv*dmat(dn, nu, lam)
             end if
             if (dij .and. dkl) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, nu, mu) = jmat(dn, nu, mu) + vv*dmat(dn, sig, lam)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, nu, sig) = kmat(dn, nu, sig) + vv*dmat(dn, mu, lam)
             end if
             if (dpq) then
-               FG_ATOMIC
+               !$acc atomic update
                jmat(dn, lam, sig) = jmat(dn, lam, sig) + vv*dmat(dn, mu, nu)
-               FG_ATOMIC
+               !$acc atomic update
                kmat(dn, lam, mu) = kmat(dn, lam, mu) + vv*dmat(dn, sig, nu)
                if (dkl) then
-                  FG_ATOMIC
+                  !$acc atomic update
                   jmat(dn, sig, lam) = jmat(dn, sig, lam) + vv*dmat(dn, mu, nu)
-                  FG_ATOMIC
+                  !$acc atomic update
                   kmat(dn, sig, mu) = kmat(dn, sig, mu) + vv*dmat(dn, lam, nu)
                end if
                if (dij) then
-                  FG_ATOMIC
+                  !$acc atomic update
                   jmat(dn, lam, sig) = jmat(dn, lam, sig) + vv*dmat(dn, nu, mu)
-                  FG_ATOMIC
+                  !$acc atomic update
                   kmat(dn, lam, nu) = kmat(dn, lam, nu) + vv*dmat(dn, sig, mu)
                end if
                if (dij .and. dkl) then
-                  FG_ATOMIC
+                  !$acc atomic update
                   jmat(dn, sig, lam) = jmat(dn, sig, lam) + vv*dmat(dn, nu, mu)
-                  FG_ATOMIC
+                  !$acc atomic update
                   kmat(dn, sig, nu) = kmat(dn, sig, nu) + vv*dmat(dn, lam, mu)
                end if
             end if
          end do
 #endif
-#endif
       end do
       end do
       end do
       end do
-#endif
-#if defined(TRC_NO_DIGEST)
-      ! keep jsink live so the whole evaluation is not dead-code eliminated
-      if (jsink /= 0.0_dp) then
-         !$acc atomic update
-         jmat(1, 1) = jmat(1, 1) + jsink*1.0e-300_dp
-      end if
 #endif
    end subroutine one_bin_item
 

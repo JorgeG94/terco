@@ -5,8 +5,8 @@ ordered s/p class (`{s,p}^4`, 16 classes, see FRAME.md section 0 -- no
 canonicalisation). It reuses the scaffolding gen_perclass.py already built
 for the HGP per-class kernels (segment locate/decode, the exact Schwarz and
 density-weighted screens, same_ab/same_cd/same_pair, the scalar-path AO
-decode, the block-accumulated density-batched digestion and its
-TRC_NO_DIGEST branch, the scalar launch driver, the item routine signature,
+decode, the block-accumulated density-batched digestion, the scalar
+launch driver, the item routine signature,
 and the inline Chebyshev Boys evaluation) rather than re-implementing any of
 it -- see the functions imported from `gen_perclass` below, and
 docs/GENERATORS.md's "Shared conventions" for why an independent copy would

@@ -31,9 +31,7 @@ module trc_eri
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use trc_binkernel, only: fock_bins
-#ifdef TERCO_RYS
    use trc_grad, only: grad_bins
-#endif
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
@@ -539,9 +537,6 @@ contains
       integer :: ndens, nw, id
       real(dp) :: jfac, kfac
 
-#ifndef TERCO_RYS
-      error stop "terco: eri%gradient needs a TERCO_RYS=ON build"
-#else
       if (present(omega)) then
          if (omega /= 0.0_dp) error stop &
             "terco: eri%gradient: no range-separated gradient; omega must be absent or zero"
@@ -594,7 +589,6 @@ contains
       deallocate (dwork)
 
       if (this%distributed) call sum_ranks(this, grad, 3*b%natm)
-#endif
    end subroutine eri_gradient
 
    subroutine sum_ranks(this, g, n)

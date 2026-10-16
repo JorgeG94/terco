@@ -16,7 +16,7 @@
 ! kernels run once per geometry and the PCM ones twice per SCF iteration,
 ! and keeping them apart keeps each module's device compile small.
 !
-#if TRC_CART_ORDER  != 0
+#if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 module trc_pcm_kernels
@@ -75,9 +75,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -132,9 +130,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -204,9 +200,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -305,9 +299,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -374,9 +366,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -472,9 +462,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -645,9 +633,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -731,9 +717,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -877,9 +861,7 @@ contains
       do ip = 1, npp
          zeta = ppz(ip)
          oo2z = 0.5_dp/zeta
-         pax = ppa(1, ip)
-         pay = ppa(2, ip)
-         paz = ppa(3, ip)
+         pax = ppa(1, ip); pay = ppa(2, ip); paz = ppa(3, ip)
          do ic = 1, npt
             kk = k0 + (ic - 1)*kstep
             pcx = ppp(1, ip) - cpt(1, kk)
@@ -1147,32 +1129,23 @@ contains
       real(dp), intent(in)  :: cpt(3, *), zk(*), wq(*)
       real(dp), intent(out) :: blk(*)
       select case (la*ONE_E_RADIX + lb)
-      case (0)
-      call pcm_00(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (0); call pcm_00(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (1)
-      call pcm_01(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (1); call pcm_01(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (2)
-      call pcm_02(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (2); call pcm_02(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (11)
-      call pcm_10(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (11); call pcm_10(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (12)
-      call pcm_11(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (12); call pcm_11(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (13)
-      call pcm_12(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (13); call pcm_12(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (22)
-      call pcm_20(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (22); call pcm_20(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (23)
-      call pcm_21(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (23); call pcm_21(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
-      case (24)
-      call pcm_22(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
+      case (24); call pcm_22(npp, ppz, ppk, ppp, ppa, abx, aby, abz, &
                           npt, k0, kstep, cpt, zk, wq, blk)
       case default
          !! No kernel for this class: the basis is above PCM_LMAX. A

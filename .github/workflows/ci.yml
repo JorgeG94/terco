@@ -178,8 +178,7 @@ jobs:
       # not a Skipped.
 
       # TERCO_LMAX=3 is the four-centre f ceiling (CMakeLists.txt's own
-      # option comment); it needs TERCO_RYS=ON, which is this project's
-      # default, so nothing else is passed for that. Paired with
+      # option comment); Rys, which it needs, is always built. Paired with
       # TERCO_DF_LMAX=3 for the same reason test/CMakeLists.txt registers
       # check_df_vs_pyscf and the f/g cases together: one job that actually
       # exercises every class the should-fix review asked CI to cover,

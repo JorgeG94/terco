@@ -163,408 +163,327 @@ contains
       real(dp), intent(inout) :: jmat(ndens, nao, nao)
       integer, intent(in) :: rank, nranks
       select case (key)
-      case (0)
-      call pcs0000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (0); call pcs0000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1)
-      call pcs0001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1); call pcs0001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2)
-      call pcs0002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2); call pcs0002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (11)
-      call pcs0010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (11); call pcs0010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (12)
-      call pcs0011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (12); call pcs0011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (13)
-      call pcs0012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (13); call pcs0012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (22)
-      call pcs0020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (22); call pcs0020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (23)
-      call pcs0021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (23); call pcs0021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (24)
-      call pcs0022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (24); call pcs0022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (121)
-      call pcs0100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (121); call pcs0100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (122)
-      call pcs0101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (122); call pcs0101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (123)
-      call pcs0102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (123); call pcs0102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (132)
-      call pcs0110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (132); call pcs0110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (133)
-      call pcs0111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (133); call pcs0111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (134)
-      call pcs0112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (134); call pcs0112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (143)
-      call pcs0120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (143); call pcs0120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (144)
-      call pcs0121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (144); call pcs0121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (145)
-      call pcs0122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (145); call pcs0122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (242)
-      call pcs0200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (242); call pcs0200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (243)
-      call pcs0201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (243); call pcs0201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (244)
-      call pcs0202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (244); call pcs0202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (253)
-      call pcs0210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (253); call pcs0210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (254)
-      call pcs0211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (254); call pcs0211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (255)
-      call pcs0212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (255); call pcs0212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (264)
-      call pcs0220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (264); call pcs0220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (265)
-      call pcs0221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (265); call pcs0221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (266)
-      call pcs0222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (266); call pcs0222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1331)
-      call pcs1000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1331); call pcs1000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1332)
-      call pcs1001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1332); call pcs1001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1333)
-      call pcs1002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1333); call pcs1002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1342)
-      call pcs1010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1342); call pcs1010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1343)
-      call pcs1011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1343); call pcs1011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1344)
-      call pcs1012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1344); call pcs1012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1353)
-      call pcs1020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1353); call pcs1020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1354)
-      call pcs1021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1354); call pcs1021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1355)
-      call pcs1022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1355); call pcs1022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1452)
-      call pcs1100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1452); call pcs1100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1453)
-      call pcs1101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1453); call pcs1101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1454)
-      call pcs1102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1454); call pcs1102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1463)
-      call pcs1110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1463); call pcs1110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1464)
-      call pcs1111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1464); call pcs1111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1465)
-      call pcs1112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1465); call pcs1112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1474)
-      call pcs1120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1474); call pcs1120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1475)
-      call pcs1121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1475); call pcs1121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1476)
-      call pcs1122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1476); call pcs1122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1573)
-      call pcs1200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1573); call pcs1200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1574)
-      call pcs1201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1574); call pcs1201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1575)
-      call pcs1202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1575); call pcs1202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1584)
-      call pcs1210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1584); call pcs1210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1585)
-      call pcs1211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1585); call pcs1211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1586)
-      call pcs1212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1586); call pcs1212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1595)
-      call pcs1220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1595); call pcs1220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1596)
-      call pcs1221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1596); call pcs1221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (1597)
-      call pcs1222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (1597); call pcs1222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2662)
-      call pcs2000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2662); call pcs2000(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2663)
-      call pcs2001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2663); call pcs2001(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2664)
-      call pcs2002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2664); call pcs2002(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2673)
-      call pcs2010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2673); call pcs2010(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2674)
-      call pcs2011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2674); call pcs2011(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2675)
-      call pcs2012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2675); call pcs2012(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2684)
-      call pcs2020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2684); call pcs2020(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2685)
-      call pcs2021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2685); call pcs2021(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2686)
-      call pcs2022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2686); call pcs2022(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2783)
-      call pcs2100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2783); call pcs2100(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2784)
-      call pcs2101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2784); call pcs2101(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2785)
-      call pcs2102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2785); call pcs2102(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2794)
-      call pcs2110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2794); call pcs2110(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2795)
-      call pcr2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2795); call pcr2111(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2796)
-      call pcs2112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2796); call pcs2112(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2805)
-      call pcr2120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2805); call pcr2120(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2806)
-      call pcr2121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2806); call pcr2121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2807)
-      call pcs2122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2807); call pcs2122(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2904)
-      call pcs2200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2904); call pcs2200(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2905)
-      call pcs2201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2905); call pcs2201(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2906)
-      call pcs2202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2906); call pcs2202(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2915)
-      call pcs2210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2915); call pcs2210(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2916)
-      call pcr2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2916); call pcr2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2917)
-      call pcs2212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2917); call pcs2212(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2926)
-      call pcr2220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2926); call pcr2220(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2927)
-      call pcr2221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2927); call pcr2221(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (2928)
-      call pcs2222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+      case (2928); call pcs2222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)

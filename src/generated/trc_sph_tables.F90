@@ -15,7 +15,7 @@
 ! and produces a spherical AO that is a linear combination of the WRONG
 ! Cartesian components, which integrates to a plausible but wrong energy.
 !
-#if TRC_CART_ORDER  != 0
+#if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
 

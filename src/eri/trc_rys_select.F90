@@ -47,7 +47,7 @@ contains
 
    subroutine rys_select_init()
       !! "none" (unset, or anything unrecognised) selects no class; "all"
-      !! every class TERCO_RYS generated a kernel for; a comma-separated list
+      !! every class the build generated a kernel for; a comma-separated list
       !! of four-digit class tags (e.g. "2222,2221,1111") selects exactly
       !! those that also have a kernel. A tag that is not exactly four ASCII
       !! digits is ignored rather than failing the whole value over one typo.

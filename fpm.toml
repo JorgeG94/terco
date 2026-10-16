@@ -84,9 +84,8 @@ line-length = 132
 "src/xc/trc_xc_functional.F90" = ["S001"]
 # Vendored as-is.
 "src/xc/vendor/*" = ["C031"]
-# FG_ATOMIC is a #define'd `!$acc atomic update`, which the parser cannot read past;
-# the kernels keep several assignments per line on purpose.
-"src/eri/trc_binkernel.F90" = ["E001", "S082", "S102"]
+# The kernels keep several assignments per line on purpose.
+"src/eri/trc_binkernel.F90" = ["S082"]
 # `procedure :: operator => pcm_operator` is valid Fortran the parser rejects.
 "src/solvation/trc_pcm.F90" = ["E001", "S082"]
 # Default-initialised components of a local derived type, not saved locals.
