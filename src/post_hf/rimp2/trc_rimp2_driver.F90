@@ -111,7 +111,7 @@ contains
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: blk
-      integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks, nji
+      integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks, nji, ng, ldk, ig, i0, i1, off
       real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), x(:, :), tens(:, :, :), half(:, :, :)
       real(dp), allocatable :: ki(:, :), kt(:, :), part(:), eo(:), ev(:)
       real(dp) :: e_os, e_ss, es(2)
@@ -236,31 +236,44 @@ contains
       tw1 = tick(lp)
 
       ! --- 5. the pair energies, one occupied i at a time ------------------
-      allocate (ki(nv, nov), kt(nov, nv), part(2*nov), eo(no), ev(nv))
+      ng = k_group(no, nv, nov)
+      ldk = ng*nv
+      if (talk) print '(a,i0,a)', "  rimp2: K GEMMs over ", ng, " occupied orbitals at a time"
+      allocate (ki(ldk, nov), kt(nov, nv), part(2*nov), eo(no), ev(nv))
       eo = eps(nfz + 1:nocc)
       ev = eps(nocc + 1:nao)
       !$acc enter data create(ki, kt, part) copyin(eo, ev)
       e_os = 0.0_dp; e_ss = 0.0_dp
-      ! Round-robin over i still balances the ranks: i's share shrinks with
-      ! i, and each rank takes every nranks-th one from the top.
-      do i = 1 + rank, no, nranks
-         ! K_i(a, jb) = sum_Q B(ia, Q) B(jb, Q) for j = i..no: rows ia of X
-         ! start at (i-1) nv + 1, and so do the rows jb of the j >= i block.
-         nji = (no - i + 1)*nv
+      ! Groups of `ng` occupied orbitals, dealt round-robin over the ranks.
+      ! One GEMM per group, K(i a, jb) for i in the group and j >= i0, the
+      ! group's first: (ng nv) rows instead of nv, so cuBLAS gets a taller
+      ! matrix. It also computes the j < i corner inside the group, which
+      ! the pair kernel then skips -- (ng - 1)/(2 (no - i0 + 1)) of the group's
+      ! work on average.
+      do ig = 1 + rank, (no + ng - 1)/ng, nranks
+         i0 = (ig - 1)*ng + 1
+         i1 = min(no, i0 + ng - 1)
+         nji = (no - i0 + 1)*nv
          call step_on(lp, ST_KGEMM, tc)
-         call lp%gemm('N', 'T', nv, nji, naux, 1.0_dp, x((i - 1)*nv + 1, 1), nov, &
-                      x((i - 1)*nv + 1, 1), nov, 0.0_dp, ki, nv)
+         call lp%gemm('N', 'T', (i1 - i0 + 1)*nv, nji, naux, 1.0_dp, x((i0 - 1)*nv + 1, 1), nov, &
+                      x((i0 - 1)*nv + 1, 1), nov, 0.0_dp, ki, ldk)
          call step_off(lp, ST_KGEMM, tc, t_step)
-         call fl(ST_KGEMM)%add(2*nv8*int(nji, int64)*naux8)
-         call step_on(lp, ST_PAIR, tc)
-         ! K_i^T, so the kernel reads (ia|jb) and (ib|ja) both coalesced
-         call lp%transpose(nv, nji, ki, nv, kt, nov)
-         call pair_energy(i, no, nv, nov, nji, eo, ev, ki, kt, part)
-         !$acc update self(part(1:2*nji))
-         call step_off(lp, ST_PAIR, tc, t_step)
-         call fl(ST_PAIR)%add(10*nv8*int(nji, int64))
-         e_os = e_os + sum(part(1:2*nji:2))
-         e_ss = e_ss + sum(part(2:2*nji:2))
+         call fl(ST_KGEMM)%add(2*int(i1 - i0 + 1, int64)*nv8*int(nji, int64)*naux8)
+         do i = i0, i1
+            ! K_i(a, jb), j >= i, is the block of rows (i - i0) nv + a and
+            ! columns from (i - i0) nv + 1.
+            off = (i - i0)*nv
+            nji = (no - i + 1)*nv
+            call step_on(lp, ST_PAIR, tc)
+            ! K_i^T, so the kernel reads (ia|jb) and (ib|ja) both coalesced
+            call lp%transpose(nv, nji, ki(off + 1, off + 1), ldk, kt, nov)
+            call pair_energy(i, no, nv, ldk, off, nov, nji, eo, ev, ki, kt, part)
+            !$acc update self(part(1:2*nji))
+            call step_off(lp, ST_PAIR, tc, t_step)
+            call fl(ST_PAIR)%add(10*nv8*int(nji, int64))
+            e_os = e_os + sum(part(1:2*nji:2))
+            e_ss = e_ss + sum(part(2:2*nji:2))
+         end do
       end do
       !$acc exit data delete(ki, kt, part, eo, ev, x, cocc, cvir, jm)
       if (nranks > 1) then
@@ -353,6 +366,36 @@ contains
       l = t
    end function label
 
+   !
+   ! Occupied orbitals per K GEMM. One i gives cuBLAS nvir rows, which it
+   ! tiles small; four give it a matrix tall enough for its larger tiles.
+   ! Measured at w40 cc-pVDZ on a V100, K GEMM seconds for 1, 2, 4, 8, 16
+   ! per group: 9.37, 9.09, 8.78, 9.24, 9.38 -- four is the best, and
+   ! larger groups lose to the j < i corner each one computes and throws
+   ! away. K is that many times larger, so on the device the group shrinks
+   ! to what the free memory holds next to K^T and the energies, keeping
+   ! 512 MB back for the libraries' own workspace.
+   !
+   integer function k_group(no, nv, nov) result(ng)
+#ifdef _OPENACC
+      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
+                         acc_property_free_memory
+#endif
+      integer, intent(in) :: no, nv, nov
+      integer, parameter :: NG_BEST = 4
+#ifdef _OPENACC
+      integer(int64) :: free, per_i, fixed
+      free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                  acc_property_free_memory), int64)
+      per_i = 8_int64*int(nv, int64)*int(nov, int64)
+      fixed = per_i + 16_int64*int(nov, int64) + 512_int64*1024*1024
+      ng = int(min(int(NG_BEST, int64), max(1_int64, (free - fixed)/per_i)))
+#else
+      ng = NG_BEST
+#endif
+      ng = max(1, min(ng, no))
+   end function k_group
+
    pure integer function ncart(l)
       integer, intent(in) :: l
       ncart = (l + 1)*(l + 2)/2
@@ -372,20 +415,20 @@ contains
    ! of the two is always strided by nv across a warp, which held this
    ! kernel to a fifth of the device's bandwidth.
    !
-   subroutine pair_energy(i, no, nv, ldt, nji, eo, ev, ki, kt, part)
-      integer, intent(in) :: i, no, nv, ldt, nji
-      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji), kt(ldt, nv)
+   subroutine pair_energy(i, no, nv, ldk, off, ldt, nji, eo, ev, ki, kt, part)
+      integer, intent(in) :: i, no, nv, ldk, off, ldt, nji
+      real(dp), intent(in) :: eo(no), ev(nv), ki(ldk, *), kt(ldt, nv)
       real(dp), intent(out) :: part(*)
       integer :: ja
       do concurrent(ja=1:nji)
-         call pair_energy_body(i, ja, no, nv, ldt, nji, eo, ev, ki, kt, part(2*ja - 1), part(2*ja))
+         call pair_energy_body(i, ja, no, nv, ldk, off, ldt, eo, ev, ki, kt, part(2*ja - 1), part(2*ja))
       end do
    end subroutine pair_energy
 
-   pure subroutine pair_energy_body(i, ja, no, nv, ldt, nji, eo, ev, ki, kt, pos, pss)
+   pure subroutine pair_energy_body(i, ja, no, nv, ldk, off, ldt, eo, ev, ki, kt, pos, pss)
       !$acc routine seq
-      integer, intent(in) :: i, ja, no, nv, ldt, nji
-      real(dp), intent(in) :: eo(no), ev(nv), ki(nv, nji), kt(ldt, nv)
+      integer, intent(in) :: i, ja, no, nv, ldk, off, ldt
+      real(dp), intent(in) :: eo(no), ev(nv), ki(ldk, *), kt(ldt, nv)
       real(dp), intent(out) :: pos, pss
       integer :: jj, j, a, b
       real(dp) :: t, u, r, eija, w
@@ -397,7 +440,7 @@ contains
       pos = 0.0_dp
       pss = 0.0_dp
       do b = 1, nv
-         t = ki(a, jj*nv + b)                ! (ia|jb)
+         t = ki(off + a, off + jj*nv + b)    ! (ia|jb)
          u = kt(ja, b)                       ! (ib|ja)
          r = 1.0_dp/(eija - ev(b))
          pos = pos + t*t*r
