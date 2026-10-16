@@ -56,9 +56,9 @@ module trc_xc_batch
 
 contains
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
@@ -69,7 +69,8 @@ contains
    !
    pure function shell_cutoff(l, np, e, c, tol) result(rcut)
       integer, intent(in) :: l, np
-      real(dp), intent(in) :: e(np), c(np), tol
+      real(dp), intent(in) :: tol
+      real(dp), intent(in) :: e(np), c(np)
       real(dp) :: rcut
       integer, parameter :: MAX_BISECT = 60   !! bisection cap; the 1e-6 bracket usually exits first
       real(dp) :: lo, hi, mid, f, ac
@@ -98,9 +99,9 @@ contains
          rcut = max(rcut, hi)
       end do
    contains
-      pure real(dp) function envelope(r)
+      pure real(dp) function envelope(r) result(res)
          real(dp), intent(in) :: r
-         envelope = ac*r**l*exp(-e(p)*r*r)
+         res = ac*r**l*exp(-e(p)*r*r)
       end function envelope
    end function shell_cutoff
 
@@ -129,7 +130,8 @@ contains
       integer :: sh_in_batch
       integer, allocatable :: idx(:), st_lo(:), st_hi(:), b_lo(:), b_hi(:)
       real(dp), allocatable :: rcut(:), bmin(:, :), bmax(:, :)
-      real(dp) :: lo3(3), hi3(3), mid, d2, dd
+      real(dp) :: mid, d2, dd
+      real(dp) :: lo3(3), hi3(3)
       real(dp) :: eps_tol, wtol
       integer :: n
 
@@ -290,7 +292,7 @@ contains
 
    contains
 
-      logical function reaches(ish, ib)
+      logical function reaches(ish, ib) result(res)
          integer, intent(in) :: ish, ib
          integer :: dim
          d2 = 0.0_dp
@@ -298,7 +300,7 @@ contains
             dd = max(0.0_dp, bmin(dim, ib) - b%sh_r(dim, ish), b%sh_r(dim, ish) - bmax(dim, ib))
             d2 = d2 + dd*dd
          end do
-         reaches = d2 < rcut(ish)*rcut(ish)
+         res = d2 < rcut(ish)*rcut(ish)
       end function reaches
 
       subroutine grow_stack()

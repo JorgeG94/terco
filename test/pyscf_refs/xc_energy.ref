@@ -2,7 +2,7 @@
 # case: check_xc_energy
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: c9ba153dec518d3d94e6e1208509a16f23e19a211925b57ffd71451dfb5b570b
+# hash: 31670f111e842231b46f0a3f5a078eb1fe9f8e15f9c62c7777c2b66660675d10
 # files: test/pyscf_refs/generate.py test/check_xc_energy.F90
 NAO 30
 NPTS 132240

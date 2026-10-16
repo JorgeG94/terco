@@ -57,7 +57,8 @@ contains
       !! convention needs no rescaling, and every covariant/contravariant call
       !! below is then a no-op multiply/divide by 1, which is why callers do
       !! not need to special-case SHELL mode themselves.
-      integer, intent(in)  :: nshell, sh_l(nshell), sh_ao(nshell), nao, kind
+      integer, intent(in) :: nshell, nao, kind
+      integer, intent(in) :: sh_l(nshell), sh_ao(nshell)
       real(dp), intent(out) :: nrm(nao)
       integer :: ish, ic, ncart, base, px, py, pz
 

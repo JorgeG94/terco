@@ -76,15 +76,15 @@ module trc_tables
 
 contains
 
-   pure integer function nherm(l)
+   pure integer function nherm(l) result(res)
       integer, intent(in) :: l
-      nherm = (l + 1)*(l + 2)*(l + 3)/6
+      res = (l + 1)*(l + 2)*(l + 3)/6
    end function nherm
 
-   pure integer function herm_index(t, u, v)
+   pure integer function herm_index(t, u, v) result(res)
       !$acc routine seq
       integer, intent(in) :: t, u, v
-      herm_index = hidx(t, u, v)
+      res = hidx(t, u, v)
    end function herm_index
 
    !

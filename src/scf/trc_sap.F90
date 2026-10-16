@@ -98,9 +98,9 @@ module trc_sap
 
 contains
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
@@ -131,7 +131,8 @@ contains
       real(dp), allocatable :: dr(:), rho(:), ang(:, :), wang(:)
       real(dp) :: chi(NCART_MAX), gchi(3, NCART_MAX)
       real(dp), allocatable :: phi(:)
-      real(dp) :: pt(3), d(3), s, acc_in, acc_out, rh
+      real(dp) :: s, acc_in, acc_out, rh
+      real(dp) :: pt(3), d(3)
       integer :: nrad, nang, k, ia, ish, np, nc, off, nz, i, j
 
       nz = size(dblk, 1)
@@ -206,14 +207,15 @@ contains
    ! past the last one (a point charge), and the first node's value inside it
    ! (unresolved by any molecular grid; the nuclear term dominates there).
    !
-   pure real(dp) function interp(r, v, nel, rr)
-      real(dp), intent(in) :: r(:), v(:), nel, rr
+   pure real(dp) function interp(r, v, nel, rr) result(res)
+      real(dp), intent(in) :: nel, rr
+      real(dp), intent(in) :: r(:), v(:)
       integer :: lo, hi, mid
       real(dp) :: t
       if (rr <= r(1)) then
-         interp = v(1)
+         res = v(1)
       else if (rr >= r(size(r))) then
-         interp = nel/rr
+         res = nel/rr
       else
          lo = 1
          hi = size(r)
@@ -226,7 +228,7 @@ contains
             end if
          end do
          t = (rr - r(lo))/(r(hi) - r(lo))
-         interp = v(lo)*(1.0_dp - t) + v(hi)*t
+         res = v(lo)*(1.0_dp - t) + v(hi)*t
       end if
    end function interp
 
@@ -535,7 +537,8 @@ contains
 
       type(trc_xc_grid_t) :: xg
       real(dp), allocatable :: phi(:, :), phiw(:, :), hloc(:, :), wb(:)
-      real(dp) :: chi(NCART_MAX), gchi(3, NCART_MAX), d(3), acc
+      real(dp) :: acc
+      real(dp) :: chi(NCART_MAX), gchi(3, NCART_MAX), d(3)
       integer :: ib, p0, p1, npb, s0, s1, nloc, is, ish, np, nc, i, j, ip, l, mu, nu
 
       ! The batcher screens on the weight it carries, so pass the product with the

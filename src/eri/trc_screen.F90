@@ -44,10 +44,10 @@ contains
    !
    ! Canonical compound index of a shell pair, i >= j, 1-based.
    !
-   pure integer function pair_index(i, j)
+   pure integer function pair_index(i, j) result(res)
       !$acc routine seq
       integer, intent(in) :: i, j
-      pair_index = i*(i - 1)/2 + j
+      res = i*(i - 1)/2 + j
    end function pair_index
 
    !
@@ -332,7 +332,8 @@ contains
       integer, intent(inout) :: d_i(*), d_j(*), d_k(*), d_l(*), d_q(*)
 
       integer, parameter :: NB = 32
-      integer :: cnt(NB), start(NB), n, b, p, key
+      integer :: n, b, p, key
+      integer :: cnt(NB), start(NB)
       integer, allocatable :: bkt(:), si(:), sj(:), sq(:)
 
       allocate (bkt(nlive), si(nlive), sj(nlive), sq(nlive))

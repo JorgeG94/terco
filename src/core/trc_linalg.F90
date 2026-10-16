@@ -243,6 +243,7 @@ contains
       interface
          subroutine dpotrf(uplo, n, a, lda, info)
             import :: dp
+            implicit none
             character, intent(in) :: uplo
             integer, intent(in) :: n, lda
             real(dp), intent(inout) :: a(lda, *)
@@ -283,6 +284,7 @@ contains
       interface
          subroutine dgetrf(m, n, a, lda, ipiv, info)
             import :: dp
+            implicit none
             integer, intent(in) :: m, n, lda
             real(dp), intent(inout) :: a(lda, *)
             integer, intent(out) :: ipiv(*)
@@ -314,6 +316,7 @@ contains
       interface
          subroutine dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
             import :: dp
+            implicit none
             character, intent(in) :: trans
             integer, intent(in) :: n, nrhs, lda, ldb
             real(dp), intent(in) :: a(lda, *)
@@ -346,6 +349,7 @@ contains
       interface
          subroutine dgemv(trans, m, n, alpha, a, lda, x, incx, beta, y, incy)
             import :: dp
+            implicit none
             character, intent(in) :: trans
             integer, intent(in) :: m, n, lda, incx, incy
             real(dp), intent(in) :: alpha, beta
@@ -380,6 +384,7 @@ contains
       interface
          subroutine dtrsm(side, uplo, transa, diag, m, n, alpha, a, lda, b, ldb)
             import :: dp
+            implicit none
             character, intent(in) :: side, uplo, transa, diag
             integer, intent(in) :: m, n, lda, ldb
             real(dp), intent(in) :: alpha

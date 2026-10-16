@@ -232,7 +232,8 @@ contains
 
    subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
       !! Same permutation fock_bins applies to its own segment descriptors.
-      integer, intent(in) :: n, ord(n)
+      integer, intent(in) :: n
+      integer, intent(in) :: ord(n)
       integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
       integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
       logical, intent(inout) :: sD(n)
@@ -316,7 +317,8 @@ contains
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair), sq_n(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh, pcut, jfac, kfac
+      real(dp), intent(in) :: thresh, pcut, jfac, kfac
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas)
       integer,  intent(in)    :: nqp

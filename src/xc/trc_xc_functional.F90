@@ -157,8 +157,10 @@ contains
    !
    pure subroutine xc_eval_point(nk, kid, coef, rho, sigma, eps, vrho, vsigma)
       !$acc routine seq
-      integer, intent(in) :: nk, kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS), rho, sigma
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho, sigma
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
       real(dp), intent(out) :: eps, vrho, vsigma
       real(dp) :: e, vr, vs
       integer :: k
@@ -251,8 +253,10 @@ contains
    pure subroutine xc_eval_point_polar(nk, kid, coef, rho_a, rho_b, s_aa, s_ab, s_bb, &
             eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb)
       !$acc routine seq
-      integer, intent(in) :: nk, kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS), rho_a, rho_b, s_aa, s_ab, s_bb
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho_a, rho_b, s_aa, s_ab, s_bb
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
       real(dp), intent(out) :: eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb
       real(dp) :: e, va, vb, saa, sab, sbb
       integer :: k
@@ -616,7 +620,8 @@ contains
    contains
       subroutine set(f, family, kid, coef)
          type(trc_xc_functional_t), intent(inout) :: f
-         integer, intent(in) :: family, kid(:)
+         integer, intent(in) :: family
+         integer, intent(in) :: kid(:)
          real(dp), intent(in) :: coef(:)
          f%family = family
          f%nk = size(kid)

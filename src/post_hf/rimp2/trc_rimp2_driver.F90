@@ -85,7 +85,8 @@ contains
       integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, q, i, rank, nranks
       real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), x(:, :), tens(:, :, :), tmp(:, :)
       real(dp), allocatable :: ki(:, :), part(:), eo(:), ev(:)
-      real(dp) :: e_os, e_ss, es(2)
+      real(dp) :: e_os, e_ss
+      real(dp) :: es(2)
 
       nao = b%nao
       naux = aux%nao
@@ -231,9 +232,9 @@ contains
       t = real(cc, dp)/real(rate, dp)
    end function wall
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !

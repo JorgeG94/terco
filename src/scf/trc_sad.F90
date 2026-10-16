@@ -438,7 +438,8 @@ contains
       !! makes it so.
       integer, intent(in) :: z
       integer, intent(out) :: na, nb
-      integer, parameter :: cap(19) = [2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 14, 10, 6]
+      integer, parameter :: NSUB = 19
+      integer, parameter :: cap(NSUB) = [2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 14, 10, 6]
       integer :: left, i, half, part
       left = z
       na = 0
@@ -460,9 +461,9 @@ contains
       nb = nb + left/2
    end subroutine hund_split
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    pure function itoa(i) result(t)

@@ -41,10 +41,10 @@ module trc_cart
 
 contains
 
-   pure integer function ncart_of(l)
+   pure integer function ncart_of(l) result(res)
       !$acc routine seq
       integer, intent(in) :: l
-      ncart_of = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart_of
 
    subroutine cart_init()

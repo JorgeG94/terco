@@ -331,7 +331,7 @@ contains
       end do
    end subroutine normalise
 
-   pure real(dp) function common_fac_sp(l)
+   pure real(dp) function common_fac_sp(l) result(res)
       !! Duplicated from trc_api.F90 (and trc_ao_norm.F90, and trc_batch.F90)
       !! rather than imported -- see those modules' own comments on the same
       !! duplication. `build` folds this in once; this routine has to undo the
@@ -340,11 +340,11 @@ contains
       integer, intent(in) :: l
       select case (l)
       case (0)
-      common_fac_sp = 0.282094791773878143_dp
+      res = 0.282094791773878143_dp
       case (1)
-      common_fac_sp = 0.488602511902919921_dp
+      res = 0.488602511902919921_dp
       case default
-      common_fac_sp = 1.0_dp
+      res = 1.0_dp
       end select
    end function common_fac_sp
 

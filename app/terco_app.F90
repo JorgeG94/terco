@@ -40,6 +40,7 @@ module terco_app
    interface
       function c_setenv(name, value, overwrite) result(rc) bind(c, name="setenv")
          import :: c_char, c_int
+         implicit none
          character(kind=c_char), intent(in) :: name(*), value(*)
          integer(c_int), value :: overwrite
          integer(c_int) :: rc
@@ -221,9 +222,9 @@ contains
       end if
    end subroutine resolve_basis
 
-   logical function exists(path)
+   logical function exists(path) result(res)
       character(len=*), intent(in) :: path
-      inquire (file=trim(path), exist=exists)
+      inquire (file=trim(path), exist=res)
    end function exists
 
    pure function c_string(s) result(cs)

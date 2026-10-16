@@ -168,7 +168,8 @@
 !         TRC_AO_NORM_SHELL.
 !
 module trc_capi
-   use, intrinsic :: iso_c_binding
+   use, intrinsic :: iso_c_binding, only: c_associated, c_char, c_double, c_f_pointer, c_int, c_loc, &
+                                          c_null_char, c_null_ptr, c_ptr
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
@@ -2248,6 +2249,10 @@ contains
             return
          end if
          dg = cx%dguess
+      case default
+         cx%message = "trc_run_scf: unknown guess kind"
+         if (collective) call comm%finalize()
+         return
       end select
       if (allocated(dg)) then
          if (collective) then
@@ -2287,23 +2292,23 @@ contains
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
 
-   pure integer function core_orbitals(z)
+   pure integer function core_orbitals(z) result(res)
       !! Frozen-core orbitals for one element, by period.
       real(dp), intent(in) :: z
       integer :: iz
       iz = nint(z)
       if (iz <= 2) then
-         core_orbitals = 0
+         res = 0
       else if (iz <= 10) then
-         core_orbitals = 1
+         res = 1
       else if (iz <= 18) then
-         core_orbitals = 5
+         res = 5
       else if (iz <= 36) then
-         core_orbitals = 9
+         res = 9
       else if (iz <= 54) then
-         core_orbitals = 18
+         res = 18
       else
-         core_orbitals = 27
+         res = 27
       end if
    end function core_orbitals
 

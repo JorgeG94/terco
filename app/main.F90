@@ -30,6 +30,8 @@ module terco_run
    use trc_capi, only: trc_message, TRC_OK
    use terco_app, only: element_symbol, f_string
    implicit none
+   private
+   public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -86,6 +88,7 @@ contains
       interface
          subroutine c_exit(status) bind(c, name="exit")
             import :: c_int
+            implicit none
             integer(c_int), value :: status
          end subroutine c_exit
       end interface
@@ -106,7 +109,8 @@ contains
       !! Stop on a failed library call, with the library's own explanation.
       type(run_t), intent(in) :: r
       integer(c_int), intent(in) :: status
-      character(kind=c_char) :: buf(1024)
+      integer, parameter :: MSG_LEN = 1024
+      character(kind=c_char) :: buf(MSG_LEN)
       integer(c_int) :: s
       if (status == TRC_OK) return
       s = trc_message(r%h, buf, int(size(buf), c_int))
@@ -186,8 +190,11 @@ contains
    subroutine formula(z, natm)
       !! Hill order: with carbon, C then H then the rest alphabetically;
       !! without, everything alphabetically.
-      integer, intent(in) :: z(:), natm
-      integer :: ia, k, n, order(118)
+      integer, intent(in) :: natm
+      integer, intent(in) :: z(:)
+      integer :: ia, k, n
+      integer, parameter :: NELEM = 118
+      integer :: order(NELEM)
       n = 0
       if (any(z == 6)) then
          n = n + 1

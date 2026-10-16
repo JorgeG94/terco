@@ -183,7 +183,8 @@ contains
       real(dp), allocatable :: radii(:), r_switch(:), r_inner(:)
       real(dp), allocatable :: pt(:, :), nrm(:, :), zet(:), wgt(:), swf(:)
       integer, allocatable :: own(:)
-      real(dp) :: point(3), xi, ratio, alpha, w, f, d
+      real(dp) :: xi, ratio, alpha, w, f, d
+      real(dp) :: point(3)
       integer :: natm, iatom, jatom, ipt, n_kept, ix, i
       character(len=16) :: num
 
@@ -200,7 +201,7 @@ contains
          if (PCM_XI_ORDERS(i) == angular_points) ix = i
       end do
       if (ix == 0 .or. .not. lebedev_is_available(angular_points)) then
-         write (num, '(i0)') angular_points
+         write (num, "(i0)") angular_points
          call error%set(ERROR_VALIDATION, "PCM: "//trim(num)//" points per sphere has no "// &
                         "fitted SWIG exponent [J. Chem. Phys. 122, 194110 (2005), Table II]; "// &
                         "use one of 6, 14, 26, 38, 50, 86, 110, 146, 170, 194, 302 (the "// &
@@ -278,32 +279,32 @@ contains
       end do
    end subroutine build_pcm_surface
 
-   pure real(dp) function s_elem(i, j, n, coords, zeta, switch_f)
+   pure real(dp) function s_elem(i, j, n, coords, zeta, switch_f) result(res)
       !! One element of S: erf(zeta_ij r)/r off the diagonal, zeta sqrt(2/pi)/F on it
       !$acc routine seq
       integer, intent(in) :: i, j, n
       real(dp), intent(in) :: coords(3, n), zeta(n), switch_f(n)
       real(dp) :: dx, dy, dz, r, zij
       if (i == j) then
-         s_elem = zeta(i)*sqrt(2.0_dp/PI)/switch_f(i)
+         res = zeta(i)*sqrt(2.0_dp/PI)/switch_f(i)
       else
          dx = coords(1, i) - coords(1, j)
          dy = coords(2, i) - coords(2, j)
          dz = coords(3, i) - coords(3, j)
          r = sqrt(dx*dx + dy*dy + dz*dz)
          zij = zeta(i)*zeta(j)/sqrt(zeta(i)**2 + zeta(j)**2)
-         s_elem = erf(zij*r)/r
+         res = erf(zij*r)/r
       end if
    end function s_elem
 
-   pure real(dp) function d_elem(i, j, n, coords, normals, zeta, r_parent)
+   pure real(dp) function d_elem(i, j, n, coords, normals, zeta, r_parent) result(res)
       !! One element of D, S's derivative along the normal of point j
       !$acc routine seq
       integer, intent(in) :: i, j, n
       real(dp), intent(in) :: coords(3, n), normals(3, n), zeta(n), r_parent(n)
       real(dp) :: dx, dy, dz, r, zij, xr, nr
       if (i == j) then
-         d_elem = -zeta(i)*sqrt(2.0_dp/PI)/(2.0_dp*r_parent(i))
+         res = -zeta(i)*sqrt(2.0_dp/PI)/(2.0_dp*r_parent(i))
       else
          dx = coords(1, i) - coords(1, j)
          dy = coords(2, i) - coords(2, j)
@@ -312,7 +313,7 @@ contains
          zij = zeta(i)*zeta(j)/sqrt(zeta(i)**2 + zeta(j)**2)
          xr = zij*r
          nr = dx*normals(1, j) + dy*normals(2, j) + dz*normals(3, j)
-         d_elem = erf(xr)/r*nr/r**2 - 2.0_dp*xr/sqrt(PI)*exp(-xr*xr)*nr/r**3
+         res = erf(xr)/r*nr/r**2 - 2.0_dp*xr/sqrt(PI)*exp(-xr*xr)*nr/r**3
       end if
    end function d_elem
 
@@ -489,7 +490,7 @@ contains
             call s_fill(n, sf%coords, sf%zeta, sf%switch_f, smat)
             call da_fill(n, sf%coords, sf%normals, sf%zeta, sf%r_parent, sf%area, this%rmat)
             call copy_square(n, smat, this%kmat)
-            call this%la%gemm('N', 'N', n, n, n, -f2pi, this%rmat, n, smat, n, 1.0_dp, this%kmat, n)
+            call this%la%gemm("N", "N", n, n, n, -f2pi, this%rmat, n, smat, n, 1.0_dp, this%kmat, n)
             !$acc exit data delete(smat)
             deallocate (smat)
             call scale_shift(n, this%rmat, f2pi, -f)
@@ -499,7 +500,7 @@ contains
       end associate
       call this%la%getrf(n, this%kmat, n, this%ipiv, info)
       if (info /= 0) then
-         write (num, '(i0)') info
+         write (num, "(i0)") info
          call error%set(ERROR_VALIDATION, "PCM: K is singular (getrf info = "//trim(num)// &
                         "), which a physical cavity does not produce; two surface points "// &
                         "may coincide -- check the geometry")
@@ -569,18 +570,18 @@ contains
       n = this%surface%n_points
       f = this%f_eps
       if (this%model == PCM_MODEL_IEFPCM) then
-         call this%la%gemv('N', n, n, 1.0_dp, this%rmat, n, v, 0.0_dp, q)
-         call this%la%getrs('N', n, 1, this%kmat, n, this%ipiv, q, n)
+         call this%la%gemv("N", n, n, 1.0_dp, this%rmat, n, v, 0.0_dp, q)
+         call this%la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
          allocate (adj(n))
          !$acc enter data create(adj)
          call axpby(n, 1.0_dp, v, 0.0_dp, adj)
-         call this%la%getrs('T', n, 1, this%kmat, n, this%ipiv, adj, n)
+         call this%la%getrs("T", n, 1, this%kmat, n, this%ipiv, adj, n)
          ! q := (q + R^T adj)/2
-         call this%la%gemv('T', n, n, 0.5_dp, this%rmat, n, adj, 0.5_dp, q)
+         call this%la%gemv("T", n, n, 0.5_dp, this%rmat, n, adj, 0.5_dp, q)
          !$acc exit data delete(adj)
       else
          call axpby(n, -f, v, 0.0_dp, q)
-         call this%la%getrs('N', n, 1, this%kmat, n, this%ipiv, q, n)
+         call this%la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
       end if
    end subroutine pcm_solve
 

@@ -262,7 +262,7 @@ contains
       ! The atomic SCFs of a SAD guess come through here too, and would
       ! overwrite the molecular density with a 5x5 one. Keep the largest.
       open (newunit=u, file=trim(path), access="stream", form="unformatted", &
-            status="old", iostat=ios)
+            status="old", action="read", iostat=ios)
       if (ios == 0) then
          read (u, iostat=ios) prev
          close (u)
@@ -271,7 +271,7 @@ contains
          end if
       end if
       open (newunit=u, file=trim(path), access="stream", form="unformatted", &
-            status="replace", iostat=ios)
+            status="replace", action="write", iostat=ios)
       if (ios /= 0) return
       write (u) int(nao, int64)
       write (u) d
@@ -279,15 +279,15 @@ contains
       print "(a,a,a,i0,a)", "   [density dumped to ", trim(path), ", nao ", nao, "]"
    end subroutine dump_density
 
-   logical function incr_env()
+   logical function incr_env() result(res)
       !! Experiment hook for the incremental build, so its effect can be
       !! measured through a driver that does not expose the option yet.
       character(len=8) :: v
       call get_environment_variable("TRC_INCREMENTAL", v)
-      incr_env = (trim(v) == "1")
+      res = (trim(v) == "1")
    end function incr_env
 
-   integer function incr_reset_env(dflt)
+   integer function incr_reset_env(dflt) result(res)
       !! Full rebuild interval, and an integral threshold override. A
       !! difference build carries the same absolute screening error as a full
       !! one, so the error accumulates across increments and DIIS stalls
@@ -299,14 +299,14 @@ contains
       character(len=8) :: v
       integer :: ios, k
       call get_environment_variable("TRC_INCR_RESET", v)
-      incr_reset_env = dflt
+      res = dflt
       if (len_trim(v) > 0) then
          read (v, *, iostat=ios) k
-         if (ios == 0 .and. k > 0) incr_reset_env = k
+         if (ios == 0 .and. k > 0) res = k
       end if
    end function incr_reset_env
 
-   real(dp) function incr_thresh_scale_env(dflt)
+   real(dp) function incr_thresh_scale_env(dflt) result(res)
       !! Experiment hook, like `incr_reset_env`: TRC_INCR_THRESH_SCALE sweeps
       !! `incr_thresh_scale` without a rebuild.
       real(dp), intent(in) :: dflt
@@ -314,14 +314,14 @@ contains
       integer :: ios
       real(dp) :: t
       call get_environment_variable("TRC_INCR_THRESH_SCALE", v)
-      incr_thresh_scale_env = dflt
+      res = dflt
       if (len_trim(v) > 0) then
          read (v, *, iostat=ios) t
-         if (ios == 0 .and. t > 0.0_dp) incr_thresh_scale_env = t
+         if (ios == 0 .and. t > 0.0_dp) res = t
       end if
    end function incr_thresh_scale_env
 
-   real(dp) function incr_start_env(dflt)
+   real(dp) function incr_start_env(dflt) result(res)
       !! Experiment hook, like `incr_reset_env`: TRC_INCR_START sweeps
       !! `incr_start` without a rebuild.
       real(dp), intent(in) :: dflt
@@ -329,23 +329,23 @@ contains
       integer :: ios
       real(dp) :: t
       call get_environment_variable("TRC_INCR_START", v)
-      incr_start_env = dflt
+      res = dflt
       if (len_trim(v) > 0) then
          read (v, *, iostat=ios) t
-         if (ios == 0 .and. t > 0.0_dp) incr_start_env = t
+         if (ios == 0 .and. t > 0.0_dp) res = t
       end if
    end function incr_start_env
 
-   real(dp) function eri_thresh_env(dflt)
+   real(dp) function eri_thresh_env(dflt) result(res)
       real(dp), intent(in) :: dflt
       character(len=16) :: v
       integer :: ios
       real(dp) :: t
       call get_environment_variable("TRC_ERI_THRESH", v)
-      eri_thresh_env = dflt
+      res = dflt
       if (len_trim(v) > 0) then
          read (v, *, iostat=ios) t
-         if (ios == 0 .and. t > 0.0_dp) eri_thresh_env = t
+         if (ios == 0 .and. t > 0.0_dp) res = t
       end if
    end function eri_thresh_env
 
@@ -377,7 +377,8 @@ contains
       !! the calculation (trc_linalg's init is create-once and grows the
       !! workspace to nao). Absent, the run makes its own and releases them.
 
-      integer :: nao, nao_c, nspin, s, it, nocc(2), ndiis_used, i, j, k, n2, m
+      integer :: nao, nao_c, nspin, s, it, ndiis_used, i, j, k, n2, m
+      integer :: nocc(2)
       integer :: nxc, nxc_c, nu_c, nlr_c, nin_c   !! full size, or 1 when unused (see the allocations)
       logical :: ok, sph
       real(dp), allocatable :: smat(:, :), hcore(:, :), x(:, :)
@@ -435,7 +436,8 @@ contains
       integer :: nfrac, ndamp
       real(dp) :: diis_start
       type(timer_type) :: tm
-      real(dp) :: ts(6)
+      integer, parameter :: NSETUP = 6
+      real(dp) :: ts(NSETUP)
       !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
       !! linear-algebra handles, orthogonaliser (printed with the timing table)
       real(dp) :: tw0, tw1, t_setup, t_grid, t_fock, t_xc, t_rest, tx_pts, tx_prs, tp1, tq1
@@ -1288,7 +1290,8 @@ contains
          !! sharing the remainder evenly. `nocc_out` is the last orbital with
          !! any occupation, for the GEMM.
          integer, intent(in) :: n
-         real(dp), intent(in) :: eps(n), nelec, omax
+         real(dp), intent(in) :: nelec, omax
+         real(dp), intent(in) :: eps(n)
          real(dp), intent(out) :: o(n)
          integer, intent(out) :: nocc_out
          real(dp), parameter :: FRAC_TOL = 1.0e-3_dp
@@ -1346,7 +1349,8 @@ contains
       subroutine adiis_coeffs(m, c)
          integer, intent(in) :: m
          real(dp), intent(out) :: c(m)
-         real(dp) :: dvec(m), amat(m, m), g(m), trial(m), f, ft, step
+         real(dp) :: f, ft, step
+         real(dp) :: dvec(m), amat(m, m), g(m), trial(m)
          integer :: ii, jj, itr, ls
          logical :: improved
          do ii = 1, m
@@ -1409,7 +1413,8 @@ contains
       pure subroutine project_simplex(m, c)
          integer, intent(in) :: m
          real(dp), intent(inout) :: c(m)
-         real(dp) :: u(m), css, theta, t
+         real(dp) :: css, theta, t
+         real(dp) :: u(m)
          integer :: ii, rho
          u = c
          call sort_desc(m, u)

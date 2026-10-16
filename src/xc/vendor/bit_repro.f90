@@ -97,6 +97,7 @@ interface
      !! x**n by binary exponentiation (n<0 via one reciprocal); ipow(x,2) == RN(x*x)
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in) :: x
     integer, intent(in) :: n
     real(wp) :: p
@@ -107,6 +108,7 @@ interface
      !! Knuth two_sum: s + e == a + b exactly, branch-free
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in)  :: a, b
     real(wp), intent(out) :: s, e
   end subroutine two_sum
@@ -115,6 +117,7 @@ interface
      !! Dekker/Veltkamp two_prod (no FMA): p + e == a*b exactly
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in)  :: a, b
     real(wp), intent(out) :: p, e
   end subroutine two_prod
@@ -124,6 +127,7 @@ interface
      !! for normal x; see the helper for why the intrinsics cannot be used raw)
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in)  :: x
     real(wp), intent(out) :: m
     integer, intent(out) :: k
@@ -133,6 +137,7 @@ interface
      !! log2(x) as a double-double pair, ~2**-85 relative, finite x > 0
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in)  :: x
     real(wp), intent(out) :: h, l
   end subroutine log2_dd
@@ -141,6 +146,7 @@ interface
      !! 2**(h+l) for a double-double exponent: table + short polynomial
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in) :: h, l
     real(wp) :: e2
   end function exp2_pair
@@ -149,6 +155,7 @@ interface
      !! Rescale for cuberoot: |a| -> [0.125,1) plus integral cube-root exponent + sign
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in) :: a
     real(wp), intent(out) :: x
     integer(kind=int64), intent(out) :: e_r, s_a
@@ -158,6 +165,7 @@ interface
      !! Undo rescale_cbrt
     !$omp declare target
     !$acc routine seq
+     implicit none
     real(wp), intent(in) :: x
     integer(kind=int64), intent(in) :: e_a, s_a
     real(wp) :: a

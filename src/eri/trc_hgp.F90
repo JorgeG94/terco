@@ -327,7 +327,8 @@ contains
       integer  :: keyab, keycd, offab, offcd, nab, ncd
       integer  :: kp, kq, m, d, x, cur, nxt
       real(dp) :: zeta, eta, zpe, rho, tval, pref
-      real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3), wc
+      real(dp) :: wc
+      real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3)
       real(dp) :: oo2z, oo2e, oo2ze, rz, re
       real(dp) :: f(0:BOYS_MMAX)
       ! [a0|c0]^m, two m levels ping-ponged (v, at vb), plus the contracted
@@ -420,7 +421,8 @@ contains
       !$acc routine seq
       integer,  intent(in)    :: lim, nca, ncc, dst, src
       real(dp), intent(inout) :: v(nca*ncc, 0:1)
-      real(dp), intent(in)    :: seed, pa(3), qc(3), wp(3), wq(3)
+      real(dp), intent(in) :: seed
+      real(dp), intent(in) :: pa(3), qc(3), wp(3), wq(3)
       real(dp), intent(in)    :: oo2z, oo2e, oo2ze, rz, re
 
       integer  :: ia, ic, d, x, xd1, xd2, xc1, xc2, xac, ai
@@ -547,7 +549,7 @@ contains
 #include "trc_cart_comp.inc"
    end subroutine comp
 
-   pure real(dp) function binom(n, k)
+   pure real(dp) function binom(n, k) result(res)
       !$acc routine seq
       integer, intent(in) :: n, k
       integer :: i
@@ -556,17 +558,17 @@ contains
       do i = 1, k
          r = r*real(n - k + i, dp)/real(i, dp)
       end do
-      binom = r
+      res = r
    end function binom
 
-   pure real(dp) function powi(x, n)
+   pure real(dp) function powi(x, n) result(res)
       !$acc routine seq
       real(dp), intent(in) :: x
       integer,  intent(in) :: n
       integer :: i
-      powi = 1.0_dp
+      res = 1.0_dp
       do i = 1, n
-         powi = powi*x
+         res = res*x
       end do
    end function powi
 

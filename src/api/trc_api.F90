@@ -211,9 +211,9 @@ module trc_api
 
 contains
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
@@ -255,15 +255,15 @@ contains
    ! `env` alone is wrong by it. Folding it into sh_c here means the kernels
    ! never have to know.
    !
-   pure real(dp) function common_fac_sp(l)
+   pure real(dp) function common_fac_sp(l) result(res)
       integer, intent(in) :: l
       select case (l)
       case (0)
-      common_fac_sp = 0.282094791773878143_dp
+      res = 0.282094791773878143_dp
       case (1)
-      common_fac_sp = 0.488602511902919921_dp
+      res = 0.488602511902919921_dp
       case default
-      common_fac_sp = 1.0_dp
+      res = 1.0_dp
       end select
    end function common_fac_sp
 

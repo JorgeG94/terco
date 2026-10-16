@@ -441,7 +441,8 @@ contains
    !
    subroutine xc_screen(nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, active)
       integer, intent(in) :: nbatch, nspin, nao, nbao
-      real(dp), intent(in) :: dmat(nao, nao, nspin), b_amax(nbao), rho_tol
+      real(dp), intent(in) :: rho_tol
+      real(dp), intent(in) :: dmat(nao, nao, nspin), b_amax(nbao)
       integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao)
       integer, intent(inout) :: active(nbatch)
       integer :: ib
@@ -453,7 +454,8 @@ contains
    pure subroutine xc_screen_body(ib, nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, flag)
       !$acc routine seq
       integer, intent(in) :: ib, nbatch, nspin, nao, nbao
-      real(dp), intent(in) :: dmat(nao, nao, nspin), b_amax(nbao), rho_tol
+      real(dp), intent(in) :: rho_tol
+      real(dp), intent(in) :: dmat(nao, nao, nspin), b_amax(nbao)
       integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao)
       integer, intent(inout) :: flag
       integer :: s, u, v, au, av
@@ -491,9 +493,9 @@ contains
          ord(j + 1) = t
       end do
    contains
-      pure logical function later(a, b)
+      pure logical function later(a, b) result(res)
          integer, intent(in) :: a, b
-         later = npp(a) > npp(b) .or. (npp(a) == npp(b) .and. nlp(a) > nlp(b))
+         res = npp(a) > npp(b) .or. (npp(a) == npp(b) .and. nlp(a) > nlp(b))
       end function later
    end subroutine sort_by_shape
 
@@ -706,7 +708,8 @@ contains
       real(dp), intent(out) :: eg, ng
 
       integer :: ib, nloc, ld, off, u, s, i
-      real(dp) :: rho(2), grho(3, 2), zg(2), zv(3, 2), wg, x, sigma, eps, vrho, vsigma
+      real(dp) :: wg, x, sigma, eps, vrho, vsigma
+      real(dp) :: rho(2), grho(3, 2), zg(2), zv(3, 2)
       real(dp) :: s_aa, s_ab, s_bb, va, vb, v_aa, v_ab, v_bb
 
       ib = batch_of(gg)

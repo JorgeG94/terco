@@ -82,9 +82,9 @@ contains
    ! kernel, or all multi-column, and goes to the blocked one -- no launch
    ! carries both, so neither pays the other's registers or divergence.
    !
-   pure integer function bin_key(la, lb, kab, s, g)
+   pure integer function bin_key(la, lb, kab, s, g) result(res)
       integer, intent(in) :: la, lb, kab, s, g
-      bin_key = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*2 + g + 1
+      res = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*2 + g + 1
    end function bin_key
 
    !
@@ -249,12 +249,12 @@ contains
          end if
       end subroutine lorder
 
-      pure integer function kab_of(i, j)
+      pure integer function kab_of(i, j) result(res)
          integer, intent(in) :: i, j
          if (present(pp_n)) then
-            kab_of = pp_n((i - 1)*nbas + j)
+            res = pp_n((i - 1)*nbas + j)
          else
-            kab_of = sh_np(i)*sh_np(j)
+            res = sh_np(i)*sh_np(j)
          end if
       end function kab_of
    end subroutine build_binned_pairs
@@ -517,14 +517,14 @@ contains
       deallocate (code, kbuf, idx, ti, tj, tq)
 
    contains
-      logical function qkey_only()
+      logical function qkey_only() result(res)
          !! Key on the Schwarz bound alone rather than on the product with the
          !! density block. The bound correlates with distance, so this keeps
          !! more of the spatial locality the natural order has, at the cost of
          !! a less faithful prediction of which threads will screen out.
          character(len=8) :: v
          call get_environment_variable("TRC_BIN_SORT_Q", v)
-         qkey_only = (trim(v) == "1")
+         res = (trim(v) == "1")
       end function qkey_only
    end subroutine sort_bins_by_weight
 
@@ -539,7 +539,8 @@ contains
       real(dp), intent(in) :: sh_r(3, nbas)
 
       integer :: k, p, lo, n, m
-      real(dp) :: lo3(3), hi3(3), span, c(3)
+      real(dp) :: span
+      real(dp) :: lo3(3), hi3(3), c(3)
       integer(int64), allocatable :: code(:), kbuf(:)
       integer(int_index), allocatable :: idx(:)
       integer, allocatable :: ti(:), tj(:)
@@ -591,18 +592,18 @@ contains
       deallocate (code, kbuf, idx, ti, tj, tq)
    end subroutine sort_bins_spatially
 
-   pure integer(int64) function morton3(ix, iy, iz)
+   pure integer(int64) function morton3(ix, iy, iz) result(res)
       !! Interleave the low ten bits of three coordinates.
       integer, intent(in) :: ix, iy, iz
       integer :: t, bit
-      morton3 = 0_int64
+      res = 0_int64
       do bit = 0, 9
          t = ibits(max(0, min(1023, ix)), bit, 1)
-         if (t /= 0) morton3 = ibset(morton3, 3*bit)
+         if (t /= 0) res = ibset(res, 3*bit)
          t = ibits(max(0, min(1023, iy)), bit, 1)
-         if (t /= 0) morton3 = ibset(morton3, 3*bit + 1)
+         if (t /= 0) res = ibset(res, 3*bit + 1)
          t = ibits(max(0, min(1023, iz)), bit, 1)
-         if (t /= 0) morton3 = ibset(morton3, 3*bit + 2)
+         if (t /= 0) res = ibset(res, 3*bit + 2)
       end do
    end function morton3
 
@@ -667,15 +668,15 @@ contains
    ! less and hands that work back. So res is a knob for accuracy at the
    ! pre-launch screen, not for speed, and 1 stays the default.
    !
-   pure integer function size_index(qq, res)
+   pure integer function size_index(qq, res) result(res_)
       real(dp), intent(in) :: qq
       integer, intent(in) :: res
       real(dp) :: v
       if (qq >= 1.0_dp) then
-         size_index = 0
+         res_ = 0
       else
          v = -log10(qq)*real(res, dp)
-         size_index = min(SDEC*res, int(ceiling(v)))
+         res_ = min(SDEC*res, int(ceiling(v)))
       end if
    end function size_index
 

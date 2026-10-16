@@ -53,10 +53,10 @@ contains
 
 #include "inc/trc_boys_eval.inc"
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       !$acc routine seq
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
@@ -64,25 +64,25 @@ contains
    ! sqrt(3/4pi) for p, and 1 from d up, so its Cartesian d functions are
    ! deliberately not unit-normalised.
    !
-   pure real(dp) function common_fac_sp(l)
+   pure real(dp) function common_fac_sp(l) result(res)
       integer, intent(in) :: l
       select case (l)
       case (0)
-      common_fac_sp = 0.282094791773878143_dp
+      res = 0.282094791773878143_dp
       case (1)
-      common_fac_sp = 0.488602511902919921_dp
+      res = 0.488602511902919921_dp
       case default
-      common_fac_sp = 1.0_dp
+      res = 1.0_dp
       end select
    end function common_fac_sp
 
    !
    ! Offset of E(i,j,t,d) within one primitive pair's block.  1-based.
    !
-   pure integer function e_off(i, j, t, d)
+   pure integer function e_off(i, j, t, d) result(res)
       !$acc routine seq
       integer, intent(in) :: i, j, t, d
-      e_off = (d - 1)*(2*LMAX + 1)*(LMAX + 1)*(LMAX + 1) &
+      res = (d - 1)*(2*LMAX + 1)*(LMAX + 1)*(LMAX + 1) &
               + t*(LMAX + 1)*(LMAX + 1) + j*(LMAX + 1) + i + 1
    end function e_off
 
@@ -336,7 +336,8 @@ contains
       ! these are indexed by a pair's Hermite index and the wrong bound cost
       ! 2.6 kB of stack frame per thread.
       real(dp) :: tvec(NHERM_PAIR), ecdv(NHERM_PAIR)
-      real(dp) :: pqx, pqy, pqz, pqd(3)
+      real(dp) :: pqx, pqy, pqz
+      real(dp) :: pqd(3)
       real(dp) :: f(0:BOYS_MMAX)
 
       la = sh_l(q_i(iq))

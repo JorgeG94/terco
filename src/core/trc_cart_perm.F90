@@ -23,12 +23,12 @@ module trc_cart_perm
 
 contains
 
-   pure integer function trc_cart_order_id()
+   pure integer function trc_cart_order_id() result(res)
       !! 0 (lexicographic) or 1 (gamess), the same encoding TRC_CART_ORDER uses.
 #if TRC_CART_ORDER == 1
-      trc_cart_order_id = 1
+      res = 1
 #else
-      trc_cart_order_id = 0
+      res = 0
 #endif
    end function trc_cart_order_id
 

@@ -42,6 +42,8 @@ module trc_eri
    private
    public :: trc_eri_t
 
+   integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
+
    type :: trc_eri_t
       real(dp) :: thresh = 1.0e-10_dp
       integer :: nbas = 0, nao = 0, nhpp = 0
@@ -94,7 +96,7 @@ module trc_eri
       !! summed across ranks. One rank is rank 0 of 1 and no communicator.
       integer :: rank = 0, nranks = 1
       logical :: distributed = .false.
-      real(dp) :: t_build(5) = 0.0_dp
+      real(dp) :: t_build(NBUILD_STAGES) = 0.0_dp
       !! Wall seconds of the last build's stages: HGP pairs, Schwarz bounds,
       !! bins, pair quartets, upload to the device. trc_scf reports them with
       !! the rest of its setup.
@@ -197,21 +199,21 @@ contains
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
-   real(dp) function decon_cutoff()
+   real(dp) function decon_cutoff() result(res)
       !! Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
       !! unless TRC_DECON_CUTOFF says otherwise.
       character(len=32) :: e
       integer :: ios
       e = " "
       call get_environment_variable("TRC_DECON_CUTOFF", e)
-      decon_cutoff = DECON_CUTOFF_DEFAULT
+      res = DECON_CUTOFF_DEFAULT
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) decon_cutoff
-         if (ios /= 0) decon_cutoff = DECON_CUTOFF_DEFAULT
+         read (e, *, iostat=ios) res
+         if (ios /= 0) res = DECON_CUTOFF_DEFAULT
       end if
    end function decon_cutoff
 
-   integer function decon_minprim()
+   integer function decon_minprim() result(res)
       !! Smallest compact primitive count a general contraction must have for
       !! the split to be worth its tightened screen. TRC_DECON_MINPRIM
       !! overrides it, so the gate can be swept without a rebuild; 0 splits
@@ -220,10 +222,10 @@ contains
       integer :: ios
       e = " "
       call get_environment_variable("TRC_DECON_MINPRIM", e)
-      decon_minprim = DECON_MINPRIM_DEFAULT
+      res = DECON_MINPRIM_DEFAULT
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) decon_minprim
-         if (ios /= 0) decon_minprim = DECON_MINPRIM_DEFAULT
+         read (e, *, iostat=ios) res
+         if (ios /= 0) res = DECON_MINPRIM_DEFAULT
       end if
    end function decon_minprim
 
@@ -889,7 +891,7 @@ contains
    ! shell pair, each scanning its own block, writing `dsh` in place while it
    ! is device-resident.
    !
-   pure logical function screen_on(flag)
+   pure logical function screen_on(flag) result(res)
       !! `density_screen` with its default applied, in one place.
       !!
       !! Written as a function rather than repeated three times because the
@@ -898,8 +900,8 @@ contains
       !! CPHF that will not converge for a reason nothing in the output points
       !! at. One place to read the default is one place to get it wrong.
       logical, intent(in), optional :: flag
-      screen_on = .true.
-      if (present(flag)) screen_on = flag
+      res = .true.
+      if (present(flag)) res = flag
    end function screen_on
 
    subroutine density_blocks_device(nshell, nao, sh_l, sh_ao, dmat, dsh)

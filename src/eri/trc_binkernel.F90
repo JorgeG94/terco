@@ -79,34 +79,34 @@ module trc_binkernel
 
 contains
 
-   integer(int64) function launch_cap()
+   integer(int64) function launch_cap() result(res)
       !! The one-time pair ordering, off unless asked for. See the comment at
       !! its call site for what it costs and buys.
       !! TRC_LAUNCH_CAP caps the quartets in one launch; 0 (default) is one
       !! launch per angular-momentum class.
       character(len=32) :: e
       integer :: ios
-      e = ' '
-      call get_environment_variable('TRC_LAUNCH_CAP', e)
-      launch_cap = 0_int64
+      e = " "
+      call get_environment_variable("TRC_LAUNCH_CAP", e)
+      res = 0_int64
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) launch_cap
-         if (ios /= 0) launch_cap = 0_int64
+         read (e, *, iostat=ios) res
+         if (ios /= 0) res = 0_int64
       end if
    end function launch_cap
 
-   logical function seg_stats_on()
+   logical function seg_stats_on() result(res)
       !! TRC_SEG_STATS=1 prints the segment shape of each Fock build.
       character(len=8) :: e
-      e = ' '
-      call get_environment_variable('TRC_SEG_STATS', e)
-      seg_stats_on = len_trim(e) > 0
+      e = " "
+      call get_environment_variable("TRC_SEG_STATS", e)
+      res = len_trim(e) > 0
    end function seg_stats_on
 
-   logical function bin_sort_on()
+   logical function bin_sort_on() result(res)
       character(len=8) :: v
       call get_environment_variable("TRC_BIN_SORT", v)
-      bin_sort_on = (trim(v) == "1")
+      res = (trim(v) == "1")
    end function bin_sort_on
 
    subroutine trc_set_prim_margin(f)
@@ -142,7 +142,7 @@ contains
 #include "trc_cart_comp.inc"
    end subroutine comp
 
-   pure real(dp) function binom(n, k)
+   pure real(dp) function binom(n, k) result(res)
       !$acc routine seq
       integer, intent(in) :: n, k
       integer :: i
@@ -151,17 +151,17 @@ contains
       do i = 1, k
          r = r*real(n - k + i, dp)/real(i, dp)
       end do
-      binom = r
+      res = r
    end function binom
 
-   pure real(dp) function powi(x, n)
+   pure real(dp) function powi(x, n) result(res)
       !$acc routine seq
       real(dp), intent(in) :: x
       integer,  intent(in) :: n
       integer :: i
-      powi = 1.0_dp
+      res = 1.0_dp
       do i = 1, n
-         powi = powi*x
+         res = res*x
       end do
    end function powi
 
@@ -341,10 +341,10 @@ contains
                mn = min(mn, sz); mx = max(mx, sz)
                if (sz < 32) nsmall = nsmall + 1
             end do
-            print '(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)', &
-               '  [seg] nseg ', nseg, '  work ', nwork, '  min ', mn, '  max ', mx, &
-               '  mean ', real(nwork, dp)/max(nseg, 1), '  <32 ', nsmall, &
-               '  boundary warps ', 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), '% of threads'
+            print "(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)", &
+               "  [seg] nseg ", nseg, "  work ", nwork, "  min ", mn, "  max ", mx, &
+               "  mean ", real(nwork, dp)/max(nseg, 1), "  <32 ", nsmall, &
+               "  boundary warps ", 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), "% of threads"
          end block
       end if
       if (nwork == 0) return
@@ -381,6 +381,7 @@ contains
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl, key2
+         logical :: use_rys
          integer(int64) :: lcap
          logical :: l2
          integer(int64) :: o2
@@ -432,27 +433,32 @@ contains
             nl = nl + 1
             key2 = ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                     + sLC(c0))*CLASS_RADIX + sLD(c0)
-#ifdef TERCO_RYS
             ! TRC_RYS_CLASSES routes this launch's whole class run to the
             ! Rys kernel instead of HGP's, for classes that have one --
             ! `rys_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
-            if (rys_route(key2)) then
+#ifdef TERCO_RYS
+            use_rys = rys_route(key2)
+#else
+            use_rys = .false.
+#endif
+            if (use_rys) then
+#ifdef TERCO_RYS
                call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
+                                 b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
+                                 omega, dsh, nbas, nao, sh_l, ao_off, &
+                                 nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                                 sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                                 ndens, dmat, jmat, rank, nranks)
+#endif
+            else
+               call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
+                                omega, dsh, nbas, nao, sh_l, ao_off, &
                                 nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                                 sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                 ndens, dmat, jmat, rank, nranks)
-            else
-#endif
-            call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
-                             nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                             ndens, dmat, jmat, rank, nranks)
-#ifdef TERCO_RYS
             end if
-#endif
             c0 = c1 + 1
          end do
          nlaunch = nl
@@ -492,19 +498,19 @@ contains
    ! block between the two bins' shell sets, which is not a per-bin
    ! quantity. The per-quartet test in the kernel, which reads dsh for all
    ! six blocks, is the one that screens on the density.
-   pure logical function dens_reject(b, ka, kb, thresh)
+   pure logical function dens_reject(b, ka, kb, thresh) result(res)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in) :: ka, kb
       real(dp), intent(in) :: thresh
       real(dp) :: qq, dd
-      dens_reject = .false.
+      res = .false.
       if (.not. allocated(b%bin_dm)) return
       ! bound on Q_ab Q_cd from the two size buckets, back off one decade each
       ! because the bucket is a ceiling
       qq = 10.0_dp**(-real(max(0, b%bin_s(ka) - 1), dp)) &
            *10.0_dp**(-real(max(0, b%bin_s(kb) - 1), dp))
       dd = 4.0_dp*max(b%bin_dm(ka), b%bin_dm(kb))
-      dens_reject = (qq*dd <= thresh)
+      res = (qq*dd <= thresh)
    end function dens_reject
 
    !
@@ -524,7 +530,8 @@ contains
       logical,  intent(in) :: sD(nseg)
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in) :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in) :: sp_q(npair), thresh, dsh(nbas, nbas)
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
       integer(int64), intent(out) :: nkept
 
       integer(int64) :: gt, nk
@@ -582,7 +589,8 @@ contains
 
    subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
       !! Apply a permutation to the segment descriptor arrays, in place.
-      integer, intent(in) :: n, ord(n)
+      integer, intent(in) :: n
+      integer, intent(in) :: ord(n)
       integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
       integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
       logical, intent(inout) :: sD(n)
@@ -630,7 +638,8 @@ contains
       logical,  intent(in)    :: sD(nseg)
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -700,7 +709,8 @@ contains
       logical,  intent(in)    :: sD(nseg)
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh, jfac, kfac, omega
+      real(dp), intent(in) :: thresh, jfac, kfac, omega
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -754,7 +764,8 @@ contains
       integer,  intent(in)    :: nt, nA, nB, offA, offB, npair, nbas, npp, nao
       logical,  intent(in)    :: diag
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -807,7 +818,8 @@ contains
       integer,  intent(in)    :: t, nA, nB, offA, offB, npair, nbas, npp, nao
       logical,  intent(in)    :: diag
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)
@@ -1233,7 +1245,8 @@ contains
       integer,  intent(in)    :: t, nA, nB, offA, offB, npair, nbas, npp, nao
       logical,  intent(in)    :: diag
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       real(dp), intent(in)    :: dsh(nbas, nbas)

@@ -78,7 +78,7 @@ contains
       end do
    end subroutine rys_select_init
 
-   pure logical function rys_route(key)
+   pure logical function rys_route(key) result(res)
       !! Should THIS launch -- class key `key`, the same fixed-radix key
       !! trc_binkernel.F90 forms from (sLA,sLB,sLC,sLD) -- go to Rys? Folds in
       !! `rys_has_class`, so a class TRC_RYS_CLASSES asks for but that has no
@@ -92,7 +92,7 @@ contains
       if (key_lmax(key) > HGP_LMAX) then
          if (.not. rys_has_class(key)) error stop &
             "terco: a class above d has no Rys kernel in this build"
-         rys_route = .true.
+         res = .true.
          return
       end if
       if (rys_all) then
@@ -102,39 +102,39 @@ contains
       else
          wanted = .false.
       end if
-      rys_route = wanted .and. rys_has_class(key)
+      res = wanted .and. rys_has_class(key)
    end function rys_route
 
-   pure integer function key_lmax(key)
+   pure integer function key_lmax(key) result(res)
       !! The highest of the four shell angular momenta packed into `key`.
       integer, intent(in) :: key
       integer :: k, i
       k = key
-      key_lmax = 0
+      res = 0
       do i = 1, 4
-         key_lmax = max(key_lmax, mod(k, RYS_CLASS_RADIX))
+         res = max(res, mod(k, RYS_CLASS_RADIX))
          k = k/RYS_CLASS_RADIX
       end do
    end function key_lmax
 
-   pure integer function class_key(tag)
+   pure integer function class_key(tag) result(res)
       !! Four ASCII digits "0".."9" -- la, lb, lc, ld in order -- to the same
       !! fixed-radix key gen_perclass.py's CLASS_RADIX forms. -1 if `tag` is
       !! not exactly four digits.
       character(len=*), intent(in) :: tag
       integer :: i, d
-      class_key = 0
+      res = 0
       if (len_trim(tag) /= 4) then
-         class_key = -1
+         res = -1
          return
       end if
       do i = 1, 4
          d = index("0123456789", tag(i:i)) - 1
          if (d < 0) then
-            class_key = -1
+            res = -1
             return
          end if
-         class_key = class_key*RYS_CLASS_RADIX + d
+         res = res*RYS_CLASS_RADIX + d
       end do
    end function class_key
 

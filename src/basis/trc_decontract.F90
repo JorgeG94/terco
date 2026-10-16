@@ -39,9 +39,9 @@ module trc_decontract
 
 contains
 
-   pure integer function ncart(l)
+   pure integer function ncart(l) result(res)
       integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
+      res = (l + 1)*(l + 2)/2
    end function ncart
 
    !
@@ -71,7 +71,8 @@ contains
       integer :: ntr, nsh_p, maxnp_p
       integer :: ng, g, i, n
       real(dp) :: cut
-      real(dp) :: fl(0:8)
+      integer, parameter :: LTOP = 8
+      real(dp) :: fl(0:LTOP)
       integer :: mnp
 
       cut = DECON_CUTOFF_DEFAULT
@@ -237,24 +238,24 @@ contains
       end if
    end function find
 
-   logical function shares_exponent(b, i, j)
+   logical function shares_exponent(b, i, j) result(res)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: i, j
       integer :: ki, kj
-      shares_exponent = .false.
+      res = .false.
       do ki = 1, b%sh_np(i)
          do kj = 1, b%sh_np(j)
             if (same_exp(b%sh_e(ki, i), b%sh_e(kj, j))) then
-               shares_exponent = .true.
+               res = .true.
                return
             end if
          end do
       end do
    end function shares_exponent
 
-   pure logical function same_exp(a, c)
+   pure logical function same_exp(a, c) result(res)
       real(dp), intent(in) :: a, c
-      same_exp = abs(a - c) <= 1.0e-10_dp*max(1.0_dp, abs(a))
+      res = abs(a - c) <= 1.0e-10_dp*max(1.0_dp, abs(a))
    end function same_exp
 
    !
@@ -262,15 +263,16 @@ contains
    ! has, and a segmented run is bit-for-bit what it was before this module
    ! existed.
    !
-   logical function any_group_splits(b, grp, ng, cut, minprim)
+   logical function any_group_splits(b, grp, ng, cut, minprim) result(res)
       type(trc_basis_t), intent(in) :: b
-      integer, intent(in) :: grp(:), ng, minprim
+      integer, intent(in) :: ng, minprim
+      integer, intent(in) :: grp(:)
       real(dp), intent(in) :: cut
       integer :: g
-      any_group_splits = .false.
+      res = .false.
       do g = 1, ng
          if (group_pays(b, grp, g, cut, minprim)) then
-            any_group_splits = .true.
+            res = .true.
             return
          end if
       end do
@@ -287,9 +289,10 @@ contains
    ! and `schwarz_bounds`, where msn's setup went 2.0 s -> 9.7 s with the
    ! split off. See DECON_MINPRIM_DEFAULT for the measurement.
    !
-   logical function group_pays(b, grp, g, cut, minprim)
+   logical function group_pays(b, grp, g, cut, minprim) result(res)
       type(trc_basis_t), intent(in) :: b
-      integer, intent(in) :: grp(:), g, minprim
+      integer, intent(in) :: g, minprim
+      integer, intent(in) :: grp(:)
       real(dp), intent(in) :: cut
       integer :: i, k, nmem, ncomp, best
       nmem = 0
@@ -303,7 +306,7 @@ contains
          end do
          best = max(best, ncomp)
       end do
-      group_pays = (nmem > 1) .and. (best >= minprim)
+      res = (nmem > 1) .and. (best >= minprim)
    end function group_pays
 
    !
@@ -313,13 +316,16 @@ contains
    subroutine split_group(b, grp, g, cut, minprim, p_l, p_np, p_e, p_c, p_r, nsh_p, &
                           tr_mu, tr_s, tr_a, tr_whole, ntr)
       type(trc_basis_t), intent(in) :: b
-      integer,  intent(in) :: grp(:), g, minprim
+      integer,  intent(in) :: g, minprim
+      integer,  intent(in) :: grp(:)
       real(dp), intent(in) :: cut
-      integer,  intent(inout) :: p_l(:), p_np(:), nsh_p, tr_mu(:), tr_s(:), ntr
+      integer,  intent(inout) :: nsh_p, ntr
+      integer,  intent(inout) :: p_l(:), p_np(:), tr_mu(:), tr_s(:)
       real(dp), intent(inout) :: p_e(:, :), p_c(:, :), p_r(:, :), tr_a(:)
       logical,  intent(inout) :: tr_whole(:)
 
-      integer :: mem(b%nshell), nmem, i, mu, k, kk, kc, s, ncomp, nmulti, i0
+      integer :: nmem, i, mu, k, kk, kc, s, ncomp, nmulti, i0
+      integer :: mem(b%nshell)
       real(dp) :: e, cbig
       logical :: seen
 
@@ -418,7 +424,8 @@ contains
                          tr_mu, tr_s, tr_a, tr_whole, ntr)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: mu
-      integer,  intent(inout) :: p_l(:), p_np(:), nsh_p, tr_mu(:), tr_s(:), ntr
+      integer,  intent(inout) :: nsh_p, ntr
+      integer,  intent(inout) :: p_l(:), p_np(:), tr_mu(:), tr_s(:)
       real(dp), intent(inout) :: p_e(:, :), p_c(:, :), p_r(:, :), tr_a(:)
       logical,  intent(inout) :: tr_whole(:)
       integer :: k
@@ -450,7 +457,8 @@ contains
    !
    subroutine build_maps(b, pb, tr_mu, tr_s, tr_a, ntr, m)
       type(trc_basis_t), intent(in) :: b, pb
-      integer,  intent(in) :: tr_mu(:), tr_s(:), ntr
+      integer,  intent(in) :: ntr
+      integer,  intent(in) :: tr_mu(:), tr_s(:)
       real(dp), intent(in) :: tr_a(:)
       type(decon_t), intent(inout) :: m
 
