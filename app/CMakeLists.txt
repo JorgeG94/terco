@@ -71,6 +71,18 @@ if(TERCO_ENABLE_TESTING)
   add_test(NAME terco/cli_missing_file COMMAND terco_cli no_such_file.xyz)
   set_tests_properties(terco/cli_missing_file PROPERTIES WILL_FAIL TRUE)
 
+  # --save-scf, then RI-MP2 alone from the file with --restart: the same
+  # energies as the run that saved it, and a refusal for a run it does not
+  # fit (another basis, method or charge).
+  add_test(
+    NAME terco/cli_restart
+    COMMAND
+      ${CMAKE_COMMAND} -DTERCO=$<TARGET_FILE:terco_cli> -DXYZ=${_xyz}/water.xyz
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_restart -P
+      ${CMAKE_CURRENT_SOURCE_DIR}/cli_restart_check.cmake)
+  set_tests_properties(terco/cli_restart PROPERTIES ENVIRONMENT "${_env}"
+                                                    PASS_REGULAR_EXPRESSION "restart: RI-MP2 identical")
+
   #
   # The CLI itself over ranks -- mirroring test/scf_mpi.F90's own launcher
   # logic (same reason for the compiler-wrapper's own mpiexec, not the

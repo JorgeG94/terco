@@ -22,9 +22,11 @@ target_sources(
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_eri.F90       # the four-centre Fock builds
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
+          core/trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
           solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
+          scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks

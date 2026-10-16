@@ -23,6 +23,7 @@
 ! and that is by design: it cannot pass silently.
 !
 module trc_linalg
+   use, intrinsic :: iso_c_binding, only: c_int
    use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm, pic_dot
    use pic_lapack_interfaces, only: pic_syev
@@ -51,6 +52,7 @@ module trc_linalg
       procedure :: release => linalg_release
       procedure :: gemm => linalg_gemm
       procedure :: gemm_strided => linalg_gemm_strided
+      procedure :: transpose => linalg_transpose
       procedure :: potrf => linalg_potrf
       procedure :: getrf => linalg_getrf
       procedure :: getrs => linalg_getrs
@@ -58,6 +60,7 @@ module trc_linalg
       procedure :: trsm => linalg_trsm
       procedure :: syev => linalg_syev
       procedure :: dot => linalg_dot
+      procedure :: sync => linalg_sync
    end type trc_linalg_t
 
 contains
@@ -120,6 +123,30 @@ contains
       this%n = n
    end subroutine grow_workspace
 
+   !
+   ! Wait for everything this object's library calls queued on the device.
+   ! cuBLAS and cuSOLVER return to the host before their kernels finish, so a
+   ! host timer around them measures the launch; this is what a timer calls
+   ! before it reads the clock. A no-op on the host build.
+   !
+   subroutine linalg_sync(this)
+      class(trc_linalg_t), intent(in) :: this
+#ifdef _OPENACC
+      interface
+         function cudaDeviceSynchronize() result(res) bind(c, name="cudaDeviceSynchronize")
+            import :: c_int
+            implicit none
+            integer(c_int) :: res
+         end function cudaDeviceSynchronize
+      end interface
+      integer(c_int) :: st
+      if (.not. this%ready) return
+      st = cudaDeviceSynchronize()
+#else
+      if (.not. this%ready) return
+#endif
+   end subroutine linalg_sync
+
    subroutine linalg_release(this)
       class(trc_linalg_t), intent(inout) :: this
 #ifdef _OPENACC
@@ -178,6 +205,36 @@ contains
    ! likewise B and C. cublasDgemmStridedBatched on the device; a loop of
    ! pic_gemm on the host. The flat dummies are what lets a caller hand in
    ! the start of a tile inside a larger array.
+   !
+   ! C = A^T, out of place: A is m x n, C is n x m. cuBLAS's geam does it at
+   ! close to the device's bandwidth, which a `do concurrent` copy cannot:
+   ! one side of a transpose is always strided across a warp, and only a
+   ! tile staged through shared memory hides that.
+   !
+   subroutine linalg_transpose(this, m, n, a, lda, c, ldc)
+      class(trc_linalg_t), intent(in) :: this
+      integer, intent(in) :: m, n, lda, ldc
+      real(dp), intent(in) :: a(lda, *)
+      real(dp), intent(inout) :: c(ldc, *)
+#ifdef _OPENACC
+      integer :: st
+      ! beta = 0: the second operand is not read, but cuBLAS still checks
+      ! its leading dimension against C's shape, so it is C itself -- the
+      ! in-place form geam documents (B = C, ldb = ldc, transb = N).
+      !$acc host_data use_device(a, c)
+      st = cublasDgeam(this%hb, CUBLAS_OP_T, CUBLAS_OP_N, n, m, 1.0_dp, a, lda, 0.0_dp, c, ldc, c, ldc)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cublasDgeam failed"
+#else
+      integer :: i, j
+      do j = 1, n
+         do i = 1, m
+            c(j, i) = a(i, j)
+         end do
+      end do
+#endif
+   end subroutine linalg_transpose
+
    subroutine linalg_gemm_strided(this, ta, tb, m, n, k, alpha, a, lda, sa, b, ldb, sb, beta, c, ldc, sc, count)
       class(trc_linalg_t), intent(in) :: this
       character, intent(in) :: ta, tb

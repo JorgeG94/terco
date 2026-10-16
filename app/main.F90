@@ -46,6 +46,7 @@ module terco_run
       type(c_ptr) :: h
       character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, func, guess, title, json
       character(len=:), allocatable :: pcm
+      character(len=:), allocatable :: save_scf, restart   !! "" when not asked for
       integer, allocatable :: z(:)
       integer :: natm, chrg, uhf, nelec, mult, grid
       integer(c_int) :: nao, conv, niter, sph, npcm
@@ -178,9 +179,13 @@ contains
       write (output_unit, "(a,a)") "   basis            : ", r%basis_path
       if (r%rimp2) write (output_unit, "(a,a)") "   auxiliary basis  : ", r%aux_path
       if (r%rimp2 .and. .not. r%cli%is_set("cart")) then
-        write (output_unit, "(a)") "   AO space         : Cartesian (RI-MP2 does not support spherical AOs yet)"
+         write (output_unit, "(a)") "   AO space         : Cartesian (RI-MP2 does not support spherical AOs yet)"
       end if
-      write (output_unit, "(a,a)") "   guess            : ", r%guess
+      if (len(r%restart) > 0) then
+         write (output_unit, "(a,a,a)") "   SCF              : read from ", r%restart, ", not run"
+      else
+         write (output_unit, "(a,a)") "   guess            : ", r%guess
+      end if
       write (output_unit, "(a,es8.1,a,es8.1,a,es8.1)") "   convergence      : dE ", r%econv, &
          "   |FDS-SDF| ", r%gconv, "   screening ", r%thresh
       if (len(r%func) > 0) write (output_unit, "(a,i0)") "   grid level       : ", r%grid
@@ -239,8 +244,13 @@ contains
       write (output_unit, "(a)") ""
       write (output_unit, "(a,i0,a,a)") "   AO basis         : ", r%nao, " functions, ", &
          merge("spherical", "Cartesian", r%sph /= 0)
-      write (output_unit, "(a,i0,a)") "   SCF              : ", r%niter, merge(" iterations, converged    ", &
-                                                                              " iterations, NOT converged", r%conv /= 0)
+      write (output_unit, "(a,i0,a)", advance="no") "   SCF              : ", r%niter, &
+         trim(merge(" iterations, converged    ", " iterations, NOT converged", r%conv /= 0))
+      if (len(r%restart) > 0) then
+         write (output_unit, "(a,a,a)") " (read from ", r%restart, ")"
+      else
+         write (output_unit, "(a)") ""
+      end if
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") bar
       call line("TOTAL ENERGY", r%etot)
@@ -353,13 +363,14 @@ program terco_main
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
    use pic_knowledge, only: get_knowledge
+   use pic_profiler, only: profiler_init
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
                        trc_set_incremental, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
-                       trc_set_pcm, trc_pcm_energy, &
+                       trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
@@ -371,7 +382,7 @@ program terco_main
    type(run_t) :: r
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
-   integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev
+   integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev, aux_block
    integer(c_int) :: st, nspin
    logical :: cart
 
@@ -381,6 +392,10 @@ program terco_main
    ! to know about ranks; `r%rank0` is what gates every print below so N
    ! ranks produce ONE copy of the output, not N.
    call pic_mpi_init()
+   ! pic's region profiler, which is what puts the library's named NVTX
+   ! ranges on an Nsight Systems timeline (a TERCO_NVTX build); without NVTX
+   ! it only keeps host wall times nobody reads, so it is always on.
+   call profiler_init()
    r%wcomm = comm_world()
    r%nranks = r%wcomm%size()
    r%rank0 = r%wcomm%leader()
@@ -414,6 +429,12 @@ program terco_main
    call r%cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", &
                          default="-1")
+   call r%cli%add_option("aux-block", "auxiliary functions per three-index block for --rimp2 (default: as many "// &
+                         "as keep the block under 2 GB)")
+   call r%cli%add_option("save-scf", "write the SCF result (orbitals, density, energies) to this file, "// &
+                         "for a later --restart")
+   call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
+                         "SCF, e.g. to go straight to --rimp2; the molecule, basis and method must match")
    call r%cli%add_option("json", "also write a JSON summary to this file")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
@@ -517,6 +538,10 @@ program terco_main
    end if
    r%json = ""
    if (r%cli%is_set("json")) call r%cli%get("json", r%json, r%err)
+   r%save_scf = ""
+   if (r%cli%is_set("save-scf")) call r%cli%get("save-scf", r%save_scf, r%err)
+   r%restart = ""
+   if (r%cli%is_set("restart")) call r%cli%get("restart", r%restart, r%err)
 
    ! SAP's fitted atomic potentials ship as a basis-format file; find it the
    ! way a basis is found, unless the caller has already said where it is.
@@ -573,10 +598,31 @@ program terco_main
    ! code keeps the build it had, but a command-line run gets the speed.
    call api(r, trc_set_incremental(r%h, merge(0_c_int, 1_c_int, r%cli%is_set("no-incremental"))))
    call api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
-   if (r%rimp2) call api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), 0_c_int))
+   if (r%rimp2) then
+      ! The three-index tensor (mu nu|P) is nao^2 per auxiliary function and
+      ! is held one block of them at a time; the library's own default is
+      ! one block of all of them, which at a thousand functions and a
+      ! cc-pVDZ-RIFIT basis is 30 GB. 2 GB a block leaves the device for the
+      ! transformed tensor, which is the one RI-MP2 cannot split.
+      if (r%cli%is_set("aux-block")) then
+         call r%cli%get("aux-block", aux_block, r%err)
+         call check(r, "--aux-block")
+         if (aux_block < 1) call die(r, "--aux-block must be at least 1")
+      else
+         call api(r, trc_nao(r%h, r%nao))
+         aux_block = int(max(16.0_dp, min(real(huge(1), dp), 2.0e9_dp/(8.0_dp*real(r%nao, dp)**2))))
+      end if
+      call api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), int(aux_block, c_int)))
+   end if
 
-   st = trc_run_scf(r%h)
+   if (len(r%restart) > 0) then
+      st = trc_load_scf(r%h, c_string(r%restart))
+   else
+      st = trc_run_scf(r%h)
+   end if
    if (st /= TRC_OK .and. st /= TRC_ERR_NOCONV) call api(r, st)
+   ! Rank 0 alone: every rank holds the same result.
+   if (len(r%save_scf) > 0 .and. r%rank0) call api(r, trc_save_scf(r%h, c_string(r%save_scf)))
    call api(r, trc_nao(r%h, r%nao))
    call api(r, trc_is_spherical(r%h, r%sph))
    call api(r, trc_nspin(r%h, nspin))

@@ -2,7 +2,7 @@
 # case: scf_rimp2:rimp2_ccpvdz_probe.bin
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: 08f47eddaa17765ec94b234db4ebb5624ed3bcf9c36ef77f1bf343e3d21a2e29
+# hash: 83c7a4bf6bc762a1de46d3de9b18a905cf587115f17664d34e6020e0255a2da1
 # files: test/pyscf_refs/generate.py test/scf_rimp2.F90
 E_SCF -7.60271129283133007e+01
 E_OS -1.55308332905064822e-01
