@@ -95,6 +95,7 @@ module trc_scf_driver
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: build_g, build_vxc, build_pcm, scf_energy, assemble_fock, &
                            commutator_error, to_cart, to_sph
+   use trc_scf_diis, only: cdiis_t, adiis_t, level_shift, damp
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_mpi_lib, only: comm_t
@@ -164,7 +165,7 @@ contains
       !! the calculation (trc_linalg's init is create-once and grows the
       !! workspace to nao). Absent, the run makes its own and releases them.
 
-      integer :: nao, nao_c, nspin, s, it, ndiis_used, i, j, k, n2, m
+      integer :: nao, nao_c, nspin, s, it, i, j, n2
       integer :: nocc(2)
       integer :: nxc, nu_c, nlr_c, nin_c, npcm   !! full size, or 1 when unused (see trc_scf_state%alloc)
       logical :: ok, sph
@@ -177,15 +178,13 @@ contains
       type(scf_timers_t) :: tmr
       character(len=256) :: msg
       logical :: incr_now
-      real(dp), allocatable :: fstore(:, :, :, :), estore(:, :, :, :)
-      real(dp), allocatable :: bmat(:, :), rhs(:)
-      real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :), cad(:)
-      !! ADIIS history (fock, density) and its own slot count, kept apart
-      !! from the CDIIS `fstore`/`estore` above: ADIIS runs exactly in the
-      !! window CDIIS has not opened yet, so the two never need the same
-      !! entries, and keeping them separate means `opts%adiis = .false.`
-      !! leaves the CDIIS path untouched, to the bit.
-      integer :: nadiis_used
+      type(cdiis_t) :: cdiis
+      type(adiis_t) :: adiis
+      !! ADIIS's history (fock, density) is kept apart from CDIIS's own (fock,
+      !! commutator): ADIIS runs exactly in the window CDIIS has not opened
+      !! yet, so the two never need the same entries, and keeping them
+      !! separate means `opts%adiis = .false.` leaves the CDIIS path
+      !! untouched, to the bit.
       logical :: adiis_active
       logical :: nlc
       type(trc_xc_functional_t) :: func
@@ -287,20 +286,12 @@ contains
       nin_c = merge(nao_c, 1, incr_on)
       npcm = merge(nao, 1, pcm_on)
       call st%alloc(ctx, cfg)
-      allocate (fstore(nao, nao, nspin, opts%ndiis), estore(nao, nao, nspin, opts%ndiis))
-      fstore = 0.0_dp
-      estore = 0.0_dp
-      allocate (bmat(opts%ndiis + 1, opts%ndiis + 1), rhs(opts%ndiis + 1))
+      call cdiis%alloc(nao, nspin, opts%ndiis)
       allocate (res%dmat(nao, nao, nspin), res%cmo(nao, nao, nspin), res%eps(nao, nspin))
       ! Only when asked for: a second ndiis-deep history the size of
-      ! fstore/estore, which matters on a system the size of w172, where
+      ! cdiis's own, which matters on a system the size of w172, where
       ! one nao^2*ndiis block is already hundreds of megabytes.
-      if (opts%adiis) then
-         allocate (fstore_a(nao, nao, nspin, opts%ndiis), dstore_a(nao, nao, nspin, opts%ndiis))
-         allocate (cad(opts%ndiis))
-         fstore_a = 0.0_dp
-         dstore_a = 0.0_dp
-      end if
+      if (opts%adiis) call adiis%alloc(nao, nspin, opts%ndiis)
 
       ! --- the guess, on the host, then everything goes up -------------------
       if (present(dguess)) then
@@ -329,10 +320,8 @@ contains
       res%eps = 0.0_dp
 
       call st%to_device(ctx, res)
-      !$acc enter data copyin(fstore, estore)
-      if (opts%adiis) then
-         !$acc enter data copyin(fstore_a, dstore_a)
-      end if
+      call cdiis%to_device()
+      if (opts%adiis) call adiis%to_device()
 
       eold = 0.0_dp
       ! Read after the loop (res%e_one/e_two) even when it never runs
@@ -342,8 +331,6 @@ contains
       ! Read by the first iteration's `incr_now` before any commutator exists
       ! (Fortran's .and. does not short-circuit), so give it a value.
       errmax = huge(1.0_dp)
-      ndiis_used = 0
-      nadiis_used = 0
       diis_on = .false.
       exc = 0.0_dp
       ngrid = 0.0_dp
@@ -450,59 +437,16 @@ contains
          ! once, after the loop.
          if (root) then
             if (adiis_active) then
-               if (nadiis_used < opts%ndiis) then
-                  nadiis_used = nadiis_used + 1
-               else
-                  call shift_history(opts%ndiis, fstore_a, dstore_a)
-               end if
-               call diis_store(nao, nspin, nadiis_used, st%fock, st%dold, fstore_a, dstore_a)
-               ! One entry: the simplex is a point, c = 1 on it, a no-op.
-               ! Skip the solve and leave `fock` as it is, which is also what
-               ! `adiis_coeffs` would return from "start at the newest entry"
-               ! after finding no improving step.
-               if (nadiis_used > 1) then
-                  call adiis_coeffs(nadiis_used, cad(1:nadiis_used))
-                  call diis_combine(nao, nspin, nadiis_used, cad(1:nadiis_used), fstore_a, st%fock)
-               end if
+               call adiis%push(nao, nspin, st%fock, st%dold)
+               call adiis%extrapolate(lp, nao, nspin, st%fock)
             end if
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. opts%level_shift > 0.0_dp) then
                call level_shift(lp, nao, nspin, opts%level_shift, occ, ctx%smat, res%dmat, st%w1, st%w2, st%fock)
             end if
             if (diis_on) then
-               if (ndiis_used < opts%ndiis) then
-                  ndiis_used = ndiis_used + 1
-               else
-                  call shift_history(opts%ndiis, fstore, estore)
-               end if
-               call diis_store(nao, nspin, ndiis_used, st%fock, st%errv, fstore, estore)
-               !
-               ! An ill-conditioned subspace loses its oldest entry, not the step.
-               ! A failed solve followed by a plain Roothaan step is not neutral: on
-               ! water/def2-SVP PBE0 the history holds errors of order 1 next to the
-               ! newest at 1e-7, B's scaled pivots drop under solve_diis's 1e-14, and
-               ! plain steps grow the commutator x1.28 per iteration along one
-               ! direction, which keeps B singular: 65 iterations of runaway. Dropping
-               ! the oldest entries until the system solves keeps the extrapolation;
-               ! two distinct error vectors always solve, and that step cancels one
-               ! growing mode.
-               !
-               do
-                  m = ndiis_used + 1
-                  bmat = -1.0_dp
-                  bmat(m, m) = 0.0_dp
-                  do j = 1, ndiis_used
-                     do i = 1, j
-                        bmat(i, j) = lp%dot(n2*nspin, estore(:, :, :, i), estore(:, :, :, j))
-                        bmat(j, i) = bmat(i, j)
-                     end do
-                  end do
-                  call solve_diis(m, bmat(1:m, 1:m), rhs(1:m), ok)
-                  if (ok .or. ndiis_used <= 2) exit
-                  call shift_history(ndiis_used, fstore, estore)
-                  ndiis_used = ndiis_used - 1
-               end do
-               if (ok) call diis_combine(nao, nspin, ndiis_used, rhs(1:ndiis_used), fstore, st%fock)
+               call cdiis%push(nao, nspin, st%fock, st%errv)
+               call cdiis%extrapolate(lp, nao, nspin, st%fock, ok)
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
             do s = 1, nspin
@@ -567,10 +511,8 @@ contains
          end if
       end if
       call st%release_device(ctx, res)
-      !$acc exit data delete(fstore, estore)
-      if (opts%adiis) then
-         !$acc exit data delete(fstore_a, dstore_a)
-      end if
+      call cdiis%release_device()
+      if (opts%adiis) call adiis%release_device()
       res%dmat = st%dold
       res%energy = etot
       res%e_one = e1
@@ -674,24 +616,6 @@ contains
          end if
       end subroutine orbitals_and_density
 
-      subroutine shift_history(n, a, bb)
-         !! Slot k <- slot k+1 for k = 1..n-1 in two histories at once, which
-         !! drops the oldest entry and frees slot n.
-         integer, intent(in) :: n
-         real(dp), intent(inout) :: a(nao, nao, nspin, *), bb(nao, nao, nspin, *)
-         integer :: i, j, s, k
-         ! Slot by slot, in order: slot k reads slot k+1, so the slot loop
-         ! carries a dependence. As a `do concurrent` over k, a device slot
-         ! was overwritten before being read and the commutator climbed for
-         ! eight iterations on cholesterol; the host never saw it.
-         do k = 1, n - 1
-            do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-               a(i, j, s, k) = a(i, j, s, k + 1)
-               bb(i, j, s, k) = bb(i, j, s, k + 1)
-            end do
-         end do
-      end subroutine shift_history
-
       pure subroutine frac_occupations(n, eps, nelec, omax, o, nocc_out)
          !! Aufbau over the eigenvalues, `omax` per orbital (2 restricted, 1 per
          !! spin channel), the frontier's degenerate set (within FRAC_TOL)
@@ -742,235 +666,6 @@ contains
          end do
       end subroutine zero_dev
 
-      !
-      ! ADIIS coefficients over the first `m` slots of fstore_a/dstore_a (host
-      ! association). Slot `m` is the newest, so Hu & Yang's "entry n" is the last
-      ! index. Minimises over the simplex {c >= 0, sum c = 1}
-      !
-      !     f(c) = 2 sum_i c_i <D_i - D_m, F_m>
-      !            + sum_ij c_i c_j <D_i - D_m, F_j - F_m>
-      !
-      ! by projected gradient with backtracking (a few hundred host flops once the
-      ! device dot products are in hand). Starting with all weight on the newest
-      ! entry means no progress degrades to the plain Roothaan step.
-      !
-      subroutine adiis_coeffs(m, c)
-         integer, intent(in) :: m
-         real(dp), intent(out) :: c(m)
-         real(dp) :: f, ft, step
-         real(dp) :: dvec(m), amat(m, m), g(m), trial(m)
-         integer :: ii, jj, itr, ls
-         logical :: improved
-         do ii = 1, m
-            dvec(ii) = lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                       - lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
-            do jj = 1, m
-               amat(ii, jj) = lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, jj)) &
-                              - lp%dot(n2*nspin, dstore_a(:, :, :, ii), fstore_a(:, :, :, m)) &
-                              - lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, jj)) &
-                              + lp%dot(n2*nspin, dstore_a(:, :, :, m), fstore_a(:, :, :, m))
-            end do
-         end do
-         c = 0.0_dp
-         c(m) = 1.0_dp
-         f = adiis_value(m, dvec, amat, c)
-         step = 1.0_dp
-         do itr = 1, 200
-            do ii = 1, m
-               g(ii) = 2.0_dp*dvec(ii)
-               do jj = 1, m
-                  g(ii) = g(ii) + (amat(ii, jj) + amat(jj, ii))*c(jj)
-               end do
-            end do
-            improved = .false.
-            do ls = 1, 30
-               trial = c - step*g
-               call project_simplex(m, trial)
-               ft = adiis_value(m, dvec, amat, trial)
-               if (ft < f - 1.0e-14_dp) then
-                  c = trial
-                  f = ft
-                  improved = .true.
-                  exit
-               end if
-               step = step*0.5_dp
-            end do
-            if (.not. improved) exit
-            step = step*1.5_dp
-         end do
-      end subroutine adiis_coeffs
-
-      pure function adiis_value(m, dvec, amat, c) result(f)
-         integer, intent(in) :: m
-         real(dp), intent(in) :: dvec(m), amat(m, m), c(m)
-         real(dp) :: f
-         integer :: ii, jj
-         f = 0.0_dp
-         do ii = 1, m
-            f = f + 2.0_dp*c(ii)*dvec(ii)
-            do jj = 1, m
-               f = f + c(ii)*c(jj)*amat(ii, jj)
-            end do
-         end do
-      end function adiis_value
-
-      ! Projection onto the simplex {c : sum c = 1, c >= 0}: the standard
-      ! sort-and-threshold algorithm, which is what enforces ADIIS's
-      ! non-negativity constraint, the thing that keeps it from wandering
-      ! off far from convergence.
-      pure subroutine project_simplex(m, c)
-         integer, intent(in) :: m
-         real(dp), intent(inout) :: c(m)
-         real(dp) :: css, theta, t
-         real(dp) :: u(m)
-         integer :: ii, rho
-         u = c
-         call sort_desc(m, u)
-         css = 0.0_dp
-         theta = 0.0_dp
-         rho = 0
-         do ii = 1, m
-            css = css + u(ii)
-            t = (css - 1.0_dp)/real(ii, dp)
-            if (u(ii) - t > 0.0_dp) then
-               rho = ii
-               theta = t
-            end if
-         end do
-         if (rho == 0) then
-            c = 1.0_dp/real(m, dp)
-            return
-         end if
-         c = max(c - theta, 0.0_dp)
-      end subroutine project_simplex
-
-      ! Insertion sort, descending: m <= ndiis, so this is never worth more
-      ! than a handful of compares.
-      pure subroutine sort_desc(m, u)
-         integer, intent(in) :: m
-         real(dp), intent(inout) :: u(m)
-         integer :: ii, jj
-         real(dp) :: t
-         do ii = 1, m - 1
-            do jj = ii + 1, m
-               if (u(jj) > u(ii)) then
-                  t = u(ii)
-                  u(ii) = u(jj)
-                  u(jj) = t
-               end if
-            end do
-         end do
-      end subroutine sort_desc
-
    end subroutine trc_scf_run
-
-   subroutine diis_store(nao, nspin, k, fock, companion, fstore, cstore)
-      !! One push, shared by CDIIS (companion = the commutator `errv`) and
-      !! ADIIS (companion = the density `dold`): slot k <- the current
-      !! iterate in both histories at once.
-      integer, intent(in) :: nao, nspin, k
-      real(dp), intent(in) :: fock(nao, nao, nspin), companion(nao, nao, nspin)
-      real(dp), intent(inout) :: fstore(nao, nao, nspin, *), cstore(nao, nao, nspin, *)
-      integer :: i, j, s
-      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-         fstore(i, j, s, k) = fock(i, j, s)
-         cstore(i, j, s, k) = companion(i, j, s)
-      end do
-   end subroutine diis_store
-
-   subroutine diis_combine(nao, nspin, m, coeff, fstore, fock)
-      !! fock := sum_k coeff(k) * fstore(:,:,:,k), the extrapolated/combined
-      !! step both CDIIS (coeff = the solved weights) and ADIIS (coeff = the
-      !! simplex coefficients) take once they have more than one history slot.
-      integer, intent(in) :: nao, nspin, m
-      real(dp), intent(in) :: coeff(m)
-      real(dp), intent(in) :: fstore(nao, nao, nspin, *)
-      real(dp), intent(inout) :: fock(nao, nao, nspin)
-      integer :: i, j, s, k
-      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-         fock(i, j, s) = 0.0_dp
-      end do
-      do k = 1, m
-         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-            fock(i, j, s) = fock(i, j, s) + coeff(k)*fstore(i, j, s, k)
-         end do
-      end do
-   end subroutine diis_combine
-
-   subroutine level_shift(lp, nao, nspin, mu, occ, smat, dmat, w1, w2, fock)
-      !! F += mu (S - S D S / occ) on the virtual space while DIIS is off,
-      !! per spin: see trc_scf_options_t%level_shift's own comment.
-      type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: nao, nspin
-      real(dp), intent(in) :: mu, occ
-      real(dp), intent(in) :: smat(nao, nao), dmat(nao, nao, nspin)
-      real(dp), intent(inout) :: w1(nao, nao), w2(nao, nao)
-      real(dp), intent(inout) :: fock(nao, nao, nspin)
-      integer :: i, j, s
-      do s = 1, nspin
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, smat, nao, dmat(:, :, s), nao, 0.0_dp, w1, nao)
-         call lp%gemm("N", "N", nao, nao, nao, 1.0_dp, w1, nao, smat, nao, 0.0_dp, w2, nao)
-         do concurrent(i=1:nao, j=1:nao)
-            fock(i, j, s) = fock(i, j, s) + mu*(smat(i, j) - w2(i, j)/occ)
-         end do
-      end do
-   end subroutine level_shift
-
-   subroutine damp(nao, nspin, alpha, dold, dmat)
-      !! The damped step while DIIS/A-DIIS are off: dmat := alpha*dmat +
-      !! (1 - alpha)*dold, the weight `alpha` given to the new density.
-      integer, intent(in) :: nao, nspin
-      real(dp), intent(in) :: alpha
-      real(dp), intent(in) :: dold(nao, nao, nspin)
-      real(dp), intent(inout) :: dmat(nao, nao, nspin)
-      integer :: i, j, s
-      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-         dmat(i, j, s) = alpha*dmat(i, j, s) + (1.0_dp - alpha)*dold(i, j, s)
-      end do
-   end subroutine damp
-
-   !
-   ! The DIIS system B c = (0, ..., 0, -1), pivoted elimination on the host,
-   ! with the error block scaled to O(1) against the -1 border first. The
-   ! weights are invariant under that scaling; only the Lagrange multiplier
-   ! moves, and nothing reads it. `ok` is false on a pivot below 1e-14, in
-   ! which case the caller keeps the unextrapolated Fock matrix.
-   !
-   subroutine solve_diis(m, b, c, ok)
-      integer, intent(in) :: m
-      real(dp), intent(in) :: b(m, m)
-      real(dp), intent(out) :: c(m)
-      logical, intent(out) :: ok
-      real(dp), allocatable :: a(:, :)
-      real(dp) :: scale, pivot, factor
-      integer :: i, j, p
-      allocate (a(m, m + 1))
-      a(:, 1:m) = b
-      a(:, m + 1) = 0.0_dp
-      a(m, m + 1) = -1.0_dp
-      scale = maxval(abs(b(1:m - 1, 1:m - 1)))
-      if (scale > 0.0_dp) a(1:m - 1, 1:m - 1) = a(1:m - 1, 1:m - 1)/scale
-      ok = .true.
-      c = 0.0_dp
-      do i = 1, m
-         p = i
-         do j = i + 1, m
-            if (abs(a(j, i)) > abs(a(p, i))) p = j
-         end do
-         if (p /= i) a([i, p], :) = a([p, i], :)
-         pivot = a(i, i)
-         if (abs(pivot) < 1.0e-14_dp) then
-            ok = .false.
-            return
-         end if
-         do j = i + 1, m
-            factor = a(j, i)/pivot
-            a(j, :) = a(j, :) - factor*a(i, :)
-         end do
-      end do
-      do i = m, 1, -1
-         c(i) = (a(i, m + 1) - sum(a(i, i + 1:m)*c(i + 1:m)))/a(i, i)
-      end do
-   end subroutine solve_diis
 
 end module trc_scf_driver
