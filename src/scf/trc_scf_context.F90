@@ -142,10 +142,20 @@ contains
       end block
       this%ts(3) = tm%get_elapsed_time()
       call tm%start()
-      if (present(comm)) then
-         call this%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
-      else
-         call this%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
+      ! Under --df, build_g never calls eri%fock_resident at all (the
+      ! four-centre engine is not called for G, by design -- see
+      ! trc_scf_df.F90's own header) -- so its setup (pair-quartet bins,
+      ! Schwarz bounds, the device-resident work lists) is pure device
+      ! memory this run has no use for. `eri%release` and build_g's own
+      ! `ctx%eri` argument are both safe either way: release() guards
+      ! every deallocation on `allocated`/`on_device`, and build_g reads
+      ! nothing off `eri` before checking `df_on`.
+      if (.not. cfg%df) then
+         if (present(comm)) then
+            call this%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
+         else
+            call this%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
+         end if
       end if
       this%e_nuc = nuclear_repulsion(b)
       this%ts(4) = tm%get_elapsed_time()
