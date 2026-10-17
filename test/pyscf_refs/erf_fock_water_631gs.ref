@@ -2,7 +2,7 @@
 # case: check_erf_fock_vs_pyscf_water_631gs
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: edfddcea56ed03c8fd723e0b044557d67a21690736bbb920c5f2a3ab8d045bdd
+# hash: 12a8a13f1a64ee3e6a41e605147f10b591f52f0f8591707f4cbc6ddcd8751fd1
 # files: test/pyscf_refs/generate.py test/check_erf_fock_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAT 3
 NAO 19
