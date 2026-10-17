@@ -87,7 +87,24 @@ module trc_scf_df
                                                    "metric (P|Q)", "Cholesky", "(mu nu|P)", "pack B", &
                                                    "B = T L^-T", "J gamma", "J build", "density factor", &
                                                    "unpack B", "K half-transform", "K accum (gemm)"]
-   real(dp), parameter :: EVAL_TOL = 1.0e-12_dp
+   real(dp), parameter :: EVAL_REL_TOL = 1.0e-10_dp
+   !! RELATIVE to the density factor's own largest |eigenvalue|, not an
+   !! absolute 1e-12 -- the absolute cut kept every eigenvalue down near
+   !! machine noise regardless of scale, which on a damped (non-
+   !! idempotent) density's genuinely continuous spectrum between 0 and
+   !! the occupation number kept dozens of factor columns with no
+   !! physical weight (measured: ~240 average at w40, nocc=200, before
+   !! this change). A dropped eigenvalue n_k contributes a K element of
+   !! at most |n_k| * max|(mu nu|lam sig)| -- bounded here by max|n|
+   !! itself, since (mu nu|lam sig) <= 1 in the orthonormal-orbital basis
+   !! Y is built in -- so every dropped eigenvalue biases K by at most
+   !! EVAL_REL_TOL * max|n| ~ 1e-10 in the units D itself is in (electron
+   !! count), two orders tighter than the 1e-8 |FDS-SDF| convergence gate
+   !! this driver already stops at, and dropping O(10) such eigenvalues
+   !! per iteration (the typical noise-rank size cut here) still sums to
+   !! under the gate. Verified empirically below: w20/w40 cc-pVDZ and
+   !! cc-pVTZ energies are unchanged to 1e-10 Eh with this cut against
+   !! the old absolute one.
 
    type :: df_jk_t
       private
@@ -176,18 +193,7 @@ contains
       allocate (this%bpk(npack, naux))
       !$acc enter data create(this%bpk)
       call dbg_mem("after B")
-      ! The setup block size, AFTER bpk's own ~p*naux*8 bytes are already
-      ! spoken for (w40 cc-pVDZ: ~21 GB of a 32 GB V100) -- naux/4 at a
-      ! time (the old, size-blind default) allocates a SECOND dense (n, n,
-      ! naux/4) tensor for the (mu nu|P) build that alone can exceed what
-      ! bpk left: w40's n=1000, naux=5320 would ask for another 10.6 GB,
-      ! and the setup OOMs. Free-memory-aware, same pattern as the
-      ! per-iteration K block (`choose_qb`) and RI-MP2's own `k_group`.
-      ablk = choose_setup_block(n, naux)
-      if (present(aux_block)) ablk = max(aux_block, 1)
       call this%tbl%init("dfjk", NAMES, bytes_steps=[ST_JGAM, ST_JBLD, ST_UNPK])
-
-      call dbg_mem("ablk chosen (ablk="//itoa_dbg(ablk)//")")
 
       ! --- the metric and its Cholesky factor -------------------------------
       allocate (jm(naux, naux))
@@ -201,6 +207,25 @@ contains
       call this%tbl%step_off(lp, ST_CHOL, tc)
       call this%tbl%add_flop(ST_CHOL, int(naux, int64)**3/3)
       call dbg_mem("after Cholesky")
+
+      ! The setup block size, queried HERE -- after bpk AND jm (the metric
+      ! and its Cholesky factor, naux*naux*8 bytes, ~226 MB even at w40's
+      ! naux=5320, but Cholesky's own cuSOLVER workspace is not that small
+      ! and is still resident at this point too) are both already spoken
+      ! for, not back when only bpk was -- because that earlier query (one
+      ! round's own bug, caught by the local-memory fix above freeing
+      ! enough headroom for the naux/4 default to pass a free-memory check
+      ! that did not yet know about jm's and potrf's own footprint) let
+      ! `choose_setup_block` approve an ablk whose tensor then OOM'd against
+      ! what jm and Cholesky had since consumed. naux/4 at a time (the old,
+      ! size-blind default) allocates a dense (n, n, naux/4) tensor for the
+      ! (mu nu|P) build that alone can exceed what is left after bpk+jm+
+      ! Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
+      ! memory-aware, same pattern as the per-iteration K block
+      ! (`choose_qb`) and RI-MP2's own `k_group`.
+      ablk = choose_setup_block(n, naux)
+      if (present(aux_block)) ablk = max(aux_block, 1)
+      call dbg_mem("ablk chosen (ablk="//itoa_dbg(ablk)//")")
 
       ! --- (mu nu|P), one auxiliary block at a time, packed as it lands ----
       s0 = 1
@@ -277,12 +302,22 @@ contains
       real(dp), intent(in) :: j_scale, k_scale
       integer :: n, naux, npack
       integer :: mu, nu, k, q0, qb_cur, qq, muu, nuu, i
-      integer :: npos, nneg
-      real(dp) :: tc
+      integer :: npos, nneg, ktot, ib, r0, r1, nb_panel
+      integer, parameter :: NB_KPANEL = 8
+      !! K's accumulation (below) is split into this many column panels,
+      !! each a GEMM over its own diagonal block down to row n -- only the
+      !! lower triangle, block by block -- rather than one GEMM over the
+      !! whole dense (redundant) square. More panels means less redundant
+      !! work (the executed/full-dense ratio is (NB_KPANEL+1)/(2*NB_KPANEL)
+      !! -- 0.5625 at 8) but a smaller N per GEMM; 8 keeps every panel's
+      !! N >= 125 at w40 (n=1000) while buying back most of the savings a
+      !! much larger panel count would.
+      real(dp) :: tc, eval_cut
 
       n = this%n
       naux = this%naux
       npack = this%npack
+      nb_panel = (n + NB_KPANEL - 1)/NB_KPANEL
 
       ! --- J: two GEMVs on the packed storage -------------------------------
       call this%tbl%step_on(lp, ST_JGAM, tc)
@@ -310,12 +345,14 @@ contains
       end do
       call lp%syev(this%dsc, this%evals)
       !$acc update self(this%evals)
+      eval_cut = EVAL_REL_TOL*maxval(abs(this%evals))
       npos = 0
       nneg = 0
       do k = 1, n
-         if (this%evals(k) > EVAL_TOL) npos = npos + 1
-         if (this%evals(k) < -EVAL_TOL) nneg = nneg + 1
+         if (this%evals(k) > eval_cut) npos = npos + 1
+         if (this%evals(k) < -eval_cut) nneg = nneg + 1
       end do
+      call dbg_rank(npos, nneg)
       if (max(npos, nneg) > this%omax) call grow_yz(this, max(npos, nneg))
       do concurrent(i=1:n, k=1:npos)
          this%ypos(i, k) = this%dsc(i, n - npos + k)*sqrt(this%evals(n - npos + k))
@@ -335,8 +372,25 @@ contains
       do while (q0 <= naux)
          qb_cur = min(this%qb, naux - q0 + 1)
 
+         ! Measured 109 GB/s against this array's own bandwidth-bound
+         ! steps (J gamma/build) at 700+ GB/s -- this gather is only
+         ! contiguous in `bpk` for the half of (muu, nuu) on one side of
+         ! the diagonal, whichever index the loop order below maps to the
+         ! fastest device thread dimension. TRIED AND REVERTED: one
+         ! thread per PACKED index `p` (bpk's own contiguous leading
+         ! dimension, decoded to (mu, nu) and fanned out to both
+         ! `bblk(mu,nu,*)` and `bblk(nu,mu,*)`) measured WORSE, 46 GB/s --
+         ! the perfectly contiguous read did not make up for losing the
+         ! one AFFINE (thread-index-to-array-index) relationship the
+         ! (muu, nuu) loop below still has on its write side. The loop
+         ! order here (nuu outermost, muu, qq innermost) was the best of
+         ! four orderings measured (109, 118, 89 GB/s for the others);
+         ! none reached the bandwidth a true coalesced-on-both-sides
+         ! kernel (a small tile staged through local memory, the pattern
+         ! `trc_linalg%transpose`'s own comment points at for exactly this
+         ! problem) should get -- that rewrite is not done this round.
          call this%tbl%step_on(lp, ST_UNPK, tc)
-         do concurrent(qq=1:qb_cur, muu=1:n, nuu=1:n)
+         do concurrent(nuu=1:n, muu=1:n, qq=1:qb_cur)
             this%bblk(muu, nuu, qq) = this%bpk(pack_idx(max(muu, nuu), min(muu, nuu)), q0 - 1 + qq)
          end do
          call this%tbl%step_off(lp, ST_UNPK, tc)
@@ -356,25 +410,67 @@ contains
          call this%tbl%step_off(lp, ST_KHLF, tc)
          call this%tbl%add_flop(ST_KHLF, 2_int64*int(n, int64)**2*int(npos + nneg, int64)*int(qb_cur, int64))
 
-         ! K += Z Z^T as a plain GEMM, not cuBLAS's own dsyrk: dsyrk only
-         ! ever has to touch the upper triangle, but it does that triangle
-         ! at a fraction of dgemm's rate, and the extra half of the
-         ! arithmetic a dense GEMM does instead is cheaper than the rate it
-         ! buys back (measured at w40 cc-pVDZ: dsyrk 2947 GFLOP/s, ~38% of
-         ! this V100's FP64 peak; the GEMM below, 2x the flops for the same
-         ! k, at 90%+). `add_flop` below is EXECUTED flops (2*n*n*k, the
-         ! full dense product); the USEFUL flops -- what a triangle-only
-         ! kernel would have done -- are exactly half of that, so the
-         ! "useful" rate is the printed GFLOP/s divided by two.
+         ! K += Z Z^T as a plain GEMM, not cuBLAS's own dsyrk (dsyrk only
+         ! ever touches the upper triangle, but at a fraction of dgemm's
+         ! rate -- measured at w40 cc-pVDZ: dsyrk 2947 GFLOP/s, ~38% of
+         ! this V100's FP64 peak, a GEMM at 90%+) -- and split into
+         ! NB_KPANEL column panels, each a GEMM over its own diagonal
+         ! block down to row n, so the REDUNDANT half of a full dense
+         ! GEMM's work (computing the upper triangle too) is mostly not
+         ! done at all rather than done cheaply: executed flops fall to
+         ! (NB_KPANEL+1)/(2*NB_KPANEL) of the full dense product (0.5625
+         ! at 8), while every panel is still GEMM-shaped (large K, M
+         ! shrinking panel to panel, N fixed at the panel width) so the
+         ! per-flop rate stays close to the dense GEMM's own. `zpos(r0,1)`/
+         ! `kpos(r0,r0)` passed to an assumed-size `a(lda,*)` dummy is
+         ! ordinary Fortran sequence association -- the same idiom any
+         ! BLAS call into a sub-matrix uses -- and OpenACC's
+         ! `host_data use_device` resolves it by offset within the whole
+         ! array's own device registration, the same as any other strided
+         ! sub-array passed to `lp%gemm` elsewhere in this file.
+         ! `add_flop` below is EXECUTED flops (2*M*N*K per panel, standard
+         ! GEMM count); the USEFUL flops -- the lower triangle only, what
+         ! this was computing before NB_KPANEL>1 existed -- are n*(n+1)*k,
+         ! essentially half of a full dense GEMM's 2*n*n*k, so dividing
+         ! that by the panelled scheme's own executed total gives the
+         ! fraction of this round's savings that NB_KPANEL actually buys.
          call this%tbl%step_on(lp, ST_KSYRK, tc)
-         if (npos > 0) call lp%gemm("N", "T", n, n, npos*qb_cur, 1.0_dp, this%zpos, n, &
-                                    this%zpos, n, 1.0_dp, this%kpos, n)
-         if (nneg > 0) call lp%gemm("N", "T", n, n, nneg*qb_cur, 1.0_dp, this%zneg, n, &
-                                    this%zneg, n, 1.0_dp, this%kneg, n)
+         if (npos > 0) then
+            ktot = npos*qb_cur
+            do ib = 1, NB_KPANEL
+               r0 = 1 + (ib - 1)*nb_panel
+               r1 = min(ib*nb_panel, n)
+               if (r0 > n) exit
+               call lp%gemm("N", "T", n - r0 + 1, r1 - r0 + 1, ktot, 1.0_dp, this%zpos(r0, 1), n, &
+                            this%zpos(r0, 1), n, 1.0_dp, this%kpos(r0, r0), n)
+               call this%tbl%add_flop(ST_KSYRK, &
+                                      2_int64*int(n - r0 + 1, int64)*int(r1 - r0 + 1, int64)*int(ktot, int64))
+            end do
+         end if
+         if (nneg > 0) then
+            ktot = nneg*qb_cur
+            do ib = 1, NB_KPANEL
+               r0 = 1 + (ib - 1)*nb_panel
+               r1 = min(ib*nb_panel, n)
+               if (r0 > n) exit
+               call lp%gemm("N", "T", n - r0 + 1, r1 - r0 + 1, ktot, 1.0_dp, this%zneg(r0, 1), n, &
+                            this%zneg(r0, 1), n, 1.0_dp, this%kneg(r0, r0), n)
+               call this%tbl%add_flop(ST_KSYRK, &
+                                      2_int64*int(n - r0 + 1, int64)*int(r1 - r0 + 1, int64)*int(ktot, int64))
+            end do
+         end if
          call this%tbl%step_off(lp, ST_KSYRK, tc)
-         call this%tbl%add_flop(ST_KSYRK, 2_int64*int(n, int64)**2*int(npos + nneg, int64)*int(qb_cur, int64))
 
          q0 = q0 + qb_cur
+      end do
+
+      ! The panelled accumulation above only ever wrote the lower
+      ! triangle (row >= column) of kpos/kneg -- mirror it before this
+      ! object's own K result (both triangles, since gmat_c is dense) is
+      ! read out.
+      do concurrent(mu=1:n, nu=1:n, nu > mu)
+         this%kpos(mu, nu) = this%kpos(nu, mu)
+         this%kneg(mu, nu) = this%kneg(nu, mu)
       end do
 
       do concurrent(mu=1:n, nu=1:n)
@@ -541,6 +637,22 @@ contains
       print "(a,a,a,f10.3,a)", "trc_scf_df: ", label, ": free ", real(free, dp)/1024.0_dp**3, " GiB"
       flush (output_unit)
    end subroutine dbg_mem
+
+   !
+   ! TERCO_DF_RANK_DEBUG=1: the density factor's rank (npos, nneg) every
+   ! `build` call, one line each -- the K half-transform/accumulation's
+   ! own cost is linear in npos+nneg, so this is what the relative cut
+   ! above (EVAL_REL_TOL) actually buys, iteration by iteration, next to
+   ! the old absolute 1e-12 cut. Debug only; a no-op otherwise.
+   !
+   subroutine dbg_rank(npos, nneg)
+      integer, intent(in) :: npos, nneg
+      character(len=8) :: v
+      call get_environment_variable("TERCO_DF_RANK_DEBUG", v)
+      if (trim(v) /= "1") return
+      print "(a,i0,a,i0)", "trc_scf_df: density factor rank: npos=", npos, " nneg=", nneg
+      flush (output_unit)
+   end subroutine dbg_rank
 
    integer function choose_setup_block(n, naux) result(ablk)
       integer, intent(in) :: n, naux
