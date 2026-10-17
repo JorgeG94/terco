@@ -498,6 +498,28 @@ set_tests_properties(
                            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# Density-fitted RHF/RKS (trc_scf_df.F90, `--df`'s library entry): water and
+# formamide, cc-pVDZ and 6-31G*, Hartree-Fock/PBE/B3LYP, against pyscf's own
+# density_fit on the SAME auxiliary basis (def2-universal-jkfit).
+#
+# NOT REGISTERED AS A CTEST YET. Debugging found that trc_scf_df.F90's
+# Coulomb build is wrong by a reproducible, exact factor of 2 against the
+# four-centre engine (confirmed three independent ways -- packed B, dense
+# B, and T^T M^-1 T with no Cholesky at all -- on two molecules and two
+# auxiliary bases, one of which (cc-pVDZ-RIFIT) RI-MP2's own validated
+# tests also use without issue, which rules out trc_df_2c/trc_df_3c
+# themselves and points at something specific to this module's own use of
+# them). Registering this as a passing ctest before that is fixed would
+# ship a test that fails (SCF does not even converge) on every build; see
+# the branch's own commit history for the measurement. Build `scf_df`
+# directly (it is still a target below) to reproduce it.
+#
+add_executable(scf_df scf_df.F90)
+target_compile_definitions(scf_df PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_df PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_include_directories(scf_df PRIVATE ${CMAKE_BINARY_DIR}/modules)
+
+#
 # The SCF with a polarisable continuum against pyscf's .PCM(): converged
 # energies and E_diel, and both again at pyscf's own converged density
 # (test/pyscf_refs/pcm_scf_main.ref, pcm_scf_f.ref). `main` is water and
