@@ -177,6 +177,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_settings, only: scf_spin_rule
+   use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
@@ -214,7 +215,7 @@ module trc_capi
    public :: capi_fock, trc_fock_many, trc_fock_nosym
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
-             trc_set_convergence, trc_set_screening, trc_set_incremental, &
+             trc_set_convergence, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
@@ -291,6 +292,19 @@ module trc_capi
       ! bases; `bb` also keeps the last SCF's orbitals, as the old entries do
       type(basis_box) :: bb, ab
       logical :: have_basis = .false., have_aux = .false.
+      ! the density-fitting (jkfit) basis for `--df`, separate from `ab`
+      ! (RI-MP2's rifit) because one run can do DF-SCF and RI-MP2 with two
+      ! different auxiliary sets (see trc_scf_df.F90's own header).
+      type(basis_box) :: jb
+      logical :: have_jkfit = .false.
+      ! the density-fitted J/K object itself: fitted once per (molecule,
+      ! basis, jkfit) and carried across every `trc_run_scf` on this
+      ! handle, so a chained RI-MP2 step could reuse `bpk` instead of
+      ! redoing the metric/Cholesky/3c/trsm (not wired up yet -- see
+      ! trc_scf_df.F90's `df_jk_dims`). `df_fit_ok` is cleared by anything
+      ! that invalidates the fit (a new basis, molecule or jkfit set).
+      type(df_jk_t) :: dfjk
+      logical :: df_fit_ok = .false.
       ! settings
       type(trc_scf_options_t) :: opts
       integer :: guess_kind = TRC_GUESS_SAD
@@ -1297,9 +1311,11 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       call drop_eri(cx)
+      if (cx%df_fit_ok) call cx%dfjk%release()
       call cx%la%release()
       if (cx%have_basis) call cx%bb%b%release()
       if (cx%have_aux) call cx%ab%b%release()
+      if (cx%have_jkfit) call cx%jb%b%release()
       deallocate (cx)
       status = TRC_OK
    end function trc_destroy
@@ -1368,6 +1384,8 @@ contains
       cx%multiplicity = int(multiplicity)
       cx%have_mol = .true.
       call invalidate_runs(cx)
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
       status = TRC_OK
    end function trc_set_molecule
 
@@ -1401,6 +1419,10 @@ contains
       call drop_eri(cx)
       call b%release()
       call invalidate_runs(cx)
+      ! A new orbital basis makes any existing --df fit (built on the old
+      ! one) wrong, not merely stale.
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
    end subroutine take_basis
 
    function basis_libcint(handle, aux, atm, natm, bas, nshell, env, nenv, cartesian) result(status)
@@ -1812,6 +1834,73 @@ contains
    end function trc_set_incremental
 
    !
+   ! Density-fitted J and K (`--df`). Needs a jkfit basis too
+   ! (`trc_set_jkfit_json`, separate from `trc_set_aux_json`'s rifit set
+   ! because one run can do DF-SCF and RI-MP2 with two different auxiliary
+   ! bases) before `trc_run_scf` -- `trc_run_scf` reports that, not this,
+   ! since nothing here can tell whether one was already set by the time
+   ! this is called.
+   !
+   function trc_set_df(handle, on) result(status) bind(c, name="trc_set_df")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%opts%df = on /= 0
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_df
+
+   !
+   ! The fitting (jkfit) basis for `--df`, a MolSSI BSE JSON file, read for
+   ! the molecule already set -- the same file format `trc_set_aux_json`
+   ! reads, into a SEPARATE slot (`cx%jb`), and always Cartesian regardless
+   ! of its own JSON tag (trc_scf_df.F90 stays Cartesian-only this
+   ! milestone, exactly `basis_json`'s own rule for the rifit set). Clears
+   ! any fit already built on the previous jkfit basis.
+   !
+   function trc_set_jkfit_json(handle, path) result(status) bind(c, name="trc_set_jkfit_json")
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_basis_t) :: b
+      type(error_t) :: err
+      character(len=1024) :: fpath
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_jkfit_json: set the molecule first; the file is read for its elements")
+         return
+      end if
+      fpath = ""
+      do i = 1, len(fpath)
+         if (path(i) == c_null_char) exit
+         fpath(i:i) = path(i)
+      end do
+      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, force_cart=.true.)
+      if (err%has_error()) then
+         cx%message = err%get_message()
+         status = TRC_ERR_BADARG
+         return
+      end if
+      if (cx%have_jkfit) call cx%jb%b%release()
+      cx%jb%b = b
+      call cx%jb%b%to_device()
+      cx%have_jkfit = .true.
+      call b%release()
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
+      status = TRC_OK
+   end function trc_set_jkfit_json
+
+   !
    ! How finely the shell pairs are batched by their Schwarz bound: `res`
    ! buckets per decade. The pre-launch screen admits a pair of batches
    ! when their bounds multiply above the threshold, so a coarse bucket
@@ -2162,6 +2251,28 @@ contains
       if (collective) talk = talk .and. comm%rank() == 0
       ! Once per context; a later run only grows the workspace to n.
       call cx%la%init(n)
+      ! --- --df: fit once per (molecule, basis, jkfit), carried across runs
+      if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         if (.not. cx%have_jkfit) then
+            cx%message = "trc_run_scf: --df needs a jkfit basis (trc_set_jkfit_json)"
+            if (collective) call comm%finalize()
+            return
+         end if
+         block
+            type(trc_pairlist_t) :: pl
+            type(error_t) :: dferr
+            call pl%build(cx%bb%b, cx%opts%eri_thresh)
+            call pl%to_device()
+            call cx%dfjk%setup(cx%bb%b, cx%jb%b, pl, cx%la, dferr, nocc_hint=max(nalpha, 1))
+            call pl%release()
+            if (dferr%has_error()) then
+               cx%message = dferr%get_message()
+               if (collective) call comm%finalize()
+               return
+            end if
+         end block
+         cx%df_fit_ok = .true.
+      end if
       opts = cx%opts
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
@@ -2260,21 +2371,21 @@ contains
       end select
       if (allocated(dg)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la, dfjk=cx%dfjk)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la, dfjk=cx%dfjk)
          end if
       else if (allocated(hsap)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la, dfjk=cx%dfjk)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la, dfjk=cx%dfjk)
          end if
       else
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, dfjk=cx%dfjk)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, dfjk=cx%dfjk)
          end if
       end if
       if (collective) call comm%finalize()
