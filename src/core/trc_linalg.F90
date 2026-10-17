@@ -78,7 +78,6 @@ module trc_linalg
       procedure :: getrs => linalg_getrs
       procedure :: gemv => linalg_gemv
       procedure :: trsm => linalg_trsm
-      procedure :: syrk => linalg_syrk
       ! syev has no such caller -- every existing call passes a plain,
       ! exactly-ranked array (never a scalar offset or a rank mismatch) --
       ! so it is safe to make it a real generic.
@@ -514,57 +513,6 @@ contains
       call dtrsm(side, uplo, trans, "N", m, n, alpha, a, lda, b, ldb)
 #endif
    end subroutine linalg_trsm
-
-   ! C := alpha op(A) op(A)^T + beta C, symmetric rank-k update: op(A) is
-   ! n x k ('N') or k x n ('T'). The library writes only the `uplo` triangle
-   ! of C (cuBLAS's and BLAS's own convention); the `do concurrent` below
-   ! fills the other one, which is what DF-JK's K build needs -- the half-
-   ! transform's Z Z^T is this call with 'N', and K is used as a full matrix
-   ! by the next iteration's commutator and energy.
-   subroutine linalg_syrk(this, uplo, trans, n, k, alpha, a, lda, beta, c, ldc)
-      class(trc_linalg_t), intent(in) :: this
-      character, intent(in) :: uplo, trans
-      integer, intent(in) :: n, k, lda, ldc
-      real(dp), intent(in) :: alpha, beta
-      real(dp), intent(in) :: a(lda, *)
-      real(dp), intent(inout) :: c(ldc, *)
-      logical :: up
-      integer :: i, j
-#ifdef _OPENACC
-      block
-         integer :: st, cu, ct
-         cu = merge(CUBLAS_FILL_MODE_UPPER, CUBLAS_FILL_MODE_LOWER, uplo == "U" .or. uplo == "u")
-         ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
-         !$acc host_data use_device(a, c)
-         st = cublasDsyrk_v2(this%hb, cu, ct, n, k, alpha, a, lda, beta, c, ldc)
-         !$acc end host_data
-         if (st /= 0) error stop "trc_linalg: cublasDsyrk failed"
-      end block
-#else
-      interface
-         subroutine dsyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc)
-            import :: dp
-            implicit none
-            character, intent(in) :: uplo, trans
-            integer, intent(in) :: n, k, lda, ldc
-            real(dp), intent(in) :: alpha, beta
-            real(dp), intent(in) :: a(lda, *)
-            real(dp), intent(inout) :: c(ldc, *)
-         end subroutine dsyrk
-      end interface
-      call dsyrk(uplo, trans, n, k, alpha, a, lda, beta, c, ldc)
-#endif
-      up = uplo == "U" .or. uplo == "u"
-      if (up) then
-         do concurrent(j=1:n, i=1:n, i > j)
-            c(i, j) = c(j, i)
-         end do
-      else
-         do concurrent(j=1:n, i=1:n, i < j)
-            c(i, j) = c(j, i)
-         end do
-      end if
-   end subroutine linalg_syrk
 
    ! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
    ! the eigenvalues ascending. Upper triangle is read.

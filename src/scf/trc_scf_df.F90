@@ -28,14 +28,16 @@
 ! this always diagonalises it (`lp%syev`, one nao_c x nao_c symmetric
 ! eigenproblem per iteration -- see df_jk_build's own header for pyscf's
 ! rule and why the orbital-only shortcut is not taken yet) and keeps every
-! eigenvalue with |n_k| > 1e-12: Y_pos = U sqrt(n_k) for the positive ones,
+! eigenvalue with |n_k| > EVAL_REL_TOL max|n|: Y_pos = U sqrt(n_k) for the positive ones,
 ! Y_neg = U sqrt(|n_k|) for the negative ones (K is linear in D, so
 ! K[D] = K[D_pos] - K[D_neg] exactly). Then, one auxiliary block at a time:
 !
 !     unpack B_q to a dense (n, n, qb) scratch (both triangles filled)
 !     X_q = B_q Y            one strided GEMM batch over the block, giving
 !                             Z(mu, (i,q)), n x (o qb), per factor
-!     K += Z Z^T             `trc_linalg%syrk`, accumulated over blocks
+!     K += Z Z^T             lower block panels only, one GEMM each (cuBLAS
+!                             dsyrk ran at 38% of peak here), accumulated
+!                             over blocks and mirrored once at the end
 !
 ! and G = j_scale J[D] - (k_scale/2) K[D] for D the TOTAL density, the SAME convention `trc_eri_t%fock_resident`
 ! returns (see trc_scf_fock.F90's build_g, which reads this object's `build`
@@ -555,7 +557,7 @@ contains
 
    !! The setup/per-iteration table: time, GFLOP(/s) or GB/s per step, and
    ! one "all dense algebra" row over the GEMM/factorisation-shaped steps
-   ! (Cholesky, trsm, the half-transform, syrk) -- J's two GEMVs and the
+   ! (Cholesky, trsm, the half-transform, the K panels) -- J's two GEMVs and the
    ! density factor are bandwidth- or eigensolver-bound and left out of it,
    ! exactly as RI-MP2 leaves its own screening-dependent integral step out.
    subroutine df_jk_report(this, t_total, rank, nranks)
