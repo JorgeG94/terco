@@ -108,6 +108,7 @@ module trc_scf_df
       procedure :: release => df_jk_release
       procedure :: report => df_jk_report
       procedure :: dims => df_jk_dims
+      procedure :: packed_b => df_jk_packed_b
       procedure :: is_ready => df_jk_is_ready
    end type df_jk_t
 
@@ -169,11 +170,18 @@ contains
       this%n = n
       this%naux = naux
       this%npack = npack
-      ablk = max(naux/4, 1)
-      if (present(aux_block)) ablk = max(aux_block, 1)
 
       allocate (this%bpk(npack, naux))
       !$acc enter data create(this%bpk)
+      ! The setup block size, AFTER bpk's own ~p*naux*8 bytes are already
+      ! spoken for (w40 cc-pVDZ: ~21 GB of a 32 GB V100) -- naux/4 at a
+      ! time (the old, size-blind default) allocates a SECOND dense (n, n,
+      ! naux/4) tensor for the (mu nu|P) build that alone can exceed what
+      ! bpk left: w40's n=1000, naux=5320 would ask for another 10.6 GB,
+      ! and the setup OOMs. Free-memory-aware, same pattern as the
+      ! per-iteration K block (`choose_qb`) and RI-MP2's own `k_group`.
+      ablk = choose_setup_block(n, naux)
+      if (present(aux_block)) ablk = max(aux_block, 1)
       call this%tbl%init("dfjk", NAMES, bytes_steps=[ST_JGAM, ST_JBLD, ST_UNPK])
 
       ! --- the metric and its Cholesky factor -------------------------------
@@ -350,10 +358,9 @@ contains
    end subroutine df_jk_build
 
    !! This object's dimensions, and whether `setup` has already fitted `bpk`
-   !! -- what a chained RI-MP2 step would check before reusing it instead of
-   !! redoing the metric/Cholesky/3c/trsm on the same auxiliary basis. The
-   !! reuse itself (RI-MP2 transforming `bpk` straight to (ia|Q)) is NOT
-   !! wired up yet; `trc_rimp2_run` always does its own three-index build.
+   !! -- what a chained RI-MP2 step checks before reusing it instead of
+   !! redoing the metric/Cholesky/3c/trsm on the same auxiliary basis (see
+   !! `packed_b` below, and trc_rimp2_driver.F90's own `dfjk` argument).
    pure subroutine df_jk_dims(this, n, naux, npack)
       class(df_jk_t), intent(in) :: this
       integer, intent(out) :: n, naux, npack
@@ -366,6 +373,23 @@ contains
       class(df_jk_t), intent(in) :: this
       r = this%ready
    end function df_jk_is_ready
+
+   !! B itself, packed (mu >= nu, p = mu(mu-1)/2 + nu) and already L^-T
+   !! applied -- (npack, naux), device-resident. A chained RI-MP2 step
+   !! reads this directly instead of rebuilding it: L^-T acts only on the
+   !! auxiliary index and the occupied/virtual half-transform only on
+   !! (mu, nu), so the two commute, and the half-transform run on THIS is
+   !! exactly RI-MP2's own B, no further triangular solve needed. Null
+   !! unless `is_ready()`.
+   function df_jk_packed_b(this) result(p)
+      class(df_jk_t), intent(in), target :: this
+      real(dp), pointer :: p(:, :)
+      if (this%ready) then
+         p => this%bpk
+      else
+         p => null()
+      end if
+   end function df_jk_packed_b
 
    subroutine df_jk_release(this)
       class(df_jk_t), intent(inout) :: this
@@ -440,6 +464,29 @@ contains
 #endif
       qb = max(1, min(qb, naux))
    end function choose_qb
+
+   !
+   ! Auxiliary functions per (mu nu|P) SETUP block: as many as naux/4 (the
+   ! old, size-blind default) unless the device's free memory -- AFTER
+   ! `bpk` (p x naux, the largest single allocation this object ever
+   ! makes) is already resident -- would not hold the dense (n, n, ablk)
+   ! scratch tensor that block's build needs, in which case as many as
+   ! fit with half a gigabyte kept back. Same pattern as `choose_qb`.
+   !
+   integer function choose_setup_block(n, naux) result(ablk)
+      integer, intent(in) :: n, naux
+#ifdef _OPENACC
+      integer(int64) :: free, per_q, fixed
+      free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                  acc_property_free_memory), int64)
+      per_q = 8_int64*int(n, int64)*int(n, int64)
+      fixed = 512_int64*1024*1024
+      ablk = int(min(int(max(naux/4, 1), int64), max(1_int64, (free - fixed)/max(per_q, 1_int64))))
+#else
+      ablk = max(naux/4, 1)
+#endif
+      ablk = max(1, min(ablk, naux))
+   end function choose_setup_block
 
    pure integer function ncart(l) result(res)
       integer, intent(in) :: l

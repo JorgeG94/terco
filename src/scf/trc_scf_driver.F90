@@ -509,6 +509,13 @@ contains
          if (cfg%pcm_on) print "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)", "   pcm: E_diel = ", epcm, &
             "  q_total = ", ctx%pcm%q_total, "  setup ", ctx%t_pcm_setup, " s, ", &
             tmr%t_pcm/real(max(1, res%iterations), dp), " s per iteration"
+         if (cfg%df) then
+            if (present(comm)) then
+               call ctx%dfj%report(tmr%t_fock, comm%rank(), comm%size())
+            else
+               call ctx%dfj%report(tmr%t_fock, 0, 1)
+            end if
+         end if
       end if
       call ctx%release()
 
