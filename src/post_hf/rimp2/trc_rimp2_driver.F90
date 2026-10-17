@@ -74,29 +74,27 @@ module trc_rimp2_driver
                           comm_isend_real_dp_array_n, comm_recv_real_dp_array_n
    use trc_mpi_device, only: trc_mpi_device_direct
    use pic_flop_recorder, only: flop_recorder_type
-   use pic_profiler, only: profiler_start, profiler_stop
+   use trc_step_table, only: step_table_t
    implicit none
    private
 
    public :: trc_rimp2_run, trc_rimp2_result_t
 
    !
-   ! THE STEPS, AS TIMED. Each is device time to completion -- the clock is
+   ! THE STEPS, AS TIMED, through the shared trc_step_table (src/core/
+   ! trc_step_table.F90): each is device time to completion -- the clock is
    ! read after a device sync, since cuBLAS returns before its kernels end --
    ! and the floating-point operations it executes, so verbose output can say
    ! how close each step runs to the device's peak. The integral steps are
    ! time only: their operation counts are not GEMM-shaped and depend on the
-   ! screening.
-   !
-   integer, parameter :: NSTEP = 8
-   integer, parameter :: ST_METRIC = 1, ST_CHOL = 2, ST_3C = 3, ST_TRANS = 4, ST_TRSM = 5, &
-                         ST_KGEMM = 6, ST_PAIR = 7, ST_RING = 8
-   !
-   ! Each step is also an NVTX range of the same name (pic_profiler; a no-op
+   ! screening. Each step is also an NVTX range of the same name (a no-op
    ! unless built with TERCO_NVTX), opened and closed at the same device
    ! syncs as the timer, so on an Nsight Systems timeline a range covers its
    ! kernels and not only their launches.
    !
+   integer, parameter :: NSTEP = 8
+   integer, parameter :: ST_METRIC = 1, ST_CHOL = 2, ST_3C = 3, ST_TRANS = 4, ST_TRSM = 5, &
+                         ST_KGEMM = 6, ST_PAIR = 7, ST_RING = 8
    character(len=18), parameter :: STEP_NAME(NSTEP) = [character(len=18) :: &
                                                        "metric (P|Q)", "Cholesky", "(mu nu|P)", &
                                                        "transform (ia|P)", "B = X L^-T", "K_i GEMMs", &
@@ -152,9 +150,9 @@ contains
       real(dp) :: e_os, e_ss
       real(dp) :: es(2)
       real(dp) :: gf_all(1)
-      real(dp) :: t_step(NSTEP)
       real(dp) :: tc
-      type(flop_recorder_type) :: fl(NSTEP)
+      type(step_table_t) :: stab
+      logical :: dense_mask(NSTEP)
       integer(int64) :: nv8, nao8, naux8
 
       nao = b%nao
@@ -227,18 +225,18 @@ contains
       nv8 = nv
       nao8 = nao
       naux8 = naux
-      t_step = 0.0_dp
+      call stab%init("rimp2", STEP_NAME)
       tw0 = tick(lp)
       ! --- 1. the metric and its Cholesky factor ---------------------------
       allocate (jm(naux, naux))
       !$acc enter data create(jm)
-      call step_on(lp, ST_METRIC, tc)
+      call stab%step_on(lp, ST_METRIC, tc)
       call trc_df_2c(aux, jm)
-      call step_off(lp, ST_METRIC, tc, t_step)
-      call step_on(lp, ST_CHOL, tc)
+      call stab%step_off(lp, ST_METRIC, tc)
+      call stab%step_on(lp, ST_CHOL, tc)
       call lp%potrf(naux, jm, naux)
-      call step_off(lp, ST_CHOL, tc, t_step)
-      call fl(ST_CHOL)%add(naux8**3/3)
+      call stab%step_off(lp, ST_CHOL, tc)
+      call stab%add_flop(ST_CHOL, naux8**3/3)
       if (talk) print "(a,i0,a,f8.2,a)", "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
 
       ! --- 3. (ia|P) for i in this rank's block, an auxiliary block at a time
@@ -260,10 +258,10 @@ contains
          call blk%to_device()
          allocate (tens(nao, nao, np), half(nb, nao, np))
          !$acc enter data create(tens, half)
-         call step_on(lp, ST_3C, tc)
+         call stab%step_on(lp, ST_3C, tc)
          call trc_df_3c(b, pl, blk, tens)
-         call step_off(lp, ST_3C, tc, t_step)
-         call step_on(lp, ST_TRANS, tc)
+         call stab%step_off(lp, ST_3C, tc)
+         call stab%step_on(lp, ST_TRANS, tc)
          ! Two library calls per block, not two per auxiliary function: the
          ! occupied side of the whole block is one GEMM,
          !   half(i, nu q) = sum_mu C_occ(mu, i) T(mu, nu q)   (nb x nao np),
@@ -273,22 +271,22 @@ contains
          call lp%gemm("T", "N", nb, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, nb)
          call lp%gemm_strided("T", "T", nv, nb, nao, 1.0_dp, cvir, nao, 0_int64, half, nb, &
                               int(nb, int64)*nao8, 0.0_dp, xr(1 + int(p0 - 1, int64)*novr8), nv, novr8, np)
-         call step_off(lp, ST_TRANS, tc, t_step)
-         call fl(ST_TRANS)%add(int(np, int64)*(2*int(nb, int64)*nao8*nao8 + 2*nv8*int(nb, int64)*nao8))
+         call stab%step_off(lp, ST_TRANS, tc)
+         call stab%add_flop(ST_TRANS, int(np, int64)*(2*int(nb, int64)*nao8*nao8 + 2*nv8*int(nb, int64)*nao8))
          !$acc exit data delete(tens, half)
          deallocate (tens, half)
          call blk%release()
          s0 = s1 + 1
       end do
-      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2: (mu nu|P) ", t_step(ST_3C), " s, transform to (ia|P) ", &
-         t_step(ST_TRANS), " s"
+      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
+         stab%t(ST_TRANS), " s"
 
       ! --- 4. B = X L^-T: solve B L^T = X from the right, this rank's rows ---
-      call step_on(lp, ST_TRSM, tc)
+      call stab%step_on(lp, ST_TRSM, tc)
       if (nb > 0) call lp%trsm("R", "L", "T", novr, naux, 1.0_dp, jm, naux, xr, novr)
-      call step_off(lp, ST_TRSM, tc, t_step)
-      call fl(ST_TRSM)%add(novr8*naux8*naux8)
-      if (talk) print "(a,f8.2,a)", "  rimp2: B = X L^-T ", t_step(ST_TRSM), " s"
+      call stab%step_off(lp, ST_TRSM, tc)
+      call stab%add_flop(ST_TRSM, novr8*naux8*naux8)
+      if (talk) print "(a,f8.2,a)", "  rimp2: B = X L^-T ", stab%t(ST_TRSM), " s"
       tw1 = tick(lp)
 
       ! --- 5. the pair energies, over the ring ------------------------------
@@ -317,11 +315,11 @@ contains
       do step = 0, nstep_ring
          qv = mod(rank + step, nranks)
          if (step > 0) then
-            call step_on(lp, ST_RING, tc)
+            call stab%step_on(lp, ST_RING, tc)
             call ring_shift(comm, rank, nranks, xr, vis, cur, &
                             int(bn(mod(rank + step - 1, nranks)), int64)*nv8*naux8, &
                             int(bn(qv), int64)*nv8*naux8, step == 1, direct)
-            call step_off(lp, ST_RING, tc, t_step)
+            call stab%step_off(lp, ST_RING, tc)
          end if
          ! Rows i in ilo..ihi of this rank's block against columns j in
          ! jlo..jhi of block qv; `diag` keeps j >= i.
@@ -354,7 +352,7 @@ contains
             if (diag) jstart = i0
             ncol = (jhi - jstart + 1)*nv
             if (ncol <= 0) cycle
-            call step_on(lp, ST_KGEMM, tc)
+            call stab%step_on(lp, ST_KGEMM, tc)
             if (step == 0) then
                call lp%gemm("N", "T", (i1 - i0 + 1)*nv, ncol, naux, 1.0_dp, xr(1 + (i0 - lo)*nv), novr, &
                             xr(1 + (jstart - jbase)*nv), ldv, 0.0_dp, ki, ldk)
@@ -362,8 +360,8 @@ contains
                call lp%gemm("N", "T", (i1 - i0 + 1)*nv, ncol, naux, 1.0_dp, xr(1 + (i0 - lo)*nv), novr, &
                             vis(1 + (jstart - jbase)*nv, cur), ldv, 0.0_dp, ki, ldk)
             end if
-            call step_off(lp, ST_KGEMM, tc, t_step)
-            call fl(ST_KGEMM)%add(2*int(i1 - i0 + 1, int64)*nv8*int(ncol, int64)*naux8)
+            call stab%step_off(lp, ST_KGEMM, tc)
+            call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nv8*int(ncol, int64)*naux8)
             do i = i0, i1
                ! K_i(a, jb) is the block of rows roff + a and, on the
                ! diagonal, columns from j = i; off it, every column.
@@ -376,13 +374,13 @@ contains
                   jfirst = jstart
                end if
                ncol_i = (jhi - jfirst + 1)*nv
-               call step_on(lp, ST_PAIR, tc)
+               call stab%step_on(lp, ST_PAIR, tc)
                ! K_i^T, so the kernel reads (ia|jb) and (ib|ja) both coalesced
                call lp%transpose(nv, ncol_i, ki(roff + 1, coff + 1), ldk, kt, ncolmax)
                call pair_energy(i, jfirst, no, nv, ldk, roff, coff, ncolmax, ncol_i, eo, ev, ki, kt, part)
                !$acc update self(part(1:2*ncol_i))
-               call step_off(lp, ST_PAIR, tc, t_step)
-               call fl(ST_PAIR)%add(10*nv8*int(ncol_i, int64))
+               call stab%step_off(lp, ST_PAIR, tc)
+               call stab%add_flop(ST_PAIR, 10*nv8*int(ncol_i, int64))
                e_os = e_os + sum(part(1:2*ncol_i:2))
                e_ss = e_ss + sum(part(2:2*ncol_i:2))
             end do
@@ -403,13 +401,18 @@ contains
       ! below is rank 0's own share.
       gf_all(1) = 0.0_dp
       do i = 1, NSTEP
-         gf_all(1) = gf_all(1) + real(fl(i)%get(), dp)*1.0e-9_dp
+         gf_all(1) = gf_all(1) + real(stab%fl(i)%get(), dp)*1.0e-9_dp
       end do
       if (nranks > 1) call allreduce(comm, gf_all, op=MPI_SUM)
       if (talk) then
          print "(a,f8.2,a,f8.2,a)", "  rimp2: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
-         call report_steps(t_step, fl, tick(lp) - tw0, rank, nranks)
-         if (nranks > 1) print "(a,a18,f14.3,f13.1,f12.1)", "  rimp2:   ", label("all ranks"), tick(lp) - tw0, &
+         dense_mask = .false.
+         dense_mask(ST_CHOL) = .true.
+         dense_mask(ST_TRANS) = .true.
+         dense_mask(ST_TRSM) = .true.
+         dense_mask(ST_KGEMM) = .true.
+         call stab%report(tick(lp) - tw0, rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
+         if (nranks > 1) print "(a,a24,f12.3,f13.1,f12.1)", "  rimp2:   ", "all ranks", tick(lp) - tw0, &
             gf_all(1), gf_all(1)/(tick(lp) - tw0)
       end if
       res%e_os = e_os
@@ -434,64 +437,6 @@ contains
       call lp%sync()
       t = wall()
    end function tick
-
-   !
-   ! Open step `k`: its start time in `tc`, and its NVTX range.
-   !
-   subroutine step_on(lp, k, tc)
-      type(trc_linalg_t), intent(in) :: lp
-      integer, intent(in) :: k
-      real(dp), intent(out) :: tc
-      tc = tick(lp)
-      call profiler_start("rimp2: "//trim(STEP_NAME(k)), nvtx_only=.true.)
-   end subroutine step_on
-
-   !
-   ! Close step `k`: the time since `tc` added to its total, its range closed.
-   !
-   subroutine step_off(lp, k, tc, t_step)
-      type(trc_linalg_t), intent(in) :: lp
-      integer, intent(in) :: k
-      real(dp), intent(in) :: tc
-      real(dp), intent(inout) :: t_step(NSTEP)
-      t_step(k) = t_step(k) + (tick(lp) - tc)
-      call profiler_stop("rimp2: "//trim(STEP_NAME(k)))
-   end subroutine step_off
-
-   !
-   ! One line per step: device time, operations executed and the rate, then
-   ! the GEMM-shaped steps together. Rank 0's own share when there are
-   ! several ranks: the pair steps are split over them, the rest replicated.
-   !
-   subroutine report_steps(t_step, fl, t_total, rank, nranks)
-      real(dp), intent(in) :: t_step(NSTEP)
-      real(dp), intent(in) :: t_total
-      type(flop_recorder_type), intent(in) :: fl(NSTEP)
-      integer, intent(in) :: rank, nranks
-      integer :: k
-      real(dp) :: gf, tg, fg
-      print "(a)", "  rimp2: step                   time (s)        GFLOP     GFLOP/s"
-      do k = 1, NSTEP
-         gf = real(fl(k)%get(), dp)*1.0e-9_dp
-         if (fl(k)%get() > 0 .and. t_step(k) > 0.0_dp) then
-            print "(a,a18,f14.3,f13.1,f12.1)", "  rimp2:   ", STEP_NAME(k), t_step(k), gf, gf/t_step(k)
-         else
-            print "(a,a18,f14.3,a13,a12)", "  rimp2:   ", STEP_NAME(k), t_step(k), "-", "-"
-         end if
-      end do
-      tg = t_step(ST_CHOL) + t_step(ST_TRANS) + t_step(ST_TRSM) + t_step(ST_KGEMM)
-      fg = real(fl(ST_CHOL)%get() + fl(ST_TRANS)%get() + fl(ST_TRSM)%get() + fl(ST_KGEMM)%get(), dp)*1.0e-9_dp
-      if (tg > 0.0_dp) print "(a,a18,f14.3,f13.1,f12.1)", "  rimp2:   ", label("all dense algebra"), tg, fg, fg/tg
-      print "(a,a18,f14.3,a,i0,a,i0)", "  rimp2:   ", label("total"), t_total, "   rank ", rank, " of ", nranks
-   end subroutine report_steps
-
-   pure function label(t) result(l)
-      !! `t` left-justified in the table's column: an `a18` edit descriptor
-      !! right-justifies anything shorter than 18.
-      character(len=*), intent(in) :: t
-      character(len=18) :: l
-      l = t
-   end function label
 
    !
    ! Occupied orbitals per K GEMM. One i gives cuBLAS nvir rows, which it
