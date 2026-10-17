@@ -55,7 +55,7 @@ program scf_rks
    character(len=16) :: tag
    logical :: has_ref
 
-   open (newunit=unit, file='rks_probe.bin', access='stream', form='unformatted', status='replace')
+   open (newunit=unit, file="rks_probe.bin", access="stream", form="unformatted", status="replace")
    write (unit) int(NCASE, int64)
    all_ok = .true.
    current = ""
@@ -64,35 +64,37 @@ program scf_rks
    ! not stop this program before rks_probe.bin is written, or
    ! test/pyscf_refs/generate.py has nothing to bootstrap from. The FAIL
    ! happens below, after the dump is safely written.
-   call ref_open('rks.ref', refu, has_ref)
+   call ref_open("rks.ref", refu, has_ref)
    nfail = 0
    if (has_ref) then
-      call ref_read_int(refu, 'NCASE', ncase_ref)
+      call ref_read_int(refu, "NCASE", ncase_ref)
       if (ncase_ref /= NCASE) then
-         print '(a)', 'scf_rks: pyscf reference case count does not match this build'; stop 1
+         print "(a)", "scf_rks: pyscf reference case count does not match this build"
+         stop 1
       end if
    end if
    do ic = 1, NCASE
       if (mol(ic) /= current) then
          if (len_trim(current) > 0) call bas%release()
          current = mol(ic)
-         call read_xyz(trim(current)//'.xyz', natm, zint, at_r)
+         call read_xyz(trim(current)//".xyz", natm, zint, at_r)
          if (allocated(at_z)) deallocate (at_z)
          allocate (at_z(natm))
          at_z = real(zint, dp)
          block
             type(trc_basis_t) :: jbas
             type(error_t) :: err
-            call trc_basis_from_json('basis_sets/6-31g.json', natm, zint, at_r, jbas, err)
+            call trc_basis_from_json("basis_sets/6-31g.json", natm, zint, at_r, jbas, err)
             if (err%has_error()) then
-               print '(a)', 'scf_rks: '//err%get_message(); stop 1
+               print "(a)", "scf_rks: "//err%get_message()
+               stop 1
             end if
             call uncontract_basis(jbas, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)
          end block
          call bas%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, at_z, at_r, maxnp)
          call bas%to_device()
-         print '(a)', ""
-         print '(a,a,a,i0,a,i0,a)', "scf_rks: ", trim(current), ", 6-31G uncontracted, ", nsh, " shells, ", bas%nao, " AOs"
+         print "(a)", ""
+         print "(a,a,a,i0,a,i0,a)", "scf_rks: ", trim(current), ", 6-31G uncontracted, ", nsh, " shells, ", bas%nao, " AOs"
       end if
       opts = trc_scf_options_t()
       opts%functional = fn(ic)
@@ -105,16 +107,45 @@ program scf_rks
       ! terco's energy AT pyscf's density agreed to 2.5e-11. Converge to the
       ! gate's own precision instead.
       opts%conv_diis = 1.0e-8_dp
-      call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts, res)
+      ! OH's unpaired electron sits in one of a rotationally degenerate
+      ! pair of pi orbitals; starting terco's OWN SCF from the same
+      ! symmetry-broken density test/pyscf_refs/generate.py's gen_rks
+      ! commits (DM0_i, read here before the NAME_i/DM_i the at-density
+      ! control reads later -- same per-case order the file was written
+      ! in) means both terco and pyscf converge toward the SAME
+      ! orientation rather than two that merely share an energy. Only for
+      ! the open-shell cases (nalpha /= nbeta) that record carries; a
+      ! missing reference (the first, bootstrap run) falls back to the
+      ! guess trc_scf_run would pick on its own, same as always.
+      if (has_ref .and. nalpha(ic) /= nbeta(ic)) then
+         block
+            character(len=16) :: name_chk
+            integer :: nspin_chk, nao_chk
+            real(dp), allocatable :: dm0(:, :, :)
+            write (tag, "(i0)") ic - 1
+            call ref_read_str(refu, "NAME_"//trim(tag), name_chk)
+            call ref_read_int(refu, "NSPIN_"//trim(tag), nspin_chk)
+            call ref_read_int(refu, "NAO_"//trim(tag), nao_chk)
+            if (nspin_chk /= 2 .or. nao_chk /= bas%nao) then
+               print "(a)", "scf_rks: pyscf reference shape does not match this build"
+               stop 1
+            end if
+            allocate (dm0(bas%nao, bas%nao, 2))
+            call ref_read_matrix3(refu, "DM0_"//trim(tag), bas%nao, bas%nao, 2, dm0)
+            call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts, res, dguess=dm0)
+         end block
+      else
+         call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts, res)
+      end if
       if (.not. res%converged) then
-         print '(a,a)', "  NOT CONVERGED: ", trim(res%message)
+         print "(a,a)", "  NOT CONVERGED: ", trim(res%message)
          all_ok = .false.
       end if
       if (len_trim(fn(ic)) > 0) then
-         print '(a,a8,a,i1,a,i3,a,f22.12,a,f14.10)', "  ", fn(ic), " nspin ", res%nspin, " iter ", res%iterations, &
+         print "(a,a8,a,i1,a,i3,a,f22.12,a,f14.10)", "  ", fn(ic), " nspin ", res%nspin, " iter ", res%iterations, &
             "  E = ", res%energy, "  N(grid) = ", res%nelec_grid
       else
-         print '(a,a8,a,i1,a,i3,a,f22.12)', "  ", "hf", " nspin ", res%nspin, " iter ", res%iterations, &
+         print "(a,a8,a,i1,a,i3,a,f22.12)", "  ", "hf", " nspin ", res%nspin, " iter ", res%iterations, &
             "  E = ", res%energy
       end if
 
@@ -148,23 +179,35 @@ program scf_rks
          integer :: nspin_ref, nao_ref
          real(dp) :: e_ref, de, dat, de_tol, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
          real(dp), allocatable :: dm_ref(:, :, :)
-         write (tag, '(i0)') ic - 1
-         call ref_read_str(refu, 'NAME_'//trim(tag), name_ref)
-         call ref_read_int(refu, 'NSPIN_'//trim(tag), nspin_ref)
-         call ref_read_int(refu, 'NAO_'//trim(tag), nao_ref)
-         call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+         write (tag, "(i0)") ic - 1
+         ! NAME_/NSPIN_/NAO_ for this case were already read above, before
+         ! the live SCF, for every open-shell case (nalpha /= nbeta) --
+         ! DM0_'s own position in the file, right after them -- so only a
+         ! closed-shell case still has them here next in sequence.
+         if (nalpha(ic) == nbeta(ic)) then
+            call ref_read_str(refu, "NAME_"//trim(tag), name_ref)
+            call ref_read_int(refu, "NSPIN_"//trim(tag), nspin_ref)
+            call ref_read_int(refu, "NAO_"//trim(tag), nao_ref)
+         else
+            name_ref = fn(ic)
+            if (len_trim(name_ref) == 0) name_ref = "hf"
+            nspin_ref = res%nspin
+            nao_ref = bas%nao
+         end if
+         call ref_read_real(refu, "E_"//trim(tag), e_ref)
          ! Provenance only (not asserted on here): the pyscf convergence
          ! this energy was committed at -- see generate.py's converge_tight,
          ! which refuses a case whose gradient norm does not clear
          ! conv_tol_grad, tighter than pyscf's own sqrt(conv_tol) default.
-         call ref_read_real(refu, 'CONV_TOL_'//trim(tag), pyscf_conv_tol)
-         call ref_read_real(refu, 'CONV_TOL_GRAD_'//trim(tag), pyscf_conv_tol_grad)
-         call ref_read_real(refu, 'GRAD_NORM_'//trim(tag), pyscf_grad_norm)
+         call ref_read_real(refu, "CONV_TOL_"//trim(tag), pyscf_conv_tol)
+         call ref_read_real(refu, "CONV_TOL_GRAD_"//trim(tag), pyscf_conv_tol_grad)
+         call ref_read_real(refu, "GRAD_NORM_"//trim(tag), pyscf_grad_norm)
          if (nspin_ref /= res%nspin .or. nao_ref /= bas%nao) then
-            print '(a)', 'scf_rks: pyscf reference shape does not match this build'; stop 1
+            print "(a)", "scf_rks: pyscf reference shape does not match this build"
+            stop 1
          end if
          allocate (dm_ref(bas%nao, bas%nao, res%nspin))
-         call ref_read_matrix3(refu, 'DM_'//trim(tag), bas%nao, bas%nao, res%nspin, dm_ref)
+         call ref_read_matrix3(refu, "DM_"//trim(tag), bas%nao, bas%nao, res%nspin, dm_ref)
          de = abs(res%energy - e_ref)
          ! The at-density control: terco's OWN energy at pyscf's committed,
          ! converged density -- max_iter=1 with dguess runs exactly one
@@ -176,8 +219,8 @@ program scf_rks
          opts2%max_iter = 1
          call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts2, res2, dguess=dm_ref)
          dat = abs(res2%energy - e_ref)
-         print '(a,a,a,es10.2,a,es10.2)', '    ', trim(name_ref), &
-            ': de(converged) ', de, '  de(at pyscf D) ', dat
+         print "(a,a,a,es10.2,a,es10.2)", "    ", trim(name_ref), &
+            ": de(converged) ", de, "  de(at pyscf D) ", dat
          ! The CONVERGED energy of an open-shell DFT case gets a looser bound
          ! than everything else. OH's 2-Pi hole can sit anywhere in the
          ! degenerate pi plane, and with a spherically averaged SAD guess
@@ -194,7 +237,7 @@ program scf_rks
             de_tol = 1.0e-8_dp
          end if
          call ref_report(nfail, de < de_tol .and. dat < 1.0e-8_dp, &
-                         trim(name_ref)//': E(converged) and E(terco at pyscf D) vs pyscf', max(de, dat))
+                         trim(name_ref)//": E(converged) and E(terco at pyscf D) vs pyscf", max(de, dat))
          deallocate (dm_ref)
       end block
       end if
@@ -203,13 +246,13 @@ program scf_rks
    call bas%release()
    if (has_ref) call ref_close(refu)
    if (.not. has_ref) then
-      print '(a)', 'FAIL: missing reference pyscf_refs/rks.ref -- run test/pyscf_refs/generate.py ' &
-         //'(see test/pyscf_refs/README.md)'
+      print "(a)", "FAIL: missing reference pyscf_refs/rks.ref -- run test/pyscf_refs/generate.py " &
+         //"(see test/pyscf_refs/README.md)"
       stop 1
    end if
    if (.not. all_ok .or. nfail > 0) stop 1
-   print '(a)', ""
-   print '(a)', "scf_rks: all cases converged and agree with the pyscf reference; RESULT: PASS"
+   print "(a)", ""
+   print "(a)", "scf_rks: all cases converged and agree with the pyscf reference; RESULT: PASS"
 
 contains
 
@@ -221,7 +264,8 @@ contains
          if (all(abs(sh_r(:, ish) - at_r(:, a)) < 1.0e-12_dp)) centre_of = a
       end do
       if (centre_of == 0) then
-         print '(a)', "scf_rks: a shell is on no atom"; stop 1
+         print "(a)", "scf_rks: a shell is on no atom"
+         stop 1
       end if
    end function centre_of
 
