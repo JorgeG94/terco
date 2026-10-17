@@ -2259,28 +2259,32 @@ contains
       if (collective) talk = talk .and. comm%rank() == 0
       ! Once per context; a later run only grows the workspace to n.
       call cx%la%init(n)
-      ! --- --df: fit once per (molecule, basis, jkfit), carried across runs
-      if (cx%opts%df .and. .not. cx%df_fit_ok) then
-         if (.not. cx%have_jkfit) then
-            cx%message = "trc_run_scf: --df needs a jkfit basis (trc_set_jkfit_json)"
-            if (collective) call comm%finalize()
-            return
-         end if
-         block
-            type(trc_pairlist_t) :: pl
-            type(error_t) :: dferr
-            call pl%build(cx%bb%b, cx%opts%eri_thresh)
-            call pl%to_device()
-            call cx%dfjk%setup(cx%bb%b, cx%jb%b, pl, cx%la, dferr, nocc_hint=max(nalpha, 1))
-            call pl%release()
-            if (dferr%has_error()) then
-               cx%message = dferr%get_message()
-               if (collective) call comm%finalize()
-               return
-            end if
-         end block
-         cx%df_fit_ok = .true.
-      end if
+      ! --- the guess, BEFORE the --df fit below -----------------------------
+      ! SAD/SADQ's atomic sub-SCFs (trc_sad_build/trc_sadq_build) run the
+      ! ordinary four-centre `eri%fock_resident` path regardless of
+      ! `cx%opts%df` -- SAD never fits its own tiny aux basis, by design (see
+      ! trc_sad.F90's own header). The FIRST four-centre kernel launch of the
+      ! process -- here, the SAD atom's, however tiny its own basis is --
+      ! pays a one-time cost that is never given back for the rest of the
+      ! process: measured on a V100, ~4.7 GiB when it runs with ~24 GiB
+      ! already committed (the order this file had before), ~8.9 GiB when it
+      ! runs first against ~31 GiB free. It is NOT a fixed, problem-size-
+      ! independent reservation -- its size tracks how much is free when it
+      ! fires, which is exactly why paying it HERE, first, matters: every
+      ! allocation after it (`cx%dfjk%setup`'s B, and its own free-memory-
+      ! aware block sizing in `choose_setup_block`/`choose_qb`) then sees the
+      ! device's true remaining budget instead of one this cost is about to
+      ! shrink out from under it. Measured consequence at w40 cc-pVDZ --df
+      ! (1000 functions, naux 10640, B alone ~19.8 GiB): with the fit BEFORE
+      ! the guess (the old order), `choose_setup_block` sized its (mu nu|P)
+      ! scratch against free memory that had not yet paid this cost, and the
+      ! run died with CUDA_ERROR_OUT_OF_MEMORY inside that scratch's own
+      ! allocation; with the fit AFTER (this order), the same run converges
+      ! in 12 iterations with free memory flat at ~1.09 GiB from the first
+      ! Fock build on. The two blocks set disjoint state (`dg`/`hsap`/
+      ! `opts%guess` here, `cx%dfjk`/`cx%df_fit_ok` below) and neither reads
+      ! the other's, so swapping their order changes nothing but the order
+      ! memory gets claimed in.
       opts = cx%opts
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
@@ -2377,6 +2381,28 @@ contains
          if (collective) call comm%finalize()
          return
       end select
+      ! --- --df: fit once per (molecule, basis, jkfit), carried across runs
+      if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         if (.not. cx%have_jkfit) then
+            cx%message = "trc_run_scf: --df needs a jkfit basis (trc_set_jkfit_json)"
+            if (collective) call comm%finalize()
+            return
+         end if
+         block
+            type(trc_pairlist_t) :: pl
+            type(error_t) :: dferr
+            call pl%build(cx%bb%b, cx%opts%eri_thresh)
+            call pl%to_device()
+            call cx%dfjk%setup(cx%bb%b, cx%jb%b, pl, cx%la, dferr, nocc_hint=max(nalpha, 1))
+            call pl%release()
+            if (dferr%has_error()) then
+               cx%message = dferr%get_message()
+               if (collective) call comm%finalize()
+               return
+            end if
+         end block
+         cx%df_fit_ok = .true.
+      end if
       if (allocated(dg)) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la, dfjk=cx%dfjk)
