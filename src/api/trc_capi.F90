@@ -186,7 +186,7 @@ module trc_capi
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
@@ -2381,6 +2381,17 @@ contains
          if (collective) call comm%finalize()
          return
       end select
+      ! The guess just paid (or re-confirmed already-paid) the SAD atomic
+      ! sub-SCF's own one-time CUDA local-memory reservation -- see
+      ! trc_release_local_mem_reservation's own header. Nothing left in a
+      ! --df run ever launches that four-centre class again (build_g skips
+      ! eri%fock_resident entirely under --df), so give it back before `the
+      ! fit` below sizes its own scratch against free memory that cost is
+      ! about to vacate: that ordering is this branch's own fix for the w40
+      ! OOM, and shrinking the reservation here is what makes the memory it
+      ! freed actually available rather than merely counted as "free" by a
+      ! query that cannot tell the difference.
+      if (cx%opts%df) call trc_release_local_mem_reservation()
       ! --- --df: fit once per (molecule, basis, jkfit), carried across runs
       if (cx%opts%df .and. .not. cx%df_fit_ok) then
          if (.not. cx%have_jkfit) then

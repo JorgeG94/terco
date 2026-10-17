@@ -23,7 +23,7 @@
 ! and that is by design: it cannot pass silently.
 !
 module trc_linalg
-   use, intrinsic :: iso_c_binding, only: c_int
+   use, intrinsic :: iso_c_binding, only: c_int, c_size_t
    use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm, pic_dot
    use pic_lapack_interfaces, only: pic_syev
@@ -36,6 +36,7 @@ module trc_linalg
    private
 
    public :: trc_linalg_t
+   public :: trc_release_local_mem_reservation
 
    type :: trc_linalg_t
       integer :: n = 0
@@ -710,5 +711,64 @@ contains
          call this%gemm("N", "T", n, n, k, occ, c(:, 1:k), n, c(:, 1:k), n, 0.0_dp, d, n)
       end if
    end subroutine linalg_density
+
+   !
+   ! The CUDA driver's per-thread "local" stack, reserved across the WHOLE
+   ! device (every resident thread the GPU could ever run concurrently, not
+   ! what the kernel that triggered it actually launched) the first time any
+   ! kernel with a frame bigger than the current limit runs -- and never
+   ! given back on its own. Measured here: `trc_pc_k2222_pcs2222` (the
+   ! (dd|dd) four-centre class) has the largest stack frame in this whole
+   ! library, 59568 bytes (`cuobjdump -res-usage`); on a V100 (80 SMs x 2048
+   ! threads/SM = 163840 resident threads) that reservation is
+   ! 163840*59568 = 9.09 GiB, matching the ~8.9 GiB this branch measured for
+   ! the SAD guess's first non-DF Fock build (SAD always needs this class --
+   ! cc-pVDZ oxygen's own d shell against itself -- regardless of `--df`).
+   ! Nothing after the guess launches that four-centre path under `--df`
+   ! (build_g never calls `eri%fock_resident` there), so MOST of the
+   ! reservation -- everything above what the DF path's own largest kernel
+   ! still needs, see `SMALL_STACK` below -- is pure waste for the rest of
+   ! a `--df` run. `cudaDeviceSetLimit` on `cudaLimitStackSize` shrinks it
+   ! back down immediately to that smaller, still-sufficient size; a later
+   ! kernel that genuinely needs a bigger frame than THAT grows it again on
+   ! its own next launch, at that kernel's own one-time cost, not this
+   ! one's -- which is exactly the failure this function's own SMALL_STACK
+   ! choice has to avoid: regrowing at the worst possible moment, with
+   ! almost no free memory left, is a crash instead of a reservation.
+   !
+   ! A no-op on the host build (no device, nothing to reserve).
+   !
+   subroutine trc_release_local_mem_reservation()
+#ifdef _OPENACC
+      interface
+         function cudadevicesetlimit(limit, lim_value) bind(c, name="cudaDeviceSetLimit") result(ierr)
+            import :: c_int, c_size_t
+            implicit none
+            integer(c_int), value :: limit
+            integer(c_size_t), value :: lim_value
+            integer(c_int) :: ierr
+         end function cudadevicesetlimit
+      end interface
+      integer(c_int), parameter :: CUDA_LIMIT_STACK_SIZE = 0
+      integer(c_size_t), parameter :: SMALL_STACK = 32768_c_size_t
+      !! NOT CUDA's 1 KiB default: the three-centre DF kernels
+      !! (trc_df_3c_k223, measured 28784 B/thread -- the next generation
+      !! above it, the def2-universal-jkfit g-function classes, could be
+      !! larger still) run AFTER this reset, inside the very fit this
+      !! reset is clearing room for, and dropping below their own need
+      !! only moves the regrowth -- at a moment chosen to have the LEAST
+      !! free memory of the whole run, right after the fit's own setup
+      !! block has claimed everything choose_setup_block thought was safe
+      !! -- to a cuLaunchKernel OOM instead of a cuMemAlloc one (measured:
+      !! it did, at trc_df_3c_k223, with 1024 here). 32 KiB clears every
+      !! three-centre and two-centre DF kernel class measured so far with
+      !! margin, while still giving back the four-centre classes' own
+      !! excess (the next ones down from k2222's 59568 B are the other
+      !! four-centre p/d combinations, all still well above 32 KiB).
+      integer(c_int) :: ierr
+      ierr = cudadevicesetlimit(CUDA_LIMIT_STACK_SIZE, SMALL_STACK)
+      if (ierr /= 0) error stop "trc_linalg: cudaDeviceSetLimit(cudaLimitStackSize) failed"
+#endif
+   end subroutine trc_release_local_mem_reservation
 
 end module trc_linalg
