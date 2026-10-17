@@ -1,6 +1,6 @@
 # kernel family polar npts nin nout
 # libxc 7.0.0 via pyscf
-# hash: 7a7697412381527a623e39a30a775339020d71656fb40d6054eb8b93bb6afc40
+# hash: f8eda67f2a1edc3788b79a9e4fb1bb4d78f8da9689ae567e918e30f514a09fc1
 # files: test/pyscf_refs/generate.py tools/xc_kernel_discovery.py
 slater_exchange lda 0 11 1 3
 1.00000000000000006e-09 -7.38558766382022241e-04 -9.84745021842696466e-04 -3.28248340614232235e+05
