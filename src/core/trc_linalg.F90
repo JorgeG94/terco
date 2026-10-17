@@ -72,6 +72,7 @@ module trc_linalg
       procedure :: gemm_mat => linalg_gemm_mat
       procedure :: gemm_strided => linalg_gemm_strided
       procedure :: transpose => linalg_transpose
+      procedure :: sym_from_upper => linalg_sym_from_upper
       procedure :: potrf => linalg_potrf
       procedure :: getrf => linalg_getrf
       procedure :: getrs => linalg_getrs
@@ -262,6 +263,39 @@ contains
       end do
 #endif
    end subroutine linalg_transpose
+
+   !
+   ! C = S + S^T, n x n, at the device's bandwidth (the same cuBLAS geam
+   ! as `transpose`, alpha = beta = 1 instead of beta = 0): the unpack a
+   ! packed-triangular object (trc_scf_df.F90's K block) needs, once the
+   ! packed run for each column has already been copied into S's UPPER
+   ! triangle (diagonal included, lower zeroed) by a plain, both-sides-
+   ! contiguous copy -- see that caller's own comment for why the packed
+   ! layout makes that copy trivial where the old (mu, nu) gather was not.
+   ! The caller is responsible for S's diagonal: this geam reads it from
+   ! BOTH operands (S and S^T agree there), so a non-zero diagonal comes
+   ! out doubled -- zero it in S first and add it back after, or halve
+   ! C's diagonal afterward; either is the caller's O(n) problem, not
+   ! this routine's.
+   !
+   subroutine linalg_sym_from_upper(this, n, s, lds, c, ldc)
+      class(trc_linalg_t), intent(in) :: this
+      integer, intent(in) :: n, lds, ldc
+      real(dp), intent(in) :: s(lds, *)
+      real(dp), intent(inout) :: c(ldc, *)
+#ifdef _OPENACC
+      integer :: st
+      !$acc host_data use_device(s, c)
+      st = cublasDgeam(this%hb, CUBLAS_OP_T, CUBLAS_OP_N, n, n, 1.0_dp, s, lds, 1.0_dp, s, lds, c, ldc)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cublasDgeam failed"
+#else
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         c(i, j) = s(i, j) + s(j, i)
+      end do
+#endif
+   end subroutine linalg_sym_from_upper
 
    subroutine linalg_gemm_strided(this, ta, tb, m, n, k, alpha, a, lda, sa, b, ldb, sb, beta, c, ldc, sc, count)
       class(trc_linalg_t), intent(in) :: this

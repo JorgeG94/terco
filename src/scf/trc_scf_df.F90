@@ -117,6 +117,7 @@ module trc_scf_df
       real(dp), allocatable :: dsc(:, :), evals(:)     !! the density-factor eigenproblem
       real(dp), allocatable :: ypos(:, :), yneg(:, :)  !! (n, omax)
       real(dp), allocatable :: bblk(:, :, :)           !! (n, n, qb): one unpacked aux block
+      real(dp), allocatable :: bsym(:, :, :)           !! (n, n, qb): upper-triangle staging for bblk's unpack
       real(dp), allocatable :: zpos(:, :), zneg(:, :)  !! (n, omax*qb): the half-transform
       real(dp), allocatable :: kpos(:, :), kneg(:, :)  !! (n, n): K's two factors, accumulated over blocks
       type(step_table_t) :: tbl
@@ -274,8 +275,9 @@ contains
       if (present(nocc_hint)) omax0 = max(nocc_hint, 1)
       this%qb = choose_qb(n, naux, omax0)
       call dbg_mem("qb chosen (qb="//itoa_dbg(this%qb)//", omax0="//itoa_dbg(omax0)//")")
-      allocate (this%bblk(n, n, this%qb))
-      !$acc enter data create(this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, this%bblk)
+      allocate (this%bblk(n, n, this%qb), this%bsym(n, n, this%qb))
+      !$acc enter data create(this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, &
+      !$acc                    this%bblk, this%bsym)
       call dbg_mem("after fixed scratch + bblk")
       call grow_yz(this, omax0)
       call dbg_mem("after ypos/yneg/zpos/zneg (setup done)")
@@ -301,7 +303,7 @@ contains
       real(dp), intent(inout) :: gmat_c(this%n, this%n)
       real(dp), intent(in) :: j_scale, k_scale
       integer :: n, naux, npack
-      integer :: mu, nu, k, q0, qb_cur, qq, muu, nuu, i
+      integer :: mu, nu, k, q0, qb_cur, qq, i
       integer :: npos, nneg, ktot, ib, r0, r1, nb_panel
       integer, parameter :: NB_KPANEL = 8
       !! K's accumulation (below) is split into this many column panels,
@@ -372,26 +374,50 @@ contains
       do while (q0 <= naux)
          qb_cur = min(this%qb, naux - q0 + 1)
 
-         ! Measured 109 GB/s against this array's own bandwidth-bound
-         ! steps (J gamma/build) at 700+ GB/s -- this gather is only
-         ! contiguous in `bpk` for the half of (muu, nuu) on one side of
-         ! the diagonal, whichever index the loop order below maps to the
-         ! fastest device thread dimension. TRIED AND REVERTED: one
-         ! thread per PACKED index `p` (bpk's own contiguous leading
-         ! dimension, decoded to (mu, nu) and fanned out to both
-         ! `bblk(mu,nu,*)` and `bblk(nu,mu,*)`) measured WORSE, 46 GB/s --
-         ! the perfectly contiguous read did not make up for losing the
-         ! one AFFINE (thread-index-to-array-index) relationship the
-         ! (muu, nuu) loop below still has on its write side. The loop
-         ! order here (nuu outermost, muu, qq innermost) was the best of
-         ! four orderings measured (109, 118, 89 GB/s for the others);
-         ! none reached the bandwidth a true coalesced-on-both-sides
-         ! kernel (a small tile staged through local memory, the pattern
-         ! `trc_linalg%transpose`'s own comment points at for exactly this
-         ! problem) should get -- that rewrite is not done this round.
+         ! Gathering straight into the dense (muu, nuu) grid (every
+         ! ordering measured: 89-118 GB/s, all tried and reverted; see
+         ! this subroutine's git history) is only ever contiguous in
+         ! `bpk` on one side of the diagonal. `pack_idx(mu, nu) =
+         ! mu(mu-1)/2 + nu` (nu <= mu) packs column mu of the UPPER
+         ! triangle as the CONTIGUOUS run bpk(pack_idx(mu,1) :
+         ! pack_idx(mu,mu), q) -- and that run lands in bsym(1:mu, mu, q),
+         ! contiguous on both sides (bsym's own leading dimension is i,
+         ! exactly the run's own offset). Zero bsym's diagonal (geam,
+         ! next, reads it from BOTH operands -- a non-zero value would
+         ! come out doubled), then `lp%sym_from_upper` -- cuBLAS geam, the
+         ! same call `transpose` already makes at the device's bandwidth
+         ! -- builds bblk(:,:,qq) = bsym + bsym^T, one call per qq (geam
+         ! has no native batched/strided form); the true diagonal (never
+         ! touched by the triangular copy or the geam) is reloaded from
+         ! bpk directly, cheaper than saving and restoring a copy of it.
+         ! Measured 134 GB/s at w40 (n=1000, qb=64 geam calls per block):
+         ! better than every dense-gather ordering tried (89-118 GB/s),
+         ! still well under the >=600 GB/s target -- each geam call here
+         ! moves only 8 MB (n*n*8 bytes), and at that size cuBLAS's own
+         ! per-call launch overhead, not bandwidth, is what the time goes
+         ! to. The fix is a single kernel doing all qb_cur transposes in
+         ! one launch (a custom strided/batched geam -- cuBLAS has no
+         ! such call); not written this round.
          call this%tbl%step_on(lp, ST_UNPK, tc)
-         do concurrent(nuu=1:n, muu=1:n, qq=1:qb_cur)
-            this%bblk(muu, nuu, qq) = this%bpk(pack_idx(max(muu, nuu), min(muu, nuu)), q0 - 1 + qq)
+         ! bsym's LOWER triangle (i > mu) is never written by the
+         ! triangular copy below, but `sym_from_upper`'s geam reads the
+         ! WHOLE n x n matrix for its transpose operand -- zero all of it
+         ! first (a uniform, coalesced write regardless of index order,
+         ! not the bandwidth bottleneck this step had).
+         do concurrent(mu=1:n, i=1:n, qq=1:qb_cur)
+            this%bsym(i, mu, qq) = 0.0_dp
+         end do
+         do concurrent(mu=1:n, i=1:n, qq=1:qb_cur, i <= mu)
+            this%bsym(i, mu, qq) = this%bpk(pack_idx(mu, i), q0 - 1 + qq)
+         end do
+         do concurrent(mu=1:n, qq=1:qb_cur)
+            this%bsym(mu, mu, qq) = 0.0_dp
+         end do
+         do qq = 1, qb_cur
+            call lp%sym_from_upper(n, this%bsym(1, 1, qq), n, this%bblk(1, 1, qq), n)
+         end do
+         do concurrent(mu=1:n, qq=1:qb_cur)
+            this%bblk(mu, mu, qq) = this%bpk(pack_idx(mu, mu), q0 - 1 + qq)
          end do
          call this%tbl%step_off(lp, ST_UNPK, tc)
          call this%tbl%add_bytes(ST_UNPK, 8_int64*int(n, int64)*int(n, int64)*int(qb_cur, int64))
@@ -516,11 +542,12 @@ contains
       class(df_jk_t), intent(inout) :: this
       if (.not. this%ready) return
       !$acc exit data delete(this%bpk, this%dpk, this%jpk, this%gq, this%dsc, this%evals, &
-      !$acc                  this%kpos, this%kneg, this%bblk)
+      !$acc                  this%kpos, this%kneg, this%bblk, this%bsym)
       if (allocated(this%ypos)) then
          !$acc exit data delete(this%ypos, this%yneg, this%zpos, this%zneg)
       end if
-      deallocate (this%bpk, this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, this%bblk)
+      deallocate (this%bpk, this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, &
+                 this%bblk, this%bsym)
       if (allocated(this%ypos)) deallocate (this%ypos, this%yneg, this%zpos, this%zneg)
       this%ready = .false.
       this%omax = 0
