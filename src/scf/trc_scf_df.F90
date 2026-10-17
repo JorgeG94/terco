@@ -37,7 +37,7 @@
 !                             Z(mu, (i,q)), n x (o qb), per factor
 !     K += Z Z^T             `trc_linalg%syrk`, accumulated over blocks
 !
-! and G = 2 j_scale J - k_scale K, the SAME convention `trc_eri_t%fock_resident`
+! and G = j_scale J[D] - (k_scale/2) K[D] for D the TOTAL density, the SAME convention `trc_eri_t%fock_resident`
 ! returns (see trc_scf_fock.F90's build_g, which reads this object's `build`
 ! in its own branch) -- `--df` and the four-centre path must agree up to the
 ! fitting error, and matching the sign/scale convention exactly is how.
@@ -238,7 +238,7 @@ contains
    end subroutine df_jk_setup
 
    !
-   ! G += 2 j_scale J[D] - k_scale K[D], the same sign/scale convention
+   ! G = j_scale J[D] - (k_scale/2) K[D], D the total density: the same convention
    ! `trc_eri_t%fock_resident` returns (trc_scf_fock.F90's build_g branches
    ! on `cfg%df` into this instead of the four-centre call, never both).
    ! `gmat_c` is OVERWRITTEN, not accumulated into -- the caller has
@@ -275,7 +275,7 @@ contains
       call this%tbl%step_on(lp, ST_JBLD, tc)
       call lp%gemv("N", npack, naux, 1.0_dp, this%bpk, npack, this%gq, 0.0_dp, this%jpk)
       do concurrent(mu=1:n, nu=1:n)
-         gmat_c(mu, nu) = 2.0_dp*j_scale*this%jpk(pack_idx(max(mu, nu), min(mu, nu)))
+         gmat_c(mu, nu) = j_scale*this%jpk(pack_idx(max(mu, nu), min(mu, nu)))
       end do
       call this%tbl%step_off(lp, ST_JBLD, tc)
       call this%tbl%add_bytes(ST_JBLD, 8_int64*int(npack, int64)*int(naux, int64))
@@ -345,7 +345,7 @@ contains
       end do
 
       do concurrent(mu=1:n, nu=1:n)
-         gmat_c(mu, nu) = gmat_c(mu, nu) - k_scale*(this%kpos(mu, nu) - this%kneg(mu, nu))
+         gmat_c(mu, nu) = gmat_c(mu, nu) - 0.5_dp*k_scale*(this%kpos(mu, nu) - this%kneg(mu, nu))
       end do
    end subroutine df_jk_build
 
