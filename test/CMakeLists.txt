@@ -500,24 +500,24 @@ set_tests_properties(
 #
 # Density-fitted RHF/RKS (trc_scf_df.F90, `--df`'s library entry): water and
 # formamide, cc-pVDZ and 6-31G*, Hartree-Fock/PBE/B3LYP, against pyscf's own
-# density_fit on the SAME auxiliary basis (def2-universal-jkfit).
-#
-# NOT REGISTERED AS A CTEST YET. Debugging found that trc_scf_df.F90's
-# Coulomb build is wrong by a reproducible, exact factor of 2 against the
-# four-centre engine (confirmed three independent ways -- packed B, dense
-# B, and T^T M^-1 T with no Cholesky at all -- on two molecules and two
-# auxiliary bases, one of which (cc-pVDZ-RIFIT) RI-MP2's own validated
-# tests also use without issue, which rules out trc_df_2c/trc_df_3c
-# themselves and points at something specific to this module's own use of
-# them). Registering this as a passing ctest before that is fixed would
-# ship a test that fails (SCF does not even converge) on every build; see
-# the branch's own commit history for the measurement. Build `scf_df`
-# directly (it is still a target below) to reproduce it.
+# density_fit on the SAME auxiliary basis (def2-universal-jkfit), at rks.ref's
+# closed-shell tolerance (test/pyscf_refs/scf_df.ref, generate.py's
+# gen_scf_df). def2-universal-jkfit needs g auxiliary functions on O/C/N,
+# within the shipped DF_LMAX_AUX=4 ceiling since that became the default
+# (see the top-level CMakeLists.txt's TERCO_DF_LMAX_AUX), so this runs for
+# real in a plain build; scf_df.F90 still self-skips (stop 0, after
+# printing SKIP), same convention as check_df_vs_pyscf's, for anyone who
+# lowers TERCO_DF_LMAX_AUX back down.
 #
 add_executable(scf_df scf_df.F90)
 target_compile_definitions(scf_df PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_df PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)
+target_link_libraries(scf_df PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
 target_include_directories(scf_df PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_df COMMAND scf_df)
+set_tests_properties(
+  terco/scf_df PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+                          SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # The SCF with a polarisable continuum against pyscf's .PCM(): converged
