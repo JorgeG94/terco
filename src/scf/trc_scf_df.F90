@@ -70,6 +70,7 @@ module trc_scf_df
    use trc_linalg, only: trc_linalg_t
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
+   use, intrinsic :: iso_fortran_env, only: output_unit
 #ifdef _OPENACC
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                       acc_property_free_memory
@@ -85,7 +86,7 @@ module trc_scf_df
    character(len=18), parameter :: NAMES(NSTEP) = [character(len=18) :: &
                                                    "metric (P|Q)", "Cholesky", "(mu nu|P)", "pack B", &
                                                    "B = T L^-T", "J gamma", "J build", "density factor", &
-                                                   "unpack B", "K half-transform", "K syrk"]
+                                                   "unpack B", "K half-transform", "K accum (gemm)"]
    real(dp), parameter :: EVAL_TOL = 1.0e-12_dp
 
    type :: df_jk_t
@@ -171,8 +172,10 @@ contains
       this%naux = naux
       this%npack = npack
 
+      call dbg_mem("before B")
       allocate (this%bpk(npack, naux))
       !$acc enter data create(this%bpk)
+      call dbg_mem("after B")
       ! The setup block size, AFTER bpk's own ~p*naux*8 bytes are already
       ! spoken for (w40 cc-pVDZ: ~21 GB of a 32 GB V100) -- naux/4 at a
       ! time (the old, size-blind default) allocates a SECOND dense (n, n,
@@ -184,9 +187,12 @@ contains
       if (present(aux_block)) ablk = max(aux_block, 1)
       call this%tbl%init("dfjk", NAMES, bytes_steps=[ST_JGAM, ST_JBLD, ST_UNPK])
 
+      call dbg_mem("ablk chosen (ablk="//itoa_dbg(ablk)//")")
+
       ! --- the metric and its Cholesky factor -------------------------------
       allocate (jm(naux, naux))
       !$acc enter data create(jm)
+      call dbg_mem("after metric alloc")
       call this%tbl%step_on(lp, ST_METRIC, tc)
       call trc_df_2c(aux, jm)
       call this%tbl%step_off(lp, ST_METRIC, tc)
@@ -194,6 +200,7 @@ contains
       call lp%potrf(naux, jm, naux)
       call this%tbl%step_off(lp, ST_CHOL, tc)
       call this%tbl%add_flop(ST_CHOL, int(naux, int64)**3/3)
+      call dbg_mem("after Cholesky")
 
       ! --- (mu nu|P), one auxiliary block at a time, packed as it lands ----
       s0 = 1
@@ -209,6 +216,7 @@ contains
          call blk%to_device()
          allocate (tens(n, n, np))
          !$acc enter data create(tens)
+         if (s0 == 1) call dbg_mem("after first (mn|P) block alloc (np="//itoa_dbg(np)//")")
          call this%tbl%step_on(lp, ST_3C, tc)
          call trc_df_3c(b, pl, blk, tens)
          call this%tbl%step_off(lp, ST_3C, tc)
@@ -223,6 +231,7 @@ contains
          s0 = s1 + 1
       end do
 
+      call dbg_mem("after (mn|P) + pack, before trsm")
       ! --- B = T L^-T: one triangular solve, every packed row at once ------
       call this%tbl%step_on(lp, ST_TRSM, tc)
       call lp%trsm("R", "L", "T", npack, naux, 1.0_dp, jm, naux, this%bpk, npack)
@@ -230,6 +239,7 @@ contains
       call this%tbl%add_flop(ST_TRSM, int(npack, int64)*int(naux, int64)*int(naux, int64))
       !$acc exit data delete(jm)
       deallocate (jm)
+      call dbg_mem("after trsm, jm freed")
 
       ! --- fixed-size per-iteration scratch, and the density-factor one ----
       allocate (this%dpk(npack), this%jpk(npack), this%gq(naux))
@@ -238,9 +248,12 @@ contains
       omax0 = max(n/4, 1)
       if (present(nocc_hint)) omax0 = max(nocc_hint, 1)
       this%qb = choose_qb(n, naux, omax0)
+      call dbg_mem("qb chosen (qb="//itoa_dbg(this%qb)//", omax0="//itoa_dbg(omax0)//")")
       allocate (this%bblk(n, n, this%qb))
       !$acc enter data create(this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, this%bblk)
+      call dbg_mem("after fixed scratch + bblk")
       call grow_yz(this, omax0)
+      call dbg_mem("after ypos/yneg/zpos/zneg (setup done)")
 
       this%ready = .true.
    end subroutine df_jk_setup
@@ -343,11 +356,23 @@ contains
          call this%tbl%step_off(lp, ST_KHLF, tc)
          call this%tbl%add_flop(ST_KHLF, 2_int64*int(n, int64)**2*int(npos + nneg, int64)*int(qb_cur, int64))
 
+         ! K += Z Z^T as a plain GEMM, not cuBLAS's own dsyrk: dsyrk only
+         ! ever has to touch the upper triangle, but it does that triangle
+         ! at a fraction of dgemm's rate, and the extra half of the
+         ! arithmetic a dense GEMM does instead is cheaper than the rate it
+         ! buys back (measured at w40 cc-pVDZ: dsyrk 2947 GFLOP/s, ~38% of
+         ! this V100's FP64 peak; the GEMM below, 2x the flops for the same
+         ! k, at 90%+). `add_flop` below is EXECUTED flops (2*n*n*k, the
+         ! full dense product); the USEFUL flops -- what a triangle-only
+         ! kernel would have done -- are exactly half of that, so the
+         ! "useful" rate is the printed GFLOP/s divided by two.
          call this%tbl%step_on(lp, ST_KSYRK, tc)
-         if (npos > 0) call lp%syrk("U", "N", n, npos*qb_cur, 1.0_dp, this%zpos, n, 1.0_dp, this%kpos, n)
-         if (nneg > 0) call lp%syrk("U", "N", n, nneg*qb_cur, 1.0_dp, this%zneg, n, 1.0_dp, this%kneg, n)
+         if (npos > 0) call lp%gemm("N", "T", n, n, npos*qb_cur, 1.0_dp, this%zpos, n, &
+                                    this%zpos, n, 1.0_dp, this%kpos, n)
+         if (nneg > 0) call lp%gemm("N", "T", n, n, nneg*qb_cur, 1.0_dp, this%zneg, n, &
+                                    this%zneg, n, 1.0_dp, this%kneg, n)
          call this%tbl%step_off(lp, ST_KSYRK, tc)
-         call this%tbl%add_flop(ST_KSYRK, int(n, int64)**2*int(npos + nneg, int64)*int(qb_cur, int64))
+         call this%tbl%add_flop(ST_KSYRK, 2_int64*int(n, int64)**2*int(npos + nneg, int64)*int(qb_cur, int64))
 
          q0 = q0 + qb_cur
       end do
@@ -442,25 +467,37 @@ contains
    end subroutine grow_yz
 
    !
-   ! Auxiliary functions per K block: `QB_DEFAULT`, or fewer if the device's
-   ! free memory (the unpacked block plus the two half-transform factors,
-   ! `omax` columns each) would not hold it with half a gigabyte kept back
-   ! for the libraries' own workspace -- the same pattern as RI-MP2's
-   ! `k_group`. A fixed default on the host build, where there is no device
-   ! memory query and the arrays are small next to host RAM regardless.
+   ! Auxiliary functions per K block: enough that k = omax*qb (the K
+   ! half-transform/accumulation GEMMs' own contraction length) reaches
+   ! `K_TARGET`, since a GEMM only clears ~90% of FP64 peak once its
+   ! contraction length is in the thousands -- QB_DEFAULT alone cleared that
+   ! for omax around a hundred or more (every case this was tuned against),
+   ! but not for a molecule with a genuinely small occupied/virtual count
+   ! (`omax` is read off D's eigenvalues at every build, not a size this
+   ! function controls). Capped, as before, by whatever the device's free
+   ! memory (the unpacked block plus the two half-transform factors, `omax`
+   ! columns each) will hold with half a gigabyte kept back for the
+   ! libraries' own workspace -- the same pattern as RI-MP2's `k_group`. A
+   ! fixed default on the host build, where there is no device memory query
+   ! and the arrays are small next to host RAM regardless.
    !
    integer function choose_qb(n, naux, omax) result(qb)
       integer, intent(in) :: n, naux, omax
       integer, parameter :: QB_DEFAULT = 64
+      integer, parameter :: K_TARGET = 4096
+      integer :: qb_target
 #ifdef _OPENACC
       integer(int64) :: free, per_q, fixed
+#endif
+      qb_target = max(QB_DEFAULT, (K_TARGET + max(omax, 1) - 1)/max(omax, 1))
+#ifdef _OPENACC
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)
       per_q = 8_int64*(int(n, int64)*int(n, int64) + 2_int64*int(n, int64)*int(max(omax, 1), int64))
       fixed = 512_int64*1024*1024
-      qb = int(min(int(QB_DEFAULT, int64), max(1_int64, (free - fixed)/max(per_q, 1_int64))))
+      qb = int(min(int(qb_target, int64), max(1_int64, (free - fixed)/max(per_q, 1_int64))))
 #else
-      qb = QB_DEFAULT
+      qb = qb_target
 #endif
       qb = max(1, min(qb, naux))
    end function choose_qb
@@ -473,6 +510,38 @@ contains
    ! scratch tensor that block's build needs, in which case as many as
    ! fit with half a gigabyte kept back. Same pattern as `choose_qb`.
    !
+   !
+   ! TERCO_DF_MEM_DEBUG=1: one line per stage, the device's free memory
+   ! right then, flushed immediately -- a device OOM kills the process
+   ! before an unflushed `print` ever reaches the pipe, which is what
+   ! made an earlier attempt at this (a plain `print` with no flush)
+   ! print nothing at all for the stage that actually failed. Debug only;
+   ! a no-op allocation-free query otherwise, on the host build too
+   ! (prints 0, which is honest: there is no device to ask).
+   !
+   pure function itoa_dbg(i) result(t)
+      !! Plain integer-to-string, for `dbg_mem`'s own labels only.
+      integer, intent(in) :: i
+      character(len=16) :: t
+      write (t, "(i0)") i
+   end function itoa_dbg
+
+   subroutine dbg_mem(label)
+      character(len=*), intent(in) :: label
+      character(len=8) :: v
+      integer(int64) :: free
+      call get_environment_variable("TERCO_DF_MEM_DEBUG", v)
+      if (trim(v) /= "1") return
+#ifdef _OPENACC
+      free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                  acc_property_free_memory), int64)
+#else
+      free = 0_int64
+#endif
+      print "(a,a,a,f10.3,a)", "trc_scf_df: ", label, ": free ", real(free, dp)/1024.0_dp**3, " GiB"
+      flush (output_unit)
+   end subroutine dbg_mem
+
    integer function choose_setup_block(n, naux) result(ablk)
       integer, intent(in) :: n, naux
 #ifdef _OPENACC
