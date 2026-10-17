@@ -50,7 +50,25 @@ module trc_linalg
    contains
       procedure :: init => linalg_init
       procedure :: release => linalg_release
-      procedure :: gemm => linalg_gemm
+      ! gemm and dot CANNOT be made into true `generic ::` bindings: every
+      ! existing call site that offsets into a larger array -- a scalar
+      ! element standing for "the sub-matrix starting here"
+      ! (trc_rimp2_driver's tens(1,1,q)), or a higher-rank section fed to
+      ! dot's flat x(*) (estore(:,:,:,i), everywhere in the ADIIS code) --
+      ! relies on sequence association, and Fortran resolves a GENERIC
+      ! reference by exact type/kind/rank agreement only: sequence
+      ! association is a property of a resolved reference to one specific
+      ! procedure, not of overload resolution, so gfortran (and, by the
+      ! same standard rule, nvfortran) rejects the call outright before it
+      ! ever reaches the raw specific. Confirmed with a minimal reproducer
+      ! (`call gemm('T', big(1,1,2), 3)` inside a two-specific generic
+      ! fails to resolve even though only one candidate has the right
+      ! first-argument type). So the raw forms keep their own plain names,
+      ! and the shape-inferred forms get their OWN names alongside them --
+      ! every existing `lp%gemm("N", ...)` / `lp%dot(n, x, y)` call is
+      ! completely unaffected.
+      procedure :: gemm => linalg_gemm_raw
+      procedure :: gemm_mat => linalg_gemm_mat
       procedure :: gemm_strided => linalg_gemm_strided
       procedure :: transpose => linalg_transpose
       procedure :: potrf => linalg_potrf
@@ -58,8 +76,16 @@ module trc_linalg
       procedure :: getrs => linalg_getrs
       procedure :: gemv => linalg_gemv
       procedure :: trsm => linalg_trsm
-      procedure :: syev => linalg_syev
-      procedure :: dot => linalg_dot
+      ! syev has no such caller -- every existing call passes a plain,
+      ! exactly-ranked array (never a scalar offset or a rank mismatch) --
+      ! so it is safe to make it a real generic.
+      procedure, private :: linalg_syev_raw
+      procedure, private :: linalg_syev_mat
+      generic :: syev => linalg_syev_raw, linalg_syev_mat
+      procedure :: dot => linalg_dot_raw
+      procedure :: dot_2d => linalg_dot_2d
+      procedure :: dot_3d => linalg_dot_3d
+      procedure :: density => linalg_density
       procedure :: sync => linalg_sync
    end type trc_linalg_t
 
@@ -166,7 +192,7 @@ contains
    end subroutine linalg_release
 
    ! C = alpha op(A) op(B) + beta C, with 'N' or 'T' for each operand.
-   subroutine linalg_gemm(this, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+   subroutine linalg_gemm_raw(this, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
       class(trc_linalg_t), intent(in) :: this
       character, intent(in) :: ta, tb
       integer, intent(in) :: m, n, k, lda, ldb, ldc
@@ -199,7 +225,7 @@ contains
          call pic_gemm(a(1:k, 1:m), b(1:n, 1:k), c(1:m, 1:n), "T", "T", alpha, beta)
       end if
 #endif
-   end subroutine linalg_gemm
+   end subroutine linalg_gemm_raw
 
    ! `count` GEMMs of one shape at once: matrix i of A starts at a(1 + (i-1) sa),
    ! likewise B and C. cublasDgemmStridedBatched on the device; a loop of
@@ -455,7 +481,7 @@ contains
 
    ! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
    ! the eigenvalues ascending. Upper triangle is read.
-   subroutine linalg_syev(this, n, a, lda, w)
+   subroutine linalg_syev_raw(this, n, a, lda, w)
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
@@ -477,10 +503,10 @@ contains
       call pic_syev(a(1:n, 1:n), w(1:n), "V", "U", info)
       if (info /= 0) error stop "trc_linalg: pic_syev failed"
 #endif
-   end subroutine linalg_syev
+   end subroutine linalg_syev_raw
 
    ! x . y over n elements, returned to the host.
-   function linalg_dot(this, n, x, y) result(r)
+   function linalg_dot_raw(this, n, x, y) result(r)
       class(trc_linalg_t), intent(in) :: this
       integer, intent(in) :: n
       real(dp), intent(in) :: x(*), y(*)
@@ -494,6 +520,143 @@ contains
 #else
       r = pic_dot(x(1:n), y(1:n))
 #endif
-   end function linalg_dot
+   end function linalg_dot_raw
+
+   !!
+   !! Shape-inferred matrix product: C = alpha op(A) op(B) + beta C, where
+   !! transa/transb ("N" by default) say whether A/B enter transposed and
+   !! alpha/beta (1 and 0 by default) match BLAS's. m, n and k are read off
+   !! the shapes of A and B after the requested transpose, not taken from
+   !! the caller, so a conformant call needs nothing beyond the matrices
+   !! themselves; a shape mismatch is an `error stop`, not a wrong number
+   !! silently read past the end of an array.
+   !!
+   !! A, B and C must be `contiguous`. A non-contiguous actual argument
+   !! (a strided section, or a section that is not a leading run of whole
+   !! columns) makes the compiler materialise a HOST temporary for the
+   !! dummy, and the `host_data use_device` below then hands cuBLAS a host
+   !! address -- a segfault, not a wrong answer. Pass whole matrices, or a
+   !! contiguous section such as `fock(:,:,s)` or `estore(:,:,:,k)`.
+   !!
+   !! Reaches the exact same library entry point as the raw gemm --
+   !! pic_gemm on the host, cublasDgemm_v2 on the device -- with the shapes
+   !! computed here, so the result is bitwise identical to the equivalent
+   !! raw call.
+   !!
+   subroutine linalg_gemm_mat(this, a, b, c, transa, transb, alpha, beta)
+      class(trc_linalg_t), intent(in) :: this
+      real(dp), intent(in), contiguous :: a(:, :), b(:, :)
+      real(dp), intent(inout), contiguous :: c(:, :)
+      character, intent(in), optional :: transa, transb
+      real(dp), intent(in), optional :: alpha, beta
+      character :: ta, tb
+      logical :: tra, trb
+      integer :: m, n, k, lda, ldb, ldc
+      real(dp) :: al, be
+
+      ta = "N"
+      if (present(transa)) ta = transa
+      tb = "N"
+      if (present(transb)) tb = transb
+      al = 1.0_dp
+      if (present(alpha)) al = alpha
+      be = 0.0_dp
+      if (present(beta)) be = beta
+      tra = ta == "T" .or. ta == "t"
+      trb = tb == "T" .or. tb == "t"
+
+      ! op(A) is m x k; A is stored k x m when transposed, m x k otherwise.
+      if (tra) then
+         k = size(a, 1)
+         m = size(a, 2)
+      else
+         m = size(a, 1)
+         k = size(a, 2)
+      end if
+      ! op(B) is k x n; B is stored n x k when transposed, k x n otherwise.
+      if (trb) then
+         n = size(b, 1)
+         if (size(b, 2) /= k) error stop "trc_linalg: gemm_mat: A and B do not conform"
+      else
+         n = size(b, 2)
+         if (size(b, 1) /= k) error stop "trc_linalg: gemm_mat: A and B do not conform"
+      end if
+      if (size(c, 1) /= m .or. size(c, 2) /= n) error stop "trc_linalg: gemm_mat: C does not conform to A, B"
+
+      lda = size(a, 1)
+      ldb = size(b, 1)
+      ldc = size(c, 1)
+      call this%gemm(ta, tb, m, n, k, al, a, lda, b, ldb, be, c, ldc)
+   end subroutine linalg_gemm_mat
+
+   !!
+   !! x . y over the whole of two same-shaped, contiguous rank-2 arrays,
+   !! n = size(x). Same device/host path as the raw dot: the raw form's
+   !! assumed-size dummies accept a contiguous array of any rank by
+   !! sequence association, so this simply counts the elements and hands
+   !! both arrays to it unchanged -- bitwise identical to calling the raw
+   !! dot directly with n = size(x).
+   !!
+   function linalg_dot_2d(this, x, y) result(r)
+      class(trc_linalg_t), intent(in) :: this
+      real(dp), intent(in), contiguous :: x(:, :), y(:, :)
+      real(dp) :: r
+      r = this%dot(size(x), x, y)
+   end function linalg_dot_2d
+
+   !! As linalg_dot_2d, for contiguous rank-3 arrays -- e.g. a section of a
+   !! rank-4 array such as `estore(:,:,:,k)`.
+   function linalg_dot_3d(this, x, y) result(r)
+      class(trc_linalg_t), intent(in) :: this
+      real(dp), intent(in), contiguous :: x(:, :, :), y(:, :, :)
+      real(dp) :: r
+      r = this%dot(size(x), x, y)
+   end function linalg_dot_3d
+
+   !!
+   !! Symmetric eigenproblem, shape-inferred: A is square and `contiguous`,
+   !! n = size(a,1). A is overwritten with its eigenvectors, W gets the
+   !! eigenvalues ascending, exactly as the raw syev leaves them -- this
+   !! only reads n and lda off A's shape before calling it, so the result
+   !! is bitwise identical to the equivalent raw call.
+   !!
+   !! A non-contiguous actual argument would force a HOST temporary and
+   !! then hand the GPU a host address under `host_data use_device` inside
+   !! the raw call -- a segfault. Pass a whole matrix or a contiguous
+   !! section.
+   !!
+   subroutine linalg_syev_mat(this, a, w)
+      class(trc_linalg_t), intent(inout) :: this
+      real(dp), intent(inout), contiguous :: a(:, :)
+      real(dp), intent(out), contiguous :: w(:)
+      integer :: n
+      n = size(a, 1)
+      call this%linalg_syev_raw(n, a, n, w)
+   end subroutine linalg_syev_mat
+
+   !!
+   !! The density matrix built from the occupied columns of C: D = occ *
+   !! C(:,1:k) C(:,1:k)^T, one GEMM with inner dimension k. For k <= 0
+   !! (nothing occupied) D is zeroed by a `do concurrent` here instead --
+   !! there is no GEMM that would do that, and the zeroing has to run on
+   !! whatever device D already lives on, which `do concurrent` does on its
+   !! own. C and D are contiguous; C need only have at least k columns.
+   !!
+   subroutine linalg_density(this, c, k, occ, d)
+      class(trc_linalg_t), intent(in) :: this
+      real(dp), intent(in), contiguous :: c(:, :)
+      integer, intent(in) :: k
+      real(dp), intent(in) :: occ
+      real(dp), intent(inout), contiguous :: d(:, :)
+      integer :: n, i, j
+      n = size(d, 1)
+      if (k <= 0) then
+         do concurrent(j=1:size(d, 2), i=1:n)
+            d(i, j) = 0.0_dp
+         end do
+      else
+         call this%gemm("N", "T", n, n, k, occ, c(:, 1:k), n, c(:, 1:k), n, 0.0_dp, d, n)
+      end if
+   end subroutine linalg_density
 
 end module trc_linalg
