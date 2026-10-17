@@ -23,7 +23,7 @@
 ! and that is by design: it cannot pass silently.
 !
 module trc_linalg
-   use, intrinsic :: iso_c_binding, only: c_int
+   use, intrinsic :: iso_c_binding, only: c_int, c_size_t
    use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm, pic_dot
    use pic_lapack_interfaces, only: pic_syev
@@ -36,6 +36,7 @@ module trc_linalg
    private
 
    public :: trc_linalg_t
+   public :: trc_release_local_mem_reservation
 
    type :: trc_linalg_t
       integer :: n = 0
@@ -71,6 +72,7 @@ module trc_linalg
       procedure :: gemm_mat => linalg_gemm_mat
       procedure :: gemm_strided => linalg_gemm_strided
       procedure :: transpose => linalg_transpose
+      procedure :: sym_from_upper => linalg_sym_from_upper
       procedure :: potrf => linalg_potrf
       procedure :: getrf => linalg_getrf
       procedure :: getrs => linalg_getrs
@@ -260,6 +262,39 @@ contains
       end do
 #endif
    end subroutine linalg_transpose
+
+   !
+   ! C = S + S^T, n x n, at the device's bandwidth (the same cuBLAS geam
+   ! as `transpose`, alpha = beta = 1 instead of beta = 0): the unpack a
+   ! packed-triangular object (trc_scf_df.F90's K block) needs, once the
+   ! packed run for each column has already been copied into S's UPPER
+   ! triangle (diagonal included, lower zeroed) by a plain, both-sides-
+   ! contiguous copy -- see that caller's own comment for why the packed
+   ! layout makes that copy trivial where the old (mu, nu) gather was not.
+   ! The caller is responsible for S's diagonal: this geam reads it from
+   ! BOTH operands (S and S^T agree there), so a non-zero diagonal comes
+   ! out doubled -- zero it in S first and add it back after, or halve
+   ! C's diagonal afterward; either is the caller's O(n) problem, not
+   ! this routine's.
+   !
+   subroutine linalg_sym_from_upper(this, n, s, lds, c, ldc)
+      class(trc_linalg_t), intent(in) :: this
+      integer, intent(in) :: n, lds, ldc
+      real(dp), intent(in) :: s(lds, *)
+      real(dp), intent(inout) :: c(ldc, *)
+#ifdef _OPENACC
+      integer :: st
+      !$acc host_data use_device(s, c)
+      st = cublasDgeam(this%hb, CUBLAS_OP_T, CUBLAS_OP_N, n, n, 1.0_dp, s, lds, 1.0_dp, s, lds, c, ldc)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cublasDgeam failed"
+#else
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         c(i, j) = s(i, j) + s(j, i)
+      end do
+#endif
+   end subroutine linalg_sym_from_upper
 
    subroutine linalg_gemm_strided(this, ta, tb, m, n, k, alpha, a, lda, sa, b, ldb, sb, beta, c, ldc, sc, count)
       class(trc_linalg_t), intent(in) :: this
@@ -658,5 +693,64 @@ contains
          call this%gemm("N", "T", n, n, k, occ, c(:, 1:k), n, c(:, 1:k), n, 0.0_dp, d, n)
       end if
    end subroutine linalg_density
+
+   !
+   ! The CUDA driver's per-thread "local" stack, reserved across the WHOLE
+   ! device (every resident thread the GPU could ever run concurrently, not
+   ! what the kernel that triggered it actually launched) the first time any
+   ! kernel with a frame bigger than the current limit runs -- and never
+   ! given back on its own. Measured here: `trc_pc_k2222_pcs2222` (the
+   ! (dd|dd) four-centre class) has the largest stack frame in this whole
+   ! library, 59568 bytes (`cuobjdump -res-usage`); on a V100 (80 SMs x 2048
+   ! threads/SM = 163840 resident threads) that reservation is
+   ! 163840*59568 = 9.09 GiB, matching the ~8.9 GiB this branch measured for
+   ! the SAD guess's first non-DF Fock build (SAD always needs this class --
+   ! cc-pVDZ oxygen's own d shell against itself -- regardless of `--df`).
+   ! Nothing after the guess launches that four-centre path under `--df`
+   ! (build_g never calls `eri%fock_resident` there), so MOST of the
+   ! reservation -- everything above what the DF path's own largest kernel
+   ! still needs, see `SMALL_STACK` below -- is pure waste for the rest of
+   ! a `--df` run. `cudaDeviceSetLimit` on `cudaLimitStackSize` shrinks it
+   ! back down immediately to that smaller, still-sufficient size; a later
+   ! kernel that genuinely needs a bigger frame than THAT grows it again on
+   ! its own next launch, at that kernel's own one-time cost, not this
+   ! one's -- which is exactly the failure this function's own SMALL_STACK
+   ! choice has to avoid: regrowing at the worst possible moment, with
+   ! almost no free memory left, is a crash instead of a reservation.
+   !
+   ! A no-op on the host build (no device, nothing to reserve).
+   !
+   subroutine trc_release_local_mem_reservation()
+#ifdef _OPENACC
+      interface
+         function cudadevicesetlimit(limit, lim_value) bind(c, name="cudaDeviceSetLimit") result(ierr)
+            import :: c_int, c_size_t
+            implicit none
+            integer(c_int), value :: limit
+            integer(c_size_t), value :: lim_value
+            integer(c_int) :: ierr
+         end function cudadevicesetlimit
+      end interface
+      integer(c_int), parameter :: CUDA_LIMIT_STACK_SIZE = 0
+      integer(c_size_t), parameter :: SMALL_STACK = 32768_c_size_t
+      !! NOT CUDA's 1 KiB default: the three-centre DF kernels
+      !! (trc_df_3c_k223, measured 28784 B/thread -- the next generation
+      !! above it, the def2-universal-jkfit g-function classes, could be
+      !! larger still) run AFTER this reset, inside the very fit this
+      !! reset is clearing room for, and dropping below their own need
+      !! only moves the regrowth -- at a moment chosen to have the LEAST
+      !! free memory of the whole run, right after the fit's own setup
+      !! block has claimed everything choose_setup_block thought was safe
+      !! -- to a cuLaunchKernel OOM instead of a cuMemAlloc one (measured:
+      !! it did, at trc_df_3c_k223, with 1024 here). 32 KiB clears every
+      !! three-centre and two-centre DF kernel class measured so far with
+      !! margin, while still giving back the four-centre classes' own
+      !! excess (the next ones down from k2222's 59568 B are the other
+      !! four-centre p/d combinations, all still well above 32 KiB).
+      integer(c_int) :: ierr
+      ierr = cudadevicesetlimit(CUDA_LIMIT_STACK_SIZE, SMALL_STACK)
+      if (ierr /= 0) error stop "trc_linalg: cudaDeviceSetLimit(cudaLimitStackSize) failed"
+#endif
+   end subroutine trc_release_local_mem_reservation
 
 end module trc_linalg

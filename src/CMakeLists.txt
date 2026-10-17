@@ -22,6 +22,7 @@ target_sources(
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_eri.F90       # the four-centre Fock builds
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
+          core/trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/GFLOP/GB/s, NVTX
           core/trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
           solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
@@ -29,6 +30,7 @@ target_sources(
           scf/trc_scf_context.F90       # everything an SCF run builds once per geometry
           scf/trc_scf_state.F90         # the SCF's per-iteration arrays, and the one enter/exit pair for them
           scf/trc_scf_fock.F90          # the Fock build: two-electron, XC, PCM, energy, commutator, folds
+          scf/trc_scf_df.F90            # density-fitted J/K (--df): metric, Cholesky, (mn|P), B, per-iteration J/K
           scf/trc_scf_diis.F90          # CDIIS and ADIIS, the level shift and the damped step
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
@@ -249,7 +251,7 @@ endfunction()
 # only if the stamp says it must. The stamp is a SHA256 over
 #   - every generator command line, exactly as it would run: the scripts'
 #     paths, the interpreter (and its version), every option that reaches a
-#     generator (TERCO_LMAX, TERCO_DF_LMAX, TERCO_CART_ORDER,
+#     generator (TERCO_LMAX, TERCO_DF_LMAX, TERCO_DF_LMAX_AUX, TERCO_CART_ORDER,
 #     TERCO_RYS_UNROLL_MAX, TERCO_DF_FORCE_RYS) and the class lists
 #     computed below, so no option can be left out of it by forgetting to
 #     list it; and
@@ -381,13 +383,15 @@ if(NOT TERCO_LMAX STREQUAL "2")
 elseif(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
   set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
   set(_regen ON)
-elseif(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND NOT TERCO_DF_LMAX STREQUAL "2")
-  # A DF ceiling above the shipped one, with the four-centre ceiling left at
-  # its default: into the build tree, same as the TERCO_LMAX branch above --
-  # never into src/generated, which TERCO_REGENERATE below writes into
-  # DELIBERATELY (regenerating the shipped --lmax 2 --lmax-aux 3 set in
-  # place to verify it reproduces the committed files). Without this branch,
-  # TERCO_DF_LMAX alone did nothing (_regen stayed OFF) unless paired with
+elseif((NOT "${TERCO_DF_LMAX}" STREQUAL "" AND NOT TERCO_DF_LMAX STREQUAL "2")
+       OR NOT TERCO_DF_LMAX_AUX STREQUAL "4")
+  # A DF orbital or auxiliary ceiling above the shipped ones, with the
+  # four-centre ceiling left at its default: into the build tree, same as
+  # the TERCO_LMAX branch above -- never into src/generated, which
+  # TERCO_REGENERATE below writes into DELIBERATELY (regenerating the
+  # shipped --lmax 2 --lmax-aux 4 set in place to verify it reproduces the
+  # committed files). Without this branch, TERCO_DF_LMAX/TERCO_DF_LMAX_AUX
+  # alone did nothing (_regen stayed OFF) unless paired with
   # TERCO_REGENERATE, which then overwrote the committed DF kernels with a
   # higher-ceiling set -- the mistake this branch exists to make impossible.
   set(_gen_dir "${CMAKE_BINARY_DIR}/generated")
@@ -429,6 +433,7 @@ if(_regen)
   if(NOT "${TERCO_DF_LMAX}" STREQUAL "")
     set(_df_lmax ${TERCO_DF_LMAX})
   endif()
+  set(_df_lmax_aux ${TERCO_DF_LMAX_AUX})
   set(_df_force_rys_flag "")
   if(NOT "${TERCO_DF_FORCE_RYS}" STREQUAL "")
     set(_df_force_rys_flag "--force-rys" "${TERCO_DF_FORCE_RYS}")
@@ -479,7 +484,7 @@ if(_regen)
     # TERCO_DF_FORCE_RYS is TESTING ONLY and empty in every normal build (see
     # its own comment, top-level CMakeLists.txt).
     terco_gen("gen_df.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
-              ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
+              --lmax-aux ${_df_lmax_aux} ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
               ${_df_force_rys_flag} --split ${_gen_out})
 
     # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's

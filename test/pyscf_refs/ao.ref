@@ -2,7 +2,7 @@
 # case: check_ao
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: 261d6da567fe2c1d1e3d2b6f5b8ce8e7b09204d1649c7fbd193b84a8b2a0ab7e
+# hash: da0f9c96c90d891db55b39dea3e795fa6a7f94c1f61ae7437f44bbf2eca486b2
 # files: test/pyscf_refs/generate.py test/check_ao.F90
 NPTS 200
 NAO 30
