@@ -305,6 +305,12 @@ module trc_capi
       ! that invalidates the fit (a new basis, molecule or jkfit set).
       type(df_jk_t) :: dfjk
       logical :: df_fit_ok = .false.
+      ! The file paths trc_set_aux_json/trc_set_jkfit_json were last given:
+      ! trc_run_rimp2's only way to tell whether RI-MP2's own auxiliary
+      ! basis is the SAME one `dfjk` was fitted on (same JSON path/
+      ! contents), the condition the chained path (skip metric/Cholesky/
+      ! 3c/trsm, read `dfjk%packed_b()` straight) is restricted to.
+      character(len=1024) :: aux_path = "", jkfit_path = ""
       ! settings
       type(trc_scf_options_t) :: opts
       integer :: guess_kind = TRC_GUESS_SAD
@@ -1582,6 +1588,7 @@ contains
          call b%release()
          return
       end if
+      if (aux) cx%aux_path = fpath
       call take_basis(cx, aux, b)
       status = TRC_OK
    end function basis_json
@@ -1894,6 +1901,7 @@ contains
       cx%jb%b = b
       call cx%jb%b%to_device()
       cx%have_jkfit = .true.
+      cx%jkfit_path = fpath
       call b%release()
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
@@ -2502,7 +2510,21 @@ contains
       if (status /= TRC_OK) return
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
-      if (collective) then
+      ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
+      ! exactly the jkfit one (same JSON path), not merely the same shape:
+      ! trc_rimp2_run checks dimensions, not that the basis is the same
+      ! one, and a path match is this handle's own way to be sure of that.
+      if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
+         if (collective) then
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+                               nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
+                               dfjk=cx%dfjk)
+            call comm%finalize()
+         else
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+                               nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, dfjk=cx%dfjk)
+         end if
+      else if (collective) then
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
                             nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la)
          call comm%finalize()

@@ -75,6 +75,7 @@ module trc_rimp2_driver
    use trc_mpi_device, only: trc_mpi_device_direct
    use pic_flop_recorder, only: flop_recorder_type
    use trc_step_table, only: step_table_t
+   use trc_scf_df, only: df_jk_t
    implicit none
    private
 
@@ -122,7 +123,21 @@ contains
    ! `pl` is the orbital basis's pair list. `la` optional, made here if
    ! absent; `comm` optional, one rank without it.
    !
-   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm, verbose)
+   ! `dfjk`, optional: a density-fitted J/K object (trc_scf_df.F90) already
+   ! fitted on an auxiliary basis the CALLER has checked is the same one
+   ! as `aux` (same JSON path/contents -- trc_capi.F90's trc_run_rimp2 is
+   ! the one caller that does; this routine only checks the dimensions
+   ! agree, not that the basis itself is really the same one). When
+   ! present, steps 1 (metric, Cholesky), 2 (the (mu nu|P) build) and 4
+   ! (B = X L^-T) are skipped entirely: `dfjk%packed_b()` is already B
+   ! (packed mu >= nu, L^-T applied), and the occupied/virtual half-
+   ! transform of step 3 run on it directly IS RI-MP2's own B -- L^-T acts
+   ! only on the auxiliary index, the half-transform only on (mu, nu), and
+   ! the two commute. `aux` is still used for its shell structure (the
+   ! block loop below only needs auxiliary function COUNTS and offsets,
+   ! identical either way).
+   !
+   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm, verbose, dfjk)
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       integer, intent(in) :: nocc
@@ -132,15 +147,18 @@ contains
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(comm_t), intent(in), optional :: comm
       logical, intent(in), optional :: verbose   !! one line per step with its wall time, rank 0
+      type(df_jk_t), intent(in), optional, target :: dfjk
 
       real(dp) :: tw0, tw1
-      logical :: talk
+      logical :: talk, chained
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: blk
+      real(dp), pointer :: bchain(:, :)
       integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, i, rank, nranks, ng, ldk, i0, i1
       integer :: lo, nb, nmax, novr, step, nstep_ring, qv, cur, ncolmax, ldv
       integer :: ilo, ihi, jlo, jhi, jbase, jstart, ncol, roff, coff, jfirst, ncol_i
+      integer :: n_chk, naux_chk, npack_chk, mu, nu, q
       integer, allocatable :: blo(:), bn(:)
       logical :: diag, direct
       real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), tens(:, :, :), half(:, :, :)
@@ -192,6 +210,19 @@ contains
                        "density-fitting kernels were generated for (see gen_df.py --lmax-aux)"
          return
       end if
+      chained = .false.
+      bchain => null()
+      if (present(dfjk)) then
+         if (dfjk%is_ready()) then
+            call dfjk%dims(n_chk, naux_chk, npack_chk)
+            if (n_chk /= nao .or. naux_chk /= naux) then
+               res%message = "trc_rimp2: the pre-fitted B does not match this orbital/auxiliary basis"
+               return
+            end if
+            bchain => dfjk%packed_b()
+            chained = .true.
+         end if
+      end if
       nblk = naux
       if (present(aux_block)) nblk = max(aux_block, 1)
       rank = 0
@@ -227,17 +258,21 @@ contains
       naux8 = naux
       call stab%init("rimp2", STEP_NAME)
       tw0 = tick(lp)
-      ! --- 1. the metric and its Cholesky factor ---------------------------
-      allocate (jm(naux, naux))
-      !$acc enter data create(jm)
-      call stab%step_on(lp, ST_METRIC, tc)
-      call trc_df_2c(aux, jm)
-      call stab%step_off(lp, ST_METRIC, tc)
-      call stab%step_on(lp, ST_CHOL, tc)
-      call lp%potrf(naux, jm, naux)
-      call stab%step_off(lp, ST_CHOL, tc)
-      call stab%add_flop(ST_CHOL, naux8**3/3)
-      if (talk) print "(a,i0,a,f8.2,a)", "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+      ! --- 1. the metric and its Cholesky factor (skipped when chained) ----
+      if (.not. chained) then
+         allocate (jm(naux, naux))
+         !$acc enter data create(jm)
+         call stab%step_on(lp, ST_METRIC, tc)
+         call trc_df_2c(aux, jm)
+         call stab%step_off(lp, ST_METRIC, tc)
+         call stab%step_on(lp, ST_CHOL, tc)
+         call lp%potrf(naux, jm, naux)
+         call stab%step_off(lp, ST_CHOL, tc)
+         call stab%add_flop(ST_CHOL, naux8**3/3)
+         if (talk) print "(a,i0,a,f8.2,a)", "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+      else if (talk) then
+         print "(a)", "  rimp2: metric, Cholesky and (mu nu|P) skipped -- chained off --df's fit"
+      end if
 
       ! --- 3. (ia|P) for i in this rank's block, an auxiliary block at a time
       allocate (cocc(nao, max(nb, 1)), cvir(nao, nv), xr(max(novr8*naux8, 1_int64)))
@@ -259,7 +294,16 @@ contains
          allocate (tens(nao, nao, np), half(nb, nao, np))
          !$acc enter data create(tens, half)
          call stab%step_on(lp, ST_3C, tc)
-         call trc_df_3c(b, pl, blk, tens)
+         if (chained) then
+            ! B, already L^-T applied, packed mu >= nu: unpack this block's
+            ! columns straight into the dense tensor the half-transform
+            ! below reads either way -- no (mu nu|P) build at all.
+            do concurrent(q=1:np, mu=1:nao, nu=1:nao)
+               tens(mu, nu, q) = bchain(rimp2_pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
+            end do
+         else
+            call trc_df_3c(b, pl, blk, tens)
+         end if
          call stab%step_off(lp, ST_3C, tc)
          call stab%step_on(lp, ST_TRANS, tc)
          ! Two library calls per block, not two per auxiliary function: the
@@ -282,11 +326,15 @@ contains
          stab%t(ST_TRANS), " s"
 
       ! --- 4. B = X L^-T: solve B L^T = X from the right, this rank's rows ---
-      call stab%step_on(lp, ST_TRSM, tc)
-      if (nb > 0) call lp%trsm("R", "L", "T", novr, naux, 1.0_dp, jm, naux, xr, novr)
-      call stab%step_off(lp, ST_TRSM, tc)
-      call stab%add_flop(ST_TRSM, novr8*naux8*naux8)
-      if (talk) print "(a,f8.2,a)", "  rimp2: B = X L^-T ", stab%t(ST_TRSM), " s"
+      ! (skipped when chained: `xr` is already built from B, which has
+      ! L^-T applied already -- see this routine's own `dfjk` comment)
+      if (.not. chained) then
+         call stab%step_on(lp, ST_TRSM, tc)
+         if (nb > 0) call lp%trsm("R", "L", "T", novr, naux, 1.0_dp, jm, naux, xr, novr)
+         call stab%step_off(lp, ST_TRSM, tc)
+         call stab%add_flop(ST_TRSM, novr8*naux8*naux8)
+         if (talk) print "(a,f8.2,a)", "  rimp2: B = X L^-T ", stab%t(ST_TRSM), " s"
+      end if
       tw1 = tick(lp)
 
       ! --- 5. the pair energies, over the ring ------------------------------
@@ -386,7 +434,10 @@ contains
             end do
          end do
       end do
-      !$acc exit data delete(ki, kt, part, eo, ev, xr, cocc, cvir, jm)
+      !$acc exit data delete(ki, kt, part, eo, ev, xr, cocc, cvir)
+      if (.not. chained) then
+         !$acc exit data delete(jm)
+      end if
       if (nranks > 1) then
          !$acc exit data delete(vis)
       end if
@@ -612,6 +663,17 @@ contains
       integer, intent(in) :: l
       res = (l + 1)*(l + 2)/2
    end function ncart
+
+   !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: trc_scf_df.F90's own
+   !! `pack_idx`, duplicated here rather than used across the module
+   !! boundary -- a `do concurrent` body may not call a procedure from
+   !! another module (the same reason `ncart` above is its own copy and
+   !! not trc_scf_df.F90's).
+   pure integer function rimp2_pack_idx(mu, nu) result(p)
+      !$acc routine seq
+      integer, intent(in) :: mu, nu
+      p = mu*(mu - 1)/2 + nu
+   end function rimp2_pack_idx
 
    !
    ! For occupied i and the pairs j = jfirst.., one thread per (j, a), with a
