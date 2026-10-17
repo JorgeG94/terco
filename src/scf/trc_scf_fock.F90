@@ -31,6 +31,7 @@ module trc_scf_fock
    use trc_xc_functional, only: trc_xc_functional_t
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_linalg, only: trc_linalg_t
+   use trc_scf_df, only: df_jk_t
    implicit none
    private
 
@@ -49,7 +50,8 @@ contains
    !
    subroutine build_g(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
                       exx, exx_lr, omega, incr_scale_run, &
-                      d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c)
+                      d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c, &
+                      df_on, dfj, lp)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       integer, intent(in) :: nao_c, nspin, nu_c, nlr_c, nin_c
@@ -60,7 +62,21 @@ contains
       real(dp), intent(inout) :: dtot_c(nu_c, nu_c), jmat_c(nu_c, nu_c)
       real(dp), intent(inout) :: w1_c(nao_c, nao_c), klr_c(nlr_c, nlr_c)
       real(dp), intent(inout) :: gacc_c(nin_c, nin_c), dref_c(nin_c, nin_c), ddif_c(nin_c, nin_c)
+      logical, intent(in) :: df_on
+      !! `--df`: density-fitted J and K instead of the four-centre engine.
+      !! Restricted only (`nspin == 1`), never combined with `incr_on`
+      !! (trc_scf_settings.F90's own refusal) -- the whole incremental
+      !! block below is unreachable under it, so this branches BEFORE any
+      !! of that rather than threading a flag through it.
+      type(df_jk_t), intent(inout), pointer :: dfj
+      !! Null and unused when `df_on` is false.
+      type(trc_linalg_t), intent(inout) :: lp
       integer :: i, j, s
+
+      if (df_on) then
+         call dfj%build(lp, d_c(:, :, 1), gmat_c(:, :, 1), j_scale=1.0_dp, k_scale=exx)
+         return
+      end if
 
       if (nspin == 1) then
          if (incr_now) then

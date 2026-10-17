@@ -30,6 +30,7 @@ target_sources(
           scf/trc_scf_context.F90       # everything an SCF run builds once per geometry
           scf/trc_scf_state.F90         # the SCF's per-iteration arrays, and the one enter/exit pair for them
           scf/trc_scf_fock.F90          # the Fock build: two-electron, XC, PCM, energy, commutator, folds
+          scf/trc_scf_df.F90            # density-fitted J/K (--df): metric, Cholesky, (mn|P), B, per-iteration J/K
           scf/trc_scf_diis.F90          # CDIIS and ADIIS, the level shift and the damped step
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart

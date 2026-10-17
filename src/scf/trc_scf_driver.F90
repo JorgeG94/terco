@@ -94,6 +94,7 @@ module trc_scf_driver
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: build_g, build_vxc, build_pcm, scf_energy, assemble_fock, &
                            commutator_error, to_cart, to_sph
+   use trc_scf_df, only: df_jk_t
    use trc_scf_diis, only: cdiis_t, adiis_t, level_shift, damp
    use pic_types, only: default_int
    use pic_logger, only: global_logger
@@ -142,7 +143,7 @@ contains
    ! basis must already be on the device. `dguess` is (nao, nao, nspin) in
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
-   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess, comm, hguess, la)
+   subroutine trc_scf_run(b, nalpha, nbeta, opts, res, dguess, comm, hguess, la, dfjk)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: opts
@@ -163,6 +164,13 @@ contains
       !! cuBLAS/cuSOLVER handles made once by the caller and carried through
       !! the calculation (trc_linalg's init is create-once and grows the
       !! workspace to nao). Absent, the run makes its own and releases them.
+      type(df_jk_t), intent(inout), optional, target :: dfjk
+      !! The density-fitted J/K object for `opts%df` (`--df`), already fitted
+      !! by the caller -- required when `opts%df` is true (trc_scf_context's
+      !! `setup` refuses otherwise), ignored when it is false. Owned by the
+      !! caller across more than one run (trc_capi.F90's context handle), the
+      !! same reason `la` is a caller-owned, optional argument rather than
+      !! something this routine builds for itself.
 
       integer :: nao, nao_c, s, it, i, j, n2
       integer :: nxc, nu_c, nlr_c, nin_c, npcm   !! full size, or 1 when unused (see trc_scf_state%alloc)
@@ -216,7 +224,7 @@ contains
 
       ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
       ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
-      call ctx%setup(b, opts, cfg, err, comm=comm, la=la)
+      call ctx%setup(b, opts, cfg, err, comm=comm, la=la, dfjk=dfjk)
       if (err%has_error()) then
          res%message = "trc_scf: "//err%get_message()
          return
@@ -344,7 +352,7 @@ contains
          call build_g(b, ctx%eri, nao_c, cfg%nspin, nu_c, nlr_c, nin_c, incr_now, cfg%incr_on, &
                       cfg%exx, cfg%exx_lr, cfg%omega, cfg%incr_scale_run, &
                       st%d_c, st%gmat_c, st%dtot_c, st%jmat_c, st%w1_c, st%klr_c, &
-                      st%gacc_c, st%dref_c, st%ddif_c)
+                      st%gacc_c, st%dref_c, st%ddif_c, cfg%df, ctx%dfj, lp)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in.
          do s = 1, cfg%nspin
