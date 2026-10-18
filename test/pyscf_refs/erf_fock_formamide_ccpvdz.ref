@@ -2,7 +2,7 @@
 # case: check_erf_fock_vs_pyscf_formamide_ccpvdz
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: a5e2f3c5020978f7a163b815e4d49c2d171b18407f2ff2f38de4f46a032d7f92
+# hash: 0f957564c9140f7cec1cf4963d665e037a72852f4a7248d00781fca642d45bf8
 # files: test/pyscf_refs/generate.py test/check_erf_fock_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
 NAT 6
 NAO 60
