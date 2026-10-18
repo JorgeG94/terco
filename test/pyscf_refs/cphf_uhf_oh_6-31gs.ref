@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: cphf oh/6-31gs (uhf)
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["cphf_uhf"] -> gen_cphf_uhf
 # pyscf: 2.14.0
-# hash: d832214d6e0fe42a22b624273830cb53893718e54e9f684b73eb424e8b8628c3
-# files: test/pyscf_refs/generate.py test/scf_cphf_uhf.F90 test/basis_sets/6-31gs.json test/oh.xyz
+# hash-scheme: case-ast-v1
+# hash: d16e34beb6f42c0eb1821af5adf8180d968614325d0fffd013200aef0e6acf00
+# files: test/scf_cphf_uhf.F90 test/basis_sets/6-31gs.json test/oh.xyz
 E_SCF -7.53821493837656362e+01
 ALPHA 3 3
 2.76581885850432041e+00 -2.99594010434388290e-02 -5.23393465916569615e-15 -2.99594010434388290e-02 2.39659501211865500e+00 5.26786261528043009e-17
