@@ -183,7 +183,10 @@ contains
       real(dp), intent(inout) :: vmat(nao, nao)
 
       real(dp), allocatable :: rho(:), grho(:, :), sigma(:), vrho(:), vsigma(:), eg(:)
+      real(dp), allocatable :: gx(:), gy(:), gz(:), gkp(:), gw0p(:), grpw(:)
+      integer, allocatable :: gidx(:)
       real(dp) :: kvv, beta
+      integer :: npass, g
 
       e_nlc = 0.0_dp
       if (npts == 0) return
@@ -198,7 +201,47 @@ contains
                         npts, nbatch, r, batch_of, b_shoff, nbsh, b_sh, b_shao, b_aooff, nbao, b_ao, &
                         dmat, rho, grho, sigma)
 
-      call vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, vrho, vsigma, eg)
+      !
+      ! GATHER before the O(N^2) pass: every quantity the inner sum needs
+      ! from point j -- w0p(j), K(j), rho(j)*w(j), and r(j) itself -- is a
+      ! function of j ALONE, yet the unguarded double loop recomputed a
+      ! sqrt and a 1/6 power of it once per (i, j) PAIR, N times more often
+      ! than the N values that exist. Below, one O(N) pass (`vv10_gather`)
+      ! filters the points below VV10_RHO_TOL (the same ones the inner sum
+      ! always `cycle`d past) and writes the survivors' precomputed
+      ! quantities into contiguous, struct-of-arrays storage -- r split
+      ! into gx/gy/gz rather than the strided r(3, npts) -- in ascending
+      ! original order. Ascending order is what makes this bit-identical:
+      ! the inner sum over j only ever adds terms in that order (skipping
+      ! the ones below tolerance exactly as before), and inserting or
+      ! removing a step that adds literally 0.0_dp -- which is what a
+      ! below-tolerance j always contributed -- changes nothing at any
+      ! position in a floating-point sum.
+      !
+      ! The filter itself runs on the host -- it is inherently sequential
+      ! (building a compacted index list) and O(N), nothing a device launch
+      ! would help -- so the density this call just built on the device is
+      ! brought back first.
+      !$acc update self(rho)
+      allocate (gidx(max(npts, 1)))
+      npass = 0
+      do g = 1, npts
+         if (rho(g) >= VV10_RHO_TOL) then
+            npass = npass + 1
+            gidx(npass) = g
+         end if
+      end do
+
+      allocate (gx(max(npass, 1)), gy(max(npass, 1)), gz(max(npass, 1)))
+      allocate (gkp(max(npass, 1)), gw0p(max(npass, 1)), grpw(max(npass, 1)))
+      !$acc data copyin(gidx(1:max(npass, 1))) create(gx, gy, gz, gkp, gw0p, grpw)
+      call vv10_gather(npts, r, w, rho, sigma, c, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
+
+      call vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+                       vrho, vsigma, eg)
+
+      !$acc end data
+      deallocate (gidx, gx, gy, gz, gkp, gw0p, grpw)
 
       !$acc update self(eg)
       e_nlc = sum(eg)
@@ -303,6 +346,52 @@ contains
    end subroutine vv10_density_body
 
    !
+   ! Gather: one thread per SURVIVING j (`npass` of them, `gidx` holds their
+   ! original point indices in ascending order), precomputing everything
+   ! pass 2's inner sum reads from j alone -- its position split into
+   ! gx/gy/gz (contiguous, unit-stride reads for the pair loop below,
+   ! unlike the strided r(3, npts) this is drawn from), K(j) = kvv rho(j)^
+   ! (1/6), W0(j) and rho(j) w(j). See vv10_drive's call site for why this
+   ! makes pass 2 bit-identical rather than merely faster.
+   !
+   subroutine vv10_gather(npts, r, w, rho, sigma, c, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
+      integer, intent(in) :: npts, npass
+      real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
+      real(dp), intent(in) :: c, kvv
+      integer, intent(in) :: gidx(npass)
+      real(dp), intent(out) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
+      integer :: k
+
+      do concurrent(k=1:npass)
+         call vv10_gather_body(k, npts, r, w, rho, sigma, c, kvv, npass, gidx, &
+                               gx(k), gy(k), gz(k), gkp(k), gw0p(k), grpw(k))
+      end do
+   end subroutine vv10_gather
+
+   pure subroutine vv10_gather_body(k, npts, r, w, rho, sigma, c, kvv, npass, gidx, &
+                                    gx_k, gy_k, gz_k, gkp_k, gw0p_k, grpw_k)
+      !$acc routine seq
+      integer, intent(in) :: k, npts, npass
+      real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
+      real(dp), intent(in) :: c, kvv
+      integer, intent(in) :: gidx(npass)
+      real(dp), intent(out) :: gx_k, gy_k, gz_k, gkp_k, gw0p_k, grpw_k
+      integer :: j
+      real(dp) :: rp, gp, w0ptmp
+
+      j = gidx(k)
+      gx_k = r(1, j)
+      gy_k = r(2, j)
+      gz_k = r(3, j)
+      rp = rho(j)
+      gp = sigma(j)
+      w0ptmp = c*(gp/(rp*rp))**2
+      gw0p_k = sqrt(w0ptmp + PI43*rp)
+      gkp_k = kvv*rp**(1.0_dp/6.0_dp)
+      grpw_k = rp*w(j)
+   end subroutine vv10_gather_body
+
+   !
    ! Pass 2: the O(N^2) double sum -- one launch, the outer point i calling
    ! vv10_kernel_body once each. The O(N) reduction over j that builds
    ! vrho(i)/vsigma(i)/eg(i) is entirely inside that one call, owned by
@@ -329,41 +418,58 @@ contains
    ! already, which is why only the CPU form changes here.
    !
 #ifdef _OPENACC
-   subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, vrho, vsigma, eg)
-      integer, intent(in) :: npts
+   subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+                          vrho, vsigma, eg)
+      integer, intent(in) :: npts, npass
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: b, c, kvv, beta
+      real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
       real(dp), intent(out) :: vrho(npts), vsigma(npts), eg(npts)
       integer :: i
 
       do concurrent(i=1:npts)
-         call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, vrho(i), vsigma(i), eg(i))
+         call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+                               vrho(i), vsigma(i), eg(i))
       end do
    end subroutine vv10_kernel
 #else
-   subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, vrho, vsigma, eg)
-      integer, intent(in) :: npts
+   subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+                          vrho, vsigma, eg)
+      integer, intent(in) :: npts, npass
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: b, c, kvv, beta
+      real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
       real(dp), intent(out) :: vrho(npts), vsigma(npts), eg(npts)
       integer :: i
 
       do i = 1, npts
-         call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, vrho(i), vsigma(i), eg(i))
+         call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+                               vrho(i), vsigma(i), eg(i))
       end do
    end subroutine vv10_kernel
 #endif
 
-   pure subroutine vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, vrho_i, vsigma_i, eg_i)
+   !
+   ! `j`'s own work (w0p(j), K(j), rho(j) w(j), its gathered position) now
+   ! comes in through gx/gy/gz/gkp/gw0p/grpw, precomputed once by
+   ! vv10_gather instead of once per (i, j) pair here -- the sqrt and the
+   ! 1/6 power that used to run inside this `do j` are gone from it, and
+   ! the inner loop itself is `do j = 1, npass` (survivors only), not
+   ! `do j = 1, npts` with a `cycle`. Everything else, including the sum
+   ! order (gidx is ascending), is unchanged.
+   !
+   pure subroutine vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+                                    vrho_i, vsigma_i, eg_i)
       !$acc routine seq
-      integer, intent(in) :: i, npts
+      integer, intent(in) :: i, npts, npass
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: c, kvv, beta
+      real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
       real(dp), intent(out) :: vrho_i, vsigma_i, eg_i
 
       integer :: j
       real(dp) :: ri, gi, w0tmp, w0, dw0dr, dw0dg, kk, dkdr
-      real(dp) :: rp, gp, w0ptmp, w0p, kp, rpw, dx, dy, dz, r2
+      real(dp) :: dx, dy, dz, r2
       real(dp) :: gg, ggp, gt, tt, t2, fsum, usum, wsum, ff
 
       vrho_i = 0.0_dp
@@ -388,22 +494,15 @@ contains
       fsum = 0.0_dp
       usum = 0.0_dp
       wsum = 0.0_dp
-      do j = 1, npts
-         rp = rho(j)
-         if (rp < VV10_RHO_TOL) cycle
-         gp = sigma(j)
-         w0ptmp = c*(gp/(rp*rp))**2
-         w0p = sqrt(w0ptmp + PI43*rp)
-         kp = kvv*rp**(1.0_dp/6.0_dp)
-         rpw = rp*w(j)
-         dx = r(1, i) - r(1, j)
-         dy = r(2, i) - r(2, j)
-         dz = r(3, i) - r(3, j)
+      do j = 1, npass
+         dx = r(1, i) - gx(j)
+         dy = r(2, i) - gy(j)
+         dz = r(3, i) - gz(j)
          r2 = dx*dx + dy*dy + dz*dz
-         ggp = r2*w0p + kp
+         ggp = r2*gw0p(j) + gkp(j)
          gg = r2*w0 + kk
          gt = gg + ggp
-         tt = rpw/(gg*ggp*gt)
+         tt = grpw(j)/(gg*ggp*gt)
          fsum = fsum + tt
          t2 = tt*(1.0_dp/gg + 1.0_dp/gt)
          usum = usum + t2
