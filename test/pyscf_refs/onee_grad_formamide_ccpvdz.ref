@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_1e_grad_vs_pyscf_formamide_ccpvdz
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["onee_grad_formamide_ccpvdz"] -> gen_1e_grad
 # pyscf: 2.14.0
-# hash: 2a4fa9bac0c214ca44858f16fed01d4bce562c2f594c36cdaf145cd6274687d0
-# files: test/pyscf_refs/generate.py test/check_1e_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
+# hash-scheme: case-ast-v1
+# hash: ccfecc689987cf015825a1a83b7890426c3650ee854862f929faa11bc3cd7942
+# files: test/check_1e_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
 NAT 6
 NAO 60
 S 60 60
