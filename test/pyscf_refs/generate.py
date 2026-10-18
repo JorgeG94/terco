@@ -1168,6 +1168,105 @@ def gen_full_grad():
     w.write()
 
 
+def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3):
+    """The FULL KS-DFT nuclear gradient against pyscf's own grad.RKS/
+    grad.UKS, at TERCO'S OWN converged orbitals and TERCO'S OWN grid
+    (check_xc_grad_vs_pyscf.F90's own header has the full reasoning: no
+    SCF difference, no quadrature difference, so what differs is this
+    build's formula -- and the grid-response term it omits by default,
+    which pyscf's grad_response=False (the default, left unset here)
+    omits too).
+
+    mo_coeff is TERCO'S cart=True AO order and normalisation; converted to
+    pyscf's order (terco_to_pyscf_perm) and rescaled (ao_norm_from_overlap)
+    before mf.mo_coeff/mo_occ/mo_energy are set directly -- mf.kernel() is
+    NEVER called, so pyscf's own SCF never runs for this case."""
+    PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP'}
+
+    dump = TEST / f"xc_grad_probe_{case}.bin"
+    run_bin(f"check_xc_grad_vs_pyscf_{case}", [xyz, json_rel, functional, grid_level, dump.name, case])
+    r = BinReader(dump)
+    nat, nao, nspin, nalpha, nbeta = r.i8(), r.i8(), r.i8(), r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    npts = r.i8()
+    pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+    wts = r.f8(npts)
+    cmo = r.f8(nao * nao * nspin).reshape(nao, nao, nspin, order='F')
+    eps = r.f8(nao * nspin).reshape(nao, nspin, order='F')
+    grad_terco = r.f8(3 * nat).reshape(3, nat, order='F').T
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    charge = int(round(at_z.sum())) - (nalpha + nbeta)
+    spin = nalpha - nbeta
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True,
+                charge=charge, spin=spin, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_xc_grad {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_xc_grad {case}: overlap check failed, {s_err:.3e}")
+
+    if nspin == 1:
+        c_p = n[:, None] * cmo[inv_perm, :, 0]
+        occ = np.zeros(nao)
+        occ[:nalpha] = 2.0
+        mf = dft.RKS(mol)
+        mf.xc = PYSCF[functional]
+        mf.grids.coords = np.ascontiguousarray(pts)
+        mf.grids.weights = wts
+        mf.grids.non0tab = None
+        mf.mo_coeff = c_p
+        mf.mo_occ = occ
+        mf.mo_energy = eps[:, 0]
+        mf.converged = True
+    else:
+        c_a = n[:, None] * cmo[inv_perm, :, 0]
+        c_b = n[:, None] * cmo[inv_perm, :, 1]
+        occ_a = np.zeros(nao)
+        occ_a[:nalpha] = 1.0
+        occ_b = np.zeros(nao)
+        occ_b[:nbeta] = 1.0
+        mf = dft.UKS(mol)
+        mf.xc = PYSCF[functional]
+        mf.grids.coords = np.ascontiguousarray(pts)
+        mf.grids.weights = wts
+        mf.grids.non0tab = None
+        mf.mo_coeff = (c_a, c_b)
+        mf.mo_occ = (occ_a, occ_b)
+        mf.mo_energy = (eps[:, 0], eps[:, 1])
+        mf.converged = True
+
+    dm = mf.make_rdm1()
+    mf.e_tot = mf.energy_tot(dm)
+    g = mf.nuc_grad_method()
+    g.grid_response = False   # the default; stated explicitly -- see this
+    #: function's own docstring and trc_xc_grad.F90's header on the
+    #: grid-response term both this build and pyscf's default omit.
+    grad_py = g.kernel()
+
+    w = RefWriter(f"xc_grad_{case}.ref")
+    w.header("check_xc_grad_vs_pyscf_" + case,
+              [ROOT / "test" / "check_xc_grad_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("GRAD", grad_py.T)
+    w.end()
+    w.write()
+    worst = np.abs(grad_terco - grad_py).max()
+    print(f"  xc_grad {case}: worst|terco-pyscf| {worst:.3e} (at generation time)")
+    dump.unlink()
+
+
 def gen_rks():
     """scf_rks.F90's 12 cases (water RHF/SVWN/PBE/BLYP/B3LYP/wB97X-V/
     wB97X/wB97 restricted; OH radical UHF/PBE/wB97X-V/wB97X unrestricted),
@@ -2124,6 +2223,24 @@ CASES = {
     "onee_grad_water_ccpvdz": lambda: gen_1e_grad("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
     "onee_grad_formamide_ccpvdz": lambda: gen_1e_grad(
         "formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
+    "xc_grad_water_svwn_631gs": lambda: gen_xc_grad(
+        "water_svwn_631gs", "water.xyz", "basis_sets/6-31gs.json", "svwn"),
+    "xc_grad_water_pbe_631gs": lambda: gen_xc_grad(
+        "water_pbe_631gs", "water.xyz", "basis_sets/6-31gs.json", "pbe"),
+    "xc_grad_water_b3lyp_631gs": lambda: gen_xc_grad(
+        "water_b3lyp_631gs", "water.xyz", "basis_sets/6-31gs.json", "b3lyp"),
+    "xc_grad_water_svwn_ccpvdz": lambda: gen_xc_grad(
+        "water_svwn_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "svwn"),
+    "xc_grad_water_pbe_ccpvdz": lambda: gen_xc_grad(
+        "water_pbe_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "xc_grad_water_b3lyp_ccpvdz": lambda: gen_xc_grad(
+        "water_b3lyp_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "xc_grad_formamide_pbe_ccpvdz": lambda: gen_xc_grad(
+        "formamide_pbe_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "xc_grad_formamide_b3lyp_ccpvdz": lambda: gen_xc_grad(
+        "formamide_b3lyp_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "xc_grad_oh_pbe_631gs": lambda: gen_xc_grad(
+        "oh_pbe_631gs", "oh.xyz", "basis_sets/6-31gs.json", "pbe"),
     "rys_fock_water_ccpvdz": lambda: gen_rys_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", 1e-9),
     "rys_fock_water_ccpvtz": lambda: gen_rys_fock("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json", 1e-10),
     "rys_fock_formamide_def2tzvp": lambda: gen_rys_fock(
