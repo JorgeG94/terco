@@ -266,6 +266,52 @@ terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 # spherical fold (see check_full_grad_vs_pyscf.F90's own header).
 terco_add_check(check_full_grad_vs_pyscf check_full_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 
+# The FULL KS-DFT gradient, SAME recipe as check_xc_grad_vs_pyscf.F90
+# (terco's own converged orbitals and grid, no pyscf SCF) but with NO
+# force_cart: cc-pVDZ comes back SPHERICAL here, exercising
+# trc_scf_gradient's fold TOGETHER with the XC term (see
+# check_dft_grad_vs_pyscf.F90's own header) -- water/formamide RKS
+# PBE/B3LYP on spherical cc-pVDZ and Cartesian 6-31G*, and UKS PBE NH2
+# from a fixed (core-guess) initial density.
+foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
+             formamide_pbe_ccpvdz_sph formamide_b3lyp_ccpvdz_sph
+             formamide_pbe_631gs formamide_b3lyp_631gs
+             nh2_pbe_ccpvdz_sph)
+  if(case STREQUAL "water_pbe_ccpvdz_sph")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+  elseif(case STREQUAL "water_b3lyp_ccpvdz_sph")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+  elseif(case STREQUAL "formamide_pbe_ccpvdz_sph")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+  elseif(case STREQUAL "formamide_b3lyp_ccpvdz_sph")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+  elseif(case STREQUAL "formamide_pbe_631gs")
+    set(xyz formamide.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+  elseif(case STREQUAL "formamide_b3lyp_631gs")
+    set(xyz formamide.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func b3lyp)
+  else()
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+  endif()
+  set(glev 3)
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/dft_grad_probe_${case}.bin)
+  terco_add_check(check_dft_grad_vs_pyscf_${case} check_dft_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case})
+endforeach()
+
 # The CLI's --grad against a direct trc_run_gradient/trc_gradient call on
 # the same molecule/basis/guess -- see check_cli_grad.F90's own header.
 # Needs the terco_cli executable itself (app/CMakeLists.txt, added AFTER
@@ -285,6 +331,15 @@ if(TERCO_BUILD_APP)
   # ARGS above is a generator expression and the explicit build-order
   # dependency is not.
   unset(_cli_grad_probe)
+
+  # The same comparison, for a KS-DFT gradient (--func pbe): the CLI's
+  # --grad is NOT refused for an LDA/GGA functional any more (this
+  # branch's own lift of trc_run_gradient's DFT refusal) -- see
+  # check_cli_grad_dft.F90's own header.
+  set(_cli_grad_dft_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_dft_probe.json)
+  terco_add_check(check_cli_grad_dft check_cli_grad_dft.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_dft_probe})
+  unset(_cli_grad_dft_probe)
 endif()
 
 # The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA

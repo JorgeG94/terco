@@ -118,7 +118,7 @@ contains
    end subroutine energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
-                               func, grid_level, grid_max_pts, grid_response)
+                               func, grid_level, grid_max_pts, grid_response, rho_tol)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -167,6 +167,14 @@ contains
       logical, intent(in), optional :: grid_response
       !! Forwarded to xc_gradient_add verbatim (its own default: ON). See
       !! that module's header, GRID RESPONSE.
+      real(dp), intent(in), optional :: rho_tol
+      !! The SAME grid level/max-points-per-batch/rho screen the SCF itself
+      !! converged with (trc_capi.F90's trc_run_gradient passes cx%opts's
+      !! own grid_level/grid_max_pts/rho_tol) -- the gradient's quadrature
+      !! has to match the energy's, not merely be "a reasonable DFT grid",
+      !! or the two are not derivatives of the same number. Absent (a
+      !! Fortran-side caller with no opinion) falls back to xc_gradient_add's
+      !! own defaults.
 
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
@@ -254,7 +262,7 @@ contains
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) call xc_gradient_add(b, lp, func, nspin, dens, grad, &
                                               grid_level=grid_level, grid_max_pts=grid_max_pts, &
-                                              grid_response=grid_response)
+                                              grid_response=grid_response, rho_tol=rho_tol)
 
       !$acc update self(grad)
       !$acc exit data delete(wmat, dtot, grad, cmo, eps, dens)
