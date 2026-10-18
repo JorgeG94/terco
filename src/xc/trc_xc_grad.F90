@@ -354,28 +354,46 @@ contains
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
       integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
       real(dp), intent(inout) :: chi(npb, nloc), gchi(npb, nloc, 3)
-      integer :: nsh_b, ks, gl
+      integer :: nsh_b, t
 
+      ! A genuine two-index `do concurrent(ks=1:nsh_b, gl=1:npb)` is the
+      ! bug this module shipped with: on this GPU build, nvfortran's
+      ! codegen for a 2-D `do concurrent` with a small, batch-varying outer
+      ! extent (nsh_b, here as small as 1-4) against a much larger inner
+      ! extent (npb, up to 512) silently drops the LAST outer slice --
+      ! confirmed by an element-by-element CPU/GPU dump of `chi`/`gchi` for
+      ! one batch (nsh_b=3, npb=86): columns for ks=1,2 matched CPU to
+      ! 1e-9, the ENTIRE ks=3 column (shell index 4, local AO 3) came back
+      ! bitwise 0 on GPU, (nsh_b-1)*npb = 172 of 258 elements right, the
+      ! rest exactly the zero a freshly `create`-mapped device buffer
+      ! starts as. Never seen on CPU, where `do concurrent` is just nested
+      ! host loops. The energy path (trc_xc.F90's xc_collocate) never
+      ! triggers this: it flattens every batch's work into ONE `do
+      ! concurrent(t=1:nwork)` before it ever reaches the device, and
+      ! recovers (ks, gl) INSIDE the pure body (xc_collocate_body) -- the
+      ! exact convention adopted here, not just the flattening.
       nsh_b = b_shoff(ib + 1) - b_shoff(ib)
-      do concurrent(ks=1:nsh_b, gl=1:npb)
+      do concurrent(t=1:nsh_b*npb)
          call xc_grad_colloc1_body(nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                    nbatch, b_off, b_shoff, nbsh, b_sh, b_shao, ib, npb, nloc, &
-                                   ks, gl, chi, gchi)
+                                   t, chi, gchi)
       end do
    end subroutine xc_grad_collocate1
 
    pure subroutine xc_grad_colloc1_body(nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                         nbatch, b_off, b_shoff, nbsh, b_sh, b_shao, ib, npb, nloc, &
-                                        ks, gl, chi, gchi)
+                                        t, chi, gchi)
       !$acc routine seq
-      integer, intent(in) :: nshell, maxnp, npts, nbatch, nbsh, ib, npb, nloc, ks, gl
+      integer, intent(in) :: nshell, maxnp, npts, nbatch, nbsh, ib, npb, nloc, t
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
       integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
       real(dp), intent(inout) :: chi(npb, nloc), gchi(npb, nloc, 3)
-      integer :: ish, iao, l, nc, m, gg
+      integer :: ks, gl, ish, iao, l, nc, m, gg
       real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX)
 
+      ks = (t - 1)/npb + 1
+      gl = t - (ks - 1)*npb
       ish = b_sh(b_shoff(ib) + ks - 1)
       iao = b_shao(b_shoff(ib) + ks - 1)
       gg = b_off(ib) + gl - 1
@@ -404,28 +422,33 @@ contains
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
       integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
       real(dp), intent(inout) :: chi(npb, nloc), gchi(npb, nloc, 3), hchi(npb, nloc, NHESS)
-      integer :: nsh_b, ks, gl
+      integer :: nsh_b, t
 
+      ! Flattened to one index, (ks, gl) recovered inside the pure body,
+      ! for the same reason xc_grad_collocate1 is -- see that subroutine's
+      ! comment.
       nsh_b = b_shoff(ib + 1) - b_shoff(ib)
-      do concurrent(ks=1:nsh_b, gl=1:npb)
+      do concurrent(t=1:nsh_b*npb)
          call xc_grad_colloc2_body(nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                    nbatch, b_off, b_shoff, nbsh, b_sh, b_shao, ib, npb, nloc, &
-                                   ks, gl, chi, gchi, hchi)
+                                   t, chi, gchi, hchi)
       end do
    end subroutine xc_grad_collocate2
 
    pure subroutine xc_grad_colloc2_body(nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                         nbatch, b_off, b_shoff, nbsh, b_sh, b_shao, ib, npb, nloc, &
-                                        ks, gl, chi, gchi, hchi)
+                                        t, chi, gchi, hchi)
       !$acc routine seq
-      integer, intent(in) :: nshell, maxnp, npts, nbatch, nbsh, ib, npb, nloc, ks, gl
+      integer, intent(in) :: nshell, maxnp, npts, nbatch, nbsh, ib, npb, nloc, t
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
       integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
       real(dp), intent(inout) :: chi(npb, nloc), gchi(npb, nloc, 3), hchi(npb, nloc, NHESS)
-      integer :: ish, iao, l, nc, m, gg
+      integer :: ks, gl, ish, iao, l, nc, m, gg
       real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX), hs(NHESS, NCART_MAX)
 
+      ks = (t - 1)/npb + 1
+      gl = t - (ks - 1)*npb
       ish = b_sh(b_shoff(ib) + ks - 1)
       iao = b_shao(b_shoff(ib) + ks - 1)
       gg = b_off(ib) + gl - 1
