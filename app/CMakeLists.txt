@@ -32,6 +32,15 @@ endif()
 
 install(TARGETS terco_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# test/check_cli_grad (test/CMakeLists.txt, added before this directory by
+# the root CMakeLists.txt) runs this executable as a subprocess, given its
+# path through a generator expression -- but ctest itself does not know
+# that check_cli_grad's own build needs terco_cli built first unless told,
+# so that ordering is declared here, now that both targets exist.
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad)
+  add_dependencies(check_cli_grad terco_cli)
+endif()
+
 # The basis sets the tests use, so `--basis def2-svp` works out of the box
 # after an install. sap_helfem_large.json is not a basis but the fitted atomic
 # potentials `--guess sap` reads; it is found the same way.
