@@ -141,6 +141,43 @@ def terco_to_pyscf_perm(atoms, basis_arg):
     return np.array(perm, dtype=np.int64)
 
 
+_NSPH = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9}
+
+
+def terco_to_pyscf_perm_sph(atoms, basis_arg):
+    """Same shell-level reordering as `terco_to_pyscf_perm`, for a
+    SPHERICAL basis (block sizes 2l+1 rather than ncart(l)). No per-AO
+    normalisation rescale is needed on top of this one (unlike the
+    Cartesian case's `ao_norm_from_overlap`): scripts/gen_sph.py's own
+    self-test checks terco's cart2sph blocks (SPH_T) against
+    `pyscf.gto.mole.cart2sph(l, normalized='sp')` -- the exact table pyscf
+    itself uses -- to 1e-13, so a spherical AO here and pyscf's cart=False
+    one of the same (atom, l, exponent) are already identically
+    normalised."""
+    perm = []
+    base = 0
+    for sym, _ in atoms:
+        shells = basis_arg[sym]
+        ls = [row[0] for row in shells]
+        n_at = sum(_NSPH[l] for l in ls)
+        terco_off = []
+        off = 0
+        for l in ls:
+            terco_off.append(off)
+            off += _NSPH[l]
+        order = sorted(range(len(ls)), key=lambda k: ls[k])
+        pyscf_off = [0] * len(ls)
+        off = 0
+        for k in order:
+            pyscf_off[k] = off
+            off += _NSPH[ls[k]]
+        for k, l in enumerate(ls):
+            for c in range(_NSPH[l]):
+                perm.append(base + pyscf_off[k] + c)
+        base += n_at
+    return np.array(perm, dtype=np.int64)
+
+
 def ao_norm_from_overlap(s_terco, s_pyscf):
     """n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)): the per-AO rescale between
     this build's normalisation and pyscf's cart=True one (their d/f
@@ -1038,6 +1075,98 @@ def gen_1e_grad(case, xyz, json_rel):
 # =========================================================================
 # SCF comparisons: converge pyscf tightly, REFUSE an unconverged case.
 # =========================================================================
+
+def gen_full_grad():
+    """check_full_grad_vs_pyscf.F90's three cases: the FULL analytic
+    RHF/UHF gradient (trc_scf_grad%trc_scf_gradient -- one-electron,
+    eri%gradient's two-electron part, nuclear repulsion) against pyscf's
+    own `Gradients` class AT A CONVERGED density, on SPHERICAL cc-pVDZ
+    bases -- water/RHF, formamide/RHF, OH/UHF. This is the one comparison
+    that exercises trc_scf_gradient's own spherical fold (D and W folded
+    from nao_sph to the Cartesian nao the kernels need, T D T^T); every
+    other gradient reference in this file (onee_grad_*, rys_grad_*) feeds
+    `trc_1e_gradient`/`eri%gradient` a synthetic density directly, at the
+    Cartesian nao, and never touches that fold.
+
+    FIXED INITIAL DENSITY, water/formamide. NOT NEEDED: a closed-shell
+    RHF ground state at this geometry has no other stationary point
+    nearby, so terco (its own default GWH guess) and pyscf (its own
+    default "minao" guess) converging independently land at the SAME
+    density, same reasoning rks.ref itself uses for ITS restricted cases
+    (which also commit no DM0 -- see that function's own header).
+
+    FIXED INITIAL DENSITY, OH. NEEDED, same reasoning and the same recipe
+    as rks.ref's own OH cases: OH's unpaired electron sits in one of a
+    rotationally degenerate pair of pi orbitals, a genuine zero-curvature
+    direction, so terco and pyscf's own independent default guesses are
+    not guaranteed to pick the SAME orientation. A core-Hamiltonian guess
+    perturbed by a substantial field along y breaks the degeneracy
+    strongly enough to pick a definite one; that same density (DM0,
+    already converged, permuted into terco's own spherical AO order) is
+    what test/check_full_grad_vs_pyscf.F90 seeds trc_scf_run's `dguess`
+    with, so both sides converge toward the SAME rotation rather than two
+    that merely share an energy.
+    """
+    w = RefWriter("full_grad_ccpvdz.ref")
+    w.header("check_full_grad_vs_pyscf",
+             [ROOT / "test" / "check_full_grad_vs_pyscf.F90", TEST / "basis_sets" / "cc-pvdz.json",
+              TEST / "water.xyz", TEST / "formamide.xyz", TEST / "oh.xyz"])
+    cases = [
+        ("water_ccpvdz", "water", 0, 1),
+        ("formamide_ccpvdz", "formamide", 0, 1),
+        ("oh_ccpvdz", "oh", 0, 2),
+    ]
+    for name, xyzname, charge, mult in cases:
+        atoms = _xyz_atoms(xyzname)
+        elements = {sym: gto.charge(sym) for sym in {s for s, _ in atoms}}
+        basis_arg = bse_json_basis(TEST / "basis_sets" / "cc-pvdz.json", elements)
+        mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=False,
+                    charge=charge, spin=mult - 1, verbose=0)
+        nao = mol.nao_nr()
+        perm = terco_to_pyscf_perm_sph(atoms, basis_arg)
+        inv_perm = np.argsort(perm)
+
+        nspin = 1 if mult == 1 else 2
+        if nspin == 1:
+            def make_mf():
+                return scf.RHF(mol)
+            mf, grad_norm = converge_tight(make_mf, None, f"full_grad {name}")
+            dm0_terco = None
+        else:
+            # Same symmetry-breaking recipe as gen_rks's own OH cases.
+            ovlp = mol.intor('int1e_ovlp')
+            dip = mol.intor('int1e_r')
+            hcore_pert = scf.hf.get_hcore(mol) + 0.05 * dip[1]
+            ea, ca = scipy.linalg.eigh(hcore_pert, ovlp)
+            nelec = sum(gto.charge(sym) for sym, _ in atoms) - charge
+            na = (nelec + (mult - 1)) // 2
+            nb = nelec - na
+            dm0_a = ca[:, :na] @ ca[:, :na].T
+            dm0_b = ca[:, :nb] @ ca[:, :nb].T
+
+            def make_mf():
+                return scf.UHF(mol)
+            mf, grad_norm = converge_tight(make_mf, (dm0_a, dm0_b), f"full_grad {name}")
+            dm0_terco = np.stack([dm0_a[np.ix_(inv_perm, inv_perm)],
+                                  dm0_b[np.ix_(inv_perm, inv_perm)]], axis=2)
+
+        g = mf.nuc_grad_method()
+        g.verbose = 0
+        grad_py = g.kernel()   # (nat, 3), Eh/Bohr, terco's own atom order
+
+        w.str_(f"NAME_{name}", name)
+        w.int_(f"NSPIN_{name}", nspin)
+        w.int_(f"NAO_{name}", nao)
+        w.int_(f"NAT_{name}", len(atoms))
+        if dm0_terco is not None:
+            w.matrix3(f"DM0_{name}", dm0_terco)
+        w.real(f"E_{name}", mf.e_tot)
+        w.real(f"GRAD_NORM_{name}", grad_norm)
+        w.matrix(f"GRAD_{name}", grad_py.T)   # (3, nat), matching terco's layout
+        print(f"  full_grad {name}: E(pyscf,converged) {mf.e_tot:18.12f}  |g| {grad_norm:.2e}")
+    w.end()
+    w.write()
+
 
 def gen_rks():
     """scf_rks.F90's 12 cases (water RHF/SVWN/PBE/BLYP/B3LYP/wB97X-V/
@@ -2003,6 +2132,7 @@ CASES = {
     "erf_fock_water_ccpvdz": lambda: gen_erf_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
     "erf_fock_formamide_ccpvdz": lambda: gen_erf_fock("formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
     "df_vs_pyscf": gen_df_vs_pyscf,
+    "full_grad": gen_full_grad,
     "rks": gen_rks,
     "scf_robust": gen_scf_robust,
     "rimp2": gen_rimp2,

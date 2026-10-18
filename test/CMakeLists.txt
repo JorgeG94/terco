@@ -254,6 +254,33 @@ set_tests_properties(
 # SCF energy -- RHF water, UHF OH -- see check_full_grad_fd.F90's header.
 terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 
+# The same full analytic gradient, on SPHERICAL cc-pVDZ bases (water/RHF,
+# formamide/RHF, OH/UHF), against pyscf's own Gradients class at a
+# converged density -- the one check that exercises trc_scf_gradient's own
+# spherical fold (see check_full_grad_vs_pyscf.F90's own header).
+terco_add_check(check_full_grad_vs_pyscf check_full_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+# The CLI's --grad against a direct trc_run_gradient/trc_gradient call on
+# the same molecule/basis/guess -- see check_cli_grad.F90's own header.
+# Needs the terco_cli executable itself (app/CMakeLists.txt, added AFTER
+# this directory by the root CMakeLists.txt, but still within the same
+# configure run -- $<TARGET_FILE:...> is a generator expression, resolved
+# at generate time, so the forward reference is fine); TERCO_BUILD_APP is
+# a separate switch from TERCO_ENABLE_TESTING, so this is guarded on it
+# rather than assumed.
+if(TERCO_BUILD_APP)
+  set(_cli_grad_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_probe.json)
+  terco_add_check(check_cli_grad check_cli_grad.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_probe})
+  # `add_dependencies(check_cli_grad terco_cli)` belongs in
+  # app/CMakeLists.txt, not here: that target does not exist yet in THIS
+  # directory's own configure pass (app/ is added after test/ by the root
+  # CMakeLists.txt), only by generate time -- which is exactly why the
+  # ARGS above is a generator expression and the explicit build-order
+  # dependency is not.
+  unset(_cli_grad_probe)
+endif()
+
 #
 # Cartesian multipoles through the octupole, against a reference
 # test/pyscf_refs/generate.py recorded from pyscf. No pyscf in CI, ever --

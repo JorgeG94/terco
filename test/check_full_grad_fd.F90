@@ -148,6 +148,14 @@ program check_full_grad_fd
 
    call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'RHF water/6-31G*', any_fail)
    call run_case('oh.xyz', 'basis_sets/6-31gs.json', 5, 4, 'UHF OH/6-31G*', any_fail)
+   ! SPHERICAL cases: cc-pVDZ is tagged gto_spherical in BSE, so
+   ! trc_basis_from_json comes back with `bas%spherical` true here, and
+   ! `run_case`'s own trc_scf_gradient call takes the spherical fold in
+   ! trc_scf_grad.F90 (D and W folded nao_sph -> nao, T D T^T) -- these two
+   ! are this program's own validation of that fold against a finite
+   ! difference of terco's own reconverged energy, independent of pyscf.
+   call run_case('water.xyz', 'basis_sets/cc-pvdz.json', 5, 5, 'RHF water/cc-pVDZ (spherical)', any_fail)
+   call run_case('oh.xyz', 'basis_sets/cc-pvdz.json', 5, 4, 'UHF OH/cc-pVDZ (spherical)', any_fail)
 
    if (any_fail) then
       print '(a)', '  RESULT: FAIL'; stop 1
