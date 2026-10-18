@@ -1,7 +1,10 @@
 !
 ! The full analytic HF/UHF nuclear gradient: one-electron (trc_1e_gradient),
 ! two-electron (eri%gradient) and nuclear repulsion, assembled at a
-! converged trc_scf_result_t.
+! converged trc_scf_result_t. With `func` present (optional, see
+! trc_scf_gradient's own header) this is the KS-DFT gradient instead:
+! eri%gradient's exact-exchange piece scaled by `func%exx`, plus
+! trc_xc_grad%xc_gradient_add's LDA/GGA exchange-correlation term.
 !
 ! ORDER MATTERS. eri%gradient starts `grad` from zero (its own header: "the
 ! two-electron part ONLY"); trc_1e_gradient and nuclear_repulsion_gradient
@@ -34,6 +37,8 @@ module trc_scf_grad
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_sph_to_cart
+   use trc_xc_functional, only: trc_xc_functional_t
+   use trc_xc_grad, only: xc_gradient_add
    implicit none
    private
    public :: trc_scf_gradient, nuclear_repulsion_gradient, energy_weighted_density
@@ -112,7 +117,8 @@ contains
       deallocate (cw)
    end subroutine energy_weighted_density
 
-   subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad)
+   subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
+                               func, grid_level, grid_max_pts)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -142,6 +148,12 @@ contains
       !! exists structurally (every shell's would-be spherical count) but
       !! plays no role here: the fold is skipped and `dens`/`wmat` are
       !! filled directly at `b%nao`, unchanged from before this feature.
+      !!
+      !! `func` ABSENT is the Hartree-Fock gradient, unchanged. PRESENT
+      !! adds the exchange-correlation term (trc_xc_grad%xc_gradient_add,
+      !! LDA/GGA only -- see its own refusals) and scales eri%gradient's
+      !! exact-exchange piece by the functional's `exx`, exactly as
+      !! trc_scf_fock.F90 scales the Fock build's K by the same field.
       type(trc_basis_t),  intent(inout) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer,            intent(in)    :: nspin, nalpha, nbeta
@@ -150,12 +162,14 @@ contains
       real(dp),           intent(in)    :: eps(merge(b%nao_sph, b%nao, b%spherical), nspin)
       real(dp),           intent(in)    :: thresh
       real(dp),           intent(out)   :: grad(3, b%natm)
+      type(trc_xc_functional_t), intent(in), optional :: func
+      integer, intent(in), optional :: grid_level, grid_max_pts
 
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       integer :: nao, nsp, s
       integer :: nocc(2)
-      real(dp) :: occ_s
+      real(dp) :: occ_s, kfac
       real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :)
 
       nao = b%nao
@@ -220,7 +234,9 @@ contains
       call eri%build(b, thresh)
 
       ! --- two-electron, first: this call starts `grad` from zero ---
-      call eri%gradient(b, dens, grad)
+      kfac = 1.0_dp
+      if (present(func)) kfac = func%exx
+      call eri%gradient(b, dens, grad, k_scale=kfac)
       grad = 0.5_dp*grad   !! see this module's own header: eri%gradient's
                            !! convention is twice d(e_two)/dR.
 
@@ -229,6 +245,13 @@ contains
       ! above) -- only `dtot` and `grad` are freshly copied up. ---
       !$acc enter data copyin(dtot, grad)
       call trc_1e_gradient(b, pl, wmat, dtot, grad)
+
+      ! --- exchange-correlation, added on top, LDA/GGA only. `dens` is
+      ! still present and correct on the device at this point (see this
+      ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
+      if (present(func)) call xc_gradient_add(b, lp, func, nspin, dens, grad, &
+                                              grid_level=grid_level, grid_max_pts=grid_max_pts)
+
       !$acc update self(grad)
       !$acc exit data delete(wmat, dtot, grad, cmo, eps, dens)
 
