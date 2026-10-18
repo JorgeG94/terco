@@ -195,31 +195,40 @@ contains
    subroutine formula(z, natm)
       !! Hill order: with carbon, C then H then the rest alphabetically;
       !! without, everything alphabetically.
+      !!
+      !! Counted once into a per-element histogram with plain loops. The
+      !! previous `any(z == ia)` test came back true for every element on
+      !! nvfortran/aarch64 (a GH200, 1155-atom rna9), which printed all 118
+      !! symbols while `count` still gave the right numbers.
       integer, intent(in) :: natm
       integer, intent(in) :: z(:)
-      integer :: ia, k, n
       integer, parameter :: NELEM = 118
-      integer :: order(NELEM)
+      integer :: ia, k, n
+      integer :: cnt(NELEM), order(NELEM)
+      cnt = 0
+      do ia = 1, natm
+         if (z(ia) >= 1 .and. z(ia) <= NELEM) cnt(z(ia)) = cnt(z(ia)) + 1
+      end do
       n = 0
-      if (any(z == 6)) then
+      if (cnt(6) > 0) then
          n = n + 1
          order(n) = 6
-         if (any(z == 1)) then
+         if (cnt(1) > 0) then
             n = n + 1
             order(n) = 1
          end if
       end if
       k = n
-      do ia = 1, 118
-         if (any(z == ia) .and. .not. any(order(:k) == ia)) then
-            n = n + 1
-            order(n) = ia
-         end if
+      do ia = 1, NELEM
+         if (cnt(ia) == 0) cycle
+         if (k > 0 .and. (ia == 6 .or. (ia == 1 .and. k == 2))) cycle
+         n = n + 1
+         order(n) = ia
       end do
       call sort_by_symbol(order(k + 1:n))
-      do k = 1, n
-         write (output_unit, "(a)", advance="no") trim(element_symbol(order(k)))
-         if (count(z == order(k)) > 1) write (output_unit, "(i0)", advance="no") count(z == order(k))
+      do ia = 1, n
+         write (output_unit, "(a)", advance="no") trim(element_symbol(order(ia)))
+         if (cnt(order(ia)) > 1) write (output_unit, "(i0)", advance="no") cnt(order(ia))
       end do
    end subroutine formula
 
