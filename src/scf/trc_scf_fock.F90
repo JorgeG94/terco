@@ -200,10 +200,10 @@ contains
       ! (coarser) grid, before the spherical transform below.
       if (nlc) then
          if (nspin == 1) then
-            call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1))
+            call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1), la=lp)
          else
             call trc_vv10_uks(b, xg_nlc, d_c(:, :, 1), d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
-                              vxc_c(:, :, 1), vxc_c(:, :, 2))
+                              vxc_c(:, :, 1), vxc_c(:, :, 2), la=lp)
          end if
          exc = exc + e_nlc
       end if
