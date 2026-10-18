@@ -134,6 +134,14 @@ terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
+# The same check with every bin split into chunks of at most 3 pairs
+# (TRC_BIN_CAP; trc_bins.F90's split_large_bins). A real system only splits
+# past 32768 pairs in a bin, around 14,000 basis functions; this is that
+# path at a size CI can run, against the same oracle and tolerance.
+add_test(NAME terco/check_binfock_split COMMAND check_binfock)
+set_tests_properties(terco/check_binfock_split PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=3")
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
