@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_erf_fock_vs_pyscf_formamide_ccpvdz
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["erf_fock_formamide_ccpvdz"] -> gen_erf_fock
 # pyscf: 2.14.0
-# hash: 0f957564c9140f7cec1cf4963d665e037a72852f4a7248d00781fca642d45bf8
-# files: test/pyscf_refs/generate.py test/check_erf_fock_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
+# hash-scheme: case-ast-v1
+# hash: fb4130240d6040ce93917484c818d5f5dd3e9a7277c7c63b412a13d71665b9a1
+# files: test/check_erf_fock_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
 NAT 6
 NAO 60
 S 60 60

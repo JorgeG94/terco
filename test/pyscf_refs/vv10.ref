@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_vv10_vs_pyscf
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["vv10"] -> gen_vv10
 # pyscf: 2.14.0
-# hash: 1a9b92eb44181f2982404b2f7b88137a3a3682533ea29c1c834a22bb424fda88
-# files: test/pyscf_refs/generate.py test/check_vv10_vs_pyscf.F90 test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
+# hash-scheme: case-ast-v1
+# hash: b7655e1a37a76c5c4d66a3e202b88c1e49fc945f37feb3bb4d2b88c117dfee78
+# files: test/check_vv10_vs_pyscf.F90 test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 NCASE 3
 KIND_0 0
 E_NLC_0 1.72082986065628940e-03

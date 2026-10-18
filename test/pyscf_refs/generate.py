@@ -28,13 +28,14 @@ the convergence-refusal rule, how to regenerate one case). Short version:
     first-order one does not reach it) and REFUSES to write a case whose
     SCF did not converge -- `SystemExit`, not a silently-wrong number;
   * every committed file carries a HASH of its own inputs (geometry, basis
-    JSON, the Fortran source that builds the fixed input, this script) and
-    the pyscf version, so check_staleness.py can tell a developer to rerun
-    this script before trusting a stale number.
+    JSON, the Fortran source that builds the fixed input) and of the code
+    in this script that wrote it -- its CASES entry and every definition
+    that entry reaches, not the whole file (refhash.py) -- plus the pyscf
+    version, so check_staleness.py can tell a developer to rerun exactly
+    the cases whose own code or inputs changed.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import subprocess
@@ -52,6 +53,8 @@ TEST = HERE.parent                                  # test/
 ROOT = TEST.parent                                  # repo root
 sys.path.insert(0, str(ROOT / "scripts"))
 from cart_perm import ao_permutation  # noqa: E402
+sys.path.insert(0, str(HERE))
+import refhash  # noqa: E402
 
 PYSCF_VERSION = pyscf.__version__
 
@@ -155,20 +158,28 @@ def ao_norm_from_overlap(s_terco, s_pyscf):
 # Hashing / staleness metadata, and the plain-text writer.
 # =========================================================================
 
-def sha256_of(*paths: Path) -> str:
-    h = hashlib.sha256()
-    for p in paths:
-        h.update(Path(p).read_bytes())
-    return h.hexdigest()
+#: The CASES key main() is running; every header records it, and its hash
+#: covers that entry's code (refhash.py), not this whole file.
+_CURRENT_CASE = None
 
 
-def inputs_hash(*paths) -> str:
-    """The staleness fingerprint: every file whose bytes determine this
-    case's fixed input or expected output -- geometry, basis JSON, the
-    Fortran source that builds the density/grid, and this script itself.
-    check_staleness.py (stdlib only, no pyscf) recomputes this and fails
-    loudly if it no longer matches the HASH line in the committed file."""
-    return sha256_of(Path(__file__), *[Path(p) for p in paths])
+def ref_header_lines(input_paths):
+    """The generator/hash/files lines of a reference's header, for the case
+    main() is running. The hash (refhash.case_hash) covers the CASES entry,
+    every definition in this file it reaches, and the input files --
+    geometry, basis JSON, the Fortran source that builds the density/grid.
+    check_staleness.py (stdlib only, no pyscf) recomputes it with the same
+    refhash module and fails loudly if it no longer matches."""
+    if _CURRENT_CASE is None:
+        raise RuntimeError("ref_header_lines: no current case -- run through main()/CASES")
+    gen = refhash.Generator.from_path(Path(__file__))
+    paths = [Path(p).resolve() for p in input_paths]
+    rels = [str(p.relative_to(ROOT)) for p in paths]
+    return [f'generator: test/pyscf_refs/generate.py CASES["{_CURRENT_CASE}"] -> '
+            f'{gen.function(_CURRENT_CASE)}',
+            "hash-scheme: " + refhash.SCHEME,
+            "hash: " + refhash.case_hash(gen, _CURRENT_CASE, paths),
+            "files: " + " ".join(rels)]
 
 
 class RefWriter:
@@ -184,14 +195,13 @@ class RefWriter:
         self.lines.append("# " + text)
 
     def header(self, case, input_paths):
-        rels = [str(Path(p).resolve().relative_to(ROOT)) for p in
-                [Path(__file__), *[Path(p) for p in input_paths]]]
+        generator, *hashing = ref_header_lines(input_paths)
         self.comment("terco pyscf reference v1")
         self.comment("case: " + case)
-        self.comment("generator: test/pyscf_refs/generate.py")
+        self.comment(generator)
         self.comment("pyscf: " + PYSCF_VERSION)
-        self.comment("hash: " + inputs_hash(*input_paths))
-        self.comment("files: " + " ".join(rels))
+        for line in hashing:
+            self.comment(line)
         #: check_staleness.py (stdlib only) recomputes the hash from exactly
         #: this file list -- it never hardcodes per-case knowledge of what
         #: feeds into which reference, so a case that starts reading a new
@@ -1490,10 +1500,8 @@ def gen_xc_kernels():
         return np.stack([a, b])
 
     out = TEST / "reference_xc.dat"
-    xc_inputs = [Path(__file__), ROOT / "tools" / "xc_kernel_discovery.py"]
-    rels = [str(p.resolve().relative_to(ROOT)) for p in xc_inputs]
-    lines = ["# kernel family polar npts nin nout", "# libxc %s via pyscf" % libxc.libxc_version(),
-             "# hash: " + sha256_of(*xc_inputs), "# files: " + " ".join(rels)]
+    lines = ["# kernel family polar npts nin nout", "# libxc %s via pyscf" % libxc.libxc_version()]
+    lines += ["# " + h for h in ref_header_lines([ROOT / "tools" / "xc_kernel_discovery.py"])]
     for stem, spec in KERNELS.items():
         if stem in DISAGREES_WITH_LIBXC:
             continue
@@ -1896,6 +1904,7 @@ CASES = {
 
 
 def main():
+    global _CURRENT_CASE
     import argparse
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("cases", nargs="*", choices=list(CASES),
@@ -1906,6 +1915,7 @@ def main():
     failures = []
     for name in todo:
         print(f"\n== {name} ==")
+        _CURRENT_CASE = name
         try:
             CASES[name]()
         except ConvergenceError as exc:

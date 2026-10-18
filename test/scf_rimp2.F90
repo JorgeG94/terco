@@ -17,6 +17,7 @@ program scf_rimp2
    use trc_guess_json, only: trc_guess_from_json
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_report
+   use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
 
    integer :: natm, nsh, maxnp, nsha, maxnpa, unit, ish, dev, nocc
@@ -153,6 +154,16 @@ program scf_rimp2
    print '(a,f20.12,a,i0)', "  E_RHF   = ", res%energy, "   iter ", res%iterations
    print '(a,f20.12,a,f20.12)', "  E_os    = ", mp%e_os, "   E_ss = ", mp%e_ss
    print '(a,f20.12,a,es9.2)', "  E_corr  = ", mp%e_corr, "   blocked vs whole ", abs(mp%e_corr - mp2%e_corr)
+   ! Golden case named after the probe, as the pyscf reference is below:
+   ! rimp2_probe.bin -> scf_rimp2, rimp2_ccpvdz_probe.bin -> scf_rimp2_ccpvdz.
+   if (index(trim(probe), '_probe.bin') > 0) then
+      call golden_begin('scf_'//probe(1:index(trim(probe), '_probe.bin') - 1))
+      call golden_put('E_RHF', res%energy)
+      call golden_put('E_OS', mp%e_os)
+      call golden_put('E_SS', mp%e_ss)
+      call golden_put('E_CORR', mp%e_corr)
+      call golden_end()
+   end if
    open (newunit=unit, file=trim(probe), access='stream', form='unformatted', status='replace')
    write (unit) int(bas%nao, int64), int(natm, int64), int(nsh, int64), int(nsha, int64), int(nocc, int64)
    write (unit) at_z, at_r

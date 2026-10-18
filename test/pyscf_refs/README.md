@@ -145,15 +145,112 @@ reader diffs straight across with no permutation of its own.
 Every file's leading comment block also carries:
 
 ```
-# hash: <sha256 of generate.py + every file on the "files:" line>
+# generator: test/pyscf_refs/generate.py CASES["<case>"] -> <gen_* function>
+# hash-scheme: case-ast-v1
+# hash: <sha256 of that case's code and every file on the "files:" line>
 # files: <path> <path> ...
 ```
 
-`check_staleness.py` (standard library only -- no pyscf, no numpy)
-recomputes that hash from exactly the paths on `files:` and compares; it
-never hardcodes per-case knowledge of what feeds into which reference, so
-a case that starts reading a new input is automatically covered. Registered
-as `terco/check_pyscf_refs_fresh`, it runs in every CI config.
+The hash covers only what wrote this reference (`refhash.py`, standard
+library only):
+
+- its `CASES` entry in `generate.py` (the dict value, so a lambda's
+  arguments count) and the transitive closure of every module-level
+  function, class and constant of `generate.py` that entry refers to,
+  found by walking the parsed source with `ast`. Each definition is
+  serialised without comments, docstrings or line positions, so those edits
+  never restale anything, and the serialisation is the same on Python 3.9
+  through 3.14;
+- the bytes of the files on `files:` -- geometry, basis JSON, the Fortran
+  source that builds a fixed density or grid.
+
+So editing one `gen_*` function restales only the references it writes,
+and editing a shared helper (`converge_tight`, `RefWriter`, `run_bin`)
+restales exactly the references whose generators reach it.
+`check_staleness.py` (standard library only -- no pyscf, no numpy) imports
+the same `refhash.py`, recomputes the hash from the `CASES` key on the
+`generator:` line and the paths on `files:`, and names the case to rerun
+when it does not match. Registered as `terco/check_pyscf_refs_fresh`, it
+runs in every CI config; `terco/check_refhash` (`test_refhash.py`) tests
+which edits restale which references.
+
+The references written before this scheme hashed the whole of
+`generate.py`. `migrate_ref_headers.py` moved every one of them to it
+without regenerating anything: it checked each was fresh under the old
+hash, then rewrote only its generator/hash/files header lines.
+
+## Two tiers: pyscf anchors and terco goldens
+
+Every method checked here is checked twice.
+
+- **Anchors** -- the pyscf references in this directory. They say terco is
+  *right*: an independent code agrees with it, at the physics tolerance of
+  each comparison (`1e-8` Eh on a closed-shell SCF energy, for example).
+  They are frozen. Regenerate one only for a new method, or when that
+  case's own generator code or inputs change (`check_staleness.py` names
+  exactly which); never to absorb a terco change. No anchor tolerance is
+  ever loosened.
+- **Goldens** -- `test/goldens/<case>.gold`, terco's own numbers from a
+  terco run. They say terco has *not moved*: the same check also records its
+  quantities (`test/golden_io.F90`) and `terco/golden/<case>`
+  (`test/goldens/compare_goldens.py`) compares them at a tolerance set from
+  the measured spread between CI's compilers, far below the anchor's. A
+  refactor that shifts an energy by `1e-9` Eh passes every anchor and fails
+  its golden.
+
+When a golden fails:
+
+- **unintended** -- it is a regression; fix the code.
+- **intended** (a new algorithm, a different but equally valid order of
+  operations) -- first confirm the anchors still pass, since that is what
+  says the new numbers are still right. Then regenerate the goldens from a
+  terco build, which runs terco only and never pyscf:
+
+  ```
+  python3 test/goldens/regen_goldens.py --build build [--build build-lmax3]
+  ```
+
+  and say in the commit what moved and by how much. A case that only runs
+  at `TERCO_LMAX=3` comes from the second build.
+
+The goldens cover the SCF and energy checks: `scf_rks`, `scf_df`,
+`scf_robust`, `scf_rimp2` (both bases), `scf_pcm` (both sets), and the
+fixed-density `rys_fock` and `erf_fock` builds (every kernel path). For
+the Fock builds, which have no single energy, the golden is three scalars
+of each matrix: `tr(D G)`, its Frobenius norm, and a sum with fixed uneven
+weights, which moves when any element does.
+
+Tolerances (`TOLERANCES` in `compare_goldens.py`) are absolute and set at
+about ten times the largest spread measured in CI.
+
+**Where the goldens come from.** They were written by gfortran 15 with
+OpenBLAS. Two gfortran 15 builds, at `TERCO_LMAX=2` and `=3`, agree on
+every quantity they share bit for bit.
+
+**How the spread was measured.** Each CI job's "Golden spread" step
+prints every quantity's |diff| against those goldens. The jobs measured
+were gcc-15 with reference BLAS, intel 2025.0, nvidia-hpc 26.9,
+OpenACC-to-OpenMP at 4 threads, `TERCO_LMAX=3` and `TERCO_DF_LMAX=3`.
+
+| quantity | key | largest |diff| measured | tolerance |
+|---|---|---|---|
+| energies, Eh | `E_` | 1.66e-11 (`scf_robust` w5/d-aug-cc-pVDZ, cond(S) ~5e7, gcc-15); 3.6e-12 elsewhere | `2e-10` |
+| `scf_rimp2` (synthetic aux) E_os, E_ss, E_corr | `E_OS`, `E_SS`, `E_CORR` | 1.04e-10 (OpenMP; 9.85e-11 intel) | `1e-9` |
+| `tr(D G)` of a fixed-density Fock build | `TR_D` | 4.3e-12 (`erf_fock` formamide, nvidia-hpc) | `5e-11` |
+| fixed-weight element sum | `WSUM_` | 1.1e-12 (intel) | `2e-11` |
+| Frobenius norm | `NORM_` | 1.7e-13 (nvidia-hpc) | `2e-12` |
+
+**The one exception.** `scf_rimp2`'s default case uses uncontracted 6-31G
+with the synthetic auxiliary ladder, which is badly conditioned. Its
+correlation energy moves by 1e-10 between runs of the threaded build,
+while its E_RHF agrees to 5e-13. Its golden for those three quantities is
+therefore no tighter than the anchor (also `1e-9`). `scf_rimp2_ccpvdz`
+uses a real RI basis and agrees to 1.5e-15, so it gets the general
+`2e-10`.
+
+**What else is tight.** The converged open-shell OH energies in `scf_rks`
+were the expected risk, since their anchor allows `2e-6`. In CI they agree
+to 1.5e-12, so they hold the general tolerance.
 
 ## Mapping from the old `*_ref.py` scripts
 

@@ -32,7 +32,7 @@ set_target_properties(terco_test_basis PROPERTIES Fortran_MODULE_DIRECTORY
 # compares in Fortran against a file test/pyscf_refs/generate.py wrote
 # offline -- pyscf itself never runs in CI.
 #
-add_library(terco_pyscf_ref_io STATIC pyscf_ref_io.F90)
+add_library(terco_pyscf_ref_io STATIC pyscf_ref_io.F90 golden_io.F90)
 target_compile_definitions(terco_pyscf_ref_io PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(terco_pyscf_ref_io PUBLIC ${main_lib})
 set_target_properties(terco_pyscf_ref_io PROPERTIES Fortran_MODULE_DIRECTORY
@@ -109,6 +109,10 @@ if(Python3_FOUND)
   set_tests_properties(
     terco/check_pyscf_refs_fresh
     PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # refhash.py's own tests: an edit to one generator restales only its
+  # references, a shared helper exactly its users', a comment none.
+  add_test(NAME terco/check_refhash
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pyscf_refs/test_refhash.py)
 endif()
 
 #
@@ -705,3 +709,41 @@ target_link_libraries(bench_sph PRIVATE ${main_lib} terco_test_basis)
 foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
+
+#
+# The golden tier ("Two tiers" in test/pyscf_refs/README.md): terco checked
+# against its own stored numbers, at a tolerance far tighter than the pyscf
+# anchors'. Each check below records its quantities (golden_io.F90) into
+# golden_out/ while it runs its pyscf comparison, and terco/golden/<case>
+# then diffs them against test/goldens/<case>.gold. The fixture orders the two; the check
+# itself never runs twice.
+#
+if(Python3_FOUND)
+  set(TERCO_GOLDEN_OUT ${CMAKE_CURRENT_BINARY_DIR}/golden_out)
+  file(MAKE_DIRECTORY ${TERCO_GOLDEN_OUT})
+  function(terco_add_golden producer case)
+    set_property(TEST terco/${producer} APPEND PROPERTY ENVIRONMENT "TERCO_GOLDEN_OUT=${TERCO_GOLDEN_OUT}")
+    set_property(TEST terco/${producer} APPEND PROPERTY FIXTURES_SETUP golden_${case})
+    add_test(NAME terco/golden/${case}
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/goldens/compare_goldens.py
+                     ${case} ${TERCO_GOLDEN_OUT})
+    set_tests_properties(terco/golden/${case} PROPERTIES FIXTURES_REQUIRED golden_${case}
+                                                         SKIP_REGULAR_EXPRESSION "^SKIP")
+  endfunction()
+  terco_add_golden(scf_rks scf_rks)
+  terco_add_golden(scf_df scf_df)
+  terco_add_golden(scf_robust scf_robust)
+  terco_add_golden(scf_rimp2 scf_rimp2)
+  terco_add_golden(scf_rimp2_ccpvdz scf_rimp2_ccpvdz)
+  foreach(set main f)
+    terco_add_golden(scf_pcm_${set} scf_pcm_${set})
+  endforeach()
+  foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
+    terco_add_golden(check_rys_fock_vs_pyscf_${case} rys_fock_${case})
+  endforeach()
+  foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+    foreach(path hgp nosym rys)
+      terco_add_golden(check_erf_fock_vs_pyscf_${case}_${path} erf_fock_${case}_${path})
+    endforeach()
+  endforeach()
+endif()

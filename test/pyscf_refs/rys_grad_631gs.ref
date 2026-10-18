@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_rys_grad_vs_pyscf_631gs
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["rys_grad_631gs"] -> gen_rys_grad
 # pyscf: 2.14.0
-# hash: 8200215677c112d999db7d8bfd215273764485e9601859e78667b483d41473d5
-# files: test/pyscf_refs/generate.py test/check_rys_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
+# hash-scheme: case-ast-v1
+# hash: ac07f86380e1d6c081ce387bcd94c191e48050f020c0a039a15077dcdd2a9e41
+# files: test/check_rys_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAT 3
 NAO 19
 S 19 19
