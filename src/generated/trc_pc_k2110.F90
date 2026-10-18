@@ -784,6 +784,17 @@ contains
                                             + jcd(1 + ic + 3*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do ic = 0, 2
             do ia = 0, 5
                !$acc atomic update
@@ -812,6 +823,7 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
+         end if
 
          end do   ! idens
    end subroutine pcsi2110

@@ -6970,6 +6970,17 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do ic = 0, 5
             do ia = 0, 5
                !$acc atomic update
@@ -6998,6 +7009,7 @@ contains
                                            + kbd(1 + ib + 6*id)
             end do
          end do
+         end if
 
          end do   ! idens
    end subroutine pcsi2221
@@ -9179,6 +9191,17 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc0(gi)
             do ia = 0, 5
@@ -9209,6 +9232,7 @@ contains
                                            + kbd(1 + ib + 6*id)
             end do
          end do
+         end if
 
          end do   ! idens
          case (2)
@@ -11304,6 +11328,17 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc1(gi)
             do ia = 0, 5
@@ -11334,6 +11369,7 @@ contains
                                            + kbd(1 + ib + 6*id)
             end do
          end do
+         end if
 
          end do   ! idens
          case (3)
@@ -13462,6 +13498,17 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc2(gi)
             do ia = 0, 5
@@ -13492,6 +13539,7 @@ contains
                                            + kbd(1 + ib + 6*id)
             end do
          end do
+         end if
 
          end do   ! idens
          case (4)
@@ -15417,6 +15465,17 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc3(gi)
             do ia = 0, 5
@@ -15447,6 +15506,7 @@ contains
                                            + kbd(1 + ib + 6*id)
             end do
          end do
+         end if
 
          end do   ! idens
          case (5)
@@ -17549,6 +17609,17 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc4(gi)
             do ia = 0, 5
@@ -17579,6 +17650,7 @@ contains
                                            + kbd(1 + ib + 6*id)
             end do
          end do
+         end if
 
          end do   ! idens
          case (6)
@@ -19352,6 +19424,17 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
+         !
+         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
+         ! kfac = 0 -- the gather above never put the density into d..,
+         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
+         ! so skipping their atomic add is the same no-op-removal argument
+         ! as the gather: every jmat element comes out bit-identical to
+         ! letting the zero-valued atomics run. This is the traffic the
+         ! ablation in FOCK6's own comment calls out as what matters; the
+         ! idx loop above is unconditional on purpose (see its own note).
+         !
+         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc5(gi)
             do ia = 0, 5
@@ -19382,6 +19465,7 @@ contains
                                            + kbd(1 + ib + 6*id)
             end do
          end do
+         end if
 
          end do   ! idens
          end select
