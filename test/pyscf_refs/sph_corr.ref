@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: scf_sph_corr
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["sph_corr"] -> gen_sph_corr
 # pyscf: 2.14.0
-# hash: edc1286566acbb1b8174befc31a5a402a1c30e3e593c12ba4f4085fba01ed2ae
-# files: test/pyscf_refs/generate.py test/scf_sph_corr.F90 test/basis_sets/cc-pvdz.json test/basis_sets/cc-pvdz-rifit.json test/basis_sets/def2-universal-jkfit.json test/water.xyz test/formamide.xyz test/oh.xyz
+# hash-scheme: case-ast-v1
+# hash: 58e257427d0925821c7ffac7d027b9b76b24d4b66885f226a6e4c91e3ecf9cd6
+# files: test/scf_sph_corr.F90 test/basis_sets/cc-pvdz.json test/basis_sets/cc-pvdz-rifit.json test/basis_sets/def2-universal-jkfit.json test/water.xyz test/formamide.xyz test/oh.xyz
 RMP2_NAME_0 water_ccpvdz_sph
 RMP2_ESCF_0 -7.60267720533943532e+01
 RMP2_EOS_0 -1.52406996335657963e-01
