@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: cpks water/6-31gs/b3lyp (rks)
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["cpks"] -> gen_cpks
 # pyscf: 2.14.0
-# hash: 5850ad9ada8030371ca6f71e4f3ac76296d554e84411b7b3ce53a7ab8265151c
-# files: test/pyscf_refs/generate.py test/scf_cpks.F90 test/basis_sets/6-31gs.json test/water.xyz
+# hash-scheme: case-ast-v1
+# hash: f3a966a6df390dd2245c3d11de1d3f4ee701da6d4233a0807d7fb2a655fd182d
+# files: test/scf_cpks.F90 test/basis_sets/6-31gs.json test/water.xyz
 E_SCF -7.64087307534522324e+01
 ALPHA 3 3
 2.84047551137335264e+00 -5.58596414030454350e-15 1.40237888422555250e-16 -5.58596414030454350e-15 7.19389900070547128e+00 -4.15012307574792289e-15
