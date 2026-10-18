@@ -220,19 +220,37 @@ the Fock builds, which have no single energy, the golden is three scalars
 of each matrix: `tr(D G)`, its Frobenius norm, and a sum with fixed uneven
 weights, which moves when any element does.
 
-Tolerances (`TOLERANCES` in `compare_goldens.py`), absolute, by quantity:
+Tolerances (`TOLERANCES` in `compare_goldens.py`) are absolute and set at
+about ten times the largest spread measured in CI.
 
-| quantity | key prefix | tolerance |
-|---|---|---|
-| total energies, Eh (SCF, at-density, E_diel, RI-MP2 components) | `E_` | `1e-10` |
-| `tr(D G)` of a fixed-density Fock build | `TR_D` | `1e-10` |
-| Frobenius norm of a fixed-density Fock build | `NORM_` | `1e-10` |
-| fixed-weight element sum of a fixed-density Fock build | `WSUM_` | `1e-10` |
+**Where the goldens come from.** They were written by gfortran 15 with
+OpenBLAS. Two gfortran 15 builds, at `TERCO_LMAX=2` and `=3`, agree on
+every quantity they share bit for bit.
 
-These are provisional, pending the spread between CI's compilers (gcc-15,
-intel, nvidia-hpc, the OpenACC-to-OpenMP translation). The goldens come
-from gfortran 15. Two gfortran 15 builds, at `TERCO_LMAX=2` and `=3`,
-agree on every shared quantity bit for bit.
+**How the spread was measured.** Each CI job's "Golden spread" step
+prints every quantity's |diff| against those goldens. The jobs measured
+were gcc-15 with reference BLAS, intel 2025.0, nvidia-hpc 26.9,
+OpenACC-to-OpenMP at 4 threads, `TERCO_LMAX=3` and `TERCO_DF_LMAX=3`.
+
+| quantity | key | largest |diff| measured | tolerance |
+|---|---|---|---|
+| energies, Eh | `E_` | 1.66e-11 (`scf_robust` w5/d-aug-cc-pVDZ, cond(S) ~5e7, gcc-15); 3.6e-12 elsewhere | `2e-10` |
+| `scf_rimp2` (synthetic aux) E_os, E_ss, E_corr | `E_OS`, `E_SS`, `E_CORR` | 1.04e-10 (OpenMP; 9.85e-11 intel) | `1e-9` |
+| `tr(D G)` of a fixed-density Fock build | `TR_D` | 4.3e-12 (`erf_fock` formamide, nvidia-hpc) | `5e-11` |
+| fixed-weight element sum | `WSUM_` | 1.1e-12 (intel) | `2e-11` |
+| Frobenius norm | `NORM_` | 1.7e-13 (nvidia-hpc) | `2e-12` |
+
+**The one exception.** `scf_rimp2`'s default case uses uncontracted 6-31G
+with the synthetic auxiliary ladder, which is badly conditioned. Its
+correlation energy moves by 1e-10 between runs of the threaded build,
+while its E_RHF agrees to 5e-13. Its golden for those three quantities is
+therefore no tighter than the anchor (also `1e-9`). `scf_rimp2_ccpvdz`
+uses a real RI basis and agrees to 1.5e-15, so it gets the general
+`2e-10`.
+
+**What else is tight.** The converged open-shell OH energies in `scf_rks`
+were the expected risk, since their anchor allows `2e-6`. In CI they agree
+to 1.5e-12, so they hold the general tolerance.
 
 ## Mapping from the old `*_ref.py` scripts
 

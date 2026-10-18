@@ -26,22 +26,31 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-#: (key prefix, absolute tolerance, why), first match wins. Set from the
-#: cross-compiler spread measured in CI -- see "Two tiers" in
-#: test/pyscf_refs/README.md.
+#: (case, key prefix, absolute tolerance, why), first match wins; case "*"
+#: is any case. Each is about 10x the largest |diff| measured across CI's
+#: jobs (gcc-15, intel, nvidia-hpc, OpenACC-to-OpenMP, LMAX=3, DF_LMAX=3)
+#: against these gfortran 15 goldens -- see "Two tiers" in
+#: test/pyscf_refs/README.md for the measurements.
 TOLERANCES = [
-    ("E_", 1.0e-10, "total energies, Eh"),
-    ("TR_D", 1.0e-10, "tr(D G) of a fixed-density Fock build, Eh"),
-    ("NORM_", 1.0e-10, "Frobenius norm of a fixed-density Fock build"),
-    ("WSUM_", 1.0e-10, "weighted element sum of a fixed-density Fock build"),
+    # The synthetic auxiliary ladder on uncontracted 6-31G is badly
+    # conditioned: its correlation energy moves 1.04e-10 between runs of
+    # the 4-thread OpenMP build (9.85e-11 on intel) while E_RHF agrees to
+    # 5e-13. scf_rimp2_ccpvdz, with a real RI basis, agrees to 1e-15.
+    ("scf_rimp2", "E_OS", 1.0e-9, "RI-MP2, synthetic aux, Eh"),
+    ("scf_rimp2", "E_SS", 1.0e-9, "RI-MP2, synthetic aux, Eh"),
+    ("scf_rimp2", "E_CORR", 1.0e-9, "RI-MP2, synthetic aux, Eh"),
+    ("*", "E_", 2.0e-10, "energies, Eh"),
+    ("*", "TR_D", 5.0e-11, "tr(D G) of a fixed-density Fock build"),
+    ("*", "WSUM_", 2.0e-11, "fixed-weight element sum of a Fock build"),
+    ("*", "NORM_", 2.0e-12, "Frobenius norm of a Fock build"),
 ]
 
 
-def tolerance(key: str) -> float:
-    for prefix, tol, _ in TOLERANCES:
-        if key.startswith(prefix):
+def tolerance(case: str, key: str) -> float:
+    for c, prefix, tol, _ in TOLERANCES:
+        if c in ("*", case) and key.startswith(prefix):
             return tol
-    raise SystemExit(f"compare_goldens: no tolerance for key {key!r}; add its prefix to TOLERANCES")
+    raise SystemExit(f"compare_goldens: no tolerance for {case} {key!r}; add it to TOLERANCES")
 
 
 def read_values(path: Path) -> tuple[dict[str, float], bool]:
@@ -74,7 +83,8 @@ def report(out_dir: Path) -> int:
         for key, val in got.items():
             if key not in want:
                 continue
-            prefix = next((p for p, _, _ in TOLERANCES if key.startswith(p)), "?")
+            prefix = next((p for c, p, _, _ in TOLERANCES
+                           if c in ("*", case) and key.startswith(p)), "?")
             diff = abs(val - want[key])
             print(f"golden-spread {case:34s} {key:44s} {diff:9.2e}")
             if diff >= worst.get(prefix, (-1.0, ""))[0]:
@@ -115,7 +125,7 @@ def main() -> int:
             print(f"{key:48s} {'(none)':>24s} {val:24.16e}   FAIL: no golden for this key")
             nfail += 1
             continue
-        tol = tolerance(key)
+        tol = tolerance(case, key)
         diff = abs(val - want[key])
         ok = diff <= tol
         nfail += not ok
