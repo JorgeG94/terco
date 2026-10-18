@@ -580,7 +580,11 @@ program terco_main
       if (r%cli%is_set("incremental")) call die(r, "--df with --incremental is refused -- a "// &
                                                "density-fitted build is a full build every "// &
                                                "iteration, and the increment buys nothing")
-      cart = .true.
+      ! `--df` follows the basis's own AO space too, same as --rimp2 above
+      ! (trc_scf_df.F90's df_jk_setup only ever touches the Cartesian
+      ! d_c/gmat_c trc_scf_fock.F90's to_cart/to_sph fold at the boundary;
+      ! it never reads b%spherical itself). `--cart` is still the explicit
+      ! override.
       call r%cli%get("jkfit", sval, r%err)
       call resolve_basis(sval, r%jkfit_path, r%err)
       if (r%err%has_error()) call die(r, "--jkfit: "//r%err%get_message())
