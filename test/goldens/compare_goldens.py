@@ -7,6 +7,12 @@ tiers" in test/pyscf_refs/README.md for when goldens and pyscf references
 are each regenerated.
 
     python3 test/goldens/compare_goldens.py <case> <out_dir>
+    python3 test/goldens/compare_goldens.py --report <out_dir>
+
+--report prints every quantity of every case in <out_dir> against its
+golden, then the largest |diff| per quantity type, and always exits 0. CI
+runs it after each job's tests, so the spread between compilers is in
+every job's log, not only a failing one's.
 
 Every key in the output must have a golden, and must agree with it to the
 tolerance of its quantity (TOLERANCES below). A golden key the output does
@@ -56,7 +62,31 @@ def read_values(path: Path) -> tuple[dict[str, float], bool]:
     return values, complete
 
 
+def report(out_dir: Path) -> int:
+    worst: dict[str, tuple[float, str]] = {}
+    for out in sorted(out_dir.glob("*.out")):
+        case = out.stem
+        got, complete = read_values(out)
+        gold = HERE / f"{case}.gold"
+        if not (got and complete and gold.exists()):
+            continue
+        want, _ = read_values(gold)
+        for key, val in got.items():
+            if key not in want:
+                continue
+            prefix = next((p for p, _, _ in TOLERANCES if key.startswith(p)), "?")
+            diff = abs(val - want[key])
+            print(f"golden-spread {case:34s} {key:44s} {diff:9.2e}")
+            if diff >= worst.get(prefix, (-1.0, ""))[0]:
+                worst[prefix] = (diff, f"{case} {key}")
+    for prefix, (diff, where) in sorted(worst.items()):
+        print(f"golden-spread-max {prefix:6s} {diff:9.2e}  ({where})")
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--report":
+        return report(Path(sys.argv[2]))
     if len(sys.argv) != 3:
         print(__doc__)
         return 2
