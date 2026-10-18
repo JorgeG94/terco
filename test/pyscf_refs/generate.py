@@ -1272,6 +1272,67 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=Fal
         mf.mo_energy = (eps[:, 0], eps[:, 1])
         mf.converged = True
 
+    if grid_response:
+        # GRID IDENTITY, CHECKED NOT ASSUMED. The WHOSE BECKE PARTITION
+        # paragraph of trc_xc_grad.F90's own header argues, term for term,
+        # that pyscf's defaults (Bragg radii, Treutler size adjustment,
+        # Treutler-Ahlrichs radial, NWChem pruning, Becke's three-iteration
+        # cutoff, level 3) are terco's own -- an argument from the two
+        # codes' source, not from running them. This is what actually runs
+        # them and compares: pyscf's own grid (built explicitly, since the
+        # override branch above never touches `mf.grids.coords` here) is
+        # sorted lexicographically and checked point-for-point against
+        # terco's dumped grid (`pts`/`wts`, `res%grid_r`/`res%grid_w` --
+        # the FULL, unscreened quadrature, matching pyscf's own default of
+        # not dropping near-zero-weight points either), since the two
+        # codes build the same set of points in different internal orders.
+        # A mismatch here means the "whose Becke partition" argument does
+        # NOT hold for this case and the comparison below is not the
+        # grid-identical one it claims to be -- refused rather than
+        # silently compared anyway.
+        mf.grids.build()
+        # `Grids.build()` pads its arrays up to a multiple of
+        # `self.alignment` with zero-weight, atm_idx=-1 placeholder points
+        # (`_add_padding`, gen_grid.py) -- a GPU-batching convenience that
+        # terco's own grid has no counterpart for and carries no physics
+        # (weight exactly 0). Dropped before the comparison, not treated
+        # as part of "pyscf's own grid" -- the first run of this check
+        # found exactly `alignment` extra points this way on water (33704
+        # vs terco's 33698) before this filter was added.
+        pad = np.asarray(mf.grids.atm_idx) >= 0
+        py_coords = np.asarray(mf.grids.coords)[pad]
+        py_weights = np.asarray(mf.grids.weights)[pad]
+        if py_coords.shape[0] != pts.shape[0]:
+            raise RuntimeError(
+                f"gen_xc_grad {case}: pyscf's own grid has {py_coords.shape[0]} points, "
+                f"terco's has {pts.shape[0]} -- not the same quadrature, refusing the "
+                f"grid_response=True comparison")
+        order_py = np.lexsort((py_coords[:, 2], py_coords[:, 1], py_coords[:, 0]))
+        order_tc = np.lexsort((pts[:, 2], pts[:, 1], pts[:, 0]))
+        coord_err = np.abs(py_coords[order_py] - pts[order_tc]).max()
+        weight_err = np.abs(py_weights[order_py] - wts[order_tc]).max()
+        # 1e-9, not 1e-12: the two codes compute the SAME formula (coords:
+        # atom + r*sphere direction; weights: a product of several
+        # sqrt/trig-derived cutoff factors) through independently written
+        # sqrt/trig call sequences, and measured coordinate agreement is
+        # ~1e-13 (plain float64 ULP noise) while the WEIGHT -- a product
+        # of several cutoff factors, each sensitive to its own ULP-level
+        # input noise, occasionally near a cutoff's steep region -- was
+        # ~4e-11 on water at generation time. 1e-9 is still ~25x that,
+        # the SAME margin style as trc_xc_grad.F90's own grid_response
+        # gate (check_xc_grad_vs_pyscf.F90's own comment): a real
+        # algorithmic mismatch (wrong radii, wrong adjustment, a dropped
+        # atom) would show up many orders above this, not within one of
+        # it.
+        if coord_err > 1e-9 or weight_err > 1e-9:
+            raise RuntimeError(
+                f"gen_xc_grad {case}: pyscf's own grid differs from terco's own grid "
+                f"(sorted) by coord {coord_err:.3e}, weight {weight_err:.3e} -- the "
+                f"grid_response=True comparison needs an identical grid on both sides, "
+                f"not an assumed one; see trc_xc_grad.F90's WHOSE BECKE PARTITION note")
+        print(f"  {case}: pyscf grid matches terco's own (sorted), coord err "
+              f"{coord_err:.3e}, weight err {weight_err:.3e}")
+
     dm = mf.make_rdm1()
     mf.e_tot = mf.energy_tot(dm)
     g = mf.nuc_grad_method()

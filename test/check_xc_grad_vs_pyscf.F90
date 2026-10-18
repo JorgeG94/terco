@@ -166,7 +166,26 @@ program check_xc_grad_vs_pyscf
       call ref_close(u)
       nfail = 0
       worst = maxval(abs(grad - grad_ref))
-      call ref_report(nfail, worst < 3.0e-6_dp, 'KS-DFT gradient vs pyscf, worst|diff|', worst)
+      if (gresp) then
+         ! The grid_response=True cases are two INDEPENDENT
+         ! implementations of the same point-motion/partition-weight
+         ! physics (trc_xc_grad.F90's header, GRID RESPONSE), not a
+         ! Pulay-term-only comparison muddied by a quadrature truncation
+         ! -- measured worst|terco-pyscf| at generation time was 1.501e-10
+         ! (water/svwn), 1.615e-10 (water/pbe), 1.563e-10 (nh2/pbe, UKS,
+         ! the cross-spin Q2/rmatx terms) -- with becke_partition_derivatives'
+         ! active-set screening ON (its own default, matching the energy's);
+         ! an EARLIER, unscreened measurement here was 5.151e-13/6.470e-13/
+         ! 2.481e-11 on the same three cases, so screening costs about two
+         ! orders of magnitude of the agreement without threatening it. 1e-9
+         ! is ~6x the worst of the three current numbers -- not the
+         ! Pulay-only tolerance below loosened: a 30% error in either new
+         ! term (B/C), or a screening inconsistency between this gradient and
+         ! the energy, would be orders of magnitude above this and caught.
+         call ref_report(nfail, worst < 1.0e-9_dp, 'KS-DFT gradient (grid response) vs pyscf, worst|diff|', worst)
+      else
+         call ref_report(nfail, worst < 3.0e-6_dp, 'KS-DFT gradient vs pyscf, worst|diff|', worst)
+      end if
       if (nfail > 0) then
          print '(a)', 'check_xc_grad_vs_pyscf: FAILED against the pyscf reference'; stop 1
       end if
