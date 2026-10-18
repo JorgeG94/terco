@@ -47,6 +47,7 @@ import scipy.linalg
 import pyscf
 from pyscf import df, gto, mp, scf, dft
 from pyscf.dft import libxc, numint
+from pyscf.grad import rhf as pyscf_grad_rhf
 
 HERE = Path(__file__).resolve().parent              # test/pyscf_refs
 TEST = HERE.parent                                  # test/
@@ -923,6 +924,114 @@ def gen_rys_grad(case, json_rel):
     worst_rhf = np.abs(grad_rhf_terco - grad_rhf_py).max()
     worst_uhf = np.abs(grad_uhf_terco - grad_uhf_py).max()
     print(f"  rys_grad {case}: RHF worst|terco-pyscf| {worst_rhf:.3e}  UHF {worst_uhf:.3e} (at generation time)")
+    dump.unlink()
+
+
+def gen_1e_grad(case, xyz, json_rel):
+    """trc_1e_gradient's three terms (dS, dT, dV) against pyscf, each in
+    isolation, at a fixed non-SCF density (check_1e_grad_vs_pyscf.F90's own
+    header has the full reasoning for why three separate pyscf quantities,
+    not one).
+
+    THE "ip" SIGN. Every pyscf `int1e_ip*` integral is <nabla_r mu|op|nu>,
+    the gradient of the BRA FUNCTION wrt the electron coordinate -- for a
+    Gaussian centred at A, that is the NEGATIVE of d/dA (shifting the
+    coordinate one way is shifting the centre the other). So
+    d<mu|op|nu>/dA_mu = -int1e_ip<op>, confirmed independently (not taken on
+    a pyscf docstring's word) by a central finite difference of
+    Tr(W, S(R)) and Tr(D, T(R))/Tr(D, V(R)) at a displaced geometry, fixed
+    W/D: agreed to 8 figures at h=1e-5.
+
+    PER-ATOM ASSEMBLY. Standard pyscf technique (grad.rhf.grad_elec's own
+    overlap/kinetic terms): slice the bra-derivative tensor to the AO rows
+    belonging to one atom (mol.aoslice_by_atom()), add the transpose for
+    the symmetric ket contribution (an atom's shells appear on BOTH sides
+    of a symmetric matrix like S/T/V), and contract with the fixed
+    matrix -- no aoslice needed for a result already per-atom.
+
+    THE OPERATOR TERM. dV cannot be split into basis/Hellmann-Feynman this
+    way without re-deriving pyscf's own int1e_iprinv convention, so dV is
+    built from pyscf's OWN validated combined kinetic+nuclear hcore
+    derivative (grad.rhf.Gradients.hcore_generator, which already bundles
+    the nuclear-attraction basis derivative and the Hellmann-Feynman term
+    per atom correctly -- that is what hcore_generator is FOR) minus the
+    kinetic piece built the same way as dT above: dV = hcore_deriv(atom) -
+    dT_only(atom). Confirmed against the same finite difference as dT,
+    same figures.
+    """
+    dump = TEST / f"onee_grad_probe_{case}.bin"
+    run_bin(f"check_1e_grad_vs_pyscf_{case}", [xyz, json_rel, dump.name, case])
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    wmat = r.mat(nao)
+    dmat = r.mat(nao)
+    gs_terco = r.f8(3 * nat).reshape(3, nat, order='F').T
+    gt_terco = r.f8(3 * nat).reshape(3, nat, order='F').T
+    gv_terco = r.f8(3 * nat).reshape(3, nat, order='F').T
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_1e_grad {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    w_terco_p = wmat[np.ix_(inv_perm, inv_perm)]
+    d_terco_p = dmat[np.ix_(inv_perm, inv_perm)]
+
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_1e_grad {case}: overlap check failed, {s_err:.3e}")
+    w_pyscf = n[:, None] * w_terco_p * n[None, :]
+    d_pyscf = n[:, None] * d_terco_p * n[None, :]
+
+    aoslices = mol.aoslice_by_atom()
+    s1 = -mol.intor('int1e_ipovlp', comp=3)
+    t1 = -mol.intor('int1e_ipkin', comp=3)
+    mf = scf.RHF(mol)
+    hcore_deriv = pyscf_grad_rhf.Gradients(mf).hcore_generator(mol)
+
+    def place(tensor, atm):
+        p0, p1 = aoslices[atm, 2:]
+        out = np.zeros((3, nao, nao))
+        out[:, p0:p1] = tensor[:, p0:p1]
+        return out + out.transpose(0, 2, 1)
+
+    grad_s_py = np.zeros((nat, 3))
+    grad_t_py = np.zeros((nat, 3))
+    grad_v_py = np.zeros((nat, 3))
+    for ia in range(nat):
+        gs_ia = place(s1, ia)
+        gt_ia = place(t1, ia)
+        gv_ia = hcore_deriv(ia) - gt_ia
+        grad_s_py[ia] = -np.einsum('xij,ij->x', gs_ia, w_pyscf)
+        grad_t_py[ia] = np.einsum('xij,ij->x', gt_ia, d_pyscf)
+        grad_v_py[ia] = np.einsum('xij,ij->x', gv_ia, d_pyscf)
+
+    w = RefWriter(f"onee_grad_{case}.ref")
+    w.header("check_1e_grad_vs_pyscf_" + case,
+              [ROOT / "test" / "check_1e_grad_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("S", s_terco)
+    w.matrix("GRAD_S", grad_s_py.T)
+    w.matrix("GRAD_T", grad_t_py.T)
+    w.matrix("GRAD_V", grad_v_py.T)
+    w.end()
+    w.write()
+    worst_s = np.abs(gs_terco - grad_s_py).max()
+    worst_t = np.abs(gt_terco - grad_t_py).max()
+    worst_v = np.abs(gv_terco - grad_v_py).max()
+    print(f"  onee_grad {case}: worst|terco-pyscf| dS {worst_s:.3e}  dT {worst_t:.3e}  "
+          f"dV {worst_v:.3e} (at generation time)")
     dump.unlink()
 
 
@@ -1882,6 +1991,10 @@ CASES = {
     "vv10": gen_vv10,
     "rys_grad_631gs": lambda: gen_rys_grad("631gs", "basis_sets/6-31gs.json"),
     "rys_grad_ccpvdz": lambda: gen_rys_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
+    "onee_grad_water_631gs": lambda: gen_1e_grad("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
+    "onee_grad_water_ccpvdz": lambda: gen_1e_grad("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
+    "onee_grad_formamide_ccpvdz": lambda: gen_1e_grad(
+        "formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
     "rys_fock_water_ccpvdz": lambda: gen_rys_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", 1e-9),
     "rys_fock_water_ccpvtz": lambda: gen_rys_fock("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json", 1e-10),
     "rys_fock_formamide_def2tzvp": lambda: gen_rys_fock(

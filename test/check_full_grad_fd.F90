@@ -1,0 +1,132 @@
+!
+! The FULL analytic RHF/UHF nuclear gradient (trc_scf_grad%trc_scf_gradient:
+! eri%gradient + trc_1e_gradient + nuclear repulsion) against a central
+! finite difference of terco's own FULLY RECONVERGED SCF energy -- the
+! Hellmann-Feynman/Pulay theorem's actual claim, extending
+! check_rys_grad_fd.F90's technique (which only exercises the two-electron
+! piece at a FIXED, non-SCF density) to the complete gradient at a
+! converged one.
+!
+! RHF on water, UHF on the OH radical (a genuinely open-shell case, nalpha
+! /= nbeta) -- both 6-31G*. Every displacement reconverges the SCF from
+! scratch (GWH guess, tight conv_energy/conv_diis): the FD step is small
+! enough (1e-3 bohr) that this is deterministic and costs nothing dramatic
+! for these two-and-three-atom systems.
+!
+! Also checks translational invariance of the analytic gradient alone
+! (sum over atoms ~ 0), the one property that holds exactly regardless of
+! step size or SCF tolerance.
+!
+program check_full_grad_fd
+   use pic_types, only: dp
+   use trc_api, only: trc_basis_t, trc_bind_device
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_grad, only: trc_scf_gradient
+   use trc_linalg, only: trc_linalg_t
+   use trc_test_basis, only: read_xyz
+   use trc_error, only: error_t
+   implicit none
+
+   real(dp), parameter :: H = 1.0e-3_dp
+   real(dp), parameter :: RELTOL = 1.0e-5_dp
+   !! Central difference at H = 1e-3 on a reconverged SCF energy: the
+   !! truncation floor measured here is ~1e-7 absolute on components of
+   !! order 1e-2 to 1e-1 -- a tight ABSOLUTE floor, not RELTOL's own
+   !! bottleneck, which is why ABSTOL (below) is the gate that matters for
+   !! the near-zero components translational invariance already covers.
+   real(dp), parameter :: ABSTOL = 5.0e-7_dp
+   real(dp), parameter :: INVTOL = 1.0e-10_dp
+
+   logical :: any_fail
+   any_fail = .false.
+
+   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'RHF water/6-31G*')
+   call run_case('oh.xyz', 'basis_sets/6-31gs.json', 5, 4, 'UHF OH/6-31G*')
+
+   if (any_fail) then
+      print '(a)', '  RESULT: FAIL'; stop 1
+   end if
+   print '(a)', '  RESULT: PASS'
+
+contains
+
+   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, label)
+      character(*), intent(in) :: xyzfile, basis_json, label
+      integer, intent(in) :: nalpha, nbeta
+
+      integer :: nat, dev, a, d
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r0(:, :), rtmp(:, :), grad(:, :)
+      type(trc_basis_t) :: bas
+      type(trc_scf_options_t) :: opts
+      type(trc_scf_result_t) :: res
+      type(trc_linalg_t) :: lp
+      type(error_t) :: err
+      real(dp) :: eplus, eminus, fd, worst_abs, worst_rel, denom
+      real(dp) :: inv(3)
+
+      dev = trc_bind_device(0)
+      call read_xyz(xyzfile, nat, at_z, r0)
+      call trc_basis_from_json(basis_json, nat, at_z, r0, bas, err)
+      if (err%has_error()) then
+         print '(a)', 'check_full_grad_fd: '//err%get_message(); stop 1
+      end if
+      call bas%to_device()
+
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 200
+      call trc_scf_run(bas, nalpha, nbeta, opts, res)
+      if (.not. res%converged) then
+         print '(a)', 'check_full_grad_fd: '//label//': reference SCF did not converge'
+         any_fail = .true.; return
+      end if
+
+      allocate (grad(3, nat))
+      call lp%init(bas%nao)
+      call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad)
+      call bas%release()
+
+      inv = sum(grad, dim=2)
+      if (maxval(abs(inv)) > INVTOL) any_fail = .true.
+
+      allocate (rtmp(3, nat))
+      worst_abs = 0.0_dp; worst_rel = 0.0_dp
+      do a = 1, nat
+         do d = 1, 3
+            rtmp = r0; rtmp(d, a) = r0(d, a) + H
+            eplus = scf_energy_at(basis_json, nat, at_z, rtmp, nalpha, nbeta, opts)
+            rtmp = r0; rtmp(d, a) = r0(d, a) - H
+            eminus = scf_energy_at(basis_json, nat, at_z, rtmp, nalpha, nbeta, opts)
+            fd = (eplus - eminus)/(2.0_dp*H)
+            denom = max(abs(grad(d, a)), abs(fd), 1.0e-10_dp)
+            worst_abs = max(worst_abs, abs(grad(d, a) - fd))
+            worst_rel = max(worst_rel, abs(grad(d, a) - fd)/denom)
+         end do
+      end do
+
+      print '(a,a,a,es10.2,a,es10.2,a,3es10.2)', '  ', label, ': worst abs ', worst_abs, &
+         '  worst rel ', worst_rel, '  translational-invariance residual: ', inv
+      if (worst_abs > ABSTOL .and. worst_rel > RELTOL) any_fail = .true.
+
+      deallocate (at_z, r0, rtmp, grad)
+   end subroutine run_case
+
+   real(dp) function scf_energy_at(basis_json, nat, at_z, r, nalpha, nbeta, opts) result(e)
+      character(*), intent(in) :: basis_json
+      integer, intent(in) :: nat, at_z(nat), nalpha, nbeta
+      real(dp), intent(in) :: r(3, nat)
+      type(trc_scf_options_t), intent(in) :: opts
+      type(trc_basis_t) :: b2
+      type(trc_scf_result_t) :: r2
+      type(error_t) :: err
+      call trc_basis_from_json(basis_json, nat, at_z, r, b2, err)
+      if (err%has_error()) then
+         print '(a)', 'check_full_grad_fd: '//err%get_message(); stop 1
+      end if
+      call b2%to_device()
+      call trc_scf_run(b2, nalpha, nbeta, opts, r2)
+      e = r2%energy
+      call b2%release()
+   end function scf_energy_at
+
+end program check_full_grad_fd

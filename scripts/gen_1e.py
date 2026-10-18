@@ -764,6 +764,445 @@ end module trc_pcm_kernels
     print(f"wrote {path}: {len(names)} classes, {txt.count(chr(10))} lines")
 
 
+def emit_dc_vrr(lab, idx):
+    """Hellmann-Feynman derivative wrt the nucleus C: wx/wy/wz(:, 0:lab),
+    built from the ALREADY-COMPUTED vn(:, 0:lab+1) -- one Boys order higher
+    than this function's own `lab`, supplied by the caller's VRR call at
+    lab+1 (see emit_grad_class).
+
+    DERIVATION. C enters V[a]^(m) only through PC_i = P_i - C_i: once
+    explicitly, in the lowering recurrence's own coefficient, and once more
+    through every V[...]^(m+1) nested inside it. Differentiate
+
+        V[a+1_i]^(m) = PA_i V[a]^(m) - PC_i V[a]^(m+1)
+                       + (N_i(a)/2zeta)(V[a-1_i]^(m) - V[a-1_i]^(m+1))
+
+    term by term wrt C_x. PA_i does not depend on C, so the first term's
+    derivative is PA_i W_x[a]^(m) outright. PC_i does (d PC_i/dC_x =
+    -delta_{ix}), so its term differentiates by the product rule into TWO
+    pieces: -PC_i W_x[a]^(m+1) from V[a]^(m+1) itself varying, and
+    +delta_{ix} V[a]^(m+1) from PC_i varying. The lowering term carries no
+    explicit PC_i, so it differentiates straight through to its own W. So:
+
+        W_x[a+1_i]^(m) = PA_i W_x[a]^(m) - PC_i W_x[a]^(m+1)
+                         + delta_{ix} V[a]^(m+1)
+                         + (N_i(a)/2zeta)(W_x[a-1_i]^(m) - W_x[a-1_i]^(m+1))
+
+    the SAME recurrence as V, plus one inhomogeneous "source" term that
+    fires only when the direction being raised (i) is the direction being
+    differentiated (x): raising momentum in a direction and differentiating
+    wrt that same direction both want the one explicit factor of PC_i, and
+    whichever one is applied first leaves the other as a plain V, not a W.
+
+    The base case (a = 0, no predecessor to inherit a recurrence from) is
+    derived directly from the Boys substitution: V[0]^(m) = (2pi/zeta) K_ab
+    F_m(T), T = zeta|PC|^2, dF_m/dT = -F_{m+1}(T), d T/dC_x = -2 zeta PC_x,
+    so
+
+        W_x[0]^(m) = (2pi/zeta) K_ab * (-F_{m+1}) * (-2 zeta PC_x)
+                    = 2 zeta PC_x * (2pi/zeta) K_ab F_{m+1}
+                    = 2 zeta PC_x V[0]^(m+1)
+
+    which is exactly the general formula's pattern with the inhomogeneous
+    term supplying the whole thing (there is no recurrence to add to at
+    a = 0).
+
+    Checked three ways in test/check_1e_grad_vs_pyscf.F90 and
+    test/check_1e_grad_fd.F90: against pyscf's own Hellmann-Feynman term
+    (grad.rhf's hcore_generator), against a central finite difference of
+    the nuclear-attraction energy wrt a nuclear coordinate at fixed
+    density and fixed basis-function positions, and via translational
+    invariance (dV/dA + dV/dB + dV/dC = 0 for the one (A,B,C) triple) --
+    never trusted on the strength of this derivation alone.
+    """
+    o, w = [], None
+    w = o.append
+    lst = []
+    for l in range(lab + 1):
+        for p in cart(l):
+            lst.append(p)
+    info = {}
+    for p in lst:
+        x, y, z = p
+        if x > 0:
+            d, dn1 = 0, (x - 1, y, z)
+            dn2 = (x - 2, y, z) if x > 1 else None
+            n = x
+        elif y > 0:
+            d, dn1 = 1, (x, y - 1, z)
+            dn2 = (x, y - 2, z) if y > 1 else None
+            n = y
+        elif z > 0:
+            d, dn1 = 2, (x, y, z - 1)
+            dn2 = (x, y, z - 2) if z > 1 else None
+            n = z
+        else:
+            continue
+        info[p] = (d, dn1, dn2, n)
+
+    PA = ["pax", "pay", "paz"]
+    PC = ["pcx", "pcy", "pcz"]
+    WN = ["wx", "wy", "wz"]
+    idx0 = idx[(0, 0, 0)]
+    for m in range(lab, -1, -1):
+        w(f"            ! --- dV/dC, m = {m} ---")
+        for dd in range(3):
+            w(f"            {WN[dd]}({idx0},{m}) = "
+              f"2.0_dp*zeta*{PC[dd]}*vn({idx0},{m + 1})")
+        for l in range(1, lab - m + 1):
+            for p in cart(l):
+                d, dn1, dn2, n = info[p]
+                for dd in range(3):
+                    t = (f"{PA[d]}*{WN[dd]}({idx[dn1]},{m})"
+                         f" - {PC[d]}*{WN[dd]}({idx[dn1]},{m + 1})")
+                    if dd == d:
+                        t += f" &\n               + vn({idx[dn1]},{m + 1})"
+                    if dn2 is not None:
+                        t += (f" &\n               + {float(n - 1)}_dp*oo2z*"
+                              f"({WN[dd]}({idx[dn2]},{m}) - {WN[dd]}({idx[dn2]},{m + 1}))")
+                    w(f"            {WN[dd]}({idx[p]},{m}) = {t}")
+    return "\n".join(o)
+
+
+def emit_grad_class(la, lb, order="lexicographic"):
+    """(la|lb) one-electron GRADIENT block: -W:dS/dR, +D:dT/dR and
+    +D:dV/dR, contracted directly into ga (bra atom), gb (ket atom) and gc
+    (every atom -- V's Hellmann-Feynman term), with no derivative matrix
+    ever materialised.
+
+    BRA/KET BASIS DERIVATIVE. A Cartesian Gaussian's derivative wrt its own
+    centre shifts its angular momentum by one unit each way,
+
+        d/dA_x [(x-Ax)^l exp(-a(x-Ax)^2)] = 2a (x-Ax)^(l+1) exp(...)
+                                            - l (x-Ax)^(l-1) exp(...)
+
+    independent of the ket or of whatever operator sits between bra and
+    ket. S and T have no third centre, so dO/dA applied via that identity
+    plus translational invariance (dO/dA + dO/dB = 0, exact -- O depends on
+    nothing C could move) gives dO/dB = -dO/dA for free; that is why only
+    one bra-raised set of 1-D tables (sx/sy/sz to la+1, tx/ty/tz likewise)
+    is built below, and `gb`'s S/T lines are the negative of `ga`'s.
+
+    V also depends on the nucleus C, so dV/dA + dV/dB = -dV/dC is no
+    longer zero and the shortcut does not apply to B: dV/dB is built the
+    same identity applied to the KET centre directly, which needs the
+    (la,lb+1) and (la,lb-1) classes. Both of those and the bra's
+    (la+1,lb)/(la-1,lb) come from ONE extra unit of VRR -- build vn to
+    degree la+lb+1 (one more than the plain V kernel ever needs) and HRR-
+    transfer the SAME vn0 at four (la',lb') pairs instead of one.
+
+    OPERATOR DERIVATIVE (Hellmann-Feynman). emit_dc_vrr's own docstring has
+    the derivation; it rides on the same vn(:, 0:la+lb+1) already built for
+    the bra/ket shift above, so no further VRR is needed, only the HRR
+    transfer of wx/wy/wz at the plain (la,lb) class.
+
+    Translational invariance is used as a CHECK on the assembled gradient
+    (test/check_1e_grad_fd.F90, test/check_1e_grad_vs_pyscf.F90), not as a
+    shortcut here for anything beyond the dO/dB = -dO/dA already described.
+
+    WEIGHT. `wt` folds the triangular shell-pair list's double count
+    (ii != jj feeds both S(mu,nu) and S(nu,mu), equal numbers, both
+    needed in the sum) into one scale on `cc`; every term below is linear
+    in `cc`, so nothing else has to know about it.
+    """
+    lab = la + lb
+    lab1 = lab + 1
+    na, nb = len(cart(la)), len(cart(lb))
+    na1, nb1 = len(cart(la + 1)), len(cart(lb + 1))
+    nam1 = len(cart(la - 1)) if la >= 1 else 0
+    nbm1 = len(cart(lb - 1)) if lb >= 1 else 0
+    idx = cart_cum(lab1)
+    nvn = ncum(lab1)
+    nvnw = ncum(lab)
+    tag = f"{la}{lb}"
+
+    sxyz = "\n".join(emit_1d(la + 1, lb, a) for a in "xyz")
+    txyz = "\n".join(emit_kin_1d(la + 1, lb, a) for a in "xyz")
+
+    cla, clb = cart(la, order), cart(lb, order)
+    cla1, clb1 = cart(la + 1, order), cart(lb + 1, order)
+    clam1 = cart(la - 1, order) if la >= 1 else None
+    clbm1 = cart(lb - 1, order) if lb >= 1 else None
+    AX = {"x": 0, "y": 1, "z": 2}
+
+    # --- S/T bra derivative; gb is -ga here (translational invariance) ---
+    st_lines = []
+    wst = st_lines.append
+    for ib, bcomp in enumerate(clb):
+        for ia, acomp in enumerate(cla):
+            k = 1 + ia + na*ib
+            comp = {"x": acomp[0], "y": acomp[1], "z": acomp[2]}
+            bco = {"x": bcomp[0], "y": bcomp[1], "z": bcomp[2]}
+            for d in "xyz":
+                cd = comp[d]
+                others = [o for o in "xyz" if o != d]
+                o1, o2 = others
+
+                def raised(tab, d=d, cd=cd, bco=bco):
+                    hi = f"{tab}{d}({cd + 1},{bco[d]})"
+                    if cd > 0:
+                        return (f"(2.0_dp*al*{hi} - {float(cd)}_dp*"
+                                f"{tab}{d}({cd - 1},{bco[d]}))")
+                    return f"(2.0_dp*al*{hi})"
+
+                ds_d = raised("s")
+                dt_d = raised("t")
+                sprod = "*".join(f"s{o}({comp[o]},{bco[o]})" for o in others)
+                dS_total = f"{ds_d}*{sprod}"
+                term2 = f"t{o1}({comp[o1]},{bco[o1]})*s{o2}({comp[o2]},{bco[o2]})"
+                term3 = f"s{o1}({comp[o1]},{bco[o1]})*t{o2}({comp[o2]},{bco[o2]})"
+                dT_total = f"{dt_d}*{sprod} + {ds_d}*({term2} + {term3})"
+                di = AX[d] + 1
+                wst(f"         ga({di}) = ga({di}) - cc*wblk({k})*({dS_total}) &")
+                wst(f"                         + cc*dblk({k})*({dT_total})")
+                wst(f"         gb({di}) = gb({di}) + cc*wblk({k})*({dS_total}) &")
+                wst(f"                         - cc*dblk({k})*({dT_total})")
+    st_block = "\n".join(st_lines)
+
+    # --- V: VRR to lab+1, Hellmann-Feynman VRR, five HRR transfers ---
+    vrr = emit_nuc_vrr(lab1, idx)
+    dcvrr = emit_dc_vrr(lab, idx)
+    hrr_ap = emit_hrr(la + 1, lb, idx, "vn0", "vAp", order)
+    hrr_am = emit_hrr(la - 1, lb, idx, "vn0", "vAm", order) if la >= 1 else \
+        "            ! la = 0: no (la-1,lb) class"
+    hrr_bp = emit_hrr(la, lb + 1, idx, "vn0", "vBp", order)
+    hrr_bm = emit_hrr(la, lb - 1, idx, "vn0", "vBm", order) if lb >= 1 else \
+        "            ! lb = 0: no (la,lb-1) class"
+    hrr_wx = emit_hrr(la, lb, idx, "wx0", "wxt", order)
+    hrr_wy = emit_hrr(la, lb, idx, "wy0", "wyt", order)
+    hrr_wz = emit_hrr(la, lb, idx, "wz0", "wzt", order)
+
+    v_lines = []
+    wv = v_lines.append
+    for ib, bcomp in enumerate(clb):
+        for ia, acomp in enumerate(cla):
+            k = 1 + ia + na*ib
+            for d in "xyz":
+                di = AX[d] + 1
+                j = AX[d]
+                ap = tuple(c + (1 if jj == j else 0) for jj, c in enumerate(acomp))
+                k1 = 1 + cla1.index(ap) + na1*ib
+                bra_expr = f"2.0_dp*al*vAp({k1})"
+                if acomp[j] > 0:
+                    am = tuple(c - (1 if jj == j else 0) for jj, c in enumerate(acomp))
+                    k2 = 1 + clam1.index(am) + nam1*ib
+                    bra_expr = f"({bra_expr} - {float(acomp[j])}_dp*vAm({k2}))"
+                else:
+                    bra_expr = f"({bra_expr})"
+                bp = tuple(c + (1 if jj == j else 0) for jj, c in enumerate(bcomp))
+                k3 = 1 + ia + na*clb1.index(bp)
+                ket_expr = f"2.0_dp*bet*vBp({k3})"
+                if bcomp[j] > 0:
+                    bm = tuple(c - (1 if jj == j else 0) for jj, c in enumerate(bcomp))
+                    k4 = 1 + ia + na*clbm1.index(bm)
+                    ket_expr = f"({ket_expr} - {float(bcomp[j])}_dp*vBm({k4}))"
+                else:
+                    ket_expr = f"({ket_expr})"
+                wtab = {"x": "wxt", "y": "wyt", "z": "wzt"}[d]
+                wv(f"            ga({di}) = ga({di}) - cc*zatm(ic)*dblk({k})*{bra_expr}")
+                wv(f"            gb({di}) = gb({di}) - cc*zatm(ic)*dblk({k})*{ket_expr}")
+                wv(f"            gc({di},ic) = gc({di},ic) - cc*zatm(ic)*dblk({k})*{wtab}({k})")
+    v_block = "\n".join(v_lines)
+
+    na1nb = na1*nb
+    nanb1 = na*nb1
+    decl_am = f"      real(dp) :: vAm({nam1*nb})\n" if la >= 1 else ""
+    decl_bm = f"      real(dp) :: vBm({na*nbm1})\n" if lb >= 1 else ""
+
+    return f"""
+   pure subroutine one_e_grad_{tag}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
+                                    natm, zatm, ratm, wt, wblk, dblk, ga, gb, gc)
+      !! ({la}|{lb}) one-electron gradient block: -W:dS/dR, +D:dT/dR, and
+      !! +D:dV/dR (basis derivative on A and B, Hellmann-Feynman on every
+      !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
+      !! and gc (every atom) -- no derivative matrix is ever formed. See
+      !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !$acc routine seq
+      integer,  intent(in)  :: nprim_a, nprim_b, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
+      real(dp), intent(in)  :: wt, wblk({na*nb}), dblk({na*nb})
+      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+
+      integer  :: ip, jp, ic, k
+      real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
+      real(dp) :: px, py, pz, pax, pay, paz, pbx, pby, pbz
+      real(dp) :: pcx, pcy, pcz, tval, vpref, rab2
+      real(dp) :: abx, aby, abz, e0x, e0y, e0z
+      real(dp) :: sx(0:{la + 1},0:{lb + 2}), sy(0:{la + 1},0:{lb + 2}), sz(0:{la + 1},0:{lb + 2})
+      real(dp) :: tx(0:{la + 1},0:{lb}), ty(0:{la + 1},0:{lb}), tz(0:{la + 1},0:{lb})
+      real(dp) :: vn({nvn},0:{lab1}), vn0({nvn})
+      real(dp) :: wx({nvnw},0:{lab}), wy({nvnw},0:{lab}), wz({nvnw},0:{lab})
+      real(dp) :: wx0({nvnw}), wy0({nvnw}), wz0({nvnw})
+      real(dp) :: vAp({na1nb})
+{decl_am}      real(dp) :: vBp({nanb1})
+{decl_bm}      real(dp) :: wxt({na*nb}), wyt({na*nb}), wzt({na*nb})
+      real(dp) :: f(0:BOYS_MMAX)
+
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      rab2 = abx*abx + aby*aby + abz*abz
+
+      ga = 0.0_dp; gb = 0.0_dp
+      do k = 1, natm
+         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
+      end do
+
+      do ip = 1, nprim_a
+         al = ea(ip)
+      do jp = 1, nprim_b
+         bet = eb(jp)
+         zeta = al + bet
+         oo2z = 0.5_dp/zeta
+         xi = al*bet/zeta
+         cc = ca(ip)*cb(jp)*wt
+         tbb = 2.0_dp*bet*bet
+
+         px = (al*ra(1) + bet*rb(1))/zeta
+         py = (al*ra(2) + bet*rb(2))/zeta
+         pz = (al*ra(3) + bet*rb(3))/zeta
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
+
+         e0x = sqrt(PI/zeta)*exp(-xi*abx*abx)
+         e0y = sqrt(PI/zeta)*exp(-xi*aby*aby)
+         e0z = sqrt(PI/zeta)*exp(-xi*abz*abz)
+
+{sxyz}
+
+{txyz}
+
+{st_block}
+
+         ! --- nuclear attraction: basis derivative + Hellmann-Feynman, per nucleus ---
+         vpref = 2.0_dp*PI/zeta*exp(-xi*rab2)
+         do ic = 1, natm
+            pcx = px - ratm(1, ic)
+            pcy = py - ratm(2, ic)
+            pcz = pz - ratm(3, ic)
+            tval = zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
+            call boys_eval({lab1}, tval, f)
+
+{vrr}
+
+{dcvrr}
+
+            do k = 1, {nvn}
+               vn0(k) = vn(k,0)
+            end do
+            do k = 1, {nvnw}
+               wx0(k) = wx(k,0); wy0(k) = wy(k,0); wz0(k) = wz(k,0)
+            end do
+
+{hrr_ap}
+
+{hrr_am}
+
+{hrr_bp}
+
+{hrr_bm}
+
+{hrr_wx}
+
+{hrr_wy}
+
+{hrr_wz}
+
+{v_block}
+         end do
+      end do
+      end do
+   end subroutine one_e_grad_{tag}
+"""
+
+
+def emit_grad_module(L, path, order="lexicographic"):
+    """The one-electron GRADIENT kernels, one routine per class, own module."""
+    order_val = 0 if order == "lexicographic" else 1
+    order_arg = "" if order == "lexicographic" else f" --order {order}"
+    parts = [f"""!
+! One-electron GRADIENT kernels: d/dR of overlap, kinetic and nuclear
+! attraction, contracted directly with the energy-weighted density (S) and
+! the density (T, V) into a (3, natm) gradient -- no derivative matrix is
+! ever materialised. See scripts/gen_1e.py's emit_grad_class and
+! emit_dc_vrr for the derivation (bra/ket shifted-angular-momentum
+! relations; the Hellmann-Feynman VRR derivative wrt the nucleus).
+!
+! GENERATED by scripts/gen_1e.py --lmax {L} --deriv{order_arg} -- do not edit.
+!
+#if TRC_CART_ORDER != {order_val}
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
+module trc_1e_grad_kernels
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   implicit none
+   private
+   public :: one_e_grad_dispatch, one_e_grad_driver, ONE_E_GRAD_LMAX
+
+   integer, parameter :: ONE_E_GRAD_LMAX = {L}
+   integer, parameter :: ONE_E_RADIX = __RADIX__
+   !! Same fixed radix as gen_1e.py's other dispatchers -- see ONE_E_RADIX's
+   !! own comment at the top of this file.
+   real(dp), parameter :: PI = 3.14159265358979323846_dp
+   integer, parameter :: NC_MAX = (ONE_E_GRAD_LMAX + 1)*(ONE_E_GRAD_LMAX + 2)/2
+   integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
+   integer, parameter :: ONE_E_GRAD_NPRIV = 8
+   !! Lane-private gradient copies, same technique as trc_grad.F90's
+   !! GRAD_NPRIV; fewer of them because this driver's work item is an
+   !! entire shell pair (every primitive, every nucleus already summed
+   !! inside one_e_grad_item) rather than one quartet, so there are far
+   !! fewer concurrent writers to spread across lanes.
+
+contains
+
+#include "inc/trc_boys_eval.inc"
+#include "inc/trc_1e_grad_driver.inc"
+"""]
+    names = []
+    for la in range(L + 1):
+        for lb in range(L + 1):
+            parts.append(emit_grad_class(la, lb, order))
+            names.append((la, lb))
+
+    parts.append(f"""
+   pure subroutine one_e_grad_dispatch(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, &
+                                       ra, rb, natm, zatm, ratm, wt, wblk, dblk, ga, gb, gc)
+      !! Dispatch on the class. Host-side call, so the module boundary the
+      !! kernels care about is not crossed here.
+      !$acc routine seq
+      integer,  intent(in)  :: la, lb, nprim_a, nprim_b, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
+      real(dp), intent(in)  :: wt, wblk(*), dblk(*)
+      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      select case (la*ONE_E_RADIX + lb)""")
+    for la, lb in names:
+        parts.append(
+            f"""      case ({la*ONE_E_RADIX + lb}); call one_e_grad_{la}{lb}(nprim_a, nprim_b, ea, ca, eb, cb, &
+                          ra, rb, natm, zatm, ratm, wt, wblk, dblk, ga, gb, gc)""")
+    parts.append("""      case default
+         !! No kernel for this class -- ONE_E_GRAD_LMAX is below the basis.
+         !! A sentinel, as one_e_dispatch's: huge() rather than silence or a
+         !! NaN (device code under -fast launders a NaN through the first
+         !! min/max it meets). trc_basis refuses such a basis before this
+         !! runs; this arm is the backstop for a path that skipped that.
+         ga(1) = huge(1.0_dp)
+      end select
+   end subroutine one_e_grad_dispatch
+
+end module trc_1e_grad_kernels
+""")
+
+    txt = "\n".join(parts).replace("__RADIX__", str(ONE_E_RADIX))
+    with open(path, "w") as fh:
+        fh.write(txt)
+    print(f"wrote {path}: {len(names)} classes, {txt.count(chr(10))} lines")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lmax", type=int, default=2)
@@ -785,6 +1224,12 @@ def main():
                     help="emit the PCM smeared-charge surface-integral "
                          "kernels (erf-attenuated nuclear attraction, one "
                          "routine per class) into their own module instead.")
+    ap.add_argument("--deriv", metavar="FILE", default=None,
+                    help="emit the one-electron GRADIENT kernels (dS, dT, "
+                         "dV -- bra/ket basis derivative and the nuclear "
+                         "Hellmann-Feynman term -- contracted directly "
+                         "into a (3,natm) gradient) into their own module "
+                         "instead.")
     args = ap.parse_args()
     L = args.lmax
     order = args.order
@@ -796,6 +1241,9 @@ def main():
         return
     if args.pcm:
         emit_pcm_module(L, args.pcm, order)
+        return
+    if args.deriv:
+        emit_grad_module(L, args.deriv, order)
         return
 
     parts = [f"""!
