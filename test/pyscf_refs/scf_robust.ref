@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: scf_robust
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["scf_robust"] -> gen_scf_robust
 # pyscf: 2.14.0
-# hash: abb3fe09e2b7d70f914c85ed3a89fa2921f879d2406caea88a875e3277e31369
-# files: test/pyscf_refs/generate.py test/scf_robust.F90
+# hash-scheme: case-ast-v1
+# hash: 031d1b4358e9efe2a3646c39a9992536e965deecb44295ef5bb0007f2f9d0020
+# files: test/scf_robust.F90
 NCASE 4
 XYZ_0 n2_stretched
 BAS_0 6-31g

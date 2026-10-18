@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: scf_rks
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["rks"] -> gen_rks
 # pyscf: 2.14.0
-# hash: 18a8260e6ca258548e7a8b59053d557d1ec95c5cb823475772d7880914718708
-# files: test/pyscf_refs/generate.py test/scf_rks.F90 test/basis_sets/6-31g.json test/water.xyz test/oh.xyz
+# hash-scheme: case-ast-v1
+# hash: 9dd9118fb2f67c0e90a691071482f7723e452e915d14f33747552eb0d9ac6350
+# files: test/scf_rks.F90 test/basis_sets/6-31g.json test/water.xyz test/oh.xyz
 NCASE 12
 NAME_0 hf
 NSPIN_0 1

@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_rys_fock_vs_pyscf_formamide_def2tzvp
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["rys_fock_formamide_def2tzvp"] -> gen_rys_fock
 # pyscf: 2.14.0
-# hash: 4f5b81274d0f6c45e64f816e10ec074f19356eca08d0bcdd6290e38b3dad3023
-# files: test/pyscf_refs/generate.py test/check_rys_fock_vs_pyscf.F90 test/basis_sets/def2-tzvp.json test/formamide.xyz
+# hash-scheme: case-ast-v1
+# hash: 05a66580ead0c86c01ea8213bac35efa73e4322deb783fec5c0249de1ef112c1
+# files: test/check_rys_fock_vs_pyscf.F90 test/basis_sets/def2-tzvp.json test/formamide.xyz
 NAT 6
 NAO 126
 S 126 126

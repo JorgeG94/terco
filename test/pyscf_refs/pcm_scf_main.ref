@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: scf_pcm main
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["pcm_scf_main"] -> gen_pcm_scf
 # pyscf: 2.14.0
-# hash: 8ed4ee15a2c33cff0fed67a700983a04884390074bf1bfc672c094a1738414cb
-# files: test/pyscf_refs/generate.py test/scf_pcm.F90 test/water.xyz test/formamide.xyz test/oh.xyz test/nh2.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json test/basis_sets/cc-pvtz.json
+# hash-scheme: case-ast-v1
+# hash: 98d8d28f13eeb2c86052e421a8eef79bad3103fd5c8d3f34fef6bd32cb1f2be7
+# files: test/scf_pcm.F90 test/water.xyz test/formamide.xyz test/oh.xyz test/nh2.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json test/basis_sets/cc-pvtz.json
 # CONV_TOL 1e-12
 # CONV_TOL_GRAD 1e-08
 NCASE 17

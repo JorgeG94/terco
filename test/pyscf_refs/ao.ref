@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_ao
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["ao"] -> gen_ao
 # pyscf: 2.14.0
-# hash: 50db5e72b02817dbf9a20e98db407b6fd629d161a5ebb4cc2cd2a828cc707c16
-# files: test/pyscf_refs/generate.py test/check_ao.F90
+# hash-scheme: case-ast-v1
+# hash: 0c869d70d230bf0f665ab287364c40b814bcd99a7987d4d47a7b8e1459fedf7f
+# files: test/check_ao.F90
 NPTS 200
 NAO 30
 CHI 200 30

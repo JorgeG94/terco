@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_pcm_cavity
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["pcm_cavity"] -> gen_pcm_cavity
 # pyscf: 2.14.0
-# hash: c644d0bc122b490902d5d35b732757c26b4fc924845ecce6f6faf443ad6e7465
-# files: test/pyscf_refs/generate.py test/check_pcm_cavity.F90 test/water.xyz
+# hash-scheme: case-ast-v1
+# hash: c211669c518851dca11a4a6066e4ed27b6209ed41544e840cdac6867df2cbfa2
+# files: test/check_pcm_cavity.F90 test/water.xyz
 NPTS 556
 COORDS 3 556
 3.44686045120667250e+00 0.00000000000000000e+00 2.21664874516203231e-01 -3.44686045120667250e+00 0.00000000000000000e+00 2.21664874516203231e-01
