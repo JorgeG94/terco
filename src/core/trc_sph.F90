@@ -27,6 +27,16 @@
 ! D_sph with `sph_to_cart` once per iteration and gives it to both the Fock
 ! build and XC, so one transform serves both.
 !
+! TWO ONE-SIDED FOLDS, for a correlated step whose kernels also stay
+! Cartesian (RI-MP2, --df): `sph_mo_to_cart` is the same per-shell T, but
+! contracted on ONE AO index only -- an MO coefficient matrix's row, its
+! column being an orbital label rather than a second AO -- and
+! `sph_aux3c_to_sph` folds the auxiliary (P) index of a three-centre
+! (mu nu|P) block the other way, Cartesian to spherical, leaving the
+! orbital-basis pair (mu, nu) alone. Both are `b%nao`/`b%nao_sph` square
+! `sph_sph_to_cart`/`sph_cart_to_sph` with one side of the contraction
+! dropped, not a new kind of transform.
+!
 module trc_sph
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
@@ -34,7 +44,7 @@ module trc_sph
    implicit none
    private
 
-   public :: sph_cart_to_sph, sph_sph_to_cart
+   public :: sph_cart_to_sph, sph_sph_to_cart, sph_mo_to_cart, sph_aux3c_to_sph
 
 contains
 
@@ -151,5 +161,106 @@ contains
          end do
       end do
    end subroutine sph_to_cart_driver
+
+   !
+   ! Ccart := T Csph, the ONE-SIDED fold a rectangular, AO-row/label-column
+   ! matrix needs: only the AO row index crosses the spherical/Cartesian
+   ! boundary, same per-shell T block `sph_sph_to_cart` contracts on BOTH
+   ! sides of a square two-AO-index matrix with; the column index here is
+   ! some other label entirely (an MO number for RI-MP2's own use at
+   ! trc_rimp2_driver.F90's `rimp2_mo_to_cart`) and is left alone. `ncol`
+   ! need not be `b%nao_sph` -- a caller folding only a slice of columns
+   ! passes however many it has.
+   !
+   subroutine sph_mo_to_cart(b, ncol, csph, ccart)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ncol
+      real(dp), intent(in)  :: csph(b%nao_sph, ncol)
+      real(dp), intent(out) :: ccart(b%nao, ncol)
+      call mo_sph_to_cart_driver(b%nshell, b%sh_l, b%sh_ao, b%sh_ao_sph, b%nao, b%nao_sph, ncol, csph, ccart)
+   end subroutine sph_mo_to_cart
+
+   subroutine mo_sph_to_cart_driver(nshell, sh_l, sh_ao, sh_ao_sph, nao_c, nao_s, ncol, csph, ccart)
+      integer,  intent(in)  :: nshell, nao_c, nao_s, ncol
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: csph(nao_s, ncol)
+      real(dp), intent(out) :: ccart(nao_c, ncol)
+      integer :: ic, ish, col, li, nci, nsi, ai, bi, p, r
+      real(dp) :: acc
+
+      ! Flattened (shell, column) index -- this module's own header on why
+      ! a 2D `do concurrent` header is not used for a shell-indexed bound.
+      do concurrent(ic=0:nshell*ncol - 1) local(ish, col, li, nci, nsi, ai, bi, p, r, acc)
+         col = ic/nshell + 1
+         ish = ic - (col - 1)*nshell + 1
+         li = sh_l(ish)
+         nci = (li + 1)*(li + 2)/2
+         nsi = 2*li + 1
+         ai = sh_ao(ish)
+         bi = sh_ao_sph(ish)
+         do p = 1, nci
+            acc = 0.0_dp
+            do r = 1, nsi
+               acc = acc + SPH_T(p, r, li)*csph(bi + r - 1, col)
+            end do
+            ccart(ai + p - 1, col) = acc
+         end do
+      end do
+   end subroutine mo_sph_to_cart_driver
+
+   !
+   ! Tsph(:, :, q) := sum_p SPH_T(p, r, l) Tcart(:, :, p), per auxiliary
+   ! SHELL -- the P-index fold a three-centre density-fitting block needs
+   ! when the auxiliary basis is spherical (trc_scf_df.F90's `df_jk_setup`,
+   ! trc_rimp2_driver.F90's own metric/3c build): the first two indices
+   ! (mu, nu), an orbital-basis AO pair, are untouched; only the auxiliary
+   ! index crosses the boundary, on the LAST axis instead of a row or
+   ! column. `aux` is the block's own basis handle -- normally a
+   ! shell-boundary subset (trc_api.F90's `basis_subset`), whose `nao`/
+   ! `nao_sph`/`sh_ao`/`sh_ao_sph` already describe that block's own,
+   ! LOCAL P numbering -- but the whole auxiliary basis works just as well
+   ! for a caller with no blocking at all.
+   !
+   subroutine sph_aux3c_to_sph(aux, n, tcart, tsph)
+      type(trc_basis_t), intent(in) :: aux
+      integer, intent(in) :: n
+      real(dp), intent(in)  :: tcart(n, n, aux%nao)
+      real(dp), intent(out) :: tsph(n, n, aux%nao_sph)
+      call aux3c_to_sph_driver(aux%nshell, aux%sh_l, aux%sh_ao, aux%sh_ao_sph, aux%nao, aux%nao_sph, n, &
+                               tcart, tsph)
+   end subroutine sph_aux3c_to_sph
+
+   subroutine aux3c_to_sph_driver(nshell, sh_l, sh_ao, sh_ao_sph, naux_c, naux_s, n, tcart, tsph)
+      integer,  intent(in)  :: nshell, naux_c, naux_s, n
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: tcart(n, n, naux_c)
+      real(dp), intent(out) :: tsph(n, n, naux_s)
+      integer :: ij, mu, nu, ish, li, nci, nsi, ai, bi, p, r
+      real(dp) :: acc
+
+      ! Flattened (mu, nu) index: every aux SHELL is folded for each (mu,
+      ! nu) pair by the inner, sequential loop below -- the bound that
+      ! would need a shell-indexed `do concurrent` axis (the one this
+      ! module's own header flags) never appears in the parallel header
+      ! itself here.
+      do concurrent(ij=0:n*n - 1) local(mu, nu, ish, li, nci, nsi, ai, bi, p, r, acc)
+         nu = ij/n + 1
+         mu = ij - (nu - 1)*n + 1
+         do ish = 1, nshell
+            li = sh_l(ish)
+            nci = (li + 1)*(li + 2)/2
+            nsi = 2*li + 1
+            ai = sh_ao(ish)
+            bi = sh_ao_sph(ish)
+            do r = 1, nsi
+               acc = 0.0_dp
+               do p = 1, nci
+                  acc = acc + SPH_T(p, r, li)*tcart(mu, nu, ai + p - 1)
+               end do
+               tsph(mu, nu, bi + r - 1) = acc
+            end do
+         end do
+      end do
+   end subroutine aux3c_to_sph_driver
 
 end module trc_sph

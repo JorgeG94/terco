@@ -76,10 +76,17 @@ module trc_rimp2_driver
    use pic_flop_recorder, only: flop_recorder_type
    use trc_step_table, only: step_table_t
    use trc_scf_df, only: df_jk_t
+   use trc_sph, only: sph_cart_to_sph, sph_mo_to_cart, sph_aux3c_to_sph
    implicit none
    private
 
-   public :: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t
+   public :: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
+
+   real(dp), parameter :: PAD_EPS = 1.0e6_dp
+   !! `rimp2_mo_to_cart`'s orbital energy for a padded, zero-coefficient
+   !! "virtual" -- see that routine's own header for why finite (never
+   !! literally infinite) is what keeps every denominator it enters finite
+   !! rather than NaN, and why the padded terms are exactly zero anyway.
 
    !
    ! THE STEPS, AS TIMED, through the shared trc_step_table (src/core/
@@ -155,13 +162,15 @@ contains
       type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: blk
       real(dp), pointer :: bchain(:, :)
-      integer :: nao, naux, nfz, no, nv, nov, nblk, s0, s1, p0, np, ish, i, rank, nranks, ng, ldk, i0, i1
+      integer :: nao, naux, naux_c, nfz, no, nv, nov, nblk, s0, s1, p0, np, p0c, npc, ish
+      integer :: i, rank, nranks, ng, ldk, i0, i1
       integer :: lo, nb, nmax, novr, step, nstep_ring, qv, cur, ncolmax, ldv
       integer :: ilo, ihi, jlo, jhi, jbase, jstart, ncol, roff, coff, jfirst, ncol_i
       integer :: n_chk, naux_chk, npack_chk, mu, nu, q
       integer, allocatable :: blo(:), bn(:)
       logical :: diag, direct
-      real(dp), allocatable :: jm(:, :), cocc(:, :), cvir(:, :), tens(:, :, :), half(:, :, :)
+      real(dp), allocatable :: jm(:, :), jmc(:, :), cocc(:, :), cvir(:, :)
+      real(dp), allocatable :: tens(:, :, :), tcart3(:, :, :), half(:, :, :)
       real(dp), allocatable :: xr(:), vis(:, :)
       real(dp), allocatable :: ki(:, :), kt(:, :), part(:), eo(:), ev(:)
       integer(int64) :: novr8
@@ -174,20 +183,29 @@ contains
       integer(int64) :: nv8, nao8, naux8
 
       nao = b%nao
-      naux = aux%nao
-      ! Density fitting stays Cartesian-only for this milestone (see
-      ! trc_capi.F90's AO classification header, and its own refusal on
-      ! the same basis at the C boundary): `cmo` above is declared
-      ! (b%nao, b%nao), and a caller whose SCF ran spherical hands this a
-      ! `cmo` actually shaped (b%nao_sph, b%nao_sph) -- smaller, so this
-      ! would read past the end of the caller's array under sequence
-      ! association rather than merely giving a wrong number. Refused
-      ! before that read happens, not after.
-      if (b%spherical) then
-         res%message = "trc_rimp2: the orbital basis is spherical; RI-MP2 only "// &
-                       "supports a Cartesian basis today"
-         return
-      end if
+      ! `cmo`/`eps` above are declared (b%nao, b%nao)/(b%nao): ALWAYS the
+      ! Cartesian AO space, whether `b` itself is spherical or not. A
+      ! caller whose SCF ran spherical (`b%spherical`) does not hand this
+      ! its raw (b%nao_sph, b%nao_sph) orbitals -- that would read past
+      ! the end of a smaller array under sequence association -- but
+      ! `rimp2_mo_to_cart`'s own fold-and-pad result instead: every real
+      ! MO transformed into the Cartesian AO space (C_cart = T C_sph, MO
+      ! space itself does not care which AO representation it came from),
+      ! padded out to `b%nao` columns with zero-coefficient, PAD_EPS
+      ! "virtuals" that contribute exactly zero to every pair energy
+      ! below. This routine never reads `b%spherical` itself.
+      !
+      ! The auxiliary basis `aux` is a separate question: it follows its
+      ! own `aux%spherical` (trc_capi.F90's `basis_json` sets it to match
+      ! the orbital basis, pyscf's own `auxmol.cart = mol.cart` rule, but
+      ! this routine only ever reads `aux%spherical`). `naux_c`, the
+      ! CARTESIAN count, is every kernel call and block-walk below
+      ! (always Cartesian); `naux`, folded when `aux%spherical`, is every
+      ! other dimension -- the metric, its Cholesky factor, `xr`'s own
+      ! width, and (via `dfjk%dims`) what a chained call's own aux count
+      ! is checked against.
+      naux_c = aux%nao
+      naux = merge(aux%nao_sph, aux%nao, aux%spherical)
       nfz = 0
       if (present(nfrozen)) nfz = max(nfrozen, 0)
       no = nocc - nfz
@@ -223,7 +241,7 @@ contains
             chained = .true.
          end if
       end if
-      nblk = naux
+      nblk = naux_c
       if (present(aux_block)) nblk = max(aux_block, 1)
       rank = 0
       nranks = 1
@@ -263,7 +281,16 @@ contains
          allocate (jm(naux, naux))
          !$acc enter data create(jm)
          call stab%step_on(lp, ST_METRIC, tc)
-         call trc_df_2c(aux, jm)
+         if (aux%spherical) then
+            allocate (jmc(naux_c, naux_c))
+            !$acc enter data create(jmc)
+            call trc_df_2c(aux, jmc)
+            call sph_cart_to_sph(aux, jmc, jm)
+            !$acc exit data delete(jmc)
+            deallocate (jmc)
+         else
+            call trc_df_2c(aux, jm)
+         end if
          call stab%step_off(lp, ST_METRIC, tc)
          call stab%step_on(lp, ST_CHOL, tc)
          call lp%potrf(naux, jm, naux)
@@ -287,20 +314,44 @@ contains
             if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > nblk) exit
             s1 = ish
          end do
-         p0 = aux%sh_ao(s0)
-         np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
+         p0c = aux%sh_ao(s0)
+         npc = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0c
          call aux%subset(s0, s1, blk)
          call blk%to_device()
+         ! Effective (spherical, when `aux%spherical`) offset/width this
+         ! block's columns land at in `xr` below -- `blk%nao_sph` is
+         ! exactly this block's own spherical width, since `subset` never
+         ! cuts a shell in two.
+         if (aux%spherical) then
+            p0 = aux%sh_ao_sph(s0)
+            np = blk%nao_sph
+         else
+            p0 = p0c
+            np = npc
+         end if
          allocate (tens(nao, nao, np), half(nb, nao, np))
          !$acc enter data create(tens, half)
          call stab%step_on(lp, ST_3C, tc)
          if (chained) then
-            ! B, already L^-T applied, packed mu >= nu: unpack this block's
-            ! columns straight into the dense tensor the half-transform
-            ! below reads either way -- no (mu nu|P) build at all.
+            ! B, already L^-T applied (and, when `aux` is spherical, the
+            ! P-fold too -- `dfjk%setup` does both before packing),
+            ! packed mu >= nu: unpack this block's columns straight into
+            ! the dense tensor the half-transform below reads either way
+            ! -- no (mu nu|P) build, and no P-fold, at all.
             do concurrent(q=1:np, mu=1:nao, nu=1:nao)
                tens(mu, nu, q) = bchain(rimp2_pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
             end do
+         else if (aux%spherical) then
+            ! (mu nu|Pc), built Cartesian, folded into `tens` on the P
+            ! index alone -- same `sph_aux3c_to_sph` `df_jk_setup` folds
+            ! its own block through, before the half-transform below
+            ! reads it (which never needs to know the difference).
+            allocate (tcart3(nao, nao, npc))
+            !$acc enter data create(tcart3)
+            call trc_df_3c(b, pl, blk, tcart3)
+            call sph_aux3c_to_sph(blk, nao, tcart3, tens)
+            !$acc exit data delete(tcart3)
+            deallocate (tcart3)
          else
             call trc_df_3c(b, pl, blk, tens)
          end if
@@ -473,6 +524,48 @@ contains
    end subroutine trc_rimp2_run
 
    !
+   ! `trc_rimp2_run`/`trc_urimp2_run`'s own fold for a spherical orbital
+   ! basis: `csph`/`epssph` are an SCF's own (b%nao_sph, b%nao_sph)/
+   ! (b%nao_sph) orbitals and energies (`trc_scf_result_t%cmo`/`eps`,
+   ! already at the SCF's own `scf_space_nao` size); `ccart`/`epscart`
+   ! come back (b%nao, b%nao)/(b%nao), the Cartesian AO space RI-MP2's own
+   ! three-centre tensor is built in.
+   !
+   ! Every real MO is `sph_mo_to_cart`'s T C_sph, trc_sph.F90's one-sided
+   ! fold (an MO's AO row crosses the spherical/Cartesian boundary, its
+   ! column -- the MO label -- does not: MO-space quantities do not care
+   ! which AO representation produced them). The Cartesian AO count is
+   ! always at least the spherical MO count (a Cartesian shell never has
+   ! fewer functions than its spherical one), so `b%nao - b%nao_sph`
+   ! columns are left over; they are filled with a ZERO coefficient
+   ! vector and `PAD_EPS`, a finite energy well outside any real
+   ! spectrum. `trc_rimp2_run`'s own `nv = nao - nocc` (nao = b%nao here)
+   ! then runs over these padded columns exactly as it would a real
+   ! virtual, but every (ia|jb) with a or b among them is a GEMM
+   ! contraction against a zero `C_vir` column and comes out exactly
+   ! zero -- PAD_EPS only has to keep `1/(e_i + e_j - e_a - e_b)` FINITE
+   ! (0 * finite = 0), not physically meaningful, since it is always
+   ! multiplied by that zero. This is what lets `trc_rimp2_run` itself
+   ! stay unchanged, Cartesian-interface, for a spherical caller.
+   !
+   subroutine rimp2_mo_to_cart(b, csph, epssph, ccart, epscart)
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)  :: csph(b%nao_sph, b%nao_sph), epssph(b%nao_sph)
+      real(dp), intent(out) :: ccart(b%nao, b%nao), epscart(b%nao)
+      integer :: ns, nc
+
+      ns = b%nao_sph
+      nc = b%nao
+      !$acc enter data copyin(csph) create(ccart)
+      call sph_mo_to_cart(b, ns, csph, ccart(:, 1:ns))
+      !$acc update self(ccart(:, 1:ns))
+      !$acc exit data delete(csph, ccart)
+      if (nc > ns) ccart(:, ns + 1:nc) = 0.0_dp
+      epscart(1:ns) = epssph
+      if (nc > ns) epscart(ns + 1:nc) = PAD_EPS
+   end subroutine rimp2_mo_to_cart
+
+   !
    ! RI-MP2 for an UNRESTRICTED (UHF or UKS) reference, on the device, one
    ! rank only.
    !
@@ -544,12 +637,13 @@ contains
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: blk
-      integer :: nao, naux, nfz, noa, nob, nva, nvb, nblk, s0, s1, p0, np, ish, rank, nranks
+      integer :: nao, naux, naux_c, nfz, noa, nob, nva, nvb, nblk, s0, s1, p0, np, p0c, npc, ish
+      integer :: rank, nranks
       integer :: novr_a, novr_b, ng_aa, ng_bb, ng_ab, ldk_aa, ldk_bb, ldk_ab
       integer :: i0, i1, i, jstart, jfirst, ncol, ncol_i, roff, coff, ncolmax_aa, ncolmax_bb
-      real(dp), allocatable :: jm(:, :)
+      real(dp), allocatable :: jm(:, :), jmc(:, :)
       real(dp), allocatable :: cocc_a(:, :), cvir_a(:, :), cocc_b(:, :), cvir_b(:, :)
-      real(dp), allocatable :: tens(:, :, :), half_a(:, :, :), half_b(:, :, :)
+      real(dp), allocatable :: tens(:, :, :), tcart3(:, :, :), half_a(:, :, :), half_b(:, :, :)
       real(dp), allocatable :: xr_a(:), xr_b(:)
       real(dp), allocatable :: ki_aa(:, :), kt_aa(:, :), part_aa(:)
       real(dp), allocatable :: ki_bb(:, :), kt_bb(:, :), part_bb(:)
@@ -561,12 +655,14 @@ contains
       integer(int64) :: nao8, naux8, nva8, nvb8, noa8, nob8, novr_a8, novr_b8
 
       nao = b%nao
-      naux = aux%nao
-      if (b%spherical) then
-         res%message = "trc_urimp2: the orbital basis is spherical; RI-MP2 only "// &
-                       "supports a Cartesian basis today"
-         return
-      end if
+      ! `cmo_a`/`cmo_b`/`eps_a`/`eps_b` are the Cartesian-space, fold-and-
+      ! pad result of `rimp2_mo_to_cart` when `b` is spherical -- see
+      ! `trc_rimp2_run`'s own header on that routine, which this one reads
+      ! exactly as it does. `naux_c`/`naux` split the auxiliary basis the
+      ! same way too (CARTESIAN count for the kernel/block-walk below,
+      ! folded when `aux%spherical` for every other dimension).
+      naux_c = aux%nao
+      naux = merge(aux%nao_sph, aux%nao, aux%spherical)
       rank = 0
       nranks = 1
       if (present(comm)) then
@@ -605,7 +701,7 @@ contains
                        "density-fitting kernels were generated for (see gen_df.py --lmax-aux)"
          return
       end if
-      nblk = naux
+      nblk = naux_c
       if (present(aux_block)) nblk = max(aux_block, 1)
       if (present(la)) then
          lp => la
@@ -633,7 +729,16 @@ contains
       allocate (jm(naux, naux))
       !$acc enter data create(jm)
       call stab%step_on(lp, ST_METRIC, tc)
-      call trc_df_2c(aux, jm)
+      if (aux%spherical) then
+         allocate (jmc(naux_c, naux_c))
+         !$acc enter data create(jmc)
+         call trc_df_2c(aux, jmc)
+         call sph_cart_to_sph(aux, jmc, jm)
+         !$acc exit data delete(jmc)
+         deallocate (jmc)
+      else
+         call trc_df_2c(aux, jm)
+      end if
       call stab%step_off(lp, ST_METRIC, tc)
       call stab%step_on(lp, ST_CHOL, tc)
       call lp%potrf(naux, jm, naux)
@@ -656,14 +761,30 @@ contains
             if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > nblk) exit
             s1 = ish
          end do
-         p0 = aux%sh_ao(s0)
-         np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
+         p0c = aux%sh_ao(s0)
+         npc = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0c
          call aux%subset(s0, s1, blk)
          call blk%to_device()
+         if (aux%spherical) then
+            p0 = aux%sh_ao_sph(s0)
+            np = blk%nao_sph
+         else
+            p0 = p0c
+            np = npc
+         end if
          allocate (tens(nao, nao, np))
          !$acc enter data create(tens)
          call stab%step_on(lp, ST_3C, tc)
-         call trc_df_3c(b, pl, blk, tens)
+         if (aux%spherical) then
+            allocate (tcart3(nao, nao, npc))
+            !$acc enter data create(tcart3)
+            call trc_df_3c(b, pl, blk, tcart3)
+            call sph_aux3c_to_sph(blk, nao, tcart3, tens)
+            !$acc exit data delete(tcart3)
+            deallocate (tcart3)
+         else
+            call trc_df_3c(b, pl, blk, tens)
+         end if
          call stab%step_off(lp, ST_3C, tc)
 
          allocate (half_a(noa, nao, np))

@@ -180,9 +180,9 @@ contains
       write (output_unit, "(a,a)") "   method           : ", method(r)
       write (output_unit, "(a,a)") "   basis            : ", r%basis_path
       if (r%rimp2) write (output_unit, "(a,a)") "   auxiliary basis  : ", r%aux_path
-      if (r%rimp2 .and. .not. r%cli%is_set("cart")) then
-         write (output_unit, "(a)") "   AO space         : Cartesian (RI-MP2 does not support spherical AOs yet)"
-      end if
+      ! The AO space itself (spherical or Cartesian) is not known until the
+      ! basis is loaded, below -- `summary`'s own "AO basis" line reports
+      ! it, for every run, once it is.
       if (len(r%restart) > 0) then
          write (output_unit, "(a,a,a)") "   SCF              : read from ", r%restart, ", not run"
       else
@@ -565,11 +565,13 @@ program terco_main
       call die(r, "--eps is the dielectric constant for --pcm, which was not given")
    end if
    if (r%rimp2) then
-      ! RI-MP2 is Cartesian only, restricted or unrestricted (UHF/UKS):
-      ! say so here rather than after an SCF it cannot use. An open-shell
+      ! RI-MP2 (restricted or unrestricted, UHF/UKS) now follows the
+      ! basis's own AO space, spherical or Cartesian, same as a plain
+      ! SCF -- trc_run_rimp2 folds the MO coefficients into the Cartesian
+      ! space its three-centre tensor runs in itself, see trc_capi.F90's
+      ! own header. `--cart` is still the explicit override. An open-shell
       ! --rimp2 refuses more than one rank, deeper in (trc_run_rimp2) --
       ! that needs the communicator this parses later, not knowable yet.
-      cart = .true.
       call r%cli%get("aux", sval, r%err)
       call resolve_basis(sval, r%aux_path, r%err)
       if (r%err%has_error()) call die(r, "--aux: "//r%err%get_message())
