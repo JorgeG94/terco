@@ -154,6 +154,18 @@ contains
       !! LDA/GGA only -- see its own refusals) and scales eri%gradient's
       !! exact-exchange piece by the functional's `exx`, exactly as
       !! trc_scf_fock.F90 scales the Fock build's K by the same field.
+      !!
+      !! RANGE-SEPARATED HYBRIDS: `func%exx_lr`/`func%omega`, same meaning
+      !! as trc_scf_fock's build_g. When `func%exx_lr` is nonzero, a SECOND
+      !! eri%gradient pass builds the long-range exchange gradient
+      !! (j_scale = 0, k_scale = exx_lr, omega) and adds it on top of the
+      !! full-range one, next to it -- exactly how build_g assembles the
+      !! energy (eri%fock_resident with j_scale=0, k_scale=exx_lr,
+      !! omega, added into gmat_c). This routine computes that term for
+      !! ANY func with exx_lr /= 0; whether a caller can reach this point
+      !! with such a func is gated upstream (trc_xc_grad%xc_gradient_add's
+      !! own refusal, and trc_capi.F90's trc_run_gradient, which checks it
+      !! before calling here at all).
       type(trc_basis_t),  intent(inout) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer,            intent(in)    :: nspin, nalpha, nbeta
@@ -180,13 +192,21 @@ contains
       type(trc_eri_t) :: eri
       integer :: nao, nsp, s
       integer :: nocc(2)
-      real(dp) :: occ_s, kfac
-      real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :)
+      real(dp) :: occ_s, exx_use, exx_lr_use, omega_use
+      real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :), grad_lr(:, :)
 
       nao = b%nao
       nsp = merge(b%nao_sph, b%nao, b%spherical)
       nocc = [nalpha, nbeta]
       occ_s = merge(2.0_dp, 1.0_dp, nspin == 1)
+      exx_use = 1.0_dp
+      exx_lr_use = 0.0_dp
+      omega_use = 0.0_dp
+      if (present(func)) then
+         exx_use = func%exx
+         exx_lr_use = func%exx_lr
+         omega_use = func%omega
+      end if
 
       ! DEVICE RESIDENCY, for the whole routine: `cmo`/`eps` arrive as
       ! plain host arrays (trc_scf_run's own `release_device` -- see
@@ -245,11 +265,27 @@ contains
       call eri%build(b, thresh)
 
       ! --- two-electron, first: this call starts `grad` from zero ---
-      kfac = 1.0_dp
-      if (present(func)) kfac = func%exx
-      call eri%gradient(b, dens, grad, k_scale=kfac)
+      call eri%gradient(b, dens, grad, k_scale=exx_use)
+
+      ! --- the long-range exchange gradient, for a range-separated
+      ! hybrid: a SECOND eri%gradient pass (j_scale=0, k_scale=exx_lr,
+      ! omega), added into `grad` next to the full-range term above --
+      ! exactly how build_g assembles the energy (trc_scf_fock.F90's own
+      ! j_scale=0.0_dp, k_scale=exx_lr, omega=omega fock_resident call,
+      ! added into gmat_c). eri%gradient always starts ITS OWN `grad_lr`
+      ! from zero (this module's own header), so the two passes are added
+      ! here rather than accumulated into one eri%gradient call. Skipped
+      ! entirely when exx_lr is zero (the default): no second build, no
+      ! second allocation, same cost as before this argument existed. ---
+      if (exx_lr_use /= 0.0_dp) then
+         allocate (grad_lr(3, b%natm))
+         call eri%gradient(b, dens, grad_lr, j_scale=0.0_dp, k_scale=exx_lr_use, omega=omega_use)
+         grad = grad + grad_lr
+         deallocate (grad_lr)
+      end if
       grad = 0.5_dp*grad   !! see this module's own header: eri%gradient's
-                           !! convention is twice d(e_two)/dR.
+                           !! convention is twice d(e_two)/dR -- true of
+                           !! both passes above, added before this halving.
 
       ! --- one-electron, added on top. `wmat` is already present (and
       ! already holds the right numbers, from energy_weighted_density
