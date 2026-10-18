@@ -1168,7 +1168,7 @@ def gen_full_grad():
     w.write()
 
 
-def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3):
+def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=False):
     """The FULL KS-DFT nuclear gradient against pyscf's own grad.RKS/
     grad.UKS, at TERCO'S OWN converged orbitals and TERCO'S OWN grid
     (check_xc_grad_vs_pyscf.F90's own header has the full reasoning: no
@@ -1180,11 +1180,31 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3):
     mo_coeff is TERCO'S cart=True AO order and normalisation; converted to
     pyscf's order (terco_to_pyscf_perm) and rescaled (ao_norm_from_overlap)
     before mf.mo_coeff/mo_occ/mo_energy are set directly -- mf.kernel() is
-    NEVER called, so pyscf's own SCF never runs for this case."""
+    NEVER called, so pyscf's own SCF never runs for this case.
+
+    GRID_RESPONSE=TRUE is a DIFFERENT comparison, not this function's
+    default path with one flag flipped: `g.grid_response=True` needs
+    pyscf's OWN `grids_response_cc`, which walks `grids.atom_grids` --
+    populated only by `Grids.build()`, not by overriding `coords`/
+    `weights` after the fact the way the grid_response=False path below
+    does with terco's dumped grid. So this path builds a plain pyscf
+    `Grids(mol)` at the SAME level and lets it run its own defaults
+    (Treutler-Ahlrichs radial, Bragg radii, Treutler size adjustment,
+    Becke's three-iteration cutoff, NWChem pruning -- trc_dft_grid.F90's
+    own defaults, confirmed to match pyscf's one by one against
+    pyscf/dft/gen_grid.py and pyscf/dft/radi.py, not assumed) rather than
+    terco's literal points: the comparison is then at terco's own
+    orbitals, on a grid that SHOULD be the partition-for-partition
+    equivalent of terco's (same scheme, same radii, same level), but not
+    provably the identical list of floating-point points in the identical
+    order -- see check_xc_grad_vs_pyscf.F90's own header on why that is
+    the honest description of what this checks."""
     PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP'}
 
-    dump = TEST / f"xc_grad_probe_{case}.bin"
-    run_bin(f"check_xc_grad_vs_pyscf_{case}", [xyz, json_rel, functional, grid_level, dump.name, case])
+    exe = f"check_xc_grad_vs_pyscf_gridresp_{case}" if grid_response else f"check_xc_grad_vs_pyscf_{case}"
+    dump = TEST / f"xc_grad_probe_gridresp_{case}.bin" if grid_response else TEST / f"xc_grad_probe_{case}.bin"
+    gresp_arg = [1] if grid_response else []
+    run_bin(exe, [xyz, json_rel, functional, grid_level, dump.name, case] + gresp_arg)
     r = BinReader(dump)
     nat, nao, nspin, nalpha, nbeta = r.i8(), r.i8(), r.i8(), r.i8(), r.i8()
     at_z = r.i8(nat)
@@ -1222,9 +1242,12 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3):
         occ[:nalpha] = 2.0
         mf = dft.RKS(mol)
         mf.xc = PYSCF[functional]
-        mf.grids.coords = np.ascontiguousarray(pts)
-        mf.grids.weights = wts
-        mf.grids.non0tab = None
+        if not grid_response:
+            mf.grids.coords = np.ascontiguousarray(pts)
+            mf.grids.weights = wts
+            mf.grids.non0tab = None
+        else:
+            mf.grids.level = grid_level
         mf.mo_coeff = c_p
         mf.mo_occ = occ
         mf.mo_energy = eps[:, 0]
@@ -1238,9 +1261,12 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3):
         occ_b[:nbeta] = 1.0
         mf = dft.UKS(mol)
         mf.xc = PYSCF[functional]
-        mf.grids.coords = np.ascontiguousarray(pts)
-        mf.grids.weights = wts
-        mf.grids.non0tab = None
+        if not grid_response:
+            mf.grids.coords = np.ascontiguousarray(pts)
+            mf.grids.weights = wts
+            mf.grids.non0tab = None
+        else:
+            mf.grids.level = grid_level
         mf.mo_coeff = (c_a, c_b)
         mf.mo_occ = (occ_a, occ_b)
         mf.mo_energy = (eps[:, 0], eps[:, 1])
@@ -1249,12 +1275,16 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3):
     dm = mf.make_rdm1()
     mf.e_tot = mf.energy_tot(dm)
     g = mf.nuc_grad_method()
-    g.grid_response = False   # the default; stated explicitly -- see this
-    #: function's own docstring and trc_xc_grad.F90's header on the
-    #: grid-response term both this build and pyscf's default omit.
+    g.grid_response = grid_response
+    #: False is the default, stated explicitly -- see this function's own
+    #: docstring and trc_xc_grad.F90's header on the grid-response term
+    #: both this build and pyscf's default omit. True is this function's
+    #: OTHER path (see the docstring on why `mf.grids` is built fresh
+    #: rather than overridden when this is set).
     grad_py = g.kernel()
 
-    w = RefWriter(f"xc_grad_{case}.ref")
+    ref_tag = f"xc_grad_gridresp_{case}" if grid_response else f"xc_grad_{case}"
+    w = RefWriter(f"{ref_tag}.ref")
     w.header("check_xc_grad_vs_pyscf_" + case,
               [ROOT / "test" / "check_xc_grad_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
     w.int_("NAT", nat)
@@ -1263,7 +1293,7 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3):
     w.end()
     w.write()
     worst = np.abs(grad_terco - grad_py).max()
-    print(f"  xc_grad {case}: worst|terco-pyscf| {worst:.3e} (at generation time)")
+    print(f"  {ref_tag}: worst|terco-pyscf| {worst:.3e} (at generation time)")
     dump.unlink()
 
 
@@ -2241,6 +2271,12 @@ CASES = {
         "formamide_b3lyp_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
     "xc_grad_oh_pbe_631gs": lambda: gen_xc_grad(
         "oh_pbe_631gs", "oh.xyz", "basis_sets/6-31gs.json", "pbe"),
+    "xc_grad_gridresp_water_svwn_631gs": lambda: gen_xc_grad(
+        "water_svwn_631gs", "water.xyz", "basis_sets/6-31gs.json", "svwn", grid_response=True),
+    "xc_grad_gridresp_water_pbe_631gs": lambda: gen_xc_grad(
+        "water_pbe_631gs", "water.xyz", "basis_sets/6-31gs.json", "pbe", grid_response=True),
+    "xc_grad_gridresp_nh2_pbe_631gs": lambda: gen_xc_grad(
+        "nh2_pbe_631gs", "nh2.xyz", "basis_sets/6-31gs.json", "pbe", grid_response=True),
     "rys_fock_water_ccpvdz": lambda: gen_rys_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", 1e-9),
     "rys_fock_water_ccpvtz": lambda: gen_rys_fock("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json", 1e-10),
     "rys_fock_formamide_def2tzvp": lambda: gen_rys_fock(

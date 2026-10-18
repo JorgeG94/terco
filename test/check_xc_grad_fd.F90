@@ -13,14 +13,22 @@
 ! OH's rotationally degenerate pi pair -- see below) and the unrestricted
 ! GGA branch (cross spin terms) at once.
 !
-! GRID-RESPONSE SIZE, MEASURED NOT ASSUMED. trc_xc_grad's own header
-! documents that the grid points and the Becke partition weights are held
-! fixed under differentiation (the "OPTIONAL" piece this round): every
-! case here runs at grid level 3 AND grid level 5, and both the
-! analytic-vs-FD gap and the level-3-vs-level-5 analytic gradient itself
-! are printed, so the omission's size and its shrinking with a finer grid
-! are both visible in this test's own output rather than asserted in a
-! comment.
+! GRID-RESPONSE SIZE, MEASURED NOT ASSUMED, BEFORE AND AFTER. The
+! finite-difference reference here is of terco's own fully reconverged
+! KS-DFT energy as a function of nuclear position, with the grid rebuilt
+! (`trc_basis_from_json` + `trc_scf_run`, fresh, at every displaced
+! geometry) -- i.e. the grid MOVES with the atoms on the FD side exactly
+! the way the GRID RESPONSE term (trc_xc_grad.F90's header) says the
+! physical gradient must account for. Every case here runs the analytic
+! gradient TWICE, at the SAME converged orbitals: once with
+! `grid_response=.true.` (ON, the module's default -- the physical
+! gradient, gated tightly) and once with `.false.` (OFF, the Pulay-only
+! term this branch started with -- printed for the before/after
+! comparison, NOT gated, since omitting a real term is not this test's
+! business to forbid for a caller who explicitly asks for it, e.g. to
+! match pyscf's own `grid_response=False` default). Both at grid level 3
+! AND grid level 5, so the omission's level-dependence (OFF) and its
+! absence (ON) are both visible in this test's own output.
 !
 module check_xc_grad_fd_cases
    use pic_types, only: dp
@@ -37,52 +45,23 @@ module check_xc_grad_fd_cases
    public :: run_case
 
    real(dp), parameter :: H = 1.0e-3_dp
-   real(dp), parameter, public :: RELTOL = 1.0e-4_dp
-   !! Looser than check_full_grad_fd's HF tolerance: a DFT energy's finite
-   !! difference carries the quadrature's own truncation on top of the HF
-   !! case's floor, and this module's grid-response omission (see header)
-   !! adds a further, GRID-LEVEL-DEPENDENT piece on top of that -- the
-   !! comparison below is run at level 5 as well as level 3 for exactly
-   !! that reason, and ABSTOL at level 5 is where the real gate is.
-   !!
-   !! MEASURED, not guessed, and all six cases land in the SAME class:
-   !! water/SVWN 8.2e-6 (L3) / 7.4e-7 (L5), water/PBE 6.6e-6 (L3) / 9.6e-7
-   !! (L5), and NH2/PBE (unrestricted, non-degenerate SOMO) 4.2e-6 (L3) /
-   !! 9.1e-7 (L5) -- every case shrinks from level 3 to level 5 the way the
-   !! grid-response omission should (see header), and the translational-
-   !! invariance residual this module prints alongside shrinks in step
-   !! with it. An EARLIER version of this test used the OH radical here
-   !! instead of NH2 and measured 2.2e-4 (L3) / 3.1e-4 (L5) -- an order of
-   !! magnitude above every other case AND not shrinking with the grid,
-   !! unlike the grid-response term it was attributed to. That attribution
-   !! (OH's rotationally degenerate pi pair; see
-   !! test/pyscf_refs/generate.py's gen_rks, same molecule, same claim for
-   !! an energy) does not hold up: check_xc_grad_vs_pyscf's OH case agrees
-   !! with pyscf's own grad.UKS, at terco's own converged orbitals and
-   !! grid, to 9.0e-13 (measured directly, not estimated) -- i.e. the
-   !! analytic gradient IS right, and OH's own grid-response piece (the
-   !! omission this header describes) is nowhere near large enough to
-   !! explain a 1e-4-scale SCF-based FD gap either. OH was replaced with
-   !! NH2 (a genuinely open-shell, non-degenerate-SOMO case) rather than
-   !! kept at a loosened tolerance, and the gap vanished: whatever made
-   !! OH's SCF-based FD noisy here did not survive the swap. ABSTOL is
-   !! set from the six numbers above with headroom, not loosened to hide
-   !! a mismatch: trc_xc_grad.F90's formula is independently confirmed to
-   !! 1e-9 against a FIXED-grid finite difference
-   !! (check_xc_grad_fixedgrid_fd.F90, restricted and unrestricted, LDA
-   !! and GGA) where no SCF reconverges and no grid response can hide.
-   real(dp), parameter, public :: ABSTOL = 1.0e-5_dp
-   !! NOT a gate here, unlike check_full_grad_fd's identically-named
-   !! constant: translational invariance (sum over atoms = 0) is a
-   !! property of the PHYSICAL gradient, which needs the grid response
-   !! this module omits by default (trc_xc_grad.F90's header) -- without
-   !! it, the Pulay-only sum is not required to vanish, and measured it
-   !! does not: printed below for every case, it is itself a second,
-   !! independent measurement of the omission's size (it shrinks from
-   !! grid level 3 to level 5 the same way the analytic-vs-FD gap does).
-   !! Gating on it the way check_full_grad_fd does would be gating on
-   !! exactly the thing this round of work does not implement.
+   real(dp), parameter, public :: RELTOL = 1.0e-6_dp
+   !! The ON gate's relative counterpart -- see ABSTOL_ON.
+   real(dp), parameter, public :: ABSTOL_ON = 2.0e-7_dp
+   !! ON (grid_response=.true., the physical gradient): the FD floor, NOT
+   !! grid-level-dependent -- this is the whole point of the grid-response
+   !! term. MEASURED on all six cases (water/SVWN, water/PBE, NH2/PBE
+   !! unrestricted, each at level 3 AND level 5): see this test's own
+   !! printed output for the exact numbers at generation time; every one
+   !! landed at or below this with no level-3-to-level-5 trend, unlike
+   !! OFF below. Set from those numbers with headroom, not loosened to
+   !! hide a mismatch -- trc_xc_grad.F90's formula is independently
+   !! confirmed to ~1e-9 against a FIXED-grid finite difference
+   !! (check_xc_grad_fixedgrid_fd.F90) where no SCF reconverges and no
+   !! grid moves at all.
    real(dp), parameter, public :: INVTOL = 1.0e-8_dp
+   !! ON's translational-invariance gate: sum over atoms ~ 0 is a property
+   !! of the PHYSICAL gradient, which is what ON now is.
 
 contains
 
@@ -93,15 +72,15 @@ contains
 
       integer :: nat, dev, a, d
       integer, allocatable :: at_z(:)
-      real(dp), allocatable :: r0(:, :), rtmp(:, :), grad(:, :)
+      real(dp), allocatable :: r0(:, :), rtmp(:, :), grad_on(:, :), grad_off(:, :)
       type(trc_basis_t) :: bas
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: res
       type(trc_xc_functional_t) :: func
       type(trc_linalg_t) :: lp
       type(error_t) :: err
-      real(dp) :: eplus, eminus, fd, worst_abs, worst_rel, denom
-      real(dp) :: inv(3)
+      real(dp) :: eplus, eminus, fd, worst_abs_on, worst_rel_on, worst_abs_off, worst_rel_off, denom
+      real(dp) :: inv_on(3), inv_off(3)
       logical :: ok
 
       ok = xc_functional_by_name(functional, func)
@@ -128,20 +107,23 @@ contains
          any_fail = .true.; return
       end if
 
-      allocate (grad(3, nat))
+      allocate (grad_on(3, nat), grad_off(3, nat))
       call lp%init(bas%nao)
-      call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad, &
-                            func=func, grid_level=grid_level)
+      call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_on, &
+                            func=func, grid_level=grid_level, grid_response=.true.)
+      call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_off, &
+                            func=func, grid_level=grid_level, grid_response=.false.)
       ! Released before `lp` goes out of scope: trc_linalg_t has no
       ! finalizer (check_full_grad_fd.F90's own comment, unchanged here).
       call lp%release()
       call bas%release()
 
-      inv = sum(grad, dim=2)
-      ! Printed, not gated -- see INVTOL's own comment above.
+      inv_on = sum(grad_on, dim=2)
+      inv_off = sum(grad_off, dim=2)
 
       allocate (rtmp(3, nat))
-      worst_abs = 0.0_dp; worst_rel = 0.0_dp
+      worst_abs_on = 0.0_dp; worst_rel_on = 0.0_dp
+      worst_abs_off = 0.0_dp; worst_rel_off = 0.0_dp
       do a = 1, nat
          do d = 1, 3
             rtmp = r0; rtmp(d, a) = r0(d, a) + H
@@ -149,17 +131,24 @@ contains
             rtmp = r0; rtmp(d, a) = r0(d, a) - H
             eminus = scf_energy_at(basis_json, nat, at_z, rtmp, nalpha, nbeta, opts)
             fd = (eplus - eminus)/(2.0_dp*H)
-            denom = max(abs(grad(d, a)), abs(fd), 1.0e-10_dp)
-            worst_abs = max(worst_abs, abs(grad(d, a) - fd))
-            worst_rel = max(worst_rel, abs(grad(d, a) - fd)/denom)
+            denom = max(abs(grad_on(d, a)), abs(fd), 1.0e-10_dp)
+            worst_abs_on = max(worst_abs_on, abs(grad_on(d, a) - fd))
+            worst_rel_on = max(worst_rel_on, abs(grad_on(d, a) - fd)/denom)
+            denom = max(abs(grad_off(d, a)), abs(fd), 1.0e-10_dp)
+            worst_abs_off = max(worst_abs_off, abs(grad_off(d, a) - fd))
+            worst_rel_off = max(worst_rel_off, abs(grad_off(d, a) - fd)/denom)
          end do
       end do
 
-      print '(a,a,a,i0,a,es10.2,a,es10.2,a,3es10.2)', '  ', label, ': grid level ', grid_level, &
-         '  worst abs ', worst_abs, '  worst rel ', worst_rel, '  translational-invariance residual: ', inv
-      if (worst_abs > ABSTOL .and. worst_rel > RELTOL) any_fail = .true.
+      print '(a,a,a,i0)', '  ', label, ': grid level ', grid_level
+      print '(a,es10.2,a,es10.2,a,3es10.2)', '    OFF (Pulay only): worst abs ', worst_abs_off, &
+         '  worst rel ', worst_rel_off, '  translational-invariance residual: ', inv_off
+      print '(a,es10.2,a,es10.2,a,3es10.2)', '    ON  (grid response): worst abs ', worst_abs_on, &
+         '  worst rel ', worst_rel_on, '  translational-invariance residual: ', inv_on
+      if (worst_abs_on > ABSTOL_ON .and. worst_rel_on > RELTOL) any_fail = .true.
+      if (any(abs(inv_on) > INVTOL)) any_fail = .true.
 
-      deallocate (at_z, r0, rtmp, grad)
+      deallocate (at_z, r0, rtmp, grad_on, grad_off)
    end subroutine run_case
 
    real(dp) function scf_energy_at(basis_json, nat, at_z, r, nalpha, nbeta, opts) result(e)

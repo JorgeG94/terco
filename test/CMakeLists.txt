@@ -416,6 +416,34 @@ foreach(case water_svwn_631gs water_pbe_631gs water_b3lyp_631gs
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case})
 endforeach()
 
+# The SAME full KS-DFT gradient, grid_response=.true. on BOTH sides (see
+# check_xc_grad_vs_pyscf.F90's header, and generate.py's gen_xc_grad
+# docstring on why pyscf's own grid is built fresh here rather than
+# overridden) -- RKS SVWN/PBE on water, UKS PBE on NH2 (a genuinely
+# open-shell, non-degenerate-SOMO case -- check_xc_grad_fd.F90's own
+# header explains why NH2 and not OH).
+foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs)
+  if(case STREQUAL "water_svwn_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func svwn)
+    set(glev 3)
+  elseif(case STREQUAL "water_pbe_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  else()
+    set(xyz nh2.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/xc_grad_probe_gridresp_${case}.bin)
+  terco_add_check(check_xc_grad_vs_pyscf_gridresp_${case} check_xc_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case} 1)
+endforeach()
+
 # trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
 # int1e_ipnuc(+Hellmann-Feynman) contractions, each term separated (see
 # check_1e_grad_vs_pyscf.F90's own header), at a fixed non-SCF density --

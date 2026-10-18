@@ -38,6 +38,25 @@ module trc_xc_batch
       integer :: npts = 0, nbatch = 0, max_nloc = 0
       real(dp), allocatable :: r(:, :)      !! (3, npts), permuted
       real(dp), allocatable :: w(:)         !! (npts), permuted
+      real(dp), allocatable :: qw(:)        !! (npts), permuted; the quadrature weight
+                                             !! alone, before the Becke partition --
+                                             !! trc_dft_grid_t's own `quad_weights`,
+                                             !! carried through the SAME permutation/
+                                             !! screen as `r`/`w`. Only trc_xc_grad's
+                                             !! grid-response term reads it (the energy
+                                             !! path has no use for the two weights
+                                             !! separately); HOST-only, never mapped to
+                                             !! the device, because the grid-response
+                                             !! term's own partition-derivative call
+                                             !! (trc_dft_partition's own, OpenMP, not
+                                             !! OpenACC) is host code too.
+      integer, allocatable :: atom(:)       !! (npts), permuted; the atom that OWNS the
+                                             !! point (trc_dft_grid_t's own `atom`).
+                                             !! Unlike `qw`, this IS mapped to the
+                                             !! device: trc_xc_grad's grid-point-motion
+                                             !! scatter needs it there, the same way
+                                             !! `b_ao`/`ao_atom` already are for the
+                                             !! Pulay scatter.
       integer, allocatable :: batch_of(:)   !! (npts)
       integer, allocatable :: b_off(:)      !! (nbatch+1): batch b is points b_off(b) .. b_off(b+1)-1
       integer, allocatable :: b_shoff(:)    !! (nbatch+1): its shells are b_sh(b_shoff(b) .. b_shoff(b+1)-1)
@@ -113,7 +132,7 @@ contains
    ! is far below the grid's own, and check_xc_energy measures it against
    ! the unscreened evaluation rather than assuming.
    !
-   subroutine xcgrid_build(this, npts, coords, weights, b, max_pts, tol, w_tol)
+   subroutine xcgrid_build(this, npts, coords, weights, b, max_pts, tol, w_tol, atom, qw)
       class(trc_xc_grid_t), intent(inout) :: this
       integer, intent(in) :: npts
       real(dp), intent(in) :: coords(3, npts), weights(npts)
@@ -125,6 +144,14 @@ contains
       !! after the partition a sizeable fraction of the grid carries
       !! nothing (Stocks and Barca drop 15-20% at 2e-15). Default 2e-15;
       !! pass 0 to keep every point.
+      integer, intent(in), optional :: atom(npts)   !! owning atom, see `this%atom`
+      real(dp), intent(in), optional :: qw(npts)     !! quadrature weight alone, see `this%qw`
+      !! Both optional and both absent by default: only trc_xc_grad's
+      !! gradient build passes them (the energy path, trc_xc.F90, has no
+      !! use for either). Present together or not at all -- a caller
+      !! wanting the grid-response term needs both, and one without the
+      !! other is a caller that forgot the second, not a legitimate partial
+      !! request.
 
       integer :: maxp, i, j, k, lo, hi, axis, top, nb, ib, ish, nsh_b, nao_b
       integer :: sh_in_batch
@@ -207,6 +234,8 @@ contains
       this%nbatch = nb
 
       allocate (this%r(3, n), this%w(n), this%batch_of(n), this%b_off(nb + 1))
+      if (present(atom)) allocate (this%atom(n))
+      if (present(qw)) allocate (this%qw(n))
       k = 0
       do ib = 1, nb
          this%b_off(ib) = k + 1
@@ -215,6 +244,8 @@ contains
             this%r(:, k) = coords(:, idx(i))
             this%w(k) = weights(idx(i))
             this%batch_of(k) = ib
+            if (present(atom)) this%atom(k) = atom(idx(i))
+            if (present(qw)) this%qw(k) = qw(idx(i))
          end do
       end do
       this%b_off(nb + 1) = n + 1
@@ -366,6 +397,11 @@ contains
       !$acc enter data copyin(this)
       !$acc enter data copyin(this%r, this%w, this%batch_of, this%b_off, &
       !$acc                   this%b_shoff, this%b_sh, this%b_shao, this%b_aooff, this%b_ao, this%b_amax)
+      ! `atom` only: trc_xc_grad's grid-point scatter reads it on the
+      ! device. `qw` stays host-only -- see its own declaration comment.
+      if (allocated(this%atom)) then
+         !$acc enter data copyin(this%atom)
+      end if
       this%on_device = .true.
    end subroutine xcgrid_to_device
 
@@ -374,11 +410,16 @@ contains
       if (this%on_device) then
          !$acc exit data delete(this%r, this%w, this%batch_of, this%b_off, &
          !$acc                  this%b_shoff, this%b_sh, this%b_shao, this%b_aooff, this%b_ao, this%b_amax)
+         if (allocated(this%atom)) then
+            !$acc exit data delete(this%atom)
+         end if
          !$acc exit data delete(this)
          this%on_device = .false.
       end if
       if (allocated(this%r)) deallocate (this%r)
       if (allocated(this%w)) deallocate (this%w)
+      if (allocated(this%qw)) deallocate (this%qw)
+      if (allocated(this%atom)) deallocate (this%atom)
       if (allocated(this%batch_of)) deallocate (this%batch_of)
       if (allocated(this%b_off)) deallocate (this%b_off)
       if (allocated(this%b_shoff)) deallocate (this%b_shoff)

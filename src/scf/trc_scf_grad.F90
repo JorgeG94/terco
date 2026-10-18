@@ -118,7 +118,7 @@ contains
    end subroutine energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
-                               func, grid_level, grid_max_pts)
+                               func, grid_level, grid_max_pts, grid_response)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -164,6 +164,9 @@ contains
       real(dp),           intent(out)   :: grad(3, b%natm)
       type(trc_xc_functional_t), intent(in), optional :: func
       integer, intent(in), optional :: grid_level, grid_max_pts
+      logical, intent(in), optional :: grid_response
+      !! Forwarded to xc_gradient_add verbatim (its own default: ON). See
+      !! that module's header, GRID RESPONSE.
 
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
@@ -250,7 +253,8 @@ contains
       ! still present and correct on the device at this point (see this
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) call xc_gradient_add(b, lp, func, nspin, dens, grad, &
-                                              grid_level=grid_level, grid_max_pts=grid_max_pts)
+                                              grid_level=grid_level, grid_max_pts=grid_max_pts, &
+                                              grid_response=grid_response)
 
       !$acc update self(grad)
       !$acc exit data delete(wmat, dtot, grad, cmo, eps, dens)

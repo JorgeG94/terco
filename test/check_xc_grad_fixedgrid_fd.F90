@@ -149,7 +149,8 @@ contains
       allocate (vv(bas0%nao, bas0%nao))
       grad0 = 0.0_dp
       !$acc enter data copyin(d, grad0)
-      call xc_gradient_add(bas0, lp0, func0, nspin, d, grad0, grid_level=3, rho_tol=0.0_dp)
+      call xc_gradient_add(bas0, lp0, func0, nspin, d, grad0, grid_level=3, rho_tol=0.0_dp, &
+                           grid_response=.false.)
       !$acc update self(grad0)
       !$acc exit data delete(d, grad0)
 
@@ -194,7 +195,8 @@ contains
       allocate (vv(bas0%nao, bas0%nao, 2))
       grad0 = 0.0_dp
       !$acc enter data copyin(d, grad0)
-      call xc_gradient_add(bas0, lp0, func0, 2, d, grad0, grid_level=3, rho_tol=0.0_dp)
+      call xc_gradient_add(bas0, lp0, func0, 2, d, grad0, grid_level=3, rho_tol=0.0_dp, &
+                           grid_response=.false.)
       !$acc update self(grad0)
       !$acc exit data delete(d, grad0)
 

@@ -13,8 +13,13 @@
 !
 ! pyscf's `grid_response` defaults to False -- the basis-function term
 ! only, no travelling grid points or responding partition weights -- the
-! same omission trc_xc_grad.F90 makes, so no flag is passed here to
-! change it.
+! same omission trc_xc_grad.F90 makes. An optional 7th argument flips
+! BOTH sides to the grid-response gradient: terco's own
+! (trc_scf_gradient's `grid_response=.true.`, this module's default) and
+! pyscf's (`g%grid_response = .true.`, which needs pyscf's OWN grid, NOT
+! the dumped one -- see the block below this header's own comment on
+! why). Absent (or 0), this is the original Pulay-only comparison,
+! unchanged, against its own already-committed reference.
 !
 program check_xc_grad_vs_pyscf
    use pic_types, only: dp, int64
@@ -30,8 +35,8 @@ program check_xc_grad_vs_pyscf
    implicit none
 
    real(dp), parameter :: THRESH = 1.0e-12_dp
-   character(len=256) :: xyzfile, basis_json, functional, dump, case_name, glevel_str
-   integer :: nat, nao, nspin, nalpha, nbeta, grid_level, unit, dev
+   character(len=256) :: xyzfile, basis_json, functional, dump, case_name, glevel_str, gresp_str
+   integer :: nat, nao, nspin, nalpha, nbeta, grid_level, unit, dev, gresp_i
    integer, allocatable :: at_z(:)
    real(dp), allocatable :: r(:, :), grad(:, :)
    type(trc_basis_t) :: bas
@@ -42,11 +47,12 @@ program check_xc_grad_vs_pyscf
    type(trc_linalg_t) :: lp
    type(error_t) :: err
    real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
-   logical :: ok
+   logical :: ok, gresp
+   character(len=256) :: ref_name
 
    if (command_argument_count() < 6) then
       print '(a)', 'usage: check_xc_grad_vs_pyscf <xyz> <basis.json> <functional> '// &
-         '<grid_level> <dump.bin> <case_name>'; stop 1
+         '<grid_level> <dump.bin> <case_name> [grid_response 0|1]'; stop 1
    end if
    call get_command_argument(1, xyzfile)
    call get_command_argument(2, basis_json)
@@ -55,6 +61,12 @@ program check_xc_grad_vs_pyscf
    call get_command_argument(5, dump)
    call get_command_argument(6, case_name)
    read (glevel_str, *) grid_level
+   gresp_i = 0
+   if (command_argument_count() >= 7) then
+      call get_command_argument(7, gresp_str)
+      read (gresp_str, *) gresp_i
+   end if
+   gresp = gresp_i /= 0
 
    ok = xc_functional_by_name(trim(functional), func)
    if (.not. ok .or. len_trim(func%missing) > 0) then
@@ -83,6 +95,8 @@ program check_xc_grad_vs_pyscf
    ! `case_name` already encodes which molecule this is.
    if (index(trim(case_name), 'oh_') == 1 .or. trim(case_name) == 'oh') then
       nalpha = 5; nbeta = 4
+   else if (index(trim(case_name), 'nh2_') == 1 .or. trim(case_name) == 'nh2') then
+      nalpha = 5; nbeta = 4
    else if (index(trim(case_name), 'formamide') == 1) then
       nalpha = 12; nbeta = 12
    else
@@ -101,7 +115,7 @@ program check_xc_grad_vs_pyscf
    allocate (grad(3, nat))
    call lp%init(nao)
    call trc_scf_gradient(bas, lp, nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, grad, &
-                         func=func, grid_level=grid_level)
+                         func=func, grid_level=grid_level, grid_response=gresp)
    call lp%release()
 
    ! The overlap, for the AO-permutation/normalisation check generate.py's
@@ -136,7 +150,12 @@ program check_xc_grad_vs_pyscf
       integer :: u, nat_ref, nao_ref, nfail
       real(dp), allocatable :: grad_ref(:, :)
       real(dp) :: worst
-      call ref_require('xc_grad_'//trim(case_name)//'.ref', u)
+      if (gresp) then
+         ref_name = 'xc_grad_gridresp_'//trim(case_name)//'.ref'
+      else
+         ref_name = 'xc_grad_'//trim(case_name)//'.ref'
+      end if
+      call ref_require(trim(ref_name), u)
       call ref_read_int(u, 'NAT', nat_ref)
       call ref_read_int(u, 'NAO', nao_ref)
       if (nat_ref /= nat .or. nao_ref /= nao) then
