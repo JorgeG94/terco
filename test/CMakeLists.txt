@@ -281,6 +281,20 @@ if(TERCO_BUILD_APP)
   unset(_cli_grad_probe)
 endif()
 
+# The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA
+# exchange-correlation term) against finite differences of terco's own
+# fully reconverged KS-DFT energy, at two grid levels -- RKS SVWN/PBE on
+# water, UKS PBE on the OH radical -- see check_xc_grad_fd.F90's header.
+terco_add_check(check_xc_grad_fd check_xc_grad_fd.F90 NEEDS_BASIS)
+
+# trc_xc_grad's basis-function (Pulay) term ALONE, against a finite
+# difference that holds the grid itself fixed too -- no SCF, no grid
+# response on either side of the comparison -- see
+# check_xc_grad_fixedgrid_fd.F90's own header for why this is the test
+# that pins the formula down to ~1e-9, independent of check_xc_grad_fd's
+# SCF-based (and therefore noisier) comparison above.
+terco_add_check(check_xc_grad_fixedgrid_fd check_xc_grad_fixedgrid_fd.F90 NEEDS_BASIS)
+
 #
 # Cartesian multipoles through the octupole, against a reference
 # test/pyscf_refs/generate.py recorded from pyscf. No pyscf in CI, ever --
@@ -341,6 +355,65 @@ foreach(b 631gs ccpvdz)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
   terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
+endforeach()
+
+# The FULL KS-DFT gradient against pyscf's own grad.RKS/grad.UKS, at
+# terco's own converged orbitals AND terco's own grid (see
+# check_xc_grad_vs_pyscf.F90's header) -- SVWN/PBE/B3LYP on water and
+# formamide, UKS PBE on the OH radical.
+foreach(case water_svwn_631gs water_pbe_631gs water_b3lyp_631gs
+             water_svwn_ccpvdz water_pbe_ccpvdz water_b3lyp_ccpvdz
+             formamide_pbe_ccpvdz formamide_b3lyp_ccpvdz
+             oh_pbe_631gs)
+  if(case STREQUAL "water_svwn_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func svwn)
+    set(glev 3)
+  elseif(case STREQUAL "water_pbe_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "water_b3lyp_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func b3lyp)
+    set(glev 3)
+  elseif(case STREQUAL "water_svwn_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func svwn)
+    set(glev 3)
+  elseif(case STREQUAL "water_pbe_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "water_b3lyp_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+    set(glev 3)
+  elseif(case STREQUAL "formamide_pbe_ccpvdz")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "formamide_b3lyp_ccpvdz")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+    set(glev 3)
+  else()
+    set(xyz oh.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/xc_grad_probe_${case}.bin)
+  terco_add_check(check_xc_grad_vs_pyscf_${case} check_xc_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case})
 endforeach()
 
 # trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
