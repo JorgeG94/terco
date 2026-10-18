@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["erf_fock_water_631gs"] -> gen_erf_fock
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: e897e36ef91c5f778ef0c037fa435f3ef911ef7dab5199f00cd0369fbfab54a9
+# hash: a17f3c3faaa7809398b81b2e03356f6a0704ab36550cd67a09debdfe8dda9cce
 # files: test/check_erf_fock_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAT 3
 NAO 19
