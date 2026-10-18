@@ -220,7 +220,19 @@ the Fock builds, which have no single energy, the golden is three scalars
 of each matrix: `tr(D G)`, its Frobenius norm, and a sum with fixed uneven
 weights, which moves when any element does.
 
-TOLERANCES_PLACEHOLDER
+Tolerances (`TOLERANCES` in `compare_goldens.py`), absolute, by quantity:
+
+| quantity | key prefix | tolerance |
+|---|---|---|
+| total energies, Eh (SCF, at-density, E_diel, RI-MP2 components) | `E_` | `1e-10` |
+| `tr(D G)` of a fixed-density Fock build | `TR_D` | `1e-10` |
+| Frobenius norm of a fixed-density Fock build | `NORM_` | `1e-10` |
+| fixed-weight element sum of a fixed-density Fock build | `WSUM_` | `1e-10` |
+
+These are provisional, pending the spread between CI's compilers (gcc-15,
+intel, nvidia-hpc, the OpenACC-to-OpenMP translation). The goldens come
+from gfortran 15. Two gfortran 15 builds, at `TERCO_LMAX=2` and `=3`,
+agree on every shared quantity bit for bit.
 
 ## Mapping from the old `*_ref.py` scripts
 
