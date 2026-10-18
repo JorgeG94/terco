@@ -146,14 +146,25 @@ _NSPH = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9}
 
 def terco_to_pyscf_perm_sph(atoms, basis_arg):
     """Same shell-level reordering as `terco_to_pyscf_perm`, for a
-    SPHERICAL basis (block sizes 2l+1 rather than ncart(l)). No per-AO
-    normalisation rescale is needed on top of this one (unlike the
-    Cartesian case's `ao_norm_from_overlap`): scripts/gen_sph.py's own
-    self-test checks terco's cart2sph blocks (SPH_T) against
-    `pyscf.gto.mole.cart2sph(l, normalized='sp')` -- the exact table pyscf
-    itself uses -- to 1e-13, so a spherical AO here and pyscf's cart=False
-    one of the same (atom, l, exponent) are already identically
-    normalised."""
+    SPHERICAL basis (block sizes 2l+1 rather than ncart(l)).
+
+    CAVEAT, found generating dft_grad_*.ref (gen_dft_grad): this
+    permutation ALONE is enough for gen_full_grad's own use (permuting an
+    ALREADY-pyscf-side density into terco's AO order, to seed terco's own
+    SCF -- a uniform-per-AO scale error would not even matter there), but
+    NOT for carrying a TERCO-side `cmo`/density INTO pyscf's own
+    normalisation the way gen_xc_grad's Cartesian `ao_norm_from_overlap`
+    rescale does: terco's own spherical S diagonal for an l>=2 (d, f, ...)
+    shell is measurably NOT 1 (e.g. ~0.398 for a cc-pVDZ oxygen d shell),
+    the same per-component Cartesian scale `ao_norm_from_overlap` already
+    corrects for riding through `sph_cart_to_sph`'s T^T S T contraction
+    (s/p shells are untouched -- T is the identity there). gen_sph.py's
+    own self-test (SPH_T vs `pyscf.gto.mole.cart2sph(l, normalized='sp')`
+    to 1e-13) validates the TRANSFORM, not terco's Cartesian INPUT to it,
+    which is where the scale actually comes from -- so a caller doing
+    that direction (cmo -> pyscf) needs the SAME `ao_norm_from_overlap`
+    rescale as the Cartesian case, from an overlap already folded to
+    nao_sph; see gen_dft_grad's own docstring."""
     perm = []
     base = 0
     for sym, _ in atoms:
