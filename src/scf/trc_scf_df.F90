@@ -115,6 +115,17 @@ module trc_scf_df
       integer :: qb = 1       !! auxiliary functions per K block, chosen at setup
       integer :: omax = 0     !! current capacity of the density-factor workspace
       real(dp), allocatable :: bpk(:, :)              !! (npack, naux): B, packed mu >= nu
+      real(dp), allocatable :: chol(:, :)              !! (naux, naux): L, the metric's Cholesky
+      !! factor (M = (P|Q) = L L^T), RETAINED past setup rather than freed --
+      !! unlike the energy build, which never needs L again once B = T L^-T
+      !! has absorbed it, the DF GRADIENT (trc_scf_grad_df.F90) needs one
+      !! more triangular solve against the SAME L to turn the Cholesky-space
+      !! coefficients `build` already computes (gamma(Q), and the occupied
+      !! half-transform) into the actual fitting coefficients the analytic
+      !! derivative's envelope-theorem formula is stationary in. Keeping L
+      !! resident is what lets that solve skip rebuilding the metric or its
+      !! factorisation -- the paper's point (Stocks/Palethorpe/Barca 2024,
+      !! .claude/notes/papers/): never recompute a 2c/3c integral's VALUE.
       real(dp), allocatable :: dpk(:), jpk(:), gq(:)   !! J's packed density/result, and gamma(Q)
       real(dp), allocatable :: dsc(:, :), evals(:)     !! the density-factor eigenproblem
       real(dp), allocatable :: ypos(:, :), yneg(:, :)  !! (n, omax)
@@ -130,6 +141,7 @@ module trc_scf_df
       procedure :: report => df_jk_report
       procedure :: dims => df_jk_dims
       procedure :: packed_b => df_jk_packed_b
+      procedure :: cholesky => df_jk_chol
       procedure :: is_ready => df_jk_is_ready
    end type df_jk_t
 
@@ -162,7 +174,7 @@ contains
       integer, intent(in), optional :: aux_block
 
       type(trc_basis_t) :: blk
-      real(dp), allocatable :: jm(:, :), tens(:, :, :)
+      real(dp), allocatable :: tens(:, :, :)
       integer :: n, naux, npack, ablk, omax0
       integer :: s0, s1, ish, p0, np, mu, nu, q
       real(dp) :: tc
@@ -199,31 +211,35 @@ contains
       call this%tbl%init("dfjk", NAMES, bytes_steps=[ST_JGAM, ST_JBLD, ST_UNPK])
 
       ! --- the metric and its Cholesky factor -------------------------------
-      allocate (jm(naux, naux))
-      !$acc enter data create(jm)
+      ! Stored in `this%chol`, not a local `jm`: the energy build never
+      ! needs it again after the trsm below absorbs it into B, but the
+      ! gradient (trc_scf_grad_df.F90) does -- see this type's own `chol`
+      ! field comment. Same lifetime as `bpk` from here on.
+      allocate (this%chol(naux, naux))
+      !$acc enter data create(this%chol)
       call dbg_mem("after metric alloc")
       call this%tbl%step_on(lp, ST_METRIC, tc)
-      call trc_df_2c(aux, jm)
+      call trc_df_2c(aux, this%chol)
       call this%tbl%step_off(lp, ST_METRIC, tc)
       call this%tbl%step_on(lp, ST_CHOL, tc)
-      call lp%potrf(naux, jm, naux)
+      call lp%potrf(naux, this%chol, naux)
       call this%tbl%step_off(lp, ST_CHOL, tc)
       call this%tbl%add_flop(ST_CHOL, int(naux, int64)**3/3)
       call dbg_mem("after Cholesky")
 
-      ! The setup block size, queried HERE -- after bpk AND jm (the metric
-      ! and its Cholesky factor, naux*naux*8 bytes, ~226 MB even at w40's
+      ! The setup block size, queried HERE -- after bpk AND the metric's
+      ! Cholesky factor (naux*naux*8 bytes, ~226 MB even at w40's
       ! naux=5320, but Cholesky's own cuSOLVER workspace is not that small
       ! and is still resident at this point too) are both already spoken
       ! for, not back when only bpk was -- because that earlier query (one
       ! round's own bug, caught by the local-memory fix above freeing
       ! enough headroom for the naux/4 default to pass a free-memory check
-      ! that did not yet know about jm's and potrf's own footprint) let
+      ! that did not yet know about the Cholesky step's own footprint) let
       ! `choose_setup_block` approve an ablk whose tensor then OOM'd against
-      ! what jm and Cholesky had since consumed. naux/4 at a time (the old,
+      ! what the metric and Cholesky had since consumed. naux/4 at a time (the old,
       ! size-blind default) allocates a dense (n, n, naux/4) tensor for the
-      ! (mu nu|P) build that alone can exceed what is left after bpk+jm+
-      ! Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
+      ! (mu nu|P) build that alone can exceed what is left after bpk+the
+      ! metric+Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
       ! memory-aware, same pattern as the per-iteration K block
       ! (`choose_qb`) and RI-MP2's own `k_group`.
       ablk = choose_setup_block(n, naux)
@@ -261,13 +277,14 @@ contains
 
       call dbg_mem("after (mn|P) + pack, before trsm")
       ! --- B = T L^-T: one triangular solve, every packed row at once ------
+      ! `this%chol` is READ here, not consumed: trsm solves against it and
+      ! leaves it untouched, so -- unlike the old local `jm`, freed right
+      ! after this call -- it stays resident for the gradient to reuse.
       call this%tbl%step_on(lp, ST_TRSM, tc)
-      call lp%trsm("R", "L", "T", npack, naux, 1.0_dp, jm, naux, this%bpk, npack)
+      call lp%trsm("R", "L", "T", npack, naux, 1.0_dp, this%chol, naux, this%bpk, npack)
       call this%tbl%step_off(lp, ST_TRSM, tc)
       call this%tbl%add_flop(ST_TRSM, int(npack, int64)*int(naux, int64)*int(naux, int64))
-      !$acc exit data delete(jm)
-      deallocate (jm)
-      call dbg_mem("after trsm, jm freed")
+      call dbg_mem("after trsm")
 
       ! --- fixed-size per-iteration scratch, and the density-factor one ----
       allocate (this%dpk(npack), this%jpk(npack), this%gq(naux))
@@ -540,15 +557,32 @@ contains
       end if
    end function df_jk_packed_b
 
+   !! L, the metric's Cholesky factor (M = (P|Q) = L L^T), lower-triangular,
+   !! (naux, naux), device-resident -- see this type's `chol` field comment.
+   !! The DF gradient (trc_scf_grad_df.F90) solves against this directly
+   !! (one triangular solve, `lp%trsm`/`lp%trsv` with "L","T") to turn the
+   !! Cholesky-space coefficients `build` already computes into the actual
+   !! fitting coefficients its envelope-theorem derivative is stationary in,
+   !! with no metric or Cholesky recomputation. Null unless `is_ready()`.
+   function df_jk_chol(this) result(p)
+      class(df_jk_t), intent(in), target :: this
+      real(dp), pointer :: p(:, :)
+      if (this%ready) then
+         p => this%chol
+      else
+         p => null()
+      end if
+   end function df_jk_chol
+
    subroutine df_jk_release(this)
       class(df_jk_t), intent(inout) :: this
       if (.not. this%ready) return
-      !$acc exit data delete(this%bpk, this%dpk, this%jpk, this%gq, this%dsc, this%evals, &
+      !$acc exit data delete(this%bpk, this%chol, this%dpk, this%jpk, this%gq, this%dsc, this%evals, &
       !$acc                  this%kpos, this%kneg, this%bblk, this%bsym)
       if (allocated(this%ypos)) then
          !$acc exit data delete(this%ypos, this%yneg, this%zpos, this%zneg)
       end if
-      deallocate (this%bpk, this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, &
+      deallocate (this%bpk, this%chol, this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, &
                  this%bblk, this%bsym)
       if (allocated(this%ypos)) deallocate (this%ypos, this%yneg, this%zpos, this%zneg)
       this%ready = .false.
