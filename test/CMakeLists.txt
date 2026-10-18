@@ -621,6 +621,24 @@ set_tests_properties(
                                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# Coupled-perturbed HF (src/scf/trc_cphf.F90): the static dipole
+# polarizability, RHF on water/formamide and UHF on the OH radical, each
+# against test/pyscf_refs/generate.py's gen_cphf/gen_cphf_uhf
+# (pyscf.prop.polarizability). Four RHF cases share scf_cphf.F90, one
+# executable per (molecule, basis) pair -- a different name/ARGS per
+# terco_add_check call, same source -- and the UHF case is its own
+# program (trc_cphf_solve_uhf's coupled spin channels).
+#
+terco_add_check(scf_cphf scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+terco_add_check(scf_cphf_ccpvdz scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/cc-pvdz.json water cc-pvdz cphf_ccpvdz_probe.bin)
+terco_add_check(scf_cphf_formamide scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS formamide.xyz basis_sets/6-31gs.json formamide 6-31gs cphf_formamide_probe.bin)
+terco_add_check(scf_cphf_formamide_ccpvdz scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS formamide.xyz basis_sets/cc-pvdz.json formamide cc-pvdz cphf_formamide_ccpvdz_probe.bin)
+terco_add_check(scf_cphf_uhf scf_cphf_uhf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+#
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks
 # when MPI is on, each run asserting the single-rank energies. No
