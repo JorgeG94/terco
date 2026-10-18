@@ -73,6 +73,8 @@ class Entry:
     omega: float = 0.0
     nlc_b: float = 0.0
     nlc_c: float = 0.0
+    pt2_cos: float = 0.0
+    pt2_css: float = 0.0
     comment: list[str] = field(default_factory=list)
     missing: str | None = None
     source: str = "local"  # local | exchcxx
@@ -138,6 +140,31 @@ LOCAL: list[Entry] = [
             "1 -- a pure range-separated functional, no global HF mixing. No",
             "VV10. The kernel's own translated `beta` is -1.0 exactly.",
         ],
+    ),
+    # Double hybrids: a_x exact exchange plus (1 - a_x) of a GGA exchange
+    # kernel, (1 - c) of a GGA correlation kernel plus c of RI-MP2
+    # correlation on the converged KS orbitals (c_os = c_ss = c for all
+    # three -- no spin-component scaling, unlike a DSD-type double
+    # hybrid). Not in libxc (metalquicha's mqc_xc_spec.f90 carries the
+    # same citations and the same a_x/c split; terco's own PT2 part is
+    # driven by trc_capi.F90's trc_run_rimp2/trc_energy, never libxc).
+    Entry(
+        "b2plyp", (), "gga", [(0.47, "b88"), (0.73, "lyp")], exx=0.53,
+        pt2_cos=0.27, pt2_css=0.27,
+        comment=["Grimme, J. Chem. Phys. 124, 034108 (2006): a_x = 0.53, c = 0.27."],
+    ),
+    Entry(
+        "b2gp-plyp", ("b2gpplyp",), "gga", [(0.35, "b88"), (0.64, "lyp")], exx=0.65,
+        pt2_cos=0.36, pt2_css=0.36,
+        comment=["Karton, Tarnopolsky, Lamere, Schatz and Martin, J. Phys.",
+                 "Chem. A 112, 12868 (2008): a_x = 0.65, c = 0.36."],
+    ),
+    Entry(
+        "mpw2plyp", ("mpw2-plyp",), "gga", [(0.45, "mpw91_x"), (0.75, "lyp")], exx=0.55,
+        pt2_cos=0.25, pt2_css=0.25,
+        comment=["Schwabe and Grimme, Phys. Chem. Chem. Phys. 8, 4398 (2006):",
+                 "a_x = 0.55, c = 0.25; the GGA exchange kernel is mPW91's,",
+                 "not B88's."],
     ),
 ]
 
@@ -344,6 +371,12 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         "! with allocatable components is exactly what a `do concurrent` body should",
         "! not touch.",
         "!",
+        "! A double hybrid (b2plyp, b2gp-plyp, mpw2plyp) is still just a (coef,",
+        "! kernel) composition plus `exx` for its SCF -- `pt2_cos`/`pt2_css` are",
+        "! the RI-MP2 fraction on top, which this module only STORES; running",
+        "! it (always RI, on the converged KS orbitals) is trc_capi.F90's",
+        "! trc_run_rimp2/trc_energy, never anything in here.",
+        "!",
         "module trc_xc_functional",
         f"{INDENT}use pic_types, only: dp",
     ]
@@ -354,6 +387,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         f"{INDENT}private",
         "",
         f"{INDENT}public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name",
+        f"{INDENT}public :: xc_is_double_hybrid",
         f"{INDENT}public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS",
         f"{INDENT}public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS",
         "",
@@ -398,6 +432,16 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}real(dp) :: omega  = 0.0_dp !! range-separation parameter, bohr^-1; 0 = none")
     lines.append(f"{INDENT}{INDENT}real(dp) :: nlc_b  = 0.0_dp !! VV10 b; 0 = no nonlocal correlation")
     lines.append(f"{INDENT}{INDENT}real(dp) :: nlc_c  = 0.0_dp !! VV10 C")
+    lines.append(f"{INDENT}{INDENT}!")
+    lines.append(f"{INDENT}{INDENT}! Double hybrids: the RI-MP2 fraction on top of the semilocal/exact-")
+    lines.append(f"{INDENT}{INDENT}! exchange composition above, split opposite-/same-spin so a")
+    lines.append(f"{INDENT}{INDENT}! spin-component-scaled (DSD-type) double hybrid can set them")
+    lines.append(f"{INDENT}{INDENT}! unequally; both zero for every functional that is not one, and")
+    lines.append(f"{INDENT}{INDENT}! equal (c_os = c_ss = c) for every double hybrid terco has today.")
+    lines.append(f"{INDENT}{INDENT}! trc_capi.F90's trc_run_rimp2/trc_energy read these, never a kernel.")
+    lines.append(f"{INDENT}{INDENT}!")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: pt2_cos = 0.0_dp !! opposite-spin RI-MP2 fraction")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: pt2_css = 0.0_dp !! same-spin RI-MP2 fraction")
     lines.append(f"{INDENT}{INDENT}!! Empty when the functional runs; otherwise exactly what it needs")
     lines.append(f"{INDENT}{INDENT}!! that terco does not have, e.g. \"needs TPSS_X: meta-GGA kernels")
     lines.append(f'{INDENT}{INDENT}!! are not translated yet\". Selecting it by name still succeeds;')
@@ -527,6 +571,10 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
                 lines.append(f"{INDENT}{INDENT}{INDENT}f%nlc_b = {fortran_real(e.nlc_b)}")
             if e.nlc_c:
                 lines.append(f"{INDENT}{INDENT}{INDENT}f%nlc_c = {fortran_real(e.nlc_c)}")
+            if e.pt2_cos:
+                lines.append(f"{INDENT}{INDENT}{INDENT}f%pt2_cos = {fortran_real(e.pt2_cos)}")
+            if e.pt2_css:
+                lines.append(f"{INDENT}{INDENT}{INDENT}f%pt2_css = {fortran_real(e.pt2_css)}")
     lines.append(f"{INDENT}{INDENT}case default")
     lines.append(f"{INDENT}{INDENT}{INDENT}ok = .false.")
     lines.append(f"{INDENT}{INDENT}end select")
@@ -542,6 +590,18 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}{INDENT}f%coef(1:f%nk) = coef")
     lines.append(f"{INDENT}{INDENT}end subroutine set")
     lines.append(f"{INDENT}end function xc_functional_by_name")
+    lines.append("")
+    lines.append(f"{INDENT}!")
+    lines.append(f"{INDENT}! Whether `f` needs an RI-MP2 pass on top of its SCF: either PT2")
+    lines.append(f"{INDENT}! fraction nonzero. The one place this is asked, rather than reading")
+    lines.append(f"{INDENT}! pt2_cos/pt2_css directly, so a future third PT2 field cannot leave")
+    lines.append(f"{INDENT}! a caller checking only the first two of three.")
+    lines.append(f"{INDENT}!")
+    lines.append(f"{INDENT}pure function xc_is_double_hybrid(f) result(is_dh)")
+    lines.append(f"{INDENT}{INDENT}type(trc_xc_functional_t), intent(in) :: f")
+    lines.append(f"{INDENT}{INDENT}logical :: is_dh")
+    lines.append(f"{INDENT}{INDENT}is_dh = f%pt2_cos /= 0.0_dp .or. f%pt2_css /= 0.0_dp")
+    lines.append(f"{INDENT}end function xc_is_double_hybrid")
     lines.append("")
     lines.append("end module trc_xc_functional")
     lines.append("")
