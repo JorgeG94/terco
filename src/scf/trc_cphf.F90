@@ -79,6 +79,11 @@ module trc_cphf
    public :: trc_cphf_options_t, trc_cphf_result_t
    public :: trc_cphf_solve_rhf, trc_cphf_solve_uhf
    public :: trc_scf_polarizability_rhf, trc_scf_polarizability_uhf, trc_scf_polarizability
+   !! Shared with trc_cpks (the CPKS extension of this solver): the same CG
+   !! loop, the same elementwise `do concurrent` helpers -- see this
+   !! module's header on why they are split out as explicit-shape-dummy
+   !! subroutines rather than inlined.
+   public :: zero_mat, copy_mat, neg_mat, add_mat, axpy_mat, precond_mat, combine_p, add_diag
 
    type :: trc_cphf_options_t
       real(dp) :: conv_residual = 1.0e-8_dp

@@ -27,42 +27,49 @@
 !
 module trc_xc_functional
    use pic_types, only: dp
-   use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar
-   use trc_xc_b97_d, only: b97_d_exc_vxc_unpolar, b97_d_exc_vxc_polar
-   use trc_xc_bmk_c, only: bmk_c_exc_vxc_unpolar, bmk_c_exc_vxc_polar
-   use trc_xc_lyp, only: lyp_exc_vxc_unpolar, lyp_exc_vxc_polar
-   use trc_xc_mpw91_x, only: mpw91_x_exc_vxc_unpolar, mpw91_x_exc_vxc_polar
-   use trc_xc_n12_c, only: n12_c_exc_vxc_unpolar, n12_c_exc_vxc_polar
-   use trc_xc_n12_sx_c, only: n12_sx_c_exc_vxc_unpolar, n12_sx_c_exc_vxc_polar
-   use trc_xc_optx_x, only: optx_x_exc_vxc_unpolar, optx_x_exc_vxc_polar
-   use trc_xc_p86_c, only: p86_c_exc_vxc_unpolar, p86_c_exc_vxc_polar
-   use trc_xc_p86vwn_ft_c, only: p86vwn_ft_c_exc_vxc_unpolar, p86vwn_ft_c_exc_vxc_polar
-   use trc_xc_pbe_c, only: pbe_c_exc_vxc_unpolar, pbe_c_exc_vxc_polar
-   use trc_xc_pbe_sol_c, only: pbe_sol_c_exc_vxc_unpolar, pbe_sol_c_exc_vxc_polar
-   use trc_xc_pbe_x, only: pbe_x_exc_vxc_unpolar, pbe_x_exc_vxc_polar
-   use trc_xc_pw86_x, only: pw86_x_exc_vxc_unpolar, pw86_x_exc_vxc_polar
-   use trc_xc_pw91_c, only: pw91_c_exc_vxc_unpolar, pw91_c_exc_vxc_polar
-   use trc_xc_pw91_lda, only: pw91_lda_exc_vxc_unpolar, pw91_lda_exc_vxc_polar
-   use trc_xc_pw91_lda_mod, only: pw91_lda_mod_exc_vxc_unpolar, pw91_lda_mod_exc_vxc_polar
-   use trc_xc_pw91_lda_rpa, only: pw91_lda_rpa_exc_vxc_unpolar, pw91_lda_rpa_exc_vxc_polar
-   use trc_xc_pw91_x, only: pw91_x_exc_vxc_unpolar, pw91_x_exc_vxc_polar
-   use trc_xc_pz81, only: pz81_exc_vxc_unpolar, pz81_exc_vxc_polar
-   use trc_xc_pz81_mod, only: pz81_mod_exc_vxc_unpolar, pz81_mod_exc_vxc_polar
-   use trc_xc_rev_pbe_x, only: rev_pbe_x_exc_vxc_unpolar, rev_pbe_x_exc_vxc_polar
-   use trc_xc_rpbe_x, only: rpbe_x_exc_vxc_unpolar, rpbe_x_exc_vxc_polar
-   use trc_xc_slater_exchange, only: slater_exchange_exc_vxc_unpolar, slater_exchange_exc_vxc_polar
-   use trc_xc_sogga11_x_c, only: sogga11_x_c_exc_vxc_unpolar, sogga11_x_c_exc_vxc_polar
-   use trc_xc_sogga11_x_x, only: sogga11_x_x_exc_vxc_unpolar, sogga11_x_x_exc_vxc_polar
-   use trc_xc_vwn, only: vwn_exc_vxc_unpolar, vwn_exc_vxc_polar
-   use trc_xc_vwn_rpa, only: vwn_rpa_exc_vxc_unpolar, vwn_rpa_exc_vxc_polar
-   use trc_xc_wb97_xc, only: wb97_xc_exc_vxc_unpolar, wb97_xc_exc_vxc_polar
-   use trc_xc_wb97x_d_xc, only: wb97x_d_xc_exc_vxc_unpolar, wb97x_d_xc_exc_vxc_polar
-   use trc_xc_wb97x_v_xc, only: wb97x_v_xc_exc_vxc_unpolar, wb97x_v_xc_exc_vxc_polar
-   use trc_xc_wb97x_xc, only: wb97x_xc_exc_vxc_unpolar, wb97x_xc_exc_vxc_polar
+   use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar, b88_vxc_fxc_unpolar
+   use trc_xc_b97_d, only: b97_d_exc_vxc_unpolar, b97_d_exc_vxc_polar, b97_d_vxc_fxc_unpolar
+   use trc_xc_bmk_c, only: bmk_c_exc_vxc_unpolar, bmk_c_exc_vxc_polar, bmk_c_vxc_fxc_unpolar
+   use trc_xc_lyp, only: lyp_exc_vxc_unpolar, lyp_exc_vxc_polar, lyp_vxc_fxc_unpolar
+   use trc_xc_mpw91_x, only: mpw91_x_exc_vxc_unpolar, mpw91_x_exc_vxc_polar, mpw91_x_vxc_fxc_unpolar
+   use trc_xc_n12_c, only: n12_c_exc_vxc_unpolar, n12_c_exc_vxc_polar, n12_c_vxc_fxc_unpolar
+   use trc_xc_n12_sx_c, only: n12_sx_c_exc_vxc_unpolar, n12_sx_c_exc_vxc_polar, n12_sx_c_vxc_fxc_unpolar
+   use trc_xc_optx_x, only: optx_x_exc_vxc_unpolar, optx_x_exc_vxc_polar, optx_x_vxc_fxc_unpolar
+   use trc_xc_p86_c, only: p86_c_exc_vxc_unpolar, p86_c_exc_vxc_polar, p86_c_vxc_fxc_unpolar
+   use trc_xc_p86vwn_ft_c, only: p86vwn_ft_c_exc_vxc_unpolar, p86vwn_ft_c_exc_vxc_polar, &
+      p86vwn_ft_c_vxc_fxc_unpolar
+   use trc_xc_pbe_c, only: pbe_c_exc_vxc_unpolar, pbe_c_exc_vxc_polar, pbe_c_vxc_fxc_unpolar
+   use trc_xc_pbe_sol_c, only: pbe_sol_c_exc_vxc_unpolar, pbe_sol_c_exc_vxc_polar, pbe_sol_c_vxc_fxc_unpolar
+   use trc_xc_pbe_x, only: pbe_x_exc_vxc_unpolar, pbe_x_exc_vxc_polar, pbe_x_vxc_fxc_unpolar
+   use trc_xc_pw86_x, only: pw86_x_exc_vxc_unpolar, pw86_x_exc_vxc_polar, pw86_x_vxc_fxc_unpolar
+   use trc_xc_pw91_c, only: pw91_c_exc_vxc_unpolar, pw91_c_exc_vxc_polar, pw91_c_vxc_fxc_unpolar
+   use trc_xc_pw91_lda, only: pw91_lda_exc_vxc_unpolar, pw91_lda_exc_vxc_polar, pw91_lda_vxc_fxc_unpolar
+   use trc_xc_pw91_lda_mod, only: pw91_lda_mod_exc_vxc_unpolar, pw91_lda_mod_exc_vxc_polar, &
+      pw91_lda_mod_vxc_fxc_unpolar
+   use trc_xc_pw91_lda_rpa, only: pw91_lda_rpa_exc_vxc_unpolar, pw91_lda_rpa_exc_vxc_polar, &
+      pw91_lda_rpa_vxc_fxc_unpolar
+   use trc_xc_pw91_x, only: pw91_x_exc_vxc_unpolar, pw91_x_exc_vxc_polar, pw91_x_vxc_fxc_unpolar
+   use trc_xc_pz81, only: pz81_exc_vxc_unpolar, pz81_exc_vxc_polar, pz81_vxc_fxc_unpolar
+   use trc_xc_pz81_mod, only: pz81_mod_exc_vxc_unpolar, pz81_mod_exc_vxc_polar, pz81_mod_vxc_fxc_unpolar
+   use trc_xc_rev_pbe_x, only: rev_pbe_x_exc_vxc_unpolar, rev_pbe_x_exc_vxc_polar, rev_pbe_x_vxc_fxc_unpolar
+   use trc_xc_rpbe_x, only: rpbe_x_exc_vxc_unpolar, rpbe_x_exc_vxc_polar, rpbe_x_vxc_fxc_unpolar
+   use trc_xc_slater_exchange, only: slater_exchange_exc_vxc_unpolar, slater_exchange_exc_vxc_polar, &
+      slater_exchange_vxc_fxc_unpolar
+   use trc_xc_sogga11_x_c, only: sogga11_x_c_exc_vxc_unpolar, sogga11_x_c_exc_vxc_polar, &
+      sogga11_x_c_vxc_fxc_unpolar
+   use trc_xc_sogga11_x_x, only: sogga11_x_x_exc_vxc_unpolar, sogga11_x_x_exc_vxc_polar, &
+      sogga11_x_x_vxc_fxc_unpolar
+   use trc_xc_vwn, only: vwn_exc_vxc_unpolar, vwn_exc_vxc_polar, vwn_vxc_fxc_unpolar
+   use trc_xc_vwn_rpa, only: vwn_rpa_exc_vxc_unpolar, vwn_rpa_exc_vxc_polar, vwn_rpa_vxc_fxc_unpolar
+   use trc_xc_wb97_xc, only: wb97_xc_exc_vxc_unpolar, wb97_xc_exc_vxc_polar, wb97_xc_vxc_fxc_unpolar
+   use trc_xc_wb97x_d_xc, only: wb97x_d_xc_exc_vxc_unpolar, wb97x_d_xc_exc_vxc_polar, wb97x_d_xc_vxc_fxc_unpolar
+   use trc_xc_wb97x_v_xc, only: wb97x_v_xc_exc_vxc_unpolar, wb97x_v_xc_exc_vxc_polar, wb97x_v_xc_vxc_fxc_unpolar
+   use trc_xc_wb97x_xc, only: wb97x_xc_exc_vxc_unpolar, wb97x_xc_exc_vxc_polar, wb97x_xc_vxc_fxc_unpolar
    implicit none
    private
 
    public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name
+   public :: xc_eval_point_fxc
    public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS
 
@@ -244,6 +251,110 @@ contains
          vsigma = vsigma + coef(k)*vs
       end do
    end subroutine xc_eval_point
+
+   !
+   ! The second derivatives of the composed functional at one point of a
+   ! closed-shell density, plus vsigma -- the GGA response term needs both
+   ! the kernel's second derivative AND its first derivative, since the
+   ! grad-rho factor the energy path's vsigma multiplies is itself
+   ! unperturbed; only vsigma's own value and the trial density's gradient
+   ! respond. Same `_vxc_fxc_unpolar` routine check_xc.F90 already validates
+   ! against libxc (tol_f = 1e-10 relative, see that program's header) --
+   ! this calls what is there, with no new kernel arithmetic. An LDA kernel
+   ! leaves vsigma, v2rhosigma and v2sigma2 at zero.
+   !
+   pure subroutine xc_eval_point_fxc(nk, kid, coef, rho, sigma, vsigma, v2rho2, v2rhosigma, v2sigma2)
+      !$acc routine seq
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho, sigma
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      real(dp), intent(out) :: vsigma, v2rho2, v2rhosigma, v2sigma2
+      real(dp) :: vr, vs, f2rr, f2rs, f2ss
+      integer :: k
+
+      vsigma = 0.0_dp
+      v2rho2 = 0.0_dp
+      v2rhosigma = 0.0_dp
+      v2sigma2 = 0.0_dp
+      do k = 1, nk
+         vs = 0.0_dp
+         f2rs = 0.0_dp
+         f2ss = 0.0_dp
+         select case (kid(k))
+         case (XC_K_B88)
+         call b88_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_B97_D)
+         call b97_d_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_BMK_C)
+         call bmk_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_LYP)
+         call lyp_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_MPW91_X)
+         call mpw91_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_N12_C)
+         call n12_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_N12_SX_C)
+         call n12_sx_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_OPTX_X)
+         call optx_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_P86_C)
+         call p86_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_P86VWN_FT_C)
+         call p86vwn_ft_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PBE_C)
+         call pbe_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PBE_SOL_C)
+         call pbe_sol_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PBE_X)
+         call pbe_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PW86_X)
+         call pw86_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PW91_C)
+         call pw91_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PW91_LDA)
+         call pw91_lda_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PW91_LDA_MOD)
+         call pw91_lda_mod_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PW91_LDA_RPA)
+         call pw91_lda_rpa_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PW91_X)
+         call pw91_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PZ81)
+         call pz81_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PZ81_MOD)
+         call pz81_mod_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_REV_PBE_X)
+         call rev_pbe_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_RPBE_X)
+         call rpbe_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_SLATER_EXCHANGE)
+         call slater_exchange_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_SOGGA11_X_C)
+         call sogga11_x_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_SOGGA11_X_X)
+         call sogga11_x_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_VWN)
+         call vwn_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_VWN_RPA)
+         call vwn_rpa_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_WB97_XC)
+         call wb97_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_WB97X_D_XC)
+         call wb97x_d_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_WB97X_V_XC)
+         call wb97x_v_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_WB97X_XC)
+         call wb97x_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case default
+         f2rr = 0.0_dp
+         end select
+         vsigma = vsigma + coef(k)*vs
+         v2rho2 = v2rho2 + coef(k)*f2rr
+         v2rhosigma = v2rhosigma + coef(k)*f2rs
+         v2sigma2 = v2sigma2 + coef(k)*f2ss
+      end do
+   end subroutine xc_eval_point_fxc
 
    !
    ! The same for a spin-polarised density: two densities, three gradient

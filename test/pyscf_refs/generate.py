@@ -1457,6 +1457,90 @@ def gen_cphf_uhf():
     _gen_cphf_one("cphf_uhf_probe.bin", "cphf_uhf_oh_6-31gs.ref", "oh.xyz", "oh", "6-31gs", uhf=True)
 
 
+def _gen_cpks_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One scf_cpks.F90 case: rebuild the IDENTICAL molecule/basis
+    (bse_json_basis, mol.cart=True) and pyscf's own RKS at terco's OWN
+    converged grid -- `m.grids.coords`/`weights` set from the probe's
+    own points, `non0tab` cleared so pyscf actually re-evaluates on them
+    (test/pyscf_refs/generate.py's gen_rks does the same for its own
+    grid-matched comparison, VV10 included) -- so the only thing left to
+    disagree is trc_cpks's own CPKS solve, not two different quadratures
+    for rho/sigma. pyscf.prop.polarizability.rks (the same module
+    _gen_cphf_one uses for RHF, here on an RKS mf) is pyscf 2.14's own
+    CPKS: J + (1-hyb) K (no hyb here, since every functional this probes
+    is a global hybrid or none, not range-separated) + f_xc, i.e. the
+    same equation trc_cpks.F90's own header derives."""
+    PYSCF = {"svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no = (r.i8() for _ in range(3))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    alpha_terco = r.f8(9).reshape(3, 3, order='F')
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_cpks {probe_relname}: probe tag mismatch "
+                            f"({mol_tag}/{bas_tag}/{func_tag} vs {molname}/{basname}/{funcname})")
+
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_cpks {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_cpks {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+    label = f"cpks {molname}/{basname}/{funcname} (rks)"
+
+    def make_mf():
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    mf, grad_norm = converge_tight(make_mf, None, label)
+    from pyscf.prop.polarizability.rks import Polarizability
+    alpha_p = Polarizability(mf).polarizability()
+
+    w = RefWriter(ref_relname)
+    w.header(label, [ROOT / "test" / "scf_cpks.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w.real("E_SCF", mf.e_tot)
+    w.matrix("ALPHA", alpha_p)
+    w.real("CONV_TOL", mf.conv_tol)
+    w.real("CONV_TOL_GRAD", mf.conv_tol_grad)
+    w.real("GRAD_NORM", grad_norm)
+    w.end()
+    w.write()
+    dmax = float(np.abs(alpha_terco - alpha_p).max())
+    print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  "
+          f"|dE| {abs(e_terco - mf.e_tot):.2e}  |g| {grad_norm:.2e}  |d(alpha)|max {dmax:.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_cpks():
+    """scf_cpks.F90's RKS static polarizability (trc_cpks.F90, LDA/GGA
+    XC kernel response on top of trc_cphf's CPHF): water SVWN/PBE/B3LYP
+    and formamide PBE, 6-31G*, against pyscf.prop.polarizability.rks at
+    terco's own converged grid."""
+    cases = [
+        ("water.xyz", "water", "6-31gs", "svwn", "cpks_svwn_probe.bin"),
+        ("water.xyz", "water", "6-31gs", "pbe", "cpks_pbe_probe.bin"),
+        ("water.xyz", "water", "6-31gs", "b3lyp", "cpks_b3lyp_probe.bin"),
+        ("formamide.xyz", "formamide", "6-31gs", "pbe", "cpks_formamide_pbe_probe.bin"),
+    ]
+    for xyzname, molname, basname, funcname, probe in cases:
+        run_bin("scf_cpks", [xyzname, f"basis_sets/{basname}.json", molname, basname, funcname, probe])
+        _gen_cpks_one(probe, f"cpks_{molname}_{basname}_{funcname}.ref", xyzname, molname, basname, funcname)
+
+
 def gen_scf_df():
     """test/scf_df.F90's 12 cases (water/formamide x cc-pVDZ/6-31G* x
     HF/PBE/B3LYP, all --df) against pyscf's own RHF/RKS.density_fit on the
@@ -2003,6 +2087,7 @@ CASES = {
     "rimp2": gen_rimp2,
     "cphf": gen_cphf,
     "cphf_uhf": gen_cphf_uhf,
+    "cpks": gen_cpks,
     "scf_df": gen_scf_df,
     "xc_kernels": gen_xc_kernels,
     "pcm_cavity": gen_pcm_cavity,
