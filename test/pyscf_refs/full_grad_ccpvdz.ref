@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_full_grad_vs_pyscf
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["full_grad"] -> gen_full_grad
 # pyscf: 2.14.0
-# hash: 88c1dc794ac550f8ab0b1cbd0252acc15842fe5f3ada8634cbb087fc9ed553ea
-# files: test/pyscf_refs/generate.py test/check_full_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/water.xyz test/formamide.xyz test/oh.xyz
+# hash-scheme: case-ast-v1
+# hash: 6fc944d8e1affa2d95d9584e6dd3f7713e213050f964a5c3044742a642a42a1c
+# files: test/check_full_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/water.xyz test/formamide.xyz test/oh.xyz
 NAME_water_ccpvdz water_ccpvdz
 NSPIN_water_ccpvdz 1
 NAO_water_ccpvdz 24

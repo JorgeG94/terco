@@ -40,6 +40,7 @@ CASE_OF = {
     "rimp2_ccpvdz.ref": "rimp2",
     "pcm_cavity_water.ref": "pcm_cavity",
     "reference_xc.dat": "xc_kernels",
+    "full_grad_ccpvdz.ref": "full_grad",
 }
 
 
