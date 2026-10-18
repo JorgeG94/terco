@@ -647,6 +647,22 @@ set_tests_properties(
   terco/scf_dh PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                           ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# SPHERICAL-basis RI-MP2 and `--df`: restricted RI-MP2 (water, formamide,
+# cc-pVDZ + cc-pVDZ-RIFIT), unrestricted RI-MP2 (OH, from a fixed initial
+# density), `--df` HF/B3LYP (water, formamide, def2-universal-jkfit) and
+# B2PLYP (water, four-centre AND --df, chained) -- all spherical, against
+# pyscf's own `cart=False` on the identical sets (test/pyscf_refs/
+# sph_corr.ref, generate.py's gen_sph_corr). The Cartesian counterpart of
+# each of these is scf_rimp2(_uhf)/scf_df/scf_dh, unchanged by this file.
+add_executable(scf_sph_corr scf_sph_corr.F90)
+target_compile_definitions(scf_sph_corr PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_sph_corr PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_sph_corr PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_sph_corr COMMAND scf_sph_corr)
+set_tests_properties(
+  terco/scf_sph_corr PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks
