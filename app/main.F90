@@ -53,6 +53,8 @@ module terco_run
       real(dp) :: econv, gconv, thresh, eps
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
+      logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
+      real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
       integer(int64) :: t0, t1, rate
       type(comm_t) :: wcomm
       integer :: nranks
@@ -255,8 +257,13 @@ contains
       write (output_unit, "(a)") bar
       call line("TOTAL ENERGY", r%etot)
       if (r%rimp2 .and. r%conv /= 0) then
-         call line("MP2 CORRELATION", r%eos + r%ess)
-         call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
+         if (r%dh) then
+            call line("PT2 CORRELATION", r%eos + r%ess)
+            call line("DOUBLE HYBRID TOTAL", r%etot_dh)
+         else
+            call line("MP2 CORRELATION", r%eos + r%ess)
+            call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
+         end if
       end if
       write (output_unit, "(a)") bar
       write (output_unit, "(a)") ""
@@ -270,8 +277,9 @@ contains
       if (len(r%func) > 0) call row("exchange-correlation", r%exc)
       if (len(r%pcm) > 0) call row("solvation (E_diel)", r%epcm)
       if (r%rimp2 .and. r%conv /= 0) then
-         call row("MP2 opposite spin", r%eos)
-         call row("MP2 same spin", r%ess)
+         call row(merge("PT2 opposite spin", "MP2 opposite spin", r%dh), r%eos)
+         call row(merge("PT2 same spin    ", "MP2 same spin    ", r%dh), r%ess)
+         if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
@@ -338,6 +346,15 @@ contains
       if (r%rimp2 .and. r%conv /= 0) then
          write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', r%eos, ","
          write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', r%ess, ","
+         if (r%dh) then
+            write (u, "(a,es23.15e3,a)") '  "pt2 opposite-spin fraction": ', r%pt2_cos, ","
+            write (u, "(a,es23.15e3,a)") '  "pt2 same-spin fraction": ', r%pt2_css, ","
+            write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
+            write (u, "(a,es23.15e3)") '  "total energy": ', r%etot_dh
+            write (u, "(a)") "}"
+            close (u)
+            return
+         end if
       end if
       write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
       write (u, "(a)") "}"
@@ -374,7 +391,8 @@ program terco_main
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
-   use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS
+   use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
+                                xc_is_double_hybrid
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env, lower
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json
    implicit none
@@ -480,6 +498,21 @@ program terco_main
    r%func = lower(trim(sval))
    if (r%func == "hf" .or. r%func == "rhf" .or. r%func == "uhf") r%func = ""
 
+   ! A double hybrid's PT2 part is always RI-MP2 on the converged KS
+   ! orbitals (no canonical, non-fitted MP2 path exists in terco at all):
+   ! --func b2plyp runs it without needing --rimp2 too, with --aux's usual
+   ! default (cc-pvdz-rifit) unless overridden below.
+   if (len(r%func) > 0) then
+      block
+         type(trc_xc_functional_t) :: func_spec
+         if (xc_functional_by_name(r%func, func_spec)) r%dh = xc_is_double_hybrid(func_spec)
+         if (r%dh) then
+            r%pt2_cos = real(func_spec%pt2_cos, c_double)
+            r%pt2_css = real(func_spec%pt2_css, c_double)
+         end if
+      end block
+   end if
+
    r%guess = "sad"
    if (r%chrg /= 0) r%guess = "sadq"
    if (r%cli%is_set("guess")) then
@@ -515,7 +548,7 @@ program terco_main
    call check(r, "--thresh")
    call r%cli%get("frozen", nfrozen, r%err)
    call check(r, "--frozen")
-   r%rimp2 = r%cli%is_set("rimp2")
+   r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
    r%df = r%cli%is_set("df")
    cart = r%cli%is_set("cart")
    r%pcm = ""
@@ -654,6 +687,10 @@ program terco_main
    if (r%rimp2 .and. r%conv /= 0) then
       call api(r, trc_run_rimp2(r%h))
       call api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
+      ! r%etot is the SCF/hybrid-part total alone (fetched above, before
+      ! this RI-MP2 step ran): the double hybrid's own total adds its
+      ! two PT2 fractions here, never the full unscaled E_os + E_ss.
+      if (r%dh) r%etot_dh = r%etot + r%pt2_cos*r%eos + r%pt2_css*r%ess
    end if
 
    call system_clock(r%t1)
