@@ -975,6 +975,78 @@ def gen_rys_grad(case, json_rel):
     dump.unlink()
 
 
+def gen_lr_exchange_grad(case, json_rel):
+    """eri%gradient's long-range exchange term alone (j_scale=0, k_scale=1,
+    omega) against pyscf's own range-separated int2e_ip1
+    (mol.with_range_coulomb(omega)), contracted by hand exactly like
+    gen_rys_grad's grad2e_rhf but exchange-only (no vj term) -- the omega > 0
+    analogue of that function, RHF only (see
+    check_lr_exchange_grad_vs_pyscf.F90's own header for why). Two omega
+    values, both real functionals already in this tree
+    (src/xc/trc_xc_functional.F90): 0.3 (wB97X-V/wB97X) and 0.4 (wB97)."""
+    xyz = "water.xyz"
+    omegas = [0.3, 0.4]
+    dump = TEST / f"lr_exchange_grad_probe_{case}.bin"
+    run_bin(f"check_lr_exchange_grad_vs_pyscf_{case}", [json_rel, dump.name])
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    drhf = r.mat(nao)
+    grad_lr_terco = [r.f8(3 * nat).reshape(3, nat, order='F').T for _ in omegas]
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_lr_exchange_grad {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    drhf_p = drhf[np.ix_(inv_perm, inv_perm)]
+
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_lr_exchange_grad {case}: overlap check failed, {s_err:.3e}")
+    drhf_pyscf = n[:, None] * drhf_p * n[None, :]
+    aoslice = mol.aoslice_by_atom()
+
+    def grad2e_k_only(dm, omega):
+        # Exchange only -- no vj term, same contraction gen_rys_grad's
+        # grad2e_rhf uses for vk, under the range-separated operator.
+        with mol.with_range_coulomb(omega):
+            eri1 = mol.intor('int2e_ip1', comp=3).reshape(3, nao, nao, nao, nao)
+        vk = -np.einsum('xijkl,jk->xil', eri1, dm)
+        vhf = -0.5 * vk
+        de = np.zeros((nat, 3))
+        for ia in range(nat):
+            p0, p1 = aoslice[ia, 2:]
+            de[ia] = np.einsum('xij,ij->x', vhf[:, p0:p1], dm[p0:p1]) * 4.0
+        return de
+
+    w = RefWriter(f"lr_exchange_grad_{case}.ref")
+    w.header("check_lr_exchange_grad_vs_pyscf_" + case,
+              [ROOT / "test" / "check_lr_exchange_grad_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("S", s_terco)
+    worst_msgs = []
+    for idx, omega in enumerate(omegas, start=1):
+        grad_py = grad2e_k_only(drhf_pyscf, omega)
+        w.matrix(f"GRAD_LR_OM{idx}", grad_py.T)   # (3, nat), matching terco's own layout
+        worst = np.abs(grad_lr_terco[idx - 1] - grad_py).max()
+        worst_msgs.append(f"omega={omega} worst|terco-pyscf| {worst:.3e}")
+    w.end()
+    w.write()
+    print(f"  lr_exchange_grad {case}: " + "  ".join(worst_msgs) + " (at generation time)")
+    dump.unlink()
+
+
 def gen_1e_grad(case, xyz, json_rel):
     """trc_1e_gradient's three terms (dS, dT, dV) against pyscf, each in
     isolation, at a fixed non-SCF density (check_1e_grad_vs_pyscf.F90's own
@@ -2448,6 +2520,8 @@ CASES = {
     "vv10": gen_vv10,
     "rys_grad_631gs": lambda: gen_rys_grad("631gs", "basis_sets/6-31gs.json"),
     "rys_grad_ccpvdz": lambda: gen_rys_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
+    "lr_exchange_grad_631gs": lambda: gen_lr_exchange_grad("631gs", "basis_sets/6-31gs.json"),
+    "lr_exchange_grad_ccpvdz": lambda: gen_lr_exchange_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
     "onee_grad_water_631gs": lambda: gen_1e_grad("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "onee_grad_water_ccpvdz": lambda: gen_1e_grad("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
     "onee_grad_formamide_ccpvdz": lambda: gen_1e_grad(

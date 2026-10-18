@@ -255,6 +255,22 @@ set_tests_properties(
   terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
+#
+# eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
+# against a central difference of E_K^lr(D) -- the omega > 0 analogue of
+# check_rys_grad_fd, RHF only (see check_lr_exchange_grad_fd.F90's own
+# header for why). water/6-31G* and water/cc-pVDZ, omega = 0.3 and 0.4
+# (wB97X-V/wB97X and wB97's own values, src/xc/trc_xc_functional.F90) in
+# one binary, plus a bit-identity check at omega = 0.
+#
+terco_add_check(check_lr_exchange_grad_fd_631gs check_lr_exchange_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/6-31gs.json)
+terco_add_check(check_lr_exchange_grad_fd_ccpvdz check_lr_exchange_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvdz.json)
+set_tests_properties(
+  terco/check_lr_exchange_grad_fd_631gs terco/check_lr_exchange_grad_fd_ccpvdz
+  PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+
 # The FULL analytic gradient (eri%gradient + trc_1e_gradient + nuclear
 # repulsion) against finite differences of terco's own fully reconverged
 # SCF energy -- RHF water, UHF OH -- see check_full_grad_fd.F90's header.
@@ -503,6 +519,22 @@ foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/xc_grad_probe_gridresp_${case}.bin)
   terco_add_check(check_xc_grad_vs_pyscf_gridresp_${case} check_xc_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case} 1)
+endforeach()
+
+# The long-range exchange gradient term alone (j_scale=0, k_scale=1, omega)
+# against a committed pyscf int2e_ip1 contraction under
+# mol.with_range_coulomb(omega) -- the omega > 0 analogue of
+# check_rys_grad_vs_pyscf, RHF only. Two omega values (0.3, 0.4) in one
+# binary/reference -- see check_lr_exchange_grad_vs_pyscf.F90's own header.
+foreach(b 631gs ccpvdz)
+  if(b STREQUAL "631gs")
+    set(json basis_sets/6-31gs.json)
+  else()
+    set(json basis_sets/cc-pvdz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/lr_exchange_grad_probe_${b}.bin)
+  terco_add_check(check_lr_exchange_grad_vs_pyscf_${b} check_lr_exchange_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
 endforeach()
 
 # trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
