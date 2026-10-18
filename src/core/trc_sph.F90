@@ -33,18 +33,42 @@
 ! column being an orbital label rather than a second AO -- and
 ! `sph_aux3c_to_sph` folds the auxiliary (P) index of a three-centre
 ! (mu nu|P) block the other way, Cartesian to spherical, leaving the
-! orbital-basis pair (mu, nu) alone. Both are `b%nao`/`b%nao_sph` square
-! `sph_sph_to_cart`/`sph_cart_to_sph` with one side of the contraction
-! dropped, not a new kind of transform.
+! orbital-basis pair (mu, nu) alone. `sph_metric_cart_to_sph` is the
+! square two-sided fold `sph_cart_to_sph` already is, specialised to the
+! auxiliary basis's own metric (P|Q).
+!
+! sph_mo_to_cart/sph_cart_to_sph/sph_sph_to_cart run ONCE per geometry (the
+! SCF's S/H, or RI-MP2's own MO fold) or once per iteration on matrices no
+! larger than nao -- the do-concurrent, one-contraction-per-shell-pair
+! cost (O(nshell^2 ncart^3), this module's own header above) is negligible
+! next to the Fock build there. `sph_aux3c_to_sph`/`sph_metric_cart_to_sph`
+! fold something O(nao^2) PER AUXILIARY FUNCTION (a three-centre block) or
+! O(naux^2) (the metric) instead: the SAME per-(mu,nu)-pair / per-row
+! shell loop that is cheap at nao^2 pairs is now O(nao^2 * naux) total,
+! and measured expensive (trc_rimp2_driver.F90's own RI-MP2 step table,
+! w20/cc-pVDZ: 0.88 s on top of a 0.07 s three-centre build). Both fold
+! the auxiliary index with a batched, strided GEMM through trc_linalg
+! (cuBLAS on the device) instead: shells of the SAME angular momentum l
+! share one (ncart(l), 2l+1) T block (SPH_T(:,:,l)) and a RUN of
+! consecutive same-l shells (common within one atom's own shell list)
+! becomes ONE `gemm_strided` call with that many batch items -- a single
+! shell is just a run of length one, so every shell is covered without a
+! special case. The small SPH_T table is staged into a device-resident
+! scratch ONCE per call (`!$acc update device`), not re-read as a
+! compile-time PARAMETER inside `host_data use_device` -- SPH_T itself was
+! never `!$acc enter data`-registered (this module's own header: "needs
+! no !$acc declare"), so cuBLAS's own device-pointer lookup on it directly
+! would not resolve.
 !
 module trc_sph
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
-   use trc_sph_tables, only: SPH_T
+   use trc_sph_tables, only: SPH_T, SPH_LMAX, SPH_NCART_MAX, SPH_NSPH_MAX
+   use trc_linalg, only: trc_linalg_t
    implicit none
    private
 
-   public :: sph_cart_to_sph, sph_sph_to_cart, sph_mo_to_cart, sph_aux3c_to_sph
+   public :: sph_cart_to_sph, sph_sph_to_cart, sph_mo_to_cart, sph_aux3c_to_sph, sph_metric_cart_to_sph
 
 contains
 
@@ -209,58 +233,154 @@ contains
    end subroutine mo_sph_to_cart_driver
 
    !
-   ! Tsph(:, :, q) := sum_p SPH_T(p, r, l) Tcart(:, :, p), per auxiliary
-   ! SHELL -- the P-index fold a three-centre density-fitting block needs
-   ! when the auxiliary basis is spherical (trc_scf_df.F90's `df_jk_setup`,
-   ! trc_rimp2_driver.F90's own metric/3c build): the first two indices
-   ! (mu, nu), an orbital-basis AO pair, are untouched; only the auxiliary
-   ! index crosses the boundary, on the LAST axis instead of a row or
-   ! column. `aux` is the block's own basis handle -- normally a
-   ! shell-boundary subset (trc_api.F90's `basis_subset`), whose `nao`/
-   ! `nao_sph`/`sh_ao`/`sh_ao_sph` already describe that block's own,
-   ! LOCAL P numbering -- but the whole auxiliary basis works just as well
-   ! for a caller with no blocking at all.
+   ! Tsph(:, :, q) := sum_p SPH_T(p, r, l) Tcart(:, :, p) -- the P-index
+   ! fold a three-centre density-fitting block needs when the auxiliary
+   ! basis is spherical (trc_scf_df.F90's `df_jk_setup`,
+   ! trc_rimp2_driver.F90's own 3c build): the first two indices (mu, nu),
+   ! an orbital-basis AO pair, are untouched; only the auxiliary index
+   ! crosses the boundary, on the LAST axis instead of a row or column.
+   ! `aux` is the block's own basis handle -- normally a shell-boundary
+   ! subset (trc_api.F90's `basis_subset`), whose `nao`/`nao_sph`/`sh_ao`/
+   ! `sh_ao_sph` already describe that block's own, LOCAL P numbering --
+   ! but the whole auxiliary basis works just as well for a caller with
+   ! no blocking at all. `lp` is the caller's own linear-algebra handles
+   ! (cuBLAS under OpenACC): see this module's own header for why this is
+   ! a batched GEMM, not a do-concurrent loop, and `lp` is now required.
    !
-   subroutine sph_aux3c_to_sph(aux, n, tcart, tsph)
+   subroutine sph_aux3c_to_sph(aux, n, tcart, tsph, lp)
       type(trc_basis_t), intent(in) :: aux
       integer, intent(in) :: n
       real(dp), intent(in)  :: tcart(n, n, aux%nao)
       real(dp), intent(out) :: tsph(n, n, aux%nao_sph)
-      call aux3c_to_sph_driver(aux%nshell, aux%sh_l, aux%sh_ao, aux%sh_ao_sph, aux%nao, aux%nao_sph, n, &
-                               tcart, tsph)
+      type(trc_linalg_t), intent(inout) :: lp
+      call sph_fold_cols_cart_to_sph(aux, lp, n*n, tcart, tsph)
    end subroutine sph_aux3c_to_sph
 
-   subroutine aux3c_to_sph_driver(nshell, sh_l, sh_ao, sh_ao_sph, naux_c, naux_s, n, tcart, tsph)
-      integer,  intent(in)  :: nshell, naux_c, naux_s, n
-      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
-      real(dp), intent(in)  :: tcart(n, n, naux_c)
-      real(dp), intent(out) :: tsph(n, n, naux_s)
-      integer :: ij, mu, nu, ish, li, nci, nsi, ai, bi, p, r
-      real(dp) :: acc
+   !
+   ! Msph := T^T Mcart T, for the auxiliary basis's own metric (P|Q) --
+   ! `sph_cart_to_sph`'s own two-sided contraction, but as two batched-GEMM
+   ! one-sided folds (columns, then rows) through `lp` instead of a
+   ! do-concurrent shell-pair loop: the metric is O(naux^2), and this
+   ! module's own header measured that loop expensive at the auxiliary
+   ! sizes RI-MP2/`--df` actually run at. `tmp` (naux_c, naux_sph) is the
+   ! column-folded intermediate between the two passes.
+   !
+   subroutine sph_metric_cart_to_sph(aux, lp, mcart, msph)
+      type(trc_basis_t), intent(in) :: aux
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in)  :: mcart(aux%nao, aux%nao)
+      real(dp), intent(out) :: msph(aux%nao_sph, aux%nao_sph)
+      real(dp), allocatable :: tmp(:, :)
+      allocate (tmp(aux%nao, aux%nao_sph))
+      !$acc enter data create(tmp)
+      call sph_fold_cols_cart_to_sph(aux, lp, aux%nao, mcart, tmp)
+      call sph_fold_rows_cart_to_sph(aux, lp, aux%nao_sph, tmp, msph)
+      !$acc exit data delete(tmp)
+      deallocate (tmp)
+   end subroutine sph_metric_cart_to_sph
 
-      ! Flattened (mu, nu) index: every aux SHELL is folded for each (mu,
-      ! nu) pair by the inner, sequential loop below -- the bound that
-      ! would need a shell-indexed `do concurrent` axis (the one this
-      ! module's own header flags) never appears in the parallel header
-      ! itself here.
-      do concurrent(ij=0:n*n - 1) local(mu, nu, ish, li, nci, nsi, ai, bi, p, r, acc)
-         nu = ij/n + 1
-         mu = ij - (nu - 1)*n + 1
-         do ish = 1, nshell
-            li = sh_l(ish)
-            nci = (li + 1)*(li + 2)/2
-            nsi = 2*li + 1
-            ai = sh_ao(ish)
-            bi = sh_ao_sph(ish)
-            do r = 1, nsi
-               acc = 0.0_dp
-               do p = 1, nci
-                  acc = acc + SPH_T(p, r, li)*tcart(mu, nu, ai + p - 1)
-               end do
-               tsph(mu, nu, bi + r - 1) = acc
-            end do
+   !
+   ! Msph(:, Psph) := sum_Pc Mcart(:, Pc) SPH_T(Pc, Psph, l) -- the
+   ! one-sided, COLUMN-wise Cartesian-to-spherical fold `sph_aux3c_to_sph`
+   ! (nrow = n^2, the flattened orbital-AO-pair axis) and
+   ! `sph_metric_cart_to_sph`'s own first pass (nrow = aux%nao) both are.
+   ! `mcart`/`msph` are passed by their first element and read via `nrow`
+   ! alone (BLAS's own `a(lda,*)` convention, trc_linalg.F90's own idiom
+   ! for a sub-block of a larger array) so the actual argument's own shape
+   ! -- (n, n, naux) for a 3c block, (naux_c, naux_c) for the metric --
+   ! never has to match this routine's flattened (nrow, naux) view of it.
+   !
+   ! One `gemm_strided` call per RUN of consecutive shells sharing an
+   ! angular momentum l (a single shell is a run of length one): every
+   ! item of the run shares the SAME (ncart(l), 2l+1) block of `tl`
+   ! (`sb = 0`), so strided-batched cuBLAS does every shell of the run in
+   ! one launch, at m = nrow, k = ncart(l), n = 2l+1 -- a tall, thin,
+   ! memory-bound GEMM, not the O(nrow * naux_c * naux_sph) a single dense
+   ! GEMM against a block-diagonal T would spend most of its flops on.
+   !
+   subroutine sph_fold_cols_cart_to_sph(aux, lp, nrow, mcart, msph)
+      type(trc_basis_t), intent(in) :: aux
+      type(trc_linalg_t), intent(inout) :: lp
+      integer, intent(in) :: nrow
+      real(dp), intent(in)  :: mcart(*)
+      real(dp), intent(out) :: msph(*)
+      real(dp) :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
+      integer :: ish0, ish, l0, nci, nsi, run, ac, bc
+      integer(int64) :: nrow8, sa, sc
+
+      nrow8 = int(nrow, int64)
+      !$acc enter data create(tl)
+      tl = SPH_T
+      !$acc update device(tl)
+
+      ish0 = 1
+      do while (ish0 <= aux%nshell)
+         l0 = aux%sh_l(ish0)
+         run = 1
+         do ish = ish0 + 1, aux%nshell
+            if (aux%sh_l(ish) /= l0) exit
+            run = run + 1
          end do
+         nci = (l0 + 1)*(l0 + 2)/2
+         nsi = 2*l0 + 1
+         ac = aux%sh_ao(ish0) - 1
+         bc = aux%sh_ao_sph(ish0) - 1
+         sa = nrow8*int(nci, int64)
+         sc = nrow8*int(nsi, int64)
+         call lp%gemm_strided("N", "N", nrow, nsi, nci, 1.0_dp, mcart(1_int64 + int(ac, int64)*nrow8), nrow, &
+                              sa, tl(1, 1, l0), SPH_NCART_MAX, 0_int64, 0.0_dp, &
+                              msph(1_int64 + int(bc, int64)*nrow8), nrow, sc, run)
+         ish0 = ish0 + run
       end do
-   end subroutine aux3c_to_sph_driver
+      !$acc exit data delete(tl)
+   end subroutine sph_fold_cols_cart_to_sph
+
+   !
+   ! Msph(Psph, :) := sum_Pc SPH_T(Pc, Psph, l)^T Mcart(Pc, :) -- the
+   ! one-sided, ROW-wise fold `sph_metric_cart_to_sph`'s own second pass
+   ! needs (folding the metric's remaining Cartesian index after the
+   ! column pass above already folded the other one). `mcart` is
+   ! (aux%nao, ncol), `msph` is (aux%nao_sph, ncol), both read/written by
+   ! their own leading dimension (`aux%nao`/`aux%nao_sph`) rather than the
+   ! `ncol` this routine sees -- a shell's own ROW block is `nci`
+   ! contiguous rows at a fixed column offset, not a contiguous run of
+   ! elements, so (unlike the column fold) the stride between a run's
+   ! items is in ROWS (`nci`/`nsi` elements), and T itself is the "A"
+   ! operand here, transposed (`ta = "T"`), not "B".
+   !
+   subroutine sph_fold_rows_cart_to_sph(aux, lp, ncol, mcart, msph)
+      type(trc_basis_t), intent(in) :: aux
+      type(trc_linalg_t), intent(inout) :: lp
+      integer, intent(in) :: ncol
+      real(dp), intent(in)  :: mcart(*)
+      real(dp), intent(out) :: msph(*)
+      real(dp) :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
+      integer :: ish0, ish, l0, nci, nsi, run, ac, bc, naux_c, naux_s
+
+      naux_c = aux%nao
+      naux_s = aux%nao_sph
+      !$acc enter data create(tl)
+      tl = SPH_T
+      !$acc update device(tl)
+
+      ish0 = 1
+      do while (ish0 <= aux%nshell)
+         l0 = aux%sh_l(ish0)
+         run = 1
+         do ish = ish0 + 1, aux%nshell
+            if (aux%sh_l(ish) /= l0) exit
+            run = run + 1
+         end do
+         nci = (l0 + 1)*(l0 + 2)/2
+         nsi = 2*l0 + 1
+         ac = aux%sh_ao(ish0) - 1
+         bc = aux%sh_ao_sph(ish0) - 1
+         call lp%gemm_strided("T", "N", nsi, ncol, nci, 1.0_dp, tl(1, 1, l0), SPH_NCART_MAX, 0_int64, &
+                              mcart(1 + ac), naux_c, int(nci, int64), 0.0_dp, msph(1 + bc), naux_s, &
+                              int(nsi, int64), run)
+         ish0 = ish0 + run
+      end do
+      !$acc exit data delete(tl)
+   end subroutine sph_fold_rows_cart_to_sph
 
 end module trc_sph

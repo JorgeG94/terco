@@ -76,7 +76,7 @@ module trc_rimp2_driver
    use pic_flop_recorder, only: flop_recorder_type
    use trc_step_table, only: step_table_t
    use trc_scf_df, only: df_jk_t
-   use trc_sph, only: sph_cart_to_sph, sph_mo_to_cart, sph_aux3c_to_sph
+   use trc_sph, only: sph_metric_cart_to_sph, sph_mo_to_cart, sph_aux3c_to_sph
    implicit none
    private
 
@@ -285,7 +285,7 @@ contains
             allocate (jmc(naux_c, naux_c))
             !$acc enter data create(jmc)
             call trc_df_2c(aux, jmc)
-            call sph_cart_to_sph(aux, jmc, jm)
+            call sph_metric_cart_to_sph(aux, lp, jmc, jm)
             !$acc exit data delete(jmc)
             deallocate (jmc)
          else
@@ -349,7 +349,7 @@ contains
             allocate (tcart3(nao, nao, npc))
             !$acc enter data create(tcart3)
             call trc_df_3c(b, pl, blk, tcart3)
-            call sph_aux3c_to_sph(blk, nao, tcart3, tens)
+            call sph_aux3c_to_sph(blk, nao, tcart3, tens, lp)
             !$acc exit data delete(tcart3)
             deallocate (tcart3)
          else
@@ -733,7 +733,7 @@ contains
          allocate (jmc(naux_c, naux_c))
          !$acc enter data create(jmc)
          call trc_df_2c(aux, jmc)
-         call sph_cart_to_sph(aux, jmc, jm)
+         call sph_metric_cart_to_sph(aux, lp, jmc, jm)
          !$acc exit data delete(jmc)
          deallocate (jmc)
       else
@@ -779,7 +779,7 @@ contains
             allocate (tcart3(nao, nao, npc))
             !$acc enter data create(tcart3)
             call trc_df_3c(b, pl, blk, tcart3)
-            call sph_aux3c_to_sph(blk, nao, tcart3, tens)
+            call sph_aux3c_to_sph(blk, nao, tcart3, tens, lp)
             !$acc exit data delete(tcart3)
             deallocate (tcart3)
          else

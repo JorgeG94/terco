@@ -76,7 +76,7 @@ module trc_scf_df
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
-   use trc_sph, only: sph_cart_to_sph, sph_aux3c_to_sph
+   use trc_sph, only: sph_metric_cart_to_sph, sph_aux3c_to_sph
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use, intrinsic :: iso_fortran_env, only: output_unit
@@ -212,6 +212,21 @@ contains
       this%naux = naux
       this%npack = npack
 
+      ! `lp`'s own eigensolver workspace: a caller that already `%init`'d
+      ! it (trc_capi.F90's own `cx%la%init(n)`, at the SCF's own space --
+      ! `b%nao_sph` when `b%spherical`) sized it for a SMALLER n than this
+      ! object's own density-factor `syev` (build()'s own `this%dsc`,
+      ! Cartesian, `n = b%nao`) ever runs at: every OTHER caller already
+      ! passes a Cartesian `n` (RI-MP2's own `trc_rimp2_run`/
+      ! `trc_urimp2_run`, or `--df` before a spherical orbital basis was
+      ! supported, when `b%nao_sph` and `b%nao` happened to always be
+      ! equal), so this went unnoticed until a spherical `--df` run first
+      ! made the two sizes differ -- `trc_linalg_t%init` only ever GROWS
+      ! (`grow_workspace`, never shrinks), so calling it here with the
+      ! size `build` actually needs is always safe and a no-op when a
+      ! caller already sized `lp` this large or larger.
+      call lp%init(n)
+
       call dbg_mem("before B")
       allocate (this%bpk(npack, naux))
       !$acc enter data create(this%bpk)
@@ -232,7 +247,7 @@ contains
          allocate (jmc(naux_c, naux_c))
          !$acc enter data create(jmc)
          call trc_df_2c(aux, jmc)
-         call sph_cart_to_sph(aux, jmc, jm)
+         call sph_metric_cart_to_sph(aux, lp, jmc, jm)
          !$acc exit data delete(jmc)
          deallocate (jmc)
       else
@@ -294,7 +309,7 @@ contains
             nps = blk%nao_sph
             allocate (tsph(n, n, nps))
             !$acc enter data create(tsph)
-            call sph_aux3c_to_sph(blk, n, tens, tsph)
+            call sph_aux3c_to_sph(blk, n, tens, tsph, lp)
             do concurrent(q=1:nps, mu=1:n, nu=1:n, nu <= mu)
                this%bpk(pack_idx(mu, nu), p0s - 1 + q) = tsph(mu, nu, q)
             end do
