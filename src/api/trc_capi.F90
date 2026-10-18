@@ -187,7 +187,7 @@ module trc_capi
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -2473,7 +2473,12 @@ contains
    end function core_orbitals
 
    function trc_run_rimp2(handle) result(status) bind(c, name="trc_run_rimp2")
-      !! Needs a converged closed-shell SCF in the context and an auxiliary basis.
+      !! Needs a converged SCF in the context (restricted, or unrestricted --
+      !! UHF or UKS, cx%res%nspin == 2) and an auxiliary basis. An
+      !! unrestricted reference refuses more than one rank below (see
+      !! trc_urimp2_run's own header for why the restricted ring is not a
+      !! clean generalisation here) and still refuses a spherical basis,
+      !! the same boundary as the restricted path.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
@@ -2495,11 +2500,11 @@ contains
          cx%message = "trc_run_rimp2: no auxiliary basis was set"
          return
       end if
+      ! cfg%nspin is always 1 (nalpha == nbeta, restricted) or 2 (nalpha /=
+      ! nbeta, UHF/UKS) -- trc_scf_driver's own rule -- so nothing is
+      ! refused here on the reference's shape; ROHF does not exist in this
+      ! build, so the spin check alone is enough.
       status = TRC_ERR_UNSUPPORTED
-      if (cx%res%nspin /= 1 .or. cx%nalpha /= cx%nbeta) then
-         cx%message = "trc_run_rimp2: restricted closed-shell reference only"
-         return
-      end if
       ! Density fitting and RI-MP2 are out of scope for the spherical AO
       ! space (this milestone's own boundary: trc_df_2c/trc_df_3c stay
       ! Cartesian-only, see this file's AO classification header). `cx%res
@@ -2537,21 +2542,41 @@ contains
          end do
       end if
       status = TRC_ERR_BADARG
-      if (nfrozen >= cx%nalpha) then
-         cx%message = "trc_run_rimp2: every occupied orbital is frozen"
+      if (nfrozen >= cx%nalpha .or. nfrozen >= cx%nbeta) then
+         cx%message = "trc_run_rimp2: every occupied orbital is frozen in at least one spin channel"
          return
       end if
       nblk = cx%aux_block
       if (nblk <= 0) nblk = cx%ab%b%nao
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
+      ! UHF/UKS RI-MP2 (cx%res%nspin == 2) refuses more than one rank --
+      ! see trc_urimp2_run's own header for why the restricted ring is not
+      ! a clean generalisation to the aa/bb/ab blocks an open-shell run
+      ! needs. Refused here, before building the pair list, so nothing
+      ! below runs for a request that cannot complete.
+      if (cx%res%nspin == 2 .and. collective) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_rimp2: unrestricted RI-MP2 runs on one rank only this round "// &
+                      "-- the restricted ring distributes one block of B and lets it meet "// &
+                      "itself, which does not generalise cleanly to the aa/bb/ab blocks an "// &
+                      "open-shell reference needs (see trc_urimp2_run's own header)"
+         call comm%finalize()
+         return
+      end if
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
+      if (cx%res%nspin == 2) then
+         ! Unrestricted: no DF chaining (--df is closed-shell only), one
+         ! rank only (checked above).
+         call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cx%res%cmo(:, :, 1), &
+                             cx%res%cmo(:, :, 2), cx%res%eps(:, 1), cx%res%eps(:, 2), res, &
+                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
       ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
       ! exactly the jkfit one (same JSON path), not merely the same shape:
       ! trc_rimp2_run checks dimensions, not that the basis is the same
       ! one, and a path match is this handle's own way to be sure of that.
-      if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
+      else if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
          if (collective) then
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
                                nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
