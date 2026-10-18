@@ -179,6 +179,49 @@ The references written before this scheme hashed the whole of
 without regenerating anything: it checked each was fresh under the old
 hash, then rewrote only its generator/hash/files header lines.
 
+## Two tiers: pyscf anchors and terco goldens
+
+Every method checked here is checked twice.
+
+- **Anchors** -- the pyscf references in this directory. They say terco is
+  *right*: an independent code agrees with it, at the physics tolerance of
+  each comparison (`1e-8` Eh on a closed-shell SCF energy, for example).
+  They are frozen. Regenerate one only for a new method, or when that
+  case's own generator code or inputs change (`check_staleness.py` names
+  exactly which); never to absorb a terco change. No anchor tolerance is
+  ever loosened.
+- **Goldens** -- `test/goldens/<case>.gold`, terco's own numbers from a
+  terco run. They say terco has *not moved*: the same check also records its
+  quantities (`test/golden_io.F90`) and `terco/golden/<case>`
+  (`test/goldens/compare_goldens.py`) compares them at a tolerance set from
+  the measured spread between CI's compilers, far below the anchor's. A
+  refactor that shifts an energy by `1e-9` Eh passes every anchor and fails
+  its golden.
+
+When a golden fails:
+
+- **unintended** -- it is a regression; fix the code.
+- **intended** (a new algorithm, a different but equally valid order of
+  operations) -- first confirm the anchors still pass, since that is what
+  says the new numbers are still right. Then regenerate the goldens from a
+  terco build, which runs terco only and never pyscf:
+
+  ```
+  python3 test/goldens/regen_goldens.py --build build [--build build-lmax3]
+  ```
+
+  and say in the commit what moved and by how much. A case that only runs
+  at `TERCO_LMAX=3` comes from the second build.
+
+The goldens cover the SCF and energy checks: `scf_rks`, `scf_df`,
+`scf_robust`, `scf_rimp2` (both bases), `scf_pcm` (both sets), and the
+fixed-density `rys_fock` and `erf_fock` builds (every kernel path). For
+the Fock builds, which have no single energy, the golden is three scalars
+of each matrix: `tr(D G)`, its Frobenius norm, and a sum with fixed uneven
+weights, which moves when any element does.
+
+TOLERANCES_PLACEHOLDER
+
 ## Mapping from the old `*_ref.py` scripts
 
 | old script | committed reference(s) | Fortran comparison |
