@@ -65,11 +65,19 @@ module check_xc_grad_fd_cases
 
 contains
 
-   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, functional, grid_level, label, any_fail)
+   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, functional, grid_level, label, any_fail, &
+                       abstol_on_override, invtol_override)
       character(*), intent(in) :: xyzfile, basis_json, functional, label
       integer, intent(in) :: nalpha, nbeta, grid_level
       logical, intent(inout) :: any_fail
+      real(dp), intent(in), optional :: abstol_on_override, invtol_override
+      !! Per-case overrides of the module ABSTOL_ON/INVTOL, for a case
+      !! whose OWN measured FD/invariance floor is genuinely looser than
+      !! the six 2-3-atom cases ABSTOL_ON/INVTOL were set from -- see the
+      !! w3.xyz case this module's program unit calls with one, and ITS
+      !! OWN comment for why.
 
+      real(dp) :: my_abstol_on, my_invtol
       integer :: nat, dev, a, d
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r0(:, :), rtmp(:, :), grad_on(:, :), grad_off(:, :)
@@ -82,6 +90,11 @@ contains
       real(dp) :: eplus, eminus, fd, worst_abs_on, worst_rel_on, worst_abs_off, worst_rel_off, denom
       real(dp) :: inv_on(3), inv_off(3)
       logical :: ok
+
+      my_abstol_on = ABSTOL_ON
+      if (present(abstol_on_override)) my_abstol_on = abstol_on_override
+      my_invtol = INVTOL
+      if (present(invtol_override)) my_invtol = invtol_override
 
       ok = xc_functional_by_name(functional, func)
       if (.not. ok .or. len_trim(func%missing) > 0) then
@@ -145,8 +158,8 @@ contains
          '  worst rel ', worst_rel_off, '  translational-invariance residual: ', inv_off
       print '(a,es10.2,a,es10.2,a,3es10.2)', '    ON  (grid response): worst abs ', worst_abs_on, &
          '  worst rel ', worst_rel_on, '  translational-invariance residual: ', inv_on
-      if (worst_abs_on > ABSTOL_ON .and. worst_rel_on > RELTOL) any_fail = .true.
-      if (any(abs(inv_on) > INVTOL)) any_fail = .true.
+      if (worst_abs_on > my_abstol_on .and. worst_rel_on > RELTOL) any_fail = .true.
+      if (any(abs(inv_on) > my_invtol)) any_fail = .true.
 
       deallocate (at_z, r0, rtmp, grad_on, grad_off)
    end subroutine run_case
@@ -172,6 +185,7 @@ contains
 end module check_xc_grad_fd_cases
 
 program check_xc_grad_fd
+   use pic_types, only: dp
    use check_xc_grad_fd_cases, only: run_case
    implicit none
    logical :: any_fail
@@ -183,6 +197,39 @@ program check_xc_grad_fd
    call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'pbe', 5, 'RKS PBE water/6-31G* L5', any_fail)
    call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'pbe', 3, 'UKS PBE NH2/6-31G* L3', any_fail)
    call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'pbe', 5, 'UKS PBE NH2/6-31G* L5', any_fail)
+
+   ! SCREENING CONSISTENCY, A CASE LARGE ENOUGH TO EXERCISE IT. Every case
+   ! above is 2-3 atoms, where `becke_partition_derivatives`'s active-set
+   ! screening (trc_dft_partition.F90's own header) never drops anything --
+   ! its nu_max=0.95 cutoff only excludes an atom once the point's owner is
+   ! confidently closer than it, which three atoms sharing one molecule
+   ! essentially never trigger. w3.xyz is three SEPARATE, well-spread water
+   ! molecules (9 atoms; the same geometry the MPI fragment tests use) --
+   ! points deep in one molecule are confidently closer to their own atoms
+   ! than to either other molecule's, so this case genuinely exercises the
+   ! screened branch rather than merely compiling it: a direct probe
+   ! (comparing this routine's own screened vs `nu_max=2` unscreened
+   ! `dweights` on this exact grid) measures worst|screened-unscreened| =
+   ! 5.15e-8 over 101094 points -- screening is live here, not a no-op.
+   !
+   ! ITS OWN tolerance, not ABSTOL_ON/INVTOL: w3.xyz is a compressed,
+   ! non-equilibrium geometry (deliberately so, for the fragment tests it
+   ! was built for -- O-H ~0.82 angstrom against water's own equilibrium
+   ! ~0.96), not a minimum, so its own energy surface is sharper and its
+   ! own central-difference floor is measured LOOSER than the six
+   ! equilibrium-ish 2-3-atom cases': worst abs ON here was 9.30e-7 at
+   ! generation time (OFF: 2.51e-6 -- ON still a real, ~2.7x improvement,
+   ! not a wash), against those cases' ~1.4e-7. 2e-6 is set from that
+   ! number with ~2x margin -- not ABSTOL_ON loosened, a DIFFERENT,
+   ! separately measured and justified number for a case ABSTOL_ON was
+   ! never calibrated from. Translational invariance stays excellent
+   ! (~1e-11/1e-12, INVTOL's own 1e-8 default still clears it with
+   ! 1e3-1e4x margin -- not overridden) -- the strongest evidence this is
+   ! geometry-driven FD noise, not a screening bug: a real inconsistency
+   ! between the energy's screening and this gradient's would show up
+   ! there first, and does not.
+   call run_case('w3.xyz', 'basis_sets/6-31gs.json', 15, 15, 'svwn', 3, 'RKS SVWN w3/6-31G* L3', any_fail, &
+                 abstol_on_override=2.0e-6_dp)
 
    if (any_fail) then
       print '(a)', '  RESULT: FAIL'; stop 1
