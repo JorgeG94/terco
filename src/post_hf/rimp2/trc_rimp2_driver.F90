@@ -79,7 +79,7 @@ module trc_rimp2_driver
    implicit none
    private
 
-   public :: trc_rimp2_run, trc_rimp2_result_t
+   public :: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t
 
    !
    ! THE STEPS, AS TIMED, through the shared trc_step_table (src/core/
@@ -472,6 +472,364 @@ contains
       if (.not. present(la)) call la_own%release()
    end subroutine trc_rimp2_run
 
+   !
+   ! RI-MP2 for an UNRESTRICTED (UHF or UKS) reference, on the device, one
+   ! rank only.
+   !
+   ! The metric, its Cholesky factor and (mu nu|P) do not know about spin --
+   ! they are built exactly once, as trc_rimp2_run's own steps 1-2 -- and
+   ! transformed TWICE, into B_a (from C_occ_a, C_vir_a) and B_b (from
+   ! C_occ_b, C_vir_b), by the same GEMM-plus-strided-batch half-transform
+   ! and the same triangular solve as the restricted routine's steps 3-4,
+   ! called once per spin.
+   !
+   ! Three pair blocks follow, all from B_a and B_b:
+   !
+   !   E_aa = 1/2 sum_{ij in a, ab in a} (ia|jb)[(ia|jb) - (ib|ja)] / D
+   !   E_bb = 1/2 sum_{ij in b, ab in b} (ia|jb)[(ia|jb) - (ib|ja)] / D
+   !   E_ab =     sum_{i in a, J in b, a in a, B in b} (ia|JB)^2 / D
+   !
+   ! E_aa and E_bb reuse trc_rimp2_run's own K GEMM and `pair_energy` kernel
+   ! verbatim -- same occupied-pair triangle (j >= i), same weight (2 off
+   ! the diagonal, 1 on it) -- and only the same-spin half of what that
+   ! kernel returns (`pss`) is kept; the opposite-spin half it also computes
+   ! (`pos`) has no meaning for two electrons of the SAME spin and is
+   ! discarded. The overall 1/2 is the one difference from the restricted
+   ! energy: expanding the standard spin-orbital result
+   !
+   !     E_aa = 1/4 sum_{ijab} [(ia|jb) - (ib|ja)]^2 / D     (i, j, a, b all
+   !                                                           independent,
+   !                                                           no triangle)
+   !
+   ! and using (ia|jb)^2 = (ib|ja)^2 over that full range gives exactly
+   ! 1/2 sum_{ijab} (ia|jb)[(ia|jb)-(ib|ja)]/D -- restricted's own full
+   ! double sum, weighted down to the triangle the same way restricted's
+   ! E_ss is -- hence the 1/2 that sits outside the triangle sum below. See
+   ! metalquicha's run_czt_uri_mp2 (mqc_czt_mp2.f90) for the same algebra
+   ! checked against a conventional (non-fitted) transform.
+   !
+   ! E_ab has no such symmetry -- i (alpha) and J (beta) are already
+   ! distinguishable electrons, so there is no exchange term and no pair to
+   ! fold in half: the full rectangle of i against J, one GEMM
+   ! K(iA, JB) = sum_Q B_a(iA, Q) B_b(JB, Q) per group of alpha occupied
+   ! orbitals, and a kernel that only needs K itself (no transpose, no
+   ! second read) since there is nothing to subtract.
+   !
+   ! MULTI-RANK: refused. The restricted ring distributes one occupied
+   ! block of B and lets it meet itself (aa) through a ring of nranks/2
+   ! steps; an open-shell run would need that ring run independently for aa
+   ! (over alpha's block) and bb (over beta's, a different size whenever
+   ! nalpha /= nbeta), plus a THIRD distribution for ab that is not a ring
+   ! at all -- alpha's block never needs to meet another alpha block, only
+   ! every beta block, so the "pass one step left" structure the ring
+   ! exists for buys nothing there. Three different distributions behind
+   ! one call is not a clean generalisation of the one the restricted path
+   ! has, so this round runs one rank only and refuses anything else below,
+   ! with a message that says so.
+   !
+   subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo_a, cmo_b, eps_a, eps_b, res, &
+                             nfrozen, aux_block, la, comm, verbose)
+      type(trc_basis_t), intent(in) :: b, aux
+      type(trc_pairlist_t), intent(in) :: pl
+      integer, intent(in) :: nalpha, nbeta
+      real(dp), intent(in) :: cmo_a(b%nao, b%nao), cmo_b(b%nao, b%nao), eps_a(b%nao), eps_b(b%nao)
+      type(trc_rimp2_result_t), intent(out) :: res
+      integer, intent(in), optional :: nfrozen, aux_block
+      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(comm_t), intent(in), optional :: comm
+      logical, intent(in), optional :: verbose
+
+      real(dp) :: tw0, tw1
+      logical :: talk
+      type(trc_linalg_t), target :: la_own
+      type(trc_linalg_t), pointer :: lp
+      type(trc_basis_t) :: blk
+      integer :: nao, naux, nfz, noa, nob, nva, nvb, nblk, s0, s1, p0, np, ish, rank, nranks
+      integer :: novr_a, novr_b, ng_aa, ng_bb, ng_ab, ldk_aa, ldk_bb, ldk_ab
+      integer :: i0, i1, i, jstart, jfirst, ncol, ncol_i, roff, coff, ncolmax_aa, ncolmax_bb
+      real(dp), allocatable :: jm(:, :)
+      real(dp), allocatable :: cocc_a(:, :), cvir_a(:, :), cocc_b(:, :), cvir_b(:, :)
+      real(dp), allocatable :: tens(:, :, :), half_a(:, :, :), half_b(:, :, :)
+      real(dp), allocatable :: xr_a(:), xr_b(:)
+      real(dp), allocatable :: ki_aa(:, :), kt_aa(:, :), part_aa(:)
+      real(dp), allocatable :: ki_bb(:, :), kt_bb(:, :), part_bb(:)
+      real(dp), allocatable :: ki_ab(:, :), part_ab(:)
+      real(dp), allocatable :: eo_a(:), ev_a(:), eo_b(:), ev_b(:)
+      real(dp) :: e_aa, e_bb, e_ab, tc
+      type(step_table_t) :: stab
+      logical :: dense_mask(NSTEP)
+      integer(int64) :: nao8, naux8, nva8, nvb8, noa8, nob8, novr_a8, novr_b8
+
+      nao = b%nao
+      naux = aux%nao
+      if (b%spherical) then
+         res%message = "trc_urimp2: the orbital basis is spherical; RI-MP2 only "// &
+                       "supports a Cartesian basis today"
+         return
+      end if
+      rank = 0
+      nranks = 1
+      if (present(comm)) then
+         rank = comm%rank()
+         nranks = comm%size()
+      end if
+      if (nranks > 1) then
+         res%message = "trc_urimp2: multi-rank UHF RI-MP2 is not implemented this round -- "// &
+                       "the restricted ring distributes one block of B and lets it meet "// &
+                       "itself; an open-shell run needs that for aa AND bb (different sizes "// &
+                       "whenever nalpha /= nbeta) plus a third, non-ring distribution for the "// &
+                       "mixed ab block. Run on one rank (no communicator, or a single-rank one)"
+         return
+      end if
+      nfz = 0
+      if (present(nfrozen)) nfz = max(nfrozen, 0)
+      noa = nalpha - nfz
+      nob = nbeta - nfz
+      nva = nao - nalpha
+      nvb = nao - nbeta
+      res%naux = naux
+      res%nocc = noa + nob    ! spin orbitals, not spatial -- see this
+      res%nvir = nva + nvb    ! routine's own header and fill_ump2_result's
+      ! equivalent in metalquicha
+      if (noa < 1 .or. nob < 1 .or. nva < 1 .or. nvb < 1) then
+         res%message = "trc_urimp2: nothing to correlate in one spin channel"
+         return
+      end if
+      if (maxval(b%sh_l) > DF_LMAX) then
+         res%message = "trc_urimp2: the orbital basis carries angular momentum above what the "// &
+                       "density-fitting kernels were generated for (see gen_df.py --lmax)"
+         return
+      end if
+      if (maxval(aux%sh_l) > DF_LMAX_AUX) then
+         res%message = "trc_urimp2: the auxiliary basis carries angular momentum above what the "// &
+                       "density-fitting kernels were generated for (see gen_df.py --lmax-aux)"
+         return
+      end if
+      nblk = naux
+      if (present(aux_block)) nblk = max(aux_block, 1)
+      if (present(la)) then
+         lp => la
+      else
+         lp => la_own
+      end if
+      novr_a = noa*nva
+      novr_b = nob*nvb
+      novr_a8 = novr_a
+      novr_b8 = novr_b
+      nao8 = nao
+      naux8 = naux
+      nva8 = nva
+      nvb8 = nvb
+      noa8 = noa
+      nob8 = nob
+      call lp%init(naux)
+
+      talk = .false.
+      if (present(verbose)) talk = verbose .and. rank == 0
+      call stab%init("rimp2u", STEP_NAME)
+      tw0 = tick(lp)
+
+      ! --- 1. the metric and its Cholesky factor (spin-independent) --------
+      allocate (jm(naux, naux))
+      !$acc enter data create(jm)
+      call stab%step_on(lp, ST_METRIC, tc)
+      call trc_df_2c(aux, jm)
+      call stab%step_off(lp, ST_METRIC, tc)
+      call stab%step_on(lp, ST_CHOL, tc)
+      call lp%potrf(naux, jm, naux)
+      call stab%step_off(lp, ST_CHOL, tc)
+      call stab%add_flop(ST_CHOL, naux8**3/3)
+      if (talk) print "(a,i0,a,f8.2,a)", "  rimp2u: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+
+      ! --- 2-3. (mu nu|P) once per aux block, (ia|P) for BOTH spins from it -
+      allocate (cocc_a(nao, noa), cvir_a(nao, nva), xr_a(max(novr_a8*naux8, 1_int64)))
+      allocate (cocc_b(nao, nob), cvir_b(nao, nvb), xr_b(max(novr_b8*naux8, 1_int64)))
+      cocc_a = cmo_a(:, nfz + 1:nalpha)
+      cvir_a = cmo_a(:, nalpha + 1:nao)
+      cocc_b = cmo_b(:, nfz + 1:nbeta)
+      cvir_b = cmo_b(:, nbeta + 1:nao)
+      !$acc enter data copyin(cocc_a, cvir_a, cocc_b, cvir_b) create(xr_a, xr_b)
+      s0 = 1
+      do while (s0 <= aux%nshell)
+         s1 = s0
+         do ish = s0 + 1, aux%nshell
+            if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > nblk) exit
+            s1 = ish
+         end do
+         p0 = aux%sh_ao(s0)
+         np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
+         call aux%subset(s0, s1, blk)
+         call blk%to_device()
+         allocate (tens(nao, nao, np))
+         !$acc enter data create(tens)
+         call stab%step_on(lp, ST_3C, tc)
+         call trc_df_3c(b, pl, blk, tens)
+         call stab%step_off(lp, ST_3C, tc)
+
+         allocate (half_a(noa, nao, np))
+         !$acc enter data create(half_a)
+         call stab%step_on(lp, ST_TRANS, tc)
+         call lp%gemm("T", "N", noa, nao*np, nao, 1.0_dp, cocc_a, nao, tens, nao, 0.0_dp, half_a, noa)
+         call lp%gemm_strided("T", "T", nva, noa, nao, 1.0_dp, cvir_a, nao, 0_int64, half_a, noa, &
+                              int(noa, int64)*nao8, 0.0_dp, xr_a(1 + int(p0 - 1, int64)*novr_a8), nva, &
+                              novr_a8, np)
+         call stab%step_off(lp, ST_TRANS, tc)
+         call stab%add_flop(ST_TRANS, int(np, int64)*(2*noa8*nao8*nao8 + 2*nva8*noa8*nao8))
+         !$acc exit data delete(half_a)
+         deallocate (half_a)
+
+         allocate (half_b(nob, nao, np))
+         !$acc enter data create(half_b)
+         call stab%step_on(lp, ST_TRANS, tc)
+         call lp%gemm("T", "N", nob, nao*np, nao, 1.0_dp, cocc_b, nao, tens, nao, 0.0_dp, half_b, nob)
+         call lp%gemm_strided("T", "T", nvb, nob, nao, 1.0_dp, cvir_b, nao, 0_int64, half_b, nob, &
+                              int(nob, int64)*nao8, 0.0_dp, xr_b(1 + int(p0 - 1, int64)*novr_b8), nvb, &
+                              novr_b8, np)
+         call stab%step_off(lp, ST_TRANS, tc)
+         call stab%add_flop(ST_TRANS, int(np, int64)*(2*nob8*nao8*nao8 + 2*nvb8*nob8*nao8))
+         !$acc exit data delete(half_b)
+         deallocate (half_b)
+
+         !$acc exit data delete(tens)
+         deallocate (tens)
+         call blk%release()
+         s0 = s1 + 1
+      end do
+      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2u: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
+         stab%t(ST_TRANS), " s"
+
+      ! --- 4. B = X L^-T, one triangular solve per spin ---------------------
+      call stab%step_on(lp, ST_TRSM, tc)
+      call lp%trsm("R", "L", "T", novr_a, naux, 1.0_dp, jm, naux, xr_a, novr_a)
+      call stab%step_off(lp, ST_TRSM, tc)
+      call stab%add_flop(ST_TRSM, novr_a8*naux8*naux8)
+      call stab%step_on(lp, ST_TRSM, tc)
+      call lp%trsm("R", "L", "T", novr_b, naux, 1.0_dp, jm, naux, xr_b, novr_b)
+      call stab%step_off(lp, ST_TRSM, tc)
+      call stab%add_flop(ST_TRSM, novr_b8*naux8*naux8)
+      !$acc exit data delete(jm)
+      if (talk) print "(a,f8.2,a)", "  rimp2u: B = X L^-T ", stab%t(ST_TRSM), " s"
+      tw1 = tick(lp)
+
+      ! --- 5a/5b. the like-spin pair energies, restricted's own triangle ---
+      allocate (eo_a(noa), ev_a(nva), eo_b(nob), ev_b(nvb))
+      eo_a = eps_a(nfz + 1:nalpha)
+      ev_a = eps_a(nalpha + 1:nao)
+      eo_b = eps_b(nfz + 1:nbeta)
+      ev_b = eps_b(nbeta + 1:nao)
+      !$acc enter data copyin(eo_a, ev_a, eo_b, ev_b)
+
+      ncolmax_aa = noa*nva
+      ng_aa = k_group(noa, nva, ncolmax_aa)
+      ldk_aa = ng_aa*nva
+      allocate (ki_aa(ldk_aa, ncolmax_aa), kt_aa(ncolmax_aa, nva), part_aa(2*ncolmax_aa))
+      !$acc enter data create(ki_aa, kt_aa, part_aa)
+      e_aa = 0.0_dp
+      do i0 = 1, noa, ng_aa
+         i1 = min(noa, i0 + ng_aa - 1)
+         jstart = i0
+         ncol = (noa - jstart + 1)*nva
+         call stab%step_on(lp, ST_KGEMM, tc)
+         call lp%gemm("N", "T", (i1 - i0 + 1)*nva, ncol, naux, 1.0_dp, xr_a(1 + (i0 - 1)*nva), novr_a, &
+                      xr_a(1 + (jstart - 1)*nva), novr_a, 0.0_dp, ki_aa, ldk_aa)
+         call stab%step_off(lp, ST_KGEMM, tc)
+         call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nva8*int(ncol, int64)*naux8)
+         do i = i0, i1
+            roff = (i - i0)*nva
+            coff = (i - i0)*nva
+            jfirst = i
+            ncol_i = (noa - jfirst + 1)*nva
+            call stab%step_on(lp, ST_PAIR, tc)
+            call lp%transpose(nva, ncol_i, ki_aa(roff + 1, coff + 1), ldk_aa, kt_aa, ncolmax_aa)
+            call pair_energy(i, jfirst, noa, nva, ldk_aa, roff, coff, ncolmax_aa, ncol_i, eo_a, ev_a, &
+                             ki_aa, kt_aa, part_aa)
+            !$acc update self(part_aa(1:2*ncol_i))
+            call stab%step_off(lp, ST_PAIR, tc)
+            call stab%add_flop(ST_PAIR, 10*nva8*int(ncol_i, int64))
+            e_aa = e_aa + sum(part_aa(2:2*ncol_i:2))   ! the same-spin half only; see this
+         end do                                        ! routine's own header for the discarded "pos" half
+      end do
+      !$acc exit data delete(ki_aa, kt_aa, part_aa)
+      deallocate (ki_aa, kt_aa, part_aa)
+      e_aa = 0.5_dp*e_aa
+
+      ncolmax_bb = nob*nvb
+      ng_bb = k_group(nob, nvb, ncolmax_bb)
+      ldk_bb = ng_bb*nvb
+      allocate (ki_bb(ldk_bb, ncolmax_bb), kt_bb(ncolmax_bb, nvb), part_bb(2*ncolmax_bb))
+      !$acc enter data create(ki_bb, kt_bb, part_bb)
+      e_bb = 0.0_dp
+      do i0 = 1, nob, ng_bb
+         i1 = min(nob, i0 + ng_bb - 1)
+         jstart = i0
+         ncol = (nob - jstart + 1)*nvb
+         call stab%step_on(lp, ST_KGEMM, tc)
+         call lp%gemm("N", "T", (i1 - i0 + 1)*nvb, ncol, naux, 1.0_dp, xr_b(1 + (i0 - 1)*nvb), novr_b, &
+                      xr_b(1 + (jstart - 1)*nvb), novr_b, 0.0_dp, ki_bb, ldk_bb)
+         call stab%step_off(lp, ST_KGEMM, tc)
+         call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nvb8*int(ncol, int64)*naux8)
+         do i = i0, i1
+            roff = (i - i0)*nvb
+            coff = (i - i0)*nvb
+            jfirst = i
+            ncol_i = (nob - jfirst + 1)*nvb
+            call stab%step_on(lp, ST_PAIR, tc)
+            call lp%transpose(nvb, ncol_i, ki_bb(roff + 1, coff + 1), ldk_bb, kt_bb, ncolmax_bb)
+            call pair_energy(i, jfirst, nob, nvb, ldk_bb, roff, coff, ncolmax_bb, ncol_i, eo_b, ev_b, &
+                             ki_bb, kt_bb, part_bb)
+            !$acc update self(part_bb(1:2*ncol_i))
+            call stab%step_off(lp, ST_PAIR, tc)
+            call stab%add_flop(ST_PAIR, 10*nvb8*int(ncol_i, int64))
+            e_bb = e_bb + sum(part_bb(2:2*ncol_i:2))
+         end do
+      end do
+      !$acc exit data delete(ki_bb, kt_bb, part_bb)
+      deallocate (ki_bb, kt_bb, part_bb)
+      e_bb = 0.5_dp*e_bb
+
+      ! --- 5c. the mixed-spin block: the full rectangle, no exchange term --
+      ng_ab = k_group(noa, nva, nob*nvb)
+      ldk_ab = ng_ab*nva
+      allocate (ki_ab(ldk_ab, nob*nvb), part_ab(nva*nob))
+      !$acc enter data create(ki_ab, part_ab)
+      e_ab = 0.0_dp
+      do i0 = 1, noa, ng_ab
+         i1 = min(noa, i0 + ng_ab - 1)
+         ncol = nob*nvb
+         call stab%step_on(lp, ST_KGEMM, tc)
+         call lp%gemm("N", "T", (i1 - i0 + 1)*nva, ncol, naux, 1.0_dp, xr_a(1 + (i0 - 1)*nva), novr_a, &
+                      xr_b, novr_b, 0.0_dp, ki_ab, ldk_ab)
+         call stab%step_off(lp, ST_KGEMM, tc)
+         call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nva8*int(ncol, int64)*naux8)
+         do i = i0, i1
+            roff = (i - i0)*nva
+            call stab%step_on(lp, ST_PAIR, tc)
+            call mixed_energy(i, nva, nob, nvb, ldk_ab, roff, eo_a, ev_a, eo_b, ev_b, ki_ab, part_ab)
+            !$acc update self(part_ab(1:nva*nob))
+            call stab%step_off(lp, ST_PAIR, tc)
+            call stab%add_flop(ST_PAIR, 4_int64*nva8*nob8*nvb8)
+            e_ab = e_ab + sum(part_ab(1:nva*nob))
+         end do
+      end do
+      !$acc exit data delete(ki_ab, part_ab)
+      deallocate (ki_ab, part_ab)
+
+      !$acc exit data delete(eo_a, ev_a, eo_b, ev_b, xr_a, xr_b, cocc_a, cvir_a, cocc_b, cvir_b)
+      if (talk) then
+         print "(a,f8.2,a,f8.2,a)", "  rimp2u: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+         dense_mask = .false.
+         dense_mask(ST_CHOL) = .true.
+         dense_mask(ST_TRANS) = .true.
+         dense_mask(ST_TRSM) = .true.
+         dense_mask(ST_KGEMM) = .true.
+         call stab%report(tick(lp) - tw0, rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
+      end if
+      res%e_os = e_ab
+      res%e_ss = e_aa + e_bb
+      res%e_corr = res%e_os + res%e_ss
+      if (.not. present(la)) call la_own%release()
+   end subroutine trc_urimp2_run
+
    function wall() result(t)
       real(dp) :: t
       integer(int64) :: cc, rate
@@ -725,5 +1083,41 @@ contains
       pos = w*pos
       pss = w*pss
    end subroutine pair_energy_body
+
+   !
+   ! The mixed-spin (ab) block for occupied alpha orbital `i`: one thread
+   ! per (a, J), B summed inside. `aJ` decomposes the same way `pair_energy`'s
+   ! `ja` does (the row selector `a` fastest, the column group `J` next),
+   ! here against a rectangle that is never folded by any symmetry, so
+   ! there is no weight, no second read of a transpose, and nothing to
+   ! subtract -- only (ia|JB)^2, never (ia|JB)(iB|Ja), which does not exist
+   ! for two distinguishable electrons.
+   !
+   subroutine mixed_energy(i, nva, nob, nvb, ldk, roff, eo_a, ev_a, eo_b, ev_b, ki, part)
+      integer, intent(in) :: i, nva, nob, nvb, ldk, roff
+      real(dp), intent(in) :: eo_a(*), ev_a(nva), eo_b(nob), ev_b(nvb), ki(ldk, *)
+      real(dp), intent(out) :: part(*)
+      integer :: aj
+      do concurrent(aj=1:nva*nob)
+         call mixed_energy_body(i, aj, nva, nob, nvb, roff, eo_a, ev_a, eo_b, ev_b, ldk, ki, part(aj))
+      end do
+   end subroutine mixed_energy
+
+   pure subroutine mixed_energy_body(i, aj, nva, nob, nvb, roff, eo_a, ev_a, eo_b, ev_b, ldk, ki, pab)
+      !$acc routine seq
+      integer, intent(in) :: i, aj, nva, nob, nvb, roff, ldk
+      real(dp), intent(in) :: eo_a(*), ev_a(nva), eo_b(nob), ev_b(nvb), ki(ldk, *)
+      real(dp), intent(out) :: pab
+      integer :: jj, a, bb
+      real(dp) :: t, eiaj
+      jj = (aj - 1)/nva       ! J - 1 (0-based)
+      a = aj - jj*nva
+      eiaj = eo_a(i) + eo_b(jj + 1) - ev_a(a)
+      pab = 0.0_dp
+      do bb = 1, nvb
+         t = ki(roff + a, jj*nvb + bb)   ! (iA|JB)
+         pab = pab + t*t/(eiaj - ev_b(bb))
+      end do
+   end subroutine mixed_energy_body
 
 end module trc_rimp2_driver
