@@ -325,7 +325,7 @@ contains
    end subroutine partition_point
 
    subroutine becke_partition_derivatives(points, atom_coords, atomic_numbers, owner, &
-                                          scheme, adjust, dweights, error)
+                                          scheme, adjust, dweights, error, nu_max)
       !! dP_k/dR_A at fixed grid points, as (3, n_atoms, n_points)
       !!
       !! The partition weight depends on every nuclear position, so moving any
@@ -338,14 +338,65 @@ contains
       !! owns them, but that motion is a separate contribution which the caller
       !! adds; mixing the two into one routine would make neither checkable.
       !!
-      !! The cell functions are differentiated by carrying the derivative
-      !! through the product alongside the value, rather than as a logarithmic
-      !! derivative summed at the end. The log form needs a division by each
-      !! cutoff factor, and those legitimately reach zero far from the molecule
-      !! -- where the value underflows to zero but the derivative does not, so
-      !! the quotient is 0/0 exactly where a guard would have to guess. Carrying
-      !! both costs an extra factor of the atom count and cannot divide by
-      !! anything.
+      !! SCREENED THE SAME WAY `becke_partition_weights` IS. The energy this
+      !! feeds does not sum the UNSCREENED partition product over every
+      !! atom: `apply_partition` calls `becke_partition_weights` at its
+      !! default `nu_max` (PARTITION_NU_MAX, or STRATMANN_A under that
+      !! scheme), which drops an atom from a point's active set once its
+      !! cutoff against that point is already below ~1e-9 relative, exactly
+      !! `becke_partition_weights`'s own header. A gradient of the UNSCREENED
+      !! partition is not the exact derivative of the SCREENED energy that
+      !! actually ran -- a difference `partition_point`'s own screening
+      !! keeps below the energy's own truncation, so it never mattered for
+      !! the FD/pyscf numbers trc_xc_grad.F90's header reports on water-
+      !! and NH2-sized cases, but it is the difference between O(active^2)
+      !! and O(n_atoms^2) per point on anything larger, and this routine had
+      !! no screening at all before. The active-set build below (own atom,
+      !! then direct, then indirect cutoffs) is `partition_point`'s own,
+      !! unchanged, so the SAME atoms the energy keeps are the only ones
+      !! this derivative ever touches -- an atom the energy drops contributes
+      !! exactly zero here too, which is correct under the screening
+      !! approximation (the screened weight literally does not depend on
+      !! that atom's position), not an extra error on top of it.
+      !!
+      !! O(active_atoms^2) PER POINT, O(n_atoms) scratch per point -- an
+      !! EARLIER version of this routine was unscreened O(n_atoms^3) (see
+      !! git history and check_dft_partition_deriv.F90's reference copy).
+      !!
+      !! cell_i = prod_{j /= i, j active} S(i,j), S(i,j) the fraction of the
+      !! (i,j) pair that goes to i (S(i,j) + S(j,i) = 1, from
+      !! `becke_cutoff`/`stratmann_cutoff` of the size-adjusted confocal
+      !! coordinate). Every factor S(i,j) depends on R_i and R_j ONLY -- so
+      !! d(cell_i)/dR_a for a /= i picks out exactly the ONE factor touching
+      !! a:
+      !!
+      !!     d(cell_i)/dR_a = [dS(i,a)/dR_a] * prod_{k /= i,a, active} S(i,k)     (a /= i)
+      !!     d(cell_i)/dR_i = sum_{j /= i, active} [dS(i,j)/dR_i] * prod_{k /= i,j, active} S(i,k)
+      !!
+      !! "prod_{k/=i,a} S(i,k)" is cell_i with ONE factor excluded, for every
+      !! active a in turn -- the classic prefix/suffix-product trick (never a
+      !! division, so a cutoff factor underflowing to exactly zero, which
+      !! value and derivative both do legitimately, is never a 0/0): for row
+      !! i, lay the active factors S(i,j) out in a list, take running
+      !! products from the front (`prefix`) and from the back (`suffix`),
+      !! and "all but the t-th" is `prefix(t-1)*suffix(t+1)`. One pass per
+      !! active row i gives every active a /= i AND the i = a term in the
+      !! same sweep, so the active-by-active derivative matrix this routine
+      !! ultimately needs (every d(cell_i)/dR_a, because `dtotal` below sums
+      !! over every active i) costs O(active) work `n_active` times --
+      !! O(active^2) total, with nothing sized n_atoms^2 kept around:
+      !! `dtotal`/`d_own` are O(n_atoms) (indexed by real atom, zero outside
+      !! the active set) and the S(i,j)/dS(i,j) values are recomputed on the
+      !! fly from `atom_r`/`shift`/`inv_distance` rather than stored.
+      !!
+      !! Checked against an UNSCREENED reference implementation on water
+      !! and formamide -- see check_dft_partition_deriv.F90 -- to ~1e-14 (at
+      !! `nu_max >= 1`, screening off on both sides; the two are NOT expected
+      !! to agree at the production `nu_max`, by design), and the active-set
+      !! build itself against `becke_partition_weights`'s FD (perturbing one
+      !! atom and differencing the SCREENED weight) on a case large enough
+      !! for screening to actually drop atoms -- see
+      !! check_xc_grad_fd.F90's own larger case.
       real(dp), intent(in) :: points(:, :)       !! (3, n_points), Bohr
       real(dp), intent(in) :: atom_coords(:, :)  !! (3, n_atoms), Bohr
       integer, intent(in) :: atomic_numbers(:)   !! Z per atom, for the radii
@@ -354,13 +405,22 @@ contains
       integer, intent(in) :: adjust
       real(dp), intent(out) :: dweights(:, :, :)  !! (3, n_atoms, n_points)
       type(error_t), intent(inout) :: error
+      real(dp), intent(in), optional :: nu_max
+      !! As `becke_partition_weights`'s own `nu_max`: default PARTITION_NU_MAX,
+      !! or STRATMANN_A under that scheme -- the SAME default the energy's own
+      !! unqualified `becke_partition_weights` call (`apply_partition`) uses.
+      !! Pass >= 1 for no screening (what check_dft_partition_deriv.F90 does
+      !! to compare against the unscreened reference).
 
-      real(dp), allocatable :: shift(:, :), inv_distance(:, :)
+      real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
       real(dp), allocatable :: atom_r(:), unit_vec(:, :)
-      real(dp), allocatable :: cell(:), dcell(:, :, :)
-      real(dp) :: dtotal(3), rij(3), ds_i(3), ds_j(3), dmu_i(3), dmu_j(3)
-      real(dp) :: mu, nu, s, total, dnu_dmu, ds_dnu, invd
-      integer :: n_atoms, n_points, i, j, k, a
+      real(dp), allocatable :: f(:), prefix(:), suffix(:)
+      real(dp), allocatable :: own_deriv(:, :), oth_deriv(:, :)
+      real(dp), allocatable :: dtotal(:, :), d_own(:, :)
+      integer, allocatable :: idx(:), active(:), mark(:)
+      real(dp) :: cell_own, total, excl, numax, r_inner, mu, nu
+      real(dp) :: d_ii(3), d_ia(3)
+      integer :: n_atoms, n_points, i, j, k, t, m, own, ia, ja, n_active, n1
 
       n_atoms = size(atom_coords, 2)
       n_points = size(points, 2)
@@ -380,7 +440,11 @@ contains
       ! not change when the atom moves.
       if (n_atoms == 1) return
 
-      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms))
+      numax = PARTITION_NU_MAX
+      if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
+      if (present(nu_max)) numax = nu_max
+
+      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
 
       call size_adjustment(atomic_numbers, adjust, shift)
 
@@ -393,33 +457,38 @@ contains
          end do
       end do
 
-      ! One thread per grid point.
-      !
-      ! Every iteration reads the geometry and writes its own `dweights(:, :, k)`,
-      ! so the points are independent and nothing is reduced. What is not
-      ! independent is the scratch -- `cell` and `dcell` are rebuilt per point --
-      ! so those move inside the region for each thread to allocate its own.
-      ! `shift` and `inv_distance` depend only on the nuclei and stay shared.
-      !
-      ! This is the grid-response term of a density functional gradient, and it
-      ! was 100 s of CPU on twenty waters while this file had no OpenMP in it at
-      ! all. `dcell` is the only sizeable copy, three by the atom count squared:
-      ! 86 kB for twenty waters, so sixteen threads cost under two megabytes.
-      !
-      ! `schedule(static)`, unlike the quadrature loops: every point costs the
-      ! same `n_atoms` squared wherever it sits, so there is nothing for dynamic
-      ! scheduling to balance and its bookkeeping would be pure overhead.
+      ! Nearest neighbour of each atom, for Stratmann's inner sphere -- the
+      ! same shortcut `partition_point` takes (a point closer to its owner
+      ! than that has weight exactly 1, so EVERY atom's derivative there is
+      ! exactly zero, not merely small: `dweights` stays at the zero this
+      ! routine already initialises it to, via the `cycle` below).
+      r_min = huge(1.0_dp)
+      do i = 1, n_atoms
+         do j = 1, n_atoms
+            if (i /= j) r_min(i) = min(r_min(i), 1.0_dp/inv_distance(i, j))
+         end do
+      end do
+
+      ! One thread per grid point, as before: every iteration reads the
+      ! geometry and writes its own `dweights(:, :, k)`, so the points are
+      ! independent. `shift`/`inv_distance`/`r_min` depend only on the
+      ! nuclei and stay shared; everything else is O(n_atoms) scratch,
+      ! allocated once per thread.
       !$omp parallel default(none) &
       !$omp    shared(points, atom_coords, owner, scheme, dweights, shift, &
-      !$omp           inv_distance, n_points, n_atoms) &
-      !$omp    private(k, i, j, a, atom_r, unit_vec, cell, dcell, dtotal, rij, &
-      !$omp            ds_i, ds_j, dmu_i, dmu_j, mu, nu, s, total, dnu_dmu, &
-      !$omp            ds_dnu, invd)
+      !$omp           inv_distance, r_min, numax, n_points, n_atoms) &
+      !$omp    private(k, i, j, t, m, own, ia, ja, n_active, n1, cell_own, total, excl, &
+      !$omp            r_inner, mu, nu, d_ii, d_ia, atom_r, unit_vec, f, prefix, suffix, &
+      !$omp            own_deriv, oth_deriv, dtotal, d_own, idx, active, mark)
       allocate (atom_r(n_atoms), unit_vec(3, n_atoms))
-      allocate (cell(n_atoms), dcell(3, n_atoms, n_atoms))
+      allocate (f(n_atoms), prefix(0:n_atoms), suffix(n_atoms + 1), idx(n_atoms))
+      allocate (own_deriv(3, n_atoms), oth_deriv(3, n_atoms))
+      allocate (dtotal(3, n_atoms), d_own(3, n_atoms))
+      allocate (active(n_atoms), mark(n_atoms))
 
       !$omp do schedule(static)
       do k = 1, n_points
+         own = owner(k)
          do i = 1, n_atoms
             atom_r(i) = norm2(points(:, k) - atom_coords(:, i))
             if (atom_r(i) > 0.0_dp) then
@@ -432,66 +501,159 @@ contains
             end if
          end do
 
-         cell = 1.0_dp
-         dcell = 0.0_dp
+         if (scheme == PARTITION_STRATMANN .and. adjust == ADJUST_NONE) then
+            r_inner = 0.5_dp*(1.0_dp - STRATMANN_A)*r_min(own)
+            if (atom_r(own) < r_inner) cycle
+         end if
 
+         ! The active set, exactly as `partition_point` builds it: the
+         ! owner always first, then every atom not cut off against it,
+         ! then (second pass) every remaining atom not cut off against any
+         ! atom ALREADY active -- an atom with a negligible cell of its own
+         ! can still carry a factor of order one on a neighbour's.
+         mark = 0
+         n_active = 1
+         active(1) = own
+         mark(own) = 1
          do i = 1, n_atoms
-            do j = i + 1, n_atoms
-               invd = inv_distance(i, j)
-               rij = atom_coords(:, i) - atom_coords(:, j)
-
-               mu = (atom_r(i) - atom_r(j))*invd
+            if (i == own) cycle
+            mu = (atom_r(i) - atom_r(own))*inv_distance(i, own)
+            nu = mu + shift(i, own)*(1.0_dp - mu*mu)
+            if (nu < numax) then
+               n_active = n_active + 1
+               active(n_active) = i
+               mark(i) = 1
+            end if
+         end do
+         n1 = n_active
+         do i = 1, n_atoms
+            if (mark(i) == 1) cycle
+            do ja = 2, n1
+               j = active(ja)
+               mu = (atom_r(i) - atom_r(j))*inv_distance(i, j)
                nu = mu + shift(i, j)*(1.0_dp - mu*mu)
-
-               if (scheme == PARTITION_BECKE) then
-                  s = becke_cutoff(nu)
-                  ds_dnu = becke_cutoff_derivative(nu)
-               else
-                  s = stratmann_cutoff(nu)
-                  ds_dnu = stratmann_cutoff_derivative(nu)
+               if (nu < numax) then
+                  n_active = n_active + 1
+                  active(n_active) = i
+                  mark(i) = 1
+                  exit
                end if
-
-               dnu_dmu = 1.0_dp - 2.0_dp*shift(i, j)*mu
-
-               ! mu depends on R_i and R_j only: through the distances from the
-               ! point, and through the internuclear distance in the denominator.
-               dmu_i = -unit_vec(:, i)*invd - (atom_r(i) - atom_r(j))*invd**3*rij
-               dmu_j = unit_vec(:, j)*invd + (atom_r(i) - atom_r(j))*invd**3*rij
-
-               ds_i = ds_dnu*dnu_dmu*dmu_i
-               ds_j = ds_dnu*dnu_dmu*dmu_j
-
-               ! Product rule, value and derivative together. Order matters:
-               ! the derivative uses the cell value from before this factor.
-               do a = 1, n_atoms
-                  dcell(:, a, i) = dcell(:, a, i)*s
-                  dcell(:, a, j) = dcell(:, a, j)*(1.0_dp - s)
-               end do
-               dcell(:, i, i) = dcell(:, i, i) + cell(i)*ds_i
-               dcell(:, j, i) = dcell(:, j, i) + cell(i)*ds_j
-               dcell(:, i, j) = dcell(:, i, j) - cell(j)*ds_i
-               dcell(:, j, j) = dcell(:, j, j) - cell(j)*ds_j
-
-               cell(i) = cell(i)*s
-               cell(j) = cell(j)*(1.0_dp - s)
             end do
          end do
 
-         total = sum(cell)
+         dtotal = 0.0_dp
+         cell_own = 1.0_dp
+         total = 0.0_dp
+
+         do ia = 1, n_active
+            i = active(ia)
+            ! Row i: every ACTIVE factor of cell_i, in some fixed order,
+            ! plus its two one-sided derivatives (own_deriv: d S(i,j)/dR_i;
+            ! oth_deriv: d S(i,j)/dR_j) -- pair_sij below handles both
+            ! orderings of (i, j) off the SAME canonical-pair (p < q)
+            ! evaluation this routine always used.
+            m = 0
+            do ja = 1, n_active
+               j = active(ja)
+               if (j == i) cycle
+               m = m + 1
+               idx(m) = j
+               call pair_sij(i, j, n_atoms, atom_coords, atom_r, unit_vec, shift, &
+                            inv_distance, scheme, f(m), own_deriv(:, m), oth_deriv(:, m))
+            end do
+
+            prefix(0) = 1.0_dp
+            do t = 1, m
+               prefix(t) = prefix(t - 1)*f(t)
+            end do
+            suffix(m + 1) = 1.0_dp
+            do t = m, 1, -1
+               suffix(t) = suffix(t + 1)*f(t)
+            end do
+
+            d_ii = 0.0_dp
+            do t = 1, m
+               excl = prefix(t - 1)*suffix(t + 1)
+               d_ii = d_ii + own_deriv(:, t)*excl
+               j = idx(t)
+               d_ia = oth_deriv(:, t)*excl
+               dtotal(:, j) = dtotal(:, j) + d_ia
+               if (i == own) d_own(:, j) = d_ia
+            end do
+            dtotal(:, i) = dtotal(:, i) + d_ii
+            ! prefix(m) is cell_i = prod over ACTIVE j/=i of S(i,j) -- this
+            ! row's own full product, already paid for building
+            ! `d_ii`/`d_ia`, so `total` (sum over active i of cell_i) costs
+            ! nothing extra here: no second pass to recover it.
+            total = total + prefix(m)
+            if (i == own) then
+               d_own(:, i) = d_ii
+               cell_own = prefix(m)
+            end if
+         end do
+
          if (total <= 0.0_dp) cycle
 
-         do a = 1, n_atoms
-            dtotal = 0.0_dp
-            do i = 1, n_atoms
-               dtotal = dtotal + dcell(:, a, i)
-            end do
-            dweights(:, a, k) = (dcell(:, a, owner(k))*total &
-                                 - cell(owner(k))*dtotal)/(total*total)
+         do ia = 1, n_active
+            i = active(ia)
+            dweights(:, i, k) = (d_own(:, i)*total - cell_own*dtotal(:, i))/(total*total)
          end do
       end do
       !$omp end do
       !$omp end parallel
    end subroutine becke_partition_derivatives
+
+   pure subroutine pair_sij(i, j, n_atoms, atom_coords, atom_r, unit_vec, shift, inv_distance, &
+                            scheme, sval, d_own, d_oth)
+      !! S(i,j): the fraction of the (i,j) pair's cutoff that atom i keeps,
+      !! and its derivative with respect to R_i (`d_own`) and R_j (`d_oth`) --
+      !! both one-sided, since S(i,j) depends on nothing else. Built from
+      !! the SAME canonical pair (p, q) = (min(i,j), max(i,j)) regardless of
+      !! which order (i,j) is asked in, so S(i,j) and S(j,i) = 1 - S(i,j)
+      !! are bitwise consistent by construction.
+      integer, intent(in) :: i, j, n_atoms
+      real(dp), intent(in) :: atom_coords(3, n_atoms), atom_r(n_atoms), unit_vec(3, n_atoms)
+      real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms)
+      integer, intent(in) :: scheme
+      real(dp), intent(out) :: sval
+      real(dp), intent(out) :: d_own(3), d_oth(3)
+      real(dp) :: mu, nu, s, ds_dnu, dnu_dmu, invd
+      real(dp) :: rij(3), ds_p(3), ds_q(3)
+      integer :: p, q
+
+      p = min(i, j)
+      q = max(i, j)
+      invd = inv_distance(p, q)
+      rij = atom_coords(:, p) - atom_coords(:, q)
+
+      mu = (atom_r(p) - atom_r(q))*invd
+      nu = mu + shift(p, q)*(1.0_dp - mu*mu)
+
+      if (scheme == PARTITION_BECKE) then
+         s = becke_cutoff(nu)
+         ds_dnu = becke_cutoff_derivative(nu)
+      else
+         s = stratmann_cutoff(nu)
+         ds_dnu = stratmann_cutoff_derivative(nu)
+      end if
+
+      dnu_dmu = 1.0_dp - 2.0_dp*shift(p, q)*mu
+
+      ! mu depends on R_p and R_q only: through the distances from the
+      ! point, and through the internuclear distance in the denominator.
+      ds_p = ds_dnu*dnu_dmu*(-unit_vec(:, p)*invd - (atom_r(p) - atom_r(q))*invd**3*rij)
+      ds_q = ds_dnu*dnu_dmu*(unit_vec(:, q)*invd + (atom_r(p) - atom_r(q))*invd**3*rij)
+
+      if (i < j) then
+         sval = s
+         d_own = ds_p
+         d_oth = ds_q
+      else
+         sval = 1.0_dp - s
+         d_own = -ds_q
+         d_oth = -ds_p
+      end if
+   end subroutine pair_sij
 
    pure subroutine size_adjustment(atomic_numbers, adjust, shift)
       !! Pairwise shift applied to mu so unequal atoms get unequal cells

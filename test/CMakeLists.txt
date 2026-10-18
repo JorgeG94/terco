@@ -128,6 +128,12 @@ terco_add_check(check_xc check_xc.F90)
 # water integrating to the atom count.
 terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
 
+# becke_partition_derivatives' O(n_atoms^2) production routine against a
+# hand-kept copy of the O(n_atoms^3) implementation it replaced, over
+# every point of a real water and formamide grid, both partition/adjust
+# combinations trc_dft_partition.F90 offers.
+terco_add_check(check_dft_partition_deriv check_dft_partition_deriv.F90 NEEDS_BASIS)
+
 #
 # Basis functions on grid points: the numerical overlap against trc_1e's
 # analytic one, and the batched, screened evaluation against the unscreened
