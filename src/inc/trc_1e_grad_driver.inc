@@ -78,13 +78,14 @@
       real(dp), intent(inout) :: gp(3, natm, ONE_E_GRAD_NPRIV)
 
       integer  :: li, lj, ni, nj, a, c, mu, nu, k, lane
-      real(dp) :: wt, ga(3), gb(3), gc(3, natm)
+      real(dp) :: wt, ga(3), gb(3)
       real(dp) :: wblk(NBLK_MAX), dblk(NBLK_MAX)
 
       li = sh_l(ii); lj = sh_l(jj)
       ni = (li + 1)*(li + 2)/2
       nj = (lj + 1)*(lj + 2)/2
       wt = merge(1.0_dp, 2.0_dp, ii == jj)
+      lane = mod(ij - 1, ONE_E_GRAD_NPRIV) + 1
 
       k = 0
       do c = 0, nj - 1
@@ -97,15 +98,46 @@
          end do
       end do
 
+      ! `gc`, the Hellmann-Feynman term's every-atom output, is a SLICE of
+      ! this thread's own lane straight out of `gp` -- not a per-thread
+      ! natm-sized local. A local `gc(3, natm)` (natm a runtime value, not
+      ! a compile-time constant) needs a per-thread dynamic stack
+      ! allocation inside `!$acc routine seq`; under the many thousands of
+      ! threads a `do concurrent` over shell pairs keeps resident at once,
+      ! that overran the device's local-memory reservation and crashed
+      ! every multi-atom case with CUDA_ERROR_LAUNCH_FAILED (water, 3
+      ! atoms, happened not to trip it; w20 did). one_e_grad_dispatch adds
+      ! into this slice (intent(inout), never zeroed inside it -- the
+      ! driver's own zeroing loop above is the only zero this lane ever
+      ! gets), so there is nothing left to merge for gc below, unlike ga/gb.
       call one_e_grad_dispatch(li, lj, sh_np(ii), sh_np(jj), &
                                sh_e(:, ii), sh_c(:, ii), &
                                sh_e(:, jj), sh_c(:, jj), &
                                sh_r(:, ii), sh_r(:, jj), &
-                               natm, at_z, at_r, wt, wblk, dblk, ga, gb, gc)
+                               natm, at_z, at_r, wt, wblk, dblk, ga, gb, &
+                               gp(1:3, 1:natm, lane))
 
-      lane = mod(ij - 1, ONE_E_GRAD_NPRIV) + 1
-      gp(1:3, sh_at(ii), lane) = gp(1:3, sh_at(ii), lane) + ga
-      gp(1:3, sh_at(jj), lane) = gp(1:3, sh_at(jj), lane) + gb
-      gp(1:3, 1:natm, lane) = gp(1:3, 1:natm, lane) + gc
+      ! ATOMIC, same reason as one_e_grad_dispatch's own gc write: two
+      ! shell pairs sharing BOTH a lane and an atom (sh_at(ii) == sh_at
+      ! (jj) of some OTHER pair) run this read-modify-write concurrently.
+      ! Measured: water/6-31G* (few shell pairs, so few same-lane,
+      ! same-atom collisions) passed with this non-atomic; water/cc-pVDZ
+      ! and formamide/cc-pVDZ (more shells, more collisions) did not --
+      ! wrong by 0.1 to 11 Eh/Bohr, the same race signature (small, not
+      ! huge, because most pairs still land cleanly) as the gc case
+      ! before ITS atomic fix. Scalar statements because OpenACC atomic
+      ! update does not take a vector/array-section target.
+      !$acc atomic update
+      gp(1, sh_at(ii), lane) = gp(1, sh_at(ii), lane) + ga(1)
+      !$acc atomic update
+      gp(2, sh_at(ii), lane) = gp(2, sh_at(ii), lane) + ga(2)
+      !$acc atomic update
+      gp(3, sh_at(ii), lane) = gp(3, sh_at(ii), lane) + ga(3)
+      !$acc atomic update
+      gp(1, sh_at(jj), lane) = gp(1, sh_at(jj), lane) + gb(1)
+      !$acc atomic update
+      gp(2, sh_at(jj), lane) = gp(2, sh_at(jj), lane) + gb(2)
+      !$acc atomic update
+      gp(3, sh_at(jj), lane) = gp(3, sh_at(jj), lane) + gb(3)
    end subroutine one_e_grad_item
 #endif

@@ -1001,6 +1001,19 @@ def emit_grad_class(la, lb, order="lexicographic"):
                 wtab = {"x": "wxt", "y": "wyt", "z": "wzt"}[d]
                 wv(f"            ga({di}) = ga({di}) - cc*zatm(ic)*dblk({k})*{bra_expr}")
                 wv(f"            gb({di}) = gb({di}) - cc*zatm(ic)*dblk({k})*{ket_expr}")
+                # `gc` is the ONLY one of the three that is natm-wide: ga/gb
+                # each touch one atom (the bra/ket shell's own), same as
+                # the validated eri%gradient ga/gb/gc/gd pattern, but gc
+                # touches EVERY atom from EVERY shell pair -- the width
+                # that turns "lane sharing happens to not collide" into
+                # "collides often enough to be visibly wrong". Measured
+                # non-deterministic, non-atomic: two runs of the same
+                # input differed in their (wrong) answer, a clean race
+                # signature neither compute-sanitizer memcheck nor
+                # racecheck caught (gc lives in global memory; racecheck
+                # only instruments __shared__). An atomic update is the fix
+                # that does not depend on how many lanes happen to collide.
+                wv("            !$acc atomic update")
                 wv(f"            gc({di},ic) = gc({di},ic) - cc*zatm(ic)*dblk({k})*{wtab}({k})")
     v_block = "\n".join(v_lines)
 
@@ -1017,6 +1030,18 @@ def emit_grad_class(la, lb, order="lexicographic"):
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -1024,7 +1049,8 @@ def emit_grad_class(la, lb, order="lexicographic"):
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk({na*nb}), dblk({na*nb})
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -1045,9 +1071,6 @@ def emit_grad_class(la, lb, order="lexicographic"):
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -1178,7 +1201,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(*), dblk(*)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
       select case (la*ONE_E_RADIX + lb)""")
     for la, lb in names:
         parts.append(

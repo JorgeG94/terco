@@ -75,6 +75,14 @@ contains
       !! (orbitals_and_density's `t(i,j) = cmo(i,j)*sqrt(ofrac(j))`), except
       !! the two factors here (C and C*eps) differ, so it is a plain GEMM
       !! rather than linalg_density's single-scalar-times-C-C^T.
+      !!
+      !! DEVICE RESIDENCY. `lp%gemm_mat` is cuBLAS under `!$acc
+      !! host_data use_device(...)` (trc_linalg.F90's linalg_gemm_raw),
+      !! which only FETCHES a device pointer for data already present --
+      !! it creates none. `cmo`/`eps`/`wmat` must already be present
+      !! (the caller's job, same as every other trc_linalg_t call in this
+      !! tree); the local scratch `cw` is this routine's own, entered and
+      !! exited here.
       type(trc_linalg_t), intent(inout) :: lp
       integer,  intent(in)  :: nao, nspin
       integer,  intent(in)  :: nocc(2)
@@ -85,6 +93,7 @@ contains
       integer :: s, i, j, nk
 
       allocate (cw(nao, nao))
+      !$acc enter data create(cw)
       occ_s = merge(2.0_dp, 1.0_dp, nspin == 1)
       do s = 1, nspin
          nk = nocc(s)
@@ -94,9 +103,11 @@ contains
                cw(i, j) = cmo(i, j, s)*eps(j, s)
             end do
          end do
+         !$acc update device(cw(:, 1:nk))
          call lp%gemm_mat(cw(:, 1:nk), cmo(:, 1:nk, s), wmat, transb="T", &
                           alpha=occ_s, beta=merge(0.0_dp, 1.0_dp, s == 1))
       end do
+      !$acc exit data delete(cw)
       deallocate (cw)
    end subroutine energy_weighted_density
 
@@ -129,10 +140,32 @@ contains
       nocc = [nalpha, nbeta]
       occ_s = merge(2.0_dp, 1.0_dp, nspin == 1)
 
-      allocate (dens(nao, nao, nspin))
+      ! DEVICE RESIDENCY, for the whole routine: `cmo`/`eps` arrive as
+      ! plain host arrays (trc_scf_run's own `release_device` -- see
+      ! trc_scf_driver.F90 -- takes them OFF the device before returning,
+      ! so neither a Fortran-side caller's `res%cmo`/`res%eps` nor the C
+      ! API's box handle's copy of them is resident); `dens`/`wmat` are
+      ! this routine's own, filled by `lp%density`/`energy_weighted_density`
+      ! ON the device (cuBLAS, which only fetches pointers for data
+      ! already present -- see energy_weighted_density's own comment).
+      allocate (dens(nao, nao, nspin), wmat(nao, nao), dtot(nao, nao))
+      !$acc enter data copyin(cmo, eps) create(dens, wmat)
+
       do s = 1, nspin
          call lp%density(cmo(:, :, s), nocc(s), occ_s, dens(:, :, s))
       end do
+      call energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
+
+      ! `dens` only has valid numbers on the device at this point; bring
+      ! it back before any HOST arithmetic reads it (dtot below) or hands
+      ! it to eri%gradient, which re-copies it up itself as a plain host
+      ! array (trc_eri.F90's eri_gradient, "dens(:, :, :), intent(in)").
+      !$acc update self(dens)
+      if (nspin == 1) then
+         dtot = dens(:, :, 1)
+      else
+         dtot = dens(:, :, 1) + dens(:, :, 2)
+      end if
 
       call pl%build(b, thresh)
       call pl%to_device()
@@ -143,19 +176,13 @@ contains
       grad = 0.5_dp*grad   !! see this module's own header: eri%gradient's
                            !! convention is twice d(e_two)/dR.
 
-      ! --- one-electron, added on top ---
-      allocate (wmat(nao, nao), dtot(nao, nao))
-      call energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
-      if (nspin == 1) then
-         dtot = dens(:, :, 1)
-      else
-         dtot = dens(:, :, 1) + dens(:, :, 2)
-      end if
-
-      !$acc enter data copyin(wmat, dtot, grad)
+      ! --- one-electron, added on top. `wmat` is already present (and
+      ! already holds the right numbers, from energy_weighted_density
+      ! above) -- only `dtot` and `grad` are freshly copied up. ---
+      !$acc enter data copyin(dtot, grad)
       call trc_1e_gradient(b, pl, wmat, dtot, grad)
       !$acc update self(grad)
-      !$acc exit data delete(wmat, dtot, grad)
+      !$acc exit data delete(wmat, dtot, grad, cmo, eps, dens)
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
       call nuclear_repulsion_gradient(b, grad)

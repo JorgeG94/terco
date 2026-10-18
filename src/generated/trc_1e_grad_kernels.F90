@@ -45,6 +45,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -52,7 +64,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(1), dblk(1)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -73,9 +86,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -188,12 +198,15 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
          end do
       end do
@@ -208,6 +221,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -215,7 +240,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(3), dblk(3)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -237,9 +263,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -463,30 +486,39 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(4) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(6))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(7))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(8))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(9))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(6) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
          end do
       end do
@@ -501,6 +533,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -508,7 +552,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(6), dblk(6)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -530,9 +575,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -1013,57 +1055,75 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1) - 2.0_dp*vBm(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(4) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(6))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(7))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(8))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(9))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(6) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(10))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(4))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(4)*wxt(4)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(11))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(7) - 2.0_dp*vBm(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(4)*wyt(4)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(12))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(4)*wzt(4)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(13))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(5)*wxt(5)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(14))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(8) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(5)*wyt(5)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(15))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(9) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(5)*wzt(5)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(16))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(6))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(6)*wxt(6)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(17))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(6)*wyt(6)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(18))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(10) - 2.0_dp*vBm(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(6)*wzt(6)
          end do
       end do
@@ -1078,6 +1138,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -1085,7 +1157,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(3), dblk(3)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -1107,9 +1180,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -1309,30 +1379,39 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1) - 1.0_dp*vAm(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(4))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4) - 1.0_dp*vAm(1))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(6))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(6) - 1.0_dp*vAm(1))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
          end do
       end do
@@ -1347,6 +1426,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -1354,7 +1445,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(9), dblk(9)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -1377,9 +1469,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -1875,84 +1964,111 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1) - 1.0_dp*vAm(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(4))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4) - 1.0_dp*vAm(1))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(6))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(6) - 1.0_dp*vAm(1))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(7) - 1.0_dp*vAm(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(4))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(4)*wxt(4)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(8))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(10) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(4)*wyt(4)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(9))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(4)*wzt(4)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(8))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(5)*wxt(5)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(10) - 1.0_dp*vAm(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(11) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(5)*wyt(5)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(11))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(5)*wzt(5)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(9))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(6))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(6)*wxt(6)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(11))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(12) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(6)*wyt(6)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(12) - 1.0_dp*vAm(2))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(6)*wzt(6)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(13) - 1.0_dp*vAm(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(7)*wxt(7)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(14))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(7)*wyt(7)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(15))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(16) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(7)*wzt(7)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(14))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(8)*wxt(8)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(16) - 1.0_dp*vAm(3))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(8)*wyt(8)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(17))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(17) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(8)*wzt(8)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(15))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(9)*wxt(9)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(17))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(9)*wyt(9)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(18) - 1.0_dp*vAm(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(18) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(9)*wzt(9)
          end do
       end do
@@ -1967,6 +2083,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -1974,7 +2102,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(18), dblk(18)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -1997,9 +2126,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -3143,165 +3269,219 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1) - 1.0_dp*vAm(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1) - 2.0_dp*vBm(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(4))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2) - 2.0_dp*vBm(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4) - 1.0_dp*vAm(1))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3) - 2.0_dp*vBm(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(6))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(6) - 1.0_dp*vAm(1))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(7) - 1.0_dp*vAm(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(4) - 1.0_dp*vBm(4))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(4)*wxt(4)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(8))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(10) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(4)*wyt(4)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(9))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(4)*wzt(4)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(8))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(5) - 1.0_dp*vBm(5))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(5)*wxt(5)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(10) - 1.0_dp*vAm(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(11) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(5)*wyt(5)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(11))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(5)*wzt(5)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(9))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(6) - 1.0_dp*vBm(6))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(6)*wxt(6)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(11))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(12) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(6)*wyt(6)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(12) - 1.0_dp*vAm(2))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(6)*wzt(6)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(13) - 1.0_dp*vAm(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(7) - 1.0_dp*vBm(7))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(7)*wxt(7)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(14))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(7)*wyt(7)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(15))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(16) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(7)*wzt(7)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(14))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(8) - 1.0_dp*vBm(8))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(8)*wxt(8)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(16) - 1.0_dp*vAm(3))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(8)*wyt(8)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(17))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(17) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(8)*wzt(8)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(15))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(9) - 1.0_dp*vBm(9))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(9)*wxt(9)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(17))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(9)*wyt(9)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(18) - 1.0_dp*vAm(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(18) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(9)*wzt(9)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(19) - 1.0_dp*vAm(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(10))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(10)*wxt(10)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(20))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(19) - 2.0_dp*vBm(4))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(10)*wyt(10)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(21))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(22))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(10)*wzt(10)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(20))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(11))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(11)*wxt(11)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(22) - 1.0_dp*vAm(4))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(20) - 2.0_dp*vBm(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(11)*wyt(11)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(23))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(23))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(11)*wzt(11)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(21))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(12))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(12)*wxt(12)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(23))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(21) - 2.0_dp*vBm(6))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(12)*wyt(12)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(24) - 1.0_dp*vAm(4))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(24))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(12)*wzt(12)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(25) - 1.0_dp*vAm(5))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(13)*wxt(13)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(26))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(22) - 1.0_dp*vBm(7))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(13)*wyt(13)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(27))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(25) - 1.0_dp*vBm(4))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(13)*wzt(13)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(26))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(14)*wxt(14)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(28) - 1.0_dp*vAm(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(23) - 1.0_dp*vBm(8))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(14)*wyt(14)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(29))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(26) - 1.0_dp*vBm(5))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(14)*wzt(14)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(27))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(15)*wxt(15)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(29))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(24) - 1.0_dp*vBm(9))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(15)*wyt(15)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(30) - 1.0_dp*vAm(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(27) - 1.0_dp*vBm(6))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(15)*wzt(15)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(31) - 1.0_dp*vAm(6))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(16))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(16)*wxt(16)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(32))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(25))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(16)*wyt(16)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(33))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(28) - 2.0_dp*vBm(7))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(16)*wzt(16)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(32))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(17))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(17)*wxt(17)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(34) - 1.0_dp*vAm(6))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(26))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(17)*wyt(17)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(35))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(29) - 2.0_dp*vBm(8))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(17)*wzt(17)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(33))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(18))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(18)*wxt(18)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(35))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(27))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(18)*wyt(18)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(36) - 1.0_dp*vAm(6))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(30) - 2.0_dp*vBm(9))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(18)*wzt(18)
          end do
       end do
@@ -3316,6 +3496,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -3323,7 +3515,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(6), dblk(6)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -3345,9 +3538,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -3707,57 +3897,75 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1) - 2.0_dp*vAm(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(2) - 1.0_dp*vAm(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4) - 1.0_dp*vAm(1))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(3) - 1.0_dp*vAm(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(6) - 1.0_dp*vAm(1))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(4))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(4)*wxt(4)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(7) - 2.0_dp*vAm(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(10))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(4)*wyt(4)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(8))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(16))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(4)*wzt(4)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(5))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(5))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(5)*wxt(5)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(8) - 1.0_dp*vAm(3))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(11))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(5)*wyt(5)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(9) - 1.0_dp*vAm(2))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(17))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(5)*wzt(5)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(6))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(6))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(6)*wxt(6)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(9))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(12))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(6)*wyt(6)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(10) - 2.0_dp*vAm(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(18))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(6)*wzt(6)
          end do
       end do
@@ -3772,6 +3980,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -3779,7 +3999,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(18), dblk(18)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -3802,9 +4023,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -4744,165 +4962,219 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1) - 2.0_dp*vAm(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(2) - 1.0_dp*vAm(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4) - 1.0_dp*vAm(1))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(3) - 1.0_dp*vAm(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(6) - 1.0_dp*vAm(1))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(4) - 1.0_dp*vBm(4))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(4)*wxt(4)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(7) - 2.0_dp*vAm(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(10))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(4)*wyt(4)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(8))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(16))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(4)*wzt(4)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(5))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(5) - 1.0_dp*vBm(5))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(5)*wxt(5)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(8) - 1.0_dp*vAm(3))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(11))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(5)*wyt(5)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(9) - 1.0_dp*vAm(2))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(17))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(5)*wzt(5)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(6))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(6) - 1.0_dp*vBm(6))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(6)*wxt(6)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(9))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(12))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(6)*wyt(6)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(10) - 2.0_dp*vAm(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(18))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(6)*wzt(6)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(11) - 2.0_dp*vAm(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(7)*wxt(7)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(12))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(19) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(7)*wyt(7)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(13))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(25))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(7)*wzt(7)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(12) - 1.0_dp*vAm(5))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(8)*wxt(8)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(14) - 1.0_dp*vAm(4))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(20) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(8)*wyt(8)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(15))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(26))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(8)*wzt(8)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(13) - 1.0_dp*vAm(6))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(9)*wxt(9)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(15))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(21) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(9)*wyt(9)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(16) - 1.0_dp*vAm(4))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(27))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(9)*wzt(9)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(14))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(10))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(10)*wxt(10)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(17) - 2.0_dp*vAm(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(22) - 1.0_dp*vBm(4))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(10)*wyt(10)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(18))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(28))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(10)*wzt(10)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(15))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(11))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(11)*wxt(11)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(18) - 1.0_dp*vAm(6))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(23) - 1.0_dp*vBm(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(11)*wyt(11)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(19) - 1.0_dp*vAm(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(29))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(11)*wzt(11)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(16))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(12))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(12)*wxt(12)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(19))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(24) - 1.0_dp*vBm(6))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(12)*wyt(12)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(20) - 2.0_dp*vAm(6))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(30))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(12)*wzt(12)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(21) - 2.0_dp*vAm(7))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(13)*wxt(13)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(22))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(25))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(13)*wyt(13)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(23))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(31) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(13)*wzt(13)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(22) - 1.0_dp*vAm(8))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(14)*wxt(14)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(24) - 1.0_dp*vAm(7))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(26))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(14)*wyt(14)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(25))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(32) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(14)*wzt(14)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(23) - 1.0_dp*vAm(9))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(15)*wxt(15)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(25))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(27))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(15)*wyt(15)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(26) - 1.0_dp*vAm(7))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(33) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(15)*wzt(15)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(24))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(16))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(16)*wxt(16)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(27) - 2.0_dp*vAm(8))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(28))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(16)*wyt(16)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(28))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(34) - 1.0_dp*vBm(4))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(16)*wzt(16)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(25))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(17))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(17)*wxt(17)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(28) - 1.0_dp*vAm(9))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(29))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(17)*wyt(17)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(29) - 1.0_dp*vAm(8))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(35) - 1.0_dp*vBm(5))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(17)*wzt(17)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(26))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(18))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(18)*wxt(18)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(29))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(30))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(18)*wyt(18)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(30) - 2.0_dp*vAm(9))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(36) - 1.0_dp*vBm(6))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(18)*wzt(18)
          end do
       end do
@@ -4917,6 +5189,18 @@ contains
       !! nucleus), contracted straight into ga (bra atom), gb (ket atom)
       !! and gc (every atom) -- no derivative matrix is ever formed. See
       !! emit_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !!
+      !! gc is intent(inout) and ADDED into, never zeroed here, on
+      !! purpose: the caller passes a slice of its own lane-private
+      !! accumulator directly (trc_1e_grad_driver.inc's one_e_grad_item),
+      !! not a per-thread local -- an automatic array sized by the RUNTIME
+      !! value `natm` inside a `!$acc routine seq` body needs a per-thread
+      !! dynamic stack allocation that a large `natm` (a 60-atom cluster,
+      !! say) under thousands of concurrently resident threads overruns,
+      !! which is exactly a CUDA_ERROR_LAUNCH_FAILED "invalid pointer
+      !! dereference" and not a Fortran-level bug. Measured: that is what
+      !! one_e_grad_item's own gc(3,natm) local used to be, and it is why
+      !! this kernel does not get one either.
       !$acc routine seq
       integer,  intent(in)  :: nprim_a, nprim_b, natm
       real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
@@ -4924,7 +5208,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(36), dblk(36)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
 
       integer  :: ip, jp, ic, k
       real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
@@ -4947,9 +5232,6 @@ contains
       rab2 = abx*abx + aby*aby + abz*abz
 
       ga = 0.0_dp; gb = 0.0_dp
-      do k = 1, natm
-         gc(1, k) = 0.0_dp; gc(2, k) = 0.0_dp; gc(3, k) = 0.0_dp
-      end do
 
       do ip = 1, nprim_a
          al = ea(ip)
@@ -7122,327 +7404,435 @@ contains
 
             ga(1) = ga(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(1) - 2.0_dp*vAm(1))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(1) - 2.0_dp*vBm(1))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(1)*wxt(1)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(7))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(1)*wyt(1)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*al*vAp(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(1)*(2.0_dp*bet*vBp(13))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(1)*wzt(1)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(2) - 1.0_dp*vAm(2))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(2) - 2.0_dp*vBm(2))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(2)*wxt(2)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(4) - 1.0_dp*vAm(1))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(8))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(2)*wyt(2)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*al*vAp(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(2)*(2.0_dp*bet*vBp(14))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(2)*wzt(2)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(3) - 1.0_dp*vAm(3))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(3) - 2.0_dp*vBm(3))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(3)*wxt(3)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(9))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(3)*wyt(3)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*al*vAp(6) - 1.0_dp*vAm(1))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(3)*(2.0_dp*bet*vBp(15))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(3)*wzt(3)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(4) - 2.0_dp*vBm(4))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(4)*wxt(4)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(7) - 2.0_dp*vAm(2))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(10))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(4)*wyt(4)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*al*vAp(8))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(4)*(2.0_dp*bet*vBp(16))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(4)*wzt(4)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(5))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(5) - 2.0_dp*vBm(5))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(5)*wxt(5)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(8) - 1.0_dp*vAm(3))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(11))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(5)*wyt(5)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*al*vAp(9) - 1.0_dp*vAm(2))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(5)*(2.0_dp*bet*vBp(17))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(5)*wzt(5)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(6))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(6) - 2.0_dp*vBm(6))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(6)*wxt(6)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(9))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(12))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(6)*wyt(6)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*al*vAp(10) - 2.0_dp*vAm(3))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(6)*(2.0_dp*bet*vBp(18))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(6)*wzt(6)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(11) - 2.0_dp*vAm(4))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(7) - 1.0_dp*vBm(7))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(7)*wxt(7)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(12))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(19) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(7)*wyt(7)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*al*vAp(13))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(7)*(2.0_dp*bet*vBp(25))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(7)*wzt(7)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(12) - 1.0_dp*vAm(5))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(8) - 1.0_dp*vBm(8))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(8)*wxt(8)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(14) - 1.0_dp*vAm(4))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(20) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(8)*wyt(8)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*al*vAp(15))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(8)*(2.0_dp*bet*vBp(26))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(8)*wzt(8)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(13) - 1.0_dp*vAm(6))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(9) - 1.0_dp*vBm(9))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(9)*wxt(9)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(15))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(21) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(9)*wyt(9)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*al*vAp(16) - 1.0_dp*vAm(4))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(9)*(2.0_dp*bet*vBp(27))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(9)*wzt(9)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(14))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(10) - 1.0_dp*vBm(10))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(10)*wxt(10)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(17) - 2.0_dp*vAm(5))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(22) - 1.0_dp*vBm(4))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(10)*wyt(10)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(10)*(2.0_dp*al*vAp(18))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(10)*(2.0_dp*bet*vBp(28))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(10)*wzt(10)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(15))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(11) - 1.0_dp*vBm(11))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(11)*wxt(11)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(18) - 1.0_dp*vAm(6))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(23) - 1.0_dp*vBm(5))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(11)*wyt(11)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(11)*(2.0_dp*al*vAp(19) - 1.0_dp*vAm(5))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(11)*(2.0_dp*bet*vBp(29))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(11)*wzt(11)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(16))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(12) - 1.0_dp*vBm(12))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(12)*wxt(12)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(19))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(24) - 1.0_dp*vBm(6))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(12)*wyt(12)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(12)*(2.0_dp*al*vAp(20) - 2.0_dp*vAm(6))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(12)*(2.0_dp*bet*vBp(30))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(12)*wzt(12)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(21) - 2.0_dp*vAm(7))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(13) - 1.0_dp*vBm(13))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(13)*wxt(13)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(22))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(25))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(13)*wyt(13)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(13)*(2.0_dp*al*vAp(23))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(13)*(2.0_dp*bet*vBp(31) - 1.0_dp*vBm(1))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(13)*wzt(13)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(22) - 1.0_dp*vAm(8))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(14) - 1.0_dp*vBm(14))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(14)*wxt(14)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(24) - 1.0_dp*vAm(7))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(26))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(14)*wyt(14)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(14)*(2.0_dp*al*vAp(25))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(14)*(2.0_dp*bet*vBp(32) - 1.0_dp*vBm(2))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(14)*wzt(14)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(23) - 1.0_dp*vAm(9))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(15) - 1.0_dp*vBm(15))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(15)*wxt(15)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(25))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(27))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(15)*wyt(15)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(15)*(2.0_dp*al*vAp(26) - 1.0_dp*vAm(7))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(15)*(2.0_dp*bet*vBp(33) - 1.0_dp*vBm(3))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(15)*wzt(15)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(24))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(16) - 1.0_dp*vBm(16))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(16)*wxt(16)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(27) - 2.0_dp*vAm(8))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(28))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(16)*wyt(16)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(16)*(2.0_dp*al*vAp(28))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(16)*(2.0_dp*bet*vBp(34) - 1.0_dp*vBm(4))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(16)*wzt(16)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(25))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(17) - 1.0_dp*vBm(17))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(17)*wxt(17)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(28) - 1.0_dp*vAm(9))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(29))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(17)*wyt(17)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(17)*(2.0_dp*al*vAp(29) - 1.0_dp*vAm(8))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(17)*(2.0_dp*bet*vBp(35) - 1.0_dp*vBm(5))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(17)*wzt(17)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(26))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(18) - 1.0_dp*vBm(18))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(18)*wxt(18)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(29))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(30))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(18)*wyt(18)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(18)*(2.0_dp*al*vAp(30) - 2.0_dp*vAm(9))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(18)*(2.0_dp*bet*vBp(36) - 1.0_dp*vBm(6))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(18)*wzt(18)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(19)*(2.0_dp*al*vAp(31) - 2.0_dp*vAm(10))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(19)*(2.0_dp*bet*vBp(19))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(19)*wxt(19)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(19)*(2.0_dp*al*vAp(32))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(19)*(2.0_dp*bet*vBp(37) - 2.0_dp*vBm(7))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(19)*wyt(19)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(19)*(2.0_dp*al*vAp(33))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(19)*(2.0_dp*bet*vBp(43))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(19)*wzt(19)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(20)*(2.0_dp*al*vAp(32) - 1.0_dp*vAm(11))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(20)*(2.0_dp*bet*vBp(20))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(20)*wxt(20)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(20)*(2.0_dp*al*vAp(34) - 1.0_dp*vAm(10))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(20)*(2.0_dp*bet*vBp(38) - 2.0_dp*vBm(8))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(20)*wyt(20)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(20)*(2.0_dp*al*vAp(35))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(20)*(2.0_dp*bet*vBp(44))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(20)*wzt(20)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(21)*(2.0_dp*al*vAp(33) - 1.0_dp*vAm(12))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(21)*(2.0_dp*bet*vBp(21))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(21)*wxt(21)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(21)*(2.0_dp*al*vAp(35))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(21)*(2.0_dp*bet*vBp(39) - 2.0_dp*vBm(9))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(21)*wyt(21)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(21)*(2.0_dp*al*vAp(36) - 1.0_dp*vAm(10))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(21)*(2.0_dp*bet*vBp(45))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(21)*wzt(21)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(22)*(2.0_dp*al*vAp(34))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(22)*(2.0_dp*bet*vBp(22))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(22)*wxt(22)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(22)*(2.0_dp*al*vAp(37) - 2.0_dp*vAm(11))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(22)*(2.0_dp*bet*vBp(40) - 2.0_dp*vBm(10))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(22)*wyt(22)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(22)*(2.0_dp*al*vAp(38))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(22)*(2.0_dp*bet*vBp(46))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(22)*wzt(22)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(23)*(2.0_dp*al*vAp(35))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(23)*(2.0_dp*bet*vBp(23))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(23)*wxt(23)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(23)*(2.0_dp*al*vAp(38) - 1.0_dp*vAm(12))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(23)*(2.0_dp*bet*vBp(41) - 2.0_dp*vBm(11))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(23)*wyt(23)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(23)*(2.0_dp*al*vAp(39) - 1.0_dp*vAm(11))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(23)*(2.0_dp*bet*vBp(47))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(23)*wzt(23)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(24)*(2.0_dp*al*vAp(36))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(24)*(2.0_dp*bet*vBp(24))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(24)*wxt(24)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(24)*(2.0_dp*al*vAp(39))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(24)*(2.0_dp*bet*vBp(42) - 2.0_dp*vBm(12))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(24)*wyt(24)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(24)*(2.0_dp*al*vAp(40) - 2.0_dp*vAm(12))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(24)*(2.0_dp*bet*vBp(48))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(24)*wzt(24)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(25)*(2.0_dp*al*vAp(41) - 2.0_dp*vAm(13))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(25)*(2.0_dp*bet*vBp(25))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(25)*wxt(25)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(25)*(2.0_dp*al*vAp(42))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(25)*(2.0_dp*bet*vBp(43) - 1.0_dp*vBm(13))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(25)*wyt(25)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(25)*(2.0_dp*al*vAp(43))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(25)*(2.0_dp*bet*vBp(49) - 1.0_dp*vBm(7))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(25)*wzt(25)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(26)*(2.0_dp*al*vAp(42) - 1.0_dp*vAm(14))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(26)*(2.0_dp*bet*vBp(26))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(26)*wxt(26)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(26)*(2.0_dp*al*vAp(44) - 1.0_dp*vAm(13))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(26)*(2.0_dp*bet*vBp(44) - 1.0_dp*vBm(14))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(26)*wyt(26)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(26)*(2.0_dp*al*vAp(45))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(26)*(2.0_dp*bet*vBp(50) - 1.0_dp*vBm(8))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(26)*wzt(26)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(27)*(2.0_dp*al*vAp(43) - 1.0_dp*vAm(15))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(27)*(2.0_dp*bet*vBp(27))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(27)*wxt(27)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(27)*(2.0_dp*al*vAp(45))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(27)*(2.0_dp*bet*vBp(45) - 1.0_dp*vBm(15))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(27)*wyt(27)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(27)*(2.0_dp*al*vAp(46) - 1.0_dp*vAm(13))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(27)*(2.0_dp*bet*vBp(51) - 1.0_dp*vBm(9))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(27)*wzt(27)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(28)*(2.0_dp*al*vAp(44))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(28)*(2.0_dp*bet*vBp(28))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(28)*wxt(28)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(28)*(2.0_dp*al*vAp(47) - 2.0_dp*vAm(14))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(28)*(2.0_dp*bet*vBp(46) - 1.0_dp*vBm(16))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(28)*wyt(28)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(28)*(2.0_dp*al*vAp(48))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(28)*(2.0_dp*bet*vBp(52) - 1.0_dp*vBm(10))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(28)*wzt(28)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(29)*(2.0_dp*al*vAp(45))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(29)*(2.0_dp*bet*vBp(29))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(29)*wxt(29)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(29)*(2.0_dp*al*vAp(48) - 1.0_dp*vAm(15))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(29)*(2.0_dp*bet*vBp(47) - 1.0_dp*vBm(17))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(29)*wyt(29)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(29)*(2.0_dp*al*vAp(49) - 1.0_dp*vAm(14))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(29)*(2.0_dp*bet*vBp(53) - 1.0_dp*vBm(11))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(29)*wzt(29)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(30)*(2.0_dp*al*vAp(46))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(30)*(2.0_dp*bet*vBp(30))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(30)*wxt(30)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(30)*(2.0_dp*al*vAp(49))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(30)*(2.0_dp*bet*vBp(48) - 1.0_dp*vBm(18))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(30)*wyt(30)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(30)*(2.0_dp*al*vAp(50) - 2.0_dp*vAm(15))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(30)*(2.0_dp*bet*vBp(54) - 1.0_dp*vBm(12))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(30)*wzt(30)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(31)*(2.0_dp*al*vAp(51) - 2.0_dp*vAm(16))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(31)*(2.0_dp*bet*vBp(31))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(31)*wxt(31)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(31)*(2.0_dp*al*vAp(52))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(31)*(2.0_dp*bet*vBp(49))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(31)*wyt(31)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(31)*(2.0_dp*al*vAp(53))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(31)*(2.0_dp*bet*vBp(55) - 2.0_dp*vBm(13))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(31)*wzt(31)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(32)*(2.0_dp*al*vAp(52) - 1.0_dp*vAm(17))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(32)*(2.0_dp*bet*vBp(32))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(32)*wxt(32)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(32)*(2.0_dp*al*vAp(54) - 1.0_dp*vAm(16))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(32)*(2.0_dp*bet*vBp(50))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(32)*wyt(32)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(32)*(2.0_dp*al*vAp(55))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(32)*(2.0_dp*bet*vBp(56) - 2.0_dp*vBm(14))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(32)*wzt(32)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(33)*(2.0_dp*al*vAp(53) - 1.0_dp*vAm(18))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(33)*(2.0_dp*bet*vBp(33))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(33)*wxt(33)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(33)*(2.0_dp*al*vAp(55))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(33)*(2.0_dp*bet*vBp(51))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(33)*wyt(33)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(33)*(2.0_dp*al*vAp(56) - 1.0_dp*vAm(16))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(33)*(2.0_dp*bet*vBp(57) - 2.0_dp*vBm(15))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(33)*wzt(33)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(34)*(2.0_dp*al*vAp(54))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(34)*(2.0_dp*bet*vBp(34))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(34)*wxt(34)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(34)*(2.0_dp*al*vAp(57) - 2.0_dp*vAm(17))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(34)*(2.0_dp*bet*vBp(52))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(34)*wyt(34)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(34)*(2.0_dp*al*vAp(58))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(34)*(2.0_dp*bet*vBp(58) - 2.0_dp*vBm(16))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(34)*wzt(34)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(35)*(2.0_dp*al*vAp(55))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(35)*(2.0_dp*bet*vBp(35))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(35)*wxt(35)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(35)*(2.0_dp*al*vAp(58) - 1.0_dp*vAm(18))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(35)*(2.0_dp*bet*vBp(53))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(35)*wyt(35)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(35)*(2.0_dp*al*vAp(59) - 1.0_dp*vAm(17))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(35)*(2.0_dp*bet*vBp(59) - 2.0_dp*vBm(17))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(35)*wzt(35)
             ga(1) = ga(1) - cc*zatm(ic)*dblk(36)*(2.0_dp*al*vAp(56))
             gb(1) = gb(1) - cc*zatm(ic)*dblk(36)*(2.0_dp*bet*vBp(36))
+            !$acc atomic update
             gc(1,ic) = gc(1,ic) - cc*zatm(ic)*dblk(36)*wxt(36)
             ga(2) = ga(2) - cc*zatm(ic)*dblk(36)*(2.0_dp*al*vAp(59))
             gb(2) = gb(2) - cc*zatm(ic)*dblk(36)*(2.0_dp*bet*vBp(54))
+            !$acc atomic update
             gc(2,ic) = gc(2,ic) - cc*zatm(ic)*dblk(36)*wyt(36)
             ga(3) = ga(3) - cc*zatm(ic)*dblk(36)*(2.0_dp*al*vAp(60) - 2.0_dp*vAm(18))
             gb(3) = gb(3) - cc*zatm(ic)*dblk(36)*(2.0_dp*bet*vBp(60) - 2.0_dp*vBm(18))
+            !$acc atomic update
             gc(3,ic) = gc(3,ic) - cc*zatm(ic)*dblk(36)*wzt(36)
          end do
       end do
@@ -7461,7 +7851,8 @@ contains
       real(dp), intent(in)  :: ra(3), rb(3)
       real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
       real(dp), intent(in)  :: wt, wblk(*), dblk(*)
-      real(dp), intent(out) :: ga(3), gb(3), gc(3, natm)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
       select case (la*ONE_E_RADIX + lb)
       case (0); call one_e_grad_00(nprim_a, nprim_b, ea, ca, eb, cb, &
                           ra, rb, natm, zatm, ratm, wt, wblk, dblk, ga, gb, gc)

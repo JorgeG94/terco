@@ -17,7 +17,19 @@
 ! (sum over atoms ~ 0), the one property that holds exactly regardless of
 ! step size or SCF tolerance.
 !
-program check_full_grad_fd
+! NO INTERNAL PROCEDURES. `run_case`/`scf_energy_at` are genuine module
+! procedures, not a `contains` block under the program, for the same
+! reason app/main.F90's `terco_run` module gives for its own equivalent
+! refactor: an internal procedure anywhere in the executable -- even one
+! with no state in common with the GPU call at all -- corrupted a later
+! collective Fock build on this exact NVHPC/OpenMPI toolchain,
+! deterministically, regardless of optimisation level. Measured here too:
+! as a `contains` block, this program's SECOND trc_scf_run (the UHF OH
+! case, after water's reference + gradient + 18-point FD loop) silently
+! failed to converge on GPU 0 -- not a crash, just wrong behaviour -- and
+! the identical sequence, as plain module procedures, does not.
+!
+module check_full_grad_fd_cases
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
@@ -27,33 +39,25 @@ program check_full_grad_fd
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    implicit none
+   private
+   public :: run_case
 
    real(dp), parameter :: H = 1.0e-3_dp
-   real(dp), parameter :: RELTOL = 1.0e-5_dp
+   real(dp), parameter, public :: RELTOL = 1.0e-5_dp
    !! Central difference at H = 1e-3 on a reconverged SCF energy: the
    !! truncation floor measured here is ~1e-7 absolute on components of
    !! order 1e-2 to 1e-1 -- a tight ABSOLUTE floor, not RELTOL's own
    !! bottleneck, which is why ABSTOL (below) is the gate that matters for
    !! the near-zero components translational invariance already covers.
-   real(dp), parameter :: ABSTOL = 5.0e-7_dp
-   real(dp), parameter :: INVTOL = 1.0e-10_dp
-
-   logical :: any_fail
-   any_fail = .false.
-
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'RHF water/6-31G*')
-   call run_case('oh.xyz', 'basis_sets/6-31gs.json', 5, 4, 'UHF OH/6-31G*')
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'; stop 1
-   end if
-   print '(a)', '  RESULT: PASS'
+   real(dp), parameter, public :: ABSTOL = 5.0e-7_dp
+   real(dp), parameter, public :: INVTOL = 1.0e-10_dp
 
 contains
 
-   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, label)
+   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, label, any_fail)
       character(*), intent(in) :: xyzfile, basis_json, label
       integer, intent(in) :: nalpha, nbeta
+      logical, intent(inout) :: any_fail
 
       integer :: nat, dev, a, d
       integer, allocatable :: at_z(:)
@@ -129,4 +133,19 @@ contains
       call b2%release()
    end function scf_energy_at
 
+end module check_full_grad_fd_cases
+
+program check_full_grad_fd
+   use check_full_grad_fd_cases, only: run_case
+   implicit none
+   logical :: any_fail
+   any_fail = .false.
+
+   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'RHF water/6-31G*', any_fail)
+   call run_case('oh.xyz', 'basis_sets/6-31gs.json', 5, 4, 'UHF OH/6-31G*', any_fail)
+
+   if (any_fail) then
+      print '(a)', '  RESULT: FAIL'; stop 1
+   end if
+   print '(a)', '  RESULT: PASS'
 end program check_full_grad_fd
