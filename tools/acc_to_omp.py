@@ -768,6 +768,10 @@ def walk(roots: list[Path]) -> list[Path]:
             files.append(p)
         for p in sorted(r.rglob("*.f90")):
             files.append(p)
+        # INCLUDE'd kernel drivers (src/inc/*.inc) are Fortran too, and
+        # need the same conversion as the modules that include them.
+        for p in sorted(r.rglob("*.inc")):
+            files.append(p)
     return files
 
 
