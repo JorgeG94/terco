@@ -4,8 +4,9 @@
 ! reads: a functional, a spin count, damping/DIIS thresholds, env overrides).
 ! `resolve` runs once, on the host, before anything is allocated or put on
 ! the device, and is the only place the run's rejections live (unknown or
-! incomplete functional, VV10 over MPI) -- every other setup failure comes
-! later, once real device state exists to release (trc_scf_context).
+! incomplete functional, --df's own restrictions) -- every other setup
+! failure comes later, once real device state exists to release
+! (trc_scf_context).
 !
 ! WHY A SHARED SPIN RULE. `trc_run_scf`/`trc_load_scf` (trc_capi.F90) need
 ! nspin before trc_scf_run is even reachable -- to size the guess density and
@@ -230,8 +231,8 @@ contains
    ! its first allocation, in the same order: the functional (and its
    ! rejections), the spin rule, the by-spin DIIS/damping defaults, whether
    ! PCM or the incremental build are on, and the env-hook overrides. `ok` is
-   ! false only for the three functional/VV10 rejections; every other setup
-   ! failure (grid, PCM) needs device state built first and is
+   ! false only for the functional and --df rejections below; every other
+   ! setup failure (grid, PCM) needs device state built first and is
    ! `trc_scf_context`'s to report.
    !
    function scf_settings_resolve(this, opts, nalpha, nbeta, comm, msg) result(ok)
@@ -270,15 +271,9 @@ contains
          end if
          this%exx = this%func%exx
          this%nlc = this%func%nlc_b /= 0.0_dp
-         ! VV10's double sum runs over the whole grid on one device; split
-         ! over ranks it would need every rank's points.
-         if (this%nlc .and. present(comm)) then
-            if (comm%size() > 1) then
-               msg = "trc_scf: VV10 nonlocal correlation is not available over MPI ranks"
-               ok = .false.
-               return
-            end if
-         end if
+         ! VV10 over MPI: trc_vv10's vv10_drive splits pass 2's outer grid
+         ! points round-robin by rank and allreduces the result, the same
+         ! as trc_xc's semilocal split -- no rejection needed here.
          this%exx_lr = this%func%exx_lr
          this%omega = this%func%omega
       end if

@@ -88,8 +88,8 @@ if(TERCO_ENABLE_TESTING)
   # logic (same reason for the compiler-wrapper's own mpiexec, not the
   # first one on PATH), since this is a different driver over the same
   # trc_set_comm/trc_run_scf and needs its own check: np 1 and np 2 must
-  # agree on water RHF and B3LYP, and wB97X-V (VV10) must be refused
-  # cleanly at np 2. Registered only when this build can run it.
+  # agree on water RHF, B3LYP and wB97X-V (VV10). Registered only when
+  # this build can run it.
   #
   if(TERCO_ENABLE_MPI)
     find_package(Python3 COMPONENTS Interpreter)

@@ -224,10 +224,10 @@ contains
          call system_clock(cc, rate)
          tv0 = real(cc, dp)/real(rate, dp)
          if (nspin == 1) then
-            call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1), la=lp)
+            call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1), la=lp, comm=comm)
          else
             call trc_vv10_uks(b, xg_nlc, d_c(:, :, 1), d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
-                              vxc_c(:, :, 1), vxc_c(:, :, 2), la=lp)
+                              vxc_c(:, :, 1), vxc_c(:, :, 2), la=lp, comm=comm)
          end if
          call lp%sync()
          call system_clock(cc, rate)

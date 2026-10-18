@@ -84,12 +84,38 @@
 ! 2 write only to the index they own (rho(g), grad rho(g); vrho(i),
 ! vsigma(i)) and need no such split.
 !
+! MULTI-GPU. With a communicator, pass 2's outer points are split into one
+! CONTIGUOUS range [i0, i1] per rank -- npts/nranks points each, the first
+! npts mod nranks ranks getting one extra -- not round-robin: every point
+! costs the same O(npass) inner sum, so a contiguous range is already
+! load-balanced, and it keeps every GPU warp either entirely inside a
+! rank's range or entirely outside it, which round-robin (mod(i-1,
+! nranks)) does not -- round-robin interleaves an owned and a skipped
+! point into the SAME warp throughout, so the warp's time is always the
+! owned thread's time no matter how many ranks split the work, measured
+! as no speedup at all between 1 and 2 ranks. A rank leaves its
+! vrho(i)/vsigma(i)/eg(i) at the 0.0_dp vv10_kernel_body already sets
+! before the range check, for every i outside its own [i0, i1], and one
+! allreduce(MPI_SUM) afterward -- a single buffer packing all three
+! arrays, as trc_xc.F90's sum_ranks does for vxc -- reconstructs the full
+! arrays on every rank: each point was computed by exactly one rank and
+! left 0.0_dp by every other, so SUM is exact, not an approximation. Passes
+! 1 and 3 stay REPLICATED on every rank rather than split too -- they are
+! the O(N) cost the SCALING section above says pass 2 dominates "by orders
+! of magnitude", so redistributing them would buy nothing worth the extra
+! communication, and running them identically from the identical
+! (replicated) density is what lets pass 3's scatter into `vmat` come out
+! identical on every rank with no reduction of its own. No comm given
+! (i0 = 1, i1 = npts) makes every point everyone's, unchanged from the
+! no-MPI path.
+!
 module trc_vv10
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: shell_collocate, NCART_MAX
    use trc_linalg, only: trc_linalg_t
+   use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
 
@@ -116,7 +142,7 @@ contains
    ! with the caller's own (trc_xc_rks's `la`) when given; made and
    ! released here otherwise, exactly as trc_xc's xc_drive does.
    !
-   subroutine trc_vv10_rks(bas, grid, dmat, b, c, e_nlc, vmat, la)
+   subroutine trc_vv10_rks(bas, grid, dmat, b, c, e_nlc, vmat, la, comm)
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       real(dp), intent(in) :: dmat(bas%nao, bas%nao)
@@ -124,11 +150,16 @@ contains
       real(dp), intent(out) :: e_nlc
       real(dp), intent(inout) :: vmat(bas%nao, bas%nao)
       type(trc_linalg_t), intent(inout), optional, target :: la
+      type(comm_t), intent(in), optional :: comm
+      !! Splits pass 2's outer points into a contiguous range per rank,
+      !! one allreduce afterward -- see this module's own MULTI-GPU
+      !! header for why passes 1 and 3 are left replicated on every rank
+      !! rather than split too.
 
       call vv10_drive(bas%nao, bas%nshell, bas%maxnp, bas%sh_l, bas%sh_np, bas%sh_e, bas%sh_c, bas%sh_r, &
                       grid%npts, grid%nbatch, grid%r, grid%w, grid%batch_of, grid%b_off, grid%b_shoff, &
                       size(grid%b_sh), grid%b_sh, grid%b_shao, grid%b_aooff, size(grid%b_ao), grid%b_ao, &
-                      dmat, b, c, e_nlc, vmat, la)
+                      dmat, b, c, e_nlc, vmat, la, comm)
    end subroutine trc_vv10_rks
 
    !
@@ -136,7 +167,7 @@ contains
    ! SAME potential matrix is added to both `vmat_a` and `vmat_b` (pyscf's
    ! `uks.py` convention -- see this module's header).
    !
-   subroutine trc_vv10_uks(bas, grid, dmat_a, dmat_b, b, c, e_nlc, vmat_a, vmat_b, la)
+   subroutine trc_vv10_uks(bas, grid, dmat_a, dmat_b, b, c, e_nlc, vmat_a, vmat_b, la, comm)
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       real(dp), intent(in) :: dmat_a(bas%nao, bas%nao), dmat_b(bas%nao, bas%nao)
@@ -144,6 +175,7 @@ contains
       real(dp), intent(out) :: e_nlc
       real(dp), intent(inout) :: vmat_a(bas%nao, bas%nao), vmat_b(bas%nao, bas%nao)
       type(trc_linalg_t), intent(inout), optional, target :: la
+      type(comm_t), intent(in), optional :: comm
       real(dp), allocatable :: dtot(:, :), vtmp(:, :)
       integer :: nao, i, j
 
@@ -160,7 +192,7 @@ contains
       call vv10_drive(bas%nao, bas%nshell, bas%maxnp, bas%sh_l, bas%sh_np, bas%sh_e, bas%sh_c, bas%sh_r, &
                       grid%npts, grid%nbatch, grid%r, grid%w, grid%batch_of, grid%b_off, grid%b_shoff, &
                       size(grid%b_sh), grid%b_sh, grid%b_shao, grid%b_aooff, size(grid%b_ao), grid%b_ao, &
-                      dtot, b, c, e_nlc, vtmp, la)
+                      dtot, b, c, e_nlc, vtmp, la, comm)
 
       !$acc data present(vtmp) copy(vmat_a, vmat_b)
       do concurrent(i=1:nao, j=1:nao)
@@ -182,7 +214,7 @@ contains
    !
    subroutine vv10_drive(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
                          npts, nbatch, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, &
-                         b_aooff, nbao, b_ao, dmat, b, c, e_nlc, vmat, la)
+                         b_aooff, nbao, b_ao, dmat, b, c, e_nlc, vmat, la, comm)
       integer, intent(in) :: nao, nshell, maxnp, npts, nbatch, nbsh, nbao
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
@@ -194,18 +226,35 @@ contains
       real(dp), intent(out) :: e_nlc
       real(dp), intent(inout) :: vmat(nao, nao)
       type(trc_linalg_t), intent(inout), optional, target :: la
+      type(comm_t), intent(in), optional :: comm
 
       real(dp), allocatable :: rho(:), grho(:, :), sigma(:), vrho(:), vsigma(:), eg(:)
       real(dp), allocatable :: gx(:), gy(:), gz(:), gkp(:), gw0p(:), grpw(:)
+      real(dp), allocatable :: buf(:)
       integer, allocatable :: gidx(:)
       real(dp) :: kvv, beta
-      integer :: npass, g
+      integer :: npass, g, rank, nranks, i0, i1
       integer(int64) :: cap
+      logical :: split
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
 
+      rank = 0
+      nranks = 1
+      split = .false.
+      if (present(comm)) then
+         rank = comm%rank()
+         nranks = comm%size()
+         split = nranks > 1
+      end if
+
       e_nlc = 0.0_dp
       if (npts == 0) return
+
+      ! A contiguous range [i0, i1] per rank -- see this module's own
+      ! MULTI-GPU header for why, not round-robin.
+      i0 = rank*(npts/nranks) + min(rank, mod(npts, nranks)) + 1
+      i1 = (rank + 1)*(npts/nranks) + min(rank + 1, mod(npts, nranks))
 
       kvv = b*1.5_dp*PI*(9.0_dp*PI)**(-1.0_dp/6.0_dp)
       beta = (3.0_dp/(b*b))**0.75_dp/32.0_dp
@@ -218,7 +267,7 @@ contains
       end if
 
       allocate (rho(npts), grho(3, npts), sigma(npts), vrho(npts), vsigma(npts), eg(npts))
-      !$acc data copyin(dmat) copy(vmat) create(rho, grho, sigma, vrho, vsigma, eg)
+      !$acc data copyin(dmat) create(rho, grho, sigma, vrho, vsigma, eg)
 
       call vv10_density_tile(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
                              npts, nbatch, r, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, b_aooff, nbao, b_ao, &
@@ -260,20 +309,51 @@ contains
       !$acc data copyin(gidx(1:max(npass, 1))) create(gx, gy, gz, gkp, gw0p, grpw)
       call vv10_gather(npts, r, w, rho, sigma, c, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
 
+      ! MULTI-GPU: pass 2's outer points, a contiguous range per rank; see
+      ! this module's own MULTI-GPU header for why passes 1 and 3 stay
+      ! replicated instead.
       call vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                       vrho, vsigma, eg)
+                       i0, i1, vrho, vsigma, eg)
 
       !$acc end data
       deallocate (gidx, gx, gy, gz, gkp, gw0p, grpw)
 
-      !$acc update self(eg)
+      !
+      ! The reduction runs with no `!$acc data` construct open at all --
+      ! the region that carried `vrho`/`vsigma`/`eg`/`grho` on the device
+      ! for passes 1-2 is closed here first, the same thing trc_xc.F90's
+      ! `sum_ranks` call site does (its `!$acc end data` closes xc_drive's
+      ! chunk loop before `sum_ranks` is ever reached), and pass 3 reopens
+      ! its own, narrower region below. A `block` placed inside the open
+      ! region instead was rejected by nvfortran outright ("Unimplemented
+      ! feature: BLOCK construct in the scope of a parallel directive"),
+      ! which is why this is split out rather than folded into the data
+      ! region above.
+      !
+      !$acc update self(vrho, vsigma, eg, grho)
+      !$acc end data
+
+      if (split) then
+         allocate (buf(3*npts))
+         buf(1:npts) = vrho
+         buf(npts + 1:2*npts) = vsigma
+         buf(2*npts + 1:3*npts) = eg
+         call allreduce(comm, buf, op=MPI_SUM)
+         call bcast(comm, buf, 3*npts, 0)
+         vrho = buf(1:npts)
+         vsigma = buf(npts + 1:2*npts)
+         eg = buf(2*npts + 1:3*npts)
+         deallocate (buf)
+      end if
+
       e_nlc = sum(eg)
 
+      !$acc data copy(vmat) copyin(grho, vrho, vsigma)
       call vv10_potential_tile(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
                                npts, nbatch, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, b_aooff, nbao, b_ao, &
                                vrho, vsigma, grho, cap, lp, vmat)
-
       !$acc end data
+
       deallocate (rho, grho, sigma, vrho, vsigma, eg)
       if (.not. present(la)) call la_own%release()
    end subroutine vv10_drive
@@ -619,8 +699,8 @@ contains
    !
 #ifdef _OPENACC
    subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                          vrho, vsigma, eg)
-      integer, intent(in) :: npts, npass
+                          i0, i1, vrho, vsigma, eg)
+      integer, intent(in) :: npts, npass, i0, i1
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: b, c, kvv, beta
       real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
@@ -629,13 +709,13 @@ contains
 
       do concurrent(i=1:npts)
          call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                               vrho(i), vsigma(i), eg(i))
+                               i0, i1, vrho(i), vsigma(i), eg(i))
       end do
    end subroutine vv10_kernel
 #else
    subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                          vrho, vsigma, eg)
-      integer, intent(in) :: npts, npass
+                          i0, i1, vrho, vsigma, eg)
+      integer, intent(in) :: npts, npass, i0, i1
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: b, c, kvv, beta
       real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
@@ -644,7 +724,7 @@ contains
 
       do i = 1, npts
          call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                               vrho(i), vsigma(i), eg(i))
+                               i0, i1, vrho(i), vsigma(i), eg(i))
       end do
    end subroutine vv10_kernel
 #endif
@@ -659,9 +739,9 @@ contains
    ! order (gidx is ascending), is unchanged.
    !
    pure subroutine vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                                    vrho_i, vsigma_i, eg_i)
+                                    i0, i1, vrho_i, vsigma_i, eg_i)
       !$acc routine seq
-      integer, intent(in) :: i, npts, npass
+      integer, intent(in) :: i, npts, npass, i0, i1
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: c, kvv, beta
       real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
@@ -675,6 +755,14 @@ contains
       vrho_i = 0.0_dp
       vsigma_i = 0.0_dp
       eg_i = 0.0_dp
+      ! MULTI-GPU: point i belongs to this rank only if it falls in
+      ! [i0, i1] (vv10_drive's own contiguous split, not round-robin --
+      ! see this module's MULTI-GPU header for why); every other rank
+      ! leaves it at the 0.0_dp just set above, a sum rather than an
+      ! approximation after the allreduce that follows. i0 = 1, i1 = npts
+      ! (no comm given) makes every i everyone's, unchanged from before
+      ! this split existed.
+      if (i < i0 .or. i > i1) return
       ri = rho(i)
       if (ri < VV10_RHO_TOL) return
       gi = sigma(i)
