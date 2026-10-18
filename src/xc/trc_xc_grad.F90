@@ -1032,9 +1032,18 @@ contains
       integer, intent(in) :: g_atom(npts)
       real(dp), intent(in) :: qmove(npb, 3)
       real(dp), intent(inout) :: grad(3, natm)
-      integer :: g, k, at
+      integer :: g, k, t, at
 #ifdef _OPENACC
-      do concurrent(g=1:npb, k=1:3) local(at)
+      ! Flattened to one index, (g, k) recovered inside the loop body, for
+      ! the same reason xc_grad_collocate1/2 are (this module's header, and
+      ! those subroutines' own comments): a genuine two-index
+      ! `do concurrent(g=1:npb, k=1:3)` is the exact construct family that
+      ! silently dropped a slice on this GPU build in a2e6768, and k=3 here
+      ! is every bit as small and fixed as the outer extent that triggered
+      ! it there.
+      do concurrent(t=1:3*npb) local(g, k, at)
+         g = (t - 1)/3 + 1
+         k = mod(t - 1, 3) + 1
          at = g_atom(g0 + g - 1)
          !$acc atomic update
          grad(k, at) = grad(k, at) + qmove(g, k)
