@@ -2,7 +2,7 @@
 # case: check_rys_grad_vs_pyscf_631gs
 # generator: test/pyscf_refs/generate.py
 # pyscf: 2.14.0
-# hash: cf7e5f4d7fe8be8a9b3a10a2a90602279c7901aab682a580e23e0ddc0e1efac0
+# hash: 8200215677c112d999db7d8bfd215273764485e9601859e78667b483d41473d5
 # files: test/pyscf_refs/generate.py test/check_rys_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAT 3
 NAO 19

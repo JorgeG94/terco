@@ -49,22 +49,36 @@ set(TERCO_LMAX
 set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3)
 
 #
-# The density-fitting kernels' orbital ceiling (gen_df.py --lmax; the
-# auxiliary ceiling is one higher). Empty follows TERCO_LMAX. Separate
-# because DF is three-centre with an auxiliary shell one above the orbital
-# one: gen_df.py now emits one module per class (src/CMakeLists.txt's
-# --split, same reason gen_perclass.py's does), but before that split, at
-# TERCO_LMAX=3 (aux g) nvfortran spent over two hours on the single
-# monolithic file and had not finished, while nothing in the four-centre f
-# path uses it -- raising this alone (src/CMakeLists.txt sends it to the
-# build tree, never src/generated) is how the per-class split is exercised
-# without pulling in TERCO_LMAX's unrelated Rys four-centre sweep. 2 keeps
-# the shipped DF set; RI-MP2 and the trc_df_* entry points then stop on an
-# orbital basis above d.
+# The density-fitting kernels' orbital ceiling (gen_df.py --lmax). Empty
+# follows TERCO_LMAX. gen_df.py now emits one module per class
+# (src/CMakeLists.txt's --split, same reason gen_perclass.py's does), but
+# before that split, at TERCO_LMAX=3 nvfortran spent over two hours on the
+# single monolithic file and had not finished, while nothing in the
+# four-centre f path uses it -- raising this alone (src/CMakeLists.txt
+# sends it to the build tree, never src/generated) is how the per-class
+# split is exercised without pulling in TERCO_LMAX's unrelated Rys
+# four-centre sweep. 2 keeps the shipped DF orbital set; RI-MP2 and the
+# trc_df_* entry points then stop on an orbital basis above d.
 #
 set(TERCO_DF_LMAX
     ""
     CACHE STRING "Density-fitting orbital angular momentum ceiling (empty: TERCO_LMAX)")
+
+#
+# The density-fitting kernels' AUXILIARY ceiling (gen_df.py --lmax-aux),
+# separate from TERCO_DF_LMAX above: a fitting basis normally outranks the
+# orbital basis by one, so this used to just follow TERCO_DF_LMAX + 1 (the
+# shipped set was --lmax 2 --lmax-aux 3). Decoupled because the usual
+# auxiliary sets (def2-universal-jkfit, cc-pVDZ-RIFIT) carry g shells on
+# O/C/N regardless of how modest the ORBITAL basis is -- cc-pVDZ (d) is
+# plenty for the orbital side, but its matching fit needs g on the
+# auxiliary one. 4 (g) is now the shipped default: raising TERCO_DF_LMAX
+# alone (an f orbital build) still gets --lmax-aux 4, not 5, unless this
+# is raised too.
+#
+set(TERCO_DF_LMAX_AUX
+    "4"
+    CACHE STRING "Density-fitting auxiliary angular momentum ceiling (gen_df.py --lmax-aux)")
 
 #
 # TESTING ONLY -- never set by a shipped build. gen_df.py routes a class

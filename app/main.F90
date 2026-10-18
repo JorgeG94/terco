@@ -44,7 +44,7 @@ module terco_run
       type(cli_t) :: cli
       type(error_t) :: err
       type(c_ptr) :: h
-      character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, func, guess, title, json
+      character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, jkfit_path, func, guess, title, json
       character(len=:), allocatable :: pcm
       character(len=:), allocatable :: save_scf, restart   !! "" when not asked for
       integer, allocatable :: z(:)
@@ -52,7 +52,7 @@ module terco_run
       integer(c_int) :: nao, conv, niter, sph, npcm
       real(dp) :: econv, gconv, thresh, eps
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
-      logical :: rimp2
+      logical :: rimp2, df
       integer(int64) :: t0, t1, rate
       type(comm_t) :: wcomm
       integer :: nranks
@@ -366,7 +366,7 @@ program terco_main
    use pic_profiler, only: profiler_init
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
-                       trc_set_incremental, &
+                       trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
@@ -422,6 +422,9 @@ program terco_main
    call r%cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (closed shell)")
+   call r%cli%add_flag("df", "density-fitted J and K instead of the four-centre engine (restricted, "// &
+                       "Cartesian only; fits both, never DF-J with 4-centre K)")
+   call r%cli%add_option("jkfit", "fitting basis for --df (def2-universal-jkfit)", default="def2-universal-jkfit")
    call r%cli%add_option("pcm", "polarisable continuum solvation: cpcm or iefpcm (pyscf's SWIG "// &
                          "cavity, 302 points per sphere, radii 1.2 x Bondi); needs --eps")
    call r%cli%add_option("eps", "solvent dielectric constant for --pcm, e.g. 78.3553 for water")
@@ -512,6 +515,7 @@ program terco_main
    call r%cli%get("frozen", nfrozen, r%err)
    call check(r, "--frozen")
    r%rimp2 = r%cli%is_set("rimp2")
+   r%df = r%cli%is_set("df")
    cart = r%cli%is_set("cart")
    r%pcm = ""
    r%eps = 0.0_dp
@@ -535,6 +539,15 @@ program terco_main
       call r%cli%get("aux", sval, r%err)
       call resolve_basis(sval, r%aux_path, r%err)
       if (r%err%has_error()) call die(r, "--aux: "//r%err%get_message())
+   end if
+   if (r%df) then
+      if (r%cli%is_set("incremental")) call die(r, "--df with --incremental is refused -- a "// &
+                                               "density-fitted build is a full build every "// &
+                                               "iteration, and the increment buys nothing")
+      cart = .true.
+      call r%cli%get("jkfit", sval, r%err)
+      call resolve_basis(sval, r%jkfit_path, r%err)
+      if (r%err%has_error()) call die(r, "--jkfit: "//r%err%get_message())
    end if
    r%json = ""
    if (r%cli%is_set("json")) call r%cli%get("json", r%json, r%err)
@@ -588,6 +601,10 @@ program terco_main
    call api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
    call api(r, trc_set_basis_json(r%h, c_string(r%basis_path)))
    if (r%rimp2) call api(r, trc_set_aux_json(r%h, c_string(r%aux_path)))
+   if (r%df) then
+      call api(r, trc_set_jkfit_json(r%h, c_string(r%jkfit_path)))
+      call api(r, trc_set_df(r%h, 1_c_int))
+   end if
    call api(r, trc_set_method(r%h, c_string(r%func), int(r%grid, c_int)))
    call api(r, trc_set_nlc_grid(r%h, int(nlc_grid, c_int)))
    if (len(r%pcm) > 0) call api(r, trc_set_pcm(r%h, c_string(r%pcm), real(r%eps, c_double), 0_c_int, 0.0_c_double))

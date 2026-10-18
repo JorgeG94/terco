@@ -177,6 +177,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_settings, only: scf_spin_rule
+   use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
@@ -185,7 +186,7 @@ module trc_capi
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
@@ -214,7 +215,7 @@ module trc_capi
    public :: capi_fock, trc_fock_many, trc_fock_nosym
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
-             trc_set_convergence, trc_set_screening, trc_set_incremental, &
+             trc_set_convergence, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
@@ -291,6 +292,25 @@ module trc_capi
       ! bases; `bb` also keeps the last SCF's orbitals, as the old entries do
       type(basis_box) :: bb, ab
       logical :: have_basis = .false., have_aux = .false.
+      ! the density-fitting (jkfit) basis for `--df`, separate from `ab`
+      ! (RI-MP2's rifit) because one run can do DF-SCF and RI-MP2 with two
+      ! different auxiliary sets (see trc_scf_df.F90's own header).
+      type(basis_box) :: jb
+      logical :: have_jkfit = .false.
+      ! the density-fitted J/K object itself: fitted once per (molecule,
+      ! basis, jkfit) and carried across every `trc_run_scf` on this
+      ! handle, so a chained RI-MP2 step could reuse `bpk` instead of
+      ! redoing the metric/Cholesky/3c/trsm (not wired up yet -- see
+      ! trc_scf_df.F90's `df_jk_dims`). `df_fit_ok` is cleared by anything
+      ! that invalidates the fit (a new basis, molecule or jkfit set).
+      type(df_jk_t) :: dfjk
+      logical :: df_fit_ok = .false.
+      ! The file paths trc_set_aux_json/trc_set_jkfit_json were last given:
+      ! trc_run_rimp2's only way to tell whether RI-MP2's own auxiliary
+      ! basis is the SAME one `dfjk` was fitted on (same JSON path/
+      ! contents), the condition the chained path (skip metric/Cholesky/
+      ! 3c/trsm, read `dfjk%packed_b()` straight) is restricted to.
+      character(len=1024) :: aux_path = "", jkfit_path = ""
       ! settings
       type(trc_scf_options_t) :: opts
       integer :: guess_kind = TRC_GUESS_SAD
@@ -1297,9 +1317,11 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       call drop_eri(cx)
+      if (cx%df_fit_ok) call cx%dfjk%release()
       call cx%la%release()
       if (cx%have_basis) call cx%bb%b%release()
       if (cx%have_aux) call cx%ab%b%release()
+      if (cx%have_jkfit) call cx%jb%b%release()
       deallocate (cx)
       status = TRC_OK
    end function trc_destroy
@@ -1368,6 +1390,8 @@ contains
       cx%multiplicity = int(multiplicity)
       cx%have_mol = .true.
       call invalidate_runs(cx)
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
       status = TRC_OK
    end function trc_set_molecule
 
@@ -1401,6 +1425,10 @@ contains
       call drop_eri(cx)
       call b%release()
       call invalidate_runs(cx)
+      ! A new orbital basis makes any existing --df fit (built on the old
+      ! one) wrong, not merely stale.
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
    end subroutine take_basis
 
    function basis_libcint(handle, aux, atm, natm, bas, nshell, env, nenv, cartesian) result(status)
@@ -1560,6 +1588,7 @@ contains
          call b%release()
          return
       end if
+      if (aux) cx%aux_path = fpath
       call take_basis(cx, aux, b)
       status = TRC_OK
    end function basis_json
@@ -1810,6 +1839,74 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_incremental
+
+   !
+   ! Density-fitted J and K (`--df`). Needs a jkfit basis too
+   ! (`trc_set_jkfit_json`, separate from `trc_set_aux_json`'s rifit set
+   ! because one run can do DF-SCF and RI-MP2 with two different auxiliary
+   ! bases) before `trc_run_scf` -- `trc_run_scf` reports that, not this,
+   ! since nothing here can tell whether one was already set by the time
+   ! this is called.
+   !
+   function trc_set_df(handle, on) result(status) bind(c, name="trc_set_df")
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%opts%df = on /= 0
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_df
+
+   !
+   ! The fitting (jkfit) basis for `--df`, a MolSSI BSE JSON file, read for
+   ! the molecule already set -- the same file format `trc_set_aux_json`
+   ! reads, into a SEPARATE slot (`cx%jb`), and always Cartesian regardless
+   ! of its own JSON tag (trc_scf_df.F90 stays Cartesian-only this
+   ! milestone, exactly `basis_json`'s own rule for the rifit set). Clears
+   ! any fit already built on the previous jkfit basis.
+   !
+   function trc_set_jkfit_json(handle, path) result(status) bind(c, name="trc_set_jkfit_json")
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_basis_t) :: b
+      type(error_t) :: err
+      character(len=1024) :: fpath
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_jkfit_json: set the molecule first; the file is read for its elements")
+         return
+      end if
+      fpath = ""
+      do i = 1, len(fpath)
+         if (path(i) == c_null_char) exit
+         fpath(i:i) = path(i)
+      end do
+      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, force_cart=.true.)
+      if (err%has_error()) then
+         cx%message = err%get_message()
+         status = TRC_ERR_BADARG
+         return
+      end if
+      if (cx%have_jkfit) call cx%jb%b%release()
+      cx%jb%b = b
+      call cx%jb%b%to_device()
+      cx%have_jkfit = .true.
+      cx%jkfit_path = fpath
+      call b%release()
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
+      status = TRC_OK
+   end function trc_set_jkfit_json
 
    !
    ! How finely the shell pairs are batched by their Schwarz bound: `res`
@@ -2162,6 +2259,32 @@ contains
       if (collective) talk = talk .and. comm%rank() == 0
       ! Once per context; a later run only grows the workspace to n.
       call cx%la%init(n)
+      ! --- the guess, BEFORE the --df fit below -----------------------------
+      ! SAD/SADQ's atomic sub-SCFs (trc_sad_build/trc_sadq_build) run the
+      ! ordinary four-centre `eri%fock_resident` path regardless of
+      ! `cx%opts%df` -- SAD never fits its own tiny aux basis, by design (see
+      ! trc_sad.F90's own header). The FIRST four-centre kernel launch of the
+      ! process -- here, the SAD atom's, however tiny its own basis is --
+      ! pays a one-time cost that is never given back for the rest of the
+      ! process: measured on a V100, ~4.7 GiB when it runs with ~24 GiB
+      ! already committed (the order this file had before), ~8.9 GiB when it
+      ! runs first against ~31 GiB free. It is NOT a fixed, problem-size-
+      ! independent reservation -- its size tracks how much is free when it
+      ! fires, which is exactly why paying it HERE, first, matters: every
+      ! allocation after it (`cx%dfjk%setup`'s B, and its own free-memory-
+      ! aware block sizing in `choose_setup_block`/`choose_qb`) then sees the
+      ! device's true remaining budget instead of one this cost is about to
+      ! shrink out from under it. Measured consequence at w40 cc-pVDZ --df
+      ! (1000 functions, naux 10640, B alone ~19.8 GiB): with the fit BEFORE
+      ! the guess (the old order), `choose_setup_block` sized its (mu nu|P)
+      ! scratch against free memory that had not yet paid this cost, and the
+      ! run died with CUDA_ERROR_OUT_OF_MEMORY inside that scratch's own
+      ! allocation; with the fit AFTER (this order), the same run converges
+      ! in 12 iterations with free memory flat at ~1.09 GiB from the first
+      ! Fock build on. The two blocks set disjoint state (`dg`/`hsap`/
+      ! `opts%guess` here, `cx%dfjk`/`cx%df_fit_ok` below) and neither reads
+      ! the other's, so swapping their order changes nothing but the order
+      ! memory gets claimed in.
       opts = cx%opts
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
@@ -2258,23 +2381,56 @@ contains
          if (collective) call comm%finalize()
          return
       end select
+      ! The guess just paid (or re-confirmed already-paid) the SAD atomic
+      ! sub-SCF's own one-time CUDA local-memory reservation -- see
+      ! trc_release_local_mem_reservation's own header. Nothing left in a
+      ! --df run ever launches that four-centre class again (build_g skips
+      ! eri%fock_resident entirely under --df), so give it back before `the
+      ! fit` below sizes its own scratch against free memory that cost is
+      ! about to vacate: that ordering is this branch's own fix for the w40
+      ! OOM, and shrinking the reservation here is what makes the memory it
+      ! freed actually available rather than merely counted as "free" by a
+      ! query that cannot tell the difference.
+      if (cx%opts%df) call trc_release_local_mem_reservation()
+      ! --- --df: fit once per (molecule, basis, jkfit), carried across runs
+      if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         if (.not. cx%have_jkfit) then
+            cx%message = "trc_run_scf: --df needs a jkfit basis (trc_set_jkfit_json)"
+            if (collective) call comm%finalize()
+            return
+         end if
+         block
+            type(trc_pairlist_t) :: pl
+            type(error_t) :: dferr
+            call pl%build(cx%bb%b, cx%opts%eri_thresh)
+            call pl%to_device()
+            call cx%dfjk%setup(cx%bb%b, cx%jb%b, pl, cx%la, dferr, nocc_hint=max(nalpha, 1))
+            call pl%release()
+            if (dferr%has_error()) then
+               cx%message = dferr%get_message()
+               if (collective) call comm%finalize()
+               return
+            end if
+         end block
+         cx%df_fit_ok = .true.
+      end if
       if (allocated(dg)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la, dfjk=cx%dfjk)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la, dfjk=cx%dfjk)
          end if
       else if (allocated(hsap)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la, dfjk=cx%dfjk)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la, dfjk=cx%dfjk)
          end if
       else
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, dfjk=cx%dfjk)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, dfjk=cx%dfjk)
          end if
       end if
       if (collective) call comm%finalize()
@@ -2391,7 +2547,21 @@ contains
       if (status /= TRC_OK) return
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
-      if (collective) then
+      ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
+      ! exactly the jkfit one (same JSON path), not merely the same shape:
+      ! trc_rimp2_run checks dimensions, not that the basis is the same
+      ! one, and a path match is this handle's own way to be sure of that.
+      if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
+         if (collective) then
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+                               nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
+                               dfjk=cx%dfjk)
+            call comm%finalize()
+         else
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+                               nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, dfjk=cx%dfjk)
+         end if
+      else if (collective) then
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
                             nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la)
          call comm%finalize()

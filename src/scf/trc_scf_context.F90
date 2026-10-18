@@ -17,12 +17,13 @@ module trc_scf_context
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_sph, only: sph_cart_to_sph
    use trc_eri, only: trc_eri_t
-   use trc_error, only: error_t
+   use trc_error, only: error_t, ERROR_GENERIC
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_linalg, only: trc_linalg_t
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name
    use trc_scf_settings, only: trc_scf_options_t, scf_settings_t
+   use trc_scf_df, only: df_jk_t
    implicit none
    private
 
@@ -50,6 +51,12 @@ module trc_scf_context
       !! attribute: Fortran does not allow TARGET on a type's component.
       type(trc_linalg_t), pointer :: lp => null()
       logical :: owns_la = .false.
+      !! The density-fitted J/K object (`--df`), borrowed from the caller
+      !! (trc_capi.F90's context handle owns one per geometry, so it
+      !! outlives a single `trc_scf_run`; see trc_scf_df.F90's own header)
+      !! and already fitted -- `setup` never calls `dfj%setup` itself, only
+      !! points at what it was handed. Null when `cfg%df` is false.
+      type(df_jk_t), pointer :: dfj => null()
       real(dp), allocatable :: smat(:, :), hcore(:, :), x(:, :)
       real(dp) :: e_nuc = 0.0_dp
       integer :: n_lindep = 0
@@ -63,7 +70,7 @@ module trc_scf_context
 
 contains
 
-   subroutine scf_ctx_setup(this, b, opts, cfg, err, comm, la)
+   subroutine scf_ctx_setup(this, b, opts, cfg, err, comm, la, dfjk)
       class(scf_ctx_t), intent(inout), target :: this
       !! TARGET: `this%lp` may end up pointing at `this%la_own`, and that
       !! association must survive the return into `trc_scf_run`, which
@@ -74,6 +81,10 @@ contains
       type(error_t), intent(out) :: err
       type(comm_t), intent(in), optional :: comm
       type(trc_linalg_t), intent(inout), optional, target :: la
+      type(df_jk_t), intent(inout), optional, target :: dfjk
+      !! Already fitted by the caller (see `scf_ctx_t%dfj`'s own comment);
+      !! required when `cfg%df` is true, checked here rather than left for
+      !! `build_g` to find out at the first Fock build.
       type(timer_type) :: tm
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
 
@@ -86,6 +97,19 @@ contains
          this%lp => la
       else
          this%lp => this%la_own
+      end if
+      if (cfg%df) then
+         if (.not. present(dfjk)) then
+            call err%set(ERROR_GENERIC, "trc_scf: --df needs a density-fitted object already set up "// &
+                         "(trc_set_df/trc_set_jkfit_json)")
+            return
+         end if
+         if (.not. dfjk%is_ready()) then
+            call err%set(ERROR_GENERIC, "trc_scf: --df's density-fitted object was never fitted "// &
+                         "(trc_set_jkfit_json before trc_run_scf)")
+            return
+         end if
+         this%dfj => dfjk
       end if
 
       ! --- once per geometry, on the host ------------------------------------
@@ -118,10 +142,20 @@ contains
       end block
       this%ts(3) = tm%get_elapsed_time()
       call tm%start()
-      if (present(comm)) then
-         call this%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
-      else
-         call this%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
+      ! Under --df, build_g never calls eri%fock_resident at all (the
+      ! four-centre engine is not called for G, by design -- see
+      ! trc_scf_df.F90's own header) -- so its setup (pair-quartet bins,
+      ! Schwarz bounds, the device-resident work lists) is pure device
+      ! memory this run has no use for. `eri%release` and build_g's own
+      ! `ctx%eri` argument are both safe either way: release() guards
+      ! every deallocation on `allocated`/`on_device`, and build_g reads
+      ! nothing off `eri` before checking `df_on`.
+      if (.not. cfg%df) then
+         if (present(comm)) then
+            call this%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
+         else
+            call this%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
+         end if
       end if
       this%e_nuc = nuclear_repulsion(b)
       this%ts(4) = tm%get_elapsed_time()

@@ -123,6 +123,16 @@ module trc_scf_settings
       !! S eigenvalues below 1e-8 on anything but a single atom. 0 restores the old
       !! `error stop` when S is not numerically positive definite.
       real(dp) :: eri_thresh = 1.0e-12_dp
+      logical :: df = .false.
+      !! Density-fitted J and K (`--df`): ALWAYS fits both, never DF-J with
+      !! 4c K. Restricted (closed-shell) reference and a Cartesian orbital
+      !! basis only, for now; a range-separated functional needs the erf fit
+      !! this milestone does not have. `--incremental` is refused with it --
+      !! DF is a full build every iteration, and the increment buys nothing.
+      !! A caller that sets this must also hand `trc_scf_run` a `dfjk`
+      !! object already fitted on the same geometry (trc_capi.F90 owns one
+      !! per context handle; see trc_scf_df.F90's own header on why it
+      !! outlives a single run).
       integer :: grid_level = 3
       integer :: nlc_grid_level = 1
       !! Grid level for VV10's nonlocal correlation, when the functional has
@@ -202,6 +212,7 @@ module trc_scf_settings
       real(dp) :: diis_start = huge(1.0_dp)
       logical :: pcm_on = .false.
       logical :: incr_on = .false.
+      logical :: df = .false.
       logical :: talk = .false.
       logical :: root = .true.
       real(dp) :: eri_thresh_run = 0.0_dp
@@ -280,6 +291,25 @@ contains
       if (this%diis_start < 0.0_dp) this%diis_start = merge(0.5_dp, huge(1.0_dp), this%nspin == 2)
       this%pcm_on = pcm_model_from_name(opts%pcm_model) /= PCM_MODEL_NONE
       this%incr_on = (opts%incremental .or. incr_env()) .and. this%nspin == 1
+      this%df = opts%df
+      if (this%df .and. this%nspin == 2) then
+         msg = "trc_scf: --df supports a restricted (closed-shell) reference only, for now"
+         ok = .false.
+         return
+      end if
+      if (this%df .and. this%exx_lr /= 0.0_dp) then
+         msg = "trc_scf: --df with a range-separated functional is refused -- the erf-attenuated "// &
+               "fit does not exist yet, and mixing a fitted K with a 4-centre long-range one is "// &
+               "never done silently"
+         ok = .false.
+         return
+      end if
+      if (this%df .and. (opts%incremental .or. incr_env())) then
+         msg = "trc_scf: --df with --incremental is refused -- a density-fitted build is a full "// &
+               "build every iteration, and the increment buys nothing"
+         ok = .false.
+         return
+      end if
       this%eri_thresh_run = eri_thresh_env(opts%eri_thresh)
       this%incr_start_run = incr_start_env(opts%incr_start)
       this%incr_reset_run = incr_reset_env(opts%incr_reset)

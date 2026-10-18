@@ -498,6 +498,28 @@ set_tests_properties(
                            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# Density-fitted RHF/RKS (trc_scf_df.F90, `--df`'s library entry): water and
+# formamide, cc-pVDZ and 6-31G*, Hartree-Fock/PBE/B3LYP, against pyscf's own
+# density_fit on the SAME auxiliary basis (def2-universal-jkfit), at rks.ref's
+# closed-shell tolerance (test/pyscf_refs/scf_df.ref, generate.py's
+# gen_scf_df). def2-universal-jkfit needs g auxiliary functions on O/C/N,
+# within the shipped DF_LMAX_AUX=4 ceiling since that became the default
+# (see the top-level CMakeLists.txt's TERCO_DF_LMAX_AUX), so this runs for
+# real in a plain build; scf_df.F90 still self-skips (stop 0, after
+# printing SKIP), same convention as check_df_vs_pyscf's, for anyone who
+# lowers TERCO_DF_LMAX_AUX back down.
+#
+add_executable(scf_df scf_df.F90)
+target_compile_definitions(scf_df PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_df PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_df PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_df COMMAND scf_df)
+set_tests_properties(
+  terco/scf_df PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+                          SKIP_REGULAR_EXPRESSION "SKIP")
+
+#
 # The SCF with a polarisable continuum against pyscf's .PCM(): converged
 # energies and E_diel, and both again at pyscf's own converged density
 # (test/pyscf_refs/pcm_scf_main.ref, pcm_scf_f.ref). `main` is water and
