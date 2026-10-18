@@ -88,6 +88,11 @@ contains
       allocate (grad(3, nat))
       call lp%init(bas%nao)
       call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad)
+      ! Released before `lp` goes out of scope: trc_linalg_t has no
+      ! finalizer, and an unreleased one leaves its device workspace mapped
+      ! after Fortran frees the host array, so a later allocation at that
+      ! host address is "present" with the wrong size and device memory.
+      call lp%release()
       call bas%release()
 
       inv = sum(grad, dim=2)
