@@ -109,6 +109,10 @@ if(Python3_FOUND)
   set_tests_properties(
     terco/check_pyscf_refs_fresh
     PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # refhash.py's own tests: an edit to one generator restales only its
+  # references, a shared helper exactly its users', a comment none.
+  add_test(NAME terco/check_refhash
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pyscf_refs/test_refhash.py)
 endif()
 
 #

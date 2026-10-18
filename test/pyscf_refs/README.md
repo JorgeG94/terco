@@ -145,15 +145,39 @@ reader diffs straight across with no permutation of its own.
 Every file's leading comment block also carries:
 
 ```
-# hash: <sha256 of generate.py + every file on the "files:" line>
+# generator: test/pyscf_refs/generate.py CASES["<case>"] -> <gen_* function>
+# hash-scheme: case-ast-v1
+# hash: <sha256 of that case's code and every file on the "files:" line>
 # files: <path> <path> ...
 ```
 
-`check_staleness.py` (standard library only -- no pyscf, no numpy)
-recomputes that hash from exactly the paths on `files:` and compares; it
-never hardcodes per-case knowledge of what feeds into which reference, so
-a case that starts reading a new input is automatically covered. Registered
-as `terco/check_pyscf_refs_fresh`, it runs in every CI config.
+The hash covers only what wrote this reference (`refhash.py`, standard
+library only):
+
+- its `CASES` entry in `generate.py` (the dict value, so a lambda's
+  arguments count) and the transitive closure of every module-level
+  function, class and constant of `generate.py` that entry refers to,
+  found by walking the parsed source with `ast`. Each definition is
+  serialised without comments, docstrings or line positions, so those edits
+  never restale anything, and the serialisation is the same on Python 3.9
+  through 3.14;
+- the bytes of the files on `files:` -- geometry, basis JSON, the Fortran
+  source that builds a fixed density or grid.
+
+So editing one `gen_*` function restales only the references it writes,
+and editing a shared helper (`converge_tight`, `RefWriter`, `run_bin`)
+restales exactly the references whose generators reach it.
+`check_staleness.py` (standard library only -- no pyscf, no numpy) imports
+the same `refhash.py`, recomputes the hash from the `CASES` key on the
+`generator:` line and the paths on `files:`, and names the case to rerun
+when it does not match. Registered as `terco/check_pyscf_refs_fresh`, it
+runs in every CI config; `terco/check_refhash` (`test_refhash.py`) tests
+which edits restale which references.
+
+The references written before this scheme hashed the whole of
+`generate.py`. `migrate_ref_headers.py` moved every one of them to it
+without regenerating anything: it checked each was fresh under the old
+hash, then rewrote only its generator/hash/files header lines.
 
 ## Mapping from the old `*_ref.py` scripts
 
