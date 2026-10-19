@@ -499,7 +499,8 @@ endforeach()
 # overridden) -- RKS SVWN/PBE on water, UKS PBE on NH2 (a genuinely
 # open-shell, non-degenerate-SOMO case -- check_xc_grad_fd.F90's own
 # header explains why NH2 and not OH).
-foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs)
+foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs
+             water_wb97x_631gs water_wb97x_ccpvdz)
   if(case STREQUAL "water_svwn_631gs")
     set(xyz water.xyz)
     set(json basis_sets/6-31gs.json)
@@ -509,6 +510,21 @@ foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs)
     set(xyz water.xyz)
     set(json basis_sets/6-31gs.json)
     set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "water_wb97x_631gs")
+    # Range-separated hybrid (wB97X: nonzero omega/exx_lr -- see
+    # src/xc/trc_xc_grad.F90's own header on why lifting the refusal
+    # there is safe): the semilocal GGA part is this grid-response term,
+    # the erf(omega r)/r long-range exchange is trc_scf_grad.F90's own
+    # (grad-rsh's) eri%gradient second pass, grid-independent.
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func wb97x)
+    set(glev 3)
+  elseif(case STREQUAL "water_wb97x_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x)
     set(glev 3)
   else()
     set(xyz nh2.xyz)

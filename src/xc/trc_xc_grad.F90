@@ -283,18 +283,27 @@ contains
       ! this branch `trc_xc_functional_t` has no meta-GGA family and no
       ! MP2-fraction field at all (see its own header), so neither can
       ! reach a converged SCF result in the first place -- there is no
-      ! flag left to check for a double hybrid. The two checks below are
-      ! for what CAN reach here: a range-separated hybrid (wb97x and
-      ! friends) and VV10, both of which run in the energy/Fock path today.
+      ! flag left to check for a double hybrid. The check below is for
+      ! what CAN reach here and is still missing a kernel: VV10, which
+      ! runs in the energy/Fock path today but has no gradient here.
+      !
+      ! RANGE-SEPARATED HYBRIDS (func%omega/exx_lr /= 0, wb97x and
+      ! friends) are NOT refused: `func%kid`/`func%coef` (read by
+      ! xc_grad_drive below) are the functional's SEMILOCAL LDA/GGA
+      ! kernels only -- exactly the same field an ordinary GGA hybrid
+      ! (b3lyp) uses -- entirely separate from `exx`/`exx_lr`/`omega`,
+      ! which only ever reach eri%gradient/eri%fock_resident's exact- and
+      ! long-range-exchange passes (trc_scf_grad.F90, trc_scf_fock.F90).
+      ! So what this routine computes for an RSH functional IS its
+      ! correct semilocal (GGA) exchange-correlation gradient term; the
+      ! erf(omega r)/r long-range exchange term is trc_scf_grad.F90's own
+      ! job (its own header, RANGE-SEPARATED HYBRIDS), added next to this
+      ! one rather than inside it.
       !
       if (func%family /= XC_FAMILY_LDA .and. func%family /= XC_FAMILY_GGA) then
          error stop "trc_xc_grad: only LDA and GGA exchange-correlation gradients "// &
             "are implemented (meta-GGA is not representable in trc_xc_functional_t "// &
             "on this branch, so this should be unreachable)"
-      end if
-      if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
-         error stop "trc_xc_grad: range-separated (erf(omega r)/r) exchange has no "// &
-            "gradient kernel; refusing rather than returning one missing that term"
       end if
       if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
          error stop "trc_xc_grad: VV10 nonlocal correlation has no gradient kernel; "// &

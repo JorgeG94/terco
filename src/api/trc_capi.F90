@@ -2482,13 +2482,10 @@ contains
       !! sized for.
       !!
       !! REFUSED, clearly, rather than attempted:
-      !!   - a range-separated functional (wb97x-v, wb97x, wb97, ...): no
-      !!     erf(omega r)/r exchange derivative exists
-      !!     (trc_xc_grad%xc_gradient_add's own refusal, checked here too so
-      !!     the message names the actual reason rather than a bare
-      !!     TRC_ERR_UNSUPPORTED).
       !!   - a functional with VV10 nonlocal correlation: no VV10 gradient
-      !!     kernel exists, same reasoning.
+      !!     kernel exists (trc_xc_grad%xc_gradient_add's own refusal,
+      !!     checked here too so the message names the actual reason
+      !!     rather than a bare TRC_ERR_UNSUPPORTED).
       !!   - meta-GGA or a double hybrid: `trc_xc_functional_t` has no
       !!     meta-GGA family and no MP2-fraction field on this branch, so
       !!     neither can reach this point at all -- `trc_set_method` already
@@ -2513,14 +2510,20 @@ contains
       !!     today, found by reading trc_eri.F90's `eri_gradient` and
       !!     comparing it against `eri_build`'s own comm handling.
       !!
-      !! A plain LDA/GGA functional, or a GLOBAL hybrid of one (b3lyp and
-      !! friends: nonzero `func%exx`, but `omega`/`exx_lr`/`nlc_b`/`nlc_c`
-      !! all zero), is NOT refused: `func` is looked up again here (same
-      !! `xc_functional_by_name` trc_set_method already validated the name
-      !! with) and handed to `trc_scf_gradient`, along with the SAME grid
-      !! settings (`cx%opts%grid_level`, `grid_max_pts`, `rho_tol`) the SCF
-      !! itself converged with -- the gradient's quadrature has to be the
-      !! SCF's, or the two are not derivatives of the same energy.
+      !! A plain LDA/GGA functional, a GLOBAL hybrid of one (b3lyp and
+      !! friends), or a RANGE-SEPARATED hybrid (wb97x and friends: nonzero
+      !! `func%omega`/`exx_lr`, `nlc_b`/`nlc_c` still zero) is NOT refused:
+      !! `func` is looked up again here (same `xc_functional_by_name`
+      !! trc_set_method already validated the name with) and handed to
+      !! `trc_scf_gradient`, along with the SAME grid settings
+      !! (`cx%opts%grid_level`, `grid_max_pts`, `rho_tol`) the SCF itself
+      !! converged with -- the gradient's quadrature has to be the SCF's,
+      !! or the two are not derivatives of the same energy.
+      !! `trc_scf_gradient` itself builds the erf(omega r)/r long-range
+      !! exchange term (a second eri%gradient pass, its own header) and
+      !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
+      !! GGA part exactly as for any other GGA -- see that module's own
+      !! header on why `omega`/`exx_lr` do not affect it.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
@@ -2545,11 +2548,6 @@ contains
          if (.not. xc_functional_by_name(cx%opts%functional, func)) then
             cx%message = "trc_run_gradient: functional '"//trim(cx%opts%functional)// &
                          "' failed to re-resolve -- this should be unreachable"
-            return
-         end if
-         if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
-            cx%message = "trc_run_gradient: range-separated exchange (functional '"// &
-                         trim(cx%opts%functional)//"') has no gradient kernel yet"
             return
          end if
          if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then

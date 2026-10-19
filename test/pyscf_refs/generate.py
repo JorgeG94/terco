@@ -1408,8 +1408,18 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=Fal
     equivalent of terco's (same scheme, same radii, same level), but not
     provably the identical list of floating-point points in the identical
     order -- see check_xc_grad_vs_pyscf.F90's own header on why that is
-    the honest description of what this checks."""
-    PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP'}
+    the honest description of what this checks.
+
+    'wb97x' is a range-separated hybrid (trc_xc_functional_t's nonzero
+    omega/exx_lr): src/xc/trc_xc_grad.F90's xc_gradient_add computes only
+    this functional's SEMILOCAL (GGA) term -- the erf(omega r)/r
+    long-range exchange is trc_scf_grad.F90's own eri%gradient second
+    pass, grid-independent -- so pyscf's full HYB_GGA_XC_WB97X analytic
+    gradient (which includes both pieces, the same way terco's full
+    trc_scf_gradient does) is the right comparison, not a semilocal-only
+    one on either side."""
+    PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
+             'wb97x': 'HYB_GGA_XC_WB97X'}
 
     exe = f"check_xc_grad_vs_pyscf_gridresp_{case}" if grid_response else f"check_xc_grad_vs_pyscf_{case}"
     dump = TEST / f"xc_grad_probe_gridresp_{case}.bin" if grid_response else TEST / f"xc_grad_probe_{case}.bin"
@@ -2550,6 +2560,10 @@ CASES = {
         "water_pbe_631gs", "water.xyz", "basis_sets/6-31gs.json", "pbe", grid_response=True),
     "xc_grad_gridresp_nh2_pbe_631gs": lambda: gen_xc_grad(
         "nh2_pbe_631gs", "nh2.xyz", "basis_sets/6-31gs.json", "pbe", grid_response=True),
+    "xc_grad_gridresp_water_wb97x_631gs": lambda: gen_xc_grad(
+        "water_wb97x_631gs", "water.xyz", "basis_sets/6-31gs.json", "wb97x", grid_response=True),
+    "xc_grad_gridresp_water_wb97x_ccpvdz": lambda: gen_xc_grad(
+        "water_wb97x_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x", grid_response=True),
     "dft_grad_water_pbe_ccpvdz_sph": lambda: gen_dft_grad(
         "water_pbe_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "pbe"),
     "dft_grad_water_b3lyp_ccpvdz_sph": lambda: gen_dft_grad(
