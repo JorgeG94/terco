@@ -50,8 +50,16 @@ foreach(key "total energy" "mp2 opposite-spin energy" "mp2 same-spin energy"
 endforeach()
 
 # Runs the file does not fit, each differing from the saved one in one thing
-# only. Each must fail, for that reason.
-foreach(case "different basis;-b;cc-pvdz" "made with;-b;6-31g;-f;b3lyp" "charge 0;-b;6-31g;-c;2")
+# only. Each must fail, for that reason. The "different basis" case forces
+# --cart explicitly: cc-pVDZ is a spherical basis family, and --rimp2 no
+# longer forces Cartesian itself (it folds a spherical orbital basis into
+# the Cartesian AO space its own three-centre tensor runs in -- see
+# trc_capi.F90's own header) -- without --cart here, trc_scf_load would
+# refuse this run for the AO SPACE mismatch (Cartesian saved, spherical
+# requested) before it ever got to compare the basis itself, which is a
+# real and correctly-reported refusal, just not the one this case means
+# to exercise.
+foreach(case "different basis;-b;cc-pvdz;--cart" "made with;-b;6-31g;-f;b3lyp" "charge 0;-b;6-31g;-c;2")
   list(POP_FRONT case why)
   terco_run(out rc ${case} --rimp2 --restart ${_scf})
   if(rc EQUAL 0 OR NOT out MATCHES "does not fit this run: [^\n]*${why}")

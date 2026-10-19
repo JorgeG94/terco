@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_mult
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["mult"] -> gen_mult
 # pyscf: 2.14.0
-# hash: 9ca9ba10db0ef0084ac101d79e2b90ed661554825277c666aa3ffb777574d886
-# files: test/pyscf_refs/generate.py test/check_mult.F90
+# hash-scheme: case-ast-v1
+# hash: 321402fa2655b66baae760117ccfffe99db90f6de82a20b809994dc7f6b09371
+# files: test/check_mult.F90
 NAO 30
 NMULT 39
 S 30 30

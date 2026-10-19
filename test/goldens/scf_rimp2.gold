@@ -1,0 +1,8 @@
+# terco golden v1
+# case: scf_rimp2
+# from: gfortran build bgold at 11d19bc, by test/goldens/regen_goldens.py
+E_RHF -7.5989139999469216e+01
+E_OS -1.3323412525270747e-01
+E_SS -3.8479420475670489e-02
+E_CORR -1.7171354572837796e-01
+END

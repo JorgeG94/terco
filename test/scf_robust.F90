@@ -52,6 +52,7 @@ program scf_robust
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, ref_report
+   use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
 
    integer, parameter :: NCASE = 4
@@ -102,6 +103,7 @@ program scf_robust
    ! comment on why: a missing reference must not stop this program before
    ! scf_robust_probe.bin exists.
    call ref_open('scf_robust.ref', refu, has_ref)
+   call golden_begin('scf_robust')
    nfail = 0
    if (has_ref) then
       call ref_read_int(refu, 'NCASE', ncase_ref)
@@ -147,6 +149,7 @@ program scf_robust
          int(nalpha, int64), int(nbeta, int64), int(charge(ic), int64)
       write (unit) xyzf(ic), basf(ic)
       write (unit) res%energy
+      call golden_put('E_'//trim(xyzf(ic))//'_'//trim(basf(ic)), res%energy)
       call bas%release()
 
       ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
@@ -170,6 +173,7 @@ program scf_robust
       end block
       end if
    end do
+   call golden_end()
    close (unit)
    if (has_ref) call ref_close(refu)
    if (.not. has_ref) then

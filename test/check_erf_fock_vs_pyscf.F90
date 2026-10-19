@@ -28,6 +28,7 @@ program check_erf_fock_vs_pyscf
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
+   use golden_io, only: golden_begin, golden_fock, golden_end
    implicit none
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
@@ -56,6 +57,14 @@ program check_erf_fock_vs_pyscf
    nosym = (trim(nosym_arg) == '1')
    case_name = 'water_ccpvdz'
    if (command_argument_count() >= 5) call get_command_argument(5, case_name)
+   ! Golden case from the dump's basename, erf_fock_probe_<case>_<path>.bin,
+   ! which test/CMakeLists.txt names per kernel path: one golden per path.
+   block
+      integer :: islash, idot
+      islash = index(trim(dump), '/', back=.true.)
+      idot = index(trim(dump), '.bin', back=.true.)
+      call golden_begin('erf_fock_'//dump(islash + 1 + len('erf_fock_probe_'):idot - 1))
+   end block
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
    call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
@@ -92,6 +101,9 @@ program check_erf_fock_vs_pyscf
 
    ! K = -2*g from the second call; see this program's own header.
    gk = -2.0_dp*gk
+   call golden_fock('J', d, gj)
+   call golden_fock('K', d, gk)
+   call golden_end()
 
    ! The overlap, for erf_fock_ref.py's per-AO normalisation check -- same
    ! reasoning as check_rys_fock_vs_pyscf.F90's own smat dump.
