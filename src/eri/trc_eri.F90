@@ -801,16 +801,10 @@ contains
       if (screen_on(density_screen)) then
          call density_blocks_device(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
       else
-         ! A COUPLED-PERTURBED SOLVE'S OWN PATH (density_screen=.false.):
-         ! fill_ones_device, not a `do concurrent` naming `this%dsh`/
-         ! `this%nbas` directly here -- a derived-type component read
-         ! inside a `do concurrent` construct is exactly what trc_scf_fock's
-         ! own header warns never to do on the GPU build, and this branch
-         ! had never been exercised there until trc_cphf's solver became
-         ! the first caller to pass density_screen=.false. on the device:
-         ! measured, it segfaults with "variable in data clause is
-         ! partially present" on `this` the moment a second `trc_eri_t` is
-         ! built after trc_scf_run's own has already been released.
+         ! density_screen=.false. (a coupled-perturbed solve): fill_ones_device,
+         ! not a `do concurrent` reading `this%dsh`/`this%nbas` directly --
+         ! trc_scf_fock's own header: never read a derived-type component
+         ! inside `do concurrent` on the GPU build.
          call fill_ones_device(this%nbas, this%dsh)
       end if
 
@@ -909,7 +903,7 @@ contains
    subroutine fill_ones_device(nshell, dsh)
       !! `dsh := 1`, as an explicit-shape dummy `do concurrent` (no derived-
       !! type component in its body) -- see eri_fock_resident's own comment
-      !! on why this exists apart from the inline block it replaced.
+      !! on why this exists.
       integer, intent(in) :: nshell
       real(dp), intent(inout) :: dsh(nshell, nshell)
       integer :: i, j
