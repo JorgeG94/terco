@@ -148,15 +148,9 @@ program scf_cphf
       if (nfail > 0) ok = .false.
    end block
 
-   ! --- a NaN right-hand side must report NOT converged, never a silent
-   ! "converged" with zero iterations -- trc_cphf_solve_rhf's own CG
-   ! loop condition is `.not. (resid < conv_residual)` rather than
-   ! `resid >= conv_residual` precisely so a NaN resid (from a NaN
-   ! bvec) reads as "not yet converged" and enters the loop, where the
-   ! pap breakdown guard catches it; see that subroutine's own comment
-   ! for why. This exercises that path end to end. Reuses the already-
-   ! converged SCF's own cmo/eps; nothing here needs to be physically
-   ! meaningful.
+   ! A NaN right-hand side must report NOT converged, never "converged"
+   ! with zero iterations -- see trc_cphf_solve_rhf's own comment on why
+   ! its CG loop condition reads a NaN resid as "not yet converged".
    block
       use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
       real(dp) :: cmo_nan(bas%nao, bas%nao)

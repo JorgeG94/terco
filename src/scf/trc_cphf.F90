@@ -418,13 +418,11 @@ contains
 
       call trc_cphf_solve_rhf(b, eri, lp, nao, nocc, nvirt, cmo, eps, 3, bvec, u, opts, res)
 
-      ! alpha_xy = -2 [sum_ai mu^x_ai U^y_ai + sum_ai mu^y_ai U^x_ai] -- the
-      ! symmetrised form pyscf's own rhf.polarizability computes (e2 + e2^T),
-      ! not the task header's bare -2*sum_ai mu^x U^y alone: those agree only
-      ! once U is exact (A self-adjoint makes mu^x.U^y = mu^y.U^x), and a
-      ! not-fully-converged CG residual breaks that equality asymmetrically
-      ! before cancelling here. Measured (water/6-31G*): using the bare,
-      ! unsymmetrised form read a tensor exactly half of pyscf's.
+      ! alpha_xy = -2 [sum_ai mu^x_ai U^y_ai + sum_ai mu^y_ai U^x_ai], the
+      ! symmetrised form pyscf's rhf.polarizability computes (e2 + e2^T):
+      ! a not-fully-converged CG residual breaks mu^x.U^y = mu^y.U^x, so
+      ! the symmetrised sum is needed to cancel that asymmetry, not just
+      ! a cosmetic average.
       do y = 1, 3
          do x = 1, 3
             alpha(x, y) = -2.0_dp*(lp%dot_2d(bvec(:, :, x), u(:, :, y)) + lp%dot_2d(bvec(:, :, y), u(:, :, x)))

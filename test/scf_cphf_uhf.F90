@@ -163,16 +163,23 @@ program scf_cphf_uhf
          call ref_report(nfail, abs(alpha_eig(x) - eig_ref(x)) < 1.0e-6_dp, &
                          'alpha eigenvalue vs pyscf', abs(alpha_eig(x) - eig_ref(x)))
       end do
+      ! alpha_ref is read above but was never otherwise checked: trace(xx+yy)
+      ! and zz alone, not every raw element, because those two combinations
+      ! are the ones that stay well-defined under OH's degenerate pi*
+      ! mixing (see this program's own header) the way the eigenvalues
+      ! above already are. 1e-6, same as the eigenvalues: measured 4.3e-7
+      ! (trace) and 9.3e-8 (zz), both already under it.
+      call ref_report(nfail, abs((alpha(1, 1) + alpha(2, 2)) - (alpha_ref(1, 1) + alpha_ref(2, 2))) < 1.0e-6_dp, &
+                      'alpha xx+yy (trace) vs pyscf', &
+                      abs((alpha(1, 1) + alpha(2, 2)) - (alpha_ref(1, 1) + alpha_ref(2, 2))))
+      call ref_report(nfail, abs(alpha(3, 3) - alpha_ref(3, 3)) < 1.0e-6_dp, &
+                      'alpha zz vs pyscf', abs(alpha(3, 3) - alpha_ref(3, 3)))
       if (nfail > 0) ok = .false.
    end block
 
-   ! --- a NaN right-hand side must report NOT converged, never a silent
-   ! "converged" with zero iterations -- trc_cphf_solve_uhf's own CG
-   ! loop condition is `.not. (resid < conv_residual)` for the same
-   ! reason trc_cphf_solve_rhf's own comment gives (a NaN resid must
-   ! read as "not yet converged", not fall through as if already
-   ! converged). Reuses the already-converged UHF SCF's own cmo/eps;
-   ! nothing here needs to be physically meaningful.
+   ! A NaN right-hand side must report NOT converged, never "converged"
+   ! with zero iterations -- same reason as trc_cphf_solve_rhf's own
+   ! comment, for trc_cphf_solve_uhf's CG loop condition.
    block
       use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
       real(dp) :: cmo_a_nan(bas%nao, bas%nao), cmo_b_nan(bas%nao, bas%nao)
