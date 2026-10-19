@@ -16,6 +16,7 @@ program context_scf
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
@@ -116,6 +117,50 @@ program context_scf
    rc = trc_energy(h, e);                   call expect(abs(e - ref%energy) < 1.0e-9_dp, "GWH start, same energy")
    rc = trc_message(h, msg, 256_c_int);     call expect(rc == TRC_OK, "message")
    rc = trc_destroy(h);                     call expect(rc == TRC_OK, "destroy")
+
+   ! --- a double hybrid's weighted total (trc_energy's pt2_cos/pt2_css
+   ! branch): b2plyp has pt2_cos == pt2_css, so this is the same arithmetic
+   ! a spin-component-scaled double hybrid would exercise, and pyscf has no
+   ! packaged functional that applies spin-component PT2 weights itself --
+   ! it is the same manual E_scf + c_os*E_os + c_ss*E_ss composition terco
+   ! uses (test/pyscf_refs/generate.py's gen_dh). So this checks self-
+   ! consistency instead: the handle's combined trc_energy must equal
+   ! E_scf (read back BEFORE trc_run_rimp2 sets cx%rimp2_ok) plus
+   ! pt2_cos*E_os + pt2_css*E_ss, from the SAME raw E_os/E_ss
+   ! trc_rimp2_energy reports, to round-off.
+   block
+      type(c_ptr) :: h2
+      type(trc_xc_functional_t) :: func
+      real(c_double) :: e_scf2, e_dh, e_os2, e_ss2
+      logical :: found
+
+      rc = trc_create(h2);                      call expect(rc == TRC_OK, "dh: create")
+      rc = trc_set_molecule(h2, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(rc == TRC_OK, "dh: set_molecule")
+      rc = trc_set_force_cartesian(h2, 1_c_int);    call expect(rc == TRC_OK, "dh: set_force_cartesian")
+      rc = trc_set_basis_json(h2, 'basis_sets/cc-pvdz.json'//c_null_char)
+      call expect(rc == TRC_OK, "dh: set_basis_json")
+      rc = trc_set_aux_json(h2, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      call expect(rc == TRC_OK, "dh: set_aux_json")
+      rc = trc_set_method(h2, 'b2plyp'//c_null_char, 3_c_int); call expect(rc == TRC_OK, "dh: set_method b2plyp")
+      rc = trc_set_convergence(h2, 1.0e-10_c_double, 1.0e-6_c_double, 100_c_int, 10_c_int)
+      call expect(rc == TRC_OK, "dh: set_convergence")
+      rc = trc_set_rimp2(h2, 1_c_int, 20_c_int);    call expect(rc == TRC_OK, "dh: set_rimp2")
+      rc = trc_run_scf(h2);                         call expect(rc == TRC_OK, "dh: run_scf")
+      rc = trc_energy(h2, e_scf2);                  call expect(rc == TRC_OK, "dh: E_scf alone")
+      rc = trc_run_rimp2(h2);                       call expect(rc == TRC_OK, "dh: run_rimp2")
+      rc = trc_rimp2_energy(h2, e_os2, e_ss2);      call expect(rc == TRC_OK, "dh: raw E_os/E_ss")
+      rc = trc_energy(h2, e_dh);                    call expect(rc == TRC_OK, "dh: weighted total")
+
+      found = xc_functional_by_name('b2plyp', func)
+      call expect(found, "dh: b2plyp known to trc_xc_functional")
+      print '(a,f20.12,a,f20.12,a,es9.2)', "context_scf: E_dh handle ", e_dh, &
+         "  E_scf+cos*os+css*ss ", e_scf2 + func%pt2_cos*e_os2 + func%pt2_css*e_ss2, &
+         "  diff ", e_dh - (e_scf2 + func%pt2_cos*e_os2 + func%pt2_css*e_ss2)
+      call expect(abs(e_dh - (e_scf2 + func%pt2_cos*e_os2 + func%pt2_css*e_ss2)) < 1.0e-12_dp, &
+                  "double hybrid total = E_scf + pt2_cos*E_os + pt2_css*E_ss to round-off")
+      rc = trc_destroy(h2);                         call expect(rc == TRC_OK, "dh: destroy")
+   end block
 
    call pl%release(); call b%release(); call aux%release()
    if (.not. ok) then
