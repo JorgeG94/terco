@@ -17,18 +17,16 @@
 ! rank count, since the allreduce after pass 2 reconstructs the same
 ! arrays every point's contribution was always going to add up to.
 !
-! NO internal `wall()` function here, unlike bench_xc/bench_sph: a
-! `contains`-ed procedure in this program's own scope hit a known
-! nvfortran + HPC-X MPI defect at more than one rank (silently wrong
-! MPI_Allreduce results -- a scalar sum of 1.0 and 2.0 across two ranks
-! came back 0.0, not 3.0, with nothing else in this file touched), the
-! same class of bug PICKUP.md already records for a `contains` procedure
-! in an MPI main program ("any `contains` procedure in the main program
-! zeroed G at >1 rank"). `system_clock` is inlined at each call site
-! instead, exactly as test/scf_mpi.F90 already does.
+! Timed with `pic_timer`'s `type(timer_type)` (start/get_elapsed_time),
+! the same mechanism src/scf/trc_scf_fock.F90's build_vxc already uses
+! around its own VV10 call on the MPI path: a derived-type variable with
+! type-bound procedures, no locally `contains`-ed helper for this program
+! to declare -- confirmed under `mpiexec -np 2` with NVHPC + HPC-X (the
+! toolchain this build uses), E_nlc still agrees between 1 and 2 ranks.
 !
 program bench_vv10
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_error, only: error_t
@@ -49,8 +47,9 @@ program bench_vv10
    type(trc_xc_grid_t) :: xg
    type(error_t) :: err
    type(comm_t) :: comm
-   real(dp) :: e_nlc, seed, t0, t1
-   integer(int64) :: lcg, cc, rate
+   type(timer_type) :: tm
+   real(dp) :: e_nlc, seed, t_vv10
+   integer(int64) :: lcg
    integer, parameter :: nocc = 100
 
    call pic_mpi_init()
@@ -80,20 +79,18 @@ program bench_vv10
    call bas%to_device()
    nao = bas%nao
 
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   call tm%start()
    call build_dft_grid(at_r, z, grid, err, level=level)
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
    if (err%has_error()) then
       print '(a)', 'bench_vv10: grid failed: '//err%get_message(); stop 1
    end if
-   print '(a,f8.3,a)', '  grid build ', t1 - t0, ' s'
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   print '(a,f8.3,a)', '  grid build ', tm%get_elapsed_time(), ' s'
+   call tm%start()
    call xg%build(grid%n_points, grid%coords, grid%weights, bas, max_pts=512)
    call xg%to_device()
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
    print '(a,i0,a,i0,a,i0,a,i0)', 'bench_vv10: ', nat, ' atoms, ', nao, ' AOs, ', grid%n_points, &
       ' points at level ', level
-   print '(a,i0,a,f8.3,a)', '  batching ', xg%nbatch, ' s ', t1 - t0, ' s'
+   print '(a,i0,a,f8.3,a)', '  batching ', xg%nbatch, ' s ', tm%get_elapsed_time(), ' s'
 
    allocate (c(nao, min(nocc, nao)), dmat(nao, nao), vmat(nao, nao))
    lcg = 7_int64
@@ -108,14 +105,14 @@ program bench_vv10
    vmat = 0.0_dp
 
    !$acc enter data copyin(dmat, vmat)
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   call tm%start()
    call trc_vv10_rks(bas, xg, dmat, 6.0_dp, 0.01_dp, e_nlc, vmat, comm=comm)
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+   t_vv10 = tm%get_elapsed_time()
    !$acc exit data delete(dmat, vmat)
 
    print '(a,i0,a,i0,a,i0,a,i0,a,f20.14,a,f10.3,a)', '  rank ', comm%rank(), ' of ', comm%size(), &
       ' (device ', dev, ') VV10 at ', grid%n_points, ' points: E_nlc = ', e_nlc, &
-      '  time = ', t1 - t0, ' s'
+      '  time = ', t_vv10, ' s'
 
    call xg%release(); call grid%destroy(); call bas%release()
    call pic_mpi_finalize()

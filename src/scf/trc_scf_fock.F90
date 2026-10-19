@@ -201,12 +201,18 @@ contains
       !
       ! NVTX_RANGES. Both the semilocal call and VV10's are bracketed here,
       ! at the one call site that has both the functional's `nlc` flag and
-      ! `lp` (so a device sync lands before the clock, matching
-      ! `trc_step_table`'s own `tick`). This file does not own a
-      ! `step_table_t` -- `trc_scf_state`'s `xcst` does -- so these ranges
-      ! are drawn with `pic_profiler` directly, the same two calls
-      ! `step_table_t%step_on`/`step_off` make internally, and the elapsed
-      ! VV10 time is handed back through `t_vv10` for `xcst` to accumulate.
+      ! `lp`. This file does not own a `step_table_t` -- `trc_scf_state`'s
+      ! `xcst` does -- so these ranges are drawn with `pic_profiler`
+      ! directly, the same two calls `step_table_t%step_on`/`step_off` make
+      ! internally.
+      !
+      ! Only the VV10 branch also calls `lp%sync()` around its own clock
+      ! (`tm_vv10`, a plain wall time handed back through `t_vv10` for
+      ! `xcst` to accumulate, rather than a `step_table_t` tick): without
+      ! that sync the measured interval could start or stop mid-flight on an
+      ! async device launch left over from either call. The semilocal call
+      ! needs no such sync here -- its own `t_points`/`t_pairs` are timed
+      ! inside `trc_xc_rks`/`trc_xc_uks`.
       !
       call profiler_start("scf: xc", nvtx_only=.true.)
       if (nspin == 1) then
