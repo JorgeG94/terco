@@ -59,11 +59,6 @@ the basis object, the shell-pair container and the screening tables from that.
 - **Angular momentum above f, on four centres.** `TERCO_LMAX=3` builds f: any
   class with a shell above d runs on a Rys kernel. g needs `TERCO_LMAX=4`,
   which the build does not offer yet.
-- **VV10 over more than one GPU.** The Fock build and the exchange-correlation
-  integration both split over MPI ranks with one device each
-  (`TERCO_ENABLE_MPI`, `trc_bind_device`, a communicator to `eri%build` or
-  `trc_scf_run`). VV10 nonlocal correlation (`wb97x-v`) needs the whole grid
-  on one device, so it is refused over more than one rank.
 
 Spherical harmonics and range separation are supported:
 
@@ -187,10 +182,13 @@ to the integrals) and splits only its two solute-surface integral passes,
 over a contiguous range of surface points per rank -- and the SCF/guess/
 summary output prints once (rank 0); the energies agree with a single-rank
 run to the same tolerance `test/scf_mpi.F90` checks (1e-8). The exchange-
-correlation quadrature splits too, its grid batches dealt across ranks, but
-VV10 nonlocal correlation (`wb97x-v`) is refused outright over more
-than one rank rather than running it wrong; every rank reports the refusal
-and the process exits non-zero. An error on any rank (a bad argument, a
+correlation quadrature splits too, its grid batches dealt across ranks, and
+VV10 nonlocal correlation (`wb97x-v`) splits with it: its O(N^2) double sum
+over grid points splits by a contiguous range of outer points per rank,
+with a single allreduce putting the full potential and energy back
+on every rank before the (replicated) contraction that follows -- the
+energy agrees with a single-rank run to the same tolerance. An error on
+any rank (a bad argument, a
 missing basis file, an unsupported functional) ends every rank, not just
 the one that saw it.
 

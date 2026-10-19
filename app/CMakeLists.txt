@@ -106,9 +106,10 @@ if(TERCO_ENABLE_TESTING)
   # The CLI itself over ranks -- mirroring test/scf_mpi.F90's own launcher
   # logic (same reason for the compiler-wrapper's own mpiexec, not the
   # first one on PATH), since this is a different driver over the same
-  # trc_set_comm/trc_run_scf and needs its own check: np 1 and np 2 must
-  # agree on water RHF and B3LYP, and wB97X-V (VV10) must be refused
-  # cleanly at np 2. Registered only when this build can run it.
+  # trc_set_comm/trc_run_scf and needs its own check: np 1, np 2 and np 3
+  # must agree on water RHF, B3LYP and wB97X-V (RKS, VV10), and on NH2
+  # radical wB97X-V (UKS, VV10) -- see cli_mpi_check.py's own header.
+  # Registered only when this build can run it.
   #
   if(TERCO_ENABLE_MPI)
     find_package(Python3 COMPONENTS Interpreter)
@@ -127,7 +128,7 @@ if(TERCO_ENABLE_TESTING)
         COMMAND
           ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_mpi_check.py
           ${_cli_mpiexec} ${_cli_npflag} $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz
-          ${PROJECT_SOURCE_DIR}/test/basis_sets)
+          ${PROJECT_SOURCE_DIR}/test/basis_sets ${_xyz}/nh2.xyz)
       set_tests_properties(terco/cli_mpi PROPERTIES WORKING_DIRECTORY
                                                      ${CMAKE_CURRENT_SOURCE_DIR}
                                                      TIMEOUT 300)
