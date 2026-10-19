@@ -25,6 +25,12 @@
 ! 1e-8 (the SCF's own 1e-12 Eh convergence over a 1e-3 bohr step is ~1e-9
 ! of noise), the invariance gate 1e-10.
 !
+! `check_df_grad_fd formamide` runs RHF on formamide/cc-pVDZ instead (its own
+! ctest entry), the case whose pyscf comparison is limited by the fit's
+! conditioning (check_df_grad_vs_pyscf.F90's `tol`): this is the
+! pyscf-independent check of the same gradient. Measured 7.1e-10 against the
+! same 1e-8 gate, invariance 1.7e-12.
+!
 ! NO INTERNAL PROCEDURES (see check_full_grad_fd.F90's header): the cases
 ! are module procedures.
 !
@@ -202,7 +208,20 @@ program check_df_grad_fd
    use check_df_grad_fd_cases, only: run_case
    implicit none
    logical :: any_fail
+   character(len=32) :: which
    any_fail = .false.
+   which = 'water'
+   if (command_argument_count() >= 1) call get_command_argument(1, which)
+
+   if (trim(which) == 'formamide') then
+      call run_case('formamide.xyz', 'basis_sets/cc-pvdz.json', 12, 12, '', 'RHF --df formamide/cc-pVDZ', &
+                    1.0e-8_dp, 1.0e-10_dp, any_fail)
+      if (any_fail) then
+         print '(a)', '  RESULT: FAIL'; stop 1
+      end if
+      print '(a)', '  RESULT: PASS'
+      stop
+   end if
 
    call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, '', 'RHF --df water/6-31G*', &
                  1.0e-8_dp, 1.0e-10_dp, any_fail)

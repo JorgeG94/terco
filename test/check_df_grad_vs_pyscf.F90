@@ -52,6 +52,9 @@ program check_df_grad_vs_pyscf
    !!     derivative tensors swapped together move it only 3.3e-11.
    !! So a 3e-12 (2.8e-14 relative) difference in the metric, amplified by
    !! cond(M), is the whole gap. Water (cond 4.6e11) agrees to 1.6e-13.
+   !! Independently of pyscf, the same formamide gradient matches a
+   !! Richardson finite difference of terco's reconverged --df energy to
+   !! 7.1e-10 (check_df_grad_fd formamide).
    !! Revisit once spherical auxiliary functions land (PR #82): the
    !! Cartesian auxiliary set's non-spherical contaminants likely drive
    !! cond(M), and with them gone the formamide gate should tighten to

@@ -750,6 +750,13 @@ endforeach()
 # -- RHF, RKS PBE, RKS B3LYP on water/6-31G*, see check_df_grad_fd.F90.
 terco_add_check(check_df_grad_fd check_df_grad_fd.F90 NEEDS_BASIS)
 set_tests_properties(terco/check_df_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# The same, RHF on formamide/cc-pVDZ (cond(M) = 8.6e13), independent of
+# pyscf: ~25 s on 4 CPU cores.
+add_test(NAME terco/check_df_grad_fd_formamide COMMAND check_df_grad_fd formamide)
+set_tests_properties(
+  terco/check_df_grad_fd_formamide
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP"
+             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
 # The full --df gradient against pyscf's own df.grad.rhf/rks at terco's
 # converged orbitals (and grid), def2-universal-jkfit, Cartesian --
