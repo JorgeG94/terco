@@ -19,6 +19,16 @@
 ! and this program is the one that checks the gradient's quadrature
 ! actually is the SCF's, not merely "a reasonable one".
 !
+! grid_response=.false. EXPLICITLY: this program and its committed
+! dft_grad_*.ref were both written (and pyscf's own g.grid_response left
+! at its False default -- test/pyscf_refs/generate.py's gen_dft_grad)
+! before trc_xc_grad.F90's grid-response term existed at all, so every
+! comparison here is Pulay-only, same as check_xc_grad_vs_pyscf.F90's own
+! default (non-gridresp) cases. trc_scf_gradient's OWN default for this
+! argument is now ON (the module it forwards to, trc_xc_grad.F90's own
+! header) -- omitting it here would silently add the grid-response term
+! into terco's side only and fail against this Pulay-only reference.
+!
 ! CASES: water/formamide, RKS, SVWN/PBE/B3LYP (same closed-shell molecules
 ! as check_xc_grad_vs_pyscf.F90, now on cc-pVDZ *spherical* or 6-31G*
 ! *Cartesian* rather than cc-pVDZ forced Cartesian); and NH2, UKS PBE,
@@ -121,7 +131,7 @@ program check_dft_grad_vs_pyscf
    call lp%init(nao_sp)
    call trc_scf_gradient(bas, lp, nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, grad, &
                          func=func, grid_level=grid_level, grid_max_pts=opts%grid_max_pts, &
-                         rho_tol=opts%rho_tol)
+                         rho_tol=opts%rho_tol, grid_response=.false.)
    call lp%release()
 
    ! The overlap, in the SCF's OWN AO space (nao_sp), for the AO-
