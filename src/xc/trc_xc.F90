@@ -430,11 +430,14 @@ contains
    ! iteration) instead of one, and a point kernel that evaluates the
    ! second derivatives instead of the first. No density screening and no
    ! rank splitting here -- unlike the energy path, every CPKS iteration
-   ! needs the SAME linear operator, and a trial density that starts at
-   ! zero would screen batches the energy path never would, see
-   ! `eri%fock_resident`'s own `density_screen=.false.` for the identical
-   ! reason on the ERI side. A later optimisation can screen on the GROUND
-   ! density alone (fixed across the CG loop, unlike `dmat_u`).
+   ! needs the SAME linear operator, and the trial density is a CG
+   ! iterate the solve drives towards zero as it converges, so screening
+   ! on ITS magnitude would tighten from one matvec to the next and break
+   ! that assumption -- see `eri_fock`'s own `density_screen` doc
+   ! (trc_eri.F90) for the identical reason on the ERI side, where the
+   ! coupled-perturbed equations have the same requirement. A later
+   ! optimisation can screen on the GROUND density alone (fixed across
+   ! the CG loop, unlike `dmat_u`).
    !
    ! `dmat` and `dmat_u` are both already device-resident (same contract as
    ! trc_cphf's `cmo`/`D_U`): the caller copies `dmat` in once, before the
