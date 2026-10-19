@@ -76,11 +76,14 @@ def _canon(node) -> str:
     3.12 added fields (type_params) older versions lack. Fields that are
     None or empty lists are skipped here, so all of those agree; position
     attributes (lineno, col_offset) are never fields, so moving code does
-    not change it."""
+    not change it. 3.15 added `is_lazy` to Import and ImportFrom (PEP 810);
+    it is skipped when false, so an ordinary import hashes as it always has."""
     if isinstance(node, ast.AST):
         parts = []
         for name, value in ast.iter_fields(node):
             if value is None or (isinstance(value, list) and not value):
+                continue
+            if name == "is_lazy" and not value:
                 continue
             parts.append(f"{name}={_canon(value)}")
         return f"{type(node).__name__}({','.join(parts)})"
