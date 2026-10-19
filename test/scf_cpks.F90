@@ -29,7 +29,7 @@ program scf_cpks
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t
-   use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason
+   use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason, trc_cpks_solve_rks
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -181,22 +181,57 @@ program scf_cpks
 
       f_missing%missing = "needs TPSS_X: meta-GGA kernels are not translated yet"
       msg = cpks_refuse_reason(f_missing)
-      call check_refused(msg, "meta-GGA (missing)")
+      call check_refused(msg, "meta-GGA (missing)", trim(f_missing%missing))
 
       f_rsh%omega = 0.3_dp
       f_rsh%exx_lr = 0.833_dp
       msg = cpks_refuse_reason(f_rsh)
-      call check_refused(msg, "range-separated hybrid (omega)")
+      call check_refused(msg, "range-separated hybrid (omega)", "range-separated")
 
       f_vv10%nlc_b = 6.0_dp
       f_vv10%nlc_c = 0.01_dp
       msg = cpks_refuse_reason(f_vv10)
-      call check_refused(msg, "VV10 (nlc_b/nlc_c)")
+      call check_refused(msg, "VV10 (nlc_b/nlc_c)", "VV10")
 
       ! f_clean is default-initialised: missing/omega/exx_lr/nlc_b/nlc_c
       ! all at their zero/empty defaults, same as a plain LDA/GGA.
       msg = cpks_refuse_reason(f_clean)
       call expect(len_trim(msg) == 0, "cpks_refuse_reason: a plain functional is not refused")
+   end block
+
+   ! --- a NaN right-hand side must report NOT converged, never a silent
+   ! "converged" with zero iterations -- trc_cpks_solve_rks has its own
+   ! separate CG loop (not a call into trc_cphf's), with the same
+   ! `.not. (resid < conv_residual)` loop condition and pap breakdown
+   ! guard trc_cphf_solve_rhf's own comment explains. Reuses the
+   ! already-converged SCF's own cmo/eps/dmat and the functional already
+   ! selected for this run; nothing here needs to be physically
+   ! meaningful.
+   block
+      use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+      real(dp) :: cmo_nan(bas%nao, bas%nao), dmat_nan(bas%nao, bas%nao)
+      real(dp), allocatable :: bvec_nan(:, :, :), u_nan(:, :, :)
+      type(trc_cphf_result_t) :: res_nan
+      integer :: nvirt_t
+      real(dp) :: nan_val
+
+      nan_val = ieee_value(nan_val, ieee_quiet_nan)
+      nvirt_t = bas%nao - nocc
+      cmo_nan = res%cmo(:, :, 1)
+      dmat_nan = res%dmat(:, :, 1)
+      allocate (bvec_nan(nvirt_t, nocc, 1), u_nan(nvirt_t, nocc, 1))
+      bvec_nan = nan_val
+      !$acc enter data copyin(cmo_nan, dmat_nan, bvec_nan) create(u_nan)
+      call trc_cpks_solve_rks(bas, eri, la, xg, func, bas%nao, nocc, nvirt_t, cmo_nan, res%eps(:, 1), &
+                              dmat_nan, 1, bvec_nan, u_nan, cphf_opts, res_nan)
+      !$acc exit data delete(cmo_nan, dmat_nan, bvec_nan, u_nan)
+      if (res_nan%converged) then
+         ok = .false.
+         print '(a)', "scf_cpks: FAILED: a NaN right-hand side must not report converged"
+      else
+         print '(a)', "scf_cpks: NaN right-hand side correctly refused: "//trim(res_nan%message)
+      end if
+      deallocate (bvec_nan, u_nan)
    end block
 
    print '(a)', merge("scf_cpks: PASS", "scf_cpks: FAIL", ok)
@@ -214,9 +249,11 @@ contains
       end if
    end subroutine expect
 
-   subroutine check_refused(msg, what)
-      character(len=*), intent(in) :: msg, what
+   subroutine check_refused(msg, what, substring)
+      character(len=*), intent(in) :: msg, what, substring
       call expect(len_trim(msg) > 0, "cpks_refuse_reason: "//what//" must be refused")
+      call expect(index(msg, substring) > 0, &
+                  "cpks_refuse_reason: "//what//" message must mention '"//trim(substring)//"'")
    end subroutine check_refused
 
 end program scf_cpks
