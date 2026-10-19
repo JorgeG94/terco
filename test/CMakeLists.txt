@@ -779,6 +779,17 @@ foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b
   set_tests_properties(terco/check_df_grad_vs_pyscf_${case}
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
+# The occupied-chunked path (trc_scf_grad_df.F90's MEMORY note), forced on
+# with TERCO_DFG_OCC_CHUNK=5: formamide's 12 occupied orbitals in chunks of
+# 5, 5 and 2, against the same reference.
+add_test(NAME terco/check_df_grad_vs_pyscf_formamide_b3lyp_ccpvdz_chunked
+         COMMAND check_df_grad_vs_pyscf_formamide_b3lyp_ccpvdz formamide.xyz basis_sets/cc-pvdz.json
+                 basis_sets/def2-universal-jkfit.json b3lyp 3
+                 ${CMAKE_CURRENT_BINARY_DIR}/dfg_chunked_probe.bin formamide_b3lyp_ccpvdz 5e-9)
+set_tests_properties(
+  terco/check_df_grad_vs_pyscf_formamide_b3lyp_ccpvdz_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP"
+             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_DFG_OCC_CHUNK=5")
 
 #
 # The polarisable continuum's cavity, S and D, and charge solve, with no

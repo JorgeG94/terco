@@ -32,15 +32,22 @@
 ! THE ORDER OF WORK
 !   1. c: one GEMV on packed B (t' = B^T w D, the energy's own J step) and
 !      one triangular solve, L^T c = t'.
-!   2. K only (k /= 0; a pure functional skips 2-3 outright, not by
-!      scaling by zero): H(ij, P) = C^T B_P C one auxiliary block at a time
-!      (unpack, then one GEMM and one strided batch), then X = H L^-1, one
-!      triangular solve over every (ij) row at once.
+!   2. K only (k /= 0; a pure functional skips the K work outright, not
+!      by scaling by zero): H(ij, P) = C^T B_P C one auxiliary block at a
+!      time (unpack, then one GEMM and one strided batch), then X = H L^-1,
+!      one triangular solve over every (ij) row at once.
 !   3. Z: an outer product plus, for K, one GEMM X^T X. Then the two-centre
 !      derivative kernels (trc_df_grad_kernels' df_grad_2c_driver).
 !   4. Y one auxiliary block at a time: the J part directly, the K part as
 !      one strided batch and one GEMM; the three-centre derivative kernels
 !      run on that block's own auxiliary subset (df_grad_3c_driver).
+!
+! MEMORY. X is nocc^2 naux doubles. When the device cannot hold it next to
+! everything else (choose_grad_blocks), steps 2-4 run once per CHUNK of
+! occupied orbitals i -- K is a sum over i, so each chunk's rows of X give
+! its own share of Z and of Y exactly -- and the three-centre kernels run
+! once per chunk. A system too large for even one orbital per chunk stops
+! with the sizes, not at a failed allocation.
 !
 ! DEVICE RESIDENCY. Every argument array (cmo, dens, grad) and both bases
 ! and the pair list must already be device-resident, as must `dfjk`'s own
@@ -83,10 +90,10 @@ contains
       real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xh(:)
       real(dp), allocatable :: tens(:, :, :), half(:, :, :)
       type(trc_basis_t) :: blk
-      integer :: n, naux, npack, nocc2, ablk, s0, s1, p0, np, mu, nu, q, i, p
-      integer(int64) :: n8, o8, oo8
+      integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, nrow, s0, s1, p0, np, mu, nu, q, i, p
+      integer(int64) :: n8, o8, c8
       logical :: do_k
-      real(dp) :: occ_s
+      real(dp) :: occ_s, jc
 
       if (b%spherical) error stop "trc_scf_grad_df: the orbital basis is spherical; --df is Cartesian only"
       if (.not. dfjk%is_ready()) error stop "trc_scf_grad_df: the density fit has not been set up"
@@ -100,10 +107,8 @@ contains
       chol => dfjk%cholesky()
       occ_s = 2.0_dp
       do_k = k_scale /= 0.0_dp .and. nocc > 0
-      nocc2 = nocc*nocc
       n8 = int(n, int64)
       o8 = int(max(nocc, 1), int64)
-      oo8 = o8*o8
 
       ! --- 1. c = M^-1 t: the energy's own J gamma, then L^T c = gamma -----
       allocate (dpk(npack), cq(naux), zmat(naux, naux))
@@ -114,80 +119,109 @@ contains
       call lp%gemv("T", npack, naux, 1.0_dp, bpk, npack, dpk, 0.0_dp, cq)
       call lp%trsm("L", "L", "T", naux, 1, 1.0_dp, chol, naux, cq, naux)
 
-      ablk = choose_grad_block(n, naux, nocc)
-
-      ! --- 2. K only: H(ij, P) = C^T B_P C, then X = H L^-1 -----------------
-      if (do_k) then
-         allocate (cocc(n, nocc), xh(oo8*int(naux, int64)))
-         !$acc enter data create(cocc, xh)
-         do concurrent(mu=1:n, i=1:nocc)
-            cocc(mu, i) = cmo(mu, i)
-         end do
-         s0 = 1
-         do while (s0 <= aux%nshell)
-            call next_block(aux, s0, ablk, s1, p0, np)
-            allocate (tens(n, n, np), half(nocc, n, np))
-            !$acc enter data create(tens, half)
-            do concurrent(q=1:np, nu=1:n, mu=1:n)
-               tens(mu, nu, q) = bpk(pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
-            end do
-            call lp%gemm("T", "N", nocc, n*np, n, 1.0_dp, cocc, n, tens, n, 0.0_dp, half, nocc)
-            call lp%gemm_strided("N", "N", nocc, nocc, n, 1.0_dp, half, nocc, o8*n8, cocc, n, 0_int64, &
-                                 0.0_dp, xh(1 + int(p0 - 1, int64)*oo8), nocc, oo8, np)
-            !$acc exit data delete(tens, half)
-            deallocate (tens, half)
-            s0 = s1 + 1
-         end do
-         call lp%trsm("R", "L", "N", nocc2, naux, 1.0_dp, chol, naux, xh, nocc2)
-      end if
-
-      ! --- 3. Z, and the two-centre derivative ------------------------------
       do concurrent(q=1:naux, p=1:naux)
          zmat(p, q) = -0.5_dp*j_scale*cq(p)*cq(q)
       end do
       if (do_k) then
-         call lp%gemm("T", "N", naux, naux, nocc2, 0.25_dp*k_scale*occ_s*occ_s, xh, nocc2, xh, nocc2, &
-                      1.0_dp, zmat, naux)
+         allocate (cocc(n, nocc))
+         !$acc enter data create(cocc)
+         do concurrent(mu=1:n, i=1:nocc)
+            cocc(mu, i) = cmo(mu, i)
+         end do
       end if
+
+      ! The blocking, chosen only now that everything resident above is
+      ! already allocated: auxiliary functions per block, and occupied
+      ! orbitals i per chunk of X (the whole of X is nocc^2 naux doubles,
+      ! several GB at a few hundred occupied and several thousand
+      ! auxiliary functions). One chunk is the usual case.
+      call choose_grad_blocks(n, naux, merge(nocc, 0, do_k), ablk, nci)
+      nchunk = 1
+      if (do_k) nchunk = (nocc + nci - 1)/nci
+
+      ! --- 2-4, per occupied chunk [i0, i1] (one chunk without K) -----------
+      ! K is a sum over occupied i, so X's rows i in [i0, i1] give that
+      ! chunk's share of Z (X_c^T X_c) and of Y (C_c X_c^P C^T) on their
+      ! own; the three-centre derivative is linear in Y, so it runs once
+      ! per chunk on that chunk's Y. The J part rides with the first chunk.
+      do ic = 1, nchunk
+         i0 = 1 + (ic - 1)*nci
+         i1 = min(nocc, ic*nci)
+         nc = max(i1 - i0 + 1, 0)
+         nrow = nc*nocc
+         c8 = int(max(nc, 1), int64)
+         jc = merge(j_scale, 0.0_dp, ic == 1)
+
+         ! --- 2. K: H(ij, P) = C_c^T B_P C for i in the chunk, X = H L^-1 --
+         if (do_k) then
+            allocate (xh(c8*o8*int(naux, int64)))
+            !$acc enter data create(xh)
+            s0 = 1
+            do while (s0 <= aux%nshell)
+               call next_block(aux, s0, ablk, s1, p0, np)
+               allocate (tens(n, n, np), half(nc, n, np))
+               !$acc enter data create(tens, half)
+               do concurrent(q=1:np, nu=1:n, mu=1:n)
+                  tens(mu, nu, q) = bpk(pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
+               end do
+               call lp%gemm("T", "N", nc, n*np, n, 1.0_dp, cocc(1, i0), n, tens, n, 0.0_dp, half, nc)
+               call lp%gemm_strided("N", "N", nc, nocc, n, 1.0_dp, half, nc, c8*n8, cocc, n, 0_int64, &
+                                    0.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, c8*o8, np)
+               !$acc exit data delete(tens, half)
+               deallocate (tens, half)
+               s0 = s1 + 1
+            end do
+            call lp%trsm("R", "L", "N", nrow, naux, 1.0_dp, chol, naux, xh, nrow)
+            ! --- 3a. Z's K share, this chunk ---
+            call lp%gemm("T", "N", naux, naux, nrow, 0.25_dp*k_scale*occ_s*occ_s, xh, nrow, xh, nrow, &
+                         1.0_dp, zmat, naux)
+         end if
+
+         ! --- 4. Y, one auxiliary block at a time, and the three-centre one -
+         s0 = 1
+         do while (s0 <= aux%nshell)
+            call next_block(aux, s0, ablk, s1, p0, np)
+            call aux%subset(s0, s1, blk)
+            call blk%to_device()
+            allocate (tens(n, n, np))
+            !$acc enter data create(tens)
+            do concurrent(q=1:np, nu=1:n, mu=1:n)
+               tens(mu, nu, q) = jc*cq(p0 - 1 + q)*dens(mu, nu)
+            end do
+            if (do_k) then
+               allocate (half(nc, n, np))
+               !$acc enter data create(half)
+               ! half_q = X_c^q C^T (nc x n), then Y += -(k/2) occ_s^2 C_c half,
+               ! every q of the block in one GEMM.
+               call lp%gemm_strided("N", "T", nc, n, nocc, 1.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, &
+                                    c8*o8, cocc, n, 0_int64, 0.0_dp, half, nc, c8*n8, np)
+               call lp%gemm("N", "N", n, n*np, nc, -0.5_dp*k_scale*occ_s*occ_s, cocc(1, i0), n, half, nc, &
+                            1.0_dp, tens, n)
+               !$acc exit data delete(half)
+               deallocate (half)
+            end if
+            call df_grad_3c_driver(b%nshell, n, b%maxnp, b%sh_l, b%sh_np, b%sh_ao, b%sh_at, &
+                                   b%sh_e, b%sh_c, b%sh_r, pl%npair, pl%p_i, pl%p_j, &
+                                   blk%nshell, blk%nao, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, blk%sh_at, &
+                                   blk%sh_e, blk%sh_c, blk%sh_r, b%natm, tens, grad)
+            !$acc exit data delete(tens)
+            deallocate (tens)
+            call blk%release()
+            s0 = s1 + 1
+         end do
+         if (do_k) then
+            !$acc exit data delete(xh)
+            deallocate (xh)
+         end if
+      end do
+
+      ! --- 3b. the two-centre derivative, once Z is complete ---------------
       call df_grad_2c_driver(aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
                              aux%sh_e, aux%sh_c, aux%sh_r, b%natm, zmat, grad)
 
-      ! --- 4. Y, one auxiliary block at a time, and the three-centre one ----
-      s0 = 1
-      do while (s0 <= aux%nshell)
-         call next_block(aux, s0, ablk, s1, p0, np)
-         call aux%subset(s0, s1, blk)
-         call blk%to_device()
-         allocate (tens(n, n, np))
-         !$acc enter data create(tens)
-         do concurrent(q=1:np, nu=1:n, mu=1:n)
-            tens(mu, nu, q) = j_scale*cq(p0 - 1 + q)*dens(mu, nu)
-         end do
-         if (do_k) then
-            allocate (half(nocc, n, np))
-            !$acc enter data create(half)
-            ! half_q = X^q C^T (nocc x n), then Y += -(k/2) occ_s^2 C half,
-            ! every q of the block in one GEMM.
-            call lp%gemm_strided("N", "T", nocc, n, nocc, 1.0_dp, xh(1 + int(p0 - 1, int64)*oo8), nocc, oo8, &
-                                 cocc, n, 0_int64, 0.0_dp, half, nocc, o8*n8, np)
-            call lp%gemm("N", "N", n, n*np, nocc, -0.5_dp*k_scale*occ_s*occ_s, cocc, n, half, nocc, &
-                         1.0_dp, tens, n)
-            !$acc exit data delete(half)
-            deallocate (half)
-         end if
-         call df_grad_3c_driver(b%nshell, n, b%maxnp, b%sh_l, b%sh_np, b%sh_ao, b%sh_at, &
-                                b%sh_e, b%sh_c, b%sh_r, pl%npair, pl%p_i, pl%p_j, &
-                                blk%nshell, blk%nao, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, blk%sh_at, &
-                                blk%sh_e, blk%sh_c, blk%sh_r, b%natm, tens, grad)
-         !$acc exit data delete(tens)
-         deallocate (tens)
-         call blk%release()
-         s0 = s1 + 1
-      end do
-
       if (do_k) then
-         !$acc exit data delete(cocc, xh)
-         deallocate (cocc, xh)
+         !$acc exit data delete(cocc)
+         deallocate (cocc)
       end if
       !$acc exit data delete(dpk, cq, zmat)
       deallocate (dpk, cq, zmat)
@@ -210,24 +244,56 @@ contains
       np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
    end subroutine next_block
 
-   integer function choose_grad_block(n, naux, nocc) result(ablk)
-      !! Auxiliary functions per block: up to naux/4, fewer when the device's
-      !! free memory (half a gigabyte kept back) would not hold the block's
-      !! dense (n, n, ablk) tensor and its (nocc, n, ablk) half-transform --
-      !! the same rule as trc_scf_df's choose_setup_block.
+   subroutine choose_grad_blocks(n, naux, nocc, ablk, nci)
+      !! The gradient's two block sizes, from the device's free memory AFTER
+      !! everything resident is allocated (B, L, Z, C_occ, the caller's own
+      !! arrays), half a gigabyte kept back for the libraries:
+      !!
+      !!   ablk  auxiliary functions per block, up to naux/4: each costs a
+      !!         dense n x n slab and an (nocc x n) half-transform, budgeted
+      !!         at no more than half of what is free;
+      !!   nci   occupied orbitals per chunk of X (nci nocc naux doubles),
+      !!         all of them when that fits in the rest (the usual case).
+      !!
+      !! `nocc` = 0 (no exchange: no X at all) budgets the slab alone. A
+      !! system for which not even one auxiliary function and one occupied
+      !! orbital fit stops here, with the sizes, rather than at an
+      !! allocation. TERCO_DFG_OCC_CHUNK=<k> caps nci at k (TESTING: forces
+      !! the chunked path on a small molecule). The host build has no
+      !! device to budget: naux/4 and every orbital, unless capped.
       integer, intent(in) :: n, naux, nocc
+      integer, intent(out) :: ablk, nci
+      integer(int64) :: per_q, per_i
+      character(len=16) :: v
+      integer :: st, cap
 #ifdef _OPENACC
-      integer(int64) :: free, per_q, fixed
+      integer(int64) :: free, avail
+      character(len=160) :: msg
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)
-      per_q = 8_int64*int(n, int64)*(int(n, int64) + int(max(nocc, 1), int64))
-      fixed = 512_int64*1024*1024
-      ablk = int(min(int(max(naux/4, 1), int64), max(1_int64, (free - fixed)/max(per_q, 1_int64))))
-#else
-      ablk = max(naux/4, 1)
+      avail = free - 512_int64*1024*1024
 #endif
+      per_q = 8_int64*int(n, int64)*(int(n, int64) + int(max(nocc, 1), int64))
+      per_i = 8_int64*int(max(nocc, 1), int64)*int(naux, int64)
+      ablk = max(naux/4, 1)
+      nci = max(nocc, 1)
+#ifdef _OPENACC
+      ablk = int(min(int(ablk, int64), max(0_int64, (avail/2)/per_q)))
+      if (nocc > 0) nci = int(min(int(nci, int64), max(0_int64, (avail - ablk*per_q)/per_i)))
+      if (ablk < 1 .or. nci < 1) then
+         write (msg, "(a,i0,a,i0,a,i0,a)") "trc_scf_grad_df: not enough device memory for the --df gradient (", &
+            avail/1024/1024, " MiB free; one auxiliary function needs ", per_q/1024/1024, &
+            " MiB, one occupied orbital's share of X ", per_i/1024/1024, " MiB)"
+         error stop msg
+      end if
+#endif
+      call get_environment_variable("TERCO_DFG_OCC_CHUNK", v, status=st)
+      if (st == 0) then
+         read (v, *, iostat=st) cap
+         if (st == 0 .and. cap >= 1) nci = min(nci, cap)
+      end if
       ablk = max(1, min(ablk, naux))
-   end function choose_grad_block
+   end subroutine choose_grad_blocks
 
    pure integer function ncart(l) result(res)
       integer, intent(in) :: l
