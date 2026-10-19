@@ -32,7 +32,7 @@ program scf_cphf_uhf
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
+   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability, trc_cphf_solve_uhf
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -164,6 +164,45 @@ program scf_cphf_uhf
                          'alpha eigenvalue vs pyscf', abs(alpha_eig(x) - eig_ref(x)))
       end do
       if (nfail > 0) ok = .false.
+   end block
+
+   ! --- a NaN right-hand side must report NOT converged, never a silent
+   ! "converged" with zero iterations -- trc_cphf_solve_uhf's own CG
+   ! loop condition is `.not. (resid < conv_residual)` for the same
+   ! reason trc_cphf_solve_rhf's own comment gives (a NaN resid must
+   ! read as "not yet converged", not fall through as if already
+   ! converged). Reuses the already-converged UHF SCF's own cmo/eps;
+   ! nothing here needs to be physically meaningful.
+   block
+      use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+      real(dp) :: cmo_a_nan(bas%nao, bas%nao), cmo_b_nan(bas%nao, bas%nao)
+      real(dp), allocatable :: bvec_a_nan(:, :, :), bvec_b_nan(:, :, :)
+      real(dp), allocatable :: u_a_nan(:, :, :), u_b_nan(:, :, :)
+      type(trc_cphf_result_t) :: res_nan
+      integer :: nva_t, nvb_t
+      real(dp) :: nan_val
+
+      nan_val = ieee_value(nan_val, ieee_quiet_nan)
+      nva_t = bas%nao - nalpha
+      nvb_t = bas%nao - nbeta
+      cmo_a_nan = res%cmo(:, :, 1)
+      cmo_b_nan = res%cmo(:, :, 2)
+      allocate (bvec_a_nan(nva_t, nalpha, 1), bvec_b_nan(nvb_t, nbeta, 1))
+      allocate (u_a_nan(nva_t, nalpha, 1), u_b_nan(nvb_t, nbeta, 1))
+      bvec_a_nan = nan_val
+      bvec_b_nan = 0.0_dp
+      !$acc enter data copyin(cmo_a_nan, cmo_b_nan, bvec_a_nan, bvec_b_nan) create(u_a_nan, u_b_nan)
+      call trc_cphf_solve_uhf(bas, eri, la, bas%nao, nalpha, nva_t, nbeta, nvb_t, cmo_a_nan, cmo_b_nan, &
+                              res%eps(:, 1), res%eps(:, 2), 1, bvec_a_nan, bvec_b_nan, u_a_nan, u_b_nan, &
+                              cphf_opts, res_nan)
+      !$acc exit data delete(cmo_a_nan, cmo_b_nan, bvec_a_nan, bvec_b_nan, u_a_nan, u_b_nan)
+      if (res_nan%converged) then
+         ok = .false.
+         print '(a)', "scf_cphf_uhf: FAILED: a NaN right-hand side must not report converged"
+      else
+         print '(a)', "scf_cphf_uhf: NaN right-hand side correctly refused: "//trim(res_nan%message)
+      end if
+      deallocate (bvec_a_nan, bvec_b_nan, u_a_nan, u_b_nan)
    end block
 
    print '(a)', merge("scf_cphf_uhf: PASS", "scf_cphf_uhf: FAIL", ok)
