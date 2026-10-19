@@ -476,7 +476,7 @@ contains
       ! allocated once per thread.
       !$omp parallel default(none) &
       !$omp    shared(points, atom_coords, owner, scheme, dweights, shift, &
-      !$omp           inv_distance, r_min, numax, n_points, n_atoms) &
+      !$omp           inv_distance, r_min, numax, n_points, n_atoms, adjust) &
       !$omp    private(k, i, j, t, m, own, ia, ja, n_active, n1, cell_own, total, excl, &
       !$omp            r_inner, mu, nu, d_ii, d_ia, atom_r, unit_vec, f, prefix, suffix, &
       !$omp            own_deriv, oth_deriv, dtotal, d_own, idx, active, mark)
