@@ -87,8 +87,10 @@
 ! MULTI-GPU. With a communicator, pass 2's outer points are split into one
 ! CONTIGUOUS range [i0, i1] per rank -- npts/nranks points each, the first
 ! npts mod nranks ranks getting one extra -- not round-robin: every point
-! costs the same O(npass) inner sum, so a contiguous range is already
-! load-balanced, and it keeps every GPU warp either entirely inside a
+! at or above VV10_RHO_TOL costs the same O(npass) inner sum (one below it
+! returns immediately -- vv10_kernel_body's own `if (ri < VV10_RHO_TOL)
+! return` -- so its cost is O(1), not O(npass)), so a contiguous range is
+! already load-balanced, and it keeps every GPU warp either entirely inside a
 ! rank's range or entirely outside it, which round-robin (mod(i-1,
 ! nranks)) does not -- round-robin interleaves an owned and a skipped
 ! point into the SAME warp throughout, so the warp's time is always the
@@ -339,6 +341,9 @@ contains
          buf(npts + 1:2*npts) = vsigma
          buf(2*npts + 1:3*npts) = eg
          call allreduce(comm, buf, op=MPI_SUM)
+         ! Then rank 0's copy everywhere: an allreduce does not promise the
+         ! same bits on every rank, same reason trc_xc.F90's sum_ranks
+         ! bcasts after its own allreduce.
          call bcast(comm, buf, 3*npts, 0)
          vrho = buf(1:npts)
          vsigma = buf(npts + 1:2*npts)
