@@ -154,7 +154,16 @@ contains
          resid = sqrt(lp%dot_2d(r, r))
          it = 0
          broke = .false.
-         do while (it < opts%max_iter .and. resid >= opts%conv_residual)
+         ! `.not. (resid < conv_residual)`, not `resid >= conv_residual`:
+         ! a NaN right-hand side makes resid NaN from the start, and NaN
+         ! fails BOTH comparisons. With `>=` that reads as "already
+         ! converged" (the loop body, and the pap guard inside it, never
+         ! run at all) and the post-loop check below falls through the
+         ! same way, leaving res%converged at its initial .true. with
+         ! zero iterations -- silently wrong. `.not. (resid < conv)` reads
+         ! a NaN resid as "not yet converged" instead, so the loop runs,
+         ! matvec produces a NaN ap, and the pap guard above catches it.
+         do while (it < opts%max_iter .and. .not. (resid < opts%conv_residual))
             call matvec(p, ap)
             pap = lp%dot_2d(p, ap)
             ! A breakdown (p^T A p <= 0, including NaN -- NaN > 0 is
@@ -182,7 +191,7 @@ contains
          if (broke) then
             res%converged = .false.
             res%message = "trc_cphf: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
-         else if (resid >= opts%conv_residual) then
+         else if (.not. (resid < opts%conv_residual)) then
             res%converged = .false.
             res%message = "trc_cphf: a right-hand side did not converge"
          end if
@@ -278,7 +287,10 @@ contains
          resid = sqrt(lp%dot_2d(ra, ra) + lp%dot_2d(rb, rb))
          it = 0
          broke = .false.
-         do while (it < opts%max_iter .and. resid >= opts%conv_residual)
+         ! See trc_cphf_solve_rhf's own comment on `.not. (resid < conv)`
+         ! vs `resid >= conv`: a NaN resid must read as "not converged",
+         ! not fall through both comparisons as false.
+         do while (it < opts%max_iter .and. .not. (resid < opts%conv_residual))
             call matvec(pa, pb, apa, apb)
             pap = lp%dot_2d(pa, apa) + lp%dot_2d(pb, apb)
             ! See trc_cphf_solve_rhf's own comment on this guard: a
@@ -309,7 +321,7 @@ contains
          if (broke) then
             res%converged = .false.
             res%message = "trc_cphf: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
-         else if (resid >= opts%conv_residual) then
+         else if (.not. (resid < opts%conv_residual)) then
             res%converged = .false.
             res%message = "trc_cphf: a right-hand side did not converge"
          end if

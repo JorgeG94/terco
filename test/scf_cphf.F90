@@ -29,7 +29,7 @@ program scf_cphf
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
+   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability, trc_cphf_solve_rhf
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -146,6 +146,41 @@ program scf_cphf
          end do
       end do
       if (nfail > 0) ok = .false.
+   end block
+
+   ! --- a NaN right-hand side must report NOT converged, never a silent
+   ! "converged" with zero iterations: the gap this branch's own
+   ! trc_cphf.F90 fix guards against -- `do while (... resid >=
+   ! conv_residual)` is skipped outright when resid starts NaN (NaN >=
+   ! conv_residual is false, read as "already converged"), the same way
+   ! `NaN < conv_residual` is false -- see trc_cphf_solve_rhf's own
+   ! comment on `.not. (resid < conv_residual)`. Reuses the already-
+   ! converged SCF's own cmo/eps; nothing here needs to be physically
+   ! meaningful.
+   block
+      use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+      real(dp) :: cmo_nan(bas%nao, bas%nao)
+      real(dp), allocatable :: bvec_nan(:, :, :), u_nan(:, :, :)
+      type(trc_cphf_result_t) :: res_nan
+      integer :: nvirt_t
+      real(dp) :: nan_val
+
+      nan_val = ieee_value(nan_val, ieee_quiet_nan)
+      nvirt_t = bas%nao - nocc
+      cmo_nan = res%cmo(:, :, 1)
+      allocate (bvec_nan(nvirt_t, nocc, 1), u_nan(nvirt_t, nocc, 1))
+      bvec_nan = nan_val
+      !$acc enter data copyin(cmo_nan, bvec_nan) create(u_nan)
+      call trc_cphf_solve_rhf(bas, eri, la, bas%nao, nocc, nvirt_t, cmo_nan, res%eps(:, 1), &
+                              1, bvec_nan, u_nan, cphf_opts, res_nan)
+      !$acc exit data delete(cmo_nan, bvec_nan, u_nan)
+      if (res_nan%converged) then
+         ok = .false.
+         print '(a)', "scf_cphf: FAILED: a NaN right-hand side must not report converged"
+      else
+         print '(a)', "scf_cphf: NaN right-hand side correctly refused: "//trim(res_nan%message)
+      end if
+      deallocate (bvec_nan, u_nan)
    end block
 
    print '(a)', merge("scf_cphf: PASS", "scf_cphf: FAIL", ok)
