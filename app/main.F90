@@ -255,11 +255,21 @@ contains
       end if
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") bar
+      ! "TOTAL ENERGY"/"total energy" means the SAME thing in text and
+      ! JSON: the double hybrid's weighted total when one ran, the SCF
+      ! total otherwise -- JSON already worked this way; this merge
+      ! makes the text banner/summary agree with it, rather than
+      ! renaming either key (every external reader of terco's output,
+      ! metalquicha included, looks for "total energy"/"TOTAL ENERGY"
+      ! by that name). "SCF ENERGY"/"scf energy" is new: always
+      ! present, always the SCF-level value alone, so a caller wanting
+      ! that specifically no longer has to infer it from context.
+      call line("TOTAL ENERGY", merge(r%etot_dh, r%etot, r%dh))
       call line("SCF ENERGY", r%etot)
       if (r%rimp2 .and. r%conv /= 0) then
          if (r%dh) then
             call line("PT2 CORRELATION", r%eos + r%ess)
-            call line("DH TOTAL ENERGY", r%etot_dh)
+            call line("DOUBLE HYBRID TOTAL", r%etot_dh)
          else
             call line("MP2 CORRELATION", r%eos + r%ess)
             call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
@@ -270,6 +280,7 @@ contains
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a)") "   ::"//repeat(" ", 21)//"SUMMARY"//repeat(" ", 22)//"::"
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
+      call row("total energy", merge(r%etot_dh, r%etot, r%dh))
       call row("scf energy", r%etot)
       call row("nuclear repulsion", r%enuc)
       call row("one-electron energy", r%eone)
@@ -279,7 +290,7 @@ contains
       if (r%rimp2 .and. r%conv /= 0) then
          call row(merge("PT2 opposite spin", "MP2 opposite spin", r%dh), r%eos)
          call row(merge("PT2 same spin    ", "MP2 same spin    ", r%dh), r%ess)
-         if (r%dh) call row("dh total energy", r%etot_dh)
+         if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
@@ -350,13 +361,14 @@ contains
             write (u, "(a,es23.15e3,a)") '  "pt2 opposite-spin fraction": ', r%pt2_cos, ","
             write (u, "(a,es23.15e3,a)") '  "pt2 same-spin fraction": ', r%pt2_css, ","
             write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
-            write (u, "(a,es23.15e3)") '  "dh total energy": ', r%etot_dh
+            write (u, "(a,es23.15e3)") '  "total energy": ', r%etot_dh
             write (u, "(a)") "}"
             close (u)
             return
          end if
       end if
-      write (u, "(a,es23.15e3)") '  "scf energy": ', r%etot
+      write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
+      write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
       write (u, "(a)") "}"
       close (u)
    end subroutine write_json
