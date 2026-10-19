@@ -22,6 +22,7 @@
 !
 module trc_eri
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use trc_boys, only: boys_init
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
@@ -838,9 +839,15 @@ contains
                            this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                            1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
                            nkept=this%nkept)
-            if (len_trim(ke) > 0) print "(a,i0,a,i0,a,f6.2,a)", &
-               "  [kept] nwork ", this%nwork, "  nkept ", this%nkept, "  survive ", &
-               100.0_dp*real(this%nkept, dp)/max(real(this%nwork, dp), 1.0_dp), "%"
+            if (len_trim(ke) > 0) then
+               block
+                  character(len=1024) :: logline
+                  write (logline, "(a,i0,a,i0,a,f6.2,a)") &
+                     "  [kept] nwork ", this%nwork, "  nkept ", this%nkept, "  survive ", &
+                     100.0_dp*real(this%nkept, dp)/max(real(this%nwork, dp), 1.0_dp), "%"
+                  call global_logger%info(trim(logline))
+               end block
+            end if
          end if
       end block
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &

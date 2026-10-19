@@ -184,6 +184,7 @@ contains
       type(scf_state_t) :: st
       type(scf_timers_t) :: tmr
       character(len=256) :: msg
+      character(len=160) :: line
       logical :: incr_now
       type(cdiis_t) :: cdiis
       type(adiis_t) :: adiis
@@ -321,21 +322,24 @@ contains
       ! What the SCF is actually running on. Two callers can hand over the
       ! same molecule and basis name and different shells -- one had a
       ! reader that kept dead primitives -- and that only shows here.
-      if (cfg%talk) print "(a,i0,a,i0,a,i0,a,i0)", "   basis: ", nao, " functions, ", b%nshell, &
-         " shells, ", sum(b%sh_np), " primitives, max ", maxval(b%sh_np)
+      if (cfg%talk) call global_logger%info("   basis: "//to_string(nao)//" functions, " &
+         //to_string(b%nshell)//" shells, "//to_string(sum(b%sh_np))//" primitives, max " &
+         //to_string(maxval(b%sh_np)))
       ! Say so when increments are on: they are opt-in and change the timings.
       ! An `i` after an iteration's line marks a Fock matrix built from the
       ! density difference.
-      if (cfg%talk .and. cfg%incr_on) print "(a,es8.1,a,i0,a)", &
-         "   incremental Fock: from |FDS-SDF| < ", cfg%incr_start_run, &
-         ", full build every ", max(1, cfg%incr_reset_run), " iterations (marked i)"
+      if (cfg%talk .and. cfg%incr_on) then
+         write (line, "(a,es8.1,a,i0,a)") "   incremental Fock: from |FDS-SDF| < ", cfg%incr_start_run, &
+            ", full build every ", max(1, cfg%incr_reset_run), " iterations (marked i)"
+         call global_logger%info(trim(line))
+      end if
       if (cfg%talk) then
          if (cfg%dft) then
-            print "(a)", "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
-               //"   fock(s)     xc(s)"
+            call global_logger%info("   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
+               //"   fock(s)     xc(s)")
          else
-            print "(a)", "   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
-               //"   fock(s)"
+            call global_logger%info("   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
+               //"   fock(s)")
          end if
       end if
       do it = 1, opts%max_iter
@@ -463,12 +467,13 @@ contains
          tmr%t_rest = tmr%t_rest + tmr%rest%get_elapsed_time()
          if (cfg%talk) then
             if (cfg%dft) then
-               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3,a)", &
+               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3,a)") &
                   it, etot, etot - eold, drms, errmax, tmr%tf_it, tmr%tx_it, merge(" i", "  ", incr_now)
             else
-               print "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,a)", &
+               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,a)") &
                   it, etot, etot - eold, drms, errmax, tmr%tf_it, merge(" i", "  ", incr_now)
             end if
+            call global_logger%info(trim(line))
          end if
          res%iterations = it
          ! A real density, on the way past, for the benchmarks. The model
@@ -532,9 +537,12 @@ contains
                call tmr%xcst%report(ctx%t_grid + tmr%t_xc, 0, 1)
             end if
          end if
-         if (cfg%pcm_on) print "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)", "   pcm: E_diel = ", epcm, &
-            "  q_total = ", ctx%pcm%q_total, "  setup ", ctx%t_pcm_setup, " s, ", &
-            tmr%t_pcm/real(max(1, res%iterations), dp), " s per iteration"
+         if (cfg%pcm_on) then
+            write (line, "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)") "   pcm: E_diel = ", epcm, &
+               "  q_total = ", ctx%pcm%q_total, "  setup ", ctx%t_pcm_setup, " s, ", &
+               tmr%t_pcm/real(max(1, res%iterations), dp), " s per iteration"
+            call global_logger%info(trim(line))
+         end if
          if (cfg%df) then
             if (present(comm)) then
                call ctx%dfj%report(tmr%t_fock, comm%rank(), comm%size())

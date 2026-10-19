@@ -73,6 +73,7 @@
 !
 module trc_scf_df
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
@@ -765,7 +766,11 @@ contains
 #else
       free = 0_int64
 #endif
-      print "(a,a,a,f10.3,a)", "trc_scf_df: ", label, ": free ", real(free, dp)/1024.0_dp**3, " GiB"
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,a,a,f10.3,a)") "trc_scf_df: ", label, ": free ", real(free, dp)/1024.0_dp**3, " GiB"
+         call global_logger%info(trim(logline))
+      end block
       flush (output_unit)
    end subroutine dbg_mem
 
@@ -781,7 +786,11 @@ contains
       character(len=8) :: v
       call get_environment_variable("TERCO_DF_RANK_DEBUG", v)
       if (trim(v) /= "1") return
-      print "(a,i0,a,i0)", "trc_scf_df: density factor rank: npos=", npos, " nneg=", nneg
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,i0,a,i0)") "trc_scf_df: density factor rank: npos=", npos, " nneg=", nneg
+         call global_logger%info(trim(logline))
+      end block
       flush (output_unit)
    end subroutine dbg_rank
 

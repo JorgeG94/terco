@@ -12,6 +12,7 @@
 !
 module trc_scf_context
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
@@ -165,9 +166,15 @@ contains
       this%ts(5) = tm%get_elapsed_time()
       call tm%start()
       call sym_orthog(this%lp, this%nao, this%smat, this%x, opts%lindep_thresh, this%n_lindep)
-      if (cfg%talk .and. this%n_lindep > 0) print "(a,i0,a,es9.2,a)", &
-         "   canonical orthogonalisation: ", this%n_lindep, &
-         " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
+      if (cfg%talk .and. this%n_lindep > 0) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i0,a,es9.2,a)") &
+               "   canonical orthogonalisation: ", this%n_lindep, &
+               " function(s) dropped, S eigenvalue below ", opts%lindep_thresh, ""
+            call global_logger%info(trim(logline))
+         end block
+      end if
       this%ts(6) = tm%get_elapsed_time()
       this%t_setup = tphase%get_elapsed_time()
 
@@ -181,9 +188,15 @@ contains
             return
          end if
          this%t_pcm_setup = tphase%get_elapsed_time()
-         if (cfg%talk) print "(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)", "   pcm: ", trim(opts%pcm_model), &
-            ", eps ", opts%pcm_eps, ", ", opts%pcm_lebedev, " points per sphere, ", &
-            this%pcm%surface%n_points, " kept; setup ", this%t_pcm_setup, " s"
+         if (cfg%talk) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)") "   pcm: ", trim(opts%pcm_model), &
+                  ", eps ", opts%pcm_eps, ", ", opts%pcm_lebedev, " points per sphere, ", &
+                  this%pcm%surface%n_points, " kept; setup ", this%t_pcm_setup, " s"
+               call global_logger%info(trim(logline))
+            end block
+         end if
       end if
 
       if (cfg%dft) then

@@ -110,9 +110,11 @@ before any non-trivial change. The rules that most often break builds:
   away from the C boundary.
 - Use pic instead of local copies: `pic_timer` (not `system_clock`),
   `pic_strings: to_string` (not `write(buf,"(i0)")`), `pic_sorting`,
-  `pic_logger` (not `print` or `write(*,...)` for diagnostics), ... The list
-  and the pinned tag are in `docs/pic_api.md`.
+  ... The list and the pinned tag are in `docs/pic_api.md`.
   Device-side `pure` helpers are exempt.
+- No bare `print` or `write(*,...)` to the console: everything goes through
+  `pic_logger`'s `global_logger` (`info`, `performance`, `warning`, ...).
+  Format into a buffer with an internal `write` if you need a fixed layout.
 - Docs are **FORD only, never Doxygen**. No `!>`, `!<` or `@param`. A `!!`
   block goes *after* its entity, after a declaration or indented under a
   procedure header. A `!!` block above a declaration documents the one

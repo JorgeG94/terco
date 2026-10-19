@@ -67,6 +67,7 @@
 ! (F2018 19.2); gfortran silently resolves the call to the wrong thing.
 module trc_rimp2_driver
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
@@ -312,9 +313,19 @@ contains
          call lp%potrf(naux, jm, naux)
          call stab%step_off(lp, ST_CHOL, tc)
          call stab%add_flop(ST_CHOL, naux8**3/3)
-         if (talk) print "(a,i0,a,f8.2,a)", "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+         if (talk) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,i0,a,f8.2,a)") "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+               call global_logger%performance(trim(logline))
+            end block
+         end if
       else if (talk) then
-         print "(a)", "  rimp2: metric, Cholesky and (mu nu|P) skipped -- chained off --df's fit"
+         block
+            character(len=1024) :: logline
+            write (logline, "(a)") "  rimp2: metric, Cholesky and (mu nu|P) skipped -- chained off --df's fit"
+            call global_logger%performance(trim(logline))
+         end block
       end if
 
       ! --- 3. (ia|P) for i in this rank's block, an auxiliary block at a time
@@ -389,8 +400,14 @@ contains
          call blk%release()
          s0 = s1 + 1
       end do
-      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
-         stab%t(ST_TRANS), " s"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
+               stab%t(ST_TRANS), " s"
+            call global_logger%performance(trim(logline))
+         end block
+      end if
 
       ! --- 4. B = X L^-T: solve B L^T = X from the right, this rank's rows ---
       ! (skipped when chained: `xr` is already built from B, which has
@@ -400,7 +417,13 @@ contains
          if (nb > 0) call lp%trsm("R", "L", "T", novr, naux, 1.0_dp, jm, naux, xr, novr)
          call stab%step_off(lp, ST_TRSM, tc)
          call stab%add_flop(ST_TRSM, novr8*naux8*naux8)
-         if (talk) print "(a,f8.2,a)", "  rimp2: B = X L^-T ", stab%t(ST_TRSM), " s"
+         if (talk) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,f8.2,a)") "  rimp2: B = X L^-T ", stab%t(ST_TRSM), " s"
+               call global_logger%performance(trim(logline))
+            end block
+         end if
       end if
       tw1 = tick(lp)
 
@@ -409,8 +432,14 @@ contains
       ! arriving; one rank needs neither.
       nstep_ring = nranks/2
       direct = trc_mpi_device_direct()
-      if (talk .and. nranks > 1) print "(a,a)", "  rimp2: B exchange ", &
-         trim(merge("device to device (CUDA-aware MPI)", "through the host                 ", direct))
+      if (talk .and. nranks > 1) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,a)") "  rimp2: B exchange ", &
+               trim(merge("device to device (CUDA-aware MPI)", "through the host                 ", direct))
+            call global_logger%performance(trim(logline))
+         end block
+      end if
       if (nranks > 1) then
          allocate (vis(int(nmax, int64)*nv8*naux8, 2))
          !$acc enter data create(vis)
@@ -418,8 +447,14 @@ contains
       ncolmax = nmax*nv
       ng = k_group(nmax, nv, ncolmax)
       ldk = ng*nv
-      if (talk) print "(a,i0,a,i0,a)", "  rimp2: K GEMMs over ", ng, " occupied orbitals at a time, ", &
-         nranks, " rank(s)"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i0,a,i0,a)") "  rimp2: K GEMMs over ", ng, " occupied orbitals at a time, ", &
+               nranks, " rank(s)"
+            call global_logger%performance(trim(logline))
+         end block
+      end if
       allocate (ki(ldk, ncolmax), kt(ncolmax, nv), part(2*ncolmax), eo(no), ev(nv))
       eo = eps(nfz + 1:nocc)
       ev = eps(nocc + 1:nao)
@@ -523,15 +558,25 @@ contains
       end do
       if (nranks > 1) call allreduce(comm, gf_all, op=MPI_SUM)
       if (talk) then
-         print "(a,f8.2,a,f8.2,a)", "  rimp2: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+            call global_logger%performance(trim(logline))
+         end block
          dense_mask = .false.
          dense_mask(ST_CHOL) = .true.
          dense_mask(ST_TRANS) = .true.
          dense_mask(ST_TRSM) = .true.
          dense_mask(ST_KGEMM) = .true.
          call stab%report(tick(lp) - tw0, rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
-         if (nranks > 1) print "(a,a24,f12.3,f13.1,f12.1)", "  rimp2:   ", "all ranks", tick(lp) - tw0, &
-            gf_all(1), gf_all(1)/(tick(lp) - tw0)
+         if (nranks > 1) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  rimp2:   ", "all ranks", tick(lp) - tw0, &
+                  gf_all(1), gf_all(1)/(tick(lp) - tw0)
+               call global_logger%performance(trim(logline))
+            end block
+         end if
       end if
       res%e_os = e_os
       res%e_ss = e_ss
@@ -764,7 +809,13 @@ contains
       call lp%potrf(naux, jm, naux)
       call stab%step_off(lp, ST_CHOL, tc)
       call stab%add_flop(ST_CHOL, naux8**3/3)
-      if (talk) print "(a,i0,a,f8.2,a)", "  rimp2u: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i0,a,f8.2,a)") "  rimp2u: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+            call global_logger%performance(trim(logline))
+         end block
+      end if
 
       ! --- 2-3. (mu nu|P) once per aux block, (ia|P) for BOTH spins from it -
       allocate (cocc_a(nao, noa), cvir_a(nao, nva), xr_a(max(novr_a8*naux8, 1_int64)))
@@ -836,8 +887,14 @@ contains
          call blk%release()
          s0 = s1 + 1
       end do
-      if (talk) print "(a,f8.2,a,f8.2,a)", "  rimp2u: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
-         stab%t(ST_TRANS), " s"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2u: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
+               stab%t(ST_TRANS), " s"
+            call global_logger%performance(trim(logline))
+         end block
+      end if
 
       ! --- 4. B = X L^-T, one triangular solve per spin ---------------------
       call stab%step_on(lp, ST_TRSM, tc)
@@ -849,7 +906,13 @@ contains
       call stab%step_off(lp, ST_TRSM, tc)
       call stab%add_flop(ST_TRSM, novr_b8*naux8*naux8)
       !$acc exit data delete(jm)
-      if (talk) print "(a,f8.2,a)", "  rimp2u: B = X L^-T ", stab%t(ST_TRSM), " s"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f8.2,a)") "  rimp2u: B = X L^-T ", stab%t(ST_TRSM), " s"
+            call global_logger%performance(trim(logline))
+         end block
+      end if
       tw1 = tick(lp)
 
       ! --- 5a/5b. the like-spin pair energies, restricted's own triangle ---
@@ -957,7 +1020,11 @@ contains
 
       !$acc exit data delete(eo_a, ev_a, eo_b, ev_b, xr_a, xr_b, cocc_a, cvir_a, cocc_b, cvir_b)
       if (talk) then
-         print "(a,f8.2,a,f8.2,a)", "  rimp2u: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2u: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+            call global_logger%performance(trim(logline))
+         end block
          dense_mask = .false.
          dense_mask(ST_CHOL) = .true.
          dense_mask(ST_TRANS) = .true.

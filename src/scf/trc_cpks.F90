@@ -60,6 +60,7 @@
 !
 module trc_cpks
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_multipoles, TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
@@ -204,8 +205,14 @@ contains
             res%converged = .false.
             res%message = "trc_cpks: a right-hand side did not converge"
          end if
-         if (opts%verbose) print "(a,i0,a,i0,a,es9.2)", &
-            "   cpks rhs ", comp, ": ", it, " iterations, residual ", resid
+         if (opts%verbose) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,i0,a,i0,a,es9.2)") &
+                  "   cpks rhs ", comp, ": ", it, " iterations, residual ", resid
+               call global_logger%info(trim(logline))
+            end block
+         end if
       end do
 
       !$acc exit data delete(diagv, dmat)
