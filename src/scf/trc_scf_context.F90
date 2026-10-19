@@ -198,6 +198,7 @@ contains
             call build_dft_grid(b%at_r, nint(b%at_z), this%grid, err, level=opts%grid_level)
          end if
          if (err%has_error()) then
+            call profiler_stop("scf: grid")
             call this%release()
             return
          end if
@@ -210,6 +211,7 @@ contains
          if (cfg%nlc) then
             call build_dft_grid(b%at_r, nint(b%at_z), this%grid_nlc, err, level=opts%nlc_grid_level)
             if (err%has_error()) then
+               call profiler_stop("scf: grid")
                call this%release()
                return
             end if
