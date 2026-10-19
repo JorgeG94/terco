@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_erf_fock_vs_pyscf_water_631gs
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["erf_fock_water_631gs"] -> gen_erf_fock
 # pyscf: 2.14.0
-# hash: 0ccdd71c3f4cc7ce17f780a0a7aeaacc51f8bb273d09d6e8325bcf79a49be886
-# files: test/pyscf_refs/generate.py test/check_erf_fock_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
+# hash-scheme: case-ast-v1
+# hash: a17f3c3faaa7809398b81b2e03356f6a0704ab36550cd67a09debdfe8dda9cce
+# files: test/check_erf_fock_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAT 3
 NAO 19
 S 19 19

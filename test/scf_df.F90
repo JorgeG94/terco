@@ -33,6 +33,7 @@ program scf_df
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, ref_report
+   use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
 
    integer, parameter :: NGROUP = 4, NMETHOD = 3
@@ -60,6 +61,7 @@ program scf_df
    real(dp) :: e_ref, de, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
 
    call ref_open("scf_df.ref", refu, has_ref)
+   call golden_begin("scf_df")
    nfail = 0
    if (has_ref) then
       call ref_read_int(refu, "NCASE", ncase_ref)
@@ -142,6 +144,7 @@ program scf_df
          else
             name_this = trim(GMOL(ig))//"_"//trim(GBASIS(ig))//"_hf"
          end if
+         call golden_put("E_"//trim(name_this), res%energy)
          if (has_ref) then
             write (tag, "(i0)") ic - 1
             call ref_read_str(refu, "NAME_"//trim(tag), name_ref)
@@ -174,6 +177,7 @@ program scf_df
       call la%release()
       deallocate (zint, at_r)
    end do
+   call golden_end()
    close (unit)
    if (has_ref) call ref_close(refu)
    if (.not. has_ref) then

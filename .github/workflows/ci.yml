@@ -85,6 +85,14 @@ jobs:
           ctest --test-dir build --output-on-failure --parallel 2
           --no-tests=error
 
+      # How far this compiler's numbers sit from the committed goldens,
+      # quantity by quantity (test/goldens/compare_goldens.py --report).
+      # Passing tests print nothing, so without this the spread the golden
+      # tolerances are set from would only show when something fails.
+      - name: Golden spread
+        if: always()
+        run: python3 test/goldens/compare_goldens.py --report build/test/golden_out
+
   host-df-lmax3:
     name: host gcc-15 (TERCO_DF_LMAX=3)
     runs-on: ubuntu-latest
@@ -143,6 +151,14 @@ jobs:
         run: >-
           ctest --test-dir build --output-on-failure --parallel 2
           --no-tests=error
+
+      # How far this compiler's numbers sit from the committed goldens,
+      # quantity by quantity (test/goldens/compare_goldens.py --report).
+      # Passing tests print nothing, so without this the spread the golden
+      # tolerances are set from would only show when something fails.
+      - name: Golden spread
+        if: always()
+        run: python3 test/goldens/compare_goldens.py --report build/test/golden_out
 
   host-lmax3:
     name: host gcc-15 (TERCO_LMAX=3)
@@ -224,6 +240,14 @@ jobs:
         run: >-
           ctest --test-dir build --output-on-failure --parallel 2
           --no-tests=error
+
+      # How far this compiler's numbers sit from the committed goldens,
+      # quantity by quantity (test/goldens/compare_goldens.py --report).
+      # Passing tests print nothing, so without this the spread the golden
+      # tolerances are set from would only show when something fails.
+      - name: Golden spread
+        if: always()
+        run: python3 test/goldens/compare_goldens.py --report build/test/golden_out
 
   fpm-build:
     name: fpm (gcc 15)
@@ -397,6 +421,10 @@ jobs:
           # while the enumerated Fock digestion was silently wrong.
           OMP_NUM_THREADS=4 ctest --test-dir build-omp --output-on-failure \
             --no-tests=error
+
+      - name: Golden spread
+        if: always()
+        run: python3 test/goldens/compare_goldens.py --report build-omp/test/golden_out
 
   fortitude:
     name: fortitude lint

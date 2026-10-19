@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_pcm_ints_water_ccpvtz
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["pcm_ints_water_ccpvtz"] -> gen_pcm_ints
 # pyscf: 2.14.0
-# hash: 6c7bad0bda34ca9bfc1924f1d2b5b4b76f6c19b012ac0341401e96f225397288
-# files: test/pyscf_refs/generate.py test/check_pcm_ints.F90 test/basis_sets/cc-pvtz.json test/water.xyz
+# hash-scheme: case-ast-v1
+# hash: 4506595c6794cab1077513a37e80a6bd88e66ab66582dbf09f6335df8ef5d8c0
+# files: test/check_pcm_ints.F90 test/basis_sets/cc-pvtz.json test/water.xyz
 NAO 65
 NPTS 564
 S 65 65
