@@ -29,7 +29,7 @@ program scf_cpks
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t
-   use trc_cpks, only: trc_scf_polarizability_rks
+   use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -168,8 +168,55 @@ program scf_cpks
       if (nfail > 0) ok = .false.
    end block
 
+   ! --- cpks_refuse_reason: pure, so no basis/SCF/device state is needed
+   ! -- four trc_xc_functional_t values built DIRECTLY (not through
+   ! xc_functional_by_name: no named functional in today's table has
+   ! nlc_b nonzero with omega zero, since every VV10 entry is also a
+   ! range-separated hybrid, which would exercise the omega branch
+   ! instead -- see this module's own header) so each of the four
+   ! branches is exercised on its own.
+   block
+      type(trc_xc_functional_t) :: f_missing, f_rsh, f_vv10, f_clean
+      character(len=256) :: msg
+
+      f_missing%missing = "needs TPSS_X: meta-GGA kernels are not translated yet"
+      msg = cpks_refuse_reason(f_missing)
+      call check_refused(msg, "meta-GGA (missing)")
+
+      f_rsh%omega = 0.3_dp
+      f_rsh%exx_lr = 0.833_dp
+      msg = cpks_refuse_reason(f_rsh)
+      call check_refused(msg, "range-separated hybrid (omega)")
+
+      f_vv10%nlc_b = 6.0_dp
+      f_vv10%nlc_c = 0.01_dp
+      msg = cpks_refuse_reason(f_vv10)
+      call check_refused(msg, "VV10 (nlc_b/nlc_c)")
+
+      ! f_clean is default-initialised: missing/omega/exx_lr/nlc_b/nlc_c
+      ! all at their zero/empty defaults, same as a plain LDA/GGA.
+      msg = cpks_refuse_reason(f_clean)
+      call expect(len_trim(msg) == 0, "cpks_refuse_reason: a plain functional is not refused")
+   end block
+
    print '(a)', merge("scf_cpks: PASS", "scf_cpks: FAIL", ok)
    call eri%release(); call la%release(); call xg%release(); call pl%release(); call bas%release()
    if (.not. ok) stop 1
+
+contains
+
+   subroutine expect(cond, what)
+      logical, intent(in) :: cond
+      character(len=*), intent(in) :: what
+      if (.not. cond) then
+         print '(a)', "scf_cpks: FAILED: "//what
+         ok = .false.
+      end if
+   end subroutine expect
+
+   subroutine check_refused(msg, what)
+      character(len=*), intent(in) :: msg, what
+      call expect(len_trim(msg) > 0, "cpks_refuse_reason: "//what//" must be refused")
+   end subroutine check_refused
 
 end program scf_cpks
