@@ -94,11 +94,19 @@
 ! through `trc_basis_create*` has no JSON file to ever set `spherical`
 ! from, by construction (trc_api.F90's `basis_build` always leaves it
 ! `.false.`), so there is nothing for these entries to switch on.
-! RI-MP2 (trc_run_rimp2) refuses a spherical orbital basis outright: its
-! three-centre tensor is Cartesian and nothing converts the MO
-! coefficients it is contracted against, which is the same reasoning as
-! trc_compute_df2c/df3c's own exemption below, just enforced as an error
-! instead of a silent exemption because RI-MP2 crosses actual MO data.
+! RI-MP2 (trc_run_rimp2) and `--df` (trc_scf_df.F90) both support a
+! spherical orbital basis now: their three-centre tensor stays Cartesian
+! (every kernel does), but `trc_run_rimp2` folds `cx%res%cmo`/`eps` into
+! that space first (`rimp2_mo_to_cart`, zero-padded past the SCF's own
+! spherical MO count -- trc_rimp2_driver.F90's own header), and `--df`'s
+! `d_c`/`gmat_c` arrive already Cartesian through `trc_scf_fock.F90`'s
+! `to_cart`/`to_sph`, which is every AO index `trc_scf_df.F90` ever reads.
+! The AUXILIARY basis (rifit for RI-MP2, jkfit for `--df`) follows the
+! ORBITAL basis's own convention (pyscf's `auxmol.cart = mol.cart`), not
+! necessarily its own JSON tag -- see `basis_json`'s and
+! `trc_set_jkfit_json`'s own comments -- and is folded on its own
+! auxiliary (P) index inside `trc_scf_df.F90`/`trc_rimp2_driver.F90` when
+! it ends up spherical.
 !
 ! TRC_AO_NORM_UNIT AND A SPHERICAL BASIS DO NOT COMBINE. UNIT rescales
 ! each CARTESIAN component of a shell individually (GAMESS's convention);
@@ -185,12 +193,13 @@ module trc_capi
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
-   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_AVAILABLE_FUNCTIONALS
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
+                                XC_AVAILABLE_FUNCTIONALS
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -1561,6 +1570,7 @@ contains
       type(error_t) :: err
       character(len=1024) :: fpath
       integer :: i
+      logical :: force_cart_this
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -1574,14 +1584,21 @@ contains
          if (path(i) == c_null_char) exit
          fpath(i:i) = path(i)
       end do
-      ! An auxiliary/fitting basis stays Cartesian unconditionally --
-      ! density fitting and RI-MP2 are untouched by this feature (the
-      ! milestone's own scope), so there is no spherical path for `aux` to
-      ! follow even if its own JSON says "gto_spherical" (def2's -jkfit
-      ! sets often do). The orbital basis (aux = .false.) follows the file
-      ! unless `force_cartesian` was set (trc_set_force_cartesian).
+      ! The orbital basis (aux = .false.) follows its own file's tag
+      ! unless `force_cartesian` was set (trc_set_force_cartesian). The
+      ! auxiliary/fitting basis follows the ORBITAL basis's convention
+      ! instead of its own tag -- pyscf's own `auxmol.cart = mol.cart`
+      ! rule (density fitting and RI-MP2 now support a spherical orbital
+      ! basis; see trc_run_rimp2's own header and trc_scf_df.F90) -- so it
+      ! is forced Cartesian whenever the orbital basis itself is (either
+      ! `force_cartesian`, or an orbital basis already loaded and NOT
+      ! spherical, e.g. a basis family -- 6-31G* -- with no spherical
+      ! tag of its own). An auxiliary basis loaded before any orbital one
+      ! falls back to `force_cartesian` alone, same as the orbital path.
+      force_cart_this = cx%opts%force_cartesian
+      if (aux .and. cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
       call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, &
-                               force_cart=(aux .or. cx%opts%force_cartesian))
+                               force_cart=force_cart_this)
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -1598,6 +1615,38 @@ contains
                      "trc_set_ao_norm(TRC_AO_NORM_SHELL) first, or set force_cartesian")
          call b%release()
          return
+      end if
+      ! The order-dependence this guards against: `force_cart_this` above
+      ! only inherits the orbital basis's convention when the ORBITAL
+      ! basis is already loaded (aux .and. cx%have_basis); an auxiliary
+      ! or jkfit basis set BEFORE the orbital one has nothing to inherit
+      ! from and falls back to force_cartesian alone (the comment above
+      ! already says so). So when the ORBITAL basis itself is what is
+      ! loading here, check it against whichever fitting basis is
+      ! already in the context, in BOTH directions, rather than silently
+      ! running RI-MP2/--df with an orbital/auxiliary mismatch pyscf's
+      ! own auxmol.cart = mol.cart rule never allows.
+      if (.not. aux) then
+         if (cx%have_aux .and. b%spherical .neqv. cx%ab%b%spherical) then
+            call refuse(cx, "trc_set_basis_json: "//trim(fpath)//" is "// &
+                        trim(merge("spherical", "Cartesian", b%spherical))//", but the auxiliary "// &
+                        "basis already set is "//trim(merge("spherical", "Cartesian", cx%ab%b%spherical))// &
+                        " -- it was loaded before this orbital basis, so it could not inherit this "// &
+                        "basis's own convention (pyscf's auxmol.cart = mol.cart rule); set "// &
+                        "force_cartesian before either, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+         if (cx%have_jkfit .and. b%spherical .neqv. cx%jb%b%spherical) then
+            call refuse(cx, "trc_set_basis_json: "//trim(fpath)//" is "// &
+                        trim(merge("spherical", "Cartesian", b%spherical))//", but the --df jkfit "// &
+                        "basis already set is "//trim(merge("spherical", "Cartesian", cx%jb%b%spherical))// &
+                        " -- it was loaded before this orbital basis, so it could not inherit this "// &
+                        "basis's own convention (pyscf's auxmol.cart = mol.cart rule); set "// &
+                        "force_cartesian before either, or load the orbital basis first")
+            call b%release()
+            return
+         end if
       end if
       if (aux) cx%aux_path = fpath
       call take_basis(cx, aux, b)
@@ -1875,10 +1924,14 @@ contains
    !
    ! The fitting (jkfit) basis for `--df`, a MolSSI BSE JSON file, read for
    ! the molecule already set -- the same file format `trc_set_aux_json`
-   ! reads, into a SEPARATE slot (`cx%jb`), and always Cartesian regardless
-   ! of its own JSON tag (trc_scf_df.F90 stays Cartesian-only this
-   ! milestone, exactly `basis_json`'s own rule for the rifit set). Clears
-   ! any fit already built on the previous jkfit basis.
+   ! reads, into a SEPARATE slot (`cx%jb`). Follows the orbital basis's
+   ! own convention, exactly `basis_json`'s rule for the rifit (`aux`)
+   ! set: Cartesian when the orbital basis is (`force_cartesian`, or an
+   ! orbital basis already loaded that is not itself spherical), its own
+   ! JSON tag otherwise (def2-universal-jkfit is spherical, matching a
+   ! spherical orbital basis -- `trc_scf_df.F90`'s `df_jk_setup` folds it,
+   ! see that module's own header). Clears any fit already built on the
+   ! previous jkfit basis.
    !
    function trc_set_jkfit_json(handle, path) result(status) bind(c, name="trc_set_jkfit_json")
       type(c_ptr), value :: handle
@@ -1889,6 +1942,7 @@ contains
       type(error_t) :: err
       character(len=1024) :: fpath
       integer :: i
+      logical :: force_cart_this
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -1902,7 +1956,9 @@ contains
          if (path(i) == c_null_char) exit
          fpath(i:i) = path(i)
       end do
-      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, force_cart=.true.)
+      force_cart_this = cx%opts%force_cartesian
+      if (cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
+      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, force_cart=force_cart_this)
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -2576,7 +2632,7 @@ contains
             return
          end if
          if (cx%bb%b%spherical) then
-            cx%message = "trc_run_gradient: --df gradient needs a Cartesian orbital basis, as --df does"
+            cx%message = "trc_run_gradient: --df gradient needs a Cartesian basis -- the DF derivative kernels are Cartesian only"
             return
          end if
          if (have_func) then
@@ -2672,15 +2728,24 @@ contains
    end function core_orbitals
 
    function trc_run_rimp2(handle) result(status) bind(c, name="trc_run_rimp2")
-      !! Needs a converged closed-shell SCF in the context and an auxiliary basis.
+      !! Needs a converged SCF in the context (restricted, or unrestricted --
+      !! UHF or UKS, cx%res%nspin == 2) and an auxiliary basis. An
+      !! unrestricted reference refuses more than one rank below (see
+      !! trc_urimp2_run's own header for why the restricted ring is not a
+      !! clean generalisation here). The orbital basis may be spherical:
+      !! `cx%res%cmo`/`eps` (at whatever space the SCF ran in) are folded
+      !! into the Cartesian, zero-padded space `trc_rimp2_run`/
+      !! `trc_urimp2_run` themselves run in by `rimp2_mo_to_cart`
+      !! (trc_rimp2_driver.F90's own header says why the pad is exact).
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
       type(trc_pairlist_t) :: pl
       type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
-      integer :: nfrozen, nblk, i
+      integer :: nfrozen, nblk, i, nc
       logical :: collective
+      real(dp), allocatable :: cmo_a(:, :), cmo_b(:, :), eps_a(:), eps_b(:)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2694,23 +2759,11 @@ contains
          cx%message = "trc_run_rimp2: no auxiliary basis was set"
          return
       end if
+      ! cfg%nspin is always 1 (nalpha == nbeta, restricted) or 2 (nalpha /=
+      ! nbeta, UHF/UKS) -- trc_scf_driver's own rule -- so nothing is
+      ! refused here on the reference's shape; ROHF does not exist in this
+      ! build, so the spin check alone is enough.
       status = TRC_ERR_UNSUPPORTED
-      if (cx%res%nspin /= 1 .or. cx%nalpha /= cx%nbeta) then
-         cx%message = "trc_run_rimp2: restricted closed-shell reference only"
-         return
-      end if
-      ! Density fitting and RI-MP2 are out of scope for the spherical AO
-      ! space (this milestone's own boundary: trc_df_2c/trc_df_3c stay
-      ! Cartesian-only, see this file's AO classification header). `cx%res
-      ! %cmo` is AO-row-indexed in whatever space the SCF ran in, so an
-      ! MO built from a spherical orbital basis does not line up with
-      ! trc_rimp2_run's Cartesian three-centre tensor -- refused rather
-      ! than silently contracting the wrong AO index against the right one.
-      if (cx%bb%b%spherical) then
-         cx%message = "trc_run_rimp2: the orbital basis is spherical; RI-MP2 only "// &
-                      "supports a Cartesian basis today -- set force_cartesian"
-         return
-      end if
       ! A status, not the DF kernels' own error stop: a host passing an
       ! auxiliary basis (a *-rifit set carries f/g on heavy atoms) above
       ! what this build's density fitting was generated for gets a refusal
@@ -2736,36 +2789,76 @@ contains
          end do
       end if
       status = TRC_ERR_BADARG
-      if (nfrozen >= cx%nalpha) then
-         cx%message = "trc_run_rimp2: every occupied orbital is frozen"
+      if (nfrozen >= cx%nalpha .or. nfrozen >= cx%nbeta) then
+         cx%message = "trc_run_rimp2: every occupied orbital is frozen in at least one spin channel"
          return
       end if
       nblk = cx%aux_block
       if (nblk <= 0) nblk = cx%ab%b%nao
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
+      ! UHF/UKS RI-MP2 (cx%res%nspin == 2) refuses more than one rank --
+      ! see trc_urimp2_run's own header for why the restricted ring is not
+      ! a clean generalisation to the aa/bb/ab blocks an open-shell run
+      ! needs. Refused here, before building the pair list, so nothing
+      ! below runs for a request that cannot complete.
+      if (cx%res%nspin == 2 .and. collective) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_rimp2: unrestricted RI-MP2 runs on one rank only this round "// &
+                      "-- the restricted ring distributes one block of B and lets it meet "// &
+                      "itself, which does not generalise cleanly to the aa/bb/ab blocks an "// &
+                      "open-shell reference needs (see trc_urimp2_run's own header)"
+         call comm%finalize()
+         return
+      end if
+      ! `cx%res%cmo`/`eps` are at the SCF's own space (`scf_space_nao`:
+      ! `nao_sph` when `cx%bb%b%spherical`, the Cartesian `nao` otherwise)
+      ! -- `trc_rimp2_run`/`trc_urimp2_run` themselves stay Cartesian-
+      ! interface, so a spherical orbital basis is folded here, once, the
+      ! same fold-and-pad `rimp2_mo_to_cart` is for (see its own header).
+      ! A Cartesian basis copies straight through (nc == the SCF's own
+      ! space already).
+      nc = cx%bb%b%nao
+      allocate (cmo_a(nc, nc), eps_a(nc))
+      if (cx%res%nspin == 2) allocate (cmo_b(nc, nc), eps_b(nc))
+      if (cx%bb%b%spherical) then
+         call rimp2_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
+         if (cx%res%nspin == 2) call rimp2_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_b, eps_b)
+      else
+         cmo_a = cx%res%cmo(:, :, 1)
+         eps_a = cx%res%eps(:, 1)
+         if (cx%res%nspin == 2) then
+            cmo_b = cx%res%cmo(:, :, 2)
+            eps_b = cx%res%eps(:, 2)
+         end if
+      end if
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
+      if (cx%res%nspin == 2) then
+         ! Unrestricted: no DF chaining (--df is closed-shell only), one
+         ! rank only (checked above).
+         call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cmo_a, cmo_b, eps_a, eps_b, res, &
+                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
       ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
       ! exactly the jkfit one (same JSON path), not merely the same shape:
       ! trc_rimp2_run checks dimensions, not that the basis is the same
       ! one, and a path match is this handle's own way to be sure of that.
-      if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
+      else if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
          if (collective) then
-            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
                                dfjk=cx%dfjk)
             call comm%finalize()
          else
-            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, dfjk=cx%dfjk)
          end if
       else if (collective) then
-         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                             nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la)
          call comm%finalize()
       else
-         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
       end if
       call pl%release()
@@ -2927,11 +3020,20 @@ contains
    end function trc_nspin
 
    function trc_energy(handle, energy) result(status) bind(c, name="trc_energy")
-      !! The SCF total, plus the RI-MP2 correlation if that ran.
+      !! The SCF total, plus the RI-MP2 correlation if that ran: the FULL
+      !! E_os + E_ss for a plain post-SCF RI-MP2 (any functional, or
+      !! Hartree-Fock), or c_os E_os + c_ss E_ss for a double hybrid --
+      !! trc_rimp2_energy below always reports the raw, unscaled E_os/E_ss
+      !! either way, so a caller after the PT2 part alone never sees this
+      !! weighting. A caller asking for a double hybrid's total needs
+      !! nothing beyond the ordinary trc_run_scf/trc_run_rimp2/trc_energy
+      !! sequence any RI-MP2 run already uses -- the weighting is applied
+      !! here, once, from the functional's own pt2_cos/pt2_css.
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: energy
       integer(c_int) :: status
       type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
       energy = 0.0_c_double
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -2939,7 +3041,16 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
       energy = real(cx%res%energy, c_double)
-      if (cx%rimp2_ok) energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      if (cx%rimp2_ok) then
+         if (len_trim(cx%opts%functional) > 0 .and. xc_functional_by_name(cx%opts%functional, func)) then
+            if (xc_is_double_hybrid(func)) then
+               energy = energy + real(func%pt2_cos*cx%e_os + func%pt2_css*cx%e_ss, c_double)
+               status = TRC_OK
+               return
+            end if
+         end if
+         energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      end if
       status = TRC_OK
    end function trc_energy
 

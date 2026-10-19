@@ -95,7 +95,7 @@ contains
       logical :: do_k
       real(dp) :: occ_s, jc
 
-      if (b%spherical) error stop "trc_scf_grad_df: the orbital basis is spherical; --df is Cartesian only"
+      if (b%spherical) error stop "trc_scf_grad_df: the orbital basis is spherical; the DF gradient is Cartesian only"
       if (.not. dfjk%is_ready()) error stop "trc_scf_grad_df: the density fit has not been set up"
       if (maxval(b%sh_l) > DFG_LMAX .or. maxval(aux%sh_l) > DFG_LMAX_AUX) then
          error stop "trc_scf_grad_df: a basis is above the DF derivative kernels' ceiling (gen_df_grad.py)"

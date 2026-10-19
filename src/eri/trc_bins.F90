@@ -40,6 +40,13 @@ module trc_bins
    integer, parameter :: SDEC = 9       !! decades of Schwarz bound worth binning
    integer, parameter :: SMAX = SDEC*SMAX_RES  !! deepest bucket at any resolution
    integer, parameter :: KCAP = 64   !! largest contraction degree binned exactly
+   integer, parameter :: BIN_CAP = 32768
+   !! Most pairs one bin may hold. A segment is the cross product of two
+   !! bins, and the kernels index within a segment by a default integer
+   !! (one_bin_item's `t`), so a segment must stay below 2**31 quartets:
+   !! 32768**2 is 2**30. A bin past this is split by split_large_bins.
+   !! TRC_BIN_CAP in the environment lowers it, for testing the split on a
+   !! system small enough for CI (terco/check_binfock_split).
 
    type :: pair_bins_t
       integer :: nbin = 0
@@ -223,9 +230,11 @@ contains
          end do
       end do
 
-      allocate (b%live(nb))
+      call split_large_bins(b)
+
+      allocate (b%live(b%nbin))
       b%nlive = 0
-      do k = 1, nb
+      do k = 1, b%nbin
          if (b%bin_cnt(k) > 0) then
             b%nlive = b%nlive + 1
             b%live(b%nlive) = k
@@ -258,6 +267,78 @@ contains
          end if
       end function kab_of
    end subroutine build_binned_pairs
+
+   !
+   ! Split every bin of more than BIN_CAP pairs into consecutive chunks of at
+   ! most BIN_CAP, appended as new bins with the same (type, size, g).
+   !
+   ! Widening the kernels' within-segment index instead would cost registers
+   ! in the hottest loop, which is the binding constraint there. Splitting
+   ! costs nothing in the kernels: the quartets are the same ones. A split
+   ! bin's own triangle becomes each chunk's triangle plus the rectangle
+   ! between every two chunks, which the launcher's bra >= ket walk over
+   ! bin pairs already produces, each quartet once. Everything per bin --
+   ! primitive layout, K, density bound, class -- is derived later from
+   ! bin_off/bin_cnt and the metadata copied here, never from the bin's
+   ! index. Bins at or below the cap are untouched, so a system that never
+   ! reaches it gets bit-identical results.
+   !
+   ! First reached around 14,000 basis functions (a 9514-shell system,
+   ! where one bin outgrew 65,536 pairs and its triangle 2**31).
+   !
+   subroutine split_large_bins(b)
+      type(pair_bins_t), intent(inout) :: b
+      integer :: k, c, nextra, nb, ich, nch, cap
+      integer, allocatable :: off(:), cnt(:), sz(:), la(:), lb(:), g(:)
+
+      cap = BIN_CAP
+      block
+         character(len=16) :: env
+         integer :: st, v, ios
+         call get_environment_variable("TRC_BIN_CAP", env, status=st)
+         if (st == 0) then
+            read (env, *, iostat=ios) v
+            if (ios == 0 .and. v >= 1) cap = min(cap, v)
+         end if
+      end block
+
+      nextra = 0
+      do k = 1, b%nbin
+         if (b%bin_cnt(k) > cap) nextra = nextra + (b%bin_cnt(k) - 1)/cap
+      end do
+      if (nextra == 0) return
+
+      nb = b%nbin + nextra
+      allocate (off(nb), cnt(nb), sz(nb), la(nb), lb(nb), g(nb))
+      off(1:b%nbin) = b%bin_off
+      cnt(1:b%nbin) = b%bin_cnt
+      sz(1:b%nbin) = b%bin_s
+      la(1:b%nbin) = b%bin_la
+      lb(1:b%nbin) = b%bin_lb
+      g(1:b%nbin) = b%bin_g
+      c = b%nbin
+      do k = 1, b%nbin
+         if (b%bin_cnt(k) <= cap) cycle
+         nch = (b%bin_cnt(k) + cap - 1)/cap
+         cnt(k) = cap
+         do ich = 2, nch
+            c = c + 1
+            off(c) = b%bin_off(k) + (ich - 1)*cap
+            cnt(c) = min(cap, b%bin_cnt(k) - (ich - 1)*cap)
+            sz(c) = b%bin_s(k)
+            la(c) = b%bin_la(k)
+            lb(c) = b%bin_lb(k)
+            g(c) = b%bin_g(k)
+         end do
+      end do
+      b%nbin = nb
+      call move_alloc(off, b%bin_off)
+      call move_alloc(cnt, b%bin_cnt)
+      call move_alloc(sz, b%bin_s)
+      call move_alloc(la, b%bin_la)
+      call move_alloc(lb, b%bin_lb)
+      call move_alloc(g, b%bin_g)
+   end subroutine split_large_bins
 
    !
    ! Build the bin-interleaved primitive-pair tables from the pp_* ("hp_*" at

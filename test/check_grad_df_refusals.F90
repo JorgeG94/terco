@@ -2,14 +2,16 @@
 ! The --grad --df refusals, at the C API: every out-of-scope request must
 ! come back as an error STATUS with a message naming the reason, never reach
 ! the library's own `error stop` (which would take the host process down).
-! The fitted gradient is restricted, Cartesian and not range-separated, the
-! DF-SCF's own scope (trc_run_gradient's own guards, trc_capi.F90).
+! The fitted gradient is restricted, Cartesian and not range-separated
+! (trc_run_gradient's own guards, trc_capi.F90).
 !
 ! Two routes into each refusal:
 !
 !   RUN. trc_run_scf with --df on an unrestricted (OH), spherical (water,
-!        cc-pVDZ as tagged) or range-separated (wB97X) setup: the SCF itself
-!        refuses, and trc_run_gradient after it refuses too (no SCF).
+!        cc-pVDZ as tagged) or range-separated (wB97X) setup. Where the SCF
+!        refuses (unrestricted, range-separated), trc_run_gradient after it
+!        refuses too (no SCF). The DF-SCF runs spherical bases, so there the
+!        gradient's own guard must refuse, TRC_ERR_UNSUPPORTED, naming it.
 !   LOAD. The same setup's SCF, run WITHOUT --df and saved (trc_save_scf),
 !        then loaded into a --df context (trc_set_df, trc_load_scf):
 !        trc_run_gradient is now past the SCF's refusals and its own guard
@@ -82,8 +84,12 @@ contains
          msg = message(h)
          if (want == TRC_OK) then
             ok = st_scf == TRC_OK .and. st_grad == TRC_OK
+         else if (st_scf == TRC_OK) then
+            ! The DF-SCF supports this setup (spherical --df does), so the
+            ! gradient's own guard is what must refuse it.
+            ok = st_grad == want .and. index(msg, key) > 0
          else
-            ok = st_scf /= TRC_OK .and. st_grad /= TRC_OK
+            ok = st_grad /= TRC_OK
          end if
          print '(a,a,a,i0,a,i0,a,a)', merge('ok   ', 'FAIL ', ok), label, ' RUN : scf ', st_scf, ' grad ', &
             st_grad, '  -- ', trim(msg)
