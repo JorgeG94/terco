@@ -257,6 +257,11 @@ set_tests_properties(
   terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
+# The FULL analytic gradient (eri%gradient + trc_1e_gradient + nuclear
+# repulsion) against finite differences of terco's own fully reconverged
+# SCF energy -- RHF water, UHF OH -- see check_full_grad_fd.F90's header.
+terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
+
 #
 # Cartesian multipoles through the octupole, against a reference
 # test/pyscf_refs/generate.py recorded from pyscf. No pyscf in CI, ever --
@@ -317,6 +322,26 @@ foreach(b 631gs ccpvdz)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
   terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
+endforeach()
+
+# trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
+# int1e_ipnuc(+Hellmann-Feynman) contractions, each term separated (see
+# check_1e_grad_vs_pyscf.F90's own header), at a fixed non-SCF density --
+# water/6-31G*, water/cc-pVDZ, formamide/cc-pVDZ.
+foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+  if(case STREQUAL "water_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+  elseif(case STREQUAL "water_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+  else()
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/onee_grad_probe_${case}.bin)
+  terco_add_check(check_1e_grad_vs_pyscf_${case} check_1e_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${case})
 endforeach()
 
 #
@@ -757,7 +782,13 @@ target_link_libraries(bench_gc PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_sph bench_sph.F90)
 target_compile_definitions(bench_sph PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_sph PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph)
+# The one-electron gradient's own time next to eri%gradient's two-electron
+# part -- see bench_grad_1e.F90's own header. Not a pass/fail, like its
+# siblings.
+add_executable(bench_grad_1e bench_grad_1e.F90)
+target_compile_definitions(bench_grad_1e PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_grad_1e PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
 
