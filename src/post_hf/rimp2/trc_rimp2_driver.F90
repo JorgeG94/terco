@@ -209,6 +209,22 @@ contains
       nfz = 0
       if (present(nfrozen)) nfz = max(nfrozen, 0)
       no = nocc - nfz
+      ! For a spherical caller, `nao` (Cartesian) is bigger than the
+      ! true spherical MO count `b%nao_sph` -- rimp2_mo_to_cart's own
+      ! header explains why this routine is never told that -- so `nv`
+      ! below runs over `b%nao - b%nao_sph` zero-coefficient pad
+      ! "virtuals" that cost real GEMM flops and contribute nothing.
+      ! Measured from shell counts alone (no kernel change, not
+      ! profiled): water/cc-pVDZ(sph) is nv=20 Cartesian vs. 19 true
+      ! (1 pad column, one O d-shell's 6-vs-5), formamide/cc-pVDZ(sph)
+      ! is nv=48 vs. 45 (3 pad columns, one d-shell per heavy atom) --
+      ! a 5-7% larger nv, which an O(nv^2) GEMM (the dominant scaling
+      ! of the half-transform/pair-energy steps below) turns into an
+      ! 11-14% larger flop count; any O(nv^3) term costs proportionally
+      ! more still. Don't change the kernels for this -- it is the
+      ! price of keeping `trc_rimp2_run` Cartesian-only and reusing it
+      ! unchanged for a spherical caller (rimp2_mo_to_cart's own
+      ! header).
       nv = nao - nocc
       nov = no*nv
       res%naux = naux
@@ -560,6 +576,10 @@ contains
       call sph_mo_to_cart(b, ns, csph, ccart(:, 1:ns))
       !$acc update self(ccart(:, 1:ns))
       !$acc exit data delete(csph, ccart)
+      ! These `nc - ns` zero columns are exactly the pad virtuals
+      ! trc_rimp2_run's own `nv = nao - nocc` then costs real GEMM
+      ! flops on -- see that routine's own comment for the measured
+      ! fraction.
       if (nc > ns) ccart(:, ns + 1:nc) = 0.0_dp
       epscart(1:ns) = epssph
       if (nc > ns) epscart(ns + 1:nc) = PAD_EPS
