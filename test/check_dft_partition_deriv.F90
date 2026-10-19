@@ -168,8 +168,9 @@ program check_dft_partition_deriv
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
-   use trc_dft_partition, only: becke_partition_derivatives, PARTITION_BECKE, PARTITION_STRATMANN, &
-                                ADJUST_TREUTLER, ADJUST_NONE
+   use pic_types, only: int64
+   use trc_dft_partition, only: becke_partition_derivatives, becke_partition_grad_contract, &
+                                PARTITION_BECKE, PARTITION_STRATMANN, ADJUST_TREUTLER, ADJUST_NONE
    use check_dft_partition_deriv_ref, only: reference_derivatives
    implicit none
 
@@ -239,9 +240,70 @@ contains
       print '(a,a,a,es10.2,a,i0)', '  ', label, ': worst|new-old| ', worst, '  over ', grid%n_points
       if (worst > 1.0e-13_dp) any_fail = .true.
 
+      ! becke_partition_grad_contract against the dense derivatives
+      ! contracted the way the XC gradient used to: with the production
+      ! screening and with none, a per-point factor that is zero on every
+      ! seventh point (the skip path), and a budget small enough to force
+      ! many chunks.
+      call contract_case(grid, nat, r, at_z, scheme, adjust, label//', screened', -1.0_dp, any_fail)
+      call contract_case(grid, nat, r, at_z, scheme, adjust, label//', unscreened', 2.0_dp, any_fail)
+
       call grid%destroy()
       deallocate (at_z, r, dw_new, dw_ref, shift, inv_distance)
    end subroutine one_case
+
+   subroutine contract_case(grid, nat, r, at_z, scheme, adjust, label, numax, any_fail)
+      type(dft_grid_t), intent(in) :: grid
+      integer, intent(in) :: nat, scheme, adjust
+      real(dp), intent(in) :: r(3, nat), numax
+      integer, intent(in) :: at_z(nat)
+      character(*), intent(in) :: label
+      logical, intent(inout) :: any_fail
+      real(dp), allocatable :: dw(:, :, :), coef(:), g_ref(:, :), g_new(:, :)
+      type(error_t) :: err
+      real(dp) :: worst, scale
+      integer :: k, a, own
+
+      allocate (dw(3, nat, grid%n_points), coef(grid%n_points), g_ref(3, nat), g_new(3, nat))
+      do k = 1, grid%n_points
+         coef(k) = grid%quad_weights(k)*(1.0_dp + 0.3_dp*sin(real(k, dp)))
+         if (mod(k, 7) == 0) coef(k) = 0.0_dp
+      end do
+      if (numax > 0.0_dp) then
+         call becke_partition_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err, nu_max=numax)
+      else
+         call becke_partition_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err)
+      end if
+      if (err%has_error()) then
+         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
+      end if
+      g_ref = 0.0_dp
+      do k = 1, grid%n_points
+         own = grid%atom(k)
+         do a = 1, nat
+            g_ref(:, a) = g_ref(:, a) + coef(k)*dw(:, a, k)
+            g_ref(:, own) = g_ref(:, own) - coef(k)*dw(:, a, k)
+         end do
+      end do
+      g_new = 1.0_dp   ! ADDED into: start from a non-zero gradient
+      if (numax > 0.0_dp) then
+         call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
+                                            adjust, g_new, err, nu_max=numax, budget=int(12*nat*37, int64))
+      else
+         call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
+                                            adjust, g_new, err, budget=int(12*nat*37, int64))
+      end if
+      if (err%has_error()) then
+         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
+      end if
+      g_new = g_new - 1.0_dp
+      scale = max(1.0_dp, maxval(abs(g_ref)))
+      worst = maxval(abs(g_new - g_ref))
+      print '(a,a,a,es10.2,a,es10.2)', '  ', label, ': contracted worst|new-dense| ', worst, &
+         '  of max ', maxval(abs(g_ref))
+      if (worst > 1.0e-13_dp*scale .or. maxval(abs(g_ref)) == 0.0_dp) any_fail = .true.
+      deallocate (dw, coef, g_ref, g_new)
+   end subroutine contract_case
 
    ! Bragg radii and the two adjustment rules, duplicated from
    ! trc_dft_partition.F90%size_adjustment (private there) -- see

@@ -106,8 +106,11 @@
 !                             sum_A dP_g/dR_{A,k}
 !
 !      i.e. the negative of B's own sum, landed entirely on the point's
-!      owner, for FREE out of the same `dweights` array B already
-!      computed -- no new derivative, no new routine. This is the piece a
+!      owner, for FREE out of the same dP/dR B already computes -- no new
+!      derivative. trc_dft_partition's becke_partition_grad_contract does
+!      B and C together, on the device, one point per thread, with no
+!      (3, natm, npts) array: it takes qw_g rho_g eps_g per point and adds
+!      straight into a (3, natm) gradient. This is the piece a
 !      two-term ("basis moves, grid moves") account of the gradient misses
 !      silently: on water it is the difference between a ~1e-7-level
 !      residual and a ~1 Hartree/Bohr one (metalquicha's own
@@ -223,7 +226,7 @@ module trc_xc_grad
    use trc_collocation, only: shell_collocate, shell_collocate2, NCART_MAX, NHESS
    use trc_linalg, only: trc_linalg_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, DEFAULT_GRID_LEVEL
-   use trc_dft_partition, only: becke_partition_derivatives
+   use trc_dft_partition, only: becke_partition_grad_contract
    use trc_error, only: error_t
    use trc_step_table, only: step_table_t
    implicit none
@@ -304,7 +307,7 @@ contains
       integer :: glevel, gmaxpts, ish, i
       real(dp) :: rtol
       integer, allocatable :: ao_atom(:), at_z(:)
-      real(dp), allocatable :: grad_extra(:, :)
+      real(dp), allocatable :: grad_extra(:, :), fxc(:), pcoef(:)
 
       ! --- refuse what this module cannot do, with a reason -------------
       !
@@ -385,26 +388,41 @@ contains
          !$acc enter data copyin(ao_atom)
 
          ! The weight-response and point-motion-of-the-weight terms (this
-         ! module's header, GRID RESPONSE) are accumulated HOST-side, into
-         ! their own array: trc_dft_partition's becke_partition_derivatives
-         ! is OpenMP, not OpenACC (it was already in the tree, unused, this
-         ! branch is its first caller), and running it per batch is cheap
-         ! enough (O(active_points x natm^2), natm tiny on every case this
-         ! round validates) that porting it to the device is not this
-         ! round's problem. Zeroed and merged into the device-resident
-         ! `grad` once, after the drive loop, rather than after every batch.
-         allocate (grad_extra(3, b%natm))
+         ! module's header, GRID RESPONSE, B and C) go into their own
+         ! array, merged into the device-resident `grad` once at the end.
+         ! They need every point's rho*eps (`fxc`, filled by the drive's
+         ! point kernel and left zero where the screen skips a batch).
+         allocate (grad_extra(3, b%natm), fxc(xg%npts))
          grad_extra = 0.0_dp
+         fxc = 0.0_dp
+         !$acc enter data copyin(fxc)
 
          call xc_grad_drive(b, lp, is_gga, nspin, func%nk, func%kid, func%coef, dens, xg, rtol, &
-                            ao_atom, grad, gresp, b%at_r, at_z, grid%scheme, grid%adjust, grad_extra, tbl)
+                            ao_atom, grad, gresp, fxc, tbl)
 
          if (gresp) then
+            ! The partition's own response, both pieces at once and with
+            ! no (3, natm, npts) array: becke_partition_grad_contract takes
+            ! the per-point factor qw*rho*eps (the quadrature weight alone,
+            ! not w: the partition's own factor is what is differentiated).
+            call tbl%step_on(lp, ST_PDERIV, tc)
+            allocate (pcoef(xg%npts), source=xg%qw)
+            !$acc enter data copyin(pcoef)
+            call xc_grad_weight_coef(xg%npts, fxc, pcoef)
+            call becke_partition_grad_contract(xg%npts, xg%r, b%at_r, at_z, xg%atom, pcoef, &
+                                               grid%scheme, grid%adjust, grad_extra, err)
+            if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
+            !$acc exit data delete(pcoef)
+            deallocate (pcoef)
+            call tbl%step_off(lp, ST_PDERIV, tc)
+            call tbl%step_on(lp, ST_RESP, tc)
             !$acc update self(grad)
             grad = grad + grad_extra
             !$acc update device(grad)
+            call tbl%step_off(lp, ST_RESP, tc)
          end if
-         deallocate (grad_extra)
+         !$acc exit data delete(fxc)
+         deallocate (grad_extra, fxc)
 
          !$acc exit data delete(ao_atom)
          deallocate (ao_atom)
@@ -422,7 +440,7 @@ contains
    ! shape-grouped chunks.
    !
    subroutine xc_grad_drive(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, rtol, ao_atom, grad, &
-                            gresp, at_r, at_z, scheme, adjust, grad_extra, tbl)
+                            gresp, fxc, tbl)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       logical, intent(in) :: is_gga
@@ -435,10 +453,9 @@ contains
       integer, intent(in) :: ao_atom(b%nao)
       real(dp), intent(inout) :: grad(3, b%natm)
       logical, intent(in) :: gresp
-      real(dp), intent(in) :: at_r(3, b%natm)
-      integer, intent(in) :: at_z(b%natm)
-      integer, intent(in) :: scheme, adjust
-      real(dp), intent(inout) :: grad_extra(3, b%natm)
+      real(dp), intent(inout) :: fxc(xg%npts)
+      !! Per point, rho*eps (no weight), for the partition's response term;
+      !! left zero on a batch the screen skips.
       type(step_table_t), intent(inout) :: tbl
 
       integer :: ib, npb, nloc
@@ -454,7 +471,7 @@ contains
          call tbl%step_off(lp, ST_SCREEN, tc)
          if (.not. act) cycle
          call xc_grad_one_batch(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, ib, npb, nloc, &
-                                ao_atom, grad, gresp, at_r, at_z, scheme, adjust, grad_extra, tbl)
+                                ao_atom, grad, gresp, fxc, tbl)
       end do
    end subroutine xc_grad_drive
 
@@ -496,7 +513,7 @@ contains
    ! no padding to match.
    !
    subroutine xc_grad_one_batch(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, ib, npb, nloc, &
-                                ao_atom, grad, gresp, at_r, at_z, scheme, adjust, grad_extra, tbl)
+                                ao_atom, grad, gresp, fxc, tbl)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       logical, intent(in) :: is_gga
@@ -509,10 +526,9 @@ contains
       integer, intent(in) :: ao_atom(b%nao)
       real(dp), intent(inout) :: grad(3, b%natm)
       logical, intent(in) :: gresp
-      real(dp), intent(in) :: at_r(3, b%natm)
-      integer, intent(in) :: at_z(b%natm)
-      integer, intent(in) :: scheme, adjust
-      real(dp), intent(inout) :: grad_extra(3, b%natm)
+      real(dp), intent(inout) :: fxc(xg%npts)
+      !! Per point, rho*eps (no weight), for the partition's response term;
+      !! left zero on a batch the screen skips.
       type(step_table_t), intent(inout) :: tbl
 
       real(dp), allocatable :: chi(:, :), gchi(:, :, :), hchi(:, :, :)
@@ -520,18 +536,16 @@ contains
       real(dp), allocatable :: pall(:, :, :), q1all(:, :, :), q2all(:, :, :), rall(:, :, :)
       real(dp), allocatable :: tall(:, :, :)
       real(dp), allocatable :: rmat(:, :, :), rmatx(:, :, :)
-      real(dp), allocatable :: fxc(:), qmove(:, :)
-      real(dp), allocatable :: dweights(:, :, :)
-      type(error_t) :: err
-      integer :: s, g, a, own, g0
-      real(dp) :: contrib, tc
+      real(dp), allocatable :: qmove(:, :)
+      integer :: s
+      real(dp) :: tc
 
       call tbl%step_on(lp, ST_ALLOC, tc)
       allocate (chi(npb, nloc), gchi(npb, nloc, 3))
       allocate (dloc(nloc, nloc, nspin), xmat(npb, nloc, nspin))
       allocate (pall(npb, 3*nloc, nspin), tall(3*nloc, nloc, nspin))
-      allocate (fxc(npb), qmove(npb, 3))
-      !$acc enter data create(chi, gchi, dloc, xmat, pall, tall, fxc, qmove)
+      allocate (qmove(npb, 3))
+      !$acc enter data create(chi, gchi, dloc, xmat, pall, tall, qmove)
 
       if (is_gga) then
          allocate (hchi(npb, nloc, NHESS))
@@ -622,51 +636,29 @@ contains
                            nloc, nspin, dloc, tall, b%natm, grad)
       call tbl%step_off(lp, ST_SCATTER, tc)
 
-      ! GRID RESPONSE, weight-derivative piece -- HOST side (see this
-      ! module's header and xc_gradient_add's own comment on why): needs
-      ! only `fxc` (rho*eps or (rho_a+rho_b)*eps per point, no weight
-      ! baked in) brought back from the device, and `xg%r`/`xg%atom`,
-      ! which are valid on the host regardless of their device mirror
-      ! (xg%build never modifies them again after this batch's collocation
-      ! reads the device copy).
-      if (gresp) then
-         call tbl%step_on(lp, ST_PDERIV, tc)
-         !$acc update self(fxc)
-         g0 = xg%b_off(ib)
-         allocate (dweights(3, b%natm, npb))
-         call becke_partition_derivatives(xg%r(:, g0:g0 + npb - 1), at_r, at_z, &
-                                          xg%atom(g0:g0 + npb - 1), scheme, adjust, dweights, err)
-         if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
-         call tbl%step_off(lp, ST_PDERIV, tc)
-         call tbl%step_on(lp, ST_RESP, tc)
-         do g = 1, npb
-            contrib = xg%qw(g0 + g - 1)*fxc(g)
-            own = xg%atom(g0 + g - 1)
-            do a = 1, b%natm
-               grad_extra(:, a) = grad_extra(:, a) + contrib*dweights(:, a, g)
-            end do
-            ! The point travels with `own`, and the partition is a function
-            ! of relative positions only, so its derivative with respect to
-            ! the POINT is minus the sum of its derivatives with respect to
-            ! every nucleus (translational invariance of a function of
-            ! r - R_1, ..., r - R_natm) -- see this module's header.
-            do a = 1, b%natm
-               grad_extra(:, own) = grad_extra(:, own) - contrib*dweights(:, a, g)
-            end do
-         end do
-         deallocate (dweights)
-         call tbl%step_off(lp, ST_RESP, tc)
-      end if
 
       call tbl%step_on(lp, ST_ALLOC, tc)
-      !$acc exit data delete(chi, gchi, dloc, xmat, pall, tall, fxc, qmove)
-      deallocate (chi, gchi, dloc, xmat, pall, tall, fxc, qmove)
+      !$acc exit data delete(chi, gchi, dloc, xmat, pall, tall, qmove)
+      deallocate (chi, gchi, dloc, xmat, pall, tall, qmove)
       if (is_gga) then
          !$acc exit data delete(hchi, q1all, q2all, rall, rmat, rmatx)
          deallocate (hchi, q1all, q2all, rall, rmat, rmatx)
       end if
       call tbl%step_off(lp, ST_ALLOC, tc)
    end subroutine xc_grad_one_batch
+
+   !
+   ! coef(g) = qw(g)*fxc(g): `coef` arrives holding qw, on the device.
+   !
+   subroutine xc_grad_weight_coef(npts, fxc, coef)
+      integer, intent(in) :: npts
+      real(dp), intent(in) :: fxc(npts)
+      real(dp), intent(inout) :: coef(npts)
+      integer :: g
+      do concurrent(g=1:npts)
+         coef(g) = coef(g)*fxc(g)
+      end do
+   end subroutine xc_grad_weight_coef
 
    !
    ! Collocation, order 1: one thread per (local shell, local point) of
@@ -830,7 +822,7 @@ contains
       real(dp), intent(in) :: coef(XC_MAX_KERNELS)
       real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), xmat(npb, nloc, nspin)
       real(dp), intent(inout) :: pall(npb, 3*nloc, nspin)
-      real(dp), intent(inout) :: fxc(npb), qmove(npb, 3)
+      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
       integer :: g
       do concurrent(g=1:npb)
          call xc_grad_point_lda_body(g, npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, xmat, &
@@ -847,7 +839,7 @@ contains
       real(dp), intent(in) :: coef(XC_MAX_KERNELS)
       real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), xmat(npb, nloc, nspin)
       real(dp), intent(inout) :: pall(npb, 3*nloc, nspin)
-      real(dp), intent(inout) :: fxc(npb), qmove(npb, 3)
+      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
       real(dp) :: rho(2), grho(3, 2)
       real(dp) :: sigma, eps, vrho, vsigma, wg
       real(dp) :: va, vb, s_aa, s_ab, s_bb, v_aa, v_ab, v_bb
@@ -874,7 +866,7 @@ contains
                pall(g, (k - 1)*nloc + mu, 1) = wg*vrho*gchi(g, mu, k)
             end do
          end do
-         fxc(g) = rho(1)*eps
+         fxc(p0 + g - 1) = rho(1)*eps
       else
          s_aa = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
          s_bb = grho(1, 2)**2 + grho(2, 2)**2 + grho(3, 2)**2
@@ -887,7 +879,7 @@ contains
                pall(g, (k - 1)*nloc + mu, 2) = wg*vb*gchi(g, mu, k)
             end do
          end do
-         fxc(g) = (rho(1) + rho(2))*eps
+         fxc(p0 + g - 1) = (rho(1) + rho(2))*eps
       end if
 
       ! GRID RESPONSE, point-motion piece, LDA -- see this module's
@@ -940,7 +932,7 @@ contains
       real(dp), intent(in) :: xmat(npb, nloc, nspin)
       real(dp), intent(inout) :: pall(npb, 3*nloc, nspin), q1all(npb, 3*nloc, nspin)
       real(dp), intent(inout) :: q2all(npb, 3*nloc, nspin), rall(npb, nloc, nspin)
-      real(dp), intent(inout) :: fxc(npb), qmove(npb, 3)
+      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
       integer :: g
       do concurrent(g=1:npb)
          call xc_grad_point_gga_body(g, npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, hchi, &
@@ -959,7 +951,7 @@ contains
       real(dp), intent(in) :: xmat(npb, nloc, nspin)
       real(dp), intent(inout) :: pall(npb, 3*nloc, nspin), q1all(npb, 3*nloc, nspin)
       real(dp), intent(inout) :: q2all(npb, 3*nloc, nspin), rall(npb, nloc, nspin)
-      real(dp), intent(inout) :: fxc(npb), qmove(npb, 3)
+      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
       real(dp) :: qm(3)
       real(dp) :: rho(2), grho(3, 2)
       real(dp) :: sigma, eps, vrho, vsigma, wg
@@ -995,7 +987,7 @@ contains
          do u = 1, nloc
             rall(g, u, 1) = grho(1, 1)*gchi(g, u, 1) + grho(2, 1)*gchi(g, u, 2) + grho(3, 1)*gchi(g, u, 3)
          end do
-         fxc(g) = rho(1)*eps
+         fxc(p0 + g - 1) = rho(1)*eps
       else
          s_aa = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
          s_bb = grho(1, 2)**2 + grho(2, 2)**2 + grho(3, 2)**2
@@ -1022,7 +1014,7 @@ contains
             rall(g, u, 1) = grho(1, 1)*gchi(g, u, 1) + grho(2, 1)*gchi(g, u, 2) + grho(3, 1)*gchi(g, u, 3)
             rall(g, u, 2) = grho(1, 2)*gchi(g, u, 1) + grho(2, 2)*gchi(g, u, 2) + grho(3, 2)*gchi(g, u, 3)
          end do
-         fxc(g) = (rho(1) + rho(2))*eps
+         fxc(p0 + g - 1) = (rho(1) + rho(2))*eps
       end if
 
       ! GRID RESPONSE, point-motion piece, the LDA-like part only -- see

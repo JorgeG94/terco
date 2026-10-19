@@ -40,6 +40,7 @@ module trc_dft_partition
    public :: ADJUST_NONE, ADJUST_BECKE, ADJUST_TREUTLER
    public :: becke_partition_weights
    public :: becke_partition_derivatives
+   public :: becke_partition_grad_contract
    public :: partition_scheme_name
    public :: PARTITION_NU_MAX
 
@@ -603,6 +604,370 @@ contains
       !$omp end parallel
    end subroutine becke_partition_derivatives
 
+   subroutine becke_partition_grad_contract(n_points, points, atom_coords, atomic_numbers, owner, &
+                                            coef, scheme, adjust, grad, error, nu_max, budget)
+      !! sum_k coef_k dP_k/dR_A, plus the point-motion term, straight into
+      !! a (3, n_atoms) gradient
+      !!
+      !! What a DFT gradient's grid response needs from the partition is
+      !! not dP_k/dR_A itself but its contraction with one number per point
+      !! (the quadrature weight times the energy density), together with
+      !! the motion of the point with its owner: P_k depends on relative
+      !! positions only, so grad_{r_k} P_k = - sum_A dP_k/dR_A, landing on
+      !! owner(k). Both are accumulated here, per point, into `grad`:
+      !!
+      !!     grad(:, A)        += coef_k dP_k/dR_A          (every active A)
+      !!     grad(:, owner(k)) -= coef_k sum_A dP_k/dR_A
+      !!
+      !! which is what `becke_partition_derivatives` followed by that
+      !! double loop gives, without its dense (3, n_atoms, n_points) array:
+      !! that is O(n_atoms) memory per point, the limit on a large molecule.
+      !!
+      !! ON THE DEVICE, as `becke_partition_weights`: one point per thread,
+      !! the per-point scratch in (chunk, ...) device arrays, point index
+      !! first. Everything the O(active^2) pair loops touch (distances,
+      !! factors, suffix products, derivative sums) is indexed by POSITION
+      !! in the point's active list, not by atom, so a warp reads and
+      !! writes whole columns instead of scattered entries; the running
+      !! prefix product of each row is a register. The active set,
+      !! screening and arithmetic order per point are those of
+      !! `becke_partition_derivatives`, so each point's dP/dR is the same
+      !! number; only the order the points' contributions are summed in
+      !! differs (atomics on the device).
+      !!
+      !! `points`, `owner` and `coef` may already be on the device (the
+      !! XC gradient's are); `grad` is a host array, ADDED into.
+      integer, intent(in) :: n_points
+      real(dp), intent(in) :: points(3, n_points)   !! Bohr
+      real(dp), intent(in) :: atom_coords(:, :)     !! (3, n_atoms), Bohr
+      integer, intent(in) :: atomic_numbers(:)      !! Z per atom, for the radii
+      integer, intent(in) :: owner(n_points)        !! Atom each point belongs to
+      real(dp), intent(in) :: coef(n_points)
+      !! The per-point factor; a point with coef exactly 0 is skipped.
+      integer, intent(in) :: scheme, adjust
+      real(dp), intent(inout) :: grad(:, :)         !! (3, n_atoms), added into
+      type(error_t), intent(inout) :: error
+      real(dp), intent(in), optional :: nu_max
+      !! As `becke_partition_derivatives`'s.
+      integer(int64), intent(in), optional :: budget
+      !! Scratch budget in doubles, default 2^26 (512 MB): a chunk holds
+      !! 2^26 / (12 n_atoms) points.
+
+      real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
+      real(dp), allocatable :: atom_r(:, :), ract(:, :), fs(:, :), sfa(:, :)
+      real(dp), allocatable :: dtot(:, :, :), down(:, :, :)
+      integer, allocatable :: active(:, :), mark(:, :)
+      integer :: n_atoms, i, j, k0, n, chunk, g
+      integer(int64) :: cap
+      real(dp) :: numax
+
+      n_atoms = size(atom_coords, 2)
+      if (size(atomic_numbers) /= n_atoms .or. size(grad, 2) /= n_atoms .or. size(grad, 1) /= 3) then
+         call error%set(ERROR_VALIDATION, "partition gradient: atomic_numbers/grad do not match atom_coords")
+         return
+      end if
+      if (scheme /= PARTITION_BECKE .and. scheme /= PARTITION_STRATMANN) then
+         call error%set(ERROR_VALIDATION, "partition gradient: unknown scheme")
+         return
+      end if
+      ! One atom owns everything: its weight is identically one.
+      if (n_atoms == 1 .or. n_points == 0) return
+
+      numax = PARTITION_NU_MAX
+      if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
+      if (present(nu_max)) numax = nu_max
+      cap = 67108864_int64
+      if (present(budget)) cap = max(budget, int(12*n_atoms, int64))
+      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(12*n_atoms, int64))))
+
+      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
+      call size_adjustment(atomic_numbers, adjust, shift)
+      inv_distance = 0.0_dp
+      do i = 1, n_atoms
+         do j = 1, n_atoms
+            if (i /= j) inv_distance(i, j) = 1.0_dp/norm2(atom_coords(:, i) - atom_coords(:, j))
+         end do
+      end do
+      r_min = huge(1.0_dp)
+      do i = 1, n_atoms
+         do j = 1, n_atoms
+            if (i /= j) r_min(i) = min(r_min(i), 1.0_dp/inv_distance(i, j))
+         end do
+      end do
+
+      allocate (atom_r(chunk, n_atoms), ract(chunk, n_atoms), fs(chunk, n_atoms), sfa(chunk, n_atoms))
+      allocate (dtot(chunk, 3, n_atoms), down(chunk, 3, n_atoms))
+      allocate (active(chunk, n_atoms), mark(chunk, n_atoms))
+      mark = 0
+      !$acc data copyin(atom_coords, shift, inv_distance, r_min, mark) copy(grad) &
+      !$acc      create(atom_r, ract, fs, sfa, dtot, down, active)
+      do k0 = 1, n_points, chunk
+         n = min(chunk, n_points - k0 + 1)
+#ifdef _OPENACC
+         do concurrent(g=1:n)
+            call partition_grad_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
+                                      coef, shift, inv_distance, r_min, scheme, adjust, numax, &
+                                      atom_r, ract, fs, sfa, dtot, down, active, mark, grad)
+         end do
+#else
+         ! Serial on the host: the body's atomics are inert there, and two
+         ! points can land on the same atom.
+         do g = 1, n
+            call partition_grad_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
+                                      coef, shift, inv_distance, r_min, scheme, adjust, numax, &
+                                      atom_r, ract, fs, sfa, dtot, down, active, mark, grad)
+         end do
+#endif
+      end do
+      !$acc end data
+   end subroutine becke_partition_grad_contract
+
+   !
+   ! One point of `becke_partition_grad_contract`, row g of the scratch.
+   ! The active set is `partition_point`'s; each row i of the cell
+   ! products is `becke_partition_derivatives`'s prefix/suffix sweep, with
+   ! the factors and suffix products stored by active position and the
+   ! prefix in a register, and the pair derivatives recomputed in the
+   ! second pass rather than stored (cheaper than six more scratch
+   ! columns). `mark` is left all-zero on exit.
+   !
+   pure subroutine partition_grad_point(k, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
+                                        coef, shift, inv_distance, r_min, scheme, adjust, numax, &
+                                        atom_r, ract, fs, sfa, dtot, down, active, mark, grad)
+      !$acc routine seq
+      integer, intent(in) :: k, g, n_atoms, n_points, chunk, scheme, adjust
+      real(dp), intent(in) :: points(3, n_points), atom_coords(3, n_atoms)
+      integer, intent(in) :: owner(n_points)
+      real(dp), intent(in) :: coef(n_points)
+      real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms)
+      real(dp), intent(in) :: numax
+      real(dp), intent(inout) :: atom_r(chunk, n_atoms), ract(chunk, n_atoms)
+      real(dp), intent(inout) :: fs(chunk, n_atoms), sfa(chunk, n_atoms)
+      real(dp), intent(inout) :: dtot(chunk, 3, n_atoms), down(chunk, 3, n_atoms)
+      integer, intent(inout) :: active(chunk, n_atoms), mark(chunk, n_atoms)
+      real(dp), intent(inout) :: grad(3, n_atoms)
+      integer :: own, i, j, ia, ja, n_active, n1, x
+      real(dp) :: c, mu, nu, ri, rj, p, sv, f, excl, total, cell_own, r_inner, denom
+      real(dp) :: d3(3), ui(3), uj(3), d_own(3), d_oth(3), d_ii(3), d_ia(3), v(3), vown(3)
+
+      c = coef(k)
+      if (c == 0.0_dp) return
+      own = owner(k)
+      do i = 1, n_atoms
+         d3(1) = points(1, k) - atom_coords(1, i)
+         d3(2) = points(2, k) - atom_coords(2, i)
+         d3(3) = points(3, k) - atom_coords(3, i)
+         atom_r(g, i) = norm2(d3)
+      end do
+      if (scheme == PARTITION_STRATMANN .and. adjust == ADJUST_NONE) then
+         ! Weight exactly one inside the inner sphere: no derivative.
+         r_inner = 0.5_dp*(1.0_dp - STRATMANN_A)*r_min(own)
+         if (atom_r(g, own) < r_inner) return
+      end if
+
+      n_active = 1
+      active(g, 1) = own
+      ract(g, 1) = atom_r(g, own)
+      mark(g, own) = 1
+      do i = 1, n_atoms
+         if (i == own) cycle
+         mu = (atom_r(g, i) - atom_r(g, own))*inv_distance(i, own)
+         nu = mu + shift(i, own)*(1.0_dp - mu*mu)
+         if (nu < numax) then
+            n_active = n_active + 1
+            active(g, n_active) = i
+            ract(g, n_active) = atom_r(g, i)
+            mark(g, i) = 1
+         end if
+      end do
+      n1 = n_active
+      do i = 1, n_atoms
+         if (mark(g, i) == 1) cycle
+         ri = atom_r(g, i)
+         do ja = 2, n1
+            j = active(g, ja)
+            mu = (ri - ract(g, ja))*inv_distance(i, j)
+            nu = mu + shift(i, j)*(1.0_dp - mu*mu)
+            if (nu < numax) then
+               n_active = n_active + 1
+               active(g, n_active) = i
+               ract(g, n_active) = ri
+               mark(g, i) = 1
+               exit
+            end if
+         end do
+      end do
+
+      do ja = 1, n_active
+         dtot(g, 1, ja) = 0.0_dp
+         dtot(g, 2, ja) = 0.0_dp
+         dtot(g, 3, ja) = 0.0_dp
+      end do
+      total = 0.0_dp
+      cell_own = 1.0_dp
+      do ia = 1, n_active
+         i = active(g, ia)
+         ri = ract(g, ia)
+         call unit_from(points(:, k), atom_coords(:, i), ri, ui)
+         ! Pass 1: row i's factors S(i,j), and the products of the factors
+         ! AFTER each position (sfa), in the same multiplication order as
+         ! becke_partition_derivatives' suffix array.
+         do ja = 1, n_active
+            if (ja == ia) cycle
+            j = active(g, ja)
+            call unit_from(points(:, k), atom_coords(:, j), ract(g, ja), uj)
+            call pair_sij_v(i, j, n_atoms, atom_coords, ri, ract(g, ja), ui, uj, shift, inv_distance, &
+                            scheme, sv, d_own, d_oth)
+            fs(g, ja) = sv
+         end do
+         p = 1.0_dp
+         do ja = n_active, 1, -1
+            sfa(g, ja) = p
+            if (ja /= ia) p = p*fs(g, ja)
+         end do
+         ! Pass 2: "all factors but this one" = prefix * suffix, the
+         ! derivatives recomputed.
+         p = 1.0_dp
+         d_ii = 0.0_dp
+         do ja = 1, n_active
+            if (ja == ia) cycle
+            j = active(g, ja)
+            call unit_from(points(:, k), atom_coords(:, j), ract(g, ja), uj)
+            call pair_sij_v(i, j, n_atoms, atom_coords, ri, ract(g, ja), ui, uj, shift, inv_distance, &
+                            scheme, f, d_own, d_oth)
+            excl = p*sfa(g, ja)
+            d_ii = d_ii + d_own*excl
+            d_ia = d_oth*excl
+            dtot(g, 1, ja) = dtot(g, 1, ja) + d_ia(1)
+            dtot(g, 2, ja) = dtot(g, 2, ja) + d_ia(2)
+            dtot(g, 3, ja) = dtot(g, 3, ja) + d_ia(3)
+            if (ia == 1) then
+               down(g, 1, ja) = d_ia(1)
+               down(g, 2, ja) = d_ia(2)
+               down(g, 3, ja) = d_ia(3)
+            end if
+            p = p*fs(g, ja)
+         end do
+         dtot(g, 1, ia) = dtot(g, 1, ia) + d_ii(1)
+         dtot(g, 2, ia) = dtot(g, 2, ia) + d_ii(2)
+         dtot(g, 3, ia) = dtot(g, 3, ia) + d_ii(3)
+         total = total + p
+         if (ia == 1) then
+            down(g, 1, 1) = d_ii(1)
+            down(g, 2, 1) = d_ii(2)
+            down(g, 3, 1) = d_ii(3)
+            cell_own = p
+         end if
+      end do
+
+      if (total > 0.0_dp) then
+         denom = total*total
+         vown = 0.0_dp
+         do ia = 1, n_active
+            i = active(g, ia)
+            do x = 1, 3
+               v(x) = c*((down(g, x, ia)*total - cell_own*dtot(g, x, ia))/denom)
+            end do
+            vown = vown + v
+            !$acc atomic update
+            grad(1, i) = grad(1, i) + v(1)
+            !$acc atomic update
+            grad(2, i) = grad(2, i) + v(2)
+            !$acc atomic update
+            grad(3, i) = grad(3, i) + v(3)
+         end do
+         ! The point moves with its owner: minus the sum, onto the owner.
+         !$acc atomic update
+         grad(1, own) = grad(1, own) - vown(1)
+         !$acc atomic update
+         grad(2, own) = grad(2, own) - vown(2)
+         !$acc atomic update
+         grad(3, own) = grad(3, own) - vown(3)
+      end if
+
+      do ia = 1, n_active
+         mark(g, active(g, ia)) = 0
+      end do
+   end subroutine partition_grad_point
+
+   pure subroutine unit_from(r, ra, dist, u)
+      !! (r - ra)/dist, zero on the nucleus itself (as
+      !! becke_partition_derivatives guards it)
+      !$acc routine seq
+      real(dp), intent(in) :: r(3), ra(3)
+      real(dp), intent(in) :: dist
+      real(dp), intent(out) :: u(3)
+      if (dist > 0.0_dp) then
+         u(1) = (r(1) - ra(1))/dist
+         u(2) = (r(2) - ra(2))/dist
+         u(3) = (r(3) - ra(3))/dist
+      else
+         u = 0.0_dp
+      end if
+   end subroutine unit_from
+
+   pure subroutine pair_sij_v(i, j, n_atoms, atom_coords, r_i, r_j, u_i, u_j, shift, inv_distance, &
+                              scheme, sval, d_own, d_oth)
+      !! `pair_sij` from the two distances and unit vectors themselves
+      !! rather than atom-indexed arrays: the same canonical (p, q) =
+      !! (min, max) evaluation, operation for operation, so the same bits.
+      !$acc routine seq
+      integer, intent(in) :: i, j, n_atoms
+      real(dp), intent(in) :: atom_coords(3, n_atoms), u_i(3), u_j(3)
+      real(dp), intent(in) :: r_i, r_j
+      real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms)
+      integer, intent(in) :: scheme
+      real(dp), intent(out) :: sval
+      real(dp), intent(out) :: d_own(3), d_oth(3)
+      real(dp) :: mu, nu, s, ds_dnu, dnu_dmu, invd, r_p, r_q, dpq
+      real(dp) :: rij(3), ds_p(3), ds_q(3), u_p(3), u_q(3)
+      integer :: p, q
+
+      p = min(i, j)
+      q = max(i, j)
+      if (i < j) then
+         r_p = r_i
+         r_q = r_j
+         u_p = u_i
+         u_q = u_j
+      else
+         r_p = r_j
+         r_q = r_i
+         u_p = u_j
+         u_q = u_i
+      end if
+      invd = inv_distance(p, q)
+      rij(1) = atom_coords(1, p) - atom_coords(1, q)
+      rij(2) = atom_coords(2, p) - atom_coords(2, q)
+      rij(3) = atom_coords(3, p) - atom_coords(3, q)
+
+      mu = (r_p - r_q)*invd
+      nu = mu + shift(p, q)*(1.0_dp - mu*mu)
+
+      if (scheme == PARTITION_BECKE) then
+         s = becke_cutoff(nu)
+         ds_dnu = becke_cutoff_derivative(nu)
+      else
+         s = stratmann_cutoff(nu)
+         ds_dnu = stratmann_cutoff_derivative(nu)
+      end if
+
+      dnu_dmu = 1.0_dp - 2.0_dp*shift(p, q)*mu
+      dpq = r_p - r_q
+      ds_p = ds_dnu*dnu_dmu*(-u_p*invd - dpq*invd**3*rij)
+      ds_q = ds_dnu*dnu_dmu*(u_q*invd + dpq*invd**3*rij)
+
+      if (i < j) then
+         sval = s
+         d_own = ds_p
+         d_oth = ds_q
+      else
+         sval = 1.0_dp - s
+         d_own = -ds_q
+         d_oth = -ds_p
+      end if
+   end subroutine pair_sij_v
+
    pure subroutine pair_sij(i, j, n_atoms, atom_coords, atom_r, unit_vec, shift, inv_distance, &
                             scheme, sval, d_own, d_oth)
       !! S(i,j): the fraction of the (i,j) pair's cutoff that atom i keeps,
@@ -734,6 +1099,7 @@ contains
       !! Each iteration is p(x) = x(3 - x^2)/2 with p'(x) = 3(1 - x^2)/2, so the
       !! chain rule over the three of them is the product of p' at the value
       !! going into each.
+      !$acc routine seq
       real(dp), intent(in) :: nu
       real(dp) :: ds
       real(dp) :: f0, f1, f2
@@ -749,6 +1115,7 @@ contains
 
    pure function stratmann_cutoff_derivative(mu) result(ds)
       !! d/dmu of `stratmann_cutoff`, zero where the cutoff is flat
+      !$acc routine seq
       real(dp), intent(in) :: mu
       real(dp) :: ds
       real(dp) :: z, z2
