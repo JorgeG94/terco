@@ -42,13 +42,14 @@ module trc_api
    use trc_boys, only: boys_init
    use trc_tables, only: LMAX
    use trc_1e_kernels, only: one_e_driver, ONE_E_LMAX
+   use trc_1e_grad_kernels, only: one_e_grad_driver, ONE_E_GRAD_LMAX
    use trc_mult_kernels, only: mult_driver, TRC_NMULT, MULT_LMAX
    use trc_df_kernels, only: df_2c_driver, df_3c_driver, DF_LMAX, DF_LMAX_AUX
    use trc_pcm_kernels, only: pcm_potential_driver, pcm_fock_driver, PCM_LMAX
    implicit none
    private
    public :: trc_basis_t, trc_pairlist_t
-   public :: trc_1e, trc_multipoles, trc_df_2c, trc_df_3c
+   public :: trc_1e, trc_1e_gradient, trc_multipoles, trc_df_2c, trc_df_3c
    public :: trc_pcm_potential, trc_pcm_fock, PCM_LMAX
    public :: trc_bind_device
    public :: TRC_NMULT
@@ -656,6 +657,31 @@ contains
                         b%sh_ao, b%sh_e, b%sh_c, b%sh_r, b%at_z, b%at_r, &
                         p%npair, p%p_i, p%p_j, smat, tmat, vmat)
    end subroutine trc_1e
+
+   !
+   ! The one-electron GRADIENT: -W:dS/dR + D:dT/dR + D:dV/dR (basis
+   ! derivative on both centres, Hellmann-Feynman on every nucleus),
+   ! ADDED into `grad` -- a caller assembling the full analytic gradient
+   ! calls this after eri%gradient (which starts `grad` from zero; see its
+   ! own header) and before the trivial nuclear-repulsion term, same
+   ! convention as trc_scf_grad%trc_scf_gradient. `wmat`/`dmat`/`grad` must
+   ! already be device-resident, same as trc_1e's own smat/tmat/vmat.
+   !
+   subroutine trc_1e_gradient(b, p, wmat, dmat, grad)
+      type(trc_basis_t), intent(in)  :: b
+      type(trc_pairlist_t), intent(in) :: p
+      real(dp), intent(in)    :: wmat(b%nao, b%nao)
+      !! The energy-weighted density, W_mu,nu = sum_i n_i eps_i c_mu,i c_nu,i
+      !! (trc_scf_grad.F90's energy_weighted_density builds it).
+      real(dp), intent(in)    :: dmat(b%nao, b%nao)
+      !! The ordinary density -- the TOTAL one (Da + Db for UHF): T and V
+      !! are both linear in the density, so the spin split eri%gradient
+      !! needs for its exchange term does not apply here.
+      real(dp), intent(inout) :: grad(3, b%natm)
+      call one_e_grad_driver(b%nshell, b%nao, b%natm, b%maxnp, b%sh_l, b%sh_np, &
+                             b%sh_ao, b%sh_at, b%sh_e, b%sh_c, b%sh_r, b%at_z, b%at_r, &
+                             p%npair, p%p_i, p%p_j, wmat, dmat, grad)
+   end subroutine trc_1e_gradient
 
    !
    ! The polarisable continuum's solute-surface integrals. A surface point

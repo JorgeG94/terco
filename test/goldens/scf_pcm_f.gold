@@ -1,0 +1,12 @@
+# terco golden v1
+# case: scf_pcm_f
+# from: gfortran build bgold3 at 29a704b, by test/goldens/regen_goldens.py
+E_1_water_cc-pvtz_hf_cpcm -7.6068148225858351e+01
+E_DIEL_1_water_cc-pvtz_hf_cpcm -1.1830210071000470e-02
+E_AT_PYSCF_D_1_water_cc-pvtz_hf_cpcm -7.6068148225858593e+01
+E_DIEL_AT_PYSCF_D_1_water_cc-pvtz_hf_cpcm -1.1830210053220405e-02
+E_2_water_cc-pvtz_b3lyp_iefpcm -7.6470789425826780e+01
+E_DIEL_2_water_cc-pvtz_b3lyp_iefpcm -1.0878987364114821e-02
+E_AT_PYSCF_D_2_water_cc-pvtz_b3lyp_iefpcm -7.6470789425826936e+01
+E_DIEL_AT_PYSCF_D_2_water_cc-pvtz_b3lyp_iefpcm -1.0878987358073579e-02
+END

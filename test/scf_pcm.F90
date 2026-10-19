@@ -53,6 +53,7 @@ program scf_pcm
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, &
                            ref_read_matrix3, ref_report
+   use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
 
    real(dp), parameter :: EPS_WATER = 78.3553_dp
@@ -109,6 +110,7 @@ program scf_pcm
    real(dp) :: e_ref, ep_ref, e_dm, ep_dm, de, dat, dp_c, dp_at
    real(dp), allocatable :: dm_ref(:, :, :)
    character(len=48) :: what
+   character(len=64) :: gkey
 
    set = "main"
    if (command_argument_count() >= 1) call get_command_argument(1, set)
@@ -124,6 +126,8 @@ program scf_pcm
    case default
       print '(a)', 'usage: scf_pcm [main|f]'; stop 1
    end select
+
+   call golden_begin('scf_pcm_'//trim(set))
 
    ! The f set needs f in the four-centre kernels; below that there is
    ! nothing to run yet.
@@ -200,6 +204,11 @@ program scf_pcm
       print '(a,a10,a8,a8,a,i1,a,i3,a,f20.12,a,f16.12,a,i0)', "  ", trim(cxyz(ic)), trim(cfn(ic)), &
          trim(cpcm(ic)), " nspin ", res%nspin, " iter ", res%iterations, "  E = ", res%energy, &
          "  E_diel = ", res%e_pcm, "  points ", res%pcm_npoints
+      write (gkey, '(i0)') ic
+      gkey = trim(gkey)//'_'//trim(cxyz(ic))//'_'//trim(cbas(ic))//'_'// &
+             trim(merge(cfn(ic), 'hf      ', len_trim(cfn(ic)) > 0))//'_'//trim(cpcm(ic))
+      call golden_put('E_'//trim(gkey), res%energy)
+      call golden_put('E_DIEL_'//trim(gkey), res%e_pcm)
 
       write (unit) int(bas%nao, int64), int(merge(bas%nao_sph, bas%nao, csph(ic)), int64), &
          int(natm, int64), int(res%nspin, int64), int(cna(ic), int64), int(cnb(ic), int64), &
@@ -254,12 +263,15 @@ program scf_pcm
             call trc_scf_run(bas, cna(ic), cnb(ic), opts2, res2, dguess=dm_ref)
             dat = abs(res2%energy - e_dm)
             dp_at = abs(res2%e_pcm - ep_dm)
+            call golden_put('E_AT_PYSCF_D_'//trim(gkey), res2%energy)
+            call golden_put('E_DIEL_AT_PYSCF_D_'//trim(gkey), res2%e_pcm)
             call ref_report(nfail, dat < TOL_E, trim(what)//': E at pyscf''s D', dat)
             call ref_report(nfail, dp_at < 1.0e-9_dp, trim(what)//': E_diel at pyscf''s D', dp_at)
          end if
       end if
       call bas%release()
    end do
+   call golden_end()
    close (unit)
    if (has_ref) call ref_close(refu)
    if (.not. has_ref) then

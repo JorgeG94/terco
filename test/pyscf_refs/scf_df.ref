@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: scf_df
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["scf_df"] -> gen_scf_df
 # pyscf: 2.14.0
-# hash: a686258799896fb0182f425f40404858534e4c15d1c2f068ff382b1f0c100b29
-# files: test/pyscf_refs/generate.py test/scf_df.F90 test/basis_sets/def2-universal-jkfit.json test/basis_sets/cc-pvdz.json test/basis_sets/6-31gs.json test/water.xyz test/formamide.xyz
+# hash-scheme: case-ast-v1
+# hash: cc4fc8a04096fa7c59ec1bf6b46f9c80069ff8a8bee2c729fb131a962912f0c0
+# files: test/scf_df.F90 test/basis_sets/def2-universal-jkfit.json test/basis_sets/cc-pvdz.json test/basis_sets/6-31gs.json test/water.xyz test/formamide.xyz
 NCASE 12
 NAME_0 water_cc-pvdz_hf
 E_0 -7.60270822853478307e+01
