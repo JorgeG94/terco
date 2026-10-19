@@ -523,11 +523,11 @@ contains
       end do
    end subroutine df_jk_build
 
-   !! This object's dimensions, and whether `setup` has already fitted `bpk`
-   !! -- what a chained RI-MP2 step checks before reusing it instead of
-   !! redoing the metric/Cholesky/3c/trsm on the same auxiliary basis (see
-   !! `packed_b` below, and trc_rimp2_driver.F90's own `dfjk` argument).
    pure subroutine df_jk_dims(this, n, naux, npack)
+      !! This object's dimensions, and whether `setup` has already fitted `bpk`
+      !! -- what a chained RI-MP2 step checks before reusing it instead of
+      !! redoing the metric/Cholesky/3c/trsm on the same auxiliary basis (see
+      !! `packed_b` below, and trc_rimp2_driver.F90's own `dfjk` argument).
       class(df_jk_t), intent(in) :: this
       integer, intent(out) :: n, naux, npack
       n = this%n
@@ -540,14 +540,14 @@ contains
       r = this%ready
    end function df_jk_is_ready
 
-   !! B itself, packed (mu >= nu, p = mu(mu-1)/2 + nu) and already L^-T
-   !! applied -- (npack, naux), device-resident. A chained RI-MP2 step
-   !! reads this directly instead of rebuilding it: L^-T acts only on the
-   !! auxiliary index and the occupied/virtual half-transform only on
-   !! (mu, nu), so the two commute, and the half-transform run on THIS is
-   !! exactly RI-MP2's own B, no further triangular solve needed. Null
-   !! unless `is_ready()`.
    function df_jk_packed_b(this) result(p)
+      !! B itself, packed (mu >= nu, p = mu(mu-1)/2 + nu) and already L^-T
+      !! applied -- (npack, naux), device-resident. A chained RI-MP2 step
+      !! reads this directly instead of rebuilding it: L^-T acts only on the
+      !! auxiliary index and the occupied/virtual half-transform only on
+      !! (mu, nu), so the two commute, and the half-transform run on THIS is
+      !! exactly RI-MP2's own B, no further triangular solve needed. Null
+      !! unless `is_ready()`.
       class(df_jk_t), intent(in), target :: this
       real(dp), pointer :: p(:, :)
       if (this%ready) then
@@ -557,14 +557,14 @@ contains
       end if
    end function df_jk_packed_b
 
-   !! L, the metric's Cholesky factor (M = (P|Q) = L L^T), lower-triangular,
-   !! (naux, naux), device-resident -- see this type's `chol` field comment.
-   !! The DF gradient (trc_scf_grad_df.F90) solves against this directly
-   !! (one triangular solve, `lp%trsm`/`lp%trsv` with "L","T") to turn the
-   !! Cholesky-space coefficients `build` already computes into the actual
-   !! fitting coefficients its envelope-theorem derivative is stationary in,
-   !! with no metric or Cholesky recomputation. Null unless `is_ready()`.
    function df_jk_chol(this) result(p)
+      !! L, the metric's Cholesky factor (M = (P|Q) = L L^T), lower-triangular,
+      !! (naux, naux), device-resident -- see this type's `chol` field comment.
+      !! The DF gradient (trc_scf_grad_df.F90) solves against this directly
+      !! (one triangular solve, `lp%trsm`/`lp%trsv` with "L","T") to turn the
+      !! Cholesky-space coefficients `build` already computes into the actual
+      !! fitting coefficients its envelope-theorem derivative is stationary in,
+      !! with no metric or Cholesky recomputation. Null unless `is_ready()`.
       class(df_jk_t), intent(in), target :: this
       real(dp), pointer :: p(:, :)
       if (this%ready) then
