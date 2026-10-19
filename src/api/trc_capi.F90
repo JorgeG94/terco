@@ -2553,8 +2553,10 @@ contains
       !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
       !!     gradient exists; `trc_scf_gradient` is the SCF reference term
       !!     only.
-      !!   - --df: density-fitted J/K have no gradient kernel; `eri%gradient`
-      !!     is the four-centre path only.
+      !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
+      !!     range-separated -- the SCF refuses those first), or with the fit
+      !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
+      !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
       !!   - PCM: no cavity/surface-charge derivative exists.
       !!   - a multi-rank context (`cx%fcomm /= -1`). `trc_scf_gradient`
       !!     takes no communicator: it rebuilds the pair list and ERI
@@ -2615,8 +2617,34 @@ contains
          return
       end if
       if (cx%opts%df) then
-         cx%message = "trc_run_gradient: --df gradient not implemented yet (no density-fitted gradient kernel)"
-         return
+         ! The fitted gradient differentiates the SAME fit the SCF converged
+         ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
+         ! fit still in place, and inherits the DF-SCF's own scope:
+         ! restricted, Cartesian, no range separation. trc_scf_settings
+         ! and trc_scf_df already refuse the SCF outside it; checked again
+         ! here so the message names the gradient -- and BEFORE the fit
+         ! check, because a result taken from a file (trc_load_scf) reaches
+         ! this point without ever having met the DF-SCF's own refusals.
+         if (cx%res%nspin /= 1) then
+            cx%message = "trc_run_gradient: --df gradient is restricted (closed-shell) only, as --df is"
+            return
+         end if
+         if (cx%bb%b%spherical) then
+            cx%message = "trc_run_gradient: --df gradient needs a Cartesian basis -- the DF derivative kernels are Cartesian only"
+            return
+         end if
+         if (have_func) then
+            if (func%exx_lr /= 0.0_dp) then
+               cx%message = "trc_run_gradient: --df with a range-separated functional is refused "// &
+                            "(the DF-SCF fits no erf exchange)"
+               return
+            end if
+         end if
+         if (.not. cx%df_fit_ok) then
+            status = TRC_ERR_STATE
+            cx%message = "trc_run_gradient: --df gradient needs the density fit the SCF ran with"
+            return
+         end if
       end if
       if (len_trim(cx%opts%pcm_model) > 0) then
          cx%message = "trc_run_gradient: PCM gradient not implemented yet (no cavity/charge derivative)"
@@ -2628,7 +2656,22 @@ contains
       end if
       if (allocated(cx%grad)) deallocate (cx%grad)
       allocate (cx%grad(3, cx%natm))
-      if (have_func) then
+      if (cx%opts%df) then
+         ! The pair list at the threshold the fit's own was built with
+         ! (trc_run_scf's `pl%build(cx%bb%b, cx%opts%eri_thresh)`), so the
+         ! derivative runs over exactly the (mu nu|P) the energy used.
+         if (have_func) then
+            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                  cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                  func=func, grid_level=cx%opts%grid_level, &
+                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b)
+         else
+            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                  cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                  dfjk=cx%dfjk, aux=cx%jb%b)
+         end if
+      else if (have_func) then
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                func=func, grid_level=cx%opts%grid_level, &

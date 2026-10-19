@@ -39,6 +39,8 @@ module trc_scf_grad
    use trc_sph, only: sph_sph_to_cart
    use trc_xc_functional, only: trc_xc_functional_t
    use trc_xc_grad, only: xc_gradient_add
+   use trc_scf_df, only: df_jk_t
+   use trc_scf_grad_df, only: df_two_electron_gradient
    use trc_vv10_grad, only: vv10_gradient_add
    use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
    implicit none
@@ -120,7 +122,7 @@ contains
    end subroutine energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
-                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level)
+                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -201,14 +203,24 @@ contains
       !! semilocal grid's: the gradient has to be taken on the grid the
       !! energy used, and a caller's own default must not drift from the
       !! SCF's.
+      type(df_jk_t), intent(in), optional, target :: dfjk
+      !! DENSITY FITTING (`--df`): present (with `aux`), the two-electron
+      !! term is the FITTED one, trc_scf_grad_df's df_two_electron_gradient
+      !! over the SAME fit (`dfjk`'s retained B and metric Cholesky factor)
+      !! the SCF converged with, instead of eri%gradient's four-centre one --
+      !! no ERI engine is built at all. Restricted and Cartesian only, the
+      !! DF-SCF's own scope, and no range separation (the DF-SCF fits no
+      !! erf exchange): each is an error stop here, refused up front by
+      !! trc_capi.F90's trc_run_gradient.
+      type(trc_basis_t), intent(inout), optional :: aux
+      !! The auxiliary (jkfit) basis `dfjk` was fitted with.
 
       type(trc_pairlist_t) :: pl
-      type(trc_eri_t) :: eri
       integer :: nlc_level
       integer :: nao, nsp, s
       integer :: nocc(2)
       real(dp) :: occ_s, exx_use, exx_lr_use, omega_use
-      real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :), grad_lr(:, :)
+      real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :)
 
       nao = b%nao
       nsp = merge(b%nao_sph, b%nao, b%spherical)
@@ -277,35 +289,26 @@ contains
 
       call pl%build(b, thresh)
       call pl%to_device()
-      call eri%build(b, thresh)
 
-      ! --- two-electron, first: this call starts `grad` from zero ---
-      call eri%gradient(b, dens, grad, k_scale=exx_use)
-
-      ! --- the long-range exchange gradient, for a range-separated
-      ! hybrid: a SECOND eri%gradient pass (j_scale=0, k_scale=exx_lr,
-      ! omega), added into `grad` next to the full-range term above --
-      ! exactly how build_g assembles the energy (trc_scf_fock.F90's own
-      ! j_scale=0.0_dp, k_scale=exx_lr, omega=omega fock_resident call,
-      ! added into gmat_c). eri%gradient always starts ITS OWN `grad_lr`
-      ! from zero (this module's own header), so the two passes are added
-      ! here rather than accumulated into one eri%gradient call. Skipped
-      ! entirely when exx_lr is zero (the default): no second build, no
-      ! second allocation, same cost as before this argument existed. ---
-      if (exx_lr_use /= 0.0_dp) then
-         allocate (grad_lr(3, b%natm))
-         call eri%gradient(b, dens, grad_lr, j_scale=0.0_dp, k_scale=exx_lr_use, omega=omega_use)
-         grad = grad + grad_lr
-         deallocate (grad_lr)
+      if (present(dfjk)) then
+         if (.not. present(aux)) error stop "trc_scf_gradient: dfjk given without its auxiliary basis"
+         if (nspin /= 1 .or. b%spherical .or. exx_lr_use /= 0.0_dp) then
+            error stop "trc_scf_gradient: the --df gradient is restricted, Cartesian and not range-separated"
+         end if
+         ! --- density-fitted two-electron term, in the actual-energy
+         ! convention (no halving: df_two_electron_gradient differentiates
+         ! E_2 itself, not eri%gradient's doubled trace) ---
+         call aux%to_device()
+         grad = 0.0_dp
+         !$acc enter data copyin(dtot, grad)
+         call df_two_electron_gradient(b, aux, pl, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, exx_use, grad)
+      else
+         call two_electron_4c(b, thresh, dens, exx_use, exx_lr_use, omega_use, grad)
+         ! --- one-electron, added on top. `wmat` is already present (and
+         ! already holds the right numbers, from energy_weighted_density
+         ! above) -- only `dtot` and `grad` are freshly copied up. ---
+         !$acc enter data copyin(dtot, grad)
       end if
-      grad = 0.5_dp*grad   ! see this module's own header: eri%gradient's
-                           ! convention is twice d(e_two)/dR -- true of
-                           ! both passes above, added before this halving.
-
-      ! --- one-electron, added on top. `wmat` is already present (and
-      ! already holds the right numbers, from energy_weighted_density
-      ! above) -- only `dtot` and `grad` are freshly copied up. ---
-      !$acc enter data copyin(dtot, grad)
       call trc_1e_gradient(b, pl, wmat, dtot, grad)
 
       ! --- exchange-correlation, added on top, LDA/GGA only. `dens` is
@@ -338,9 +341,46 @@ contains
       ! --- nuclear repulsion, host arithmetic, added on top ---
       call nuclear_repulsion_gradient(b, grad)
 
-      call eri%release()
       call pl%release()
       deallocate (wmat, dtot, dens)
    end subroutine trc_scf_gradient
+
+   subroutine two_electron_4c(b, thresh, dens, exx_use, exx_lr_use, omega_use, grad)
+      !! The four-centre two-electron gradient (eri%gradient), halved into
+      !! the actual-energy convention -- trc_scf_gradient's non-`--df`
+      !! branch, on its own ERI engine. `grad` is OVERWRITTEN (host).
+      type(trc_basis_t), intent(inout) :: b
+      real(dp), intent(in) :: thresh, exx_use, exx_lr_use, omega_use
+      real(dp), intent(in) :: dens(:, :, :)
+      real(dp), intent(out) :: grad(3, b%natm)
+      type(trc_eri_t) :: eri
+      real(dp), allocatable :: grad_lr(:, :)
+
+      call eri%build(b, thresh)
+      ! --- two-electron, first: this call starts `grad` from zero ---
+      call eri%gradient(b, dens, grad, k_scale=exx_use)
+
+      ! --- the long-range exchange gradient, for a range-separated
+      ! hybrid: a SECOND eri%gradient pass (j_scale=0, k_scale=exx_lr,
+      ! omega), added into `grad` next to the full-range term above --
+      ! exactly how build_g assembles the energy (trc_scf_fock.F90's own
+      ! j_scale=0.0_dp, k_scale=exx_lr, omega=omega fock_resident call,
+      ! added into gmat_c). eri%gradient always starts ITS OWN `grad_lr`
+      ! from zero (this module's own header), so the two passes are added
+      ! here rather than accumulated into one eri%gradient call. Skipped
+      ! entirely when exx_lr is zero (the default): no second build, no
+      ! second allocation, same cost as before this argument existed. ---
+      if (exx_lr_use /= 0.0_dp) then
+         allocate (grad_lr(3, b%natm))
+         call eri%gradient(b, dens, grad_lr, j_scale=0.0_dp, k_scale=exx_lr_use, omega=omega_use)
+         grad = grad + grad_lr
+         deallocate (grad_lr)
+      end if
+      grad = 0.5_dp*grad   ! see this module's own header: eri%gradient's
+                           ! convention is twice d(e_two)/dR -- true of
+                           ! both passes above, added before this halving.
+
+      call eri%release()
+   end subroutine two_electron_4c
 
 end module trc_scf_grad
