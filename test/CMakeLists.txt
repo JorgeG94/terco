@@ -287,12 +287,13 @@ terco_add_check(check_full_grad_vs_pyscf check_full_grad_vs_pyscf.F90 NEEDS_BASI
 # force_cart: cc-pVDZ comes back SPHERICAL here, exercising
 # trc_scf_gradient's fold TOGETHER with the XC term (see
 # check_dft_grad_vs_pyscf.F90's own header) -- water/formamide RKS
-# PBE/B3LYP on spherical cc-pVDZ and Cartesian 6-31G*, and UKS PBE NH2
-# from a fixed (core-guess) initial density.
+# PBE/B3LYP on spherical cc-pVDZ and Cartesian 6-31G*, and UKS PBE/B3LYP
+# NH2 from a fixed (core-guess) initial density -- B3LYP NH2 is the
+# GLOBAL-hybrid UKS case (nonzero func%exx, omega/exx_lr still zero).
 foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              formamide_pbe_ccpvdz_sph formamide_b3lyp_ccpvdz_sph
              formamide_pbe_631gs formamide_b3lyp_631gs
-             nh2_pbe_ccpvdz_sph)
+             nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph)
   if(case STREQUAL "water_pbe_ccpvdz_sph")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
@@ -316,6 +317,10 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
   elseif(case STREQUAL "formamide_b3lyp_631gs")
     set(xyz formamide.xyz)
     set(json basis_sets/6-31gs.json)
+    set(func b3lyp)
+  elseif(case STREQUAL "nh2_b3lyp_ccpvdz_sph")
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
     set(func b3lyp)
   else()
     set(xyz nh2.xyz)

@@ -1,0 +1,13 @@
+# terco pyscf reference v1
+# case: check_dft_grad_vs_pyscf_nh2_b3lyp_ccpvdz_sph
+# generator: test/pyscf_refs/generate.py CASES["dft_grad_nh2_b3lyp_ccpvdz_sph"] -> gen_dft_grad
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 5b5e4eaf74fbad281370d75791151a0bef706ed585a04ae9785ae30bdf20b01a
+# files: test/check_dft_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/nh2.xyz
+NAT 3
+NAO 24
+GRAD 3 3
+1.47692271387503158e-09 -2.42961559513060246e-16 6.81594718034683744e-02 -7.34360524660647083e-10 -2.69645103464948299e-02 -3.40801912235078053e-02
+-7.34360438186562669e-10 2.69645103464981606e-02 -3.40801912235071391e-02
+END

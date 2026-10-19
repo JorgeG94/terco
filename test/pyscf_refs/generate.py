@@ -2578,6 +2578,8 @@ CASES = {
         "formamide_b3lyp_631gs", "formamide.xyz", "basis_sets/6-31gs.json", "b3lyp"),
     "dft_grad_nh2_pbe_ccpvdz_sph": lambda: gen_dft_grad(
         "nh2_pbe_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "dft_grad_nh2_b3lyp_ccpvdz_sph": lambda: gen_dft_grad(
+        "nh2_b3lyp_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
     "rys_fock_water_ccpvdz": lambda: gen_rys_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", 1e-9),
     "rys_fock_water_ccpvtz": lambda: gen_rys_fock("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json", 1e-10),
     "rys_fock_formamide_def2tzvp": lambda: gen_rys_fock(
