@@ -55,12 +55,14 @@ class RestaleTests(unittest.TestCase):
         self.assertEqual(restaled(src), {"scf_df"})
 
     def test_shared_helper_restales_exactly_its_users(self):
-        # converge_tight is called by gen_rks, gen_scf_robust, and through
-        # _gen_rimp2_one / _gen_scf_df_one by gen_rimp2 / gen_scf_df. Update
-        # this set when a new generator starts calling it.
+        # converge_tight is called by gen_rks, gen_scf_robust, gen_rimp2_uhf,
+        # gen_dh, gen_sph_corr, and through _gen_rimp2_one / _gen_scf_df_one
+        # by gen_rimp2 / gen_scf_df. Update this set when a new generator
+        # starts calling it.
         src = edit_once(SOURCE, "conv_tol_grad=1.0e-8, max_cycle=200,",
                         "conv_tol_grad=1.0e-8, max_cycle=201,")
-        self.assertEqual(restaled(src), {"rks", "scf_robust", "rimp2", "scf_df"})
+        self.assertEqual(restaled(src),
+                         {"rks", "scf_robust", "rimp2", "scf_df", "rimp2_uhf", "dh", "sph_corr"})
 
     def test_case_arguments_restale_only_that_case(self):
         src = edit_once(SOURCE, '"basis_sets/cc-pvdz.json", 1e-9),',
