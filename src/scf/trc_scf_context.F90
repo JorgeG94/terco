@@ -14,6 +14,7 @@ module trc_scf_context
    use pic_types, only: dp, int64
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
+   use pic_profiler, only: profiler_start, profiler_stop
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_sph, only: sph_cart_to_sph
    use trc_eri, only: trc_eri_t
@@ -187,6 +188,7 @@ contains
 
       if (cfg%dft) then
          call tphase%start()
+         call profiler_start("scf: grid", nvtx_only=.true.)
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
@@ -216,6 +218,7 @@ contains
             call this%xg_nlc%to_device()
             this%nlc_built = .true.
          end if
+         call profiler_stop("scf: grid")
          this%t_grid = tphase%get_elapsed_time()
       end if
    end subroutine scf_ctx_setup

@@ -4,12 +4,12 @@
 # that the two agree -- the same thing scf_mpi.F90 checks for the library's
 # own Fortran and C entries, here for the thing a user actually runs.
 #
-# Water RHF and B3LYP must match between np 1 and np 2 to 1e-8 (scf_mpi's
-# own tolerance); wB97X-V (VV10) must be refused cleanly, on every rank, at
-# np 2. RI-MP2's correlation energy must match between np 1 and np 2 to
-# 1e-10, with B distributed over the ranks and passed round them, both with
-# the build's default transport and staged through the host
-# (TERCO_MPI_DEVICE=0).
+# Water RHF, B3LYP and wB97X-V (VV10 split round-robin over pass 2's grid
+# points, one allreduce) must all match between np 1 and np 2 to 1e-8
+# (scf_mpi's own tolerance). RI-MP2's correlation energy must match between
+# np 1 and np 2 to 1e-10, with B distributed over the ranks and passed
+# round them, both with the build's default transport and staged through
+# the host (TERCO_MPI_DEVICE=0).
 #
 import re
 import subprocess
@@ -37,7 +37,7 @@ def main():
     mpiexec, npflag, terco_cli, xyz, basis_dir = sys.argv[1:6]
     ok = True
 
-    for label, extra in [("RHF", []), ("B3LYP", ["-f", "b3lyp"])]:
+    for label, extra in [("RHF", []), ("B3LYP", ["-f", "b3lyp"]), ("wB97X-V", ["-f", "wb97x-v"])]:
         p1 = run(mpiexec, npflag, 1, terco_cli, xyz, basis_dir, *extra)
         p2 = run(mpiexec, npflag, 2, terco_cli, xyz, basis_dir, *extra)
         if p1.returncode != 0 or p2.returncode != 0:
@@ -79,15 +79,6 @@ def main():
         print(f"cli_mpi_check: RI-MP2 ({label})  np1 = {c1:.12f}  np2 = {c2:.12f}  diff = {diff:.2e}")
         if diff > MP2_TOL:
             ok = False
-
-    # wB97X-V needs VV10, which the library refuses over more than one rank
-    # -- every rank must say so and exit non-zero, not hang.
-    pv = run(mpiexec, npflag, 2, terco_cli, xyz, basis_dir, "-f", "wb97x-v")
-    refused = pv.returncode != 0 and "VV10" in (pv.stdout + pv.stderr)
-    print(f"cli_mpi_check: wB97X-V at np 2  rc={pv.returncode}  refused={refused}")
-    if not refused:
-        print(pv.stdout, pv.stderr)
-        ok = False
 
     print("cli_mpi_check: PASS" if ok else "cli_mpi_check: FAIL")
     return 0 if ok else 1
