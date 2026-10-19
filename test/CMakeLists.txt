@@ -973,6 +973,22 @@ terco_add_check(scf_cphf_formamide_ccpvdz scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_R
 terco_add_check(scf_cphf_uhf scf_cphf_uhf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 
 #
+# Coupled-perturbed KS (src/scf/trc_cpks.F90): the static dipole
+# polarizability, RKS on water and formamide for SVWN (LDA), PBE and
+# B3LYP (GGA/hybrid-GGA), 6-31G*, against test/pyscf_refs/generate.py's
+# gen_cpks (pyscf.prop.polarizability.rks, grid matched to terco's own --
+# see scf_cpks.F90's own header). One executable, one ARGS set per case.
+#
+terco_add_check(scf_cpks scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/6-31gs.json water 6-31gs svwn cpks_svwn_probe.bin)
+terco_add_check(scf_cpks_pbe scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/6-31gs.json water 6-31gs pbe cpks_pbe_probe.bin)
+terco_add_check(scf_cpks_b3lyp scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/6-31gs.json water 6-31gs b3lyp cpks_b3lyp_probe.bin)
+terco_add_check(scf_cpks_formamide_pbe scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS formamide.xyz basis_sets/6-31gs.json formamide 6-31gs pbe cpks_formamide_pbe_probe.bin)
+
+#
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks
 # when MPI is on, each run asserting the single-rank energies. No

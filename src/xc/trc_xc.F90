@@ -106,14 +106,15 @@ module trc_xc
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, XC_MAX_KERNELS
+   use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
+      xc_eval_point_fxc, XC_MAX_KERNELS
    use trc_collocation, only: shell_collocate, NCART_MAX
    use trc_linalg, only: trc_linalg_t
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
 
-   public :: trc_xc_rks, trc_xc_uks, XC_RHO_TOL
+   public :: trc_xc_rks, trc_xc_uks, trc_xc_fxc_rks, XC_RHO_TOL
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
    !! A batch whose bound on rho is below this is skipped. The functionals'
@@ -417,6 +418,341 @@ contains
          nelec = es(2)
       end if
    end subroutine xc_drive
+
+   !
+   ! The CPKS XC kernel response, restricted: f_xc[D_U]_uv = integral
+   ! phi_u phi_v (v2rho2 rho_U + v2rhosigma dsigma_U) for LDA, plus the GGA
+   ! sigma-response terms through grad rho (ground state) and grad rho_U
+   ! (trial) -- xc_resp_point_body below has the full per-point formula
+   ! (trc_cpks's own header only names f_xc[D_U] as a term, it does not
+   ! derive it). Same grid
+   ! batches, same collocate-then-GEMM pipeline as `trc_xc_rks` (xc_drive's
+   ! own header): the one difference is gathering TWO densities per batch
+   ! (`dmat`, fixed for a whole CPKS solve, and `dmat_u`, rebuilt every CG
+   ! iteration) instead of one, and a point kernel that evaluates the
+   ! second derivatives instead of the first. No density screening and no
+   ! rank splitting here -- unlike the energy path, every CPKS iteration
+   ! needs the SAME linear operator, and the trial density is a CG
+   ! iterate the solve drives towards zero as it converges, so screening
+   ! on ITS magnitude would tighten from one matvec to the next and break
+   ! that assumption -- see `eri_fock`'s own `density_screen` doc
+   ! (trc_eri.F90) for the identical reason on the ERI side, where the
+   ! coupled-perturbed equations have the same requirement. A later
+   ! optimisation can screen on the GROUND density alone (fixed across
+   ! the CG loop, unlike `dmat_u`).
+   !
+   ! `dmat` and `dmat_u` are both already device-resident (same contract as
+   ! trc_cphf's `cmo`/`D_U`): the caller copies `dmat` in once, before the
+   ! CG loop starts, and keeps `dmat_u` resident from one matvec to the
+   ! next. `v_resp` is written in full (not accumulated into); the caller
+   ! adds it into its own Fock-response matrix.
+   !
+   subroutine trc_xc_fxc_rks(b, xg, func, dmat, dmat_u, v_resp, budget, la)
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in) :: dmat(b%nao, b%nao), dmat_u(b%nao, b%nao)
+      real(dp), intent(out) :: v_resp(b%nao, b%nao)
+      integer(int64), intent(in), optional :: budget
+      type(trc_linalg_t), intent(inout), optional, target :: la
+
+      integer :: nao
+      integer(int64) :: need, nchi, sa, sb, sc, cap
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, s
+      integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
+      integer :: nwork
+      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:), dpack(:, :, :)
+      type(trc_linalg_t), target :: la_own
+      type(trc_linalg_t), pointer :: lp
+      integer :: kid(XC_MAX_KERNELS)
+      real(dp) :: coef(XC_MAX_KERNELS)
+      logical :: owns_la
+
+      nao = b%nao
+      kid = func%kid
+      coef = func%coef
+      v_resp = 0.0_dp
+      if (xg%npts == 0) return
+      cap = 8388608_int64
+      if (present(budget)) cap = max(budget, 1_int64)
+
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
+      allocate (npp(xg%nbatch), nlp(xg%nbatch))
+      allocate (dpack(nao, nao, 2))
+
+      owns_la = .not. present(la)
+      if (present(la)) then
+         lp => la
+      else
+         lp => la_own
+         call la_own%init(1)
+      end if
+
+      !$acc data copyin(dmat, dmat_u, kid, coef) copy(v_resp) create(npp, nlp, dpack)
+      !$acc update device(v_resp)
+      call xc_pack2(nao, dmat, dmat_u, dpack)
+      do ib = 1, xg%nbatch
+         nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         npb = xg%b_off(ib + 1) - xg%b_off(ib)
+         npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((nloc + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+      end do
+      !$acc update device(npp, nlp)
+
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > cap .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            b1 = ib
+         end do
+         nchi = max(need, 1_int64)
+         p0 = xg%b_off(b0)
+         np = xg%b_off(b1 + 1) - p0
+         nb = b1 - b0 + 1
+         allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
+         do k0 = 1, nb
+            ord(k0) = b0 + k0 - 1
+         end do
+         call sort_by_shape(nb, npp, nlp, ord)
+         need = 0
+         npairs = 0
+         nwork = 0
+         pb_off(1) = 0
+         wk_off(1) = 0
+         do k0 = 1, nb
+            ib = ord(k0)
+            c_off(ib) = int(need)
+            pr_off(ib) = npairs
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            pb_off(k0 + 1) = npairs
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))
+            wk_off(k0 + 1) = nwork
+         end do
+
+         allocate (chi(nchi), gchi(nchi, 3), xt(nchi, 2), zt(nchi, 1))
+         allocate (dloc(max(npairs, 1), 2), vloc(max(npairs, 1)))
+         !$acc enter data create(chi, gchi, xt, zt, dloc, vloc) copyin(c_off, pr_off, ord, pb_off, wk_off)
+
+         call xc_zero(nchi, 1, chi, zt)
+         call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                           c_off, npp, xg%nbatch, nchi, chi, gchi)
+         call xc_gather(npairs, nb, ord, pb_off, 2, nao, dpack, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                        nlp, xg%nbatch, dloc)
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               sa = int(mp, int64)*int(ml, int64)
+               sb = int(ml, int64)*int(ml, int64)
+               do s = 1, 2
+                  call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
+                                       dloc(pr_off(ib) + 1, s), ml, sb, 0.0_dp, xt(c_off(ib) + 1, s), mp, sa, cnt)
+               end do
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_resp_points(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, &
+                             xg%nbatch, func%nk, kid, coef, nchi, chi, gchi, xt, zt)
+
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               sa = int(mp, int64)*int(ml, int64)
+               sc = int(ml, int64)*int(ml, int64)
+               call lp%gemm_strided("T", "N", ml, ml, mp, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
+                                    zt(c_off(ib) + 1, 1), mp, sa, 0.0_dp, vloc(pr_off(ib) + 1), ml, sc, cnt)
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_resp_scatter(npairs, nb, ord, pb_off, nao, v_resp, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                              nlp, xg%nbatch, vloc)
+
+         !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, c_off, pr_off, ord, pb_off, wk_off)
+         deallocate (chi, gchi, xt, zt, dloc, vloc, ord, pb_off, wk_off)
+         b0 = b1 + 1
+      end do
+      if (owns_la) call la_own%release()
+      !$acc end data
+   end subroutine trc_xc_fxc_rks
+
+   ! dpack(:,:,1) = a, dpack(:,:,2) = bb -- packs the ground and trial
+   ! densities into one array so a single `xc_gather` call (nspin = 2)
+   ! fetches both per-batch tiles, rather than two differently-shaped calls.
+   subroutine xc_pack2(nao, a, bb, dpack)
+      integer, intent(in) :: nao
+      real(dp), intent(in) :: a(nao, nao), bb(nao, nao)
+      real(dp), intent(inout) :: dpack(nao, nao, 2)
+      integer :: i, j
+      do concurrent(j=1:nao, i=1:nao)
+         dpack(i, j, 1) = a(i, j)
+         dpack(i, j, 2) = bb(i, j)
+      end do
+   end subroutine xc_pack2
+
+   !
+   ! Kernel 3 for the response pass: one thread per point, reading the
+   ! ground state's row of X (slot 1) and the trial density's (slot 2),
+   ! writing the single response tile `zt(:,1)`. See trc_xc_fxc_rks's own
+   ! header for the formula.
+   !
+   subroutine xc_resp_points(np, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                             nk, kid, coef, nchi, chi, gchi, xt, zt)
+      integer, intent(in) :: np, p0, npts, nbatch, nk
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 2)
+      real(dp), intent(inout) :: zt(nchi, 1)
+      integer :: g
+
+      do concurrent(g=1:np)
+         call xc_resp_point_body(p0 + g - 1, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                 nk, kid, coef, nchi, chi, gchi, xt, zt)
+      end do
+   end subroutine xc_resp_points
+
+   pure subroutine xc_resp_point_body(gg, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                      nk, kid, coef, nchi, chi, gchi, xt, zt)
+      !$acc routine seq
+      integer, intent(in) :: gg, npts, nbatch, nk
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 2)
+      real(dp), intent(inout) :: zt(nchi, 1)
+
+      integer :: ib, nloc, ld, off, u, i
+      real(dp) :: wg, x, xu, sigma, dsig_u, vsigma, v2rho2, v2rhosigma, v2sigma2
+      real(dp) :: rho, rho_u, zg_r
+      real(dp) :: grho(3), grho_u(3), zv_r(3)
+
+      ib = batch_of(gg)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      wg = w(gg)
+      rho = 0.0_dp
+      grho = 0.0_dp
+      rho_u = 0.0_dp
+      grho_u = 0.0_dp
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         x = xt(i, 1)
+         xu = xt(i, 2)
+         rho = rho + x*chi(i)
+         rho_u = rho_u + xu*chi(i)
+         grho(1) = grho(1) + 2.0_dp*x*gchi(i, 1)
+         grho(2) = grho(2) + 2.0_dp*x*gchi(i, 2)
+         grho(3) = grho(3) + 2.0_dp*x*gchi(i, 3)
+         grho_u(1) = grho_u(1) + 2.0_dp*xu*gchi(i, 1)
+         grho_u(2) = grho_u(2) + 2.0_dp*xu*gchi(i, 2)
+         grho_u(3) = grho_u(3) + 2.0_dp*xu*gchi(i, 3)
+      end do
+      sigma = grho(1)**2 + grho(2)**2 + grho(3)**2
+      call xc_eval_point_fxc(nk, kid, coef, rho, sigma, vsigma, v2rho2, v2rhosigma, v2sigma2)
+      ! dsigma_U = 2 grad(rho).grad(rho_U) -- sigma's own response to the
+      ! trial density, through the UNPERTURBED grad(rho) (ground state).
+      dsig_u = 2.0_dp*(grho(1)*grho_u(1) + grho(2)*grho_u(2) + grho(3)*grho_u(3))
+      zg_r = wg*(v2rho2*rho_u + v2rhosigma*dsig_u)
+      ! The GGA term has two pieces: the second-derivative response
+      ! multiplying the UNPERTURBED grad(rho) (vsigma's own value changes),
+      ! plus vsigma (unperturbed) multiplying the TRIAL gradient directly
+      ! (the explicit grad(rho) factor in the energy path's own vxc becomes
+      ! grad(rho_U) here) -- trc_xc_fxc_rks's own header.
+      zv_r(1) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(1) + wg*2.0_dp*vsigma*grho_u(1)
+      zv_r(2) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(2) + wg*2.0_dp*vsigma*grho_u(2)
+      zv_r(3) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(3) + wg*2.0_dp*vsigma*grho_u(3)
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         zt(i, 1) = 0.5_dp*zg_r*chi(i) + zv_r(1)*gchi(i, 1) + zv_r(2)*gchi(i, 2) + zv_r(3)*gchi(i, 3)
+      end do
+   end subroutine xc_resp_point_body
+
+   !
+   ! Kernel 4 for the response pass: V_resp(u,v) += V_b(u,v) + V_b(v,u),
+   ! one output channel -- xc_scatter's own twin, duplicated rather than
+   ! made generic over nspin because its `vxc` here is genuinely rank 2
+   ! (trc_cpks has one response matrix, not a per-spin pair).
+   !
+   subroutine xc_resp_scatter(npairs, nb, ord, pb_off, nao, vxc, b_aooff, nbao, b_ao, nlp, nbatch, vloc)
+      integer, intent(in) :: npairs, nb, nao, nbao, nbatch
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      real(dp), intent(inout) :: vxc(nao, nao)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(in) :: vloc(max(npairs, 1))
+      integer :: t, au, av
+      real(dp) :: acc_a
+
+#ifdef _OPENACC
+      do concurrent(t=1:npairs) local(au, av, acc_a)
+         call xc_resp_scatter_body(t, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
+                                   au, av, acc_a)
+         if (au > 0) then
+            !$acc atomic update
+            vxc(au, av) = vxc(au, av) + acc_a
+         end if
+      end do
+#else
+      do t = 1, npairs
+         call xc_resp_scatter_body(t, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
+                                   au, av, acc_a)
+         if (au > 0) vxc(au, av) = vxc(au, av) + acc_a
+      end do
+#endif
+   end subroutine xc_resp_scatter
+
+   pure subroutine xc_resp_scatter_body(t, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
+                                        au, av, acc_a)
+      !$acc routine seq
+      integer, intent(in) :: t, nb, nbao, nbatch, npairs
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(in) :: vloc(npairs)
+      integer, intent(out) :: au, av
+      real(dp), intent(out) :: acc_a
+      integer :: k, ib, tt, nloc, ld, u, v, tvu
+
+      call pair_batch(t, nb, pb_off, k, tt)
+      ib = ord(k)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = nlp(ib)
+      u = mod(tt, ld) + 1
+      v = tt/ld + 1
+      acc_a = 0.0_dp
+      au = 0
+      av = 0
+      if (u > nloc .or. v > nloc) return
+      tvu = pb_off(k) + (u - 1)*ld + v
+      acc_a = vloc(t) + vloc(tvu)
+      au = b_ao(b_aooff(ib) + u - 1)
+      av = b_ao(b_aooff(ib) + v - 1)
+   end subroutine xc_resp_scatter_body
 
    ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
    subroutine sum_ranks(comm, g, n)

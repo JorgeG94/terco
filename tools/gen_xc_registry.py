@@ -381,12 +381,14 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         f"{INDENT}use pic_types, only: dp",
     ]
     for stem in available_kernels:
-        lines.append(f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar")
+        lines.append(f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar, &")
+        lines.append(f"{INDENT}{INDENT}{stem}_vxc_fxc_unpolar")
     lines += [
         f"{INDENT}implicit none",
         f"{INDENT}private",
         "",
         f"{INDENT}public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name",
+        f"{INDENT}public :: xc_eval_point_fxc",
         f"{INDENT}public :: xc_is_double_hybrid",
         f"{INDENT}public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS",
         f"{INDENT}public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS",
@@ -490,6 +492,48 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}{INDENT}vsigma = vsigma + coef(k)*vs")
     lines.append(f"{INDENT}{INDENT}end do")
     lines.append(f"{INDENT}end subroutine xc_eval_point")
+    lines.append("")
+
+    # xc_eval_point_fxc: the restricted-spin second derivatives CPKS needs
+    # (v2rho2, v2rhosigma, v2sigma2), plus vsigma -- the GGA response term
+    # needs both the kernel's second derivative AND its first, since the
+    # grad-rho factor the energy path's own vsigma multiplies is itself
+    # unperturbed; only the coefficient in front of it (vsigma) and the
+    # trial density's own gradient respond. Same `_vxc_fxc_unpolar` routine
+    # check_xc.F90 already validates against libxc (tol_f = 1e-10) -- no
+    # new kernel arithmetic, only a new way of calling what is there.
+    lines.append(f"{INDENT}!")
+    lines.append(f"{INDENT}! The second derivatives of the composed functional at one point of a")
+    lines.append(f"{INDENT}! closed-shell density, plus vsigma (the GGA response needs both): the")
+    lines.append(f"{INDENT}! inputs trc_cpks's f_xc[D_U] contraction needs. `sigma` is |grad rho|^2;")
+    lines.append(f"{INDENT}! an LDA kernel leaves vsigma, v2rhosigma and v2sigma2 at zero.")
+    lines.append(f"{INDENT}!")
+    lines.append(f"{INDENT}pure subroutine xc_eval_point_fxc(nk, kid, coef, rho, sigma, vsigma, v2rho2, v2rhosigma, v2sigma2)")
+    lines.append(f"{INDENT}{INDENT}!$acc routine seq")
+    lines.append(f"{INDENT}{INDENT}integer, intent(in) :: nk, kid(XC_MAX_KERNELS)")
+    lines.append(f"{INDENT}{INDENT}real(dp), intent(in) :: coef(XC_MAX_KERNELS), rho, sigma")
+    lines.append(f"{INDENT}{INDENT}real(dp), intent(out) :: vsigma, v2rho2, v2rhosigma, v2sigma2")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: vr, vs, f2rr, f2rs, f2ss")
+    lines.append(f"{INDENT}{INDENT}integer :: k")
+    lines.append("")
+    lines.append(f"{INDENT}{INDENT}vsigma = 0.0_dp; v2rho2 = 0.0_dp; v2rhosigma = 0.0_dp; v2sigma2 = 0.0_dp")
+    lines.append(f"{INDENT}{INDENT}do k = 1, nk")
+    lines.append(f"{INDENT}{INDENT}{INDENT}vs = 0.0_dp; f2rs = 0.0_dp; f2ss = 0.0_dp")
+    lines.append(f"{INDENT}{INDENT}{INDENT}select case (kid(k))")
+    for stem in available_kernels:
+        if _family_of(stem) == "gga":
+            call = f"call {stem}_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)"
+        else:
+            call = f"call {stem}_vxc_fxc_unpolar(rho, vr, f2rr)"
+        lines.append(f"{INDENT}{INDENT}{INDENT}case ({kid_name[stem]}); {call}")
+    lines.append(f"{INDENT}{INDENT}{INDENT}case default; vr = 0.0_dp; f2rr = 0.0_dp")
+    lines.append(f"{INDENT}{INDENT}{INDENT}end select")
+    lines.append(f"{INDENT}{INDENT}{INDENT}vsigma = vsigma + coef(k)*vs")
+    lines.append(f"{INDENT}{INDENT}{INDENT}v2rho2 = v2rho2 + coef(k)*f2rr")
+    lines.append(f"{INDENT}{INDENT}{INDENT}v2rhosigma = v2rhosigma + coef(k)*f2rs")
+    lines.append(f"{INDENT}{INDENT}{INDENT}v2sigma2 = v2sigma2 + coef(k)*f2ss")
+    lines.append(f"{INDENT}{INDENT}end do")
+    lines.append(f"{INDENT}end subroutine xc_eval_point_fxc")
     lines.append("")
 
     lines.append(f"{INDENT}!")
