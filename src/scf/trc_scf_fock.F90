@@ -10,14 +10,15 @@
 ! header for what each piece means physically; this module is just where
 ! the arithmetic now lives.
 !
-! EXPLICIT-SHAPE DUMMIES THROUGHOUT. Every array here is a plain
-! argument, sized by an explicit dimension dummy (`nu_c`, `nlr_c`,
-! `nin_c`, `nxc`, `npcm`: 1 when the caller has no use for the real
-! array, matching trc_scf_state%alloc's own sizing). A `do concurrent`
-! body never names a derived-type component -- trc_scf_state's `st%...`
-! or trc_scf_context's `ctx%...` -- only one of these dummies: that is
-! what lets this compile correctly on the GPU build once the caller's
-! arrays are struct components instead of plain locals.
+! THE CALLER PASSES OBJECTS, THE KERNELS SEE ARRAYS. Each public routine
+! takes the run's basis, context (`scf_ctx_t`), settings (`scf_settings_t`)
+! and per-iteration state (`scf_state_t`) and picks out what it needs, so
+! the SCF loop reads as one line per step. A `do concurrent` body must never
+! name a derived-type component, though: under `-gpu=mem:separate` that is
+! what breaks. So `build_g` and `assemble_fock`, the two with loops of their
+! own, hand the arrays to a private explicit-shape worker (`*_arrays`), whose
+! sizes come from the arrays themselves (1 x 1 where the run has no use for
+! one, matching trc_scf_state%alloc).
 !
 module trc_scf_fock
    use pic_types, only: dp
@@ -34,6 +35,9 @@ module trc_scf_fock
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_linalg, only: trc_linalg_t
    use trc_scf_df, only: df_jk_t
+   use trc_scf_settings, only: scf_settings_t, scf_energies_t, trc_scf_result_t
+   use trc_scf_context, only: scf_ctx_t
+   use trc_scf_state, only: scf_state_t, scf_timers_t
    implicit none
    private
 
@@ -50,10 +54,27 @@ contains
    ! entry points, since the caller already has exactly one of them to ask
    ! for.
    !
-   subroutine build_g(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
-                      exx, exx_lr, omega, incr_scale_run, &
-                      d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c, &
-                      df_on, dfj, lp)
+   subroutine build_g(scf_basis, scf_context, scf_config, scf_state, incr_now)
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      logical, intent(in) :: incr_now
+      !! This iteration builds G from the density difference (the caller's
+      !! schedule: `incr_on`, the commutator below `incr_start`, not a reset).
+      call build_g_arrays(scf_basis, scf_context%eri, scf_context%nao_c, scf_config%nspin, &
+                          size(scf_state%dtot_c, 1), size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), &
+                          incr_now, scf_config%incr_on, &
+                          scf_config%exx, scf_config%exx_lr, scf_config%omega, scf_config%incr_scale_run, &
+                          scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%jmat_c, scf_state%w1_c, &
+                          scf_state%klr_c, scf_state%gacc_c, scf_state%dref_c, scf_state%ddif_c, &
+                          scf_config%df, scf_context%dfj, scf_context%lp)
+   end subroutine build_g
+
+   subroutine build_g_arrays(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
+                             exx, exx_lr, omega, incr_scale_run, &
+                             d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c, &
+                             df_on, dfj, lp)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       integer, intent(in) :: nao_c, nspin, nu_c, nlr_c, nin_c
@@ -166,7 +187,7 @@ contains
             end if
          end do
       end if
-   end subroutine build_g
+   end subroutine build_g_arrays
 
    !
    ! The exchange-correlation potential and energy, finding its (Cartesian)
@@ -176,25 +197,20 @@ contains
    ! true (the caller's own guard), so `vxc_c`/`vxc` are always full size
    ! here -- no 1 x 1 sizing dummy needed, unlike `build_g`'s arrays.
    !
-   subroutine build_vxc(b, xg, xg_nlc, func, nlc, nspin, nao_c, nao, sph, rho_tol, comm, lp, &
-                        d_c, vxc_c, vxc, exc, ngrid, tx_pts, tx_prs, t_vv10)
-      type(trc_basis_t), intent(in) :: b
-      type(trc_xc_grid_t), intent(inout) :: xg, xg_nlc
-      type(trc_xc_functional_t), intent(in) :: func
-      logical, intent(in) :: nlc, sph
-      integer, intent(in) :: nspin, nao_c, nao
+   subroutine build_vxc(scf_basis, scf_context, scf_config, scf_state, rho_tol, scf_energies, scf_timers, comm)
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
       real(dp), intent(in) :: rho_tol
+      type(scf_energies_t), intent(inout) :: scf_energies
+      !! `xc` and `nelec_grid` are set here, VV10's energy included.
+      type(scf_timers_t), intent(inout) :: scf_timers
+      !! `tx_pts`/`tx_prs` and `t_vv10` are added to (not overwritten). The
+      !! DFT step table (`xcst`) reports VV10 as its own step, separate from
+      !! the semilocal points/pairs split -- see NVTX_RANGES below for why
+      !! VV10's is a plain wall time rather than a `step_on`/`step_off` pair.
       type(comm_t), intent(in), optional :: comm
-      type(trc_linalg_t), intent(inout) :: lp
-      real(dp), intent(in) :: d_c(nao_c, nao_c, nspin)
-      real(dp), intent(inout) :: vxc_c(nao_c, nao_c, nspin), vxc(nao, nao, nspin)
-      real(dp), intent(inout) :: exc, ngrid, tx_pts, tx_prs
-      real(dp), intent(inout), optional :: t_vv10
-      !! VV10's own elapsed time, added in (not overwritten): the DFT
-      !! step table (`trc_scf_state`'s `xcst`) reports it as its own
-      !! step, separate from the semilocal `tx_pts`/`tx_prs` above --
-      !! see NVTX_RANGES below for why this is a plain wall time rather
-      !! than a `step_table_t%step_on`/`step_off` pair.
       real(dp) :: e_nlc, tp1, tq1
       type(timer_type) :: tm_vv10
       integer :: s
@@ -220,36 +236,42 @@ contains
       ! the same reason.
       !
       call profiler_start("scf: xc", nvtx_only=.true.)
-      if (nspin == 1) then
-         call trc_xc_rks(b, xg, func, d_c(:, :, 1), vxc_c(:, :, 1), exc, ngrid, rho_tol=rho_tol, &
-                         comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
+      if (scf_config%nspin == 1) then
+         call trc_xc_rks(scf_basis, scf_context%xg, scf_config%func, scf_state%d_c(:, :, 1), scf_state%vxc_c(:, :, 1), &
+                         scf_energies%xc, scf_energies%nelec_grid, rho_tol=rho_tol, &
+                         comm=comm, t_points=tp1, t_pairs=tq1, la=scf_context%lp)
       else
-         call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=rho_tol, &
-                         comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
+         call trc_xc_uks(scf_basis, scf_context%xg, scf_config%func, scf_state%d_c, scf_state%vxc_c, &
+                         scf_energies%xc, scf_energies%nelec_grid, rho_tol=rho_tol, &
+                         comm=comm, t_points=tp1, t_pairs=tq1, la=scf_context%lp)
       end if
-      call lp%sync()
+      call scf_context%lp%sync()
       call profiler_stop("scf: xc")
-      ! VV10 adds its energy to exc and its potential into vxc_c, on its own
-      ! (coarser) grid, before the spherical transform below.
-      if (nlc) then
+      ! VV10 adds its energy to the XC energy and its potential into vxc_c, on
+      ! its own (coarser) grid, before the spherical transform below.
+      if (scf_config%nlc) then
          call profiler_start("scf: vv10", nvtx_only=.true.)
-         call lp%sync()
+         call scf_context%lp%sync()
          call tm_vv10%start()
-         if (nspin == 1) then
-            call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1), la=lp, comm=comm)
+         if (scf_config%nspin == 1) then
+            call trc_vv10_rks(scf_basis, scf_context%xg_nlc, scf_state%d_c(:, :, 1), &
+                              scf_config%func%nlc_b, scf_config%func%nlc_c, e_nlc, scf_state%vxc_c(:, :, 1), &
+                              la=scf_context%lp, comm=comm)
          else
-            call trc_vv10_uks(b, xg_nlc, d_c(:, :, 1), d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
-                              vxc_c(:, :, 1), vxc_c(:, :, 2), la=lp, comm=comm)
+            call trc_vv10_uks(scf_basis, scf_context%xg_nlc, scf_state%d_c(:, :, 1), scf_state%d_c(:, :, 2), &
+                              scf_config%func%nlc_b, scf_config%func%nlc_c, e_nlc, &
+                              scf_state%vxc_c(:, :, 1), scf_state%vxc_c(:, :, 2), la=scf_context%lp, comm=comm)
          end if
-         call lp%sync()
+         call scf_context%lp%sync()
          call profiler_stop("scf: vv10")
-         if (present(t_vv10)) t_vv10 = t_vv10 + tm_vv10%get_elapsed_time()
-         exc = exc + e_nlc
+         scf_timers%t_vv10 = scf_timers%t_vv10 + tm_vv10%get_elapsed_time()
+         scf_energies%xc = scf_energies%xc + e_nlc
       end if
-      tx_pts = tx_pts + tp1
-      tx_prs = tx_prs + tq1
-      do s = 1, nspin
-         call to_sph(b, sph, nao, nao_c, vxc_c(:, :, s), vxc(:, :, s))
+      scf_timers%tx_pts = scf_timers%tx_pts + tp1
+      scf_timers%tx_prs = scf_timers%tx_prs + tq1
+      do s = 1, scf_config%nspin
+         call to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
+                     scf_state%vxc_c(:, :, s), scf_state%vxc(:, :, s))
       end do
    end subroutine build_vxc
 
@@ -259,46 +281,57 @@ contains
    ! to the run's own space. Only called when `pcm_on` is true. `nu_c` is
    ! `dtot_c`'s true size (1 when `nspin == 1`, where it is never read).
    !
-   subroutine build_pcm(b, pcm, pl, nspin, nao_c, nu_c, nao, sph, d_c, dtot_c, vpcm_c, vpcm, epcm, comm)
-      type(trc_basis_t), intent(in) :: b
-      type(trc_pcm_t), intent(inout) :: pcm
-      type(trc_pairlist_t), intent(in) :: pl
-      integer, intent(in) :: nspin, nao_c, nu_c, nao
-      logical, intent(in) :: sph
-      real(dp), intent(in) :: d_c(nao_c, nao_c, nspin), dtot_c(nu_c, nu_c)
-      real(dp), intent(inout) :: vpcm_c(nao_c, nao_c), vpcm(nao, nao)
-      real(dp), intent(inout) :: epcm
+   subroutine build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, comm)
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(scf_energies_t), intent(inout) :: scf_energies
+      !! `pcm` (the dielectric energy) is set here.
       type(comm_t), intent(in), optional :: comm
       ! An absent `comm` passes through as absent: one rank, unsplit.
-      if (nspin == 1) then
-         call pcm%operator(b, pl, d_c(:, :, 1), vpcm_c, epcm, comm)
+      if (scf_config%nspin == 1) then
+         call scf_context%pcm%operator(scf_basis, scf_context%pl, scf_state%d_c(:, :, 1), scf_state%vpcm_c, &
+                                       scf_energies%pcm, comm)
       else
-         call pcm%operator(b, pl, dtot_c, vpcm_c, epcm, comm)
+         call scf_context%pcm%operator(scf_basis, scf_context%pl, scf_state%dtot_c, scf_state%vpcm_c, &
+                                       scf_energies%pcm, comm)
       end if
-      call to_sph(b, sph, nao, nao_c, vpcm_c, vpcm)
+      call to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, scf_state%vpcm_c, scf_state%vpcm)
    end subroutine build_pcm
 
-   ! The one- and two-electron energy at the density `dmat`: Tr(D H) and
-   ! Tr(D G)/2, per spin; `etot` adds the nuclear repulsion, the XC and PCM
-   ! energies the caller already has.
-   subroutine scf_energy(lp, nao, nspin, dmat, hcore, gmat, e_nuc, exc, epcm, e1, e2, etot)
-      type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: nao, nspin
-      real(dp), intent(in) :: dmat(nao, nao, nspin), hcore(nao, nao), gmat(nao, nao, nspin)
-      real(dp), intent(in) :: e_nuc, exc, epcm
-      real(dp), intent(out) :: e1, e2, etot
+   ! The one- and two-electron energy at the density `scf_result%dmat`: Tr(D H) and
+   ! Tr(D G)/2, per spin; the total adds the nuclear repulsion and the XC and
+   ! PCM energies already in `scf_energies`.
+   subroutine scf_energy(scf_context, scf_config, scf_state, scf_result, scf_energies)
+      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(in) :: scf_state
+      type(trc_scf_result_t), intent(in) :: scf_result
+      type(scf_energies_t), intent(inout) :: scf_energies
       integer :: s
-      e1 = 0.0_dp
-      e2 = 0.0_dp
-      do s = 1, nspin
-         e1 = e1 + lp%dot_2d(dmat(:, :, s), hcore)
-         e2 = e2 + 0.5_dp*lp%dot_2d(dmat(:, :, s), gmat(:, :, s))
+      scf_energies%one = 0.0_dp
+      scf_energies%two = 0.0_dp
+      do s = 1, scf_config%nspin
+         scf_energies%one = scf_energies%one + scf_context%lp%dot_2d(scf_result%dmat(:, :, s), scf_context%hcore)
+         scf_energies%two = scf_energies%two + 0.5_dp*scf_context%lp%dot_2d(scf_result%dmat(:, :, s), scf_state%gmat(:, :, s))
       end do
-      etot = e1 + e2 + exc + e_nuc + epcm
+      scf_energies%total = scf_energies%one + scf_energies%two + scf_energies%xc + scf_context%e_nuc + scf_energies%pcm
    end subroutine scf_energy
 
-   subroutine assemble_fock(nao, nxc, npcm, nspin, dft, pcm_on, hcore, gmat, vxc, vpcm, fock)
-      !! F = H + G (+ V_xc, + the continuum's operator), per spin. `vxc` is
+   subroutine assemble_fock(scf_context, scf_config, scf_state)
+      !! F = H + G (+ V_xc, + the continuum's operator), per spin, into
+      !! `scf_state%fock`.
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      call assemble_fock_arrays(scf_context%nao, size(scf_state%vxc, 1), size(scf_state%vpcm, 1), scf_config%nspin, &
+                                scf_config%dft, scf_config%pcm_on, scf_context%hcore, scf_state%gmat, scf_state%vxc, &
+                                scf_state%vpcm, scf_state%fock)
+   end subroutine assemble_fock
+
+   subroutine assemble_fock_arrays(nao, nxc, npcm, nspin, dft, pcm_on, hcore, gmat, vxc, vpcm, fock)
+      !! `assemble_fock`'s loops, on explicit-shape arrays. `vxc` is
       !! 1 x 1 (unused) when `.not. dft`, `vpcm` 1 x 1 when `.not. pcm_on`;
       !! `nxc`/`npcm` are their true sizes, so the explicit-shape dummies
       !! below match whichever the caller actually allocated.
@@ -325,27 +358,26 @@ contains
             end do
          end if
       end do
-   end subroutine assemble_fock
+   end subroutine assemble_fock_arrays
 
    ! W = F D S - S D F, errv = X^T W X, per spin: the orthogonalised
    ! commutator DIIS extrapolates on, and whose norm gates DIIS/A-DIIS.
-   subroutine commutator_error(lp, nao, nspin, fock, dmat, smat, x, w1, w2, errv)
-      type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: nao, nspin
-      real(dp), intent(in) :: fock(nao, nao, nspin), dmat(nao, nao, nspin)
-      real(dp), intent(in) :: smat(nao, nao), x(nao, nao)
-      real(dp), intent(inout) :: w1(nao, nao), w2(nao, nao)
-      real(dp), intent(inout) :: errv(nao, nao, nspin)
+   subroutine commutator_error(scf_context, scf_config, scf_state, scf_result)
+      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      !! Reads `fock`, writes `errv`; `w1`/`w2` are scratch.
+      type(trc_scf_result_t), intent(in) :: scf_result
       integer :: s
-      do s = 1, nspin
+      do s = 1, scf_config%nspin
          ! w2 = F D S - S D F
-         call lp%gemm_mat(fock(:, :, s), dmat(:, :, s), w1)
-         call lp%gemm_mat(w1, smat, w2)
-         call lp%gemm_mat(smat, dmat(:, :, s), w1)
-         call lp%gemm_mat(w1, fock(:, :, s), w2, alpha=-1.0_dp, beta=1.0_dp)
+         call scf_context%lp%gemm_mat(scf_state%fock(:, :, s), scf_result%dmat(:, :, s), scf_state%w1)
+         call scf_context%lp%gemm_mat(scf_state%w1, scf_context%smat, scf_state%w2)
+         call scf_context%lp%gemm_mat(scf_context%smat, scf_result%dmat(:, :, s), scf_state%w1)
+         call scf_context%lp%gemm_mat(scf_state%w1, scf_state%fock(:, :, s), scf_state%w2, alpha=-1.0_dp, beta=1.0_dp)
          ! errv = X^T w2 X
-         call lp%gemm_mat(w2, x, w1)
-         call lp%gemm_mat(x, w1, errv(:, :, s), transa="T")
+         call scf_context%lp%gemm_mat(scf_state%w2, scf_context%x, scf_state%w1)
+         call scf_context%lp%gemm_mat(scf_context%x, scf_state%w1, scf_state%errv(:, :, s), transa="T")
       end do
    end subroutine commutator_error
 

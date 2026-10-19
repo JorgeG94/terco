@@ -174,7 +174,6 @@ contains
       !! something this routine builds for itself.
 
       integer :: nao, nao_c, s, it, i, j, n2
-      integer :: nxc, nu_c, nlr_c, nin_c, npcm   !! full size, or 1 when unused (see trc_scf_state%alloc)
       logical :: ok, sph
       type(scf_settings_t) :: scf_config
       type(scf_ctx_t), target :: scf_context
@@ -259,18 +258,11 @@ contains
       end if
 
       ! ONLY WHAT THIS RUN USES IS FULL SIZE (trc_scf_state%alloc owns the
-      ! array sizes; `nu_c`/`nlr_c`/`nin_c`/`nxc`/`npcm` below are the same
-      ! sizes again, for the calls into `build_g`/`assemble_fock`, which take
-      ! explicit-shape dummies and so must be told how big a 1 x 1 "unused"
-      ! array really is). One that a run never touches is nao^2 of device
-      ! memory for nothing: on ionic05 in aug-cc-pVTZ (4255 functions, 4950
-      ! Cartesian) an HF run carried ~2.4 GB of XC, unrestricted,
-      ! range-separated, incremental and PCM matrices it had no use for.
-      nxc = merge(nao, 1, scf_config%dft)
-      nu_c = merge(nao_c, 1, scf_config%nspin == 2)
-      nlr_c = merge(nao_c, 1, scf_config%exx_lr /= 0.0_dp)
-      nin_c = merge(nao_c, 1, scf_config%incr_on)
-      npcm = merge(nao, 1, scf_config%pcm_on)
+      ! array sizes, 1 x 1 for an array the run never touches). One that a
+      ! run never touches is nao^2 of device memory for nothing: on ionic05
+      ! in aug-cc-pVTZ (4255 functions, 4950 Cartesian) an HF run carried
+      ! ~2.4 GB of XC, unrestricted, range-separated, incremental and PCM
+      ! matrices it had no use for.
       call scf_state%alloc(scf_context, scf_config)
       call cdiis%alloc(nao, scf_config%nspin, scf_options%ndiis)
       allocate (scf_result%dmat(nao, nao, scf_config%nspin), scf_result%cmo(nao, nao, scf_config%nspin), &
@@ -359,10 +351,7 @@ contains
          incr_now = scf_config%incr_on .and. it > 1 &
                     .and. errmax < scf_config%incr_start_run &
                     .and. mod(it - 1, max(1, scf_config%incr_reset_run)) /= 0
-         call build_g(scf_basis, scf_context%eri, nao_c, scf_config%nspin, nu_c, nlr_c, nin_c, incr_now, scf_config%incr_on, &
-                      scf_config%exx, scf_config%exx_lr, scf_config%omega, scf_config%incr_scale_run, &
-                      scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%jmat_c, scf_state%w1_c, scf_state%klr_c, &
-                      scf_state%gacc_c, scf_state%dref_c, scf_state%ddif_c, scf_config%df, scf_context%dfj, linalg_provider)
+         call build_g(scf_basis, scf_context, scf_config, scf_state, incr_now)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in.
          do s = 1, scf_config%nspin
@@ -373,10 +362,7 @@ contains
          call scf_timers%xc%start()
          ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (scf_config%dft) then
-            call build_vxc(scf_basis, scf_context%xg, scf_context%xg_nlc, scf_config%func, scf_config%nlc, &
-                           scf_config%nspin, nao_c, nao, sph, scf_options%rho_tol, comm, linalg_provider, &
-                           scf_state%d_c, scf_state%vxc_c, scf_state%vxc, scf_energies%xc, scf_energies%nelec_grid, &
-                           scf_timers%tx_pts, scf_timers%tx_prs, t_vv10=scf_timers%t_vv10)
+            call build_vxc(scf_basis, scf_context, scf_config, scf_state, scf_options%rho_tol, scf_energies, scf_timers, comm)
          end if
          scf_timers%tx_it = scf_timers%xc%get_elapsed_time()
          scf_timers%t_xc = scf_timers%t_xc + scf_timers%tx_it
@@ -385,21 +371,16 @@ contains
          ! too: one set of charges, one operator added to both spins) -----
          if (scf_config%pcm_on) then
             call scf_timers%pcm%start()
-            call build_pcm(scf_basis, scf_context%pcm, scf_context%pl, scf_config%nspin, nao_c, nu_c, nao, sph, &
-                           scf_state%d_c, scf_state%dtot_c, scf_state%vpcm_c, scf_state%vpcm, scf_energies%pcm, comm)
+            call build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, comm)
             scf_timers%t_pcm = scf_timers%t_pcm + scf_timers%pcm%get_elapsed_time()
             ! the PCM step is its own column, not part of the rest
             call scf_timers%rest%start()
          end if
          ! --- energy at this density -----------------------------------------
-         call scf_energy(linalg_provider, nao, scf_config%nspin, scf_result%dmat, scf_context%hcore, scf_state%gmat, &
-                scf_result%e_nuc, scf_energies%xc, scf_energies%pcm, scf_energies%one, scf_energies%two, &
-                scf_energies%total)
+         call scf_energy(scf_context, scf_config, scf_state, scf_result, scf_energies)
          ! --- Fock and its commutator, per spin ------------------------------
-         call assemble_fock(nao, nxc, npcm, scf_config%nspin, scf_config%dft, scf_config%pcm_on, &
-                scf_context%hcore, scf_state%gmat, scf_state%vxc, scf_state%vpcm, scf_state%fock)
-         call commutator_error(linalg_provider, nao, scf_config%nspin, scf_state%fock, scf_result%dmat, scf_context%smat, &
-                scf_context%x, scf_state%w1, scf_state%w2, scf_state%errv)
+         call assemble_fock(scf_context, scf_config, scf_state)
+         call commutator_error(scf_context, scf_config, scf_state, scf_result)
          ! `dold` must hold `scf_result%dmat` from BEFORE DIIS/diagonalisation touch
          ! it -- see trc_scf_state's own header.
          call scf_state%save_dold(nao, scf_config%nspin, scf_result%dmat)
@@ -473,10 +454,12 @@ contains
          if (scf_config%talk) then
             if (scf_config%dft) then
                write (line, "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3,a)") &
-                  it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, scf_timers%tx_it, merge(" i", "  ", incr_now)
+                  it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, scf_timers%tx_it, &
+                  merge(" i", "  ", incr_now)
             else
                write (line, "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,a)") &
-                  it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, merge(" i", "  ", incr_now)
+                  it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, &
+                  merge(" i", "  ", incr_now)
             end if
             call global_logger%info(trim(line))
          end if
