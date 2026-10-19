@@ -11,7 +11,8 @@
 !   bench_grad_1e <xyz> <basis.json> [thresh]
 !
 program bench_grad_1e
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e_gradient, trc_bind_device
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json
@@ -29,7 +30,7 @@ program bench_grad_1e
    type(trc_pairlist_t) :: pl
    type(trc_eri_t) :: eri
    real(dp), allocatable :: wmat(:, :), dmat(:, :), grad(:, :)
-   integer(int64) :: c0, c1, rate
+   type(timer_type) :: tm
    real(dp) :: t_1e, t_2e
 
    thresh = 1.0e-10_dp
@@ -74,20 +75,18 @@ program bench_grad_1e
    call trc_1e_gradient(bas, pl, wmat, dmat, grad)
    !$acc exit data delete(wmat, dmat, grad)
 
-   call system_clock(c0, rate)
+   call tm%start()
    grad = 0.0_dp
    call eri%gradient(bas, reshape(dmat, [nao, nao, 1]), grad)
-   call system_clock(c1)
-   t_2e = real(c1 - c0, dp)/real(rate, dp)
+   t_2e = tm%get_elapsed_time()
 
-   call system_clock(c0, rate)
+   call tm%start()
    grad = 0.0_dp
    !$acc enter data copyin(wmat, dmat, grad)
    call trc_1e_gradient(bas, pl, wmat, dmat, grad)
    !$acc update self(grad)
    !$acc exit data delete(wmat, dmat, grad)
-   call system_clock(c1)
-   t_1e = real(c1 - c0, dp)/real(rate, dp)
+   t_1e = tm%get_elapsed_time()
 
    print '(a,f10.4,a)', 'eri%gradient (2e):     ', t_2e, ' s'
    print '(a,f10.4,a)', 'trc_1e_gradient (1e):  ', t_1e, ' s'
