@@ -162,10 +162,12 @@ contains
       !! full-range one, next to it -- exactly how build_g assembles the
       !! energy (eri%fock_resident with j_scale=0, k_scale=exx_lr,
       !! omega, added into gmat_c). This routine computes that term for
-      !! ANY func with exx_lr /= 0; whether a caller can reach this point
-      !! with such a func is gated upstream (trc_xc_grad%xc_gradient_add's
-      !! own refusal, and trc_capi.F90's trc_run_gradient, which checks it
-      !! before calling here at all).
+      !! ANY func with exx_lr /= 0, and so does xc_gradient_add's
+      !! semilocal GGA term below (func%omega/exx_lr do not reach it --
+      !! see that module's own header) -- an RSH functional like wB97X is
+      !! NOT refused anywhere in this path any more. Only VV10
+      !! (func%nlc_b/nlc_c) still is, in xc_gradient_add and in
+      !! trc_capi.F90's trc_run_gradient.
       type(trc_basis_t),  intent(inout) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer,            intent(in)    :: nspin, nalpha, nbeta

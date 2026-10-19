@@ -75,13 +75,11 @@ program check_xc_grad_vs_pyscf
 
    dev = trc_bind_device(0)
    call read_xyz(trim(xyzfile), nat, at_z, r)
-   ! trc_scf_gradient (this branch) takes cmo/eps straight from
-   ! trc_scf_run's result at `bas%nao`: a spherical basis (cc-pVDZ's JSON
-   ! tags "gto_spherical") would make that SMALLER than bas%nao, which the
-   ! gradient has no fold-back for yet -- the sibling branch's "spherical
-   ! density folding" (this program's own header, and trc_scf_grad.F90's)
-   ! is what adds it. force_cart=.true. keeps every basis here Cartesian,
-   ! matching pyscf's own cart=True mol below exactly.
+   ! trc_scf_gradient DOES fold a spherical density back to Cartesian now
+   ! (check_dft_grad_vs_pyscf.F90 exercises it, and trc_scf_grad.F90's
+   ! own header has the formula); force_cart=.true. here is this
+   ! program's own choice, kept so every case matches pyscf's own
+   ! cart=True mol below exactly -- not a missing capability.
    call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, force_cart=.true.)
    if (err%has_error()) then
       print '(a)', 'check_xc_grad_vs_pyscf: '//err%get_message(); stop 1
