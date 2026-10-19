@@ -33,6 +33,7 @@ module trc_scf_grad
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e_gradient
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
+   use trc_sph, only: sph_sph_to_cart
    implicit none
    private
    public :: trc_scf_gradient, nuclear_repulsion_gradient, energy_weighted_density
@@ -122,21 +123,43 @@ contains
       !! second copy of the density/aufbau-occupation bookkeeping: D is
       !! rebuilt here from cmo/eps/nocc exactly the way trc_scf_driver
       !! itself builds it (lp%density, occ=2 restricted or 1 per channel).
+      !!
+      !! SPHERICAL BASES. `cmo`/`eps` are sized at whatever space the SCF
+      !! itself ran in -- `b%nao_sph` when `b%spherical`, `b%nao`
+      !! (Cartesian) otherwise, same `merge` trc_capi.F90's own
+      !! `scf_space_nao` uses -- but every kernel below (eri%gradient,
+      !! trc_1e_gradient) is Cartesian throughout (trc_scf_driver.F90's own
+      !! "SPHERICAL BASES" header: "Everything touching a kernel stays
+      !! Cartesian"). D and W are therefore built in the SCF's own space
+      !! first, then folded to Cartesian with `sph_sph_to_cart` -- T D T^T,
+      !! the same transform trc_scf_driver folds the Fock-build density on
+      !! each iteration -- before anything here touches an integral. This
+      !! is EXACT, not an approximation: contracting the Cartesian
+      !! derivative integrals with T D T^T equals contracting the
+      !! spherical ones with D directly, because T is exactly the
+      !! (per-shell) change of basis the SCF's own spherical AOs are
+      !! defined by. When the basis is not spherical, `b%nao_sph` still
+      !! exists structurally (every shell's would-be spherical count) but
+      !! plays no role here: the fold is skipped and `dens`/`wmat` are
+      !! filled directly at `b%nao`, unchanged from before this feature.
       type(trc_basis_t),  intent(inout) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer,            intent(in)    :: nspin, nalpha, nbeta
-      real(dp),           intent(in)    :: cmo(b%nao, b%nao, nspin), eps(b%nao, nspin)
+      real(dp),           intent(in)    :: cmo(merge(b%nao_sph, b%nao, b%spherical), &
+                                               merge(b%nao_sph, b%nao, b%spherical), nspin)
+      real(dp),           intent(in)    :: eps(merge(b%nao_sph, b%nao, b%spherical), nspin)
       real(dp),           intent(in)    :: thresh
       real(dp),           intent(out)   :: grad(3, b%natm)
 
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
-      integer :: nao, s
+      integer :: nao, nsp, s
       integer :: nocc(2)
       real(dp) :: occ_s
       real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :)
 
       nao = b%nao
+      nsp = merge(b%nao_sph, b%nao, b%spherical)
       nocc = [nalpha, nbeta]
       occ_s = merge(2.0_dp, 1.0_dp, nspin == 1)
 
@@ -145,16 +168,41 @@ contains
       ! trc_scf_driver.F90 -- takes them OFF the device before returning,
       ! so neither a Fortran-side caller's `res%cmo`/`res%eps` nor the C
       ! API's box handle's copy of them is resident); `dens`/`wmat` are
-      ! this routine's own, filled by `lp%density`/`energy_weighted_density`
-      ! ON the device (cuBLAS, which only fetches pointers for data
-      ! already present -- see energy_weighted_density's own comment).
+      ! this routine's own, at the Cartesian `nao` the kernels below need
+      ! -- filled directly there when the basis is Cartesian, or via the
+      ! spherical fold (its own block, right below) otherwise.
       allocate (dens(nao, nao, nspin), wmat(nao, nao), dtot(nao, nao))
       !$acc enter data copyin(cmo, eps) create(dens, wmat)
 
-      do s = 1, nspin
-         call lp%density(cmo(:, :, s), nocc(s), occ_s, dens(:, :, s))
-      end do
-      call energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
+      if (.not. b%spherical) then
+         do s = 1, nspin
+            call lp%density(cmo(:, :, s), nocc(s), occ_s, dens(:, :, s))
+         end do
+         call energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
+      else
+         ! Build D and W in the SCF's own (spherical) space, nsp = nao_sph,
+         ! then fold each one to Cartesian -- see this subroutine's own
+         ! header. `dens_s`/`wmat_s` are local to this block, entered and
+         ! exited here; `dens`/`wmat` (already created on the device above)
+         ! receive the fold's output and are what every line after this
+         ! block reads, exactly as if the basis had been Cartesian all
+         ! along.
+         block
+            real(dp), allocatable :: dens_s(:, :, :), wmat_s(:, :)
+            allocate (dens_s(nsp, nsp, nspin), wmat_s(nsp, nsp))
+            !$acc enter data create(dens_s, wmat_s)
+            do s = 1, nspin
+               call lp%density(cmo(:, :, s), nocc(s), occ_s, dens_s(:, :, s))
+            end do
+            call energy_weighted_density(lp, nsp, nspin, cmo, eps, nocc, wmat_s)
+            do s = 1, nspin
+               call sph_sph_to_cart(b, dens_s(:, :, s), dens(:, :, s))
+            end do
+            call sph_sph_to_cart(b, wmat_s, wmat)
+            !$acc exit data delete(dens_s, wmat_s)
+            deallocate (dens_s, wmat_s)
+         end block
+      end if
 
       ! `dens` only has valid numbers on the device at this point; bring
       ! it back before any HOST arithmetic reads it (dtot below) or hands

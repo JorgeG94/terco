@@ -31,7 +31,8 @@ module terco_run
    use terco_app, only: element_symbol, f_string
    implicit none
    private
-   public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json
+   public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
+             gradient_summary
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -59,6 +60,8 @@ module terco_run
       type(comm_t) :: wcomm
       integer :: nranks
       logical :: rank0
+      logical :: grad
+      real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
    end type run_t
 
 contains
@@ -305,6 +308,28 @@ contains
       write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
    end subroutine summary
 
+   subroutine gradient_summary(r)
+      !! Per-atom analytic nuclear gradient (Eh/Bohr), plus the RMS and the
+      !! largest per-atom norm -- the two scalars an optimiser's own
+      !! convergence check usually gates on. `r%gradient` is already
+      !! filled by the time this is called (terco_main's own job, right
+      !! after `trc_gradient`).
+      type(run_t), intent(in) :: r
+      real(dp) :: rms, gmax
+      integer :: ia
+      write (output_unit, "(a)") ""
+      write (output_unit, "(a)") "   gradient (Eh/Bohr)"
+      write (output_unit, "(a)") "   ----------------------------------------------------------"
+      do ia = 1, r%natm
+         write (output_unit, "(a,i4,2x,a2,3f16.8)") "   ", ia, element_symbol(r%z(ia)), r%gradient(:, ia)
+      end do
+      rms = sqrt(sum(r%gradient**2)/real(3*r%natm, dp))
+      gmax = sqrt(maxval(sum(r%gradient**2, dim=1)))
+      write (output_unit, "(a)") "   ----------------------------------------------------------"
+      write (output_unit, "(a,es12.4)") "   RMS gradient     : ", rms
+      write (output_unit, "(a,es12.4)") "   max |gradient|   : ", gmax
+   end subroutine gradient_summary
+
    subroutine line(label, e)
       character(len=*), intent(in) :: label
       real(c_double), intent(in) :: e
@@ -377,10 +402,37 @@ contains
          end if
       end if
       write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
-      write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
+      if (r%grad .and. allocated(r%gradient)) then
+         write (u, "(a,es23.15e3,a)") '  "total energy": ', r%etot, ","
+         call write_json_gradient(u, r)
+      else
+         write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
+      end if
       write (u, "(a)") "}"
       close (u)
    end subroutine write_json
+
+   subroutine write_json_gradient(u, r)
+      !! The analytic gradient as a JSON array of [x, y, z] triples, one per
+      !! atom in `r%gradient`'s own (and `trc_set_molecule`'s) atom order,
+      !! plus the RMS and max per-atom norm `gradient_summary` also prints.
+      integer, intent(in) :: u
+      type(run_t), intent(in) :: r
+      integer :: ia
+      real(dp) :: rms, gmax
+      character(len=2) :: closing
+      write (u, "(a)") '  "gradient": ['
+      do ia = 1, r%natm
+         closing = merge("] ", "],", ia == r%natm)
+         write (u, "(a,es23.15e3,a,es23.15e3,a,es23.15e3,a)") "    [", r%gradient(1, ia), ", ", &
+            r%gradient(2, ia), ", ", r%gradient(3, ia), trim(closing)
+      end do
+      write (u, "(a)") "  ],"
+      rms = sqrt(sum(r%gradient**2)/real(3*r%natm, dp))
+      gmax = sqrt(maxval(sum(r%gradient**2, dim=1)))
+      write (u, "(a,es23.15e3,a)") '  "gradient rms": ', rms, ","
+      write (u, "(a,es23.15e3)") '  "gradient max": ', gmax
+   end subroutine write_json_gradient
 
 end module terco_run
 
@@ -409,18 +461,21 @@ program terco_main
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
+                       trc_run_gradient, trc_gradient, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
    use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
                                 xc_is_double_hybrid
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env, lower
-   use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json
+   use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
+                       gradient_summary
    implicit none
 
    type(run_t) :: r
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
+   real(c_double), allocatable :: gradbuf(:)
    integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev, aux_block
    integer(c_int) :: st, nspin
    logical :: cart
@@ -479,6 +534,7 @@ program terco_main
    call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
                          "SCF, e.g. to go straight to --rimp2; the molecule, basis and method must match")
    call r%cli%add_option("json", "also write a JSON summary to this file")
+   call r%cli%add_flag("grad", "print the analytic RHF/UHF nuclear gradient (Eh/Bohr) after the SCF")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -571,6 +627,7 @@ program terco_main
    call check(r, "--frozen")
    r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
    r%df = r%cli%is_set("df")
+   r%grad = r%cli%is_set("grad")
    cart = r%cli%is_set("cart")
    r%pcm = ""
    r%eps = 0.0_dp
@@ -722,9 +779,21 @@ program terco_main
       ! weighting trc_energy already does from the SAME table.
       if (r%dh) call api(r, trc_energy(r%h, r%etot_dh))
    end if
+   if (r%grad .and. r%conv /= 0) then
+      ! trc_run_gradient's own refusals (a DFT functional, RI-MP2, --df,
+      ! PCM, multi-rank) come back through `api`, which prints the
+      ! library's own message and stops -- the same clear-refusal path
+      ! every other unsupported combination in this CLI already takes.
+      call api(r, trc_run_gradient(r%h))
+      allocate (gradbuf(3*r%natm), r%gradient(3, r%natm))
+      call api(r, trc_gradient(r%h, gradbuf))
+      r%gradient = reshape(real(gradbuf, dp), [3, r%natm])
+      deallocate (gradbuf)
+   end if
 
    call system_clock(r%t1)
    if (r%rank0) call summary(r)
+   if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
    st = trc_destroy(r%h)
 

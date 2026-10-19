@@ -155,7 +155,9 @@
 !   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
 !     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
 !     trc_iterations, trc_rimp2_energy, trc_nao, trc_nspin, trc_message,
-!     trc_set_pcm, trc_pcm_energy
+!     trc_set_pcm, trc_pcm_energy, trc_gradient (a nuclear-coordinate
+!     array, not an AO one -- an SCF energy derivative does not depend on
+!     which AO normalisation convention computed it)
 !
 !   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
 !   the handle's own ao_norm_kind is what a later entry reads):
@@ -184,6 +186,7 @@ module trc_capi
                         TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_settings, only: scf_spin_rule
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json
@@ -229,6 +232,7 @@ module trc_capi
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
+   public :: trc_run_gradient, trc_gradient
    public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
@@ -346,6 +350,12 @@ module trc_capi
       integer :: nalpha = 0, nbeta = 0
       logical :: scf_ok = .false., rimp2_ok = .false.
       real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
+      ! trc_run_gradient's own result: (3, natm), Eh/Bohr, in terco's atom
+      ! order. `grad_ok` is cleared by anything that invalidates `scf_ok`
+      ! too (invalidate_runs) -- a gradient at a geometry/density this
+      ! context no longer holds is not a gradient of anything.
+      real(dp), allocatable :: grad(:, :)
+      logical :: grad_ok = .false.
       character(len=256) :: message = ""
    end type context_box
 
@@ -1363,6 +1373,7 @@ contains
       type(context_box), intent(inout) :: cx
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%grad_ok = .false.
       cx%message = ""
    end subroutine invalidate_runs
 
@@ -2281,6 +2292,7 @@ contains
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%grad_ok = .false.
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_run_scf: set the molecule and the basis first"
@@ -2508,6 +2520,105 @@ contains
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
 
+   function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
+      !! The full analytic RHF/UHF nuclear gradient at the converged SCF
+      !! this context already holds (trc_scf_grad%trc_scf_gradient: the
+      !! one-electron terms, eri%gradient's two-electron part, and nuclear
+      !! repulsion -- see that module's own header for the assembly order
+      !! and the factor of 1/2). When the orbital basis is spherical,
+      !! `trc_scf_gradient` itself folds D and W to the Cartesian space the
+      !! derivative kernels need (T D T^T) before touching an integral;
+      !! nothing here has to know which case it is in.
+      !!
+      !! Reuses `cx%la` (initialised once per context by `trc_run_scf`,
+      !! released only at `trc_destroy`) rather than a `trc_linalg_t` of
+      !! its own: a second handle here would need its own release before
+      !! going out of scope (trc_linalg_t has no finalizer), for no reason
+      !! -- the gradient's GEMMs are the same size `cx%la` was already
+      !! sized for.
+      !!
+      !! REFUSED, clearly, rather than attempted:
+      !!   - a DFT functional: no XC gradient kernel exists yet.
+      !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
+      !!     gradient exists; `trc_scf_gradient` is the SCF reference term
+      !!     only.
+      !!   - --df: density-fitted J/K have no gradient kernel; `eri%gradient`
+      !!     is the four-centre path only.
+      !!   - PCM: no cavity/surface-charge derivative exists.
+      !!   - a multi-rank context (`cx%fcomm /= -1`). `trc_scf_gradient`
+      !!     takes no communicator: it rebuilds the pair list and ERI
+      !!     engine from `cx%bb%b` alone, so on a collective run it would
+      !!     rebuild the FULL (unsplit) pair list, Schwarz screen and ERI
+      !!     structures on EVERY rank's own device -- not merely redundant
+      !!     work, but re-materialising, on one GPU, exactly the memory a
+      !!     multi-rank SCF split across ranks to avoid. `eri%gradient`
+      !!     itself DOES support a rank split (`this%rank`/`this%nranks`,
+      !!     `sum_ranks`'s allreduce) but only when its own `eri%build` is
+      !!     given a `comm` -- a plumbing `trc_scf_gradient` does not do
+      !!     today, found by reading trc_eri.F90's `eri_gradient` and
+      !!     comparing it against `eri_build`'s own comm handling.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%grad_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_run_gradient: run the SCF first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (len_trim(cx%opts%functional) > 0) then
+         cx%message = "trc_run_gradient: XC gradient not implemented yet"
+         return
+      end if
+      if (cx%rimp2_ok) then
+         cx%message = "trc_run_gradient: RI-MP2/double-hybrid correlation gradient not implemented yet"
+         return
+      end if
+      if (cx%opts%df) then
+         cx%message = "trc_run_gradient: --df gradient not implemented yet (no density-fitted gradient kernel)"
+         return
+      end if
+      if (len_trim(cx%opts%pcm_model) > 0) then
+         cx%message = "trc_run_gradient: PCM gradient not implemented yet (no cavity/charge derivative)"
+         return
+      end if
+      if (cx%fcomm /= -1) then
+         cx%message = "trc_run_gradient: the gradient path is not rank-split; run it on a single rank"
+         return
+      end if
+      if (allocated(cx%grad)) deallocate (cx%grad)
+      allocate (cx%grad(3, cx%natm))
+      call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                            cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad)
+      cx%grad_ok = .true.
+      status = TRC_OK
+   end function trc_run_gradient
+
+   function trc_gradient(handle, grad) result(status) bind(c, name="trc_gradient")
+      !! (3, natm), Eh/Bohr, column-major (x, y, z fastest, then atom, the
+      !! same atom order `trc_set_molecule` was given) -- after a
+      !! successful `trc_run_gradient`. NOT AO-indexed data (see
+      !! trc_capi.F90's own "AO NORMALISATION" header): a nuclear gradient
+      !! is a derivative of the SCF energy, which does not depend on which
+      !! AO normalisation convention computed it, so `trc_set_ao_norm`
+      !! plays no role here.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: grad(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%grad_ok) return
+      grad(1:3*cx%natm) = real(reshape(cx%grad, [3*cx%natm]), c_double)
+      status = TRC_OK
+   end function trc_gradient
+
    pure integer function core_orbitals(z) result(res)
       !! Frozen-core orbitals for one element, by period.
       real(dp), intent(in) :: z
@@ -2714,6 +2825,7 @@ contains
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%grad_ok = .false.
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_load_scf: set the molecule and the basis first"
