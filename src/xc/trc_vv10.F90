@@ -90,7 +90,12 @@
 ! at or above VV10_RHO_TOL costs the same O(npass) inner sum (one below it
 ! returns immediately -- vv10_kernel_body's own `if (ri < VV10_RHO_TOL)
 ! return` -- so its cost is O(1), not O(npass)), so a contiguous range is
-! already load-balanced, and it keeps every GPU warp either entirely inside a
+! already load-balanced WHEN the above-tolerance points are themselves
+! roughly uniform across the grid's point ordering -- measured true on
+! compact systems (water, water clusters); a sparse or strongly elongated
+! one could concentrate them into one contiguous range and leave another
+! mostly O(1) early returns, which this split alone would not rebalance.
+! Either way it keeps every GPU warp either entirely inside a
 ! rank's range or entirely outside it, which round-robin (mod(i-1,
 ! nranks)) does not -- round-robin interleaves an owned and a skipped
 ! point into the SAME warp throughout, so the warp's time is always the
