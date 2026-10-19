@@ -128,6 +128,12 @@ terco_add_check(check_xc check_xc.F90)
 # water integrating to the atom count.
 terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
 
+# becke_partition_derivatives' O(n_atoms^2) production routine against a
+# hand-kept copy of the O(n_atoms^3) implementation it replaced, over
+# every point of a real water and formamide grid, both partition/adjust
+# combinations trc_dft_partition.F90 offers.
+terco_add_check(check_dft_partition_deriv check_dft_partition_deriv.F90 NEEDS_BASIS)
+
 #
 # Basis functions on grid points: the numerical overlap against trc_1e's
 # analytic one, and the batched, screened evaluation against the unscreened
@@ -257,6 +263,22 @@ set_tests_properties(
   terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
+#
+# eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
+# against a central difference of E_K^lr(D) -- the omega > 0 analogue of
+# check_rys_grad_fd, RHF only (see check_lr_exchange_grad_fd.F90's own
+# header for why). water/6-31G* and water/cc-pVDZ, omega = 0.3 and 0.4
+# (wB97X-V/wB97X and wB97's own values, src/xc/trc_xc_functional.F90) in
+# one binary, plus a bit-identity check at omega = 0.
+#
+terco_add_check(check_lr_exchange_grad_fd_631gs check_lr_exchange_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/6-31gs.json)
+terco_add_check(check_lr_exchange_grad_fd_ccpvdz check_lr_exchange_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvdz.json)
+set_tests_properties(
+  terco/check_lr_exchange_grad_fd_631gs terco/check_lr_exchange_grad_fd_ccpvdz
+  PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+
 # The FULL analytic gradient (eri%gradient + trc_1e_gradient + nuclear
 # repulsion) against finite differences of terco's own fully reconverged
 # SCF energy -- RHF water, UHF OH -- see check_full_grad_fd.F90's header.
@@ -267,6 +289,73 @@ terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 # converged density -- the one check that exercises trc_scf_gradient's own
 # spherical fold (see check_full_grad_vs_pyscf.F90's own header).
 terco_add_check(check_full_grad_vs_pyscf check_full_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+# The FULL KS-DFT gradient, SAME recipe as check_xc_grad_vs_pyscf.F90
+# (terco's own converged orbitals and grid, no pyscf SCF) but with NO
+# force_cart: cc-pVDZ comes back SPHERICAL here, exercising
+# trc_scf_gradient's fold TOGETHER with the XC term (see
+# check_dft_grad_vs_pyscf.F90's own header) -- water/formamide RKS
+# PBE/B3LYP on spherical cc-pVDZ and Cartesian 6-31G*, and UKS PBE/B3LYP
+# NH2 from a fixed (core-guess) initial density -- B3LYP NH2 is the
+# GLOBAL-hybrid UKS case (nonzero func%exx, omega/exx_lr still zero).
+foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
+             formamide_pbe_ccpvdz_sph formamide_b3lyp_ccpvdz_sph
+             formamide_pbe_631gs formamide_b3lyp_631gs
+             nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph
+             water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph)
+  if(case STREQUAL "water_pbe_ccpvdz_sph")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+  elseif(case STREQUAL "water_b3lyp_ccpvdz_sph")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+  elseif(case STREQUAL "formamide_pbe_ccpvdz_sph")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+  elseif(case STREQUAL "formamide_b3lyp_ccpvdz_sph")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+  elseif(case STREQUAL "formamide_pbe_631gs")
+    set(xyz formamide.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+  elseif(case STREQUAL "formamide_b3lyp_631gs")
+    set(xyz formamide.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func b3lyp)
+  elseif(case STREQUAL "nh2_b3lyp_ccpvdz_sph")
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+  elseif(case STREQUAL "water_wb97x_ccpvdz_sph")
+    # Range-separated hybrid, spherical, RKS -- the full assembled
+    # wB97X gradient (semilocal GGA term + trc_scf_grad.F90's own
+    # long-range exchange pass) through trc_scf_gradient, SPHERICAL
+    # fold included, guarded against pyscf's own analytic gradient.
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x)
+  elseif(case STREQUAL "nh2_wb97x_ccpvdz_sph")
+    # Same, UKS (ndens=2): the erf long-range exchange gradient's
+    # unrestricted (per-spin-channel) pass, guarded for real rather
+    # than only the RHF path check_lr_exchange_grad_vs_pyscf.F90 covers.
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x)
+  else()
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+  endif()
+  set(glev 3)
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/dft_grad_probe_${case}.bin)
+  terco_add_check(check_dft_grad_vs_pyscf_${case} check_dft_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case})
+endforeach()
 
 # The CLI's --grad against a direct trc_run_gradient/trc_gradient call on
 # the same molecule/basis/guess -- see check_cli_grad.F90's own header.
@@ -287,7 +376,30 @@ if(TERCO_BUILD_APP)
   # ARGS above is a generator expression and the explicit build-order
   # dependency is not.
   unset(_cli_grad_probe)
+
+  # The same comparison, for a KS-DFT gradient (--func pbe): the CLI's
+  # --grad is NOT refused for an LDA/GGA functional any more (this
+  # branch's own lift of trc_run_gradient's DFT refusal) -- see
+  # check_cli_grad_dft.F90's own header.
+  set(_cli_grad_dft_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_dft_probe.json)
+  terco_add_check(check_cli_grad_dft check_cli_grad_dft.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_dft_probe})
+  unset(_cli_grad_dft_probe)
 endif()
+
+# The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA
+# exchange-correlation term) against finite differences of terco's own
+# fully reconverged KS-DFT energy, at two grid levels -- RKS SVWN/PBE on
+# water, UKS PBE on the OH radical -- see check_xc_grad_fd.F90's header.
+terco_add_check(check_xc_grad_fd check_xc_grad_fd.F90 NEEDS_BASIS)
+
+# trc_xc_grad's basis-function (Pulay) term ALONE, against a finite
+# difference that holds the grid itself fixed too -- no SCF, no grid
+# response on either side of the comparison -- see
+# check_xc_grad_fixedgrid_fd.F90's own header for why this is the test
+# that pins the formula down to ~1e-9, independent of check_xc_grad_fd's
+# SCF-based (and therefore noisier) comparison above.
+terco_add_check(check_xc_grad_fixedgrid_fd check_xc_grad_fixedgrid_fd.F90 NEEDS_BASIS)
 
 #
 # Cartesian multipoles through the octupole, against a reference
@@ -348,6 +460,125 @@ foreach(b 631gs ccpvdz)
   endif()
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
   terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
+endforeach()
+
+# The FULL KS-DFT gradient against pyscf's own grad.RKS/grad.UKS, at
+# terco's own converged orbitals AND terco's own grid (see
+# check_xc_grad_vs_pyscf.F90's header) -- SVWN/PBE/B3LYP on water and
+# formamide, UKS PBE on the OH radical.
+foreach(case water_svwn_631gs water_pbe_631gs water_b3lyp_631gs
+             water_svwn_ccpvdz water_pbe_ccpvdz water_b3lyp_ccpvdz
+             formamide_pbe_ccpvdz formamide_b3lyp_ccpvdz
+             oh_pbe_631gs)
+  if(case STREQUAL "water_svwn_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func svwn)
+    set(glev 3)
+  elseif(case STREQUAL "water_pbe_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "water_b3lyp_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func b3lyp)
+    set(glev 3)
+  elseif(case STREQUAL "water_svwn_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func svwn)
+    set(glev 3)
+  elseif(case STREQUAL "water_pbe_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "water_b3lyp_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+    set(glev 3)
+  elseif(case STREQUAL "formamide_pbe_ccpvdz")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "formamide_b3lyp_ccpvdz")
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func b3lyp)
+    set(glev 3)
+  else()
+    set(xyz oh.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/xc_grad_probe_${case}.bin)
+  terco_add_check(check_xc_grad_vs_pyscf_${case} check_xc_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case})
+endforeach()
+
+# The SAME full KS-DFT gradient, grid_response=.true. on BOTH sides (see
+# check_xc_grad_vs_pyscf.F90's header, and generate.py's gen_xc_grad
+# docstring on why pyscf's own grid is built fresh here rather than
+# overridden) -- RKS SVWN/PBE on water, UKS PBE on NH2 (a genuinely
+# open-shell, non-degenerate-SOMO case -- check_xc_grad_fd.F90's own
+# header explains why NH2 and not OH).
+foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs
+             water_wb97x_631gs water_wb97x_ccpvdz)
+  if(case STREQUAL "water_svwn_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func svwn)
+    set(glev 3)
+  elseif(case STREQUAL "water_pbe_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  elseif(case STREQUAL "water_wb97x_631gs")
+    # Range-separated hybrid (wB97X: nonzero omega/exx_lr -- see
+    # src/xc/trc_xc_grad.F90's own header on why lifting the refusal
+    # there is safe): the semilocal GGA part is this grid-response term,
+    # the erf(omega r)/r long-range exchange is trc_scf_grad.F90's own
+    # (grad-rsh's) eri%gradient second pass, grid-independent.
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func wb97x)
+    set(glev 3)
+  elseif(case STREQUAL "water_wb97x_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x)
+    set(glev 3)
+  else()
+    set(xyz nh2.xyz)
+    set(json basis_sets/6-31gs.json)
+    set(func pbe)
+    set(glev 3)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/xc_grad_probe_gridresp_${case}.bin)
+  terco_add_check(check_xc_grad_vs_pyscf_gridresp_${case} check_xc_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case} 1)
+endforeach()
+
+# The long-range exchange gradient term alone (j_scale=0, k_scale=1, omega)
+# against a committed pyscf int2e_ip1 contraction under
+# mol.with_range_coulomb(omega) -- the omega > 0 analogue of
+# check_rys_grad_vs_pyscf, RHF only. Two omega values (0.3, 0.4) in one
+# binary/reference -- see check_lr_exchange_grad_vs_pyscf.F90's own header.
+foreach(b 631gs ccpvdz)
+  if(b STREQUAL "631gs")
+    set(json basis_sets/6-31gs.json)
+  else()
+    set(json basis_sets/cc-pvdz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/lr_exchange_grad_probe_${b}.bin)
+  terco_add_check(check_lr_exchange_grad_vs_pyscf_${b} check_lr_exchange_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
 endforeach()
 

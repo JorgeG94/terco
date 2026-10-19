@@ -145,18 +145,26 @@ _NSPH = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9}
 
 
 def terco_to_pyscf_perm_sph(atoms, basis_arg):
-    """`terco_to_pyscf_perm`'s own per-atom-shell-sort fix, for a SPHERICAL
-    basis: shell widths are 2l+1 (`_NSPH`), not `_NCART`, and there is no
-    within-shell permutation to apply on top -- scripts/gen_sph.py's own
-    self-test checks terco's per-shell spherical transform against
-    `pyscf.gto.mole.cart2sph(l, normalized='sp')` to 1e-13, so a terco
-    spherical AO and pyscf's own at the SAME (shell, m) position are
-    already the identical function, same sign. The only possible mismatch
-    left is pyscf's stable shell sort by ascending l within an atom (terco
-    keeps the shell list's own literal order); for every basis this script
-    uses (cc-pVDZ, cc-pVDZ-RIFIT, def2-universal-jkfit) that sort is a
-    no-op in practice -- shells already arrive s, p, d, ... -- but this is
-    not assumed: `perm` is still derived, the same as the Cartesian case."""
+    """Same shell-level reordering as `terco_to_pyscf_perm`, for a
+    SPHERICAL basis (block sizes 2l+1 rather than ncart(l)).
+
+    CAVEAT, found generating dft_grad_*.ref (gen_dft_grad): this
+    permutation ALONE is enough for gen_full_grad's own use (permuting an
+    ALREADY-pyscf-side density into terco's AO order, to seed terco's own
+    SCF -- a uniform-per-AO scale error would not even matter there), but
+    NOT for carrying a TERCO-side `cmo`/density INTO pyscf's own
+    normalisation the way gen_xc_grad's Cartesian `ao_norm_from_overlap`
+    rescale does: terco's own spherical S diagonal for an l>=2 (d, f, ...)
+    shell is measurably NOT 1 (e.g. ~0.398 for a cc-pVDZ oxygen d shell),
+    the same per-component Cartesian scale `ao_norm_from_overlap` already
+    corrects for riding through `sph_cart_to_sph`'s T^T S T contraction
+    (s/p shells are untouched -- T is the identity there). gen_sph.py's
+    own self-test (SPH_T vs `pyscf.gto.mole.cart2sph(l, normalized='sp')`
+    to 1e-13) validates the TRANSFORM, not terco's Cartesian INPUT to it,
+    which is where the scale actually comes from -- so a caller doing
+    that direction (cmo -> pyscf) needs the SAME `ao_norm_from_overlap`
+    rescale as the Cartesian case, from an overlap already folded to
+    nao_sph; see gen_dft_grad's own docstring."""
     perm = []
     base = 0
     for sym, _ in atoms:
@@ -962,6 +970,78 @@ def gen_rys_grad(case, json_rel):
     dump.unlink()
 
 
+def gen_lr_exchange_grad(case, json_rel):
+    """eri%gradient's long-range exchange term alone (j_scale=0, k_scale=1,
+    omega) against pyscf's own range-separated int2e_ip1
+    (mol.with_range_coulomb(omega)), contracted by hand exactly like
+    gen_rys_grad's grad2e_rhf but exchange-only (no vj term) -- the omega > 0
+    analogue of that function, RHF only (see
+    check_lr_exchange_grad_vs_pyscf.F90's own header for why). Two omega
+    values, both real functionals already in this tree
+    (src/xc/trc_xc_functional.F90): 0.3 (wB97X-V/wB97X) and 0.4 (wB97)."""
+    xyz = "water.xyz"
+    omegas = [0.3, 0.4]
+    dump = TEST / f"lr_exchange_grad_probe_{case}.bin"
+    run_bin(f"check_lr_exchange_grad_vs_pyscf_{case}", [json_rel, dump.name])
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    drhf = r.mat(nao)
+    grad_lr_terco = [r.f8(3 * nat).reshape(3, nat, order='F').T for _ in omegas]
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_lr_exchange_grad {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    drhf_p = drhf[np.ix_(inv_perm, inv_perm)]
+
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_lr_exchange_grad {case}: overlap check failed, {s_err:.3e}")
+    drhf_pyscf = n[:, None] * drhf_p * n[None, :]
+    aoslice = mol.aoslice_by_atom()
+
+    def grad2e_k_only(dm, omega):
+        # Exchange only -- no vj term, same contraction gen_rys_grad's
+        # grad2e_rhf uses for vk, under the range-separated operator.
+        with mol.with_range_coulomb(omega):
+            eri1 = mol.intor('int2e_ip1', comp=3).reshape(3, nao, nao, nao, nao)
+        vk = -np.einsum('xijkl,jk->xil', eri1, dm)
+        vhf = -0.5 * vk
+        de = np.zeros((nat, 3))
+        for ia in range(nat):
+            p0, p1 = aoslice[ia, 2:]
+            de[ia] = np.einsum('xij,ij->x', vhf[:, p0:p1], dm[p0:p1]) * 4.0
+        return de
+
+    w = RefWriter(f"lr_exchange_grad_{case}.ref")
+    w.header("check_lr_exchange_grad_vs_pyscf_" + case,
+              [ROOT / "test" / "check_lr_exchange_grad_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("S", s_terco)
+    worst_msgs = []
+    for idx, omega in enumerate(omegas, start=1):
+        grad_py = grad2e_k_only(drhf_pyscf, omega)
+        w.matrix(f"GRAD_LR_OM{idx}", grad_py.T)   # (3, nat), matching terco's own layout
+        worst = np.abs(grad_lr_terco[idx - 1] - grad_py).max()
+        worst_msgs.append(f"omega={omega} worst|terco-pyscf| {worst:.3e}")
+    w.end()
+    w.write()
+    print(f"  lr_exchange_grad {case}: " + "  ".join(worst_msgs) + " (at generation time)")
+    dump.unlink()
+
+
 def gen_1e_grad(case, xyz, json_rel):
     """trc_1e_gradient's three terms (dS, dT, dV) against pyscf, each in
     isolation, at a fixed non-SCF density (check_1e_grad_vs_pyscf.F90's own
@@ -1074,6 +1154,135 @@ def gen_1e_grad(case, xyz, json_rel):
 # SCF comparisons: converge pyscf tightly, REFUSE an unconverged case.
 # =========================================================================
 
+def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
+    """check_dft_grad_vs_pyscf.F90's own cases: the FULL KS-DFT gradient
+    against pyscf's own grad.RKS/grad.UKS, at TERCO'S OWN converged
+    orbitals and TERCO'S OWN grid -- exactly gen_xc_grad's recipe (see its
+    own docstring for why mf.kernel() is never called), except this
+    program's basis loads in whatever space its own JSON tags it, rather
+    than being forced Cartesian: 'cc-pvdz.json' comes back SPHERICAL,
+    '6-31gs.json' Cartesian, same as check_full_grad_vs_pyscf.F90's own
+    molecules. This is what exercises trc_scf_gradient's spherical fold
+    TOGETHER with the XC term, which neither sibling branch's own test
+    did alone.
+
+    RENORMALISATION, Cartesian AND spherical. gen_xc_grad's own
+    `ao_norm_from_overlap` rescale is needed in BOTH cases here, not only
+    the Cartesian one `terco_to_pyscf_perm_sph`'s own docstring might
+    suggest is exempt: that docstring's "no renormalisation needed" is
+    about permuting an ALREADY-pyscf-side density into terco's AO order
+    (gen_full_grad's own DM0 use, a seed density where a uniform-per-AO
+    scale error would not even matter); carrying a TERCO-side `cmo` into
+    pyscf's own normalisation (this function's job, same as gen_xc_grad's
+    Cartesian one) is different, and measured to need it: terco's own
+    S_sph diagonal for an l=2 (d) shell here is ~0.398, not 1 -- the same
+    per-component Cartesian scale `ao_norm_from_overlap` already corrects
+    for riding through `sph_cart_to_sph`'s T^T S T contraction (l=0,1
+    shells are untouched, T being the identity there, which is why the
+    existing Cartesian-only cases and check_full_grad_vs_pyscf.F90's own
+    independent-SCF comparison never surfaced this: neither needs terco's
+    AO-level S to equal pyscf's). check_dft_grad_vs_pyscf.F90 dumps S
+    already folded to its OWN (nao_sp) space either way, so this function
+    treats both cases identically from here.
+
+    Every 'nh2' case (UKS, any functional -- PBE, B3LYP, wB97X, ...) is
+    from a FIXED initial density -- not a committed DM0 here, but
+    check_dft_grad_vs_pyscf.F90's own `opts%guess = "core"` for any case
+    whose name starts with 'nh2' (a bare core-Hamiltonian
+    diagonalisation, fully determined by the molecule and basis alone),
+    so the SCF this function reads back is reproducible without this
+    script needing to carry an initial density of its own."""
+    PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
+             'wb97x': 'HYB_GGA_XC_WB97X'}
+    is_sph = 'cc-pvdz' in json_rel
+
+    dump = TEST / f"dft_grad_probe_{case}.bin"
+    run_bin(f"check_dft_grad_vs_pyscf_{case}", [xyz, json_rel, functional, grid_level, dump.name, case])
+    r = BinReader(dump)
+    nat, nao_sp, nspin, nalpha, nbeta, sph_flag = (
+        r.i8(), r.i8(), r.i8(), r.i8(), r.i8(), r.i8())
+    if bool(sph_flag) != is_sph:
+        raise RuntimeError(f"gen_dft_grad {case}: basis spherical-ness disagrees with the dump")
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    npts = r.i8()
+    pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+    wts = r.f8(npts)
+    cmo = r.f8(nao_sp * nao_sp * nspin).reshape(nao_sp, nao_sp, nspin, order='F')
+    eps = r.f8(nao_sp * nspin).reshape(nao_sp, nspin, order='F')
+    grad_terco = r.f8(3 * nat).reshape(3, nat, order='F').T
+    s_terco = r.mat(nao_sp)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    charge = int(round(at_z.sum())) - (nalpha + nbeta)
+    spin = nalpha - nbeta
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=not is_sph,
+                charge=charge, spin=spin, verbose=0)
+    if mol.nao_nr() != nao_sp:
+        raise RuntimeError(f"gen_dft_grad {case}: nao mismatch terco {nao_sp} pyscf {mol.nao_nr()}")
+
+    perm = (terco_to_pyscf_perm_sph if is_sph else terco_to_pyscf_perm)(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_dft_grad {case}: overlap check failed, {s_err:.3e}")
+
+    if nspin == 1:
+        c_p = n[:, None] * cmo[inv_perm, :, 0]
+        occ = np.zeros(nao_sp)
+        occ[:nalpha] = 2.0
+        mf = dft.RKS(mol)
+        mf.xc = PYSCF[functional]
+        mf.grids.coords = np.ascontiguousarray(pts)
+        mf.grids.weights = wts
+        mf.grids.non0tab = None
+        mf.mo_coeff = c_p
+        mf.mo_occ = occ
+        mf.mo_energy = eps[:, 0]
+        mf.converged = True
+    else:
+        c_a = n[:, None] * cmo[inv_perm, :, 0]
+        c_b = n[:, None] * cmo[inv_perm, :, 1]
+        occ_a = np.zeros(nao_sp)
+        occ_a[:nalpha] = 1.0
+        occ_b = np.zeros(nao_sp)
+        occ_b[:nbeta] = 1.0
+        mf = dft.UKS(mol)
+        mf.xc = PYSCF[functional]
+        mf.grids.coords = np.ascontiguousarray(pts)
+        mf.grids.weights = wts
+        mf.grids.non0tab = None
+        mf.mo_coeff = (c_a, c_b)
+        mf.mo_occ = (occ_a, occ_b)
+        mf.mo_energy = (eps[:, 0], eps[:, 1])
+        mf.converged = True
+
+    dm = mf.make_rdm1()
+    mf.e_tot = mf.energy_tot(dm)
+    g = mf.nuc_grad_method()
+    g.grid_response = False   # the default; stated explicitly -- see
+    #: gen_xc_grad's own docstring and trc_xc_grad.F90's header on the
+    #: grid-response term both this build and pyscf's default omit.
+    grad_py = g.kernel()
+
+    w = RefWriter(f"dft_grad_{case}.ref")
+    w.header("check_dft_grad_vs_pyscf_" + case,
+             [ROOT / "test" / "check_dft_grad_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao_sp)
+    w.matrix("GRAD", grad_py.T)
+    w.end()
+    w.write()
+    worst = np.abs(grad_terco - grad_py).max()
+    print(f"  dft_grad {case}: worst|terco-pyscf| {worst:.3e} (at generation time)")
+    dump.unlink()
+
+
 def gen_full_grad():
     """check_full_grad_vs_pyscf.F90's three cases: the FULL analytic
     RHF/UHF gradient (trc_scf_grad%trc_scf_gradient -- one-electron,
@@ -1164,6 +1373,206 @@ def gen_full_grad():
         print(f"  full_grad {name}: E(pyscf,converged) {mf.e_tot:18.12f}  |g| {grad_norm:.2e}")
     w.end()
     w.write()
+
+
+def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=False):
+    """The FULL KS-DFT nuclear gradient against pyscf's own grad.RKS/
+    grad.UKS, at TERCO'S OWN converged orbitals and TERCO'S OWN grid
+    (check_xc_grad_vs_pyscf.F90's own header has the full reasoning: no
+    SCF difference, no quadrature difference, so what differs is this
+    build's formula -- and the grid-response term it omits by default,
+    which pyscf's grad_response=False (the default, left unset here)
+    omits too).
+
+    mo_coeff is TERCO'S cart=True AO order and normalisation; converted to
+    pyscf's order (terco_to_pyscf_perm) and rescaled (ao_norm_from_overlap)
+    before mf.mo_coeff/mo_occ/mo_energy are set directly -- mf.kernel() is
+    NEVER called, so pyscf's own SCF never runs for this case.
+
+    GRID_RESPONSE=TRUE is a DIFFERENT comparison, not this function's
+    default path with one flag flipped: `g.grid_response=True` needs
+    pyscf's OWN `grids_response_cc`, which walks `grids.atom_grids` --
+    populated only by `Grids.build()`, not by overriding `coords`/
+    `weights` after the fact the way the grid_response=False path below
+    does with terco's dumped grid. So this path builds a plain pyscf
+    `Grids(mol)` at the SAME level and lets it run its own defaults
+    (Treutler-Ahlrichs radial, Bragg radii, Treutler size adjustment,
+    Becke's three-iteration cutoff, NWChem pruning -- trc_dft_grid.F90's
+    own defaults, confirmed to match pyscf's one by one against
+    pyscf/dft/gen_grid.py and pyscf/dft/radi.py, not assumed) rather than
+    terco's literal points: the comparison is then at terco's own
+    orbitals, on a grid that SHOULD be the partition-for-partition
+    equivalent of terco's (same scheme, same radii, same level), but not
+    provably the identical list of floating-point points in the identical
+    order -- see check_xc_grad_vs_pyscf.F90's own header on why that is
+    the honest description of what this checks.
+
+    'wb97x' is a range-separated hybrid (trc_xc_functional_t's nonzero
+    omega/exx_lr): src/xc/trc_xc_grad.F90's xc_gradient_add computes only
+    this functional's SEMILOCAL (GGA) term -- the erf(omega r)/r
+    long-range exchange is trc_scf_grad.F90's own eri%gradient second
+    pass, grid-independent -- so pyscf's full HYB_GGA_XC_WB97X analytic
+    gradient (which includes both pieces, the same way terco's full
+    trc_scf_gradient does) is the right comparison, not a semilocal-only
+    one on either side."""
+    PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
+             'wb97x': 'HYB_GGA_XC_WB97X'}
+
+    exe = f"check_xc_grad_vs_pyscf_gridresp_{case}" if grid_response else f"check_xc_grad_vs_pyscf_{case}"
+    dump = TEST / f"xc_grad_probe_gridresp_{case}.bin" if grid_response else TEST / f"xc_grad_probe_{case}.bin"
+    gresp_arg = [1] if grid_response else []
+    run_bin(exe, [xyz, json_rel, functional, grid_level, dump.name, case] + gresp_arg)
+    r = BinReader(dump)
+    nat, nao, nspin, nalpha, nbeta = r.i8(), r.i8(), r.i8(), r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    npts = r.i8()
+    pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+    wts = r.f8(npts)
+    cmo = r.f8(nao * nao * nspin).reshape(nao, nao, nspin, order='F')
+    eps = r.f8(nao * nspin).reshape(nao, nspin, order='F')
+    grad_terco = r.f8(3 * nat).reshape(3, nat, order='F').T
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    charge = int(round(at_z.sum())) - (nalpha + nbeta)
+    spin = nalpha - nbeta
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True,
+                charge=charge, spin=spin, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_xc_grad {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_xc_grad {case}: overlap check failed, {s_err:.3e}")
+
+    if nspin == 1:
+        c_p = n[:, None] * cmo[inv_perm, :, 0]
+        occ = np.zeros(nao)
+        occ[:nalpha] = 2.0
+        mf = dft.RKS(mol)
+        mf.xc = PYSCF[functional]
+        if not grid_response:
+            mf.grids.coords = np.ascontiguousarray(pts)
+            mf.grids.weights = wts
+            mf.grids.non0tab = None
+        else:
+            mf.grids.level = grid_level
+        mf.mo_coeff = c_p
+        mf.mo_occ = occ
+        mf.mo_energy = eps[:, 0]
+        mf.converged = True
+    else:
+        c_a = n[:, None] * cmo[inv_perm, :, 0]
+        c_b = n[:, None] * cmo[inv_perm, :, 1]
+        occ_a = np.zeros(nao)
+        occ_a[:nalpha] = 1.0
+        occ_b = np.zeros(nao)
+        occ_b[:nbeta] = 1.0
+        mf = dft.UKS(mol)
+        mf.xc = PYSCF[functional]
+        if not grid_response:
+            mf.grids.coords = np.ascontiguousarray(pts)
+            mf.grids.weights = wts
+            mf.grids.non0tab = None
+        else:
+            mf.grids.level = grid_level
+        mf.mo_coeff = (c_a, c_b)
+        mf.mo_occ = (occ_a, occ_b)
+        mf.mo_energy = (eps[:, 0], eps[:, 1])
+        mf.converged = True
+
+    if grid_response:
+        # GRID IDENTITY, CHECKED NOT ASSUMED. The WHOSE BECKE PARTITION
+        # paragraph of trc_xc_grad.F90's own header argues, term for term,
+        # that pyscf's defaults (Bragg radii, Treutler size adjustment,
+        # Treutler-Ahlrichs radial, NWChem pruning, Becke's three-iteration
+        # cutoff, level 3) are terco's own -- an argument from the two
+        # codes' source, not from running them. This is what actually runs
+        # them and compares: pyscf's own grid (built explicitly, since the
+        # override branch above never touches `mf.grids.coords` here) is
+        # sorted lexicographically and checked point-for-point against
+        # terco's dumped grid (`pts`/`wts`, `res%grid_r`/`res%grid_w` --
+        # the FULL, unscreened quadrature, matching pyscf's own default of
+        # not dropping near-zero-weight points either), since the two
+        # codes build the same set of points in different internal orders.
+        # A mismatch here means the "whose Becke partition" argument does
+        # NOT hold for this case and the comparison below is not the
+        # grid-identical one it claims to be -- refused rather than
+        # silently compared anyway.
+        mf.grids.build()
+        # `Grids.build()` pads its arrays up to a multiple of
+        # `self.alignment` with zero-weight, atm_idx=-1 placeholder points
+        # (`_add_padding`, gen_grid.py) -- a GPU-batching convenience that
+        # terco's own grid has no counterpart for and carries no physics
+        # (weight exactly 0). Dropped before the comparison, not treated
+        # as part of "pyscf's own grid" -- the first run of this check
+        # found exactly `alignment` extra points this way on water (33704
+        # vs terco's 33698) before this filter was added.
+        pad = np.asarray(mf.grids.atm_idx) >= 0
+        py_coords = np.asarray(mf.grids.coords)[pad]
+        py_weights = np.asarray(mf.grids.weights)[pad]
+        if py_coords.shape[0] != pts.shape[0]:
+            raise RuntimeError(
+                f"gen_xc_grad {case}: pyscf's own grid has {py_coords.shape[0]} points, "
+                f"terco's has {pts.shape[0]} -- not the same quadrature, refusing the "
+                f"grid_response=True comparison")
+        order_py = np.lexsort((py_coords[:, 2], py_coords[:, 1], py_coords[:, 0]))
+        order_tc = np.lexsort((pts[:, 2], pts[:, 1], pts[:, 0]))
+        coord_err = np.abs(py_coords[order_py] - pts[order_tc]).max()
+        weight_err = np.abs(py_weights[order_py] - wts[order_tc]).max()
+        # 1e-9, not 1e-12: the two codes compute the SAME formula (coords:
+        # atom + r*sphere direction; weights: a product of several
+        # sqrt/trig-derived cutoff factors) through independently written
+        # sqrt/trig call sequences, and measured coordinate agreement is
+        # ~1e-13 (plain float64 ULP noise) while the WEIGHT -- a product
+        # of several cutoff factors, each sensitive to its own ULP-level
+        # input noise, occasionally near a cutoff's steep region -- was
+        # ~4e-11 on water at generation time. 1e-9 is still ~25x that,
+        # the SAME margin style as trc_xc_grad.F90's own grid_response
+        # gate (check_xc_grad_vs_pyscf.F90's own comment): a real
+        # algorithmic mismatch (wrong radii, wrong adjustment, a dropped
+        # atom) would show up many orders above this, not within one of
+        # it.
+        if coord_err > 1e-9 or weight_err > 1e-9:
+            raise RuntimeError(
+                f"gen_xc_grad {case}: pyscf's own grid differs from terco's own grid "
+                f"(sorted) by coord {coord_err:.3e}, weight {weight_err:.3e} -- the "
+                f"grid_response=True comparison needs an identical grid on both sides, "
+                f"not an assumed one; see trc_xc_grad.F90's WHOSE BECKE PARTITION note")
+        print(f"  {case}: pyscf grid matches terco's own (sorted), coord err "
+              f"{coord_err:.3e}, weight err {weight_err:.3e}")
+
+    dm = mf.make_rdm1()
+    mf.e_tot = mf.energy_tot(dm)
+    g = mf.nuc_grad_method()
+    g.grid_response = grid_response
+    #: False is the default, stated explicitly -- see this function's own
+    #: docstring and trc_xc_grad.F90's header on the grid-response term
+    #: both this build and pyscf's default omit. True is this function's
+    #: OTHER path (see the docstring on why `mf.grids` is built fresh
+    #: rather than overridden when this is set).
+    grad_py = g.kernel()
+
+    ref_tag = f"xc_grad_gridresp_{case}" if grid_response else f"xc_grad_{case}"
+    w = RefWriter(f"{ref_tag}.ref")
+    w.header("check_xc_grad_vs_pyscf_" + case,
+              [ROOT / "test" / "check_xc_grad_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("GRAD", grad_py.T)
+    w.end()
+    w.write()
+    worst = np.abs(grad_terco - grad_py).max()
+    print(f"  {ref_tag}: worst|terco-pyscf| {worst:.3e} (at generation time)")
+    dump.unlink()
 
 
 def gen_rks():
@@ -2641,10 +3050,60 @@ CASES = {
     "vv10": gen_vv10,
     "rys_grad_631gs": lambda: gen_rys_grad("631gs", "basis_sets/6-31gs.json"),
     "rys_grad_ccpvdz": lambda: gen_rys_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
+    "lr_exchange_grad_631gs": lambda: gen_lr_exchange_grad("631gs", "basis_sets/6-31gs.json"),
+    "lr_exchange_grad_ccpvdz": lambda: gen_lr_exchange_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
     "onee_grad_water_631gs": lambda: gen_1e_grad("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "onee_grad_water_ccpvdz": lambda: gen_1e_grad("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
     "onee_grad_formamide_ccpvdz": lambda: gen_1e_grad(
         "formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
+    "xc_grad_water_svwn_631gs": lambda: gen_xc_grad(
+        "water_svwn_631gs", "water.xyz", "basis_sets/6-31gs.json", "svwn"),
+    "xc_grad_water_pbe_631gs": lambda: gen_xc_grad(
+        "water_pbe_631gs", "water.xyz", "basis_sets/6-31gs.json", "pbe"),
+    "xc_grad_water_b3lyp_631gs": lambda: gen_xc_grad(
+        "water_b3lyp_631gs", "water.xyz", "basis_sets/6-31gs.json", "b3lyp"),
+    "xc_grad_water_svwn_ccpvdz": lambda: gen_xc_grad(
+        "water_svwn_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "svwn"),
+    "xc_grad_water_pbe_ccpvdz": lambda: gen_xc_grad(
+        "water_pbe_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "xc_grad_water_b3lyp_ccpvdz": lambda: gen_xc_grad(
+        "water_b3lyp_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "xc_grad_formamide_pbe_ccpvdz": lambda: gen_xc_grad(
+        "formamide_pbe_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "xc_grad_formamide_b3lyp_ccpvdz": lambda: gen_xc_grad(
+        "formamide_b3lyp_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "xc_grad_oh_pbe_631gs": lambda: gen_xc_grad(
+        "oh_pbe_631gs", "oh.xyz", "basis_sets/6-31gs.json", "pbe"),
+    "xc_grad_gridresp_water_svwn_631gs": lambda: gen_xc_grad(
+        "water_svwn_631gs", "water.xyz", "basis_sets/6-31gs.json", "svwn", grid_response=True),
+    "xc_grad_gridresp_water_pbe_631gs": lambda: gen_xc_grad(
+        "water_pbe_631gs", "water.xyz", "basis_sets/6-31gs.json", "pbe", grid_response=True),
+    "xc_grad_gridresp_nh2_pbe_631gs": lambda: gen_xc_grad(
+        "nh2_pbe_631gs", "nh2.xyz", "basis_sets/6-31gs.json", "pbe", grid_response=True),
+    "xc_grad_gridresp_water_wb97x_631gs": lambda: gen_xc_grad(
+        "water_wb97x_631gs", "water.xyz", "basis_sets/6-31gs.json", "wb97x", grid_response=True),
+    "xc_grad_gridresp_water_wb97x_ccpvdz": lambda: gen_xc_grad(
+        "water_wb97x_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x", grid_response=True),
+    "dft_grad_water_pbe_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_pbe_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "dft_grad_water_b3lyp_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_b3lyp_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "dft_grad_formamide_pbe_ccpvdz_sph": lambda: gen_dft_grad(
+        "formamide_pbe_ccpvdz_sph", "formamide.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "dft_grad_formamide_b3lyp_ccpvdz_sph": lambda: gen_dft_grad(
+        "formamide_b3lyp_ccpvdz_sph", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "dft_grad_formamide_pbe_631gs": lambda: gen_dft_grad(
+        "formamide_pbe_631gs", "formamide.xyz", "basis_sets/6-31gs.json", "pbe"),
+    "dft_grad_formamide_b3lyp_631gs": lambda: gen_dft_grad(
+        "formamide_b3lyp_631gs", "formamide.xyz", "basis_sets/6-31gs.json", "b3lyp"),
+    "dft_grad_nh2_pbe_ccpvdz_sph": lambda: gen_dft_grad(
+        "nh2_pbe_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "pbe"),
+    "dft_grad_nh2_b3lyp_ccpvdz_sph": lambda: gen_dft_grad(
+        "nh2_b3lyp_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "dft_grad_water_wb97x_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_wb97x_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x"),
+    "dft_grad_nh2_wb97x_ccpvdz_sph": lambda: gen_dft_grad(
+        "nh2_wb97x_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "wb97x"),
     "rys_fock_water_ccpvdz": lambda: gen_rys_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", 1e-9),
     "rys_fock_water_ccpvtz": lambda: gen_rys_fock("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json", 1e-10),
     "rys_fock_formamide_def2tzvp": lambda: gen_rys_fock(

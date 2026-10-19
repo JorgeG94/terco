@@ -54,7 +54,7 @@ def main():
 
     compact_cases = "\n".join(
         f"""      case ({key}); call rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, npriv, gp)"""
         for key, tag in keys)
@@ -119,7 +119,7 @@ contains
    end subroutine rysg_screen_dispatch
 
    subroutine rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                           ndens, dmat, npriv, gp)
@@ -127,7 +127,12 @@ contains
       !! over the dense survivor
       !! list `rysg_screen_dispatch` produced, adding into npriv
       !! lane-private gradient copies gp (see gen_rys_grad.py's compact
-      !! driver) that the caller sums into grad.
+      !! driver) that the caller sums into grad. `omega` switches the
+      !! operator to erf(omega*r12)/r12, same meaning as eri_fock's own --
+      !! the screen pass above takes no `omega`, since the Schwarz bound it
+      !! tests against stays the plain Coulomb one (see eri_fock's own
+      !! comment: pointwise larger, so it bounds the attenuated integral
+      !! too).
       integer, intent(in) :: key
       integer(int64), intent(in) :: nout
       integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
@@ -136,7 +141,7 @@ contains
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac
+      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
       integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)

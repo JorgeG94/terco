@@ -187,7 +187,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_grad, only: trc_scf_gradient
-   use trc_scf_settings, only: scf_spin_rule
+   use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
@@ -2538,7 +2538,15 @@ contains
       !! sized for.
       !!
       !! REFUSED, clearly, rather than attempted:
-      !!   - a DFT functional: no XC gradient kernel exists yet.
+      !!   - a functional with VV10 nonlocal correlation: no VV10 gradient
+      !!     kernel exists (trc_xc_grad%xc_gradient_add's own refusal,
+      !!     checked here too so the message names the actual reason
+      !!     rather than a bare TRC_ERR_UNSUPPORTED).
+      !!   - meta-GGA or a double hybrid: `trc_xc_functional_t` has no
+      !!     meta-GGA family and no MP2-fraction field on this branch, so
+      !!     neither can reach this point at all -- `trc_set_method` already
+      !!     refused it (func%missing) before a functional name naming one
+      !!     could be stored in `cx%opts%functional`. Nothing to check here.
       !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
       !!     gradient exists; `trc_scf_gradient` is the SCF reference term
       !!     only.
@@ -2557,9 +2565,26 @@ contains
       !!     given a `comm` -- a plumbing `trc_scf_gradient` does not do
       !!     today, found by reading trc_eri.F90's `eri_gradient` and
       !!     comparing it against `eri_build`'s own comm handling.
+      !!
+      !! A plain LDA/GGA functional, a GLOBAL hybrid of one (b3lyp and
+      !! friends), or a RANGE-SEPARATED hybrid (wb97x and friends: nonzero
+      !! `func%omega`/`exx_lr`, `nlc_b`/`nlc_c` still zero) is NOT refused:
+      !! `func` is looked up again here (same `xc_functional_by_name`
+      !! trc_set_method already validated the name with) and handed to
+      !! `trc_scf_gradient`, along with the SAME grid settings
+      !! (`cx%opts%grid_level`, `grid_max_pts`, `rho_tol`) the SCF itself
+      !! converged with -- the gradient's quadrature has to be the SCF's,
+      !! or the two are not derivatives of the same energy.
+      !! `trc_scf_gradient` itself builds the erf(omega r)/r long-range
+      !! exchange term (a second eri%gradient pass, its own header) and
+      !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
+      !! GGA part exactly as for any other GGA -- see that module's own
+      !! header on why `omega`/`exx_lr` do not affect it.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
+      logical :: have_func
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2570,9 +2595,22 @@ contains
          return
       end if
       status = TRC_ERR_UNSUPPORTED
-      if (len_trim(cx%opts%functional) > 0) then
-         cx%message = "trc_run_gradient: XC gradient not implemented yet"
-         return
+      have_func = len_trim(cx%opts%functional) > 0
+      if (have_func) then
+         ! `cx%opts%functional` only ever holds a name trc_set_method/
+         ! scf_entry already validated (xc_functional_by_name succeeded,
+         ! func%missing empty), so this lookup cannot fail -- it is
+         ! re-done here only to read the fields below, not to re-validate.
+         if (.not. xc_functional_by_name(cx%opts%functional, func)) then
+            cx%message = "trc_run_gradient: functional '"//trim(cx%opts%functional)// &
+                         "' failed to re-resolve -- this should be unreachable"
+            return
+         end if
+         if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
+            cx%message = "trc_run_gradient: VV10 nonlocal correlation (functional '"// &
+                         trim(cx%opts%functional)//"') has no gradient kernel yet"
+            return
+         end if
       end if
       if (cx%rimp2_ok) then
          cx%message = "trc_run_gradient: RI-MP2/double-hybrid correlation gradient not implemented yet"
@@ -2592,8 +2630,15 @@ contains
       end if
       if (allocated(cx%grad)) deallocate (cx%grad)
       allocate (cx%grad(3, cx%natm))
-      call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                            cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad)
+      if (have_func) then
+         call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                               func=func, grid_level=cx%opts%grid_level, &
+                               grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol)
+      else
+         call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad)
+      end if
       cx%grad_ok = .true.
       status = TRC_OK
    end function trc_run_gradient

@@ -1,0 +1,12 @@
+# terco pyscf reference v1
+# case: check_xc_grad_vs_pyscf_oh_pbe_631gs
+# generator: test/pyscf_refs/generate.py CASES["xc_grad_oh_pbe_631gs"] -> gen_xc_grad
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 24dd1f4306e3171be3af8aec97ccf35566dac10133aee267cedad32f20251879
+# files: test/check_xc_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/oh.xyz
+NAT 2
+NAO 17
+GRAD 3 2
+-1.37689966385705036e-16 -1.60576403579100281e-16 2.00793773172445178e-02 1.90484378601684823e-16 1.56765855538349978e-18 -2.00782690969876221e-02
+END
