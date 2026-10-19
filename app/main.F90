@@ -255,11 +255,11 @@ contains
       end if
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") bar
-      call line("TOTAL ENERGY", r%etot)
+      call line("SCF ENERGY", r%etot)
       if (r%rimp2 .and. r%conv /= 0) then
          if (r%dh) then
             call line("PT2 CORRELATION", r%eos + r%ess)
-            call line("DOUBLE HYBRID TOTAL", r%etot_dh)
+            call line("DH TOTAL ENERGY", r%etot_dh)
          else
             call line("MP2 CORRELATION", r%eos + r%ess)
             call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
@@ -270,7 +270,7 @@ contains
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a)") "   ::"//repeat(" ", 21)//"SUMMARY"//repeat(" ", 22)//"::"
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
-      call row("total energy", r%etot)
+      call row("scf energy", r%etot)
       call row("nuclear repulsion", r%enuc)
       call row("one-electron energy", r%eone)
       call row("two-electron energy", r%etwo)
@@ -279,7 +279,7 @@ contains
       if (r%rimp2 .and. r%conv /= 0) then
          call row(merge("PT2 opposite spin", "MP2 opposite spin", r%dh), r%eos)
          call row(merge("PT2 same spin    ", "MP2 same spin    ", r%dh), r%ess)
-         if (r%dh) call row("double hybrid total", r%etot_dh)
+         if (r%dh) call row("dh total energy", r%etot_dh)
       end if
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
@@ -350,13 +350,13 @@ contains
             write (u, "(a,es23.15e3,a)") '  "pt2 opposite-spin fraction": ', r%pt2_cos, ","
             write (u, "(a,es23.15e3,a)") '  "pt2 same-spin fraction": ', r%pt2_css, ","
             write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
-            write (u, "(a,es23.15e3)") '  "total energy": ', r%etot_dh
+            write (u, "(a,es23.15e3)") '  "dh total energy": ', r%etot_dh
             write (u, "(a)") "}"
             close (u)
             return
          end if
       end if
-      write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
+      write (u, "(a,es23.15e3)") '  "scf energy": ', r%etot
       write (u, "(a)") "}"
       close (u)
    end subroutine write_json
@@ -687,10 +687,13 @@ program terco_main
    if (r%rimp2 .and. r%conv /= 0) then
       call api(r, trc_run_rimp2(r%h))
       call api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
-      ! r%etot is the SCF/hybrid-part total alone (fetched above, before
-      ! this RI-MP2 step ran): the double hybrid's own total adds its
-      ! two PT2 fractions here, never the full unscaled E_os + E_ss.
-      if (r%dh) r%etot_dh = r%etot + r%pt2_cos*r%eos + r%pt2_css*r%ess
+      ! The double hybrid's own weighted total comes from trc_energy
+      ! itself (now that RI-MP2 has run, cx%rimp2_ok is set and its
+      ! pt2_cos/pt2_css branch applies), not recomputed here from
+      ! r%pt2_cos/r%pt2_css -- those stay around only to report the
+      ! fractions themselves (write_json), never to duplicate the
+      ! weighting trc_energy already does from the SAME table.
+      if (r%dh) call api(r, trc_energy(r%h, r%etot_dh))
    end if
 
    call system_clock(r%t1)

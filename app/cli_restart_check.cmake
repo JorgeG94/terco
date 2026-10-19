@@ -40,7 +40,7 @@ endif()
 if(out MATCHES "fock\\(s\\)")
   message(FATAL_ERROR "the restarted run ran SCF iterations:\n${out}")
 endif()
-foreach(key "total energy" "mp2 opposite-spin energy" "mp2 same-spin energy"
+foreach(key "scf energy" "mp2 opposite-spin energy" "mp2 same-spin energy"
             "two-electron energy" "iterations")
   json_number(${WORK}/full.json "${key}" a)
   json_number(${WORK}/restart.json "${key}" b)

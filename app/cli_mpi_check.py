@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 TOL = 1.0e-8
-ENERGY_RE = re.compile(r"TOTAL ENERGY\s+(-?\d+\.\d+)")
+ENERGY_RE = re.compile(r"SCF ENERGY\s+(-?\d+\.\d+)")
 MP2_RE = re.compile(r"MP2 CORRELATION\s+(-?\d+\.\d+)")
 MP2_TOL = 1.0e-10
 
@@ -48,13 +48,13 @@ def main():
             continue
         e1, e2 = energy(p1.stdout), energy(p2.stdout)
         if e1 is None or e2 is None:
-            print(f"cli_mpi_check: {label} -- could not find TOTAL ENERGY in output")
+            print(f"cli_mpi_check: {label} -- could not find SCF ENERGY in output")
             ok = False
             continue
         # np 2 must print the result once, not twice.
-        if p2.stdout.count("TOTAL ENERGY") != 1:
-            print(f"cli_mpi_check: {label} -- np 2 printed TOTAL ENERGY "
-                  f"{p2.stdout.count('TOTAL ENERGY')} times, not once")
+        if p2.stdout.count("SCF ENERGY") != 1:
+            print(f"cli_mpi_check: {label} -- np 2 printed SCF ENERGY "
+                  f"{p2.stdout.count('SCF ENERGY')} times, not once")
             ok = False
         diff = abs(e1 - e2)
         print(f"cli_mpi_check: {label}  np1 = {e1:.12f}  np2 = {e2:.12f}  diff = {diff:.2e}")
