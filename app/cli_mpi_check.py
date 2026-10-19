@@ -12,8 +12,9 @@
 # (semilocal XC plus VV10's E_nlc, the quantity pass 2's rank split and
 # allreduce actually touch). np 3 exercises the "first (points mod ranks)
 # ranks get one extra point" remainder handling (see trc_vv10.F90's own
-# MULTI-GPU header), not just the evenly-split np 2 case -- both grids'
-# point counts are not multiples of 3.
+# MULTI-GPU header), not just the evenly-split np 2 case -- measured,
+# neither grid's point count is a multiple of 3 (see the np3 block below
+# for the actual counts), so this is not an assumption.
 #
 # NH2, not OH, is the open-shell case: OH's SOMO is a doubly-degenerate pi
 # orbital, so each SCF run is free to converge to an arbitrary mixture of
@@ -60,17 +61,23 @@ def exc_energy(out):
 
 
 def main():
-    mpiexec, npflag, terco_cli, xyz, basis_dir = sys.argv[1:6]
-    nh2_xyz = os.path.join(os.path.dirname(xyz), "nh2.xyz")
+    mpiexec, npflag, terco_cli, xyz, basis_dir, nh2_xyz = sys.argv[1:7]
     ok = True
 
+    # check_exc/check_np3 are explicit per case rather than keyed off a
+    # label substring: both are VV10 properties (the exchange-correlation
+    # row only has a meaningful E_nlc contribution, and only VV10's own
+    # grid is split, when wB97X-V is running), not something RHF/B3LYP
+    # need or NH2 happens to share a name with. np3 is deliberately run
+    # only for the two VV10 cases: RHF/B3LYP have no grid to split
+    # unevenly, so a remainder check there would exercise nothing new.
     cases = [
-        ("RHF", xyz, []),
-        ("B3LYP", xyz, ["-f", "b3lyp"]),
-        ("wB97X-V", xyz, ["-f", "wb97x-v"]),
-        ("wB97X-V (UKS, NH2)", nh2_xyz, ["-f", "wb97x-v"]),
+        ("RHF", xyz, [], False, False),
+        ("B3LYP", xyz, ["-f", "b3lyp"], False, False),
+        ("wB97X-V", xyz, ["-f", "wb97x-v"], True, True),
+        ("wB97X-V (UKS, NH2)", nh2_xyz, ["-f", "wb97x-v"], True, True),
     ]
-    for label, mol, extra in cases:
+    for label, mol, extra, check_exc, check_np3 in cases:
         p1 = run(mpiexec, npflag, 1, terco_cli, mol, basis_dir, *extra)
         p2 = run(mpiexec, npflag, 2, terco_cli, mol, basis_dir, *extra)
         if p1.returncode != 0 or p2.returncode != 0:
@@ -94,7 +101,7 @@ def main():
         if diff > TOL:
             ok = False
 
-        if "wB97X-V" in label:
+        if check_exc:
             # The exchange-correlation row carries VV10's E_nlc -- the
             # quantity pass 2's rank split and allreduce actually touch --
             # separately from the total, which also depends on H and G.
@@ -109,9 +116,13 @@ def main():
             if xdiff > TOL:
                 ok = False
 
-            # np 3: the grid's point count is not a multiple of 3, so the
-            # "first (points mod ranks) ranks get one extra point" remainder
-            # handling runs too, not just the evenly-split np 2 case above.
+        if check_np3:
+            # np 3: the grid's point count is not a multiple of 3 (water's
+            # own VV10 grid: 10124 points, 10124 % 3 == 2; NH2's: 10064
+            # points, 10064 % 3 == 2 -- both measured at this program's
+            # default --nlc-grid level 1), so the "first (points mod
+            # ranks) ranks get one extra point" remainder handling runs
+            # too, not just the evenly-split np 2 case above.
             p3 = run(mpiexec, npflag, 3, terco_cli, mol, basis_dir, *extra)
             if p3.returncode != 0:
                 print(f"cli_mpi_check: {label} np3 did not run cleanly (rc={p3.returncode})")
