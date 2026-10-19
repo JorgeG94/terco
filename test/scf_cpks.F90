@@ -21,6 +21,7 @@
 !
 program scf_cpks
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
@@ -113,14 +114,13 @@ program scf_cpks
    cphf_opts%max_iter = 100
 
    block
-      integer(int64) :: tc0, tc1, rate
+      type(timer_type) :: tm
       real(dp) :: t_cpks
       integer :: niter_tot
-      call system_clock(tc0, rate)
+      call tm%start()
       call trc_scf_polarizability_rks(bas, pl, eri, xg, func, nocc, res%cmo(:, :, 1), res%eps(:, 1), &
                                       res%dmat(:, :, 1), alpha, cphf_opts, cphf_res, la)
-      call system_clock(tc1)
-      t_cpks = real(tc1 - tc0, dp)/real(rate, dp)
+      t_cpks = tm%get_elapsed_time()
       niter_tot = sum(cphf_res%iterations)
       print '(a,f10.3,a,i0,a,f10.4,a)', "  CPKS wall time ", t_cpks, " s over ", niter_tot, &
          " total CG iterations: ", t_cpks/real(max(niter_tot, 1), dp), " s/iteration"
