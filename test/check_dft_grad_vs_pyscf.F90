@@ -134,9 +134,25 @@ program check_dft_grad_vs_pyscf
 
    allocate (grad(3, nat))
    call lp%init(nao_sp)
+   ! `nlc_grid_level=grid_level`, NOT `opts%nlc_grid_level` (the SCF's own,
+   ! deliberately coarse, default level 1): this comparison is against
+   ! PYSCF's INDEPENDENT reference, at a grid PYSCF controls entirely on
+   ! its own side (its own `nlcgrids`, not synced to terco's choice at
+   ! all) -- there is no "must match the SCF's own grid" requirement the
+   ! way check_xc_grad_fd.F90's FD-of-terco's-own-energy comparison has
+   ! (that program's own comment). What matters HERE is evaluating the
+   ! Pulay+response integral accurately; `opts%nlc_grid_level`'s coarse
+   ! default measures 9.37e-7 against this exact pyscf reference (level 1
+   ! quadrature error in the VV10 term, not a formula bug --
+   ! check_vv10_grad_fixedd_fd.F90 independently confirms the formula to
+   ! ~1e-11 at both level 1 AND level 2), while the semilocal grid's own
+   ! level (3, same as the reference was generated with) reproduces the
+   ! original ~1e-12/1e-13. Explicit here rather than left to
+   ! vv10_gradient_add's own default so a future change to that default
+   ! cannot silently change what this test measures.
    call trc_scf_gradient(bas, lp, nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, grad, &
                          func=func, grid_level=grid_level, grid_max_pts=opts%grid_max_pts, &
-                         rho_tol=opts%rho_tol, grid_response=.false.)
+                         rho_tol=opts%rho_tol, grid_response=.false., nlc_grid_level=grid_level)
    call lp%release()
 
    ! The overlap, in the SCF's OWN AO space (nao_sp), for the AO-

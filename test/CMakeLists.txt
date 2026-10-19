@@ -405,6 +405,12 @@ endif()
 # water, UKS PBE on the OH radical -- see check_xc_grad_fd.F90's header.
 terco_add_check(check_xc_grad_fd check_xc_grad_fd.F90 NEEDS_BASIS)
 
+# The VV10 gradient's own formula, isolated from the SCF entirely: a
+# fixed-density finite difference of E_nlc[D] alone -- see
+# check_vv10_grad_fixedd_fd.F90's own header for why this is a sharper
+# gate than check_xc_grad_fd's reconverged-SCF wB97X-V case.
+terco_add_check(check_vv10_grad_fixedd_fd check_vv10_grad_fixedd_fd.F90 NEEDS_BASIS)
+
 # trc_xc_grad's basis-function (Pulay) term ALONE, against a finite
 # difference that holds the grid itself fixed too -- no SCF, no grid
 # response on either side of the comparison -- see

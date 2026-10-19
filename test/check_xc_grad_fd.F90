@@ -142,10 +142,23 @@ contains
 
       allocate (grad_on(3, nat), grad_off(3, nat))
       call lp%init(bas%nao)
+      ! `nlc_grid_level=opts%nlc_grid_level` matters for any VV10
+      ! (nlc_b/nlc_c nonzero) functional: trc_scf_run just converged this
+      ! SCF with VV10 on `opts%nlc_grid_level` (trc_scf_context's own
+      ! `grid_nlc`), and trc_scf_gradient's own `nlc_grid_level` argument
+      ! is NOT forwarded from `grid_level` -- omitting it left
+      ! vv10_gradient_add on its OWN default grid level (3), while the
+      ! energy this FD differences used `opts%nlc_grid_level`'s default
+      ! (1): two different VV10 grids on the two sides of one comparison.
+      ! Harmless for every functional here with nlc_b = nlc_c = 0 (the
+      ! argument is simply unused then), but required for wb97x-v --
+      ! see check_vv10_grad_fixedd_fd.F90 for the test that caught this.
       call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_on, &
-                            func=func, grid_level=grid_level, grid_response=.true.)
+                            func=func, grid_level=grid_level, grid_response=.true., &
+                            nlc_grid_level=opts%nlc_grid_level)
       call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_off, &
-                            func=func, grid_level=grid_level, grid_response=.false.)
+                            func=func, grid_level=grid_level, grid_response=.false., &
+                            nlc_grid_level=opts%nlc_grid_level)
       ! Released before `lp` goes out of scope: trc_linalg_t has no
       ! finalizer (check_full_grad_fd.F90's own comment, unchanged here).
       call lp%release()
@@ -279,33 +292,35 @@ program check_xc_grad_fd
    ! at every displaced geometry, VV10's own double sum recomputed from
    ! scratch each time).
    !
-   ! ITS OWN tolerance, not ABSTOL_ON. MEASURED (CPU, gfortran): ON worst
-   ! abs 4.27e-7 at BOTH L3 and L5 (identical to 3 significant figures --
-   ! the same grid-level-independence signature ABSTOL_ON's own six cases
-   ! were set from, so this is the physical gradient, not a quadrature
-   ! artifact), OFF 5.51e-6 at L3 shrinking to 6.05e-7 at L5 (the Pulay-
-   ! only quadrature artifact, same pattern as every OFF case above).
-   ! Translational invariance ~1e-13/1e-14 at both levels, far inside the
-   ! module default INVTOL -- no override needed for that.
+   ! NO override: ON worst abs measures 1.38e-7 at BOTH L3 and L5
+   ! (identical to 3 significant figures -- the same grid-level-
+   ! independence signature ABSTOL_ON's own six cases were set from),
+   ! essentially the SAME floor as the plain-GGA cases above (1.37e-7
+   ! SVWN, 1.38e-7 PBE) -- clears the shared ABSTOL_ON (2.0e-7)
+   ! comfortably, same as them, no case-specific tolerance needed.
    !
-   ! richardson=.true. (steps H and H/2) was tried here too: it only moved
-   ! worst abs from 4.27e-7 to 2.90e-7, NOT the ~440x collapse w3.xyz's
-   ! own case measures (9.30e-7 -> 2.13e-9) -- so, unlike w3, this floor
-   ! is NOT dominated by the central difference's smooth O(H^2) Taylor
-   ! truncation term; the grid-level-independence above already rules out
-   ! a missing/wrong grid-response term, so what Richardson leaves behind
-   ! is read as SCF/DIIS convergence noise feeding into each displaced
-   ! energy (wB97X-V's RSH+NLC SCF has more to converge per iteration
-   ! than a plain GGA, and VV10's own O(N^2) sum is more floating-point
-   ! work to accumulate it over) -- a floor Richardson's extra energy
-   ! evaluations cannot remove, so the plain step-H gate below is used
-   ! rather than paying for Richardson's 2x cost for no real gain. 2.0e-6
-   ! is the measured 4.27e-7 with ~4.7x headroom, not a loosened gate --
-   ! this case did not exist before this branch.
+   ! THIS NUMBER WAS 4.27e-7 before a real bug was found and fixed here:
+   ! this subroutine never passed `nlc_grid_level` to `trc_scf_gradient`,
+   ! so the ON/OFF comparison above was differencing an energy built on
+   ! `opts%nlc_grid_level`'s default VV10 grid (level 1) against an
+   ! ANALYTIC gradient whose VV10 term silently fell back to
+   ! vv10_gradient_add's own default (level 3) -- two different grids on
+   ! the two sides of one derivative. Caught by check_vv10_grad_fixedd_fd.F90
+   ! (a fixed-density FD of E_nlc alone, no SCF, so no grid-level
+   ! inconsistency to hide behind): that test's own gradient-formula
+   ! check was already clean (~1e-11) at EVERY individual grid level, so
+   ! the 4.27e-7 here was a test-harness mismatch, not a missing/wrong
+   ! term in trc_vv10_grad.F90 itself. Fixed by passing
+   ! `nlc_grid_level=opts%nlc_grid_level` below, matching what the SCF
+   ! itself actually used; richardson=.true. was tried on the ORIGINAL
+   ! (buggy) 4.27e-7 and only reached 2.90e-7 -- NOT w3.xyz's ~440x
+   ! collapse -- which is consistent with a non-truncation (grid-
+   ! mismatch) floor, not evidence it was SCF noise, the reading
+   ! originally recorded here before this fix.
    call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 3, 'RKS wB97X-V water/6-31G* L3', &
-                 any_fail, abstol_on_override=2.0e-6_dp)
+                 any_fail)
    call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 5, 'RKS wB97X-V water/6-31G* L5', &
-                 any_fail, abstol_on_override=2.0e-6_dp)
+                 any_fail)
 
    if (any_fail) then
       print '(a)', '  RESULT: FAIL'; stop 1
