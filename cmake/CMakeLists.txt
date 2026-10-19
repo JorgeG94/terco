@@ -50,10 +50,24 @@ else()
     set(TERCO_HOST_NVHPC_OPTIONS "-Mnovect" PARENT_SCOPE)
   elseif(CMAKE_Fortran_COMPILER_ID MATCHES "GNU")
     set(TERCO_FLAGS "-cpp -ffree-line-length-none -fbacktrace")
-  elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel|IntelLLVM")
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
+    # Classic ifort. Its own branch: a different backend from ifx.
+    set(TERCO_FLAGS "-fpp -traceback")
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
+    # ifx.
     set(TERCO_FLAGS "-fpp -traceback")
   elseif(CMAKE_Fortran_COMPILER_ID MATCHES "LLVMFlang|Flang")
     set(TERCO_FLAGS "-cpp")
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "LFortran")
+    # No preprocessor flag: CMake's own LFortran module already compiles with
+    # `--cpp-infer`, and a second `--cpp` or `--std` is rejected outright
+    # ("--std: At Most 1 required but received 2"), which also kills the
+    # fetched dependencies. Only -O3 is set, and CMake's per-config Release
+    # and Debug flags are cleared so it is not duplicated or overridden
+    # (same handling as roundabout).
+    set(TERCO_FLAGS "-O3")
+    set(CMAKE_Fortran_FLAGS_DEBUG "" PARENT_SCOPE)
+    set(CMAKE_Fortran_FLAGS_RELEASE "" PARENT_SCOPE)
   else()
     message(
       WARNING

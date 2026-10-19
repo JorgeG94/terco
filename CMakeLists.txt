@@ -237,6 +237,15 @@ if(TERCO_ENABLE_GPU AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
       "host build.")
 endif()
 
+# CMake's Apple platform rules inject `-install_name @rpath/lib....dylib`, which
+# lfortran's CLI rejects, so a shared libterco cannot be linked with it. Force
+# the static library (roundabout does the same).
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "LFortran" AND TERCO_BUILD_SHARED)
+  set(TERCO_BUILD_SHARED OFF)
+  message(STATUS "LFortran: forcing a static libterco (no shared library -- "
+                 "lfortran lacks the macOS -install_name flag)")
+endif()
+
 add_subdirectory(cmake)
 
 #
