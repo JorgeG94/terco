@@ -26,6 +26,7 @@ module trc_sad
    !! coefficients as they are. An atom's shells must be contiguous (every
    !! reader here guarantees it); an interleaved basis is refused.
    use pic_types, only: dp
+   use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_linalg, only: trc_linalg_t
@@ -207,11 +208,19 @@ contains
             end if
             if (talk) then
                if (sadq .and. .not. hund) then
-                  print "(a,i0,a,i0,a,f10.6,a,f16.8,a,i0,a)", "  sadq: Z = ", z, " (", nz, &
-                     " functions) n = ", want, " E = ", res%energy, " in ", res%iterations, " iterations"
+                  block
+                     character(len=1024) :: logline
+                     write (logline, "(a,i0,a,i0,a,f10.6,a,f16.8,a,i0,a)") "  sadq: Z = ", z, " (", nz, &
+                        " functions) n = ", want, " E = ", res%energy, " in ", res%iterations, " iterations"
+                     call global_logger%info(trim(logline))
+                  end block
                else
-                  print "(a,i0,a,i0,a,f16.8,a,i0,a)", "  sad: Z = ", z, " (", nz, " functions) E = ", &
-                     res%energy, " in ", res%iterations, " iterations"
+                  block
+                     character(len=1024) :: logline
+                     write (logline, "(a,i0,a,i0,a,f16.8,a,i0,a)") "  sad: Z = ", z, " (", nz, " functions) E = ", &
+                        res%energy, " in ", res%iterations, " iterations"
+                     call global_logger%info(trim(logline))
+                  end block
                end if
             end if
             ncached = ncached + 1

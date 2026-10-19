@@ -4,6 +4,7 @@
 !
 module trc_decontract
    use pic_types, only: dp
+   use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t
    implicit none
    private
@@ -174,11 +175,15 @@ contains
                end do
                smx = max(smx, asum)
             end do
-            print "(a,i0,a,i0,a,i0,a,i0,a,es10.3,a,es10.3,a,f6.2)", &
-               "  [decon] shells ", b%nshell, " -> ", pb%nshell, &
-               "   nao ", m%nao_c, " -> ", m%nao_p, &
-               "   max|C| ", amx, "   max col sum|C| ", smx, &
-               "   max amp ", maxval(m%amp)
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,i0,a,i0,a,i0,a,i0,a,es10.3,a,es10.3,a,f6.2)") &
+                  "  [decon] shells ", b%nshell, " -> ", pb%nshell, &
+                  "   nao ", m%nao_c, " -> ", m%nao_p, &
+                  "   max|C| ", amx, "   max col sum|C| ", smx, &
+                  "   max amp ", maxval(m%amp)
+               call global_logger%info(trim(logline))
+            end block
          end if
       end block
       deallocate (p_l, p_np, p_e, p_c, p_r, tr_mu, tr_s, tr_a, tr_whole, grp)

@@ -19,6 +19,7 @@
 !
 module trc_binkernel
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
@@ -338,10 +339,14 @@ contains
                mn = min(mn, sz); mx = max(mx, sz)
                if (sz < 32) nsmall = nsmall + 1
             end do
-            print "(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)", &
-               "  [seg] nseg ", nseg, "  work ", nwork, "  min ", mn, "  max ", mx, &
-               "  mean ", real(nwork, dp)/max(nseg, 1), "  <32 ", nsmall, &
-               "  boundary warps ", 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), "% of threads"
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)") &
+                  "  [seg] nseg ", nseg, "  work ", nwork, "  min ", mn, "  max ", mx, &
+                  "  mean ", real(nwork, dp)/max(nseg, 1), "  <32 ", nsmall, &
+                  "  boundary warps ", 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), "% of threads"
+               call global_logger%info(trim(logline))
+            end block
          end block
       end if
       if (nwork == 0) return
