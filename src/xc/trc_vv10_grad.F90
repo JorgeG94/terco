@@ -4,9 +4,7 @@
 ! `grad(3,natm)`, the same convention trc_xc_grad%xc_gradient_add's semilocal
 ! term uses.
 !
-! THE FORMULA -- metalquicha's own derivation (mqc_czt_gradient.f90's
-! `vv10_gradient_core`, this module's reference implementation), ported term
-! for term. The non-locality is already inside vrho/vsigma: E_nl is a
+! THE FORMULA. The non-locality is already inside vrho/vsigma: E_nl is a
 ! functional of rho and sigma alone,
 !
 !     E_nl = int dr rho(r) [ beta + 1/2 int dr' rho(r') Phi(r,r') ]
@@ -23,8 +21,8 @@
 ! `xc_eval_point`.
 !
 ! THE NONLOCAL EXTRAS. Two things have no counterpart in a semilocal
-! functional's gradient, and neither is optional (worth 4.5e-4 on water,
-! metalquicha's own measurement, and it does not shrink with the grid):
+! functional's gradient, and neither is optional (measured at ~4.5e-4 on
+! water, and it does not shrink with the grid):
 !
 !   - the PARTITION-WEIGHT term's coefficient is `dE/dw_i`, not `rho_i eps_i`.
 !     A point's weight multiplies the pair sum TWICE over (once as the outer
@@ -45,7 +43,8 @@
 !     per-pair sum `vrho`'s own `dk/dr`/`dw0/dr` terms are built from, not
 !     `-1.5 r_i` -- the doubled coefficient IS that symmetry, not a second
 !     loop. Landed on the point's OWNER at the point's FULL (Becke-weighted)
-!     weight, same as metalquicha's own `ctx%nlc_grid%weights(gg)*fexp(:,gg)`.
+!     weight `xg%w`, not the bare quadrature weight `xg%qw` the partition
+!     term below uses.
 !
 ! Both grid-response pieces close the SAME header gap xc_gradient_add's own
 ! "GRID RESPONSE" section documents for the semilocal term (point motion of
@@ -59,12 +58,13 @@
 ! reads) are trc_vv10's own, exported unchanged -- the gradient's outer-point
 ! sweep is bit-identical O(N) work to the energy path's, so it is not
 ! re-derived here. PASS 2 itself (`vv10_kernel_body`) is NOT reused as-is:
-! it has no `dedw`/`fexp` outputs, and adding them to a validated,
-! performance-sensitive energy kernel under time pressure was judged a worse
-! trade than a second, gradient-only pass-2 body that reads the exact same
-! gathered arrays and the exact same `kvv`/`beta`/`w0`/`k` formulas
-! (`vv10_grad_kernel_body` below) -- the two are checked against each other
-! implicitly, since both are checked against pyscf/metalquicha independently.
+! it has no `dedw`/`fexp` outputs, and `vv10_grad_kernel_body` below is a
+! second, gradient-only pass-2 body instead, reading the exact same
+! gathered arrays and the exact same `kvv`/`beta`/`w0`/`k` formulas (see
+! that routine's own comment for the one place its sign convention
+! differs). Folding the two bodies into one, with `dedw`/`fexp` as
+! optional outputs the energy path's own call site simply omits, is a
+! reasonable follow-up refactor, not attempted here.
 !
 ! RESTRICTED AND UNRESTRICTED. VV10 is a functional of the TOTAL density
 ! alone (trc_vv10.F90's own header), so this module's single entry point
@@ -94,9 +94,13 @@
 ! rank-split"), so every caller of this module is single-rank already;
 ! left that way rather than half-plumbed.
 !
-! GPU. Not yet measured: see this branch's own report. Built from the same
-! idioms (`do concurrent`/`routine seq`, the `_OPENACC` CPU/GPU pass-2 split
-! trc_vv10.F90's own header explains) as the two modules it reuses.
+! GPU. Measured correct and consistent with CPU to ~1e-11/1e-12 (the
+! fixed-density FD check, check_vv10_grad_fixedd_fd.F90, three repeated
+! GPU runs) -- built from the same idioms (`do concurrent`/`routine seq`,
+! the `_OPENACC` CPU/GPU pass-2 split trc_vv10.F90's own header explains)
+! as the two modules it reuses. Not yet measured for its OWN cost next to
+! the rest of the gradient at more than one case; see the branch report
+! that added this module for the one case it does measure.
 !
 module trc_vv10_grad
    use pic_types, only: dp, int64
@@ -115,6 +119,16 @@ module trc_vv10_grad
    public :: vv10_gradient_add
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
+   integer(int64), parameter :: VV10_GRAD_TILE_CAP = 8388608_int64
+   !! The chunk-size budget (padded rows x padded columns) handed to
+   !! `vv10_density_tile`'s own batching loop -- trc_vv10.F90's `vv10_drive`
+   !! uses the identical literal for its own PASS 1 call, unnamed; named
+   !! here rather than duplicated unnamed a second time.
+   integer, parameter :: VV10_GRAD_DEFAULT_MAX_PTS = 512
+   !! Default points-per-batch cap for this module's OWN grid build
+   !! (`xg%build`'s `max_pts`), when the caller's `grid_max_pts` is
+   !! absent -- the same default xc_gradient_add and trc_scf_context use
+   !! for the semilocal grid.
 
 contains
 
@@ -123,7 +137,7 @@ contains
    ! per spin channel, same convention xc_gradient_add uses. `bcoef`/`ccoef`
    ! are VV10's own `b`/`C` (6.0, 0.01 for wB97X-V). ADDS into `grad`.
    !
-   subroutine vv10_gradient_add(b, lp, nspin, dens, bcoef, ccoef, grad, grid_level, grid_max_pts, rho_tol, &
+   subroutine vv10_gradient_add(b, lp, nspin, dens, bcoef, ccoef, grad, grid_level, grid_max_pts, &
                                 grid_response)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
@@ -132,7 +146,17 @@ contains
       real(dp), intent(in) :: bcoef, ccoef
       real(dp), intent(inout) :: grad(3, b%natm)
       integer, intent(in), optional :: grid_level, grid_max_pts
-      real(dp), intent(in), optional :: rho_tol
+      !! NO `rho_tol`: unlike xc_gradient_add's semilocal term, this
+      !! module always screens at `VV10_RHO_TOL` (trc_vv10's own
+      !! constant), everywhere -- the gather, the batch screen below, AND
+      !! `vv10_grad_kernel_body`'s own `ri < VV10_RHO_TOL` cutoff, which
+      !! has no caller-supplied tolerance threaded into it (it is a
+      !! `routine seq` body called from a `do concurrent`/GPU kernel, not
+      !! worth a plumbed-through argument for a value every OTHER screen
+      !! in this module already hard-codes). A `rho_tol` argument that
+      !! moved three of the four screens and not the fourth was strictly
+      !! worse than none at all. Matches the energy path exactly:
+      !! `trc_vv10_rks`/`trc_vv10_uks` take no `rho_tol` either.
       logical, intent(in), optional :: grid_response
       !! ON by default, same meaning and default as xc_gradient_add's own
       !! argument (that module's header, GRID RESPONSE). OFF recovers the
@@ -145,7 +169,7 @@ contains
       type(trc_xc_grid_t) :: xg
       type(error_t) :: err
       integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc
-      real(dp) :: rtol, kvv, beta
+      real(dp) :: kvv, beta
       integer, allocatable :: ao_atom(:), at_z(:)
       real(dp), allocatable :: dtot(:, :, :)
       real(dp), allocatable :: rho(:), grho(:, :), sigma(:)
@@ -158,10 +182,8 @@ contains
 
       glevel = DEFAULT_GRID_LEVEL
       if (present(grid_level)) glevel = grid_level
-      gmaxpts = 512
+      gmaxpts = VV10_GRAD_DEFAULT_MAX_PTS
       if (present(grid_max_pts)) gmaxpts = grid_max_pts
-      rtol = VV10_RHO_TOL
-      if (present(rho_tol)) rtol = rho_tol
       gresp = .true.
       if (present(grid_response)) gresp = grid_response
 
@@ -213,7 +235,7 @@ contains
          call vv10_density_tile(b%nao, b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
                                 xg%npts, xg%nbatch, xg%r, xg%batch_of, xg%b_off, xg%b_shoff, &
                                 size(xg%b_sh), xg%b_sh, xg%b_shao, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                                dtot(:, :, 1), 8388608_int64, lp, rho, grho, sigma)
+                                dtot(:, :, 1), VV10_GRAD_TILE_CAP, lp, rho, grho, sigma)
 
          ! The inner-grid survivor gather (host-side compaction, then an
          ! O(N) device gather) -- trc_vv10's own `vv10_gather`, see
@@ -222,7 +244,7 @@ contains
          allocate (gidx(max(npts, 1)))
          npass = 0
          do i = 1, npts
-            if (rho(i) >= rtol) then
+            if (rho(i) >= VV10_RHO_TOL) then
                npass = npass + 1
                gidx(npass) = i
             end if
@@ -254,7 +276,7 @@ contains
             npb = xg%b_off(ib + 1) - xg%b_off(ib)
             nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
             if (npb == 0 .or. nloc == 0) cycle
-            active = vv10_grad_batch_active(xg%b_off(ib), npb, rho, npts, rtol)
+            active = vv10_grad_batch_active(xg%b_off(ib), npb, rho, npts)
             if (.not. active) cycle
             call vv10_grad_one_batch(b, lp, dtot, xg, ib, npb, nloc, ao_atom, grad, &
                                      b%at_r, at_z, grid%scheme, grid%adjust, gresp, &
@@ -284,14 +306,13 @@ contains
    ! `rho` is already the host array the gather above just read, so this is
    ! a cheap O(npb) bound, not a new array.
    !
-   logical function vv10_grad_batch_active(g0, npb, rho, npts, rtol) result(active)
+   logical function vv10_grad_batch_active(g0, npb, rho, npts) result(active)
       integer, intent(in) :: g0, npb, npts
       real(dp), intent(in) :: rho(npts)
-      real(dp), intent(in) :: rtol
       integer :: g
       active = .false.
       do g = g0, g0 + npb - 1
-         if (rho(g) >= rtol) then
+         if (rho(g) >= VV10_RHO_TOL) then
             active = .true.
             return
          end if
@@ -303,6 +324,9 @@ contains
    ! potential, fed into the SAME GGA Pulay contraction xc_gradient_add's
    ! semilocal term uses) plus `dedw(i)`/`fexp(:,i)`, the two pieces with no
    ! semilocal counterpart -- see this module's header, THE NONLOCAL EXTRAS.
+   ! A duplicate of trc_vv10's own `vv10_kernel_body`, not a call to it:
+   ! that body has no `dedw`/`fexp` outputs (see this module's header,
+   ! ENERGY-SIDE REUSE).
    !
 #ifdef _OPENACC
    subroutine vv10_grad_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
@@ -340,13 +364,13 @@ contains
 #endif
 
    !
-   ! `i`'s own pair sum, matched term for term against metalquicha's
-   ! `vv10_nlc` (want_grad branch) and pyscf's `_vv10nlc`: `w(i)` plays no
-   ! role here (the weight multiplies `vrho`/`vsigma`/`dedw`/`fexp` only once
-   ! they are CONTRACTED, same as trc_vv10's own PASS 2) -- the convention
-   ! that matters is `dx = inner - outer` (`gx(j) - r(1,i)`, NOT the sign
-   ! trc_vv10's own `vv10_kernel_body` uses for its unsigned `r2`), since
-   ! `fexp` is LINEAR in `dx`, not squared.
+   ! `i`'s own pair sum, matched term for term against pyscf's `_vv10nlc`.
+   ! `w(i)` plays no role here (the weight multiplies `vrho`/`vsigma`/
+   ! `dedw`/`fexp` only once they are CONTRACTED, same as trc_vv10's own
+   ! PASS 2) -- the convention that matters is `dx = inner - outer`
+   ! (`gx(j) - r(1,i)`, NOT the sign trc_vv10's own `vv10_kernel_body`
+   ! uses for its unsigned `r2`), since `fexp` is LINEAR in `dx`, not
+   ! squared.
    !
    pure subroutine vv10_grad_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                          vrho_i, vsigma_i, dedw_i, fx_i, fy_i, fz_i)

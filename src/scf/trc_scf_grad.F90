@@ -40,7 +40,7 @@ module trc_scf_grad
    use trc_xc_functional, only: trc_xc_functional_t
    use trc_xc_grad, only: xc_gradient_add
    use trc_vv10_grad, only: vv10_gradient_add
-   use trc_scf_settings, only: trc_scf_options_t
+   use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
    implicit none
    private
    public :: trc_scf_gradient, nuclear_repulsion_gradient, energy_weighted_density
@@ -196,13 +196,14 @@ contains
       !! own defaults.
       integer, intent(in), optional :: nlc_grid_level
       !! VV10's own grid level -- see this subroutine's own header, VV10.
-      !! Absent means the SCF's own default (trc_scf_options_t's
-      !! nlc_grid_level), not the semilocal grid's: the gradient has to be
-      !! taken on the grid the energy used.
+      !! Absent means `trc_scf_settings%DEFAULT_NLC_GRID_LEVEL`, the SAME
+      !! constant `trc_scf_options_t%nlc_grid_level` defaults to, not the
+      !! semilocal grid's: the gradient has to be taken on the grid the
+      !! energy used, and a caller's own default must not drift from the
+      !! SCF's.
 
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
-      type(trc_scf_options_t) :: scf_defaults
       integer :: nlc_level
       integer :: nao, nsp, s
       integer :: nocc(2)
@@ -319,13 +320,12 @@ contains
          ! present and correct on the device (same note as xc_gradient_add
          ! above); `grad` likewise. ---
          if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
-            nlc_level = scf_defaults%nlc_grid_level
+            nlc_level = DEFAULT_NLC_GRID_LEVEL
             if (present(nlc_grid_level)) nlc_level = nlc_grid_level
-            ! No `rho_tol` forwarded: the energy path's own VV10 call
-            ! (trc_scf_fock.F90's build_vxc, trc_vv10_rks/uks) never takes
-            ! one either -- it always screens at trc_vv10's own
-            ! VV10_RHO_TOL, so the gradient matches that rather than the
-            ! semilocal grid's (tighter) rho_tol.
+            ! vv10_gradient_add has no `rho_tol` of its own: it always
+            ! screens at trc_vv10's own VV10_RHO_TOL, the same constant
+            ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
+            ! see that module's own header.
             call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
                                    grid_level=nlc_level, grid_max_pts=grid_max_pts, &
                                    grid_response=grid_response)

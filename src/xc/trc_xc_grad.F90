@@ -231,11 +231,11 @@ module trc_xc_grad
    public :: xc_gradient_add, XC_GRAD_RHO_TOL
    public :: xc_grad_collocate1, xc_grad_collocate2, xc_grad_gather
    public :: xc_grad_scatter, xc_grad_scatter_points
-   !! Exported for trc_vv10_grad: the AO-value/gradient/Hessian collocation,
-   !! the density gather onto a batch's local basis, and the two atom
-   !! scatters are generic per-batch plumbing with nothing semilocal-XC-
-   !! specific about them (no `kid`/`coef`/`xc_eval_point` in sight) -- VV10's
-   !! gradient reuses them rather than keeping a second, parallel copy.
+   ! Exported for trc_vv10_grad: the AO-value/gradient/Hessian collocation,
+   ! the density gather onto a batch's local basis, and the two atom
+   ! scatters are generic per-batch plumbing with nothing semilocal-XC-
+   ! specific about them (no `kid`/`coef`/`xc_eval_point` in sight) -- VV10's
+   ! gradient reuses them rather than keeping a second, parallel copy.
 
    real(dp), parameter :: XC_GRAD_RHO_TOL = 1.0e-12_dp
    !! Same role and value as trc_xc.F90's XC_RHO_TOL: a batch whose bound on
