@@ -1001,6 +1001,11 @@ target_link_libraries(bench_xc PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_vv10 bench_vv10.F90)
 target_compile_definitions(bench_vv10 PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_vv10 PRIVATE ${main_lib} terco_test_basis)
+# The VV10 GRADIENT's own time next to the rest of the wB97X-V gradient --
+# see bench_vv10_grad.F90's own header. Not a pass/fail, like its siblings.
+add_executable(bench_vv10_grad bench_vv10_grad.F90)
+target_compile_definitions(bench_vv10_grad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_vv10_grad PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_gc bench_gc.F90)
 target_compile_definitions(bench_gc PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_gc PRIVATE ${main_lib} terco_test_basis)

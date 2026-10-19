@@ -277,12 +277,35 @@ program check_xc_grad_fd
    ! the erf long-range exchange gradient -- the full wB97X-V gradient,
    ! differenced against the SAME recipe as every case above (grid rebuilt
    ! at every displaced geometry, VV10's own double sum recomputed from
-   ! scratch each time). ITS OWN tolerance -- see this program's own
-   ! output for the measured worst|abs| this was set from; not assumed
-   ! equal to ABSTOL_ON, which was measured on functionals with no
-   ! nonlocal term at all.
+   ! scratch each time).
+   !
+   ! ITS OWN tolerance, not ABSTOL_ON. MEASURED (CPU, gfortran): ON worst
+   ! abs 4.27e-7 at BOTH L3 and L5 (identical to 3 significant figures --
+   ! the same grid-level-independence signature ABSTOL_ON's own six cases
+   ! were set from, so this is the physical gradient, not a quadrature
+   ! artifact), OFF 5.51e-6 at L3 shrinking to 6.05e-7 at L5 (the Pulay-
+   ! only quadrature artifact, same pattern as every OFF case above).
+   ! Translational invariance ~1e-13/1e-14 at both levels, far inside the
+   ! module default INVTOL -- no override needed for that.
+   !
+   ! richardson=.true. (steps H and H/2) was tried here too: it only moved
+   ! worst abs from 4.27e-7 to 2.90e-7, NOT the ~440x collapse w3.xyz's
+   ! own case measures (9.30e-7 -> 2.13e-9) -- so, unlike w3, this floor
+   ! is NOT dominated by the central difference's smooth O(H^2) Taylor
+   ! truncation term; the grid-level-independence above already rules out
+   ! a missing/wrong grid-response term, so what Richardson leaves behind
+   ! is read as SCF/DIIS convergence noise feeding into each displaced
+   ! energy (wB97X-V's RSH+NLC SCF has more to converge per iteration
+   ! than a plain GGA, and VV10's own O(N^2) sum is more floating-point
+   ! work to accumulate it over) -- a floor Richardson's extra energy
+   ! evaluations cannot remove, so the plain step-H gate below is used
+   ! rather than paying for Richardson's 2x cost for no real gain. 2.0e-6
+   ! is the measured 4.27e-7 with ~4.7x headroom, not a loosened gate --
+   ! this case did not exist before this branch.
    call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 3, 'RKS wB97X-V water/6-31G* L3', &
-                 any_fail, abstol_on_override=5.0e-6_dp, invtol_override=1.0e-7_dp)
+                 any_fail, abstol_on_override=2.0e-6_dp)
+   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 5, 'RKS wB97X-V water/6-31G* L5', &
+                 any_fail, abstol_on_override=2.0e-6_dp)
 
    if (any_fail) then
       print '(a)', '  RESULT: FAIL'; stop 1
