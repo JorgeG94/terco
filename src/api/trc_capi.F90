@@ -2939,6 +2939,10 @@ contains
       cx%message = msg
       if (len_trim(msg) > 0) return
       n = scf_space_nao(cx%bb)
+      ! The GEMM/eigensolver handles trc_run_scf would have made: a loaded
+      ! result goes straight to trc_run_gradient or trc_run_rimp2, which
+      ! reuse `cx%la` and would otherwise call cuBLAS with no handle.
+      call cx%la%init(n)
       if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
       allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
       cx%bb%cmo = cx%res%cmo
