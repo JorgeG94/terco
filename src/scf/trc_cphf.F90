@@ -122,6 +122,7 @@ contains
       real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
       integer :: it, comp, i, a
+      logical :: broke
 
       allocate (d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao))
       allocate (tmp_no(nao, nocc), tmp_no2(nao, nocc))
@@ -147,9 +148,19 @@ contains
          rz = lp%dot_2d(r, z)
          resid = sqrt(lp%dot_2d(r, r))
          it = 0
+         broke = .false.
          do while (it < opts%max_iter .and. resid >= opts%conv_residual)
             call matvec(p, ap)
             pap = lp%dot_2d(p, ap)
+            ! A breakdown (p^T A p <= 0, including NaN -- NaN > 0 is
+            ! false) must stop here: falling through to alpha_cg = rz/pap
+            ! gives an Inf/NaN update that the residual check below
+            ! cannot catch either (NaN >= conv_residual is also false),
+            ! which would otherwise exit the loop and report converged.
+            if (.not. (pap > 0.0_dp)) then
+               broke = .true.
+               exit
+            end if
             alpha_cg = rz/pap
             call axpy_mat(nvirt, nocc, alpha_cg, p, u(:, :, comp))
             call axpy_mat(nvirt, nocc, -alpha_cg, ap, r)
@@ -163,7 +174,10 @@ contains
             call combine_p(nvirt, nocc, z, beta_cg, p)
          end do
          res%iterations(comp) = it
-         if (resid >= opts%conv_residual) then
+         if (broke) then
+            res%converged = .false.
+            res%message = "trc_cphf: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
+         else if (resid >= opts%conv_residual) then
             res%converged = .false.
             res%message = "trc_cphf: a right-hand side did not converge"
          end if
@@ -220,6 +234,7 @@ contains
       real(dp), allocatable :: rb(:, :), zb(:, :), pb(:, :), apb(:, :), diag_b(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
       integer :: it, comp, i, a
+      logical :: broke
 
       allocate (d_ua(nao, nao), d_ub(nao, nao), d_t(nao, nao), d_tmp(nao, nao))
       allocate (g_j(nao, nao), g_ka(nao, nao), g_kb(nao, nao), g_eff_a(nao, nao), g_eff_b(nao, nao))
@@ -257,9 +272,18 @@ contains
          rz = lp%dot_2d(ra, za) + lp%dot_2d(rb, zb)
          resid = sqrt(lp%dot_2d(ra, ra) + lp%dot_2d(rb, rb))
          it = 0
+         broke = .false.
          do while (it < opts%max_iter .and. resid >= opts%conv_residual)
             call matvec(pa, pb, apa, apb)
             pap = lp%dot_2d(pa, apa) + lp%dot_2d(pb, apb)
+            ! See trc_cphf_solve_rhf's own comment on this guard: a
+            ! breakdown (pap <= 0, or NaN) must stop here, never fall
+            ! through to an Inf/NaN alpha_cg that the residual check
+            ! below cannot catch.
+            if (.not. (pap > 0.0_dp)) then
+               broke = .true.
+               exit
+            end if
             alpha_cg = rz/pap
             call axpy_mat(nva, noa, alpha_cg, pa, u_a(:, :, comp))
             call axpy_mat(nvb, nob, alpha_cg, pb, u_b(:, :, comp))
@@ -277,7 +301,10 @@ contains
             call combine_p(nvb, nob, zb, beta_cg, pb)
          end do
          res%iterations(comp) = it
-         if (resid >= opts%conv_residual) then
+         if (broke) then
+            res%converged = .false.
+            res%message = "trc_cphf: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
+         else if (resid >= opts%conv_residual) then
             res%converged = .false.
             res%message = "trc_cphf: a right-hand side did not converge"
          end if
