@@ -140,6 +140,41 @@ def terco_to_pyscf_perm(atoms, basis_arg):
     return np.array(perm, dtype=np.int64)
 
 
+_NSPH = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9}
+
+
+def terco_to_pyscf_perm_sph(atoms, basis_arg):
+    """`terco_to_pyscf_perm`'s own per-atom-shell-sort fix, for a SPHERICAL
+    basis: shell widths are 2l+1 (`_NSPH`), not `_NCART`, and there is no
+    within-shell permutation to apply on top -- scripts/gen_sph.py's own
+    self-test checks terco's per-shell spherical transform against
+    `pyscf.gto.mole.cart2sph(l, normalized='sp')` to 1e-13, so a terco
+    spherical AO and pyscf's own at the SAME (shell, m) position are
+    already the identical function, same sign. The only possible mismatch
+    left is pyscf's stable shell sort by ascending l within an atom (terco
+    keeps the shell list's own literal order); for every basis this script
+    uses (cc-pVDZ, cc-pVDZ-RIFIT, def2-universal-jkfit) that sort is a
+    no-op in practice -- shells already arrive s, p, d, ... -- but this is
+    not assumed: `perm` is still derived, the same as the Cartesian case."""
+    perm = []
+    base = 0
+    for sym, _ in atoms:
+        shells = basis_arg[sym]
+        ls = [row[0] for row in shells]
+        n_at = sum(_NSPH[l] for l in ls)
+        order = sorted(range(len(ls)), key=lambda k: ls[k])
+        pyscf_off = [0]*len(ls)
+        off = 0
+        for k in order:
+            pyscf_off[k] = off
+            off += _NSPH[ls[k]]
+        for k, l in enumerate(ls):
+            for c in range(_NSPH[l]):
+                perm.append(base + pyscf_off[k] + c)
+        base += n_at
+    return np.array(perm, dtype=np.int64)
+
+
 def ao_norm_from_overlap(s_terco, s_pyscf):
     """n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)): the per-AO rescale between
     this build's normalisation and pyscf's cart=True one (their d/f
@@ -1718,6 +1753,194 @@ def gen_scf_df():
     dump.unlink()
 
 
+def gen_sph_corr():
+    """test/scf_sph_corr.F90's SPHERICAL-basis cases, against pyscf's own
+    `cart=False` on the identical sets -- mol.cart=False is pyscf's own
+    rule for auxmol too (`df.DF`/`.density_fit()` set `auxmol.cart =
+    mol.cart`, checked directly against this build in both directions --
+    see trc_capi.F90's `basis_json`), so neither mol nor auxmol is ever
+    forced Cartesian here, unlike every OTHER gen_* in this file.
+
+    FOUR GROUPS, written in the exact order test/scf_sph_corr.F90 reads
+    them back (pyscf_ref_io.F90's reader is sequential; see that module's
+    own header):
+
+      A. restricted RI-MP2, water and formamide, cc-pVDZ + cc-pVDZ-RIFIT,
+         full core (scf_rimp2.ref's own water/cc-pVDZ convention);
+      B. unrestricted RI-MP2, OH, cc-pVDZ + cc-pVDZ-RIFIT, frozen core (O),
+         from a FIXED initial density -- gen_rimp2_uhf's own symmetry-
+         broken-guess recipe, but the density transfer uses
+         `terco_to_pyscf_perm_sph` (no AO-norm rescale needed: a spherical
+         AO's normalisation already matches pyscf's directly, see that
+         function's own docstring -- `ao_norm_from_overlap` still checked,
+         not assumed, against this build's own dumped S);
+      C. `--df` HF and B3LYP, water and formamide, cc-pVDZ, def2-
+         universal-jkfit (gen_scf_df's own cases);
+      D. B2PLYP, water, cc-pVDZ, four-centre AND `--df` (gen_dh's own
+         chained-RI-MP2 pattern).
+    """
+    ELEMENTS = {'H': 1, 'C': 6, 'N': 7, 'O': 8}
+    run_bin("scf_sph_corr", [])
+
+    w = RefWriter("sph_corr.ref")
+    w.header("scf_sph_corr", [ROOT / "test" / "scf_sph_corr.F90",
+                              TEST / "basis_sets" / "cc-pvdz.json", TEST / "basis_sets" / "cc-pvdz-rifit.json",
+                              TEST / "basis_sets" / "def2-universal-jkfit.json",
+                              TEST / "water.xyz", TEST / "formamide.xyz", TEST / "oh.xyz"])
+
+    # --- A: restricted RI-MP2, spherical, full core -----------------------
+    for ic, molname in enumerate(["water", "formamide"]):
+        atoms = _xyz_atoms(molname)
+        elements = {sym: ELEMENTS[sym] for sym, _ in atoms}
+        bas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz.json", elements)
+        auxbas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz-rifit.json", elements)
+        mol = gto.M(atom=atoms, basis=bas, cart=False, unit='Angstrom', verbose=0)
+
+        def make_mf(mol=mol):
+            return scf.RHF(mol)
+
+        label = f"sph_corr A {molname}/cc-pvdz(sph)"
+        mf, grad_norm = converge_tight(make_mf, None, label)
+        pt = mp.dfmp2.DFMP2(mf)
+        pt.with_df = df.DF(mol, auxbasis=auxbas)
+        pt.verbose = 0
+        pt.kernel()
+        name = f"{molname}_ccpvdz_sph"
+        w.str_(f"RMP2_NAME_{ic}", name)
+        w.real(f"RMP2_ESCF_{ic}", mf.e_tot)
+        w.real(f"RMP2_EOS_{ic}", pt.e_corr_os)
+        w.real(f"RMP2_ESS_{ic}", pt.e_corr_ss)
+        print(f"  A {name:24s} E(pyscf) {mf.e_tot:20.12f}  E_os {pt.e_corr_os:16.12f}  "
+              f"E_ss {pt.e_corr_ss:16.12f}  |g| {grad_norm:.2e}")
+
+    # --- B: unrestricted RI-MP2, OH, spherical, frozen core, fixed DM0 ----
+    na, nb, frozen = 5, 4, 1
+    atoms = _xyz_atoms("oh")
+    elements = {sym: ELEMENTS[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz.json", elements)
+    auxbas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz-rifit.json", elements)
+    mol = gto.M(atom=atoms, basis=bas, cart=False, unit='Angstrom', charge=0, spin=na - nb, verbose=0)
+
+    perm = terco_to_pyscf_perm_sph(atoms, bas)
+    inv_perm = np.argsort(perm)
+
+    # The symmetry-broken initial guess -- gen_rimp2_uhf's own recipe.
+    dip = mol.intor('int1e_r')
+    ovlp = mol.intor('int1e_ovlp')
+    hcore_pert = scf.hf.get_hcore(mol) + 0.05*dip[1]
+    _, ca = scipy.linalg.eigh(hcore_pert, ovlp)
+    dm0_a = ca[:, :na] @ ca[:, :na].T
+    dm0_b = ca[:, :nb] @ ca[:, :nb].T
+
+    def make_mf_oh():
+        return scf.UHF(mol)
+
+    mf, grad_norm = converge_tight(make_mf_oh, (dm0_a, dm0_b), "sph_corr B oh/cc-pvdz(sph)")
+    dm_conv = mf.make_rdm1()
+
+    probe = TEST / "sph_corr_oh_probe.bin"
+    pr = BinReader(probe)
+    nao_probe = pr.i8()
+    s_terco = pr.mat(nao_probe)
+    pr.close()
+    probe.unlink()
+    if nao_probe != mol.nao_nr():
+        raise RuntimeError(f"gen_sph_corr B: nao mismatch terco {nao_probe} pyscf {mol.nao_nr()}")
+
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    n, s_err = ao_norm_from_overlap(s_terco_p, ovlp)
+    if s_err >= 1.0e-8:
+        raise RuntimeError(f"gen_sph_corr B: overlap check failed, {s_err:.3e}")
+
+    def to_terco(dm_pyscf_spin):
+        dm_terco_p = dm_pyscf_spin/(n[:, None]*n[None, :])
+        return dm_terco_p[np.ix_(perm, perm)]
+
+    dm0_terco = np.stack([to_terco(dm_conv[0]), to_terco(dm_conv[1])], axis=2)
+
+    pt = mp.dfump2.DFUMP2(mf, frozen=frozen)
+    pt.with_df = df.DF(mol, auxbasis=auxbas)
+    pt.verbose = 0
+    pt.kernel()
+
+    w.int_("OH_NSPIN", 2)
+    w.int_("OH_NAO", mol.nao_nr())
+    w.matrix3("OH_DM0", dm0_terco)
+    w.real("OH_ESCF", mf.e_tot)
+    w.real("OH_EOS", pt.e_corr_os)
+    w.real("OH_ESS", pt.e_corr_ss)
+    print(f"  B oh/cc-pvdz(sph)         E(pyscf) {mf.e_tot:20.12f}  E_os {pt.e_corr_os:16.12f}  "
+          f"E_ss {pt.e_corr_ss:16.12f}  |g| {grad_norm:.2e}  AO norm max|1-n| {np.max(np.abs(1.0 - np.abs(n))):.2e}")
+
+    # --- C: --df HF and B3LYP, spherical, def2-universal-jkfit -----------
+    PYSCF_XC = {"": None, "b3lyp": "HYB_GGA_XC_B3LYP"}
+    for molname in ["water", "formamide"]:
+        atoms = _xyz_atoms(molname)
+        elements = {sym: ELEMENTS[sym] for sym, _ in atoms}
+        bas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz.json", elements)
+        auxbas = bse_json_basis(TEST / "basis_sets" / "def2-universal-jkfit.json", elements)
+        mol = gto.M(atom=atoms, basis=bas, cart=False, unit='Angstrom', verbose=0)
+
+        for method in ["", "b3lyp"]:
+            def make_mf(grid_level=3, mol=mol, auxbas=auxbas, method=method):
+                if method:
+                    m = dft.RKS(mol)
+                    m.xc = PYSCF_XC[method]
+                    m.grids.level = grid_level
+                else:
+                    m = scf.RHF(mol)
+                return m.density_fit(auxbasis=auxbas)
+
+            name = f"{molname}_ccpvdz_sph_{method or 'hf'}"
+            label = f"sph_corr C {name}"
+            try:
+                mf, grad_norm = converge_tight(make_mf, None, label)
+            except ConvergenceError:
+                # formamide/cc-pVDZ/B3LYP measured (gen_scf_df's own
+                # comment on the identical case, Cartesian): |g| sits at
+                # ~1e-8 regardless of grid level, a DF/quadrature floor,
+                # not a missed stationary point.
+                mf, grad_norm = converge_tight(make_mf, None, label + " (loosened gate)", conv_tol_grad=5.0e-8)
+            ic = {"water_ccpvdz_sph_hf": 0, "water_ccpvdz_sph_b3lyp": 1,
+                  "formamide_ccpvdz_sph_hf": 2, "formamide_ccpvdz_sph_b3lyp": 3}[name]
+            w.str_(f"DF_NAME_{ic}", name)
+            w.real(f"DF_ESCF_{ic}", mf.e_tot)
+            print(f"  C {name:28s} E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}")
+
+    # --- D: B2PLYP, water, spherical, four-centre and --df, chained ------
+    atoms = _xyz_atoms("water")
+    elements = {sym: ELEMENTS[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz.json", elements)
+    auxbas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz-rifit.json", elements)
+    mol = gto.M(atom=atoms, basis=bas, cart=False, unit='Angstrom', verbose=0)
+    xc_string, c_os, c_ss = DH_HYB["b2plyp"]
+    frozen_water = 1
+
+    for kind, tag in [("4c", "4C"), ("df", "DF")]:
+        def make_mf(mol=mol, auxbas=auxbas, kind=kind):
+            m = dft.RKS(mol)
+            m.xc = xc_string
+            m.grids.level = 3
+            if kind == "df":
+                m = m.density_fit(auxbasis=auxbas)
+            return m
+
+        label = f"sph_corr D b2plyp water/cc-pvdz(sph)/{kind}"
+        mf, grad_norm = converge_tight(make_mf, None, label)
+        pt = mp.dfmp2.DFMP2(mf, frozen=frozen_water)
+        pt.with_df = df.DF(mol, auxbasis=auxbas)
+        pt.verbose = 0
+        pt.kernel()
+        w.real(f"B2PLYP_ESCF_{tag}", mf.e_tot)
+        w.real(f"B2PLYP_EOS_{tag}", pt.e_corr_os)
+        w.real(f"B2PLYP_ESS_{tag}", pt.e_corr_ss)
+        print(f"  D b2plyp water/cc-pvdz(sph)/{kind:2s}  E(pyscf) {mf.e_tot:20.12f}  "
+              f"E_os {pt.e_corr_os:16.12f}  E_ss {pt.e_corr_ss:16.12f}  |g| {grad_norm:.2e}")
+
+    w.end()
+    w.write()
+
+
 # =========================================================================
 # The translated XC kernels against libxc (folded in from the old
 # test/xc_ref.py, unchanged logic, writing test/reference_xc.dat exactly
@@ -2231,6 +2454,7 @@ CASES = {
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
     "dh": gen_dh,
+    "sph_corr": gen_sph_corr,
     "xc_kernels": gen_xc_kernels,
     "pcm_cavity": gen_pcm_cavity,
     "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
