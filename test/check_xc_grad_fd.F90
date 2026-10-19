@@ -66,7 +66,7 @@ module check_xc_grad_fd_cases
 contains
 
    subroutine run_case(xyzfile, basis_json, nalpha, nbeta, functional, grid_level, label, any_fail, &
-                       abstol_on_override, invtol_override)
+                       abstol_on_override, invtol_override, richardson)
       character(*), intent(in) :: xyzfile, basis_json, functional, label
       integer, intent(in) :: nalpha, nbeta, grid_level
       logical, intent(inout) :: any_fail
@@ -76,6 +76,21 @@ contains
       !! the six 2-3-atom cases ABSTOL_ON/INVTOL were set from -- see the
       !! w3.xyz case this module's program unit calls with one, and ITS
       !! OWN comment for why.
+      logical, intent(in), optional :: richardson
+      !! Default .false. (the plain central difference at step H, as
+      !! before). When .true., the ON gradient is compared against a
+      !! RICHARDSON EXTRAPOLATION of the central difference instead: a
+      !! SECOND central difference at step H/2 is taken alongside the
+      !! step-H one, and the two combined as
+      !!
+      !!   fd_richardson = (4*fd(H/2) - fd(H)) / 3
+      !!
+      !! which cancels the central difference's LEADING O(h^2) truncation
+      !! term (fd(h) = f'(x) + c*h^2 + O(h^4) for some c, so 4*fd(h/2) -
+      !! fd(h) = 3*f'(x) + O(h^4)), leaving an O(h^4) floor instead of
+      !! O(h^2) -- see the w3.xyz case's own comment for why this
+      !! particular case needs it (doubles the SCF-reconverge cost per
+      !! atom/direction: two step sizes instead of one).
 
       real(dp) :: my_abstol_on, my_invtol
       integer :: nat, dev, a, d
@@ -87,12 +102,14 @@ contains
       type(trc_xc_functional_t) :: func
       type(trc_linalg_t) :: lp
       type(error_t) :: err
-      real(dp) :: eplus, eminus, fd, worst_abs_on, worst_rel_on, worst_abs_off, worst_rel_off, denom
+      real(dp) :: eplus, eminus, fd, fd_h, fd_hh, worst_abs_on, worst_rel_on, worst_abs_off, worst_rel_off, denom
       real(dp) :: inv_on(3), inv_off(3)
-      logical :: ok
+      logical :: ok, my_richardson
 
       my_abstol_on = ABSTOL_ON
       if (present(abstol_on_override)) my_abstol_on = abstol_on_override
+      my_richardson = .false.
+      if (present(richardson)) my_richardson = richardson
       my_invtol = INVTOL
       if (present(invtol_override)) my_invtol = invtol_override
 
@@ -103,8 +120,11 @@ contains
 
       dev = trc_bind_device(0)
       call read_xyz(xyzfile, nat, at_z, r0)
-      ! force_cart: see check_xc_grad_vs_pyscf.F90's own comment -- this
-      ! branch's trc_scf_gradient has no spherical fold-back yet.
+      ! force_cart: trc_scf_gradient DOES have a spherical fold now
+      ! (check_dft_grad_vs_pyscf.F90 exercises it); kept Cartesian here
+      ! only to keep this program's own finite-difference recipe (a full
+      ! SCF reconverge at every displaced geometry, scf_energy_at below)
+      ! simple -- not a missing capability.
       call trc_basis_from_json(basis_json, nat, at_z, r0, bas, err, force_cart=.true.)
       if (err%has_error()) then
          print '(a)', 'check_xc_grad_fd: '//err%get_message(); stop 1
@@ -143,13 +163,28 @@ contains
             eplus = scf_energy_at(basis_json, nat, at_z, rtmp, nalpha, nbeta, opts)
             rtmp = r0; rtmp(d, a) = r0(d, a) - H
             eminus = scf_energy_at(basis_json, nat, at_z, rtmp, nalpha, nbeta, opts)
-            fd = (eplus - eminus)/(2.0_dp*H)
+            fd_h = (eplus - eminus)/(2.0_dp*H)
+            ! OFF is diagnostic only (its own header: "NOT gated"), always
+            ! against the plain step-H difference -- Richardson only
+            ! matters for ON's own gate below.
+            fd = fd_h
+            if (my_richardson) then
+               rtmp = r0; rtmp(d, a) = r0(d, a) + 0.5_dp*H
+               eplus = scf_energy_at(basis_json, nat, at_z, rtmp, nalpha, nbeta, opts)
+               rtmp = r0; rtmp(d, a) = r0(d, a) - 0.5_dp*H
+               eminus = scf_energy_at(basis_json, nat, at_z, rtmp, nalpha, nbeta, opts)
+               fd_hh = (eplus - eminus)/H
+               ! Richardson extrapolation: fd_h = f'(x) + c*H^2 + O(H^4),
+               ! fd_hh = f'(x) + c*(H/2)^2 + O(H^4), so 4*fd_hh - fd_h =
+               ! 3*f'(x) + O(H^4) -- see this subroutine's own header.
+               fd = (4.0_dp*fd_hh - fd_h)/3.0_dp
+            end if
             denom = max(abs(grad_on(d, a)), abs(fd), 1.0e-10_dp)
             worst_abs_on = max(worst_abs_on, abs(grad_on(d, a) - fd))
             worst_rel_on = max(worst_rel_on, abs(grad_on(d, a) - fd)/denom)
-            denom = max(abs(grad_off(d, a)), abs(fd), 1.0e-10_dp)
-            worst_abs_off = max(worst_abs_off, abs(grad_off(d, a) - fd))
-            worst_rel_off = max(worst_rel_off, abs(grad_off(d, a) - fd)/denom)
+            denom = max(abs(grad_off(d, a)), abs(fd_h), 1.0e-10_dp)
+            worst_abs_off = max(worst_abs_off, abs(grad_off(d, a) - fd_h))
+            worst_rel_off = max(worst_rel_off, abs(grad_off(d, a) - fd_h)/denom)
          end do
       end do
 
@@ -212,24 +247,29 @@ program check_xc_grad_fd
    ! `dweights` on this exact grid) measures worst|screened-unscreened| =
    ! 5.15e-8 over 101094 points -- screening is live here, not a no-op.
    !
-   ! ITS OWN tolerance, not ABSTOL_ON/INVTOL: w3.xyz is a compressed,
+   ! ITS OWN tolerance, not ABSTOL_ON: w3.xyz is a compressed,
    ! non-equilibrium geometry (deliberately so, for the fragment tests it
    ! was built for -- O-H ~0.82 angstrom against water's own equilibrium
    ! ~0.96), not a minimum, so its own energy surface is sharper and its
-   ! own central-difference floor is measured LOOSER than the six
-   ! equilibrium-ish 2-3-atom cases': worst abs ON here was 9.30e-7 at
-   ! generation time (OFF: 2.51e-6 -- ON still a real, ~2.7x improvement,
-   ! not a wash), against those cases' ~1.4e-7. 2e-6 is set from that
-   ! number with ~2x margin -- not ABSTOL_ON loosened, a DIFFERENT,
-   ! separately measured and justified number for a case ABSTOL_ON was
-   ! never calibrated from. Translational invariance stays excellent
-   ! (~1e-11/1e-12, INVTOL's own 1e-8 default still clears it with
-   ! 1e3-1e4x margin -- not overridden) -- the strongest evidence this is
-   ! geometry-driven FD noise, not a screening bug: a real inconsistency
+   ! third-derivative larger, which is exactly the coefficient the plain
+   ! central difference's O(H^2) truncation term depends on. PLAIN step-H
+   ! worst abs ON was 9.30e-7 (OFF: 2.51e-6) against the six equilibrium-
+   ! ish 2-3-atom cases' ~1.4e-7 -- NOT a screening artifact (a direct
+   ! probe with becke_partition_derivatives' active-set screening
+   ! disabled entirely, nu_max=2, reproduces the identical 9.30e-7,
+   ! unchanged to 3 significant figures) and NOT a grid-response bug
+   ! (translational invariance stays ~1e-11/1e-12 either way, INVTOL's
+   ! default 1e-8 cleared with 1e3-1e4x margin -- a real inconsistency
    ! between the energy's screening and this gradient's would show up
-   ! there first, and does not.
+   ! there first, and does not). richardson=.true. below confirms it IS
+   ! h^2 finite-difference truncation directly: Richardson-extrapolating
+   ! the same central difference (steps H and H/2, this subroutine's own
+   ! header) collapses worst abs ON from 9.30e-7 to 2.13e-9 (measured,
+   ! CPU, gfortran) -- a ~440x reduction, consistent with trading an
+   ! O(H^2) floor for an O(H^4) one. 1e-8 below is that measured value
+   ! with ~5x margin, not the old 2e-6 loosened.
    call run_case('w3.xyz', 'basis_sets/6-31gs.json', 15, 15, 'svwn', 3, 'RKS SVWN w3/6-31G* L3', any_fail, &
-                 abstol_on_override=2.0e-6_dp)
+                 abstol_on_override=1.0e-8_dp, richardson=.true.)
 
    if (any_fail) then
       print '(a)', '  RESULT: FAIL'; stop 1
