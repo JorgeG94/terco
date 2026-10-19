@@ -120,6 +120,14 @@ module trc_vv10
    private
 
    public :: trc_vv10_rks, trc_vv10_uks
+   public :: vv10_density_tile, vv10_gather
+   !! Exported for trc_vv10_grad: the gradient's outer-point rho/grad-rho/
+   !! sigma sweep and its inner-grid gather are the SAME O(N) work the
+   !! energy path already does (this module's own SCALING header), so the
+   !! gradient reuses these two tiled drivers bit-identically rather than
+   !! re-deriving them -- only pass 2 (the O(N^2) kernel) and pass 3 (the
+   !! potential contraction) differ, and those are the gradient's own.
+   public :: VV10_RHO_TOL, PI43
 
    real(dp), parameter :: VV10_RHO_TOL = 1.0e-8_dp
    !! pyscf's `_vv10nlc` threshold, outer and inner grid alike: a density

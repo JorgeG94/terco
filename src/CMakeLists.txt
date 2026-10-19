@@ -127,7 +127,8 @@ target_sources(
           xc/trc_xc_batch.F90       # the grid, batched and screened
           xc/trc_xc.F90             # the integrator: E_xc and V_xc
           xc/trc_xc_grad.F90        # the exchange-correlation nuclear gradient, LDA/GGA
-          xc/trc_vv10.F90)          # VV10 nonlocal correlation: E_nlc and its potential
+          xc/trc_vv10.F90           # VV10 nonlocal correlation: E_nlc and its potential
+          xc/trc_vv10_grad.F90)     # VV10's nuclear gradient, with grid response
 
 # ifx's default -fp-model=fast reassociates and contracts the translated
 # kernels' Maple power series, which were written assuming IEEE-strict

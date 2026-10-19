@@ -294,7 +294,8 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              formamide_pbe_ccpvdz_sph formamide_b3lyp_ccpvdz_sph
              formamide_pbe_631gs formamide_b3lyp_631gs
              nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph
-             water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph)
+             water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph
+             water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph)
   if(case STREQUAL "water_pbe_ccpvdz_sph")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
@@ -338,6 +339,25 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
     set(func wb97x)
+  elseif(case STREQUAL "water_wb97xv_ccpvdz_sph")
+    # VV10 nonlocal correlation (wB97X-V), RKS, spherical -- the semilocal
+    # GGA term, the erf long-range exchange gradient, AND
+    # trc_vv10_grad%vv10_gradient_add's nonlocal term, all three assembled
+    # by trc_scf_gradient. grid_response left at trc_scf_gradient's own
+    # default (OFF, this program's own `.false.` below) -- pyscf's own
+    # nlc gradient has no grid-response term to match against, see
+    # trc_vv10_grad.F90's own header.
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x-v)
+  elseif(case STREQUAL "nh2_wb97xv_ccpvdz_sph")
+    # Same, UKS (ndens=2, fixed core-guess density) -- VV10 reads the
+    # TOTAL density only (trc_vv10_grad.F90's own header), so this is the
+    # one case that checks the UKS reduction (dtot = dens_a + dens_b)
+    # for real.
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x-v)
   else()
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)

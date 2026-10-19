@@ -271,6 +271,19 @@ program check_xc_grad_fd
    call run_case('w3.xyz', 'basis_sets/6-31gs.json', 15, 15, 'svwn', 3, 'RKS SVWN w3/6-31G* L3', any_fail, &
                  abstol_on_override=1.0e-8_dp, richardson=.true.)
 
+   ! VV10 (wB97X-V, RKS): the nonlocal correlation term's own grid response
+   ! (point motion of BOTH grids plus the Becke weight derivative,
+   ! trc_vv10_grad.F90's own header) on top of the semilocal GGA term and
+   ! the erf long-range exchange gradient -- the full wB97X-V gradient,
+   ! differenced against the SAME recipe as every case above (grid rebuilt
+   ! at every displaced geometry, VV10's own double sum recomputed from
+   ! scratch each time). ITS OWN tolerance -- see this program's own
+   ! output for the measured worst|abs| this was set from; not assumed
+   ! equal to ABSTOL_ON, which was measured on functionals with no
+   ! nonlocal term at all.
+   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 3, 'RKS wB97X-V water/6-31G* L3', &
+                 any_fail, abstol_on_override=5.0e-6_dp, invtol_override=1.0e-7_dp)
+
    if (any_fail) then
       print '(a)', '  RESULT: FAIL'; stop 1
    end if
