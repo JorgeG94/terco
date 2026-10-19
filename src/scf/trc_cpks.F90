@@ -41,6 +41,16 @@
 ! derivative here. All three stop with a message naming the gap rather
 ! than silently running the wrong physics.
 !
+! SINGLE-RANK ONLY. `trc_xc_fxc_rks` (src/xc/trc_xc.F90) takes no `comm`
+! argument -- unlike `trc_xc_rks`/`xc_drive`, which split batches over a
+! communicator for the energy path, the XC kernel response here always
+! runs the whole grid on whichever rank calls it. Nothing in this module
+! checks a communicator's size or refuses one; a caller under MPI with
+! more than one rank gets every rank redundantly repeating the same
+! solve rather than an error naming the gap. Not refused at runtime, so
+! noted here instead -- the same limitation trc_cphf.F90's CPHF solver
+! already has, silently.
+!
 ! THE SOLVER
 ! ----------
 ! trc_cphf's own preconditioned CG, reused verbatim (its elementwise
@@ -58,7 +68,6 @@ module trc_cpks
    use trc_xc, only: trc_xc_fxc_rks
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, &
                        zero_mat, copy_mat, neg_mat, add_mat, axpy_mat, precond_mat, combine_p, add_diag
-   use trc_scf_settings, only: trc_scf_result_t
    implicit none
    private
 
@@ -160,7 +169,11 @@ contains
          resid = sqrt(lp%dot_2d(r, r))
          it = 0
          broke = .false.
-         do while (it < opts%max_iter .and. resid >= opts%conv_residual)
+         ! `.not. (resid < conv_residual)`, not `resid >= conv_residual`:
+         ! see trc_cphf.F90's trc_cphf_solve_rhf for why a NaN resid must
+         ! read as "not yet converged" here, not fall through both
+         ! comparisons as false and report a silent converged.
+         do while (it < opts%max_iter .and. .not. (resid < opts%conv_residual))
             call matvec(p, ap)
             pap = lp%dot_2d(p, ap)
             ! See trc_cphf.F90's trc_cphf_solve_rhf for why this guard is
@@ -187,7 +200,7 @@ contains
          if (broke) then
             res%converged = .false.
             res%message = "trc_cpks: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
-         else if (resid >= opts%conv_residual) then
+         else if (.not. (resid < opts%conv_residual)) then
             res%converged = .false.
             res%message = "trc_cpks: a right-hand side did not converge"
          end if
