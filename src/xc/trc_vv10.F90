@@ -106,6 +106,12 @@ module trc_vv10
    ! XC_NL_PAD) -- not shared by `use`, since they are two bare parameters
    ! and duplicating them costs nothing a cross-module dependency would be
    ! worth paying for.
+   integer(int64), parameter :: VV10_TILE_CAP = 8388608_int64
+   !! Bounds one tile chunk's chi/gchi/xt element count -- the running sum
+   !! of npp(ib) * nlp(ib) over the batches folded into that chunk in
+   !! passes 1 and 3 -- so the chunk's device scratch (chi/gchi/xt/dloc or
+   !! zt/vloc) stays a bounded size; once a chunk would exceed this, it is
+   !! closed and a new one starts (see vv10_density_tile/vv10_potential_tile).
 
 contains
 
@@ -209,7 +215,7 @@ contains
 
       kvv = b*1.5_dp*PI*(9.0_dp*PI)**(-1.0_dp/6.0_dp)
       beta = (3.0_dp/(b*b))**0.75_dp/32.0_dp
-      cap = 8388608_int64
+      cap = VV10_TILE_CAP
       if (present(la)) then
          lp => la
       else
@@ -304,7 +310,7 @@ contains
 
       integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml
       integer, allocatable :: ord(:), npp(:), nlp(:), c_off(:), pr_off(:), pb_off(:), wk_off(:)
-      integer(int64) :: need, nchi, sa, sb
+      integer(int64) :: need, nchi, sa, sb, nlsq
       integer :: nwork
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:), dloc(:)
 
@@ -341,9 +347,21 @@ contains
          nwork = 0
          do k = 1, nb
             ib = ord(k)
+            ! need and nlp(ib)*nlp(ib) are formed in int64 before the narrowing
+            ! cast into c_off/pb_off (both plain `integer`, the kind every
+            ! device kernel below indexes chi/gchi/xt/dloc with): guard each
+            ! cast so a tile chunk that would overflow int32 dies with a clear
+            ! message instead of wrapping into a corrupted offset.
+            if (need > int(huge(0), int64)) then
+               error stop "trc_vv10_density_tile: tile chunk offset overflowed int32; lower VV10_TILE_CAP"
+            end if
             c_off(ib) = int(need)
             pr_off(ib) = pb_off(k)
             need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            nlsq = int(nlp(ib), int64)*int(nlp(ib), int64)
+            if (int(pb_off(k), int64) + nlsq > int(huge(0), int64)) then
+               error stop "trc_vv10_density_tile: tile pair-block offset overflowed int32; lower VV10_TILE_CAP"
+            end if
             pb_off(k + 1) = pb_off(k) + nlp(ib)*nlp(ib)
             nwork = nwork + (b_shoff(ib + 1) - b_shoff(ib))*(b_off(ib + 1) - b_off(ib))
             wk_off(k + 1) = nwork
@@ -739,7 +757,7 @@ contains
 
       integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml
       integer, allocatable :: ord(:), npp(:), nlp(:), c_off(:), pr_off(:), pb_off(:), wk_off(:)
-      integer(int64) :: need, nchi, sa, sc
+      integer(int64) :: need, nchi, sa, sc, nlsq
       integer :: nwork
       real(dp), allocatable :: chi(:), gchi(:, :), zt(:), vloc(:)
 
@@ -776,9 +794,20 @@ contains
          nwork = 0
          do k = 1, nb
             ib = ord(k)
+            ! Same int32 overflow guard as vv10_density_tile: need and
+            ! nlp(ib)*nlp(ib) are formed in int64 before narrowing into
+            ! c_off/pb_off, the kind every device kernel below indexes
+            ! chi/gchi/zt/vloc with.
+            if (need > int(huge(0), int64)) then
+               error stop "trc_vv10_potential_tile: tile chunk offset overflowed int32; lower VV10_TILE_CAP"
+            end if
             c_off(ib) = int(need)
             pr_off(ib) = pb_off(k)
             need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            nlsq = int(nlp(ib), int64)*int(nlp(ib), int64)
+            if (int(pb_off(k), int64) + nlsq > int(huge(0), int64)) then
+               error stop "trc_vv10_potential_tile: tile pair-block offset overflowed int32; lower VV10_TILE_CAP"
+            end if
             pb_off(k + 1) = pb_off(k) + nlp(ib)*nlp(ib)
             nwork = nwork + (b_shoff(ib + 1) - b_shoff(ib))*(b_off(ib + 1) - b_off(ib))
             wk_off(k + 1) = nwork
