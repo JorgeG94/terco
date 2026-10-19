@@ -437,7 +437,8 @@ program terco_main
    call r%cli%add_option("pcm", "polarisable continuum solvation: cpcm or iefpcm (pyscf's SWIG "// &
                          "cavity, 302 points per sphere, radii 1.2 x Bondi); needs --eps")
    call r%cli%add_option("eps", "solvent dielectric constant for --pcm, e.g. 78.3553 for water")
-   call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after a closed-shell SCF")
+   call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after the SCF (restricted or "// &
+                       "unrestricted; unrestricted refuses more than one rank)")
    call r%cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", &
                          default="-1")
@@ -540,10 +541,10 @@ program terco_main
       call die(r, "--eps is the dielectric constant for --pcm, which was not given")
    end if
    if (r%rimp2) then
-      ! RI-MP2 is closed-shell and, today, Cartesian only: say so here rather
-      ! than after an SCF it cannot use.
-      if (r%mult /= 1) call die(r, "--rimp2 needs a closed-shell reference, and this molecule has "// &
-                                itoa(r%uhf)//" unpaired electrons")
+      ! RI-MP2 is Cartesian only, restricted or unrestricted (UHF/UKS):
+      ! say so here rather than after an SCF it cannot use. An open-shell
+      ! --rimp2 refuses more than one rank, deeper in (trc_run_rimp2) --
+      ! that needs the communicator this parses later, not knowable yet.
       cart = .true.
       call r%cli%get("aux", sval, r%err)
       call resolve_basis(sval, r%aux_path, r%err)

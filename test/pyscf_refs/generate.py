@@ -1349,6 +1349,148 @@ def _gen_scf_df_one(r, name, xyzname, basname):
     return e_p, mf.conv_tol, mf.conv_tol_grad, grad_norm
 
 
+def gen_rimp2_uhf():
+    """trc_urimp2_run (unrestricted RI-MP2, src/post_hf/rimp2/
+    trc_rimp2_driver.F90) on three open-shell radicals -- OH, triplet O2,
+    NH2 -- in 6-31G* and cc-pVDZ with cc-pVDZ-RIFIT, against pyscf's own
+    UHF + DF-UMP2 (mp.dfump2.DFUMP2) on the identical sets.
+
+    OH and O2 are linear: the unpaired electron(s) sit in a rotationally
+    degenerate pair of pi orbitals, the same zero-curvature direction
+    gen_rks's own OH cases hit first (see that function's comment for the
+    measured flake and the fix). Every case here -- even the bent NH2,
+    which does not need it -- gets the SAME symmetry-broken initial guess
+    (core Hamiltonian plus a field along one fixed axis, diagonalised
+    once with no SCF history behind it), computed straight from the
+    geometry and basis with no terco run needed first (unlike gen_rks,
+    which reconstructs UNCONTRACTED primitive shells only knowable after
+    terco's own uncontract_basis step, this uses real, published basis
+    sets straight off their BSE JSON files -- gen_scf_df's own
+    bse_json_basis/terco_to_pyscf_perm machinery, proven there on these
+    same two basis sets). Committed as DM0_i, so test/scf_rimp2_uhf.F90
+    starts ITS OWN SCF from the identical density: both sides then settle
+    into the SAME orientation, not merely two that happen to share an
+    energy.
+
+    Frozen core: core_orbitals(Z) summed per molecule's atoms (O and N
+    both 1, H 0) -- the SAME per-element rule trc_capi.F90's own RI-MP2
+    default counts by, passed to pyscf's DFUMP2(frozen=...) explicitly
+    since mp.dfump2's own default is no frozen core at all."""
+    cases = [("oh", "6-31gs"), ("oh", "cc-pvdz"),
+             ("o2", "6-31gs"), ("o2", "cc-pvdz"),
+             ("nh2", "6-31gs"), ("nh2", "cc-pvdz")]
+    # (nalpha, nbeta, frozen) per molecule.
+    SPIN = {"oh": (5, 4, 1), "o2": (9, 7, 2), "nh2": (5, 4, 1)}
+
+    # test/scf_rimp2_uhf.F90's own S matrix, this build's own AO order and
+    # normalisation, one case at a time -- needed because this build's
+    # Cartesian d (and higher) off-diagonal components (dxy, dxz, dyz, ...)
+    # are NOT unit-normalised the way pyscf's cart=True ones are (measured:
+    # self-overlap 1/3 here against pyscf's own un-rescaled ~2.5 on
+    # O2/6-31G*'s d shell) -- a plain index permutation of pyscf's
+    # converged density into this build's AO order, with no rescale, landed
+    # terco's own SCF in a DIFFERENT UHF stationary point on 3 of 6 cases
+    # (|dE| up to 0.26 Ha), not merely a small error. S alone is geometry-
+    # and basis-derived, never from an SCF, so run_bin runs it unconditionally.
+    run_bin("scf_rimp2_uhf", [])
+    probe = TEST / "rimp2_uhf_probe.bin"
+    pr = BinReader(probe)
+    ncase_probe = pr.i8()
+    if ncase_probe != len(cases):
+        raise RuntimeError(f"gen_rimp2_uhf: probe case count {ncase_probe} != {len(cases)}")
+    s_terco_cases = []
+    for _ in range(len(cases)):
+        nao_probe = pr.i8()
+        s_terco_cases.append(pr.mat(nao_probe))
+    pr.close()
+    probe.unlink()
+
+    w = RefWriter("rimp2_uhf.ref")
+    w.header("scf_rimp2_uhf", [ROOT / "test" / "scf_rimp2_uhf.F90",
+                               TEST / "basis_sets" / "6-31gs.json", TEST / "basis_sets" / "cc-pvdz.json",
+                               TEST / "basis_sets" / "cc-pvdz-rifit.json",
+                               TEST / "oh.xyz", TEST / "o2.xyz", TEST / "nh2.xyz"])
+    w.int_("NCASE", len(cases))
+    for ic, (molname, basname) in enumerate(cases):
+        na, nb, frozen = SPIN[molname]
+        atoms = _xyz_atoms(molname)
+        elements = {sym: {'H': 1, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+        bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+        auxbas = bse_json_basis(TEST / "basis_sets" / "cc-pvdz-rifit.json", elements)
+        mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=0, spin=na - nb, verbose=0)
+
+        perm = terco_to_pyscf_perm(atoms, bas)
+        inv_perm = np.argsort(perm)
+
+        # The symmetry-broken initial guess -- see this function's own
+        # header, and gen_rks's identical recipe/comment for why.
+        dip = mol.intor('int1e_r')
+        ovlp = mol.intor('int1e_ovlp')
+        hcore_pert = scf.hf.get_hcore(mol) + 0.05*dip[1]
+        _, ca = scipy.linalg.eigh(hcore_pert, ovlp)
+        dm0_a = ca[:, :na] @ ca[:, :na].T
+        dm0_b = ca[:, :nb] @ ca[:, :nb].T
+
+        def make_mf():
+            return scf.UHF(mol)
+
+        label = f"rimp2_uhf {molname}/{basname}"
+        mf, grad_norm = converge_tight(make_mf, (dm0_a, dm0_b), label)
+        # Committed as DM0_i: pyscf's own CONVERGED density, not the crude
+        # perturbed-hcore guess above -- measured landing terco in a
+        # DIFFERENT UHF stationary point on 3 of these 6 cases (|dE| up to
+        # 0.26 Ha on O2/cc-pVDZ) when seeded with the crude guess instead:
+        # near-degenerate radicals have more than one self-consistent UHF
+        # solution close in energy, and two independent DIIS
+        # implementations starting from the SAME crude guess are not
+        # guaranteed to settle into the SAME one. Seeding from pyscf's own
+        # converged density instead puts terco's own SCF one Roothaan step
+        # from the answer, which is what this comparison is actually
+        # checking (does terco's energy functional AND its RI-MP2 agree at
+        # the SAME physical state), not whether terco's guess heuristics
+        # independently rediscover a flat, near-degenerate minimum --
+        # test/scf_robust.F90 is where that is checked.
+        dm_conv = mf.make_rdm1()
+        # This build's own S, reordered into pyscf's AO order (inv_perm:
+        # terco order -> pyscf order, terco_to_pyscf_perm's own docstring),
+        # against pyscf's raw S: the per-AO rescale between the two
+        # Cartesian normalisation conventions (ao_norm_from_overlap's own
+        # convention, used identically by gen_rys_fock/gen_vv10/etc.).
+        s_terco_p = s_terco_cases[ic][np.ix_(inv_perm, inv_perm)]
+        n, s_err = ao_norm_from_overlap(s_terco_p, ovlp)
+        if s_err >= 1.0e-8:
+            raise RuntimeError(f"gen_rimp2_uhf {molname}/{basname}: overlap check failed, {s_err:.3e}")
+        # D is contravariant (the opposite direction from S): undo pyscf's
+        # own raw scale (divide by n(x)n, still in pyscf's AO order), then
+        # reorder pyscf order -> terco order with `perm` (NOT inv_perm --
+        # see terco_to_pyscf_perm's own docstring: perm[i] is the PYSCF
+        # slot of terco's AO i, so M_terco = M_pyscf[np.ix_(perm, perm)]).
+        def to_terco(dm_pyscf_spin):
+            dm_terco_p = dm_pyscf_spin/(n[:, None]*n[None, :])
+            return dm_terco_p[np.ix_(perm, perm)]
+
+        dm0_terco = np.stack([to_terco(dm_conv[0]), to_terco(dm_conv[1])], axis=2)
+        pt = mp.dfump2.DFUMP2(mf, frozen=frozen)
+        pt.with_df = df.DF(mol, auxbasis=auxbas)
+        pt.verbose = 0
+        pt.kernel()
+        ref_os, ref_ss = pt.e_corr_os, pt.e_corr_ss
+
+        w.int_(f"NSPIN_{ic}", 2)
+        w.int_(f"NAO_{ic}", mol.nao_nr())
+        w.matrix3(f"DM0_{ic}", dm0_terco)
+        w.real(f"E_SCF_{ic}", mf.e_tot)
+        w.real(f"E_OS_{ic}", ref_os)
+        w.real(f"E_SS_{ic}", ref_ss)
+        w.real(f"CONV_TOL_{ic}", mf.conv_tol)
+        w.real(f"CONV_TOL_GRAD_{ic}", mf.conv_tol_grad)
+        w.real(f"GRAD_NORM_{ic}", grad_norm)
+        print(f"  {label:20s} E(pyscf) {mf.e_tot:20.12f}  E_os {ref_os:16.12f}  E_ss {ref_ss:16.12f}  "
+              f"|g| {grad_norm:.2e}")
+    w.end()
+    w.write()
+
+
 def gen_scf_df():
     """test/scf_df.F90's 12 cases (water/formamide x cc-pVDZ/6-31G* x
     HF/PBE/B3LYP, all --df) against pyscf's own RHF/RKS.density_fit on the
@@ -1893,6 +2035,7 @@ CASES = {
     "rks": gen_rks,
     "scf_robust": gen_scf_robust,
     "rimp2": gen_rimp2,
+    "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
     "xc_kernels": gen_xc_kernels,
     "pcm_cavity": gen_pcm_cavity,

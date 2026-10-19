@@ -628,6 +628,18 @@ set_tests_properties(
   terco/scf_rimp2_ccpvdz PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# UNRESTRICTED RI-MP2 (trc_urimp2_run): OH, triplet O2, NH2 in 6-31G* and
+# cc-pVDZ with cc-pVDZ-RIFIT against pyscf's own UHF + DF-UMP2, plus a
+# closed-shell-as-UHF self-check against the restricted path.
+add_executable(scf_rimp2_uhf scf_rimp2_uhf.F90)
+target_compile_definitions(scf_rimp2_uhf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rimp2_uhf PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_rimp2_uhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_rimp2_uhf COMMAND scf_rimp2_uhf)
+set_tests_properties(
+  terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks
