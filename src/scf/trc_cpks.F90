@@ -122,6 +122,7 @@ contains
       real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid, ax
       integer :: it, comp, i, a
+      logical :: broke
       character(len=256) :: reason
 
       reason = cpks_refuse_reason(func)
@@ -158,9 +159,18 @@ contains
          rz = lp%dot_2d(r, z)
          resid = sqrt(lp%dot_2d(r, r))
          it = 0
+         broke = .false.
          do while (it < opts%max_iter .and. resid >= opts%conv_residual)
             call matvec(p, ap)
             pap = lp%dot_2d(p, ap)
+            ! See trc_cphf.F90's trc_cphf_solve_rhf for why this guard is
+            ! needed: a breakdown (pap <= 0, or NaN -- NaN > 0 is false)
+            ! must stop here, never fall through to an Inf/NaN alpha_cg
+            ! that the residual check below cannot catch either.
+            if (.not. (pap > 0.0_dp)) then
+               broke = .true.
+               exit
+            end if
             alpha_cg = rz/pap
             call axpy_mat(nvirt, nocc, alpha_cg, p, u(:, :, comp))
             call axpy_mat(nvirt, nocc, -alpha_cg, ap, r)
@@ -174,7 +184,10 @@ contains
             call combine_p(nvirt, nocc, z, beta_cg, p)
          end do
          res%iterations(comp) = it
-         if (resid >= opts%conv_residual) then
+         if (broke) then
+            res%converged = .false.
+            res%message = "trc_cpks: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
+         else if (resid >= opts%conv_residual) then
             res%converged = .false.
             res%message = "trc_cpks: a right-hand side did not converge"
          end if
