@@ -496,7 +496,7 @@ program terco_main
    call r%cli%add_option("json", "also write a JSON summary to this file")
    call r%cli%add_flag("grad", "print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
-                       "hybrids included); refused for a VV10 --func, --rimp2, --df, --pcm, "// &
+                       "hybrids and VV10 included); refused for --rimp2, --df, --pcm, "// &
                        "or more than one rank")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
@@ -715,13 +715,13 @@ program terco_main
       call api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
    end if
    if (r%grad .and. r%conv /= 0) then
-      ! trc_run_gradient's own refusals (a VV10 --func, RI-MP2, --df,
-      ! PCM, multi-rank) come back through `api`, which prints the
-      ! library's own message and stops -- the same clear-refusal path
-      ! every other unsupported combination in this CLI already takes.
-      ! A plain LDA/GGA --func (global and range-separated hybrids
-      ! included) is NOT refused: trc_run_gradient builds the KS-DFT
-      ! gradient at the SCF's own functional and grid.
+      ! trc_run_gradient's own refusals (RI-MP2, --df, PCM, multi-rank)
+      ! come back through `api`, which prints the library's own message
+      ! and stops -- the same clear-refusal path every other unsupported
+      ! combination in this CLI already takes. An LDA/GGA --func (global
+      ! and range-separated hybrids and VV10 included) is NOT refused:
+      ! trc_run_gradient builds the KS-DFT gradient at the SCF's own
+      ! functional and grids.
       call api(r, trc_run_gradient(r%h))
       allocate (gradbuf(3*r%natm), r%gradient(3, r%natm))
       call api(r, trc_gradient(r%h, gradbuf))
