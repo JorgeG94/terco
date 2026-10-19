@@ -144,6 +144,14 @@ terco_add_check(check_dft_partition_deriv check_dft_partition_deriv.F90 NEEDS_BA
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
+# The same check with every bin split into chunks of at most 3 pairs
+# (TRC_BIN_CAP; trc_bins.F90's split_large_bins). A real system only splits
+# past 32768 pairs in a bin, around 14,000 basis functions; this is that
+# path at a size CI can run, against the same oracle and tolerance.
+add_test(NAME terco/check_binfock_split COMMAND check_binfock)
+set_tests_properties(terco/check_binfock_split PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=3")
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
@@ -928,6 +936,83 @@ add_test(NAME terco/scf_rimp2_ccpvdz
 set_tests_properties(
   terco/scf_rimp2_ccpvdz PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# UNRESTRICTED RI-MP2 (trc_urimp2_run): OH, triplet O2, NH2 in 6-31G* and
+# cc-pVDZ with cc-pVDZ-RIFIT against pyscf's own UHF + DF-UMP2, plus a
+# closed-shell-as-UHF self-check against the restricted path.
+add_executable(scf_rimp2_uhf scf_rimp2_uhf.F90)
+target_compile_definitions(scf_rimp2_uhf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rimp2_uhf PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_rimp2_uhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_rimp2_uhf COMMAND scf_rimp2_uhf)
+set_tests_properties(
+  terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# Double hybrids (b2plyp, b2gp-plyp -- trc_xc_functional.F90): the SCF
+# (four-centre AND --df, cc-pVDZ-RIFIT doing double duty as --df's jkfit
+# too) then RI-MP2 (plain and chained off --df's fit) on water and
+# formamide, cc-pVDZ and 6-31G*, plus OH/b2plyp UKS from a fixed density,
+# against pyscf's own custom-hybrid KS ('0.53*HF + 0.47*B88, 0.73*LYP')
+# plus DF-MP2/DF-UMP2 (test/pyscf_refs/dh.ref, generate.py's gen_dh).
+add_executable(scf_dh scf_dh.F90)
+target_compile_definitions(scf_dh PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_dh PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_dh PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_dh COMMAND scf_dh)
+set_tests_properties(
+  terco/scf_dh PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# SPHERICAL-basis RI-MP2 and `--df`: restricted RI-MP2 (water, formamide,
+# cc-pVDZ + cc-pVDZ-RIFIT), unrestricted RI-MP2 (OH, from a fixed initial
+# density), `--df` HF/B3LYP (water, formamide, def2-universal-jkfit) and
+# B2PLYP (water, four-centre AND --df, chained) -- all spherical, against
+# pyscf's own `cart=False` on the identical sets (test/pyscf_refs/
+# sph_corr.ref, generate.py's gen_sph_corr). The Cartesian counterpart of
+# each of these is scf_rimp2(_uhf)/scf_df/scf_dh, unchanged by this file.
+add_executable(scf_sph_corr scf_sph_corr.F90)
+target_compile_definitions(scf_sph_corr PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_sph_corr PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_sph_corr PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_sph_corr COMMAND scf_sph_corr)
+set_tests_properties(
+  terco/scf_sph_corr PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# Coupled-perturbed HF (src/scf/trc_cphf.F90): the static dipole
+# polarizability, RHF on water/formamide and UHF on the OH radical, each
+# against test/pyscf_refs/generate.py's gen_cphf/gen_cphf_uhf
+# (pyscf.prop.polarizability). Four RHF cases share scf_cphf.F90, one
+# executable per (molecule, basis) pair -- a different name/ARGS per
+# terco_add_check call, same source -- and the UHF case is its own
+# program (trc_cphf_solve_uhf's coupled spin channels).
+#
+terco_add_check(scf_cphf scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+terco_add_check(scf_cphf_ccpvdz scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/cc-pvdz.json water cc-pvdz cphf_ccpvdz_probe.bin)
+terco_add_check(scf_cphf_formamide scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS formamide.xyz basis_sets/6-31gs.json formamide 6-31gs cphf_formamide_probe.bin)
+terco_add_check(scf_cphf_formamide_ccpvdz scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS formamide.xyz basis_sets/cc-pvdz.json formamide cc-pvdz cphf_formamide_ccpvdz_probe.bin)
+terco_add_check(scf_cphf_uhf scf_cphf_uhf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+#
+# Coupled-perturbed KS (src/scf/trc_cpks.F90): the static dipole
+# polarizability, RKS on water and formamide for SVWN (LDA), PBE and
+# B3LYP (GGA/hybrid-GGA), 6-31G*, against test/pyscf_refs/generate.py's
+# gen_cpks (pyscf.prop.polarizability.rks, grid matched to terco's own --
+# see scf_cpks.F90's own header). One executable, one ARGS set per case.
+#
+terco_add_check(scf_cpks scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/6-31gs.json water 6-31gs svwn cpks_svwn_probe.bin)
+terco_add_check(scf_cpks_pbe scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/6-31gs.json water 6-31gs pbe cpks_pbe_probe.bin)
+terco_add_check(scf_cpks_b3lyp scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS water.xyz basis_sets/6-31gs.json water 6-31gs b3lyp cpks_b3lyp_probe.bin)
+terco_add_check(scf_cpks_formamide_pbe scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                 ARGS formamide.xyz basis_sets/6-31gs.json formamide 6-31gs pbe cpks_formamide_pbe_probe.bin)
 
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial

@@ -40,6 +40,15 @@ CASE_OF = {
     "rimp2_ccpvdz.ref": "rimp2",
     "pcm_cavity_water.ref": "pcm_cavity",
     "reference_xc.dat": "xc_kernels",
+    "cphf_water_6-31gs.ref": "cphf",
+    "cphf_water_cc-pvdz.ref": "cphf",
+    "cphf_formamide_6-31gs.ref": "cphf",
+    "cphf_formamide_cc-pvdz.ref": "cphf",
+    "cphf_uhf_oh_6-31gs.ref": "cphf_uhf",
+    "cpks_water_6-31gs_svwn.ref": "cpks",
+    "cpks_water_6-31gs_pbe.ref": "cpks",
+    "cpks_water_6-31gs_b3lyp.ref": "cpks",
+    "cpks_formamide_6-31gs_pbe.ref": "cpks",
     "full_grad_ccpvdz.ref": "full_grad",
 }
 

@@ -34,6 +34,8 @@ target_sources(
           scf/trc_scf_diis.F90          # CDIIS and ADIIS, the level shift and the damped step
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
+          scf/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
+          scf/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
           scf/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file

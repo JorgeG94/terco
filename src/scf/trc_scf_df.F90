@@ -1,6 +1,12 @@
 !
 ! Density-fitted J and K for a restricted (closed-shell) reference,
-! Cartesian orbital basis, resident on the device.
+! resident on the device. Every array THIS object owns -- `bpk`, the
+! packed density/J factors, the K half-transform -- is Cartesian-sized
+! (`n = b%nao`), whether the orbital basis `b` is spherical or not: a
+! spherical caller folds S/H/D/F through `trc_scf_fock.F90`'s `to_cart`/
+! `to_sph` at the boundary, and this object never sees the difference.
+! The AUXILIARY basis is a separate question (see `df_jk_setup`'s own
+! comment): it follows its own `aux%spherical`, independent of `b`'s.
 !
 ! With the auxiliary basis {P}, its metric M = (P|Q) = L L^T and the
 ! three-index tensor T(mu nu, P) = (mu nu|P),
@@ -70,6 +76,7 @@ module trc_scf_df
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
+   use trc_sph, only: sph_metric_cart_to_sph, sph_aux3c_to_sph
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use, intrinsic :: iso_fortran_env, only: output_unit
@@ -162,18 +169,19 @@ contains
       integer, intent(in), optional :: aux_block
 
       type(trc_basis_t) :: blk
-      real(dp), allocatable :: jm(:, :), tens(:, :, :)
-      integer :: n, naux, npack, ablk, omax0
-      integer :: s0, s1, ish, p0, np, mu, nu, q
+      real(dp), allocatable :: jm(:, :), jmc(:, :), tens(:, :, :), tsph(:, :, :)
+      integer :: n, naux, naux_c, npack, ablk, omax0
+      integer :: s0, s1, ish, p0, p0s, np, nps, mu, nu, q
       real(dp) :: tc
 
       call err%clear()
       if (this%ready) return
-      if (b%spherical) then
-         call err%set(ERROR_VALIDATION, "trc_scf_df: the orbital basis is spherical; DF-JK only "// &
-                      "supports a Cartesian basis today")
-         return
-      end if
+      ! The orbital basis `b` is only ever read here at its CARTESIAN size
+      ! (`n = b%nao`, never `b%nao_sph`) -- `d_c`/`gmat_c` in `build`
+      ! below are the Cartesian-space scratch trc_scf_fock.F90's `to_cart`/
+      ! `to_sph` fold the SCF's own (spherical, if `b%spherical`) matrices
+      ! through at the call site -- so nothing here needs `b%spherical`
+      ! at all, and a spherical orbital basis is not refused.
       if (maxval(b%sh_l) > DF_LMAX) then
          call err%set(ERROR_VALIDATION, "trc_scf_df: the orbital basis carries angular momentum "// &
                       "above what the density-fitting kernels were generated for (gen_df.py --lmax)")
@@ -186,11 +194,38 @@ contains
       end if
 
       n = b%nao
-      naux = aux%nao
+      ! The auxiliary basis follows ITS OWN `spherical` tag, independent
+      ! of the orbital basis's -- trc_capi.F90's `basis_json`/
+      ! `trc_set_jkfit_json` set it to match the orbital basis by
+      ! construction (pyscf's own `auxmol.cart = mol.cart` rule), but
+      ! this object only ever reads `aux%spherical` itself, same as every
+      ! other aux-basis-aware piece below. `naux_c`, the CARTESIAN count,
+      ! sizes the (mu nu|P) build's own kernel calls and block walk
+      ! (always Cartesian, like every kernel); `naux`, spherical-folded
+      ! when `aux%spherical`, is every OTHER dimension below -- the
+      ! metric, its Cholesky factor, `bpk`'s own column count, and (via
+      ! `this%naux`) what a chained RI-MP2 step checks against its own.
+      naux_c = aux%nao
+      naux = merge(aux%nao_sph, aux%nao, aux%spherical)
       npack = n*(n + 1)/2
       this%n = n
       this%naux = naux
       this%npack = npack
+
+      ! `lp`'s own eigensolver workspace: a caller that already `%init`'d
+      ! it (trc_capi.F90's own `cx%la%init(n)`, at the SCF's own space --
+      ! `b%nao_sph` when `b%spherical`) sized it for a SMALLER n than this
+      ! object's own density-factor `syev` (build()'s own `this%dsc`,
+      ! Cartesian, `n = b%nao`) ever runs at: every OTHER caller already
+      ! passes a Cartesian `n` (RI-MP2's own `trc_rimp2_run`/
+      ! `trc_urimp2_run`, or `--df` before a spherical orbital basis was
+      ! supported, when `b%nao_sph` and `b%nao` happened to always be
+      ! equal), so this went unnoticed until a spherical `--df` run first
+      ! made the two sizes differ -- `trc_linalg_t%init` only ever GROWS
+      ! (`grow_workspace`, never shrinks), so calling it here with the
+      ! size `build` actually needs is always safe and a no-op when a
+      ! caller already sized `lp` this large or larger.
+      call lp%init(n)
 
       call dbg_mem("before B")
       allocate (this%bpk(npack, naux))
@@ -199,11 +234,25 @@ contains
       call this%tbl%init("dfjk", NAMES, bytes_steps=[ST_JGAM, ST_JBLD, ST_UNPK])
 
       ! --- the metric and its Cholesky factor -------------------------------
+      ! M = (P|Q) is built Cartesian (the kernel's only space) and folded,
+      ! M_sph = T^T M_cart T, BEFORE the Cholesky factor -- the same
+      ! `sph_cart_to_sph` the SCF driver folds S/H/D/F through, with the
+      ! auxiliary basis standing in for the orbital one it is normally
+      ! called on (trc_sph.F90's own transforms take any `trc_basis_t`).
       allocate (jm(naux, naux))
       !$acc enter data create(jm)
       call dbg_mem("after metric alloc")
       call this%tbl%step_on(lp, ST_METRIC, tc)
-      call trc_df_2c(aux, jm)
+      if (aux%spherical) then
+         allocate (jmc(naux_c, naux_c))
+         !$acc enter data create(jmc)
+         call trc_df_2c(aux, jmc)
+         call sph_metric_cart_to_sph(aux, lp, jmc, jm)
+         !$acc exit data delete(jmc)
+         deallocate (jmc)
+      else
+         call trc_df_2c(aux, jm)
+      end if
       call this%tbl%step_off(lp, ST_METRIC, tc)
       call this%tbl%step_on(lp, ST_CHOL, tc)
       call lp%potrf(naux, jm, naux)
@@ -226,11 +275,17 @@ contains
       ! Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
       ! memory-aware, same pattern as the per-iteration K block
       ! (`choose_qb`) and RI-MP2's own `k_group`.
-      ablk = choose_setup_block(n, naux)
+      ablk = choose_setup_block(n, naux_c)
       if (present(aux_block)) ablk = max(aux_block, 1)
       call dbg_mem("ablk chosen (ablk="//itoa_dbg(ablk)//")")
 
       ! --- (mu nu|P), one auxiliary block at a time, packed as it lands ----
+      ! `p0`/`np` below are the block's EFFECTIVE (spherical, when
+      ! `aux%spherical`) offset/width -- what `bpk`'s own column index
+      ! runs over -- kept distinct from the block's CARTESIAN `p0`/`np`
+      ! only where the two differ, read out of `blk` after `subset` cuts
+      ! it (never across a shell, so `blk%nao_sph` is exactly this
+      ! block's own spherical width).
       s0 = 1
       do while (s0 <= aux%nshell)
          s1 = s0
@@ -249,9 +304,22 @@ contains
          call trc_df_3c(b, pl, blk, tens)
          call this%tbl%step_off(lp, ST_3C, tc)
          call this%tbl%step_on(lp, ST_PACK, tc)
-         do concurrent(q=1:np, mu=1:n, nu=1:n, nu <= mu)
-            this%bpk(pack_idx(mu, nu), p0 - 1 + q) = tens(mu, nu, q)
-         end do
+         if (aux%spherical) then
+            p0s = aux%sh_ao_sph(s0)
+            nps = blk%nao_sph
+            allocate (tsph(n, n, nps))
+            !$acc enter data create(tsph)
+            call sph_aux3c_to_sph(blk, n, tens, tsph, lp)
+            do concurrent(q=1:nps, mu=1:n, nu=1:n, nu <= mu)
+               this%bpk(pack_idx(mu, nu), p0s - 1 + q) = tsph(mu, nu, q)
+            end do
+            !$acc exit data delete(tsph)
+            deallocate (tsph)
+         else
+            do concurrent(q=1:np, mu=1:n, nu=1:n, nu <= mu)
+               this%bpk(pack_idx(mu, nu), p0 - 1 + q) = tens(mu, nu, q)
+            end do
+         end if
          call this%tbl%step_off(lp, ST_PACK, tc)
          !$acc exit data delete(tens)
          deallocate (tens)
