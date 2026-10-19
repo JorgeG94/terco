@@ -17,8 +17,9 @@ commit messages cite the pre-rewrite hashes, which map as follows:
 | `d324ef7` Derive the GAMESS rescale from a closed form | `49eb0d9` |
 | `59f9e38` Rename the default order to "lexicographic" | `e2c20cf` |
 
-The guide libfint wrote for this work is kept in terco at
-`docs/LIBFINT_GENERATORS.md`, since it is no longer in libfint's git.
+The guide libfint wrote for this work is no longer in libfint's git; terco
+carried it as `docs/LIBFINT_GENERATORS.md` until it was retired, so it is
+in terco's history at 48cc3b3.
 
 | here | libfint |
 |---|---|
