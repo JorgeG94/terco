@@ -48,6 +48,7 @@ program scf_sph_corr
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
+   use pic_strings, only: to_string
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, &
                            ref_read_matrix3, ref_report
    implicit none
@@ -147,7 +148,7 @@ contains
             "  E_RHF ", res%energy, "  E_os ", mp%e_os, "  E_ss ", mp%e_ss
 
          if (has_ref) then
-            write (tag, "(i0)") ic - 1
+            tag = to_string(ic - 1)
             call ref_read_str(refu, "RMP2_NAME_"//trim(tag), name_ref)
             name_this = trim(gmol(ic))//"_ccpvdz_sph"
             if (trim(name_ref) /= trim(name_this)) then
@@ -350,7 +351,7 @@ contains
                name_this = trim(gmol(ig))//"_ccpvdz_sph_"//trim(method(im))
             end if
             if (has_ref) then
-               write (tag, "(i0)") ic - 1
+               tag = to_string(ic - 1)
                call ref_read_str(refu, "DF_NAME_"//trim(tag), name_ref)
                if (trim(name_ref) /= trim(name_this)) then
                   print "(a)", "scf_sph_corr/C: case order mismatch ("//trim(name_ref)//" vs "// &
