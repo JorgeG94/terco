@@ -142,6 +142,7 @@ program context_scf
    ! each multiplied by its own literal coefficient.
    call check_double_hybrid('b2plyp', 0.27_c_double, 0.27_c_double)
    call check_double_hybrid('b2gpplyp', 0.36_c_double, 0.36_c_double)
+   call check_aux_order()
 
    call pl%release(); call b%release(); call aux%release()
    if (.not. ok) then
@@ -202,5 +203,47 @@ contains
                   name//": double hybrid total = E_scf + pt2_cos*E_os + pt2_css*E_ss (literals) to round-off")
       rc2 = trc_destroy(h2);                         call expect(rc2 == TRC_OK, name//": destroy")
    end subroutine check_double_hybrid
+
+   ! The auxiliary (or jkfit) basis must end up on the SAME Cartesian/
+   ! spherical convention as the orbital basis regardless of which is
+   ! set first (pyscf's own auxmol.cart = mol.cart rule) --
+   ! trc_set_basis_json/trc_set_aux_json only inherit the convention
+   ! FORWARD (aux from an already-loaded orbital basis), so an aux
+   ! basis set FIRST had nothing to inherit from and could silently
+   ! disagree once the orbital basis loaded after it. Two bases with
+   ! genuinely different native tags exercise both orders: 6-31g.json
+   ! has no spherical shell anywhere (always Cartesian, no
+   ! force_cartesian needed), cc-pvdz-rifit.json is spherical
+   ! throughout -- orbital-first inherits correctly (already exercised
+   ! elsewhere in this program, confirmed again here); aux-first must
+   ! now be refused rather than silently mismatched.
+   subroutine check_aux_order()
+      type(c_ptr) :: h3, h4
+      integer(c_int) :: rc3
+
+      ! Correct order: orbital first, aux second -- aux inherits the
+      ! orbital's own Cartesian convention and succeeds.
+      rc3 = trc_create(h3);                      call expect(rc3 == TRC_OK, "aux order: create (orbital-first)")
+      rc3 = trc_set_molecule(h3, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(rc3 == TRC_OK, "aux order: set_molecule (orbital-first)")
+      rc3 = trc_set_basis_json(h3, 'basis_sets/6-31g.json'//c_null_char)
+      call expect(rc3 == TRC_OK, "aux order: orbital first succeeds")
+      rc3 = trc_set_aux_json(h3, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      call expect(rc3 == TRC_OK, "aux order: aux after orbital inherits and succeeds")
+      rc3 = trc_destroy(h3);                      call expect(rc3 == TRC_OK, "aux order: destroy (orbital-first)")
+
+      ! Wrong order: aux first -- nothing to inherit from yet, so it
+      ! keeps its own native (spherical) tag; orbital second keeps ITS
+      ! own native (Cartesian) tag -- now refused instead of silently
+      ! running RI-MP2 with two AO spaces that disagree.
+      rc3 = trc_create(h4);                      call expect(rc3 == TRC_OK, "aux order: create (aux-first)")
+      rc3 = trc_set_molecule(h4, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(rc3 == TRC_OK, "aux order: set_molecule (aux-first)")
+      rc3 = trc_set_aux_json(h4, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      call expect(rc3 == TRC_OK, "aux order: aux loaded first, nothing to inherit from yet, succeeds")
+      rc3 = trc_set_basis_json(h4, 'basis_sets/6-31g.json'//c_null_char)
+      call expect(rc3 /= TRC_OK, "aux order: orbital after a mismatched aux is refused, not silently wrong")
+      rc3 = trc_destroy(h4);                      call expect(rc3 == TRC_OK, "aux order: destroy (aux-first)")
+   end subroutine check_aux_order
 
 end program context_scf

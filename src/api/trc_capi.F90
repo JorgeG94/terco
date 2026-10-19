@@ -1605,6 +1605,38 @@ contains
          call b%release()
          return
       end if
+      ! The order-dependence this guards against: `force_cart_this` above
+      ! only inherits the orbital basis's convention when the ORBITAL
+      ! basis is already loaded (aux .and. cx%have_basis); an auxiliary
+      ! or jkfit basis set BEFORE the orbital one has nothing to inherit
+      ! from and falls back to force_cartesian alone (the comment above
+      ! already says so). So when the ORBITAL basis itself is what is
+      ! loading here, check it against whichever fitting basis is
+      ! already in the context, in BOTH directions, rather than silently
+      ! running RI-MP2/--df with an orbital/auxiliary mismatch pyscf's
+      ! own auxmol.cart = mol.cart rule never allows.
+      if (.not. aux) then
+         if (cx%have_aux .and. b%spherical .neqv. cx%ab%b%spherical) then
+            call refuse(cx, "trc_set_basis_json: "//trim(fpath)//" is "// &
+                        trim(merge("spherical", "Cartesian", b%spherical))//", but the auxiliary "// &
+                        "basis already set is "//trim(merge("spherical", "Cartesian", cx%ab%b%spherical))// &
+                        " -- it was loaded before this orbital basis, so it could not inherit this "// &
+                        "basis's own convention (pyscf's auxmol.cart = mol.cart rule); set "// &
+                        "force_cartesian before either, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+         if (cx%have_jkfit .and. b%spherical .neqv. cx%jb%b%spherical) then
+            call refuse(cx, "trc_set_basis_json: "//trim(fpath)//" is "// &
+                        trim(merge("spherical", "Cartesian", b%spherical))//", but the --df jkfit "// &
+                        "basis already set is "//trim(merge("spherical", "Cartesian", cx%jb%b%spherical))// &
+                        " -- it was loaded before this orbital basis, so it could not inherit this "// &
+                        "basis's own convention (pyscf's auxmol.cart = mol.cart rule); set "// &
+                        "force_cartesian before either, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+      end if
       if (aux) cx%aux_path = fpath
       call take_basis(cx, aux, b)
       status = TRC_OK
