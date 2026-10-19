@@ -385,6 +385,13 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_grad_dft check_cli_grad_dft.F90 NEEDS_BASIS
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_dft_probe})
   unset(_cli_grad_dft_probe)
+
+  # The same comparison for --df --grad (B3LYP: fitted J, fitted K, XC) --
+  # see check_cli_grad_df.F90's own header.
+  set(_cli_grad_df_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_df_probe.json)
+  terco_add_check(check_cli_grad_df check_cli_grad_df.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
+  unset(_cli_grad_df_probe)
 endif()
 
 # The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA
@@ -718,6 +725,92 @@ terco_add_check(check_df_vs_pyscf check_df_vs_pyscf.F90
 # Same self-skip convention as check_rys_fock_vs_pyscf above, one level up.
 set_tests_properties(terco/check_df_vs_pyscf
   PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+#
+# The density-fitting DERIVATIVE integrals (scripts/gen_df_grad.py) against
+# pyscf's int3c2e_ip1/ip2 and int2c2e_ip1: raw one-hot tensors from the host
+# class dispatch, and the device drivers' Y/Z contraction against both those
+# and test/pyscf_refs/dfg_ints_<case>.ref -- see check_df_grad_ints.F90's
+# header. def2-universal-jkfit carries g auxiliary shells, so this covers the
+# shipped DFG_LMAX_AUX = 4 ceiling.
+#
+foreach(case IN ITEMS water_631gs water_ccpvdz formamide_ccpvdz)
+  string(REGEX MATCH "^[a-z]+" _mol "${case}")
+  if(case MATCHES "631gs$")
+    set(_bas basis_sets/6-31gs.json)
+  else()
+    set(_bas basis_sets/cc-pvdz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/dfg_ints_${case}_probe.bin)
+  terco_add_check(check_df_grad_ints_${case} check_df_grad_ints.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${_mol}.xyz ${_bas}
+                  basis_sets/def2-universal-jkfit.json ${dump} ${case})
+  set_tests_properties(terco/check_df_grad_ints_${case}
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+  # Its own module directory: both cases compile the same source, whose
+  # helper module would otherwise race into one shared directory.
+  set_target_properties(check_df_grad_ints_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_df_grad_ints_${case})
+endforeach()
+
+# The --df analytic gradient (fitted J and K, trc_scf_grad_df.F90) against a
+# Richardson central finite difference of terco's own reconverged --df energy
+# -- RHF, RKS PBE, RKS B3LYP on water/6-31G*, see check_df_grad_fd.F90.
+terco_add_check(check_df_grad_fd check_df_grad_fd.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_df_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# The same, RHF on formamide/cc-pVDZ (cond(M) = 8.6e13), independent of
+# pyscf: ~25 s on 4 CPU cores.
+add_test(NAME terco/check_df_grad_fd_formamide COMMAND check_df_grad_fd formamide)
+set_tests_properties(
+  terco/check_df_grad_fd_formamide
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP"
+             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+
+# The full --df gradient against pyscf's own df.grad.rhf/rks at terco's
+# converged orbitals (and grid), def2-universal-jkfit, Cartesian --
+# test/pyscf_refs/dfg_<case>.ref, see check_df_grad_vs_pyscf.F90.
+foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b3lyp_631gs
+                      formamide_b3lyp_ccpvdz)
+  string(REGEX MATCH "^[a-z]+" _mol "${case}")
+  string(REGEX MATCH "_(hf|pbe|b3lyp)_" _fn "${case}")
+  string(REPLACE "_" "" _fn "${_fn}")
+  if(case MATCHES "631gs$")
+    set(_bas basis_sets/6-31gs.json)
+  else()
+    set(_bas basis_sets/cc-pvdz.json)
+  endif()
+  # The formamide gate is the fit's conditioning floor (measured: the gap is
+  # the (P|Q) values through cond(M) = 8.6e13), see the program's `tol`
+  # comment; water's is the gradient's own.
+  if(_mol STREQUAL "formamide")
+    set(_tol 5e-9)
+  else()
+    set(_tol 1e-10)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/dfg_${case}_probe.bin)
+  terco_add_check(check_df_grad_vs_pyscf_${case} check_df_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${_mol}.xyz ${_bas}
+                  basis_sets/def2-universal-jkfit.json ${_fn} 3 ${dump} ${case} ${_tol})
+  set_tests_properties(terco/check_df_grad_vs_pyscf_${case}
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+# The --grad --df refusals (UHF, spherical, range-separated, no fit) at the C
+# API, by status and message, never the library's error stop -- see
+# check_grad_df_refusals.F90.
+terco_add_check(check_grad_df_refusals check_grad_df_refusals.F90 NEEDS_BASIS
+                ARGS ${CMAKE_CURRENT_BINARY_DIR}/grad_df_refusals.scf)
+
+# The occupied-chunked path (trc_scf_grad_df.F90's MEMORY note), forced on
+# with TERCO_DFG_OCC_CHUNK=5: formamide's 12 occupied orbitals in chunks of
+# 5, 5 and 2, against the same reference.
+add_test(NAME terco/check_df_grad_vs_pyscf_formamide_b3lyp_ccpvdz_chunked
+         COMMAND check_df_grad_vs_pyscf_formamide_b3lyp_ccpvdz formamide.xyz basis_sets/cc-pvdz.json
+                 basis_sets/def2-universal-jkfit.json b3lyp 3
+                 ${CMAKE_CURRENT_BINARY_DIR}/dfg_chunked_probe.bin formamide_b3lyp_ccpvdz 5e-9)
+set_tests_properties(
+  terco/check_df_grad_vs_pyscf_formamide_b3lyp_ccpvdz_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP"
+             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_DFG_OCC_CHUNK=5")
 
 #
 # The polarisable continuum's cavity, S and D, and charge solve, with no
