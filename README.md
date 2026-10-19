@@ -34,6 +34,23 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 
 ---
 
+> [!WARNING]
+> ## ⚠️ Analytic gradients are EXPERIMENTAL ⚠️
+>
+> `--grad` / `trc_run_gradient` (HF/UHF, LDA/GGA and hybrid KS-DFT including
+> range-separated and VV10, and the `--df` fitted gradient) are **validated**:
+> they match pyscf to ~1e-12 where pyscf can check them, finite differences of
+> terco's own energy everywhere else, and CPU = GPU. They are **not yet
+> performance-tuned**:
+>
+> - the DFT, VV10 and `--df` gradients can cost **much more than the energy**;
+> - the grid response stores a dense **3 x atoms x grid points** array, so
+>   large molecules run out of memory;
+> - **single rank only** (`--grad` refuses MPI), and no PCM, RI-MP2 or
+>   double-hybrid gradients.
+>
+> Use them for testing and development, not for production cost estimates.
+
 ## What it does
 
 | | |

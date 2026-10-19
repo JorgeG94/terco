@@ -229,6 +229,13 @@ module trc_xc_grad
    private
 
    public :: xc_gradient_add, XC_GRAD_RHO_TOL
+   public :: xc_grad_collocate1, xc_grad_collocate2, xc_grad_gather
+   public :: xc_grad_scatter, xc_grad_scatter_points
+   ! Exported for trc_vv10_grad: the AO-value/gradient/Hessian collocation,
+   ! the density gather onto a batch's local basis, and the two atom
+   ! scatters are generic per-batch plumbing with nothing semilocal-XC-
+   ! specific about them (no `kid`/`coef`/`xc_eval_point` in sight) -- VV10's
+   ! gradient reuses them rather than keeping a second, parallel copy.
 
    real(dp), parameter :: XC_GRAD_RHO_TOL = 1.0e-12_dp
    !! Same role and value as trc_xc.F90's XC_RHO_TOL: a batch whose bound on
@@ -284,8 +291,14 @@ contains
       ! MP2-fraction field at all (see its own header), so neither can
       ! reach a converged SCF result in the first place -- there is no
       ! flag left to check for a double hybrid. The check below is for
-      ! what CAN reach here and is still missing a kernel: VV10, which
-      ! runs in the energy/Fock path today but has no gradient here.
+      ! what CAN reach here that USED to be missing a kernel: VV10, whose
+      ! nonlocal correlation gradient is now trc_vv10_grad%vv10_gradient_add's
+      ! job, called by trc_scf_gradient next to this routine rather than
+      ! from inside it. `func%nlc_b`/`nlc_c` play NO role in this routine at
+      ! all -- they gate the SEPARATE nonlocal double-sum, not the semilocal
+      ! `kid`/`coef` kernel list this routine reads, so a VV10 functional
+      ! (wB97X-V) reaches this point and gets exactly its correct semilocal
+      ! GGA gradient term, same as any other GGA.
       !
       ! RANGE-SEPARATED HYBRIDS (func%omega/exx_lr /= 0, wb97x and
       ! friends) are NOT refused: `func%kid`/`func%coef` (read by
@@ -305,11 +318,6 @@ contains
             "are implemented (meta-GGA is not representable in trc_xc_functional_t "// &
             "on this branch, so this should be unreachable)"
       end if
-      if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
-         error stop "trc_xc_grad: VV10 nonlocal correlation has no gradient kernel; "// &
-            "refusing rather than returning one missing that term"
-      end if
-
       is_gga = func%family == XC_FAMILY_GGA
 
       glevel = DEFAULT_GRID_LEVEL

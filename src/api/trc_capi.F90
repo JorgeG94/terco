@@ -2521,6 +2521,13 @@ contains
    end function trc_run_scf
 
    function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
+      !! ======================================================================
+      !! !!! EXPERIMENTAL !!! Validated against pyscf and finite differences,
+      !! but NOT performance-tuned: the DFT, VV10 and --df gradients can cost
+      !! far more than the energy, the grid response stores 3 x atoms x grid
+      !! points, and only one rank is supported. Do not rely on its cost yet.
+      !! ======================================================================
+      !!
       !! The full analytic RHF/UHF nuclear gradient at the converged SCF
       !! this context already holds (trc_scf_grad%trc_scf_gradient: the
       !! one-electron terms, eri%gradient's two-electron part, and nuclear
@@ -2537,11 +2544,14 @@ contains
       !! -- the gradient's GEMMs are the same size `cx%la` was already
       !! sized for.
       !!
+      !! NOT refused any more: a functional with VV10 nonlocal correlation
+      !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
+      !! term on top of the semilocal one, on VV10's own grid
+      !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
+      !! it on). wB97M-V is meta-GGA and cannot reach this point at all (see
+      !! below), so it is not a case this routine has to decide about.
+      !!
       !! REFUSED, clearly, rather than attempted:
-      !!   - a functional with VV10 nonlocal correlation: no VV10 gradient
-      !!     kernel exists (trc_xc_grad%xc_gradient_add's own refusal,
-      !!     checked here too so the message names the actual reason
-      !!     rather than a bare TRC_ERR_UNSUPPORTED).
       !!   - meta-GGA or a double hybrid: `trc_xc_functional_t` has no
       !!     meta-GGA family and no MP2-fraction field on this branch, so
       !!     neither can reach this point at all -- `trc_set_method` already
@@ -2608,11 +2618,6 @@ contains
                          "' failed to re-resolve -- this should be unreachable"
             return
          end if
-         if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
-            cx%message = "trc_run_gradient: VV10 nonlocal correlation (functional '"// &
-                         trim(cx%opts%functional)//"') has no gradient kernel yet"
-            return
-         end if
       end if
       if (cx%rimp2_ok) then
          cx%message = "trc_run_gradient: RI-MP2/double-hybrid correlation gradient not implemented yet"
@@ -2667,7 +2672,7 @@ contains
                                   cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                   func=func, grid_level=cx%opts%grid_level, &
                                   grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                  dfjk=cx%dfjk, aux=cx%jb%b)
+                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b)
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
@@ -2677,7 +2682,8 @@ contains
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                func=func, grid_level=cx%opts%grid_level, &
-                               grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol)
+                               grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                               nlc_grid_level=cx%opts%nlc_grid_level)
       else
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad)

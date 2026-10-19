@@ -32,7 +32,7 @@ module terco_run
    implicit none
    private
    public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
-             gradient_summary
+             gradient_summary, experimental_gradient_banner
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -318,6 +318,7 @@ contains
       real(dp) :: rms, gmax
       integer :: ia
       write (output_unit, "(a)") ""
+      call experimental_gradient_banner(output_unit)
       write (output_unit, "(a)") "   gradient (Eh/Bohr)"
       write (output_unit, "(a)") "   ----------------------------------------------------------"
       do ia = 1, r%natm
@@ -329,6 +330,21 @@ contains
       write (output_unit, "(a,es12.4)") "   RMS gradient     : ", rms
       write (output_unit, "(a,es12.4)") "   max |gradient|   : ", gmax
    end subroutine gradient_summary
+
+   subroutine experimental_gradient_banner(u)
+      !! The analytic gradients are validated (pyscf, finite differences)
+      !! but not yet performance-tuned, and run on one rank only. Printed
+      !! wherever a gradient is requested or reported, so nobody mistakes
+      !! them for a production code path.
+      integer, intent(in) :: u
+      write (u, "(a)") "   =========================================================================="
+      write (u, "(a)") "     !!!  EXPERIMENTAL: ANALYTIC GRADIENTS  !!!"
+      write (u, "(a)") "     Validated against pyscf and finite differences, but NOT performance-"
+      write (u, "(a)") "     tuned: the DFT, VV10 and --df gradients can be much slower than the"
+      write (u, "(a)") "     energy, and grid-response memory grows as 3 x atoms x grid points."
+      write (u, "(a)") "     Single rank only. Use for testing; do not rely on its cost yet."
+      write (u, "(a)") "   =========================================================================="
+   end subroutine experimental_gradient_banner
 
    subroutine line(label, e)
       character(len=*), intent(in) :: label
@@ -421,6 +437,7 @@ contains
       integer :: ia
       real(dp) :: rms, gmax
       character(len=2) :: closing
+      write (u, "(a)") '  "gradient status": "experimental: validated, not performance-tuned, single rank",'
       write (u, "(a)") '  "gradient": ['
       do ia = 1, r%natm
          closing = merge("] ", "],", ia == r%natm)
@@ -469,7 +486,7 @@ program terco_main
                                 xc_is_double_hybrid
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env, lower
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
-                       gradient_summary
+                       gradient_summary, experimental_gradient_banner
    implicit none
 
    type(run_t) :: r
@@ -534,10 +551,11 @@ program terco_main
    call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
                          "SCF, e.g. to go straight to --rimp2; the molecule, basis and method must match")
    call r%cli%add_option("json", "also write a JSON summary to this file")
-   call r%cli%add_flag("grad", "print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
+   call r%cli%add_flag("grad", "EXPERIMENTAL (validated, not performance-tuned; single rank). "// &
+                       "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
-                       "hybrids included); with --df, the fitted RHF/RKS gradient; refused for "// &
-                       "a VV10 --func, --rimp2, --pcm, or more than one rank")
+                       "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
+                       "refused for --rimp2, --pcm, or more than one rank")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -631,6 +649,8 @@ program terco_main
    r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
    r%df = r%cli%is_set("df")
    r%grad = r%cli%is_set("grad")
+   ! Unmissable, and on stderr so --silent and redirected output still show it.
+   if (r%grad .and. r%rank0) call experimental_gradient_banner(error_unit)
    cart = r%cli%is_set("cart")
    r%pcm = ""
    r%eps = 0.0_dp
@@ -783,13 +803,13 @@ program terco_main
       if (r%dh) call api(r, trc_energy(r%h, r%etot_dh))
    end if
    if (r%grad .and. r%conv /= 0) then
-      ! trc_run_gradient's own refusals (a VV10 --func, RI-MP2, PCM,
-      ! multi-rank) come back through `api`, which prints the library's
-      ! own message and stops -- the same clear-refusal path every other
-      ! unsupported combination in this CLI already takes. A plain
-      ! LDA/GGA --func (global and range-separated hybrids included) is
-      ! NOT refused: trc_run_gradient builds the KS-DFT gradient at the
-      ! SCF's own functional and grid, and with --df the fitted one.
+      ! trc_run_gradient's own refusals (RI-MP2, PCM, multi-rank) come
+      ! back through `api`, which prints the library's own message and
+      ! stops -- the same clear-refusal path every other unsupported
+      ! combination in this CLI already takes. An LDA/GGA --func (global
+      ! and range-separated hybrids and VV10 included) is NOT refused:
+      ! trc_run_gradient builds the KS-DFT gradient at the SCF's own
+      ! functional and grids, and with --df the fitted one.
       call api(r, trc_run_gradient(r%h))
       allocate (gradbuf(3*r%natm), r%gradient(3, r%natm))
       call api(r, trc_gradient(r%h, gradbuf))

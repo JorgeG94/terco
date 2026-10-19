@@ -1,4 +1,8 @@
 !
+! !!! EXPERIMENTAL !!! The analytic gradients are validated (pyscf, finite
+! differences, CPU = GPU) but NOT performance-tuned, and single rank only.
+! The DFT/VV10/--df paths can be much slower than the energy. See README.
+!
 ! The full analytic HF/UHF nuclear gradient: one-electron (trc_1e_gradient),
 ! two-electron (eri%gradient) and nuclear repulsion, assembled at a
 ! converged trc_scf_result_t. With `func` present (optional, see
@@ -41,6 +45,8 @@ module trc_scf_grad
    use trc_xc_grad, only: xc_gradient_add
    use trc_scf_df, only: df_jk_t
    use trc_scf_grad_df, only: df_two_electron_gradient
+   use trc_vv10_grad, only: vv10_gradient_add
+   use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
    implicit none
    private
    public :: trc_scf_gradient, nuclear_repulsion_gradient, energy_weighted_density
@@ -120,7 +126,7 @@ contains
    end subroutine energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
-                               func, grid_level, grid_max_pts, grid_response, rho_tol, dfjk, aux)
+                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -167,9 +173,12 @@ contains
       !! ANY func with exx_lr /= 0, and so does xc_gradient_add's
       !! semilocal GGA term below (func%omega/exx_lr do not reach it --
       !! see that module's own header) -- an RSH functional like wB97X is
-      !! NOT refused anywhere in this path any more. Only VV10
-      !! (func%nlc_b/nlc_c) still is, in xc_gradient_add and in
-      !! trc_capi.F90's trc_run_gradient.
+      !! NOT refused anywhere in this path any more.
+      !!
+      !! VV10 (func%nlc_b/nlc_c nonzero, e.g. wB97X-V) is NOT refused
+      !! either any more: trc_vv10_grad%vv10_gradient_add adds the
+      !! nonlocal correlation term on top, on its own grid (`nlc_grid_level`,
+      !! below) -- single rank only, see that module's own header.
       type(trc_basis_t),  intent(inout) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer,            intent(in)    :: nspin, nalpha, nbeta
@@ -191,6 +200,13 @@ contains
       !! or the two are not derivatives of the same number. Absent (a
       !! Fortran-side caller with no opinion) falls back to xc_gradient_add's
       !! own defaults.
+      integer, intent(in), optional :: nlc_grid_level
+      !! VV10's own grid level -- see this subroutine's own header, VV10.
+      !! Absent means `trc_scf_settings%DEFAULT_NLC_GRID_LEVEL`, the SAME
+      !! constant `trc_scf_options_t%nlc_grid_level` defaults to, not the
+      !! semilocal grid's: the gradient has to be taken on the grid the
+      !! energy used, and a caller's own default must not drift from the
+      !! SCF's.
       type(df_jk_t), intent(in), optional, target :: dfjk
       !! DENSITY FITTING (`--df`): present (with `aux`), the two-electron
       !! term is the FITTED one, trc_scf_grad_df's df_two_electron_gradient
@@ -204,6 +220,7 @@ contains
       !! The auxiliary (jkfit) basis `dfjk` was fitted with.
 
       type(trc_pairlist_t) :: pl
+      integer :: nlc_level
       integer :: nao, nsp, s
       integer :: nocc(2)
       real(dp) :: occ_s, exx_use, exx_lr_use, omega_use
@@ -301,9 +318,26 @@ contains
       ! --- exchange-correlation, added on top, LDA/GGA only. `dens` is
       ! still present and correct on the device at this point (see this
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
-      if (present(func)) call xc_gradient_add(b, lp, func, nspin, dens, grad, &
-                                              grid_level=grid_level, grid_max_pts=grid_max_pts, &
-                                              grid_response=grid_response, rho_tol=rho_tol)
+      if (present(func)) then
+         call xc_gradient_add(b, lp, func, nspin, dens, grad, &
+                              grid_level=grid_level, grid_max_pts=grid_max_pts, &
+                              grid_response=grid_response, rho_tol=rho_tol)
+         ! --- VV10 nonlocal correlation, added on top. Its own grid, its
+         ! own screen -- see trc_vv10_grad's own header. `dens` is still
+         ! present and correct on the device (same note as xc_gradient_add
+         ! above); `grad` likewise. ---
+         if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
+            nlc_level = DEFAULT_NLC_GRID_LEVEL
+            if (present(nlc_grid_level)) nlc_level = nlc_grid_level
+            ! vv10_gradient_add has no `rho_tol` of its own: it always
+            ! screens at trc_vv10's own VV10_RHO_TOL, the same constant
+            ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
+            ! see that module's own header.
+            call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
+                                   grid_level=nlc_level, grid_max_pts=grid_max_pts, &
+                                   grid_response=grid_response)
+         end if
+      end if
 
       !$acc update self(grad)
       !$acc exit data delete(wmat, dtot, grad, cmo, eps, dens)
