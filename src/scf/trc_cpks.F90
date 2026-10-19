@@ -41,20 +41,13 @@
 ! derivative here. All three stop with a message naming the gap rather
 ! than silently running the wrong physics.
 !
-! SINGLE-RANK ONLY, TRACED: `eri%fock_resident` (trc_eri.F90) reduces
-! `gmat` across ranks itself, through `sum_ranks`, whenever the `eri`
-! object was built distributed (`this%distributed`); `trc_xc_fxc_rks`
-! (src/xc/trc_xc.F90) takes no `comm` argument and does no such
-! reduction -- it computes the WHOLE grid's `v_resp` on every rank
-! that calls it, redundantly, never as a partial contribution.
-! `matvec`'s own `add_mat(nao, nao, g_u, v_resp, g_u)` therefore adds a
-! (possibly rank-summed) `g_u` to a (never rank-split, always-whole)
-! `v_resp` -- the two terms are not rank-weighted the same way under a
-! distributed `eri`, and nothing here checks for or refuses one.
-! trc_cphf.F90's own matvec calls the same `fock_resident` the same
-! way, with no `v_resp` term to complicate it, so it has the identical
-! g_u-under-a-distributed-eri question on its own -- verified by
-! reading trc_eri.F90 directly, not assumed from this module alone.
+! RANKS: correct under a distributed `eri`. `eri%fock_resident` reduces
+! `gmat` with `sum_ranks` (an allreduce then a broadcast), so every rank
+! holds the full G[D_U]; `trc_xc_fxc_rks` takes no communicator and
+! computes the full `v_resp` on every rank. `matvec`'s g_u + v_resp is
+! therefore full + full and identical across ranks. The only cost is the
+! XC response, done redundantly on each rank. trc_cphf's matvec gets the
+! same full G from the same call.
 !
 ! THE SOLVER
 ! ----------

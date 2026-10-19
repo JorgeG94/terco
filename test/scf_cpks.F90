@@ -228,6 +228,10 @@ program scf_cpks
       if (res_nan%converged) then
          ok = .false.
          print '(a)', "scf_cpks: FAILED: a NaN right-hand side must not report converged"
+      else if (index(res_nan%message, "breakdown") == 0) then
+         ok = .false.
+         print '(a)', "scf_cpks: FAILED: a NaN right-hand side must stop at the CG breakdown, got: "// &
+            trim(res_nan%message)
       else
          print '(a)', "scf_cpks: NaN right-hand side correctly refused: "//trim(res_nan%message)
       end if
