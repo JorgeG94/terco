@@ -221,8 +221,8 @@ contains
 
       ! --- two-electron, first: this call starts `grad` from zero ---
       call eri%gradient(b, dens, grad)
-      grad = 0.5_dp*grad   !! see this module's own header: eri%gradient's
-                           !! convention is twice d(e_two)/dR.
+      grad = 0.5_dp*grad   ! see this module's own header: eri%gradient's
+                           ! convention is twice d(e_two)/dR.
 
       ! --- one-electron, added on top. `wmat` is already present (and
       ! already holds the right numbers, from energy_weighted_density
