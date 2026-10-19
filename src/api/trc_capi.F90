@@ -179,7 +179,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_grad, only: trc_scf_gradient
-   use trc_scf_settings, only: scf_spin_rule
+   use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
@@ -2576,12 +2576,12 @@ contains
       allocate (cx%grad(3, cx%natm))
       if (have_func) then
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                               cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                func=func, grid_level=cx%opts%grid_level, &
                                grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol)
       else
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                               cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad)
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad)
       end if
       cx%grad_ok = .true.
       status = TRC_OK
