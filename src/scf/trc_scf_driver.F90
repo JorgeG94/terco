@@ -98,6 +98,7 @@ module trc_scf_driver
    use trc_scf_diis, only: cdiis_t, adiis_t, level_shift, damp
    use pic_types, only: default_int
    use pic_logger, only: global_logger
+   use pic_strings, only: to_string
    use pic_mpi_lib, only: comm_t
    implicit none
    private
@@ -134,7 +135,7 @@ contains
       write (u) int(nao, int64)
       write (u) d
       close (u)
-      print "(a,a,a,i0,a)", "   [density dumped to ", trim(path), ", nao ", nao, "]"
+      call global_logger%info("density dumped to "//trim(path)//", nao "//to_string(nao))
    end subroutine dump_density
 
    !
