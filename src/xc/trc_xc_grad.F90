@@ -935,10 +935,10 @@ contains
             do k = 1, 3
                pall(g, (k - 1)*nloc + mu, 1) = wg*(va*gchi(g, mu, k) + 2.0_dp*v_aa*hdota(k) + v_ab*hdotb(k))
                pall(g, (k - 1)*nloc + mu, 2) = wg*(vb*gchi(g, mu, k) + 2.0_dp*v_bb*hdotb(k) + v_ab*hdota(k))
-               q1all(g, (k - 1)*nloc + mu, 1) = wg*2.0_dp*v_aa*gchi(g, mu, k)   !! x rall(:,:,1)
-               q2all(g, (k - 1)*nloc + mu, 1) = wg*v_ab*gchi(g, mu, k)         !! x rall(:,:,2)
-               q1all(g, (k - 1)*nloc + mu, 2) = wg*2.0_dp*v_bb*gchi(g, mu, k)   !! x rall(:,:,2)
-               q2all(g, (k - 1)*nloc + mu, 2) = wg*v_ab*gchi(g, mu, k)         !! x rall(:,:,1)
+               q1all(g, (k - 1)*nloc + mu, 1) = wg*2.0_dp*v_aa*gchi(g, mu, k)   ! x rall(:,:,1)
+               q2all(g, (k - 1)*nloc + mu, 1) = wg*v_ab*gchi(g, mu, k)         ! x rall(:,:,2)
+               q1all(g, (k - 1)*nloc + mu, 2) = wg*2.0_dp*v_bb*gchi(g, mu, k)   ! x rall(:,:,2)
+               q2all(g, (k - 1)*nloc + mu, 2) = wg*v_ab*gchi(g, mu, k)         ! x rall(:,:,1)
             end do
          end do
          do u = 1, nloc
