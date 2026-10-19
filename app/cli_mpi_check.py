@@ -4,12 +4,12 @@
 # that the two agree -- the same thing scf_mpi.F90 checks for the library's
 # own Fortran and C entries, here for the thing a user actually runs.
 #
-# Water RHF, B3LYP and wB97X-V (VV10 split round-robin over pass 2's grid
-# points, one allreduce) must all match between np 1 and np 2 to 1e-8
-# (scf_mpi's own tolerance). RI-MP2's correlation energy must match between
-# np 1 and np 2 to 1e-10, with B distributed over the ranks and passed
-# round them, both with the build's default transport and staged through
-# the host (TERCO_MPI_DEVICE=0).
+# Water RHF, B3LYP and wB97X-V (VV10 split by a contiguous range of
+# pass 2's grid points per rank, one allreduce) must all match between
+# np 1 and np 2 to 1e-8 (scf_mpi's own tolerance). RI-MP2's correlation
+# energy must match between np 1 and np 2 to 1e-10, with B distributed
+# over the ranks and passed round them, both with the build's default
+# transport and staged through the host (TERCO_MPI_DEVICE=0).
 #
 import re
 import subprocess

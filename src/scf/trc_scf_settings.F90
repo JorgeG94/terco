@@ -272,8 +272,8 @@ contains
          this%exx = this%func%exx
          this%nlc = this%func%nlc_b /= 0.0_dp
          ! VV10 over MPI: trc_vv10's vv10_drive splits pass 2's outer grid
-         ! points round-robin by rank and allreduces the result, the same
-         ! as trc_xc's semilocal split -- no rejection needed here.
+         ! points into a contiguous range per rank and allreduces the
+         ! result -- no rejection needed here.
          this%exx_lr = this%func%exx_lr
          this%omega = this%func%omega
       end if

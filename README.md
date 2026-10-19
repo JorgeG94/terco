@@ -184,8 +184,8 @@ summary output prints once (rank 0); the energies agree with a single-rank
 run to the same tolerance `test/scf_mpi.F90` checks (1e-8). The exchange-
 correlation quadrature splits too, its grid batches dealt across ranks, and
 VV10 nonlocal correlation (`wb97x-v`) splits with it: its O(N^2) double sum
-over grid points is dealt round-robin across ranks, one point in N to
-each, with a single allreduce putting the full potential and energy back
+over grid points splits by a contiguous range of outer points per rank,
+with a single allreduce putting the full potential and energy back
 on every rank before the (replicated) contraction that follows -- the
 energy agrees with a single-rank run to the same tolerance. An error on
 any rank (a bad argument, a

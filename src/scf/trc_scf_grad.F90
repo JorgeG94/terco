@@ -297,9 +297,9 @@ contains
          grad = grad + grad_lr
          deallocate (grad_lr)
       end if
-      grad = 0.5_dp*grad   !! see this module's own header: eri%gradient's
-                           !! convention is twice d(e_two)/dR -- true of
-                           !! both passes above, added before this halving.
+      grad = 0.5_dp*grad   ! see this module's own header: eri%gradient's
+                           ! convention is twice d(e_two)/dR -- true of
+                           ! both passes above, added before this halving.
 
       ! --- one-electron, added on top. `wmat` is already present (and
       ! already holds the right numbers, from energy_weighted_density

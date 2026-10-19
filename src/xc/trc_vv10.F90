@@ -136,10 +136,10 @@ module trc_vv10
    real(dp), parameter :: PI43 = 4.0_dp*PI/3.0_dp
    integer, parameter :: VV10_NP_PAD = 128  !! tile rows padded to a multiple of this
    integer, parameter :: VV10_NL_PAD = 32   !! tile columns padded to a multiple of this
-   !! Same padding constants trc_xc.F90 uses for its batch tiles (XC_NP_PAD/
-   !! XC_NL_PAD) -- not shared by `use`, since they are two bare parameters
-   !! and duplicating them costs nothing a cross-module dependency would be
-   !! worth paying for.
+   ! Same padding constants trc_xc.F90 uses for its batch tiles (XC_NP_PAD/
+   ! XC_NL_PAD) -- not shared by `use`, since they are two bare parameters
+   ! and duplicating them costs nothing a cross-module dependency would be
+   ! worth paying for.
 
 contains
 
@@ -260,7 +260,7 @@ contains
       if (npts == 0) return
 
       ! A contiguous range [i0, i1] per rank -- see this module's own
-      ! MULTI-GPU header for why, not round-robin.
+      ! MULTI-GPU header for why.
       i0 = rank*(npts/nranks) + min(rank, mod(npts, nranks)) + 1
       i1 = (rank + 1)*(npts/nranks) + min(rank + 1, mod(npts, nranks))
 
@@ -764,12 +764,9 @@ contains
       vsigma_i = 0.0_dp
       eg_i = 0.0_dp
       ! MULTI-GPU: point i belongs to this rank only if it falls in
-      ! [i0, i1] (vv10_drive's own contiguous split, not round-robin --
-      ! see this module's MULTI-GPU header for why); every other rank
-      ! leaves it at the 0.0_dp just set above, a sum rather than an
-      ! approximation after the allreduce that follows. i0 = 1, i1 = npts
-      ! (no comm given) makes every i everyone's, unchanged from before
-      ! this split existed.
+      ! [i0, i1] (vv10_drive's own contiguous split) -- every other rank
+      ! leaves it at the 0.0_dp just set above; see this module's own
+      ! MULTI-GPU header for why. i0 = 1, i1 = npts with no comm given.
       if (i < i0 .or. i > i1) return
       ri = rho(i)
       if (ri < VV10_RHO_TOL) return
@@ -846,6 +843,7 @@ contains
          npp(ib) = ((npb + VV10_NP_PAD - 1)/VV10_NP_PAD)*VV10_NP_PAD
          nlp(ib) = ((nloc + VV10_NL_PAD - 1)/VV10_NL_PAD)*VV10_NL_PAD
       end do
+      !$acc data copyin(npp, nlp)
 
       b0 = 1
       do while (b0 <= nbatch)
@@ -915,6 +913,7 @@ contains
          deallocate (chi, gchi, zt, vloc, ord, pb_off, wk_off)
          b0 = b1 + 1
       end do
+      !$acc end data
       deallocate (npp, nlp, c_off, pr_off)
    end subroutine vv10_potential_tile
 
