@@ -564,6 +564,12 @@ contains
             "   eri (s) hgp pairs   schwarz      bins  quartets    upload")
          write (line, "(a,5f10.3)") "          ", ctx%eri%t_build
          call global_logger%performance(trim(line))
+         if (cfg%dft) then
+            call global_logger%performance( &
+               "   grid (s)   points  partition  batching    upload")
+            write (line, "(a,4f10.3)") "          ", ctx%t_grid_sub
+            call global_logger%performance(trim(line))
+         end if
       end subroutine report_timing
 
       ! Guess for one spin from a Fock-like h, into `dout`: the eigenproblem

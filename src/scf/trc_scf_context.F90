@@ -33,6 +33,10 @@ module trc_scf_context
    !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
    !! linear-algebra handles, orthogonaliser -- `ts`'s six slots, printed
    !! with the rest of the timing table by the caller.
+   integer, parameter, public :: NGRID = 4
+   !! grid's own sub-steps: point generation (radial x Lebedev x pruning),
+   !! the Becke/Stratmann partition, `trc_xc_grid_t%build`'s spatial
+   !! batching, and `%to_device`'s upload -- `t_grid_sub`'s four slots.
 
    type :: scf_ctx_t
       !! Geometry-lifetime state: everything above is built once and read
@@ -62,6 +66,7 @@ module trc_scf_context
       real(dp) :: e_nuc = 0.0_dp
       integer :: n_lindep = 0
       real(dp) :: ts(NSETUP) = 0.0_dp
+      real(dp) :: t_grid_sub(NGRID) = 0.0_dp
       real(dp) :: t_setup = 0.0_dp, t_grid = 0.0_dp, t_pcm_setup = 0.0_dp
       logical :: grid_built = .false., nlc_built = .false., released = .false.
    contains
@@ -193,9 +198,11 @@ contains
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
             call build_dft_grid_block(b%at_r, nint(b%at_z), this%grid, err, comm%rank(), comm%size(), &
-                                      level=opts%grid_level)
+                                      level=opts%grid_level, &
+                                      t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          else
-            call build_dft_grid(b%at_r, nint(b%at_z), this%grid, err, level=opts%grid_level)
+            call build_dft_grid(b%at_r, nint(b%at_z), this%grid, err, level=opts%grid_level, &
+                                t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          end if
          if (err%has_error()) then
             call profiler_stop("scf: grid")
@@ -205,8 +212,12 @@ contains
          if (present(comm)) then
             if (comm%size() > 1) call sum_flat(comm, this%grid%weights, this%grid%n_points)
          end if
+         call tm%start()
          call this%xg%build(this%grid%n_points, this%grid%coords, this%grid%weights, b, max_pts=opts%grid_max_pts)
+         this%t_grid_sub(3) = tm%get_elapsed_time()
+         call tm%start()
          call this%xg%to_device()
+         this%t_grid_sub(4) = tm%get_elapsed_time()
          this%grid_built = .true.
          if (cfg%nlc) then
             call build_dft_grid(b%at_r, nint(b%at_z), this%grid_nlc, err, level=opts%nlc_grid_level)
