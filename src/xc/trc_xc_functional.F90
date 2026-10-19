@@ -157,6 +157,15 @@ module trc_xc_functional
       ! equal (c_os = c_ss = c) for every double hybrid terco has today.
       ! trc_capi.F90's trc_run_rimp2/trc_energy read these, never a kernel.
       !
+      ! WHOEVER ADDS THE FIRST DSD-TYPE ENTRY (pt2_cos /= pt2_css) MUST
+      ! ALSO ADD A TEST THAT EXERCISES UNEQUAL WEIGHTS: every double
+      ! hybrid and every test of its weighted total today has pt2_cos ==
+      ! pt2_css, so a cos/css coefficient swap anywhere in the chain
+      ! (here, trc_capi's trc_energy, or a test's own oracle) is
+      ! undetectable -- see context_scf.F90's check_double_hybrid for
+      ! where that gap is called out and why literal-coefficient
+      ! assertions alone do not close it.
+      !
       real(dp) :: pt2_cos = 0.0_dp  !! opposite-spin RI-MP2 fraction
       real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction
       character(len=160) :: missing = ""

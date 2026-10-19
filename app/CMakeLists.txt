@@ -54,7 +54,7 @@ if(TERCO_ENABLE_TESTING)
   add_test(NAME terco/cli_rhf COMMAND terco_cli ${_xyz}/water.xyz --basis 6-31g)
   set_tests_properties(
     terco/cli_rhf PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
-                             "TOTAL ENERGY +-75\\.98397446")
+                             "SCF ENERGY +-75\\.98397446")
 
   # The same through every other guess, so each one stays reachable from the
   # command line and converges to the same state.
@@ -64,7 +64,7 @@ if(TERCO_ENABLE_TESTING)
     set_tests_properties(
       terco/cli_guess_${g} PROPERTIES ENVIRONMENT "${_env}"
                                       PASS_REGULAR_EXPRESSION
-                                      "TOTAL ENERGY +-75\\.98397446")
+                                      "SCF ENERGY +-75\\.98397446")
   endforeach()
 
   # A missing geometry is an error with a message, not a crash.
