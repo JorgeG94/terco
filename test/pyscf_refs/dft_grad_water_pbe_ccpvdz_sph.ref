@@ -1,12 +1,13 @@
 # terco pyscf reference v1
 # case: check_dft_grad_vs_pyscf_water_pbe_ccpvdz_sph
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["dft_grad_water_pbe_ccpvdz_sph"] -> gen_dft_grad
 # pyscf: 2.14.0
-# hash: 34e994b4ce05f68ea12db8fc349dc876458e019356036d1434e6fd7fa288b2bc
-# files: test/pyscf_refs/generate.py test/check_dft_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/water.xyz
+# hash-scheme: case-ast-v1
+# hash: 96d9e67396b4a4be5caecb41f82bdb712ca7a146e6528c12cc48141700991a2d
+# files: test/check_dft_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/water.xyz
 NAT 3
 NAO 24
 GRAD 3 3
--5.52720637420639922e-16 -8.00611655521319424e-15 -2.57859687220989287e-02 3.08967444740322112e-16 -1.17048121280105555e-02 1.28955875495260219e-02
--2.75092748521348763e-16 1.17048121280127759e-02 1.28955875495226913e-02
+-5.52730070948350040e-16 -8.00611655521319424e-15 -2.57859687220989287e-02 3.08954945792508616e-16 -1.17048121280105555e-02 1.28955875495260219e-02
+-2.75090944350286493e-16 1.17048121280127759e-02 1.28955875495226913e-02
 END
