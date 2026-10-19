@@ -19,6 +19,7 @@ module trc_dft_grid
    !! what makes a level-for-level comparison meaningful. Level 3 is the usual
    !! default and is the one a production calculation should start from.
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid
    use trc_dft_radial, only: treutler_ahlrichs_radial
@@ -145,7 +146,7 @@ contains
    end function clamp_level
 
    subroutine build_dft_grid(atom_coords, atomic_numbers, grid, error, &
-                             level, scheme, adjust, n_radial, n_angular, prune)
+                             level, scheme, adjust, n_radial, n_angular, prune, t_points, t_partition)
       !! Build the molecular grid: see `build_grid` for the arguments.
       !!
       !! A separate entry from `build_dft_grid_block`, with this interface
@@ -157,11 +158,16 @@ contains
       type(dft_grid_t), intent(out) :: grid
       type(error_t), intent(inout) :: error
       integer, intent(in), optional :: level, scheme, adjust, n_radial, n_angular, prune
-      call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune)
+      real(dp), intent(out), optional :: t_points, t_partition
+      !! Wall time of the point-generation loop (radial x Lebedev x pruning)
+      !! and of `apply_partition` (the Becke/Stratmann weights), for the
+      !! caller's own "grid (s)" sub-table -- trc_scf_context.F90's `setup`.
+      call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune, &
+                      t_points=t_points, t_partition=t_partition)
    end subroutine build_dft_grid
 
    subroutine build_dft_grid_block(atom_coords, atomic_numbers, grid, error, my_rank, n_ranks, &
-                                   level, scheme, adjust, n_radial, n_angular, prune)
+                                   level, scheme, adjust, n_radial, n_angular, prune, t_points, t_partition)
       !! Build the molecular grid with this rank partitioning only its block
       !! of the points: the partition is the expensive part of the build,
       !! and the same on every rank. The returned `weights` are zero outside
@@ -173,12 +179,13 @@ contains
       type(error_t), intent(inout) :: error
       integer, intent(in) :: my_rank, n_ranks
       integer, intent(in), optional :: level, scheme, adjust, n_radial, n_angular, prune
+      real(dp), intent(out), optional :: t_points, t_partition
       call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune, &
-                      my_rank, n_ranks)
+                      my_rank, n_ranks, t_points, t_partition)
    end subroutine build_dft_grid_block
 
    subroutine build_grid(atom_coords, atomic_numbers, grid, error, &
-                         level, scheme, adjust, n_radial, n_angular, prune, my_rank, n_ranks)
+                         level, scheme, adjust, n_radial, n_angular, prune, my_rank, n_ranks, t_points, t_partition)
       !! Build the molecular grid
       !!
       !! `level` picks per-element sizes from the standard tables. `n_radial`
@@ -197,11 +204,14 @@ contains
       integer, intent(in), optional :: prune      !! PRUNE_NONE or PRUNE_NWCHEM
       integer, intent(in), optional :: my_rank, n_ranks
       !! With both given, only this rank's block of the points is partitioned.
+      real(dp), intent(out), optional :: t_points, t_partition
+      !! See `build_dft_grid`'s own declaration.
 
       real(dp), allocatable :: r(:), dr(:), sphere(:, :), w_ang(:)
       integer, allocatable :: shell_order(:)
       integer :: n_atoms, used_level, used_scheme, used_adjust, used_prune
       integer :: ia, i, j, k, nr, na, total, offset, cached_order
+      type(timer_type) :: tm_gen
 
       n_atoms = size(atom_coords, 2)
       if (size(atomic_numbers) /= n_atoms) then
@@ -228,6 +238,7 @@ contains
          return
       end if
 
+      call tm_gen%start()
       ! Size the whole grid first so it can be allocated once. With pruning the
       ! count is no longer nr*na: each shell carries its own order, and those
       ! depend on the radii, so the radial mesh has to be built here as well.
@@ -289,8 +300,11 @@ contains
       grid%scheme = used_scheme
       grid%adjust = used_adjust
       allocate (grid%numbers(n_atoms), source=atomic_numbers)
+      if (present(t_points)) t_points = tm_gen%get_elapsed_time()
 
+      call tm_gen%start()
       call apply_partition(grid, atom_coords, atomic_numbers, used_scheme, used_adjust, error, my_rank, n_ranks)
+      if (present(t_partition)) t_partition = tm_gen%get_elapsed_time()
    end subroutine build_grid
 
    pure subroutine atom_sizes(atomic_number, level, n_radial, n_angular, nr, na)
