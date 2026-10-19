@@ -805,9 +805,11 @@ contains
       if (screen_on(density_screen)) then
          call density_blocks_device(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
       else
-         do concurrent(j=1:this%nbas, i=1:this%nbas)
-            this%dsh(i, j) = 1.0_dp
-         end do
+         ! density_screen=.false. (a coupled-perturbed solve): fill_ones_device,
+         ! not a `do concurrent` reading `this%dsh`/`this%nbas` directly --
+         ! trc_scf_fock's own header: never read a derived-type component
+         ! inside `do concurrent` on the GPU build.
+         call fill_ones_device(this%nbas, this%dsh)
       end if
 
       !
@@ -901,6 +903,18 @@ contains
       res = .true.
       if (present(flag)) res = flag
    end function screen_on
+
+   subroutine fill_ones_device(nshell, dsh)
+      !! `dsh := 1`, as an explicit-shape dummy `do concurrent` (no derived-
+      !! type component in its body) -- see eri_fock_resident's own comment
+      !! on why this exists.
+      integer, intent(in) :: nshell
+      real(dp), intent(inout) :: dsh(nshell, nshell)
+      integer :: i, j
+      do concurrent(j=1:nshell, i=1:nshell)
+         dsh(i, j) = 1.0_dp
+      end do
+   end subroutine fill_ones_device
 
    subroutine density_blocks_device(nshell, nao, sh_l, sh_ao, dmat, dsh)
       integer,  intent(in)    :: nshell, nao

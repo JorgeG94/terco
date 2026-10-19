@@ -1994,6 +1994,114 @@ def _gen_scf_df_one(r, name, xyzname, basname):
     return e_p, mf.conv_tol, mf.conv_tol_grad, grad_norm
 
 
+def _gen_cphf_one(probe_relname, ref_relname, xyzname, molname, basname, uhf=False):
+    """One scf_cphf.F90/scf_cphf_uhf.F90 case: rebuild the IDENTICAL
+    molecule and basis (bse_json_basis, mol.cart=True) and converge
+    pyscf's own RHF/UHF tightly, then commit its SCF energy and its
+    static dipole polarizability tensor (pyscf.prop.polarizability.rhf/
+    uhf, the cphf.solve/ucphf.solve pyscf 2.14 ships under it).
+
+    NO ao_norm_from_overlap HERE, unlike every AO-matrix comparison else-
+    where in this file: a converged SCF energy and a static polarizability
+    tensor are both basis-independent molecular properties (a scalar, and
+    a 3x3 tensor in real xyz, not an AO-indexed matrix), so there is
+    nothing to permute or rescale -- terco and pyscf only need to agree
+    that they solved the SAME physical problem, which `nao`/`na`/`nb`
+    sanity-checked below already confirms.
+
+    UHF (OH) ALSO WRITES alpha's EIGENVALUES, ascending, and commits those
+    as the comparison target instead of the raw tensor -- OH's unpaired
+    electron sits in the (degenerate, in exact symmetry) pi* pair, and an
+    independent UHF solve breaks that degeneracy along whichever real
+    combination its own iteration happened to find, not necessarily the
+    same one terco's independent solve found. Measured: the two energies
+    agreed to 1e-11 and alpha's trace/zz agreed to ~1e-6, but the raw
+    xx/yy/xy split differed by up to 0.17 a.u. -- a rotation within the
+    degenerate plane, not a wrong answer. See scf_cphf_uhf.F90's own
+    header for the same point from the Fortran side."""
+    r = BinReader(TEST / probe_relname)
+    if uhf:
+        n, natm, na, nb = (r.i8() for _ in range(4))
+    else:
+        n, natm, no = (r.i8() for _ in range(3))
+        na = nb = no
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    alpha_terco = r.f8(9).reshape(3, 3, order='F')
+    eig_terco = r.f8(3) if uhf else None
+    r.close()
+    if mol_tag != molname or bas_tag != basname:
+        raise RuntimeError(f"gen_cphf {probe_relname}: probe tag mismatch "
+                            f"({mol_tag}/{bas_tag} vs {molname}/{basname})")
+
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_cphf {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - (na + nb)
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=na - nb, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_cphf {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+    label = f"cphf {molname}/{basname} ({'uhf' if uhf else 'rhf'})"
+    if uhf:
+        mf, grad_norm = converge_tight(lambda: scf.UHF(mol), None, label)
+        from pyscf.prop.polarizability.uhf import Polarizability
+    else:
+        mf, grad_norm = converge_tight(lambda: scf.RHF(mol), None, label)
+        from pyscf.prop.polarizability.rhf import Polarizability
+    alpha_p = Polarizability(mf).polarizability()
+
+    w = RefWriter(ref_relname)
+    w.header(label, [ROOT / "test" / ("scf_cphf_uhf.F90" if uhf else "scf_cphf.F90"),
+                     TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w.real("E_SCF", mf.e_tot)
+    w.matrix("ALPHA", alpha_p)
+    if uhf:
+        eig_p = np.linalg.eigvalsh(alpha_p)  # ascending, same convention as LAPACK dsyev
+        w.vector("ALPHA_EIG", eig_p)
+    w.real("CONV_TOL", mf.conv_tol)
+    w.real("CONV_TOL_GRAD", mf.conv_tol_grad)
+    w.real("GRAD_NORM", grad_norm)
+    w.end()
+    w.write()
+    if uhf:
+        dmax = float(np.abs(eig_terco - eig_p).max())
+        print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  "
+              f"|dE| {abs(e_terco - mf.e_tot):.2e}  |g| {grad_norm:.2e}  |d(alpha eig)|max {dmax:.2e}")
+        print(f"    alpha eig (terco) {eig_terco}  alpha eig (pyscf) {eig_p}")
+        print(f"    raw tensor |diff|max {float(np.abs(alpha_terco - alpha_p).max()):.2e} "
+              f"(expected to be large -- see this function's own docstring)")
+    else:
+        dmax = float(np.abs(alpha_terco - alpha_p).max())
+        print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  "
+              f"|dE| {abs(e_terco - mf.e_tot):.2e}  |g| {grad_norm:.2e}  |d(alpha)|max {dmax:.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_cphf():
+    """scf_cphf.F90's RHF static polarizability, water and formamide in
+    6-31G* and cc-pVDZ, against pyscf.prop.polarizability.rhf."""
+    cases = [
+        ("water.xyz", "water", "6-31gs", "cphf_probe.bin"),
+        ("water.xyz", "water", "cc-pvdz", "cphf_ccpvdz_probe.bin"),
+        ("formamide.xyz", "formamide", "6-31gs", "cphf_formamide_probe.bin"),
+        ("formamide.xyz", "formamide", "cc-pvdz", "cphf_formamide_ccpvdz_probe.bin"),
+    ]
+    for xyzname, molname, basname, probe in cases:
+        run_bin("scf_cphf", [xyzname, f"basis_sets/{basname}.json", molname, basname, probe])
+        _gen_cphf_one(probe, f"cphf_{molname}_{basname}.ref", xyzname, molname, basname)
+
+
+def gen_cphf_uhf():
+    """scf_cphf_uhf.F90's UHF static polarizability, the OH radical in
+    6-31G*, against pyscf.prop.polarizability.uhf."""
+    run_bin("scf_cphf_uhf", ["oh.xyz", "basis_sets/6-31gs.json", "oh", "6-31gs", "cphf_uhf_probe.bin"])
+    _gen_cphf_one("cphf_uhf_probe.bin", "cphf_uhf_oh_6-31gs.ref", "oh.xyz", "oh", "6-31gs", uhf=True)
+
+
 def gen_rimp2_uhf():
     """trc_urimp2_run (unrestricted RI-MP2, src/post_hf/rimp2/
     trc_rimp2_driver.F90) on three open-shell radicals -- OH, triplet O2,
@@ -3116,6 +3224,8 @@ CASES = {
     "rks": gen_rks,
     "scf_robust": gen_scf_robust,
     "rimp2": gen_rimp2,
+    "cphf": gen_cphf,
+    "cphf_uhf": gen_cphf_uhf,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
     "dh": gen_dh,
