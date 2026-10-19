@@ -20,7 +20,8 @@
 ! arrays are struct components instead of plain locals.
 !
 module trc_scf_fock
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_api, only: trc_basis_t, trc_pairlist_t
@@ -194,8 +195,8 @@ contains
       !! step, separate from the semilocal `tx_pts`/`tx_prs` above --
       !! see NVTX_RANGES below for why this is a plain wall time rather
       !! than a `step_table_t%step_on`/`step_off` pair.
-      real(dp) :: e_nlc, tp1, tq1, tv0, tv1
-      integer(int64) :: cc, rate
+      real(dp) :: e_nlc, tp1, tq1
+      type(timer_type) :: tm_vv10
       integer :: s
       !
       ! NVTX_RANGES. Both the semilocal call and VV10's are bracketed here,
@@ -221,8 +222,7 @@ contains
       if (nlc) then
          call profiler_start("scf: vv10", nvtx_only=.true.)
          call lp%sync()
-         call system_clock(cc, rate)
-         tv0 = real(cc, dp)/real(rate, dp)
+         call tm_vv10%start()
          if (nspin == 1) then
             call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1), la=lp, comm=comm)
          else
@@ -230,10 +230,8 @@ contains
                               vxc_c(:, :, 1), vxc_c(:, :, 2), la=lp, comm=comm)
          end if
          call lp%sync()
-         call system_clock(cc, rate)
-         tv1 = real(cc, dp)/real(rate, dp)
          call profiler_stop("scf: vv10")
-         if (present(t_vv10)) t_vv10 = t_vv10 + (tv1 - tv0)
+         if (present(t_vv10)) t_vv10 = t_vv10 + tm_vv10%get_elapsed_time()
          exc = exc + e_nlc
       end if
       tx_pts = tx_pts + tp1

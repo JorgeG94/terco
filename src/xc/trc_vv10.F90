@@ -128,10 +128,10 @@ module trc_vv10
    real(dp), parameter :: PI43 = 4.0_dp*PI/3.0_dp
    integer, parameter :: VV10_NP_PAD = 128  !! tile rows padded to a multiple of this
    integer, parameter :: VV10_NL_PAD = 32   !! tile columns padded to a multiple of this
-   !! Same padding constants trc_xc.F90 uses for its batch tiles (XC_NP_PAD/
-   !! XC_NL_PAD) -- not shared by `use`, since they are two bare parameters
-   !! and duplicating them costs nothing a cross-module dependency would be
-   !! worth paying for.
+   ! Same padding constants trc_xc.F90 uses for its batch tiles (XC_NP_PAD/
+   ! XC_NL_PAD) -- not shared by `use`, since they are two bare parameters
+   ! and duplicating them costs nothing a cross-module dependency would be
+   ! worth paying for.
 
 contains
 
@@ -838,6 +838,7 @@ contains
          npp(ib) = ((npb + VV10_NP_PAD - 1)/VV10_NP_PAD)*VV10_NP_PAD
          nlp(ib) = ((nloc + VV10_NL_PAD - 1)/VV10_NL_PAD)*VV10_NL_PAD
       end do
+      !$acc data copyin(npp, nlp)
 
       b0 = 1
       do while (b0 <= nbatch)
@@ -907,6 +908,7 @@ contains
          deallocate (chi, gchi, zt, vloc, ord, pb_off, wk_off)
          b0 = b1 + 1
       end do
+      !$acc end data
       deallocate (npp, nlp, c_off, pr_off)
    end subroutine vv10_potential_tile
 
