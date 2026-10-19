@@ -1,0 +1,243 @@
+!
+! The two-electron part of the density-fitted (`--df`) RHF/RKS nuclear
+! gradient: fitted J and fitted K, both through the same auxiliary basis and
+! the same metric Cholesky factor the DF-SCF (trc_scf_df.F90) converged with.
+!
+! THE ENERGY. With M = (P|Q) = L L^T, t_P = sum_mn D_mn (mn|P) and, for the
+! occupied orbitals C (D = occ_s C C^T, occ_s = 2), h^{ij}_P = sum_mn C_mi
+! (mn|P) C_nj, the fitted two-electron energy terco converges is
+!
+!     E_2 = (j/2) t^T M^-1 t  -  (k/4) occ_s^2 sum_ij h^{ij} M^-1 h^{ij}
+!
+! (j = 1, k the exact-exchange fraction: 1 for HF, func%exx for a hybrid,
+! the same G = j J - (k/2) K split trc_scf_df's build uses).
+!
+! THE GRADIENT. Stationary in C (the SCF converged), so only the integrals
+! move. With c = M^-1 t and X^{ij} = M^-1 h^{ij} -- one triangular solve
+! each against the RETAINED L (df_jk_t%cholesky), since df_jk_t already
+! holds B = T L^-T, whose contractions are L^-1 t and L^-1 h:
+!
+!     dE_2/dR = sum_(mn P) Y^P_mn d(mn|P)/dR + sum_(P Q) Z_PQ d(P|Q)/dR
+!
+!     Y^P_mn = j c_P D_mn - (k/2) occ_s^2 [C X^P C^T]_mn
+!     Z_PQ   = -(j/2) c_P c_Q + (k/4) occ_s^2 sum_ij X^{ij}_P X^{ij}_Q
+!
+! Both coefficient tensors multiply derivatives taken with respect to the
+! nuclear centres (scripts/gen_df_grad.py computes d/dA and d/dB and sets dC
+! from translational invariance), so no sign convention of any integral
+! library enters: Y and Z go in exactly as written. Verified numerically
+! against finite differences before this was written (the K 2c term's sign
+! in particular, which a library's nabla-on-the-electron convention flips).
+!
+! THE ORDER OF WORK
+!   1. c: one GEMV on packed B (t' = B^T w D, the energy's own J step) and
+!      one triangular solve, L^T c = t'.
+!   2. K only (k /= 0; a pure functional skips 2-3 outright, not by
+!      scaling by zero): H(ij, P) = C^T B_P C one auxiliary block at a time
+!      (unpack, then one GEMM and one strided batch), then X = H L^-1, one
+!      triangular solve over every (ij) row at once.
+!   3. Z: an outer product plus, for K, one GEMM X^T X. Then the two-centre
+!      derivative kernels (trc_df_grad_kernels' df_grad_2c_driver).
+!   4. Y one auxiliary block at a time: the J part directly, the K part as
+!      one strided batch and one GEMM; the three-centre derivative kernels
+!      run on that block's own auxiliary subset (df_grad_3c_driver).
+!
+! DEVICE RESIDENCY. Every argument array (cmo, dens, grad) and both bases
+! and the pair list must already be device-resident, as must `dfjk`'s own
+! B and L (they are, from its setup). Everything else is this routine's own.
+!
+module trc_scf_grad_df
+   use pic_types, only: dp, int64
+   use trc_api, only: trc_basis_t, trc_pairlist_t
+   use trc_scf_df, only: df_jk_t
+   use trc_linalg, only: trc_linalg_t
+   use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, DFG_LMAX, DFG_LMAX_AUX
+#ifdef _OPENACC
+   use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
+                      acc_property_free_memory
+#endif
+   implicit none
+   private
+   public :: df_two_electron_gradient
+
+contains
+
+   subroutine df_two_electron_gradient(b, aux, pl, dfjk, lp, nocc, cmo, dens, j_scale, k_scale, grad)
+      !! grad += dE_2/dR for the density-fitted J (scaled by j_scale) and K
+      !! (scaled by k_scale), restricted, Cartesian -- see this module's
+      !! header. `cmo` the converged orbitals (their first `nocc` columns are
+      !! the occupied ones), `dens` the total density 2 C_occ C_occ^T,
+      !! `pl` the pair list the fit's (mu nu|P) was built over.
+      type(trc_basis_t),    intent(in)    :: b
+      type(trc_basis_t),    intent(in)    :: aux
+      type(trc_pairlist_t), intent(in)    :: pl
+      type(df_jk_t),        intent(in), target :: dfjk
+      type(trc_linalg_t),   intent(inout) :: lp
+      integer,              intent(in)    :: nocc
+      real(dp),             intent(in)    :: cmo(b%nao, b%nao)
+      real(dp),             intent(in)    :: dens(b%nao, b%nao)
+      real(dp),             intent(in)    :: j_scale, k_scale
+      real(dp),             intent(inout) :: grad(3, b%natm)
+
+      real(dp), pointer :: bpk(:, :), chol(:, :)
+      real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xh(:)
+      real(dp), allocatable :: tens(:, :, :), half(:, :, :)
+      type(trc_basis_t) :: blk
+      integer :: n, naux, npack, nocc2, ablk, s0, s1, p0, np, mu, nu, q, i, p
+      integer(int64) :: n8, o8, oo8
+      logical :: do_k
+      real(dp) :: occ_s
+
+      if (b%spherical) error stop "trc_scf_grad_df: the orbital basis is spherical; --df is Cartesian only"
+      if (.not. dfjk%is_ready()) error stop "trc_scf_grad_df: the density fit has not been set up"
+      if (maxval(b%sh_l) > DFG_LMAX .or. maxval(aux%sh_l) > DFG_LMAX_AUX) &
+         error stop "trc_scf_grad_df: a basis is above the DF derivative kernels' ceiling (gen_df_grad.py)"
+      call dfjk%dims(n, naux, npack)
+      if (n /= b%nao .or. naux /= aux%nao) error stop "trc_scf_grad_df: the fit does not match these bases"
+      if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
+      bpk => dfjk%packed_b()
+      chol => dfjk%cholesky()
+      occ_s = 2.0_dp
+      do_k = k_scale /= 0.0_dp .and. nocc > 0
+      nocc2 = nocc*nocc
+      n8 = int(n, int64)
+      o8 = int(max(nocc, 1), int64)
+      oo8 = o8*o8
+
+      ! --- 1. c = M^-1 t: the energy's own J gamma, then L^T c = gamma -----
+      allocate (dpk(npack), cq(naux), zmat(naux, naux))
+      !$acc enter data create(dpk, cq, zmat)
+      do concurrent(mu=1:n, nu=1:n, nu <= mu)
+         dpk(pack_idx(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*dens(mu, nu)
+      end do
+      call lp%gemv("T", npack, naux, 1.0_dp, bpk, npack, dpk, 0.0_dp, cq)
+      call lp%trsm("L", "L", "T", naux, 1, 1.0_dp, chol, naux, cq, naux)
+
+      ablk = choose_grad_block(n, naux, nocc)
+
+      ! --- 2. K only: H(ij, P) = C^T B_P C, then X = H L^-1 -----------------
+      if (do_k) then
+         allocate (cocc(n, nocc), xh(oo8*int(naux, int64)))
+         !$acc enter data create(cocc, xh)
+         do concurrent(mu=1:n, i=1:nocc)
+            cocc(mu, i) = cmo(mu, i)
+         end do
+         s0 = 1
+         do while (s0 <= aux%nshell)
+            call next_block(aux, s0, ablk, s1, p0, np)
+            allocate (tens(n, n, np), half(nocc, n, np))
+            !$acc enter data create(tens, half)
+            do concurrent(q=1:np, nu=1:n, mu=1:n)
+               tens(mu, nu, q) = bpk(pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
+            end do
+            call lp%gemm("T", "N", nocc, n*np, n, 1.0_dp, cocc, n, tens, n, 0.0_dp, half, nocc)
+            call lp%gemm_strided("N", "N", nocc, nocc, n, 1.0_dp, half, nocc, o8*n8, cocc, n, 0_int64, &
+                                 0.0_dp, xh(1 + int(p0 - 1, int64)*oo8), nocc, oo8, np)
+            !$acc exit data delete(tens, half)
+            deallocate (tens, half)
+            s0 = s1 + 1
+         end do
+         call lp%trsm("R", "L", "N", nocc2, naux, 1.0_dp, chol, naux, xh, nocc2)
+      end if
+
+      ! --- 3. Z, and the two-centre derivative ------------------------------
+      do concurrent(q=1:naux, p=1:naux)
+         zmat(p, q) = -0.5_dp*j_scale*cq(p)*cq(q)
+      end do
+      if (do_k) then
+         call lp%gemm("T", "N", naux, naux, nocc2, 0.25_dp*k_scale*occ_s*occ_s, xh, nocc2, xh, nocc2, &
+                      1.0_dp, zmat, naux)
+      end if
+      call df_grad_2c_driver(aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
+                             aux%sh_e, aux%sh_c, aux%sh_r, b%natm, zmat, grad)
+
+      ! --- 4. Y, one auxiliary block at a time, and the three-centre one ----
+      s0 = 1
+      do while (s0 <= aux%nshell)
+         call next_block(aux, s0, ablk, s1, p0, np)
+         call aux%subset(s0, s1, blk)
+         call blk%to_device()
+         allocate (tens(n, n, np))
+         !$acc enter data create(tens)
+         do concurrent(q=1:np, nu=1:n, mu=1:n)
+            tens(mu, nu, q) = j_scale*cq(p0 - 1 + q)*dens(mu, nu)
+         end do
+         if (do_k) then
+            allocate (half(nocc, n, np))
+            !$acc enter data create(half)
+            ! half_q = X^q C^T (nocc x n), then Y += -(k/2) occ_s^2 C half,
+            ! every q of the block in one GEMM.
+            call lp%gemm_strided("N", "T", nocc, n, nocc, 1.0_dp, xh(1 + int(p0 - 1, int64)*oo8), nocc, oo8, &
+                                 cocc, n, 0_int64, 0.0_dp, half, nocc, o8*n8, np)
+            call lp%gemm("N", "N", n, n*np, nocc, -0.5_dp*k_scale*occ_s*occ_s, cocc, n, half, nocc, &
+                         1.0_dp, tens, n)
+            !$acc exit data delete(half)
+            deallocate (half)
+         end if
+         call df_grad_3c_driver(b%nshell, n, b%maxnp, b%sh_l, b%sh_np, b%sh_ao, b%sh_at, &
+                                b%sh_e, b%sh_c, b%sh_r, pl%npair, pl%p_i, pl%p_j, &
+                                blk%nshell, blk%nao, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, blk%sh_at, &
+                                blk%sh_e, blk%sh_c, blk%sh_r, b%natm, tens, grad)
+         !$acc exit data delete(tens)
+         deallocate (tens)
+         call blk%release()
+         s0 = s1 + 1
+      end do
+
+      if (do_k) then
+         !$acc exit data delete(cocc, xh)
+         deallocate (cocc, xh)
+      end if
+      !$acc exit data delete(dpk, cq, zmat)
+      deallocate (dpk, cq, zmat)
+   end subroutine df_two_electron_gradient
+
+   subroutine next_block(aux, s0, ablk, s1, p0, np)
+      !! The run of whole auxiliary shells starting at s0 whose functions fit
+      !! in `ablk` (at least one shell): last shell s1, first function p0,
+      !! function count np. Same rule as trc_scf_df's setup blocks.
+      type(trc_basis_t), intent(in) :: aux
+      integer, intent(in) :: s0, ablk
+      integer, intent(out) :: s1, p0, np
+      integer :: ish
+      s1 = s0
+      do ish = s0 + 1, aux%nshell
+         if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > ablk) exit
+         s1 = ish
+      end do
+      p0 = aux%sh_ao(s0)
+      np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
+   end subroutine next_block
+
+   integer function choose_grad_block(n, naux, nocc) result(ablk)
+      !! Auxiliary functions per block: up to naux/4, fewer when the device's
+      !! free memory (half a gigabyte kept back) would not hold the block's
+      !! dense (n, n, ablk) tensor and its (nocc, n, ablk) half-transform --
+      !! the same rule as trc_scf_df's choose_setup_block.
+      integer, intent(in) :: n, naux, nocc
+#ifdef _OPENACC
+      integer(int64) :: free, per_q, fixed
+      free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                  acc_property_free_memory), int64)
+      per_q = 8_int64*int(n, int64)*(int(n, int64) + int(max(nocc, 1), int64))
+      fixed = 512_int64*1024*1024
+      ablk = int(min(int(max(naux/4, 1), int64), max(1_int64, (free - fixed)/max(per_q, 1_int64))))
+#else
+      ablk = max(naux/4, 1)
+#endif
+      ablk = max(1, min(ablk, naux))
+   end function choose_grad_block
+
+   pure integer function ncart(l) result(res)
+      integer, intent(in) :: l
+      res = (l + 1)*(l + 2)/2
+   end function ncart
+
+   pure integer function pack_idx(mu, nu) result(p)
+      !! trc_scf_df's packed index, mu >= nu: mu(mu-1)/2 + nu.
+      !$acc routine seq
+      integer, intent(in) :: mu, nu
+      p = mu*(mu - 1)/2 + nu
+   end function pack_idx
+
+end module trc_scf_grad_df

@@ -1383,6 +1383,83 @@ def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
     dump.unlink()
 
 
+def gen_df_grad(case, xyz, json_rel, functional, grid_level=3):
+    """check_df_grad_vs_pyscf.F90's cases: the FULL density-fitted RHF/RKS
+    gradient against pyscf's own df.grad (auxbasis def2-universal-jkfit,
+    mol.cart=True, auxiliary-basis response on, pyscf's default) at
+    TERCO'S OWN converged orbitals and, for a functional, TERCO'S OWN grid
+    -- gen_dft_grad's recipe, with `density_fit` on the mf. Grid response
+    off on both sides (pyscf's default, and the Fortran side passes
+    grid_response=.false.)."""
+    PYSCF = {'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP'}
+    aux_rel = "basis_sets/def2-universal-jkfit.json"
+    dump = TEST / f"dfg_{case}_probe.bin"
+    run_bin(f"check_df_grad_vs_pyscf_{case}", [xyz, json_rel, aux_rel, functional, grid_level, dump.name, case,
+                                                1.0])
+    if not dump.exists():
+        print(f"  dfg {case}: binary self-skipped; not regenerating")
+        return
+    r = BinReader(dump)
+    nat, nao, nocc = r.i8(), r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    npts = r.i8()
+    if npts > 0:
+        pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+        wts = r.f8(npts)
+    cmo = r.mat(nao)
+    eps = r.f8(nao)
+    grad_terco = r.f8(3 * nat).reshape(3, nat, order='F').T
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    aux_arg = bse_json_basis(TEST / aux_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_df_grad {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    n, s_err = ao_norm_from_overlap(s_terco[np.ix_(inv_perm, inv_perm)], mol.intor('int1e_ovlp'))
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_df_grad {case}: overlap check failed, {s_err:.3e}")
+    occ = np.zeros(nao)
+    occ[:nocc] = 2.0
+    if functional == 'hf':
+        mf = scf.RHF(mol).density_fit(auxbasis=aux_arg)
+    else:
+        mf = dft.RKS(mol)
+        mf.xc = PYSCF[functional]
+        mf.grids.coords = np.ascontiguousarray(pts)
+        mf.grids.weights = wts
+        mf.grids.non0tab = None
+        mf = mf.density_fit(auxbasis=aux_arg)
+    mf.mo_coeff = n[:, None] * cmo[inv_perm, :]
+    mf.mo_occ = occ
+    mf.mo_energy = eps
+    mf.converged = True
+    mf.e_tot = mf.energy_tot(mf.make_rdm1())
+    g = mf.nuc_grad_method()
+    if functional != 'hf':
+        g.grid_response = False
+    grad_py = g.kernel()
+
+    w = RefWriter(f"dfg_{case}.ref")
+    w.header("check_df_grad_vs_pyscf_" + case,
+             [ROOT / "test" / "check_df_grad_vs_pyscf.F90", TEST / json_rel, TEST / aux_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("GRAD", grad_py.T)
+    w.end()
+    w.write()
+    worst = np.abs(grad_terco - grad_py).max()
+    print(f"  dfg {case}: worst|terco-pyscf| {worst:.3e}, max|g| {np.abs(grad_py).max():.2e} "
+          f"(at generation time)")
+    dump.unlink()
+
+
 def gen_full_grad():
     """check_full_grad_vs_pyscf.F90's three cases: the FULL analytic
     RHF/UHF gradient (trc_scf_grad%trc_scf_gradient -- one-electron,
@@ -2693,7 +2770,17 @@ CASES = {
         "water_631gs", "water.xyz", "basis_sets/6-31gs.json", "basis_sets/def2-universal-jkfit.json"),
     "dfg_ints_water_ccpvdz": lambda: gen_df_grad_ints(
         "water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "basis_sets/def2-universal-jkfit.json"),
+    "dfg_ints_formamide_ccpvdz": lambda: gen_df_grad_ints(
+        "formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "basis_sets/def2-universal-jkfit.json"),
     "full_grad": gen_full_grad,
+    "dfg_water_hf_631gs": lambda: gen_df_grad("water_hf_631gs", "water.xyz", "basis_sets/6-31gs.json", "hf"),
+    "dfg_formamide_hf_ccpvdz": lambda: gen_df_grad(
+        "formamide_hf_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "hf"),
+    "dfg_water_pbe_631gs": lambda: gen_df_grad("water_pbe_631gs", "water.xyz", "basis_sets/6-31gs.json", "pbe"),
+    "dfg_water_b3lyp_631gs": lambda: gen_df_grad(
+        "water_b3lyp_631gs", "water.xyz", "basis_sets/6-31gs.json", "b3lyp"),
+    "dfg_formamide_b3lyp_ccpvdz": lambda: gen_df_grad(
+        "formamide_b3lyp_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
     "rks": gen_rks,
     "scf_robust": gen_scf_robust,
     "rimp2": gen_rimp2,

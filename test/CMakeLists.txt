@@ -719,15 +719,16 @@ set_tests_properties(terco/check_df_vs_pyscf
 # header. def2-universal-jkfit carries g auxiliary shells, so this covers the
 # shipped DFG_LMAX_AUX = 4 ceiling.
 #
-foreach(case IN ITEMS water_631gs water_ccpvdz)
-  if(case STREQUAL "water_631gs")
+foreach(case IN ITEMS water_631gs water_ccpvdz formamide_ccpvdz)
+  string(REGEX MATCH "^[a-z]+" _mol "${case}")
+  if(case MATCHES "631gs$")
     set(_bas basis_sets/6-31gs.json)
   else()
     set(_bas basis_sets/cc-pvdz.json)
   endif()
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/dfg_ints_${case}_probe.bin)
   terco_add_check(check_df_grad_ints_${case} check_df_grad_ints.F90
-                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS water.xyz ${_bas}
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${_mol}.xyz ${_bas}
                   basis_sets/def2-universal-jkfit.json ${dump} ${case})
   set_tests_properties(terco/check_df_grad_ints_${case}
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
@@ -735,6 +736,40 @@ foreach(case IN ITEMS water_631gs water_ccpvdz)
   # helper module would otherwise race into one shared directory.
   set_target_properties(check_df_grad_ints_${case} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_df_grad_ints_${case})
+endforeach()
+
+# The --df analytic gradient (fitted J and K, trc_scf_grad_df.F90) against a
+# Richardson central finite difference of terco's own reconverged --df energy
+# -- RHF, RKS PBE, RKS B3LYP on water/6-31G*, see check_df_grad_fd.F90.
+terco_add_check(check_df_grad_fd check_df_grad_fd.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_df_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The full --df gradient against pyscf's own df.grad.rhf/rks at terco's
+# converged orbitals (and grid), def2-universal-jkfit, Cartesian --
+# test/pyscf_refs/dfg_<case>.ref, see check_df_grad_vs_pyscf.F90.
+foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b3lyp_631gs
+                      formamide_b3lyp_ccpvdz)
+  string(REGEX MATCH "^[a-z]+" _mol "${case}")
+  string(REGEX MATCH "_(hf|pbe|b3lyp)_" _fn "${case}")
+  string(REPLACE "_" "" _fn "${_fn}")
+  if(case MATCHES "631gs$")
+    set(_bas basis_sets/6-31gs.json)
+  else()
+    set(_bas basis_sets/cc-pvdz.json)
+  endif()
+  # The formamide gate is the fit's conditioning floor, see the program's
+  # `tol` comment; water's is the gradient's own.
+  if(_mol STREQUAL "formamide")
+    set(_tol 5e-9)
+  else()
+    set(_tol 1e-10)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/dfg_${case}_probe.bin)
+  terco_add_check(check_df_grad_vs_pyscf_${case} check_df_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${_mol}.xyz ${_bas}
+                  basis_sets/def2-universal-jkfit.json ${_fn} 3 ${dump} ${case} ${_tol})
+  set_tests_properties(terco/check_df_grad_vs_pyscf_${case}
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
 
 #
