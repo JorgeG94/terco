@@ -764,8 +764,9 @@ foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b
   else()
     set(_bas basis_sets/cc-pvdz.json)
   endif()
-  # The formamide gate is the fit's conditioning floor, see the program's
-  # `tol` comment; water's is the gradient's own.
+  # The formamide gate is the fit's conditioning floor (measured: the gap is
+  # the (P|Q) values through cond(M) = 8.6e13), see the program's `tol`
+  # comment; water's is the gradient's own.
   if(_mol STREQUAL "formamide")
     set(_tol 5e-9)
   else()

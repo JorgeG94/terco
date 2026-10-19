@@ -35,13 +35,27 @@ program check_df_grad_vs_pyscf
    real(dp), parameter :: THRESH = 1.0e-12_dp
    real(dp) :: tol
    !! Per case, from test/CMakeLists.txt (the 8th argument): 1e-10 on
-   !! water, 5e-9 on formamide. The formamide floor is the FIT's
-   !! conditioning, not the gradient: def2-universal-jkfit's Cartesian
-   !! metric on formamide has cond(M) = 1.6e14, and a 1e-14 relative
-   !! perturbation of pyscf's OWN (mu nu|P) and (P|Q) moves pyscf's own
-   !! fitted gradient by 4e-10 (measured), which is the level terco's
-   !! integrals and libcint's differ at. terco's derivative integrals agree
-   !! with pyscf's to 2e-13 on the same molecule (check_df_grad_ints).
+   !! water, 5e-9 on formamide. The formamide gap (9.4e-10 RHF, 6.2e-10
+   !! B3LYP) is the (P|Q) VALUES through an ill-conditioned fit, PROVEN, not
+   !! assumed. With terco's converged orbitals fixed, the fitted gradient
+   !! was re-evaluated in numpy from each code's raw tensors (terco's own
+   !! (mn|P), (P|Q), d(mn|P)/dA, d(P|Q)/dA dumped from the same kernels this
+   !! program runs), formamide/cc-pVDZ, Cartesian def2-universal-jkfit,
+   !! cond(M) = 8.6e13:
+   !!   - raw tensors, terco vs pyscf, max |diff| / max |element|: (mn|P)
+   !!     5.2e-14, (P|Q) 2.8e-14, d(mn|P)/dA 2.5e-14, d(P|Q)/dA 5.6e-14;
+   !!   - numpy with terco's tensors reproduces terco's gradient to 4.1e-12,
+   !!     with pyscf's reproduces pyscf's df.grad to 4.3e-12 (so neither
+   !!     contraction is off), and the two differ by 9.5e-10, the gap;
+   !!   - terco's tensors with ONLY pyscf's (P|Q) values swapped in land
+   !!     4.3e-11 from pyscf's gradient (9.1e-10 from terco's), and both
+   !!     derivative tensors swapped together move it only 3.3e-11.
+   !! So a 3e-12 (2.8e-14 relative) difference in the metric, amplified by
+   !! cond(M), is the whole gap. Water (cond 4.6e11) agrees to 1.6e-13.
+   !! Revisit once spherical auxiliary functions land (PR #82): the
+   !! Cartesian auxiliary set's non-spherical contaminants likely drive
+   !! cond(M), and with them gone the formamide gate should tighten to
+   !! water's.
    character(len=256) :: xyzfile, basis_json, aux_json, functional, dump, case_name, glevel_str, tol_str
    integer :: nat, nao, nalpha, nbeta, grid_level, unit, dev, npts
    integer, allocatable :: at_z(:)
