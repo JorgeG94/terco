@@ -41,6 +41,7 @@ module trc_step_table
       procedure :: init => step_table_init
       procedure :: step_on => step_table_on
       procedure :: step_off => step_table_off
+      procedure :: add_time => step_table_add_time
       procedure :: add_flop => step_table_add_flop
       procedure :: add_bytes => step_table_add_bytes
       procedure :: report => step_table_report
@@ -132,6 +133,21 @@ contains
       this%t(k) = this%t(k) + (tick(lp) - tc)
       call profiler_stop(this%prefix//": "//trim(this%names(k)))
    end subroutine step_table_off
+
+   !
+   ! Add a time already measured elsewhere -- a caller that cannot bracket
+   ! its own kernel with `step_on`/`step_off` (it only gets a finished
+   ! elapsed time back, the way `trc_xc_rks`'s `t_points`/`t_pairs` or
+   ! `trc_scf_context`'s grid-build timer already do) still gets its total
+   ! into this table's `report`. No NVTX range: one cannot be drawn around
+   ! work that has already finished by the time this is called.
+   !
+   subroutine step_table_add_time(this, k, t)
+      class(step_table_t), intent(inout) :: this
+      integer, intent(in) :: k
+      real(dp), intent(in) :: t
+      this%t(k) = this%t(k) + t
+   end subroutine step_table_add_time
 
    subroutine step_table_add_flop(this, k, n)
       class(step_table_t), intent(inout) :: this

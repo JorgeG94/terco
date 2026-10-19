@@ -21,7 +21,9 @@
 !
 module trc_scf_fock
    use pic_types, only: dp
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t
+   use pic_profiler, only: profiler_start, profiler_stop
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_eri, only: trc_eri_t
@@ -175,7 +177,7 @@ contains
    ! here -- no 1 x 1 sizing dummy needed, unlike `build_g`'s arrays.
    !
    subroutine build_vxc(b, xg, xg_nlc, func, nlc, nspin, nao_c, nao, sph, rho_tol, comm, lp, &
-                        d_c, vxc_c, vxc, exc, ngrid, tx_pts, tx_prs)
+                        d_c, vxc_c, vxc, exc, ngrid, tx_pts, tx_prs, t_vv10)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(inout) :: xg, xg_nlc
       type(trc_xc_functional_t), intent(in) :: func
@@ -187,8 +189,37 @@ contains
       real(dp), intent(in) :: d_c(nao_c, nao_c, nspin)
       real(dp), intent(inout) :: vxc_c(nao_c, nao_c, nspin), vxc(nao, nao, nspin)
       real(dp), intent(inout) :: exc, ngrid, tx_pts, tx_prs
+      real(dp), intent(inout), optional :: t_vv10
+      !! VV10's own elapsed time, added in (not overwritten): the DFT
+      !! step table (`trc_scf_state`'s `xcst`) reports it as its own
+      !! step, separate from the semilocal `tx_pts`/`tx_prs` above --
+      !! see NVTX_RANGES below for why this is a plain wall time rather
+      !! than a `step_table_t%step_on`/`step_off` pair.
       real(dp) :: e_nlc, tp1, tq1
+      type(timer_type) :: tm_vv10
       integer :: s
+      !
+      ! NVTX_RANGES. Both the semilocal call and VV10's are bracketed here,
+      ! at the one call site that has both the functional's `nlc` flag and
+      ! `lp`. This file does not own a `step_table_t` -- `trc_scf_state`'s
+      ! `xcst` does -- so these ranges are drawn with `pic_profiler`
+      ! directly, the same two calls `step_table_t%step_on`/`step_off` make
+      ! internally.
+      !
+      ! Both branches call `lp%sync()` before their own `profiler_stop`:
+      ! without it, an async device launch left over from `trc_xc_rks`/
+      ! `trc_xc_uks` could still be running when the "scf: xc" NVTX range
+      ! closes, so a profiler would show it finishing inside "scf: vv10"
+      ! instead -- the xc row undercounting, the vv10 row overcounting. The
+      ! sync measured free here: `trc_xc_rks`/`trc_xc_uks` already force a
+      ! device-to-host transfer of `exc`/`nelec` (`xc_drive`'s own `!$acc
+      ! update self(eg, ng)`/`update self(vxc)`) before returning, so the
+      ! device is already idle by the time `lp%sync()` runs. VV10's own
+      ! sync (`tm_vv10`, a plain wall time handed back through `t_vv10` for
+      ! `xcst` to accumulate, rather than a `step_table_t` tick) stays for
+      ! the same reason.
+      !
+      call profiler_start("scf: xc", nvtx_only=.true.)
       if (nspin == 1) then
          call trc_xc_rks(b, xg, func, d_c(:, :, 1), vxc_c(:, :, 1), exc, ngrid, rho_tol=rho_tol, &
                          comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
@@ -196,15 +227,23 @@ contains
          call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=rho_tol, &
                          comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
       end if
+      call lp%sync()
+      call profiler_stop("scf: xc")
       ! VV10 adds its energy to exc and its potential into vxc_c, on its own
       ! (coarser) grid, before the spherical transform below.
       if (nlc) then
+         call profiler_start("scf: vv10", nvtx_only=.true.)
+         call lp%sync()
+         call tm_vv10%start()
          if (nspin == 1) then
-            call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1))
+            call trc_vv10_rks(b, xg_nlc, d_c(:, :, 1), func%nlc_b, func%nlc_c, e_nlc, vxc_c(:, :, 1), la=lp)
          else
             call trc_vv10_uks(b, xg_nlc, d_c(:, :, 1), d_c(:, :, 2), func%nlc_b, func%nlc_c, e_nlc, &
-                              vxc_c(:, :, 1), vxc_c(:, :, 2))
+                              vxc_c(:, :, 1), vxc_c(:, :, 2), la=lp)
          end if
+         call lp%sync()
+         call profiler_stop("scf: vv10")
+         if (present(t_vv10)) t_vv10 = t_vv10 + tm_vv10%get_elapsed_time()
          exc = exc + e_nlc
       end if
       tx_pts = tx_pts + tp1

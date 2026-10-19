@@ -244,6 +244,15 @@ contains
             res%grid_r_nlc = ctx%grid_nlc%coords
             res%grid_w_nlc = ctx%grid_nlc%weights
          end if
+         ! The DFT pipeline's own step table (grid build, semilocal XC,
+         ! VV10), reported alongside the existing fock(s)/xc(s) columns
+         ! below rather than instead of them: `report`'s per-step rate
+         ! columns are new here (grid build has no flop count to show
+         ! them against), but the three totals are not new numbers, only
+         ! a second, uniform place they land -- see trc_scf_state's own
+         ! header on `xcst`.
+         call tmr%xcst%init("scf", [character(len=8) :: "grid", "xc", "vv10"])
+         call tmr%xcst%add_time(1, ctx%t_grid)
       end if
 
       ! ONLY WHAT THIS RUN USES IS FULL SIZE (trc_scf_state%alloc owns the
@@ -364,7 +373,7 @@ contains
          ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (cfg%dft) then
             call build_vxc(b, ctx%xg, ctx%xg_nlc, cfg%func, cfg%nlc, cfg%nspin, nao_c, nao, sph, opts%rho_tol, comm, lp, &
-                           st%d_c, st%vxc_c, st%vxc, exc, ngrid, tmr%tx_pts, tmr%tx_prs)
+                           st%d_c, st%vxc_c, st%vxc, exc, ngrid, tmr%tx_pts, tmr%tx_prs, t_vv10=tmr%t_vv10)
          end if
          tmr%tx_it = tmr%xc%get_elapsed_time()
          tmr%t_xc = tmr%t_xc + tmr%tx_it
@@ -504,8 +513,24 @@ contains
       res%e_pcm = epcm
       res%pcm_qtotal = ctx%pcm%q_total
       if (.not. res%converged) res%message = "trc_scf: not converged"
+      if (cfg%dft) then
+         ! The run's own totals, not a second measurement: grid build was
+         ! added in right after ctx%setup, above; xc/vv10 are build_vxc's
+         ! running sums, read once here rather than per iteration, since
+         ! `add_time` has no way to know "only the increment since last
+         ! time" and the totals are already exactly what is wanted.
+         call tmr%xcst%add_time(2, tmr%tx_pts + tmr%tx_prs)
+         call tmr%xcst%add_time(3, tmr%t_vv10)
+      end if
       if (cfg%talk) then
          call report_timing()
+         if (cfg%dft) then
+            if (present(comm)) then
+               call tmr%xcst%report(ctx%t_grid + tmr%t_xc, comm%rank(), comm%size())
+            else
+               call tmr%xcst%report(ctx%t_grid + tmr%t_xc, 0, 1)
+            end if
+         end if
          if (cfg%pcm_on) print "(a,f20.12,a,f10.6,a,f10.3,a,f10.4,a)", "   pcm: E_diel = ", epcm, &
             "  q_total = ", ctx%pcm%q_total, "  setup ", ctx%t_pcm_setup, " s, ", &
             tmr%t_pcm/real(max(1, res%iterations), dp), " s per iteration"

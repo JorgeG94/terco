@@ -14,6 +14,7 @@
 module trc_scf_state
    use pic_types, only: dp
    use pic_timer, only: timer_type
+   use trc_step_table, only: step_table_t
    use trc_scf_context, only: scf_ctx_t
    use trc_scf_settings, only: scf_settings_t, trc_scf_result_t
    implicit none
@@ -35,6 +36,19 @@ module trc_scf_state
       real(dp) :: t_pcm = 0.0_dp
       real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp
       real(dp) :: tx_pts = 0.0_dp, tx_prs = 0.0_dp
+      real(dp) :: t_vv10 = 0.0_dp
+      !! Running total of the VV10 calls `build_vxc` wraps in their own
+      !! NVTX range -- see `xcst` below, and `trc_scf_fock`'s own header
+      !! on why VV10's time is not folded into `t_xc`/`tx_pts`/`tx_prs`
+      !! the way the semilocal functional's points/pairs split is.
+      type(step_table_t) :: xcst
+      !! The DFT pipeline's steps (grid build, semilocal XC, VV10) in the
+      !! same shared table RI-MP2/DF-JK report through -- NVTX ranges on
+      !! the two steps whose own call sites can bracket them
+      !! (`build_vxc`'s xc_rks/uks and vv10_rks/uks calls); grid build's
+      !! total is added in after the fact (`add_time`, no range) since
+      !! its own timer lives inside `trc_scf_context` and threading a
+      !! second timing mechanism through that file was not worth it here.
    end type scf_timers_t
 
    type :: scf_state_t
