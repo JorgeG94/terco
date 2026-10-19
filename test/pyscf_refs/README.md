@@ -261,6 +261,7 @@ to 1.5e-12, so they hold the general tolerance.
 | `xc_energy_ref.py` | `xc_energy.ref` | `check_xc_energy.F90` |
 | `vv10_ref.py` | `vv10.ref` | `check_vv10_vs_pyscf.F90` |
 | `rys_grad_ref.py` | `rys_grad_631gs.ref`, `rys_grad_ccpvdz.ref` | `check_rys_grad_vs_pyscf.F90` |
+| (new, 1e gradient) | `onee_grad_water_631gs.ref`, `onee_grad_water_ccpvdz.ref`, `onee_grad_formamide_ccpvdz.ref` | `check_1e_grad_vs_pyscf.F90` |
 | `rys_fock_ref.py` | `rys_fock_water_ccpvdz.ref`, `rys_fock_water_ccpvtz.ref`, `rys_fock_formamide_def2tzvp.ref` | `check_rys_fock_vs_pyscf.F90` |
 | `erf_fock_ref.py` | `erf_fock_water_631gs.ref`, `erf_fock_water_ccpvdz.ref`, `erf_fock_formamide_ccpvdz.ref` (shared by the hgp/nosym/rys kernel-path binaries) | `check_erf_fock_vs_pyscf.F90` |
 | `df_vs_pyscf_ref.py` | `df_vs_pyscf.ref` (local-only, see above) | `check_df_vs_pyscf.F90` |

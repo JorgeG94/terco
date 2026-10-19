@@ -138,6 +138,14 @@ terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
+# The same check with every bin split into chunks of at most 3 pairs
+# (TRC_BIN_CAP; trc_bins.F90's split_large_bins). A real system only splits
+# past 32768 pairs in a bin, around 14,000 basis functions; this is that
+# path at a size CI can run, against the same oracle and tolerance.
+add_test(NAME terco/check_binfock_split COMMAND check_binfock)
+set_tests_properties(terco/check_binfock_split PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=3")
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
@@ -249,6 +257,38 @@ set_tests_properties(
   terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 
+# The FULL analytic gradient (eri%gradient + trc_1e_gradient + nuclear
+# repulsion) against finite differences of terco's own fully reconverged
+# SCF energy -- RHF water, UHF OH -- see check_full_grad_fd.F90's header.
+terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
+
+# The same full analytic gradient, on SPHERICAL cc-pVDZ bases (water/RHF,
+# formamide/RHF, OH/UHF), against pyscf's own Gradients class at a
+# converged density -- the one check that exercises trc_scf_gradient's own
+# spherical fold (see check_full_grad_vs_pyscf.F90's own header).
+terco_add_check(check_full_grad_vs_pyscf check_full_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+# The CLI's --grad against a direct trc_run_gradient/trc_gradient call on
+# the same molecule/basis/guess -- see check_cli_grad.F90's own header.
+# Needs the terco_cli executable itself (app/CMakeLists.txt, added AFTER
+# this directory by the root CMakeLists.txt, but still within the same
+# configure run -- $<TARGET_FILE:...> is a generator expression, resolved
+# at generate time, so the forward reference is fine); TERCO_BUILD_APP is
+# a separate switch from TERCO_ENABLE_TESTING, so this is guarded on it
+# rather than assumed.
+if(TERCO_BUILD_APP)
+  set(_cli_grad_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_probe.json)
+  terco_add_check(check_cli_grad check_cli_grad.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_probe})
+  # `add_dependencies(check_cli_grad terco_cli)` belongs in
+  # app/CMakeLists.txt, not here: that target does not exist yet in THIS
+  # directory's own configure pass (app/ is added after test/ by the root
+  # CMakeLists.txt), only by generate time -- which is exactly why the
+  # ARGS above is a generator expression and the explicit build-order
+  # dependency is not.
+  unset(_cli_grad_probe)
+endif()
+
 #
 # Cartesian multipoles through the octupole, against a reference
 # test/pyscf_refs/generate.py recorded from pyscf. No pyscf in CI, ever --
@@ -309,6 +349,26 @@ foreach(b 631gs ccpvdz)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
   terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
+endforeach()
+
+# trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
+# int1e_ipnuc(+Hellmann-Feynman) contractions, each term separated (see
+# check_1e_grad_vs_pyscf.F90's own header), at a fixed non-SCF density --
+# water/6-31G*, water/cc-pVDZ, formamide/cc-pVDZ.
+foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+  if(case STREQUAL "water_631gs")
+    set(xyz water.xyz)
+    set(json basis_sets/6-31gs.json)
+  elseif(case STREQUAL "water_ccpvdz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+  else()
+    set(xyz formamide.xyz)
+    set(json basis_sets/cc-pvdz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/onee_grad_probe_${case}.bin)
+  terco_add_check(check_1e_grad_vs_pyscf_${case} check_1e_grad_vs_pyscf.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${case})
 endforeach()
 
 #
@@ -620,6 +680,49 @@ set_tests_properties(
   terco/scf_rimp2_ccpvdz PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# UNRESTRICTED RI-MP2 (trc_urimp2_run): OH, triplet O2, NH2 in 6-31G* and
+# cc-pVDZ with cc-pVDZ-RIFIT against pyscf's own UHF + DF-UMP2, plus a
+# closed-shell-as-UHF self-check against the restricted path.
+add_executable(scf_rimp2_uhf scf_rimp2_uhf.F90)
+target_compile_definitions(scf_rimp2_uhf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_rimp2_uhf PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_rimp2_uhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_rimp2_uhf COMMAND scf_rimp2_uhf)
+set_tests_properties(
+  terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# Double hybrids (b2plyp, b2gp-plyp -- trc_xc_functional.F90): the SCF
+# (four-centre AND --df, cc-pVDZ-RIFIT doing double duty as --df's jkfit
+# too) then RI-MP2 (plain and chained off --df's fit) on water and
+# formamide, cc-pVDZ and 6-31G*, plus OH/b2plyp UKS from a fixed density,
+# against pyscf's own custom-hybrid KS ('0.53*HF + 0.47*B88, 0.73*LYP')
+# plus DF-MP2/DF-UMP2 (test/pyscf_refs/dh.ref, generate.py's gen_dh).
+add_executable(scf_dh scf_dh.F90)
+target_compile_definitions(scf_dh PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_dh PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_dh PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_dh COMMAND scf_dh)
+set_tests_properties(
+  terco/scf_dh PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# SPHERICAL-basis RI-MP2 and `--df`: restricted RI-MP2 (water, formamide,
+# cc-pVDZ + cc-pVDZ-RIFIT), unrestricted RI-MP2 (OH, from a fixed initial
+# density), `--df` HF/B3LYP (water, formamide, def2-universal-jkfit) and
+# B2PLYP (water, four-centre AND --df, chained) -- all spherical, against
+# pyscf's own `cart=False` on the identical sets (test/pyscf_refs/
+# sph_corr.ref, generate.py's gen_sph_corr). The Cartesian counterpart of
+# each of these is scf_rimp2(_uhf)/scf_df/scf_dh, unchanged by this file.
+add_executable(scf_sph_corr scf_sph_corr.F90)
+target_compile_definitions(scf_sph_corr PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_sph_corr PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_sph_corr PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_sph_corr COMMAND scf_sph_corr)
+set_tests_properties(
+  terco/scf_sph_corr PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 #
 # Coupled-perturbed HF (src/scf/trc_cphf.F90): the static dipole
 # polarizability, RHF on water/formamide and UHF on the OH radical, each
@@ -724,7 +827,13 @@ target_link_libraries(bench_gc PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_sph bench_sph.F90)
 target_compile_definitions(bench_sph PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_sph PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph)
+# The one-electron gradient's own time next to eri%gradient's two-electron
+# part -- see bench_grad_1e.F90's own header. Not a pass/fail, like its
+# siblings.
+add_executable(bench_grad_1e bench_grad_1e.F90)
+target_compile_definitions(bench_grad_1e PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_grad_1e PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
 
