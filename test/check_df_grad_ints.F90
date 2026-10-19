@@ -52,7 +52,10 @@ contains
       integer :: ii, jj, kk, la, lb, lc, na, nb, nc, a, c, e, slot
       real(dp), allocatable :: y(:)
       real(dp) :: ga(3), gb(3)
-      allocate (y(15*6*6))
+      ! Sized for the largest class of THESE bases, not a fixed ceiling: a
+      ! DF_LMAX=3 build reaches (ff|g), 10*10*15 components.
+      la = maxval(b%sh_l); lc = maxval(aux%sh_l)
+      allocate (y(((la + 1)*(la + 2)/2)**2*(lc + 1)*(lc + 2)/2))
       do kk = 1, aux%nshell
          lc = aux%sh_l(kk); nc = (lc + 1)*(lc + 2)/2
          do jj = 1, b%nshell
@@ -87,7 +90,8 @@ contains
       integer :: ii, jj, la, lc, na, nc, a, c
       real(dp), allocatable :: y(:)
       real(dp) :: ga(3)
-      allocate (y(15*15))
+      la = maxval(aux%sh_l)
+      allocate (y(((la + 1)*(la + 2)/2)**2))
       do jj = 1, aux%nshell
          lc = aux%sh_l(jj); nc = (lc + 1)*(lc + 2)/2
          do ii = 1, aux%nshell
