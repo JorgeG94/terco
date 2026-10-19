@@ -159,12 +159,11 @@ module trc_xc_functional
       !
       real(dp) :: pt2_cos = 0.0_dp  !! opposite-spin RI-MP2 fraction
       real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction
-
+      character(len=160) :: missing = ""
       !! Empty when the functional runs; otherwise exactly what it needs
       !! that terco does not have, e.g. "needs TPSS_X: meta-GGA kernels
       !! are not translated yet". Selecting it by name still succeeds;
       !! running it is what the caller must refuse.
-      character(len=160) :: missing = ""
    end type trc_xc_functional_t
 
 contains
