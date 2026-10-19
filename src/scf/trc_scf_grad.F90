@@ -279,8 +279,9 @@ contains
 
       if (present(dfjk)) then
          if (.not. present(aux)) error stop "trc_scf_gradient: dfjk given without its auxiliary basis"
-         if (nspin /= 1 .or. b%spherical .or. exx_lr_use /= 0.0_dp) &
+         if (nspin /= 1 .or. b%spherical .or. exx_lr_use /= 0.0_dp) then
             error stop "trc_scf_gradient: the --df gradient is restricted, Cartesian and not range-separated"
+         end if
          ! --- density-fitted two-electron term, in the actual-energy
          ! convention (no halving: df_two_electron_gradient differentiates
          ! E_2 itself, not eri%gradient's doubled trace) ---

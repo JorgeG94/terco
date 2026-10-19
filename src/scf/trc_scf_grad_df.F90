@@ -90,8 +90,9 @@ contains
 
       if (b%spherical) error stop "trc_scf_grad_df: the orbital basis is spherical; --df is Cartesian only"
       if (.not. dfjk%is_ready()) error stop "trc_scf_grad_df: the density fit has not been set up"
-      if (maxval(b%sh_l) > DFG_LMAX .or. maxval(aux%sh_l) > DFG_LMAX_AUX) &
+      if (maxval(b%sh_l) > DFG_LMAX .or. maxval(aux%sh_l) > DFG_LMAX_AUX) then
          error stop "trc_scf_grad_df: a basis is above the DF derivative kernels' ceiling (gen_df_grad.py)"
+      end if
       call dfjk%dims(n, naux, npack)
       if (n /= b%nao .or. naux /= aux%nao) error stop "trc_scf_grad_df: the fit does not match these bases"
       if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
