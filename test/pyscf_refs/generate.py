@@ -1190,13 +1190,15 @@ def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
     already folded to its OWN (nao_sp) space either way, so this function
     treats both cases identically from here.
 
-    The 'nh2' case is UKS PBE from a FIXED initial density -- not a
-    committed DM0 here, but check_dft_grad_vs_pyscf.F90's own
-    `opts%guess = "core"` for that case (a bare core-Hamiltonian
+    Every 'nh2' case (UKS, any functional -- PBE, B3LYP, wB97X, ...) is
+    from a FIXED initial density -- not a committed DM0 here, but
+    check_dft_grad_vs_pyscf.F90's own `opts%guess = "core"` for any case
+    whose name starts with 'nh2' (a bare core-Hamiltonian
     diagonalisation, fully determined by the molecule and basis alone),
     so the SCF this function reads back is reproducible without this
     script needing to carry an initial density of its own."""
-    PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP'}
+    PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
+             'wb97x': 'HYB_GGA_XC_WB97X'}
     is_sph = 'cc-pvdz' in json_rel
 
     dump = TEST / f"dft_grad_probe_{case}.bin"
@@ -2580,6 +2582,10 @@ CASES = {
         "nh2_pbe_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "pbe"),
     "dft_grad_nh2_b3lyp_ccpvdz_sph": lambda: gen_dft_grad(
         "nh2_b3lyp_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "dft_grad_water_wb97x_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_wb97x_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x"),
+    "dft_grad_nh2_wb97x_ccpvdz_sph": lambda: gen_dft_grad(
+        "nh2_wb97x_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "wb97x"),
     "rys_fock_water_ccpvdz": lambda: gen_rys_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", 1e-9),
     "rys_fock_water_ccpvtz": lambda: gen_rys_fock("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json", 1e-10),
     "rys_fock_formamide_def2tzvp": lambda: gen_rys_fock(

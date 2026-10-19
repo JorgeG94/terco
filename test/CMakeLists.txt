@@ -293,7 +293,8 @@ terco_add_check(check_full_grad_vs_pyscf check_full_grad_vs_pyscf.F90 NEEDS_BASI
 foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              formamide_pbe_ccpvdz_sph formamide_b3lyp_ccpvdz_sph
              formamide_pbe_631gs formamide_b3lyp_631gs
-             nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph)
+             nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph
+             water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph)
   if(case STREQUAL "water_pbe_ccpvdz_sph")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
@@ -322,6 +323,21 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
     set(func b3lyp)
+  elseif(case STREQUAL "water_wb97x_ccpvdz_sph")
+    # Range-separated hybrid, spherical, RKS -- the full assembled
+    # wB97X gradient (semilocal GGA term + trc_scf_grad.F90's own
+    # long-range exchange pass) through trc_scf_gradient, SPHERICAL
+    # fold included, guarded against pyscf's own analytic gradient.
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x)
+  elseif(case STREQUAL "nh2_wb97x_ccpvdz_sph")
+    # Same, UKS (ndens=2): the erf long-range exchange gradient's
+    # unrestricted (per-spin-channel) pass, guarded for real rather
+    # than only the RHF path check_lr_exchange_grad_vs_pyscf.F90 covers.
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x)
   else()
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
