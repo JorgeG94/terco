@@ -120,7 +120,12 @@ program check_dft_grad_vs_pyscf
 
    opts%functional = trim(functional)
    opts%grid_level = grid_level
-   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 200
+   ! conv_diis tightened from 1e-9: CPU and GPU DIIS error floors differ
+   ! enough at 1e-9 that the two hardware's converged densities themselves
+   ! differ by ~1e-8/1e-9 (measured), which this program's comparison
+   ! cannot tell apart from a real gradient bug -- see this program's
+   ! own gate comment below.
+   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-11_dp; opts%max_iter = 200
    call trc_scf_run(bas, nalpha, nbeta, opts, res)
    if (.not. res%converged) then
       print '(a)', 'check_dft_grad_vs_pyscf: reference SCF did not converge'; stop 1
@@ -202,7 +207,21 @@ program check_dft_grad_vs_pyscf
       call ref_close(u)
       nfail = 0
       worst = maxval(abs(grad - grad_ref))
-      call ref_report(nfail, worst < 3.0e-6_dp, 'KS-DFT gradient vs pyscf, worst|diff|', worst)
+      ! 1e-9, not the old 3e-6: with conv_diis tightened above, CPU and
+      ! GPU converge to the same density (opts%guess="core" for NH2's
+      ! fixed initial density; "gwh" otherwise lands on the same minimum
+      ! independently, same reasoning as every other *_vs_pyscf check in
+      ! this tree) and measured worst|diff| across all 10 cases this
+      ! program's own CMakeLists.txt registers, BOTH hardware (gfortran
+      ! CPU, nvfortran/V100 GPU): 1.66e-12..4.14e-12 (every pure-GGA/
+      ! global-hybrid case, RKS and UKS, cc-pVDZ and 6-31G*) and
+      ! 1.99e-13..3.53e-12 (the two wB97X cases) -- CPU and GPU agree to
+      ! within ~1e-12 of EACH OTHER on every case, not just within this
+      ! gate. 1e-9 is ~250x the worst of those 20 numbers: tight enough
+      ! that a genuine ~1e-7 gradient bug (this check's whole job) is
+      ! not hidden in the margin the old 3e-6 gate left, but not so
+      ! tight it chases hardware-dependent summation-order noise.
+      call ref_report(nfail, worst < 1.0e-9_dp, 'KS-DFT gradient vs pyscf, worst|diff|', worst)
       if (nfail > 0) then
          print '(a)', 'check_dft_grad_vs_pyscf: FAILED against the pyscf reference'; stop 1
       end if
