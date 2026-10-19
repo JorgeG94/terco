@@ -264,7 +264,7 @@ contains
       ! by that name). "SCF ENERGY"/"scf energy" is new: always
       ! present, always the SCF-level value alone, so a caller wanting
       ! that specifically no longer has to infer it from context.
-      call line("TOTAL ENERGY", merge(r%etot_dh, r%etot, r%dh))
+      call line("TOTAL ENERGY", merge(r%etot_dh, r%etot, r%dh .and. r%conv /= 0))
       call line("SCF ENERGY", r%etot)
       if (r%rimp2 .and. r%conv /= 0) then
          if (r%dh) then
@@ -280,7 +280,7 @@ contains
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a)") "   ::"//repeat(" ", 21)//"SUMMARY"//repeat(" ", 22)//"::"
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
-      call row("total energy", merge(r%etot_dh, r%etot, r%dh))
+      call row("total energy", merge(r%etot_dh, r%etot, r%dh .and. r%conv /= 0))
       call row("scf energy", r%etot)
       call row("nuclear repulsion", r%enuc)
       call row("one-electron energy", r%eone)
