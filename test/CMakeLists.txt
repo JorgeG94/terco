@@ -786,6 +786,12 @@ foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b
   set_tests_properties(terco/check_df_grad_vs_pyscf_${case}
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
+# The --grad --df refusals (UHF, spherical, range-separated, no fit) at the C
+# API, by status and message, never the library's error stop -- see
+# check_grad_df_refusals.F90.
+terco_add_check(check_grad_df_refusals check_grad_df_refusals.F90 NEEDS_BASIS
+                ARGS ${CMAKE_CURRENT_BINARY_DIR}/grad_df_refusals.scf)
+
 # The occupied-chunked path (trc_scf_grad_df.F90's MEMORY note), forced on
 # with TERCO_DFG_OCC_CHUNK=5: formamide's 12 occupied orbitals in chunks of
 # 5, 5 and 2, against the same reference.

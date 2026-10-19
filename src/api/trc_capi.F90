@@ -2568,12 +2568,9 @@ contains
          ! fit still in place, and inherits the DF-SCF's own scope:
          ! restricted, Cartesian, no range separation. trc_scf_settings
          ! and trc_scf_df already refuse the SCF outside it; checked again
-         ! here so the message names the gradient.
-         if (.not. cx%df_fit_ok) then
-            status = TRC_ERR_STATE
-            cx%message = "trc_run_gradient: --df gradient needs the density fit the SCF ran with"
-            return
-         end if
+         ! here so the message names the gradient -- and BEFORE the fit
+         ! check, because a result taken from a file (trc_load_scf) reaches
+         ! this point without ever having met the DF-SCF's own refusals.
          if (cx%res%nspin /= 1) then
             cx%message = "trc_run_gradient: --df gradient is restricted (closed-shell) only, as --df is"
             return
@@ -2588,6 +2585,11 @@ contains
                             "(the DF-SCF fits no erf exchange)"
                return
             end if
+         end if
+         if (.not. cx%df_fit_ok) then
+            status = TRC_ERR_STATE
+            cx%message = "trc_run_gradient: --df gradient needs the density fit the SCF ran with"
+            return
          end if
       end if
       if (len_trim(cx%opts%pcm_model) > 0) then
