@@ -1630,6 +1630,7 @@ def gen_dh():
                 w.real(f"E_SCF_{ic}", mf.e_tot)
                 w.real(f"E_OS_{ic}", e_os)
                 w.real(f"E_SS_{ic}", e_ss)
+                w.real(f"E_DH_{ic}", e_dh_pyscf)
                 w.real(f"CONV_TOL_{ic}", mf.conv_tol)
                 w.real(f"CONV_TOL_GRAD_{ic}", mf.conv_tol_grad)
                 w.real(f"GRAD_NORM_{ic}", grad_norm)
@@ -1698,12 +1699,16 @@ def gen_dh():
     pt.kernel()
     ref_os, ref_ss = pt.e_corr_os, pt.e_corr_ss
 
+    _, c_os_oh, c_ss_oh = DH_HYB["b2plyp"]
+    e_dh_pyscf_oh = mf.e_tot + c_os_oh*ref_os + c_ss_oh*ref_ss
+
     w.int_("NSPIN_OH", 2)
     w.int_("NAO_OH", mol.nao_nr())
     w.matrix3("DM0_OH", dm0_terco)
     w.real("E_SCF_OH", mf.e_tot)
     w.real("E_OS_OH", ref_os)
     w.real("E_SS_OH", ref_ss)
+    w.real("E_DH_OH", e_dh_pyscf_oh)
     w.real("CONV_TOL_OH", mf.conv_tol)
     w.real("CONV_TOL_GRAD_OH", mf.conv_tol_grad)
     w.real("GRAD_NORM_OH", grad_norm)

@@ -16,7 +16,6 @@ program context_scf
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build
-   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
@@ -119,48 +118,30 @@ program context_scf
    rc = trc_destroy(h);                     call expect(rc == TRC_OK, "destroy")
 
    ! --- a double hybrid's weighted total (trc_energy's pt2_cos/pt2_css
-   ! branch): b2plyp has pt2_cos == pt2_css, so this is the same arithmetic
-   ! a spin-component-scaled double hybrid would exercise, and pyscf has no
-   ! packaged functional that applies spin-component PT2 weights itself --
-   ! it is the same manual E_scf + c_os*E_os + c_ss*E_ss composition terco
-   ! uses (test/pyscf_refs/generate.py's gen_dh). So this checks self-
-   ! consistency instead: the handle's combined trc_energy must equal
-   ! E_scf (read back BEFORE trc_run_rimp2 sets cx%rimp2_ok) plus
-   ! pt2_cos*E_os + pt2_css*E_ss, from the SAME raw E_os/E_ss
+   ! branch): checked against LITERAL coefficients, not trc_xc_functional's
+   ! own table, so a wrong table entry (or a coefficient accidentally
+   ! copied from another functional) fails this test even though it would
+   ! not fail a check that re-read the same table trc_energy itself reads.
+   ! pyscf has no packaged functional that applies spin-component PT2
+   ! weights itself -- it is the same manual E_scf + c_os*E_os + c_ss*E_ss
+   ! composition terco uses (test/pyscf_refs/generate.py's gen_dh) -- so
+   ! this checks self-consistency instead: the handle's combined
+   ! trc_energy must equal E_scf (read back BEFORE trc_run_rimp2 sets
+   ! cx%rimp2_ok) plus cos*E_os + css*E_ss, from the SAME raw E_os/E_ss
    ! trc_rimp2_energy reports, to round-off.
-   block
-      type(c_ptr) :: h2
-      type(trc_xc_functional_t) :: func
-      real(c_double) :: e_scf2, e_dh, e_os2, e_ss2
-      logical :: found
-
-      rc = trc_create(h2);                      call expect(rc == TRC_OK, "dh: create")
-      rc = trc_set_molecule(h2, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
-      call expect(rc == TRC_OK, "dh: set_molecule")
-      rc = trc_set_force_cartesian(h2, 1_c_int);    call expect(rc == TRC_OK, "dh: set_force_cartesian")
-      rc = trc_set_basis_json(h2, 'basis_sets/cc-pvdz.json'//c_null_char)
-      call expect(rc == TRC_OK, "dh: set_basis_json")
-      rc = trc_set_aux_json(h2, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
-      call expect(rc == TRC_OK, "dh: set_aux_json")
-      rc = trc_set_method(h2, 'b2plyp'//c_null_char, 3_c_int); call expect(rc == TRC_OK, "dh: set_method b2plyp")
-      rc = trc_set_convergence(h2, 1.0e-10_c_double, 1.0e-6_c_double, 100_c_int, 10_c_int)
-      call expect(rc == TRC_OK, "dh: set_convergence")
-      rc = trc_set_rimp2(h2, 1_c_int, 20_c_int);    call expect(rc == TRC_OK, "dh: set_rimp2")
-      rc = trc_run_scf(h2);                         call expect(rc == TRC_OK, "dh: run_scf")
-      rc = trc_energy(h2, e_scf2);                  call expect(rc == TRC_OK, "dh: E_scf alone")
-      rc = trc_run_rimp2(h2);                       call expect(rc == TRC_OK, "dh: run_rimp2")
-      rc = trc_rimp2_energy(h2, e_os2, e_ss2);      call expect(rc == TRC_OK, "dh: raw E_os/E_ss")
-      rc = trc_energy(h2, e_dh);                    call expect(rc == TRC_OK, "dh: weighted total")
-
-      found = xc_functional_by_name('b2plyp', func)
-      call expect(found, "dh: b2plyp known to trc_xc_functional")
-      print '(a,f20.12,a,f20.12,a,es9.2)', "context_scf: E_dh handle ", e_dh, &
-         "  E_scf+cos*os+css*ss ", e_scf2 + func%pt2_cos*e_os2 + func%pt2_css*e_ss2, &
-         "  diff ", e_dh - (e_scf2 + func%pt2_cos*e_os2 + func%pt2_css*e_ss2)
-      call expect(abs(e_dh - (e_scf2 + func%pt2_cos*e_os2 + func%pt2_css*e_ss2)) < 1.0e-12_dp, &
-                  "double hybrid total = E_scf + pt2_cos*E_os + pt2_css*E_ss to round-off")
-      rc = trc_destroy(h2);                         call expect(rc == TRC_OK, "dh: destroy")
-   end block
+   !
+   ! Every double hybrid terco has today (b2plyp, b2gp-plyp, mpw2plyp) has
+   ! pt2_cos == pt2_css, and nothing public (no functional, no C-API
+   ! setter) can set them unequally -- trc_xc_functional.F90's own header
+   ! comment on why the field is split in the first place is forward-
+   ! looking, not something exercised yet. A cos/css coefficient swap is
+   ! therefore NOT distinguishable by this test on EITHER case below (the
+   ! weighted sum is symmetric in cos/css when they are equal); what IS
+   ! checked is that E_os and E_ss enter as two genuinely different
+   ! numbers (asserted separately, not just a coincidental E_os == E_ss),
+   ! each multiplied by its own literal coefficient.
+   call check_double_hybrid('b2plyp', 0.27_c_double, 0.27_c_double)
+   call check_double_hybrid('b2gpplyp', 0.36_c_double, 0.36_c_double)
 
    call pl%release(); call b%release(); call aux%release()
    if (.not. ok) then
@@ -179,5 +160,47 @@ contains
          ok = .false.
       end if
    end subroutine expect
+
+   ! water/cc-pVDZ through a fresh handle, `name` a double hybrid: checks
+   ! trc_energy's combined total against E_scf + pt2_cos_lit*E_os +
+   ! pt2_css_lit*E_ss, the LITERAL coefficients the caller passes in
+   ! (never read back from trc_xc_functional's own table), and that E_os
+   ! and E_ss are not coincidentally equal -- see this program's own
+   ! comment above the two calls on why a cos/css swap is otherwise
+   ! undetectable for every double hybrid terco has today.
+   subroutine check_double_hybrid(name, pt2_cos_lit, pt2_css_lit)
+      character(len=*), intent(in) :: name
+      real(c_double), intent(in) :: pt2_cos_lit, pt2_css_lit
+      type(c_ptr) :: h2
+      real(c_double) :: e_scf2, e_dh, e_os2, e_ss2, e_dh_expected
+      integer(c_int) :: rc2
+
+      rc2 = trc_create(h2);                      call expect(rc2 == TRC_OK, name//": create")
+      rc2 = trc_set_molecule(h2, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(rc2 == TRC_OK, name//": set_molecule")
+      rc2 = trc_set_force_cartesian(h2, 1_c_int);    call expect(rc2 == TRC_OK, name//": set_force_cartesian")
+      rc2 = trc_set_basis_json(h2, 'basis_sets/cc-pvdz.json'//c_null_char)
+      call expect(rc2 == TRC_OK, name//": set_basis_json")
+      rc2 = trc_set_aux_json(h2, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      call expect(rc2 == TRC_OK, name//": set_aux_json")
+      rc2 = trc_set_method(h2, name//c_null_char, 3_c_int); call expect(rc2 == TRC_OK, name//": set_method")
+      rc2 = trc_set_convergence(h2, 1.0e-10_c_double, 1.0e-6_c_double, 100_c_int, 10_c_int)
+      call expect(rc2 == TRC_OK, name//": set_convergence")
+      rc2 = trc_set_rimp2(h2, 1_c_int, 20_c_int);    call expect(rc2 == TRC_OK, name//": set_rimp2")
+      rc2 = trc_run_scf(h2);                         call expect(rc2 == TRC_OK, name//": run_scf")
+      rc2 = trc_energy(h2, e_scf2);                  call expect(rc2 == TRC_OK, name//": E_scf alone")
+      rc2 = trc_run_rimp2(h2);                       call expect(rc2 == TRC_OK, name//": run_rimp2")
+      rc2 = trc_rimp2_energy(h2, e_os2, e_ss2);      call expect(rc2 == TRC_OK, name//": raw E_os/E_ss")
+      rc2 = trc_energy(h2, e_dh);                    call expect(rc2 == TRC_OK, name//": weighted total")
+
+      call expect(abs(e_os2 - e_ss2) > 1.0e-3_dp, name//": E_os and E_ss are genuinely different, not E_os == E_ss")
+
+      e_dh_expected = e_scf2 + pt2_cos_lit*e_os2 + pt2_css_lit*e_ss2
+      print '(a,a,a,f20.12,a,f20.12,a,es9.2)', "context_scf: ", name, " E_dh handle ", e_dh, &
+         "  E_scf+cos*os+css*ss (literals) ", e_dh_expected, "  diff ", e_dh - e_dh_expected
+      call expect(abs(e_dh - e_dh_expected) < 1.0e-12_dp, &
+                  name//": double hybrid total = E_scf + pt2_cos*E_os + pt2_css*E_ss (literals) to round-off")
+      rc2 = trc_destroy(h2);                         call expect(rc2 == TRC_OK, name//": destroy")
+   end subroutine check_double_hybrid
 
 end program context_scf

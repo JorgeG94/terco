@@ -8,10 +8,12 @@
 ! for) -- against pyscf's KS with the SAME hybrid composition
 ! (`0.53*HF + 0.47*B88, 0.73*LYP` for b2plyp, etc. -- test/pyscf_refs/
 ! generate.py's own gen_dh) plus DF-MP2/DF-UMP2 on the SAME aux basis and
-! frozen core, never terco's unscaled total: the committed reference
-! (dh.ref) carries E_SCF and the RAW (unscaled) E_os/E_ss, and the
-! c_os*E_os + c_ss*E_ss weighting this program's own double hybrid total
-! applies is checked against pyscf's weighted sum computed the same way.
+! frozen core: the committed reference (dh.ref) carries E_SCF, the RAW
+! (unscaled) E_os/E_ss, AND pyscf's own weighted total (mf.e_tot +
+! c_os*e_os + c_ss*e_ss) as E_DH -- this program's own c_os*E_os +
+! c_ss*E_ss weighting (from LITERAL coefficients, PT2_COS/PT2_CSS below,
+! not read back from trc_xc_functional's own table) is checked against
+! that committed E_DH directly, never left as an unchecked header claim.
 !
 ! 24 closed-shell cases: water and formamide, cc-pVDZ and 6-31G*,
 ! b2plyp, b2gp-plyp and mpw2plyp, four-centre and --df -- plus one open-shell case,
@@ -53,6 +55,12 @@ program scf_dh
                                                       "cc-pvdz", "6-31gs", "cc-pvdz", "6-31gs"]
    integer, parameter :: GFROZEN(NGROUP) = [1, 1, 3, 3]   !! core_orbitals(Z), summed: water O, formamide C+N+O
    character(len=8), parameter :: FUNC(NFUNC) = [character(len=8) :: "b2plyp", "b2gpplyp", "mpw2plyp"]
+   ! LITERAL coefficients, one pair per FUNC entry above, never read back
+   ! from trc_xc_functional's own table: trc_xc_functional.F90's own
+   ! comments at each case ("b2plyp")/("b2gp-plyp", "b2gpplyp")/
+   ! ("mpw2plyp", "mpw2-plyp") give these same numbers.
+   real(dp), parameter :: PT2_COS(NFUNC) = [0.27_dp, 0.36_dp, 0.25_dp]
+   real(dp), parameter :: PT2_CSS(NFUNC) = [0.27_dp, 0.36_dp, 0.25_dp]
    character(len=2), parameter :: KIND(2) = [character(len=2) :: "4c", "df"]
    real(dp), parameter :: E_TOL_4C = 1.0e-9_dp    !! scf_rimp2.ref's own closed-shell tolerance
    real(dp), parameter :: E_TOL_DF = 1.0e-8_dp    !! scf_df.ref's own fitted-SCF tolerance
@@ -170,13 +178,22 @@ program scf_dh
                call ref_report(nfail, res%converged .and. de < merge(E_TOL_4C, E_TOL_DF, ik == 1), &
                                trim(name_this)//" E_SCF vs pyscf", de)
                block
-                  real(dp) :: e_os_ref, e_ss_ref
+                  real(dp) :: e_os_ref, e_ss_ref, e_dh_ref, e_dh_this
                   call ref_read_real(refu, "E_OS_"//trim(tag), e_os_ref)
                   call ref_read_real(refu, "E_SS_"//trim(tag), e_ss_ref)
                   call ref_report(nfail, abs(mp%e_os - e_os_ref) < CORR_TOL, &
                                   trim(name_this)//" E_os vs pyscf", abs(mp%e_os - e_os_ref))
                   call ref_report(nfail, abs(mp%e_ss - e_ss_ref) < CORR_TOL, &
                                   trim(name_this)//" E_ss vs pyscf", abs(mp%e_ss - e_ss_ref))
+                  ! The weighted double-hybrid total, against pyscf's OWN
+                  ! mf.e_tot + c_os*e_os + c_ss*e_ss (generate.py's gen_dh),
+                  ! not merely this program's own E_SCF/E_os/E_ss checked
+                  ! separately above -- PT2_COS/PT2_CSS are the SAME
+                  ! literals context_scf.F90's check_double_hybrid asserts.
+                  call ref_read_real(refu, "E_DH_"//trim(tag), e_dh_ref)
+                  e_dh_this = res%energy + PT2_COS(im)*mp%e_os + PT2_CSS(im)*mp%e_ss
+                  call ref_report(nfail, abs(e_dh_this - e_dh_ref) < CORR_TOL, &
+                                  trim(name_this)//" weighted E_dh vs pyscf", abs(e_dh_this - e_dh_ref))
                end block
                ! Provenance only -- scf_rimp2.F90's own comment on the same tags.
                call ref_read_real(refu, "CONV_TOL_"//trim(tag), pyscf_conv_tol)
@@ -281,10 +298,11 @@ program scf_dh
 
       if (has_ref) then
          block
-            real(dp) :: e_scf_ref, e_os_ref, e_ss_ref
+            real(dp) :: e_scf_ref, e_os_ref, e_ss_ref, e_dh_ref, e_dh_this
             call ref_read_real(refu, "E_SCF_OH", e_scf_ref)
             call ref_read_real(refu, "E_OS_OH", e_os_ref)
             call ref_read_real(refu, "E_SS_OH", e_ss_ref)
+            call ref_read_real(refu, "E_DH_OH", e_dh_ref)
             call ref_read_real(refu, "CONV_TOL_OH", pyscf_conv_tol)
             call ref_read_real(refu, "CONV_TOL_GRAD_OH", pyscf_conv_tol_grad)
             call ref_read_real(refu, "GRAD_NORM_OH", pyscf_grad_norm)
@@ -294,6 +312,10 @@ program scf_dh
                             abs(wmp%e_os - e_os_ref))
             call ref_report(nfail, abs(wmp%e_ss - e_ss_ref) < CORR_TOL, "oh b2plyp E_ss vs pyscf", &
                             abs(wmp%e_ss - e_ss_ref))
+            ! PT2_COS(1)/PT2_CSS(1) is b2plyp's literal 0.27/0.27 (FUNC(1)).
+            e_dh_this = wres%energy + PT2_COS(1)*wmp%e_os + PT2_CSS(1)*wmp%e_ss
+            call ref_report(nfail, abs(e_dh_this - e_dh_ref) < CORR_TOL, "oh b2plyp weighted E_dh vs pyscf", &
+                            abs(e_dh_this - e_dh_ref))
          end block
       end if
 
