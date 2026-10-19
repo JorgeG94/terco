@@ -1,5 +1,5 @@
 !
-! Double hybrids (trc_xc_functional.F90's b2plyp/b2gp-plyp): the SCF
+! Double hybrids (trc_xc_functional.F90's b2plyp/b2gp-plyp/mpw2plyp): the SCF
 ! through trc_scf_run (four-centre AND --df, trc_scf_df.F90), then RI-MP2
 ! on the converged KS orbitals through trc_rimp2_run -- chained off --df's
 ! own fit when the aux basis given to RI-MP2 is the SAME one --df was
@@ -13,8 +13,8 @@
 ! c_os*E_os + c_ss*E_ss weighting this program's own double hybrid total
 ! applies is checked against pyscf's weighted sum computed the same way.
 !
-! 16 closed-shell cases: water and formamide, cc-pVDZ and 6-31G*,
-! b2plyp and b2gp-plyp, four-centre and --df -- plus one open-shell case,
+! 24 closed-shell cases: water and formamide, cc-pVDZ and 6-31G*,
+! b2plyp, b2gp-plyp and mpw2plyp, four-centre and --df -- plus one open-shell case,
 ! OH/b2plyp UKS/6-31G*, from a FIXED initial density (rks.ref's and
 ! rimp2_uhf.ref's own pattern: pyscf's own converged density, rescaled
 ! into this build's AO normalisation via this program's own dumped
@@ -46,13 +46,13 @@ program scf_dh
                            ref_read_matrix3, ref_report
    implicit none
 
-   integer, parameter :: NGROUP = 4, NFUNC = 2
+   integer, parameter :: NGROUP = 4, NFUNC = 3
    character(len=16), parameter :: GMOL(NGROUP) = [character(len=16) :: &
                                                    "water", "water", "formamide", "formamide"]
    character(len=16), parameter :: GBASIS(NGROUP) = [character(len=16) :: &
                                                       "cc-pvdz", "6-31gs", "cc-pvdz", "6-31gs"]
    integer, parameter :: GFROZEN(NGROUP) = [1, 1, 3, 3]   !! core_orbitals(Z), summed: water O, formamide C+N+O
-   character(len=8), parameter :: FUNC(NFUNC) = [character(len=8) :: "b2plyp", "b2gpplyp"]
+   character(len=8), parameter :: FUNC(NFUNC) = [character(len=8) :: "b2plyp", "b2gpplyp", "mpw2plyp"]
    character(len=2), parameter :: KIND(2) = [character(len=2) :: "4c", "df"]
    real(dp), parameter :: E_TOL_4C = 1.0e-9_dp    !! scf_rimp2.ref's own closed-shell tolerance
    real(dp), parameter :: E_TOL_DF = 1.0e-8_dp    !! scf_df.ref's own fitted-SCF tolerance

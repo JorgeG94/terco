@@ -1538,11 +1538,12 @@ def gen_rimp2_uhf():
 DH_HYB = {
     "b2plyp": ("0.53*HF + 0.47*B88, 0.73*LYP", 0.27, 0.27),
     "b2gpplyp": ("0.65*HF + 0.35*B88, 0.64*LYP", 0.36, 0.36),
+    "mpw2plyp": ("0.55*HF + 0.45*mpw91, 0.75*LYP", 0.25, 0.25),
 }
 
 
 def gen_dh():
-    """test/scf_dh.F90's double-hybrid cases: b2plyp/b2gp-plyp on water and
+    """test/scf_dh.F90's double-hybrid cases: b2plyp/b2gp-plyp/mpw2plyp on water and
     formamide, cc-pVDZ and 6-31G*, both four-centre SCF and --df SCF (cc-
     pVDZ-RIFIT doing double duty as --df's jkfit, the case terco's own
     `dfjk` chaining exists for) -- against pyscf's KS with DH_HYB's xc
@@ -1563,7 +1564,7 @@ def gen_dh():
     same way (trc_capi.F90's trc_energy)."""
     GROUPS = [("water", "cc-pvdz", 1), ("water", "6-31gs", 1),
               ("formamide", "cc-pvdz", 3), ("formamide", "6-31gs", 3)]
-    FUNCS = ["b2plyp", "b2gpplyp"]
+    FUNCS = ["b2plyp", "b2gpplyp", "mpw2plyp"]
     KINDS = ["4c", "df"]
 
     run_bin("scf_dh", [])

@@ -159,6 +159,7 @@ module trc_xc_functional
       !
       real(dp) :: pt2_cos = 0.0_dp  !! opposite-spin RI-MP2 fraction
       real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction
+
       !! Empty when the functional runs; otherwise exactly what it needs
       !! that terco does not have, e.g. "needs TPSS_X: meta-GGA kernels
       !! are not translated yet". Selecting it by name still succeeds;
