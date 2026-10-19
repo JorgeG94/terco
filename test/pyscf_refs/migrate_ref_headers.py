@@ -49,6 +49,7 @@ CASE_OF = {
     "cpks_water_6-31gs_pbe.ref": "cpks",
     "cpks_water_6-31gs_b3lyp.ref": "cpks",
     "cpks_formamide_6-31gs_pbe.ref": "cpks",
+    "full_grad_ccpvdz.ref": "full_grad",
 }
 
 

@@ -36,6 +36,7 @@ target_sources(
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
           scf/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
           scf/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
+          scf/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
@@ -473,6 +474,11 @@ if(_regen)
     # four-centre ceiling would have no operator for the basis it is given.
     terco_gen("gen_1e.py --pcm" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
               --lmax ${TERCO_LMAX} --pcm ${_gen_out}/trc_pcm_kernels.F90 ${_order_flag})
+    # The one-electron GRADIENT kernels follow TERCO_LMAX for the same
+    # reason trc_1e's own do: a ceiling below the orbital basis is not a
+    # limitation, it is a wrong force.
+    terco_gen("gen_1e.py --deriv" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --deriv ${_gen_out}/trc_1e_grad_kernels.F90 ${_order_flag})
 
     # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
     # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single

@@ -308,12 +308,11 @@ contains
             end if
             !
             ! one_bin_item takes its within-segment index as a default integer,
-            ! so a segment must fit in one.  At 75 waters the largest bin holds
-            ! 3617 pairs and the largest segment is 6.5e6, against a 2.1e9
-            ! limit -- about 65,000 pairs in a single bin before it bites,
-            ! which is a system some 20x larger.  Guarded rather than widened
-            ! because widening the index costs registers in the hot kernel and
-            ! the register budget is already the binding constraint.
+            ! so a segment must fit in one. Widening it would cost registers
+            ! in the hot kernel, which are the binding constraint; instead
+            ! build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+            ! (split_large_bins, trc_bins.F90), so no segment exceeds 2**30.
+            ! This guard is the backstop if that cap is ever raised.
             !
             if (nt > 2147483000_int64) error stop &
                "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"
@@ -1745,12 +1744,11 @@ contains
             end if
             !
             ! one_bin_item takes its within-segment index as a default integer,
-            ! so a segment must fit in one.  At 75 waters the largest bin holds
-            ! 3617 pairs and the largest segment is 6.5e6, against a 2.1e9
-            ! limit -- about 65,000 pairs in a single bin before it bites,
-            ! which is a system some 20x larger.  Guarded rather than widened
-            ! because widening the index costs registers in the hot kernel and
-            ! the register budget is already the binding constraint.
+            ! so a segment must fit in one. Widening it would cost registers
+            ! in the hot kernel, which are the binding constraint; instead
+            ! build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+            ! (split_large_bins, trc_bins.F90), so no segment exceeds 2**30.
+            ! This guard is the backstop if that cap is ever raised.
             !
             if (nt > 2147483000_int64) error stop &
                "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"

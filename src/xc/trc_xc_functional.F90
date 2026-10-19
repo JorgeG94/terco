@@ -25,6 +25,12 @@
 ! with allocatable components is exactly what a `do concurrent` body should
 ! not touch.
 !
+! A double hybrid (b2plyp, b2gp-plyp, mpw2plyp) is still just a (coef,
+! kernel) composition plus `exx` for its SCF -- `pt2_cos`/`pt2_css` are
+! the RI-MP2 fraction on top, which this module only STORES; running it
+! (always RI, on the converged KS orbitals) is trc_capi.F90's
+! trc_run_rimp2/trc_energy, never anything in here.
+!
 module trc_xc_functional
    use pic_types, only: dp
    use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar, b88_vxc_fxc_unpolar
@@ -70,6 +76,7 @@ module trc_xc_functional
 
    public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name
    public :: xc_eval_point_fxc
+   public :: xc_is_double_hybrid
    public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS
 
@@ -112,25 +119,26 @@ module trc_xc_functional
    !! Every selectable name, available or `missing`: the CLI's --func
    !! help and trc_capi's unknown-functional message are built from this
    !! rather than keeping their own copy of the list.
-   integer, parameter :: XC_FUNCTIONAL_COUNT = 92
+   integer, parameter :: XC_FUNCTIONAL_COUNT = 97
    character(len=13), parameter :: XC_FUNCTIONAL_NAMES(XC_FUNCTIONAL_COUNT) = [ &
-      "b3lyp        ", "b3lyp5       ", "b3pw91       ", "b88          ", "b97d         ", "b97d3zero    ", &
-      "bhandh       ", "bhandhlyp    ", "bhhlyp       ", "blyp         ", "bmk          ", "bp86         ", &
-      "bp86vwn      ", "camb3lyp     ", "cf22d        ", "epc17_1      ", "epc17_2      ", "epc18_1      ", &
-      "epc18_2      ", "hf-lyp       ", "hf_lyp       ", "hflyp        ", "hse03        ", "hse06        ", &
-      "lcwpbe       ", "lda          ", "lda_x        ", "lrcwpbe      ", "lrcwpbeh     ", "m05          ", &
-      "m052x        ", "m06          ", "m062x        ", "m06hf        ", "m06l         ", "m06sx        ", &
-      "m08hx        ", "m08so        ", "m11          ", "mbeef        ", "mn12l        ", "mn12sx       ", &
-      "mn15         ", "mn15l        ", "mpw1k        ", "mpw91        ", "o3lyp        ", "olyp         ", &
-      "opbe         ", "pbe          ", "pbe0         ", "pkzb         ", "pw86b95      ", "pw86pbe      ", &
-      "pw91         ", "r2scan       ", "r2scan0      ", "r2scan50     ", "r2scanh      ", "r2scanl      ", &
-      "revb3lyp     ", "revm06l      ", "revpbe       ", "revpbe0      ", "revtpss      ", "revtpssh     ", &
-      "rpbe         ", "rscan        ", "scan         ", "scan0        ", "slater       ", "sogga11x     ", &
-      "spw92        ", "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", "tpss         ", &
-      "tpss0        ", "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", &
-      "wb97x        ", "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", &
-      "x3lyp        ", "xlyp         "]
-   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bp86, bp86vwn, hf-lyp, hf_lyp, hflyp, lda, lda_x, mpw1k, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
+      "b2gp-plyp    ", "b2gpplyp     ", "b2plyp       ", "b3lyp        ", "b3lyp5       ", "b3pw91       ", &
+      "b88          ", "b97d         ", "b97d3zero    ", "bhandh       ", "bhandhlyp    ", "bhhlyp       ", &
+      "blyp         ", "bmk          ", "bp86         ", "bp86vwn      ", "camb3lyp     ", "cf22d        ", &
+      "epc17_1      ", "epc17_2      ", "epc18_1      ", "epc18_2      ", "hf-lyp       ", "hf_lyp       ", &
+      "hflyp        ", "hse03        ", "hse06        ", "lcwpbe       ", "lda          ", "lda_x        ", &
+      "lrcwpbe      ", "lrcwpbeh     ", "m05          ", "m052x        ", "m06          ", "m062x        ", &
+      "m06hf        ", "m06l         ", "m06sx        ", "m08hx        ", "m08so        ", "m11          ", &
+      "mbeef        ", "mn12l        ", "mn12sx       ", "mn15         ", "mn15l        ", "mpw1k        ", &
+      "mpw2-plyp    ", "mpw2plyp     ", "mpw91        ", "o3lyp        ", "olyp         ", "opbe         ", &
+      "pbe          ", "pbe0         ", "pkzb         ", "pw86b95      ", "pw86pbe      ", "pw91         ", &
+      "r2scan       ", "r2scan0      ", "r2scan50     ", "r2scanh      ", "r2scanl      ", "revb3lyp     ", &
+      "revm06l      ", "revpbe       ", "revpbe0      ", "revtpss      ", "revtpssh     ", "rpbe         ", &
+      "rscan        ", "scan         ", "scan0        ", "slater       ", "sogga11x     ", "spw92        ", &
+      "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", "tpss         ", "tpss0        ", &
+      "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", "wb97x        ", &
+      "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", "x3lyp        ", &
+      "xlyp         "]
+   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b2gp-plyp, b2gpplyp, b2plyp, b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bp86, bp86vwn, hf-lyp, hf_lyp, hflyp, lda, lda_x, mpw1k, mpw2-plyp, mpw2plyp, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
 
    type :: trc_xc_functional_t
       character(len=24) :: name = ""
@@ -148,11 +156,30 @@ module trc_xc_functional
       real(dp) :: omega  = 0.0_dp  !! range-separation parameter, bohr^-1; 0 = none
       real(dp) :: nlc_b  = 0.0_dp  !! VV10 b; 0 = no nonlocal correlation
       real(dp) :: nlc_c  = 0.0_dp  !! VV10 C
+      !
+      ! Double hybrids: the RI-MP2 fraction on top of the semilocal/exact-
+      ! exchange composition above, split opposite-/same-spin so a
+      ! spin-component-scaled (DSD-type) double hybrid can set them
+      ! unequally; both zero for every functional that is not one, and
+      ! equal (c_os = c_ss = c) for every double hybrid terco has today.
+      ! trc_capi.F90's trc_run_rimp2/trc_energy read these, never a kernel.
+      !
+      ! WHOEVER ADDS THE FIRST DSD-TYPE ENTRY (pt2_cos /= pt2_css) MUST
+      ! ALSO ADD A TEST THAT EXERCISES UNEQUAL WEIGHTS: every double
+      ! hybrid and every test of its weighted total today has pt2_cos ==
+      ! pt2_css, so a cos/css coefficient swap anywhere in the chain
+      ! (here, trc_capi's trc_energy, or a test's own oracle) is
+      ! undetectable -- see context_scf.F90's check_double_hybrid for
+      ! where that gap is called out and why literal-coefficient
+      ! assertions alone do not close it.
+      !
+      real(dp) :: pt2_cos = 0.0_dp  !! opposite-spin RI-MP2 fraction
+      real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction
+      character(len=160) :: missing = ""
       !! Empty when the functional runs; otherwise exactly what it needs
       !! that terco does not have, e.g. "needs TPSS_X: meta-GGA kernels
       !! are not translated yet". Selecting it by name still succeeds;
       !! running it is what the caller must refuse.
-      character(len=160) :: missing = ""
    end type trc_xc_functional_t
 
 contains
@@ -533,6 +560,23 @@ contains
          ! half exact exchange. Not in ExchCXX's functional table.
          call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_LYP], [0.5_dp, 1.0_dp])
          f%exx = 0.5_dp
+      case ("b2plyp")
+         ! Grimme, J. Chem. Phys. 124, 034108 (2006): a_x = 0.53, c = 0.27.
+         ! Not in libxc (no double hybrid is); the hybrid part is 0.53 HF +
+         ! 0.47 B88 exchange, 0.73 LYP correlation, and c is the RI-MP2
+         ! fraction trc_run_rimp2/trc_energy add on top (pt2_cos = pt2_css,
+         ! no spin-component scaling).
+         call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_LYP], [0.47_dp, 0.73_dp])
+         f%exx = 0.53_dp
+         f%pt2_cos = 0.27_dp
+         f%pt2_css = 0.27_dp
+      case ("b2gp-plyp", "b2gpplyp")
+         ! Karton, Tarnopolsky, Lamere, Schatz and Martin, J. Phys. Chem. A
+         ! 112, 12868 (2008): a_x = 0.65, c = 0.36.
+         call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_LYP], [0.35_dp, 0.64_dp])
+         f%exx = 0.65_dp
+         f%pt2_cos = 0.36_dp
+         f%pt2_css = 0.36_dp
       case ("hflyp", "hf-lyp", "hf_lyp")
          ! Full exact exchange plus LYP correlation; pyscf's 'HF,LYP'
          ! (libxc GGA_C_LYP with hybrid_coeff 1). Not in ExchCXX's table.
@@ -654,6 +698,14 @@ contains
       case ("mpw1k")
          call set(f, XC_FAMILY_GGA, [XC_K_MPW91_X, XC_K_PW91_C], [0.572_dp, 1.0_dp])
          f%exx = 0.428_dp
+      case ("mpw2plyp", "mpw2-plyp")
+         ! Schwabe and Grimme, Phys. Chem. Chem. Phys. 8, 4398 (2006):
+         ! a_x = 0.55, c = 0.25; the GGA exchange kernel is mPW91's, not
+         ! B88's -- the other difference from b2plyp/b2gp-plyp above.
+         call set(f, XC_FAMILY_GGA, [XC_K_MPW91_X, XC_K_LYP], [0.45_dp, 0.75_dp])
+         f%exx = 0.55_dp
+         f%pt2_cos = 0.25_dp
+         f%pt2_css = 0.25_dp
       case ("rpbe")
          call set(f, XC_FAMILY_GGA, [XC_K_RPBE_X, XC_K_PBE_C], [1.0_dp, 1.0_dp])
       case ("b88")
@@ -742,5 +794,17 @@ contains
          f%coef(1:f%nk) = coef
       end subroutine set
    end function xc_functional_by_name
+
+   !
+   ! Whether `f` needs an RI-MP2 pass on top of its SCF: either PT2
+   ! fraction nonzero. The one place this is asked, rather than reading
+   ! pt2_cos/pt2_css directly, so a future third PT2 field cannot leave a
+   ! caller checking only the first two of three.
+   !
+   pure function xc_is_double_hybrid(f) result(is_dh)
+      type(trc_xc_functional_t), intent(in) :: f
+      logical :: is_dh
+      is_dh = f%pt2_cos /= 0.0_dp .or. f%pt2_css /= 0.0_dp
+   end function xc_is_double_hybrid
 
 end module trc_xc_functional

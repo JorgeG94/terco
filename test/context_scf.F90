@@ -117,6 +117,33 @@ program context_scf
    rc = trc_message(h, msg, 256_c_int);     call expect(rc == TRC_OK, "message")
    rc = trc_destroy(h);                     call expect(rc == TRC_OK, "destroy")
 
+   ! --- a double hybrid's weighted total (trc_energy's pt2_cos/pt2_css
+   ! branch): checked against LITERAL coefficients, not trc_xc_functional's
+   ! own table, so a wrong table entry (or a coefficient accidentally
+   ! copied from another functional) fails this test even though it would
+   ! not fail a check that re-read the same table trc_energy itself reads.
+   ! pyscf has no packaged functional that applies spin-component PT2
+   ! weights itself -- it is the same manual E_scf + c_os*E_os + c_ss*E_ss
+   ! composition terco uses (test/pyscf_refs/generate.py's gen_dh) -- so
+   ! this checks self-consistency instead: the handle's combined
+   ! trc_energy must equal E_scf (read back BEFORE trc_run_rimp2 sets
+   ! cx%rimp2_ok) plus cos*E_os + css*E_ss, from the SAME raw E_os/E_ss
+   ! trc_rimp2_energy reports, to round-off.
+   !
+   ! Every double hybrid terco has today (b2plyp, b2gp-plyp, mpw2plyp) has
+   ! pt2_cos == pt2_css, and nothing public (no functional, no C-API
+   ! setter) can set them unequally -- trc_xc_functional.F90's own header
+   ! comment on why the field is split in the first place is forward-
+   ! looking, not something exercised yet. A cos/css coefficient swap is
+   ! therefore NOT distinguishable by this test on EITHER case below (the
+   ! weighted sum is symmetric in cos/css when they are equal); what IS
+   ! checked is that E_os and E_ss enter as two genuinely different
+   ! numbers (asserted separately, not just a coincidental E_os == E_ss),
+   ! each multiplied by its own literal coefficient.
+   call check_double_hybrid('b2plyp', 0.27_c_double, 0.27_c_double)
+   call check_double_hybrid('b2gpplyp', 0.36_c_double, 0.36_c_double)
+   call check_aux_order()
+
    call pl%release(); call b%release(); call aux%release()
    if (.not. ok) then
       print '(a)', "context_scf: FAIL"
@@ -134,5 +161,89 @@ contains
          ok = .false.
       end if
    end subroutine expect
+
+   ! water/cc-pVDZ through a fresh handle, `name` a double hybrid: checks
+   ! trc_energy's combined total against E_scf + pt2_cos_lit*E_os +
+   ! pt2_css_lit*E_ss, the LITERAL coefficients the caller passes in
+   ! (never read back from trc_xc_functional's own table), and that E_os
+   ! and E_ss are not coincidentally equal -- see this program's own
+   ! comment above the two calls on why a cos/css swap is otherwise
+   ! undetectable for every double hybrid terco has today.
+   subroutine check_double_hybrid(name, pt2_cos_lit, pt2_css_lit)
+      character(len=*), intent(in) :: name
+      real(c_double), intent(in) :: pt2_cos_lit, pt2_css_lit
+      type(c_ptr) :: h2
+      real(c_double) :: e_scf2, e_dh, e_os2, e_ss2, e_dh_expected
+      integer(c_int) :: rc2
+
+      rc2 = trc_create(h2);                      call expect(rc2 == TRC_OK, name//": create")
+      rc2 = trc_set_molecule(h2, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(rc2 == TRC_OK, name//": set_molecule")
+      rc2 = trc_set_force_cartesian(h2, 1_c_int);    call expect(rc2 == TRC_OK, name//": set_force_cartesian")
+      rc2 = trc_set_basis_json(h2, 'basis_sets/cc-pvdz.json'//c_null_char)
+      call expect(rc2 == TRC_OK, name//": set_basis_json")
+      rc2 = trc_set_aux_json(h2, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      call expect(rc2 == TRC_OK, name//": set_aux_json")
+      rc2 = trc_set_method(h2, name//c_null_char, 3_c_int); call expect(rc2 == TRC_OK, name//": set_method")
+      rc2 = trc_set_convergence(h2, 1.0e-10_c_double, 1.0e-6_c_double, 100_c_int, 10_c_int)
+      call expect(rc2 == TRC_OK, name//": set_convergence")
+      rc2 = trc_set_rimp2(h2, 1_c_int, 20_c_int);    call expect(rc2 == TRC_OK, name//": set_rimp2")
+      rc2 = trc_run_scf(h2);                         call expect(rc2 == TRC_OK, name//": run_scf")
+      rc2 = trc_energy(h2, e_scf2);                  call expect(rc2 == TRC_OK, name//": E_scf alone")
+      rc2 = trc_run_rimp2(h2);                       call expect(rc2 == TRC_OK, name//": run_rimp2")
+      rc2 = trc_rimp2_energy(h2, e_os2, e_ss2);      call expect(rc2 == TRC_OK, name//": raw E_os/E_ss")
+      rc2 = trc_energy(h2, e_dh);                    call expect(rc2 == TRC_OK, name//": weighted total")
+
+      call expect(abs(e_os2 - e_ss2) > 1.0e-3_dp, name//": E_os and E_ss are genuinely different, not E_os == E_ss")
+
+      e_dh_expected = e_scf2 + pt2_cos_lit*e_os2 + pt2_css_lit*e_ss2
+      print '(a,a,a,f20.12,a,f20.12,a,es9.2)', "context_scf: ", name, " E_dh handle ", e_dh, &
+         "  E_scf+cos*os+css*ss (literals) ", e_dh_expected, "  diff ", e_dh - e_dh_expected
+      call expect(abs(e_dh - e_dh_expected) < 1.0e-12_dp, &
+                  name//": double hybrid total = E_scf + pt2_cos*E_os + pt2_css*E_ss (literals) to round-off")
+      rc2 = trc_destroy(h2);                         call expect(rc2 == TRC_OK, name//": destroy")
+   end subroutine check_double_hybrid
+
+   ! The auxiliary (or jkfit) basis must end up on the SAME Cartesian/
+   ! spherical convention as the orbital basis regardless of which is
+   ! set first (pyscf's own auxmol.cart = mol.cart rule) --
+   ! trc_set_basis_json/trc_set_aux_json only inherit the convention
+   ! FORWARD (aux from an already-loaded orbital basis), so an aux
+   ! basis set FIRST had nothing to inherit from and could silently
+   ! disagree once the orbital basis loaded after it. Two bases with
+   ! genuinely different native tags exercise both orders: 6-31g.json
+   ! has no spherical shell anywhere (always Cartesian, no
+   ! force_cartesian needed), cc-pvdz-rifit.json is spherical
+   ! throughout -- orbital-first inherits correctly (already exercised
+   ! elsewhere in this program, confirmed again here); aux-first must
+   ! now be refused rather than silently mismatched.
+   subroutine check_aux_order()
+      type(c_ptr) :: h3, h4
+      integer(c_int) :: rc3
+
+      ! Correct order: orbital first, aux second -- aux inherits the
+      ! orbital's own Cartesian convention and succeeds.
+      rc3 = trc_create(h3);                      call expect(rc3 == TRC_OK, "aux order: create (orbital-first)")
+      rc3 = trc_set_molecule(h3, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(rc3 == TRC_OK, "aux order: set_molecule (orbital-first)")
+      rc3 = trc_set_basis_json(h3, 'basis_sets/6-31g.json'//c_null_char)
+      call expect(rc3 == TRC_OK, "aux order: orbital first succeeds")
+      rc3 = trc_set_aux_json(h3, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      call expect(rc3 == TRC_OK, "aux order: aux after orbital inherits and succeeds")
+      rc3 = trc_destroy(h3);                      call expect(rc3 == TRC_OK, "aux order: destroy (orbital-first)")
+
+      ! Wrong order: aux first -- nothing to inherit from yet, so it
+      ! keeps its own native (spherical) tag; orbital second keeps ITS
+      ! own native (Cartesian) tag -- now refused instead of silently
+      ! running RI-MP2 with two AO spaces that disagree.
+      rc3 = trc_create(h4);                      call expect(rc3 == TRC_OK, "aux order: create (aux-first)")
+      rc3 = trc_set_molecule(h4, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(rc3 == TRC_OK, "aux order: set_molecule (aux-first)")
+      rc3 = trc_set_aux_json(h4, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      call expect(rc3 == TRC_OK, "aux order: aux loaded first, nothing to inherit from yet, succeeds")
+      rc3 = trc_set_basis_json(h4, 'basis_sets/6-31g.json'//c_null_char)
+      call expect(rc3 /= TRC_OK, "aux order: orbital after a mismatched aux is refused, not silently wrong")
+      rc3 = trc_destroy(h4);                      call expect(rc3 == TRC_OK, "aux order: destroy (aux-first)")
+   end subroutine check_aux_order
 
 end program context_scf
