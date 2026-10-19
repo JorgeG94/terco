@@ -302,7 +302,8 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              formamide_pbe_ccpvdz_sph formamide_b3lyp_ccpvdz_sph
              formamide_pbe_631gs formamide_b3lyp_631gs
              nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph
-             water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph)
+             water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph
+             water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph)
   if(case STREQUAL "water_pbe_ccpvdz_sph")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
@@ -346,6 +347,25 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
     set(func wb97x)
+  elseif(case STREQUAL "water_wb97xv_ccpvdz_sph")
+    # VV10 nonlocal correlation (wB97X-V), RKS, spherical -- the semilocal
+    # GGA term, the erf long-range exchange gradient, AND
+    # trc_vv10_grad%vv10_gradient_add's nonlocal term, all three assembled
+    # by trc_scf_gradient. grid_response left at trc_scf_gradient's own
+    # default (OFF, this program's own `.false.` below) -- pyscf's own
+    # nlc gradient has no grid-response term to match against, see
+    # trc_vv10_grad.F90's own header.
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x-v)
+  elseif(case STREQUAL "nh2_wb97xv_ccpvdz_sph")
+    # Same, UKS (ndens=2, fixed core-guess density) -- VV10 reads the
+    # TOTAL density only (trc_vv10_grad.F90's own header), so this is the
+    # one case that checks the UKS reduction (dtot = dens_a + dens_b)
+    # for real.
+    set(xyz nh2.xyz)
+    set(json basis_sets/cc-pvdz.json)
+    set(func wb97x-v)
   else()
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
@@ -399,6 +419,12 @@ endif()
 # fully reconverged KS-DFT energy, at two grid levels -- RKS SVWN/PBE on
 # water, UKS PBE on the OH radical -- see check_xc_grad_fd.F90's header.
 terco_add_check(check_xc_grad_fd check_xc_grad_fd.F90 NEEDS_BASIS)
+
+# The VV10 gradient's own formula, isolated from the SCF entirely: a
+# fixed-density finite difference of E_nlc[D] alone -- see
+# check_vv10_grad_fixedd_fd.F90's own header for why this is a sharper
+# gate than check_xc_grad_fd's reconverged-SCF wB97X-V case.
+terco_add_check(check_vv10_grad_fixedd_fd check_vv10_grad_fixedd_fd.F90 NEEDS_BASIS)
 
 # trc_xc_grad's basis-function (Pulay) term ALONE, against a finite
 # difference that holds the grid itself fixed too -- no SCF, no grid
@@ -1159,6 +1185,11 @@ target_link_libraries(bench_xc PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_vv10 bench_vv10.F90)
 target_compile_definitions(bench_vv10 PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_vv10 PRIVATE ${main_lib} terco_test_basis)
+# The VV10 GRADIENT's own time next to the rest of the wB97X-V gradient --
+# see bench_vv10_grad.F90's own header. Not a pass/fail, like its siblings.
+add_executable(bench_vv10_grad bench_vv10_grad.F90)
+target_compile_definitions(bench_vv10_grad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_vv10_grad PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_gc bench_gc.F90)
 target_compile_definitions(bench_gc PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_gc PRIVATE ${main_lib} terco_test_basis)
