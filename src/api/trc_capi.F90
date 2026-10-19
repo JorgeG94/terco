@@ -182,7 +182,8 @@ module trc_capi
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
-   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_AVAILABLE_FUNCTIONALS
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
+                                XC_AVAILABLE_FUNCTIONALS
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
@@ -2752,11 +2753,20 @@ contains
    end function trc_nspin
 
    function trc_energy(handle, energy) result(status) bind(c, name="trc_energy")
-      !! The SCF total, plus the RI-MP2 correlation if that ran.
+      !! The SCF total, plus the RI-MP2 correlation if that ran: the FULL
+      !! E_os + E_ss for a plain post-SCF RI-MP2 (any functional, or
+      !! Hartree-Fock), or c_os E_os + c_ss E_ss for a double hybrid --
+      !! trc_rimp2_energy below always reports the raw, unscaled E_os/E_ss
+      !! either way, so a caller after the PT2 part alone never sees this
+      !! weighting. A caller asking for a double hybrid's total needs
+      !! nothing beyond the ordinary trc_run_scf/trc_run_rimp2/trc_energy
+      !! sequence any RI-MP2 run already uses -- the weighting is applied
+      !! here, once, from the functional's own pt2_cos/pt2_css.
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: energy
       integer(c_int) :: status
       type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
       energy = 0.0_c_double
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -2764,7 +2774,16 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
       energy = real(cx%res%energy, c_double)
-      if (cx%rimp2_ok) energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      if (cx%rimp2_ok) then
+         if (len_trim(cx%opts%functional) > 0 .and. xc_functional_by_name(cx%opts%functional, func)) then
+            if (xc_is_double_hybrid(func)) then
+               energy = energy + real(func%pt2_cos*cx%e_os + func%pt2_css*cx%e_ss, c_double)
+               status = TRC_OK
+               return
+            end if
+         end if
+         energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      end if
       status = TRC_OK
    end function trc_energy
 

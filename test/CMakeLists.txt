@@ -640,6 +640,21 @@ set_tests_properties(
   terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# Double hybrids (b2plyp, b2gp-plyp -- trc_xc_functional.F90): the SCF
+# (four-centre AND --df, cc-pVDZ-RIFIT doing double duty as --df's jkfit
+# too) then RI-MP2 (plain and chained off --df's fit) on water and
+# formamide, cc-pVDZ and 6-31G*, plus OH/b2plyp UKS from a fixed density,
+# against pyscf's own custom-hybrid KS ('0.53*HF + 0.47*B88, 0.73*LYP')
+# plus DF-MP2/DF-UMP2 (test/pyscf_refs/dh.ref, generate.py's gen_dh).
+add_executable(scf_dh scf_dh.F90)
+target_compile_definitions(scf_dh PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_dh PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_dh PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_dh COMMAND scf_dh)
+set_tests_properties(
+  terco/scf_dh PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks

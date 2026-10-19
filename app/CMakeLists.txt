@@ -68,6 +68,16 @@ if(TERCO_ENABLE_TESTING)
   endforeach()
 
   # A missing geometry is an error with a message, not a crash.
+  # A double hybrid whose SCF stops unconverged never runs RI-MP2, so its
+  # TOTAL ENERGY is the SCF energy, never the unset double-hybrid total (0).
+  add_test(NAME terco/cli_dh_unconverged COMMAND terco_cli ${_xyz}/water.xyz -b
+                                                 6-31g -f b2plyp --iterations 1)
+  set_tests_properties(
+    terco/cli_dh_unconverged
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "TOTAL ENERGY +-7[0-9]\\." FAIL_REGULAR_EXPRESSION
+               "TOTAL ENERGY +-?0\\.0+ ")
+
   add_test(NAME terco/cli_missing_file COMMAND terco_cli no_such_file.xyz)
   set_tests_properties(terco/cli_missing_file PROPERTIES WILL_FAIL TRUE)
 
