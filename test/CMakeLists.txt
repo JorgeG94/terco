@@ -712,6 +712,32 @@ set_tests_properties(terco/check_df_vs_pyscf
   PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# The density-fitting DERIVATIVE integrals (scripts/gen_df_grad.py) against
+# pyscf's int3c2e_ip1/ip2 and int2c2e_ip1: raw one-hot tensors from the host
+# class dispatch, and the device drivers' Y/Z contraction against both those
+# and test/pyscf_refs/dfg_ints_<case>.ref -- see check_df_grad_ints.F90's
+# header. def2-universal-jkfit carries g auxiliary shells, so this covers the
+# shipped DFG_LMAX_AUX = 4 ceiling.
+#
+foreach(case IN ITEMS water_631gs water_ccpvdz)
+  if(case STREQUAL "water_631gs")
+    set(_bas basis_sets/6-31gs.json)
+  else()
+    set(_bas basis_sets/cc-pvdz.json)
+  endif()
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/dfg_ints_${case}_probe.bin)
+  terco_add_check(check_df_grad_ints_${case} check_df_grad_ints.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS water.xyz ${_bas}
+                  basis_sets/def2-universal-jkfit.json ${dump} ${case})
+  set_tests_properties(terco/check_df_grad_ints_${case}
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+  # Its own module directory: both cases compile the same source, whose
+  # helper module would otherwise race into one shared directory.
+  set_target_properties(check_df_grad_ints_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_df_grad_ints_${case})
+endforeach()
+
+#
 # The polarisable continuum's cavity, S and D, and charge solve, with no
 # integrals: Born-ion and sphere identities, the refusals, and pyscf's own
 # surface arrays from test/pyscf_refs/pcm_cavity_water.ref.

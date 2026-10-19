@@ -493,6 +493,13 @@ if(_regen)
     terco_gen("gen_df.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
               --lmax-aux ${_df_lmax_aux} ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
               ${_df_force_rys_flag} --split ${_gen_out})
+    # The DF integrals' nuclear derivatives, contracted (the --df gradient,
+    # trc_scf_grad_df.F90): Rys for every class, since a derivative raises an
+    # index past the written-out VRR+HRR's compile wall (gen_df_grad.py's
+    # docstring). Same ceilings and unroll threshold as gen_df.py above.
+    terco_gen("gen_df_grad.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df_grad.py --lmax ${_df_lmax}
+              --lmax-aux ${_df_lmax_aux} ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
+              --split ${_gen_out})
 
     # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
     # `comp` and trc_batch.F90's `cart_pow`, the flat table
@@ -549,7 +556,7 @@ if(_regen)
     "kernels for LMAX=${TERCO_LMAX}, ${TERCO_CART_ORDER} order" _terco_gen_main
     "${_gen_out}" "${_gen_dir}" ${_prune} ${_stampable}
     ${_scripts}/gen_perclass.py ${_scripts}/gen_vrr.py ${_scripts}/gen_hrr.py
-    ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/rys_inline.py
+    ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/gen_df_grad.py ${_scripts}/rys_inline.py
     ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/cartorder.py)
 endif()
 
