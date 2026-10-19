@@ -32,6 +32,15 @@ endif()
 
 install(TARGETS terco_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# test/check_cli_grad (test/CMakeLists.txt, added before this directory by
+# the root CMakeLists.txt) runs this executable as a subprocess, given its
+# path through a generator expression -- but ctest itself does not know
+# that check_cli_grad's own build needs terco_cli built first unless told,
+# so that ordering is declared here, now that both targets exist.
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad)
+  add_dependencies(check_cli_grad terco_cli)
+endif()
+
 # The basis sets the tests use, so `--basis def2-svp` works out of the box
 # after an install. sap_helfem_large.json is not a basis but the fitted atomic
 # potentials `--guess sap` reads; it is found the same way.
@@ -68,6 +77,16 @@ if(TERCO_ENABLE_TESTING)
   endforeach()
 
   # A missing geometry is an error with a message, not a crash.
+  # A double hybrid whose SCF stops unconverged never runs RI-MP2, so its
+  # TOTAL ENERGY is the SCF energy, never the unset double-hybrid total (0).
+  add_test(NAME terco/cli_dh_unconverged COMMAND terco_cli ${_xyz}/water.xyz -b
+                                                 6-31g -f b2plyp --iterations 1)
+  set_tests_properties(
+    terco/cli_dh_unconverged
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "TOTAL ENERGY +-7[0-9]\\." FAIL_REGULAR_EXPRESSION
+               "TOTAL ENERGY +-?0\\.0+ ")
+
   add_test(NAME terco/cli_missing_file COMMAND terco_cli no_such_file.xyz)
   set_tests_properties(terco/cli_missing_file PROPERTIES WILL_FAIL TRUE)
 

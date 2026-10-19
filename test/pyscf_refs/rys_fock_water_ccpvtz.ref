@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_rys_fock_vs_pyscf_water_ccpvtz
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["rys_fock_water_ccpvtz"] -> gen_rys_fock
 # pyscf: 2.14.0
-# hash: 122b5656e9375e1d6eb41f5b66394658d88cd804dbc849271c9ce37be31433e4
-# files: test/pyscf_refs/generate.py test/check_rys_fock_vs_pyscf.F90 test/basis_sets/cc-pvtz.json test/water.xyz
+# hash-scheme: case-ast-v1
+# hash: 5e1ed23748e964c11138720f7ee9169fab293b4a08cbcb025665102d0e2a30d3
+# files: test/check_rys_fock_vs_pyscf.F90 test/basis_sets/cc-pvtz.json test/water.xyz
 NAT 3
 NAO 65
 S 65 65

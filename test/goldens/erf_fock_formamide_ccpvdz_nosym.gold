@@ -1,0 +1,10 @@
+# terco golden v1
+# case: erf_fock_formamide_ccpvdz_nosym
+# from: gfortran build bgold at 11d19bc, by test/goldens/regen_goldens.py
+TR_DJ 1.8203252903380812e+03
+NORM_J 2.6757645954394837e+02
+WSUM_J -4.3453869581163707e+02
+TR_DK 1.8209304553000391e+03
+NORM_K 1.4095556555653155e+02
+WSUM_K -2.6361314364979222e+01
+END

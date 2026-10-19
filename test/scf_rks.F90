@@ -32,6 +32,7 @@ program scf_rks
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, &
                            ref_read_matrix3, ref_report
+   use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
 
    integer, parameter :: NCASE = 12
@@ -53,6 +54,7 @@ program scf_rks
    logical :: all_ok
    integer :: refu, ncase_ref, nfail
    character(len=16) :: tag
+   character(len=32) :: gkey
    logical :: has_ref
 
    open (newunit=unit, file="rks_probe.bin", access="stream", form="unformatted", status="replace")
@@ -65,6 +67,7 @@ program scf_rks
    ! test/pyscf_refs/generate.py has nothing to bootstrap from. The FAIL
    ! happens below, after the dump is safely written.
    call ref_open("rks.ref", refu, has_ref)
+   call golden_begin("scf_rks")
    nfail = 0
    if (has_ref) then
       call ref_read_int(refu, "NCASE", ncase_ref)
@@ -148,6 +151,8 @@ program scf_rks
          print "(a,a8,a,i1,a,i3,a,f22.12)", "  ", "hf", " nspin ", res%nspin, " iter ", res%iterations, &
             "  E = ", res%energy
       end if
+      gkey = trim(mol(ic))//"_"//merge(fn(ic), "hf      ", len_trim(fn(ic)) > 0)
+      call golden_put("E_"//trim(gkey), res%energy)
 
       ! Everything pyscf needs to reproduce this case.
       write (unit) int(bas%nao, int64), int(natm, int64), int(nsh, int64), int(res%nspin, int64), &
@@ -219,6 +224,7 @@ program scf_rks
          opts2%max_iter = 1
          call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts2, res2, dguess=dm_ref)
          dat = abs(res2%energy - e_ref)
+         call golden_put("E_AT_PYSCF_D_"//trim(gkey), res2%energy)
          print "(a,a,a,es10.2,a,es10.2)", "    ", trim(name_ref), &
             ": de(converged) ", de, "  de(at pyscf D) ", dat
          ! The CONVERGED energy of an open-shell DFT case gets a looser bound
@@ -242,6 +248,7 @@ program scf_rks
       end block
       end if
    end do
+   call golden_end()
    close (unit)
    call bas%release()
    if (has_ref) call ref_close(refu)

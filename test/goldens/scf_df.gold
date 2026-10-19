@@ -1,0 +1,16 @@
+# terco golden v1
+# case: scf_df
+# from: gfortran build bgold at 11d19bc, by test/goldens/regen_goldens.py
+E_water_cc-pvdz_hf -7.6027082285326401e+01
+E_water_cc-pvdz_pbe -7.6334720791347962e+01
+E_water_cc-pvdz_b3lyp -7.6421575948374922e+01
+E_water_6-31gs_hf -7.6010476165641265e+01
+E_water_6-31gs_pbe -7.6321867242384457e+01
+E_water_6-31gs_b3lyp -7.6408742715588545e+01
+E_formamide_cc-pvdz_hf -1.6894871761683834e+02
+E_formamide_cc-pvdz_pbe -1.6971114659893880e+02
+E_formamide_cc-pvdz_b3lyp -1.6990393840751210e+02
+E_formamide_6-31gs_hf -1.6892962703084595e+02
+E_formamide_6-31gs_pbe -1.6969403366472488e+02
+E_formamide_6-31gs_b3lyp -1.6988754056767249e+02
+END

@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: check_xc_energy
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["xc_energy"] -> gen_xc_energy
 # pyscf: 2.14.0
-# hash: 1c366af55657df691dee2ae4708bb61c6d417ec1e08df8da99951a9f670adcd4
-# files: test/pyscf_refs/generate.py test/check_xc_energy.F90
+# hash-scheme: case-ast-v1
+# hash: 7f04d048523c7184da01001a467dfb0bf2ae56c9282af57572534652e3488c20
+# files: test/check_xc_energy.F90
 NAO 30
 NPTS 132240
 NFUNC 20
