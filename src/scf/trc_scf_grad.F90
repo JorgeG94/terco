@@ -42,7 +42,8 @@ module trc_scf_grad
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_sph_to_cart
    use trc_xc_functional, only: trc_xc_functional_t
-   use trc_xc_grad, only: xc_gradient_add
+   use trc_xc_grad, only: xc_gradient_add, xc_grad_step_names
+   use trc_step_table, only: step_table_t
    use trc_scf_df, only: df_jk_t
    use trc_scf_grad_df, only: df_two_electron_gradient
    use trc_vv10_grad, only: vv10_gradient_add
@@ -126,7 +127,8 @@ contains
    end subroutine energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
-                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux)
+                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux, &
+                               verbose)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -218,13 +220,25 @@ contains
       !! trc_capi.F90's trc_run_gradient.
       type(trc_basis_t), intent(inout), optional :: aux
       !! The auxiliary (jkfit) basis `dfjk` was fitted with.
+      logical, intent(in), optional :: verbose
+      !! Log the gradient's timing table, its phases and the XC term's
+      !! steps, through pic's logger at PERFORMANCE. Default off.
 
       type(trc_pairlist_t) :: pl
+      type(step_table_t) :: gst, xst
+      real(dp) :: tc
+      logical :: talk
       integer :: nlc_level
       integer :: nao, nsp, s
       integer :: nocc(2)
       real(dp) :: occ_s, exx_use, exx_lr_use, omega_use
       real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :)
+
+      talk = .false.
+      if (present(verbose)) talk = verbose
+      call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10"])
+      call xst%init("xc grad", xc_grad_step_names())
+      call gst%step_on(lp, 1, tc)
 
       nao = b%nao
       nsp = merge(b%nao_sph, b%nao, b%spherical)
@@ -291,6 +305,8 @@ contains
          dtot = dens(:, :, 1) + dens(:, :, 2)
       end if
 
+      call gst%step_off(lp, 1, tc)
+      call gst%step_on(lp, 2, tc)
       call pl%build(b, thresh)
       call pl%to_device()
 
@@ -313,15 +329,20 @@ contains
          ! above) -- only `dtot` and `grad` are freshly copied up. ---
          !$acc enter data copyin(dtot, grad)
       end if
+      call gst%step_off(lp, 2, tc)
+      call gst%step_on(lp, 3, tc)
       call trc_1e_gradient(b, pl, wmat, dtot, grad)
+      call gst%step_off(lp, 3, tc)
 
       ! --- exchange-correlation, added on top, LDA/GGA only. `dens` is
       ! still present and correct on the device at this point (see this
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) then
+         call gst%step_on(lp, 4, tc)
          call xc_gradient_add(b, lp, func, nspin, dens, grad, &
                               grid_level=grid_level, grid_max_pts=grid_max_pts, &
-                              grid_response=grid_response, rho_tol=rho_tol)
+                              grid_response=grid_response, rho_tol=rho_tol, timing=xst)
+         call gst%step_off(lp, 4, tc)
          ! --- VV10 nonlocal correlation, added on top. Its own grid, its
          ! own screen -- see trc_vv10_grad's own header. `dens` is still
          ! present and correct on the device (same note as xc_gradient_add
@@ -333,9 +354,11 @@ contains
             ! screens at trc_vv10's own VV10_RHO_TOL, the same constant
             ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
             ! see that module's own header.
+            call gst%step_on(lp, 5, tc)
             call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
                                    grid_level=nlc_level, grid_max_pts=grid_max_pts, &
                                    grid_response=grid_response)
+            call gst%step_off(lp, 5, tc)
          end if
       end if
 
@@ -347,6 +370,12 @@ contains
 
       call pl%release()
       deallocate (wmat, dtot, dens)
+
+      if (talk) then
+         call lp%sync()
+         call gst%report(sum(gst%t), 0, 1)
+         if (present(func)) call xst%report(gst%t(4), 0, 1)
+      end if
    end subroutine trc_scf_gradient
 
    subroutine two_electron_4c(b, thresh, dens, exx_use, exx_lr_use, omega_use, grad)

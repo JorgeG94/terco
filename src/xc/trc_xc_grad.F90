@@ -225,10 +225,12 @@ module trc_xc_grad
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, DEFAULT_GRID_LEVEL
    use trc_dft_partition, only: becke_partition_derivatives
    use trc_error, only: error_t
+   use trc_step_table, only: step_table_t
    implicit none
    private
 
    public :: xc_gradient_add, XC_GRAD_RHO_TOL
+   public :: XC_GRAD_NSTEP, xc_grad_step_names
    public :: xc_grad_collocate1, xc_grad_collocate2, xc_grad_gather
    public :: xc_grad_scatter, xc_grad_scatter_points
    ! Exported for trc_vv10_grad: the AO-value/gradient/Hessian collocation,
@@ -237,12 +239,25 @@ module trc_xc_grad
    ! specific about them (no `kid`/`coef`/`xc_eval_point` in sight) -- VV10's
    ! gradient reuses them rather than keeping a second, parallel copy.
 
+   integer, parameter :: XC_GRAD_NSTEP = 10
+   !! Steps of the timing table `xc_gradient_add` fills (see
+   !! `xc_grad_step_names`); a caller's step_table_t is initialised with them.
+   integer, parameter :: ST_GRID = 1, ST_SCREEN = 2, ST_ALLOC = 3, ST_COLLOC = 4, ST_GATHER = 5, &
+                         ST_GEMM = 6, ST_POINTS = 7, ST_SCATTER = 8, ST_PDERIV = 9, ST_RESP = 10
+
    real(dp), parameter :: XC_GRAD_RHO_TOL = 1.0e-12_dp
    !! Same role and value as trc_xc.F90's XC_RHO_TOL: a batch whose bound on
    !! rho is below this contributes nothing and is skipped before any
    !! device work for it.
 
 contains
+
+   pure function xc_grad_step_names() result(names)
+      !! The step names of `xc_gradient_add`'s timing table, in order.
+      character(len=16) :: names(XC_GRAD_NSTEP)
+      names = [character(len=16) :: "grid", "screen", "alloc", "collocate", "gather", &
+               "gemm", "points", "scatter", "partition deriv", "response"]
+   end function xc_grad_step_names
 
    !
    ! The one entry point. Builds its own DFT quadrature at `b`'s geometry
@@ -252,7 +267,7 @@ contains
    ! into `grad`.
    !
    subroutine xc_gradient_add(b, lp, func, nspin, dens, grad, grid_level, grid_max_pts, rho_tol, &
-                              grid_response)
+                              grid_response, timing)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -274,8 +289,15 @@ contains
       !! (what check_xc_grad_fixedgrid_fd's fixed-grid finite difference
       !! isolates, and what pyscf's own `grid_response=False` default
       !! compares against in check_xc_grad_vs_pyscf).
+      type(step_table_t), intent(inout), optional, target :: timing
+      !! Device-synced time per step, ADDED into; initialised by the caller
+      !! with `xc_grad_step_names()`. Absent, a private table is kept and
+      !! dropped.
 
       type(dft_grid_t) :: grid
+      type(step_table_t), target :: tbl_own
+      type(step_table_t), pointer :: tbl
+      real(dp) :: tc
       type(trc_xc_grid_t) :: xg
       type(error_t) :: err
       logical :: is_gga, gresp
@@ -329,6 +351,14 @@ contains
       gresp = .true.
       if (present(grid_response)) gresp = grid_response
 
+      if (present(timing)) then
+         tbl => timing
+      else
+         call tbl_own%init("xc grad", xc_grad_step_names())
+         tbl => tbl_own
+      end if
+
+      call tbl%step_on(lp, ST_GRID, tc)
       allocate (at_z(b%natm), source=nint(b%at_z))
       call build_dft_grid(b%at_r, at_z, grid, err, level=glevel)
       if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
@@ -340,6 +370,7 @@ contains
       call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=gmaxpts, &
                     atom=grid%atom, qw=grid%quad_weights)
       call xg%to_device()
+      call tbl%step_off(lp, ST_GRID, tc)
 
       if (xg%npts > 0) then
          ! AO -> atom, built once from the shell -> atom map `basis_build`
@@ -366,7 +397,7 @@ contains
          grad_extra = 0.0_dp
 
          call xc_grad_drive(b, lp, is_gga, nspin, func%nk, func%kid, func%coef, dens, xg, rtol, &
-                            ao_atom, grad, gresp, b%at_r, at_z, grid%scheme, grid%adjust, grad_extra)
+                            ao_atom, grad, gresp, b%at_r, at_z, grid%scheme, grid%adjust, grad_extra, tbl)
 
          if (gresp) then
             !$acc update self(grad)
@@ -391,7 +422,7 @@ contains
    ! shape-grouped chunks.
    !
    subroutine xc_grad_drive(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, rtol, ao_atom, grad, &
-                            gresp, at_r, at_z, scheme, adjust, grad_extra)
+                            gresp, at_r, at_z, scheme, adjust, grad_extra, tbl)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       logical, intent(in) :: is_gga
@@ -408,16 +439,22 @@ contains
       integer, intent(in) :: at_z(b%natm)
       integer, intent(in) :: scheme, adjust
       real(dp), intent(inout) :: grad_extra(3, b%natm)
+      type(step_table_t), intent(inout) :: tbl
 
       integer :: ib, npb, nloc
+      logical :: act
+      real(dp) :: tc
 
       do ib = 1, xg%nbatch
          npb = xg%b_off(ib + 1) - xg%b_off(ib)
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          if (npb == 0 .or. nloc == 0) cycle
-         if (.not. xc_grad_batch_active(ib, xg, b%nao, nspin, dens, rtol)) cycle
+         call tbl%step_on(lp, ST_SCREEN, tc)
+         act = xc_grad_batch_active(ib, xg, b%nao, nspin, dens, rtol)
+         call tbl%step_off(lp, ST_SCREEN, tc)
+         if (.not. act) cycle
          call xc_grad_one_batch(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, ib, npb, nloc, &
-                                ao_atom, grad, gresp, at_r, at_z, scheme, adjust, grad_extra)
+                                ao_atom, grad, gresp, at_r, at_z, scheme, adjust, grad_extra, tbl)
       end do
    end subroutine xc_grad_drive
 
@@ -459,7 +496,7 @@ contains
    ! no padding to match.
    !
    subroutine xc_grad_one_batch(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, ib, npb, nloc, &
-                                ao_atom, grad, gresp, at_r, at_z, scheme, adjust, grad_extra)
+                                ao_atom, grad, gresp, at_r, at_z, scheme, adjust, grad_extra, tbl)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       logical, intent(in) :: is_gga
@@ -476,6 +513,7 @@ contains
       integer, intent(in) :: at_z(b%natm)
       integer, intent(in) :: scheme, adjust
       real(dp), intent(inout) :: grad_extra(3, b%natm)
+      type(step_table_t), intent(inout) :: tbl
 
       real(dp), allocatable :: chi(:, :), gchi(:, :, :), hchi(:, :, :)
       real(dp), allocatable :: dloc(:, :, :), xmat(:, :, :)
@@ -486,8 +524,9 @@ contains
       real(dp), allocatable :: dweights(:, :, :)
       type(error_t) :: err
       integer :: s, g, a, own, g0
-      real(dp) :: contrib
+      real(dp) :: contrib, tc
 
+      call tbl%step_on(lp, ST_ALLOC, tc)
       allocate (chi(npb, nloc), gchi(npb, nloc, 3))
       allocate (dloc(nloc, nloc, nspin), xmat(npb, nloc, nspin))
       allocate (pall(npb, 3*nloc, nspin), tall(3*nloc, nloc, nspin))
@@ -499,6 +538,11 @@ contains
          allocate (q1all(npb, 3*nloc, nspin), q2all(npb, 3*nloc, nspin), rall(npb, nloc, nspin))
          allocate (rmat(npb, nloc, nspin), rmatx(npb, nloc, nspin))
          !$acc enter data create(hchi, q1all, q2all, rall, rmat, rmatx)
+      end if
+      call tbl%step_off(lp, ST_ALLOC, tc)
+
+      call tbl%step_on(lp, ST_COLLOC, tc)
+      if (is_gga) then
          call xc_grad_collocate2(b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
                                  xg%npts, xg%r, xg%nbatch, xg%b_off, xg%b_shoff, size(xg%b_sh), &
                                  xg%b_sh, xg%b_shao, ib, npb, nloc, chi, gchi, hchi)
@@ -507,16 +551,23 @@ contains
                                  xg%npts, xg%r, xg%nbatch, xg%b_off, xg%b_shoff, size(xg%b_sh), &
                                  xg%b_sh, xg%b_shao, ib, npb, nloc, chi, gchi)
       end if
+      call tbl%step_off(lp, ST_COLLOC, tc)
 
+      call tbl%step_on(lp, ST_GATHER, tc)
       call xc_grad_gather(b%nao, size(xg%b_ao), xg%b_ao, xg%b_aooff(ib), nloc, nspin, dens, dloc)
+      call tbl%step_off(lp, ST_GATHER, tc)
 
+      call tbl%step_on(lp, ST_GEMM, tc)
       do s = 1, nspin
          call lp%gemm_mat(chi, dloc(:, :, s), xmat(:, :, s))
       end do
+      call tbl%step_off(lp, ST_GEMM, tc)
 
       if (is_gga) then
+         call tbl%step_on(lp, ST_POINTS, tc)
          call xc_grad_point_gga(npb, xg%npts, xg%w, xg%b_off(ib), nloc, nspin, nk, kid, coef, &
                                 chi, gchi, hchi, xmat, pall, q1all, q2all, rall, fxc, qmove)
+         call tbl%step_off(lp, ST_POINTS, tc)
          ! GRID RESPONSE, point-motion piece -- see this module's header.
          ! `rmat`/`rmatx` need every point's `rall` (the GEMM below
          ! contracts across the whole batch), so they cannot be fused into
@@ -524,6 +575,7 @@ contains
          ! is; `xc_grad_pointmotion_gga` ADDS its own contribution into the
          ! `qmove` that kernel already seeded.
          if (gresp) then
+            call tbl%step_on(lp, ST_GEMM, tc)
             do s = 1, nspin
                call lp%gemm_mat(rall(:, :, s), dloc(:, :, s), rmat(:, :, s))
             end do
@@ -531,18 +583,26 @@ contains
                call lp%gemm_mat(rall(:, :, 2), dloc(:, :, 1), rmatx(:, :, 1))
                call lp%gemm_mat(rall(:, :, 1), dloc(:, :, 2), rmatx(:, :, 2))
             end if
+            call tbl%step_off(lp, ST_GEMM, tc)
+            call tbl%step_on(lp, ST_POINTS, tc)
             call xc_grad_pointmotion_gga(npb, nloc, nspin, q1all, q2all, rmat, rmatx, qmove)
+            call tbl%step_off(lp, ST_POINTS, tc)
          end if
       else
+         call tbl%step_on(lp, ST_POINTS, tc)
          call xc_grad_point_lda(npb, xg%npts, xg%w, xg%b_off(ib), nloc, nspin, nk, kid, coef, &
                                 chi, gchi, xmat, pall, fxc, qmove)
+         call tbl%step_off(lp, ST_POINTS, tc)
       end if
 
       ! GRID RESPONSE, point-motion piece, scattered: every point's
       ! `qmove` lands on the atom that OWNS the point (xg%atom), not on
       ! the atom of any basis function -- see this module's header.
+      call tbl%step_on(lp, ST_SCATTER, tc)
       if (gresp) call xc_grad_scatter_points(xg%npts, xg%atom, xg%b_off(ib), npb, qmove, b%natm, grad)
+      call tbl%step_off(lp, ST_SCATTER, tc)
 
+      call tbl%step_on(lp, ST_GEMM, tc)
       do s = 1, nspin
          call lp%gemm_mat(pall(:, :, s), chi, tall(:, :, s), transa="T", beta=0.0_dp)
       end do
@@ -555,9 +615,12 @@ contains
             call lp%gemm_mat(q2all(:, :, 2), rall(:, :, 1), tall(:, :, 2), transa="T", beta=1.0_dp)
          end if
       end if
+      call tbl%step_off(lp, ST_GEMM, tc)
 
+      call tbl%step_on(lp, ST_SCATTER, tc)
       call xc_grad_scatter(ib, xg%nbatch, xg%b_aooff, size(xg%b_ao), xg%b_ao, ao_atom, b%nao, &
                            nloc, nspin, dloc, tall, b%natm, grad)
+      call tbl%step_off(lp, ST_SCATTER, tc)
 
       ! GRID RESPONSE, weight-derivative piece -- HOST side (see this
       ! module's header and xc_gradient_add's own comment on why): needs
@@ -567,12 +630,15 @@ contains
       ! (xg%build never modifies them again after this batch's collocation
       ! reads the device copy).
       if (gresp) then
+         call tbl%step_on(lp, ST_PDERIV, tc)
          !$acc update self(fxc)
          g0 = xg%b_off(ib)
          allocate (dweights(3, b%natm, npb))
          call becke_partition_derivatives(xg%r(:, g0:g0 + npb - 1), at_r, at_z, &
                                           xg%atom(g0:g0 + npb - 1), scheme, adjust, dweights, err)
          if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
+         call tbl%step_off(lp, ST_PDERIV, tc)
+         call tbl%step_on(lp, ST_RESP, tc)
          do g = 1, npb
             contrib = xg%qw(g0 + g - 1)*fxc(g)
             own = xg%atom(g0 + g - 1)
@@ -589,14 +655,17 @@ contains
             end do
          end do
          deallocate (dweights)
+         call tbl%step_off(lp, ST_RESP, tc)
       end if
 
+      call tbl%step_on(lp, ST_ALLOC, tc)
       !$acc exit data delete(chi, gchi, dloc, xmat, pall, tall, fxc, qmove)
       deallocate (chi, gchi, dloc, xmat, pall, tall, fxc, qmove)
       if (is_gga) then
          !$acc exit data delete(hchi, q1all, q2all, rall, rmat, rmatx)
          deallocate (hchi, q1all, q2all, rall, rmat, rmatx)
       end if
+      call tbl%step_off(lp, ST_ALLOC, tc)
    end subroutine xc_grad_one_batch
 
    !

@@ -2672,21 +2672,23 @@ contains
                                   cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                   func=func, grid_level=cx%opts%grid_level, &
                                   grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b)
+                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                  verbose=cx%opts%verbose)
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                  dfjk=cx%dfjk, aux=cx%jb%b)
+                                  dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose)
          end if
       else if (have_func) then
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                func=func, grid_level=cx%opts%grid_level, &
                                grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                               nlc_grid_level=cx%opts%nlc_grid_level)
+                               nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose)
       else
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad)
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                               verbose=cx%opts%verbose)
       end if
       cx%grad_ok = .true.
       status = TRC_OK
