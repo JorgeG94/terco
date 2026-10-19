@@ -206,13 +206,18 @@ contains
       ! directly, the same two calls `step_table_t%step_on`/`step_off` make
       ! internally.
       !
-      ! Only the VV10 branch also calls `lp%sync()` around its own clock
-      ! (`tm_vv10`, a plain wall time handed back through `t_vv10` for
-      ! `xcst` to accumulate, rather than a `step_table_t` tick): without
-      ! that sync the measured interval could start or stop mid-flight on an
-      ! async device launch left over from either call. The semilocal call
-      ! needs no such sync here -- its own `t_points`/`t_pairs` are timed
-      ! inside `trc_xc_rks`/`trc_xc_uks`.
+      ! Both branches call `lp%sync()` before their own `profiler_stop`:
+      ! without it, an async device launch left over from `trc_xc_rks`/
+      ! `trc_xc_uks` could still be running when the "scf: xc" NVTX range
+      ! closes, so a profiler would show it finishing inside "scf: vv10"
+      ! instead -- the xc row undercounting, the vv10 row overcounting. The
+      ! sync measured free here: `trc_xc_rks`/`trc_xc_uks` already force a
+      ! device-to-host transfer of `exc`/`nelec` (`xc_drive`'s own `!$acc
+      ! update self(eg, ng)`/`update self(vxc)`) before returning, so the
+      ! device is already idle by the time `lp%sync()` runs. VV10's own
+      ! sync (`tm_vv10`, a plain wall time handed back through `t_vv10` for
+      ! `xcst` to accumulate, rather than a `step_table_t` tick) stays for
+      ! the same reason.
       !
       call profiler_start("scf: xc", nvtx_only=.true.)
       if (nspin == 1) then
@@ -222,6 +227,7 @@ contains
          call trc_xc_uks(b, xg, func, d_c, vxc_c, exc, ngrid, rho_tol=rho_tol, &
                          comm=comm, t_points=tp1, t_pairs=tq1, la=lp)
       end if
+      call lp%sync()
       call profiler_stop("scf: xc")
       ! VV10 adds its energy to exc and its potential into vxc_c, on its own
       ! (coarser) grid, before the spherical transform below.
