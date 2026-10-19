@@ -58,6 +58,8 @@ module trc_scf_grad_df
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_scf_df, only: df_jk_t
    use trc_linalg, only: trc_linalg_t
+   use trc_step_table, only: step_table_t
+   use pic_timer, only: timer_type
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, DFG_LMAX, DFG_LMAX_AUX
 #ifdef _OPENACC
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
@@ -66,6 +68,20 @@ module trc_scf_grad_df
    implicit none
    private
    public :: df_two_electron_gradient
+
+   ! The timed steps, reported (global_logger, PERFORMANCE) after every
+   ! gradient in the same table shape DF-JK and RI-MP2 use: device-synced
+   ! seconds, and GFLOP/s for the dense algebra or GB/s for the steps that
+   ! only move memory. The derivative kernels report time only -- their
+   ! operation count is a property of each generated class, measured with
+   ! a profiler, not modelled here.
+   integer, parameter :: ST_JGAM = 1, ST_CSOL = 2, ST_UNPK = 3, ST_HGEMM = 4, ST_XTRSM = 5, &
+                         ST_ZGEMM = 6, ST_YJ = 7, ST_YK = 8, ST_D3C = 9, ST_D2C = 10, NSTEP = 10
+   character(len=22), parameter :: NAMES(NSTEP) = [character(len=22) :: &
+                                   "J gamma (gemv)", "c = L^-T gamma (trsm)", "unpack B", &
+                                   "H = C^T B C (gemm)", "X = H L^-1 (trsm)", "Z += X^T X (gemm)", &
+                                   "Y: J part", "Y: K part (gemm)", "3c derivative kernels", &
+                                   "2c derivative kernels"]
 
 contains
 
@@ -93,7 +109,10 @@ contains
       integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, nrow, s0, s1, p0, np, mu, nu, q, i, p
       integer(int64) :: n8, o8, c8
       logical :: do_k
-      real(dp) :: occ_s, jc
+      real(dp) :: occ_s, jc, tc
+      type(step_table_t) :: tbl
+      type(timer_type) :: tall
+      logical :: dense(NSTEP)
 
       if (b%spherical) error stop "trc_scf_grad_df: the orbital basis is spherical; the DF gradient is Cartesian only"
       if (.not. dfjk%is_ready()) error stop "trc_scf_grad_df: the density fit has not been set up"
@@ -103,6 +122,9 @@ contains
       call dfjk%dims(n, naux, npack)
       if (n /= b%nao .or. naux /= aux%nao) error stop "trc_scf_grad_df: the fit does not match these bases"
       if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
+      call tbl%init("dfgrad", NAMES, bytes_steps=[ST_JGAM, ST_UNPK, ST_YJ])
+      call lp%sync()
+      call tall%start()
       bpk => dfjk%packed_b()
       chol => dfjk%cholesky()
       occ_s = 2.0_dp
@@ -116,8 +138,14 @@ contains
       do concurrent(mu=1:n, nu=1:n, nu <= mu)
          dpk(pack_idx(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*dens(mu, nu)
       end do
+      call tbl%step_on(lp, ST_JGAM, tc)
       call lp%gemv("T", npack, naux, 1.0_dp, bpk, npack, dpk, 0.0_dp, cq)
+      call tbl%step_off(lp, ST_JGAM, tc)
+      call tbl%add_bytes(ST_JGAM, 8_int64*int(npack, int64)*int(naux, int64))
+      call tbl%step_on(lp, ST_CSOL, tc)
       call lp%trsm("L", "L", "T", naux, 1, 1.0_dp, chol, naux, cq, naux)
+      call tbl%step_off(lp, ST_CSOL, tc)
+      call tbl%add_flop(ST_CSOL, int(naux, int64)**2)
 
       do concurrent(q=1:naux, p=1:naux)
          zmat(p, q) = -0.5_dp*j_scale*cq(p)*cq(q)
@@ -161,20 +189,32 @@ contains
                call next_block(aux, s0, ablk, s1, p0, np)
                allocate (tens(n, n, np), half(nc, n, np))
                !$acc enter data create(tens, half)
+               call tbl%step_on(lp, ST_UNPK, tc)
                do concurrent(q=1:np, nu=1:n, mu=1:n)
                   tens(mu, nu, q) = bpk(pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
                end do
+               call tbl%step_off(lp, ST_UNPK, tc)
+               call tbl%add_bytes(ST_UNPK, 8_int64*n8*n8*int(np, int64))
+               call tbl%step_on(lp, ST_HGEMM, tc)
                call lp%gemm("T", "N", nc, n*np, n, 1.0_dp, cocc(1, i0), n, tens, n, 0.0_dp, half, nc)
                call lp%gemm_strided("N", "N", nc, nocc, n, 1.0_dp, half, nc, c8*n8, cocc, n, 0_int64, &
                                     0.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, c8*o8, np)
+               call tbl%step_off(lp, ST_HGEMM, tc)
+               call tbl%add_flop(ST_HGEMM, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
                !$acc exit data delete(tens, half)
                deallocate (tens, half)
                s0 = s1 + 1
             end do
+            call tbl%step_on(lp, ST_XTRSM, tc)
             call lp%trsm("R", "L", "N", nrow, naux, 1.0_dp, chol, naux, xh, nrow)
+            call tbl%step_off(lp, ST_XTRSM, tc)
+            call tbl%add_flop(ST_XTRSM, int(nrow, int64)*int(naux, int64)**2)
             ! --- 3a. Z's K share, this chunk ---
+            call tbl%step_on(lp, ST_ZGEMM, tc)
             call lp%gemm("T", "N", naux, naux, nrow, 0.25_dp*k_scale*occ_s*occ_s, xh, nrow, xh, nrow, &
                          1.0_dp, zmat, naux)
+            call tbl%step_off(lp, ST_ZGEMM, tc)
+            call tbl%add_flop(ST_ZGEMM, 2_int64*int(nrow, int64)*int(naux, int64)**2)
          end if
 
          ! --- 4. Y, one auxiliary block at a time, and the three-centre one -
@@ -185,25 +225,33 @@ contains
             call blk%to_device()
             allocate (tens(n, n, np))
             !$acc enter data create(tens)
+            call tbl%step_on(lp, ST_YJ, tc)
             do concurrent(q=1:np, nu=1:n, mu=1:n)
                tens(mu, nu, q) = jc*cq(p0 - 1 + q)*dens(mu, nu)
             end do
+            call tbl%step_off(lp, ST_YJ, tc)
+            call tbl%add_bytes(ST_YJ, 8_int64*n8*n8*int(np, int64))
             if (do_k) then
                allocate (half(nc, n, np))
                !$acc enter data create(half)
                ! half_q = X_c^q C^T (nc x n), then Y += -(k/2) occ_s^2 C_c half,
                ! every q of the block in one GEMM.
+               call tbl%step_on(lp, ST_YK, tc)
                call lp%gemm_strided("N", "T", nc, n, nocc, 1.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, &
                                     c8*o8, cocc, n, 0_int64, 0.0_dp, half, nc, c8*n8, np)
                call lp%gemm("N", "N", n, n*np, nc, -0.5_dp*k_scale*occ_s*occ_s, cocc(1, i0), n, half, nc, &
                             1.0_dp, tens, n)
+               call tbl%step_off(lp, ST_YK, tc)
+               call tbl%add_flop(ST_YK, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
                !$acc exit data delete(half)
                deallocate (half)
             end if
+            call tbl%step_on(lp, ST_D3C, tc)
             call df_grad_3c_driver(b%nshell, n, b%maxnp, b%sh_l, b%sh_np, b%sh_ao, b%sh_at, &
                                    b%sh_e, b%sh_c, b%sh_r, pl%npair, pl%p_i, pl%p_j, &
                                    blk%nshell, blk%nao, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, blk%sh_at, &
                                    blk%sh_e, blk%sh_c, blk%sh_r, b%natm, tens, grad)
+            call tbl%step_off(lp, ST_D3C, tc)
             !$acc exit data delete(tens)
             deallocate (tens)
             call blk%release()
@@ -216,8 +264,10 @@ contains
       end do
 
       ! --- 3b. the two-centre derivative, once Z is complete ---------------
+      call tbl%step_on(lp, ST_D2C, tc)
       call df_grad_2c_driver(aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
                              aux%sh_e, aux%sh_c, aux%sh_r, b%natm, zmat, grad)
+      call tbl%step_off(lp, ST_D2C, tc)
 
       if (do_k) then
          !$acc exit data delete(cocc)
@@ -225,6 +275,10 @@ contains
       end if
       !$acc exit data delete(dpk, cq, zmat)
       deallocate (dpk, cq, zmat)
+      dense = .false.
+      dense([ST_CSOL, ST_HGEMM, ST_XTRSM, ST_ZGEMM, ST_YK]) = .true.
+      call lp%sync()
+      call tbl%report(tall%get_elapsed_time(), 0, 1, subtotal_mask=dense, subtotal_label="all dense algebra")
    end subroutine df_two_electron_gradient
 
    subroutine next_block(aux, s0, ablk, s1, p0, np)

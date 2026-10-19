@@ -3,9 +3,10 @@
 ! like RI-MP2's: device-synced wall time per step, an optional flop count
 ! (GFLOP/s), an optional byte count for a bandwidth-bound step (GB/s
 ! instead), an NVTX range opened and closed at the same device syncs as the
-! timer, and a report routine that prints the table the way RI-MP2 always
-! has. Lifted out of trc_rimp2_driver.F90 so trc_scf_df.F90 (DF-JK) reports
-! in exactly the same shape rather than a second copy of the same bookkeeping.
+! timer, and a report routine that logs the table (global_logger, at
+! PERFORMANCE) the way RI-MP2 always has. Lifted out of trc_rimp2_driver.F90
+! so trc_scf_df.F90 (DF-JK) reports in exactly the same shape rather than a
+! second copy of the same bookkeeping.
 !
 ! ONE OBJECT, N STEPS. `init` takes the step names and (for a bandwidth-bound
 ! step) which ones report GB/s instead of GFLOP/s; `step_on`/`step_off`
@@ -20,6 +21,7 @@ module trc_step_table
    use trc_linalg, only: trc_linalg_t
    use pic_flop_recorder, only: flop_recorder_type
    use pic_profiler, only: profiler_start, profiler_stop
+   use pic_logger, only: global_logger
    implicit none
    private
 
@@ -179,22 +181,29 @@ contains
       character(len=*), intent(in), optional :: subtotal_label
       integer :: k
       real(dp) :: gf, gb, tg, fg
-      print "(a,a)", "  "//this%prefix//": step", "                   time (s)        GFLOP     GFLOP/s"
+      character(len=160) :: line
+      write (line, "(a,a)") "  "//this%prefix//": step", "                   time (s)        GFLOP     GFLOP/s"
+      call global_logger%performance(trim(line))
       do k = 1, this%n
          if (this%is_bytes(k)) then
             gb = real(this%bytes(k), dp)*1.0e-9_dp
             if (this%bytes(k) > 0 .and. this%t(k) > 0.0_dp) then
-               print "(a,a24,f12.3,a13,f12.1,a)", "  "//this%prefix//":   ", this%names(k), this%t(k), &
+               write (line, "(a,a24,f12.3,a13,f12.1,a)") "  "//this%prefix//":   ", this%names(k), this%t(k), &
                   "-", gb/this%t(k), " GB/s"
+               call global_logger%performance(trim(line))
             else
-               print "(a,a24,f12.3,a13,a12)", "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+               write (line, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+               call global_logger%performance(trim(line))
             end if
          else
             gf = real(this%fl(k)%get(), dp)*1.0e-9_dp
             if (this%fl(k)%get() > 0 .and. this%t(k) > 0.0_dp) then
-               print "(a,a24,f12.3,f13.1,f12.1)", "  "//this%prefix//":   ", this%names(k), this%t(k), gf, gf/this%t(k)
+               write (line, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", this%names(k), this%t(k), &
+                  gf, gf/this%t(k)
+               call global_logger%performance(trim(line))
             else
-               print "(a,a24,f12.3,a13,a12)", "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+               write (line, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+               call global_logger%performance(trim(line))
             end if
          end if
       end do
@@ -207,11 +216,15 @@ contains
                fg = fg + real(this%fl(k)%get(), dp)*1.0e-9_dp
             end if
          end do
-         if (tg > 0.0_dp) print "(a,a24,f12.3,f13.1,f12.1)", "  "//this%prefix//":   ", &
-            label(subtotal_label), tg, fg, fg/tg
+         if (tg > 0.0_dp) then
+            write (line, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", &
+               label(subtotal_label), tg, fg, fg/tg
+            call global_logger%performance(trim(line))
+         end if
       end if
-      print "(a,a24,f12.3,a,i0,a,i0)", "  "//this%prefix//":   ", label("total"), t_total, &
+      write (line, "(a,a24,f12.3,a,i0,a,i0)") "  "//this%prefix//":   ", label("total"), t_total, &
          "   rank ", rank, " of ", nranks
+      call global_logger%performance(trim(line))
 
    contains
 
