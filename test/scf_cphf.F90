@@ -149,12 +149,12 @@ program scf_cphf
    end block
 
    ! --- a NaN right-hand side must report NOT converged, never a silent
-   ! "converged" with zero iterations: the gap this branch's own
-   ! trc_cphf.F90 fix guards against -- `do while (... resid >=
-   ! conv_residual)` is skipped outright when resid starts NaN (NaN >=
-   ! conv_residual is false, read as "already converged"), the same way
-   ! `NaN < conv_residual` is false -- see trc_cphf_solve_rhf's own
-   ! comment on `.not. (resid < conv_residual)`. Reuses the already-
+   ! "converged" with zero iterations -- trc_cphf_solve_rhf's own CG
+   ! loop condition is `.not. (resid < conv_residual)` rather than
+   ! `resid >= conv_residual` precisely so a NaN resid (from a NaN
+   ! bvec) reads as "not yet converged" and enters the loop, where the
+   ! pap breakdown guard catches it; see that subroutine's own comment
+   ! for why. This exercises that path end to end. Reuses the already-
    ! converged SCF's own cmo/eps; nothing here needs to be physically
    ! meaningful.
    block

@@ -26,10 +26,13 @@
 ! one, so it must not drive the Schwarz screen (trc_eri.F90's own warning
 ! on both `fock_resident` and `fock`). The derivation (4(ai|jb) -
 ! (ij|ab) - (ib|ja), contracted against the full permutation symmetry of
-! real two-electron integrals) is in this branch's PR description, not
-! repeated here; see trc_eri.F90's header for why `fock_resident` is the
-! entry point this was always meant to reach ("the coupled-perturbed
-! equations run a hundred of them").
+! real two-electron integrals) is the standard RHF orbital-Hessian
+! result -- Pople, Krishnan, Schlegel and Binkley, Int. J. Quantum Chem.
+! 16, 225 (1979), or Helgaker/Jorgensen/Olsen, Molecular Electronic-
+! Structure Theory, the CPHF section of ch. 10 -- not rederived here;
+! see trc_eri.F90's header for why `fock_resident` is the entry point
+! this was always meant to reach ("the coupled-perturbed equations run
+! a hundred of them").
 !
 ! THE EQUATION (UHF)
 ! -------------------
