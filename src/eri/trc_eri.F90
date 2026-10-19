@@ -527,20 +527,24 @@ contains
       !! Same meaning as eri_fock's: a hybrid functional's exchange fraction
       !! multiplies kfac; default one is Hartree-Fock.
       real(dp), intent(in), optional :: omega
-      !! NOT implemented: there is no range-separated gradient kernel, only
-      !! the Rys energy and HGP/Rys Fock paths carry the erf(omega*r12)/r12
-      !! substitution (see eri%fock). Present only so a caller that always
-      !! threads omega through every eri% call does not need a special case
-      !! for the gradient; passing anything but absent or zero error-stops.
+      !! Range-separation parameter, bohr^-1; same meaning as eri_fock's
+      !! own omega. Absent or zero (the default) is the ordinary Coulomb
+      !! operator; omega > 0 switches to erf(omega*r12)/r12 through the
+      !! same rho -> rho_theta substitution eri_fock's Fock kernels make
+      !! (scripts/gen_perclass.py), threaded here into the Rys gradient
+      !! kernels' own per-root coefficients (scripts/gen_rys_grad.py's
+      !! `_RANGE_SEP_BLOCK`). omega == 0 is bit-identical to the
+      !! unattenuated path -- that substitution collapses to an exact
+      !! multiply by one at every step. omega < 0 (erfc/short-range) is
+      !! not implemented, same restriction as eri_fock's own.
 
       real(dp), allocatable :: dwork(:, :, :)
       integer :: ndens, nw, id
-      real(dp) :: jfac, kfac
+      real(dp) :: jfac, kfac, ow
 
-      if (present(omega)) then
-         if (omega /= 0.0_dp) error stop &
-            "terco: eri%gradient: no range-separated gradient; omega must be absent or zero"
-      end if
+      ow = 0.0_dp
+      if (present(omega)) ow = omega
+      if (.not. (ow >= 0.0_dp)) error stop "terco: eri%gradient: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       ndens = size(dens, 3)
 
@@ -577,7 +581,7 @@ contains
       !$acc enter data copyin(dwork) copyin(grad)
       !$acc update device(this%dsh)
       call grad_bins(this%bins, this%nbas, nw, this%sh_l, this%ao_off, this%sh_at, b%natm, &
-                     this%thresh, jfac, kfac, this%dsh, &
+                     this%thresh, jfac, kfac, ow, this%dsh, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
                      this%qp_z, this%qp_c, this%qp_a, this%qp_px, this%qp_py, this%qp_pz, &
                      this%sq_ax, this%sq_ay, this%sq_az, &
@@ -801,9 +805,11 @@ contains
       if (screen_on(density_screen)) then
          call density_blocks_device(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
       else
-         do concurrent(j=1:this%nbas, i=1:this%nbas)
-            this%dsh(i, j) = 1.0_dp
-         end do
+         ! density_screen=.false. (a coupled-perturbed solve): fill_ones_device,
+         ! not a `do concurrent` reading `this%dsh`/`this%nbas` directly --
+         ! trc_scf_fock's own header: never read a derived-type component
+         ! inside `do concurrent` on the GPU build.
+         call fill_ones_device(this%nbas, this%dsh)
       end if
 
       !
@@ -897,6 +903,18 @@ contains
       res = .true.
       if (present(flag)) res = flag
    end function screen_on
+
+   subroutine fill_ones_device(nshell, dsh)
+      !! `dsh := 1`, as an explicit-shape dummy `do concurrent` (no derived-
+      !! type component in its body) -- see eri_fock_resident's own comment
+      !! on why this exists.
+      integer, intent(in) :: nshell
+      real(dp), intent(inout) :: dsh(nshell, nshell)
+      integer :: i, j
+      do concurrent(j=1:nshell, i=1:nshell)
+         dsh(i, j) = 1.0_dp
+      end do
+   end subroutine fill_ones_device
 
    subroutine density_blocks_device(nshell, nao, sh_l, sh_ao, dmat, dsh)
       integer,  intent(in)    :: nshell, nao

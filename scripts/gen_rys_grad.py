@@ -64,7 +64,12 @@ not only its description:
             Gamma = jfac*(Da+Db)_ab*(Da+Db)_cd
                     - kfac*(Da_ac*Da_bd+Da_ad*Da_bc + Db_ac*Db_bd+Db_ad*Db_bc)
     jfac/kfac default to 1 (pure HF); a hybrid functional's exchange
-    fraction multiplies kfac, same meaning as eri_fock's k_scale.
+    fraction multiplies kfac, same meaning as eri_fock's k_scale. omega
+    defaults to 0 (the ordinary Coulomb operator); omega > 0 switches to
+    erf(omega*r12)/r12, the same operator eri_fock's own omega builds --
+    see `_RANGE_SEP_BLOCK`'s own comment for the Rys quadrature's
+    (different-looking, algebraically equivalent) form of the same HGP
+    oo2ze/rz/re substitution.
   - A quartet whose four shells all sit on the same atom contributes
     nothing (A=B=C=D already satisfies translational invariance on its
     own) and is skipped before the primitive loop.
@@ -207,7 +212,7 @@ def unrolled_gradient_middle(tag, la, lb, lc, ld, nig, nkg, nroots, dims, order)
     out = [ri.roots_inline_body(nroots, "tval", 18)]
     for rr in range(1, nroots + 1):
         out.append(f"""\
-                  u2 = ru({rr})/(1.0_dp - ru({rr}))*rho
+                  u2 = theta*ru({rr})/(1.0_dp - theta*ru({rr}))*rho
                   dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
                   b00r  = 0.5_dp*u2*dinv
                   b10r  = 0.5_dp*(eta + u2)*dinv
@@ -586,7 +591,7 @@ def chunked_rhf_item_text(tag, item, comps, inside):
     body.append(ri.roots_inline_body(nroots, "tval", 18))
     body.append(f"""\
                   do jrt = 1, {nroots}
-                     u2 = ru(jrt)/(1.0_dp - ru(jrt))*rho
+                     u2 = theta*ru(jrt)/(1.0_dp - theta*ru(jrt))*rho
                      dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
                      b00r  = 0.5_dp*u2*dinv
                      b10r  = 0.5_dp*(eta + u2)*dinv
@@ -822,7 +827,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
         p = " "*indent
         return (f"{p}do concurrent(i=1:nout)\n"
                 f"{p}   call {item}(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
-                f"{p}                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &\n"
+                f"{p}                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &\n"
                 f"{p}                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
                 f"{p}                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
                 f"{p}                          ndens, dmat, npriv, gp, {slot_expr})\n"
@@ -852,7 +857,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
    ! screen_and_compact_text docstring.
    !
    subroutine rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                              ndens, dmat, npriv, gp)
@@ -863,7 +868,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac
+      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
       integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
@@ -892,7 +897,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
 {compact_loops}   end subroutine rysg{tag}_compact
 
    pure subroutine rysgi{tag}_compact(seg, iab, icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                              ndens, dmat, npriv, gp, slot)
@@ -903,7 +908,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac
+      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
       integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
@@ -924,15 +929,39 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     return screen + compact
 
 
-#: `pcsi{tag}`'s primitive-quartet head now computes the wB97X-V long-range
-#: exchange substitution (rho_theta = theta*rho, theta from `omega`) -- see
-#: scripts/gen_perclass.py. The gradient has no range-separated operator and
-#: no `omega` dummy argument (`eri%gradient` error-stops if ever given one),
-#: so the splice below removes that substitution instead of inheriting an
-#: undeclared `omega` into the spliced text: `rho_theta` collapses back to
-#: plain `rho`, and the two attenuation multiplies on wpx/wqx (omega == 0's
-#: theta == 1.0_dp, so removing them is the identical specialisation, not an
-#: approximation) go with it.
+#: `pcsi{tag}`'s primitive-quartet head already computes the wB97X-V
+#: long-range exchange substitution (rho_theta = theta*rho, theta from
+#: `omega`) -- see scripts/gen_perclass.py, whose comment is reproduced
+#: below verbatim since the splice keeps it. `omega` is already a dummy
+#: argument of the spliced head (gen_perclass.py's PROLOGUE declares it
+#: unconditionally), so nothing needs inheriting from this splice point
+#: on down -- but what the gradient's per-root Rys coefficients (`u2`
+#: onward, below `pcsi{tag}`'s tval line) need is NOT "read rho_theta
+#: instead of rho" (that distorts the (zeta*eta+u2*(zeta+eta)) denominator
+#: u2 sits in, measured wrong by 10-70% against a finite difference of
+#: the attenuated exchange energy -- two different wrong substitutions
+#: were tried and measured before this one). `tval` IS the one place
+#: X = rho_theta*PQ^2 belongs (in `head`, unchanged): that argument is
+#: what the root/weight TABLE is evaluated at. What ALSO needs omega,
+#: checked against gpu4pyscf's own range-separated root routine
+#: (gpu4pyscf/lib/gvhf-rys/rys_roots.cu's `rys_roots_rs`: roots/weights
+#: looked up at the attenuated X, then the ROOT itself scaled by theta
+#: and the WEIGHT by sqrt(theta), on top of that lookup) is the ROOT
+#: `ru(n)` itself, wherever `u2` reads it -- `theta*ru(n)` in place of
+#: `ru(n)`, with `rho` in u2's own formula left plain. The weight
+#: `rw(n)` gets its sqrt(theta) through `pref` instead (linear, so
+#: either side of the `f00 = pref*rw(n)` product is equivalent) -- see
+#: below.
+#:
+#: ONE thing the splice does NOT inherit: HGP's `pref = pref*sqrt(theta)`
+#: sits in its TAIL, right after the Boys evaluation this generator never
+#: splices in (the Rys roots replace it) -- so it is added explicitly
+#: here, in the same place relative to `rho_theta`, before `pref` is
+#: first read (the per-root `f00 = pref*rw(rr)`).
+#:
+#: omega == 0 keeps every one of these bit-identical to the unattenuated
+#: path: theta == 1.0_dp exactly, so rho_theta == rho, pref*sqrt(theta) ==
+#: pref and theta*ru(n) == ru(n), each an exact multiply by one.
 _RANGE_SEP_BLOCK = """                  ! RANGE SEPARATION. erf(omega*r12)/r12 is the Coulomb
                   ! integral with rho replaced everywhere by
                   ! rho_theta = theta*rho, theta = omega^2/(rho + omega^2) --
@@ -956,19 +985,17 @@ _RANGE_SEP_BLOCK = """                  ! RANGE SEPARATION. erf(omega*r12)/r12 i
                   end if
                   rho_theta = theta*rho
 """
-_RANGE_SEP_WP_WQ = ("                  wpx = theta*wpx; wpy = theta*wpy; wpz = theta*wpz\n"
-                    "                  wqx = theta*wqx; wqy = theta*wqy; wqz = theta*wqz\n")
 
 
-def _degauge_range_separation(text):
-    """Specialise the spliced head to omega == 0 (see `_RANGE_SEP_BLOCK`)."""
+def _thread_range_separation(text):
+    """Keep the spliced head's range-separation substitution (see
+    `_RANGE_SEP_BLOCK`'s own comment) and add the one line HGP's tail has
+    that this splice does not reach: `pref = pref*sqrt(theta)`, right
+    after `rho_theta` is formed."""
     n = text.count(_RANGE_SEP_BLOCK)
     assert n == 1, n
-    text = text.replace(_RANGE_SEP_BLOCK, "                  rho_theta = rho\n")
-    n = text.count(_RANGE_SEP_WP_WQ)
-    assert n == 1, n
-    text = text.replace(_RANGE_SEP_WP_WQ, "")
-    return text
+    return text.replace(_RANGE_SEP_BLOCK,
+                        _RANGE_SEP_BLOCK + "                  pref = pref*sqrt(theta)\n")
 
 
 def main():
@@ -1021,7 +1048,7 @@ def main():
     tval_line = "tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
     i_tval = whole.index(tval_line) + len(tval_line)
     head = whole[:i_tval]
-    head = _degauge_range_separation(head)
+    head = _thread_range_separation(head)
 
     # --- 1. thread qp_a (the bra/ket primitive's own exponent) through the
     #     signatures and the one call between them, exactly like qp_z. ---
@@ -1283,7 +1310,7 @@ def main():
         middle = f"""
 {ri.roots_inline_body(nroots, "tval", 18)}
                   do rr = 1, {nroots}
-                     u2 = ru(rr)/(1.0_dp - ru(rr))*rho
+                     u2 = theta*ru(rr)/(1.0_dp - theta*ru(rr))*rho
                      dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
                      b00r  = 0.5_dp*u2*dinv
                      b10r  = 0.5_dp*(eta + u2)*dinv

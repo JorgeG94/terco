@@ -1,0 +1,8 @@
+# terco golden v1
+# case: scf_robust
+# from: gfortran build bgold at 11d19bc, by test/goldens/regen_goldens.py
+E_n2_stretched_6-31g -1.0785610505804972e+02
+E_o3_6-31g -2.2413686768851124e+02
+E_w5_d-aug-cc-pvdz -3.8010405505218841e+02
+E_o2_anion_6-31g -1.4952324966004971e+02
+END

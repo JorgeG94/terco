@@ -94,11 +94,19 @@
 ! through `trc_basis_create*` has no JSON file to ever set `spherical`
 ! from, by construction (trc_api.F90's `basis_build` always leaves it
 ! `.false.`), so there is nothing for these entries to switch on.
-! RI-MP2 (trc_run_rimp2) refuses a spherical orbital basis outright: its
-! three-centre tensor is Cartesian and nothing converts the MO
-! coefficients it is contracted against, which is the same reasoning as
-! trc_compute_df2c/df3c's own exemption below, just enforced as an error
-! instead of a silent exemption because RI-MP2 crosses actual MO data.
+! RI-MP2 (trc_run_rimp2) and `--df` (trc_scf_df.F90) both support a
+! spherical orbital basis now: their three-centre tensor stays Cartesian
+! (every kernel does), but `trc_run_rimp2` folds `cx%res%cmo`/`eps` into
+! that space first (`rimp2_mo_to_cart`, zero-padded past the SCF's own
+! spherical MO count -- trc_rimp2_driver.F90's own header), and `--df`'s
+! `d_c`/`gmat_c` arrive already Cartesian through `trc_scf_fock.F90`'s
+! `to_cart`/`to_sph`, which is every AO index `trc_scf_df.F90` ever reads.
+! The AUXILIARY basis (rifit for RI-MP2, jkfit for `--df`) follows the
+! ORBITAL basis's own convention (pyscf's `auxmol.cart = mol.cart`), not
+! necessarily its own JSON tag -- see `basis_json`'s and
+! `trc_set_jkfit_json`'s own comments -- and is folded on its own
+! auxiliary (P) index inside `trc_scf_df.F90`/`trc_rimp2_driver.F90` when
+! it ends up spherical.
 !
 ! TRC_AO_NORM_UNIT AND A SPHERICAL BASIS DO NOT COMBINE. UNIT rescales
 ! each CARTESIAN component of a shell individually (GAMESS's convention);
@@ -147,7 +155,9 @@
 !   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
 !     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
 !     trc_iterations, trc_rimp2_energy, trc_nao, trc_nspin, trc_message,
-!     trc_set_pcm, trc_pcm_energy
+!     trc_set_pcm, trc_pcm_energy, trc_gradient (a nuclear-coordinate
+!     array, not an AO one -- an SCF energy derivative does not depend on
+!     which AO normalisation convention computed it)
 !
 !   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
 !   the handle's own ao_norm_kind is what a later entry reads):
@@ -176,18 +186,20 @@ module trc_capi
                         TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_scf_settings, only: scf_spin_rule
+   use trc_scf_grad, only: trc_scf_gradient
+   use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
-   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_AVAILABLE_FUNCTIONALS
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
+                                XC_AVAILABLE_FUNCTIONALS
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -220,6 +232,7 @@ module trc_capi
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
+   public :: trc_run_gradient, trc_gradient
    public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
@@ -337,6 +350,12 @@ module trc_capi
       integer :: nalpha = 0, nbeta = 0
       logical :: scf_ok = .false., rimp2_ok = .false.
       real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
+      ! trc_run_gradient's own result: (3, natm), Eh/Bohr, in terco's atom
+      ! order. `grad_ok` is cleared by anything that invalidates `scf_ok`
+      ! too (invalidate_runs) -- a gradient at a geometry/density this
+      ! context no longer holds is not a gradient of anything.
+      real(dp), allocatable :: grad(:, :)
+      logical :: grad_ok = .false.
       character(len=256) :: message = ""
    end type context_box
 
@@ -1354,6 +1373,7 @@ contains
       type(context_box), intent(inout) :: cx
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%grad_ok = .false.
       cx%message = ""
    end subroutine invalidate_runs
 
@@ -1550,6 +1570,7 @@ contains
       type(error_t) :: err
       character(len=1024) :: fpath
       integer :: i
+      logical :: force_cart_this
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -1563,14 +1584,21 @@ contains
          if (path(i) == c_null_char) exit
          fpath(i:i) = path(i)
       end do
-      ! An auxiliary/fitting basis stays Cartesian unconditionally --
-      ! density fitting and RI-MP2 are untouched by this feature (the
-      ! milestone's own scope), so there is no spherical path for `aux` to
-      ! follow even if its own JSON says "gto_spherical" (def2's -jkfit
-      ! sets often do). The orbital basis (aux = .false.) follows the file
-      ! unless `force_cartesian` was set (trc_set_force_cartesian).
+      ! The orbital basis (aux = .false.) follows its own file's tag
+      ! unless `force_cartesian` was set (trc_set_force_cartesian). The
+      ! auxiliary/fitting basis follows the ORBITAL basis's convention
+      ! instead of its own tag -- pyscf's own `auxmol.cart = mol.cart`
+      ! rule (density fitting and RI-MP2 now support a spherical orbital
+      ! basis; see trc_run_rimp2's own header and trc_scf_df.F90) -- so it
+      ! is forced Cartesian whenever the orbital basis itself is (either
+      ! `force_cartesian`, or an orbital basis already loaded and NOT
+      ! spherical, e.g. a basis family -- 6-31G* -- with no spherical
+      ! tag of its own). An auxiliary basis loaded before any orbital one
+      ! falls back to `force_cartesian` alone, same as the orbital path.
+      force_cart_this = cx%opts%force_cartesian
+      if (aux .and. cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
       call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, &
-                               force_cart=(aux .or. cx%opts%force_cartesian))
+                               force_cart=force_cart_this)
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -1587,6 +1615,38 @@ contains
                      "trc_set_ao_norm(TRC_AO_NORM_SHELL) first, or set force_cartesian")
          call b%release()
          return
+      end if
+      ! The order-dependence this guards against: `force_cart_this` above
+      ! only inherits the orbital basis's convention when the ORBITAL
+      ! basis is already loaded (aux .and. cx%have_basis); an auxiliary
+      ! or jkfit basis set BEFORE the orbital one has nothing to inherit
+      ! from and falls back to force_cartesian alone (the comment above
+      ! already says so). So when the ORBITAL basis itself is what is
+      ! loading here, check it against whichever fitting basis is
+      ! already in the context, in BOTH directions, rather than silently
+      ! running RI-MP2/--df with an orbital/auxiliary mismatch pyscf's
+      ! own auxmol.cart = mol.cart rule never allows.
+      if (.not. aux) then
+         if (cx%have_aux .and. b%spherical .neqv. cx%ab%b%spherical) then
+            call refuse(cx, "trc_set_basis_json: "//trim(fpath)//" is "// &
+                        trim(merge("spherical", "Cartesian", b%spherical))//", but the auxiliary "// &
+                        "basis already set is "//trim(merge("spherical", "Cartesian", cx%ab%b%spherical))// &
+                        " -- it was loaded before this orbital basis, so it could not inherit this "// &
+                        "basis's own convention (pyscf's auxmol.cart = mol.cart rule); set "// &
+                        "force_cartesian before either, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+         if (cx%have_jkfit .and. b%spherical .neqv. cx%jb%b%spherical) then
+            call refuse(cx, "trc_set_basis_json: "//trim(fpath)//" is "// &
+                        trim(merge("spherical", "Cartesian", b%spherical))//", but the --df jkfit "// &
+                        "basis already set is "//trim(merge("spherical", "Cartesian", cx%jb%b%spherical))// &
+                        " -- it was loaded before this orbital basis, so it could not inherit this "// &
+                        "basis's own convention (pyscf's auxmol.cart = mol.cart rule); set "// &
+                        "force_cartesian before either, or load the orbital basis first")
+            call b%release()
+            return
+         end if
       end if
       if (aux) cx%aux_path = fpath
       call take_basis(cx, aux, b)
@@ -1864,10 +1924,14 @@ contains
    !
    ! The fitting (jkfit) basis for `--df`, a MolSSI BSE JSON file, read for
    ! the molecule already set -- the same file format `trc_set_aux_json`
-   ! reads, into a SEPARATE slot (`cx%jb`), and always Cartesian regardless
-   ! of its own JSON tag (trc_scf_df.F90 stays Cartesian-only this
-   ! milestone, exactly `basis_json`'s own rule for the rifit set). Clears
-   ! any fit already built on the previous jkfit basis.
+   ! reads, into a SEPARATE slot (`cx%jb`). Follows the orbital basis's
+   ! own convention, exactly `basis_json`'s rule for the rifit (`aux`)
+   ! set: Cartesian when the orbital basis is (`force_cartesian`, or an
+   ! orbital basis already loaded that is not itself spherical), its own
+   ! JSON tag otherwise (def2-universal-jkfit is spherical, matching a
+   ! spherical orbital basis -- `trc_scf_df.F90`'s `df_jk_setup` folds it,
+   ! see that module's own header). Clears any fit already built on the
+   ! previous jkfit basis.
    !
    function trc_set_jkfit_json(handle, path) result(status) bind(c, name="trc_set_jkfit_json")
       type(c_ptr), value :: handle
@@ -1878,6 +1942,7 @@ contains
       type(error_t) :: err
       character(len=1024) :: fpath
       integer :: i
+      logical :: force_cart_this
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -1891,7 +1956,9 @@ contains
          if (path(i) == c_null_char) exit
          fpath(i:i) = path(i)
       end do
-      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, force_cart=.true.)
+      force_cart_this = cx%opts%force_cartesian
+      if (cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
+      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, force_cart=force_cart_this)
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -2225,6 +2292,7 @@ contains
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%grad_ok = .false.
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_run_scf: set the molecule and the basis first"
@@ -2452,6 +2520,199 @@ contains
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
 
+   function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
+      !! ======================================================================
+      !! !!! EXPERIMENTAL !!! Validated against pyscf and finite differences,
+      !! but NOT performance-tuned: the DFT, VV10 and --df gradients can cost
+      !! far more than the energy, the grid response stores 3 x atoms x grid
+      !! points, and only one rank is supported. Do not rely on its cost yet.
+      !! ======================================================================
+      !!
+      !! The full analytic RHF/UHF nuclear gradient at the converged SCF
+      !! this context already holds (trc_scf_grad%trc_scf_gradient: the
+      !! one-electron terms, eri%gradient's two-electron part, and nuclear
+      !! repulsion -- see that module's own header for the assembly order
+      !! and the factor of 1/2). When the orbital basis is spherical,
+      !! `trc_scf_gradient` itself folds D and W to the Cartesian space the
+      !! derivative kernels need (T D T^T) before touching an integral;
+      !! nothing here has to know which case it is in.
+      !!
+      !! Reuses `cx%la` (initialised once per context by `trc_run_scf`,
+      !! released only at `trc_destroy`) rather than a `trc_linalg_t` of
+      !! its own: a second handle here would need its own release before
+      !! going out of scope (trc_linalg_t has no finalizer), for no reason
+      !! -- the gradient's GEMMs are the same size `cx%la` was already
+      !! sized for.
+      !!
+      !! NOT refused any more: a functional with VV10 nonlocal correlation
+      !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
+      !! term on top of the semilocal one, on VV10's own grid
+      !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
+      !! it on). wB97M-V is meta-GGA and cannot reach this point at all (see
+      !! below), so it is not a case this routine has to decide about.
+      !!
+      !! REFUSED, clearly, rather than attempted:
+      !!   - meta-GGA or a double hybrid: `trc_xc_functional_t` has no
+      !!     meta-GGA family and no MP2-fraction field on this branch, so
+      !!     neither can reach this point at all -- `trc_set_method` already
+      !!     refused it (func%missing) before a functional name naming one
+      !!     could be stored in `cx%opts%functional`. Nothing to check here.
+      !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
+      !!     gradient exists; `trc_scf_gradient` is the SCF reference term
+      !!     only.
+      !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
+      !!     range-separated -- the SCF refuses those first), or with the fit
+      !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
+      !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
+      !!   - PCM: no cavity/surface-charge derivative exists.
+      !!   - a multi-rank context (`cx%fcomm /= -1`). `trc_scf_gradient`
+      !!     takes no communicator: it rebuilds the pair list and ERI
+      !!     engine from `cx%bb%b` alone, so on a collective run it would
+      !!     rebuild the FULL (unsplit) pair list, Schwarz screen and ERI
+      !!     structures on EVERY rank's own device -- not merely redundant
+      !!     work, but re-materialising, on one GPU, exactly the memory a
+      !!     multi-rank SCF split across ranks to avoid. `eri%gradient`
+      !!     itself DOES support a rank split (`this%rank`/`this%nranks`,
+      !!     `sum_ranks`'s allreduce) but only when its own `eri%build` is
+      !!     given a `comm` -- a plumbing `trc_scf_gradient` does not do
+      !!     today, found by reading trc_eri.F90's `eri_gradient` and
+      !!     comparing it against `eri_build`'s own comm handling.
+      !!
+      !! A plain LDA/GGA functional, a GLOBAL hybrid of one (b3lyp and
+      !! friends), or a RANGE-SEPARATED hybrid (wb97x and friends: nonzero
+      !! `func%omega`/`exx_lr`, `nlc_b`/`nlc_c` still zero) is NOT refused:
+      !! `func` is looked up again here (same `xc_functional_by_name`
+      !! trc_set_method already validated the name with) and handed to
+      !! `trc_scf_gradient`, along with the SAME grid settings
+      !! (`cx%opts%grid_level`, `grid_max_pts`, `rho_tol`) the SCF itself
+      !! converged with -- the gradient's quadrature has to be the SCF's,
+      !! or the two are not derivatives of the same energy.
+      !! `trc_scf_gradient` itself builds the erf(omega r)/r long-range
+      !! exchange term (a second eri%gradient pass, its own header) and
+      !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
+      !! GGA part exactly as for any other GGA -- see that module's own
+      !! header on why `omega`/`exx_lr` do not affect it.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
+      logical :: have_func
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%grad_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_run_gradient: run the SCF first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      have_func = len_trim(cx%opts%functional) > 0
+      if (have_func) then
+         ! `cx%opts%functional` only ever holds a name trc_set_method/
+         ! scf_entry already validated (xc_functional_by_name succeeded,
+         ! func%missing empty), so this lookup cannot fail -- it is
+         ! re-done here only to read the fields below, not to re-validate.
+         if (.not. xc_functional_by_name(cx%opts%functional, func)) then
+            cx%message = "trc_run_gradient: functional '"//trim(cx%opts%functional)// &
+                         "' failed to re-resolve -- this should be unreachable"
+            return
+         end if
+      end if
+      if (cx%rimp2_ok) then
+         cx%message = "trc_run_gradient: RI-MP2/double-hybrid correlation gradient not implemented yet"
+         return
+      end if
+      if (cx%opts%df) then
+         ! The fitted gradient differentiates the SAME fit the SCF converged
+         ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
+         ! fit still in place, and inherits the DF-SCF's own scope:
+         ! restricted, Cartesian, no range separation. trc_scf_settings
+         ! and trc_scf_df already refuse the SCF outside it; checked again
+         ! here so the message names the gradient -- and BEFORE the fit
+         ! check, because a result taken from a file (trc_load_scf) reaches
+         ! this point without ever having met the DF-SCF's own refusals.
+         if (cx%res%nspin /= 1) then
+            cx%message = "trc_run_gradient: --df gradient is restricted (closed-shell) only, as --df is"
+            return
+         end if
+         if (cx%bb%b%spherical) then
+            cx%message = "trc_run_gradient: --df gradient needs a Cartesian basis -- the DF derivative kernels are Cartesian only"
+            return
+         end if
+         if (have_func) then
+            if (func%exx_lr /= 0.0_dp) then
+               cx%message = "trc_run_gradient: --df with a range-separated functional is refused "// &
+                            "(the DF-SCF fits no erf exchange)"
+               return
+            end if
+         end if
+         if (.not. cx%df_fit_ok) then
+            status = TRC_ERR_STATE
+            cx%message = "trc_run_gradient: --df gradient needs the density fit the SCF ran with"
+            return
+         end if
+      end if
+      if (len_trim(cx%opts%pcm_model) > 0) then
+         cx%message = "trc_run_gradient: PCM gradient not implemented yet (no cavity/charge derivative)"
+         return
+      end if
+      if (cx%fcomm /= -1) then
+         cx%message = "trc_run_gradient: the gradient path is not rank-split; run it on a single rank"
+         return
+      end if
+      if (allocated(cx%grad)) deallocate (cx%grad)
+      allocate (cx%grad(3, cx%natm))
+      if (cx%opts%df) then
+         ! The pair list at the threshold the fit's own was built with
+         ! (trc_run_scf's `pl%build(cx%bb%b, cx%opts%eri_thresh)`), so the
+         ! derivative runs over exactly the (mu nu|P) the energy used.
+         if (have_func) then
+            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                  cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                  func=func, grid_level=cx%opts%grid_level, &
+                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b)
+         else
+            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                  cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                  dfjk=cx%dfjk, aux=cx%jb%b)
+         end if
+      else if (have_func) then
+         call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                               func=func, grid_level=cx%opts%grid_level, &
+                               grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                               nlc_grid_level=cx%opts%nlc_grid_level)
+      else
+         call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad)
+      end if
+      cx%grad_ok = .true.
+      status = TRC_OK
+   end function trc_run_gradient
+
+   function trc_gradient(handle, grad) result(status) bind(c, name="trc_gradient")
+      !! (3, natm), Eh/Bohr, column-major (x, y, z fastest, then atom, the
+      !! same atom order `trc_set_molecule` was given) -- after a
+      !! successful `trc_run_gradient`. NOT AO-indexed data (see
+      !! trc_capi.F90's own "AO NORMALISATION" header): a nuclear gradient
+      !! is a derivative of the SCF energy, which does not depend on which
+      !! AO normalisation convention computed it, so `trc_set_ao_norm`
+      !! plays no role here.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: grad(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%grad_ok) return
+      grad(1:3*cx%natm) = real(reshape(cx%grad, [3*cx%natm]), c_double)
+      status = TRC_OK
+   end function trc_gradient
+
    pure integer function core_orbitals(z) result(res)
       !! Frozen-core orbitals for one element, by period.
       real(dp), intent(in) :: z
@@ -2473,15 +2734,24 @@ contains
    end function core_orbitals
 
    function trc_run_rimp2(handle) result(status) bind(c, name="trc_run_rimp2")
-      !! Needs a converged closed-shell SCF in the context and an auxiliary basis.
+      !! Needs a converged SCF in the context (restricted, or unrestricted --
+      !! UHF or UKS, cx%res%nspin == 2) and an auxiliary basis. An
+      !! unrestricted reference refuses more than one rank below (see
+      !! trc_urimp2_run's own header for why the restricted ring is not a
+      !! clean generalisation here). The orbital basis may be spherical:
+      !! `cx%res%cmo`/`eps` (at whatever space the SCF ran in) are folded
+      !! into the Cartesian, zero-padded space `trc_rimp2_run`/
+      !! `trc_urimp2_run` themselves run in by `rimp2_mo_to_cart`
+      !! (trc_rimp2_driver.F90's own header says why the pad is exact).
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
       type(trc_pairlist_t) :: pl
       type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
-      integer :: nfrozen, nblk, i
+      integer :: nfrozen, nblk, i, nc
       logical :: collective
+      real(dp), allocatable :: cmo_a(:, :), cmo_b(:, :), eps_a(:), eps_b(:)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2495,23 +2765,11 @@ contains
          cx%message = "trc_run_rimp2: no auxiliary basis was set"
          return
       end if
+      ! cfg%nspin is always 1 (nalpha == nbeta, restricted) or 2 (nalpha /=
+      ! nbeta, UHF/UKS) -- trc_scf_driver's own rule -- so nothing is
+      ! refused here on the reference's shape; ROHF does not exist in this
+      ! build, so the spin check alone is enough.
       status = TRC_ERR_UNSUPPORTED
-      if (cx%res%nspin /= 1 .or. cx%nalpha /= cx%nbeta) then
-         cx%message = "trc_run_rimp2: restricted closed-shell reference only"
-         return
-      end if
-      ! Density fitting and RI-MP2 are out of scope for the spherical AO
-      ! space (this milestone's own boundary: trc_df_2c/trc_df_3c stay
-      ! Cartesian-only, see this file's AO classification header). `cx%res
-      ! %cmo` is AO-row-indexed in whatever space the SCF ran in, so an
-      ! MO built from a spherical orbital basis does not line up with
-      ! trc_rimp2_run's Cartesian three-centre tensor -- refused rather
-      ! than silently contracting the wrong AO index against the right one.
-      if (cx%bb%b%spherical) then
-         cx%message = "trc_run_rimp2: the orbital basis is spherical; RI-MP2 only "// &
-                      "supports a Cartesian basis today -- set force_cartesian"
-         return
-      end if
       ! A status, not the DF kernels' own error stop: a host passing an
       ! auxiliary basis (a *-rifit set carries f/g on heavy atoms) above
       ! what this build's density fitting was generated for gets a refusal
@@ -2537,36 +2795,76 @@ contains
          end do
       end if
       status = TRC_ERR_BADARG
-      if (nfrozen >= cx%nalpha) then
-         cx%message = "trc_run_rimp2: every occupied orbital is frozen"
+      if (nfrozen >= cx%nalpha .or. nfrozen >= cx%nbeta) then
+         cx%message = "trc_run_rimp2: every occupied orbital is frozen in at least one spin channel"
          return
       end if
       nblk = cx%aux_block
       if (nblk <= 0) nblk = cx%ab%b%nao
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
+      ! UHF/UKS RI-MP2 (cx%res%nspin == 2) refuses more than one rank --
+      ! see trc_urimp2_run's own header for why the restricted ring is not
+      ! a clean generalisation to the aa/bb/ab blocks an open-shell run
+      ! needs. Refused here, before building the pair list, so nothing
+      ! below runs for a request that cannot complete.
+      if (cx%res%nspin == 2 .and. collective) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_rimp2: unrestricted RI-MP2 runs on one rank only this round "// &
+                      "-- the restricted ring distributes one block of B and lets it meet "// &
+                      "itself, which does not generalise cleanly to the aa/bb/ab blocks an "// &
+                      "open-shell reference needs (see trc_urimp2_run's own header)"
+         call comm%finalize()
+         return
+      end if
+      ! `cx%res%cmo`/`eps` are at the SCF's own space (`scf_space_nao`:
+      ! `nao_sph` when `cx%bb%b%spherical`, the Cartesian `nao` otherwise)
+      ! -- `trc_rimp2_run`/`trc_urimp2_run` themselves stay Cartesian-
+      ! interface, so a spherical orbital basis is folded here, once, the
+      ! same fold-and-pad `rimp2_mo_to_cart` is for (see its own header).
+      ! A Cartesian basis copies straight through (nc == the SCF's own
+      ! space already).
+      nc = cx%bb%b%nao
+      allocate (cmo_a(nc, nc), eps_a(nc))
+      if (cx%res%nspin == 2) allocate (cmo_b(nc, nc), eps_b(nc))
+      if (cx%bb%b%spherical) then
+         call rimp2_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
+         if (cx%res%nspin == 2) call rimp2_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_b, eps_b)
+      else
+         cmo_a = cx%res%cmo(:, :, 1)
+         eps_a = cx%res%eps(:, 1)
+         if (cx%res%nspin == 2) then
+            cmo_b = cx%res%cmo(:, :, 2)
+            eps_b = cx%res%eps(:, 2)
+         end if
+      end if
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
+      if (cx%res%nspin == 2) then
+         ! Unrestricted: no DF chaining (--df is closed-shell only), one
+         ! rank only (checked above).
+         call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cmo_a, cmo_b, eps_a, eps_b, res, &
+                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
       ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
       ! exactly the jkfit one (same JSON path), not merely the same shape:
       ! trc_rimp2_run checks dimensions, not that the basis is the same
       ! one, and a path match is this handle's own way to be sure of that.
-      if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
+      else if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
          if (collective) then
-            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
                                dfjk=cx%dfjk)
             call comm%finalize()
          else
-            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+            call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, dfjk=cx%dfjk)
          end if
       else if (collective) then
-         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                             nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la)
          call comm%finalize()
       else
-         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), res, &
+         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
       end if
       call pl%release()
@@ -2621,6 +2919,7 @@ contains
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%grad_ok = .false.
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_load_scf: set the molecule and the basis first"
@@ -2727,11 +3026,20 @@ contains
    end function trc_nspin
 
    function trc_energy(handle, energy) result(status) bind(c, name="trc_energy")
-      !! The SCF total, plus the RI-MP2 correlation if that ran.
+      !! The SCF total, plus the RI-MP2 correlation if that ran: the FULL
+      !! E_os + E_ss for a plain post-SCF RI-MP2 (any functional, or
+      !! Hartree-Fock), or c_os E_os + c_ss E_ss for a double hybrid --
+      !! trc_rimp2_energy below always reports the raw, unscaled E_os/E_ss
+      !! either way, so a caller after the PT2 part alone never sees this
+      !! weighting. A caller asking for a double hybrid's total needs
+      !! nothing beyond the ordinary trc_run_scf/trc_run_rimp2/trc_energy
+      !! sequence any RI-MP2 run already uses -- the weighting is applied
+      !! here, once, from the functional's own pt2_cos/pt2_css.
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: energy
       integer(c_int) :: status
       type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
       energy = 0.0_c_double
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -2739,7 +3047,16 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
       energy = real(cx%res%energy, c_double)
-      if (cx%rimp2_ok) energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      if (cx%rimp2_ok) then
+         if (len_trim(cx%opts%functional) > 0 .and. xc_functional_by_name(cx%opts%functional, func)) then
+            if (xc_is_double_hybrid(func)) then
+               energy = energy + real(func%pt2_cos*cx%e_os + func%pt2_css*cx%e_ss, c_double)
+               status = TRC_OK
+               return
+            end if
+         end if
+         energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      end if
       status = TRC_OK
    end function trc_energy
 

@@ -34,6 +34,10 @@ target_sources(
           scf/trc_scf_diis.F90          # CDIIS and ADIIS, the level shift and the damped step
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
+          scf/trc_scf_grad_df.F90       # the density-fitted (--df) two-electron gradient: fitted J and K
+          scf/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
+          scf/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
+          scf/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
@@ -125,7 +129,9 @@ target_sources(
           xc/trc_collocation.F90    # basis functions and gradients at a point
           xc/trc_xc_batch.F90       # the grid, batched and screened
           xc/trc_xc.F90             # the integrator: E_xc and V_xc
-          xc/trc_vv10.F90)          # VV10 nonlocal correlation: E_nlc and its potential
+          xc/trc_xc_grad.F90        # the exchange-correlation nuclear gradient, LDA/GGA
+          xc/trc_vv10.F90           # VV10 nonlocal correlation: E_nlc and its potential
+          xc/trc_vv10_grad.F90)     # VV10's nuclear gradient, with grid response
 
 # ifx's default -fp-model=fast reassociates and contracts the translated
 # kernels' Maple power series, which were written assuming IEEE-strict
@@ -471,6 +477,11 @@ if(_regen)
     # four-centre ceiling would have no operator for the basis it is given.
     terco_gen("gen_1e.py --pcm" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
               --lmax ${TERCO_LMAX} --pcm ${_gen_out}/trc_pcm_kernels.F90 ${_order_flag})
+    # The one-electron GRADIENT kernels follow TERCO_LMAX for the same
+    # reason trc_1e's own do: a ceiling below the orbital basis is not a
+    # limitation, it is a wrong force.
+    terco_gen("gen_1e.py --deriv" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --deriv ${_gen_out}/trc_1e_grad_kernels.F90 ${_order_flag})
 
     # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
     # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
@@ -486,6 +497,13 @@ if(_regen)
     terco_gen("gen_df.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df.py --lmax ${_df_lmax}
               --lmax-aux ${_df_lmax_aux} ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
               ${_df_force_rys_flag} --split ${_gen_out})
+    # The DF integrals' nuclear derivatives, contracted (the --df gradient,
+    # trc_scf_grad_df.F90): Rys for every class, since a derivative raises an
+    # index past the written-out VRR+HRR's compile wall (gen_df_grad.py's
+    # docstring). Same ceilings and unroll threshold as gen_df.py above.
+    terco_gen("gen_df_grad.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df_grad.py --lmax ${_df_lmax}
+              --lmax-aux ${_df_lmax_aux} ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
+              --split ${_gen_out})
 
     # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
     # `comp` and trc_batch.F90's `cart_pow`, the flat table
@@ -542,7 +560,7 @@ if(_regen)
     "kernels for LMAX=${TERCO_LMAX}, ${TERCO_CART_ORDER} order" _terco_gen_main
     "${_gen_out}" "${_gen_dir}" ${_prune} ${_stampable}
     ${_scripts}/gen_perclass.py ${_scripts}/gen_vrr.py ${_scripts}/gen_hrr.py
-    ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/rys_inline.py
+    ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/gen_df_grad.py ${_scripts}/rys_inline.py
     ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/cartorder.py)
 endif()
 

@@ -1,9 +1,10 @@
 # terco pyscf reference v1
 # case: scf_rimp2:rimp2_ccpvdz_probe.bin
-# generator: test/pyscf_refs/generate.py
+# generator: test/pyscf_refs/generate.py CASES["rimp2"] -> gen_rimp2
 # pyscf: 2.14.0
-# hash: 4e4916e37c142326c6f41c49198a6558fe93abe307ee16739207f0a4f01a4c4a
-# files: test/pyscf_refs/generate.py test/scf_rimp2.F90
+# hash-scheme: case-ast-v1
+# hash: 4624796533eff516caf996b8ebc97da72e2829f1e8e91edd878d8466b960cdb2
+# files: test/scf_rimp2.F90
 E_SCF -7.60271129283133575e+01
 E_OS -1.55308332905144231e-01
 E_SS -5.22435978781967264e-02

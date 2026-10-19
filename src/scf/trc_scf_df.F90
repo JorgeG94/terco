@@ -1,6 +1,12 @@
 !
 ! Density-fitted J and K for a restricted (closed-shell) reference,
-! Cartesian orbital basis, resident on the device.
+! resident on the device. Every array THIS object owns -- `bpk`, the
+! packed density/J factors, the K half-transform -- is Cartesian-sized
+! (`n = b%nao`), whether the orbital basis `b` is spherical or not: a
+! spherical caller folds S/H/D/F through `trc_scf_fock.F90`'s `to_cart`/
+! `to_sph` at the boundary, and this object never sees the difference.
+! The AUXILIARY basis is a separate question (see `df_jk_setup`'s own
+! comment): it follows its own `aux%spherical`, independent of `b`'s.
 !
 ! With the auxiliary basis {P}, its metric M = (P|Q) = L L^T and the
 ! three-index tensor T(mu nu, P) = (mu nu|P),
@@ -70,6 +76,7 @@ module trc_scf_df
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
+   use trc_sph, only: sph_metric_cart_to_sph, sph_aux3c_to_sph
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use, intrinsic :: iso_fortran_env, only: output_unit
@@ -115,6 +122,17 @@ module trc_scf_df
       integer :: qb = 1       !! auxiliary functions per K block, chosen at setup
       integer :: omax = 0     !! current capacity of the density-factor workspace
       real(dp), allocatable :: bpk(:, :)              !! (npack, naux): B, packed mu >= nu
+      real(dp), allocatable :: chol(:, :)              !! (naux, naux): L, the metric's Cholesky
+      !! factor (M = (P|Q) = L L^T), RETAINED past setup rather than freed --
+      !! unlike the energy build, which never needs L again once B = T L^-T
+      !! has absorbed it, the DF GRADIENT (trc_scf_grad_df.F90) needs one
+      !! more triangular solve against the SAME L to turn the Cholesky-space
+      !! coefficients `build` already computes (gamma(Q), and the occupied
+      !! half-transform) into the actual fitting coefficients the analytic
+      !! derivative's envelope-theorem formula is stationary in. Keeping L
+      !! resident is what lets that solve skip rebuilding the metric or its
+      !! factorisation -- the paper's point (Stocks/Palethorpe/Barca 2024,
+      !! .claude/notes/papers/): never recompute a 2c/3c integral's VALUE.
       real(dp), allocatable :: dpk(:), jpk(:), gq(:)   !! J's packed density/result, and gamma(Q)
       real(dp), allocatable :: dsc(:, :), evals(:)     !! the density-factor eigenproblem
       real(dp), allocatable :: ypos(:, :), yneg(:, :)  !! (n, omax)
@@ -130,6 +148,7 @@ module trc_scf_df
       procedure :: report => df_jk_report
       procedure :: dims => df_jk_dims
       procedure :: packed_b => df_jk_packed_b
+      procedure :: cholesky => df_jk_chol
       procedure :: is_ready => df_jk_is_ready
    end type df_jk_t
 
@@ -162,18 +181,19 @@ contains
       integer, intent(in), optional :: aux_block
 
       type(trc_basis_t) :: blk
-      real(dp), allocatable :: jm(:, :), tens(:, :, :)
-      integer :: n, naux, npack, ablk, omax0
-      integer :: s0, s1, ish, p0, np, mu, nu, q
+      real(dp), allocatable :: jmc(:, :), tens(:, :, :), tsph(:, :, :)
+      integer :: n, naux, naux_c, npack, ablk, omax0
+      integer :: s0, s1, ish, p0, p0s, np, nps, mu, nu, q
       real(dp) :: tc
 
       call err%clear()
       if (this%ready) return
-      if (b%spherical) then
-         call err%set(ERROR_VALIDATION, "trc_scf_df: the orbital basis is spherical; DF-JK only "// &
-                      "supports a Cartesian basis today")
-         return
-      end if
+      ! The orbital basis `b` is only ever read here at its CARTESIAN size
+      ! (`n = b%nao`, never `b%nao_sph`) -- `d_c`/`gmat_c` in `build`
+      ! below are the Cartesian-space scratch trc_scf_fock.F90's `to_cart`/
+      ! `to_sph` fold the SCF's own (spherical, if `b%spherical`) matrices
+      ! through at the call site -- so nothing here needs `b%spherical`
+      ! at all, and a spherical orbital basis is not refused.
       if (maxval(b%sh_l) > DF_LMAX) then
          call err%set(ERROR_VALIDATION, "trc_scf_df: the orbital basis carries angular momentum "// &
                       "above what the density-fitting kernels were generated for (gen_df.py --lmax)")
@@ -186,11 +206,38 @@ contains
       end if
 
       n = b%nao
-      naux = aux%nao
+      ! The auxiliary basis follows ITS OWN `spherical` tag, independent
+      ! of the orbital basis's -- trc_capi.F90's `basis_json`/
+      ! `trc_set_jkfit_json` set it to match the orbital basis by
+      ! construction (pyscf's own `auxmol.cart = mol.cart` rule), but
+      ! this object only ever reads `aux%spherical` itself, same as every
+      ! other aux-basis-aware piece below. `naux_c`, the CARTESIAN count,
+      ! sizes the (mu nu|P) build's own kernel calls and block walk
+      ! (always Cartesian, like every kernel); `naux`, spherical-folded
+      ! when `aux%spherical`, is every OTHER dimension below -- the
+      ! metric, its Cholesky factor, `bpk`'s own column count, and (via
+      ! `this%naux`) what a chained RI-MP2 step checks against its own.
+      naux_c = aux%nao
+      naux = merge(aux%nao_sph, aux%nao, aux%spherical)
       npack = n*(n + 1)/2
       this%n = n
       this%naux = naux
       this%npack = npack
+
+      ! `lp`'s own eigensolver workspace: a caller that already `%init`'d
+      ! it (trc_capi.F90's own `cx%la%init(n)`, at the SCF's own space --
+      ! `b%nao_sph` when `b%spherical`) sized it for a SMALLER n than this
+      ! object's own density-factor `syev` (build()'s own `this%dsc`,
+      ! Cartesian, `n = b%nao`) ever runs at: every OTHER caller already
+      ! passes a Cartesian `n` (RI-MP2's own `trc_rimp2_run`/
+      ! `trc_urimp2_run`, or `--df` before a spherical orbital basis was
+      ! supported, when `b%nao_sph` and `b%nao` happened to always be
+      ! equal), so this went unnoticed until a spherical `--df` run first
+      ! made the two sizes differ -- `trc_linalg_t%init` only ever GROWS
+      ! (`grow_workspace`, never shrinks), so calling it here with the
+      ! size `build` actually needs is always safe and a no-op when a
+      ! caller already sized `lp` this large or larger.
+      call lp%init(n)
 
       call dbg_mem("before B")
       allocate (this%bpk(npack, naux))
@@ -199,38 +246,62 @@ contains
       call this%tbl%init("dfjk", NAMES, bytes_steps=[ST_JGAM, ST_JBLD, ST_UNPK])
 
       ! --- the metric and its Cholesky factor -------------------------------
-      allocate (jm(naux, naux))
-      !$acc enter data create(jm)
+      ! Stored in `this%chol`, not a local metric: the energy build never
+      ! needs it again after the trsm below absorbs it into B, but the
+      ! gradient (trc_scf_grad_df.F90) does -- see this type's own `chol`
+      ! field comment. Same lifetime as `bpk` from here on.
+      ! M = (P|Q) is built Cartesian (the kernel's only space) and folded,
+      ! M_sph = T^T M_cart T, BEFORE the Cholesky factor -- the same
+      ! `sph_cart_to_sph` the SCF driver folds S/H/D/F through, with the
+      ! auxiliary basis standing in for the orbital one it is normally
+      ! called on (trc_sph.F90's own transforms take any `trc_basis_t`).
+      allocate (this%chol(naux, naux))
+      !$acc enter data create(this%chol)
       call dbg_mem("after metric alloc")
       call this%tbl%step_on(lp, ST_METRIC, tc)
-      call trc_df_2c(aux, jm)
+      if (aux%spherical) then
+         allocate (jmc(naux_c, naux_c))
+         !$acc enter data create(jmc)
+         call trc_df_2c(aux, jmc)
+         call sph_metric_cart_to_sph(aux, lp, jmc, this%chol)
+         !$acc exit data delete(jmc)
+         deallocate (jmc)
+      else
+         call trc_df_2c(aux, this%chol)
+      end if
       call this%tbl%step_off(lp, ST_METRIC, tc)
       call this%tbl%step_on(lp, ST_CHOL, tc)
-      call lp%potrf(naux, jm, naux)
+      call lp%potrf(naux, this%chol, naux)
       call this%tbl%step_off(lp, ST_CHOL, tc)
       call this%tbl%add_flop(ST_CHOL, int(naux, int64)**3/3)
       call dbg_mem("after Cholesky")
 
-      ! The setup block size, queried HERE -- after bpk AND jm (the metric
-      ! and its Cholesky factor, naux*naux*8 bytes, ~226 MB even at w40's
+      ! The setup block size, queried HERE -- after bpk AND the metric's
+      ! Cholesky factor (naux*naux*8 bytes, ~226 MB even at w40's
       ! naux=5320, but Cholesky's own cuSOLVER workspace is not that small
       ! and is still resident at this point too) are both already spoken
       ! for, not back when only bpk was -- because that earlier query (one
       ! round's own bug, caught by the local-memory fix above freeing
       ! enough headroom for the naux/4 default to pass a free-memory check
-      ! that did not yet know about jm's and potrf's own footprint) let
+      ! that did not yet know about the Cholesky step's own footprint) let
       ! `choose_setup_block` approve an ablk whose tensor then OOM'd against
-      ! what jm and Cholesky had since consumed. naux/4 at a time (the old,
+      ! what the metric and Cholesky had since consumed. naux/4 at a time (the old,
       ! size-blind default) allocates a dense (n, n, naux/4) tensor for the
-      ! (mu nu|P) build that alone can exceed what is left after bpk+jm+
-      ! Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
+      ! (mu nu|P) build that alone can exceed what is left after bpk+the
+      ! metric+Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
       ! memory-aware, same pattern as the per-iteration K block
       ! (`choose_qb`) and RI-MP2's own `k_group`.
-      ablk = choose_setup_block(n, naux)
+      ablk = choose_setup_block(n, naux_c)
       if (present(aux_block)) ablk = max(aux_block, 1)
       call dbg_mem("ablk chosen (ablk="//itoa_dbg(ablk)//")")
 
       ! --- (mu nu|P), one auxiliary block at a time, packed as it lands ----
+      ! `p0`/`np` below are the block's EFFECTIVE (spherical, when
+      ! `aux%spherical`) offset/width -- what `bpk`'s own column index
+      ! runs over -- kept distinct from the block's CARTESIAN `p0`/`np`
+      ! only where the two differ, read out of `blk` after `subset` cuts
+      ! it (never across a shell, so `blk%nao_sph` is exactly this
+      ! block's own spherical width).
       s0 = 1
       do while (s0 <= aux%nshell)
          s1 = s0
@@ -249,9 +320,22 @@ contains
          call trc_df_3c(b, pl, blk, tens)
          call this%tbl%step_off(lp, ST_3C, tc)
          call this%tbl%step_on(lp, ST_PACK, tc)
-         do concurrent(q=1:np, mu=1:n, nu=1:n, nu <= mu)
-            this%bpk(pack_idx(mu, nu), p0 - 1 + q) = tens(mu, nu, q)
-         end do
+         if (aux%spherical) then
+            p0s = aux%sh_ao_sph(s0)
+            nps = blk%nao_sph
+            allocate (tsph(n, n, nps))
+            !$acc enter data create(tsph)
+            call sph_aux3c_to_sph(blk, n, tens, tsph, lp)
+            do concurrent(q=1:nps, mu=1:n, nu=1:n, nu <= mu)
+               this%bpk(pack_idx(mu, nu), p0s - 1 + q) = tsph(mu, nu, q)
+            end do
+            !$acc exit data delete(tsph)
+            deallocate (tsph)
+         else
+            do concurrent(q=1:np, mu=1:n, nu=1:n, nu <= mu)
+               this%bpk(pack_idx(mu, nu), p0 - 1 + q) = tens(mu, nu, q)
+            end do
+         end if
          call this%tbl%step_off(lp, ST_PACK, tc)
          !$acc exit data delete(tens)
          deallocate (tens)
@@ -261,13 +345,14 @@ contains
 
       call dbg_mem("after (mn|P) + pack, before trsm")
       ! --- B = T L^-T: one triangular solve, every packed row at once ------
+      ! `this%chol` is READ here, not consumed: trsm solves against it and
+      ! leaves it untouched, so -- unlike the old local `jm`, freed right
+      ! after this call -- it stays resident for the gradient to reuse.
       call this%tbl%step_on(lp, ST_TRSM, tc)
-      call lp%trsm("R", "L", "T", npack, naux, 1.0_dp, jm, naux, this%bpk, npack)
+      call lp%trsm("R", "L", "T", npack, naux, 1.0_dp, this%chol, naux, this%bpk, npack)
       call this%tbl%step_off(lp, ST_TRSM, tc)
       call this%tbl%add_flop(ST_TRSM, int(npack, int64)*int(naux, int64)*int(naux, int64))
-      !$acc exit data delete(jm)
-      deallocate (jm)
-      call dbg_mem("after trsm, jm freed")
+      call dbg_mem("after trsm")
 
       ! --- fixed-size per-iteration scratch, and the density-factor one ----
       allocate (this%dpk(npack), this%jpk(npack), this%gq(naux))
@@ -506,11 +591,11 @@ contains
       end do
    end subroutine df_jk_build
 
-   !! This object's dimensions, and whether `setup` has already fitted `bpk`
-   !! -- what a chained RI-MP2 step checks before reusing it instead of
-   !! redoing the metric/Cholesky/3c/trsm on the same auxiliary basis (see
-   !! `packed_b` below, and trc_rimp2_driver.F90's own `dfjk` argument).
    pure subroutine df_jk_dims(this, n, naux, npack)
+      !! This object's dimensions, and whether `setup` has already fitted `bpk`
+      !! -- what a chained RI-MP2 step checks before reusing it instead of
+      !! redoing the metric/Cholesky/3c/trsm on the same auxiliary basis (see
+      !! `packed_b` below, and trc_rimp2_driver.F90's own `dfjk` argument).
       class(df_jk_t), intent(in) :: this
       integer, intent(out) :: n, naux, npack
       n = this%n
@@ -523,14 +608,14 @@ contains
       r = this%ready
    end function df_jk_is_ready
 
-   !! B itself, packed (mu >= nu, p = mu(mu-1)/2 + nu) and already L^-T
-   !! applied -- (npack, naux), device-resident. A chained RI-MP2 step
-   !! reads this directly instead of rebuilding it: L^-T acts only on the
-   !! auxiliary index and the occupied/virtual half-transform only on
-   !! (mu, nu), so the two commute, and the half-transform run on THIS is
-   !! exactly RI-MP2's own B, no further triangular solve needed. Null
-   !! unless `is_ready()`.
    function df_jk_packed_b(this) result(p)
+      !! B itself, packed (mu >= nu, p = mu(mu-1)/2 + nu) and already L^-T
+      !! applied -- (npack, naux), device-resident. A chained RI-MP2 step
+      !! reads this directly instead of rebuilding it: L^-T acts only on the
+      !! auxiliary index and the occupied/virtual half-transform only on
+      !! (mu, nu), so the two commute, and the half-transform run on THIS is
+      !! exactly RI-MP2's own B, no further triangular solve needed. Null
+      !! unless `is_ready()`.
       class(df_jk_t), intent(in), target :: this
       real(dp), pointer :: p(:, :)
       if (this%ready) then
@@ -540,15 +625,32 @@ contains
       end if
    end function df_jk_packed_b
 
+   function df_jk_chol(this) result(p)
+      !! L, the metric's Cholesky factor (M = (P|Q) = L L^T), lower-triangular,
+      !! (naux, naux), device-resident -- see this type's `chol` field comment.
+      !! The DF gradient (trc_scf_grad_df.F90) solves against this directly
+      !! (one triangular solve, `lp%trsm`/`lp%trsv` with "L","T") to turn the
+      !! Cholesky-space coefficients `build` already computes into the actual
+      !! fitting coefficients its envelope-theorem derivative is stationary in,
+      !! with no metric or Cholesky recomputation. Null unless `is_ready()`.
+      class(df_jk_t), intent(in), target :: this
+      real(dp), pointer :: p(:, :)
+      if (this%ready) then
+         p => this%chol
+      else
+         p => null()
+      end if
+   end function df_jk_chol
+
    subroutine df_jk_release(this)
       class(df_jk_t), intent(inout) :: this
       if (.not. this%ready) return
-      !$acc exit data delete(this%bpk, this%dpk, this%jpk, this%gq, this%dsc, this%evals, &
+      !$acc exit data delete(this%bpk, this%chol, this%dpk, this%jpk, this%gq, this%dsc, this%evals, &
       !$acc                  this%kpos, this%kneg, this%bblk, this%bsym)
       if (allocated(this%ypos)) then
          !$acc exit data delete(this%ypos, this%yneg, this%zpos, this%zneg)
       end if
-      deallocate (this%bpk, this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, &
+      deallocate (this%bpk, this%chol, this%dpk, this%jpk, this%gq, this%dsc, this%evals, this%kpos, this%kneg, &
                  this%bblk, this%bsym)
       if (allocated(this%ypos)) deallocate (this%ypos, this%yneg, this%zpos, this%zneg)
       this%ready = .false.

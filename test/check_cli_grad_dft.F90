@@ -1,0 +1,162 @@
+!
+! The CLI's --grad for a KS-DFT run (--func pbe): what `terco` prints to
+! its JSON summary must be exactly what the library itself
+! (trc_run_gradient/trc_gradient, the same C API app/main.F90 calls)
+! computes for the identical molecule, basis, functional and guess --
+! see check_cli_grad.F90's own header for the reasoning (this program is
+! that one's DFT twin, same wiring check, same tolerance). What this
+! program adds is that trc_run_gradient is no longer refused for an
+! LDA/GGA --func (this branch's own lift of its DFT refusal): both the
+! CLI and the direct call below take the KS-DFT gradient path
+! (trc_scf_grad%trc_scf_gradient's `func` present), and the SAME grid
+! settings (grid_level 3, the default grid_max_pts/rho_tol) both ways.
+!
+! Runs the installed `terco` binary (its path given as this program's
+! first command-line argument; its second argument is a scratch path for
+! the CLI's own --json output) with --func pbe --guess gwh on water/
+! 6-31G, reads its --json gradient array back, and compares it to a
+! direct trc_create/.../trc_run_gradient/trc_gradient call on the SAME
+! molecule/basis/functional/guess/convergence settings, in the SAME order
+! app/main.F90 itself calls them.
+!
+program check_cli_grad_dft
+   use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
+   use pic_types, only: dp
+   use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
+                       trc_set_method, trc_set_guess, trc_set_convergence, trc_set_screening, &
+                       trc_set_incremental, trc_run_scf, trc_run_gradient, trc_gradient, &
+                       trc_set_verbose, trc_set_force_cartesian, trc_set_nlc_grid, &
+                       TRC_OK, TRC_GUESS_GWH
+   use trc_test_basis, only: read_xyz
+   implicit none
+
+   character(len=:), allocatable :: cli_exe, probe_json, probe_out
+   character(len=1024) :: arg
+   character(len=:), allocatable :: cmd
+   integer :: nat, i, rc, u, ios
+   integer, allocatable :: at_z(:)
+   real(dp), allocatable :: r(:, :)
+   real(dp), allocatable :: grad_api(:, :), grad_cli(:, :)
+   type(c_ptr) :: h
+   integer(c_int) :: st
+   character(len=256) :: line
+   logical :: found
+   real(dp) :: worst
+   real(dp), parameter :: TOL = 1.0e-6_dp
+   !! Same value and reasoning as check_cli_grad.F90's own TOL: two
+   !! separate OS processes, threaded BLAS that is not associative, so
+   !! their GWH guesses and DIIS iterations (now also the XC quadrature's
+   !! own batched GEMMs) can land at very slightly different densities.
+
+   call get_command_argument(1, arg)
+   cli_exe = trim(arg)
+   call get_command_argument(2, arg)
+   probe_json = trim(arg)
+   if (len(cli_exe) == 0 .or. len(probe_json) == 0) then
+      print '(a)', 'check_cli_grad_dft: usage: check_cli_grad_dft <terco CLI binary> <scratch .json path>'
+      stop 1
+   end if
+   probe_out = probe_json//'.out'
+
+   call read_xyz('water.xyz', nat, at_z, r)
+
+   ! --- "the library's" own gradient, straight through the C API -------
+   st = trc_create(h)
+   if (st /= TRC_OK) then
+      print '(a)', 'check_cli_grad_dft: trc_create failed'; stop 1
+   end if
+   st = trc_set_verbose(h, 1_c_int)
+   call must_ok(st, 'trc_set_verbose')
+   st = trc_set_molecule(h, int(nat, c_int), real(at_z, c_double), r, 0_c_int, 1_c_int)
+   call must_ok(st, 'trc_set_molecule')
+   st = trc_set_force_cartesian(h, 0_c_int)
+   call must_ok(st, 'trc_set_force_cartesian')
+   st = trc_set_basis_json(h, c_string_local('basis_sets/6-31g.json'))
+   call must_ok(st, 'trc_set_basis_json')
+   st = trc_set_method(h, c_string_local('pbe'), 3_c_int)
+   call must_ok(st, 'trc_set_method')
+   st = trc_set_nlc_grid(h, 1_c_int)
+   call must_ok(st, 'trc_set_nlc_grid')
+   st = trc_set_convergence(h, 1.0e-10_c_double, 1.0e-5_c_double, 100_c_int, 10_c_int)
+   call must_ok(st, 'trc_set_convergence')
+   st = trc_set_screening(h, 1.0e-12_c_double)
+   call must_ok(st, 'trc_set_screening')
+   st = trc_set_incremental(h, 0_c_int)
+   call must_ok(st, 'trc_set_incremental')
+   st = trc_set_guess(h, TRC_GUESS_GWH, c_null_ptr, 1_c_int)
+   call must_ok(st, 'trc_set_guess')
+   st = trc_run_scf(h)
+   call must_ok(st, 'trc_run_scf')
+   st = trc_run_gradient(h)
+   call must_ok(st, 'trc_run_gradient')
+   allocate (grad_api(3, nat))
+   st = trc_gradient(h, grad_api)
+   call must_ok(st, 'trc_gradient')
+   st = trc_destroy(h)
+
+   ! --- the CLI's own printed/JSON gradient, same molecule/basis/func ---
+   cmd = trim(cli_exe)//' water.xyz -b basis_sets/6-31g.json --func pbe --guess gwh --grad --json '// &
+         probe_json//' > '//probe_out//' 2>&1'
+   call execute_command_line(cmd, exitstat=rc, wait=.true.)
+   if (rc /= 0) then
+      print '(a,i0)', 'check_cli_grad_dft: the CLI run itself failed, exit code ', rc; stop 1
+   end if
+
+   allocate (grad_cli(3, nat))
+   open (newunit=u, file=probe_json, status='old', action='read', iostat=ios)
+   if (ios /= 0) then
+      print '(a)', 'check_cli_grad_dft: cannot open '//probe_json; stop 1
+   end if
+   found = .false.
+   do
+      read (u, '(a)', iostat=ios) line
+      if (ios /= 0) exit
+      if (index(line, '"gradient"') > 0) then
+         found = .true.
+         exit
+      end if
+   end do
+   if (.not. found) then
+      print '(a)', 'check_cli_grad_dft: no "gradient" array in the CLI''s JSON output'; stop 1
+   end if
+   do i = 1, nat
+      read (u, '(a)') line
+      call strip_brackets(line)
+      read (line, *) grad_cli(1, i), grad_cli(2, i), grad_cli(3, i)
+   end do
+   close (u)
+
+   worst = maxval(abs(grad_api - grad_cli))
+   print '(a,es10.2)', '  check_cli_grad_dft: worst|CLI JSON - direct trc_gradient| ', worst
+   if (worst > TOL) then
+      print '(a)', 'check_cli_grad_dft: RESULT: FAIL'; stop 1
+   end if
+   print '(a)', 'check_cli_grad_dft: RESULT: PASS'
+
+contains
+
+   subroutine must_ok(status, what)
+      integer(c_int), intent(in) :: status
+      character(*), intent(in) :: what
+      if (status /= TRC_OK) then
+         print '(a,a,a,i0)', 'check_cli_grad_dft: ', what, ' failed, status ', status; stop 1
+      end if
+   end subroutine must_ok
+
+   subroutine strip_brackets(line)
+      character(*), intent(inout) :: line
+      integer :: k
+      do k = 1, len(line)
+         if (line(k:k) == '[' .or. line(k:k) == ']') line(k:k) = ' '
+      end do
+   end subroutine strip_brackets
+
+   pure function c_string_local(s) result(cs)
+      !! `s` NUL-terminated, for a `character(kind=c_char) :: x(*)` dummy --
+      !! the same convention app/terco_app.F90's own `c_string` uses.
+      character(*), intent(in) :: s
+      character(len=len(s) + 1) :: cs
+      cs = s//achar(0)
+   end function c_string_local
+
+end program check_cli_grad_dft

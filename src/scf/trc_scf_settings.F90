@@ -4,8 +4,9 @@
 ! reads: a functional, a spin count, damping/DIIS thresholds, env overrides).
 ! `resolve` runs once, on the host, before anything is allocated or put on
 ! the device, and is the only place the run's rejections live (unknown or
-! incomplete functional, VV10 over MPI) -- every other setup failure comes
-! later, once real device state exists to release (trc_scf_context).
+! incomplete functional, --df's own restrictions) -- every other setup
+! failure comes later, once real device state exists to release
+! (trc_scf_context).
 !
 ! WHY A SHARED SPIN RULE. `trc_run_scf`/`trc_load_scf` (trc_capi.F90) need
 ! nspin before trc_scf_run is even reachable -- to size the guess density and
@@ -27,6 +28,18 @@ module trc_scf_settings
 
    public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_spin_rule
    public :: incr_env, incr_reset_env, incr_thresh_scale_env, incr_start_env, eri_thresh_env
+   public :: DEFAULT_NLC_GRID_LEVEL
+
+   integer, parameter :: DEFAULT_NLC_GRID_LEVEL = 1
+   !! VV10's own default grid level, coarser than the semilocal grid's
+   !! own default (`trc_dft_grid`'s `DEFAULT_GRID_LEVEL = 3`) by
+   !! convention (SG-1-like): VV10's double sum over grid points costs
+   !! the square of this grid's size. Both `trc_scf_options_t%nlc_grid_level`
+   !! below and `trc_scf_grad%trc_scf_gradient`'s own fallback (its
+   !! `nlc_grid_level` argument absent) read this SAME constant, so the
+   !! two cannot drift apart the way an SCF energy on one grid and its
+   !! own gradient on another once did (feat/grad-vv10's own fix, see
+   !! check_vv10_grad_fixedd_fd.F90).
 
    type :: trc_scf_options_t
       character(len=16) :: functional = ""   !! empty is Hartree-Fock
@@ -134,7 +147,7 @@ module trc_scf_settings
       !! per context handle; see trc_scf_df.F90's own header on why it
       !! outlives a single run).
       integer :: grid_level = 3
-      integer :: nlc_grid_level = 1
+      integer :: nlc_grid_level = DEFAULT_NLC_GRID_LEVEL
       !! Grid level for VV10's nonlocal correlation, when the functional has
       !! it. Coarser than the semilocal grid by convention (SG-1-like): VV10
       !! is a double sum over grid points, so its cost goes as the square of
@@ -230,8 +243,8 @@ contains
    ! its first allocation, in the same order: the functional (and its
    ! rejections), the spin rule, the by-spin DIIS/damping defaults, whether
    ! PCM or the incremental build are on, and the env-hook overrides. `ok` is
-   ! false only for the three functional/VV10 rejections; every other setup
-   ! failure (grid, PCM) needs device state built first and is
+   ! false only for the functional and --df rejections below; every other
+   ! setup failure (grid, PCM) needs device state built first and is
    ! `trc_scf_context`'s to report.
    !
    function scf_settings_resolve(this, opts, nalpha, nbeta, comm, msg) result(ok)
@@ -270,15 +283,9 @@ contains
          end if
          this%exx = this%func%exx
          this%nlc = this%func%nlc_b /= 0.0_dp
-         ! VV10's double sum runs over the whole grid on one device; split
-         ! over ranks it would need every rank's points.
-         if (this%nlc .and. present(comm)) then
-            if (comm%size() > 1) then
-               msg = "trc_scf: VV10 nonlocal correlation is not available over MPI ranks"
-               ok = .false.
-               return
-            end if
-         end if
+         ! VV10 over MPI: trc_vv10's vv10_drive splits pass 2's outer grid
+         ! points into a contiguous range per rank and allreduces the
+         ! result -- no rejection needed here.
          this%exx_lr = this%func%exx_lr
          this%omega = this%func%omega
       end if

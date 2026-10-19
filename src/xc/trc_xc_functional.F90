@@ -25,44 +25,58 @@
 ! with allocatable components is exactly what a `do concurrent` body should
 ! not touch.
 !
+! A double hybrid (b2plyp, b2gp-plyp, mpw2plyp) is still just a (coef,
+! kernel) composition plus `exx` for its SCF -- `pt2_cos`/`pt2_css` are
+! the RI-MP2 fraction on top, which this module only STORES; running it
+! (always RI, on the converged KS orbitals) is trc_capi.F90's
+! trc_run_rimp2/trc_energy, never anything in here.
+!
 module trc_xc_functional
    use pic_types, only: dp
-   use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar
-   use trc_xc_b97_d, only: b97_d_exc_vxc_unpolar, b97_d_exc_vxc_polar
-   use trc_xc_bmk_c, only: bmk_c_exc_vxc_unpolar, bmk_c_exc_vxc_polar
-   use trc_xc_lyp, only: lyp_exc_vxc_unpolar, lyp_exc_vxc_polar
-   use trc_xc_mpw91_x, only: mpw91_x_exc_vxc_unpolar, mpw91_x_exc_vxc_polar
-   use trc_xc_n12_c, only: n12_c_exc_vxc_unpolar, n12_c_exc_vxc_polar
-   use trc_xc_n12_sx_c, only: n12_sx_c_exc_vxc_unpolar, n12_sx_c_exc_vxc_polar
-   use trc_xc_optx_x, only: optx_x_exc_vxc_unpolar, optx_x_exc_vxc_polar
-   use trc_xc_p86_c, only: p86_c_exc_vxc_unpolar, p86_c_exc_vxc_polar
-   use trc_xc_p86vwn_ft_c, only: p86vwn_ft_c_exc_vxc_unpolar, p86vwn_ft_c_exc_vxc_polar
-   use trc_xc_pbe_c, only: pbe_c_exc_vxc_unpolar, pbe_c_exc_vxc_polar
-   use trc_xc_pbe_sol_c, only: pbe_sol_c_exc_vxc_unpolar, pbe_sol_c_exc_vxc_polar
-   use trc_xc_pbe_x, only: pbe_x_exc_vxc_unpolar, pbe_x_exc_vxc_polar
-   use trc_xc_pw86_x, only: pw86_x_exc_vxc_unpolar, pw86_x_exc_vxc_polar
-   use trc_xc_pw91_c, only: pw91_c_exc_vxc_unpolar, pw91_c_exc_vxc_polar
-   use trc_xc_pw91_lda, only: pw91_lda_exc_vxc_unpolar, pw91_lda_exc_vxc_polar
-   use trc_xc_pw91_lda_mod, only: pw91_lda_mod_exc_vxc_unpolar, pw91_lda_mod_exc_vxc_polar
-   use trc_xc_pw91_lda_rpa, only: pw91_lda_rpa_exc_vxc_unpolar, pw91_lda_rpa_exc_vxc_polar
-   use trc_xc_pw91_x, only: pw91_x_exc_vxc_unpolar, pw91_x_exc_vxc_polar
-   use trc_xc_pz81, only: pz81_exc_vxc_unpolar, pz81_exc_vxc_polar
-   use trc_xc_pz81_mod, only: pz81_mod_exc_vxc_unpolar, pz81_mod_exc_vxc_polar
-   use trc_xc_rev_pbe_x, only: rev_pbe_x_exc_vxc_unpolar, rev_pbe_x_exc_vxc_polar
-   use trc_xc_rpbe_x, only: rpbe_x_exc_vxc_unpolar, rpbe_x_exc_vxc_polar
-   use trc_xc_slater_exchange, only: slater_exchange_exc_vxc_unpolar, slater_exchange_exc_vxc_polar
-   use trc_xc_sogga11_x_c, only: sogga11_x_c_exc_vxc_unpolar, sogga11_x_c_exc_vxc_polar
-   use trc_xc_sogga11_x_x, only: sogga11_x_x_exc_vxc_unpolar, sogga11_x_x_exc_vxc_polar
-   use trc_xc_vwn, only: vwn_exc_vxc_unpolar, vwn_exc_vxc_polar
-   use trc_xc_vwn_rpa, only: vwn_rpa_exc_vxc_unpolar, vwn_rpa_exc_vxc_polar
-   use trc_xc_wb97_xc, only: wb97_xc_exc_vxc_unpolar, wb97_xc_exc_vxc_polar
-   use trc_xc_wb97x_d_xc, only: wb97x_d_xc_exc_vxc_unpolar, wb97x_d_xc_exc_vxc_polar
-   use trc_xc_wb97x_v_xc, only: wb97x_v_xc_exc_vxc_unpolar, wb97x_v_xc_exc_vxc_polar
-   use trc_xc_wb97x_xc, only: wb97x_xc_exc_vxc_unpolar, wb97x_xc_exc_vxc_polar
+   use trc_xc_b88, only: b88_exc_vxc_unpolar, b88_exc_vxc_polar, b88_vxc_fxc_unpolar
+   use trc_xc_b97_d, only: b97_d_exc_vxc_unpolar, b97_d_exc_vxc_polar, b97_d_vxc_fxc_unpolar
+   use trc_xc_bmk_c, only: bmk_c_exc_vxc_unpolar, bmk_c_exc_vxc_polar, bmk_c_vxc_fxc_unpolar
+   use trc_xc_lyp, only: lyp_exc_vxc_unpolar, lyp_exc_vxc_polar, lyp_vxc_fxc_unpolar
+   use trc_xc_mpw91_x, only: mpw91_x_exc_vxc_unpolar, mpw91_x_exc_vxc_polar, mpw91_x_vxc_fxc_unpolar
+   use trc_xc_n12_c, only: n12_c_exc_vxc_unpolar, n12_c_exc_vxc_polar, n12_c_vxc_fxc_unpolar
+   use trc_xc_n12_sx_c, only: n12_sx_c_exc_vxc_unpolar, n12_sx_c_exc_vxc_polar, n12_sx_c_vxc_fxc_unpolar
+   use trc_xc_optx_x, only: optx_x_exc_vxc_unpolar, optx_x_exc_vxc_polar, optx_x_vxc_fxc_unpolar
+   use trc_xc_p86_c, only: p86_c_exc_vxc_unpolar, p86_c_exc_vxc_polar, p86_c_vxc_fxc_unpolar
+   use trc_xc_p86vwn_ft_c, only: p86vwn_ft_c_exc_vxc_unpolar, p86vwn_ft_c_exc_vxc_polar, &
+      p86vwn_ft_c_vxc_fxc_unpolar
+   use trc_xc_pbe_c, only: pbe_c_exc_vxc_unpolar, pbe_c_exc_vxc_polar, pbe_c_vxc_fxc_unpolar
+   use trc_xc_pbe_sol_c, only: pbe_sol_c_exc_vxc_unpolar, pbe_sol_c_exc_vxc_polar, pbe_sol_c_vxc_fxc_unpolar
+   use trc_xc_pbe_x, only: pbe_x_exc_vxc_unpolar, pbe_x_exc_vxc_polar, pbe_x_vxc_fxc_unpolar
+   use trc_xc_pw86_x, only: pw86_x_exc_vxc_unpolar, pw86_x_exc_vxc_polar, pw86_x_vxc_fxc_unpolar
+   use trc_xc_pw91_c, only: pw91_c_exc_vxc_unpolar, pw91_c_exc_vxc_polar, pw91_c_vxc_fxc_unpolar
+   use trc_xc_pw91_lda, only: pw91_lda_exc_vxc_unpolar, pw91_lda_exc_vxc_polar, pw91_lda_vxc_fxc_unpolar
+   use trc_xc_pw91_lda_mod, only: pw91_lda_mod_exc_vxc_unpolar, pw91_lda_mod_exc_vxc_polar, &
+      pw91_lda_mod_vxc_fxc_unpolar
+   use trc_xc_pw91_lda_rpa, only: pw91_lda_rpa_exc_vxc_unpolar, pw91_lda_rpa_exc_vxc_polar, &
+      pw91_lda_rpa_vxc_fxc_unpolar
+   use trc_xc_pw91_x, only: pw91_x_exc_vxc_unpolar, pw91_x_exc_vxc_polar, pw91_x_vxc_fxc_unpolar
+   use trc_xc_pz81, only: pz81_exc_vxc_unpolar, pz81_exc_vxc_polar, pz81_vxc_fxc_unpolar
+   use trc_xc_pz81_mod, only: pz81_mod_exc_vxc_unpolar, pz81_mod_exc_vxc_polar, pz81_mod_vxc_fxc_unpolar
+   use trc_xc_rev_pbe_x, only: rev_pbe_x_exc_vxc_unpolar, rev_pbe_x_exc_vxc_polar, rev_pbe_x_vxc_fxc_unpolar
+   use trc_xc_rpbe_x, only: rpbe_x_exc_vxc_unpolar, rpbe_x_exc_vxc_polar, rpbe_x_vxc_fxc_unpolar
+   use trc_xc_slater_exchange, only: slater_exchange_exc_vxc_unpolar, slater_exchange_exc_vxc_polar, &
+      slater_exchange_vxc_fxc_unpolar
+   use trc_xc_sogga11_x_c, only: sogga11_x_c_exc_vxc_unpolar, sogga11_x_c_exc_vxc_polar, &
+      sogga11_x_c_vxc_fxc_unpolar
+   use trc_xc_sogga11_x_x, only: sogga11_x_x_exc_vxc_unpolar, sogga11_x_x_exc_vxc_polar, &
+      sogga11_x_x_vxc_fxc_unpolar
+   use trc_xc_vwn, only: vwn_exc_vxc_unpolar, vwn_exc_vxc_polar, vwn_vxc_fxc_unpolar
+   use trc_xc_vwn_rpa, only: vwn_rpa_exc_vxc_unpolar, vwn_rpa_exc_vxc_polar, vwn_rpa_vxc_fxc_unpolar
+   use trc_xc_wb97_xc, only: wb97_xc_exc_vxc_unpolar, wb97_xc_exc_vxc_polar, wb97_xc_vxc_fxc_unpolar
+   use trc_xc_wb97x_d_xc, only: wb97x_d_xc_exc_vxc_unpolar, wb97x_d_xc_exc_vxc_polar, wb97x_d_xc_vxc_fxc_unpolar
+   use trc_xc_wb97x_v_xc, only: wb97x_v_xc_exc_vxc_unpolar, wb97x_v_xc_exc_vxc_polar, wb97x_v_xc_vxc_fxc_unpolar
+   use trc_xc_wb97x_xc, only: wb97x_xc_exc_vxc_unpolar, wb97x_xc_exc_vxc_polar, wb97x_xc_vxc_fxc_unpolar
    implicit none
    private
 
    public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name
+   public :: xc_eval_point_fxc
+   public :: xc_is_double_hybrid
    public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS
 
@@ -105,25 +119,26 @@ module trc_xc_functional
    !! Every selectable name, available or `missing`: the CLI's --func
    !! help and trc_capi's unknown-functional message are built from this
    !! rather than keeping their own copy of the list.
-   integer, parameter :: XC_FUNCTIONAL_COUNT = 92
+   integer, parameter :: XC_FUNCTIONAL_COUNT = 97
    character(len=13), parameter :: XC_FUNCTIONAL_NAMES(XC_FUNCTIONAL_COUNT) = [ &
-      "b3lyp        ", "b3lyp5       ", "b3pw91       ", "b88          ", "b97d         ", "b97d3zero    ", &
-      "bhandh       ", "bhandhlyp    ", "bhhlyp       ", "blyp         ", "bmk          ", "bp86         ", &
-      "bp86vwn      ", "camb3lyp     ", "cf22d        ", "epc17_1      ", "epc17_2      ", "epc18_1      ", &
-      "epc18_2      ", "hf-lyp       ", "hf_lyp       ", "hflyp        ", "hse03        ", "hse06        ", &
-      "lcwpbe       ", "lda          ", "lda_x        ", "lrcwpbe      ", "lrcwpbeh     ", "m05          ", &
-      "m052x        ", "m06          ", "m062x        ", "m06hf        ", "m06l         ", "m06sx        ", &
-      "m08hx        ", "m08so        ", "m11          ", "mbeef        ", "mn12l        ", "mn12sx       ", &
-      "mn15         ", "mn15l        ", "mpw1k        ", "mpw91        ", "o3lyp        ", "olyp         ", &
-      "opbe         ", "pbe          ", "pbe0         ", "pkzb         ", "pw86b95      ", "pw86pbe      ", &
-      "pw91         ", "r2scan       ", "r2scan0      ", "r2scan50     ", "r2scanh      ", "r2scanl      ", &
-      "revb3lyp     ", "revm06l      ", "revpbe       ", "revpbe0      ", "revtpss      ", "revtpssh     ", &
-      "rpbe         ", "rscan        ", "scan         ", "scan0        ", "slater       ", "sogga11x     ", &
-      "spw92        ", "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", "tpss         ", &
-      "tpss0        ", "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", &
-      "wb97x        ", "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", &
-      "x3lyp        ", "xlyp         "]
-   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bp86, bp86vwn, hf-lyp, hf_lyp, hflyp, lda, lda_x, mpw1k, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
+      "b2gp-plyp    ", "b2gpplyp     ", "b2plyp       ", "b3lyp        ", "b3lyp5       ", "b3pw91       ", &
+      "b88          ", "b97d         ", "b97d3zero    ", "bhandh       ", "bhandhlyp    ", "bhhlyp       ", &
+      "blyp         ", "bmk          ", "bp86         ", "bp86vwn      ", "camb3lyp     ", "cf22d        ", &
+      "epc17_1      ", "epc17_2      ", "epc18_1      ", "epc18_2      ", "hf-lyp       ", "hf_lyp       ", &
+      "hflyp        ", "hse03        ", "hse06        ", "lcwpbe       ", "lda          ", "lda_x        ", &
+      "lrcwpbe      ", "lrcwpbeh     ", "m05          ", "m052x        ", "m06          ", "m062x        ", &
+      "m06hf        ", "m06l         ", "m06sx        ", "m08hx        ", "m08so        ", "m11          ", &
+      "mbeef        ", "mn12l        ", "mn12sx       ", "mn15         ", "mn15l        ", "mpw1k        ", &
+      "mpw2-plyp    ", "mpw2plyp     ", "mpw91        ", "o3lyp        ", "olyp         ", "opbe         ", &
+      "pbe          ", "pbe0         ", "pkzb         ", "pw86b95      ", "pw86pbe      ", "pw91         ", &
+      "r2scan       ", "r2scan0      ", "r2scan50     ", "r2scanh      ", "r2scanl      ", "revb3lyp     ", &
+      "revm06l      ", "revpbe       ", "revpbe0      ", "revtpss      ", "revtpssh     ", "rpbe         ", &
+      "rscan        ", "scan         ", "scan0        ", "slater       ", "sogga11x     ", "spw92        ", &
+      "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", "tpss         ", "tpss0        ", &
+      "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", "wb97x        ", &
+      "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", "x3lyp        ", &
+      "xlyp         "]
+   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b2gp-plyp, b2gpplyp, b2plyp, b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bp86, bp86vwn, hf-lyp, hf_lyp, hflyp, lda, lda_x, mpw1k, mpw2-plyp, mpw2plyp, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
 
    type :: trc_xc_functional_t
       character(len=24) :: name = ""
@@ -141,11 +156,30 @@ module trc_xc_functional
       real(dp) :: omega  = 0.0_dp  !! range-separation parameter, bohr^-1; 0 = none
       real(dp) :: nlc_b  = 0.0_dp  !! VV10 b; 0 = no nonlocal correlation
       real(dp) :: nlc_c  = 0.0_dp  !! VV10 C
+      !
+      ! Double hybrids: the RI-MP2 fraction on top of the semilocal/exact-
+      ! exchange composition above, split opposite-/same-spin so a
+      ! spin-component-scaled (DSD-type) double hybrid can set them
+      ! unequally; both zero for every functional that is not one, and
+      ! equal (c_os = c_ss = c) for every double hybrid terco has today.
+      ! trc_capi.F90's trc_run_rimp2/trc_energy read these, never a kernel.
+      !
+      ! WHOEVER ADDS THE FIRST DSD-TYPE ENTRY (pt2_cos /= pt2_css) MUST
+      ! ALSO ADD A TEST THAT EXERCISES UNEQUAL WEIGHTS: every double
+      ! hybrid and every test of its weighted total today has pt2_cos ==
+      ! pt2_css, so a cos/css coefficient swap anywhere in the chain
+      ! (here, trc_capi's trc_energy, or a test's own oracle) is
+      ! undetectable -- see context_scf.F90's check_double_hybrid for
+      ! where that gap is called out and why literal-coefficient
+      ! assertions alone do not close it.
+      !
+      real(dp) :: pt2_cos = 0.0_dp  !! opposite-spin RI-MP2 fraction
+      real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction
+      character(len=160) :: missing = ""
       !! Empty when the functional runs; otherwise exactly what it needs
       !! that terco does not have, e.g. "needs TPSS_X: meta-GGA kernels
       !! are not translated yet". Selecting it by name still succeeds;
       !! running it is what the caller must refuse.
-      character(len=160) :: missing = ""
    end type trc_xc_functional_t
 
 contains
@@ -244,6 +278,110 @@ contains
          vsigma = vsigma + coef(k)*vs
       end do
    end subroutine xc_eval_point
+
+   !
+   ! The second derivatives of the composed functional at one point of a
+   ! closed-shell density, plus vsigma -- the GGA response term needs both
+   ! the kernel's second derivative AND its first derivative, since the
+   ! grad-rho factor the energy path's vsigma multiplies is itself
+   ! unperturbed; only vsigma's own value and the trial density's gradient
+   ! respond. Same `_vxc_fxc_unpolar` routine check_xc.F90 already validates
+   ! against libxc (tol_f = 1e-10 relative, see that program's header) --
+   ! this calls what is there, with no new kernel arithmetic. An LDA kernel
+   ! leaves vsigma, v2rhosigma and v2sigma2 at zero.
+   !
+   pure subroutine xc_eval_point_fxc(nk, kid, coef, rho, sigma, vsigma, v2rho2, v2rhosigma, v2sigma2)
+      !$acc routine seq
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho, sigma
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      real(dp), intent(out) :: vsigma, v2rho2, v2rhosigma, v2sigma2
+      real(dp) :: vr, vs, f2rr, f2rs, f2ss
+      integer :: k
+
+      vsigma = 0.0_dp
+      v2rho2 = 0.0_dp
+      v2rhosigma = 0.0_dp
+      v2sigma2 = 0.0_dp
+      do k = 1, nk
+         vs = 0.0_dp
+         f2rs = 0.0_dp
+         f2ss = 0.0_dp
+         select case (kid(k))
+         case (XC_K_B88)
+         call b88_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_B97_D)
+         call b97_d_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_BMK_C)
+         call bmk_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_LYP)
+         call lyp_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_MPW91_X)
+         call mpw91_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_N12_C)
+         call n12_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_N12_SX_C)
+         call n12_sx_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_OPTX_X)
+         call optx_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_P86_C)
+         call p86_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_P86VWN_FT_C)
+         call p86vwn_ft_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PBE_C)
+         call pbe_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PBE_SOL_C)
+         call pbe_sol_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PBE_X)
+         call pbe_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PW86_X)
+         call pw86_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PW91_C)
+         call pw91_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PW91_LDA)
+         call pw91_lda_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PW91_LDA_MOD)
+         call pw91_lda_mod_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PW91_LDA_RPA)
+         call pw91_lda_rpa_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PW91_X)
+         call pw91_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_PZ81)
+         call pz81_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_PZ81_MOD)
+         call pz81_mod_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_REV_PBE_X)
+         call rev_pbe_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_RPBE_X)
+         call rpbe_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_SLATER_EXCHANGE)
+         call slater_exchange_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_SOGGA11_X_C)
+         call sogga11_x_c_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_SOGGA11_X_X)
+         call sogga11_x_x_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_VWN)
+         call vwn_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_VWN_RPA)
+         call vwn_rpa_vxc_fxc_unpolar(rho, vr, f2rr)
+         case (XC_K_WB97_XC)
+         call wb97_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_WB97X_D_XC)
+         call wb97x_d_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_WB97X_V_XC)
+         call wb97x_v_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case (XC_K_WB97X_XC)
+         call wb97x_xc_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)
+         case default
+         f2rr = 0.0_dp
+         end select
+         vsigma = vsigma + coef(k)*vs
+         v2rho2 = v2rho2 + coef(k)*f2rr
+         v2rhosigma = v2rhosigma + coef(k)*f2rs
+         v2sigma2 = v2sigma2 + coef(k)*f2ss
+      end do
+   end subroutine xc_eval_point_fxc
 
    !
    ! The same for a spin-polarised density: two densities, three gradient
@@ -422,6 +560,23 @@ contains
          ! half exact exchange. Not in ExchCXX's functional table.
          call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_LYP], [0.5_dp, 1.0_dp])
          f%exx = 0.5_dp
+      case ("b2plyp")
+         ! Grimme, J. Chem. Phys. 124, 034108 (2006): a_x = 0.53, c = 0.27.
+         ! Not in libxc (no double hybrid is); the hybrid part is 0.53 HF +
+         ! 0.47 B88 exchange, 0.73 LYP correlation, and c is the RI-MP2
+         ! fraction trc_run_rimp2/trc_energy add on top (pt2_cos = pt2_css,
+         ! no spin-component scaling).
+         call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_LYP], [0.47_dp, 0.73_dp])
+         f%exx = 0.53_dp
+         f%pt2_cos = 0.27_dp
+         f%pt2_css = 0.27_dp
+      case ("b2gp-plyp", "b2gpplyp")
+         ! Karton, Tarnopolsky, Lamere, Schatz and Martin, J. Phys. Chem. A
+         ! 112, 12868 (2008): a_x = 0.65, c = 0.36.
+         call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_LYP], [0.35_dp, 0.64_dp])
+         f%exx = 0.65_dp
+         f%pt2_cos = 0.36_dp
+         f%pt2_css = 0.36_dp
       case ("hflyp", "hf-lyp", "hf_lyp")
          ! Full exact exchange plus LYP correlation; pyscf's 'HF,LYP'
          ! (libxc GGA_C_LYP with hybrid_coeff 1). Not in ExchCXX's table.
@@ -543,6 +698,14 @@ contains
       case ("mpw1k")
          call set(f, XC_FAMILY_GGA, [XC_K_MPW91_X, XC_K_PW91_C], [0.572_dp, 1.0_dp])
          f%exx = 0.428_dp
+      case ("mpw2plyp", "mpw2-plyp")
+         ! Schwabe and Grimme, Phys. Chem. Chem. Phys. 8, 4398 (2006):
+         ! a_x = 0.55, c = 0.25; the GGA exchange kernel is mPW91's, not
+         ! B88's -- the other difference from b2plyp/b2gp-plyp above.
+         call set(f, XC_FAMILY_GGA, [XC_K_MPW91_X, XC_K_LYP], [0.45_dp, 0.75_dp])
+         f%exx = 0.55_dp
+         f%pt2_cos = 0.25_dp
+         f%pt2_css = 0.25_dp
       case ("rpbe")
          call set(f, XC_FAMILY_GGA, [XC_K_RPBE_X, XC_K_PBE_C], [1.0_dp, 1.0_dp])
       case ("b88")
@@ -631,5 +794,17 @@ contains
          f%coef(1:f%nk) = coef
       end subroutine set
    end function xc_functional_by_name
+
+   !
+   ! Whether `f` needs an RI-MP2 pass on top of its SCF: either PT2
+   ! fraction nonzero. The one place this is asked, rather than reading
+   ! pt2_cos/pt2_css directly, so a future third PT2 field cannot leave a
+   ! caller checking only the first two of three.
+   !
+   pure function xc_is_double_hybrid(f) result(is_dh)
+      type(trc_xc_functional_t), intent(in) :: f
+      logical :: is_dh
+      is_dh = f%pt2_cos /= 0.0_dp .or. f%pt2_css /= 0.0_dp
+   end function xc_is_double_hybrid
 
 end module trc_xc_functional

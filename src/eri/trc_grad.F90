@@ -3,6 +3,14 @@
 ! build uses: one launch per angular-momentum class, Rys only -- there is
 ! no HGP gradient (out of scope).
 !
+! RANGE SEPARATION: `omega` switches the operator to erf(omega*r12)/r12,
+! same meaning and same rho -> rho_theta substitution as eri_fock's own
+! (scripts/gen_perclass.py) -- threaded only into the COMPACT pass
+! (grad_class_compact/rysg_compact_dispatch), never the screen pass: the
+! Schwarz bound stays the plain Coulomb one, which bounds the attenuated
+! integral too (eri_fock's own comment). omega == 0 is bit-identical to
+! the unattenuated path -- see scripts/gen_rys_grad.py's `_RANGE_SEP_BLOCK`.
+!
 ! SCREENING: the same bound as the energy/Fock build (`thresh`), not a
 ! separate gradient-specific tolerance. Gamma already carries the density
 ! weighting per quartet exactly as the Fock digestion's jab/jcd/kac/kad/kbc/
@@ -67,7 +75,7 @@ contains
    ! `eri_fock_nosym`), so this always walks the plain Schwarz-screened plan.
    !
    subroutine grad_bins(b, nbas, nao, sh_l, ao_off, sh_at, natm, thresh, &
-                        jfac, kfac, dsh, &
+                        jfac, kfac, omega, dsh, &
                         qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                         sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                         ndens, dmat, grad, rank, nranks)
@@ -75,6 +83,11 @@ contains
       integer,  intent(in)    :: nbas, nao, natm
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas), sh_at(nbas)
       real(dp), intent(in)    :: thresh, jfac, kfac
+      real(dp), intent(in)    :: omega
+      !! Range-separation parameter, bohr^-1; see eri_fock's own omega.
+      !! Zero is the ordinary Coulomb operator the screen below is already
+      !! built for -- see grad_class_compact's own comment for why the
+      !! SCREEN pass takes no omega of its own.
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: qp_bin_pbase(:), qp_bin_k(:)
       integer,  intent(in)    :: nqp
@@ -201,7 +214,7 @@ contains
                "terco: grad_bins met a class the build did not generate a gradient kernel for"
             call grad_class_compact(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                     b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*1.0e-3_dp, &
-                                    jfac, kfac, dsh, nbas, nao, ao_off, sh_at, natm, &
+                                    jfac, kfac, omega, dsh, nbas, nao, ao_off, sh_at, natm, &
                                     nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                                     sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                     ndens, dmat, gp, rank, nranks)
@@ -299,7 +312,7 @@ contains
    ! or a single segment is -- see GRAD_COMPACT_CAP's own comment.
    !
    subroutine grad_class_compact(key, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                 npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, &
+                                 npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, &
                                  dsh, nbas, nao, ao_off, sh_at, natm, &
                                  nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -310,7 +323,12 @@ contains
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair), sq_n(npair)
-      real(dp), intent(in) :: thresh, pcut, jfac, kfac
+      real(dp), intent(in) :: thresh, pcut, jfac, kfac, omega
+      !! `omega` reaches only `rysg_compact_dispatch` below, never
+      !! `rysg_screen_dispatch`: the screen's Schwarz bound is the plain
+      !! Coulomb one and stays valid at omega > 0 (pointwise larger -- see
+      !! eri_fock's own comment), so the screen pass takes no omega of its
+      !! own.
       real(dp), intent(in) :: sp_q(npair)
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas)
@@ -365,7 +383,7 @@ contains
             !$acc update host(ctr)
             nout = min(ctr(1), int(nmax, int64))
             call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                      npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, nbas, nao, ao_off, sh_at, natm, &
+                                      npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                                       nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                       ndens, dmat, GRAD_NPRIV, gp)

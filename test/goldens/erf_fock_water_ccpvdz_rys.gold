@@ -1,0 +1,10 @@
+# terco golden v1
+# case: erf_fock_water_ccpvdz_rys
+# from: gfortran build bgold at 11d19bc, by test/goldens/regen_goldens.py
+TR_DJ 2.3675291448761590e+02
+NORM_J 6.1122364368385483e+01
+WSUM_J -3.2477887704332360e+01
+TR_DK 2.3628742423476751e+02
+NORM_K 3.6238048811311174e+01
+WSUM_K 1.8659670301357885e+00
+END

@@ -32,6 +32,18 @@ endif()
 
 install(TARGETS terco_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# test/check_cli_grad (test/CMakeLists.txt, added before this directory by
+# the root CMakeLists.txt) runs this executable as a subprocess, given its
+# path through a generator expression -- but ctest itself does not know
+# that check_cli_grad's own build needs terco_cli built first unless told,
+# so that ordering is declared here, now that both targets exist.
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad)
+  add_dependencies(check_cli_grad terco_cli)
+endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad_df)
+  add_dependencies(check_cli_grad_df terco_cli)
+endif()
+
 # The basis sets the tests use, so `--basis def2-svp` works out of the box
 # after an install. sap_helfem_large.json is not a basis but the fitted atomic
 # potentials `--guess sap` reads; it is found the same way.
@@ -68,6 +80,16 @@ if(TERCO_ENABLE_TESTING)
   endforeach()
 
   # A missing geometry is an error with a message, not a crash.
+  # A double hybrid whose SCF stops unconverged never runs RI-MP2, so its
+  # TOTAL ENERGY is the SCF energy, never the unset double-hybrid total (0).
+  add_test(NAME terco/cli_dh_unconverged COMMAND terco_cli ${_xyz}/water.xyz -b
+                                                 6-31g -f b2plyp --iterations 1)
+  set_tests_properties(
+    terco/cli_dh_unconverged
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "TOTAL ENERGY +-7[0-9]\\." FAIL_REGULAR_EXPRESSION
+               "TOTAL ENERGY +-?0\\.0+ ")
+
   add_test(NAME terco/cli_missing_file COMMAND terco_cli no_such_file.xyz)
   set_tests_properties(terco/cli_missing_file PROPERTIES WILL_FAIL TRUE)
 
@@ -87,9 +109,10 @@ if(TERCO_ENABLE_TESTING)
   # The CLI itself over ranks -- mirroring test/scf_mpi.F90's own launcher
   # logic (same reason for the compiler-wrapper's own mpiexec, not the
   # first one on PATH), since this is a different driver over the same
-  # trc_set_comm/trc_run_scf and needs its own check: np 1 and np 2 must
-  # agree on water RHF and B3LYP, and wB97X-V (VV10) must be refused
-  # cleanly at np 2. Registered only when this build can run it.
+  # trc_set_comm/trc_run_scf and needs its own check: np 1, np 2 and np 3
+  # must agree on water RHF, B3LYP and wB97X-V (RKS, VV10), and on NH2
+  # radical wB97X-V (UKS, VV10) -- see cli_mpi_check.py's own header.
+  # Registered only when this build can run it.
   #
   if(TERCO_ENABLE_MPI)
     find_package(Python3 COMPONENTS Interpreter)
@@ -108,7 +131,7 @@ if(TERCO_ENABLE_TESTING)
         COMMAND
           ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_mpi_check.py
           ${_cli_mpiexec} ${_cli_npflag} $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz
-          ${PROJECT_SOURCE_DIR}/test/basis_sets)
+          ${PROJECT_SOURCE_DIR}/test/basis_sets ${_xyz}/nh2.xyz)
       set_tests_properties(terco/cli_mpi PROPERTIES WORKING_DIRECTORY
                                                      ${CMAKE_CURRENT_SOURCE_DIR}
                                                      TIMEOUT 300)

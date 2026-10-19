@@ -1,0 +1,15 @@
+# terco pyscf reference v1
+# case: cpks formamide/6-31gs/pbe (rks)
+# generator: test/pyscf_refs/generate.py CASES["cpks"] -> gen_cpks
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: b6cc85b8fff3b4ddeaad2dd8f714e879624e22fde00c532bcd551073ed351a3b
+# files: test/scf_cpks.F90 test/basis_sets/6-31gs.json test/formamide.xyz
+E_SCF -1.69693995459119520e+02
+ALPHA 3 3
+2.73277159844548514e+01 2.93728503871979996e+00 3.82494395002332293e-17 2.93728503871979996e+00 2.35499054585240160e+01 -1.19153004069891957e-15
+3.82494395002332293e-17 -1.19153004069891957e-15 9.82794908523482036e+00
+CONV_TOL 9.99999999999999980e-13
+CONV_TOL_GRAD 1.00000000000000002e-08
+GRAD_NORM 4.68643967005532326e-09
+END

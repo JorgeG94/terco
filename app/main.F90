@@ -31,7 +31,8 @@ module terco_run
    use terco_app, only: element_symbol, f_string
    implicit none
    private
-   public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json
+   public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
+             gradient_summary, experimental_gradient_banner
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -53,10 +54,14 @@ module terco_run
       real(dp) :: econv, gconv, thresh, eps
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
+      logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
+      real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
       integer(int64) :: t0, t1, rate
       type(comm_t) :: wcomm
       integer :: nranks
       logical :: rank0
+      logical :: grad
+      real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
    end type run_t
 
 contains
@@ -178,9 +183,9 @@ contains
       write (output_unit, "(a,a)") "   method           : ", method(r)
       write (output_unit, "(a,a)") "   basis            : ", r%basis_path
       if (r%rimp2) write (output_unit, "(a,a)") "   auxiliary basis  : ", r%aux_path
-      if (r%rimp2 .and. .not. r%cli%is_set("cart")) then
-         write (output_unit, "(a)") "   AO space         : Cartesian (RI-MP2 does not support spherical AOs yet)"
-      end if
+      ! The AO space itself (spherical or Cartesian) is not known until the
+      ! basis is loaded, below -- `summary`'s own "AO basis" line reports
+      ! it, for every run, once it is.
       if (len(r%restart) > 0) then
          write (output_unit, "(a,a,a)") "   SCF              : read from ", r%restart, ", not run"
       else
@@ -195,31 +200,40 @@ contains
    subroutine formula(z, natm)
       !! Hill order: with carbon, C then H then the rest alphabetically;
       !! without, everything alphabetically.
+      !!
+      !! Counted once into a per-element histogram with plain loops. The
+      !! previous `any(z == ia)` test came back true for every element on
+      !! nvfortran/aarch64 (a GH200, 1155-atom rna9), which printed all 118
+      !! symbols while `count` still gave the right numbers.
       integer, intent(in) :: natm
       integer, intent(in) :: z(:)
-      integer :: ia, k, n
       integer, parameter :: NELEM = 118
-      integer :: order(NELEM)
+      integer :: ia, k, n
+      integer :: cnt(NELEM), order(NELEM)
+      cnt = 0
+      do ia = 1, natm
+         if (z(ia) >= 1 .and. z(ia) <= NELEM) cnt(z(ia)) = cnt(z(ia)) + 1
+      end do
       n = 0
-      if (any(z == 6)) then
+      if (cnt(6) > 0) then
          n = n + 1
          order(n) = 6
-         if (any(z == 1)) then
+         if (cnt(1) > 0) then
             n = n + 1
             order(n) = 1
          end if
       end if
       k = n
-      do ia = 1, 118
-         if (any(z == ia) .and. .not. any(order(:k) == ia)) then
-            n = n + 1
-            order(n) = ia
-         end if
+      do ia = 1, NELEM
+         if (cnt(ia) == 0) cycle
+         if (k > 0 .and. (ia == 6 .or. (ia == 1 .and. k == 2))) cycle
+         n = n + 1
+         order(n) = ia
       end do
       call sort_by_symbol(order(k + 1:n))
-      do k = 1, n
-         write (output_unit, "(a)", advance="no") trim(element_symbol(order(k)))
-         if (count(z == order(k)) > 1) write (output_unit, "(i0)", advance="no") count(z == order(k))
+      do ia = 1, n
+         write (output_unit, "(a)", advance="no") trim(element_symbol(order(ia)))
+         if (cnt(order(ia)) > 1) write (output_unit, "(i0)", advance="no") cnt(order(ia))
       end do
    end subroutine formula
 
@@ -253,29 +267,84 @@ contains
       end if
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") bar
-      call line("TOTAL ENERGY", r%etot)
+      ! "TOTAL ENERGY"/"total energy" means the SAME thing in text and
+      ! JSON: the double hybrid's weighted total when one ran, the SCF
+      ! total otherwise -- JSON already worked this way; this merge
+      ! makes the text banner/summary agree with it, rather than
+      ! renaming either key (every external reader of terco's output,
+      ! metalquicha included, looks for "total energy"/"TOTAL ENERGY"
+      ! by that name). "SCF ENERGY"/"scf energy" is new: always
+      ! present, always the SCF-level value alone, so a caller wanting
+      ! that specifically no longer has to infer it from context.
+      call line("TOTAL ENERGY", merge(r%etot_dh, r%etot, r%dh .and. r%conv /= 0))
+      call line("SCF ENERGY", r%etot)
       if (r%rimp2 .and. r%conv /= 0) then
-         call line("MP2 CORRELATION", r%eos + r%ess)
-         call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
+         if (r%dh) then
+            call line("PT2 CORRELATION", r%eos + r%ess)
+            call line("DOUBLE HYBRID TOTAL", r%etot_dh)
+         else
+            call line("MP2 CORRELATION", r%eos + r%ess)
+            call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
+         end if
       end if
       write (output_unit, "(a)") bar
       write (output_unit, "(a)") ""
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a)") "   ::"//repeat(" ", 21)//"SUMMARY"//repeat(" ", 22)//"::"
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
-      call row("total energy", r%etot)
+      call row("total energy", merge(r%etot_dh, r%etot, r%dh .and. r%conv /= 0))
+      call row("scf energy", r%etot)
       call row("nuclear repulsion", r%enuc)
       call row("one-electron energy", r%eone)
       call row("two-electron energy", r%etwo)
       if (len(r%func) > 0) call row("exchange-correlation", r%exc)
       if (len(r%pcm) > 0) call row("solvation (E_diel)", r%epcm)
       if (r%rimp2 .and. r%conv /= 0) then
-         call row("MP2 opposite spin", r%eos)
-         call row("MP2 same spin", r%ess)
+         call row(merge("PT2 opposite spin", "MP2 opposite spin", r%dh), r%eos)
+         call row(merge("PT2 same spin    ", "MP2 same spin    ", r%dh), r%ess)
+         if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
       write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
       write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
    end subroutine summary
+
+   subroutine gradient_summary(r)
+      !! Per-atom analytic nuclear gradient (Eh/Bohr), plus the RMS and the
+      !! largest per-atom norm -- the two scalars an optimiser's own
+      !! convergence check usually gates on. `r%gradient` is already
+      !! filled by the time this is called (terco_main's own job, right
+      !! after `trc_gradient`).
+      type(run_t), intent(in) :: r
+      real(dp) :: rms, gmax
+      integer :: ia
+      write (output_unit, "(a)") ""
+      call experimental_gradient_banner(output_unit)
+      write (output_unit, "(a)") "   gradient (Eh/Bohr)"
+      write (output_unit, "(a)") "   ----------------------------------------------------------"
+      do ia = 1, r%natm
+         write (output_unit, "(a,i4,2x,a2,3f16.8)") "   ", ia, element_symbol(r%z(ia)), r%gradient(:, ia)
+      end do
+      rms = sqrt(sum(r%gradient**2)/real(3*r%natm, dp))
+      gmax = sqrt(maxval(sum(r%gradient**2, dim=1)))
+      write (output_unit, "(a)") "   ----------------------------------------------------------"
+      write (output_unit, "(a,es12.4)") "   RMS gradient     : ", rms
+      write (output_unit, "(a,es12.4)") "   max |gradient|   : ", gmax
+   end subroutine gradient_summary
+
+   subroutine experimental_gradient_banner(u)
+      !! The analytic gradients are validated (pyscf, finite differences)
+      !! but not yet performance-tuned, and run on one rank only. Printed
+      !! wherever a gradient is requested or reported, so nobody mistakes
+      !! them for a production code path.
+      integer, intent(in) :: u
+      write (u, "(a)") "   =========================================================================="
+      write (u, "(a)") "     !!!  EXPERIMENTAL: ANALYTIC GRADIENTS  !!!"
+      write (u, "(a)") "     Validated against pyscf and finite differences, but NOT performance-"
+      write (u, "(a)") "     tuned: the DFT, VV10 and --df gradients can be much slower than the"
+      write (u, "(a)") "     energy, and grid-response memory grows as 3 x atoms x grid points."
+      write (u, "(a)") "     Single rank only. Use for testing; do not rely on its cost yet."
+      write (u, "(a)") "   =========================================================================="
+   end subroutine experimental_gradient_banner
 
    subroutine line(label, e)
       character(len=*), intent(in) :: label
@@ -338,11 +407,49 @@ contains
       if (r%rimp2 .and. r%conv /= 0) then
          write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', r%eos, ","
          write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', r%ess, ","
+         if (r%dh) then
+            write (u, "(a,es23.15e3,a)") '  "pt2 opposite-spin fraction": ', r%pt2_cos, ","
+            write (u, "(a,es23.15e3,a)") '  "pt2 same-spin fraction": ', r%pt2_css, ","
+            write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
+            write (u, "(a,es23.15e3)") '  "total energy": ', r%etot_dh
+            write (u, "(a)") "}"
+            close (u)
+            return
+         end if
       end if
-      write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
+      write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
+      if (r%grad .and. allocated(r%gradient)) then
+         write (u, "(a,es23.15e3,a)") '  "total energy": ', r%etot, ","
+         call write_json_gradient(u, r)
+      else
+         write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
+      end if
       write (u, "(a)") "}"
       close (u)
    end subroutine write_json
+
+   subroutine write_json_gradient(u, r)
+      !! The analytic gradient as a JSON array of [x, y, z] triples, one per
+      !! atom in `r%gradient`'s own (and `trc_set_molecule`'s) atom order,
+      !! plus the RMS and max per-atom norm `gradient_summary` also prints.
+      integer, intent(in) :: u
+      type(run_t), intent(in) :: r
+      integer :: ia
+      real(dp) :: rms, gmax
+      character(len=2) :: closing
+      write (u, "(a)") '  "gradient status": "experimental: validated, not performance-tuned, single rank",'
+      write (u, "(a)") '  "gradient": ['
+      do ia = 1, r%natm
+         closing = merge("] ", "],", ia == r%natm)
+         write (u, "(a,es23.15e3,a,es23.15e3,a,es23.15e3,a)") "    [", r%gradient(1, ia), ", ", &
+            r%gradient(2, ia), ", ", r%gradient(3, ia), trim(closing)
+      end do
+      write (u, "(a)") "  ],"
+      rms = sqrt(sum(r%gradient**2)/real(3*r%natm, dp))
+      gmax = sqrt(maxval(sum(r%gradient**2, dim=1)))
+      write (u, "(a,es23.15e3,a)") '  "gradient rms": ', rms, ","
+      write (u, "(a,es23.15e3)") '  "gradient max": ', gmax
+   end subroutine write_json_gradient
 
 end module terco_run
 
@@ -371,17 +478,21 @@ program terco_main
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
+                       trc_run_gradient, trc_gradient, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
-   use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS
+   use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
+                                xc_is_double_hybrid
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env, lower
-   use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json
+   use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
+                       gradient_summary, experimental_gradient_banner
    implicit none
 
    type(run_t) :: r
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
+   real(c_double), allocatable :: gradbuf(:)
    integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev, aux_block
    integer(c_int) :: st, nspin
    logical :: cart
@@ -428,7 +539,8 @@ program terco_main
    call r%cli%add_option("pcm", "polarisable continuum solvation: cpcm or iefpcm (pyscf's SWIG "// &
                          "cavity, 302 points per sphere, radii 1.2 x Bondi); needs --eps")
    call r%cli%add_option("eps", "solvent dielectric constant for --pcm, e.g. 78.3553 for water")
-   call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after a closed-shell SCF")
+   call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after the SCF (restricted or "// &
+                       "unrestricted; unrestricted refuses more than one rank)")
    call r%cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", &
                          default="-1")
@@ -439,6 +551,11 @@ program terco_main
    call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
                          "SCF, e.g. to go straight to --rimp2; the molecule, basis and method must match")
    call r%cli%add_option("json", "also write a JSON summary to this file")
+   call r%cli%add_flag("grad", "EXPERIMENTAL (validated, not performance-tuned; single rank). "// &
+                       "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
+                       "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
+                       "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
+                       "refused for --rimp2, --pcm, or more than one rank")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -479,6 +596,21 @@ program terco_main
    r%func = lower(trim(sval))
    if (r%func == "hf" .or. r%func == "rhf" .or. r%func == "uhf") r%func = ""
 
+   ! A double hybrid's PT2 part is always RI-MP2 on the converged KS
+   ! orbitals (no canonical, non-fitted MP2 path exists in terco at all):
+   ! --func b2plyp runs it without needing --rimp2 too, with --aux's usual
+   ! default (cc-pvdz-rifit) unless overridden below.
+   if (len(r%func) > 0) then
+      block
+         type(trc_xc_functional_t) :: func_spec
+         if (xc_functional_by_name(r%func, func_spec)) r%dh = xc_is_double_hybrid(func_spec)
+         if (r%dh) then
+            r%pt2_cos = real(func_spec%pt2_cos, c_double)
+            r%pt2_css = real(func_spec%pt2_css, c_double)
+         end if
+      end block
+   end if
+
    r%guess = "sad"
    if (r%chrg /= 0) r%guess = "sadq"
    if (r%cli%is_set("guess")) then
@@ -514,8 +646,11 @@ program terco_main
    call check(r, "--thresh")
    call r%cli%get("frozen", nfrozen, r%err)
    call check(r, "--frozen")
-   r%rimp2 = r%cli%is_set("rimp2")
+   r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
    r%df = r%cli%is_set("df")
+   r%grad = r%cli%is_set("grad")
+   ! Unmissable, and on stderr so --silent and redirected output still show it.
+   if (r%grad .and. r%rank0) call experimental_gradient_banner(error_unit)
    cart = r%cli%is_set("cart")
    r%pcm = ""
    r%eps = 0.0_dp
@@ -531,11 +666,13 @@ program terco_main
       call die(r, "--eps is the dielectric constant for --pcm, which was not given")
    end if
    if (r%rimp2) then
-      ! RI-MP2 is closed-shell and, today, Cartesian only: say so here rather
-      ! than after an SCF it cannot use.
-      if (r%mult /= 1) call die(r, "--rimp2 needs a closed-shell reference, and this molecule has "// &
-                                itoa(r%uhf)//" unpaired electrons")
-      cart = .true.
+      ! RI-MP2 (restricted or unrestricted, UHF/UKS) now follows the
+      ! basis's own AO space, spherical or Cartesian, same as a plain
+      ! SCF -- trc_run_rimp2 folds the MO coefficients into the Cartesian
+      ! space its three-centre tensor runs in itself, see trc_capi.F90's
+      ! own header. `--cart` is still the explicit override. An open-shell
+      ! --rimp2 refuses more than one rank, deeper in (trc_run_rimp2) --
+      ! that needs the communicator this parses later, not knowable yet.
       call r%cli%get("aux", sval, r%err)
       call resolve_basis(sval, r%aux_path, r%err)
       if (r%err%has_error()) call die(r, "--aux: "//r%err%get_message())
@@ -544,7 +681,11 @@ program terco_main
       if (r%cli%is_set("incremental")) call die(r, "--df with --incremental is refused -- a "// &
                                                "density-fitted build is a full build every "// &
                                                "iteration, and the increment buys nothing")
-      cart = .true.
+      ! `--df` follows the basis's own AO space too, same as --rimp2 above
+      ! (trc_scf_df.F90's df_jk_setup only ever touches the Cartesian
+      ! d_c/gmat_c trc_scf_fock.F90's to_cart/to_sph fold at the boundary;
+      ! it never reads b%spherical itself). `--cart` is still the explicit
+      ! override.
       call r%cli%get("jkfit", sval, r%err)
       call resolve_basis(sval, r%jkfit_path, r%err)
       if (r%err%has_error()) call die(r, "--jkfit: "//r%err%get_message())
@@ -653,10 +794,32 @@ program terco_main
    if (r%rimp2 .and. r%conv /= 0) then
       call api(r, trc_run_rimp2(r%h))
       call api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
+      ! The double hybrid's own weighted total comes from trc_energy
+      ! itself (now that RI-MP2 has run, cx%rimp2_ok is set and its
+      ! pt2_cos/pt2_css branch applies), not recomputed here from
+      ! r%pt2_cos/r%pt2_css -- those stay around only to report the
+      ! fractions themselves (write_json), never to duplicate the
+      ! weighting trc_energy already does from the SAME table.
+      if (r%dh) call api(r, trc_energy(r%h, r%etot_dh))
+   end if
+   if (r%grad .and. r%conv /= 0) then
+      ! trc_run_gradient's own refusals (RI-MP2, PCM, multi-rank) come
+      ! back through `api`, which prints the library's own message and
+      ! stops -- the same clear-refusal path every other unsupported
+      ! combination in this CLI already takes. An LDA/GGA --func (global
+      ! and range-separated hybrids and VV10 included) is NOT refused:
+      ! trc_run_gradient builds the KS-DFT gradient at the SCF's own
+      ! functional and grids, and with --df the fitted one.
+      call api(r, trc_run_gradient(r%h))
+      allocate (gradbuf(3*r%natm), r%gradient(3, r%natm))
+      call api(r, trc_gradient(r%h, gradbuf))
+      r%gradient = reshape(real(gradbuf, dp), [3, r%natm])
+      deallocate (gradbuf)
    end if
 
    call system_clock(r%t1)
    if (r%rank0) call summary(r)
+   if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
    st = trc_destroy(r%h)
 

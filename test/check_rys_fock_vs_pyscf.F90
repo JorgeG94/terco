@@ -34,6 +34,7 @@ program check_rys_fock_vs_pyscf
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
+   use golden_io, only: golden_begin, golden_fock, golden_end
    implicit none
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
@@ -71,6 +72,7 @@ program check_rys_fock_vs_pyscf
       idot = index(trim(dump), '.bin', back=.true.)
       case_name = dump(islash + 1 + len('rys_fock_probe_'):idot - 1)
    end block
+   call golden_begin('rys_fock_'//trim(case_name))
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
    call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
@@ -94,6 +96,8 @@ program check_rys_fock_vs_pyscf
    call eri%build(bas, THRESH)
    call eri%fock(bas, d, g, density_screen=.false.)
    call eri%release()
+   call golden_fock('G', d, g)
+   call golden_end()
 
    ! The overlap, for rys_fock_ref.py's per-AO normalisation check -- same
    ! reasoning as check_rys_grad_vs_pyscf.F90's own smat dump: a fixed
