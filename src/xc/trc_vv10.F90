@@ -252,7 +252,7 @@ contains
       if (npts == 0) return
 
       ! A contiguous range [i0, i1] per rank -- see this module's own
-      ! MULTI-GPU header for why, not round-robin.
+      ! MULTI-GPU header for why.
       i0 = rank*(npts/nranks) + min(rank, mod(npts, nranks)) + 1
       i1 = (rank + 1)*(npts/nranks) + min(rank + 1, mod(npts, nranks))
 
@@ -756,12 +756,9 @@ contains
       vsigma_i = 0.0_dp
       eg_i = 0.0_dp
       ! MULTI-GPU: point i belongs to this rank only if it falls in
-      ! [i0, i1] (vv10_drive's own contiguous split, not round-robin --
-      ! see this module's MULTI-GPU header for why); every other rank
-      ! leaves it at the 0.0_dp just set above, a sum rather than an
-      ! approximation after the allreduce that follows. i0 = 1, i1 = npts
-      ! (no comm given) makes every i everyone's, unchanged from before
-      ! this split existed.
+      ! [i0, i1] (vv10_drive's own contiguous split) -- every other rank
+      ! leaves it at the 0.0_dp just set above; see this module's own
+      ! MULTI-GPU header for why. i0 = 1, i1 = npts with no comm given.
       if (i < i0 .or. i > i1) return
       ri = rho(i)
       if (ri < VV10_RHO_TOL) return
