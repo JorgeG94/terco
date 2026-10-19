@@ -337,7 +337,7 @@ contains
             opts%grid_level = 3
             opts%conv_energy = 1.0e-11_dp
             opts%conv_diis = 1.0e-8_dp
-            call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, dfjk=dfjk)
+            call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, scf_dfjk=dfjk)
             if (.not. res%converged) then
                print "(a,a)", "  NOT CONVERGED: ", trim(res%message); ok = .false.
             end if
@@ -437,7 +437,7 @@ contains
 
       ! --- --df, chained RI-MP2 off its own fit -----------------------------
       opts%df = .true.
-      call trc_scf_run(bas, nalpha, nbeta, opts, res_df, la=la, dfjk=dfjk)
+      call trc_scf_run(bas, nalpha, nbeta, opts, res_df, la=la, scf_dfjk=dfjk)
       allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
       call rimp2_mo_to_cart(bas, res_df%cmo(:, :, 1), res_df%eps(:, 1), cmo_c, eps_c)
       call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, nfrozen=NFZ, la=la, dfjk=dfjk)

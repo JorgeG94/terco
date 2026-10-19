@@ -126,7 +126,7 @@ program scf_df
          opts%grid_level = 3
          opts%conv_energy = 1.0e-11_dp
          opts%conv_diis = 1.0e-8_dp
-         call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, dfjk=dfjk)
+         call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, scf_dfjk=dfjk)
          if (.not. res%converged) then
             print "(a,a)", "  NOT CONVERGED: ", trim(res%message)
             all_ok = .false.

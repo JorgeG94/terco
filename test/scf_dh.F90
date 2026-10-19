@@ -148,7 +148,7 @@ program scf_dh
                                   nfrozen=GFROZEN(ig), la=la)
             else
                opts%df = .true.
-               call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, dfjk=dfjk)
+               call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, scf_dfjk=dfjk)
                call trc_rimp2_run(bas, aux, pl, nalpha, res%cmo(:, :, 1), res%eps(:, 1), mp, &
                                   nfrozen=GFROZEN(ig), la=la, dfjk=dfjk)
             end if

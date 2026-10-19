@@ -26,7 +26,7 @@ module trc_scf_settings
    implicit none
    private
 
-   public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_spin_rule
+   public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_spin_rule, scf_energies_t
    public :: incr_env, incr_reset_env, incr_thresh_scale_env, incr_start_env, eri_thresh_env
    public :: DEFAULT_NLC_GRID_LEVEL
 
@@ -178,6 +178,18 @@ module trc_scf_settings
       !! van der Waals radius to cavity radius (1.2, as pyscf and Q-Chem)
    end type trc_scf_options_t
 
+   type :: scf_energies_t
+      !! What the SCF loop computes at each density, gathered so `trc_scf_run`
+      !! hands it to the result in one `update` call. All zero until set.
+      real(dp) :: total = 0.0_dp
+      real(dp) :: one = 0.0_dp         !! Tr(D H)
+      real(dp) :: two = 0.0_dp         !! Coulomb and exact exchange
+      real(dp) :: xc = 0.0_dp
+      real(dp) :: nelec_grid = 0.0_dp  !! what the grid integrated the density to
+      real(dp) :: pcm = 0.0_dp         !! PCM dielectric energy q.v/2, included in `total`
+      real(dp) :: pcm_qtotal = 0.0_dp  !! total apparent surface charge
+   end type scf_energies_t
+
    type :: trc_scf_result_t
       logical :: converged = .false.
       integer :: iterations = 0
@@ -203,6 +215,8 @@ module trc_scf_settings
       real(dp), allocatable :: grid_r_nlc(:, :)  !! VV10's own (coarser) grid, unallocated when the
       real(dp), allocatable :: grid_w_nlc(:)     !! functional has no nonlocal correlation.
       character(len=256) :: message = ""
+   contains
+      procedure :: update => scf_result_update
    end type trc_scf_result_t
 
    type :: scf_settings_t
@@ -237,6 +251,25 @@ module trc_scf_settings
    end type scf_settings_t
 
 contains
+
+   !
+   ! The end-of-run copy `trc_scf_run` used to spell out field by field: the
+   ! converged density and the energies. Orbitals, grids and counts are set
+   ! where they are produced.
+   !
+   subroutine scf_result_update(this, energies, dmat)
+      class(trc_scf_result_t), intent(inout) :: this
+      type(scf_energies_t), intent(in) :: energies
+      real(dp), intent(in) :: dmat(:, :, :)
+      this%dmat = dmat
+      this%energy = energies%total
+      this%e_one = energies%one
+      this%e_two = energies%two
+      this%e_xc = energies%xc
+      this%nelec_grid = energies%nelec_grid
+      this%e_pcm = energies%pcm
+      this%pcm_qtotal = energies%pcm_qtotal
+   end subroutine scf_result_update
 
    !
    ! Everything `trc_scf_run` used to work out between its declarations and
