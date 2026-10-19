@@ -377,6 +377,13 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_grad_dft check_cli_grad_dft.F90 NEEDS_BASIS
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_dft_probe})
   unset(_cli_grad_dft_probe)
+
+  # The same comparison for --df --grad (B3LYP: fitted J, fitted K, XC) --
+  # see check_cli_grad_df.F90's own header.
+  set(_cli_grad_df_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_df_probe.json)
+  terco_add_check(check_cli_grad_df check_cli_grad_df.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
+  unset(_cli_grad_df_probe)
 endif()
 
 # The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA
