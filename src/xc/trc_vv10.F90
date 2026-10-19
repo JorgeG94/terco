@@ -90,7 +90,12 @@
 ! at or above VV10_RHO_TOL costs the same O(npass) inner sum (one below it
 ! returns immediately -- vv10_kernel_body's own `if (ri < VV10_RHO_TOL)
 ! return` -- so its cost is O(1), not O(npass)), so a contiguous range is
-! already load-balanced, and it keeps every GPU warp either entirely inside a
+! already load-balanced WHEN the above-tolerance points are themselves
+! roughly uniform across the grid's point ordering -- measured true on
+! compact systems (water, water clusters); a sparse or strongly elongated
+! one could concentrate them into one contiguous range and leave another
+! mostly O(1) early returns, which this split alone would not rebalance.
+! Either way it keeps every GPU warp either entirely inside a
 ! rank's range or entirely outside it, which round-robin (mod(i-1,
 ! nranks)) does not -- round-robin interleaves an owned and a skipped
 ! point into the SAME warp throughout, so the warp's time is always the
@@ -142,6 +147,7 @@ module trc_vv10
    ! XC_NL_PAD) -- not shared by `use`, since they are two bare parameters
    ! and duplicating them costs nothing a cross-module dependency would be
    ! worth paying for.
+
    integer(int64), parameter :: VV10_TILE_CAP = 8388608_int64
    !! Bounds one tile chunk's chi/gchi/xt element count -- the running sum
    !! of npp(ib) * nlp(ib) over the batches folded into that chunk in
@@ -444,16 +450,20 @@ contains
             ! cast into c_off/pb_off (both plain `integer`, the kind every
             ! device kernel below indexes chi/gchi/xt/dloc with): guard each
             ! cast so a tile chunk that would overflow int32 dies with a clear
-            ! message instead of wrapping into a corrupted offset.
+            ! message instead of wrapping into a corrupted offset. Lowering
+            ! VV10_TILE_CAP cannot fix either case: the chunk loop always
+            ! admits a chunk's first batch regardless of cap, and pb_off is
+            ! bounded by nlp(ib)^2, a quantity cap never bounds at all -- the
+            ! message below names the actual condition instead.
             if (need > int(huge(0), int64)) then
-               error stop "trc_vv10_density_tile: tile chunk offset overflowed int32; lower VV10_TILE_CAP"
+               error stop "vv10_density_tile: a single grid batch is too large for int32 tile offsets (chunk offset)"
             end if
             c_off(ib) = int(need)
             pr_off(ib) = pb_off(k)
             need = need + int(npp(ib), int64)*int(nlp(ib), int64)
             nlsq = int(nlp(ib), int64)*int(nlp(ib), int64)
             if (int(pb_off(k), int64) + nlsq > int(huge(0), int64)) then
-               error stop "trc_vv10_density_tile: tile pair-block offset overflowed int32; lower VV10_TILE_CAP"
+               error stop "vv10_density_tile: a single grid batch is too large for int32 tile offsets (pair-block offset)"
             end if
             pb_off(k + 1) = pb_off(k) + nlp(ib)*nlp(ib)
             nwork = nwork + (b_shoff(ib + 1) - b_shoff(ib))*(b_off(ib + 1) - b_off(ib))
@@ -892,19 +902,20 @@ contains
          nwork = 0
          do k = 1, nb
             ib = ord(k)
-            ! Same int32 overflow guard as vv10_density_tile: need and
-            ! nlp(ib)*nlp(ib) are formed in int64 before narrowing into
-            ! c_off/pb_off, the kind every device kernel below indexes
+            ! Same int32 overflow guard as vv10_density_tile (see its own
+            ! comment on why lowering VV10_TILE_CAP cannot fix either case):
+            ! need and nlp(ib)*nlp(ib) are formed in int64 before narrowing
+            ! into c_off/pb_off, the kind every device kernel below indexes
             ! chi/gchi/zt/vloc with.
             if (need > int(huge(0), int64)) then
-               error stop "trc_vv10_potential_tile: tile chunk offset overflowed int32; lower VV10_TILE_CAP"
+               error stop "vv10_potential_tile: a single grid batch is too large for int32 tile offsets (chunk offset)"
             end if
             c_off(ib) = int(need)
             pr_off(ib) = pb_off(k)
             need = need + int(npp(ib), int64)*int(nlp(ib), int64)
             nlsq = int(nlp(ib), int64)*int(nlp(ib), int64)
             if (int(pb_off(k), int64) + nlsq > int(huge(0), int64)) then
-               error stop "trc_vv10_potential_tile: tile pair-block offset overflowed int32; lower VV10_TILE_CAP"
+               error stop "vv10_potential_tile: a single grid batch is too large for int32 tile offsets (pair-block offset)"
             end if
             pb_off(k + 1) = pb_off(k) + nlp(ib)*nlp(ib)
             nwork = nwork + (b_shoff(ib + 1) - b_shoff(ib))*(b_off(ib + 1) - b_off(ib))

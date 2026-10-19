@@ -128,7 +128,7 @@ if(TERCO_ENABLE_TESTING)
         COMMAND
           ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_mpi_check.py
           ${_cli_mpiexec} ${_cli_npflag} $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz
-          ${PROJECT_SOURCE_DIR}/test/basis_sets)
+          ${PROJECT_SOURCE_DIR}/test/basis_sets ${_xyz}/nh2.xyz)
       set_tests_properties(terco/cli_mpi PROPERTIES WORKING_DIRECTORY
                                                      ${CMAKE_CURRENT_SOURCE_DIR}
                                                      TIMEOUT 300)
