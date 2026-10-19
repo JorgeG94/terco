@@ -423,7 +423,9 @@ contains
    ! The CPKS XC kernel response, restricted: f_xc[D_U]_uv = integral
    ! phi_u phi_v (v2rho2 rho_U + v2rhosigma dsigma_U) for LDA, plus the GGA
    ! sigma-response terms through grad rho (ground state) and grad rho_U
-   ! (trial) -- trc_cpks's own header has the full derivation. Same grid
+   ! (trial) -- xc_resp_point_body below has the full per-point formula
+   ! (trc_cpks's own header only names f_xc[D_U] as a term, it does not
+   ! derive it). Same grid
    ! batches, same collocate-then-GEMM pipeline as `trc_xc_rks` (xc_drive's
    ! own header): the one difference is gathering TWO densities per batch
    ! (`dmat`, fixed for a whole CPKS solve, and `dmat_u`, rebuilt every CG
