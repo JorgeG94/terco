@@ -24,6 +24,7 @@
 !
 program scf_cphf
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
@@ -96,13 +97,12 @@ program scf_cphf
    cphf_opts%max_iter = 100
 
    block
-      integer(int64) :: tc0, tc1, rate
+      type(timer_type) :: tm
       real(dp) :: t_cphf
       integer :: niter_tot
-      call system_clock(tc0, rate)
+      call tm%start()
       call trc_scf_polarizability(bas, pl, eri, nocc, nocc, res, alpha, cphf_opts, cphf_res, la)
-      call system_clock(tc1)
-      t_cphf = real(tc1 - tc0, dp)/real(rate, dp)
+      t_cphf = tm%get_elapsed_time()
       niter_tot = sum(cphf_res%iterations)
       print '(a,f10.3,a,i0,a,f10.4,a)', "  CPHF wall time ", t_cphf, " s over ", niter_tot, &
          " total CG iterations: ", t_cphf/real(max(niter_tot, 1), dp), " s/iteration"
