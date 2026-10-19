@@ -567,6 +567,49 @@ module trc_c_interfaces
          integer(c_int), value :: flag
       end function trc_set_force_cartesian
 
+      integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
+         !! 1 makes every later SCF density-fitted J and K (restricted only);
+         !! the fitting basis comes from trc_set_jkfit_json. 0 turns it off.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+      end function trc_set_df
+
+      integer(c_int) function trc_set_jkfit_json(handle, path) bind(c) result(res)
+         !! The --df fitting basis, a Basis Set Exchange JSON file, NUL-terminated.
+         import :: c_int, c_ptr, c_char
+         implicit none
+         type(c_ptr), value :: handle
+         character(kind=c_char), intent(in) :: path(*)
+      end function trc_set_jkfit_json
+
+      integer(c_int) function trc_run_gradient(handle) bind(c) result(res)
+         !! EXPERIMENTAL: validated, not performance-tuned, single rank. The
+         !! analytic nuclear gradient at the context's converged SCF (RHF/UHF,
+         !! KS-DFT, --df); read it with trc_gradient.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_run_gradient
+
+      integer(c_int) function trc_gradient(handle, grad) bind(c) result(res)
+         !! The gradient trc_run_gradient computed, Eh/Bohr, as 3*natm values
+         !! (x, y, z per atom, in trc_set_molecule's atom order).
+         import :: c_int, c_double, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: grad(*)
+      end function trc_gradient
+
+      integer(c_int) function trc_cart_order() bind(c) result(res)
+         !! 0 (lexicographic: xx, xy, xz, yy, yz, zz -- libcint's) or 1 (gamess):
+         !! the within-shell Cartesian order of every AO-indexed array, fixed
+         !! at compile time (TRC_CART_ORDER). No handle; always succeeds.
+         import :: c_int
+         implicit none
+      end function trc_cart_order
+
       integer(c_int) function trc_set_verbose(handle, level) bind(c) result(res)
          import :: c_int, c_ptr
          implicit none
