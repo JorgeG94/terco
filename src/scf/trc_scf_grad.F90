@@ -346,9 +346,9 @@ contains
          grad = grad + grad_lr
          deallocate (grad_lr)
       end if
-      grad = 0.5_dp*grad   !! see this module's own header: eri%gradient's
-                           !! convention is twice d(e_two)/dR -- true of
-                           !! both passes above, added before this halving.
+      grad = 0.5_dp*grad   ! see this module's own header: eri%gradient's
+                           ! convention is twice d(e_two)/dR -- true of
+                           ! both passes above, added before this halving.
 
       call eri%release()
    end subroutine two_electron_4c
