@@ -70,11 +70,24 @@ program check_xc_energy
    ! V_xc element at this test's own grid/density misses this test's 1e-9
    ! by 16% while E_xc and N match to 1e-15/1e-13 -- recorded, not chased
    ! further, since check_xc is the authoritative per-kernel check.)
-   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 20
+   !
+   ! The last 32 are every meta-GGA the registry can run, all of them rather
+   ! than a sample: their compositions and hybrid splits come from
+   ! ExchCXX's table, and this is where each is checked against libxc's own
+   ! definition of the same name, through tau and its potential term (the
+   ! factor of one half in tau and the quarter in its potential tile, see
+   ! trc_xc.F90's header). E_xc/V_xc are the semilocal part only, as for the
+   ! GGA hybrids.
+   integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NOCC = 4, NFUNC = 52
    character(len=8), parameter :: names(NFUNC) = [character(len=8) :: &
                                                   "lda_x", "svwn", "pbe", "blyp", "b3lyp", "b3lyp5", "wb97x-v", &
                                                   "wb97x", "wb97", "vwn5", "pw91", "bp86", "rpbe", "o3lyp", &
-                                                  "revb3lyp", "x3lyp", "bhandh", "sogga11x", "bhhlyp", "hflyp"]
+                                                  "revb3lyp", "x3lyp", "bhandh", "sogga11x", "bhhlyp", "hflyp", "r2scan", &
+                                                  "tpss", "m06l", "scan", "revtpss", "tpssh", "m06", "m062x", &
+                                                  "r2scan0", "bmk", "cf22d", "m05", "m052x", "m06hf", "m06sx", &
+                                                  "m08hx", "m08so", "m11", "mbeef", "mn12l", "mn12sx", "mn15", &
+                                                  "mn15l", "pkzb", "pw86b95", "r2scan50", "r2scanh", "revm06l", "revtpssh", &
+                                                  "rscan", "scan0", "tpss0"]
    integer :: sh_l(NSH), sh_np(NSH), i, j, nao, ifn, unit, nfail
    real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
    real(dp) :: at_z(NATM), at_r(3, NATM), seed, exc, nelec, exc2, nelec2, trds

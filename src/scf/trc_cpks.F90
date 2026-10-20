@@ -65,7 +65,7 @@ module trc_cpks
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc_functional, only: trc_xc_functional_t
+   use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_MGGA
    use trc_xc, only: trc_xc_fxc_rks
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, &
                        zero_mat, copy_mat, neg_mat, add_mat, axpy_mat, precond_mat, combine_p, add_diag
@@ -92,6 +92,9 @@ contains
       else if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
          msg = "trc_cpks: range-separated hybrids are refused -- the CPKS response needs a second, " &
                //"short-range-screened exchange term ('"//trim(func%name)//"') this module does not build"
+      else if (func%family == XC_FAMILY_MGGA) then
+         msg = "trc_cpks: meta-GGA ('"//trim(func%name)//"') has no CPKS response term here -- " &
+               //"its second derivatives (tau included) are not translated"
       else if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
          msg = "trc_cpks: VV10 nonlocal correlation ('"//trim(func%name)//"') has no CPKS response " &
                //"term here -- its second derivative is not implemented"

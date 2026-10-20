@@ -22,6 +22,19 @@
 ! in place of 2 v_sigma grad rho, with a and b exchanged for spin b. The
 ! same two kernels serve both; `nspin` is the only difference.
 !
+! A meta-GGA also depends on the kinetic-energy density of each spin,
+!
+!     tau = 1/2 sum_i |grad psi_i|^2 = 1/2 sum_uv D_uv grad chi_u . grad chi_v
+!
+! with D the total density for RKS and the spin's own for UKS -- libxc's
+! and pyscf's convention, so tau of a closed shell is the total and not
+! half of it. Its potential adds
+!
+!     V_uv += sum_g w_g v_tau/2 grad chi_u . grad chi_v
+!
+! from d tau / d D_uv. Both come out of the gradient tiles a GGA already
+! collocates: see THE PIPELINE PER CHUNK.
+!
 ! THE PIPELINE PER CHUNK
 ! ----------------------
 ! Batched dense linear algebra, the "Batch Dense D" algorithm of Stocks
@@ -38,6 +51,18 @@
 !      GEMM:       V_b = chi_b^T Z_b
 !   4. scatter:    V_uv += V_b(u,v) + V_b(v,u), one thread per (b, u, v),
 !                  atomic because batches share global functions
+!
+! A meta-GGA adds three GEMMs per spin on each side, nothing else: before
+! the point kernel Y_x = (d chi/dx)_b D_b, one per Cartesian direction, so
+! that tau = 1/2 sum_x sum_u Y_x,gu (d chi/dx)_gu; and after it, in Y_x's own
+! storage (each point thread reads its row of Y before overwriting it with
+! W_x,gu = w v_tau/4 (d chi/dx)_gu),
+!
+!     V_b += sum_x (d chi/dx)_b^T W_x
+!
+! accumulated onto the chi^T Z product. W_x is symmetric under the
+! scatter's V_b + V_b^T, hence the quarter. LDA and GGA functionals take
+! none of this and run exactly the kernels they always did.
 !
 ! The earlier form contracted D per point and summed the potential per
 ! pair in loop nests, their "Direct" algorithm, and on cholesterol that was
@@ -107,7 +132,7 @@ module trc_xc
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
-      xc_eval_point_fxc, XC_MAX_KERNELS
+      xc_eval_point_fxc, xc_eval_point_mgga, xc_eval_point_mgga_polar, XC_MAX_KERNELS, XC_FAMILY_MGGA
    use trc_collocation, only: shell_collocate, NCART_MAX
    use trc_linalg, only: trc_linalg_t
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
@@ -131,7 +156,7 @@ contains
    !
    ! `budget` caps the stored basis values per chunk, in doubles; the
    ! gradients take three times as much again. The default is 8M doubles,
-   ! 256 MB with the gradients.
+   ! 256 MB with the gradients; a meta-GGA adds three more tiles per spin.
    !
    subroutine trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped, comm, la)
       type(trc_basis_t), intent(in) :: b
@@ -218,12 +243,18 @@ contains
       real(dp) :: es(2)
       logical :: split
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:, :), eg(:), ng(:)
+      real(dp), allocatable :: yt(:, :, :)
+      !! meta-GGA only: (d chi/dx) D per direction and spin, then the tau
+      !! potential tile in the same storage (see the module header)
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
       real(dp) :: t0, t1, t2
+      logical :: mgga
+      integer :: x
 
+      mgga = func%family == XC_FAMILY_MGGA
       kid = func%kid
       coef = func%coef
       vxc = 0.0_dp
@@ -330,12 +361,19 @@ contains
          allocate (chi(nchi), gchi(nchi, 3), xt(nchi, nspin), zt(nchi, nspin))
          allocate (dloc(max(npairs, 1), nspin), vloc(max(npairs, 1), nspin), eg(np), ng(np))
          !$acc enter data create(chi, gchi, xt, zt, dloc, vloc, eg, ng) copyin(c_off, pr_off, ord, pb_off, wk_off)
+         if (mgga) then
+            allocate (yt(nchi, 3, nspin))
+            !$acc enter data create(yt)
+         end if
 
          t0 = wall()
          ! Padding rows and columns must be zero, not whatever the allocation
          ! held: a NaN there would poison the GEMM. chi feeds both GEMMs, Z
          ! the second; X, D_b and V_b are written in full.
          call xc_zero(nchi, nspin, chi, zt)
+         ! A meta-GGA's GEMMs read grad chi too, so its padding must be zero
+         ! as well; Y and W then come out zero there without further help.
+         if (mgga) call xc_zero_grad(nchi, gchi)
          call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
                            xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
                            c_off, npp, xg%nbatch, nchi, chi, gchi)
@@ -359,12 +397,25 @@ contains
                do s = 1, nspin
                   call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
                                        dloc(pr_off(ib) + 1, s), ml, sb, 0.0_dp, xt(c_off(ib) + 1, s), mp, sa, cnt)
+                  if (mgga) then
+                     ! Y_x = (d chi/dx)_b D_b, for tau.
+                     do x = 1, 3
+                        call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, gchi(c_off(ib) + 1, x), mp, sa, &
+                                             dloc(pr_off(ib) + 1, s), ml, sb, 0.0_dp, yt(c_off(ib) + 1, x, s), &
+                                             mp, sa, cnt)
+                     end do
+                  end if
                end do
             end if
             k0 = k1 + 1
          end do
-         call xc_points(np, p0, nspin, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, active, &
-                        xg%nbatch, func%nk, kid, coef, nchi, chi, gchi, xt, zt, eg, ng)
+         if (mgga) then
+            call xc_points_mgga(np, p0, nspin, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, &
+                                active, xg%nbatch, func%nk, kid, coef, nchi, chi, gchi, xt, zt, yt, eg, ng)
+         else
+            call xc_points(np, p0, nspin, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, active, &
+                           xg%nbatch, func%nk, kid, coef, nchi, chi, gchi, xt, zt, eg, ng)
+         end if
          t1 = wall()
 
          !$acc update self(eg, ng)
@@ -389,6 +440,14 @@ contains
                do s = 1, nspin
                   call lp%gemm_strided("T", "N", ml, ml, mp, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
                                        zt(c_off(ib) + 1, s), mp, sa, 0.0_dp, vloc(pr_off(ib) + 1, s), ml, sc, cnt)
+                  if (mgga) then
+                     ! V_b += sum_x (d chi/dx)_b^T W_x, W_x in Y_x's storage.
+                     do x = 1, 3
+                        call lp%gemm_strided("T", "N", ml, ml, mp, 1.0_dp, gchi(c_off(ib) + 1, x), mp, sa, &
+                                             yt(c_off(ib) + 1, x, s), mp, sa, 1.0_dp, vloc(pr_off(ib) + 1, s), &
+                                             ml, sc, cnt)
+                     end do
+                  end if
                end do
             end if
             k0 = k1 + 1
@@ -401,6 +460,10 @@ contains
 
          !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, eg, ng, c_off, pr_off, ord, pb_off, wk_off)
          deallocate (chi, gchi, xt, zt, dloc, vloc, eg, ng, ord, pb_off, wk_off)
+         if (mgga) then
+            !$acc exit data delete(yt)
+            deallocate (yt)
+         end if
          b0 = b1 + 1
       end do
       if (.not. present(la)) call la_own%release()
@@ -900,6 +963,17 @@ contains
       end do
    end subroutine xc_zero
 
+   ! Zero the gradient tiles, whose padding only a meta-GGA's GEMMs read.
+   ! One flattened index rather than (i, x): the outer extent is small.
+   subroutine xc_zero_grad(nchi, gchi)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(out) :: gchi(nchi*3)
+      integer(int64) :: i
+      do concurrent(i=1:3*nchi)
+         gchi(i) = 0.0_dp
+      end do
+   end subroutine xc_zero_grad
+
    !
    ! Kernel 1: collocation -- one thread per (shell, point), Algorithm 2 of
    ! Stocks and Barca. Work item t maps to a stored batch, then a shell of
@@ -1105,6 +1179,114 @@ contains
          end do
       end do
    end subroutine xc_point_body
+
+   !
+   ! Kernel 3 for a meta-GGA: xc_point_body plus tau. Reads its row of Y_x
+   ! = (d chi/dx) D as well, and overwrites it with W_x = w v_tau/4 d chi/dx
+   ! (the module header). A separate kernel rather than a branch in
+   ! xc_point_body, so the LDA/GGA one compiles to exactly what it did.
+   !
+   subroutine xc_points_mgga(np, p0, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+                             nk, kid, coef, nchi, chi, gchi, xt, zt, yt, eg, ng)
+      integer, intent(in) :: np, p0, nspin, npts, nbatch, nk
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, nspin)
+      real(dp), intent(inout) :: zt(nchi, nspin), yt(nchi, 3, nspin)
+      real(dp), intent(out) :: eg(np), ng(np)
+      integer :: g
+
+      do concurrent(g=1:np)
+         call xc_point_mgga_body(p0 + g - 1, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+                                 nk, kid, coef, nchi, chi, gchi, xt, zt, yt, eg(g), ng(g))
+      end do
+   end subroutine xc_points_mgga
+
+   pure subroutine xc_point_mgga_body(gg, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+                                      nk, kid, coef, nchi, chi, gchi, xt, zt, yt, eg, ng)
+      !$acc routine seq
+      integer, intent(in) :: gg, nspin, npts, nbatch, nk
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, nspin)
+      real(dp), intent(inout) :: zt(nchi, nspin), yt(nchi, 3, nspin)
+      real(dp), intent(out) :: eg, ng
+
+      integer :: ib, nloc, ld, off, u, s, i
+      real(dp) :: wg, x, sigma, eps, vrho, vsigma
+      real(dp) :: rho(2), grho(3, 2), tau(2), vtau(2), zg(2), zv(3, 2), zw(2)
+      real(dp) :: s_aa, s_ab, s_bb, va, vb, v_aa, v_ab, v_bb
+
+      ib = batch_of(gg)
+      eg = 0.0_dp
+      ng = 0.0_dp
+      if (active(ib) == 0) return
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      wg = w(gg)
+      ! rho and grad rho as xc_point_body; tau = 1/2 sum_u Y_u . grad chi_u
+      rho = 0.0_dp
+      grho = 0.0_dp
+      tau = 0.0_dp
+      do s = 1, nspin
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            x = xt(i, s)
+            rho(s) = rho(s) + x*chi(i)
+            grho(1, s) = grho(1, s) + 2.0_dp*x*gchi(i, 1)
+            grho(2, s) = grho(2, s) + 2.0_dp*x*gchi(i, 2)
+            grho(3, s) = grho(3, s) + 2.0_dp*x*gchi(i, 3)
+            tau(s) = tau(s) + yt(i, 1, s)*gchi(i, 1) + yt(i, 2, s)*gchi(i, 2) + yt(i, 3, s)*gchi(i, 3)
+         end do
+         tau(s) = 0.5_dp*tau(s)
+      end do
+      vtau = 0.0_dp
+      if (nspin == 1) then
+         sigma = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
+         call xc_eval_point_mgga(nk, kid, coef, rho(1), sigma, tau(1), eps, vrho, vsigma, vtau(1))
+         eg = wg*rho(1)*eps
+         ng = wg*rho(1)
+         zg(1) = wg*vrho
+         zv(1, 1) = 2.0_dp*wg*vsigma*grho(1, 1)
+         zv(2, 1) = 2.0_dp*wg*vsigma*grho(2, 1)
+         zv(3, 1) = 2.0_dp*wg*vsigma*grho(3, 1)
+      else
+         s_aa = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
+         s_bb = grho(1, 2)**2 + grho(2, 2)**2 + grho(3, 2)**2
+         s_ab = grho(1, 1)*grho(1, 2) + grho(2, 1)*grho(2, 2) + grho(3, 1)*grho(3, 2)
+         call xc_eval_point_mgga_polar(nk, kid, coef, rho(1), rho(2), s_aa, s_ab, s_bb, tau(1), tau(2), &
+                                       eps, va, vb, v_aa, v_ab, v_bb, vtau(1), vtau(2))
+         eg = wg*(rho(1) + rho(2))*eps
+         ng = wg*(rho(1) + rho(2))
+         zg(1) = wg*va
+         zg(2) = wg*vb
+         zv(1, 1) = wg*(2.0_dp*v_aa*grho(1, 1) + v_ab*grho(1, 2))
+         zv(2, 1) = wg*(2.0_dp*v_aa*grho(2, 1) + v_ab*grho(2, 2))
+         zv(3, 1) = wg*(2.0_dp*v_aa*grho(3, 1) + v_ab*grho(3, 2))
+         zv(1, 2) = wg*(2.0_dp*v_bb*grho(1, 2) + v_ab*grho(1, 1))
+         zv(2, 2) = wg*(2.0_dp*v_bb*grho(2, 2) + v_ab*grho(2, 1))
+         zv(3, 2) = wg*(2.0_dp*v_bb*grho(3, 2) + v_ab*grho(3, 1))
+      end if
+      ! W_x,u = w v_tau/4 d chi_u/dx: (d chi/dx)^T W plus its transpose is
+      ! sum_g w v_tau/2 grad chi_u . grad chi_v.
+      zw = 0.25_dp*wg*vtau
+      do s = 1, nspin
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            zt(i, s) = 0.5_dp*zg(s)*chi(i) + zv(1, s)*gchi(i, 1) + zv(2, s)*gchi(i, 2) + zv(3, s)*gchi(i, 3)
+            yt(i, 1, s) = zw(s)*gchi(i, 1)
+            yt(i, 2, s) = zw(s)*gchi(i, 2)
+            yt(i, 3, s) = zw(s)*gchi(i, 3)
+         end do
+      end do
+   end subroutine xc_point_mgga_body
 
    !
    ! Kernel 4: V_uv += V_b(u,v) + V_b(v,u) -- one thread per stored (b, u, v);

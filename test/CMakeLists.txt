@@ -916,6 +916,20 @@ set_tests_properties(
                            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# The same harness for the meta-GGAs (tau): water r2SCAN, TPSS, M06-L, SCAN,
+# TPSSh, r2SCAN0, M06, M06-2X restricted, OH r2SCAN, TPSS, M06-L, TPSSh
+# unrestricted, against pyscf on terco's own grid (pyscf_refs/mgga.ref).
+#
+add_executable(scf_mgga scf_mgga.F90)
+target_compile_definitions(scf_mgga PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(scf_mgga PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_include_directories(scf_mgga PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/scf_mgga COMMAND scf_mgga)
+set_tests_properties(
+  terco/scf_mgga PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # Density-fitted RHF/RKS (trc_scf_df.F90, `--df`'s library entry): water and
 # formamide, cc-pVDZ and 6-31G*, Hartree-Fock/PBE/B3LYP, against pyscf's own
 # density_fit on the SAME auxiliary basis (def2-universal-jkfit), at rks.ref's
@@ -1307,6 +1321,7 @@ if(Python3_FOUND)
                                                          SKIP_REGULAR_EXPRESSION "^SKIP")
   endfunction()
   terco_add_golden(scf_rks scf_rks)
+  terco_add_golden(scf_mgga scf_mgga)
   terco_add_golden(scf_df scf_df)
   terco_add_golden(scf_robust scf_robust)
   terco_add_golden(scf_rimp2 scf_rimp2)

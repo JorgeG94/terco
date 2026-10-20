@@ -67,7 +67,7 @@ USE_WIDTH = 112  # a `use` line that fits stays one line
 class Entry:
     name: str
     aliases: tuple[str, ...]
-    family: str  # "lda" | "gga"
+    family: str  # "lda" | "gga" | "mgga"
     kernels: list[tuple[float, str]]
     exx: float = 0.0
     exx_lr: float = 0.0
@@ -298,6 +298,12 @@ def build_registry(exchcxx: Path) -> tuple[list[Entry], list[str]]:
             fams = {f for s, f in translated if s in {st for _, st in kernel_stems}}
             if fams == {"lda"}:
                 family = "lda"
+            elif "mgga" in fams:
+                # Any meta-GGA kernel makes the whole functional one (PW86B95
+                # is a GGA exchange under BC95's meta-GGA correlation): the
+                # integrator then evaluates tau and calls xc_eval_point_mgga,
+                # which dispatches the LDA/GGA kernels too.
+                family = "mgga"
 
         exx = exx_lr = omega = 0.0
         if fn.hyb:
@@ -306,8 +312,8 @@ def build_registry(exchcxx: Path) -> tuple[list[Entry], list[str]]:
             exx_lr = -beta
 
         if problems:
-            # Group enums by identical reason so "needs TPSS_X, TPSS_C:
-            # meta-GGA kernels are not translated yet" prints once.
+            # Group enums by identical reason so "needs R2SCANL_C, R2SCANL_X:
+            # needs the density Laplacian, ..." prints once.
             by_reason: dict[str, list[str]] = {}
             for enum, reason in problems.items():
                 by_reason.setdefault(reason, []).append(enum)
@@ -353,6 +359,12 @@ def fortran_real(x: float) -> str:
 
 def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     kid_name = {stem: f"XC_K_{stem.upper()}" for stem in available_kernels}
+    semilocal = [st for st in available_kernels if _family_of(st) != "mgga"]
+    # What xc_eval_point_mgga dispatches: every meta-GGA kernel, plus the
+    # LDA/GGA kernels some available meta-GGA composition puts beside them.
+    mgga_used = {st for e in entries if e.family == "mgga" and e.missing is None for _, st in e.kernels}
+    mgga_dispatch = [st for st in semilocal if st in mgga_used] + \
+        [st for st in available_kernels if _family_of(st) == "mgga"]
     lines = [
         "!",
         "! A density functional, as the integrator sees it: a short list of",
@@ -381,6 +393,13 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         "! with allocatable components is exactly what a `do concurrent` body should",
         "! not touch.",
         "!",
+        "! A meta-GGA has its own pair, `xc_eval_point_mgga` and its polarised twin:",
+        "! tau in, vtau out, dispatching every kernel a meta-GGA composition uses",
+        "! (its meta-GGA kernels and any LDA/GGA ones beside them). The LDA/GGA",
+        "! evaluators dispatch only LDA and GGA kernels, so the meta-GGA family",
+        "! leaves what they compile to unchanged. Kernel ids are LDA/GGA first and",
+        "! meta-GGA after, for the same reason.",
+        "!",
         "! A double hybrid (b2plyp, b2gp-plyp, mpw2plyp) is still just a (coef,",
         "! kernel) composition plus `exx` for its SCF -- `pt2_cos`/`pt2_css` are",
         "! the RI-MP2 fraction on top, which this module only STORES; running it",
@@ -391,6 +410,10 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         f"{INDENT}use pic_types, only: dp",
     ]
     for stem in available_kernels:
+        if _family_of(stem) == "mgga":
+            # No second derivatives translated for a meta-GGA.
+            lines.append(f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar")
+            continue
         one = (f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar, "
                f"{stem}_vxc_fxc_unpolar")
         if len(one) <= USE_WIDTH:
@@ -404,11 +427,12 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         "",
         f"{INDENT}public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name",
         f"{INDENT}public :: xc_eval_point_fxc",
+        f"{INDENT}public :: xc_eval_point_mgga, xc_eval_point_mgga_polar",
         f"{INDENT}public :: xc_is_double_hybrid",
-        f"{INDENT}public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS",
+        f"{INDENT}public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_FAMILY_MGGA, XC_MAX_KERNELS",
         f"{INDENT}public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS",
         "",
-        f"{INDENT}integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2",
+        f"{INDENT}integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2, XC_FAMILY_MGGA = 3",
         f"{INDENT}integer, parameter :: XC_MAX_KERNELS = 8",
         "",
     ]
@@ -470,8 +494,8 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction")
     lines.append(f"{INDENT}{INDENT}character(len=160) :: missing = \"\"")
     lines.append(f"{INDENT}{INDENT}!! Empty when the functional runs; otherwise exactly what it needs")
-    lines.append(f"{INDENT}{INDENT}!! that terco does not have, e.g. \"needs TPSS_X: meta-GGA kernels")
-    lines.append(f'{INDENT}{INDENT}!! are not translated yet\". Selecting it by name still succeeds;')
+    lines.append(f"{INDENT}{INDENT}!! that terco does not have, e.g. \"needs R2SCANL_C: needs the")
+    lines.append(f'{INDENT}{INDENT}!! density Laplacian, ...\". Selecting it by name still succeeds;')
     lines.append(f"{INDENT}{INDENT}!! running it is what the caller must refuse.")
     lines.append(f"{INDENT}end type trc_xc_functional_t")
     lines.append("")
@@ -495,7 +519,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}do k = 1, nk")
     lines.extend(_zero(3, ["vs"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}select case (kid(k))")
-    for stem in available_kernels:
+    for stem in semilocal:
         call = f"call {stem}_exc_vxc_unpolar(rho, sigma, e, vr, vs)" if \
             _family_of(stem) == "gga" else f"call {stem}_exc_vxc_unpolar(rho, e, vr)"
         lines.extend(_case(kid_name[stem], call))
@@ -538,7 +562,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}do k = 1, nk")
     lines.extend(_zero(3, ["vs", "f2rs", "f2ss"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}select case (kid(k))")
-    for stem in available_kernels:
+    for stem in semilocal:
         if _family_of(stem) == "gga":
             call = f"call {stem}_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)"
         else:
@@ -572,7 +596,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}do k = 1, nk")
     lines.extend(_zero(3, ["saa", "sab", "sbb"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}select case (kid(k))")
-    for stem in available_kernels:
+    for stem in semilocal:
         if _family_of(stem) == "gga":
             call = f"call {stem}_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)"
         else:
@@ -589,6 +613,8 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}end do")
     lines.append(f"{INDENT}end subroutine xc_eval_point_polar")
     lines.append("")
+
+    lines.extend(emit_mgga_eval(mgga_dispatch, kid_name))
 
     # xc_functional_by_name
     lines.append(f"{INDENT}!")
@@ -624,7 +650,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
             esc = e.missing.replace('"', "'")
             lines.append(f'{INDENT}{INDENT}{INDENT}f%missing = "{esc}"')
         else:
-            family_param = "XC_FAMILY_GGA" if e.family == "gga" else "XC_FAMILY_LDA"
+            family_param = {"lda": "XC_FAMILY_LDA", "gga": "XC_FAMILY_GGA", "mgga": "XC_FAMILY_MGGA"}[e.family]
             kids = ", ".join(kid_name[s] for _, s in e.kernels)
             coefs = ", ".join(fortran_real(c) for c, _ in e.kernels)
             for ln in wrap(f"{INDENT}{INDENT}{INDENT}call set(f, {family_param}, [{kids}], [{coefs}])", INDENT*3):
@@ -679,6 +705,99 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
 
 
 _FAMILY_CACHE: dict[str, str] = {}
+
+
+def emit_mgga_eval(dispatch: list[str], kid_name: dict[str, str]) -> list[str]:
+    """xc_eval_point_mgga and xc_eval_point_mgga_polar, the meta-GGA point
+    evaluators. An LDA or GGA kernel among them ignores tau and contributes
+    no vtau, the way libxc evaluates a mixed composition kernel by kernel."""
+    I = INDENT
+    out = [
+        f"{I}!",
+        f"{I}! Energy per particle and first derivatives of a composed meta-GGA at one",
+        f"{I}! point of a closed-shell density: `sigma` is |grad rho|^2 and `tau` the",
+        f"{I}! kinetic-energy density 1/2 sum_i |grad psi_i|^2 of the total density,",
+        f"{I}! libxc's and pyscf's convention. `vtau` is d(rho eps)/d tau. An LDA or",
+        f"{I}! GGA kernel in the composition ignores tau.",
+        f"{I}!",
+        f"{I}pure subroutine xc_eval_point_mgga(nk, kid, coef, rho, sigma, tau, eps, vrho, vsigma, vtau)",
+        f"{I}{I}!$acc routine seq",
+    ]
+    out += _kid_decls(["rho", "sigma", "tau"])
+    out += [
+        f"{I}{I}real(dp), intent(out) :: eps, vrho, vsigma, vtau",
+        f"{I}{I}real(dp) :: e, vr, vs, vt",
+        f"{I}{I}integer :: k",
+        "",
+    ]
+    out += _zero(2, ["eps", "vrho", "vsigma", "vtau"])
+    out.append(f"{I}{I}do k = 1, nk")
+    out += _zero(3, ["vs", "vt"])
+    out.append(f"{I}{I}{I}select case (kid(k))")
+    for stem in dispatch:
+        fam = _family_of(stem)
+        if fam == "mgga":
+            call = f"call {stem}_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)"
+        elif fam == "gga":
+            call = f"call {stem}_exc_vxc_unpolar(rho, sigma, e, vr, vs)"
+        else:
+            call = f"call {stem}_exc_vxc_unpolar(rho, e, vr)"
+        out += _case(kid_name[stem], call, wrapped=True)
+    out += _case_default(["e", "vr"])
+    out += [
+        f"{I}{I}{I}end select",
+        f"{I}{I}{I}eps = eps + coef(k)*e",
+        f"{I}{I}{I}vrho = vrho + coef(k)*vr",
+        f"{I}{I}{I}vsigma = vsigma + coef(k)*vs",
+        f"{I}{I}{I}vtau = vtau + coef(k)*vt",
+        f"{I}{I}end do",
+        f"{I}end subroutine xc_eval_point_mgga",
+        "",
+        f"{I}!",
+        f"{I}! The same for a spin-polarised density: per-spin densities, the three",
+        f"{I}! gradient invariants and per-spin tau_s = 1/2 sum_i |grad psi_is|^2.",
+        f"{I}!",
+        f"{I}pure subroutine xc_eval_point_mgga_polar(nk, kid, coef, rho_a, rho_b, s_aa, s_ab, s_bb, &",
+        f"{I}{I}{I}{I}tau_a, tau_b, eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb, vtau_a, vtau_b)",
+        f"{I}{I}!$acc routine seq",
+    ]
+    out += _kid_decls(["rho_a", "rho_b", "s_aa", "s_ab", "s_bb", "tau_a", "tau_b"])
+    out += [
+        f"{I}{I}real(dp), intent(out) :: eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb, vtau_a, vtau_b",
+        f"{I}{I}real(dp) :: e, va, vb, saa, sab, sbb, ta, tb",
+        f"{I}{I}integer :: k",
+        "",
+    ]
+    out += _zero(2, ["eps", "vrho_a", "vrho_b", "vs_aa", "vs_ab", "vs_bb", "vtau_a", "vtau_b"])
+    out.append(f"{I}{I}do k = 1, nk")
+    out += _zero(3, ["saa", "sab", "sbb", "ta", "tb"])
+    out.append(f"{I}{I}{I}select case (kid(k))")
+    for stem in dispatch:
+        fam = _family_of(stem)
+        if fam == "mgga":
+            call = (f"call {stem}_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, tau_b, "
+                    f"e, va, vb, saa, sab, sbb, ta, tb)")
+        elif fam == "gga":
+            call = f"call {stem}_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)"
+        else:
+            call = f"call {stem}_exc_vxc_polar(rho_a, rho_b, e, va, vb)"
+        out += _case(kid_name[stem], call, wrapped=True)
+    out += _case_default(["e", "va", "vb"])
+    out += [
+        f"{I}{I}{I}end select",
+        f"{I}{I}{I}eps = eps + coef(k)*e",
+        f"{I}{I}{I}vrho_a = vrho_a + coef(k)*va",
+        f"{I}{I}{I}vrho_b = vrho_b + coef(k)*vb",
+        f"{I}{I}{I}vs_aa = vs_aa + coef(k)*saa",
+        f"{I}{I}{I}vs_ab = vs_ab + coef(k)*sab",
+        f"{I}{I}{I}vs_bb = vs_bb + coef(k)*sbb",
+        f"{I}{I}{I}vtau_a = vtau_a + coef(k)*ta",
+        f"{I}{I}{I}vtau_b = vtau_b + coef(k)*tb",
+        f"{I}{I}end do",
+        f"{I}end subroutine xc_eval_point_mgga_polar",
+        "",
+    ]
+    return out
 
 
 # One statement per line and one kind of declaration per line: the style
@@ -781,8 +900,13 @@ def main(argv=None) -> int:
         _FAMILY_CACHE[stem] = fam
     available_kernels = [s for s, _ in translated if s not in xc_kernel_discovery.DISAGREES_WITH_LIBXC]
 
+    # LDA/GGA ids first, meta-GGA after: adding the meta-GGA family must not
+    # renumber the LDA/GGA dispatch.
+    ordered = sorted(st for st in available_kernels if _FAMILY_CACHE[st] != "mgga") + \
+        sorted(st for st in available_kernels if _FAMILY_CACHE[st] == "mgga")
+
     entries, notes = build_registry(args.exchcxx)
-    args.output.write_text(emit_fortran(entries, sorted(available_kernels)))
+    args.output.write_text(emit_fortran(entries, ordered))
     args.docs.write_text(emit_docs(entries, notes, len(translated), len(refused),
                                     len(xc_kernel_discovery.DISAGREES_WITH_LIBXC)))
     navail = sum(1 for e in entries if e.missing is None)

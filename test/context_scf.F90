@@ -308,11 +308,20 @@ contains
       call expect(iand(flags, 4_c_int) /= 0, "functional_info(wb97x-v): range-separated (bit 4)")
       call expect(iand(flags, 8_c_int) /= 0, "functional_info(wb97x-v): VV10 (bit 8)")
 
-      ! listed but not runnable: bit 64, bit 1 (known) must then be clear
+      ! a runnable meta-GGA: bit 16 with bit 1, not 64
       rc4 = trc_functional_info('tpss'//c_null_char, flags, exx, c_os2, c_ss2)
-      call expect(rc4 == TRC_OK, "functional_info(tpss): status (listed)")
-      call expect(iand(flags, 64_c_int) /= 0, "functional_info(tpss): listed but not runnable (bit 64)")
-      call expect(iand(flags, 1_c_int) == 0, "functional_info(tpss): NOT known, since it cannot run")
+      call expect(rc4 == TRC_OK, "functional_info(tpss): status")
+      call expect(iand(flags, 1_c_int) /= 0, "functional_info(tpss): known (bit 1)")
+      call expect(iand(flags, 16_c_int) /= 0, "functional_info(tpss): meta-GGA (bit 16)")
+      call expect(iand(flags, 64_c_int) == 0, "functional_info(tpss): runnable, so not bit 64")
+
+      ! listed but not runnable: bit 64, bit 1 (known) must then be clear;
+      ! r2SCAN-L is a meta-GGA that needs the density Laplacian
+      rc4 = trc_functional_info('r2scanl'//c_null_char, flags, exx, c_os2, c_ss2)
+      call expect(rc4 == TRC_OK, "functional_info(r2scanl): status (listed)")
+      call expect(iand(flags, 64_c_int) /= 0, "functional_info(r2scanl): listed but not runnable (bit 64)")
+      call expect(iand(flags, 1_c_int) == 0, "functional_info(r2scanl): NOT known, since it cannot run")
+      call expect(iand(flags, 16_c_int) /= 0, "functional_info(r2scanl): meta-GGA (bit 16)")
 
       ! an unknown name: non-OK, flags = 0
       rc4 = trc_functional_info('not-a-functional'//c_null_char, flags, exx, c_os2, c_ss2)

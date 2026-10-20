@@ -59,12 +59,33 @@ DISAGREES_WITH_LIBXC = {
             "missed pyscf on terco's grid -- under investigation",
 }
 
+# Meta-GGA kernels whose first derivatives miss libxc by more than check_xc's
+# 1e-11 at a few points, where libxc is the one that is off: the same
+# translated Fortran evaluated in quadruple precision (gfortran real(16),
+# every literal and helper promoted) agrees with terco's double-precision
+# result to 3e-14 or better at those points, and with libxc only to the
+# error listed, so the gap is libxc's rounding, not a translation slip.
+# check_xc holds these kernels' first derivatives to the tolerance given
+# instead of 1e-11. Measured, natural-scale relative error against quad
+# (see check_xc.F90), terco / libxc:
+#   tpss_c     rho_a 9.95, rho_b 0.05, s 0.1        1.4e-14 / 4.6e-11 (vtau)
+#   revtpss_c  the same point                       1.3e-14 / 4.6e-11
+#   pkzb_c     rho_a 9.95, rho_b 0.05, s 1          1.3e-14 / 3.7e-11 (vsigma)
+#   mbeef_x    rho_a 9.95e-10, rho_b 5e-12, sigma 0 2.9e-14 / 3.5e-10 (vsigma)
+LIBXC_LESS_ACCURATE = {
+    "tpss_c": 1.0e-10,
+    "revtpss_c": 1.0e-10,
+    "pkzb_c": 1.0e-10,
+    "mbeef_x": 1.0e-9,
+}
+
 
 def discover(exchcxx: Path) -> tuple[list[tuple[str, str]], dict[str, str]]:
     """Return (translated [(stem, family), ...], refused {stem: reason}).
 
     A kernel is only really translated once `emit_module` has walked every
-    statement of every one of its eight routines: `parse_kernel` alone does
+    statement of every routine it emits (all eight for LDA/GGA, the four
+    energy and first-derivative ones for a meta-GGA): `parse_kernel` alone does
     not call `translate_expr` on the body, so an unsupported function deep
     in a statement (the scaled exponential integral in the HSE/LC-wPBE
     kernels, say) would otherwise slip past as "translated" here and then
