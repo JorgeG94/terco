@@ -4,10 +4,13 @@ program check_capi_pcm_radii
    !!
    !! Case A -- self-consistency, no pyscf needed: an override equal to
    !! what terco's own table (trc_pcm_radii.F90) already produces for
-   !! this molecule must give a BIT-IDENTICAL energy and E_diel to the
-   !! table path -- the override and the table are two routes to the
-   !! same per-atom radii array, so build_pcm_surface cannot tell them
-   !! apart.
+   !! this molecule must give the same energy and E_diel as the table
+   !! path -- the override and the table are two routes to the same
+   !! per-atom radii array, so build_pcm_surface cannot tell them apart.
+   !! The same to round-off (SAME_TOL), not bit for bit: each side is its
+   !! own SCF, and with OpenMP threads the reductions sum in a different
+   !! order every run (2.4e-13 apart at 4 threads in CI). A wrong radius
+   !! moves the energy by more than 1e-6 (the misuse case checks that).
    !!
    !! Case B -- against pyscf, with DIFFERENT radii: mqc's own
    !! convention (plain Bondi, hydrogen 1.20 Angstrom, times 1.2) against
@@ -36,6 +39,9 @@ program check_capi_pcm_radii
    real(dp), parameter :: BOHR_ANGSTROM = 0.52917721092_dp
    real(dp), parameter :: SCALE = 1.2_dp
    real(dp), parameter :: O_ANG = 1.52_dp, H_MODBONDI_ANG = 1.10_dp, H_BONDI_ANG = 1.20_dp
+   real(dp), parameter :: SAME_TOL = 1.0e-10_dp
+   !! Two SCFs on the same radii agree to this (round-off, see case A); a
+   !! wrong radius is more than 1e-6 away.
 
    dev = trc_bind_device(0)
    call read_xyz('water.xyz', natm, zint, at_r)
@@ -111,10 +117,10 @@ contains
 
       print '(a,f20.14,a,f20.14,a,es9.2)', "check_capi_pcm_radii: E table ", e_table, &
          "  override(=table) ", e_override, "  diff ", real(e_table, dp) - real(e_override, dp)
-      call expect(abs(real(e_table, dp) - real(e_override, dp)) < 1.0e-13_dp, &
-                  "override_matches_table: SCF energy is bit-identical to the table")
-      call expect(abs(real(ediel_table, dp) - real(ediel_override, dp)) < 1.0e-13_dp, &
-                  "override_matches_table: E_diel is bit-identical to the table")
+      call expect(abs(real(e_table, dp) - real(e_override, dp)) < SAME_TOL, &
+                  "override_matches_table: SCF energy matches the table")
+      call expect(abs(real(ediel_table, dp) - real(ediel_override, dp)) < SAME_TOL, &
+                  "override_matches_table: E_diel matches the table")
 
       rc = trc_destroy(h_table); rc = trc_destroy(h_override)
    end subroutine check_override_matches_table
@@ -193,7 +199,7 @@ contains
       call expect(rc == TRC_OK, "misuse: natm = 0 clears the override")
       rc = trc_run_scf(h); call expect(rc == TRC_OK, "misuse: run_scf (cleared)")
       rc = trc_energy(h, e_cleared)
-      call expect(abs(real(e_cleared, dp) - real(e_table, dp)) < 1.0e-13_dp, &
+      call expect(abs(real(e_cleared, dp) - real(e_table, dp)) < SAME_TOL, &
                   "misuse: cleared override matches the table again")
 
       ! A NULL radii pointer clears it too.
@@ -202,7 +208,7 @@ contains
       call expect(rc == TRC_OK, "misuse: a NULL radii pointer clears the override")
       rc = trc_run_scf(h); call expect(rc == TRC_OK, "misuse: run_scf (cleared via NULL)")
       rc = trc_energy(h, e_after)
-      call expect(abs(real(e_after, dp) - real(e_table, dp)) < 1.0e-13_dp, &
+      call expect(abs(real(e_after, dp) - real(e_table, dp)) < SAME_TOL, &
                   "misuse: NULL-cleared override matches the table again")
 
       ediel_unused = 0.0_c_double; qtot = 0.0_c_double; npts = 0
