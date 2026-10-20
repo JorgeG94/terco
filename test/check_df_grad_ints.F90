@@ -240,11 +240,13 @@ program check_df_grad_ints
    call synth_y(nao, naux, y)
    call synth_z(naux, z)
    g3 = 0.0_dp; g2 = 0.0_dp
-   ! Y alone (the drivers' K-style dense input): the J part's c and D zero.
+   ! Y alone (the drivers' K-style dense input, read as M + M^T, so y/2
+   ! for a symmetric y): the J part's c and D zero.
    allocate (cq0(naux), d0(nao, nao))
    cq0 = 0.0_dp; d0 = 0.0_dp
    call df_grad_3c_plan(bas%nshell, bas%maxnp, bas%sh_l, bas%sh_np, bas%sh_e, bas%sh_c, bas%sh_r, &
                         pl%npair, pl%p_i, pl%p_j, coff, q_a, q_b, q_o, q_n, pd)
+   y = 0.5_dp*y
    !$acc enter data copyin(y, z, g3, g2, cq0, d0, q_a, q_b, q_o, q_n, pd)
    call df_grad_3c_driver(bas%nshell, nao, bas%sh_ao, bas%sh_at, bas%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                           size(pd, 2), pd, aux%nshell, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
@@ -253,6 +255,7 @@ program check_df_grad_ints
                           aux%sh_e, aux%sh_c, aux%sh_r, nat, z, g2)
    !$acc update self(g3, g2)
    !$acc exit data delete(y, z, g3, g2, cq0, d0, q_a, q_b, q_o, q_n, pd)
+   y = 2.0_dp*y
 
    ! --- the same contraction from the raw host tensors ---
    allocate (aoat(nao), axat(naux))

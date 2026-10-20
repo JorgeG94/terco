@@ -181,14 +181,17 @@ contains
       !! shell pairs (df_grad_3c_plan) and every shell of the auxiliary
       !! (sub)basis, with
       !!
-      !!     Y(mu,nu,P) = jc cq(qoff+P) dens(mu,nu)  [+ ytens(mu,nu,P) if ky]
+      !!     Y(mu,nu,P) = jc cq(qoff+P) dens(mu,nu)
+      !!                  [+ ytens(mu,nu,P) + ytens(nu,mu,P)  if ky]
       !!
       !! -- the J part formed inside the kernels from c and D, never stored,
       !! so a J-only gradient (ky false; ytens then a dummy, ny1 = ny3 = 1)
       !! needs no (n, n, naux) tensor at all. P is the auxiliary (sub)basis's
       !! OWN AO numbering (a subset basis from trc_basis_t%subset numbers
-      !! from 1); qoff maps it into cq. `ytens` symmetric in mu, nu. Every
-      !! array but `coff` is device-resident; `grad` is added into.
+      !! from 1); qoff maps it into cq. `ytens` is the K part's one-sided
+      !! half M (Y_K = M + M^T: trc_scf_grad_df.F90 builds it from X's
+      !! packed rows j <= i). Every array but `coff` is device-resident;
+      !! `grad` is added into.
       integer,  intent(in)    :: nsh, nao, npair, npp, nsx, mnx, natm, ny1, ny3, nqc, qoff
       integer,  intent(in)    :: sh_ao(nsh), sh_at(nsh)
       real(dp), intent(in)    :: sh_r(3, nsh)

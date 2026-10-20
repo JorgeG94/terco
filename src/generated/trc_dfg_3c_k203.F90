@@ -58,7 +58,7 @@ contains
                          natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
       !! One (shell pair, auxiliary shell) triple: its Y block, the J part
       !! jc c_P D_mn formed here from c and D (never stored as a tensor) plus,
-      !! when `ky`, the K part read from `ytens` -- weighted 2 for an
+      !! when `ky`, the K part M + M^T read from `ytens` = M -- weighted 2 for an
       !! off-diagonal pair, which stands for both (mu,nu) and (nu,mu) -- the
       !! contracted derivative, and nine atomic adds into lane mod(t, nlane)+1
       !! of `gp`. A triple on one atom is skipped: its three derivatives sum
@@ -93,7 +93,7 @@ contains
             do a = 0, 5
                mu = sh_ao(ii) + a
                yv = jc*cq(qoff + pq)*dens(mu, nu)
-               if (ky) yv = yv + ytens(mu, nu, pq)
+               if (ky) yv = yv + ytens(mu, nu, pq) + ytens(nu, mu, pq)
                yb(1 + a + 6*(c + 1*e)) = wt*yv
             end do
          end do

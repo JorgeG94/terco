@@ -34,16 +34,19 @@
 !      one triangular solve, L^T c = t'.
 !   2. K only (k /= 0; a pure functional skips the K work outright, not
 !      by scaling by zero): H(ij, P) = C^T B_P C one auxiliary block at a
-!      time (unpack, then one GEMM and one strided batch), then X = H L^-1,
-!      one triangular solve over every (ij) row at once.
-!   3. Z: an outer product plus, for K, one GEMM X^T X. Then the two-centre
+!      time (unpack, then one GEMM and one strided batch), kept only for
+!      j <= i (X^{ij} = X^{ji}; the off-diagonal rows scaled by sqrt 2),
+!      then X = H L^-1, one triangular solve over every kept row at once.
+!   3. Z: an outer product plus, for K, X^T X over the kept rows, its lower
+!      triangle only, one column panel per GEMM. Then the two-centre
 !      derivative kernels (trc_df_grad_kernels' df_grad_2c_driver).
 !   4. The three-centre derivative kernels, on the pair plan built once
 !      (df_grad_3c_plan) and Y = j c_P D_mn + Y_K, whose J part the kernels
 !      form themselves from c and D (df_grad_3c_driver). J only: one pass
-!      over the whole auxiliary basis, no Y tensor. With K: Y_K one
-!      auxiliary block at a time, one strided batch and one GEMM, and the
-!      kernels on that block's own auxiliary subset.
+!      over the whole auxiliary basis, no Y tensor. With K: Y_K = M + M^T
+!      one auxiliary block at a time, M from the kept rows of X by one
+!      strided batch and one GEMM, and the kernels on that block's own
+!      auxiliary subset.
 !
 ! MEMORY. X is nocc^2 naux doubles. When the device cannot hold it next to
 ! everything else (choose_grad_blocks), steps 2-4 run once per CHUNK of
@@ -79,11 +82,15 @@ module trc_scf_grad_df
    ! only move memory. The derivative kernels report time only -- their
    ! operation count is a property of each generated class, measured with
    ! a profiler, not modelled here.
-   integer, parameter :: ST_JGAM = 1, ST_CSOL = 2, ST_UNPK = 3, ST_HGEMM = 4, ST_XTRSM = 5, &
-                         ST_ZGEMM = 6, ST_PLAN = 7, ST_YK = 8, ST_D3C = 9, ST_D2C = 10, NSTEP = 10
+   integer, parameter :: ST_JGAM = 1, ST_CSOL = 2, ST_UNPK = 3, ST_HGEMM = 4, ST_XPACK = 5, ST_XTRSM = 6, &
+                         ST_ZGEMM = 7, ST_PLAN = 8, ST_YK = 9, ST_D3C = 10, ST_D2C = 11, NSTEP = 11
+   real(dp), parameter :: SQRT2 = 1.4142135623730951_dp
+   integer, parameter :: ZPANEL = 1024
+   !! Columns per panel of Z's lower-triangle GEMMs.
    character(len=22), parameter :: NAMES(NSTEP) = [character(len=22) :: &
                                    "J gamma (gemv)", "c = L^-T gamma (trsm)", "unpack B", &
-                                   "H = C^T B C (gemm)", "X = H L^-1 (trsm)", "Z += X^T X (gemm)", &
+                                   "H = C^T B C (gemm)", "pack/unpack X (i>=j)", "X = H L^-1 (trsm)", &
+                                   "Z += X^T X (gemm)", &
                                    "3c pair plan (host)", "Y = K part (gemm)", "3c derivative kernels", &
                                    "2c derivative kernels"]
 
@@ -107,11 +114,12 @@ contains
       real(dp),             intent(inout) :: grad(3, b%natm)
 
       real(dp), pointer :: bpk(:, :), chol(:, :)
-      real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xh(:)
+      real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xp(:), hb(:, :, :)
       real(dp), allocatable :: tens(:, :, :), half(:, :, :), ydum(:, :, :)
       type(trc_basis_t) :: blk
-      integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, nrow, s0, s1, p0, np, mu, nu, q, i, p
+      integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, s0, s1, p0, np, mu, nu, q, i, p
       integer(int64) :: n8, o8, c8, t
+      integer :: q0, w, nrp, rbase, il, j
       integer :: coff(0:DFG_NPCLS)
       integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
       real(dp), allocatable :: pd(:, :)
@@ -129,7 +137,7 @@ contains
       call dfjk%dims(n, naux, npack)
       if (n /= b%nao .or. naux /= aux%nao) error stop "trc_scf_grad_df: the fit does not match these bases"
       if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
-      call tbl%init("dfgrad", NAMES, bytes_steps=[ST_JGAM, ST_UNPK])
+      call tbl%init("dfgrad", NAMES, bytes_steps=[ST_JGAM, ST_UNPK, ST_XPACK])
       call lp%sync()
       call tall%start()
       bpk => dfjk%packed_b()
@@ -213,18 +221,25 @@ contains
          i0 = 1 + (ic - 1)*nci
          i1 = min(nocc, ic*nci)
          nc = max(i1 - i0 + 1, 0)
-         nrow = nc*nocc
          c8 = int(max(nc, 1), int64)
          jc = merge(j_scale, 0.0_dp, ic == 1)
 
          ! --- 2. K: H(ij, P) = C_c^T B_P C for i in the chunk, X = H L^-1 --
-         allocate (xh(c8*o8*int(naux, int64)))
-         !$acc enter data create(xh)
+         ! X^{ij} = X^{ji}, so only the rows j <= i are kept: xp(r, P), r the
+         ! chunk-local packed index of (i, j), scaled by w_ij = sqrt(2) off
+         ! the diagonal so that xp^T xp is Z's full sum over (i, j). Half the
+         ! rows for the triangular solve and for Z (w60/6-31G: 5.7 and 11.5
+         ! TFLOP before). Each auxiliary block's H lands in a block-sized
+         ! buffer and is packed straight into xp: no full nc x nocc x naux H.
+         nrp = (i1*(i1 + 1) - (i0 - 1)*i0)/2
+         rbase = (i0 - 1)*i0/2
+         allocate (xp(int(nrp, int64)*int(naux, int64)))
+         !$acc enter data create(xp)
          s0 = 1
          do while (s0 <= aux%nshell)
             call next_block(aux, s0, ablk, s1, p0, np)
-            allocate (tens(n, n, np), half(nc, n, np))
-            !$acc enter data create(tens, half)
+            allocate (tens(n, n, np), half(nc, n, np), hb(nc, nocc, np))
+            !$acc enter data create(tens, half, hb)
             call tbl%step_on(lp, ST_UNPK, tc)
             ! One flat index over the whole (n, n, np) block: the three-
             ! index form ran its q loop sequentially inside each thread
@@ -240,43 +255,83 @@ contains
             call tbl%step_on(lp, ST_HGEMM, tc)
             call lp%gemm("T", "N", nc, n*np, n, 1.0_dp, cocc(1, i0), n, tens, n, 0.0_dp, half, nc)
             call lp%gemm_strided("N", "N", nc, nocc, n, 1.0_dp, half, nc, c8*n8, cocc, n, 0_int64, &
-                                 0.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, c8*o8, np)
+                                 0.0_dp, hb, nc, c8*o8, np)
             call tbl%step_off(lp, ST_HGEMM, tc)
             call tbl%add_flop(ST_HGEMM, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
-            !$acc exit data delete(tens, half)
-            deallocate (tens, half)
+            call tbl%step_on(lp, ST_XPACK, tc)
+            do concurrent(t=0:c8*o8*int(np, int64) - 1) local(il, j, q, i)
+               il = int(mod(t, c8)) + 1
+               j = int(mod(t/c8, o8)) + 1
+               q = int(t/(c8*o8)) + 1
+               i = i0 - 1 + il
+               if (j <= i) xp(int(i*(i - 1)/2 + j - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64)) = &
+                  merge(1.0_dp, SQRT2, j == i)*hb(il, j, q)
+            end do
+            call tbl%step_off(lp, ST_XPACK, tc)
+            call tbl%add_bytes(ST_XPACK, 8_int64*c8*o8*int(np, int64))
+            !$acc exit data delete(tens, half, hb)
+            deallocate (tens, half, hb)
             s0 = s1 + 1
          end do
          call tbl%step_on(lp, ST_XTRSM, tc)
-         call lp%trsm("R", "L", "N", nrow, naux, 1.0_dp, chol, naux, xh, nrow)
+         call lp%trsm("R", "L", "N", nrp, naux, 1.0_dp, chol, naux, xp, nrp)
          call tbl%step_off(lp, ST_XTRSM, tc)
-         call tbl%add_flop(ST_XTRSM, int(nrow, int64)*int(naux, int64)**2)
-         ! --- 3a. Z's K share, this chunk ---
+         call tbl%add_flop(ST_XTRSM, int(nrp, int64)*int(naux, int64)**2)
+         ! --- 3a. Z's K share, this chunk: Z is symmetric, so only its lower
+         ! triangle, one column panel at a time (each panel's own diagonal
+         ! block in full), mirrored once after the last chunk -- half the
+         ! flops of the one square GEMM, which also ran at only ~51% of peak
+         ! (cuBLAS's 64x64 TN tile at this shape, gly10/cc-pVDZ).
          call tbl%step_on(lp, ST_ZGEMM, tc)
-         call lp%gemm("T", "N", naux, naux, nrow, 0.25_dp*k_scale*occ_s*occ_s, xh, nrow, xh, nrow, &
-                      1.0_dp, zmat, naux)
+         do q0 = 1, naux, ZPANEL
+            w = min(ZPANEL, naux - q0 + 1)
+            call lp%gemm("T", "N", naux - q0 + 1, w, nrp, 0.25_dp*k_scale*occ_s*occ_s, &
+                         xp(1 + int(q0 - 1, int64)*int(nrp, int64)), nrp, &
+                         xp(1 + int(q0 - 1, int64)*int(nrp, int64)), nrp, 1.0_dp, zmat(q0, q0), naux)
+            call tbl%add_flop(ST_ZGEMM, 2_int64*int(nrp, int64)*int(naux - q0 + 1, int64)*int(w, int64))
+         end do
          call tbl%step_off(lp, ST_ZGEMM, tc)
-         call tbl%add_flop(ST_ZGEMM, 2_int64*int(nrow, int64)*int(naux, int64)**2)
 
          ! --- 4. Y, one auxiliary block at a time, and the three-centre one -
+         ! From the packed rows, M^P = C_c V^P C^T with V^P_ij = X^P_ij below
+         ! the diagonal, X^P_ii/2 on it and 0 above, so that Y_K = M + M^T
+         ! (X symmetric) -- the kernels read both M(mu,nu) and M(nu,mu).
          s0 = 1
          do while (s0 <= aux%nshell)
             call next_block(aux, s0, ablk, s1, p0, np)
             call aux%subset(s0, s1, blk)
             call blk%to_device()
-            allocate (tens(n, n, np), half(nc, n, np))
-            !$acc enter data create(tens, half)
-            ! half_q = X_c^q C^T (nc x n), then Y_K = -(k/2) occ_s^2 C_c half,
+            allocate (tens(n, n, np), half(nc, n, np), hb(nc, nocc, np))
+            !$acc enter data create(tens, half, hb)
+            call tbl%step_on(lp, ST_XPACK, tc)
+            do concurrent(t=0:c8*o8*int(np, int64) - 1) local(il, j, q, i)
+               il = int(mod(t, c8)) + 1
+               j = int(mod(t/c8, o8)) + 1
+               q = int(t/(c8*o8)) + 1
+               i = i0 - 1 + il
+               if (j < i) then
+                  hb(il, j, q) = xp(int(i*(i - 1)/2 + j - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64)) &
+                                 /SQRT2
+               else if (j == i) then
+                  hb(il, j, q) = 0.5_dp*xp(int(i*(i - 1)/2 + j - rbase, int64) + &
+                                           int(nrp, int64)*int(p0 - 2 + q, int64))
+               else
+                  hb(il, j, q) = 0.0_dp
+               end if
+            end do
+            call tbl%step_off(lp, ST_XPACK, tc)
+            call tbl%add_bytes(ST_XPACK, 8_int64*c8*o8*int(np, int64))
+            ! half_q = V_q C^T (nc x n), then M = -(k/2) occ_s^2 C_c half,
             ! every q of the block in one GEMM; the J part is the kernels'.
             call tbl%step_on(lp, ST_YK, tc)
-            call lp%gemm_strided("N", "T", nc, n, nocc, 1.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, &
-                                 c8*o8, cocc, n, 0_int64, 0.0_dp, half, nc, c8*n8, np)
+            call lp%gemm_strided("N", "T", nc, n, nocc, 1.0_dp, hb, nc, c8*o8, cocc, n, 0_int64, 0.0_dp, &
+                                 half, nc, c8*n8, np)
             call lp%gemm("N", "N", n, n*np, nc, -0.5_dp*k_scale*occ_s*occ_s, cocc(1, i0), n, half, nc, &
                          0.0_dp, tens, n)
             call tbl%step_off(lp, ST_YK, tc)
             call tbl%add_flop(ST_YK, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
-            !$acc exit data delete(half)
-            deallocate (half)
+            !$acc exit data delete(half, hb)
+            deallocate (half, hb)
             call tbl%step_on(lp, ST_D3C, tc)
             call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                                    size(pd, 2), pd, blk%nshell, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, &
@@ -288,11 +343,21 @@ contains
             call blk%release()
             s0 = s1 + 1
          end do
-         !$acc exit data delete(xh)
-         deallocate (xh)
+         !$acc exit data delete(xp)
+         deallocate (xp)
       end do
       !$acc exit data delete(q_a, q_b, q_o, q_n, pd)
       deallocate (q_a, q_b, q_o, q_n, pd)
+      if (do_k) then
+         ! Z's upper triangle from its lower one (the panels above wrote the
+         ! lower triangle and each diagonal block): reads only row > column,
+         ! writes only row < column.
+         do concurrent(t=0:int(naux, int64)**2 - 1) local(p, q)
+            p = int(mod(t, int(naux, int64))) + 1
+            q = int(t/int(naux, int64)) + 1
+            if (p < q) zmat(p, q) = zmat(q, p)
+         end do
+      end if
 
       ! --- 3b. the two-centre derivative, once Z is complete ---------------
       call tbl%step_on(lp, ST_D2C, tc)
@@ -335,9 +400,11 @@ contains
       !! arrays), half a gigabyte kept back for the libraries:
       !!
       !!   ablk  auxiliary functions per block, up to naux/4: each costs a
-      !!         dense n x n slab and an (nocc x n) half-transform, budgeted
-      !!         at no more than half of what is free;
-      !!   nci   occupied orbitals per chunk of X (nci nocc naux doubles),
+      !!         dense n x n slab, an (nocc x n) half-transform and an
+      !!         (nocc x nocc) block of H or V, budgeted at no more than half
+      !!         of what is free;
+      !!   nci   occupied orbitals per chunk of X (at most nci nocc naux
+      !!         doubles: the packed rows j <= i of the chunk's i),
       !!         all of them when that fits in the rest (the usual case).
       !!
       !! `nocc` = 0 (no exchange: no X at all) budgets the slab alone. A
@@ -358,7 +425,7 @@ contains
                                   acc_property_free_memory), int64)
       avail = free - 512_int64*1024*1024
 #endif
-      per_q = 8_int64*int(n, int64)*(int(n, int64) + int(max(nocc, 1), int64))
+      per_q = 8_int64*(int(n, int64)*(int(n, int64) + int(max(nocc, 1), int64)) + int(max(nocc, 1), int64)**2)
       per_i = 8_int64*int(max(nocc, 1), int64)*int(naux, int64)
       ablk = max(naux/4, 1)
       nci = max(nocc, 1)
