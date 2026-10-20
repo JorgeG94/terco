@@ -2523,9 +2523,9 @@ contains
    function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
       !! ======================================================================
       !! !!! EXPERIMENTAL !!! Validated against pyscf and finite differences,
-      !! but NOT performance-tuned: the DFT, VV10 and --df gradients can cost
-      !! far more than the energy, the grid response stores 3 x atoms x grid
-      !! points, and only one rank is supported. Do not rely on its cost yet.
+      !! but NOT performance-tuned: the --df gradient can cost far more than
+      !! the energy, and only one rank is supported. Do not rely on its cost
+      !! yet.
       !! ======================================================================
       !!
       !! The full analytic RHF/UHF nuclear gradient at the converged SCF

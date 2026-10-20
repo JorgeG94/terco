@@ -340,8 +340,7 @@ contains
       write (u, "(a)") "   =========================================================================="
       write (u, "(a)") "     !!!  EXPERIMENTAL: ANALYTIC GRADIENTS  !!!"
       write (u, "(a)") "     Validated against pyscf and finite differences, but NOT performance-"
-      write (u, "(a)") "     tuned: the DFT, VV10 and --df gradients can be much slower than the"
-      write (u, "(a)") "     energy, and grid-response memory grows as 3 x atoms x grid points."
+      write (u, "(a)") "     tuned: the --df gradient can be much slower than the energy."
       write (u, "(a)") "     Single rank only. Use for testing; do not rely on its cost yet."
       write (u, "(a)") "   =========================================================================="
    end subroutine experimental_gradient_banner

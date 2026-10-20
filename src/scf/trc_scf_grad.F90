@@ -1,7 +1,7 @@
 !
 ! !!! EXPERIMENTAL !!! The analytic gradients are validated (pyscf, finite
 ! differences, CPU = GPU) but NOT performance-tuned, and single rank only.
-! The DFT/VV10/--df paths can be much slower than the energy. See README.
+! The --df path can be much slower than the energy. See README.
 !
 ! The full analytic HF/UHF nuclear gradient: one-electron (trc_1e_gradient),
 ! two-electron (eri%gradient) and nuclear repulsion, assembled at a

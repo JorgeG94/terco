@@ -43,9 +43,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 > terco's own energy everywhere else, and CPU = GPU. They are **not yet
 > performance-tuned**:
 >
-> - the DFT, VV10 and `--df` gradients can cost **much more than the energy**;
-> - the grid response stores a dense **3 x atoms x grid points** array, so
->   large molecules run out of memory;
+> - the `--df` gradient can cost **much more than the energy**;
 > - **single rank only** (`--grad` refuses MPI), and no PCM, RI-MP2 or
 >   double-hybrid gradients.
 >
