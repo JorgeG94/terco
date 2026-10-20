@@ -1,13 +1,14 @@
 !
 ! Where the XC time goes, on a real molecule in a real basis.
 !
-!   bench_xc <xyz> [level] [reps] [max_pts] [basis.json]
+!   bench_xc <xyz> [level] [reps] [max_pts] [basis.json] [functional]
 !
 ! Builds 6-31G on the molecule by default, or the MolSSI BSE basis named by
 ! the optional 5th argument (e.g. basis_sets/cc-pvdz.json on sih4.xyz, to put
 ! a d shell through `shell_collocate` -- 6-31G alone has none, s/p only) --
 ! a grid at the given level with the default pruning, a fixed positive
-! density, and times `trc_xc_rks` for PBE: the batching, then `reps`
+! density, and times `trc_xc_rks` for PBE (or the functional named by the
+! optional 6th argument, r2scan say, for a meta-GGA): the batching, then `reps`
 ! evaluations split into the point kernel (collocation, density, functional)
 ! and the pair kernel (V_xc). A timing is not a pass, so this is built and
 ! not registered as a test.
@@ -24,7 +25,7 @@ program bench_xc
    use trc_basis_json, only: trc_basis_from_json
    implicit none
 
-   character(len=256) :: xyzfile, arg, bas_json
+   character(len=256) :: xyzfile, arg, bas_json, fname
    integer :: level, reps, max_pts, nat, nao, i, j, r
    integer, allocatable :: z(:)
    real(dp), allocatable :: at_r(:, :)
@@ -42,9 +43,9 @@ program bench_xc
    integer(int64) :: lcg
    logical :: ok
 
-   level = 3; reps = 5; max_pts = 512; bas_json = ''
+   level = 3; reps = 5; max_pts = 512; bas_json = ''; fname = 'pbe'
    if (command_argument_count() < 1) then
-      print '(a)', 'usage: bench_xc <xyz> [level] [reps] [max_pts] [basis.json]'
+      print '(a)', 'usage: bench_xc <xyz> [level] [reps] [max_pts] [basis.json] [functional]'
       stop 1
    end if
    call get_command_argument(1, xyzfile)
@@ -58,6 +59,7 @@ program bench_xc
       call get_command_argument(4, arg); read (arg, *) max_pts
    end if
    if (command_argument_count() >= 5) call get_command_argument(5, bas_json)
+   if (command_argument_count() >= 6) call get_command_argument(6, fname)
 
    call read_xyz(trim(xyzfile), nat, z, at_r)
    if (len_trim(bas_json) > 0) then
@@ -101,7 +103,11 @@ program bench_xc
       end do
    end do
    dmat = 2.0_dp*matmul(c, transpose(c))
-   ok = xc_functional_by_name('pbe', func)
+   ok = xc_functional_by_name(trim(fname), func)
+   if (.not. ok .or. len_trim(func%missing) > 0) then
+      print '(a)', 'bench_xc: cannot run functional '//trim(fname)
+      stop 1
+   end if
    ! The control: sum_g w rho must be Tr(DS) to the grid's accuracy.
    call pl%build(bas, 1.0e-30_dp); call pl%to_device()
    allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao))
@@ -118,7 +124,7 @@ program bench_xc
    end do
    print '(a,f9.4,a,f9.4,a,f9.4,a,i0,a,i0,a)', '  per call: points ', sp/reps, ' s   pairs ', sq/reps, &
       ' s   total (best) ', tmin, ' s   (', nsk, ' of ', xg%nbatch, ' batches screened out)'
-   print '(a,f16.8,a,f14.8,a,f14.8)', '  E_xc(PBE) ', exc, '   N ', nelec, '   Tr(DS) ', trds
+   print '(a,f16.8,a,f14.8,a,f14.8)', '  E_xc('//trim(fname)//') ', exc, '   N ', nelec, '   Tr(DS) ', trds
 
    call xg%release(); call grid%destroy(); call bas%release()
 
