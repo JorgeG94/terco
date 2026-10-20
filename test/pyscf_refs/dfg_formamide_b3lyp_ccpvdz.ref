@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["dfg_formamide_b3lyp_ccpvdz"] -> gen_df_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: a63c013f12f7c84c4ac8b85a36ada15cb0ce585e2e2eec2d3e4697bbb26aa572
+# hash: f212f04af6b8046fe92550fc3d927725a955be3ca2e95f1e3d4f475ee0ccc04e
 # files: test/check_df_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/basis_sets/def2-universal-jkfit.json test/formamide.xyz
 NAT 6
 NAO 60

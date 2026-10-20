@@ -94,7 +94,7 @@ contains
          print '(a)', '  SKIP: def2-universal-jkfit needs g auxiliary shells, above this build''s DF_LMAX_AUX.'
          stop 0
       end if
-      call trc_scf_run(bas, nalpha, nbeta, opts, res, la=lp, dfjk=dfjk)
+      call trc_scf_run(bas, nalpha, nbeta, opts, res, la=lp, scf_dfjk=dfjk)
       if (.not. res%converged) then
          print '(a)', 'check_df_grad_fd: '//label//': reference SCF did not converge'
          any_fail = .true.; return
@@ -193,7 +193,7 @@ contains
       type(df_jk_t) :: f2
       type(trc_scf_result_t) :: r2
       call setup(basis_json, nat, at_z, r, nalpha, b2, a2, p2, l2, f2)
-      call trc_scf_run(b2, nalpha, nbeta, opts, r2, la=l2, dfjk=f2)
+      call trc_scf_run(b2, nalpha, nbeta, opts, r2, la=l2, scf_dfjk=f2)
       if (.not. r2%converged) then
          print '(a)', 'check_df_grad_fd: a displaced SCF did not converge'; stop 1
       end if
