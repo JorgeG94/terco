@@ -154,9 +154,11 @@
 !
 !   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
 !     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
-!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nspin, trc_message,
-!     trc_set_pcm, trc_pcm_energy, trc_gradient (a nuclear-coordinate
-!     array, not an AO one -- an SCF energy derivative does not depend on
+!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nmo, trc_nspin,
+!     trc_mo_occupations (MO-indexed, like trc_mo_energies, not AO-indexed),
+!     trc_message, trc_set_pcm, trc_pcm_energy, trc_gradient, trc_polarizability
+!     (a nuclear-coordinate array and a Cartesian response tensor, neither an
+!     AO one -- an SCF energy derivative or response does not depend on
 !     which AO normalisation convention computed it)
 !
 !   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
