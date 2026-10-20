@@ -295,13 +295,6 @@ int trc_set_rimp2(trc_handle_t handle, int nfrozen, int aux_block);
 int trc_run_scf(trc_handle_t handle);
 
 /**
- * ======================================================================
- * !!! EXPERIMENTAL !!! Validated against pyscf and finite differences,
- * but NOT performance-tuned: the --df gradient can cost far more than
- * the energy, and only one rank is supported. Do not rely on its cost
- * yet.
- * ======================================================================
- *
  * The full analytic RHF/UHF nuclear gradient at the converged SCF
  * this context already holds (trc_scf_grad%trc_scf_gradient: the
  * one-electron terms, eri%gradient's two-electron part, and nuclear

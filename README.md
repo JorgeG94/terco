@@ -34,21 +34,6 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 
 ---
 
-> [!WARNING]
-> ## ⚠️ Analytic gradients are EXPERIMENTAL ⚠️
->
-> `--grad` / `trc_run_gradient` (HF/UHF, LDA/GGA and hybrid KS-DFT including
-> range-separated and VV10, and the `--df` fitted gradient) are **validated**:
-> they match pyscf to ~1e-12 where pyscf can check them, finite differences of
-> terco's own energy everywhere else, and CPU = GPU. They are **not yet
-> performance-tuned**:
->
-> - the `--df` gradient can cost **much more than the energy**;
-> - **single rank only** (`--grad` refuses MPI), and no PCM, RI-MP2 or
->   double-hybrid gradients.
->
-> Use them for testing and development, not for production cost estimates.
-
 ## What it does
 
 | | |
@@ -61,6 +46,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 | **Multipoles** | full Cartesian tensors through the **octupole** — 3 + 9 + 27 components |
 | **Density fitting** | two- and three-centre Coulomb integrals |
 | **Solvation** | C-PCM and IEF-PCM SCF energies (pyscf's SWIG cavity, term for term), RKS and UKS, any functional, CPU and GPU |
+| **Analytic gradients** | HF/UHF, LDA/GGA/hybrid/range-separated KS-DFT with VV10, and the `--df` fitted RHF/RKS gradient; validated against pyscf and finite differences; single rank; no PCM, RI-MP2 or double-hybrid gradients |
 | **Interfaces** | a Fortran API, and a `bind(c)` ABI for host codes built with another compiler |
 
 terco **ships no basis set**. A consumer passes exponents, coefficients and
