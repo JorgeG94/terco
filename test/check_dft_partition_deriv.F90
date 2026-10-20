@@ -288,10 +288,10 @@ contains
       g_new = 1.0_dp   ! ADDED into: start from a non-zero gradient
       if (numax > 0.0_dp) then
          call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
-                                            adjust, g_new, err, nu_max=numax, budget=int(12*nat*37, int64))
+                                            adjust, g_new, err, nu_max=numax, budget=int(3*nat*37, int64))
       else
          call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
-                                            adjust, g_new, err, budget=int(12*nat*37, int64))
+                                            adjust, g_new, err, budget=int(3*nat*37, int64))
       end if
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
