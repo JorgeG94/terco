@@ -204,6 +204,20 @@ set(TERCO_RYS_UNROLL_MAX
     "81"
     CACHE STRING "Unroll Rys classes with na*nb*nc*nd <= this ('inf'/'all': every class)")
 #
+# The --df gradient's derivative kernels (gen_df_grad.py) unroll their
+# COMPONENTS for every class with na*nb*nc <= this, inside a run-time root
+# loop (--unroll-roots-max-comp 0: one copy of the 2D/HRR/fold text, not
+# nroots). MEASURED on a V100, gly10/cc-pVDZ, per class against the loop
+# form: (pp|f) 5.8 -> 2.0 ms, (dp|d) 6.1 -> 3.1 ms, (dp|g) 2.9 -> 2.0 ms;
+# the classes at or below 81 run the same as with their roots unrolled too
+# (within 3%), in a third of the text. 270 takes every class but (dd|f) and
+# (dd|g), whose unrolled form saves 0.4-0.5 ms a block for 80-180 s of
+# nvfortran compile each. The shipped set is 33k lines (60k before).
+#
+set(TERCO_DFG_UNROLL_MAX
+    "270"
+    CACHE STRING "Unroll the DF-gradient kernels' components for classes with na*nb*nc <= this")
+#
 # Shared by default. The one consumer that matters, metalquicha, is built
 # with gfortran and reaches terco through the C ABI, and a static libterco
 # from nvfortran cannot be linked by another compiler: its device code, the

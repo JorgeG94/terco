@@ -87,8 +87,16 @@ module (trc_df_grad_kernels.F90) has a host `select case` over them
 with a one-hot coefficient block and read back the raw derivative integrals
 (test/check_df_grad_ints.F90) -- the exact code the drivers run.
 
+UNROLLING. --unroll-max-comp unrolls a class's components, and
+--unroll-roots-max-comp (default: the same number) its root loop too. The
+shipped set (CMake's TERCO_DFG_UNROLL_MAX) unrolls the components up to 270
+and never the roots: a run-time root loop around unrolled components ran
+as fast as the fully unrolled form on a V100 (within 3% per class) in a
+third of the text, and 2-3x faster than the loop form (whose run-time
+indexed tables live in local memory) for the classes above 81.
+
 USAGE
-    gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 81 --split src/generated
+    gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 270 --unroll-roots-max-comp 0 --split src/generated
 """
 
 import argparse
@@ -198,14 +206,22 @@ def _fold_loop(la, lb, lc, three, tag, pad):
     return "\n".join(s) + "\n"
 
 
-def emit_kernel(la, lb, lc, three, order, unroll_max):
-    """One class's contracted derivative kernel. Returns (text, tables)."""
+def emit_kernel(la, lb, lc, three, order, unroll_max, roots_max):
+    """One class's contracted derivative kernel. Returns (text, tables).
+
+    Three forms, by the class's component count nout = na*nb*nc: nout <=
+    roots_max (and <= unroll_max) unrolls the roots and the components;
+    nout <= unroll_max unrolls the components inside a run-time root loop
+    (one copy of the 2D/HRR/fold text instead of nroots); above that, the
+    loop form (run-time-indexed tables, which live in local memory)."""
     nig, nkg = la + lb + 1, lc
     nroots = (la + lb + lc + 1)//2 + 1
     na, nb, nc = ncart(la), ncart(lb), ncart(lc)
     nout = na*nb*nc
     unroll = nout <= unroll_max
+    rloop = unroll and nout > roots_max
     tag = f"3c{la}{lb}{lc}" if three else f"2c{la}{lc}"
+    form = "root-loop unrolled" if rloop else "unrolled" if unroll else "loop"
 
     if three:
         sig = "npp, poff, pd, ra, rb, npc, ec, cc_, rc, y, ga, gb"
@@ -217,7 +233,7 @@ def emit_kernel(la, lb, lc, three, order, unroll_max):
             "      real(dp), intent(out) :: ga(3), gb(3)\n")
         doc = (f"      !! d(ab|c)/dA and d(ab|c)/dB of class ({la}{lb}|{lc}), contracted with\n"
                f"      !! y(slot): ga = sum y d/dA, gb = sum y d/dB (dC = -(ga+gb)). Rys,\n"
-               f"      !! {nroots} root{'s' if nroots != 1 else ''}, {'unrolled' if unroll else 'loop'} form.\n"
+               f"      !! {nroots} root{'s' if nroots != 1 else ''}, {form} form.\n"
                f"      !! The bra's npp primitive pairs are columns poff+1..poff+npp of pd\n"
                f"      !! (zeta, K_ab, P, alpha, beta: trc_df_grad_kernels' df_grad_3c_plan).\n")
         bra_open = """\
@@ -242,7 +258,7 @@ def emit_kernel(la, lb, lc, three, order, unroll_max):
             f"      real(dp), intent(in)  :: y({nout})\n"
             "      real(dp), intent(out) :: ga(3)\n")
         doc = (f"      !! d(a|c)/dA of class ({la}|{lc}), contracted with y(slot) (dC = -ga).\n"
-               f"      !! Rys, {nroots} root{'s' if nroots != 1 else ''}, {'unrolled' if unroll else 'loop'} form.\n")
+               f"      !! Rys, {nroots} root{'s' if nroots != 1 else ''}, {form} form.\n")
         bra_open = """\
       do ip = 1, npa
          al = ea(ip)
@@ -268,6 +284,8 @@ def emit_kernel(la, lb, lc, three, order, unroll_max):
     tabs = ""
     if unroll:
         loc += ri.unrolled_table_decls(nig, nkg, la + 1, lb, lc, 0, 6)
+        if rloop:
+            loc += "      integer  :: rr\n"
     else:
         loc += (f"      real(dp) :: gx(0:{nig}, 0:{nkg}), gy(0:{nig}, 0:{nkg}), gz(0:{nig}, 0:{nkg})\n"
                 f"      real(dp) :: hx(0:{la + 1}, 0:{lb}, 0:{lc}, 0:0)\n"
@@ -310,7 +328,20 @@ def emit_kernel(la, lb, lc, three, order, unroll_max):
 {p}cp0z = qcz + u2*zeta*dinv*pqz
 """
 
-    if unroll:
+    if rloop:
+        p2 = pad + "   "
+        i2 = ind + 3
+        kp_body = "".join(
+            [ri.roots_inline_body(nroots, "tval", ind),
+             f"{pad}do rr = 1, {nroots}\n",
+             root_setup("rr", p2),
+             ri.rys2d_scalar_assignments(nig, nkg, "c00x", "cp0x", "b00r", "b10r", "bp01r", "1.0_dp", "gx", i2),
+             ri.rys2d_scalar_assignments(nig, nkg, "c00y", "cp0y", "b00r", "b10r", "bp01r", "1.0_dp", "gy", i2),
+             ri.rys2d_scalar_assignments(nig, nkg, "c00z", "cp0z", "b00r", "b10r", "bp01r", "f00", "gz", i2)]
+            + [ri.hrr_scalar_assignments(nig, nkg, la + 1, lb, lc, 0, f"g{xn}", abn, "0.0_dp", f"h{xn}", i2)
+               for xn, abn in zip("xyz", ab_axes)]
+            + [_fold_unrolled(la, lb, lc, three, order, p2), f"{pad}end do\n"])
+    elif unroll:
         mid = [ri.roots_inline_body(nroots, "tval", ind)]
         for r in range(1, nroots + 1):
             mid.append(root_setup(r, pad))
@@ -380,11 +411,11 @@ MOD_HEADER = """!
 """
 
 
-def emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, unroll_max):
+def emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, unroll_max, roots_max):
     na, nb, nc = ncart(la), ncart(lb), ncart(lc)
     tag = f"{la}{lb}{lc}"
     mod, drv, itm, kern = f"trc_dfg_3c_k{tag}", f"dfg_3c_k{tag}", f"dfg_3c_i{tag}", f"dfg_3c{tag}"
-    body, tabs, nroots = emit_kernel(la, lb, lc, True, order, unroll_max)
+    body, tabs, nroots = emit_kernel(la, lb, lc, True, order, unroll_max, roots_max)
     text = MOD_HEADER.format(title=f"Class ({la}{lb}|{lc}) three-centre Coulomb derivative, contracted.",
                              L=L, LA=LA, order_arg=order_arg, order_val=order_val)
     text += f"""module {mod}
@@ -502,11 +533,11 @@ end module {mod}
     return mod, text
 
 
-def emit_2c_module(la, lc, L, LA, order, order_val, order_arg, unroll_max):
+def emit_2c_module(la, lc, L, LA, order, order_val, order_arg, unroll_max, roots_max):
     na, nc = ncart(la), ncart(lc)
     tag = f"{la}{lc}"
     mod, drv, itm, kern = f"trc_dfg_2c_k{tag}", f"dfg_2c_k{tag}", f"dfg_2c_i{tag}", f"dfg_2c{tag}"
-    body, tabs, nroots = emit_kernel(la, 0, lc, False, order, unroll_max)
+    body, tabs, nroots = emit_kernel(la, 0, lc, False, order, unroll_max, roots_max)
     text = MOD_HEADER.format(title=f"Class ({la}|{lc}) two-centre Coulomb derivative, contracted.",
                              L=L, LA=LA, order_arg=order_arg, order_val=order_val)
     text += f"""module {mod}
@@ -1056,6 +1087,10 @@ def main():
     ap.add_argument("--unroll-max-comp", default="0",
                     help="unroll a class's root/component loops when na*nb*nc is at most this "
                          "(the same TERCO_RYS_UNROLL_MAX gen_df.py takes)")
+    ap.add_argument("--unroll-roots-max-comp", default=None,
+                    help="also unroll the root loop only when na*nb*nc is at most this (default: "
+                         "--unroll-max-comp); classes between the two keep a run-time root loop around "
+                         "unrolled components")
     args = ap.parse_args()
     L = args.lmax
     LA = args.lmax_aux if args.lmax_aux is not None else L + 2
@@ -1063,19 +1098,21 @@ def main():
     order_val = 0 if order == "lexicographic" else 1
     order_arg = "" if order == "lexicographic" else f" --order {order}"
     unroll_max = _parse_unroll_max(args.unroll_max_comp)
+    roots_max = unroll_max if args.unroll_roots_max_comp is None else _parse_unroll_max(args.unroll_roots_max_comp)
     os.makedirs(args.split, exist_ok=True)
 
     two, three = [], []
     for la in range(LA + 1):
         for lc in range(la + 1):
-            mod, text = emit_2c_module(la, lc, L, LA, order, order_val, order_arg, unroll_max)
+            mod, text = emit_2c_module(la, lc, L, LA, order, order_val, order_arg, unroll_max, roots_max)
             with open(os.path.join(args.split, mod + ".F90"), "w") as fh:
                 fh.write(text)
             two.append((la, lc))
     for la in range(L + 1):
         for lb in range(la + 1):
             for lc in range(LA + 1):
-                mod, text = emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, unroll_max)
+                mod, text = emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, unroll_max,
+                                           roots_max)
                 with open(os.path.join(args.split, mod + ".F90"), "w") as fh:
                     fh.write(text)
                 three.append((la, lb, lc))
