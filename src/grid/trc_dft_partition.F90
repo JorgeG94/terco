@@ -121,14 +121,14 @@ contains
       !! PARTITION_NU_MAX, or STRATMANN_A under that scheme.
       integer(int64), intent(in), optional :: budget
       !! Scratch budget in doubles, default 2^26 (512 MB): sets how many
-      !! points a chunk holds, 2^26 / (3 n_atoms).
+      !! points a chunk holds, 2^26 / (4 n_atoms).
       integer, intent(in), optional :: first, last
       !! Only the points first..last are partitioned; every other weight is
       !! returned as zero, so a caller holding one block per rank can sum
       !! the arrays and have the whole grid. Default all of them.
 
       real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
-      real(dp), allocatable :: atom_r(:, :), cell(:, :)
+      real(dp), allocatable :: atom_r(:, :), ract(:, :), cell(:, :)
       integer, allocatable :: active(:, :), mark(:, :)
       integer :: n_atoms, n_points, i, j, k0, n, chunk, g, k_lo, k_hi
       integer(int64) :: cap
@@ -173,8 +173,8 @@ contains
       if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
       if (present(nu_max)) numax = nu_max
       cap = 67108864_int64
-      if (present(budget)) cap = max(budget, int(3*n_atoms, int64))
-      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(3*n_atoms, int64))))
+      if (present(budget)) cap = max(budget, int(4*n_atoms, int64))
+      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(4*n_atoms, int64))))
 
       allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
       call size_adjustment(atomic_numbers, adjust, shift)
@@ -200,20 +200,27 @@ contains
       end do
 
       ! Point index FIRST: consecutive threads are consecutive points, and
-      ! this is what makes their reads of the same atom's entry adjacent.
-      allocate (atom_r(chunk, n_atoms), cell(chunk, n_atoms), active(chunk, n_atoms), mark(chunk, n_atoms))
+      ! this is what makes their reads of the same column adjacent. `atom_r`
+      ! and `mark` are indexed by atom, read with the atom loop uniform
+      ! across threads; `ract` and `cell` are indexed by POSITION in each
+      ! point's active list, so the O(active^2) pair loop -- whose atom
+      ! indices differ from thread to thread -- still reads and writes
+      ! whole columns. Indexing those two by atom made every pair two
+      ! scattered read-modify-writes, and the partition memory-bound.
+      allocate (atom_r(chunk, n_atoms), ract(chunk, n_atoms), cell(chunk, n_atoms), &
+                active(chunk, n_atoms), mark(chunk, n_atoms))
       mark = 0
       ! Only the block this call writes is on the device: a copyout of the
       ! whole array would bring back uninitialised device memory for the
       ! rest, over the zeros set above.
       !$acc data copyin(points, atom_coords, owner, shift, inv_distance, r_min, mark) &
-      !$acc      create(atom_r, cell, active) copyout(weights(k_lo:k_hi))
+      !$acc      create(atom_r, ract, cell, active) copyout(weights(k_lo:k_hi))
       do k0 = k_lo, k_hi, chunk
          n = min(chunk, k_hi - k0 + 1)
          do concurrent(g=1:n)
             call partition_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                  shift, inv_distance, r_min, scheme, adjust, numax, &
-                                 atom_r, cell, active, mark, weights)
+                                 atom_r, ract, cell, active, mark, weights)
          end do
       end do
       !$acc end data
@@ -232,18 +239,18 @@ contains
    !
    pure subroutine partition_point(k, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                    shift, inv_distance, r_min, scheme, adjust, numax, &
-                                   atom_r, cell, active, mark, weights)
+                                   atom_r, ract, cell, active, mark, weights)
       !$acc routine seq
       integer, intent(in) :: k, g, n_atoms, n_points, chunk, scheme, adjust
       real(dp), intent(in) :: points(3, n_points), atom_coords(3, n_atoms)
       integer, intent(in) :: owner(n_points)
       real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms)
       real(dp), intent(in) :: numax
-      real(dp), intent(inout) :: atom_r(chunk, n_atoms), cell(chunk, n_atoms)
+      real(dp), intent(inout) :: atom_r(chunk, n_atoms), ract(chunk, n_atoms), cell(chunk, n_atoms)
       integer, intent(inout) :: active(chunk, n_atoms), mark(chunk, n_atoms)
       real(dp), intent(inout) :: weights(n_points)
       integer :: own, i, j, ia, ja, n_active, n1
-      real(dp) :: mu, nu, s, total, r_inner, dx, dy, dz
+      real(dp) :: mu, nu, s, total, r_inner, dx, dy, dz, ri, ci
 
       own = owner(k)
       do i = 1, n_atoms
@@ -262,6 +269,7 @@ contains
 
       n_active = 1
       active(g, 1) = own
+      ract(g, 1) = atom_r(g, own)
       mark(g, own) = 1
       do i = 1, n_atoms
          if (i == own) cycle
@@ -270,33 +278,43 @@ contains
          if (nu < numax) then
             n_active = n_active + 1
             active(g, n_active) = i
+            ract(g, n_active) = atom_r(g, i)
             mark(g, i) = 1
          end if
       end do
       n1 = n_active
       do i = 1, n_atoms
          if (mark(g, i) == 1) cycle
+         ri = atom_r(g, i)
          do ja = 2, n1
             j = active(g, ja)
-            mu = (atom_r(g, i) - atom_r(g, j))*inv_distance(i, j)
+            mu = (ri - ract(g, ja))*inv_distance(i, j)
             nu = mu + shift(i, j)*(1.0_dp - mu*mu)
             if (nu < numax) then
                n_active = n_active + 1
                active(g, n_active) = i
+               ract(g, n_active) = ri
                mark(g, i) = 1
                exit
             end if
          end do
       end do
 
+      ! `cell` by active position: cell(g, ia) is atom active(g, ia)'s cell.
+      ! Atom i's cell takes its (1 - s) factors from the earlier rows (as
+      ! somebody's j) before its own row multiplies in its s factors, the
+      ! same order as indexing by atom did, so the weights are unchanged
+      ! to the last bit; the row's own product just runs in a register.
       do ia = 1, n_active
-         cell(g, active(g, ia)) = 1.0_dp
+         cell(g, ia) = 1.0_dp
       end do
       do ia = 1, n_active
          i = active(g, ia)
+         ri = ract(g, ia)
+         ci = cell(g, ia)
          do ja = ia + 1, n_active
             j = active(g, ja)
-            mu = (atom_r(g, i) - atom_r(g, j))*inv_distance(i, j)
+            mu = (ri - ract(g, ja))*inv_distance(i, j)
             nu = mu + shift(i, j)*(1.0_dp - mu*mu)
             if (scheme == PARTITION_BECKE) then
                s = becke_cutoff(nu)
@@ -305,18 +323,19 @@ contains
             end if
             ! s is the fraction going to i; the complement goes to j. Doing
             ! both here keeps the pair symmetric by construction.
-            cell(g, i) = cell(g, i)*s
-            cell(g, j) = cell(g, j)*(1.0_dp - s)
+            ci = ci*s
+            cell(g, ja) = cell(g, ja)*(1.0_dp - s)
          end do
+         cell(g, ia) = ci
       end do
 
       total = 0.0_dp
       do ia = 1, n_active
-         total = total + cell(g, active(g, ia))
+         total = total + cell(g, ia)
          mark(g, active(g, ia)) = 0
       end do
       if (total > 0.0_dp) then
-         weights(k) = cell(g, own)/total
+         weights(k) = cell(g, 1)/total
       else
          ! Every cell function underflowed, which happens only absurdly far
          ! from the molecule where the integrand is zero anyway.

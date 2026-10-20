@@ -263,7 +263,7 @@ unless the PR says why pic cannot do it:
 | mean / variance / min-max loops | `pic_statistics` |
 | a tolerance compare (`abs(a-b) < tol`) repeated as a helper | `pic_math: is_close` |
 | fixed-size "grow by copy" arrays, linear-search lookup tables | `pic_vector`, `pic_hash_map`, `pic_heap` |
-| `print` progress or diagnostic chatter | `pic_logger` |
+| any bare `print` or `write(*,...)` to the console | `pic_logger` (`global_logger`); format into a buffer first if the layout matters |
 | per-step timing or flop counting | `pic_profiler`, `pic_flop_recorder`, `pic_flop_rate` |
 
 - **Exempt: anything that runs on the device.** pic is host code, so a `pure` helper called from a `do concurrent` body (a sort of a few register values, a device-side formatter) stays local; check that it really runs on the device.

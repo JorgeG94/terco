@@ -25,6 +25,7 @@ module trc_sap
    !! quadratured: T and V_ne come in as analytic matrices and only the smooth,
    !! short-ranged screening potential is integrated.
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
@@ -329,13 +330,25 @@ contains
          call error%set(ERROR_VALIDATION, "trc_sap: the basis builder zeroed a unit coefficient")
          return
       end if
-      if (talk) print "(a,a,a,i0,a)", "  sap: fitted potentials from ", trim(bpath), &
-         ", up to ", nmax, " primitives per atom"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,a,a,i0,a)") "  sap: fitted potentials from ", trim(bpath), &
+               ", up to ", nmax, " primitives per atom"
+            call global_logger%info(trim(logline))
+         end block
+      end if
 
       chunk = int(max(1_int64, SAP_TENSOR_BYTES/(int(nao, int64)*int(nao, int64)*8_int64)))
       chunk = min(chunk, b%natm)
-      if (talk) print "(a,i0,a,i0,a)", "  sap: ", (b%natm + chunk - 1)/chunk, &
-         " three-centre pass(es), ", chunk, " atoms each"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i0,a,i0,a)") "  sap: ", (b%natm + chunk - 1)/chunk, &
+               " three-centre pass(es), ", chunk, " atoms each"
+            call global_logger%info(trim(logline))
+         end block
+      end if
       do n0 = 1, b%natm, chunk
          n1 = min(n0 + chunk - 1, b%natm)
          nch = n1 - n0 + 1
@@ -451,10 +464,16 @@ contains
             if (error%has_error()) return
             tab(ntab)%z = zint(ia)
             tab(ntab)%nz = nz
-            if (talk) print "(a,i0,a,f12.8,a,f12.8)", "  sap: Z = ", zint(ia), &
-               "  radial density integrates to ", tab(ntab)%nel, &
-               "   r*Vscr at the last node ", tab(ntab)%r(size(tab(ntab)%r))* &
-               tab(ntab)%v(size(tab(ntab)%v))
+            if (talk) then
+               block
+                  character(len=1024) :: logline
+                  write (logline, "(a,i0,a,f12.8,a,f12.8)") "  sap: Z = ", zint(ia), &
+                     "  radial density integrates to ", tab(ntab)%nel, &
+                     "   r*Vscr at the last node ", tab(ntab)%r(size(tab(ntab)%r))* &
+                     tab(ntab)%v(size(tab(ntab)%v))
+                  call global_logger%info(trim(logline))
+               end block
+            end if
             tab_of(ia) = ntab
          end if
       end do
@@ -476,8 +495,14 @@ contains
       end block
       call build_dft_grid(b%at_r(:, 1:b%natm), zint, g, error, level=lv)
       if (error%has_error()) return
-      if (talk) print "(a,i0,a,i0,a)", "  sap: quadrature level ", lv, ", ", &
-         g%n_points, " points"
+      if (talk) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i0,a,i0,a)") "  sap: quadrature level ", lv, ", ", &
+               g%n_points, " points"
+            call global_logger%info(trim(logline))
+         end block
+      end if
 
       ! Every atom contributes to every point and nothing is screened: Vscr falls
       ! off as nel/r, which is the long-range neutrality of V_ne + Vscr, and
@@ -515,8 +540,14 @@ contains
          e = " "
          call get_environment_variable("TRC_BUILD_TIMING", e)
          call system_clock(c1)
-         if (len_trim(e) > 0) print "(a,a,f9.3,a)", "  [sap] ", what, &
-            real(c1 - c0, dp)/real(crate, dp), " s"
+         if (len_trim(e) > 0) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,a,f9.3,a)") "  [sap] ", what, &
+                  real(c1 - c0, dp)/real(crate, dp), " s"
+               call global_logger%info(trim(logline))
+            end block
+         end if
          c0 = c1
       end subroutine stage
    end subroutine trc_sap_grid

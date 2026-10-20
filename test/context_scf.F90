@@ -23,6 +23,7 @@ program context_scf
                                trc_set_method, trc_set_convergence, trc_set_rimp2, trc_run_scf, trc_run_rimp2, &
                                trc_nao, trc_nspin, trc_energy, trc_converged, trc_iterations, trc_density, &
                                trc_mo_energies, trc_rimp2_energy, trc_message, trc_set_guess, &
+                               trc_run_gradient, trc_gradient, trc_set_df, trc_set_jkfit_json, trc_cart_order, &
                                TRC_OK, TRC_ERR_STATE, TRC_ERR_NULL, TRC_GUESS_GWH
    implicit none
    integer :: natm, dev, nocc
@@ -36,7 +37,8 @@ program context_scf
    type(error_t) :: err
    type(c_ptr) :: h
    integer(c_int) :: rc, n, ns, it, flag
-   real(c_double) :: e, e_os, e_ss
+   real(c_double) :: e, e_os, e_ss, e_df
+   real(c_double), allocatable :: grad(:)
    character(kind=c_char) :: msg(256)
    logical :: ok
 
@@ -114,6 +116,24 @@ program context_scf
    rc = trc_rimp2_energy(h, e_os, e_ss);    call expect(rc == TRC_ERR_STATE, "rimp2 result gone after a setter")
    rc = trc_run_scf(h);                     call expect(rc == TRC_OK, "second run")
    rc = trc_energy(h, e);                   call expect(abs(e - ref%energy) < 1.0e-9_dp, "GWH start, same energy")
+
+   ! --- the entry points host codes reach only through trc_c_interfaces:
+   ! declared there by hand, so a wrong declaration shows up here ---
+   call expect(trc_cart_order() == 0 .or. trc_cart_order() == 1, "cart_order is 0 or 1")
+   allocate (grad(3*natm))
+   rc = trc_run_gradient(h);                call expect(rc == TRC_OK, "run_gradient")
+   rc = trc_gradient(h, grad);              call expect(rc == TRC_OK, "gradient")
+   call expect(maxval(abs(grad)) > 1.0e-4_dp, "gradient is not zero")
+   call expect(abs(sum(grad(1::3))) + abs(sum(grad(2::3))) + abs(sum(grad(3::3))) < 1.0e-8_dp, &
+               "gradient is translationally invariant")
+   rc = trc_set_jkfit_json(h, 'basis_sets/def2-universal-jkfit.json'//c_null_char)
+   call expect(rc == TRC_OK, "set_jkfit_json")
+   rc = trc_set_df(h, 1_c_int);             call expect(rc == TRC_OK, "set_df")
+   rc = trc_run_scf(h);                     call expect(rc == TRC_OK, "run_scf --df")
+   rc = trc_energy(h, e_df)
+   ! The fitting error itself: tens of microhartree, never zero.
+   call expect(abs(e_df - ref%energy) > 0.0_dp .and. abs(e_df - ref%energy) < 1.0e-3_dp, "--df energy near the 4c one")
+   rc = trc_set_df(h, 0_c_int);             call expect(rc == TRC_OK, "set_df off")
    rc = trc_message(h, msg, 256_c_int);     call expect(rc == TRC_OK, "message")
    rc = trc_destroy(h);                     call expect(rc == TRC_OK, "destroy")
 
