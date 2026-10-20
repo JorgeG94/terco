@@ -207,6 +207,9 @@ module trc_capi
    use trc_sph, only: sph_cart_to_sph
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
+   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
+   use trc_cpks, only: trc_scf_polarizability_rks
+   use trc_xc_batch, only: trc_xc_grid_t
    implicit none
    private
 
@@ -243,6 +246,8 @@ module trc_capi
    public :: trc_cart_order
    public :: trc_functional_info, trc_functional_list
    public :: trc_abi_version
+   public :: trc_run_polarizability, trc_polarizability
+   public :: trc_nmo, trc_mo_occupations
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -368,6 +373,11 @@ module trc_capi
       ! context no longer holds is not a gradient of anything.
       real(dp), allocatable :: grad(:, :)
       logical :: grad_ok = .false.
+      ! trc_run_polarizability's own result: the static dipole
+      ! polarizability (a.u.) at the converged SCF, CPHF (RHF/UHF) or
+      ! CPKS (RKS). Cleared by invalidate_runs, same as grad_ok.
+      real(dp) :: alpha(3, 3) = 0.0_dp
+      logical :: polar_ok = .false.
       ! `trc_run_scf`'s own DFT grid(s), kept alive (device-resident) for
       ! `trc_run_gradient` to reuse instead of rebuilding -- see
       ! trc_scf_context.F90's `trc_grid_cache_t` and trc_scf_driver.F90's
@@ -1401,6 +1411,7 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
+      cx%polar_ok = .false.
       call cx%kgrid%release()
       cx%kgrid_level = -1
       cx%kgrid_max_pts = -1
@@ -2929,6 +2940,127 @@ contains
       status = TRC_OK
    end function trc_gradient
 
+   function trc_run_polarizability(handle) result(status) bind(c, name="trc_run_polarizability")
+      !! The static dipole polarizability at the converged SCF this
+      !! context already holds: CPHF (trc_cphf%trc_scf_polarizability)
+      !! for RHF or UHF, Hartree-Fock only; CPKS
+      !! (trc_cpks%trc_scf_polarizability_rks) when a functional is set --
+      !! restricted only, trc_cpks has no unrestricted entry. Builds its
+      !! own pair list and ERI engine at the context's own screening
+      !! threshold, and (for CPKS) its own XC grid from `cx%res%grid_r`/
+      !! `grid_w` -- the SAME quadrature `trc_run_scf` converged the
+      !! density with, since a CPKS response built on a different grid is
+      !! not a derivative of the energy that converged. All three are
+      !! released before returning; `cx%la` is reused, as `trc_run_gradient`
+      !! reuses it.
+      !!
+      !! REFUSED, as `trc_run_gradient` is and for the same reasons: a
+      !! correlated (RI-MP2 or double-hybrid) reference, `--df`, PCM, or a
+      !! multi-rank context. An unrestricted functional reference is
+      !! refused here too (`trc_cpks` has nothing else to call). A
+      !! meta-GGA or double-hybrid functional cannot reach this point at
+      !! all -- `trc_set_method` already refused it.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_pairlist_t) :: pl
+      type(trc_eri_t) :: eri
+      type(trc_xc_functional_t) :: func
+      type(trc_xc_grid_t) :: xg
+      type(trc_cphf_options_t) :: copts
+      type(trc_cphf_result_t) :: cres
+      logical :: have_func
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%polar_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_run_polarizability: run the SCF first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%bb%b%spherical) then
+         ! trc_cphf/trc_cpks know nothing of nao_sph: `cmo`/`eps` there are
+         ! explicit-shape dummies at `b%nao`, the CARTESIAN count, while
+         ! `cx%bb%cmo`/`cx%bb%eps` (what this entry would otherwise hand
+         ! them) are sized at nao_sph for a spherical basis -- a silent
+         ! shape mismatch, not merely an unimplemented case. Refused
+         ! rather than risked.
+         cx%message = "trc_run_polarizability: CPHF/CPKS are Cartesian-only; "// &
+                      "set force_cartesian before loading the basis"
+         return
+      end if
+      if (cx%rimp2_ok) then
+         cx%message = "trc_run_polarizability: RI-MP2/double-hybrid response not implemented"
+         return
+      end if
+      if (cx%opts%df) then
+         cx%message = "trc_run_polarizability: --df response not implemented"
+         return
+      end if
+      if (len_trim(cx%opts%pcm_model) > 0) then
+         cx%message = "trc_run_polarizability: PCM response not implemented (no cavity/charge response)"
+         return
+      end if
+      if (cx%fcomm /= -1) then
+         cx%message = "trc_run_polarizability: the response path is not rank-split; run it on a single rank"
+         return
+      end if
+      have_func = len_trim(cx%opts%functional) > 0
+      if (have_func .and. cx%res%nspin /= 1) then
+         cx%message = "trc_run_polarizability: CPKS (a functional is set) is restricted only"
+         return
+      end if
+      call pl%build(cx%bb%b, cx%opts%eri_thresh)
+      call pl%to_device()
+      call eri%build(cx%bb%b, cx%opts%eri_thresh)
+      copts%conv_residual = 1.0e-8_dp
+      copts%max_iter = 100
+      copts%verbose = cx%opts%verbose
+      if (have_func) then
+         if (.not. xc_functional_by_name(cx%opts%functional, func)) then
+            cx%message = "trc_run_polarizability: functional '"//trim(cx%opts%functional)// &
+                         "' failed to re-resolve -- this should be unreachable"
+            call pl%release()
+            call eri%release()
+            return
+         end if
+         call xg%build(size(cx%res%grid_w), cx%res%grid_r, cx%res%grid_w, cx%bb%b, max_pts=cx%opts%grid_max_pts)
+         call xg%to_device()
+         call trc_scf_polarizability_rks(cx%bb%b, pl, eri, xg, func, cx%nalpha, cx%bb%cmo(:, :, 1), &
+                                         cx%bb%eps(:, 1), cx%res%dmat(:, :, 1), cx%alpha, copts, cres, cx%la)
+         call xg%release()
+      else
+         call trc_scf_polarizability(cx%bb%b, pl, eri, cx%nalpha, cx%nbeta, cx%res, cx%alpha, copts, cres, cx%la)
+      end if
+      call pl%release()
+      call eri%release()
+      if (.not. cres%converged) then
+         cx%message = "trc_run_polarizability: "//trim(cres%message)
+         status = TRC_ERR_NOCONV
+         return
+      end if
+      cx%polar_ok = .true.
+      status = TRC_OK
+   end function trc_run_polarizability
+
+   function trc_polarizability(handle, alpha) result(status) bind(c, name="trc_polarizability")
+      !! The static dipole polarizability tensor `trc_run_polarizability`
+      !! computed, a.u., column-major (3, 3).
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: alpha(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%polar_ok) return
+      alpha(1:9) = real(reshape(cx%alpha, [9]), c_double)
+      status = TRC_OK
+   end function trc_polarizability
+
    pure integer function core_orbitals(z) result(res)
       !! Frozen-core orbitals for one element, by period.
       real(dp), intent(in) :: z
@@ -3136,6 +3268,7 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
+      cx%polar_ok = .false.
       ! A loaded result has no grid of its own -- any grid `trc_run_scf`
       ! kept on this handle belongs to a DIFFERENT (possibly stale) run,
       ! so `trc_run_gradient` must rebuild (this function's own header,
@@ -3327,6 +3460,80 @@ contains
       nao = int(scf_space_nao(cx%bb), c_int)
       status = TRC_OK
    end function trc_nao
+
+   function trc_nmo(handle, nmo) result(status) bind(c, name="trc_nmo")
+      !! Molecular-orbital count: `trc_nao`'s own AO count minus whatever
+      !! canonical orthogonalisation dropped as linearly dependent at the
+      !! last `trc_run_scf` (`trc_scf_result_t%n_lindep` -- 0 for every
+      !! compact basis, nonzero only for a diffuse one close to linear
+      !! dependency). Before the first `trc_run_scf` that count is
+      !! unknown, so `nmo` is `trc_nao`'s own number.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nmo
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      nmo = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_basis) return
+      if (cx%scf_ok) then
+         nmo = int(scf_space_nao(cx%bb) - cx%res%n_lindep, c_int)
+      else
+         nmo = int(scf_space_nao(cx%bb), c_int)
+      end if
+      status = TRC_OK
+   end function trc_nmo
+
+   function trc_mo_occupations(handle, occ) result(status) bind(c, name="trc_mo_occupations")
+      !! Occupation numbers, (nmo, nspin) column-major (`trc_nmo`'s own
+      !! size), for the last converged `trc_run_scf`: 2.0 per orbital up
+      !! to `nalpha` and restricted (nspin 1), or 1.0 up to `nalpha`/
+      !! `nbeta` on each spin's own column (nspin 2); 0 above. REFUSED
+      !! (TRC_ERR_UNSUPPORTED) if this context's guess used fractional
+      !! occupation: that per-orbital Aufbau split is private to
+      !! `trc_scf_run` (its own `frac_occupations`) and not re-derivable
+      !! from the stored result alone -- unreachable through this C API
+      !! today, since nothing here sets fractional occupation, but
+      !! refused rather than silently wrong for a Fortran-driver-built
+      !! context that did.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: occ(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: n, nspin, k, i, s
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_mo_occupations: run the SCF first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%opts%frac_occ) then
+         cx%message = "trc_mo_occupations: this context's guess used fractional occupation; "// &
+                      "its per-orbital Aufbau split is not exposed here"
+         return
+      end if
+      n = int(scf_space_nao(cx%bb)) - cx%res%n_lindep
+      nspin = cx%res%nspin
+      k = 0
+      do s = 1, nspin
+         do i = 1, n
+            k = k + 1
+            if (nspin == 1) then
+               occ(k) = merge(2.0_c_double, 0.0_c_double, i <= cx%nalpha)
+            else if (s == 1) then
+               occ(k) = merge(1.0_c_double, 0.0_c_double, i <= cx%nalpha)
+            else
+               occ(k) = merge(1.0_c_double, 0.0_c_double, i <= cx%nbeta)
+            end if
+         end do
+      end do
+      status = TRC_OK
+   end function trc_mo_occupations
 
    function trc_is_spherical(handle, flag) result(status) bind(c, name="trc_is_spherical")
       !! Non-zero if the orbital basis this context holds is running in

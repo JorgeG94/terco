@@ -717,6 +717,40 @@ module trc_c_interfaces
          real(c_double), intent(out) :: grad(*)
       end function trc_gradient
 
+      integer(c_int) function trc_run_polarizability(handle) bind(c) result(res)
+         !! The static dipole polarizability at the converged SCF this
+         !! context already holds: CPHF (trc_cphf%trc_scf_polarizability)
+         !! for RHF or UHF, Hartree-Fock only; CPKS
+         !! (trc_cpks%trc_scf_polarizability_rks) when a functional is set --
+         !! restricted only, trc_cpks has no unrestricted entry. Builds its
+         !! own pair list and ERI engine at the context's own screening
+         !! threshold, and (for CPKS) its own XC grid from `cx%res%grid_r`/
+         !! `grid_w` -- the SAME quadrature `trc_run_scf` converged the
+         !! density with, since a CPKS response built on a different grid is
+         !! not a derivative of the energy that converged. All three are
+         !! released before returning; `cx%la` is reused, as `trc_run_gradient`
+         !! reuses it.
+         !!
+         !! REFUSED, as `trc_run_gradient` is and for the same reasons: a
+         !! correlated (RI-MP2 or double-hybrid) reference, `--df`, PCM, or a
+         !! multi-rank context. An unrestricted functional reference is
+         !! refused here too (`trc_cpks` has nothing else to call). A
+         !! meta-GGA or double-hybrid functional cannot reach this point at
+         !! all -- `trc_set_method` already refused it.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_run_polarizability
+
+      integer(c_int) function trc_polarizability(handle, alpha) bind(c) result(res)
+         !! The static dipole polarizability tensor `trc_run_polarizability`
+         !! computed, a.u., column-major (3, 3).
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: alpha(*)
+      end function trc_polarizability
+
       integer(c_int) function trc_run_rimp2(handle) bind(c) result(res)
          !! Needs a converged SCF in the context (restricted, or unrestricted --
          !! UHF or UKS, cx%res%nspin == 2) and an auxiliary basis. An
@@ -836,6 +870,37 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: nao
       end function trc_nao
+
+      integer(c_int) function trc_nmo(handle, nmo) bind(c) result(res)
+         !! Molecular-orbital count: `trc_nao`'s own AO count minus whatever
+         !! canonical orthogonalisation dropped as linearly dependent at the
+         !! last `trc_run_scf` (`trc_scf_result_t%n_lindep` -- 0 for every
+         !! compact basis, nonzero only for a diffuse one close to linear
+         !! dependency). Before the first `trc_run_scf` that count is
+         !! unknown, so `nmo` is `trc_nao`'s own number.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: nmo
+      end function trc_nmo
+
+      integer(c_int) function trc_mo_occupations(handle, occ) bind(c) result(res)
+         !! Occupation numbers, (nmo, nspin) column-major (`trc_nmo`'s own
+         !! size), for the last converged `trc_run_scf`: 2.0 per orbital up
+         !! to `nalpha` and restricted (nspin 1), or 1.0 up to `nalpha`/
+         !! `nbeta` on each spin's own column (nspin 2); 0 above. REFUSED
+         !! (TRC_ERR_UNSUPPORTED) if this context's guess used fractional
+         !! occupation: that per-orbital Aufbau split is private to
+         !! `trc_scf_run` (its own `frac_occupations`) and not re-derivable
+         !! from the stored result alone -- unreachable through this C API
+         !! today, since nothing here sets fractional occupation, but
+         !! refused rather than silently wrong for a Fortran-driver-built
+         !! context that did.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: occ(*)
+      end function trc_mo_occupations
 
       integer(c_int) function trc_is_spherical(handle, flag) bind(c) result(res)
          !! Non-zero if the orbital basis this context holds is running in

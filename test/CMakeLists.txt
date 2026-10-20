@@ -1014,6 +1014,19 @@ set_tests_properties(terco/check_capi_libcint_sph PROPERTIES WORKING_DIRECTORY $
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# trc_run_polarizability/trc_polarizability (CPHF/CPKS) and trc_nmo/
+# trc_mo_occupations, through the context API, against the SAME pyscf
+# references test/scf_cphf.F90 and test/scf_cpks.F90 check their own
+# Fortran drivers with.
+add_executable(check_capi_polarizability check_capi_polarizability.F90)
+target_compile_definitions(check_capi_polarizability PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_polarizability PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                        terco_pyscf_ref_io)
+add_test(NAME terco/check_capi_polarizability COMMAND check_capi_polarizability)
+set_tests_properties(terco/check_capi_polarizability PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # terco driven from C, through include/terco.h only -- the C-side proof
 # trc_c_interfaces.f90 is for a Fortran caller (test/link_gfortran.F90).
 # Needs the C compiler, which nothing else in this build does; enabled
