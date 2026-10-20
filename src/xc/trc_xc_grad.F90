@@ -24,7 +24,7 @@
 ! cost: LDA never collocates a Hessian). Unrestricted replaces the single
 ! vrho/vsigma pair with the five spin-resolved derivatives
 ! (va, vb, v_aa, v_ab, v_bb) and a density matrix per channel; see
-! xc_grad_point_gga_body for the channel-by-channel expansion. Checked,
+! xc_grad_term for the channel-by-channel expansion. Checked,
 ! term for term, against metalquicha's independently-validated
 ! accumulate_channel/accumulate_gga_channel (mqc_czt_gradient.f90).
 !
@@ -54,8 +54,9 @@
 !
 !   A. POINT MOTION OF rho/eps. d(rho_g eps_g)/dR_B, at FIXED weight, for
 !      g owned by B: the chain rule through r_g's dependence on R_B gives
-!      + the SAME contraction the Pulay force tiles (pall/q1all/q2all/rall)
-!      already build, but summed over EVERY local function of the batch
+!      + the SAME per-(point, function) force density the Pulay term
+!      sums over points (xc_grad_term), but summed over EVERY local
+!      function of the batch
 !      (not just the ones on one atom) and landing on the POINT's owner
 !      (not the function's), with the OPPOSITE sign:
 !
@@ -64,16 +65,12 @@
 !
 !      dsigma_g/dx_k = 2 (H_rho(g) . grad_rho_g)_k needs the density
 !      HESSIAN at the point, which trc_xc_grad already collocates
-!      (`hchi`) for the Pulay term's own vsigma piece -- xc_grad_point_lda/
-!      gga_body compute this directly: the LDA-like piece (vrho) is cheap
-!      enough to fold into the SAME point kernel that builds `pall`
-!      (it only needs `pall` and `xmat`, both already there); the GGA
-!      vsigma piece needs `rmat`/`rmatx` -- `rall` contracted with the
-!      density matrix the same way `xmat` is chi's -- which is a
-!      whole-batch GEMM, so it is added by a follow-up kernel
-!      (xc_grad_pointmotion_gga) once xc_grad_point_gga has filled `rall`
-!      for every point. Scattered by xc_grad_scatter_points, keyed by
-!      `xg%atom` (the point's owner), not `ao_atom`.
+!      (`hchi`) for the Pulay term's own vsigma piece. Its vsigma part
+!      needs R D, R_u = grad rho . grad chi_u contracted with the density
+!      the way X = chi D is chi's, which is a GEMM over the whole batch, so
+!      the point-motion sum runs in its own kernel (xc_grad_pointmotion)
+!      after it, one thread per point, keyed by `xg%atom` (the point's
+!      owner), not `ao_atom`.
 !
 !   B. PARTITION WEIGHT, explicit nuclear dependence, AT FIXED r_g.
 !      `trc_dft_partition.F90`'s `becke_partition_derivatives` (already in
@@ -177,54 +174,29 @@
 ! caller matching a reference that itself omits it (pyscf's own default),
 ! or isolating the Pulay term the way check_xc_grad_fixedgrid_fd.F90 does.
 !
-! BATCHING -- deliberately SIMPLER than the energy path's. trc_xc.F90's
-! xc_drive pads every batch's tile to a common shape and groups batches of
-! equal padded shape into one strided-batched cuBLAS call, because it runs
-! every SCF iteration and the grouping is what makes that affordable. This
-! module runs once, after convergence, so it processes one spatial batch
-! at a time -- collocate, gather, a handful of exact-sized GEMMs, scatter
-! -- with no padding and no cross-batch grouping. Still cuBLAS (`trc_linalg`),
-! still batched (one pass per `trc_xc_grid_t` batch, same screening), just
-! not padding-grouped; see this branch's own report for the measured cost
-! against the two-electron gradient. Grouping batches the way the energy
-! path does is the natural next step if this ever dominates a gradient's
-! wall time.
+! BATCHING -- the energy path's (trc_xc.F90's xc_drive): tiles padded to
+! (XC_NP_PAD, XC_NL_PAD) multiples, stored by padded shape so each run of
+! equal shape is one strided-batched GEMM, every kernel one launch over a
+! chunk of batches, and the workspace allocated once, at the largest
+! chunk. The Pulay contraction needs only X = chi D and, for a GGA, R D
+! (xc_grad_drive's own header): the (3 nloc x nloc) GEMMs the per-batch
+! version formed, and their tiles, are gone. Measured, def2-SVP PBE on a
+! V100: w20 1.5 s -> 0.18 s for everything but the grid build and the
+! partition response; see the commit that made the change for the rest.
 !
 ! CARTESIAN ONLY. XC is Cartesian throughout terco (the SCF folds to
 ! spherical); `b` and `dens` here are exactly what trc_scf_grad.F90 hands
 ! in, with no spherical folding of its own.
 !
-! GPU: CONFIRMED WRONG, NOT MERELY UNTESTED. check_full_grad_fd (the
-! existing one/two-electron gradient) and scf_rks (the existing XC
-! ENERGY path, same atomic-scatter idiom as this module's own
-! xc_grad_scatter) both pass on this exact GPU build, which rules out the
-! basis/pairlist/eri/trc_linalg/XC-energy machinery this module reuses.
-! What is NEW here -- and the only thing left to suspect -- is this
-! module's own per-batch device lifetime: unlike xc_drive, which
-! allocates its device tiles ONCE outside the batch loop and reuses them
-! (see BATCHING above), xc_grad_one_batch allocates (`!$acc enter data
-! create`) and frees (`!$acc exit data delete`) a fresh set of device
-! buffers on EVERY batch. check_xc_grad_fixedgrid_fd and
-! check_xc_grad_vs_pyscf both fail the same way on GPU 2, deterministically
-! (repeated runs give the identical worst|diff|, not a flaky range), with
-! the error growing with how much per-batch work there is (UKS GGA worse
-! than RKS GGA worse than RKS LDA) -- consistent with a stale or
-! overlapping device allocation across batches rather than a sign/index
-! mistake, which CPU's bitwise-identical formula code rules out anyway.
-! NOT fixed this round: restructuring the per-batch allocation to the
-! energy path's hoist-and-reuse convention is a real change to this
-! module's data flow, not a one-line fix, and is left for the GPU
-! follow-up this header's BATCHING section already calls out as the next
-! step. Use the CPU build for this module until then.
-!
 module trc_xc_grad
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
                                  XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    use trc_collocation, only: shell_collocate, shell_collocate2, NCART_MAX, NHESS
    use trc_linalg, only: trc_linalg_t
+   use trc_xc, only: XC_NP_PAD, XC_NL_PAD, sort_by_shape
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, DEFAULT_GRID_LEVEL
    use trc_dft_partition, only: becke_partition_grad_contract
    use trc_error, only: error_t
@@ -232,8 +204,9 @@ module trc_xc_grad
    implicit none
    private
 
-   public :: xc_gradient_add, XC_GRAD_RHO_TOL
+   public :: xc_gradient_add, XC_GRAD_RHO_TOL, xc_grad_drive
    public :: XC_GRAD_NSTEP, xc_grad_step_names
+   public :: ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
    public :: xc_grad_collocate1, xc_grad_collocate2, xc_grad_gather
    public :: xc_grad_scatter, xc_grad_scatter_points
    ! Exported for trc_vv10_grad: the AO-value/gradient/Hessian collocation,
@@ -241,12 +214,18 @@ module trc_xc_grad
    ! scatters are generic per-batch plumbing with nothing semilocal-XC-
    ! specific about them (no `kid`/`coef`/`xc_eval_point` in sight) -- VV10's
    ! gradient reuses them rather than keeping a second, parallel copy.
-
    integer, parameter :: XC_GRAD_NSTEP = 10
    !! Steps of the timing table `xc_gradient_add` fills (see
    !! `xc_grad_step_names`); a caller's step_table_t is initialised with them.
    integer, parameter :: ST_GRID = 1, ST_SCREEN = 2, ST_ALLOC = 3, ST_COLLOC = 4, ST_GATHER = 5, &
                          ST_GEMM = 6, ST_POINTS = 7, ST_SCATTER = 8, ST_PDERIV = 9, ST_RESP = 10
+
+   integer, parameter :: XC_GRAD_NPC = 12
+   !! Per-point coefficients the force kernels read, at most (unrestricted):
+   !! w, v_a, v_b, v_aa, v_ab, v_bb, grad rho_a, grad rho_b. Restricted uses 6.
+   integer(int64), parameter :: XC_GRAD_TILE_CAP = 8388608_int64
+   !! Doubles in one tile of a chunk (chi, say); a GGA chunk holds about
+   !! thirteen such tiles, so 64 MB here is about 0.8 GB of device memory.
 
    real(dp), parameter :: XC_GRAD_RHO_TOL = 1.0e-12_dp
    !! Same role and value as trc_xc.F90's XC_RHO_TOL: a batch whose bound on
@@ -434,13 +413,30 @@ contains
    end subroutine xc_gradient_add
 
    !
-   ! One pass over every batch of the grid: screen, then collocate + gather
-   ! + GEMM + scatter for the ones that survive. See this module's header
-   ! for why this is per-batch rather than the energy path's padded,
-   ! shape-grouped chunks.
+   ! Every surviving batch, in chunks, the energy path's way (trc_xc.F90's
+   ! xc_drive): each batch's tiles are padded to (XC_NP_PAD, XC_NL_PAD)
+   ! multiples and stored in order of padded shape, so each run of equal
+   ! shape is ONE strided-batched GEMM, and every kernel is one launch over
+   ! the whole chunk. The workspace is sized once, for the largest chunk.
+   !
+   ! THE FORCE WITHOUT THE BIG GEMMS. The Pulay term contracts, for every
+   ! local function mu and direction k,
+   !
+   !     F_k(mu) = sum_nu D(mu,nu) sum_g [P_k(g,mu) chi_nu(g) + Q_k(g,mu) R_nu(g)]
+   !             = sum_g [P_k(g,mu) X(g,mu) + Q_k(g,mu) RD(g,mu)]
+   !
+   ! with X = chi D and RD = R D (D symmetric), so the (3 nloc x nloc)
+   ! GEMMs pall^T chi and q^T R and their D-contraction collapse to a
+   ! per-(point, function) product summed over the points. RD is the GEMM
+   ! the point-motion term already needed; X is the one the density needs.
+   ! P and Q are rebuilt from per-point coefficients (w, v_rho, v_sigma,
+   ! grad rho) instead of being stored as tiles three columns per function.
+   ! The point-motion term is the SAME per-(point, function) product summed
+   ! over the functions instead, landing on the point's owner with the
+   ! opposite sign -- this module's header, GRID RESPONSE, piece A.
    !
    subroutine xc_grad_drive(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, rtol, ao_atom, grad, &
-                            gresp, fxc, tbl)
+                            gresp, fxc, tbl, act_in, ext_grho, ext_vrho, ext_vsigma)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       logical, intent(in) :: is_gga
@@ -457,22 +453,224 @@ contains
       !! Per point, rho*eps (no weight), for the partition's response term;
       !! left zero on a batch the screen skips.
       type(step_table_t), intent(inout) :: tbl
+      integer, intent(in), optional :: act_in(xg%nbatch)
+      !! The caller's own batch screen (1 = keep) in place of the density
+      !! bound on `dens`.
+      real(dp), intent(in), optional :: ext_grho(3, xg%npts), ext_vrho(xg%npts), ext_vsigma(xg%npts)
+      !! A potential already in hand (VV10's, restricted GGA): the point
+      !! kernel takes w, v_rho, v_sigma and grad rho from these, on the
+      !! device, instead of evaluating `kid`/`coef`; `fxc` is not written.
 
-      integer :: ib, npb, nloc
-      logical :: act
+      integer, allocatable :: active(:), npp(:), nlp(:), c_off(:), pr_off(:)
+      integer, allocatable :: ord(:), pb_off(:), wk_off(:), mw_off(:), ch_lo(:), ch_hi(:)
+      real(dp), allocatable :: chi(:), gchi(:, :), hchi(:, :), xt(:, :), rt(:, :), rd(:, :), rdx(:, :)
+      real(dp), allocatable :: dloc(:, :), pc(:, :)
+      integer(int64) :: need, nchi, nchi_max, sa, sb, ldt, ldh, ldr, ldx
+      integer :: ib, npb, nloc, nch, ic, b0, b1, nb, k, k0, k1, cnt, mp, ml, s, p0, np
+      integer :: npairs, nwork, nmu, npairs_max, np_max, nb_max, npc, nhs
       real(dp) :: tc
 
+      ! --- screen: which batches carry density at all -------------------
+      call tbl%step_on(lp, ST_SCREEN, tc)
+      allocate (active(xg%nbatch), npp(xg%nbatch), nlp(xg%nbatch))
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
       do ib = 1, xg%nbatch
          npb = xg%b_off(ib + 1) - xg%b_off(ib)
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
-         if (npb == 0 .or. nloc == 0) cycle
-         call tbl%step_on(lp, ST_SCREEN, tc)
-         act = xc_grad_batch_active(ib, xg, b%nao, nspin, dens, rtol)
-         call tbl%step_off(lp, ST_SCREEN, tc)
-         if (.not. act) cycle
-         call xc_grad_one_batch(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, ib, npb, nloc, &
-                                ao_atom, grad, gresp, fxc, tbl)
+         active(ib) = 0
+         if (npb > 0 .and. nloc > 0) then
+            if (present(act_in)) then
+               active(ib) = act_in(ib)
+            else if (xc_grad_batch_active(ib, xg, b%nao, nspin, dens, rtol)) then
+               active(ib) = 1
+            end if
+         end if
+         npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((nloc*active(ib) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
       end do
+      c_off = 0
+      pr_off = 0
+
+      ! The chunks, up front, so the workspace is allocated once at the
+      ! largest one: as many batches as XC_GRAD_TILE_CAP doubles of one
+      ! tile hold, and at least one.
+      allocate (ch_lo(xg%nbatch), ch_hi(xg%nbatch))
+      nch = 0
+      nchi_max = 1
+      npairs_max = 1
+      np_max = 1
+      nb_max = 1
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         npairs = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > XC_GRAD_TILE_CAP .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            b1 = ib
+         end do
+         nch = nch + 1
+         ch_lo(nch) = b0
+         ch_hi(nch) = b1
+         nchi_max = max(nchi_max, need)
+         npairs_max = max(npairs_max, npairs)
+         np_max = max(np_max, xg%b_off(b1 + 1) - xg%b_off(b0))
+         nb_max = max(nb_max, b1 - b0 + 1)
+         b0 = b1 + 1
+      end do
+      call tbl%step_off(lp, ST_SCREEN, tc)
+
+      ! --- the workspace, once ------------------------------------------
+      call tbl%step_on(lp, ST_ALLOC, tc)
+      npc = merge(6, XC_GRAD_NPC, nspin == 1)
+      nhs = merge(NHESS, 1, is_gga)
+      allocate (chi(nchi_max), gchi(nchi_max, 3), hchi(merge(nchi_max, 1_int64, is_gga), nhs))
+      allocate (xt(nchi_max, nspin))
+      if (is_gga) then
+         allocate (rt(nchi_max, nspin), rd(nchi_max, nspin), rdx(merge(nchi_max, 1_int64, nspin == 2), nspin))
+      else
+         allocate (rt(1, nspin), rd(1, nspin), rdx(1, nspin))
+      end if
+      allocate (dloc(npairs_max, nspin), pc(np_max, npc))
+      allocate (ord(nb_max), pb_off(nb_max + 1), wk_off(nb_max + 1), mw_off(nb_max + 1))
+      ldt = nchi_max
+      ldh = size(hchi, 1, int64)
+      ldr = size(rt, 1, int64)
+      ldx = size(rdx, 1, int64)
+      !$acc enter data copyin(active, npp, nlp, c_off, pr_off) &
+      !$acc      create(chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc, ord, pb_off, wk_off, mw_off)
+      call tbl%step_off(lp, ST_ALLOC, tc)
+
+      do ic = 1, nch
+         b0 = ch_lo(ic)
+         b1 = ch_hi(ic)
+         nb = b1 - b0 + 1
+         p0 = xg%b_off(b0)
+         np = xg%b_off(b1 + 1) - p0
+         do k = 1, nb
+            ord(k) = b0 + k - 1
+         end do
+         call sort_by_shape(nb, npp, nlp, ord)
+         ! Offsets in storage order: tiles (point fastest), (u,v) pairs,
+         ! collocation work (shell, point), and force work (function).
+         need = 0
+         npairs = 0
+         nwork = 0
+         nmu = 0
+         pb_off(1) = 0
+         wk_off(1) = 0
+         mw_off(1) = 0
+         do k = 1, nb
+            ib = ord(k)
+            c_off(ib) = int(need)
+            pr_off(ib) = npairs
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            pb_off(k + 1) = npairs
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))*active(ib)
+            wk_off(k + 1) = nwork
+            nmu = nmu + (xg%b_aooff(ib + 1) - xg%b_aooff(ib))*active(ib)
+            mw_off(k + 1) = nmu
+         end do
+         nchi = max(need, 1_int64)
+         !$acc update device(c_off, pr_off, ord(1:nb), pb_off(1:nb+1), wk_off(1:nb+1), mw_off(1:nb+1))
+         if (nmu == 0) cycle
+
+         ! Padding rows and columns of the GEMM inputs must be zero, not
+         ! whatever the workspace last held: chi feeds X = chi D, R feeds
+         ! RD = R D. D's own padding is written as zero by the gather.
+         call tbl%step_on(lp, ST_COLLOC, tc)
+         call xc_grad_zero(nchi, ldr, nspin, is_gga, chi, rt)
+         call xc_grad_colloc_tiles(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, &
+                                   b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, &
+                                   xg%b_shao, c_off, npp, xg%nbatch, ldt, is_gga, ldh, nhs, chi, gchi, hchi)
+         call tbl%step_off(lp, ST_COLLOC, tc)
+
+         call tbl%step_on(lp, ST_GATHER, tc)
+         call xc_grad_gather_tiles(npairs, nb, ord, pb_off, nspin, b%nao, dens, xg%b_aooff, size(xg%b_ao), &
+                                   xg%b_ao, nlp, xg%nbatch, npairs_max, dloc)
+         call tbl%step_off(lp, ST_GATHER, tc)
+
+         ! X = chi D, per spin: one strided-batched GEMM per run of shape.
+         call tbl%step_on(lp, ST_GEMM, tc)
+         k0 = 1
+         do while (k0 <= nb)
+            call shape_run(k0, nb, ord, npp, nlp, k1, mp, ml)
+            ib = ord(k0)
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               sa = int(mp, int64)*int(ml, int64)
+               sb = int(ml, int64)*int(ml, int64)
+               do s = 1, nspin
+                  call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
+                                       dloc(pr_off(ib) + 1, s), ml, sb, 0.0_dp, xt(c_off(ib) + 1, s), mp, sa, cnt)
+               end do
+            end if
+            k0 = k1 + 1
+         end do
+         call tbl%step_off(lp, ST_GEMM, tc)
+
+         call tbl%step_on(lp, ST_POINTS, tc)
+         if (present(ext_vrho)) then
+            call xc_grad_points_ext(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, &
+                                    active, xg%nbatch, ldt, ldr, np_max, npc, gchi, ext_grho, ext_vrho, &
+                                    ext_vsigma, rt, pc)
+         else
+            call xc_grad_points(np, p0, nspin, is_gga, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, &
+                                c_off, npp, active, xg%nbatch, nk, kid, coef, ldt, ldr, np_max, npc, &
+                                chi, gchi, xt, rt, pc, fxc)
+         end if
+         call tbl%step_off(lp, ST_POINTS, tc)
+
+         ! RD = R D and, unrestricted, the cross-spin R_b D_a / R_a D_b.
+         if (is_gga) then
+            call tbl%step_on(lp, ST_GEMM, tc)
+            k0 = 1
+            do while (k0 <= nb)
+               call shape_run(k0, nb, ord, npp, nlp, k1, mp, ml)
+               ib = ord(k0)
+               cnt = k1 - k0 + 1
+               if (ml > 0) then
+                  sa = int(mp, int64)*int(ml, int64)
+                  sb = int(ml, int64)*int(ml, int64)
+                  do s = 1, nspin
+                     call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, rt(c_off(ib) + 1, s), mp, sa, &
+                                          dloc(pr_off(ib) + 1, s), ml, sb, 0.0_dp, rd(c_off(ib) + 1, s), mp, sa, cnt)
+                  end do
+                  if (nspin == 2) then
+                     call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, rt(c_off(ib) + 1, 2), mp, sa, &
+                                          dloc(pr_off(ib) + 1, 1), ml, sb, 0.0_dp, rdx(c_off(ib) + 1, 1), mp, sa, cnt)
+                     call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, rt(c_off(ib) + 1, 1), mp, sa, &
+                                          dloc(pr_off(ib) + 1, 2), ml, sb, 0.0_dp, rdx(c_off(ib) + 1, 2), mp, sa, cnt)
+                  end if
+               end if
+               k0 = k1 + 1
+            end do
+            call tbl%step_off(lp, ST_GEMM, tc)
+         end if
+
+         ! The forces: Pulay onto each function's atom, point motion onto
+         ! each point's owner.
+         call tbl%step_on(lp, ST_SCATTER, tc)
+         call xc_grad_pulay(nmu, nb, ord, mw_off, nspin, is_gga, xg%npts, p0, np_max, xg%b_off, xg%b_aooff, &
+                            size(xg%b_ao), xg%b_ao, b%nao, ao_atom, c_off, npp, xg%nbatch, ldt, ldh, nhs, ldr, ldx, &
+                            npc, gchi, hchi, xt, rd, rdx, pc, b%natm, grad)
+         if (gresp) then
+            call xc_grad_pointmotion(np, p0, nspin, is_gga, xg%npts, xg%atom, xg%batch_of, xg%b_off, &
+                                     xg%b_aooff, c_off, npp, active, xg%nbatch, ldt, ldh, nhs, ldr, ldx, npc, &
+                                     gchi, hchi, xt, rd, rdx, pc, np_max, b%natm, grad)
+         end if
+         call tbl%step_off(lp, ST_SCATTER, tc)
+      end do
+
+      call tbl%step_on(lp, ST_ALLOC, tc)
+      !$acc exit data delete(active, npp, nlp, c_off, pr_off, chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc, &
+      !$acc                  ord, pb_off, wk_off, mw_off)
+      deallocate (active, npp, nlp, c_off, pr_off, ord, pb_off, wk_off, mw_off, ch_lo, ch_hi)
+      deallocate (chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc)
+      call tbl%step_off(lp, ST_ALLOC, tc)
    end subroutine xc_grad_drive
 
    !
@@ -505,147 +703,20 @@ contains
       active = bound > rtol
    end function xc_grad_batch_active
 
-   !
-   ! One batch: collocate (order 1, or order 1+2 for a GGA), gather D onto
-   ! the local basis, X = chi D, the per-point functional and force
-   ! tiles, the force GEMMs, and the atom scatter. Every array here is
-   ! sized to this batch exactly -- see the module header on why there is
-   ! no padding to match.
-   !
-   subroutine xc_grad_one_batch(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, ib, npb, nloc, &
-                                ao_atom, grad, gresp, fxc, tbl)
-      type(trc_basis_t), intent(in) :: b
-      type(trc_linalg_t), intent(inout) :: lp
-      logical, intent(in) :: is_gga
-      integer, intent(in) :: nspin, nk
-      integer, intent(in) :: kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      real(dp), intent(in) :: dens(b%nao, b%nao, nspin)
-      type(trc_xc_grid_t), intent(in) :: xg
-      integer, intent(in) :: ib, npb, nloc
-      integer, intent(in) :: ao_atom(b%nao)
-      real(dp), intent(inout) :: grad(3, b%natm)
-      logical, intent(in) :: gresp
-      real(dp), intent(inout) :: fxc(xg%npts)
-      !! Per point, rho*eps (no weight), for the partition's response term;
-      !! left zero on a batch the screen skips.
-      type(step_table_t), intent(inout) :: tbl
-
-      real(dp), allocatable :: chi(:, :), gchi(:, :, :), hchi(:, :, :)
-      real(dp), allocatable :: dloc(:, :, :), xmat(:, :, :)
-      real(dp), allocatable :: pall(:, :, :), q1all(:, :, :), q2all(:, :, :), rall(:, :, :)
-      real(dp), allocatable :: tall(:, :, :)
-      real(dp), allocatable :: rmat(:, :, :), rmatx(:, :, :)
-      real(dp), allocatable :: qmove(:, :)
-      integer :: s
-      real(dp) :: tc
-
-      call tbl%step_on(lp, ST_ALLOC, tc)
-      allocate (chi(npb, nloc), gchi(npb, nloc, 3))
-      allocate (dloc(nloc, nloc, nspin), xmat(npb, nloc, nspin))
-      allocate (pall(npb, 3*nloc, nspin), tall(3*nloc, nloc, nspin))
-      allocate (qmove(npb, 3))
-      !$acc enter data create(chi, gchi, dloc, xmat, pall, tall, qmove)
-
-      if (is_gga) then
-         allocate (hchi(npb, nloc, NHESS))
-         allocate (q1all(npb, 3*nloc, nspin), q2all(npb, 3*nloc, nspin), rall(npb, nloc, nspin))
-         allocate (rmat(npb, nloc, nspin), rmatx(npb, nloc, nspin))
-         !$acc enter data create(hchi, q1all, q2all, rall, rmat, rmatx)
-      end if
-      call tbl%step_off(lp, ST_ALLOC, tc)
-
-      call tbl%step_on(lp, ST_COLLOC, tc)
-      if (is_gga) then
-         call xc_grad_collocate2(b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                                 xg%npts, xg%r, xg%nbatch, xg%b_off, xg%b_shoff, size(xg%b_sh), &
-                                 xg%b_sh, xg%b_shao, ib, npb, nloc, chi, gchi, hchi)
-      else
-         call xc_grad_collocate1(b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                                 xg%npts, xg%r, xg%nbatch, xg%b_off, xg%b_shoff, size(xg%b_sh), &
-                                 xg%b_sh, xg%b_shao, ib, npb, nloc, chi, gchi)
-      end if
-      call tbl%step_off(lp, ST_COLLOC, tc)
-
-      call tbl%step_on(lp, ST_GATHER, tc)
-      call xc_grad_gather(b%nao, size(xg%b_ao), xg%b_ao, xg%b_aooff(ib), nloc, nspin, dens, dloc)
-      call tbl%step_off(lp, ST_GATHER, tc)
-
-      call tbl%step_on(lp, ST_GEMM, tc)
-      do s = 1, nspin
-         call lp%gemm_mat(chi, dloc(:, :, s), xmat(:, :, s))
+   ! The run of stored batches k0..k1 that share batch ord(k0)'s padded
+   ! shape (mp, ml).
+   subroutine shape_run(k0, nb, ord, npp, nlp, k1, mp, ml)
+      integer, intent(in) :: k0, nb
+      integer, intent(in) :: ord(:), npp(:), nlp(:)
+      integer, intent(out) :: k1, mp, ml
+      mp = npp(ord(k0))
+      ml = nlp(ord(k0))
+      k1 = k0
+      do while (k1 < nb)
+         if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+         k1 = k1 + 1
       end do
-      call tbl%step_off(lp, ST_GEMM, tc)
-
-      if (is_gga) then
-         call tbl%step_on(lp, ST_POINTS, tc)
-         call xc_grad_point_gga(npb, xg%npts, xg%w, xg%b_off(ib), nloc, nspin, nk, kid, coef, &
-                                chi, gchi, hchi, xmat, pall, q1all, q2all, rall, fxc, qmove)
-         call tbl%step_off(lp, ST_POINTS, tc)
-         ! GRID RESPONSE, point-motion piece -- see this module's header.
-         ! `rmat`/`rmatx` need every point's `rall` (the GEMM below
-         ! contracts across the whole batch), so they cannot be fused into
-         ! the point kernel above the way the LDA-like piece of `qmove`
-         ! is; `xc_grad_pointmotion_gga` ADDS its own contribution into the
-         ! `qmove` that kernel already seeded.
-         if (gresp) then
-            call tbl%step_on(lp, ST_GEMM, tc)
-            do s = 1, nspin
-               call lp%gemm_mat(rall(:, :, s), dloc(:, :, s), rmat(:, :, s))
-            end do
-            if (nspin == 2) then
-               call lp%gemm_mat(rall(:, :, 2), dloc(:, :, 1), rmatx(:, :, 1))
-               call lp%gemm_mat(rall(:, :, 1), dloc(:, :, 2), rmatx(:, :, 2))
-            end if
-            call tbl%step_off(lp, ST_GEMM, tc)
-            call tbl%step_on(lp, ST_POINTS, tc)
-            call xc_grad_pointmotion_gga(npb, nloc, nspin, q1all, q2all, rmat, rmatx, qmove)
-            call tbl%step_off(lp, ST_POINTS, tc)
-         end if
-      else
-         call tbl%step_on(lp, ST_POINTS, tc)
-         call xc_grad_point_lda(npb, xg%npts, xg%w, xg%b_off(ib), nloc, nspin, nk, kid, coef, &
-                                chi, gchi, xmat, pall, fxc, qmove)
-         call tbl%step_off(lp, ST_POINTS, tc)
-      end if
-
-      ! GRID RESPONSE, point-motion piece, scattered: every point's
-      ! `qmove` lands on the atom that OWNS the point (xg%atom), not on
-      ! the atom of any basis function -- see this module's header.
-      call tbl%step_on(lp, ST_SCATTER, tc)
-      if (gresp) call xc_grad_scatter_points(xg%npts, xg%atom, xg%b_off(ib), npb, qmove, b%natm, grad)
-      call tbl%step_off(lp, ST_SCATTER, tc)
-
-      call tbl%step_on(lp, ST_GEMM, tc)
-      do s = 1, nspin
-         call lp%gemm_mat(pall(:, :, s), chi, tall(:, :, s), transa="T", beta=0.0_dp)
-      end do
-      if (is_gga) then
-         do s = 1, nspin
-            call lp%gemm_mat(q1all(:, :, s), rall(:, :, s), tall(:, :, s), transa="T", beta=1.0_dp)
-         end do
-         if (nspin == 2) then
-            call lp%gemm_mat(q2all(:, :, 1), rall(:, :, 2), tall(:, :, 1), transa="T", beta=1.0_dp)
-            call lp%gemm_mat(q2all(:, :, 2), rall(:, :, 1), tall(:, :, 2), transa="T", beta=1.0_dp)
-         end if
-      end if
-      call tbl%step_off(lp, ST_GEMM, tc)
-
-      call tbl%step_on(lp, ST_SCATTER, tc)
-      call xc_grad_scatter(ib, xg%nbatch, xg%b_aooff, size(xg%b_ao), xg%b_ao, ao_atom, b%nao, &
-                           nloc, nspin, dloc, tall, b%natm, grad)
-      call tbl%step_off(lp, ST_SCATTER, tc)
-
-
-      call tbl%step_on(lp, ST_ALLOC, tc)
-      !$acc exit data delete(chi, gchi, dloc, xmat, pall, tall, qmove)
-      deallocate (chi, gchi, dloc, xmat, pall, tall, qmove)
-      if (is_gga) then
-         !$acc exit data delete(hchi, q1all, q2all, rall, rmat, rmatx)
-         deallocate (hchi, q1all, q2all, rall, rmat, rmatx)
-      end if
-      call tbl%step_off(lp, ST_ALLOC, tc)
-   end subroutine xc_grad_one_batch
+   end subroutine shape_run
 
    !
    ! coef(g) = qw(g)*fxc(g): `coef` arrives holding qw, on the device.
@@ -659,6 +730,641 @@ contains
          coef(g) = coef(g)*fxc(g)
       end do
    end subroutine xc_grad_weight_coef
+
+   ! Zero the tiles whose padding a GEMM reads: chi, and R for a GGA.
+   subroutine xc_grad_zero(nchi, ldr, nspin, is_gga, chi, rt)
+      integer(int64), intent(in) :: nchi, ldr
+      integer, intent(in) :: nspin
+      logical, intent(in) :: is_gga
+      real(dp), intent(inout) :: chi(nchi), rt(ldr, nspin)
+      integer(int64) :: i
+      integer :: s
+      do concurrent(i=1:nchi)
+         chi(i) = 0.0_dp
+      end do
+      if (is_gga) then
+         do s = 1, nspin
+            do concurrent(i=1:nchi)
+               rt(i, s) = 0.0_dp
+            end do
+         end do
+      end if
+   end subroutine xc_grad_zero
+
+   !
+   ! Which stored batch (1..nb, storage order) owns work item t: the last k
+   ! with off(k) < t, and t's 0-based position inside it. trc_xc.F90's
+   ! pair_batch, here because a `do concurrent` body calls only this
+   ! module's own routines.
+   !
+   pure subroutine grad_item_batch(t, nb, off, k, tt)
+      !$acc routine seq
+      integer, intent(in) :: t, nb
+      integer, intent(in) :: off(nb + 1)
+      integer, intent(out) :: k, tt
+      integer :: lo, hi, mid
+      lo = 1
+      hi = nb
+      do while (lo < hi)
+         mid = (lo + hi + 1)/2
+         if (off(mid) < t) then
+            lo = mid
+         else
+            hi = mid - 1
+         end if
+      end do
+      k = lo
+      tt = t - off(k) - 1
+   end subroutine grad_item_batch
+
+   !
+   ! Collocation into the chunk's padded tiles: one thread per (shell,
+   ! point) of every stored batch, point fastest, as trc_xc.F90's
+   ! xc_collocate, with the Hessian for a GGA.
+   !
+   subroutine xc_grad_colloc_tiles(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
+                                   npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, ldt, &
+                                   is_gga, ldh, nhs, chi, gchi, hchi)
+      integer, intent(in) :: nwork, nb, maxnp, nshell, npts, nbsh, nbatch, nhs
+      integer, intent(in) :: ord(nb), wk_off(nb + 1)
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
+      integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch)
+      integer(int64), intent(in) :: ldt, ldh
+      logical, intent(in) :: is_gga
+      real(dp), intent(inout) :: chi(ldt), gchi(ldt, 3), hchi(ldh, nhs)
+      integer :: t
+
+      if (is_gga) then
+         do concurrent(t=1:nwork)
+            call xc_grad_colloc_tile2_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
+                                           npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, &
+                                           ldt, chi, gchi, hchi)
+         end do
+      else
+         do concurrent(t=1:nwork)
+            call xc_grad_colloc_tile1_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
+                                           npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, &
+                                           ldt, chi, gchi)
+         end do
+      end if
+   end subroutine xc_grad_colloc_tiles
+
+   pure subroutine xc_grad_colloc_tile1_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
+                                             npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, &
+                                             ldt, chi, gchi)
+      !$acc routine seq
+      integer, intent(in) :: t, nb, maxnp, nshell, npts, nbsh, nbatch
+      integer, intent(in) :: ord(nb), wk_off(nb + 1)
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
+      integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch)
+      integer(int64), intent(in) :: ldt
+      real(dp), intent(inout) :: chi(ldt), gchi(ldt, 3)
+      integer :: k, ib, tt, npb, ks, gl, gg, ish, l, nc, m, ld, off, iao, i
+      real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX)
+
+      call grad_item_batch(t, nb, wk_off, k, tt)
+      ib = ord(k)
+      npb = b_off(ib + 1) - b_off(ib)
+      ks = tt/npb
+      gl = tt - ks*npb
+      gg = b_off(ib) + gl
+      ish = b_sh(b_shoff(ib) + ks)
+      iao = b_shao(b_shoff(ib) + ks)
+      l = sh_l(ish)
+      d(1) = r(1, gg) - sh_r(1, ish)
+      d(2) = r(2, gg) - sh_r(2, ish)
+      d(3) = r(3, gg) - sh_r(3, ish)
+      call shell_collocate(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
+      nc = (l + 1)*(l + 2)/2
+      ld = npp(ib)
+      off = c_off(ib) + gl + 1
+      do m = 1, nc
+         i = off + (iao + m - 1)*ld
+         chi(i) = cs(m)
+         gchi(i, 1) = gs(1, m)
+         gchi(i, 2) = gs(2, m)
+         gchi(i, 3) = gs(3, m)
+      end do
+   end subroutine xc_grad_colloc_tile1_body
+
+   pure subroutine xc_grad_colloc_tile2_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
+                                             npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, &
+                                             ldt, chi, gchi, hchi)
+      !$acc routine seq
+      integer, intent(in) :: t, nb, maxnp, nshell, npts, nbsh, nbatch
+      integer, intent(in) :: ord(nb), wk_off(nb + 1)
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
+      integer, intent(in) :: b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch)
+      integer(int64), intent(in) :: ldt
+      real(dp), intent(inout) :: chi(ldt), gchi(ldt, 3), hchi(ldt, NHESS)
+      integer :: k, ib, tt, npb, ks, gl, gg, ish, l, nc, m, ld, off, iao, i
+      real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX), hs(NHESS, NCART_MAX)
+
+      call grad_item_batch(t, nb, wk_off, k, tt)
+      ib = ord(k)
+      npb = b_off(ib + 1) - b_off(ib)
+      ks = tt/npb
+      gl = tt - ks*npb
+      gg = b_off(ib) + gl
+      ish = b_sh(b_shoff(ib) + ks)
+      iao = b_shao(b_shoff(ib) + ks)
+      l = sh_l(ish)
+      d(1) = r(1, gg) - sh_r(1, ish)
+      d(2) = r(2, gg) - sh_r(2, ish)
+      d(3) = r(3, gg) - sh_r(3, ish)
+      call shell_collocate2(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs, hs)
+      nc = (l + 1)*(l + 2)/2
+      ld = npp(ib)
+      off = c_off(ib) + gl + 1
+      do m = 1, nc
+         i = off + (iao + m - 1)*ld
+         chi(i) = cs(m)
+         gchi(i, 1) = gs(1, m)
+         gchi(i, 2) = gs(2, m)
+         gchi(i, 3) = gs(3, m)
+         hchi(i, 1) = hs(1, m)
+         hchi(i, 2) = hs(2, m)
+         hchi(i, 3) = hs(3, m)
+         hchi(i, 4) = hs(4, m)
+         hchi(i, 5) = hs(5, m)
+         hchi(i, 6) = hs(6, m)
+      end do
+   end subroutine xc_grad_colloc_tile2_body
+
+   !
+   ! The density slice of every stored batch, one thread per (b, u, v),
+   ! padding written as zero -- trc_xc.F90's xc_gather, with the leading
+   ! dimension of the (once-allocated) workspace passed in.
+   !
+   subroutine xc_grad_gather_tiles(npairs, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, &
+                                   nbatch, ldd, dloc)
+      integer, intent(in) :: npairs, nb, nspin, nao, nbao, nbatch, ldd
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      real(dp), intent(in) :: dmat(nao, nao, nspin)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(inout) :: dloc(ldd, nspin)
+      integer :: t
+      do concurrent(t=1:npairs)
+         call xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
+                                       ldd, dloc)
+      end do
+   end subroutine xc_grad_gather_tiles
+
+   pure subroutine xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, &
+                                            nbatch, ldd, dloc)
+      !$acc routine seq
+      integer, intent(in) :: t, nb, nspin, nao, nbao, nbatch, ldd
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      real(dp), intent(in) :: dmat(nao, nao, nspin)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(inout) :: dloc(ldd, nspin)
+      integer :: k, ib, tt, nloc, ld, u, v, s
+
+      call grad_item_batch(t, nb, pb_off, k, tt)
+      ib = ord(k)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = nlp(ib)
+      u = mod(tt, ld) + 1
+      v = tt/ld + 1
+      if (u > nloc .or. v > nloc) then
+         do s = 1, nspin
+            dloc(t, s) = 0.0_dp
+         end do
+      else
+         do s = 1, nspin
+            dloc(t, s) = dmat(b_ao(b_aooff(ib) + u - 1), b_ao(b_aooff(ib) + v - 1), s)
+         end do
+      end if
+   end subroutine xc_grad_gather_tile_body
+
+   !
+   ! One thread per point of the chunk: rho and grad rho from X = chi D,
+   ! the functional, the point's coefficients for the force kernels (`pc`:
+   ! w, the potential's derivatives, grad rho per spin), its energy density
+   ! for the partition response, and, for a GGA, its row of
+   ! R_u = grad rho . grad chi_u, the tile R D is formed from.
+   !
+   subroutine xc_grad_points(np, p0, nspin, is_gga, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, &
+                             nbatch, nk, kid, coef, ldt, ldr, ldp, npc, chi, gchi, xt, rt, pc, fxc)
+      integer, intent(in) :: np, p0, nspin, npts, nbatch, nk, ldp, npc
+      logical, intent(in) :: is_gga
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: ldt, ldr
+      real(dp), intent(in) :: chi(ldt), gchi(ldt, 3), xt(ldt, nspin)
+      real(dp), intent(inout) :: rt(ldr, nspin), pc(ldp, npc), fxc(npts)
+      integer :: g
+      do concurrent(g=1:np)
+         call xc_grad_point_body(g, p0, nspin, is_gga, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, &
+                                 nbatch, nk, kid, coef, ldt, ldr, ldp, npc, chi, gchi, xt, rt, pc, fxc)
+      end do
+   end subroutine xc_grad_points
+
+   pure subroutine xc_grad_point_body(g, p0, nspin, is_gga, npts, w, batch_of, b_off, b_aooff, c_off, npp, &
+                                      active, nbatch, nk, kid, coef, ldt, ldr, ldp, npc, chi, gchi, xt, rt, &
+                                      pc, fxc)
+      !$acc routine seq
+      integer, intent(in) :: g, p0, nspin, npts, nbatch, nk, ldp, npc
+      logical, intent(in) :: is_gga
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: ldt, ldr
+      real(dp), intent(in) :: chi(ldt), gchi(ldt, 3), xt(ldt, nspin)
+      real(dp), intent(inout) :: rt(ldr, nspin), pc(ldp, npc), fxc(npts)
+      integer :: gg, ib, nloc, ld, off, s, u, i
+      real(dp) :: rho(2), grho(3, 2)
+      real(dp) :: sigma, eps, vrho, vsigma
+      real(dp) :: va, vb, s_aa, s_ab, s_bb, v_aa, v_ab, v_bb, x
+
+      gg = p0 + g - 1
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      rho = 0.0_dp
+      grho = 0.0_dp
+      do s = 1, nspin
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            x = xt(i, s)
+            rho(s) = rho(s) + x*chi(i)
+            grho(1, s) = grho(1, s) + 2.0_dp*x*gchi(i, 1)
+            grho(2, s) = grho(2, s) + 2.0_dp*x*gchi(i, 2)
+            grho(3, s) = grho(3, s) + 2.0_dp*x*gchi(i, 3)
+         end do
+      end do
+      pc(g, 1) = w(gg)
+      if (nspin == 1) then
+         sigma = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
+         call xc_eval_point(nk, kid, coef, rho(1), sigma, eps, vrho, vsigma)
+         pc(g, 2) = vrho
+         pc(g, 3) = vsigma
+         pc(g, 4) = grho(1, 1)
+         pc(g, 5) = grho(2, 1)
+         pc(g, 6) = grho(3, 1)
+         fxc(gg) = rho(1)*eps
+      else
+         s_aa = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
+         s_bb = grho(1, 2)**2 + grho(2, 2)**2 + grho(3, 2)**2
+         s_ab = grho(1, 1)*grho(1, 2) + grho(2, 1)*grho(2, 2) + grho(3, 1)*grho(3, 2)
+         call xc_eval_point_polar(nk, kid, coef, rho(1), rho(2), s_aa, s_ab, s_bb, &
+                                  eps, va, vb, v_aa, v_ab, v_bb)
+         pc(g, 2) = va
+         pc(g, 3) = vb
+         pc(g, 4) = v_aa
+         pc(g, 5) = v_ab
+         pc(g, 6) = v_bb
+         pc(g, 7) = grho(1, 1)
+         pc(g, 8) = grho(2, 1)
+         pc(g, 9) = grho(3, 1)
+         pc(g, 10) = grho(1, 2)
+         pc(g, 11) = grho(2, 2)
+         pc(g, 12) = grho(3, 2)
+         fxc(gg) = (rho(1) + rho(2))*eps
+      end if
+      if (is_gga) then
+         do s = 1, nspin
+            do u = 1, nloc
+               i = off + (u - 1)*ld
+               rt(i, s) = grho(1, s)*gchi(i, 1) + grho(2, s)*gchi(i, 2) + grho(3, s)*gchi(i, 3)
+            end do
+         end do
+      end if
+   end subroutine xc_grad_point_body
+
+   !
+   ! As xc_grad_points for a potential already evaluated on the grid
+   ! (restricted GGA): the point's coefficients copied from it, and its
+   ! row of R_u = grad rho . grad chi_u.
+   !
+   subroutine xc_grad_points_ext(np, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+                                 ldt, ldr, ldp, npc, gchi, grho, vrho, vsigma, rt, pc)
+      integer, intent(in) :: np, p0, npts, nbatch, ldp, npc
+      real(dp), intent(in) :: w(npts), grho(3, npts), vrho(npts), vsigma(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldr
+      real(dp), intent(in) :: gchi(ldt, 3)
+      real(dp), intent(inout) :: rt(ldr, 1), pc(ldp, npc)
+      integer :: g
+      do concurrent(g=1:np)
+         call xc_grad_point_ext_body(g, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+                                     ldt, ldr, ldp, npc, gchi, grho, vrho, vsigma, rt, pc)
+      end do
+   end subroutine xc_grad_points_ext
+
+   pure subroutine xc_grad_point_ext_body(g, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+                                          ldt, ldr, ldp, npc, gchi, grho, vrho, vsigma, rt, pc)
+      !$acc routine seq
+      integer, intent(in) :: g, p0, npts, nbatch, ldp, npc
+      real(dp), intent(in) :: w(npts), grho(3, npts), vrho(npts), vsigma(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldr
+      real(dp), intent(in) :: gchi(ldt, 3)
+      real(dp), intent(inout) :: rt(ldr, 1), pc(ldp, npc)
+      integer :: gg, ib, nloc, ld, off, u, i
+      real(dp) :: grx, gry, grz
+
+      gg = p0 + g - 1
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      grx = grho(1, gg)
+      gry = grho(2, gg)
+      grz = grho(3, gg)
+      pc(g, 1) = w(gg)
+      pc(g, 2) = vrho(gg)
+      pc(g, 3) = vsigma(gg)
+      pc(g, 4) = grx
+      pc(g, 5) = gry
+      pc(g, 6) = grz
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         rt(i, 1) = grx*gchi(i, 1) + gry*gchi(i, 2) + grz*gchi(i, 3)
+      end do
+   end subroutine xc_grad_point_ext_body
+
+   !
+   ! The force density of one (point, function) pair, e_k = sum_s
+   ! [P_sk X_s + Q1_sk RD_s + Q2_sk RDx_s], P and Q rebuilt from the point's
+   ! coefficients exactly as the per-point tiles used to hold them:
+   !
+   !   restricted   P_k = w (v_rho dchi_k + 2 v_sigma (grad rho . H)_k)
+   !                Q1_k = w 2 v_sigma dchi_k
+   !   unrestricted P_ak = w (v_a dchi_k + 2 v_aa (grad rho_a . H)_k + v_ab (grad rho_b . H)_k)
+   !                Q1_ak = w 2 v_aa dchi_k,  Q2_ak = w v_ab dchi_k   (b likewise)
+   !
+   ! with H packed xx, xy, xz, yy, yz, zz; an LDA keeps only the v_rho piece.
+   !
+   pure subroutine xc_grad_term(nspin, is_gga, pcv, gx, hx, x, rm, rx, e)
+      !$acc routine seq
+      integer, intent(in) :: nspin
+      logical, intent(in) :: is_gga
+      real(dp), intent(in) :: pcv(XC_GRAD_NPC), gx(3), hx(NHESS), x(2), rm(2), rx(2)
+      real(dp), intent(out) :: e(3)
+      real(dp) :: hda(3), hdb(3)
+      real(dp) :: wg, pa, pb
+      integer :: k
+
+      wg = pcv(1)
+      if (nspin == 1) then
+         if (is_gga) then
+            hda(1) = pcv(4)*hx(1) + pcv(5)*hx(2) + pcv(6)*hx(3)
+            hda(2) = pcv(4)*hx(2) + pcv(5)*hx(4) + pcv(6)*hx(5)
+            hda(3) = pcv(4)*hx(3) + pcv(5)*hx(5) + pcv(6)*hx(6)
+            do k = 1, 3
+               pa = wg*(pcv(2)*gx(k) + 2.0_dp*pcv(3)*hda(k))
+               e(k) = pa*x(1) + wg*2.0_dp*pcv(3)*gx(k)*rm(1)
+            end do
+         else
+            do k = 1, 3
+               e(k) = wg*pcv(2)*gx(k)*x(1)
+            end do
+         end if
+      else
+         if (is_gga) then
+            hda(1) = pcv(7)*hx(1) + pcv(8)*hx(2) + pcv(9)*hx(3)
+            hda(2) = pcv(7)*hx(2) + pcv(8)*hx(4) + pcv(9)*hx(5)
+            hda(3) = pcv(7)*hx(3) + pcv(8)*hx(5) + pcv(9)*hx(6)
+            hdb(1) = pcv(10)*hx(1) + pcv(11)*hx(2) + pcv(XC_GRAD_NPC)*hx(3)
+            hdb(2) = pcv(10)*hx(2) + pcv(11)*hx(4) + pcv(XC_GRAD_NPC)*hx(5)
+            hdb(3) = pcv(10)*hx(3) + pcv(11)*hx(5) + pcv(XC_GRAD_NPC)*hx(6)
+            do k = 1, 3
+               pa = wg*(pcv(2)*gx(k) + 2.0_dp*pcv(4)*hda(k) + pcv(5)*hdb(k))
+               pb = wg*(pcv(3)*gx(k) + 2.0_dp*pcv(6)*hdb(k) + pcv(5)*hda(k))
+               e(k) = pa*x(1) + pb*x(2) &
+                      + wg*2.0_dp*pcv(4)*gx(k)*rm(1) + wg*2.0_dp*pcv(6)*gx(k)*rm(2) &
+                      + wg*pcv(5)*gx(k)*rx(1) + wg*pcv(5)*gx(k)*rx(2)
+            end do
+         else
+            do k = 1, 3
+               e(k) = wg*pcv(2)*gx(k)*x(1) + wg*pcv(3)*gx(k)*x(2)
+            end do
+         end if
+      end if
+   end subroutine xc_grad_term
+
+   !
+   ! The Pulay force: one thread per local function mu of every stored
+   ! batch, summing its force density over the batch's points, -2 x that
+   ! onto the atom mu sits on. Atomic, as xc_grad_scatter: functions of
+   ! different batches share atoms.
+   !
+   subroutine xc_grad_pulay(nmu, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, b_ao, &
+                            nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, &
+                            pc, natm, grad)
+      integer, intent(in) :: nmu, nb, nspin, npts, p0, ldp, nbao, nao, nbatch, npc, natm, nhs
+      logical, intent(in) :: is_gga
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), b_aooff(nbatch + 1), b_ao(nbao)
+      integer, intent(in) :: ao_atom(nao), c_off(nbatch + 1), npp(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr, ldx
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(inout) :: grad(3, natm)
+      integer :: t, at
+      real(dp) :: f(3)
+#ifdef _OPENACC
+      do concurrent(t=1:nmu) local(f, at)
+         call xc_grad_pulay_body(t, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, b_ao, &
+                                 nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, &
+                                 rdx, pc, f, at)
+         !$acc atomic update
+         grad(1, at) = grad(1, at) + f(1)
+         !$acc atomic update
+         grad(2, at) = grad(2, at) + f(2)
+         !$acc atomic update
+         grad(3, at) = grad(3, at) + f(3)
+      end do
+#else
+      do t = 1, nmu
+         call xc_grad_pulay_body(t, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, b_ao, &
+                                 nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, &
+                                 rdx, pc, f, at)
+         grad(1, at) = grad(1, at) + f(1)
+         grad(2, at) = grad(2, at) + f(2)
+         grad(3, at) = grad(3, at) + f(3)
+      end do
+#endif
+   end subroutine xc_grad_pulay
+
+   pure subroutine xc_grad_pulay_body(t, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, &
+                                      b_ao, nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, &
+                                      hchi, xt, rd, rdx, pc, f, at)
+      !$acc routine seq
+      integer, intent(in) :: t, nb, nspin, npts, p0, ldp, nbao, nao, nbatch, npc, nhs
+      logical, intent(in) :: is_gga
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), b_aooff(nbatch + 1), b_ao(nbao)
+      integer, intent(in) :: ao_atom(nao), c_off(nbatch + 1), npp(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr, ldx
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(out) :: f(3)
+      integer, intent(out) :: at
+      integer :: k, ib, mu, npb, ld, gl, lg, s, j
+      integer(int64) :: col, i
+      real(dp) :: pcv(XC_GRAD_NPC), gx(3), hx(NHESS), x(2), rm(2), rx(2), e(3)
+
+      call grad_item_batch(t, nb, mw_off, k, mu)
+      ib = ord(k)
+      mu = mu + 1
+      npb = b_off(ib + 1) - b_off(ib)
+      ld = npp(ib)
+      col = int(c_off(ib), int64) + int(mu - 1, int64)*int(ld, int64)
+      at = ao_atom(b_ao(b_aooff(ib) + mu - 1))
+      pcv = 0.0_dp
+      hx = 0.0_dp
+      x = 0.0_dp
+      rm = 0.0_dp
+      rx = 0.0_dp
+      f = 0.0_dp
+      do gl = 1, npb
+         i = col + gl
+         lg = b_off(ib) + gl - 1 - p0 + 1
+         do j = 1, npc
+            pcv(j) = pc(lg, j)
+         end do
+         gx(1) = gchi(i, 1)
+         gx(2) = gchi(i, 2)
+         gx(3) = gchi(i, 3)
+         if (is_gga) then
+            do j = 1, NHESS
+               hx(j) = hchi(i, j)
+            end do
+         end if
+         do s = 1, nspin
+            x(s) = xt(i, s)
+            if (is_gga) rm(s) = rd(i, s)
+            if (is_gga .and. nspin == 2) rx(s) = rdx(i, s)
+         end do
+         call xc_grad_term(nspin, is_gga, pcv, gx, hx, x, rm, rx, e)
+         f(1) = f(1) + e(1)
+         f(2) = f(2) + e(2)
+         f(3) = f(3) + e(3)
+      end do
+      f(1) = -2.0_dp*f(1)
+      f(2) = -2.0_dp*f(2)
+      f(3) = -2.0_dp*f(3)
+   end subroutine xc_grad_pulay_body
+
+   !
+   ! GRID RESPONSE, point-motion piece (this module's header, A): the same
+   ! force density summed over the point's local functions instead, +2 x
+   ! that onto the atom that OWNS the point. One thread per point, atomic.
+   !
+   subroutine xc_grad_pointmotion(np, p0, nspin, is_gga, npts, g_atom, batch_of, b_off, b_aooff, c_off, npp, &
+                                  active, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, pc, ldp, &
+                                  natm, grad)
+      integer, intent(in) :: np, p0, nspin, npts, nbatch, npc, ldp, natm, nhs
+      logical, intent(in) :: is_gga
+      integer, intent(in) :: g_atom(npts), batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr, ldx
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(inout) :: grad(3, natm)
+      integer :: g, at
+      real(dp) :: q(3)
+#ifdef _OPENACC
+      do concurrent(g=1:np) local(q, at)
+         call xc_grad_pointmotion_body(g, p0, nspin, is_gga, npts, g_atom, batch_of, b_off, b_aooff, c_off, npp, &
+                                       active, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, pc, ldp, &
+                                       q, at)
+         if (at > 0) then
+            !$acc atomic update
+            grad(1, at) = grad(1, at) + q(1)
+            !$acc atomic update
+            grad(2, at) = grad(2, at) + q(2)
+            !$acc atomic update
+            grad(3, at) = grad(3, at) + q(3)
+         end if
+      end do
+#else
+      do g = 1, np
+         call xc_grad_pointmotion_body(g, p0, nspin, is_gga, npts, g_atom, batch_of, b_off, b_aooff, c_off, npp, &
+                                       active, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, pc, ldp, &
+                                       q, at)
+         if (at > 0) then
+            grad(1, at) = grad(1, at) + q(1)
+            grad(2, at) = grad(2, at) + q(2)
+            grad(3, at) = grad(3, at) + q(3)
+         end if
+      end do
+#endif
+   end subroutine xc_grad_pointmotion
+
+   pure subroutine xc_grad_pointmotion_body(g, p0, nspin, is_gga, npts, g_atom, batch_of, b_off, b_aooff, c_off, &
+                                            npp, active, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, &
+                                            rdx, pc, ldp, q, at)
+      !$acc routine seq
+      integer, intent(in) :: g, p0, nspin, npts, nbatch, npc, ldp, nhs
+      logical, intent(in) :: is_gga
+      integer, intent(in) :: g_atom(npts), batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr, ldx
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(out) :: q(3)
+      integer, intent(out) :: at
+      integer :: gg, ib, nloc, ld, u, s, j
+      integer(int64) :: off, i
+      real(dp) :: pcv(XC_GRAD_NPC), gx(3), hx(NHESS), x(2), rm(2), rx(2), e(3)
+
+      q = 0.0_dp
+      at = 0
+      gg = p0 + g - 1
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      at = g_atom(gg)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = int(c_off(ib), int64) + int(gg - b_off(ib), int64) + 1_int64
+      pcv = 0.0_dp
+      do j = 1, npc
+         pcv(j) = pc(g, j)
+      end do
+      hx = 0.0_dp
+      x = 0.0_dp
+      rm = 0.0_dp
+      rx = 0.0_dp
+      do u = 1, nloc
+         i = off + int(u - 1, int64)*int(ld, int64)
+         gx(1) = gchi(i, 1)
+         gx(2) = gchi(i, 2)
+         gx(3) = gchi(i, 3)
+         if (is_gga) then
+            do j = 1, NHESS
+               hx(j) = hchi(i, j)
+            end do
+         end if
+         do s = 1, nspin
+            x(s) = xt(i, s)
+            if (is_gga) rm(s) = rd(i, s)
+            if (is_gga .and. nspin == 2) rx(s) = rdx(i, s)
+         end do
+         call xc_grad_term(nspin, is_gga, pcv, gx, hx, x, rm, rx, e)
+         q(1) = q(1) + e(1)
+         q(2) = q(2) + e(2)
+         q(3) = q(3) + e(3)
+      end do
+      q(1) = 2.0_dp*q(1)
+      q(2) = 2.0_dp*q(2)
+      q(3) = 2.0_dp*q(3)
+   end subroutine xc_grad_pointmotion_body
+
 
    !
    ! Collocation, order 1: one thread per (local shell, local point) of
@@ -806,294 +1512,6 @@ contains
          dloc(mu, nu, s) = dens(b_ao(aooff0 + mu - 1), b_ao(aooff0 + nu - 1), s)
       end do
    end subroutine xc_grad_gather
-
-   !
-   ! LDA: one thread per point. Builds rho, grad rho (needed even at LDA,
-   ! since the moving function's OWN gradient enters the Pulay term), the
-   ! potential, and the "P" tile `pall(g, (k-1)*nloc+mu, s)` the force
-   ! GEMM `pall^T @ chi` contracts into T_k(mu,nu). Restricted and
-   ! unrestricted in the same body, as trc_xc.F90's own xc_point_body does.
-   !
-   subroutine xc_grad_point_lda(npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, xmat, pall, &
-                                fxc, qmove)
-      integer, intent(in) :: npb, npts, p0, nloc, nspin, nk
-      real(dp), intent(in) :: w(npts)
-      integer, intent(in) :: kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), xmat(npb, nloc, nspin)
-      real(dp), intent(inout) :: pall(npb, 3*nloc, nspin)
-      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
-      integer :: g
-      do concurrent(g=1:npb)
-         call xc_grad_point_lda_body(g, npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, xmat, &
-                                     pall, fxc, qmove)
-      end do
-   end subroutine xc_grad_point_lda
-
-   pure subroutine xc_grad_point_lda_body(g, npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, &
-                                          xmat, pall, fxc, qmove)
-      !$acc routine seq
-      integer, intent(in) :: g, npb, npts, p0, nloc, nspin, nk
-      real(dp), intent(in) :: w(npts)
-      integer, intent(in) :: kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), xmat(npb, nloc, nspin)
-      real(dp), intent(inout) :: pall(npb, 3*nloc, nspin)
-      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
-      real(dp) :: rho(2), grho(3, 2)
-      real(dp) :: sigma, eps, vrho, vsigma, wg
-      real(dp) :: va, vb, s_aa, s_ab, s_bb, v_aa, v_ab, v_bb
-      real(dp) :: qm(3)
-      integer :: s, u, mu, k
-
-      wg = w(p0 + g - 1)
-      rho = 0.0_dp
-      grho = 0.0_dp
-      do s = 1, nspin
-         do u = 1, nloc
-            rho(s) = rho(s) + xmat(g, u, s)*chi(g, u)
-            grho(1, s) = grho(1, s) + 2.0_dp*xmat(g, u, s)*gchi(g, u, 1)
-            grho(2, s) = grho(2, s) + 2.0_dp*xmat(g, u, s)*gchi(g, u, 2)
-            grho(3, s) = grho(3, s) + 2.0_dp*xmat(g, u, s)*gchi(g, u, 3)
-         end do
-      end do
-
-      if (nspin == 1) then
-         sigma = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
-         call xc_eval_point(nk, kid, coef, rho(1), sigma, eps, vrho, vsigma)
-         do mu = 1, nloc
-            do k = 1, 3
-               pall(g, (k - 1)*nloc + mu, 1) = wg*vrho*gchi(g, mu, k)
-            end do
-         end do
-         fxc(p0 + g - 1) = rho(1)*eps
-      else
-         s_aa = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
-         s_bb = grho(1, 2)**2 + grho(2, 2)**2 + grho(3, 2)**2
-         s_ab = grho(1, 1)*grho(1, 2) + grho(2, 1)*grho(2, 2) + grho(3, 1)*grho(3, 2)
-         call xc_eval_point_polar(nk, kid, coef, rho(1), rho(2), s_aa, s_ab, s_bb, &
-                                  eps, va, vb, v_aa, v_ab, v_bb)
-         do mu = 1, nloc
-            do k = 1, 3
-               pall(g, (k - 1)*nloc + mu, 1) = wg*va*gchi(g, mu, k)
-               pall(g, (k - 1)*nloc + mu, 2) = wg*vb*gchi(g, mu, k)
-            end do
-         end do
-         fxc(p0 + g - 1) = (rho(1) + rho(2))*eps
-      end if
-
-      ! GRID RESPONSE, point-motion piece, LDA -- see this module's
-      ! header. The same contraction the Pulay force GEMM performs
-      ! (pall^T @ chi, then dotted with D), but summed over EVERY local
-      ! function rather than only the ones on one atom, with the
-      ! OPPOSITE sign, and kept per-point rather than pre-summed over the
-      ! batch -- because the atom this lands on is the POINT's owner,
-      ! which can differ from point to point within one spatial batch.
-      ! `xmat(g, mu, s)` already equals `sum_nu D(mu,nu,s) chi(nu,g)` (D
-      ! symmetric), so this is the full `D : pall` contraction for this
-      ! point alone, times the "+2" the module header derives.
-      qm = 0.0_dp
-      do mu = 1, nloc
-         do k = 1, 3
-            qm(k) = qm(k) + pall(g, (k - 1)*nloc + mu, 1)*xmat(g, mu, 1)
-         end do
-      end do
-      if (nspin == 2) then
-         do mu = 1, nloc
-            do k = 1, 3
-               qm(k) = qm(k) + pall(g, (k - 1)*nloc + mu, 2)*xmat(g, mu, 2)
-            end do
-         end do
-      end if
-      qmove(g, 1) = 2.0_dp*qm(1)
-      qmove(g, 2) = 2.0_dp*qm(2)
-      qmove(g, 3) = 2.0_dp*qm(3)
-   end subroutine xc_grad_point_lda_body
-
-   !
-   ! GGA: as the LDA point kernel, plus the Hessian-dependent "P" piece and
-   ! the "Q"/"R" pair the second force GEMM (`q^T @ r`) contracts. R_nu(g)
-   ! = grad_rho(g) . grad_chi_nu(g) is the ONE quantity shared by every mu
-   ! on this point -- built once per nu, not recomputed per (mu, nu) pair.
-   !
-   ! Unrestricted carries two cross terms the restricted branch does not:
-   ! channel a's P and Q1/Q2 read v_ab against channel b's Hessian/R and
-   ! vice versa (Ca_k = Pa_k phi_nu + Qa1_k Ra_nu + Qa2_k Rb_nu, this
-   ! module's header), so `q2all(:,:,1)` pairs with `rall(:,:,2)` and
-   ! `q2all(:,:,2)` with `rall(:,:,1)` in the caller's GEMM step.
-   !
-   subroutine xc_grad_point_gga(npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, hchi, xmat, &
-                                pall, q1all, q2all, rall, fxc, qmove)
-      integer, intent(in) :: npb, npts, p0, nloc, nspin, nk
-      real(dp), intent(in) :: w(npts)
-      integer, intent(in) :: kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), hchi(npb, nloc, NHESS)
-      real(dp), intent(in) :: xmat(npb, nloc, nspin)
-      real(dp), intent(inout) :: pall(npb, 3*nloc, nspin), q1all(npb, 3*nloc, nspin)
-      real(dp), intent(inout) :: q2all(npb, 3*nloc, nspin), rall(npb, nloc, nspin)
-      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
-      integer :: g
-      do concurrent(g=1:npb)
-         call xc_grad_point_gga_body(g, npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, hchi, &
-                                     xmat, pall, q1all, q2all, rall, fxc, qmove)
-      end do
-   end subroutine xc_grad_point_gga
-
-   pure subroutine xc_grad_point_gga_body(g, npb, npts, w, p0, nloc, nspin, nk, kid, coef, chi, gchi, &
-                                          hchi, xmat, pall, q1all, q2all, rall, fxc, qmove)
-      !$acc routine seq
-      integer, intent(in) :: g, npb, npts, p0, nloc, nspin, nk
-      real(dp), intent(in) :: w(npts)
-      integer, intent(in) :: kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), hchi(npb, nloc, NHESS)
-      real(dp), intent(in) :: xmat(npb, nloc, nspin)
-      real(dp), intent(inout) :: pall(npb, 3*nloc, nspin), q1all(npb, 3*nloc, nspin)
-      real(dp), intent(inout) :: q2all(npb, 3*nloc, nspin), rall(npb, nloc, nspin)
-      real(dp), intent(inout) :: fxc(npts), qmove(npb, 3)
-      real(dp) :: qm(3)
-      real(dp) :: rho(2), grho(3, 2)
-      real(dp) :: sigma, eps, vrho, vsigma, wg
-      real(dp) :: va, vb, s_aa, s_ab, s_bb, v_aa, v_ab, v_bb
-      real(dp) :: hdota(3), hdotb(3)
-      integer :: s, u, mu, k
-
-      wg = w(p0 + g - 1)
-      rho = 0.0_dp
-      grho = 0.0_dp
-      do s = 1, nspin
-         do u = 1, nloc
-            rho(s) = rho(s) + xmat(g, u, s)*chi(g, u)
-            grho(1, s) = grho(1, s) + 2.0_dp*xmat(g, u, s)*gchi(g, u, 1)
-            grho(2, s) = grho(2, s) + 2.0_dp*xmat(g, u, s)*gchi(g, u, 2)
-            grho(3, s) = grho(3, s) + 2.0_dp*xmat(g, u, s)*gchi(g, u, 3)
-         end do
-      end do
-
-      if (nspin == 1) then
-         sigma = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
-         call xc_eval_point(nk, kid, coef, rho(1), sigma, eps, vrho, vsigma)
-         do mu = 1, nloc
-            ! (grad_rho . H_mu)_k, hchi packed xx, xy, xz, yy, yz, zz.
-            hdota(1) = grho(1, 1)*hchi(g, mu, 1) + grho(2, 1)*hchi(g, mu, 2) + grho(3, 1)*hchi(g, mu, 3)
-            hdota(2) = grho(1, 1)*hchi(g, mu, 2) + grho(2, 1)*hchi(g, mu, 4) + grho(3, 1)*hchi(g, mu, 5)
-            hdota(3) = grho(1, 1)*hchi(g, mu, 3) + grho(2, 1)*hchi(g, mu, 5) + grho(3, 1)*hchi(g, mu, 6)
-            do k = 1, 3
-               pall(g, (k - 1)*nloc + mu, 1) = wg*(vrho*gchi(g, mu, k) + 2.0_dp*vsigma*hdota(k))
-               q1all(g, (k - 1)*nloc + mu, 1) = wg*2.0_dp*vsigma*gchi(g, mu, k)
-            end do
-         end do
-         do u = 1, nloc
-            rall(g, u, 1) = grho(1, 1)*gchi(g, u, 1) + grho(2, 1)*gchi(g, u, 2) + grho(3, 1)*gchi(g, u, 3)
-         end do
-         fxc(p0 + g - 1) = rho(1)*eps
-      else
-         s_aa = grho(1, 1)**2 + grho(2, 1)**2 + grho(3, 1)**2
-         s_bb = grho(1, 2)**2 + grho(2, 2)**2 + grho(3, 2)**2
-         s_ab = grho(1, 1)*grho(1, 2) + grho(2, 1)*grho(2, 2) + grho(3, 1)*grho(3, 2)
-         call xc_eval_point_polar(nk, kid, coef, rho(1), rho(2), s_aa, s_ab, s_bb, &
-                                  eps, va, vb, v_aa, v_ab, v_bb)
-         do mu = 1, nloc
-            hdota(1) = grho(1, 1)*hchi(g, mu, 1) + grho(2, 1)*hchi(g, mu, 2) + grho(3, 1)*hchi(g, mu, 3)
-            hdota(2) = grho(1, 1)*hchi(g, mu, 2) + grho(2, 1)*hchi(g, mu, 4) + grho(3, 1)*hchi(g, mu, 5)
-            hdota(3) = grho(1, 1)*hchi(g, mu, 3) + grho(2, 1)*hchi(g, mu, 5) + grho(3, 1)*hchi(g, mu, 6)
-            hdotb(1) = grho(1, 2)*hchi(g, mu, 1) + grho(2, 2)*hchi(g, mu, 2) + grho(3, 2)*hchi(g, mu, 3)
-            hdotb(2) = grho(1, 2)*hchi(g, mu, 2) + grho(2, 2)*hchi(g, mu, 4) + grho(3, 2)*hchi(g, mu, 5)
-            hdotb(3) = grho(1, 2)*hchi(g, mu, 3) + grho(2, 2)*hchi(g, mu, 5) + grho(3, 2)*hchi(g, mu, 6)
-            do k = 1, 3
-               pall(g, (k - 1)*nloc + mu, 1) = wg*(va*gchi(g, mu, k) + 2.0_dp*v_aa*hdota(k) + v_ab*hdotb(k))
-               pall(g, (k - 1)*nloc + mu, 2) = wg*(vb*gchi(g, mu, k) + 2.0_dp*v_bb*hdotb(k) + v_ab*hdota(k))
-               q1all(g, (k - 1)*nloc + mu, 1) = wg*2.0_dp*v_aa*gchi(g, mu, k)   ! x rall(:,:,1)
-               q2all(g, (k - 1)*nloc + mu, 1) = wg*v_ab*gchi(g, mu, k)         ! x rall(:,:,2)
-               q1all(g, (k - 1)*nloc + mu, 2) = wg*2.0_dp*v_bb*gchi(g, mu, k)   ! x rall(:,:,2)
-               q2all(g, (k - 1)*nloc + mu, 2) = wg*v_ab*gchi(g, mu, k)         ! x rall(:,:,1)
-            end do
-         end do
-         do u = 1, nloc
-            rall(g, u, 1) = grho(1, 1)*gchi(g, u, 1) + grho(2, 1)*gchi(g, u, 2) + grho(3, 1)*gchi(g, u, 3)
-            rall(g, u, 2) = grho(1, 2)*gchi(g, u, 1) + grho(2, 2)*gchi(g, u, 2) + grho(3, 2)*gchi(g, u, 3)
-         end do
-         fxc(p0 + g - 1) = (rho(1) + rho(2))*eps
-      end if
-
-      ! GRID RESPONSE, point-motion piece, the LDA-like part only -- see
-      ! this module's header and xc_grad_point_lda_body's own comment on
-      ! the sign and the "+2". The GGA-specific addition (the `q1`/`q2`
-      ! pieces, which need `rmat`/`rmatx` -- a contraction across every
-      ! point of the batch at once, not available inside this per-point
-      ! body) is ADDED on top by xc_grad_pointmotion_gga, called once this
-      ! kernel has run over the whole batch.
-      qm = 0.0_dp
-      do mu = 1, nloc
-         do k = 1, 3
-            qm(k) = qm(k) + pall(g, (k - 1)*nloc + mu, 1)*xmat(g, mu, 1)
-         end do
-      end do
-      if (nspin == 2) then
-         do mu = 1, nloc
-            do k = 1, 3
-               qm(k) = qm(k) + pall(g, (k - 1)*nloc + mu, 2)*xmat(g, mu, 2)
-            end do
-         end do
-      end if
-      qmove(g, 1) = 2.0_dp*qm(1)
-      qmove(g, 2) = 2.0_dp*qm(2)
-      qmove(g, 3) = 2.0_dp*qm(3)
-   end subroutine xc_grad_point_gga_body
-
-   !
-   ! GRID RESPONSE, point-motion piece: the GGA-specific addition to
-   ! `qmove` that xc_grad_point_gga_body could not compute itself -- see
-   ! this module's header and that body's own comment. `rmat(g, mu, s) =
-   ! sum_nu D(mu,nu,s) rall(nu,g,s)` and `rmatx` its cross-spin twin
-   ! (xc_grad_one_batch's own comment on the GEMMs that build them) are
-   ! the exact counterparts of `xmat` for the "R" tile the way `xmat`
-   ! itself is for `chi`, which is what lets this follow the SAME "+2 x
-   ! the full-basis contraction, no atom restriction" pattern as the
-   ! LDA-like piece.
-   !
-   subroutine xc_grad_pointmotion_gga(npb, nloc, nspin, q1all, q2all, rmat, rmatx, qmove)
-      integer, intent(in) :: npb, nloc, nspin
-      real(dp), intent(in) :: q1all(npb, 3*nloc, nspin), q2all(npb, 3*nloc, nspin)
-      real(dp), intent(in) :: rmat(npb, nloc, nspin), rmatx(npb, nloc, nspin)
-      real(dp), intent(inout) :: qmove(npb, 3)
-      integer :: g
-      do concurrent(g=1:npb)
-         call xc_grad_pointmotion_gga_body(g, npb, nloc, nspin, q1all, q2all, rmat, rmatx, qmove)
-      end do
-   end subroutine xc_grad_pointmotion_gga
-
-   pure subroutine xc_grad_pointmotion_gga_body(g, npb, nloc, nspin, q1all, q2all, rmat, rmatx, qmove)
-      !$acc routine seq
-      integer, intent(in) :: g, npb, nloc, nspin
-      real(dp), intent(in) :: q1all(npb, 3*nloc, nspin), q2all(npb, 3*nloc, nspin)
-      real(dp), intent(in) :: rmat(npb, nloc, nspin), rmatx(npb, nloc, nspin)
-      real(dp), intent(inout) :: qmove(npb, 3)
-      integer :: mu, k
-      real(dp) :: acc(3)
-
-      acc = 0.0_dp
-      if (nspin == 1) then
-         do mu = 1, nloc
-            do k = 1, 3
-               acc(k) = acc(k) + q1all(g, (k - 1)*nloc + mu, 1)*rmat(g, mu, 1)
-            end do
-         end do
-      else
-         do mu = 1, nloc
-            do k = 1, 3
-               acc(k) = acc(k) + q1all(g, (k - 1)*nloc + mu, 1)*rmat(g, mu, 1) &
-                        + q1all(g, (k - 1)*nloc + mu, 2)*rmat(g, mu, 2) &
-                        + q2all(g, (k - 1)*nloc + mu, 1)*rmatx(g, mu, 1) &
-                        + q2all(g, (k - 1)*nloc + mu, 2)*rmatx(g, mu, 2)
-            end do
-         end do
-      end if
-      qmove(g, 1) = qmove(g, 1) + 2.0_dp*acc(1)
-      qmove(g, 2) = qmove(g, 2) + 2.0_dp*acc(2)
-      qmove(g, 3) = qmove(g, 3) + 2.0_dp*acc(3)
-   end subroutine xc_grad_pointmotion_gga_body
 
    !
    ! GRID RESPONSE, point-motion piece, scattered: `qmove(g, :)` lands on
