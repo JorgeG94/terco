@@ -26,6 +26,12 @@ python3 test/goldens/compare_goldens.py --report build/test/golden_out
 Add `-DTERCO_LMAX=3` or `-DTERCO_DF_LMAX=3` for the f builds. They take far
 longer to compile.
 
+Pull requests and pushes run ctest with `-LE LONG`. Tests labelled `LONG`
+in `test/CMakeLists.txt` (`check_xc_grad_fd`, over half the suite's time) run
+only in the nightly scheduled run on main (13:00 UTC, midnight AEDT) and in a
+run started by hand (`workflow_dispatch`). Run them locally with `ctest -L LONG`
+when you touch the XC gradient.
+
 ## Generators
 
 ```sh

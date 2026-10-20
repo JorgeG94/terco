@@ -419,6 +419,10 @@ endif()
 # fully reconverged KS-DFT energy, at two grid levels -- RKS SVWN/PBE on
 # water, UKS PBE on the OH radical -- see check_xc_grad_fd.F90's header.
 terco_add_check(check_xc_grad_fd check_xc_grad_fd.F90 NEEDS_BASIS)
+# LONG: over half of the whole suite's time (1091 of 1973 s on a gcc-15 CI
+# runner, 1920 s on a slow one), so pull requests skip it (`ctest -LE LONG`)
+# and the nightly scheduled CI run on main runs it with everything else.
+set_tests_properties(terco/check_xc_grad_fd PROPERTIES LABELS LONG)
 
 # The VV10 gradient's own formula, isolated from the SCF entirely: a
 # fixed-density finite difference of E_nlc[D] alone -- see
