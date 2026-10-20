@@ -228,6 +228,7 @@ module trc_capi
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
              trc_set_convergence, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
+             trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
@@ -1472,6 +1473,20 @@ contains
    end subroutine take_basis
 
    function basis_libcint(handle, aux, atm, natm, bas, nshell, env, nenv, cartesian) result(status)
+      !! `cartesian` nonzero builds the basis in terco's own Cartesian AO
+      !! space, as before. Zero tags it spherical instead: the SHELLS
+      !! libcint's `bas` describes carry no cartesian/spherical bit of
+      !! their own (that is a convention the caller picks, not something
+      !! `atm`/`bas`/`env` encodes), so the Gaussians `from_libcint` builds
+      !! are identical either way -- what changes is only `b%spherical`,
+      !! the same tag `trc_basis_from_json` sets from a JSON file's
+      !! "gto_spherical" function_type. Every downstream consumer
+      !! (scf_space_nao, trc_run_scf, trc_set_guess, trc_density,
+      !! trc_mo_coefficients) reads that tag, not how the basis was built,
+      !! so a libcint caller lands in the same spherical AO space -- same
+      !! ordering, same nao_sph -- as the JSON path (trc_sph.F90's
+      !! transform is the only place either path's integrals are ever
+      !! folded from Cartesian to spherical).
       type(c_ptr), value :: handle
       logical, intent(in) :: aux
       integer(c_int), value :: natm, nshell, nenv, cartesian
@@ -1480,27 +1495,74 @@ contains
       integer(c_int) :: status
       type(context_box), pointer :: cx
       type(trc_basis_t) :: b
+      character(len=21), parameter :: who = "trc_set_basis_libcint", who_aux = "trc_set_aux_libcint  "
+      character(len=21) :: whoer
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      whoer = merge(who_aux, who, aux)
       status = TRC_ERR_BADARG
       if (natm <= 0 .or. nshell <= 0 .or. nenv <= 0) then
-         call refuse(cx, "trc_set_basis_libcint: natm, nshell and nenv must all be positive")
-         return
-      end if
-      if (cartesian == 0) then
-         status = TRC_ERR_UNSUPPORTED
-         call refuse(cx, "trc_set_basis_libcint: terco builds every shell Cartesian; pass cartesian = 1 "// &
-                     "and a Cartesian basis, a spherical one is not reinterpreted")
+         call refuse(cx, trim(whoer)//": natm, nshell and nenv must all be positive")
          return
       end if
       call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
+      b%spherical = (cartesian == 0)
+      ! TRC_AO_NORM_UNIT and a spherical basis do not combine -- same
+      ! refusal basis_json makes for the JSON path (see its own comment).
+      if (b%spherical .and. cx%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         call refuse(cx, trim(whoer)//": cartesian = 0 is a spherical basis and this "// &
+                     "context is set to TRC_AO_NORM_UNIT, which only applies to a Cartesian basis -- call "// &
+                     "trc_set_ao_norm(TRC_AO_NORM_SHELL) first, or pass cartesian = 1")
+         call b%release()
+         return
+      end if
+      ! Orbital/auxiliary convention mismatch, both directions -- same
+      ! policy as basis_json, except a libcint caller states `cartesian`
+      ! explicitly rather than through a file tag, so a mismatch is always
+      ! refused here rather than coerced: nothing silently reinterprets
+      ! what the caller asked for (see this module's own header, "Neither
+      ! direction silently falls back to one interpretation of the two").
+      if (.not. aux) then
+         if (cx%have_aux .and. b%spherical .neqv. cx%ab%b%spherical) then
+            call refuse(cx, who//": orbital basis is "//trim(merge("spherical", "Cartesian", b%spherical))// &
+                        ", but the auxiliary basis already set is "// &
+                        trim(merge("spherical", "Cartesian", cx%ab%b%spherical))// &
+                        " -- match cartesian flags, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+         if (cx%have_jkfit .and. b%spherical .neqv. cx%jb%b%spherical) then
+            call refuse(cx, who//": orbital basis is "//trim(merge("spherical", "Cartesian", b%spherical))// &
+                        ", but the --df jkfit basis already set is "// &
+                        trim(merge("spherical", "Cartesian", cx%jb%b%spherical))// &
+                        " -- match cartesian flags, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+      else
+         if (cx%have_basis .and. b%spherical .neqv. cx%bb%b%spherical) then
+            call refuse(cx, trim(who_aux)//": auxiliary basis is "//trim(merge("spherical", "Cartesian", b%spherical))// &
+                        ", but the orbital basis already set is "// &
+                        trim(merge("spherical", "Cartesian", cx%bb%b%spherical))// &
+                        " -- match cartesian flags (pyscf's auxmol.cart = mol.cart rule)")
+            call b%release()
+            return
+         end if
+      end if
       call take_basis(cx, aux, b)
       status = TRC_OK
    end function basis_libcint
 
    function trc_set_basis_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
       bind(c, name="trc_set_basis_libcint")
+      !! The orbital basis from libcint's packed `atm`/`bas`/`env`.
+      !! `cartesian` nonzero builds terco's own Cartesian AO space; zero
+      !! tags it spherical (libcint/pyscf order, m = -l..l except p as x,
+      !! y, z) -- trc_nao and every SCF-facing entry then size and index
+      !! at nao_sph, exactly as for a spherical trc_set_basis_json. A
+      !! mismatch against an already-set auxiliary or jkfit basis's own
+      !! convention is refused, not coerced.
       type(c_ptr), value :: handle
       integer(c_int), value :: natm, nshell, nenv, cartesian
       integer(c_int), intent(in) :: atm(*), bas(*)
@@ -1511,6 +1573,9 @@ contains
 
    function trc_set_aux_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
       bind(c, name="trc_set_aux_libcint")
+      !! The auxiliary (RI-MP2 rifit) basis, same layout and `cartesian`
+      !! convention as trc_set_basis_libcint; refused rather than coerced
+      !! if it disagrees with the orbital basis already set.
       type(c_ptr), value :: handle
       integer(c_int), value :: natm, nshell, nenv, cartesian
       integer(c_int), intent(in) :: atm(*), bas(*)
@@ -1994,6 +2059,56 @@ contains
       cx%df_fit_ok = .false.
       status = TRC_OK
    end function trc_set_jkfit_json
+
+   !
+   ! The same fitting basis as `trc_set_jkfit_json`, from libcint's packed
+   ! `atm`/`bas`/`env` instead of a JSON file -- the same shape
+   ! `trc_set_aux_libcint` takes. `cartesian` zero tags it spherical,
+   ! exactly as `basis_libcint` above; refused rather than coerced if it
+   ! disagrees with the orbital basis already set (pyscf's `auxmol.cart =
+   ! mol.cart`), since there is no file tag here to silently override.
+   !
+   function trc_set_jkfit_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
+      bind(c, name="trc_set_jkfit_libcint")
+      !! The --df fitting basis from libcint's packed arrays, the same
+      !! shape and `cartesian` convention as trc_set_aux_libcint; refused
+      !! rather than coerced if it disagrees with the orbital basis
+      !! already set (pyscf's auxmol.cart = mol.cart rule).
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm, nshell, nenv, cartesian
+      integer(c_int), intent(in) :: atm(*), bas(*)
+      real(c_double), intent(in) :: env(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_basis_t) :: b
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (natm <= 0 .or. nshell <= 0 .or. nenv <= 0) then
+         call refuse(cx, "trc_set_jkfit_libcint: natm, nshell and nenv must all be positive")
+         return
+      end if
+      call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
+      b%spherical = (cartesian == 0)
+      if (cx%have_basis .and. b%spherical .neqv. cx%bb%b%spherical) then
+         call refuse(cx, "trc_set_jkfit_libcint: jkfit basis is "// &
+                     trim(merge("spherical", "Cartesian", b%spherical))//", but the orbital basis "// &
+                     "already set is "//trim(merge("spherical", "Cartesian", cx%bb%b%spherical))// &
+                     " -- match cartesian flags (pyscf's auxmol.cart = mol.cart rule)")
+         call b%release()
+         return
+      end if
+      if (cx%have_jkfit) call cx%jb%b%release()
+      cx%jb%b = b
+      call cx%jb%b%to_device()
+      cx%have_jkfit = .true.
+      cx%jkfit_path = ""
+      call b%release()
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
+      status = TRC_OK
+   end function trc_set_jkfit_libcint
 
    !
    ! How finely the shell pairs are batched by their Schwarz bound: `res`

@@ -1004,6 +1004,15 @@ add_test(NAME terco/context_scf COMMAND context_scf)
 set_tests_properties(terco/context_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# trc_set_basis_libcint/trc_set_aux_libcint/trc_set_jkfit_libcint with
+# cartesian = 0 (spherical), against the equivalent trc_set_*_json path.
+add_executable(check_capi_libcint_sph check_capi_libcint_sph.F90)
+target_compile_definitions(check_capi_libcint_sph PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_libcint_sph PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
+add_test(NAME terco/check_capi_libcint_sph COMMAND check_capi_libcint_sph)
+set_tests_properties(terco/check_capi_libcint_sph PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 # GAMESS's per-component AO normalisation (trc_set_ao_norm): the factor
 # itself against scripts/cartorder.py's recorded reference, l = 0..4, then
 # the overlap diagonal, the SCF energy, Tr(D S) and a guess round trip, all
