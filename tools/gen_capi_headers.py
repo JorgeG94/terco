@@ -382,6 +382,11 @@ def check_shape(arg, proc_name):
         raise GeneratorError(f"{proc_name}: dummy {arg.name} is optional, not supported at the C boundary")
 
 
+HANDLE_NAMES = {"handle", "basis", "pairs", "aux", "eri"}
+"""by-value type(c_ptr) dummies that are terco handles; every other by-value
+c_ptr is a nullable data pointer (const void* in terco.h)."""
+
+
 def c_type_for(arg, proc_name):
     check_shape(arg, proc_name)
     kind = arg.kind
@@ -389,7 +394,13 @@ def c_type_for(arg, proc_name):
         if kind != "c_ptr":
             raise GeneratorError(f"{proc_name}: unsupported derived type dummy {arg.entity_text!r}")
         if arg.is_value:
-            return "trc_handle_t"
+            # A by-value c_ptr is either an opaque handle or a nullable data
+            # pointer (an optional array: dguess, radii). Only the names
+            # terco uses for its handles map to trc_handle_t; anything
+            # else is data, so a C caller passes its double* uncast.
+            if arg.name in HANDLE_NAMES:
+                return "trc_handle_t"
+            return "const void*"
         if "intent(out)" in arg.attrs:
             return "trc_handle_t*"
         raise GeneratorError(f"{proc_name}: type(c_ptr) dummy {arg.name} is neither value nor intent(out)")

@@ -129,9 +129,9 @@ int trc_fock_many(trc_handle_t eri, trc_handle_t basis, int ndens, const double*
  */
 int trc_fock_nosym(trc_handle_t eri, trc_handle_t basis, const double* dmat, double* gmat, int dscreen);
 
-int trc_scf(trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, trc_handle_t dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
+int trc_scf(trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
 
-int trc_scf_mpi(int fcomm, trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, trc_handle_t dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
+int trc_scf_mpi(int fcomm, trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
 
 int trc_rimp2(int fcomm, trc_handle_t basis, trc_handle_t aux, int nfrozen, int aux_block, double* e_os, double* e_ss);
 
@@ -243,7 +243,7 @@ int trc_set_pcm(trc_handle_t handle, const char* model, double eps, int lebedev,
  * which can change the atom count and order the override was
  * given in.
  */
-int trc_set_pcm_radii(trc_handle_t handle, int natm, trc_handle_t radii);
+int trc_set_pcm_radii(trc_handle_t handle, int natm, const void* radii);
 
 /**
  * The continuum's part of the last SCF: E_diel = q.v/2 (already in
@@ -317,7 +317,7 @@ int trc_set_force_cartesian(trc_handle_t handle, int flag);
  * this copy, including trc_run_scf's own iteration, only ever sees
  * terco's native convention.
  */
-int trc_set_guess(trc_handle_t handle, int kind, trc_handle_t dguess, int nspin);
+int trc_set_guess(trc_handle_t handle, int kind, const void* dguess, int nspin);
 
 /**
  * How this context's AO-indexed C API entries normalise a Cartesian
