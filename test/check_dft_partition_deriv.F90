@@ -181,6 +181,9 @@ program check_dft_partition_deriv
    call one_case('water.xyz', PARTITION_STRATMANN, ADJUST_NONE, 'water, Stratmann/none', any_fail)
    call one_case('formamide.xyz', PARTITION_BECKE, ADJUST_TREUTLER, 'formamide, Becke/Treutler', any_fail)
    call one_case('formamide.xyz', PARTITION_STRATMANN, ADJUST_NONE, 'formamide, Stratmann/none', any_fail)
+   ! A water cluster, where most of a point's active atoms have negligible
+   ! cells: the case becke_partition_grad_contract's cell screening is for.
+   call large_case('w5.xyz', 'w5, Becke/Treutler, level 1', any_fail)
 
    if (any_fail) then
       print '(a)', 'check_dft_partition_deriv: RESULT: FAIL'; stop 1
@@ -252,6 +255,24 @@ contains
       deallocate (at_z, r, dw_new, dw_ref, shift, inv_distance)
    end subroutine one_case
 
+   subroutine large_case(xyzfile, label, any_fail)
+      character(*), intent(in) :: xyzfile, label
+      logical, intent(inout) :: any_fail
+      integer :: nat
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :)
+      type(dft_grid_t) :: grid
+      type(error_t) :: err
+
+      call read_xyz(xyzfile, nat, at_z, r)
+      call build_dft_grid(r, at_z, grid, err, level=1, scheme=PARTITION_BECKE, adjust=ADJUST_TREUTLER)
+      if (err%has_error()) then
+         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
+      end if
+      call contract_case(grid, nat, r, at_z, PARTITION_BECKE, ADJUST_TREUTLER, label, -1.0_dp, any_fail)
+      call grid%destroy()
+   end subroutine large_case
+
    subroutine contract_case(grid, nat, r, at_z, scheme, adjust, label, numax, any_fail)
       type(dft_grid_t), intent(in) :: grid
       integer, intent(in) :: nat, scheme, adjust
@@ -288,10 +309,10 @@ contains
       g_new = 1.0_dp   ! ADDED into: start from a non-zero gradient
       if (numax > 0.0_dp) then
          call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
-                                            adjust, g_new, err, nu_max=numax, budget=int(3*nat*37, int64))
+                                            adjust, g_new, err, nu_max=numax, budget=int(4*nat*37, int64))
       else
          call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
-                                            adjust, g_new, err, budget=int(3*nat*37, int64))
+                                            adjust, g_new, err, budget=int(4*nat*37, int64))
       end if
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1

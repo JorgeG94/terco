@@ -72,6 +72,9 @@ module trc_dft_partition
    !! becke_partition_grad_contract (see partition_grad_point): every term
    !! it carries is below it, relatively, and above it every factor is
    !! safely non-zero to divide by.
+   real(dp), parameter :: CELL_REL = 1.0e-20_dp
+   !! ... and so is one below this times the point owner's own cell (see
+   !! partition_grad_point for the bound on what that drops).
 
    integer, parameter :: N_DIM = 3
 
@@ -657,11 +660,11 @@ contains
       !! As `becke_partition_derivatives`'s.
       integer(int64), intent(in), optional :: budget
       !! Scratch budget in doubles, default 2^26 (512 MB): a chunk holds
-      !! 2^26 / (3 n_atoms) points, 124k at 180 atoms.
+      !! 2^26 / (4 n_atoms) points, 93k at 180 atoms.
 
       real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
       real(dp), allocatable :: ract(:, :), cell(:, :)
-      integer, allocatable :: active(:, :), mark(:, :)
+      integer, allocatable :: active(:, :), sig(:, :), mark(:, :)
       integer :: n_atoms, i, j, k0, n, chunk, g
       integer(int64) :: cap
       real(dp) :: numax
@@ -682,8 +685,8 @@ contains
       if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
       if (present(nu_max)) numax = nu_max
       cap = 67108864_int64
-      if (present(budget)) cap = max(budget, int(3*n_atoms, int64))
-      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(3*n_atoms, int64))))
+      if (present(budget)) cap = max(budget, int(4*n_atoms, int64))
+      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(4*n_atoms, int64))))
 
       allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
       call size_adjustment(atomic_numbers, adjust, shift)
@@ -701,17 +704,17 @@ contains
       end do
 
       allocate (ract(chunk, n_atoms), cell(chunk, n_atoms))
-      allocate (active(chunk, n_atoms), mark(chunk, n_atoms))
+      allocate (active(chunk, n_atoms), sig(chunk, n_atoms), mark(chunk, n_atoms))
       mark = 0
       !$acc data copyin(atom_coords, shift, inv_distance, r_min, mark) copy(grad) &
-      !$acc      create(ract, cell, active)
+      !$acc      create(ract, cell, active, sig)
       do k0 = 1, n_points, chunk
          n = min(chunk, n_points - k0 + 1)
 #ifdef _OPENACC
          do concurrent(g=1:n)
             call partition_grad_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                       coef, shift, inv_distance, r_min, scheme, adjust, numax, &
-                                      ract, cell, active, mark, grad)
+                                      ract, cell, active, sig, mark, grad)
          end do
 #else
          ! Serial on the host: the body's atomics are inert there, and two
@@ -719,7 +722,7 @@ contains
          do g = 1, n
             call partition_grad_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                       coef, shift, inv_distance, r_min, scheme, adjust, numax, &
-                                      ract, cell, active, mark, grad)
+                                      ract, cell, active, sig, mark, grad)
          end do
 #endif
       end do
@@ -748,16 +751,20 @@ contains
    ! read back and forth. That traffic was what bound the kernel.
    !
    ! "cell_r / S(r,c)" is the product of cell_r's other factors only while
-   ! cell_r is a normal number: a row whose cell is below CELL_FLOOR is
-   ! dropped from (A) and (B). Its terms are bounded by that cell over
-   ! (1 - nu) times O(1) -- the cutoff's derivative vanishes with it -- so
-   ! nothing below 1e-150 relative is lost, and no factor that is exactly
-   ! zero is ever divided by. The pair algebra is `pair_sij`'s, operation
-   ! for operation, on scalars.
+   ! cell_r is a normal number, and most active atoms' cells are far below
+   ! any that matters: a row whose cell is below CELL_FLOOR, or below
+   ! CELL_REL times the owner's cell, counts as zero (its product stops as
+   ! soon as it is there, and it leaves `total`). Its terms are that cell
+   ! times S'/S, at most 8/(1 - nu) |grad nu| for Becke's cutoff -- under
+   ! 1e-14 relative even at nu = 1 - 1e-6 -- and no factor that is exactly
+   ! zero is ever divided by. A nucleus whose cell is zero then needs only
+   ! (A), over the rows that are not (`sig`), so the pass over nuclei costs
+   ! active x significant rather than active^2. The pair algebra is
+   ! `pair_sij`'s, operation for operation, on scalars.
    !
    pure subroutine partition_grad_point(k, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                         coef, shift, inv_distance, r_min, scheme, adjust, numax, &
-                                        ract, cell, active, mark, grad)
+                                        ract, cell, active, sig, mark, grad)
       !$acc routine seq
       integer, intent(in) :: k, g, n_atoms, n_points, chunk, scheme, adjust
       real(dp), intent(in) :: points(3, n_points), atom_coords(3, n_atoms)
@@ -766,13 +773,13 @@ contains
       real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms)
       real(dp), intent(in) :: numax
       real(dp), intent(inout) :: ract(chunk, n_atoms), cell(chunk, n_atoms)
-      integer, intent(inout) :: active(chunk, n_atoms), mark(chunk, n_atoms)
+      integer, intent(inout) :: active(chunk, n_atoms), sig(chunk, n_atoms), mark(chunk, n_atoms)
       real(dp), intent(inout) :: grad(3, n_atoms)
-      integer :: own, i, j, ia, ja, n_active, n1, pp, qq, ic, ir
-      real(dp) :: c, mu, nu, ri, rj, rown, s, total, cell_own, cell_c, cell_r, r_inner, denom
+      integer :: own, i, j, ia, ja, n_active, n1, pp, qq, ic, ir, it, nsig, nrow
+      real(dp) :: c, mu, nu, ri, rown, s, total, cell_own, cell_c, cell_r, r_inner, denom, floor
       real(dp) :: d3(3)
       real(dp) :: ucx, ucy, ucz, rc, invd, r_p, r_q, sh, ds_dnu, c1, t3, f0, f1, f2, f3
-      real(dp) :: s_rc, s_cr, rx, ry, rz, dx, dy, dz, ex, ey, ez
+      real(dp) :: s_rc, s_cr, rx, ry, rz, dx, dy, dz, ex, ey
       real(dp) :: tax, tay, taz, tbx, tby, tbz, ox, oy, oz
       real(dp) :: vx, vy, vz, vox, voy, voz
 
@@ -832,8 +839,14 @@ contains
       end do
 
       ! The cells, each in a register, in becke_partition_derivatives'
-      ! factor order (j by position, skipping i).
+      ! factor order (j by position, skipping i). The owner's comes first
+      ! (it is position 1); every other row stops as soon as its product,
+      ! which only falls, is below `floor`, and counts as zero from then on.
+      ! The rows that do not are the `sig` list.
       total = 0.0_dp
+      cell_own = 0.0_dp
+      floor = CELL_FLOOR
+      nsig = 0
       do ia = 1, n_active
          i = active(g, ia)
          ri = ract(g, ia)
@@ -866,11 +879,20 @@ contains
             else
                cell_c = cell_c*(1.0_dp - s)
             end if
+            if (cell_c < floor) exit
          end do
+         if (ia == 1) then
+            cell_own = cell_c
+            floor = max(CELL_FLOOR, CELL_REL*cell_own)
+         end if
+         if (cell_c < floor) cell_c = 0.0_dp
          cell(g, ia) = cell_c
-         total = total + cell_c
+         if (cell_c > 0.0_dp) then
+            nsig = nsig + 1
+            sig(g, nsig) = ia
+            total = total + cell_c
+         end if
       end do
-      cell_own = cell(g, 1)
 
       if (total > 0.0_dp) then
          denom = total*total
@@ -890,7 +912,9 @@ contains
                ucy = 0.0_dp
                ucz = 0.0_dp
             end if
-            ! (A), (B), and dcell_own/dR_c, summed over the rows r.
+            ! (A), (B), and dcell_own/dR_c, summed over the rows r: every
+            ! row when c's own cell counts ((B) needs them all), only the
+            ! `sig` rows when it does not ((A) is all that is left).
             tax = 0.0_dp
             tay = 0.0_dp
             taz = 0.0_dp
@@ -900,10 +924,19 @@ contains
             ox = 0.0_dp
             oy = 0.0_dp
             oz = 0.0_dp
-            do ir = 1, n_active
+            if (cell_c > 0.0_dp) then
+               nrow = n_active
+            else
+               nrow = nsig
+            end if
+            do it = 1, nrow
+               if (cell_c > 0.0_dp) then
+                  ir = it
+               else
+                  ir = sig(g, it)
+               end if
                if (ir == ic) cycle
                cell_r = cell(g, ir)
-               if (cell_r < CELL_FLOOR .and. cell_c < CELL_FLOOR) cycle
                i = active(g, ir)
                ri = ract(g, ir)
                pp = min(i, j)
@@ -952,7 +985,7 @@ contains
                   dy = -(c1*(-ucy*invd - t3*ry))
                   dz = -(c1*(-ucz*invd - t3*rz))
                end if
-               if (cell_r >= CELL_FLOOR) then
+               if (cell_r > 0.0_dp) then
                   ex = cell_r/s_rc
                   tax = tax + dx*ex
                   tay = tay + dy*ex
@@ -963,7 +996,7 @@ contains
                      oz = dz*ex
                   end if
                end if
-               if (cell_c >= CELL_FLOOR) then
+               if (cell_c > 0.0_dp) then
                   ey = cell_c/s_cr
                   tbx = tbx - dx*ey
                   tby = tby - dy*ey
