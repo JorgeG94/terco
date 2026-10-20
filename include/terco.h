@@ -223,6 +223,29 @@ int trc_set_nlc_grid(trc_handle_t handle, int grid_level);
 int trc_set_pcm(trc_handle_t handle, const char* model, double eps, int lebedev, double radii_scale);
 
 /**
+ * Override the PCM cavity radii table (trc_pcm_radii.F90) with
+ * explicit, FINAL (already-scaled) per-atom radii in bohr,
+ * trc_set_molecule's own atom order -- for a caller whose own PCM
+ * reference used a different van der Waals table or scale than
+ * terco's default (pyscf's modified Bondi, radii_scale 1.2): mqc's
+ * own convention is plain Bondi (hydrogen 1.20 Angstrom, not
+ * terco's 1.10) times 1.2, which the two backends otherwise
+ * disagree on by construction (water cpcm/PBE0: E_diel -0.011577
+ * here against -0.010200 there, 556 against 566 kept surface
+ * points) -- not a bug in either, a different cavity. This makes
+ * them agree by construction instead.
+ *
+ * natm = 0, or a NULL radii, clears the override, back to the
+ * table and radii_scale; natm must otherwise equal the molecule's
+ * own atom count. Invalidates the last SCF result, as trc_set_pcm
+ * does. Kept across trc_set_charge (the molecule, and so the
+ * cavity's atoms, are unchanged); cleared by trc_set_molecule,
+ * which can change the atom count and order the override was
+ * given in.
+ */
+int trc_set_pcm_radii(trc_handle_t handle, int natm, trc_handle_t radii);
+
+/**
  * The continuum's part of the last SCF: E_diel = q.v/2 (already in
  * trc_energy's total), the total apparent surface charge, and the
  * surface points the cavity kept. Zeros when no continuum was set.

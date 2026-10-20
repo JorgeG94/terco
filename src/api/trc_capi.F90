@@ -241,7 +241,7 @@ module trc_capi
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
    public :: trc_save_scf, trc_load_scf
-   public :: trc_set_pcm, trc_pcm_energy
+   public :: trc_set_pcm, trc_set_pcm_radii, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
    public :: trc_set_force_cartesian, trc_is_spherical
    public :: trc_max_angular_momentum
@@ -1458,6 +1458,10 @@ contains
       call invalidate_runs(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
+      ! A new (possibly different-sized, differently-ordered) atom set
+      ! invalidates any trc_set_pcm_radii override -- unlike trc_set_charge,
+      ! which keeps the same atoms and so keeps it.
+      if (allocated(cx%opts%pcm_radii_override)) deallocate (cx%opts%pcm_radii_override)
       status = TRC_OK
    end function trc_set_molecule
 
@@ -1984,6 +1988,60 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_pcm
+
+   function trc_set_pcm_radii(handle, natm, radii) result(status) bind(c, name="trc_set_pcm_radii")
+      !! Override the PCM cavity radii table (trc_pcm_radii.F90) with
+      !! explicit, FINAL (already-scaled) per-atom radii in bohr,
+      !! trc_set_molecule's own atom order -- for a caller whose own PCM
+      !! reference used a different van der Waals table or scale than
+      !! terco's default (pyscf's modified Bondi, radii_scale 1.2): mqc's
+      !! own convention is plain Bondi (hydrogen 1.20 Angstrom, not
+      !! terco's 1.10) times 1.2, which the two backends otherwise
+      !! disagree on by construction (water cpcm/PBE0: E_diel -0.011577
+      !! here against -0.010200 there, 556 against 566 kept surface
+      !! points) -- not a bug in either, a different cavity. This makes
+      !! them agree by construction instead.
+      !!
+      !! natm = 0, or a NULL radii, clears the override, back to the
+      !! table and radii_scale; natm must otherwise equal the molecule's
+      !! own atom count. Invalidates the last SCF result, as trc_set_pcm
+      !! does. Kept across trc_set_charge (the molecule, and so the
+      !! cavity's atoms, are unchanged); cleared by trc_set_molecule,
+      !! which can change the atom count and order the override was
+      !! given in.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm
+      type(c_ptr), value :: radii
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      real(c_double), pointer :: rp(:)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      if (natm == 0 .or. .not. c_associated(radii)) then
+         if (allocated(cx%opts%pcm_radii_override)) deallocate (cx%opts%pcm_radii_override)
+         call invalidate_runs(cx)
+         status = TRC_OK
+         return
+      end if
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_pcm_radii: set the molecule first")
+         return
+      end if
+      status = TRC_ERR_BADARG
+      if (int(natm) /= cx%natm) then
+         call refuse(cx, "trc_set_pcm_radii: natm "//trim(itoa(int(natm)))// &
+                     " does not match the molecule's "//trim(itoa(cx%natm))//" atoms")
+         return
+      end if
+      if (allocated(cx%opts%pcm_radii_override)) deallocate (cx%opts%pcm_radii_override)
+      call c_f_pointer(radii, rp, [int(natm)])
+      allocate (cx%opts%pcm_radii_override(cx%natm))
+      cx%opts%pcm_radii_override = real(rp, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_pcm_radii
 
    function trc_pcm_energy(handle, e_diel, q_total, npoints) result(status) bind(c, name="trc_pcm_energy")
       !! The continuum's part of the last SCF: E_diel = q.v/2 (already in

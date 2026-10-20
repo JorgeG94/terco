@@ -1,0 +1,11 @@
+# terco pyscf reference v1
+# case: check_capi_pcm_radii
+# generator: test/pyscf_refs/generate.py CASES["pcm_radii_override"] -> gen_pcm_radii_override
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: f9d2bb9e0554b6c9257f9db5965e3dfec7c4212970c8b46f0221c079276646db
+# files: test/check_capi_pcm_radii.F90 test/water.xyz test/basis_sets/6-31gs.json
+# GRAD_NORM 4.715e-10
+E_SCF -7.63350143571157389e+01
+E_DIEL -1.03443249509328969e-02
+END

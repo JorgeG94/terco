@@ -223,7 +223,12 @@ contains
       if (cfg%pcm_on) then
          call tphase%start()
          call this%pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err, la=this%lp)
-         call this%pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
+         if (allocated(opts%pcm_radii_override)) then
+            call this%pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err, &
+                                radii_override=opts%pcm_radii_override)
+         else
+            call this%pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
+         end if
          if (err%has_error()) then
             call this%release()
             return

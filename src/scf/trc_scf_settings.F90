@@ -176,6 +176,12 @@ module trc_scf_settings
       !! SWIG exponent (302, pyscf's default, here too)
       real(dp) :: pcm_radii_scale = PCM_DEFAULT_RADII_SCALE
       !! van der Waals radius to cavity radius (1.2, as pyscf and Q-Chem)
+      real(dp), allocatable :: pcm_radii_override(:)
+      !! Final, already-scaled per-atom cavity radii in bohr, trc_set_molecule's
+      !! own atom order -- unallocated (the default) reads the table and
+      !! pcm_radii_scale above instead. trc_set_pcm_radii's own route in;
+      !! see trc_capi.F90 for why a caller would want this (matching another
+      !! backend's own radii convention, rather than terco's).
    end type trc_scf_options_t
 
    type :: scf_energies_t

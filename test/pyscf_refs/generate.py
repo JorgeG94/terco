@@ -3283,6 +3283,48 @@ def _pcm_converge(mf, label, dm0=None):
     return mf, gnorm
 
 
+def gen_pcm_radii_override():
+    """check_capi_pcm_radii.F90's pyscf-backed case: water/6-31G*, C-PCM,
+    PBE0, with the cavity radii trc_set_pcm_radii overrides to PLAIN Bondi
+    (hydrogen 1.20 Angstrom, pyscf's pcm.radii.VDW) times the usual 1.2
+    scale -- mqc's own convention, which terco's default table (pyscf's
+    MODIFIED Bondi, hydrogen 1.10) disagrees with by construction. Every
+    other element water uses (oxygen, 1.52 in both tables) is identical
+    between the two, so this isolates exactly the one radius the override
+    exists to change. No binary dump: converged independently (water's
+    closed-shell singlet has no near-degenerate frontier orbital or
+    symmetry-breaking ambiguity for the two sides to land in different
+    basins over, test/scf_cphf.F90's own header), so pyscf only needs the
+    same geometry, basis and PCM settings, not terco's own density."""
+    from pyscf.solvent import pcm
+    atoms = _xyz_bohr("water.xyz")
+    basis_arg = bse_json_basis(TEST / "basis_sets" / "6-31gs.json", {"O": 8, "H": 1})
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+
+    mf = dft.RKS(mol)
+    mf.xc = 'PBE0'
+    mf = mf.PCM()
+    mf.with_solvent.method = 'C-PCM'
+    mf.with_solvent.eps = PCM_EPS
+    mf.with_solvent.lebedev_order = 29   # 302 points per sphere
+    # PCM.build() uses radii_table AS THE FINAL RADII when it is set at
+    # all (vdw_scale is only applied to the DEFAULT modified_Bondi table,
+    # never on top of an explicit radii_table -- see its own source), so
+    # the x1.2 has to be baked in here rather than left to vdw_scale.
+    mf.with_solvent.radii_table = pcm.radii.VDW * 1.2
+    mf, gnorm = _pcm_converge(mf, "pcm_radii_override water/6-31gs cpcm pbe0 (plain Bondi x 1.2)")
+
+    w = RefWriter("pcm_radii_override_water.ref")
+    w.header("check_capi_pcm_radii", [ROOT / "test" / "check_capi_pcm_radii.F90", TEST / "water.xyz",
+                                       TEST / "basis_sets" / "6-31gs.json"])
+    w.comment(f"GRAD_NORM {gnorm:.3e}")
+    w.real("E_SCF", mf.e_tot)
+    w.real("E_DIEL", mf.scf_summary['e_solvent'])
+    w.end()
+    w.write()
+    print(f"  pcm_radii_override: E {mf.e_tot:.12f}  E_diel {mf.scf_summary['e_solvent']:.12f}")
+
+
 def gen_pcm_scf(set_name):
     """scf_pcm.F90's cases: pyscf's own RHF/UHF/RKS/UKS with .PCM() (same
     model, dielectric, radii scale and Lebedev order), on terco's own DFT
@@ -3410,6 +3452,7 @@ def gen_pcm_scf(set_name):
 CASES = {
     "mult": gen_mult,
     "ao": gen_ao,
+    "pcm_radii_override": gen_pcm_radii_override,
     "xc_energy": gen_xc_energy,
     "vv10": gen_vv10,
     "rys_grad_631gs": lambda: gen_rys_grad("631gs", "basis_sets/6-31gs.json"),

@@ -1040,6 +1040,19 @@ set_tests_properties(terco/check_capi_charge_unrestricted PROPERTIES WORKING_DIR
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# trc_set_pcm_radii, through the context API: an override equal to
+# terco's own table is bit-identical to the table path; an override at
+# mqc's own radii convention (plain Bondi x 1.2) matches an independent
+# pyscf reference built with the same convention.
+add_executable(check_capi_pcm_radii check_capi_pcm_radii.F90)
+target_compile_definitions(check_capi_pcm_radii PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_pcm_radii PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                    terco_pyscf_ref_io)
+add_test(NAME terco/check_capi_pcm_radii COMMAND check_capi_pcm_radii)
+set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # terco driven from C, through include/terco.h only -- the C-side proof
 # trc_c_interfaces.f90 is for a Fortran caller (test/link_gfortran.F90).
 # Needs the C compiler, which nothing else in this build does; enabled
