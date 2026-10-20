@@ -2523,9 +2523,9 @@ contains
    function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
       !! ======================================================================
       !! !!! EXPERIMENTAL !!! Validated against pyscf and finite differences,
-      !! but NOT performance-tuned: the DFT, VV10 and --df gradients can cost
-      !! far more than the energy, the grid response stores 3 x atoms x grid
-      !! points, and only one rank is supported. Do not rely on its cost yet.
+      !! but NOT performance-tuned: the --df gradient can cost far more than
+      !! the energy, and only one rank is supported. Do not rely on its cost
+      !! yet.
       !! ======================================================================
       !!
       !! The full analytic RHF/UHF nuclear gradient at the converged SCF
@@ -2672,21 +2672,23 @@ contains
                                   cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                   func=func, grid_level=cx%opts%grid_level, &
                                   grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b)
+                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                  verbose=cx%opts%verbose)
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                  dfjk=cx%dfjk, aux=cx%jb%b)
+                                  dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose)
          end if
       else if (have_func) then
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                func=func, grid_level=cx%opts%grid_level, &
                                grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                               nlc_grid_level=cx%opts%nlc_grid_level)
+                               nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose)
       else
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad)
+                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                               verbose=cx%opts%verbose)
       end if
       cx%grad_ok = .true.
       status = TRC_OK
@@ -2937,6 +2939,10 @@ contains
       cx%message = msg
       if (len_trim(msg) > 0) return
       n = scf_space_nao(cx%bb)
+      ! The GEMM/eigensolver handles trc_run_scf would have made: a loaded
+      ! result goes straight to trc_run_gradient or trc_run_rimp2, which
+      ! reuse `cx%la` and would otherwise call cuBLAS with no handle.
+      call cx%la%init(n)
       if (allocated(cx%bb%cmo)) deallocate (cx%bb%cmo, cx%bb%eps)
       allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
       cx%bb%cmo = cx%res%cmo

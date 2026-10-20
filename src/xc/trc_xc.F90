@@ -115,6 +115,7 @@ module trc_xc
    private
 
    public :: trc_xc_rks, trc_xc_uks, trc_xc_fxc_rks, XC_RHO_TOL
+   public :: XC_NP_PAD, XC_NL_PAD, sort_by_shape
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
    !! A batch whose bound on rho is below this is skipped. The functionals'

@@ -388,8 +388,7 @@ contains
       call global_logger%warning("   ==========================================================================")
       call global_logger%warning("     !!!  EXPERIMENTAL: ANALYTIC GRADIENTS  !!!")
       call global_logger%warning("     Validated against pyscf and finite differences, but NOT performance-")
-      call global_logger%warning("     tuned: the DFT, VV10 and --df gradients can be much slower than the")
-      call global_logger%warning("     energy, and grid-response memory grows as 3 x atoms x grid points.")
+      call global_logger%warning("     tuned: the --df gradient can be much slower than the energy.")
       call global_logger%warning("     Single rank only. Use for testing; do not rely on its cost yet.")
       call global_logger%warning("   ==========================================================================")
    end subroutine experimental_gradient_banner

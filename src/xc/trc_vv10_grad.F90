@@ -14,11 +14,10 @@
 ! producing the two arrays `vrho`/`vsigma` at every point, exactly the way
 ! trc_vv10's own energy path does. What is left is the ORDINARY GGA
 ! contraction trc_xc_grad.F90 already implements for a semilocal kernel's
-! vrho/vsigma -- this module reuses that contraction machinery
-! (xc_grad_collocate2, xc_grad_gather, xc_grad_scatter, xc_grad_scatter_points,
-! all exported from trc_xc_grad for exactly this), just reading `vrho(g)`/
-! `vsigma(g)` from VV10's own precomputed arrays instead of calling
-! `xc_eval_point`.
+! vrho/vsigma -- this module reuses that pipeline (trc_xc_grad's
+! xc_grad_drive, restricted GGA, with this module's own batch screen),
+! just reading `vrho(g)`/`vsigma(g)`/grad rho from VV10's own precomputed
+! arrays instead of calling `xc_eval_point`.
 !
 ! THE NONLOCAL EXTRAS. Two things have no counterpart in a semilocal
 ! functional's gradient, and neither is optional (measured at ~4.5e-4 on
@@ -49,7 +48,7 @@
 ! Both grid-response pieces close the SAME header gap xc_gradient_add's own
 ! "GRID RESPONSE" section documents for the semilocal term (point motion of
 ! both grids, partition-weight motion, and their cross-cancellation via
-! `becke_partition_derivatives`) -- this module's own weight/point-motion
+! `becke_partition_grad_contract`) -- this module's own weight/point-motion
 ! block is that section's VV10 analogue, with `dedw`/`fexp` in place of
 ! `fxc = rho eps`/nothing.
 !
@@ -106,12 +105,13 @@ module trc_vv10_grad
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc_grad, only: xc_grad_collocate2, xc_grad_gather, xc_grad_scatter, xc_grad_scatter_points
+   use trc_xc_grad, only: xc_grad_drive, xc_grad_step_names, ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
+   use trc_xc_functional, only: XC_MAX_KERNELS
+   use trc_step_table, only: step_table_t
    use trc_vv10, only: vv10_density_tile, vv10_gather, VV10_RHO_TOL, PI43
-   use trc_collocation, only: NHESS
    use trc_linalg, only: trc_linalg_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, DEFAULT_GRID_LEVEL
-   use trc_dft_partition, only: becke_partition_derivatives
+   use trc_dft_partition, only: becke_partition_grad_contract
    use trc_error, only: error_t
    implicit none
    private
@@ -138,7 +138,8 @@ contains
    ! are VV10's own `b`/`C` (6.0, 0.01 for wB97X-V). ADDS into `grad`.
    !
    subroutine vv10_gradient_add(b, lp, nspin, dens, bcoef, ccoef, grad, grid_level, grid_max_pts, &
-                                grid_response)
+                                grid_response, &
+                                timing)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nspin
@@ -164,11 +165,21 @@ contains
       !! against pyscf, whose own nlc gradient has no grid-response support
       !! to match against (this module's own header, GRID RESPONSE caveat
       !! in trc_scf_grad.F90's docs).
+      type(step_table_t), intent(inout), optional, target :: timing
+      !! As xc_gradient_add's: device-synced time per step, added into,
+      !! initialised by the caller with `xc_grad_step_names()`.
 
+      type(step_table_t), target :: tbl_own
+      type(step_table_t), pointer :: tbl
+      integer, allocatable :: bact(:)
+      integer :: kid0(XC_MAX_KERNELS)
+      real(dp) :: coef0(XC_MAX_KERNELS)
+      real(dp) :: tc
+      real(dp), allocatable :: fxc0(:), pcoef(:)
       type(dft_grid_t) :: grid
       type(trc_xc_grid_t) :: xg
       type(error_t) :: err
-      integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc
+      integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc, g, own
       real(dp) :: kvv, beta
       integer, allocatable :: ao_atom(:), at_z(:)
       real(dp), allocatable :: dtot(:, :, :)
@@ -178,7 +189,7 @@ contains
       integer, allocatable :: gidx(:)
       integer :: npass, npts
       real(dp), allocatable :: grad_extra(:, :)
-      logical :: active, gresp
+      logical :: gresp
 
       glevel = DEFAULT_GRID_LEVEL
       if (present(grid_level)) glevel = grid_level
@@ -187,6 +198,14 @@ contains
       gresp = .true.
       if (present(grid_response)) gresp = grid_response
 
+      if (present(timing)) then
+         tbl => timing
+      else
+         call tbl_own%init("vv10 grad", xc_grad_step_names())
+         tbl => tbl_own
+      end if
+
+      call tbl%step_on(lp, ST_GRID, tc)
       allocate (at_z(b%natm), source=nint(b%at_z))
       call build_dft_grid(b%at_r, at_z, grid, err, level=glevel)
       if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
@@ -194,6 +213,7 @@ contains
                     atom=grid%atom, qw=grid%quad_weights)
       call xg%to_device()
       npts = xg%npts
+      call tbl%step_off(lp, ST_GRID, tc)
 
       if (npts > 0) then
          allocate (ao_atom(b%nao))
@@ -205,10 +225,10 @@ contains
          !$acc enter data copyin(ao_atom)
 
          ! VV10 sees the TOTAL density only (this module's own header) --
-         ! built once, at nspin = 1, so every downstream call (the generic
-         ! xc_grad_gather/xc_grad_scatter it reuses, both written for a
-         ! spin-indexed `dens(nao,nao,nspin)`) can be handed this array
-         ! directly with nspin = 1 rather than reshaped.
+         ! built once, at nspin = 1, so the semilocal gradient's pipeline it
+         ! reuses (xc_grad_drive, written for a spin-indexed
+         ! `dens(nao,nao,nspin)`) can be handed this array directly with
+         ! nspin = 1 rather than reshaped.
          allocate (dtot(b%nao, b%nao, 1))
          !$acc enter data create(dtot)
          !$acc data copyin(dens)
@@ -230,6 +250,7 @@ contains
          allocate (vrho(npts), vsigma(npts), dedw(npts), fexp(3, npts))
          !$acc data copyin(dtot) create(rho, grho, sigma, vrho, vsigma, dedw, fexp)
 
+         call tbl%step_on(lp, ST_POINTS, tc)
          ! PASS 1: rho/grad-rho/sigma at every outer point -- trc_vv10's own
          ! tiled driver, reused bit-identically (this module's header).
          call vv10_density_tile(b%nao, b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
@@ -263,6 +284,7 @@ contains
                                gx, gy, gz, gkp, gw0p, grpw, vrho, vsigma, dedw, fexp)
          !$acc end data
          deallocate (gidx, gx, gy, gz, gkp, gw0p, grpw)
+         call tbl%step_off(lp, ST_POINTS, tc)
 
          ! `dedw`/`fexp` are only ever read host-side (the weight-response
          ! block below); `rho`/`grho`/`sigma`/`vrho`/`vsigma` stay device-
@@ -272,24 +294,54 @@ contains
          allocate (grad_extra(3, b%natm))
          grad_extra = 0.0_dp
 
+         ! The Pulay and point-motion terms: the semilocal gradient's own
+         ! chunked pipeline (trc_xc_grad's xc_grad_drive), restricted GGA,
+         ! with this module's PASS 2 potential in place of a functional and
+         ! its own batch screen (any point at or above VV10_RHO_TOL).
+         allocate (bact(xg%nbatch), fxc0(npts))
+         fxc0 = 0.0_dp
          do ib = 1, xg%nbatch
             npb = xg%b_off(ib + 1) - xg%b_off(ib)
             nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+            bact(ib) = 0
             if (npb == 0 .or. nloc == 0) cycle
-            active = vv10_grad_batch_active(xg%b_off(ib), npb, rho, npts)
-            if (.not. active) cycle
-            call vv10_grad_one_batch(b, lp, dtot, xg, ib, npb, nloc, ao_atom, grad, &
-                                     b%at_r, at_z, grid%scheme, grid%adjust, gresp, &
-                                     grho, vrho, vsigma, dedw, fexp, grad_extra)
+            if (vv10_grad_batch_active(xg%b_off(ib), npb, rho, npts)) bact(ib) = 1
          end do
+         kid0 = 0
+         coef0 = 0.0_dp
+         call xc_grad_drive(b, lp, .true., 1, 0, kid0, coef0, dtot, xg, 0.0_dp, ao_atom, grad, gresp, &
+                            fxc0, tbl, act_in=bact, ext_grho=grho, ext_vrho=vrho, ext_vsigma=vsigma)
 
          !$acc end data
          if (gresp) then
+            ! GRID RESPONSE, the weight-derivative and the point's-own-force
+            ! pieces (this module's header, THE NONLOCAL EXTRAS), over the
+            ! batches the screen kept: the point's own explicit force at its
+            ! FULL weight onto its owner, here; the partition's response to
+            ! qw*dedw, both its pieces, on the device.
+            call tbl%step_on(lp, ST_PDERIV, tc)
+            allocate (pcoef(npts))
+            pcoef = 0.0_dp
+            do ib = 1, xg%nbatch
+               if (bact(ib) == 0) cycle
+               do g = xg%b_off(ib), xg%b_off(ib + 1) - 1
+                  own = xg%atom(g)
+                  grad_extra(:, own) = grad_extra(:, own) + xg%w(g)*fexp(:, g)
+                  pcoef(g) = xg%qw(g)*dedw(g)
+               end do
+            end do
+            call becke_partition_grad_contract(npts, xg%r, b%at_r, at_z, xg%atom, pcoef, &
+                                               grid%scheme, grid%adjust, grad_extra, err)
+            if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
+            deallocate (pcoef)
+            call tbl%step_off(lp, ST_PDERIV, tc)
+            call tbl%step_on(lp, ST_RESP, tc)
             !$acc update self(grad)
             grad = grad + grad_extra
             !$acc update device(grad)
+            call tbl%step_off(lp, ST_RESP, tc)
          end if
-         deallocate (grad_extra)
+         deallocate (grad_extra, bact, fxc0)
 
          !$acc exit data delete(ao_atom, dtot)
          deallocate (ao_atom, dtot, rho, grho, sigma, vrho, vsigma, dedw, fexp)
@@ -442,215 +494,5 @@ contains
       fy_i = -3.0_dp*ri*fsy
       fz_i = -3.0_dp*ri*fsz
    end subroutine vv10_grad_kernel_body
-
-   !
-   ! One batch of the Pulay + grid-response-point-motion contraction: the
-   ! same shape as trc_xc_grad.F90's own `xc_grad_one_batch` GGA branch
-   ! (nspin = 1, since VV10 only ever sees the total density), with
-   ! `vrho`/`vsigma` read from this module's own PASS 2 output instead of
-   ! `xc_eval_point`, and the weight/point-motion grid-response block built
-   ! from `dedw`/`fexp` instead of `fxc = rho eps`.
-   !
-   subroutine vv10_grad_one_batch(b, lp, dtot, xg, ib, npb, nloc, ao_atom, grad, at_r, at_z, scheme, adjust, &
-                                  gresp, grho, vrho, vsigma, dedw, fexp, grad_extra)
-      type(trc_basis_t), intent(in) :: b
-      type(trc_linalg_t), intent(inout) :: lp
-      real(dp), intent(in) :: dtot(b%nao, b%nao, 1)
-      type(trc_xc_grid_t), intent(in) :: xg
-      integer, intent(in) :: ib, npb, nloc
-      integer, intent(in) :: ao_atom(b%nao)
-      real(dp), intent(inout) :: grad(3, b%natm)
-      real(dp), intent(in) :: at_r(3, b%natm)
-      integer, intent(in) :: at_z(b%natm)
-      integer, intent(in) :: scheme, adjust
-      logical, intent(in) :: gresp
-      real(dp), intent(in) :: grho(3, xg%npts), vrho(xg%npts), vsigma(xg%npts)
-      real(dp), intent(in) :: dedw(xg%npts), fexp(3, xg%npts)
-      real(dp), intent(inout) :: grad_extra(3, b%natm)
-
-      real(dp), allocatable :: chi(:, :), gchi(:, :, :), hchi(:, :, :)
-      real(dp), allocatable :: dloc(:, :, :), xmat(:, :, :)
-      real(dp), allocatable :: pall(:, :, :), q1all(:, :, :), rall(:, :, :), rmat(:, :, :)
-      real(dp), allocatable :: tall(:, :, :), qmove(:, :)
-      real(dp), allocatable :: dweights(:, :, :)
-      type(error_t) :: err
-      integer :: g, a, own, g0
-      real(dp) :: contrib
-
-      allocate (chi(npb, nloc), gchi(npb, nloc, 3), hchi(npb, nloc, NHESS))
-      allocate (dloc(nloc, nloc, 1), xmat(npb, nloc, 1))
-      allocate (pall(npb, 3*nloc, 1), q1all(npb, 3*nloc, 1), rall(npb, nloc, 1), rmat(npb, nloc, 1))
-      allocate (tall(3*nloc, nloc, 1), qmove(npb, 3))
-      !$acc enter data create(chi, gchi, hchi, dloc, xmat, pall, q1all, rall, rmat, tall, qmove)
-
-      call xc_grad_collocate2(b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                              xg%npts, xg%r, xg%nbatch, xg%b_off, xg%b_shoff, size(xg%b_sh), &
-                              xg%b_sh, xg%b_shao, ib, npb, nloc, chi, gchi, hchi)
-
-      call xc_grad_gather(b%nao, size(xg%b_ao), xg%b_ao, xg%b_aooff(ib), nloc, 1, dtot, dloc)
-
-      call lp%gemm_mat(chi, dloc(:, :, 1), xmat(:, :, 1))
-
-      call vv10_grad_point(npb, xg%npts, xg%w, xg%b_off(ib), nloc, grho, vrho, vsigma, &
-                           chi, gchi, hchi, xmat(:, :, 1), pall(:, :, 1), q1all(:, :, 1), rall(:, :, 1), qmove)
-
-      ! GRID RESPONSE, point-motion piece, GGA addition (needs every
-      ! point's `rall` density-contracted) -- xc_grad_pointmotion_gga's
-      ! exact counterpart; see this module's header for why this is a
-      ! second GEMM rather than foldable into vv10_grad_point's own kernel.
-      ! Skipped, along with the scatter below, when `gresp` is OFF -- same
-      ! as xc_grad_one_batch's own `if (gresp)` guard around the identical
-      ! pair.
-      if (gresp) then
-         call lp%gemm_mat(rall(:, :, 1), dloc(:, :, 1), rmat(:, :, 1))
-         call vv10_grad_pointmotion(npb, nloc, q1all(:, :, 1), rmat(:, :, 1), qmove)
-         call xc_grad_scatter_points(xg%npts, xg%atom, xg%b_off(ib), npb, qmove, b%natm, grad)
-      end if
-
-      call lp%gemm_mat(pall(:, :, 1), chi, tall(:, :, 1), transa="T", beta=0.0_dp)
-      call lp%gemm_mat(q1all(:, :, 1), rall(:, :, 1), tall(:, :, 1), transa="T", beta=1.0_dp)
-
-      call xc_grad_scatter(ib, xg%nbatch, xg%b_aooff, size(xg%b_ao), xg%b_ao, ao_atom, b%nao, &
-                           nloc, 1, dloc, tall, b%natm, grad)
-
-      ! GRID RESPONSE, weight-derivative and point's-own-force pieces --
-      ! HOST side (dedw/fexp are already host-resident, this module's own
-      ! call site); see this module's header, THE NONLOCAL EXTRAS. Skipped
-      ! entirely when `gresp` is OFF, same as xc_gradient_add's own
-      ! weight-response block.
-      if (gresp) then
-         g0 = xg%b_off(ib)
-         allocate (dweights(3, b%natm, npb))
-         call becke_partition_derivatives(xg%r(:, g0:g0 + npb - 1), at_r, at_z, &
-                                          xg%atom(g0:g0 + npb - 1), scheme, adjust, dweights, err)
-         if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
-         do g = 1, npb
-            own = xg%atom(g0 + g - 1)
-            ! The point's own explicit force, at the point's FULL weight.
-            grad_extra(:, own) = grad_extra(:, own) + xg%w(g0 + g - 1)*fexp(:, g0 + g - 1)
-            contrib = xg%qw(g0 + g - 1)*dedw(g0 + g - 1)
-            do a = 1, b%natm
-               grad_extra(:, a) = grad_extra(:, a) + contrib*dweights(:, a, g)
-            end do
-            do a = 1, b%natm
-               grad_extra(:, own) = grad_extra(:, own) - contrib*dweights(:, a, g)
-            end do
-         end do
-         deallocate (dweights)
-      end if
-
-      !$acc exit data delete(chi, gchi, hchi, dloc, xmat, pall, q1all, rall, rmat, tall, qmove)
-      deallocate (chi, gchi, hchi, dloc, xmat, pall, q1all, rall, rmat, tall, qmove)
-   end subroutine vv10_grad_one_batch
-
-   !
-   ! Pulay term, one point per thread: `pall`/`q1all`/`rall` built from the
-   ! PRECOMPUTED `vrho(g)`/`vsigma(g)` and the batch's own local collocation,
-   ! exactly as xc_grad_point_gga_body's nspin = 1 branch -- see that
-   ! routine's own comments for the algebra; the only change is that
-   ! `grad_rho` is read from the GLOBAL array PASS 1 already built (`grho`)
-   ! rather than reconstructed from `xmat`/`gchi` (the two are numerically
-   ! the same quantity: this batch's local AO list is the same one PASS 1's
-   ! `vv10_density_tile` screened to, so the local reconstruction a
-   ! semilocal kernel needs equals the global value already in hand here).
-   !
-   subroutine vv10_grad_point(npb, npts, w, p0, nloc, grho, vrho, vsigma, chi, gchi, hchi, xmat, &
-                              pall, q1all, rall, qmove)
-      integer, intent(in) :: npb, npts, p0, nloc
-      real(dp), intent(in) :: w(npts), grho(3, npts), vrho(npts), vsigma(npts)
-      real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), hchi(npb, nloc, NHESS)
-      real(dp), intent(in) :: xmat(npb, nloc)
-      real(dp), intent(inout) :: pall(npb, 3*nloc), q1all(npb, 3*nloc), rall(npb, nloc)
-      real(dp), intent(inout) :: qmove(npb, 3)
-      integer :: g
-      do concurrent(g=1:npb)
-         call vv10_grad_point_body(g, npb, npts, w, p0, nloc, grho, vrho, vsigma, chi, gchi, hchi, xmat, &
-                                   pall, q1all, rall, qmove)
-      end do
-   end subroutine vv10_grad_point
-
-   pure subroutine vv10_grad_point_body(g, npb, npts, w, p0, nloc, grho, vrho, vsigma, chi, gchi, hchi, xmat, &
-                                        pall, q1all, rall, qmove)
-      !$acc routine seq
-      integer, intent(in) :: g, npb, npts, p0, nloc
-      real(dp), intent(in) :: w(npts), grho(3, npts), vrho(npts), vsigma(npts)
-      real(dp), intent(in) :: chi(npb, nloc), gchi(npb, nloc, 3), hchi(npb, nloc, NHESS)
-      real(dp), intent(in) :: xmat(npb, nloc)
-      real(dp), intent(inout) :: pall(npb, 3*nloc), q1all(npb, 3*nloc), rall(npb, nloc)
-      real(dp), intent(inout) :: qmove(npb, 3)
-      integer :: mu, k, gg
-      real(dp) :: wg, vr, vs, grx, gry, grz
-      real(dp) :: hdota(3), qm(3)
-
-      gg = p0 + g - 1
-      wg = w(gg)
-      vr = vrho(gg)
-      vs = vsigma(gg)
-      grx = grho(1, gg)
-      gry = grho(2, gg)
-      grz = grho(3, gg)
-
-      do mu = 1, nloc
-         ! (grad_rho . H_mu)_k, hchi packed xx, xy, xz, yy, yz, zz.
-         hdota(1) = grx*hchi(g, mu, 1) + gry*hchi(g, mu, 2) + grz*hchi(g, mu, 3)
-         hdota(2) = grx*hchi(g, mu, 2) + gry*hchi(g, mu, 4) + grz*hchi(g, mu, 5)
-         hdota(3) = grx*hchi(g, mu, 3) + gry*hchi(g, mu, 5) + grz*hchi(g, mu, 6)
-         do k = 1, 3
-            pall(g, (k - 1)*nloc + mu) = wg*(vr*gchi(g, mu, k) + 2.0_dp*vs*hdota(k))
-            q1all(g, (k - 1)*nloc + mu) = wg*2.0_dp*vs*gchi(g, mu, k)
-         end do
-      end do
-      do mu = 1, nloc
-         rall(g, mu) = grx*gchi(g, mu, 1) + gry*gchi(g, mu, 2) + grz*gchi(g, mu, 3)
-      end do
-
-      ! GRID RESPONSE, point-motion piece, LDA-like part -- see
-      ! xc_grad_point_gga_body's own comment on the sign and the "+2"; the
-      ! GGA-specific addition needing `rmat` is added on top by
-      ! vv10_grad_pointmotion below, once this kernel has run over the
-      ! whole batch.
-      qm = 0.0_dp
-      do mu = 1, nloc
-         do k = 1, 3
-            qm(k) = qm(k) + pall(g, (k - 1)*nloc + mu)*xmat(g, mu)
-         end do
-      end do
-      qmove(g, 1) = 2.0_dp*qm(1)
-      qmove(g, 2) = 2.0_dp*qm(2)
-      qmove(g, 3) = 2.0_dp*qm(3)
-   end subroutine vv10_grad_point_body
-
-   !
-   ! GRID RESPONSE, point-motion piece: the GGA-specific addition to
-   ! `qmove` -- xc_grad_pointmotion_gga_body's nspin = 1 branch exactly
-   ! (its own header explains `rmat`).
-   !
-   subroutine vv10_grad_pointmotion(npb, nloc, q1all, rmat, qmove)
-      integer, intent(in) :: npb, nloc
-      real(dp), intent(in) :: q1all(npb, 3*nloc), rmat(npb, nloc)
-      real(dp), intent(inout) :: qmove(npb, 3)
-      integer :: g
-      do concurrent(g=1:npb)
-         call vv10_grad_pointmotion_body(g, npb, nloc, q1all, rmat, qmove)
-      end do
-   end subroutine vv10_grad_pointmotion
-
-   pure subroutine vv10_grad_pointmotion_body(g, npb, nloc, q1all, rmat, qmove)
-      !$acc routine seq
-      integer, intent(in) :: g, npb, nloc
-      real(dp), intent(in) :: q1all(npb, 3*nloc), rmat(npb, nloc)
-      real(dp), intent(inout) :: qmove(npb, 3)
-      integer :: mu, k
-      real(dp) :: acc(3)
-      acc = 0.0_dp
-      do mu = 1, nloc
-         do k = 1, 3
-            acc(k) = acc(k) + q1all(g, (k - 1)*nloc + mu)*rmat(g, mu)
-         end do
-      end do
-      qmove(g, 1) = qmove(g, 1) + 2.0_dp*acc(1)
-      qmove(g, 2) = qmove(g, 2) + 2.0_dp*acc(2)
-      qmove(g, 3) = qmove(g, 3) + 2.0_dp*acc(3)
-   end subroutine vv10_grad_pointmotion_body
 
 end module trc_vv10_grad
