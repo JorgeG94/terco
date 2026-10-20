@@ -241,6 +241,8 @@ module trc_capi
    public :: trc_max_angular_momentum
    public :: capi_scf, capi_scf_mpi, capi_rimp2
    public :: trc_cart_order
+   public :: trc_functional_info, trc_functional_list
+   public :: trc_abi_version
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -263,6 +265,15 @@ module trc_capi
    ! "AO NORMALISATION" section below for which entries it applies to.
    integer(c_int), parameter, public :: TRC_AO_NORM_SHELL = ao_norm_shell_
    integer(c_int), parameter, public :: TRC_AO_NORM_UNIT = ao_norm_unit_
+
+   ! This ABI's own version, read back by trc_abi_version so a host can
+   ! compare it against the constants its own compiled-against header
+   ! carries before trusting anything else in this module. MINOR for an
+   ! additive change, MAJOR (with MINOR reset to 0) for anything that
+   ! changes an existing signature or enum meaning -- see trc_abi_version's
+   ! own comment.
+   integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 0
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -3192,6 +3203,115 @@ contains
       integer(c_int) :: order_id
       order_id = int(trc_cart_order_id(), c_int)
    end function trc_cart_order
+
+   function trc_abi_version(major, minor) result(status) bind(c, name="trc_abi_version")
+      !! This build's ABI version (TRC_ABI_MAJOR, TRC_ABI_MINOR above), so
+      !! a host can compare it against the constants the header it
+      !! compiled against carries before trusting any other entry point.
+      !! Bump TRC_ABI_MINOR for an additive change (a new entry point, a
+      !! new enum value appended at the end); bump TRC_ABI_MAJOR, and
+      !! reset TRC_ABI_MINOR to 0, for anything that changes an existing
+      !! signature or an existing enum value's meaning. No handle; always
+      !! succeeds.
+      integer(c_int), intent(out) :: major, minor
+      integer(c_int) :: status
+      major = TRC_ABI_MAJOR
+      minor = TRC_ABI_MINOR
+      status = TRC_OK
+   end function trc_abi_version
+
+   function trc_functional_info(name, flags, exx, c_os, c_ss) result(status) bind(c, name="trc_functional_info")
+      !! Look up a functional by name (case-insensitive, trc_xc_functional's
+      !! own table) without a context: `flags` is a bitmask --
+      !!
+      !!   1  known      -- runnable today (trc_set_method would accept it)
+      !!   2  hybrid     -- exx or exx_lr nonzero (some exact exchange)
+      !!   4  range-separated -- omega nonzero
+      !!   8  VV10       -- nlc_b nonzero (nonlocal correlation)
+      !!   16 meta-GGA   -- needs a kinetic-energy-density kernel; always
+      !!      paired with bit 64 today, since terco has none translated yet
+      !!   32 double hybrid -- xc_is_double_hybrid (pt2_cos or pt2_css nonzero)
+      !!   64 listed but not runnable -- trc_xc_functional_t%missing is set;
+      !!      bit 1 is then NOT set, and `exx`/`c_os`/`c_ss`/the other bits
+      !!      reflect only whatever the table's own entry set before
+      !!      giving up (most "missing" entries set nothing at all, so
+      !!      every other bit and output reads zero -- that is the table's
+      !!      gap, not this entry's)
+      !!
+      !! `exx` is the fraction of ordinary (full-range) exact exchange;
+      !! `c_os`/`c_ss` are the opposite-/same-spin RI-MP2 weights a double
+      !! hybrid adds on top (both 0 for anything that is not one). An
+      !! unknown name returns a non-OK status with flags = 0 and every
+      !! output zeroed, rather than TRC_OK with nothing found.
+      character(kind=c_char), intent(in) :: name(*)
+      integer(c_int), intent(out) :: flags
+      real(c_double), intent(out) :: exx, c_os, c_ss
+      integer(c_int) :: status
+      type(trc_xc_functional_t) :: f
+      character(len=24) :: fname
+      integer :: i
+      flags = 0
+      exx = 0.0_c_double
+      c_os = 0.0_c_double
+      c_ss = 0.0_c_double
+      fname = ""
+      do i = 1, len(fname)
+         if (name(i) == c_null_char) exit
+         fname(i:i) = name(i)
+      end do
+      status = TRC_ERR_UNSUPPORTED
+      if (.not. xc_functional_by_name(trim(fname), f)) return
+      status = TRC_OK
+      if (len_trim(f%missing) > 0) then
+         flags = ibset(flags, 6)                                    ! 64: listed, not runnable
+         if (index(f%missing, "meta-GGA") > 0) flags = ibset(flags, 4)  ! 16: meta-GGA
+      else
+         flags = ibset(flags, 0)                                    ! 1: known/runnable
+      end if
+      if (f%exx /= 0.0_dp .or. f%exx_lr /= 0.0_dp) flags = ibset(flags, 1)  ! 2: hybrid
+      if (f%omega /= 0.0_dp) flags = ibset(flags, 2)                       ! 4: range-separated
+      if (f%nlc_b /= 0.0_dp) flags = ibset(flags, 3)                       ! 8: VV10
+      if (xc_is_double_hybrid(f)) flags = ibset(flags, 5)                  ! 32: double hybrid
+      exx = real(f%exx, c_double)
+      c_os = real(f%pt2_cos, c_double)
+      c_ss = real(f%pt2_css, c_double)
+   end function trc_functional_info
+
+   function trc_functional_list(buf, buflen, reqlen) result(status) bind(c, name="trc_functional_list")
+      !! XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
+      !! trc_functional_info can look up that terco can actually run today
+      !! -- space-separated and NUL-terminated into `buf` (capacity
+      !! `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
+      !! number of bytes that call needed, NUL included, whether or not it
+      !! fit: a caller queries it with `buflen = 0` (`buf` is never
+      !! touched then) and allocates exactly `reqlen` bytes for a second,
+      !! filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
+      !! `buflen` is positive but smaller than `reqlen`.
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int), intent(out) :: reqlen
+      integer(c_int) :: status
+      integer :: i, k
+      k = 0
+      do i = 1, len_trim(XC_AVAILABLE_FUNCTIONALS)
+         if (XC_AVAILABLE_FUNCTIONALS(i:i) == ",") cycle
+         k = k + 1
+      end do
+      reqlen = int(k + 1, c_int)
+      status = TRC_OK
+      if (buflen <= 0) return
+      if (buflen < reqlen) then
+         status = TRC_ERR_BADARG
+         return
+      end if
+      k = 0
+      do i = 1, len_trim(XC_AVAILABLE_FUNCTIONALS)
+         if (XC_AVAILABLE_FUNCTIONALS(i:i) == ",") cycle
+         k = k + 1
+         buf(k) = XC_AVAILABLE_FUNCTIONALS(i:i)
+      end do
+      buf(k + 1) = c_null_char
+   end function trc_functional_list
 
    function trc_nao(handle, nao) result(status) bind(c, name="trc_nao")
       type(c_ptr), value :: handle

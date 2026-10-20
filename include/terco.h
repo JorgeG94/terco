@@ -35,6 +35,8 @@ typedef void* trc_handle_t;
 #define TRC_GUESS_SAP 5
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
+#define TRC_ABI_MAJOR 1
+#define TRC_ABI_MINOR 0
 
 int trc_basis_create(int nshell, int maxnp, const int* l, const int* nprim, const double* exps, const double* coefs, const double* centres, int natm, const double* zatm, const double* ratm, trc_handle_t* handle);
 
@@ -432,6 +434,57 @@ int trc_load_scf(trc_handle_t handle, const char* path);
  * and it always succeeds.
  */
 int trc_cart_order(void);
+
+/**
+ * This build's ABI version (TRC_ABI_MAJOR, TRC_ABI_MINOR above), so
+ * a host can compare it against the constants the header it
+ * compiled against carries before trusting any other entry point.
+ * Bump TRC_ABI_MINOR for an additive change (a new entry point, a
+ * new enum value appended at the end); bump TRC_ABI_MAJOR, and
+ * reset TRC_ABI_MINOR to 0, for anything that changes an existing
+ * signature or an existing enum value's meaning. No handle; always
+ * succeeds.
+ */
+int trc_abi_version(int* major, int* minor);
+
+/**
+ * Look up a functional by name (case-insensitive, trc_xc_functional's
+ * own table) without a context: `flags` is a bitmask --
+ *
+ *   1  known      -- runnable today (trc_set_method would accept it)
+ *   2  hybrid     -- exx or exx_lr nonzero (some exact exchange)
+ *   4  range-separated -- omega nonzero
+ *   8  VV10       -- nlc_b nonzero (nonlocal correlation)
+ *   16 meta-GGA   -- needs a kinetic-energy-density kernel; always
+ *      paired with bit 64 today, since terco has none translated yet
+ *   32 double hybrid -- xc_is_double_hybrid (pt2_cos or pt2_css nonzero)
+ *   64 listed but not runnable -- trc_xc_functional_t%missing is set;
+ *      bit 1 is then NOT set, and `exx`/`c_os`/`c_ss`/the other bits
+ *      reflect only whatever the table's own entry set before
+ *      giving up (most "missing" entries set nothing at all, so
+ *      every other bit and output reads zero -- that is the table's
+ *      gap, not this entry's)
+ *
+ * `exx` is the fraction of ordinary (full-range) exact exchange;
+ * `c_os`/`c_ss` are the opposite-/same-spin RI-MP2 weights a double
+ * hybrid adds on top (both 0 for anything that is not one). An
+ * unknown name returns a non-OK status with flags = 0 and every
+ * output zeroed, rather than TRC_OK with nothing found.
+ */
+int trc_functional_info(const char* name, int* flags, double* exx, double* c_os, double* c_ss);
+
+/**
+ * XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
+ * trc_functional_info can look up that terco can actually run today
+ * -- space-separated and NUL-terminated into `buf` (capacity
+ * `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
+ * number of bytes that call needed, NUL included, whether or not it
+ * fit: a caller queries it with `buflen = 0` (`buf` is never
+ * touched then) and allocates exactly `reqlen` bytes for a second,
+ * filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
+ * `buflen` is positive but smaller than `reqlen`.
+ */
+int trc_functional_list(char* buf, int buflen, int* reqlen);
 
 int trc_nao(trc_handle_t handle, int* nao);
 
