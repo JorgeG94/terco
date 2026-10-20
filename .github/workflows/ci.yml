@@ -21,13 +21,24 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # Weekly, to catch toolchain drift with no code change. Scheduled runs fire
-  # only on the default branch.
+  # Nightly, at midnight AEDT (13:00 UTC; cron is always UTC, so it is 1am
+  # under AEST). This is the only run that includes the tests labelled LONG
+  # (`set_tests_properties(... LABELS LONG)` in test/CMakeLists.txt), which
+  # pull requests and pushes skip, and it also catches toolchain drift with
+  # no code change. Scheduled runs fire only on the default branch.
   schedule:
-    - cron: '0 12 * * 3'
+    - cron: '0 13 * * *'
 
 permissions:
   contents: read
+
+env:
+  # Every ctest below appends this: LONG tests run only on the nightly
+  # schedule and when the workflow is started by hand.
+  # (Written as `not-nightly && '-LE LONG' || ''`: an empty string is falsy
+  # in GitHub expressions, so `nightly && '' || '-LE LONG'` would always
+  # give '-LE LONG'.)
+  CTEST_LONG: ${{ (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch') && '-LE LONG' || '' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
@@ -83,7 +94,7 @@ jobs:
       - name: Validate
         run: >-
           ctest --test-dir build --output-on-failure --parallel 2
-          --no-tests=error
+          --no-tests=error ${{ env.CTEST_LONG }}
 
       # How far this compiler's numbers sit from the committed goldens,
       # quantity by quantity (test/goldens/compare_goldens.py --report).
@@ -150,7 +161,7 @@ jobs:
       - name: Validate
         run: >-
           ctest --test-dir build --output-on-failure --parallel 2
-          --no-tests=error
+          --no-tests=error ${{ env.CTEST_LONG }}
 
       # How far this compiler's numbers sit from the committed goldens,
       # quantity by quantity (test/goldens/compare_goldens.py --report).
@@ -239,7 +250,7 @@ jobs:
       - name: Validate
         run: >-
           ctest --test-dir build --output-on-failure --parallel 2
-          --no-tests=error
+          --no-tests=error ${{ env.CTEST_LONG }}
 
       # How far this compiler's numbers sit from the committed goldens,
       # quantity by quantity (test/goldens/compare_goldens.py --report).
@@ -425,7 +436,7 @@ jobs:
           # on one thread. Running this suite single-threaded would have passed
           # while the enumerated Fock digestion was silently wrong.
           OMP_NUM_THREADS=4 ctest --test-dir build-omp --output-on-failure \
-            --no-tests=error
+            --no-tests=error ${{ env.CTEST_LONG }}
 
       - name: Golden spread
         if: always()
