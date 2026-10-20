@@ -229,12 +229,14 @@ contains
             end if
          end do
          if (tg > 0.0_dp) then
-            block
-               character(len=1024) :: logline
-               write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", &
-                  label(subtotal_label), tg, fg, fg/tg
-               call global_logger%performance(trim(logline))
-            end block
+            if (tg > 0.0_dp) then
+               block
+                  character(len=1024) :: logline
+                  write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", &
+                     label(subtotal_label), tg, fg, fg/tg
+                  call global_logger%performance(trim(logline))
+               end block
+            end if
          end if
       end if
       block

@@ -20,65 +20,70 @@ module trc_dfg_3c_k202
    public :: dfg_3c_k202, dfg_3c202
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
+   integer, parameter :: PD_W = 8
 
 contains
 
-   subroutine dfg_3c_k202(nsh, nao, mnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, &
-                    npair, p_i, p_j, npc, ord_p, &
-                    nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
-                    natm, nlane, ytens, gp)
-      !! (20|2) launch: `do concurrent` over the npc x nac cross product of
-      !! a shell-pair index LIST and an auxiliary-shell index LIST, grouped by
-      !! angular momentum on the host (trc_df_grad_kernels.F90's
-      !! df_grad_3c_driver).
-      integer,  intent(in)    :: nsh, nao, mnp, npair, npc, nsx, nax, mnx, nac, natm, nlane
-      integer,  intent(in)    :: sh_np(nsh), sh_ao(nsh), sh_at(nsh)
-      real(dp), intent(in)    :: sh_e(mnp, nsh), sh_c(mnp, nsh), sh_r(3, nsh)
-      integer,  intent(in)    :: p_i(npair), p_j(npair), ord_p(npc)
+   subroutine dfg_3c_k202(nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+                    nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
+                    natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
+      !! (20|2) launch: `do concurrent` over the npq x nac cross product of
+      !! this class's shell pairs (q_a/q_b, la >= lb, sorted by primitive
+      !! count: trc_df_grad_kernels.F90's df_grad_3c_plan) and an auxiliary-
+      !! shell index LIST (df_grad_3c_driver).
+      integer,  intent(in)    :: nsh, nao, npq, npp, nsx, mnx, nac, natm, nlane, ny1, ny3, nqc, qoff
+      integer,  intent(in)    :: sh_ao(nsh), sh_at(nsh)
+      real(dp), intent(in)    :: sh_r(3, nsh)
+      integer,  intent(in)    :: q_a(npq), q_b(npq), q_o(npq), q_n(npq)
+      real(dp), intent(in)    :: pd(PD_W, npp)
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      real(dp), intent(in)    :: ytens(nao, nao, nax)
+      integer,  intent(in)    :: ky
+      real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
       integer(int64) :: t
 
-      if (npc <= 0 .or. nac <= 0) return
-      do concurrent(t = 0:int(npc, int64)*nac - 1)
-         call dfg_3c_i202(t, nsh, nao, mnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, &
-                   npair, p_i, p_j, npc, ord_p, &
-                   nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
-                   natm, nlane, ytens, gp)
+      if (npq <= 0 .or. nac <= 0) return
+      do concurrent(t = 0:int(npq, int64)*nac - 1)
+         call dfg_3c_i202(t, nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+                   nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
+                   natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
       end do
    end subroutine dfg_3c_k202
 
-   pure subroutine dfg_3c_i202(t, nsh, nao, mnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, &
-                         npair, p_i, p_j, npc, ord_p, &
-                         nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
-                         natm, nlane, ytens, gp)
-      !! One (shell pair, auxiliary shell) triple: its Y block (weighted 2 for
-      !! an off-diagonal pair, which stands for both (mu,nu) and (nu,mu)), the
-      !! contracted derivative, and nine atomic adds into lane
-      !! mod(t, nlane)+1 of `gp`. A triple on one atom is skipped: its three
-      !! derivatives sum to zero on that atom.
+   pure subroutine dfg_3c_i202(t, nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+                         nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
+                         natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
+      !! One (shell pair, auxiliary shell) triple: its Y block, the J part
+      !! jc c_P D_mn formed here from c and D (never stored as a tensor) plus
+      !! the K part read from `ytens` (ky = 1: Y_K itself; ky = 2: its one-
+      !! sided half M, Y_K = M + M^T; ky = 0: none) -- weighted 2 for an
+      !! off-diagonal pair, which stands for both (mu,nu) and (nu,mu) -- the
+      !! contracted derivative, and nine atomic adds into lane mod(t, nlane)+1
+      !! of `gp`. A triple on one atom is skipped: its three derivatives sum
+      !! to zero on that atom.
       !$acc routine seq
       integer(int64), intent(in) :: t
-      integer,  intent(in)    :: nsh, nao, mnp, npair, npc, nsx, nax, mnx, nac, natm, nlane
-      integer,  intent(in)    :: sh_np(nsh), sh_ao(nsh), sh_at(nsh)
-      real(dp), intent(in)    :: sh_e(mnp, nsh), sh_c(mnp, nsh), sh_r(3, nsh)
-      integer,  intent(in)    :: p_i(npair), p_j(npair), ord_p(npc)
+      integer,  intent(in)    :: nsh, nao, npq, npp, nsx, mnx, nac, natm, nlane, ny1, ny3, nqc, qoff
+      integer,  intent(in)    :: sh_ao(nsh), sh_at(nsh)
+      real(dp), intent(in)    :: sh_r(3, nsh)
+      integer,  intent(in)    :: q_a(npq), q_b(npq), q_o(npq), q_n(npq)
+      real(dp), intent(in)    :: pd(PD_W, npp)
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      real(dp), intent(in)    :: ytens(nao, nao, nax)
+      integer,  intent(in)    :: ky
+      real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
       integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, lane, ia, ib, ic
-      real(dp) :: yb(36), ga(3), gb(3), wt
+      real(dp) :: yb(36), ga(3), gb(3), wt, yv
 
-      ip = ord_p(int(mod(t, int(npc, int64))) + 1)
-      kk = ord_a(int(t/npc) + 1)
-      ii = p_i(ip); jj = p_j(ip)
+      ip = int(mod(t, int(npq, int64))) + 1
+      kk = ord_a(int(t/npq) + 1)
+      ii = q_a(ip); jj = q_b(ip)
       ia = sh_at(ii); ib = sh_at(jj); ic = ax_at(kk)
       if (ia == ib .and. ia == ic) return
       wt = merge(1.0_dp, 2.0_dp, ii == jj)
@@ -88,13 +93,18 @@ contains
             nu = sh_ao(jj) + c
             do a = 0, 5
                mu = sh_ao(ii) + a
-               yb(1 + a + 6*(c + 1*e)) = wt*ytens(mu, nu, pq)
+               yv = jc*cq(qoff + pq)*dens(mu, nu)
+               if (ky == 1) then
+                  yv = yv + ytens(mu, nu, pq)
+               else if (ky == 2) then
+                  yv = yv + ytens(mu, nu, pq) + ytens(nu, mu, pq)
+               end if
+               yb(1 + a + 6*(c + 1*e)) = wt*yv
             end do
          end do
       end do
 
-      call dfg_3c202(sh_np(ii), sh_e(:, ii), sh_c(:, ii), sh_r(:, ii), &
-                 sh_np(jj), sh_e(:, jj), sh_c(:, jj), sh_r(:, jj), &
+      call dfg_3c202(q_n(ip), q_o(ip), pd, sh_r(:, ii), sh_r(:, jj), &
                  ax_np(kk), ax_e(:, kk), ax_c(:, kk), ax_r(:, kk), yb, ga, gb)
 
       lane = int(mod(t, int(nlane, int64))) + 1
@@ -118,20 +128,21 @@ contains
       gp(3, ic, lane) = gp(3, ic, lane) - (ga(3) + gb(3))
    end subroutine dfg_3c_i202
 
-   pure subroutine dfg_3c202(npa, ea, ca, ra, npb, eb, cb, rb, npc, ec, cc_, rc, y, ga, gb)
+   pure subroutine dfg_3c202(npp, poff, pd, ra, rb, npc, ec, cc_, rc, y, ga, gb)
       !! d(ab|c)/dA and d(ab|c)/dB of class (20|2), contracted with
       !! y(slot): ga = sum y d/dA, gb = sum y d/dB (dC = -(ga+gb)). Rys,
-      !! 3 roots, unrolled form.
+      !! 3 roots, root-loop unrolled form.
+      !! The bra's npp primitive pairs are columns poff+1..poff+npp of pd
+      !! (zeta, K_ab, P, alpha, beta: trc_df_grad_kernels' df_grad_3c_plan).
       !$acc routine seq
-      integer,  intent(in)  :: npa, npb, npc
-      real(dp), intent(in)  :: ea(npa), ca(npa), ra(3)
-      real(dp), intent(in)  :: eb(npb), cb(npb), rb(3)
+      integer,  intent(in)  :: npp, poff, npc
+      real(dp), intent(in)  :: pd(PD_W, *), ra(3), rb(3)
       real(dp), intent(in)  :: ec(npc), cc_(npc), rc(3)
       real(dp), intent(in)  :: y(36)
       real(dp), intent(out) :: ga(3), gb(3)
 
-      integer  :: ip, jp, kp
-      real(dp) :: al, be, zeta, eta, zpe, rho, kab, pref, rab2
+      integer  :: ip, kp
+      real(dp) :: al, be, zeta, eta, zpe, rho, kab, pref
       real(dp) :: px, py, pz, pqx, pqy, pqz, tval
       real(dp) :: pax, pay, paz, qcx, qcy, qcz, abx, aby, abz
       real(dp) :: ru(3), rw(3)
@@ -155,902 +166,71 @@ contains
                    hz_2_0_0_0, hz_2_0_1_0, hz_2_0_2_0, hz_3_0_0_0, hz_3_0_1_0, hz_3_0_2_0
       real(dp) :: ht_0_0_0, ht_0_0_1, ht_0_0_2, ht_1_0_0, ht_1_0_1, ht_1_0_2, &
                    ht_2_0_0, ht_2_0_1, ht_2_0_2, ht_3_0_0, ht_3_0_1, ht_3_0_2
+      integer  :: rr
 
       gax = 0.0_dp; gay = 0.0_dp; gaz = 0.0_dp
       gbx = 0.0_dp; gby = 0.0_dp; gbz = 0.0_dp
       abx = 0.0_dp; aby = 0.0_dp; abz = 0.0_dp
-      rab2 = 0.0_dp
       be = 0.0_dp
 
       abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
-      rab2 = abx*abx + aby*aby + abz*abz
-      do ip = 1, npa
-         al = ea(ip)
-         do jp = 1, npb
-            be = eb(jp)
-            zeta = al + be
-            kab = ca(ip)*cb(jp)*exp(-al*be/zeta*rab2)
-            px = (al*ra(1) + be*rb(1))/zeta
-            py = (al*ra(2) + be*rb(2))/zeta
-            pz = (al*ra(3) + be*rb(3))/zeta
-            pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+      do ip = poff + 1, poff + npp
+         zeta = pd(1, ip)
+         kab = pd(2, ip)
+         px = pd(3, ip); py = pd(4, ip); pz = pd(5, ip)
+         al = pd(6, ip)
+         be = pd(7, ip)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
 
-            do kp = 1, npc
-               eta = ec(kp)
-               zpe = zeta + eta
-               rho = zeta*eta/zpe
-               ! The ket is one auxiliary shell: Q = C, QC = 0, K_cd = 1.
-               qcx = 0.0_dp; qcy = 0.0_dp; qcz = 0.0_dp
-               pqx = px - rc(1); pqy = py - rc(2); pqz = pz - rc(3)
-               tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
-               pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*kab*cc_(kp)
+         do kp = 1, npc
+            eta = ec(kp)
+            zpe = zeta + eta
+            rho = zeta*eta/zpe
+            ! The ket is one auxiliary shell: Q = C, QC = 0, K_cd = 1.
+            qcx = 0.0_dp; qcy = 0.0_dp; qcz = 0.0_dp
+            pqx = px - rc(1); pqy = py - rc(2); pqz = pz - rc(3)
+            tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+            pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*kab*cc_(kp)
 
-               ! Rys root/weight lookup, inlined from trc_rys_roots3_tab -- same
-               ! table, interval and Chebyshev evaluation; the early return there
-               ! becomes this if/else (a return here would exit the whole kernel).
-               if (tval >= RYS_XMAX3) then
-                  fr = 1.0_dp/tval
-                  fw = sqrt(fr)
-                  do s = 1, RYS_NROOTS3
-                     ru(s) = RYS_ASY_R3(s)*fr
-                     rw(s) = RYS_ASY_W3(s)*fw
+            ! Rys root/weight lookup, inlined from trc_rys_roots3_tab -- same
+            ! table, interval and Chebyshev evaluation; the early return there
+            ! becomes this if/else (a return here would exit the whole kernel).
+            if (tval >= RYS_XMAX3) then
+               fr = 1.0_dp/tval
+               fw = sqrt(fr)
+               do s = 1, RYS_NROOTS3
+                  ru(s) = RYS_ASY_R3(s)*fr
+                  rw(s) = RYS_ASY_W3(s)*fw
+               end do
+            else
+               xc = max(tval, 0.0_dp)
+               iv = min(int(xc/RYS_WIDTH3) + 1, RYS_NINT3)
+               rlt = (2.0_dp*xc - (2*iv - 1)*RYS_WIDTH3)/RYS_WIDTH3
+               t2 = 2.0_dp*rlt
+               do s = 1, 2*RYS_NROOTS3
+                  base = ((iv - 1)*2*RYS_NROOTS3 + (s - 1))*(RYS_DEGREE3 + 1)
+                  d0 = 0.0_dp
+                  d1 = 0.0_dp
+                  do j = RYS_DEGREE3, 1, -1
+                     tmp = d0
+                     d0 = t2*d0 - d1 + RYS_C3(base + j + 1)
+                     d1 = tmp
                   end do
-               else
-                  xc = max(tval, 0.0_dp)
-                  iv = min(int(xc/RYS_WIDTH3) + 1, RYS_NINT3)
-                  rlt = (2.0_dp*xc - (2*iv - 1)*RYS_WIDTH3)/RYS_WIDTH3
-                  t2 = 2.0_dp*rlt
-                  do s = 1, 2*RYS_NROOTS3
-                     base = ((iv - 1)*2*RYS_NROOTS3 + (s - 1))*(RYS_DEGREE3 + 1)
-                     d0 = 0.0_dp
-                     d1 = 0.0_dp
-                     do j = RYS_DEGREE3, 1, -1
-                        tmp = d0
-                        d0 = t2*d0 - d1 + RYS_C3(base + j + 1)
-                        d1 = tmp
-                     end do
-                     tmp = rlt*d0 - d1 + RYS_C3(base + 1)
-                     if (s <= RYS_NROOTS3) then
-                        ru(s) = tmp
-                     else
-                        rw(s - RYS_NROOTS3) = tmp
-                     end if
-                  end do
-               end if
-               u2 = ru(1)/(1.0_dp - ru(1))*rho
+                  tmp = rlt*d0 - d1 + RYS_C3(base + 1)
+                  if (s <= RYS_NROOTS3) then
+                     ru(s) = tmp
+                  else
+                     rw(s - RYS_NROOTS3) = tmp
+                  end if
+               end do
+            end if
+            do rr = 1, 3
+               u2 = ru(rr)/(1.0_dp - ru(rr))*rho
                dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
                b00r  = 0.5_dp*u2*dinv
                b10r  = 0.5_dp*(eta + u2)*dinv
                bp01r = 0.5_dp*(zeta + u2)*dinv
-               f00 = pref*rw(1)
-               c00x = pax - u2*eta*dinv*pqx
-               c00y = pay - u2*eta*dinv*pqy
-               c00z = paz - u2*eta*dinv*pqz
-               cp0x = qcx + u2*zeta*dinv*pqx
-               cp0y = qcy + u2*zeta*dinv*pqy
-               cp0z = qcz + u2*zeta*dinv*pqz
-               gx_0_0 = 1.0_dp
-               gx_1_0 = c00x*gx_0_0
-               gx_2_0 = 1.0_dp*b10r*gx_0_0 + c00x*gx_1_0
-               gx_3_0 = 2.0_dp*b10r*gx_1_0 + c00x*gx_2_0
-               gx_0_1 = cp0x*gx_0_0
-               gx_1_1 = 1.0_dp*b00r*gx_0_0 + cp0x*gx_1_0
-               gx_2_1 = 2.0_dp*b00r*gx_1_0 + cp0x*gx_2_0
-               gx_3_1 = 3.0_dp*b00r*gx_2_0 + cp0x*gx_3_0
-               gx_0_2 = 1.0_dp*bp01r*gx_0_0 + cp0x*gx_0_1
-               gx_1_2 = 1.0_dp*b00r*gx_0_1 + 1.0_dp*bp01r*gx_1_0 + cp0x*gx_1_1
-               gx_2_2 = 2.0_dp*b00r*gx_1_1 + 1.0_dp*bp01r*gx_2_0 + cp0x*gx_2_1
-               gx_3_2 = 3.0_dp*b00r*gx_2_1 + 1.0_dp*bp01r*gx_3_0 + cp0x*gx_3_1
-               gy_0_0 = 1.0_dp
-               gy_1_0 = c00y*gy_0_0
-               gy_2_0 = 1.0_dp*b10r*gy_0_0 + c00y*gy_1_0
-               gy_3_0 = 2.0_dp*b10r*gy_1_0 + c00y*gy_2_0
-               gy_0_1 = cp0y*gy_0_0
-               gy_1_1 = 1.0_dp*b00r*gy_0_0 + cp0y*gy_1_0
-               gy_2_1 = 2.0_dp*b00r*gy_1_0 + cp0y*gy_2_0
-               gy_3_1 = 3.0_dp*b00r*gy_2_0 + cp0y*gy_3_0
-               gy_0_2 = 1.0_dp*bp01r*gy_0_0 + cp0y*gy_0_1
-               gy_1_2 = 1.0_dp*b00r*gy_0_1 + 1.0_dp*bp01r*gy_1_0 + cp0y*gy_1_1
-               gy_2_2 = 2.0_dp*b00r*gy_1_1 + 1.0_dp*bp01r*gy_2_0 + cp0y*gy_2_1
-               gy_3_2 = 3.0_dp*b00r*gy_2_1 + 1.0_dp*bp01r*gy_3_0 + cp0y*gy_3_1
-               gz_0_0 = f00
-               gz_1_0 = c00z*gz_0_0
-               gz_2_0 = 1.0_dp*b10r*gz_0_0 + c00z*gz_1_0
-               gz_3_0 = 2.0_dp*b10r*gz_1_0 + c00z*gz_2_0
-               gz_0_1 = cp0z*gz_0_0
-               gz_1_1 = 1.0_dp*b00r*gz_0_0 + cp0z*gz_1_0
-               gz_2_1 = 2.0_dp*b00r*gz_1_0 + cp0z*gz_2_0
-               gz_3_1 = 3.0_dp*b00r*gz_2_0 + cp0z*gz_3_0
-               gz_0_2 = 1.0_dp*bp01r*gz_0_0 + cp0z*gz_0_1
-               gz_1_2 = 1.0_dp*b00r*gz_0_1 + 1.0_dp*bp01r*gz_1_0 + cp0z*gz_1_1
-               gz_2_2 = 2.0_dp*b00r*gz_1_1 + 1.0_dp*bp01r*gz_2_0 + cp0z*gz_2_1
-               gz_3_2 = 3.0_dp*b00r*gz_2_1 + 1.0_dp*bp01r*gz_3_0 + cp0z*gz_3_1
-               ab2 = abx*abx
-               cd2 = 0.0_dp*0.0_dp
-               ht_0_0_0 = gx_0_0
-               ht_0_0_1 = gx_0_1
-               ht_0_0_2 = gx_0_2
-               ht_1_0_0 = gx_1_0
-               ht_1_0_1 = gx_1_1
-               ht_1_0_2 = gx_1_2
-               ht_2_0_0 = gx_2_0
-               ht_2_0_1 = gx_2_1
-               ht_2_0_2 = gx_2_2
-               ht_3_0_0 = gx_3_0
-               ht_3_0_1 = gx_3_1
-               ht_3_0_2 = gx_3_2
-               hx_0_0_0_0 = ht_0_0_0
-               hx_0_0_1_0 = ht_0_0_1
-               hx_0_0_2_0 = ht_0_0_2
-               hx_1_0_0_0 = ht_1_0_0
-               hx_1_0_1_0 = ht_1_0_1
-               hx_1_0_2_0 = ht_1_0_2
-               hx_2_0_0_0 = ht_2_0_0
-               hx_2_0_1_0 = ht_2_0_1
-               hx_2_0_2_0 = ht_2_0_2
-               hx_3_0_0_0 = ht_3_0_0
-               hx_3_0_1_0 = ht_3_0_1
-               hx_3_0_2_0 = ht_3_0_2
-               ab2 = aby*aby
-               cd2 = 0.0_dp*0.0_dp
-               ht_0_0_0 = gy_0_0
-               ht_0_0_1 = gy_0_1
-               ht_0_0_2 = gy_0_2
-               ht_1_0_0 = gy_1_0
-               ht_1_0_1 = gy_1_1
-               ht_1_0_2 = gy_1_2
-               ht_2_0_0 = gy_2_0
-               ht_2_0_1 = gy_2_1
-               ht_2_0_2 = gy_2_2
-               ht_3_0_0 = gy_3_0
-               ht_3_0_1 = gy_3_1
-               ht_3_0_2 = gy_3_2
-               hy_0_0_0_0 = ht_0_0_0
-               hy_0_0_1_0 = ht_0_0_1
-               hy_0_0_2_0 = ht_0_0_2
-               hy_1_0_0_0 = ht_1_0_0
-               hy_1_0_1_0 = ht_1_0_1
-               hy_1_0_2_0 = ht_1_0_2
-               hy_2_0_0_0 = ht_2_0_0
-               hy_2_0_1_0 = ht_2_0_1
-               hy_2_0_2_0 = ht_2_0_2
-               hy_3_0_0_0 = ht_3_0_0
-               hy_3_0_1_0 = ht_3_0_1
-               hy_3_0_2_0 = ht_3_0_2
-               ab2 = abz*abz
-               cd2 = 0.0_dp*0.0_dp
-               ht_0_0_0 = gz_0_0
-               ht_0_0_1 = gz_0_1
-               ht_0_0_2 = gz_0_2
-               ht_1_0_0 = gz_1_0
-               ht_1_0_1 = gz_1_1
-               ht_1_0_2 = gz_1_2
-               ht_2_0_0 = gz_2_0
-               ht_2_0_1 = gz_2_1
-               ht_2_0_2 = gz_2_2
-               ht_3_0_0 = gz_3_0
-               ht_3_0_1 = gz_3_1
-               ht_3_0_2 = gz_3_2
-               hz_0_0_0_0 = ht_0_0_0
-               hz_0_0_1_0 = ht_0_0_1
-               hz_0_0_2_0 = ht_0_0_2
-               hz_1_0_0_0 = ht_1_0_0
-               hz_1_0_1_0 = ht_1_0_1
-               hz_1_0_2_0 = ht_1_0_2
-               hz_2_0_0_0 = ht_2_0_0
-               hz_2_0_1_0 = ht_2_0_1
-               hz_2_0_2_0 = ht_2_0_2
-               hz_3_0_0_0 = ht_3_0_0
-               hz_3_0_1_0 = ht_3_0_1
-               hz_3_0_2_0 = ht_3_0_2
-               yv = y(1)
-               pyz = yv*hy_0_0_0_0*hz_0_0_0_0; pxz = yv*hx_2_0_2_0*hz_0_0_0_0; pxy = yv*hx_2_0_2_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_3_0_2_0 - 2.0_dp*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_2_0 + abx*hx_2_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(2)
-               pyz = yv*hy_1_0_0_0*hz_0_0_0_0; pxz = yv*hx_1_0_2_0*hz_0_0_0_0; pxy = yv*hx_1_0_2_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_2_0 - 1.0_dp*hx_0_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_2_0 + abx*hx_1_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(3)
-               pyz = yv*hy_0_0_0_0*hz_1_0_0_0; pxz = yv*hx_1_0_2_0*hz_1_0_0_0; pxy = yv*hx_1_0_2_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_2_0 - 1.0_dp*hx_0_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_2_0 + abx*hx_1_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(4)
-               pyz = yv*hy_2_0_0_0*hz_0_0_0_0; pxz = yv*hx_0_0_2_0*hz_0_0_0_0; pxy = yv*hx_0_0_2_0*hy_2_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_0_0 - 2.0_dp*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_2_0 + abx*hx_0_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_0_0 + aby*hy_2_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(5)
-               pyz = yv*hy_1_0_0_0*hz_1_0_0_0; pxz = yv*hx_0_0_2_0*hz_1_0_0_0; pxy = yv*hx_0_0_2_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_2_0 + abx*hx_0_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(6)
-               pyz = yv*hy_0_0_0_0*hz_2_0_0_0; pxz = yv*hx_0_0_2_0*hz_2_0_0_0; pxy = yv*hx_0_0_2_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_0_0 - 2.0_dp*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_2_0 + abx*hx_0_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_0_0 + abz*hz_2_0_0_0))*pxy
-               yv = y(7)
-               pyz = yv*hy_0_0_1_0*hz_0_0_0_0; pxz = yv*hx_2_0_1_0*hz_0_0_0_0; pxy = yv*hx_2_0_1_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_3_0_1_0 - 2.0_dp*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_1_0 + abx*hx_2_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(8)
-               pyz = yv*hy_1_0_1_0*hz_0_0_0_0; pxz = yv*hx_1_0_1_0*hz_0_0_0_0; pxy = yv*hx_1_0_1_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(9)
-               pyz = yv*hy_0_0_1_0*hz_1_0_0_0; pxz = yv*hx_1_0_1_0*hz_1_0_0_0; pxy = yv*hx_1_0_1_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(10)
-               pyz = yv*hy_2_0_1_0*hz_0_0_0_0; pxz = yv*hx_0_0_1_0*hz_0_0_0_0; pxy = yv*hx_0_0_1_0*hy_2_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_1_0 - 2.0_dp*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_1_0 + aby*hy_2_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(11)
-               pyz = yv*hy_1_0_1_0*hz_1_0_0_0; pxz = yv*hx_0_0_1_0*hz_1_0_0_0; pxy = yv*hx_0_0_1_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(12)
-               pyz = yv*hy_0_0_1_0*hz_2_0_0_0; pxz = yv*hx_0_0_1_0*hz_2_0_0_0; pxy = yv*hx_0_0_1_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_0_0 - 2.0_dp*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_0_0 + abz*hz_2_0_0_0))*pxy
-               yv = y(13)
-               pyz = yv*hy_0_0_0_0*hz_0_0_1_0; pxz = yv*hx_2_0_1_0*hz_0_0_1_0; pxy = yv*hx_2_0_1_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_3_0_1_0 - 2.0_dp*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_1_0 + abx*hx_2_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(14)
-               pyz = yv*hy_1_0_0_0*hz_0_0_1_0; pxz = yv*hx_1_0_1_0*hz_0_0_1_0; pxy = yv*hx_1_0_1_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(15)
-               pyz = yv*hy_0_0_0_0*hz_1_0_1_0; pxz = yv*hx_1_0_1_0*hz_1_0_1_0; pxy = yv*hx_1_0_1_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(16)
-               pyz = yv*hy_2_0_0_0*hz_0_0_1_0; pxz = yv*hx_0_0_1_0*hz_0_0_1_0; pxy = yv*hx_0_0_1_0*hy_2_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_0_0 - 2.0_dp*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_0_0 + aby*hy_2_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(17)
-               pyz = yv*hy_1_0_0_0*hz_1_0_1_0; pxz = yv*hx_0_0_1_0*hz_1_0_1_0; pxy = yv*hx_0_0_1_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(18)
-               pyz = yv*hy_0_0_0_0*hz_2_0_1_0; pxz = yv*hx_0_0_1_0*hz_2_0_1_0; pxy = yv*hx_0_0_1_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_1_0 - 2.0_dp*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_1_0 + abz*hz_2_0_1_0))*pxy
-               yv = y(19)
-               pyz = yv*hy_0_0_2_0*hz_0_0_0_0; pxz = yv*hx_2_0_0_0*hz_0_0_0_0; pxy = yv*hx_2_0_0_0*hy_0_0_2_0
-               gax = gax + (2.0_dp*al*hx_3_0_0_0 - 2.0_dp*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_0_0 + abx*hx_2_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_2_0 + aby*hy_0_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(20)
-               pyz = yv*hy_1_0_2_0*hz_0_0_0_0; pxz = yv*hx_1_0_0_0*hz_0_0_0_0; pxy = yv*hx_1_0_0_0*hy_1_0_2_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_2_0 - 1.0_dp*hy_0_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_2_0 + aby*hy_1_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(21)
-               pyz = yv*hy_0_0_2_0*hz_1_0_0_0; pxz = yv*hx_1_0_0_0*hz_1_0_0_0; pxy = yv*hx_1_0_0_0*hy_0_0_2_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_2_0 + aby*hy_0_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(22)
-               pyz = yv*hy_2_0_2_0*hz_0_0_0_0; pxz = yv*hx_0_0_0_0*hz_0_0_0_0; pxy = yv*hx_0_0_0_0*hy_2_0_2_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_2_0 - 2.0_dp*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_2_0 + aby*hy_2_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(23)
-               pyz = yv*hy_1_0_2_0*hz_1_0_0_0; pxz = yv*hx_0_0_0_0*hz_1_0_0_0; pxy = yv*hx_0_0_0_0*hy_1_0_2_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_2_0 - 1.0_dp*hy_0_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_2_0 + aby*hy_1_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(24)
-               pyz = yv*hy_0_0_2_0*hz_2_0_0_0; pxz = yv*hx_0_0_0_0*hz_2_0_0_0; pxy = yv*hx_0_0_0_0*hy_0_0_2_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_0_0 - 2.0_dp*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_2_0 + aby*hy_0_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_0_0 + abz*hz_2_0_0_0))*pxy
-               yv = y(25)
-               pyz = yv*hy_0_0_1_0*hz_0_0_1_0; pxz = yv*hx_2_0_0_0*hz_0_0_1_0; pxy = yv*hx_2_0_0_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_3_0_0_0 - 2.0_dp*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_0_0 + abx*hx_2_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(26)
-               pyz = yv*hy_1_0_1_0*hz_0_0_1_0; pxz = yv*hx_1_0_0_0*hz_0_0_1_0; pxy = yv*hx_1_0_0_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(27)
-               pyz = yv*hy_0_0_1_0*hz_1_0_1_0; pxz = yv*hx_1_0_0_0*hz_1_0_1_0; pxy = yv*hx_1_0_0_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(28)
-               pyz = yv*hy_2_0_1_0*hz_0_0_1_0; pxz = yv*hx_0_0_0_0*hz_0_0_1_0; pxy = yv*hx_0_0_0_0*hy_2_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_1_0 - 2.0_dp*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_1_0 + aby*hy_2_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(29)
-               pyz = yv*hy_1_0_1_0*hz_1_0_1_0; pxz = yv*hx_0_0_0_0*hz_1_0_1_0; pxy = yv*hx_0_0_0_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(30)
-               pyz = yv*hy_0_0_1_0*hz_2_0_1_0; pxz = yv*hx_0_0_0_0*hz_2_0_1_0; pxy = yv*hx_0_0_0_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_1_0 - 2.0_dp*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_1_0 + abz*hz_2_0_1_0))*pxy
-               yv = y(31)
-               pyz = yv*hy_0_0_0_0*hz_0_0_2_0; pxz = yv*hx_2_0_0_0*hz_0_0_2_0; pxy = yv*hx_2_0_0_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_3_0_0_0 - 2.0_dp*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_0_0 + abx*hx_2_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_2_0 + abz*hz_0_0_2_0))*pxy
-               yv = y(32)
-               pyz = yv*hy_1_0_0_0*hz_0_0_2_0; pxz = yv*hx_1_0_0_0*hz_0_0_2_0; pxy = yv*hx_1_0_0_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_2_0 + abz*hz_0_0_2_0))*pxy
-               yv = y(33)
-               pyz = yv*hy_0_0_0_0*hz_1_0_2_0; pxz = yv*hx_1_0_0_0*hz_1_0_2_0; pxy = yv*hx_1_0_0_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_2_0 - 1.0_dp*hz_0_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_2_0 + abz*hz_1_0_2_0))*pxy
-               yv = y(34)
-               pyz = yv*hy_2_0_0_0*hz_0_0_2_0; pxz = yv*hx_0_0_0_0*hz_0_0_2_0; pxy = yv*hx_0_0_0_0*hy_2_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_0_0 - 2.0_dp*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_0_0 + aby*hy_2_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_2_0 + abz*hz_0_0_2_0))*pxy
-               yv = y(35)
-               pyz = yv*hy_1_0_0_0*hz_1_0_2_0; pxz = yv*hx_0_0_0_0*hz_1_0_2_0; pxy = yv*hx_0_0_0_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_2_0 - 1.0_dp*hz_0_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_2_0 + abz*hz_1_0_2_0))*pxy
-               yv = y(36)
-               pyz = yv*hy_0_0_0_0*hz_2_0_2_0; pxz = yv*hx_0_0_0_0*hz_2_0_2_0; pxy = yv*hx_0_0_0_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_2_0 - 2.0_dp*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_2_0 + abz*hz_2_0_2_0))*pxy
-               u2 = ru(2)/(1.0_dp - ru(2))*rho
-               dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
-               b00r  = 0.5_dp*u2*dinv
-               b10r  = 0.5_dp*(eta + u2)*dinv
-               bp01r = 0.5_dp*(zeta + u2)*dinv
-               f00 = pref*rw(2)
-               c00x = pax - u2*eta*dinv*pqx
-               c00y = pay - u2*eta*dinv*pqy
-               c00z = paz - u2*eta*dinv*pqz
-               cp0x = qcx + u2*zeta*dinv*pqx
-               cp0y = qcy + u2*zeta*dinv*pqy
-               cp0z = qcz + u2*zeta*dinv*pqz
-               gx_0_0 = 1.0_dp
-               gx_1_0 = c00x*gx_0_0
-               gx_2_0 = 1.0_dp*b10r*gx_0_0 + c00x*gx_1_0
-               gx_3_0 = 2.0_dp*b10r*gx_1_0 + c00x*gx_2_0
-               gx_0_1 = cp0x*gx_0_0
-               gx_1_1 = 1.0_dp*b00r*gx_0_0 + cp0x*gx_1_0
-               gx_2_1 = 2.0_dp*b00r*gx_1_0 + cp0x*gx_2_0
-               gx_3_1 = 3.0_dp*b00r*gx_2_0 + cp0x*gx_3_0
-               gx_0_2 = 1.0_dp*bp01r*gx_0_0 + cp0x*gx_0_1
-               gx_1_2 = 1.0_dp*b00r*gx_0_1 + 1.0_dp*bp01r*gx_1_0 + cp0x*gx_1_1
-               gx_2_2 = 2.0_dp*b00r*gx_1_1 + 1.0_dp*bp01r*gx_2_0 + cp0x*gx_2_1
-               gx_3_2 = 3.0_dp*b00r*gx_2_1 + 1.0_dp*bp01r*gx_3_0 + cp0x*gx_3_1
-               gy_0_0 = 1.0_dp
-               gy_1_0 = c00y*gy_0_0
-               gy_2_0 = 1.0_dp*b10r*gy_0_0 + c00y*gy_1_0
-               gy_3_0 = 2.0_dp*b10r*gy_1_0 + c00y*gy_2_0
-               gy_0_1 = cp0y*gy_0_0
-               gy_1_1 = 1.0_dp*b00r*gy_0_0 + cp0y*gy_1_0
-               gy_2_1 = 2.0_dp*b00r*gy_1_0 + cp0y*gy_2_0
-               gy_3_1 = 3.0_dp*b00r*gy_2_0 + cp0y*gy_3_0
-               gy_0_2 = 1.0_dp*bp01r*gy_0_0 + cp0y*gy_0_1
-               gy_1_2 = 1.0_dp*b00r*gy_0_1 + 1.0_dp*bp01r*gy_1_0 + cp0y*gy_1_1
-               gy_2_2 = 2.0_dp*b00r*gy_1_1 + 1.0_dp*bp01r*gy_2_0 + cp0y*gy_2_1
-               gy_3_2 = 3.0_dp*b00r*gy_2_1 + 1.0_dp*bp01r*gy_3_0 + cp0y*gy_3_1
-               gz_0_0 = f00
-               gz_1_0 = c00z*gz_0_0
-               gz_2_0 = 1.0_dp*b10r*gz_0_0 + c00z*gz_1_0
-               gz_3_0 = 2.0_dp*b10r*gz_1_0 + c00z*gz_2_0
-               gz_0_1 = cp0z*gz_0_0
-               gz_1_1 = 1.0_dp*b00r*gz_0_0 + cp0z*gz_1_0
-               gz_2_1 = 2.0_dp*b00r*gz_1_0 + cp0z*gz_2_0
-               gz_3_1 = 3.0_dp*b00r*gz_2_0 + cp0z*gz_3_0
-               gz_0_2 = 1.0_dp*bp01r*gz_0_0 + cp0z*gz_0_1
-               gz_1_2 = 1.0_dp*b00r*gz_0_1 + 1.0_dp*bp01r*gz_1_0 + cp0z*gz_1_1
-               gz_2_2 = 2.0_dp*b00r*gz_1_1 + 1.0_dp*bp01r*gz_2_0 + cp0z*gz_2_1
-               gz_3_2 = 3.0_dp*b00r*gz_2_1 + 1.0_dp*bp01r*gz_3_0 + cp0z*gz_3_1
-               ab2 = abx*abx
-               cd2 = 0.0_dp*0.0_dp
-               ht_0_0_0 = gx_0_0
-               ht_0_0_1 = gx_0_1
-               ht_0_0_2 = gx_0_2
-               ht_1_0_0 = gx_1_0
-               ht_1_0_1 = gx_1_1
-               ht_1_0_2 = gx_1_2
-               ht_2_0_0 = gx_2_0
-               ht_2_0_1 = gx_2_1
-               ht_2_0_2 = gx_2_2
-               ht_3_0_0 = gx_3_0
-               ht_3_0_1 = gx_3_1
-               ht_3_0_2 = gx_3_2
-               hx_0_0_0_0 = ht_0_0_0
-               hx_0_0_1_0 = ht_0_0_1
-               hx_0_0_2_0 = ht_0_0_2
-               hx_1_0_0_0 = ht_1_0_0
-               hx_1_0_1_0 = ht_1_0_1
-               hx_1_0_2_0 = ht_1_0_2
-               hx_2_0_0_0 = ht_2_0_0
-               hx_2_0_1_0 = ht_2_0_1
-               hx_2_0_2_0 = ht_2_0_2
-               hx_3_0_0_0 = ht_3_0_0
-               hx_3_0_1_0 = ht_3_0_1
-               hx_3_0_2_0 = ht_3_0_2
-               ab2 = aby*aby
-               cd2 = 0.0_dp*0.0_dp
-               ht_0_0_0 = gy_0_0
-               ht_0_0_1 = gy_0_1
-               ht_0_0_2 = gy_0_2
-               ht_1_0_0 = gy_1_0
-               ht_1_0_1 = gy_1_1
-               ht_1_0_2 = gy_1_2
-               ht_2_0_0 = gy_2_0
-               ht_2_0_1 = gy_2_1
-               ht_2_0_2 = gy_2_2
-               ht_3_0_0 = gy_3_0
-               ht_3_0_1 = gy_3_1
-               ht_3_0_2 = gy_3_2
-               hy_0_0_0_0 = ht_0_0_0
-               hy_0_0_1_0 = ht_0_0_1
-               hy_0_0_2_0 = ht_0_0_2
-               hy_1_0_0_0 = ht_1_0_0
-               hy_1_0_1_0 = ht_1_0_1
-               hy_1_0_2_0 = ht_1_0_2
-               hy_2_0_0_0 = ht_2_0_0
-               hy_2_0_1_0 = ht_2_0_1
-               hy_2_0_2_0 = ht_2_0_2
-               hy_3_0_0_0 = ht_3_0_0
-               hy_3_0_1_0 = ht_3_0_1
-               hy_3_0_2_0 = ht_3_0_2
-               ab2 = abz*abz
-               cd2 = 0.0_dp*0.0_dp
-               ht_0_0_0 = gz_0_0
-               ht_0_0_1 = gz_0_1
-               ht_0_0_2 = gz_0_2
-               ht_1_0_0 = gz_1_0
-               ht_1_0_1 = gz_1_1
-               ht_1_0_2 = gz_1_2
-               ht_2_0_0 = gz_2_0
-               ht_2_0_1 = gz_2_1
-               ht_2_0_2 = gz_2_2
-               ht_3_0_0 = gz_3_0
-               ht_3_0_1 = gz_3_1
-               ht_3_0_2 = gz_3_2
-               hz_0_0_0_0 = ht_0_0_0
-               hz_0_0_1_0 = ht_0_0_1
-               hz_0_0_2_0 = ht_0_0_2
-               hz_1_0_0_0 = ht_1_0_0
-               hz_1_0_1_0 = ht_1_0_1
-               hz_1_0_2_0 = ht_1_0_2
-               hz_2_0_0_0 = ht_2_0_0
-               hz_2_0_1_0 = ht_2_0_1
-               hz_2_0_2_0 = ht_2_0_2
-               hz_3_0_0_0 = ht_3_0_0
-               hz_3_0_1_0 = ht_3_0_1
-               hz_3_0_2_0 = ht_3_0_2
-               yv = y(1)
-               pyz = yv*hy_0_0_0_0*hz_0_0_0_0; pxz = yv*hx_2_0_2_0*hz_0_0_0_0; pxy = yv*hx_2_0_2_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_3_0_2_0 - 2.0_dp*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_2_0 + abx*hx_2_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(2)
-               pyz = yv*hy_1_0_0_0*hz_0_0_0_0; pxz = yv*hx_1_0_2_0*hz_0_0_0_0; pxy = yv*hx_1_0_2_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_2_0 - 1.0_dp*hx_0_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_2_0 + abx*hx_1_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(3)
-               pyz = yv*hy_0_0_0_0*hz_1_0_0_0; pxz = yv*hx_1_0_2_0*hz_1_0_0_0; pxy = yv*hx_1_0_2_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_2_0 - 1.0_dp*hx_0_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_2_0 + abx*hx_1_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(4)
-               pyz = yv*hy_2_0_0_0*hz_0_0_0_0; pxz = yv*hx_0_0_2_0*hz_0_0_0_0; pxy = yv*hx_0_0_2_0*hy_2_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_0_0 - 2.0_dp*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_2_0 + abx*hx_0_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_0_0 + aby*hy_2_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(5)
-               pyz = yv*hy_1_0_0_0*hz_1_0_0_0; pxz = yv*hx_0_0_2_0*hz_1_0_0_0; pxy = yv*hx_0_0_2_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_2_0 + abx*hx_0_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(6)
-               pyz = yv*hy_0_0_0_0*hz_2_0_0_0; pxz = yv*hx_0_0_2_0*hz_2_0_0_0; pxy = yv*hx_0_0_2_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_2_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_0_0 - 2.0_dp*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_2_0 + abx*hx_0_0_2_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_0_0 + abz*hz_2_0_0_0))*pxy
-               yv = y(7)
-               pyz = yv*hy_0_0_1_0*hz_0_0_0_0; pxz = yv*hx_2_0_1_0*hz_0_0_0_0; pxy = yv*hx_2_0_1_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_3_0_1_0 - 2.0_dp*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_1_0 + abx*hx_2_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(8)
-               pyz = yv*hy_1_0_1_0*hz_0_0_0_0; pxz = yv*hx_1_0_1_0*hz_0_0_0_0; pxy = yv*hx_1_0_1_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(9)
-               pyz = yv*hy_0_0_1_0*hz_1_0_0_0; pxz = yv*hx_1_0_1_0*hz_1_0_0_0; pxy = yv*hx_1_0_1_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(10)
-               pyz = yv*hy_2_0_1_0*hz_0_0_0_0; pxz = yv*hx_0_0_1_0*hz_0_0_0_0; pxy = yv*hx_0_0_1_0*hy_2_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_1_0 - 2.0_dp*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_1_0 + aby*hy_2_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(11)
-               pyz = yv*hy_1_0_1_0*hz_1_0_0_0; pxz = yv*hx_0_0_1_0*hz_1_0_0_0; pxy = yv*hx_0_0_1_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(12)
-               pyz = yv*hy_0_0_1_0*hz_2_0_0_0; pxz = yv*hx_0_0_1_0*hz_2_0_0_0; pxy = yv*hx_0_0_1_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_0_0 - 2.0_dp*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_0_0 + abz*hz_2_0_0_0))*pxy
-               yv = y(13)
-               pyz = yv*hy_0_0_0_0*hz_0_0_1_0; pxz = yv*hx_2_0_1_0*hz_0_0_1_0; pxy = yv*hx_2_0_1_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_3_0_1_0 - 2.0_dp*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_1_0 + abx*hx_2_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(14)
-               pyz = yv*hy_1_0_0_0*hz_0_0_1_0; pxz = yv*hx_1_0_1_0*hz_0_0_1_0; pxy = yv*hx_1_0_1_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(15)
-               pyz = yv*hy_0_0_0_0*hz_1_0_1_0; pxz = yv*hx_1_0_1_0*hz_1_0_1_0; pxy = yv*hx_1_0_1_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_1_0 - 1.0_dp*hx_0_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_1_0 + abx*hx_1_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(16)
-               pyz = yv*hy_2_0_0_0*hz_0_0_1_0; pxz = yv*hx_0_0_1_0*hz_0_0_1_0; pxy = yv*hx_0_0_1_0*hy_2_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_0_0 - 2.0_dp*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_0_0 + aby*hy_2_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(17)
-               pyz = yv*hy_1_0_0_0*hz_1_0_1_0; pxz = yv*hx_0_0_1_0*hz_1_0_1_0; pxy = yv*hx_0_0_1_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(18)
-               pyz = yv*hy_0_0_0_0*hz_2_0_1_0; pxz = yv*hx_0_0_1_0*hz_2_0_1_0; pxy = yv*hx_0_0_1_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_1_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_1_0 - 2.0_dp*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_1_0 + abx*hx_0_0_1_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_1_0 + abz*hz_2_0_1_0))*pxy
-               yv = y(19)
-               pyz = yv*hy_0_0_2_0*hz_0_0_0_0; pxz = yv*hx_2_0_0_0*hz_0_0_0_0; pxy = yv*hx_2_0_0_0*hy_0_0_2_0
-               gax = gax + (2.0_dp*al*hx_3_0_0_0 - 2.0_dp*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_0_0 + abx*hx_2_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_2_0 + aby*hy_0_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(20)
-               pyz = yv*hy_1_0_2_0*hz_0_0_0_0; pxz = yv*hx_1_0_0_0*hz_0_0_0_0; pxy = yv*hx_1_0_0_0*hy_1_0_2_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_2_0 - 1.0_dp*hy_0_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_2_0 + aby*hy_1_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(21)
-               pyz = yv*hy_0_0_2_0*hz_1_0_0_0; pxz = yv*hx_1_0_0_0*hz_1_0_0_0; pxy = yv*hx_1_0_0_0*hy_0_0_2_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_2_0 + aby*hy_0_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(22)
-               pyz = yv*hy_2_0_2_0*hz_0_0_0_0; pxz = yv*hx_0_0_0_0*hz_0_0_0_0; pxy = yv*hx_0_0_0_0*hy_2_0_2_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_2_0 - 2.0_dp*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_2_0 + aby*hy_2_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_0_0 + abz*hz_0_0_0_0))*pxy
-               yv = y(23)
-               pyz = yv*hy_1_0_2_0*hz_1_0_0_0; pxz = yv*hx_0_0_0_0*hz_1_0_0_0; pxy = yv*hx_0_0_0_0*hy_1_0_2_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_2_0 - 1.0_dp*hy_0_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_0_0 - 1.0_dp*hz_0_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_2_0 + aby*hy_1_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_0_0 + abz*hz_1_0_0_0))*pxy
-               yv = y(24)
-               pyz = yv*hy_0_0_2_0*hz_2_0_0_0; pxz = yv*hx_0_0_0_0*hz_2_0_0_0; pxy = yv*hx_0_0_0_0*hy_0_0_2_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_2_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_0_0 - 2.0_dp*hz_1_0_0_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_2_0 + aby*hy_0_0_2_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_0_0 + abz*hz_2_0_0_0))*pxy
-               yv = y(25)
-               pyz = yv*hy_0_0_1_0*hz_0_0_1_0; pxz = yv*hx_2_0_0_0*hz_0_0_1_0; pxy = yv*hx_2_0_0_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_3_0_0_0 - 2.0_dp*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_0_0 + abx*hx_2_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(26)
-               pyz = yv*hy_1_0_1_0*hz_0_0_1_0; pxz = yv*hx_1_0_0_0*hz_0_0_1_0; pxy = yv*hx_1_0_0_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(27)
-               pyz = yv*hy_0_0_1_0*hz_1_0_1_0; pxz = yv*hx_1_0_0_0*hz_1_0_1_0; pxy = yv*hx_1_0_0_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(28)
-               pyz = yv*hy_2_0_1_0*hz_0_0_1_0; pxz = yv*hx_0_0_0_0*hz_0_0_1_0; pxy = yv*hx_0_0_0_0*hy_2_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_1_0 - 2.0_dp*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_1_0 + aby*hy_2_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_1_0 + abz*hz_0_0_1_0))*pxy
-               yv = y(29)
-               pyz = yv*hy_1_0_1_0*hz_1_0_1_0; pxz = yv*hx_0_0_0_0*hz_1_0_1_0; pxy = yv*hx_0_0_0_0*hy_1_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_1_0 - 1.0_dp*hy_0_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_1_0 - 1.0_dp*hz_0_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_1_0 + aby*hy_1_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_1_0 + abz*hz_1_0_1_0))*pxy
-               yv = y(30)
-               pyz = yv*hy_0_0_1_0*hz_2_0_1_0; pxz = yv*hx_0_0_0_0*hz_2_0_1_0; pxy = yv*hx_0_0_0_0*hy_0_0_1_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_1_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_1_0 - 2.0_dp*hz_1_0_1_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_1_0 + aby*hy_0_0_1_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_1_0 + abz*hz_2_0_1_0))*pxy
-               yv = y(31)
-               pyz = yv*hy_0_0_0_0*hz_0_0_2_0; pxz = yv*hx_2_0_0_0*hz_0_0_2_0; pxy = yv*hx_2_0_0_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_3_0_0_0 - 2.0_dp*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_3_0_0_0 + abx*hx_2_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_2_0 + abz*hz_0_0_2_0))*pxy
-               yv = y(32)
-               pyz = yv*hy_1_0_0_0*hz_0_0_2_0; pxz = yv*hx_1_0_0_0*hz_0_0_2_0; pxy = yv*hx_1_0_0_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_2_0 + abz*hz_0_0_2_0))*pxy
-               yv = y(33)
-               pyz = yv*hy_0_0_0_0*hz_1_0_2_0; pxz = yv*hx_1_0_0_0*hz_1_0_2_0; pxy = yv*hx_1_0_0_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_2_0_0_0 - 1.0_dp*hx_0_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_2_0 - 1.0_dp*hz_0_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_2_0_0_0 + abx*hx_1_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_2_0 + abz*hz_1_0_2_0))*pxy
-               yv = y(34)
-               pyz = yv*hy_2_0_0_0*hz_0_0_2_0; pxz = yv*hx_0_0_0_0*hz_0_0_2_0; pxy = yv*hx_0_0_0_0*hy_2_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_3_0_0_0 - 2.0_dp*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_3_0_0_0 + aby*hy_2_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_1_0_2_0 + abz*hz_0_0_2_0))*pxy
-               yv = y(35)
-               pyz = yv*hy_1_0_0_0*hz_1_0_2_0; pxz = yv*hx_0_0_0_0*hz_1_0_2_0; pxy = yv*hx_0_0_0_0*hy_1_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_2_0_0_0 - 1.0_dp*hy_0_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_2_0_2_0 - 1.0_dp*hz_0_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_2_0_0_0 + aby*hy_1_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_2_0_2_0 + abz*hz_1_0_2_0))*pxy
-               yv = y(36)
-               pyz = yv*hy_0_0_0_0*hz_2_0_2_0; pxz = yv*hx_0_0_0_0*hz_2_0_2_0; pxy = yv*hx_0_0_0_0*hy_0_0_0_0
-               gax = gax + (2.0_dp*al*hx_1_0_0_0)*pyz
-               gay = gay + (2.0_dp*al*hy_1_0_0_0)*pxz
-               gaz = gaz + (2.0_dp*al*hz_3_0_2_0 - 2.0_dp*hz_1_0_2_0)*pxy
-               gbx = gbx + (2.0_dp*be*(hx_1_0_0_0 + abx*hx_0_0_0_0))*pyz
-               gby = gby + (2.0_dp*be*(hy_1_0_0_0 + aby*hy_0_0_0_0))*pxz
-               gbz = gbz + (2.0_dp*be*(hz_3_0_2_0 + abz*hz_2_0_2_0))*pxy
-               u2 = ru(3)/(1.0_dp - ru(3))*rho
-               dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
-               b00r  = 0.5_dp*u2*dinv
-               b10r  = 0.5_dp*(eta + u2)*dinv
-               bp01r = 0.5_dp*(zeta + u2)*dinv
-               f00 = pref*rw(3)
+               f00 = pref*rw(rr)
                c00x = pax - u2*eta*dinv*pqx
                c00y = pay - u2*eta*dinv*pqy
                c00z = paz - u2*eta*dinv*pqz

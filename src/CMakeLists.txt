@@ -500,10 +500,12 @@ if(_regen)
     # The DF integrals' nuclear derivatives, contracted (the --df gradient,
     # trc_scf_grad_df.F90): Rys for every class, since a derivative raises an
     # index past the written-out VRR+HRR's compile wall (gen_df_grad.py's
-    # docstring). Same ceilings and unroll threshold as gen_df.py above.
+    # docstring). Same ceilings as gen_df.py above; their own unroll
+    # threshold, TERCO_DFG_UNROLL_MAX (top-level CMakeLists.txt), with the
+    # root loop never unrolled.
     terco_gen("gen_df_grad.py" ${Python3_EXECUTABLE} ${_scripts}/gen_df_grad.py --lmax ${_df_lmax}
-              --lmax-aux ${_df_lmax_aux} ${_order_flag} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
-              --split ${_gen_out})
+              --lmax-aux ${_df_lmax_aux} ${_order_flag} --unroll-max-comp ${TERCO_DFG_UNROLL_MAX}
+              --unroll-roots-max-comp 0 --split ${_gen_out})
 
     # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
     # `comp` and trc_batch.F90's `cart_pow`, the flat table
