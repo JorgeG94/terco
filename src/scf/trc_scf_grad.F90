@@ -225,7 +225,7 @@ contains
       !! steps, through pic's logger at PERFORMANCE. Default off.
 
       type(trc_pairlist_t) :: pl
-      type(step_table_t) :: gst, xst
+      type(step_table_t) :: gst, xst, vst
       real(dp) :: tc
       logical :: talk
       integer :: nlc_level
@@ -238,6 +238,7 @@ contains
       if (present(verbose)) talk = verbose
       call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10"])
       call xst%init("xc grad", xc_grad_step_names())
+      call vst%init("vv10 grad", xc_grad_step_names())
       call gst%step_on(lp, 1, tc)
 
       nao = b%nao
@@ -357,7 +358,7 @@ contains
             call gst%step_on(lp, 5, tc)
             call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
                                    grid_level=nlc_level, grid_max_pts=grid_max_pts, &
-                                   grid_response=grid_response)
+                                   grid_response=grid_response, timing=vst)
             call gst%step_off(lp, 5, tc)
          end if
       end if
@@ -375,6 +376,7 @@ contains
          call lp%sync()
          call gst%report(sum(gst%t), 0, 1)
          if (present(func)) call xst%report(gst%t(4), 0, 1)
+         if (gst%t(5) > 0.0_dp) call vst%report(gst%t(5), 0, 1)
       end if
    end subroutine trc_scf_gradient
 
