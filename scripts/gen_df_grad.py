@@ -90,14 +90,14 @@ with a one-hot coefficient block and read back the raw derivative integrals
 
 UNROLLING. --unroll-max-comp unrolls a class's components, and
 --unroll-roots-max-comp (default: the same number) its root loop too. The
-shipped set (CMake's TERCO_DFG_UNROLL_MAX) unrolls the components up to 270
+shipped set (CMake's TERCO_DFG_UNROLL_MAX) unrolls the components up to 135
 and never the roots: a run-time root loop around unrolled components ran
 as fast as the fully unrolled form on a V100 (within 3% per class) in a
 third of the text, and 2-3x faster than the loop form (whose run-time
 indexed tables live in local memory) for the classes above 81.
 
 USAGE
-    gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 270 --unroll-roots-max-comp 0 --split src/generated
+    gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 135 --unroll-roots-max-comp 0 --split src/generated
 """
 
 import argparse

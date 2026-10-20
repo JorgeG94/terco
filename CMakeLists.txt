@@ -210,12 +210,15 @@ set(TERCO_RYS_UNROLL_MAX
 # nroots). MEASURED on a V100, gly10/cc-pVDZ, per class against the loop
 # form: (pp|f) 5.8 -> 2.0 ms, (dp|d) 6.1 -> 3.1 ms, (dp|g) 2.9 -> 2.0 ms;
 # the classes at or below 81 run the same as with their roots unrolled too
-# (within 3%), in a third of the text. 270 takes every class but (dd|f) and
-# (dd|g), whose unrolled form saves 0.4-0.5 ms a block for 80-180 s of
-# nvfortran compile each. The shipped set is 33k lines (60k before).
+# (within 3%), in a third of the text. 135 takes (pp|f), (pp|g), (ds|g),
+# (dp|d) and (dd|p) too; 270 would add (dp|f), (dp|g) and (dd|d) for 1-2%
+# of the gradient (gly10 0.732 -> 0.721 s, w40 1.603 -> 1.575 s) at 65% more
+# nvfortran compile (121 -> 199 s summed) and 31% more text; 81 would leave
+# the five classes above in the loop form, 2-3x slower each. The shipped set
+# is 25.2k lines (59.8k with the old 81-everything-unrolled rule).
 #
 set(TERCO_DFG_UNROLL_MAX
-    "270"
+    "135"
     CACHE STRING "Unroll the DF-gradient kernels' components for classes with na*nb*nc <= this")
 #
 # Shared by default. The one consumer that matters, metalquicha, is built

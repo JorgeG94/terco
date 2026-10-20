@@ -306,7 +306,7 @@ python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --pcm src/generated/trc_pcm_kernels.F90
 python3 scripts/gen_df.py --lmax 2 --lmax-aux 4 --unroll-max-comp 81 --split src/generated
-python3 scripts/gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 270 --unroll-roots-max-comp 0 \
+python3 scripts/gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 135 --unroll-roots-max-comp 0 \
     --split src/generated
 ```
 
