@@ -795,7 +795,7 @@ contains
       integer, intent(inout) :: active(chunk, n_atoms), sig(chunk, n_atoms), mark(chunk, n_atoms)
       real(dp), intent(inout) :: grad(3, n_atoms)
       integer :: own, i, j, ia, ja, n_active, n1, pp, qq, ic, ir, it, nsig, nrow
-      real(dp) :: c, mu, nu, ri, rown, s, total, cell_own, cell_c, cell_r, r_inner, denom, floor
+      real(dp) :: c, mu, nu, ri, rown, s, total, cell_own, cell_c, cell_r, r_inner, inv_total, w_own, floor
       real(dp) :: d3(3)
       real(dp) :: ucx, ucy, ucz, rc, invd, r_p, r_q, sh, ds_dnu, c1, t3, f0, f1, f2, f3
       real(dp) :: s_rc, s_cr, rx, ry, rz, dx, dy, dz, ex, ey
@@ -914,7 +914,12 @@ contains
       end do
 
       if (total > 0.0_dp) then
-         denom = total*total
+         ! 1/total and P = cell_own/total, never total**2: a point whose
+         ! cells all sit near CELL_FLOOR has total ~1e-150, total**2 is
+         ! below the smallest normal double, and a flush-to-zero build
+         ! (nvfortran -fast) then divides by an exact zero.
+         inv_total = 1.0_dp/total
+         w_own = cell_own*inv_total
          vox = 0.0_dp
          voy = 0.0_dp
          voz = 0.0_dp
@@ -1004,7 +1009,13 @@ contains
                   dy = -(c1*(-ucy*invd - t3*ry))
                   dz = -(c1*(-ucz*invd - t3*rz))
                end if
-               if (cell_r > 0.0_dp) then
+               ! cell/S is the product of the cell's OTHER factors. Where S
+               ! itself is exactly 0 (Becke's s rounds to 0 or 1 in double,
+               ! and a -fast build contracts the polynomial into FMAs that
+               ! reach it) the term is S'*(that product), and S' is zero
+               ! there too (ds/dnu vanishes at nu = +-1): skip it rather
+               ! than form 0/0.
+               if (cell_r > 0.0_dp .and. s_rc > 0.0_dp) then
                   ex = cell_r/s_rc
                   tax = tax + dx*ex
                   tay = tay + dy*ex
@@ -1015,7 +1026,7 @@ contains
                      oz = dz*ex
                   end if
                end if
-               if (cell_c > 0.0_dp) then
+               if (cell_c > 0.0_dp .and. s_cr > 0.0_dp) then
                   ey = cell_c/s_cr
                   tbx = tbx - dx*ey
                   tby = tby - dy*ey
@@ -1028,9 +1039,9 @@ contains
                oy = tby
                oz = tbz
             end if
-            vx = c*(((ox*total) - cell_own*(tax + tbx))/denom)
-            vy = c*(((oy*total) - cell_own*(tay + tby))/denom)
-            vz = c*(((oz*total) - cell_own*(taz + tbz))/denom)
+            vx = c*((ox - w_own*(tax + tbx))*inv_total)
+            vy = c*((oy - w_own*(tay + tby))*inv_total)
+            vz = c*((oz - w_own*(taz + tbz))*inv_total)
             vox = vox + vx
             voy = voy + vy
             voz = voz + vz
