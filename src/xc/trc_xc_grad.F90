@@ -224,9 +224,17 @@ module trc_xc_grad
    !! Threads that share one function's Pulay sum on the device, adjacent
    !! threads adjacent points (xc_grad_forces); one on the host, which
    !! walks a column in one iteration.
+#ifdef _OPENACC
    integer(int64), parameter :: XC_GRAD_TILE_CAP = 8388608_int64
+#else
+   integer(int64), parameter :: XC_GRAD_TILE_CAP = 262144_int64
+#endif
    !! Doubles in one tile of a chunk (chi, say); a GGA chunk holds about
    !! thirteen such tiles, so 64 MB here is about 0.8 GB of device memory.
+   !! On the host, 2 MB, so a chunk's tiles stay in cache from one kernel
+   !! to the next: each kernel is a pass over every tile it reads, and at
+   !! 64 MB every pass went to memory (w20/def2-SVP PBE, one core:
+   !! collocate 3.9 -> 3.0 s, points 1.6 -> 1.2 s).
 
    real(dp), parameter :: XC_GRAD_RHO_TOL = 1.0e-12_dp
    !! Same role and value as trc_xc.F90's XC_RHO_TOL: a batch whose bound on
@@ -943,12 +951,57 @@ contains
       real(dp), intent(in) :: dmat(nao, nao, nspin)
       integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
       real(dp), intent(inout) :: dloc(ldd, nspin)
+#ifdef _OPENACC
       integer :: t
       do concurrent(t=1:npairs)
          call xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
                                        ldd, dloc)
       end do
+#else
+      ! On the host, a batch per iteration, its tile column by column: the
+      ! flat form's search for each element's batch, and its mod and
+      ! divide, cost several times the copy itself.
+      integer :: k
+      do concurrent(k=1:nb)
+         call xc_grad_gather_batch(k, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, ldd, &
+                                   dloc)
+      end do
+#endif
    end subroutine xc_grad_gather_tiles
+
+   ! Stored batch k's density tiles, as xc_grad_gather_tile_body writes
+   ! them element by element.
+   pure subroutine xc_grad_gather_batch(k, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
+                                        ldd, dloc)
+      integer, intent(in) :: k, nb, nspin, nao, nbao, nbatch, ldd
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      real(dp), intent(in) :: dmat(nao, nao, nspin)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(inout) :: dloc(ldd, nspin)
+      integer :: ib, nloc, ld, a0, u, v, s, t
+
+      ib = ord(k)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = nlp(ib)
+      a0 = b_aooff(ib) - 1
+      do s = 1, nspin
+         do v = 1, ld
+            t = pb_off(k) + (v - 1)*ld
+            if (v > nloc) then
+               do u = 1, ld
+                  dloc(t + u, s) = 0.0_dp
+               end do
+            else
+               do u = 1, nloc
+                  dloc(t + u, s) = dmat(b_ao(a0 + u), b_ao(a0 + v), s)
+               end do
+               do u = nloc + 1, ld
+                  dloc(t + u, s) = 0.0_dp
+               end do
+            end if
+         end do
+      end do
+   end subroutine xc_grad_gather_batch
 
    pure subroutine xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, &
                                             nbatch, ldd, dloc)
