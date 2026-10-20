@@ -36,7 +36,7 @@ static int must(int rc, const char *what) {
 }
 
 int main(void) {
-   int rc, major, minor, flags;
+   int rc, major, minor, flags, dev;
    double exx, c_os, c_ss;
    trc_handle_t h = NULL;
    double z[3] = {8.0, 1.0, 1.0};
@@ -58,6 +58,16 @@ int main(void) {
    if (major != TRC_ABI_MAJOR || minor != TRC_ABI_MINOR) {
       fprintf(stderr, "link_c: header says ABI %d.%d, library says %d.%d\n",
               TRC_ABI_MAJOR, TRC_ABI_MINOR, major, minor);
+      return 1;
+   }
+
+   /* Rank 0 must bind device 0 when there is a GPU, and report -1 on a
+      host build: mod(0, ndev) either way. */
+   rc = trc_select_device(0, &dev);
+   if (must(rc, "trc_select_device")) return 1;
+   printf("link_c: trc_select_device(0) chose device %d\n", dev);
+   if (dev != 0 && dev != -1) {
+      fprintf(stderr, "link_c: rank 0 should bind device 0 (or -1 without a GPU), got %d\n", dev);
       return 1;
    }
 

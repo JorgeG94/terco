@@ -281,7 +281,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 0
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 1
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -3509,6 +3509,22 @@ contains
       minor = TRC_ABI_MINOR
       status = TRC_OK
    end function trc_abi_version
+
+   function trc_select_device(rank, dev) result(status) bind(c, name="trc_select_device")
+      !! Bind this process to a GPU by its node-local rank: device
+      !! mod(rank, number of devices), what trc_api's trc_bind_device does
+      !! for terco's own MPI runs. A host code that runs one single-rank
+      !! context per process and never calls trc_set_comm (one fragment per
+      !! rank, say) calls this once, before the first trc_create, or every
+      !! rank lands on device 0. `dev` is the device chosen, -1 on a build
+      !! without the GPU or a node without one. Process-wide; no handle;
+      !! always succeeds.
+      integer(c_int), value :: rank
+      integer(c_int), intent(out) :: dev
+      integer(c_int) :: status
+      dev = int(trc_bind_device(int(rank)), c_int)
+      status = TRC_OK
+   end function trc_select_device
 
    function trc_functional_info(name, flags, exx, c_os, c_ss) result(status) bind(c, name="trc_functional_info")
       !! Look up a functional by name (case-insensitive, trc_xc_functional's

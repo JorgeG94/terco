@@ -36,7 +36,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 0
+#define TRC_ABI_MINOR 1
 
 int trc_basis_create(int nshell, int maxnp, const int* l, const int* nprim, const double* exps, const double* coefs, const double* centres, int natm, const double* zatm, const double* ratm, trc_handle_t* handle);
 
@@ -546,6 +546,18 @@ int trc_cart_order(void);
  * succeeds.
  */
 int trc_abi_version(int* major, int* minor);
+
+/**
+ * Bind this process to a GPU by its node-local rank: device
+ * mod(rank, number of devices), what trc_api's trc_bind_device does
+ * for terco's own MPI runs. A host code that runs one single-rank
+ * context per process and never calls trc_set_comm (one fragment per
+ * rank, say) calls this once, before the first trc_create, or every
+ * rank lands on device 0. `dev` is the device chosen, -1 on a build
+ * without the GPU or a node without one. Process-wide; no handle;
+ * always succeeds.
+ */
+int trc_select_device(int rank, int* dev);
 
 /**
  * Look up a functional by name (case-insensitive, trc_xc_functional's
