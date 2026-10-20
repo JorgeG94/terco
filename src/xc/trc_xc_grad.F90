@@ -236,13 +236,20 @@ contains
 
    !
    ! The one entry point. Builds its own DFT quadrature at `b`'s geometry
-   ! (trc_scf_run keeps neither its grid nor its functional alive past
-   ! convergence, the same reason trc_scf_gradient rebuilds the pair list
-   ! and the ERI engine), refuses what it cannot do, and ADDS the result
-   ! into `grad`.
+   ! by default (trc_scf_run keeps neither its grid nor its functional
+   ! alive past convergence, the same reason trc_scf_gradient rebuilds the
+   ! pair list and the ERI engine) -- UNLESS the caller already has one at
+   ! this exact geometry and settings and hands it in through `grid`/`xg`
+   ! (trc_capi.F90's `trc_run_gradient`, reusing the SCF's own grid cache:
+   ! see trc_scf_context.F90's `trc_grid_cache_t`). Present, both together,
+   ! no rebuild and no upload happen at all, and neither is released here
+   ! -- the caller owns them, exactly as it owns `dfjk`/`aux` in
+   ! trc_scf_grad.F90's own `--df` branch. Absent (the default, and every
+   ! existing caller), behaviour is unchanged: refuses what it cannot do,
+   ! and ADDS the result into `grad`.
    !
    subroutine xc_gradient_add(b, lp, func, nspin, dens, grad, grid_level, grid_max_pts, rho_tol, &
-                              grid_response, timing)
+                              grid_response, timing, grid, xg)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -268,12 +275,21 @@ contains
       !! Device-synced time per step, ADDED into; initialised by the caller
       !! with `xc_grad_step_names()`. Absent, a private table is kept and
       !! dropped.
+      type(dft_grid_t), intent(in), optional, target :: grid
+      type(trc_xc_grid_t), intent(in), optional, target :: xg
+      !! The SCF's own grid, already batched and device-resident (`xg`) --
+      !! present TOGETHER, never one without the other, same convention
+      !! `xcgrid_build`'s own `atom`/`qw` pair uses. See this subroutine's
+      !! own header, REUSE.
 
-      type(dft_grid_t) :: grid
+      type(dft_grid_t), target :: grid_own
+      type(trc_xc_grid_t), target :: xg_own
+      type(dft_grid_t), pointer :: gp
+      type(trc_xc_grid_t), pointer :: xgp
+      logical :: reuse_grid
       type(step_table_t), target :: tbl_own
       type(step_table_t), pointer :: tbl
       real(dp) :: tc
-      type(trc_xc_grid_t) :: xg
       type(error_t) :: err
       logical :: is_gga, gresp
       integer :: glevel, gmaxpts, ish, i
@@ -333,21 +349,31 @@ contains
          tbl => tbl_own
       end if
 
+      reuse_grid = present(grid) .and. present(xg)
       call tbl%step_on(lp, ST_GRID, tc)
       allocate (at_z(b%natm), source=nint(b%at_z))
-      call build_dft_grid(b%at_r, at_z, grid, err, level=glevel)
-      if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
-      ! `atom`/`qw` are only ever read by the grid-response term below
-      ! (xg%build leaves both unallocated, and every other caller of
-      ! xcgrid_build never asks for them); built unconditionally anyway --
-      ! they cost one more integer and one more real(dp) per point, next to
-      ! the GEMMs a surviving batch pays for.
-      call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=gmaxpts, &
-                    atom=grid%atom, qw=grid%quad_weights)
-      call xg%to_device()
+      if (reuse_grid) then
+         ! The SCF's own grid, already batched and on the device -- no
+         ! rebuild, no re-upload. See this subroutine's own header, REUSE.
+         gp => grid
+         xgp => xg
+      else
+         call build_dft_grid(b%at_r, at_z, grid_own, err, level=glevel)
+         if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
+         ! `atom`/`qw` are only ever read by the grid-response term below
+         ! (xg%build leaves both unallocated, and every other caller of
+         ! xcgrid_build never asks for them); built unconditionally anyway --
+         ! they cost one more integer and one more real(dp) per point, next to
+         ! the GEMMs a surviving batch pays for.
+         call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=gmaxpts, &
+                           atom=grid_own%atom, qw=grid_own%quad_weights)
+         call xg_own%to_device()
+         gp => grid_own
+         xgp => xg_own
+      end if
       call tbl%step_off(lp, ST_GRID, tc)
 
-      if (xg%npts > 0) then
+      if (xgp%npts > 0) then
          ! AO -> atom, built once from the shell -> atom map `basis_build`
          ! already produced (sh_at), the same map the two-electron and
          ! one-electron gradients use.
@@ -364,12 +390,12 @@ contains
          ! array, merged into the device-resident `grad` once at the end.
          ! They need every point's rho*eps (`fxc`, filled by the drive's
          ! point kernel and left zero where the screen skips a batch).
-         allocate (grad_extra(3, b%natm), fxc(xg%npts))
+         allocate (grad_extra(3, b%natm), fxc(xgp%npts))
          grad_extra = 0.0_dp
          fxc = 0.0_dp
          !$acc enter data copyin(fxc)
 
-         call xc_grad_drive(b, lp, is_gga, nspin, func%nk, func%kid, func%coef, dens, xg, rtol, &
+         call xc_grad_drive(b, lp, is_gga, nspin, func%nk, func%kid, func%coef, dens, xgp, rtol, &
                             ao_atom, grad, gresp, fxc, tbl)
 
          if (gresp) then
@@ -378,11 +404,11 @@ contains
             ! the per-point factor qw*rho*eps (the quadrature weight alone,
             ! not w: the partition's own factor is what is differentiated).
             call tbl%step_on(lp, ST_PDERIV, tc)
-            allocate (pcoef(xg%npts), source=xg%qw)
+            allocate (pcoef(xgp%npts), source=xgp%qw)
             !$acc enter data copyin(pcoef)
-            call xc_grad_weight_coef(xg%npts, fxc, pcoef)
-            call becke_partition_grad_contract(xg%npts, xg%r, b%at_r, at_z, xg%atom, pcoef, &
-                                               grid%scheme, grid%adjust, grad_extra, err)
+            call xc_grad_weight_coef(xgp%npts, fxc, pcoef)
+            call becke_partition_grad_contract(xgp%npts, xgp%r, b%at_r, at_z, xgp%atom, pcoef, &
+                                               gp%scheme, gp%adjust, grad_extra, err)
             if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
             !$acc exit data delete(pcoef)
             deallocate (pcoef)
@@ -400,8 +426,10 @@ contains
          deallocate (ao_atom)
       end if
 
-      call xg%release()
-      call grid%destroy()
+      if (.not. reuse_grid) then
+         call xg_own%release()
+         call grid_own%destroy()
+      end if
       deallocate (at_z)
    end subroutine xc_gradient_add
 

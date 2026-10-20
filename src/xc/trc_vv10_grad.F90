@@ -139,7 +139,7 @@ contains
    !
    subroutine vv10_gradient_add(b, lp, nspin, dens, bcoef, ccoef, grad, grid_level, grid_max_pts, &
                                 grid_response, &
-                                timing)
+                                timing, grid, xg)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nspin
@@ -168,7 +168,18 @@ contains
       type(step_table_t), intent(inout), optional, target :: timing
       !! As xc_gradient_add's: device-synced time per step, added into,
       !! initialised by the caller with `xc_grad_step_names()`.
+      type(dft_grid_t), intent(in), optional, target :: grid
+      type(trc_xc_grid_t), intent(in), optional, target :: xg
+      !! The SCF's own VV10 (nlc) grid, already batched and device-
+      !! resident -- present TOGETHER, same convention and same reuse
+      !! this module's header (GRID) and xc_gradient_add's own `grid`/`xg`
+      !! document; see trc_scf_context.F90's `trc_grid_cache_t`.
 
+      type(dft_grid_t), target :: grid_own
+      type(trc_xc_grid_t), target :: xg_own
+      type(dft_grid_t), pointer :: gp
+      type(trc_xc_grid_t), pointer :: xgp
+      logical :: reuse_grid
       type(step_table_t), target :: tbl_own
       type(step_table_t), pointer :: tbl
       integer, allocatable :: bact(:)
@@ -176,8 +187,6 @@ contains
       real(dp) :: coef0(XC_MAX_KERNELS)
       real(dp) :: tc
       real(dp), allocatable :: fxc0(:), pcoef(:)
-      type(dft_grid_t) :: grid
-      type(trc_xc_grid_t) :: xg
       type(error_t) :: err
       integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc, g, own
       real(dp) :: kvv, beta
@@ -205,14 +214,24 @@ contains
          tbl => tbl_own
       end if
 
+      reuse_grid = present(grid) .and. present(xg)
       call tbl%step_on(lp, ST_GRID, tc)
       allocate (at_z(b%natm), source=nint(b%at_z))
-      call build_dft_grid(b%at_r, at_z, grid, err, level=glevel)
-      if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
-      call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=gmaxpts, &
-                    atom=grid%atom, qw=grid%quad_weights)
-      call xg%to_device()
-      npts = xg%npts
+      if (reuse_grid) then
+         ! The SCF's own nlc grid, already batched and on the device -- no
+         ! rebuild, no re-upload. See this subroutine's own header, GRID.
+         gp => grid
+         xgp => xg
+      else
+         call build_dft_grid(b%at_r, at_z, grid_own, err, level=glevel)
+         if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
+         call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=gmaxpts, &
+                           atom=grid_own%atom, qw=grid_own%quad_weights)
+         call xg_own%to_device()
+         gp => grid_own
+         xgp => xg_own
+      end if
+      npts = xgp%npts
       call tbl%step_off(lp, ST_GRID, tc)
 
       if (npts > 0) then
@@ -254,8 +273,8 @@ contains
          ! PASS 1: rho/grad-rho/sigma at every outer point -- trc_vv10's own
          ! tiled driver, reused bit-identically (this module's header).
          call vv10_density_tile(b%nao, b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                                xg%npts, xg%nbatch, xg%r, xg%batch_of, xg%b_off, xg%b_shoff, &
-                                size(xg%b_sh), xg%b_sh, xg%b_shao, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                                xgp%npts, xgp%nbatch, xgp%r, xgp%batch_of, xgp%b_off, xgp%b_shoff, &
+                                size(xgp%b_sh), xgp%b_sh, xgp%b_shao, xgp%b_aooff, size(xgp%b_ao), xgp%b_ao, &
                                 dtot(:, :, 1), VV10_GRAD_TILE_CAP, lp, rho, grho, sigma)
 
          ! The inner-grid survivor gather (host-side compaction, then an
@@ -273,14 +292,14 @@ contains
          allocate (gx(max(npass, 1)), gy(max(npass, 1)), gz(max(npass, 1)))
          allocate (gkp(max(npass, 1)), gw0p(max(npass, 1)), grpw(max(npass, 1)))
          !$acc data copyin(gidx(1:max(npass, 1))) create(gx, gy, gz, gkp, gw0p, grpw)
-         call vv10_gather(npts, xg%r, xg%w, rho, sigma, ccoef, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
+         call vv10_gather(npts, xgp%r, xgp%w, rho, sigma, ccoef, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
 
          ! PASS 2, gradient variant: vrho/vsigma (fed into the Pulay
          ! contraction below) plus dedw/fexp (the two nonlocal-only grid-
          ! response pieces, this module's own header) -- see
          ! vv10_grad_kernel_body's own comment for why this duplicates
          ! trc_vv10's PASS 2 rather than extending it in place.
-         call vv10_grad_kernel(npts, xg%r, xg%w, rho, sigma, ccoef, kvv, beta, npass, &
+         call vv10_grad_kernel(npts, xgp%r, xgp%w, rho, sigma, ccoef, kvv, beta, npass, &
                                gx, gy, gz, gkp, gw0p, grpw, vrho, vsigma, dedw, fexp)
          !$acc end data
          deallocate (gidx, gx, gy, gz, gkp, gw0p, grpw)
@@ -298,18 +317,18 @@ contains
          ! chunked pipeline (trc_xc_grad's xc_grad_drive), restricted GGA,
          ! with this module's PASS 2 potential in place of a functional and
          ! its own batch screen (any point at or above VV10_RHO_TOL).
-         allocate (bact(xg%nbatch), fxc0(npts))
+         allocate (bact(xgp%nbatch), fxc0(npts))
          fxc0 = 0.0_dp
-         do ib = 1, xg%nbatch
-            npb = xg%b_off(ib + 1) - xg%b_off(ib)
-            nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         do ib = 1, xgp%nbatch
+            npb = xgp%b_off(ib + 1) - xgp%b_off(ib)
+            nloc = xgp%b_aooff(ib + 1) - xgp%b_aooff(ib)
             bact(ib) = 0
             if (npb == 0 .or. nloc == 0) cycle
-            if (vv10_grad_batch_active(xg%b_off(ib), npb, rho, npts)) bact(ib) = 1
+            if (vv10_grad_batch_active(xgp%b_off(ib), npb, rho, npts)) bact(ib) = 1
          end do
          kid0 = 0
          coef0 = 0.0_dp
-         call xc_grad_drive(b, lp, .true., 1, 0, kid0, coef0, dtot, xg, 0.0_dp, ao_atom, grad, gresp, &
+         call xc_grad_drive(b, lp, .true., 1, 0, kid0, coef0, dtot, xgp, 0.0_dp, ao_atom, grad, gresp, &
                             fxc0, tbl, act_in=bact, ext_grho=grho, ext_vrho=vrho, ext_vsigma=vsigma)
 
          !$acc end data
@@ -322,16 +341,16 @@ contains
             call tbl%step_on(lp, ST_PDERIV, tc)
             allocate (pcoef(npts))
             pcoef = 0.0_dp
-            do ib = 1, xg%nbatch
+            do ib = 1, xgp%nbatch
                if (bact(ib) == 0) cycle
-               do g = xg%b_off(ib), xg%b_off(ib + 1) - 1
-                  own = xg%atom(g)
-                  grad_extra(:, own) = grad_extra(:, own) + xg%w(g)*fexp(:, g)
-                  pcoef(g) = xg%qw(g)*dedw(g)
+               do g = xgp%b_off(ib), xgp%b_off(ib + 1) - 1
+                  own = xgp%atom(g)
+                  grad_extra(:, own) = grad_extra(:, own) + xgp%w(g)*fexp(:, g)
+                  pcoef(g) = xgp%qw(g)*dedw(g)
                end do
             end do
-            call becke_partition_grad_contract(npts, xg%r, b%at_r, at_z, xg%atom, pcoef, &
-                                               grid%scheme, grid%adjust, grad_extra, err)
+            call becke_partition_grad_contract(npts, xgp%r, b%at_r, at_z, xgp%atom, pcoef, &
+                                               gp%scheme, gp%adjust, grad_extra, err)
             if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
             deallocate (pcoef)
             call tbl%step_off(lp, ST_PDERIV, tc)
@@ -347,8 +366,10 @@ contains
          deallocate (ao_atom, dtot, rho, grho, sigma, vrho, vsigma, dedw, fexp)
       end if
 
-      call xg%release()
-      call grid%destroy()
+      if (.not. reuse_grid) then
+         call xg_own%release()
+         call grid_own%destroy()
+      end if
       deallocate (at_z)
    end subroutine vv10_gradient_add
 
