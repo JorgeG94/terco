@@ -145,6 +145,33 @@ int trc_destroy(trc_handle_t handle);
 int trc_set_molecule(trc_handle_t handle, int natm, const double* z, const double* xyz, int charge, int multiplicity);
 
 /**
+ * Change the electron count on the SAME molecule, basis, auxiliary
+ * and jkfit bases -- unlike trc_set_molecule, which always
+ * releases any --df fit, this keeps `cx%dfjk`/`cx%df_fit_ok`: a
+ * fit depends on the geometry and the two bases (the metric, the
+ * three-centre tensor and its Cholesky factor -- see
+ * trc_scf_df.F90's `df_jk_setup`'s own header, "meant to survive
+ * across more than one trc_scf_run on the same geometry"), never
+ * on the electron count, so an ionisation series on one handle
+ * (N, N+1, N-1, ...) fits once and reuses it for every charge
+ * state instead of repeating the metric/Cholesky/3c/trsm for each.
+ *
+ * Same multiplicity check as trc_set_molecule (2S+1 >= 1); whether
+ * charge and multiplicity actually fit the electron count is
+ * trc_run_scf's own check, exactly as it is reached through
+ * trc_set_molecule.
+ *
+ * Invalidates the last SCF/gradient/polarizability result
+ * (invalidate_runs) and any TRC_GUESS_GIVEN density: a density
+ * from the OLD electron count's own occupation is not a guess for
+ * the new one, even where its shape happens to still match, so
+ * the guess kind resets to TRC_GUESS_SAD. Every other guess kind
+ * (CORE/GWH/SAD/SADQ/SAP) carries no state keyed to the old
+ * charge and is left as the caller set it.
+ */
+int trc_set_charge(trc_handle_t handle, int charge, int multiplicity);
+
+/**
  * The orbital basis from libcint's packed `atm`/`bas`/`env`.
  * `cartesian` nonzero builds terco's own Cartesian AO space; zero
  * tags it spherical (libcint/pyscf order, m = -l..l except p as x,
@@ -176,6 +203,17 @@ int trc_set_aux_json(trc_handle_t handle, const char* path);
 int trc_set_method(trc_handle_t handle, const char* functional, int grid_level);
 
 /**
+ * Force UHF/UKS (two independent spin densities) even on a CLOSED
+ * shell (nalpha == nbeta), which otherwise runs restricted --
+ * `trc_scf_options_t%unrestricted`'s own comment, "forced; an open
+ * shell is unrestricted regardless": nalpha /= nbeta already gets
+ * nspin = 2 whether or not this is set, so this only changes
+ * anything on a singlet. `on` nonzero sets it; 0 (the default)
+ * restores restricted-when-closed-shell.
+ */
+int trc_set_unrestricted(trc_handle_t handle, int on);
+
+/**
  * Grid level for VV10's nonlocal correlation (default 1, coarser than
  * the semilocal grid: VV10 is a double sum over its points). Only
  * used by a functional with VV10, such as wB97X-V.
@@ -196,6 +234,23 @@ int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_dii
 int trc_set_screening(trc_handle_t handle, double thresh);
 
 int trc_set_incremental(trc_handle_t handle, int on);
+
+/**
+ * The virtual-orbital level shift, hartree; 0 turns it off.
+ * trc_scf_options_t%level_shift's own comment: F += mu (S - S D S
+ * / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
+ * damped start before either has engaged (trc_scf_driver.F90's own
+ * "level shift while DIIS and A/EDIIS are off" block). It is a
+ * CONVERGENCE AID for that early phase, not a persistent shift
+ * held through the whole SCF: once the commutator is small enough
+ * for CDIIS (or ADIIS takes over first), this stops being applied
+ * at all, however large `shift` is set. A caller wanting a shift
+ * that stays on throughout -- the sense a persistent level shift
+ * has in, for instance, a Fukui-ion deck's convergence recipe --
+ * is asking for something this entry does not do; nothing here
+ * changes that behaviour, only exposes the existing knob.
+ */
+int trc_set_level_shift(trc_handle_t handle, double shift);
 
 int trc_set_df(trc_handle_t handle, int on);
 

@@ -1027,6 +1027,19 @@ set_tests_properties(terco/check_capi_polarizability PROPERTIES WORKING_DIRECTOR
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# trc_set_unrestricted, trc_set_level_shift and trc_set_charge, through
+# the context API: forced UHF on a closed shell matches RHF, a level
+# shift only changes the path (not the converged energy), and an
+# ionisation series on one --df handle matches fresh handles while
+# reusing the fit.
+add_executable(check_capi_charge_unrestricted check_capi_charge_unrestricted.F90)
+target_compile_definitions(check_capi_charge_unrestricted PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_charge_unrestricted PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+add_test(NAME terco/check_capi_charge_unrestricted COMMAND check_capi_charge_unrestricted)
+set_tests_properties(terco/check_capi_charge_unrestricted PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # terco driven from C, through include/terco.h only -- the C-side proof
 # trc_c_interfaces.f90 is for a Fortran caller (test/link_gfortran.F90).
 # Needs the C compiler, which nothing else in this build does; enabled

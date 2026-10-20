@@ -228,8 +228,9 @@ module trc_capi
    ! tolerate. The Fortran function names are capi_* for the same reason;
    ! the C symbols are the ABI and are unchanged.
    public :: capi_fock, trc_fock_many, trc_fock_nosym
-   public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
+   public :: trc_create, trc_destroy, trc_set_molecule, trc_set_charge, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
+             trc_set_unrestricted, trc_set_level_shift, &
              trc_set_convergence, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
@@ -1458,6 +1459,58 @@ contains
       status = TRC_OK
    end function trc_set_molecule
 
+   function trc_set_charge(handle, charge, multiplicity) result(status) bind(c, name="trc_set_charge")
+      !! Change the electron count on the SAME molecule, basis, auxiliary
+      !! and jkfit bases -- unlike trc_set_molecule, which always
+      !! releases any --df fit, this keeps `cx%dfjk`/`cx%df_fit_ok`: a
+      !! fit depends on the geometry and the two bases (the metric, the
+      !! three-centre tensor and its Cholesky factor -- see
+      !! trc_scf_df.F90's `df_jk_setup`'s own header, "meant to survive
+      !! across more than one trc_scf_run on the same geometry"), never
+      !! on the electron count, so an ionisation series on one handle
+      !! (N, N+1, N-1, ...) fits once and reuses it for every charge
+      !! state instead of repeating the metric/Cholesky/3c/trsm for each.
+      !!
+      !! Same multiplicity check as trc_set_molecule (2S+1 >= 1); whether
+      !! charge and multiplicity actually fit the electron count is
+      !! trc_run_scf's own check, exactly as it is reached through
+      !! trc_set_molecule.
+      !!
+      !! Invalidates the last SCF/gradient/polarizability result
+      !! (invalidate_runs) and any TRC_GUESS_GIVEN density: a density
+      !! from the OLD electron count's own occupation is not a guess for
+      !! the new one, even where its shape happens to still match, so
+      !! the guess kind resets to TRC_GUESS_SAD. Every other guess kind
+      !! (CORE/GWH/SAD/SADQ/SAP) carries no state keyed to the old
+      !! charge and is left as the caller set it.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: charge, multiplicity
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_charge: set the molecule first")
+         return
+      end if
+      status = TRC_ERR_BADARG
+      if (multiplicity < 1) then
+         call refuse(cx, "trc_set_charge: multiplicity is 2S+1 and must be at least 1, got "// &
+                     trim(itoa(int(multiplicity))))
+         return
+      end if
+      cx%charge = int(charge)
+      cx%multiplicity = int(multiplicity)
+      if (cx%guess_kind == TRC_GUESS_GIVEN) then
+         cx%guess_kind = TRC_GUESS_SAD
+         if (allocated(cx%dguess)) deallocate (cx%dguess)
+      end if
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_charge
+
    subroutine take_basis(cx, aux, b)
       !! Move a freshly built basis into the context, then to the device.
       !! The copy goes up, not `b`: the device present-table is keyed on
@@ -1818,6 +1871,26 @@ contains
       status = TRC_OK
    end function trc_set_method
 
+   function trc_set_unrestricted(handle, on) result(status) bind(c, name="trc_set_unrestricted")
+      !! Force UHF/UKS (two independent spin densities) even on a CLOSED
+      !! shell (nalpha == nbeta), which otherwise runs restricted --
+      !! `trc_scf_options_t%unrestricted`'s own comment, "forced; an open
+      !! shell is unrestricted regardless": nalpha /= nbeta already gets
+      !! nspin = 2 whether or not this is set, so this only changes
+      !! anything on a singlet. `on` nonzero sets it; 0 (the default)
+      !! restores restricted-when-closed-shell.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%opts%unrestricted = (on /= 0)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_unrestricted
+
    function trc_set_nlc_grid(handle, grid_level) result(status) bind(c, name="trc_set_nlc_grid")
       !! Grid level for VV10's nonlocal correlation (default 1, coarser than
       !! the semilocal grid: VV10 is a double sum over its points). Only
@@ -2006,6 +2079,37 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_incremental
+
+   function trc_set_level_shift(handle, shift) result(status) bind(c, name="trc_set_level_shift")
+      !! The virtual-orbital level shift, hartree; 0 turns it off.
+      !! trc_scf_options_t%level_shift's own comment: F += mu (S - S D S
+      !! / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
+      !! damped start before either has engaged (trc_scf_driver.F90's own
+      !! "level shift while DIIS and A/EDIIS are off" block). It is a
+      !! CONVERGENCE AID for that early phase, not a persistent shift
+      !! held through the whole SCF: once the commutator is small enough
+      !! for CDIIS (or ADIIS takes over first), this stops being applied
+      !! at all, however large `shift` is set. A caller wanting a shift
+      !! that stays on throughout -- the sense a persistent level shift
+      !! has in, for instance, a Fukui-ion deck's convergence recipe --
+      !! is asking for something this entry does not do; nothing here
+      !! changes that behaviour, only exposes the existing knob.
+      type(c_ptr), value :: handle
+      real(c_double), value :: shift
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (shift < 0.0_c_double) then
+         call refuse(cx, "trc_set_level_shift: shift must be >= 0 (0 turns it off)")
+         return
+      end if
+      cx%opts%level_shift = real(shift, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_level_shift
 
    !
    ! Density-fitted J and K (`--df`). Needs a jkfit basis too

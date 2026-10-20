@@ -321,6 +321,37 @@ module trc_c_interfaces
          integer(c_int), value :: multiplicity
       end function trc_set_molecule
 
+      integer(c_int) function trc_set_charge(handle, charge, multiplicity) bind(c) result(res)
+         !! Change the electron count on the SAME molecule, basis, auxiliary
+         !! and jkfit bases -- unlike trc_set_molecule, which always
+         !! releases any --df fit, this keeps `cx%dfjk`/`cx%df_fit_ok`: a
+         !! fit depends on the geometry and the two bases (the metric, the
+         !! three-centre tensor and its Cholesky factor -- see
+         !! trc_scf_df.F90's `df_jk_setup`'s own header, "meant to survive
+         !! across more than one trc_scf_run on the same geometry"), never
+         !! on the electron count, so an ionisation series on one handle
+         !! (N, N+1, N-1, ...) fits once and reuses it for every charge
+         !! state instead of repeating the metric/Cholesky/3c/trsm for each.
+         !!
+         !! Same multiplicity check as trc_set_molecule (2S+1 >= 1); whether
+         !! charge and multiplicity actually fit the electron count is
+         !! trc_run_scf's own check, exactly as it is reached through
+         !! trc_set_molecule.
+         !!
+         !! Invalidates the last SCF/gradient/polarizability result
+         !! (invalidate_runs) and any TRC_GUESS_GIVEN density: a density
+         !! from the OLD electron count's own occupation is not a guess for
+         !! the new one, even where its shape happens to still match, so
+         !! the guess kind resets to TRC_GUESS_SAD. Every other guess kind
+         !! (CORE/GWH/SAD/SADQ/SAP) carries no state keyed to the old
+         !! charge and is left as the caller set it.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: charge
+         integer(c_int), value :: multiplicity
+      end function trc_set_charge
+
       integer(c_int) function trc_set_basis_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) bind(c) result(res)
          !! The orbital basis from libcint's packed `atm`/`bas`/`env`.
          !! `cartesian` nonzero builds terco's own Cartesian AO space; zero
@@ -406,6 +437,20 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
       end function trc_set_method
 
+      integer(c_int) function trc_set_unrestricted(handle, on) bind(c) result(res)
+         !! Force UHF/UKS (two independent spin densities) even on a CLOSED
+         !! shell (nalpha == nbeta), which otherwise runs restricted --
+         !! `trc_scf_options_t%unrestricted`'s own comment, "forced; an open
+         !! shell is unrestricted regardless": nalpha /= nbeta already gets
+         !! nspin = 2 whether or not this is set, so this only changes
+         !! anything on a singlet. `on` nonzero sets it; 0 (the default)
+         !! restores restricted-when-closed-shell.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+      end function trc_set_unrestricted
+
       integer(c_int) function trc_set_nlc_grid(handle, grid_level) bind(c) result(res)
          !! Grid level for VV10's nonlocal correlation (default 1, coarser than
          !! the semilocal grid: VV10 is a double sum over its points). Only
@@ -461,6 +506,26 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), value :: on
       end function trc_set_incremental
+
+      integer(c_int) function trc_set_level_shift(handle, shift) bind(c) result(res)
+         !! The virtual-orbital level shift, hartree; 0 turns it off.
+         !! trc_scf_options_t%level_shift's own comment: F += mu (S - S D S
+         !! / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
+         !! damped start before either has engaged (trc_scf_driver.F90's own
+         !! "level shift while DIIS and A/EDIIS are off" block). It is a
+         !! CONVERGENCE AID for that early phase, not a persistent shift
+         !! held through the whole SCF: once the commutator is small enough
+         !! for CDIIS (or ADIIS takes over first), this stops being applied
+         !! at all, however large `shift` is set. A caller wanting a shift
+         !! that stays on throughout -- the sense a persistent level shift
+         !! has in, for instance, a Fukui-ion deck's convergence recipe --
+         !! is asking for something this entry does not do; nothing here
+         !! changes that behaviour, only exposes the existing knob.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), value :: shift
+      end function trc_set_level_shift
 
       integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
          import :: c_int, c_ptr
