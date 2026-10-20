@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["dfg_ints_water_ccpvdz"] -> gen_df_grad_ints
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 77b98cd35016f07e847996e3fa6b0b4ccdfebd7b0ee4dc7c72216ed3c4d8decd
+# hash: 1a530592e7d9218c92271c5a1313c6920b9f297110c0b30fc0c4189101a95735
 # files: test/check_df_grad_ints.F90 test/basis_sets/cc-pvdz.json test/basis_sets/def2-universal-jkfit.json test/water.xyz
 NAT 3
 NAO 25
