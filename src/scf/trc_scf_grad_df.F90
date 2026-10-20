@@ -177,15 +177,6 @@ contains
          end do
       end if
 
-      ! The blocking, chosen only now that everything resident above is
-      ! already allocated: auxiliary functions per block, and occupied
-      ! orbitals i per chunk of X (the whole of X is nocc^2 naux doubles,
-      ! several GB at a few hundred occupied and several thousand
-      ! auxiliary functions). One chunk is the usual case.
-      call choose_grad_blocks(n, naux, merge(nocc, 0, do_k), ablk, nci)
-      nchunk = 1
-      if (do_k) nchunk = (nocc + nci - 1)/nci
-
       ! The three-centre kernels' pair plan: every screened pair turned to
       ! its canonical class, sorted by primitive count, its primitive pairs
       ! precomputed (trc_df_grad_kernels' df_grad_3c_plan), once.
@@ -194,6 +185,15 @@ contains
                            pl%p_j, coff, q_a, q_b, q_o, q_n, pd)
       !$acc enter data copyin(q_a, q_b, q_o, q_n, pd)
       call tbl%step_off(lp, ST_PLAN, tc)
+
+      ! The blocking, chosen only now that everything resident above is
+      ! already allocated (the plan included): auxiliary functions per
+      ! block, and occupied orbitals i per chunk of X (packed, X is
+      ! nocc(nocc+1)/2 naux doubles, GBs at a few hundred occupied and
+      ! several thousand auxiliary functions). One chunk is the usual case.
+      call choose_grad_blocks(n, naux, merge(nocc, 0, do_k), ablk, nci)
+      nchunk = 1
+      if (do_k) nchunk = (nocc + nci - 1)/nci
 
       ! --- J only: Y = j c_P D_mn is formed inside the three-centre kernels
       ! from c and D -- no (n, n, naux) tensor, no auxiliary blocks, one pass.
@@ -410,11 +410,19 @@ contains
       !!
       !!   ablk  auxiliary functions per block, up to naux/4: each costs a
       !!         dense n x n slab, an (nocc x n) half-transform and an
-      !!         (nocc x nocc) block of H or V, budgeted at no more than half
-      !!         of what is free;
-      !!   nci   occupied orbitals per chunk of X (at most nci nocc naux
-      !!         doubles: the packed rows j <= i of the chunk's i),
-      !!         all of them when that fits in the rest (the usual case).
+      !!         (nocc x nocc) block of H or V;
+      !!   nci   occupied orbitals per chunk of X (the packed rows j <= i of
+      !!         the chunk's i, at most nci nocc naux doubles).
+      !!
+      !! When all of packed X (nocc(nocc+1)/2 naux doubles) fits next to a
+      !! block of at least MIN_BLOCK functions -- the usual case -- X is
+      !! reserved first and the blocks get everything else: every block is
+      !! a full pass of the three-centre kernels over all the pairs, and a
+      !! small one starves the GPU (w40/cc-pVDZ on a V100: the old even
+      !! split of the free memory gave 25 blocks and 0.45 s of kernels, this
+      !! rule ~15 blocks and 0.35 s, one pass over everything 0.18 s).
+      !! Otherwise, the old split: blocks within half of what is free, X
+      !! chunked in the rest.
       !!
       !! `nocc` = 0 (no exchange: no X at all) budgets the slab alone. A
       !! system for which not even one auxiliary function and one occupied
@@ -428,7 +436,8 @@ contains
       character(len=16) :: v
       integer :: st, cap
 #ifdef _OPENACC
-      integer(int64) :: free, avail
+      integer, parameter :: MIN_BLOCK = 256
+      integer(int64) :: free, avail, xall
       character(len=160) :: msg
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)
@@ -439,8 +448,13 @@ contains
       ablk = max(naux/4, 1)
       nci = max(nocc, 1)
 #ifdef _OPENACC
-      ablk = int(min(int(ablk, int64), max(0_int64, (avail/2)/per_q)))
-      if (nocc > 0) nci = int(min(int(nci, int64), max(0_int64, (avail - ablk*per_q)/per_i)))
+      xall = 8_int64*int(naux, int64)*(int(nocc, int64)*int(nocc + 1, int64)/2)
+      if (xall + int(min(MIN_BLOCK, naux), int64)*per_q <= avail) then
+         ablk = int(min(int(ablk, int64), (avail - xall)/per_q))
+      else
+         ablk = int(min(int(ablk, int64), max(0_int64, (avail/2)/per_q)))
+         if (nocc > 0) nci = int(min(int(nci, int64), max(0_int64, (avail - ablk*per_q)/per_i)))
+      end if
       if (ablk < 1 .or. nci < 1) then
          write (msg, "(a,i0,a,i0,a,i0,a)") "trc_scf_grad_df: not enough device memory for the --df gradient (", &
             avail/1024/1024, " MiB free; one auxiliary function needs ", per_q/1024/1024, &
