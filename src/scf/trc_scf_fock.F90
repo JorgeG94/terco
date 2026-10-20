@@ -237,11 +237,11 @@ contains
       !
       call profiler_start("scf: xc", nvtx_only=.true.)
       if (scf_config%nspin == 1) then
-         call trc_xc_rks(scf_basis, scf_context%xg, scf_config%func, scf_state%d_c(:, :, 1), scf_state%vxc_c(:, :, 1), &
+         call trc_xc_rks(scf_basis, scf_context%gc%xg, scf_config%func, scf_state%d_c(:, :, 1), scf_state%vxc_c(:, :, 1), &
                          scf_energies%xc, scf_energies%nelec_grid, rho_tol=rho_tol, &
                          comm=comm, t_points=tp1, t_pairs=tq1, la=scf_context%lp)
       else
-         call trc_xc_uks(scf_basis, scf_context%xg, scf_config%func, scf_state%d_c, scf_state%vxc_c, &
+         call trc_xc_uks(scf_basis, scf_context%gc%xg, scf_config%func, scf_state%d_c, scf_state%vxc_c, &
                          scf_energies%xc, scf_energies%nelec_grid, rho_tol=rho_tol, &
                          comm=comm, t_points=tp1, t_pairs=tq1, la=scf_context%lp)
       end if
@@ -254,11 +254,11 @@ contains
          call scf_context%lp%sync()
          call tm_vv10%start()
          if (scf_config%nspin == 1) then
-            call trc_vv10_rks(scf_basis, scf_context%xg_nlc, scf_state%d_c(:, :, 1), &
+            call trc_vv10_rks(scf_basis, scf_context%gc%xg_nlc, scf_state%d_c(:, :, 1), &
                               scf_config%func%nlc_b, scf_config%func%nlc_c, e_nlc, scf_state%vxc_c(:, :, 1), &
                               la=scf_context%lp, comm=comm)
          else
-            call trc_vv10_uks(scf_basis, scf_context%xg_nlc, scf_state%d_c(:, :, 1), scf_state%d_c(:, :, 2), &
+            call trc_vv10_uks(scf_basis, scf_context%gc%xg_nlc, scf_state%d_c(:, :, 1), scf_state%d_c(:, :, 2), &
                               scf_config%func%nlc_b, scf_config%func%nlc_c, e_nlc, &
                               scf_state%vxc_c(:, :, 1), scf_state%vxc_c(:, :, 2), la=scf_context%lp, comm=comm)
          end if

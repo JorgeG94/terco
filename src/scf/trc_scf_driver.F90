@@ -90,7 +90,7 @@ module trc_scf_driver
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t
-   use trc_scf_context, only: scf_ctx_t, bcast_flat
+   use trc_scf_context, only: scf_ctx_t, bcast_flat, trc_grid_cache_t
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: build_g, build_vxc, build_pcm, scf_energy, assemble_fock, &
                            commutator_error, to_cart, to_sph
@@ -103,7 +103,7 @@ module trc_scf_driver
    implicit none
    private
 
-   public :: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   public :: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t
 
 contains
 
@@ -144,7 +144,8 @@ contains
    ! basis must already be on the device. `dguess` is (nao, nao, nspin) in
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
-   subroutine trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, scf_dfjk)
+   subroutine trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, scf_dfjk, &
+                          grid_cache)
       type(trc_basis_t), intent(in) :: scf_basis
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: scf_options
@@ -172,6 +173,14 @@ contains
       !! caller across more than one run (trc_capi.F90's context handle), the
       !! same reason `la` is a caller-owned, optional argument rather than
       !! something this routine builds for itself.
+      type(trc_grid_cache_t), intent(inout), optional, target :: grid_cache
+      !! A caller-owned DFT grid cache -- forwarded verbatim to
+      !! `scf_context%setup` (trc_scf_context.F90's own header on the
+      !! argument). Present, the converged grid stays alive (and device-
+      !! resident) in `grid_cache` after this call returns, for a
+      !! gradient run right after to reuse (trc_capi.F90's
+      !! `trc_run_gradient`); absent, the run's own grid is released with
+      !! `scf_context` as before this argument existed.
 
       integer :: nao, nao_c, s, it, i, j, n2
       logical :: ok, sph
@@ -226,7 +235,8 @@ contains
 
       ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
       ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
-      call scf_context%setup(scf_basis, scf_options, scf_config, err, comm=comm, la=la, dfjk=scf_dfjk)
+      call scf_context%setup(scf_basis, scf_options, scf_config, err, comm=comm, la=la, dfjk=scf_dfjk, &
+                             grid_cache=grid_cache)
       if (err%has_error()) then
          scf_result%message = "trc_scf: "//err%get_message()
          return
@@ -240,11 +250,11 @@ contains
       scf_result%n_lindep = scf_context%n_lindep
       if (scf_config%pcm_on) scf_result%pcm_npoints = scf_context%pcm%surface%n_points
       if (scf_config%dft) then
-         scf_result%grid_r = scf_context%grid%coords
-         scf_result%grid_w = scf_context%grid%weights
+         scf_result%grid_r = scf_context%gc%grid%coords
+         scf_result%grid_w = scf_context%gc%grid%weights
          if (scf_config%nlc) then
-            scf_result%grid_r_nlc = scf_context%grid_nlc%coords
-            scf_result%grid_w_nlc = scf_context%grid_nlc%weights
+            scf_result%grid_r_nlc = scf_context%gc%grid_nlc%coords
+            scf_result%grid_w_nlc = scf_context%gc%grid_nlc%weights
          end if
          ! The DFT pipeline's own step table (grid build, semilocal XC,
          ! VV10), reported alongside the existing fock(s)/xc(s) columns
