@@ -250,7 +250,7 @@ program check_df_grad_ints
    !$acc enter data copyin(y, z, g3, g2, cq0, d0, q_a, q_b, q_o, q_n, pd)
    call df_grad_3c_driver(bas%nshell, nao, bas%sh_ao, bas%sh_at, bas%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                           size(pd, 2), pd, aux%nshell, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
-                          aux%sh_e, aux%sh_c, aux%sh_r, nat, .true., nao, naux, y, 0.0_dp, naux, 0, cq0, d0, g3)
+                          aux%sh_e, aux%sh_c, aux%sh_r, nat, 2, nao, naux, y, 0.0_dp, naux, 0, cq0, d0, g3)
    call df_grad_2c_driver(aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
                           aux%sh_e, aux%sh_c, aux%sh_r, nat, z, g2)
    !$acc update self(g3, g2)

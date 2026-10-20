@@ -77,9 +77,10 @@ THE J PART IN THE KERNEL. Y = j c_P D_mn + Y_K: the three-centre item forms
 the J part from c and D itself (`jc`, `cq`, `dens`), so a J-only gradient
 (a pure functional) never stores an (n, n, naux) tensor at all and runs
 one pass over the whole auxiliary basis, and with K the dense input is
-Y_K alone (`ky`; the GEMM writes it with beta = 0, no fill pass) -- as M with
-Y_K = M + M^T, the kernel reading both, so that only X's rows j <= i are
-ever kept (trc_scf_grad_df.F90).
+Y_K alone (`ky` = 1; the GEMM writes it with beta = 0, no fill pass) -- or,
+when trc_scf_grad_df.F90 has to chunk the occupied orbitals and so cannot
+rebuild X's rows j > i, as M with Y_K = M + M^T (`ky` = 2), the kernel
+reading both.
 
 HOST-CALLABLE CLASS KERNELS. Every class kernel is public, and the hand-off
 module (trc_df_grad_kernels.F90) has a host `select case` over them
@@ -444,7 +445,7 @@ contains
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
@@ -462,8 +463,9 @@ contains
                          nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
                          natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
       !! One (shell pair, auxiliary shell) triple: its Y block, the J part
-      !! jc c_P D_mn formed here from c and D (never stored as a tensor) plus,
-      !! when `ky`, the K part M + M^T read from `ytens` = M -- weighted 2 for an
+      !! jc c_P D_mn formed here from c and D (never stored as a tensor) plus
+      !! the K part read from `ytens` (ky = 1: Y_K itself; ky = 2: its one-
+      !! sided half M, Y_K = M + M^T; ky = 0: none) -- weighted 2 for an
       !! off-diagonal pair, which stands for both (mu,nu) and (nu,mu) -- the
       !! contracted derivative, and nine atomic adds into lane mod(t, nlane)+1
       !! of `gp`. A triple on one atom is skipped: its three derivatives sum
@@ -478,7 +480,7 @@ contains
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
@@ -498,7 +500,11 @@ contains
             do a = 0, {na - 1}
                mu = sh_ao(ii) + a
                yv = jc*cq(qoff + pq)*dens(mu, nu)
-               if (ky) yv = yv + ytens(mu, nu, pq) + ytens(nu, mu, pq)
+               if (ky == 1) then
+                  yv = yv + ytens(mu, nu, pq)
+               else if (ky == 2) then
+                  yv = yv + ytens(mu, nu, pq) + ytens(nu, mu, pq)
+               end if
                yb(1 + a + {na}*(c + {nb}*e)) = wt*yv
             end do
          end do
@@ -794,16 +800,18 @@ contains
       !! (sub)basis, with
       !!
       !!     Y(mu,nu,P) = jc cq(qoff+P) dens(mu,nu)
-      !!                  [+ ytens(mu,nu,P) + ytens(nu,mu,P)  if ky]
+      !!                  + ytens(mu,nu,P)                    (ky = 1)
+      !!                  + ytens(mu,nu,P) + ytens(nu,mu,P)   (ky = 2)
       !!
       !! -- the J part formed inside the kernels from c and D, never stored,
-      !! so a J-only gradient (ky false; ytens then a dummy, ny1 = ny3 = 1)
+      !! so a J-only gradient (ky = 0; ytens then a dummy, ny1 = ny3 = 1)
       !! needs no (n, n, naux) tensor at all. P is the auxiliary (sub)basis's
       !! OWN AO numbering (a subset basis from trc_basis_t%subset numbers
-      !! from 1); qoff maps it into cq. `ytens` is the K part's one-sided
-      !! half M (Y_K = M + M^T: trc_scf_grad_df.F90 builds it from X's
-      !! packed rows j <= i). Every array but `coff` is device-resident;
-      !! `grad` is added into.
+      !! from 1); qoff maps it into cq. With ky = 1 `ytens` is the K part
+      !! itself (symmetric in mu, nu); with ky = 2 its one-sided half M,
+      !! which trc_scf_grad_df.F90 builds from X's packed rows j <= i when
+      !! the occupied orbitals come in more than one chunk. Every array but
+      !! `coff` is device-resident; `grad` is added into.
       integer,  intent(in)    :: nsh, nao, npair, npp, nsx, mnx, natm, ny1, ny3, nqc, qoff
       integer,  intent(in)    :: sh_ao(nsh), sh_at(nsh)
       real(dp), intent(in)    :: sh_r(3, nsh)
@@ -812,7 +820,7 @@ contains
       real(dp), intent(in)    :: pd(DFG_PD_W, npp)
       integer,  intent(in)    :: ax_l(nsx), ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: grad(3, natm)
 
@@ -965,7 +973,7 @@ contains
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
       select case (k*(DFG_LMAX_AUX + 1) + lc)

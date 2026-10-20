@@ -182,16 +182,18 @@ contains
       !! (sub)basis, with
       !!
       !!     Y(mu,nu,P) = jc cq(qoff+P) dens(mu,nu)
-      !!                  [+ ytens(mu,nu,P) + ytens(nu,mu,P)  if ky]
+      !!                  + ytens(mu,nu,P)                    (ky = 1)
+      !!                  + ytens(mu,nu,P) + ytens(nu,mu,P)   (ky = 2)
       !!
       !! -- the J part formed inside the kernels from c and D, never stored,
-      !! so a J-only gradient (ky false; ytens then a dummy, ny1 = ny3 = 1)
+      !! so a J-only gradient (ky = 0; ytens then a dummy, ny1 = ny3 = 1)
       !! needs no (n, n, naux) tensor at all. P is the auxiliary (sub)basis's
       !! OWN AO numbering (a subset basis from trc_basis_t%subset numbers
-      !! from 1); qoff maps it into cq. `ytens` is the K part's one-sided
-      !! half M (Y_K = M + M^T: trc_scf_grad_df.F90 builds it from X's
-      !! packed rows j <= i). Every array but `coff` is device-resident;
-      !! `grad` is added into.
+      !! from 1); qoff maps it into cq. With ky = 1 `ytens` is the K part
+      !! itself (symmetric in mu, nu); with ky = 2 its one-sided half M,
+      !! which trc_scf_grad_df.F90 builds from X's packed rows j <= i when
+      !! the occupied orbitals come in more than one chunk. Every array but
+      !! `coff` is device-resident; `grad` is added into.
       integer,  intent(in)    :: nsh, nao, npair, npp, nsx, mnx, natm, ny1, ny3, nqc, qoff
       integer,  intent(in)    :: sh_ao(nsh), sh_at(nsh)
       real(dp), intent(in)    :: sh_r(3, nsh)
@@ -200,7 +202,7 @@ contains
       real(dp), intent(in)    :: pd(DFG_PD_W, npp)
       integer,  intent(in)    :: ax_l(nsx), ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: grad(3, natm)
 
@@ -353,7 +355,7 @@ contains
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
       select case (k*(DFG_LMAX_AUX + 1) + lc)

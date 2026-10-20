@@ -48,7 +48,7 @@ contains
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
@@ -66,8 +66,9 @@ contains
                          nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
                          natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
       !! One (shell pair, auxiliary shell) triple: its Y block, the J part
-      !! jc c_P D_mn formed here from c and D (never stored as a tensor) plus,
-      !! when `ky`, the K part M + M^T read from `ytens` = M -- weighted 2 for an
+      !! jc c_P D_mn formed here from c and D (never stored as a tensor) plus
+      !! the K part read from `ytens` (ky = 1: Y_K itself; ky = 2: its one-
+      !! sided half M, Y_K = M + M^T; ky = 0: none) -- weighted 2 for an
       !! off-diagonal pair, which stands for both (mu,nu) and (nu,mu) -- the
       !! contracted derivative, and nine atomic adds into lane mod(t, nlane)+1
       !! of `gp`. A triple on one atom is skipped: its three derivatives sum
@@ -82,7 +83,7 @@ contains
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      logical,  intent(in)    :: ky
+      integer,  intent(in)    :: ky
       real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
@@ -102,7 +103,11 @@ contains
             do a = 0, 5
                mu = sh_ao(ii) + a
                yv = jc*cq(qoff + pq)*dens(mu, nu)
-               if (ky) yv = yv + ytens(mu, nu, pq) + ytens(nu, mu, pq)
+               if (ky == 1) then
+                  yv = yv + ytens(mu, nu, pq)
+               else if (ky == 2) then
+                  yv = yv + ytens(mu, nu, pq) + ytens(nu, mu, pq)
+               end if
                yb(1 + a + 6*(c + 6*e)) = wt*yv
             end do
          end do

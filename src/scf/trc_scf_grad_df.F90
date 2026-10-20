@@ -43,8 +43,9 @@
 !   4. The three-centre derivative kernels, on the pair plan built once
 !      (df_grad_3c_plan) and Y = j c_P D_mn + Y_K, whose J part the kernels
 !      form themselves from c and D (df_grad_3c_driver). J only: one pass
-!      over the whole auxiliary basis, no Y tensor. With K: Y_K = M + M^T
-!      one auxiliary block at a time, M from the kept rows of X by one
+!      over the whole auxiliary basis, no Y tensor. With K: Y_K one
+!      auxiliary block at a time from the kept rows of X (unpacked to the
+!      full X^P with one chunk; as M with Y_K = M + M^T with several), one
 !      strided batch and one GEMM, and the kernels on that block's own
 !      auxiliary subset.
 !
@@ -119,7 +120,7 @@ contains
       type(trc_basis_t) :: blk
       integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, s0, s1, p0, np, mu, nu, q, i, p
       integer(int64) :: n8, o8, c8, t
-      integer :: q0, w, nrp, rbase, il, j
+      integer :: q0, w, nrp, rbase, il, j, kmode
       integer :: coff(0:DFG_NPCLS)
       integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
       real(dp), allocatable :: pd(:, :)
@@ -203,7 +204,7 @@ contains
          call tbl%step_on(lp, ST_D3C, tc)
          call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                                 size(pd, 2), pd, aux%nshell, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, &
-                                aux%sh_at, aux%sh_e, aux%sh_c, aux%sh_r, b%natm, .false., 1, 1, ydum, j_scale, &
+                                aux%sh_at, aux%sh_e, aux%sh_c, aux%sh_r, b%natm, 0, 1, 1, ydum, j_scale, &
                                 naux, 0, cq, dens, grad)
          call tbl%step_off(lp, ST_D3C, tc)
          !$acc exit data delete(ydum)
@@ -293,9 +294,14 @@ contains
          call tbl%step_off(lp, ST_ZGEMM, tc)
 
          ! --- 4. Y, one auxiliary block at a time, and the three-centre one -
-         ! From the packed rows, M^P = C_c V^P C^T with V^P_ij = X^P_ij below
-         ! the diagonal, X^P_ii/2 on it and 0 above, so that Y_K = M + M^T
-         ! (X symmetric) -- the kernels read both M(mu,nu) and M(nu,mu).
+         ! One chunk (every i): V^P = X^P in full, rows j > i read from their
+         ! (j, i) partner, and Y_K = C V C^T is symmetric (kmode 1). More
+         ! than one chunk: the partner of a row j > i may sit in another
+         ! chunk, so V^P_ij = X^P_ij below the diagonal, X^P_ii/2 on it and 0
+         ! above, M = C_c V C^T and Y_K = M + M^T (X symmetric) -- the
+         ! kernels read both M(mu,nu) and M(nu,mu) (kmode 2), a second,
+         ! uncoalesced read (3% of the kernels' time at gly10/cc-pVDZ).
+         kmode = merge(1, 2, nchunk == 1)
          s0 = 1
          do while (s0 <= aux%nshell)
             call next_block(aux, s0, ablk, s1, p0, np)
@@ -313,8 +319,11 @@ contains
                   hb(il, j, q) = xp(int(i*(i - 1)/2 + j - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64)) &
                                  /SQRT2
                else if (j == i) then
-                  hb(il, j, q) = 0.5_dp*xp(int(i*(i - 1)/2 + j - rbase, int64) + &
-                                           int(nrp, int64)*int(p0 - 2 + q, int64))
+                  hb(il, j, q) = merge(1.0_dp, 0.5_dp, kmode == 1)* &
+                                 xp(int(i*(i - 1)/2 + j - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64))
+               else if (kmode == 1) then
+                  hb(il, j, q) = xp(int(j*(j - 1)/2 + i - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64)) &
+                                 /SQRT2
                else
                   hb(il, j, q) = 0.0_dp
                end if
@@ -335,7 +344,7 @@ contains
             call tbl%step_on(lp, ST_D3C, tc)
             call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                                    size(pd, 2), pd, blk%nshell, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, &
-                                   blk%sh_at, blk%sh_e, blk%sh_c, blk%sh_r, b%natm, .true., n, np, tens, jc, &
+                                   blk%sh_at, blk%sh_e, blk%sh_c, blk%sh_r, b%natm, kmode, n, np, tens, jc, &
                                    naux, p0 - 1, cq, dens, grad)
             call tbl%step_off(lp, ST_D3C, tc)
             !$acc exit data delete(tens)
