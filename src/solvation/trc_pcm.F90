@@ -170,7 +170,7 @@ contains
       end select
    end function pcm_model_from_name
 
-   subroutine build_pcm_surface(atomic_numbers, coords, angular_points, radii_scale, surface, error)
+   subroutine build_pcm_surface(atomic_numbers, coords, angular_points, radii_scale, surface, error, radii_override)
       !! Tessellate the cavity: Lebedev points per atom, switched and pruned
       integer, intent(in) :: atomic_numbers(:)
       real(dp), intent(in) :: coords(:, :)        !! (3, natm), bohr
@@ -178,6 +178,10 @@ contains
       real(dp), intent(in) :: radii_scale         !! van der Waals radius to cavity radius
       type(pcm_surface_t), intent(out) :: surface
       type(error_t), intent(inout) :: error
+      real(dp), intent(in), optional :: radii_override(:)
+      !! Final, already-scaled per-atom radii, bohr -- read straight in,
+      !! bypassing pcm_cavity_radius/radii_scale entirely, when present.
+      !! trc_capi.F90's trc_set_pcm_radii is the route in.
 
       real(dp), allocatable :: unit_points(:, :), unit_weights(:)
       real(dp), allocatable :: radii(:), r_switch(:), r_inner(:)
@@ -193,6 +197,12 @@ contains
       if (size(coords, 1) /= 3 .or. size(coords, 2) /= natm) then
          call error%set(ERROR_VALIDATION, "PCM surface: coordinates must be (3, natm)")
          return
+      end if
+      if (present(radii_override)) then
+         if (size(radii_override) /= natm) then
+            call error%set(ERROR_VALIDATION, "PCM surface: radii_override must have one entry per atom")
+            return
+         end if
       end if
 
       ! The exponent table is fitted per Lebedev order; see PCM_XI_ORDERS.
@@ -218,8 +228,12 @@ contains
       ! that the region a point sweeps as it fades matches the point spacing.
       allocate (radii(natm), r_switch(natm), r_inner(natm))
       do iatom = 1, natm
-         call pcm_cavity_radius(atomic_numbers(iatom), radii_scale, radii(iatom), error)
-         if (error%has_error()) return
+         if (present(radii_override)) then
+            radii(iatom) = radii_override(iatom)
+         else
+            call pcm_cavity_radius(atomic_numbers(iatom), radii_scale, radii(iatom), error)
+            if (error%has_error()) return
+         end if
          r_switch(iatom) = radii(iatom)*sqrt(14.0_dp/real(angular_points, dp))
          ratio = radii(iatom)/r_switch(iatom)
          alpha = 0.5_dp + ratio - sqrt(ratio**2 - 1.0_dp/28.0_dp)
@@ -416,13 +430,15 @@ contains
       this%on_device = .true.
    end subroutine pcm_init
 
-   subroutine pcm_build(this, b, angular_points, radii_scale, error)
+   subroutine pcm_build(this, b, angular_points, radii_scale, error, radii_override)
       !! Cavity, operators and nuclear potential, once per geometry
       class(trc_pcm_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: angular_points
       real(dp), intent(in) :: radii_scale
       type(error_t), intent(inout) :: error
+      real(dp), intent(in), optional :: radii_override(:)
+      !! See build_pcm_surface's own comment; trc_set_pcm_radii's route in.
 
       integer :: k, ia, n
       real(dp) :: d
@@ -436,7 +452,8 @@ contains
                         "build's PCM surface-integral kernels (gen_1e.py --pcm --lmax)")
          return
       end if
-      call build_pcm_surface(nint(b%at_z), b%at_r, angular_points, radii_scale, this%surface, error)
+      call build_pcm_surface(nint(b%at_z), b%at_r, angular_points, radii_scale, this%surface, error, &
+                             radii_override=radii_override)
       if (error%has_error()) return
       call this%build_operators(error)
       if (error%has_error()) return

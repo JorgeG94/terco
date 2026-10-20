@@ -154,9 +154,11 @@
 !
 !   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
 !     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
-!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nspin, trc_message,
-!     trc_set_pcm, trc_pcm_energy, trc_gradient (a nuclear-coordinate
-!     array, not an AO one -- an SCF energy derivative does not depend on
+!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nmo, trc_nspin,
+!     trc_mo_occupations (MO-indexed, like trc_mo_energies, not AO-indexed),
+!     trc_message, trc_set_pcm, trc_pcm_energy, trc_gradient, trc_polarizability
+!     (a nuclear-coordinate array and a Cartesian response tensor, neither an
+!     AO one -- an SCF energy derivative or response does not depend on
 !     which AO normalisation convention computed it)
 !
 !   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
@@ -207,6 +209,9 @@ module trc_capi
    use trc_sph, only: sph_cart_to_sph
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
+   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
+   use trc_cpks, only: trc_scf_polarizability_rks
+   use trc_xc_batch, only: trc_xc_grid_t
    implicit none
    private
 
@@ -225,21 +230,27 @@ module trc_capi
    ! tolerate. The Fortran function names are capi_* for the same reason;
    ! the C symbols are the ABI and are unchanged.
    public :: capi_fock, trc_fock_many, trc_fock_nosym
-   public :: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_libcint, trc_set_basis_arrays, &
+   public :: trc_create, trc_destroy, trc_set_molecule, trc_set_charge, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
+             trc_set_unrestricted, trc_set_level_shift, &
              trc_set_convergence, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
+             trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
    public :: trc_save_scf, trc_load_scf
-   public :: trc_set_pcm, trc_pcm_energy
+   public :: trc_set_pcm, trc_set_pcm_radii, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
    public :: trc_set_force_cartesian, trc_is_spherical
    public :: trc_max_angular_momentum
    public :: capi_scf, capi_scf_mpi, capi_rimp2
    public :: trc_cart_order
+   public :: trc_functional_info, trc_functional_list
+   public :: trc_abi_version
+   public :: trc_run_polarizability, trc_polarizability
+   public :: trc_nmo, trc_mo_occupations
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -262,6 +273,15 @@ module trc_capi
    ! "AO NORMALISATION" section below for which entries it applies to.
    integer(c_int), parameter, public :: TRC_AO_NORM_SHELL = ao_norm_shell_
    integer(c_int), parameter, public :: TRC_AO_NORM_UNIT = ao_norm_unit_
+
+   ! This ABI's own version, read back by trc_abi_version so a host can
+   ! compare it against the constants its own compiled-against header
+   ! carries before trusting anything else in this module. MINOR for an
+   ! additive change, MAJOR (with MINOR reset to 0) for anything that
+   ! changes an existing signature or enum meaning -- see trc_abi_version's
+   ! own comment.
+   integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 0
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -356,6 +376,11 @@ module trc_capi
       ! context no longer holds is not a gradient of anything.
       real(dp), allocatable :: grad(:, :)
       logical :: grad_ok = .false.
+      ! trc_run_polarizability's own result: the static dipole
+      ! polarizability (a.u.) at the converged SCF, CPHF (RHF/UHF) or
+      ! CPKS (RKS). Cleared by invalidate_runs, same as grad_ok.
+      real(dp) :: alpha(3, 3) = 0.0_dp
+      logical :: polar_ok = .false.
       ! `trc_run_scf`'s own DFT grid(s), kept alive (device-resident) for
       ! `trc_run_gradient` to reuse instead of rebuilding -- see
       ! trc_scf_context.F90's `trc_grid_cache_t` and trc_scf_driver.F90's
@@ -1389,6 +1414,7 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
+      cx%polar_ok = .false.
       call cx%kgrid%release()
       cx%kgrid_level = -1
       cx%kgrid_max_pts = -1
@@ -1432,8 +1458,64 @@ contains
       call invalidate_runs(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
+      ! A new (possibly different-sized, differently-ordered) atom set
+      ! invalidates any trc_set_pcm_radii override -- unlike trc_set_charge,
+      ! which keeps the same atoms and so keeps it.
+      if (allocated(cx%opts%pcm_radii_override)) deallocate (cx%opts%pcm_radii_override)
       status = TRC_OK
    end function trc_set_molecule
+
+   function trc_set_charge(handle, charge, multiplicity) result(status) bind(c, name="trc_set_charge")
+      !! Change the electron count on the SAME molecule, basis, auxiliary
+      !! and jkfit bases -- unlike trc_set_molecule, which always
+      !! releases any --df fit, this keeps `cx%dfjk`/`cx%df_fit_ok`: a
+      !! fit depends on the geometry and the two bases (the metric, the
+      !! three-centre tensor and its Cholesky factor -- see
+      !! trc_scf_df.F90's `df_jk_setup`'s own header, "meant to survive
+      !! across more than one trc_scf_run on the same geometry"), never
+      !! on the electron count, so an ionisation series on one handle
+      !! (N, N+1, N-1, ...) fits once and reuses it for every charge
+      !! state instead of repeating the metric/Cholesky/3c/trsm for each.
+      !!
+      !! Same multiplicity check as trc_set_molecule (2S+1 >= 1); whether
+      !! charge and multiplicity actually fit the electron count is
+      !! trc_run_scf's own check, exactly as it is reached through
+      !! trc_set_molecule.
+      !!
+      !! Invalidates the last SCF/gradient/polarizability result
+      !! (invalidate_runs) and any TRC_GUESS_GIVEN density: a density
+      !! from the OLD electron count's own occupation is not a guess for
+      !! the new one, even where its shape happens to still match, so
+      !! the guess kind resets to TRC_GUESS_SAD. Every other guess kind
+      !! (CORE/GWH/SAD/SADQ/SAP) carries no state keyed to the old
+      !! charge and is left as the caller set it.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: charge, multiplicity
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_charge: set the molecule first")
+         return
+      end if
+      status = TRC_ERR_BADARG
+      if (multiplicity < 1) then
+         call refuse(cx, "trc_set_charge: multiplicity is 2S+1 and must be at least 1, got "// &
+                     trim(itoa(int(multiplicity))))
+         return
+      end if
+      cx%charge = int(charge)
+      cx%multiplicity = int(multiplicity)
+      if (cx%guess_kind == TRC_GUESS_GIVEN) then
+         cx%guess_kind = TRC_GUESS_SAD
+         if (allocated(cx%dguess)) deallocate (cx%dguess)
+      end if
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_charge
 
    subroutine take_basis(cx, aux, b)
       !! Move a freshly built basis into the context, then to the device.
@@ -1472,6 +1554,20 @@ contains
    end subroutine take_basis
 
    function basis_libcint(handle, aux, atm, natm, bas, nshell, env, nenv, cartesian) result(status)
+      !! `cartesian` nonzero builds the basis in terco's own Cartesian AO
+      !! space, as before. Zero tags it spherical instead: the SHELLS
+      !! libcint's `bas` describes carry no cartesian/spherical bit of
+      !! their own (that is a convention the caller picks, not something
+      !! `atm`/`bas`/`env` encodes), so the Gaussians `from_libcint` builds
+      !! are identical either way -- what changes is only `b%spherical`,
+      !! the same tag `trc_basis_from_json` sets from a JSON file's
+      !! "gto_spherical" function_type. Every downstream consumer
+      !! (scf_space_nao, trc_run_scf, trc_set_guess, trc_density,
+      !! trc_mo_coefficients) reads that tag, not how the basis was built,
+      !! so a libcint caller lands in the same spherical AO space -- same
+      !! ordering, same nao_sph -- as the JSON path (trc_sph.F90's
+      !! transform is the only place either path's integrals are ever
+      !! folded from Cartesian to spherical).
       type(c_ptr), value :: handle
       logical, intent(in) :: aux
       integer(c_int), value :: natm, nshell, nenv, cartesian
@@ -1480,27 +1576,74 @@ contains
       integer(c_int) :: status
       type(context_box), pointer :: cx
       type(trc_basis_t) :: b
+      character(len=21), parameter :: who = "trc_set_basis_libcint", who_aux = "trc_set_aux_libcint  "
+      character(len=21) :: whoer
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      whoer = merge(who_aux, who, aux)
       status = TRC_ERR_BADARG
       if (natm <= 0 .or. nshell <= 0 .or. nenv <= 0) then
-         call refuse(cx, "trc_set_basis_libcint: natm, nshell and nenv must all be positive")
-         return
-      end if
-      if (cartesian == 0) then
-         status = TRC_ERR_UNSUPPORTED
-         call refuse(cx, "trc_set_basis_libcint: terco builds every shell Cartesian; pass cartesian = 1 "// &
-                     "and a Cartesian basis, a spherical one is not reinterpreted")
+         call refuse(cx, trim(whoer)//": natm, nshell and nenv must all be positive")
          return
       end if
       call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
+      b%spherical = (cartesian == 0)
+      ! TRC_AO_NORM_UNIT and a spherical basis do not combine -- same
+      ! refusal basis_json makes for the JSON path (see its own comment).
+      if (b%spherical .and. cx%ao_norm_kind == TRC_AO_NORM_UNIT) then
+         call refuse(cx, trim(whoer)//": cartesian = 0 is a spherical basis and this "// &
+                     "context is set to TRC_AO_NORM_UNIT, which only applies to a Cartesian basis -- call "// &
+                     "trc_set_ao_norm(TRC_AO_NORM_SHELL) first, or pass cartesian = 1")
+         call b%release()
+         return
+      end if
+      ! Orbital/auxiliary convention mismatch, both directions -- same
+      ! policy as basis_json, except a libcint caller states `cartesian`
+      ! explicitly rather than through a file tag, so a mismatch is always
+      ! refused here rather than coerced: nothing silently reinterprets
+      ! what the caller asked for (see this module's own header, "Neither
+      ! direction silently falls back to one interpretation of the two").
+      if (.not. aux) then
+         if (cx%have_aux .and. b%spherical .neqv. cx%ab%b%spherical) then
+            call refuse(cx, who//": orbital basis is "//trim(merge("spherical", "Cartesian", b%spherical))// &
+                        ", but the auxiliary basis already set is "// &
+                        trim(merge("spherical", "Cartesian", cx%ab%b%spherical))// &
+                        " -- match cartesian flags, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+         if (cx%have_jkfit .and. b%spherical .neqv. cx%jb%b%spherical) then
+            call refuse(cx, who//": orbital basis is "//trim(merge("spherical", "Cartesian", b%spherical))// &
+                        ", but the --df jkfit basis already set is "// &
+                        trim(merge("spherical", "Cartesian", cx%jb%b%spherical))// &
+                        " -- match cartesian flags, or load the orbital basis first")
+            call b%release()
+            return
+         end if
+      else
+         if (cx%have_basis .and. b%spherical .neqv. cx%bb%b%spherical) then
+            call refuse(cx, trim(who_aux)//": auxiliary basis is "//trim(merge("spherical", "Cartesian", b%spherical))// &
+                        ", but the orbital basis already set is "// &
+                        trim(merge("spherical", "Cartesian", cx%bb%b%spherical))// &
+                        " -- match cartesian flags (pyscf's auxmol.cart = mol.cart rule)")
+            call b%release()
+            return
+         end if
+      end if
       call take_basis(cx, aux, b)
       status = TRC_OK
    end function basis_libcint
 
    function trc_set_basis_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
       bind(c, name="trc_set_basis_libcint")
+      !! The orbital basis from libcint's packed `atm`/`bas`/`env`.
+      !! `cartesian` nonzero builds terco's own Cartesian AO space; zero
+      !! tags it spherical (libcint/pyscf order, m = -l..l except p as x,
+      !! y, z) -- trc_nao and every SCF-facing entry then size and index
+      !! at nao_sph, exactly as for a spherical trc_set_basis_json. A
+      !! mismatch against an already-set auxiliary or jkfit basis's own
+      !! convention is refused, not coerced.
       type(c_ptr), value :: handle
       integer(c_int), value :: natm, nshell, nenv, cartesian
       integer(c_int), intent(in) :: atm(*), bas(*)
@@ -1511,6 +1654,9 @@ contains
 
    function trc_set_aux_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
       bind(c, name="trc_set_aux_libcint")
+      !! The auxiliary (RI-MP2 rifit) basis, same layout and `cartesian`
+      !! convention as trc_set_basis_libcint; refused rather than coerced
+      !! if it disagrees with the orbital basis already set.
       type(c_ptr), value :: handle
       integer(c_int), value :: natm, nshell, nenv, cartesian
       integer(c_int), intent(in) :: atm(*), bas(*)
@@ -1731,6 +1877,26 @@ contains
       status = TRC_OK
    end function trc_set_method
 
+   function trc_set_unrestricted(handle, on) result(status) bind(c, name="trc_set_unrestricted")
+      !! Force UHF/UKS (two independent spin densities) even on a CLOSED
+      !! shell (nalpha == nbeta), which otherwise runs restricted --
+      !! `trc_scf_options_t%unrestricted`'s own comment, "forced; an open
+      !! shell is unrestricted regardless": nalpha /= nbeta already gets
+      !! nspin = 2 whether or not this is set, so this only changes
+      !! anything on a singlet. `on` nonzero sets it; 0 (the default)
+      !! restores restricted-when-closed-shell.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%opts%unrestricted = (on /= 0)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_unrestricted
+
    function trc_set_nlc_grid(handle, grid_level) result(status) bind(c, name="trc_set_nlc_grid")
       !! Grid level for VV10's nonlocal correlation (default 1, coarser than
       !! the semilocal grid: VV10 is a double sum over its points). Only
@@ -1822,6 +1988,60 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_pcm
+
+   function trc_set_pcm_radii(handle, natm, radii) result(status) bind(c, name="trc_set_pcm_radii")
+      !! Override the PCM cavity radii table (trc_pcm_radii.F90) with
+      !! explicit, FINAL (already-scaled) per-atom radii in bohr,
+      !! trc_set_molecule's own atom order -- for a caller whose own PCM
+      !! reference used a different van der Waals table or scale than
+      !! terco's default (pyscf's modified Bondi, radii_scale 1.2): mqc's
+      !! own convention is plain Bondi (hydrogen 1.20 Angstrom, not
+      !! terco's 1.10) times 1.2, which the two backends otherwise
+      !! disagree on by construction (water cpcm/PBE0: E_diel -0.011577
+      !! here against -0.010200 there, 556 against 566 kept surface
+      !! points) -- not a bug in either, a different cavity. This makes
+      !! them agree by construction instead.
+      !!
+      !! natm = 0, or a NULL radii, clears the override, back to the
+      !! table and radii_scale; natm must otherwise equal the molecule's
+      !! own atom count. Invalidates the last SCF result, as trc_set_pcm
+      !! does. Kept across trc_set_charge (the molecule, and so the
+      !! cavity's atoms, are unchanged); cleared by trc_set_molecule,
+      !! which can change the atom count and order the override was
+      !! given in.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm
+      type(c_ptr), value :: radii
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      real(c_double), pointer :: rp(:)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      if (natm == 0 .or. .not. c_associated(radii)) then
+         if (allocated(cx%opts%pcm_radii_override)) deallocate (cx%opts%pcm_radii_override)
+         call invalidate_runs(cx)
+         status = TRC_OK
+         return
+      end if
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_pcm_radii: set the molecule first")
+         return
+      end if
+      status = TRC_ERR_BADARG
+      if (int(natm) /= cx%natm) then
+         call refuse(cx, "trc_set_pcm_radii: natm "//trim(itoa(int(natm)))// &
+                     " does not match the molecule's "//trim(itoa(cx%natm))//" atoms")
+         return
+      end if
+      if (allocated(cx%opts%pcm_radii_override)) deallocate (cx%opts%pcm_radii_override)
+      call c_f_pointer(radii, rp, [int(natm)])
+      allocate (cx%opts%pcm_radii_override(cx%natm))
+      cx%opts%pcm_radii_override = real(rp, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_pcm_radii
 
    function trc_pcm_energy(handle, e_diel, q_total, npoints) result(status) bind(c, name="trc_pcm_energy")
       !! The continuum's part of the last SCF: E_diel = q.v/2 (already in
@@ -1920,6 +2140,37 @@ contains
       status = TRC_OK
    end function trc_set_incremental
 
+   function trc_set_level_shift(handle, shift) result(status) bind(c, name="trc_set_level_shift")
+      !! The virtual-orbital level shift, hartree; 0 turns it off.
+      !! trc_scf_options_t%level_shift's own comment: F += mu (S - S D S
+      !! / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
+      !! damped start before either has engaged (trc_scf_driver.F90's own
+      !! "level shift while DIIS and A/EDIIS are off" block). It is a
+      !! CONVERGENCE AID for that early phase, not a persistent shift
+      !! held through the whole SCF: once the commutator is small enough
+      !! for CDIIS (or ADIIS takes over first), this stops being applied
+      !! at all, however large `shift` is set. A caller wanting a shift
+      !! that stays on throughout -- the sense a persistent level shift
+      !! has in, for instance, a Fukui-ion deck's convergence recipe --
+      !! is asking for something this entry does not do; nothing here
+      !! changes that behaviour, only exposes the existing knob.
+      type(c_ptr), value :: handle
+      real(c_double), value :: shift
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (shift < 0.0_c_double) then
+         call refuse(cx, "trc_set_level_shift: shift must be >= 0 (0 turns it off)")
+         return
+      end if
+      cx%opts%level_shift = real(shift, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_level_shift
+
    !
    ! Density-fitted J and K (`--df`). Needs a jkfit basis too
    ! (`trc_set_jkfit_json`, separate from `trc_set_aux_json`'s rifit set
@@ -1994,6 +2245,56 @@ contains
       cx%df_fit_ok = .false.
       status = TRC_OK
    end function trc_set_jkfit_json
+
+   !
+   ! The same fitting basis as `trc_set_jkfit_json`, from libcint's packed
+   ! `atm`/`bas`/`env` instead of a JSON file -- the same shape
+   ! `trc_set_aux_libcint` takes. `cartesian` zero tags it spherical,
+   ! exactly as `basis_libcint` above; refused rather than coerced if it
+   ! disagrees with the orbital basis already set (pyscf's `auxmol.cart =
+   ! mol.cart`), since there is no file tag here to silently override.
+   !
+   function trc_set_jkfit_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
+      bind(c, name="trc_set_jkfit_libcint")
+      !! The --df fitting basis from libcint's packed arrays, the same
+      !! shape and `cartesian` convention as trc_set_aux_libcint; refused
+      !! rather than coerced if it disagrees with the orbital basis
+      !! already set (pyscf's auxmol.cart = mol.cart rule).
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm, nshell, nenv, cartesian
+      integer(c_int), intent(in) :: atm(*), bas(*)
+      real(c_double), intent(in) :: env(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_basis_t) :: b
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (natm <= 0 .or. nshell <= 0 .or. nenv <= 0) then
+         call refuse(cx, "trc_set_jkfit_libcint: natm, nshell and nenv must all be positive")
+         return
+      end if
+      call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
+      b%spherical = (cartesian == 0)
+      if (cx%have_basis .and. b%spherical .neqv. cx%bb%b%spherical) then
+         call refuse(cx, "trc_set_jkfit_libcint: jkfit basis is "// &
+                     trim(merge("spherical", "Cartesian", b%spherical))//", but the orbital basis "// &
+                     "already set is "//trim(merge("spherical", "Cartesian", cx%bb%b%spherical))// &
+                     " -- match cartesian flags (pyscf's auxmol.cart = mol.cart rule)")
+         call b%release()
+         return
+      end if
+      if (cx%have_jkfit) call cx%jb%b%release()
+      cx%jb%b = b
+      call cx%jb%b%to_device()
+      cx%have_jkfit = .true.
+      cx%jkfit_path = ""
+      call b%release()
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
+      status = TRC_OK
+   end function trc_set_jkfit_libcint
 
    !
    ! How finely the shell pairs are batched by their Schwarz bound: `res`
@@ -2553,13 +2854,6 @@ contains
    end function trc_run_scf
 
    function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
-      !! ======================================================================
-      !! !!! EXPERIMENTAL !!! Validated against pyscf and finite differences,
-      !! but NOT performance-tuned: the --df gradient can cost far more than
-      !! the energy, and only one rank is supported. Do not rely on its cost
-      !! yet.
-      !! ======================================================================
-      !!
       !! The full analytic RHF/UHF nuclear gradient at the converged SCF
       !! this context already holds (trc_scf_grad%trc_scf_gradient: the
       !! one-electron terms, eri%gradient's two-electron part, and nuclear
@@ -2803,6 +3097,127 @@ contains
       status = TRC_OK
    end function trc_gradient
 
+   function trc_run_polarizability(handle) result(status) bind(c, name="trc_run_polarizability")
+      !! The static dipole polarizability at the converged SCF this
+      !! context already holds: CPHF (trc_cphf%trc_scf_polarizability)
+      !! for RHF or UHF, Hartree-Fock only; CPKS
+      !! (trc_cpks%trc_scf_polarizability_rks) when a functional is set --
+      !! restricted only, trc_cpks has no unrestricted entry. Builds its
+      !! own pair list and ERI engine at the context's own screening
+      !! threshold, and (for CPKS) its own XC grid from `cx%res%grid_r`/
+      !! `grid_w` -- the SAME quadrature `trc_run_scf` converged the
+      !! density with, since a CPKS response built on a different grid is
+      !! not a derivative of the energy that converged. All three are
+      !! released before returning; `cx%la` is reused, as `trc_run_gradient`
+      !! reuses it.
+      !!
+      !! REFUSED, as `trc_run_gradient` is and for the same reasons: a
+      !! correlated (RI-MP2 or double-hybrid) reference, `--df`, PCM, or a
+      !! multi-rank context. An unrestricted functional reference is
+      !! refused here too (`trc_cpks` has nothing else to call). A
+      !! meta-GGA or double-hybrid functional cannot reach this point at
+      !! all -- `trc_set_method` already refused it.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_pairlist_t) :: pl
+      type(trc_eri_t) :: eri
+      type(trc_xc_functional_t) :: func
+      type(trc_xc_grid_t) :: xg
+      type(trc_cphf_options_t) :: copts
+      type(trc_cphf_result_t) :: cres
+      logical :: have_func
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%polar_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_run_polarizability: run the SCF first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%bb%b%spherical) then
+         ! trc_cphf/trc_cpks know nothing of nao_sph: `cmo`/`eps` there are
+         ! explicit-shape dummies at `b%nao`, the CARTESIAN count, while
+         ! `cx%bb%cmo`/`cx%bb%eps` (what this entry would otherwise hand
+         ! them) are sized at nao_sph for a spherical basis -- a silent
+         ! shape mismatch, not merely an unimplemented case. Refused
+         ! rather than risked.
+         cx%message = "trc_run_polarizability: CPHF/CPKS are Cartesian-only; "// &
+                      "set force_cartesian before loading the basis"
+         return
+      end if
+      if (cx%rimp2_ok) then
+         cx%message = "trc_run_polarizability: RI-MP2/double-hybrid response not implemented"
+         return
+      end if
+      if (cx%opts%df) then
+         cx%message = "trc_run_polarizability: --df response not implemented"
+         return
+      end if
+      if (len_trim(cx%opts%pcm_model) > 0) then
+         cx%message = "trc_run_polarizability: PCM response not implemented (no cavity/charge response)"
+         return
+      end if
+      if (cx%fcomm /= -1) then
+         cx%message = "trc_run_polarizability: the response path is not rank-split; run it on a single rank"
+         return
+      end if
+      have_func = len_trim(cx%opts%functional) > 0
+      if (have_func .and. cx%res%nspin /= 1) then
+         cx%message = "trc_run_polarizability: CPKS (a functional is set) is restricted only"
+         return
+      end if
+      call pl%build(cx%bb%b, cx%opts%eri_thresh)
+      call pl%to_device()
+      call eri%build(cx%bb%b, cx%opts%eri_thresh)
+      copts%conv_residual = 1.0e-8_dp
+      copts%max_iter = 100
+      copts%verbose = cx%opts%verbose
+      if (have_func) then
+         if (.not. xc_functional_by_name(cx%opts%functional, func)) then
+            cx%message = "trc_run_polarizability: functional '"//trim(cx%opts%functional)// &
+                         "' failed to re-resolve -- this should be unreachable"
+            call pl%release()
+            call eri%release()
+            return
+         end if
+         call xg%build(size(cx%res%grid_w), cx%res%grid_r, cx%res%grid_w, cx%bb%b, max_pts=cx%opts%grid_max_pts)
+         call xg%to_device()
+         call trc_scf_polarizability_rks(cx%bb%b, pl, eri, xg, func, cx%nalpha, cx%bb%cmo(:, :, 1), &
+                                         cx%bb%eps(:, 1), cx%res%dmat(:, :, 1), cx%alpha, copts, cres, cx%la)
+         call xg%release()
+      else
+         call trc_scf_polarizability(cx%bb%b, pl, eri, cx%nalpha, cx%nbeta, cx%res, cx%alpha, copts, cres, cx%la)
+      end if
+      call pl%release()
+      call eri%release()
+      if (.not. cres%converged) then
+         cx%message = "trc_run_polarizability: "//trim(cres%message)
+         status = TRC_ERR_NOCONV
+         return
+      end if
+      cx%polar_ok = .true.
+      status = TRC_OK
+   end function trc_run_polarizability
+
+   function trc_polarizability(handle, alpha) result(status) bind(c, name="trc_polarizability")
+      !! The static dipole polarizability tensor `trc_run_polarizability`
+      !! computed, a.u., column-major (3, 3).
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: alpha(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%polar_ok) return
+      alpha(1:9) = real(reshape(cx%alpha, [9]), c_double)
+      status = TRC_OK
+   end function trc_polarizability
+
    pure integer function core_orbitals(z) result(res)
       !! Frozen-core orbitals for one element, by period.
       real(dp), intent(in) :: z
@@ -3010,6 +3425,7 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
+      cx%polar_ok = .false.
       ! A loaded result has no grid of its own -- any grid `trc_run_scf`
       ! kept on this handle belongs to a DIFFERENT (possibly stale) run,
       ! so `trc_run_gradient` must rebuild (this function's own header,
@@ -3078,6 +3494,115 @@ contains
       order_id = int(trc_cart_order_id(), c_int)
    end function trc_cart_order
 
+   function trc_abi_version(major, minor) result(status) bind(c, name="trc_abi_version")
+      !! This build's ABI version (TRC_ABI_MAJOR, TRC_ABI_MINOR above), so
+      !! a host can compare it against the constants the header it
+      !! compiled against carries before trusting any other entry point.
+      !! Bump TRC_ABI_MINOR for an additive change (a new entry point, a
+      !! new enum value appended at the end); bump TRC_ABI_MAJOR, and
+      !! reset TRC_ABI_MINOR to 0, for anything that changes an existing
+      !! signature or an existing enum value's meaning. No handle; always
+      !! succeeds.
+      integer(c_int), intent(out) :: major, minor
+      integer(c_int) :: status
+      major = TRC_ABI_MAJOR
+      minor = TRC_ABI_MINOR
+      status = TRC_OK
+   end function trc_abi_version
+
+   function trc_functional_info(name, flags, exx, c_os, c_ss) result(status) bind(c, name="trc_functional_info")
+      !! Look up a functional by name (case-insensitive, trc_xc_functional's
+      !! own table) without a context: `flags` is a bitmask --
+      !!
+      !!   1  known      -- runnable today (trc_set_method would accept it)
+      !!   2  hybrid     -- exx or exx_lr nonzero (some exact exchange)
+      !!   4  range-separated -- omega nonzero
+      !!   8  VV10       -- nlc_b nonzero (nonlocal correlation)
+      !!   16 meta-GGA   -- needs a kinetic-energy-density kernel; always
+      !!      paired with bit 64 today, since terco has none translated yet
+      !!   32 double hybrid -- xc_is_double_hybrid (pt2_cos or pt2_css nonzero)
+      !!   64 listed but not runnable -- trc_xc_functional_t%missing is set;
+      !!      bit 1 is then NOT set, and `exx`/`c_os`/`c_ss`/the other bits
+      !!      reflect only whatever the table's own entry set before
+      !!      giving up (most "missing" entries set nothing at all, so
+      !!      every other bit and output reads zero -- that is the table's
+      !!      gap, not this entry's)
+      !!
+      !! `exx` is the fraction of ordinary (full-range) exact exchange;
+      !! `c_os`/`c_ss` are the opposite-/same-spin RI-MP2 weights a double
+      !! hybrid adds on top (both 0 for anything that is not one). An
+      !! unknown name returns a non-OK status with flags = 0 and every
+      !! output zeroed, rather than TRC_OK with nothing found.
+      character(kind=c_char), intent(in) :: name(*)
+      integer(c_int), intent(out) :: flags
+      real(c_double), intent(out) :: exx, c_os, c_ss
+      integer(c_int) :: status
+      type(trc_xc_functional_t) :: f
+      character(len=24) :: fname
+      integer :: i
+      flags = 0
+      exx = 0.0_c_double
+      c_os = 0.0_c_double
+      c_ss = 0.0_c_double
+      fname = ""
+      do i = 1, len(fname)
+         if (name(i) == c_null_char) exit
+         fname(i:i) = name(i)
+      end do
+      status = TRC_ERR_UNSUPPORTED
+      if (.not. xc_functional_by_name(trim(fname), f)) return
+      status = TRC_OK
+      if (len_trim(f%missing) > 0) then
+         flags = ibset(flags, 6)                                    ! 64: listed, not runnable
+         if (index(f%missing, "meta-GGA") > 0) flags = ibset(flags, 4)  ! 16: meta-GGA
+      else
+         flags = ibset(flags, 0)                                    ! 1: known/runnable
+      end if
+      if (f%exx /= 0.0_dp .or. f%exx_lr /= 0.0_dp) flags = ibset(flags, 1)  ! 2: hybrid
+      if (f%omega /= 0.0_dp) flags = ibset(flags, 2)                       ! 4: range-separated
+      if (f%nlc_b /= 0.0_dp) flags = ibset(flags, 3)                       ! 8: VV10
+      if (xc_is_double_hybrid(f)) flags = ibset(flags, 5)                  ! 32: double hybrid
+      exx = real(f%exx, c_double)
+      c_os = real(f%pt2_cos, c_double)
+      c_ss = real(f%pt2_css, c_double)
+   end function trc_functional_info
+
+   function trc_functional_list(buf, buflen, reqlen) result(status) bind(c, name="trc_functional_list")
+      !! XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
+      !! trc_functional_info can look up that terco can actually run today
+      !! -- space-separated and NUL-terminated into `buf` (capacity
+      !! `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
+      !! number of bytes that call needed, NUL included, whether or not it
+      !! fit: a caller queries it with `buflen = 0` (`buf` is never
+      !! touched then) and allocates exactly `reqlen` bytes for a second,
+      !! filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
+      !! `buflen` is positive but smaller than `reqlen`.
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int), intent(out) :: reqlen
+      integer(c_int) :: status
+      integer :: i, k
+      k = 0
+      do i = 1, len_trim(XC_AVAILABLE_FUNCTIONALS)
+         if (XC_AVAILABLE_FUNCTIONALS(i:i) == ",") cycle
+         k = k + 1
+      end do
+      reqlen = int(k + 1, c_int)
+      status = TRC_OK
+      if (buflen <= 0) return
+      if (buflen < reqlen) then
+         status = TRC_ERR_BADARG
+         return
+      end if
+      k = 0
+      do i = 1, len_trim(XC_AVAILABLE_FUNCTIONALS)
+         if (XC_AVAILABLE_FUNCTIONALS(i:i) == ",") cycle
+         k = k + 1
+         buf(k) = XC_AVAILABLE_FUNCTIONALS(i:i)
+      end do
+      buf(k + 1) = c_null_char
+   end function trc_functional_list
+
    function trc_nao(handle, nao) result(status) bind(c, name="trc_nao")
       type(c_ptr), value :: handle
       integer(c_int), intent(out) :: nao
@@ -3092,6 +3617,80 @@ contains
       nao = int(scf_space_nao(cx%bb), c_int)
       status = TRC_OK
    end function trc_nao
+
+   function trc_nmo(handle, nmo) result(status) bind(c, name="trc_nmo")
+      !! Molecular-orbital count: `trc_nao`'s own AO count minus whatever
+      !! canonical orthogonalisation dropped as linearly dependent at the
+      !! last `trc_run_scf` (`trc_scf_result_t%n_lindep` -- 0 for every
+      !! compact basis, nonzero only for a diffuse one close to linear
+      !! dependency). Before the first `trc_run_scf` that count is
+      !! unknown, so `nmo` is `trc_nao`'s own number.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nmo
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      nmo = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_basis) return
+      if (cx%scf_ok) then
+         nmo = int(scf_space_nao(cx%bb) - cx%res%n_lindep, c_int)
+      else
+         nmo = int(scf_space_nao(cx%bb), c_int)
+      end if
+      status = TRC_OK
+   end function trc_nmo
+
+   function trc_mo_occupations(handle, occ) result(status) bind(c, name="trc_mo_occupations")
+      !! Occupation numbers, (nmo, nspin) column-major (`trc_nmo`'s own
+      !! size), for the last converged `trc_run_scf`: 2.0 per orbital up
+      !! to `nalpha` and restricted (nspin 1), or 1.0 up to `nalpha`/
+      !! `nbeta` on each spin's own column (nspin 2); 0 above. REFUSED
+      !! (TRC_ERR_UNSUPPORTED) if this context's guess used fractional
+      !! occupation: that per-orbital Aufbau split is private to
+      !! `trc_scf_run` (its own `frac_occupations`) and not re-derivable
+      !! from the stored result alone -- unreachable through this C API
+      !! today, since nothing here sets fractional occupation, but
+      !! refused rather than silently wrong for a Fortran-driver-built
+      !! context that did.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: occ(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: n, nspin, k, i, s
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_mo_occupations: run the SCF first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%opts%frac_occ) then
+         cx%message = "trc_mo_occupations: this context's guess used fractional occupation; "// &
+                      "its per-orbital Aufbau split is not exposed here"
+         return
+      end if
+      n = int(scf_space_nao(cx%bb)) - cx%res%n_lindep
+      nspin = cx%res%nspin
+      k = 0
+      do s = 1, nspin
+         do i = 1, n
+            k = k + 1
+            if (nspin == 1) then
+               occ(k) = merge(2.0_c_double, 0.0_c_double, i <= cx%nalpha)
+            else if (s == 1) then
+               occ(k) = merge(1.0_c_double, 0.0_c_double, i <= cx%nalpha)
+            else
+               occ(k) = merge(1.0_c_double, 0.0_c_double, i <= cx%nbeta)
+            end if
+         end do
+      end do
+      status = TRC_OK
+   end function trc_mo_occupations
 
    function trc_is_spherical(handle, flag) result(status) bind(c, name="trc_is_spherical")
       !! Non-zero if the orbital basis this context holds is running in

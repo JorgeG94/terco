@@ -474,14 +474,19 @@ install(
   PATTERN "bit_repro*.mod")
 
 #
-# The C ABI's Fortran declaration ships as SOURCE, not as a module.
+# The C ABI's Fortran declaration ships as SOURCE, not as a module, and its
+# C header ships alongside it.
 #
-# A consumer built with another compiler cannot read terco's `.mod` files, so
-# it compiles this one file itself and gets the interfaces from the same
-# declaration terco's own tests use. Shipping a `.mod` instead would work for
-# NVHPC callers only, which are the ones that do not need it.
+# A Fortran consumer built with another compiler cannot read terco's `.mod`
+# files, so it compiles trc_c_interfaces.f90 itself and gets the interfaces
+# from the same declaration terco's own tests use. Shipping a `.mod` instead
+# would work for NVHPC callers only, which are the ones that do not need it.
+# terco.h is the same ABI for a C or C++ consumer. Both files are generated
+# by tools/gen_capi_headers.py from src/api/trc_capi.F90 and committed, not
+# built here -- see that script's own header for why.
 #
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/trc_c_interfaces.f90
+              ${CMAKE_CURRENT_SOURCE_DIR}/include/terco.h
         DESTINATION include/terco)
 
 install(

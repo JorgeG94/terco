@@ -24,7 +24,9 @@ program context_scf
                                trc_nao, trc_nspin, trc_energy, trc_converged, trc_iterations, trc_density, &
                                trc_mo_energies, trc_rimp2_energy, trc_message, trc_set_guess, &
                                trc_run_gradient, trc_gradient, trc_set_df, trc_set_jkfit_json, trc_cart_order, &
-                               TRC_OK, TRC_ERR_STATE, TRC_ERR_NULL, TRC_GUESS_GWH
+                               trc_abi_version, trc_functional_info, trc_functional_list, &
+                               TRC_OK, TRC_ERR_STATE, TRC_ERR_NULL, TRC_ERR_BADARG, TRC_GUESS_GWH, &
+                               TRC_ABI_MAJOR, TRC_ABI_MINOR
    implicit none
    integer :: natm, dev, nocc
    integer, allocatable :: zint(:)
@@ -163,6 +165,7 @@ program context_scf
    call check_double_hybrid('b2plyp', 0.27_c_double, 0.27_c_double)
    call check_double_hybrid('b2gpplyp', 0.36_c_double, 0.36_c_double)
    call check_aux_order()
+   call check_abi_and_functionals()
 
    call pl%release(); call b%release(); call aux%release()
    if (.not. ok) then
@@ -265,5 +268,78 @@ contains
       call expect(rc3 /= TRC_OK, "aux order: orbital after a mismatched aux is refused, not silently wrong")
       rc3 = trc_destroy(h4);                      call expect(rc3 == TRC_OK, "aux order: destroy (aux-first)")
    end subroutine check_aux_order
+
+   !
+   ! trc_abi_version and trc_functional_info/trc_functional_list -- both
+   ! handle-free, so nothing above this needed to run first.
+   !
+   subroutine check_abi_and_functionals()
+      integer(c_int) :: rc4, major, minor, flags, reqlen
+      real(c_double) :: exx, c_os2, c_ss2
+      character(kind=c_char), allocatable :: buf(:)
+      character(len=:), allocatable :: text
+
+      rc4 = trc_abi_version(major, minor)
+      call expect(rc4 == TRC_OK, "abi_version: status")
+      call expect(major == TRC_ABI_MAJOR .and. minor == TRC_ABI_MINOR, &
+                  "abi_version: matches the header's own TRC_ABI_MAJOR/MINOR")
+
+      ! a known, runnable global hybrid
+      rc4 = trc_functional_info('b3lyp'//c_null_char, flags, exx, c_os2, c_ss2)
+      call expect(rc4 == TRC_OK, "functional_info(b3lyp): status")
+      call expect(iand(flags, 1_c_int) /= 0, "functional_info(b3lyp): known (bit 1)")
+      call expect(iand(flags, 2_c_int) /= 0, "functional_info(b3lyp): hybrid (bit 2)")
+      call expect(iand(flags, 32_c_int) == 0, "functional_info(b3lyp): not a double hybrid")
+      call expect(abs(exx - 0.2_c_double) < 1.0e-12_c_double, "functional_info(b3lyp): exx = 0.2")
+
+      ! a known double hybrid: bit 32, and the SAME pt2_cos/pt2_css
+      ! check_double_hybrid already asserted through trc_energy
+      rc4 = trc_functional_info('b2plyp'//c_null_char, flags, exx, c_os2, c_ss2)
+      call expect(rc4 == TRC_OK, "functional_info(b2plyp): status")
+      call expect(iand(flags, 32_c_int) /= 0, "functional_info(b2plyp): double hybrid (bit 32)")
+      call expect(abs(c_os2 - 0.27_c_double) < 1.0e-12_c_double .and. abs(c_ss2 - 0.27_c_double) < 1.0e-12_c_double, &
+                  "functional_info(b2plyp): c_os = c_ss = 0.27")
+
+      ! a known range-separated hybrid with VV10
+      rc4 = trc_functional_info('wb97x-v'//c_null_char, flags, exx, c_os2, c_ss2)
+      call expect(rc4 == TRC_OK, "functional_info(wb97x-v): status")
+      call expect(iand(flags, 1_c_int) /= 0, "functional_info(wb97x-v): known (bit 1)")
+      call expect(iand(flags, 2_c_int) /= 0, "functional_info(wb97x-v): hybrid (bit 2)")
+      call expect(iand(flags, 4_c_int) /= 0, "functional_info(wb97x-v): range-separated (bit 4)")
+      call expect(iand(flags, 8_c_int) /= 0, "functional_info(wb97x-v): VV10 (bit 8)")
+
+      ! listed but not runnable: bit 64, bit 1 (known) must then be clear
+      rc4 = trc_functional_info('tpss'//c_null_char, flags, exx, c_os2, c_ss2)
+      call expect(rc4 == TRC_OK, "functional_info(tpss): status (listed)")
+      call expect(iand(flags, 64_c_int) /= 0, "functional_info(tpss): listed but not runnable (bit 64)")
+      call expect(iand(flags, 1_c_int) == 0, "functional_info(tpss): NOT known, since it cannot run")
+
+      ! an unknown name: non-OK, flags = 0
+      rc4 = trc_functional_info('not-a-functional'//c_null_char, flags, exx, c_os2, c_ss2)
+      call expect(rc4 /= TRC_OK, "functional_info(unknown): non-OK status")
+      call expect(flags == 0, "functional_info(unknown): flags = 0")
+
+      ! trc_functional_list: query the length with buflen = 0 (buf itself
+      ! still needs SOME storage behind the dummy's assumed-size `buf(*)`,
+      ! even though the library never reads or writes it at buflen = 0).
+      allocate (buf(1))
+      rc4 = trc_functional_list(buf, 0_c_int, reqlen)
+      call expect(rc4 == TRC_OK .and. reqlen > 0, "functional_list: buflen=0 query returns reqlen > 0")
+      deallocate (buf)
+      allocate (buf(reqlen))
+      rc4 = trc_functional_list(buf, reqlen, reqlen)
+      call expect(rc4 == TRC_OK, "functional_list: filling call with the queried reqlen")
+      allocate (character(len=reqlen) :: text)
+      text = transfer(buf, text)
+      call expect(index(text, 'b3lyp') > 0, "functional_list: names b3lyp")
+      call expect(index(text, char(0)) == reqlen, "functional_list: NUL-terminated at reqlen")
+      deallocate (buf, text)
+
+      ! a buffer that is one byte too small is refused, untouched
+      allocate (buf(reqlen - 1))
+      rc4 = trc_functional_list(buf, reqlen - 1, reqlen)
+      call expect(rc4 == TRC_ERR_BADARG, "functional_list: a too-small buflen is refused")
+      deallocate (buf)
+   end subroutine check_abi_and_functionals
 
 end program context_scf

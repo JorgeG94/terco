@@ -1004,6 +1004,80 @@ add_test(NAME terco/context_scf COMMAND context_scf)
 set_tests_properties(terco/context_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# trc_set_basis_libcint/trc_set_aux_libcint/trc_set_jkfit_libcint with
+# cartesian = 0 (spherical), against the equivalent trc_set_*_json path.
+add_executable(check_capi_libcint_sph check_capi_libcint_sph.F90)
+target_compile_definitions(check_capi_libcint_sph PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_libcint_sph PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
+add_test(NAME terco/check_capi_libcint_sph COMMAND check_capi_libcint_sph)
+set_tests_properties(terco/check_capi_libcint_sph PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# trc_run_polarizability/trc_polarizability (CPHF/CPKS) and trc_nmo/
+# trc_mo_occupations, through the context API, against the SAME pyscf
+# references test/scf_cphf.F90 and test/scf_cpks.F90 check their own
+# Fortran drivers with.
+add_executable(check_capi_polarizability check_capi_polarizability.F90)
+target_compile_definitions(check_capi_polarizability PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_polarizability PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                        terco_pyscf_ref_io)
+add_test(NAME terco/check_capi_polarizability COMMAND check_capi_polarizability)
+set_tests_properties(terco/check_capi_polarizability PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# trc_set_unrestricted, trc_set_level_shift and trc_set_charge, through
+# the context API: forced UHF on a closed shell matches RHF, a level
+# shift only changes the path (not the converged energy), and an
+# ionisation series on one --df handle matches fresh handles while
+# reusing the fit.
+add_executable(check_capi_charge_unrestricted check_capi_charge_unrestricted.F90)
+target_compile_definitions(check_capi_charge_unrestricted PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_charge_unrestricted PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+add_test(NAME terco/check_capi_charge_unrestricted COMMAND check_capi_charge_unrestricted)
+set_tests_properties(terco/check_capi_charge_unrestricted PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# trc_set_pcm_radii, through the context API: an override equal to
+# terco's own table is bit-identical to the table path; an override at
+# mqc's own radii convention (plain Bondi x 1.2) matches an independent
+# pyscf reference built with the same convention.
+add_executable(check_capi_pcm_radii check_capi_pcm_radii.F90)
+target_compile_definitions(check_capi_pcm_radii PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_pcm_radii PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                    terco_pyscf_ref_io)
+add_test(NAME terco/check_capi_pcm_radii COMMAND check_capi_pcm_radii)
+set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# terco driven from C, through include/terco.h only -- the C-side proof
+# trc_c_interfaces.f90 is for a Fortran caller (test/link_gfortran.F90).
+# Needs the C compiler, which nothing else in this build does; enabled
+# here, scoped to this one target, rather than at the top level.
+#
+enable_language(C)
+add_executable(link_c link_c.c)
+# Linked against libterco's own FILE, not the CMake target name: going
+# through the target name pulls in terco's PUBLIC usage requirements,
+# including -cudalib=cublas,cusolver under TERCO_ENABLE_GPU (top-level
+# CMakeLists.txt) -- an nvfortran flag the C compiler linking this
+# executable does not understand. Linking nvfortran itself as the
+# driver instead does understand that flag, but then supplies its OWN
+# `main` (expecting a Fortran program's `MAIN_` entry), which collides
+# with link_c.c's own `main` -- worse, not better. The file path sidesteps
+# both: the shared library already carries cuBLAS/cuSOLVER as its own
+# linked dependencies, so nothing here needs to ask for them again.
+add_dependencies(link_c ${main_lib})
+target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
+target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+set_target_properties(link_c PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:${main_lib}>")
+add_test(NAME terco/link_c COMMAND link_c)
+set_tests_properties(terco/link_c PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 # GAMESS's per-component AO normalisation (trc_set_ao_norm): the factor
 # itself against scripts/cartorder.py's recorded reference, l = 0..4, then
 # the overlap diagonal, the SCF energy, Tr(D S) and a guess round trip, all

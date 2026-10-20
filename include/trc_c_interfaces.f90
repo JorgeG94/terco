@@ -1,137 +1,86 @@
 !
-! The authoritative Fortran declaration of terco's C ABI.
+! The authoritative Fortran declaration of terco's C ABI -- GENERATED,
+! do not edit by hand.
 !
-! WHY THIS FILE EXISTS
-! --------------------
-! terco is nvfortran and its callers usually are not, so they reach it through
-! `bind(c)`. A Fortran caller then needs an `interface` block for every entry
-! point -- and the obvious thing is for each caller to write its own. That is a
-! copy of a contract, kept in step by hand, and there is nothing to catch it
-! drifting: adding an argument on the library side and forgetting one copy of
-! the block still COMPILES and still LINKS, because a C symbol carries no
-! signature. It fails at run time, by reading whatever was in the register.
+! terco is nvfortran and its callers usually are not, so they reach it
+! through `bind(c)`. tools/gen_capi_headers.py parses src/api/trc_capi.F90's
+! own `bind(c, name=...)` procedures and public TRC_* parameters and
+! writes this file and include/terco.h from the same pass, so a Fortran
+! caller, a C caller and the library itself cannot drift from each other.
+! Regenerate with that script; do not edit the output.
 !
-! So the declaration lives here, once, in terco's own repository, and every
-! consumer compiles this file rather than restating it. This is plain
-! `iso_c_binding` -- interface bodies and parameters, no executable code -- so
-! any Fortran compiler can build it, which is the point: gfortran, ifx or
-! nvfortran all get the same declarations from the same source.
-!
-! `test/link_gfortran.F90` compiles this file too, with gfortran, and asserts
-! an SCF energy. That is what makes the arrangement self-checking: change
-! `trc_capi.F90` without changing this file and the energy comes out wrong,
-! in terco's own test suite, before any host code sees it.
-!
-! HOW TO USE IT
-! -------------
-!     use trc_c_interfaces
-!     rc = trc_basis_create_libcint(atm, natm, bas, nbas, env, nenv, 1, h)
-!     if (rc /= TRC_OK) ...
-!
-! ARRAY LAYOUT, WHICH THE DECLARATIONS CANNOT STATE
-! --------------------------------------------------
-! Everything is Fortran order -- first index fastest. Two cases are worth
-! naming because a caller would otherwise guess wrong:
-!
-!   * `exps` and `coefs` in `trc_basis_create` are `(maxnp, nshell)`. A C
-!     caller writing `exps[shell][prim]` has them transposed.
-!   * `dmats` and `gmats` in `trc_fock_many` are `(ndens, nao, nao)` -- the
-!     DENSITY INDEX IS FIRST. That is not arbitrary: with it last, the N
-!     atomic updates for one (mu,nu) sit nao^2 apart and the batch stops
-!     paying past N = 4.
+! `test/link_gfortran.F90` compiles this file with gfortran and asserts an
+! SCF energy, so a drift anywhere in the chain is a wrong number in terco's
+! own test suite before any host code sees it.
 !
 module trc_c_interfaces
    use, intrinsic :: iso_c_binding
    implicit none
    public
 
-   ! Zero is success; everything else is a reason. A library that stops the
-   ! process on bad input is unusable inside someone else's SCF.
-   integer(c_int), parameter :: TRC_OK              = 0
-   integer(c_int), parameter :: TRC_ERR_NULL        = 1
-   integer(c_int), parameter :: TRC_ERR_BADARG      = 2
+   integer(c_int), parameter :: TRC_OK = 0
+   integer(c_int), parameter :: TRC_ERR_NULL = 1
+   integer(c_int), parameter :: TRC_ERR_BADARG = 2
    integer(c_int), parameter :: TRC_ERR_UNSUPPORTED = 3
-   integer(c_int), parameter :: TRC_ERR_NOCONV      = 4   !! the SCF ran out of iterations
-   integer(c_int), parameter :: TRC_ERR_STATE = 5   !! called before what it needs was set
-   integer(c_int), parameter :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
-                                TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
-                                TRC_GUESS_SAP = 5
-   ! AO normalisation kinds for trc_set_ao_norm: TRC_AO_NORM_SHELL (the
-   ! default) is terco's own per-l convention, TRC_AO_NORM_UNIT is
-   ! GAMESS's per-component one. See trc_capi.F90's "AO NORMALISATION"
-   ! header section for the transform and which entries apply it.
-   integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0, TRC_AO_NORM_UNIT = 1
+   integer(c_int), parameter :: TRC_ERR_NOCONV = 4
+   integer(c_int), parameter :: TRC_ERR_STATE = 5
+   integer(c_int), parameter :: TRC_GUESS_CORE = 0
+   integer(c_int), parameter :: TRC_GUESS_GWH = 1
+   integer(c_int), parameter :: TRC_GUESS_SAD = 2
+   integer(c_int), parameter :: TRC_GUESS_GIVEN = 3
+   integer(c_int), parameter :: TRC_GUESS_SADQ = 4
+   integer(c_int), parameter :: TRC_GUESS_SAP = 5
+   integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
+   integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
+   integer(c_int), parameter :: TRC_ABI_MAJOR = 1
+   integer(c_int), parameter :: TRC_ABI_MINOR = 0
 
    interface
 
-      ! --- basis ------------------------------------------------------------
-
-      integer(c_int) function trc_basis_create(nshell, maxnp, l, nprim, exps, &
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-            coefs, centres, natm, zatm, ratm, handle) bind(c) result(res)
-         !! Build a basis from flat per-shell arrays.
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_basis_create(nshell, maxnp, l, nprim, exps, coefs, centres, natm, zatm, ratm, handle &
+                                               ) bind(c) result(res)
+         import :: c_double, c_int, c_ptr
          implicit none
-         integer(c_int), value :: nshell, maxnp, natm
-         integer(c_int), intent(in) :: l(*), nprim(*)
-         real(c_double), intent(in) :: exps(*), coefs(*), centres(*)
-         real(c_double), intent(in) :: zatm(*), ratm(*)
+         integer(c_int), value :: nshell
+         integer(c_int), value :: maxnp
+         integer(c_int), intent(in) :: l(nshell)
+         integer(c_int), intent(in) :: nprim(nshell)
+         real(c_double), intent(in) :: exps(maxnp, nshell)
+         real(c_double), intent(in) :: coefs(maxnp, nshell)
+         real(c_double), intent(in) :: centres(3, nshell)
+         integer(c_int), value :: natm
+         real(c_double), intent(in) :: zatm(natm)
+         real(c_double), intent(in) :: ratm(3, natm)
          type(c_ptr), intent(out) :: handle
       end function trc_basis_create
 
-      integer(c_int) function trc_basis_create_libcint(atm, natm, bas, nshell, &
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-            env, nenv, cartesian, handle) bind(c) result(res)
-         !! Build a basis from libcint's packed `atm`/`bas`/`env`.
-         !!
-         !! CARTESIAN ONLY -- pass `cartesian = 1`. A spherical basis is refused
-         !! with TRC_ERR_UNSUPPORTED rather than reinterpreted, because
-         !! reinterpreting it gives wrong numbers instead of an error.
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_basis_destroy(handle) bind(c) result(res)
+         import :: c_int, c_ptr
          implicit none
-         integer(c_int), value :: natm, nshell, nenv, cartesian
-         integer(c_int), intent(in) :: atm(*), bas(*)
-         real(c_double), intent(in) :: env(*)
-         type(c_ptr), intent(out) :: handle
-      end function trc_basis_create_libcint
+         type(c_ptr), value :: handle
+      end function trc_basis_destroy
 
       integer(c_int) function trc_basis_nao(handle, nao) bind(c) result(res)
+         !! Number of atomic orbitals, so a caller can size its own output buffers.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: nao
       end function trc_basis_nao
 
-      integer(c_int) function trc_basis_maxl(handle, maxl) bind(c) result(res)
-         !! Highest angular momentum present, so a caller can decide to fall back
-         !! before building anything expensive. The four-centre kernels stop at d.
-         import :: c_int, c_ptr
-         implicit none
-         type(c_ptr), value :: handle
-         integer(c_int), intent(out) :: maxl
-      end function trc_basis_maxl
-
-      integer(c_int) function trc_basis_destroy(handle) bind(c) result(res)
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-         import :: c_int, c_ptr
-         implicit none
-         type(c_ptr), value :: handle
-      end function trc_basis_destroy
-
-      ! --- shell pairs ------------------------------------------------------
-
       integer(c_int) function trc_pairs_create(basis, thresh, handle) bind(c) result(res)
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: basis
          real(c_double), value :: thresh
          type(c_ptr), intent(out) :: handle
       end function trc_pairs_create
+
+      integer(c_int) function trc_pairs_destroy(handle) bind(c) result(res)
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_pairs_destroy
 
       integer(c_int) function trc_pairs_count(handle, npair) bind(c) result(res)
          import :: c_int, c_ptr
@@ -140,52 +89,96 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: npair
       end function trc_pairs_count
 
-      integer(c_int) function trc_pairs_destroy(handle) bind(c) result(res)
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
+      integer(c_int) function trc_compute_1e(basis, pairs, smat, tmat, vmat) bind(c) result(res)
+         !! COVARIANT under `basis`'s own ao_norm_kind (set through
+         !! trc_set_ao_norm on a context that lent this handle via
+         !! trc_context_basis; a raw trc_basis_create* handle is always
+         !! TRC_AO_NORM_SHELL and this is then a no-op): S_out = N S N, same
+         !! for T and V.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: basis
+         type(c_ptr), value :: pairs
+         real(c_double), intent(out) :: smat(*)
+         real(c_double), intent(out) :: tmat(*)
+         real(c_double), intent(out) :: vmat(*)
+      end function trc_compute_1e
+
+      integer(c_int) function trc_compute_df2c(aux, jmat) bind(c) result(res)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: aux
+         real(c_double), intent(out) :: jmat(*)
+      end function trc_compute_df2c
+
+      integer(c_int) function trc_compute_df3c(basis, pairs, aux, tens) bind(c) result(res)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: basis
+         type(c_ptr), value :: pairs
+         type(c_ptr), value :: aux
+         real(c_double), intent(out) :: tens(*)
+      end function trc_compute_df3c
+
+      integer(c_int) function trc_basis_create_libcint(atm, natm, bas, nshell, env, nenv, cartesian, handle) bind(c) result(res)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         integer(c_int), intent(in) :: atm(*)
+         integer(c_int), value :: natm
+         integer(c_int), intent(in) :: bas(*)
+         integer(c_int), value :: nshell
+         real(c_double), intent(in) :: env(*)
+         integer(c_int), value :: nenv
+         integer(c_int), value :: cartesian
+         type(c_ptr), intent(out) :: handle
+      end function trc_basis_create_libcint
+
+      integer(c_int) function trc_basis_maxl(handle, maxl) bind(c) result(res)
+         !! Highest angular momentum in the basis, so a caller can decide whether to
+         !! use this library at all before it builds anything expensive. The
+         !! four-centre kernels stop at d and the caller has to fall back rather than
+         !! get a wrong answer.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-      end function trc_pairs_destroy
+         integer(c_int), intent(out) :: maxl
+      end function trc_basis_maxl
 
-      ! --- one electron -----------------------------------------------------
-
-      integer(c_int) function trc_compute_1e(basis, pairs, smat, tmat, vmat) &
-            bind(c) result(res)
-         !! Overlap, kinetic and nuclear attraction, `nao*nao` each.
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_max_angular_momentum(eri_lmax, df_lmax, df_lmax_aux) bind(c) result(res)
+         !! The angular-momentum ceilings THIS build was compiled for, so a host
+         !! can check a basis against them instead of hard-coding them: the
+         !! four-centre ERIs / SCF (TERCO_LMAX: 2 by default, 3 for f), and the
+         !! density-fitting orbital and auxiliary bases (TERCO_DF_LMAX; the
+         !! auxiliary one is one higher). Compare with trc_basis_maxl.
+         import :: c_int
          implicit none
-         type(c_ptr), value :: basis, pairs
-         real(c_double), intent(out) :: smat(*), tmat(*), vmat(*)
-      end function trc_compute_1e
+         integer(c_int), intent(out) :: eri_lmax
+         integer(c_int), intent(out) :: df_lmax
+         integer(c_int), intent(out) :: df_lmax_aux
+      end function trc_max_angular_momentum
 
       integer(c_int) function trc_multipole_count() bind(c) result(res)
-         !! Number of Cartesian multipole components, so a caller sizes its
-         !! buffer from the library rather than hardcoding it.
+         !! Number of Cartesian multipole components, so a caller can size its buffer
+         !! without hardcoding 39 and drifting when the operator order changes.
+         !! Named for what it counts rather than `trc_nmult`, which collides with the
+         !! parameter of that name it returns.
          import :: c_int
          implicit none
       end function trc_multipole_count
 
-      integer(c_int) function trc_compute_multipoles(basis, pairs, origin, &
-            mmat) bind(c) result(res)
-         !! Multipoles through the octupole about `origin`, `nao*nao*count`,
-         !! component index slowest.
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_compute_multipoles(basis, pairs, origin, mmat) bind(c) result(res)
+         !! COVARIANT under `basis`'s own ao_norm_kind, one component at a
+         !! time (see trc_compute_1e).
+         import :: c_double, c_int, c_ptr
          implicit none
-         type(c_ptr), value :: basis, pairs
-         real(c_double), intent(in) :: origin(*)
+         type(c_ptr), value :: basis
+         type(c_ptr), value :: pairs
+         real(c_double), intent(in) :: origin(3)
          real(c_double), intent(out) :: mmat(*)
       end function trc_compute_multipoles
 
-      ! --- four-centre ------------------------------------------------------
-
       integer(c_int) function trc_eri_create(basis, thresh, handle) bind(c) result(res)
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-         !! The per-geometry ERI object: Schwarz bounds, binned pair list and
-         !! primitive-pair tables. Expensive to build and meant to be reused by
-         !! every Fock build; one per SCF iteration defeats the purpose.
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: basis
          real(c_double), value :: thresh
@@ -193,254 +186,275 @@ module trc_c_interfaces
       end function trc_eri_create
 
       integer(c_int) function trc_eri_destroy(handle) bind(c) result(res)
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
       end function trc_eri_destroy
 
-      integer(c_int) function trc_fock(eri, basis, dmat, gmat, jfac, kfac, &
-            dscreen, omega) bind(c) result(res)
-         !! `g = jfac*J - kfac*K/2` for one density.
-         !!
-         !! `dscreen` nonzero weights the Schwarz bound by the density, which is
-         !! what an SCF wants. A COUPLED-PERTURBED SOLVE MUST PASS ZERO: its
-         !! density is a trial vector driven towards zero, so a density-keyed
-         !! screen tightens as the solve proceeds and the operator stops being
-         !! the same linear map between matvecs.
-         !!
-         !! `omega` is the range-separation parameter, bohr^-1: zero is the
-         !! ordinary Coulomb operator; positive builds J and K with
-         !! erf(omega*r12)/r12 instead (wB97X-V's long-range exchange pass).
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen, omega) bind(c) result(res)
+         !! CONTRAVARIANT in (dmat), COVARIANT out (gmat), under `basis`'s own
+         !! ao_norm_kind: this is GAMESS's own main caller (its Fock/J/K
+         !! build, run_Fockbuild's role in hpcchem_driver.src), so it is wired
+         !! rather than left at TRC_AO_NORM_SHELL like the entries the "not
+         !! wired" list below still names. See fock_scale_in/fock_scale_out
+         !! for why SHELL mode still costs nothing extra.
+         import :: c_double, c_int, c_ptr
          implicit none
-         type(c_ptr), value :: eri, basis
+         type(c_ptr), value :: eri
+         type(c_ptr), value :: basis
          real(c_double), intent(in) :: dmat(*)
          real(c_double), intent(out) :: gmat(*)
-         real(c_double), value :: jfac, kfac
+         real(c_double), value :: jfac
+         real(c_double), value :: kfac
          integer(c_int), value :: dscreen
          real(c_double), value :: omega
       end function trc_fock
 
-      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, &
-            conv_energy, conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-            niter) bind(c) result(res)
-         !! The whole SCF, HF or Kohn-Sham, R or U. `functional` NUL-terminated
-         !! (empty for HF); `dguess` NULL or a (nao,nao,nspin) density; `verbose`
-         !! non-zero prints one line per iteration; `dmat` (nao,nao,nspin) and
-         !! `eps` (nao,nspin) out, nspin = 2 iff nalpha /= nbeta.
-         !! TRC_ERR_NOCONV means the last iterate is in the outputs.
-         import :: c_int, c_double, c_ptr, c_char
+      integer(c_int) function trc_fock_many(eri, basis, ndens, dmats, gmats, jfac, kfac, dscreen, omega) bind(c) result(res)
+         !! CONTRAVARIANT in, COVARIANT out, under `basis`'s own ao_norm_kind
+         !! -- see capi_fock; the density-index-fastest layout means the
+         !! UNIT-mode scaling here is its own small routines
+         !! (fock_many_scale_in/out) rather than a reuse of fock_scale_in/out.
+         import :: c_double, c_int, c_ptr
          implicit none
+         type(c_ptr), value :: eri
          type(c_ptr), value :: basis
-         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
-         character(kind=c_char), intent(in) :: functional(*)
-         real(c_double), value :: conv_energy, conv_density
-         type(c_ptr), value :: dguess
-         real(c_double), intent(out) :: energy, e_xc
-         real(c_double), intent(out) :: dmat(*), eps(*)
-         integer(c_int), intent(out) :: niter
-      end function trc_scf
-
-      integer(c_int) function trc_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, &
-            conv_energy, conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-            niter) bind(c) result(res)
-         !! trc_scf run collectively by every rank of the communicator whose
-         !! Fortran handle is `fcomm` (MPI_Comm_c2f from C, not necessarily
-         !! MPI_COMM_WORLD -- GAMESS, for one, hands in DDI's compute
-         !! communicator). terco duplicates it; the caller keeps ownership
-         !! of its own handle. -1 runs on one rank as trc_scf does. Every
-         !! rank binds its own device and returns the identical result.
-         !! Without MPI in the build any handle but -1 means the single
-         !! rank there is.
-         import :: c_int, c_double, c_ptr, c_char
-         implicit none
-         integer(c_int), value :: fcomm
-         type(c_ptr), value :: basis
-         integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
-         character(kind=c_char), intent(in) :: functional(*)
-         real(c_double), value :: conv_energy, conv_density
-         type(c_ptr), value :: dguess
-         real(c_double), intent(out) :: energy, e_xc
-         real(c_double), intent(out) :: dmat(*), eps(*)
-         integer(c_int), intent(out) :: niter
-      end function trc_scf_mpi
-
-      integer(c_int) function trc_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) bind(c) result(res)
-         !! DEPRECATED: the context surface below (trc_create ...) replaces this;
-         !! kept one release for callers already written to it.
-         !! RI-MP2 on the orbitals of the last trc_scf/trc_scf_mpi on `basis`
-         !! (restricted only), with `aux` the auxiliary basis, `nfrozen` frozen
-         !! doubly occupied orbitals, `aux_block` the depth of the three-index
-         !! tensor held at once (0: all). E_os and E_ss separately; MP2 is the
-         !! sum. `fcomm` -1 runs on one rank; any other value is a caller
-         !! communicator's Fortran handle (need not be MPI_COMM_WORLD; see
-         !! trc_scf_mpi) and splits the occupied orbitals over its ranks.
-         import :: c_int, c_double, c_ptr
-         implicit none
-         integer(c_int), value :: fcomm
-         type(c_ptr), value :: basis, aux
-         integer(c_int), value :: nfrozen, aux_block
-         real(c_double), intent(out) :: e_os, e_ss
-      end function trc_rimp2
-
-      integer(c_int) function trc_fock_many(eri, basis, ndens, dmats, gmats, &
-            jfac, kfac, dscreen, omega) bind(c) result(res)
-         !! N densities against one pass over the integrals.
-         !! `(ndens, nao, nao)`, density index FIRST -- see the header.
-         !! `omega`: see trc_fock.
-         import :: c_int, c_double, c_ptr
-         implicit none
-         type(c_ptr), value :: eri, basis
-         integer(c_int), value :: ndens, dscreen
+         integer(c_int), value :: ndens
          real(c_double), intent(in) :: dmats(*)
          real(c_double), intent(out) :: gmats(*)
-         real(c_double), value :: jfac, kfac
+         real(c_double), value :: jfac
+         real(c_double), value :: kfac
+         integer(c_int), value :: dscreen
          real(c_double), value :: omega
       end function trc_fock_many
 
-      integer(c_int) function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) &
-            bind(c) result(res)
-         !! The same build for a density that is NOT symmetric.
-         !!
-         !! A separate name rather than a flag on `trc_fock`: the folded
-         !! eight-fold digestion assumes D(mu,nu) = D(nu,mu), and feeding it an
-         !! antisymmetric response density gives a plausible wrong answer with no
-         !! diagnostic. Two names cannot be confused by accident.
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) bind(c) result(res)
+         !! CONTRAVARIANT in, COVARIANT out, exactly as capi_fock -- the
+         !! diagonal congruence ao_scale_cov/fock_scale_in apply does not
+         !! care whether `dmat` is symmetric, so nothing here differs from
+         !! the symmetric entry beyond which shared routines it reuses.
+         import :: c_double, c_int, c_ptr
          implicit none
-         type(c_ptr), value :: eri, basis
+         type(c_ptr), value :: eri
+         type(c_ptr), value :: basis
          real(c_double), intent(in) :: dmat(*)
          real(c_double), intent(out) :: gmat(*)
          integer(c_int), value :: dscreen
       end function trc_fock_nosym
 
-      ! --- density fitting --------------------------------------------------
-
-      integer(c_int) function trc_compute_df2c(aux, jmat) bind(c) result(res)
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, max_iter, dguess, &
+                                      verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
+         import :: c_char, c_double, c_int, c_ptr
          implicit none
+         type(c_ptr), value :: basis
+         integer(c_int), value :: nalpha
+         integer(c_int), value :: nbeta
+         character(kind=c_char), intent(in) :: functional(*)
+         integer(c_int), value :: grid_level
+         real(c_double), value :: conv_energy
+         real(c_double), value :: conv_density
+         integer(c_int), value :: max_iter
+         type(c_ptr), value :: dguess
+         integer(c_int), value :: verbose
+         real(c_double), intent(out) :: energy
+         real(c_double), intent(out) :: e_xc
+         real(c_double), intent(out) :: dmat(*)
+         real(c_double), intent(out) :: eps(*)
+         integer(c_int), intent(out) :: niter
+      end function trc_scf
+
+      integer(c_int) function trc_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
+                                          max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
+         import :: c_char, c_double, c_int, c_ptr
+         implicit none
+         integer(c_int), value :: fcomm
+         type(c_ptr), value :: basis
+         integer(c_int), value :: nalpha
+         integer(c_int), value :: nbeta
+         character(kind=c_char), intent(in) :: functional(*)
+         integer(c_int), value :: grid_level
+         real(c_double), value :: conv_energy
+         real(c_double), value :: conv_density
+         integer(c_int), value :: max_iter
+         type(c_ptr), value :: dguess
+         integer(c_int), value :: verbose
+         real(c_double), intent(out) :: energy
+         real(c_double), intent(out) :: e_xc
+         real(c_double), intent(out) :: dmat(*)
+         real(c_double), intent(out) :: eps(*)
+         integer(c_int), intent(out) :: niter
+      end function trc_scf_mpi
+
+      integer(c_int) function trc_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) bind(c) result(res)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         integer(c_int), value :: fcomm
+         type(c_ptr), value :: basis
          type(c_ptr), value :: aux
-         real(c_double), intent(out) :: jmat(*)
-      end function trc_compute_df2c
-
-      integer(c_int) function trc_compute_df3c(basis, pairs, aux, tens) bind(c) result(res)
-         import :: c_int, c_double, c_ptr
-         implicit none
-         type(c_ptr), value :: basis, pairs, aux
-         real(c_double), intent(out) :: tens(*)
-      end function trc_compute_df3c
-
-
-      ! ==================================================================
-      ! THE CONTEXT. One handle for a whole calculation: create, set up in
-      ! any order, run, read back, destroy. The three-handle entries above
-      ! stay for one release and are deprecated; new callers use these.
-      ! Statuses: 0 TRC_OK, 1 NULL, 2 BADARG, 3 UNSUPPORTED, 4 NOCONV,
-      ! 5 STATE (called before what it needs was set).
-      ! ==================================================================
+         integer(c_int), value :: nfrozen
+         integer(c_int), value :: aux_block
+         real(c_double), intent(out) :: e_os
+         real(c_double), intent(out) :: e_ss
+      end function trc_rimp2
 
       integer(c_int) function trc_create(handle) bind(c) result(res)
-         !! A context with defaults in every setting: HF, SAD guess, one rank.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), intent(out) :: handle
       end function trc_create
 
       integer(c_int) function trc_destroy(handle) bind(c) result(res)
-         !! Release everything the context holds, device data included.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
       end function trc_destroy
 
       integer(c_int) function trc_set_molecule(handle, natm, z, xyz, charge, multiplicity) bind(c) result(res)
-         !! Nuclear charges as doubles, coordinates (3, natm) in Bohr.
-         import :: c_int, c_double, c_ptr
+         !! Atoms in Bohr, nuclear charges as doubles, atom-major coordinates.
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         integer(c_int), value :: natm, charge, multiplicity
-         real(c_double), intent(in) :: z(*), xyz(*)
+         integer(c_int), value :: natm
+         real(c_double), intent(in) :: z(*)
+         real(c_double), intent(in) :: xyz(*)
+         integer(c_int), value :: charge
+         integer(c_int), value :: multiplicity
       end function trc_set_molecule
 
-      integer(c_int) function trc_set_basis_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) bind(c) result(res)
-         !! The orbital basis from libcint's packed arrays. Cartesian only.
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_set_charge(handle, charge, multiplicity) bind(c) result(res)
+         !! Change the electron count on the SAME molecule, basis, auxiliary
+         !! and jkfit bases -- unlike trc_set_molecule, which always
+         !! releases any --df fit, this keeps `cx%dfjk`/`cx%df_fit_ok`: a
+         !! fit depends on the geometry and the two bases (the metric, the
+         !! three-centre tensor and its Cholesky factor -- see
+         !! trc_scf_df.F90's `df_jk_setup`'s own header, "meant to survive
+         !! across more than one trc_scf_run on the same geometry"), never
+         !! on the electron count, so an ionisation series on one handle
+         !! (N, N+1, N-1, ...) fits once and reuses it for every charge
+         !! state instead of repeating the metric/Cholesky/3c/trsm for each.
+         !!
+         !! Same multiplicity check as trc_set_molecule (2S+1 >= 1); whether
+         !! charge and multiplicity actually fit the electron count is
+         !! trc_run_scf's own check, exactly as it is reached through
+         !! trc_set_molecule.
+         !!
+         !! Invalidates the last SCF/gradient/polarizability result
+         !! (invalidate_runs) and any TRC_GUESS_GIVEN density: a density
+         !! from the OLD electron count's own occupation is not a guess for
+         !! the new one, even where its shape happens to still match, so
+         !! the guess kind resets to TRC_GUESS_SAD. Every other guess kind
+         !! (CORE/GWH/SAD/SADQ/SAP) carries no state keyed to the old
+         !! charge and is left as the caller set it.
+         import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         integer(c_int), value :: natm, nshell, nenv, cartesian
-         integer(c_int), intent(in) :: atm(*), bas(*)
+         integer(c_int), value :: charge
+         integer(c_int), value :: multiplicity
+      end function trc_set_charge
+
+      integer(c_int) function trc_set_basis_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) bind(c) result(res)
+         !! The orbital basis from libcint's packed `atm`/`bas`/`env`.
+         !! `cartesian` nonzero builds terco's own Cartesian AO space; zero
+         !! tags it spherical (libcint/pyscf order, m = -l..l except p as x,
+         !! y, z) -- trc_nao and every SCF-facing entry then size and index
+         !! at nao_sph, exactly as for a spherical trc_set_basis_json. A
+         !! mismatch against an already-set auxiliary or jkfit basis's own
+         !! convention is refused, not coerced.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(in) :: atm(*)
+         integer(c_int), value :: natm
+         integer(c_int), intent(in) :: bas(*)
+         integer(c_int), value :: nshell
          real(c_double), intent(in) :: env(*)
+         integer(c_int), value :: nenv
+         integer(c_int), value :: cartesian
       end function trc_set_basis_libcint
 
       integer(c_int) function trc_set_aux_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) bind(c) result(res)
-         !! The auxiliary basis for RI-MP2, same layout.
-         import :: c_int, c_double, c_ptr
+         !! The auxiliary (RI-MP2 rifit) basis, same layout and `cartesian`
+         !! convention as trc_set_basis_libcint; refused rather than coerced
+         !! if it disagrees with the orbital basis already set.
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         integer(c_int), value :: natm, nshell, nenv, cartesian
-         integer(c_int), intent(in) :: atm(*), bas(*)
+         integer(c_int), intent(in) :: atm(*)
+         integer(c_int), value :: natm
+         integer(c_int), intent(in) :: bas(*)
+         integer(c_int), value :: nshell
          real(c_double), intent(in) :: env(*)
+         integer(c_int), value :: nenv
+         integer(c_int), value :: cartesian
       end function trc_set_aux_libcint
 
       integer(c_int) function trc_set_basis_arrays(handle, nshell, maxnp, l, nprim, exps, coefs, centres) bind(c) result(res)
-         !! From flat shell arrays, `exps`/`coefs` (maxnp, nshell) column-major,
-         !! `centres` (3, nshell). Needs the molecule set first.
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         integer(c_int), value :: nshell, maxnp
-         integer(c_int), intent(in) :: l(*), nprim(*)
-         real(c_double), intent(in) :: exps(*), coefs(*), centres(*)
+         integer(c_int), value :: nshell
+         integer(c_int), value :: maxnp
+         integer(c_int), intent(in) :: l(*)
+         integer(c_int), intent(in) :: nprim(*)
+         real(c_double), intent(in) :: exps(*)
+         real(c_double), intent(in) :: coefs(*)
+         real(c_double), intent(in) :: centres(*)
       end function trc_set_basis_arrays
 
       integer(c_int) function trc_set_aux_arrays(handle, nshell, maxnp, l, nprim, exps, coefs, centres) bind(c) result(res)
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         integer(c_int), value :: nshell, maxnp
-         integer(c_int), intent(in) :: l(*), nprim(*)
-         real(c_double), intent(in) :: exps(*), coefs(*), centres(*)
+         integer(c_int), value :: nshell
+         integer(c_int), value :: maxnp
+         integer(c_int), intent(in) :: l(*)
+         integer(c_int), intent(in) :: nprim(*)
+         real(c_double), intent(in) :: exps(*)
+         real(c_double), intent(in) :: coefs(*)
+         real(c_double), intent(in) :: centres(*)
       end function trc_set_aux_arrays
 
       integer(c_int) function trc_set_basis_json(handle, path) bind(c) result(res)
-         !! From a MolSSI BSE JSON file, NUL-terminated path. Needs the molecule first.
-         import :: c_int, c_ptr, c_char
+         import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(in) :: path(*)
       end function trc_set_basis_json
 
       integer(c_int) function trc_set_aux_json(handle, path) bind(c) result(res)
-         import :: c_int, c_ptr, c_char
+         import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(in) :: path(*)
       end function trc_set_aux_json
 
       integer(c_int) function trc_set_method(handle, functional, grid_level) bind(c) result(res)
-         !! NUL-terminated functional name; empty is Hartree-Fock.
-         import :: c_int, c_ptr, c_char
+         !! An empty functional name is Hartree-Fock.
+         import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(in) :: functional(*)
          integer(c_int), value :: grid_level
       end function trc_set_method
 
-      integer(c_int) function trc_max_angular_momentum(eri_lmax, df_lmax, df_lmax_aux) bind(c) result(res)
-         !! This build's compiled ceilings: four-centre/SCF, DF orbital, DF auxiliary.
-         import :: c_int
+      integer(c_int) function trc_set_unrestricted(handle, on) bind(c) result(res)
+         !! Force UHF/UKS (two independent spin densities) even on a CLOSED
+         !! shell (nalpha == nbeta), which otherwise runs restricted --
+         !! `trc_scf_options_t%unrestricted`'s own comment, "forced; an open
+         !! shell is unrestricted regardless": nalpha /= nbeta already gets
+         !! nspin = 2 whether or not this is set, so this only changes
+         !! anything on a singlet. `on` nonzero sets it; 0 (the default)
+         !! restores restricted-when-closed-shell.
+         import :: c_int, c_ptr
          implicit none
-         integer(c_int), intent(out) :: eri_lmax, df_lmax, df_lmax_aux
-      end function trc_max_angular_momentum
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+      end function trc_set_unrestricted
 
       integer(c_int) function trc_set_nlc_grid(handle, grid_level) bind(c) result(res)
-         !! Grid level for VV10 (default 1); only used by a functional with VV10.
+         !! Grid level for VV10's nonlocal correlation (default 1, coarser than
+         !! the semilocal grid: VV10 is a double sum over its points). Only
+         !! used by a functional with VV10, such as wB97X-V.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -448,11 +462,7 @@ module trc_c_interfaces
       end function trc_set_nlc_grid
 
       integer(c_int) function trc_set_pcm(handle, model, eps, lebedev, radii_scale) bind(c) result(res)
-         !! A polarisable continuum for every SCF from here on: model "cpcm" or
-         !! "iefpcm" ("" turns it off), the solvent dielectric eps (required,
-         !! > 1), Lebedev points per sphere and the radii scale (0 for either
-         !! takes 302 and 1.2).
-         import :: c_int, c_double, c_ptr, c_char
+         import :: c_char, c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(in) :: model(*)
@@ -461,115 +471,90 @@ module trc_c_interfaces
          real(c_double), value :: radii_scale
       end function trc_set_pcm
 
-      integer(c_int) function trc_pcm_energy(handle, e_diel, q_total, npoints) bind(c) result(res)
-         !! The last SCF's dielectric energy q.v/2 (included in trc_energy),
-         !! total surface charge and kept surface points; zeros without PCM.
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_set_pcm_radii(handle, natm, radii) bind(c) result(res)
+         !! Override the PCM cavity radii table (trc_pcm_radii.F90) with
+         !! explicit, FINAL (already-scaled) per-atom radii in bohr,
+         !! trc_set_molecule's own atom order -- for a caller whose own PCM
+         !! reference used a different van der Waals table or scale than
+         !! terco's default (pyscf's modified Bondi, radii_scale 1.2): mqc's
+         !! own convention is plain Bondi (hydrogen 1.20 Angstrom, not
+         !! terco's 1.10) times 1.2, which the two backends otherwise
+         !! disagree on by construction (water cpcm/PBE0: E_diel -0.011577
+         !! here against -0.010200 there, 556 against 566 kept surface
+         !! points) -- not a bug in either, a different cavity. This makes
+         !! them agree by construction instead.
+         !!
+         !! natm = 0, or a NULL radii, clears the override, back to the
+         !! table and radii_scale; natm must otherwise equal the molecule's
+         !! own atom count. Invalidates the last SCF result, as trc_set_pcm
+         !! does. Kept across trc_set_charge (the molecule, and so the
+         !! cavity's atoms, are unchanged); cleared by trc_set_molecule,
+         !! which can change the atom count and order the override was
+         !! given in.
+         import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         real(c_double), intent(out) :: e_diel, q_total
+         integer(c_int), value :: natm
+         type(c_ptr), value :: radii
+      end function trc_set_pcm_radii
+
+      integer(c_int) function trc_pcm_energy(handle, e_diel, q_total, npoints) bind(c) result(res)
+         !! The continuum's part of the last SCF: E_diel = q.v/2 (already in
+         !! trc_energy's total), the total apparent surface charge, and the
+         !! surface points the cavity kept. Zeros when no continuum was set.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: e_diel
+         real(c_double), intent(out) :: q_total
          integer(c_int), intent(out) :: npoints
       end function trc_pcm_energy
 
       integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) bind(c) result(res)
-         !! The SCF stops when the energy change is under conv_energy AND the
-         !! commutator norm |X^T(FDS-SDF)X| is under conv_diis.
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         real(c_double), value :: conv_energy, conv_diis
-         integer(c_int), value :: max_iter, ndiis
+         real(c_double), value :: conv_energy
+         real(c_double), value :: conv_diis
+         integer(c_int), value :: max_iter
+         integer(c_int), value :: ndiis
       end function trc_set_convergence
 
       integer(c_int) function trc_set_screening(handle, thresh) bind(c) result(res)
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          real(c_double), value :: thresh
       end function trc_set_screening
 
       integer(c_int) function trc_set_incremental(handle, on) bind(c) result(res)
-         !! Incremental (difference-density) Fock builds: 0 off (the
-         !! library default), nonzero on (the terco CLI's default).
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          integer(c_int), value :: on
       end function trc_set_incremental
 
-      integer(c_int) function trc_set_batching(handle, res) bind(c) result(res_)
-         !! How finely shell pairs are batched by their Schwarz bound, in
-         !! buckets per decade. The pre-launch screen admits a pair of
-         !! batches when their bounds multiply above the threshold, so a
-         !! coarse bucket leaves more for the test inside the kernel, where
-         !! a rejected quartet has already cost a thread. 1 is decades and
-         !! is the default; 4 is the finest available.
-         import :: c_int, c_ptr
+      integer(c_int) function trc_set_level_shift(handle, shift) bind(c) result(res)
+         !! The virtual-orbital level shift, hartree; 0 turns it off.
+         !! trc_scf_options_t%level_shift's own comment: F += mu (S - S D S
+         !! / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
+         !! damped start before either has engaged (trc_scf_driver.F90's own
+         !! "level shift while DIIS and A/EDIIS are off" block). It is a
+         !! CONVERGENCE AID for that early phase, not a persistent shift
+         !! held through the whole SCF: once the commutator is small enough
+         !! for CDIIS (or ADIIS takes over first), this stops being applied
+         !! at all, however large `shift` is set. A caller wanting a shift
+         !! that stays on throughout -- the sense a persistent level shift
+         !! has in, for instance, a Fukui-ion deck's convergence recipe --
+         !! is asking for something this entry does not do; nothing here
+         !! changes that behaviour, only exposes the existing knob.
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         integer(c_int), value :: res
-      end function trc_set_batching
-
-      integer(c_int) function trc_set_guess(handle, kind, dguess, nspin) bind(c) result(res)
-         !! `kind`: 0 core, 1 GWH, 2 SAD (the default; built here, one atomic
-         !! SCF per element), 3 a density given in `dguess`, (nao, nao, nspin)
-         !! column-major, copied at this call -- `nao` is trc_nao's own
-         !! number (nao_sph if the basis is spherical), the same size every
-         !! other SCF-facing entry in this file uses. Set the basis before
-         !! giving one.
-         import :: c_int, c_ptr
-         implicit none
-         type(c_ptr), value :: handle
-         integer(c_int), value :: kind, nspin
-         type(c_ptr), value :: dguess
-      end function trc_set_guess
-
-      integer(c_int) function trc_set_comm(handle, fcomm) bind(c) result(res)
-         !! A Fortran communicator handle to split the run over; -1 is one
-         !! rank. ANY intra-communicator (need not be MPI_COMM_WORLD -- see
-         !! trc_scf_mpi), and every rank of it must make the same calls.
-         import :: c_int, c_ptr
-         implicit none
-         type(c_ptr), value :: handle
-         integer(c_int), value :: fcomm
-      end function trc_set_comm
-
-      integer(c_int) function trc_set_ao_norm(handle, kind) bind(c) result(res)
-         !! TRC_AO_NORM_SHELL (0, the default -- terco's/libcint's own
-         !! convention) or TRC_AO_NORM_UNIT (1 -- GAMESS's, every Cartesian
-         !! component individually normalised to 1). Settable before or
-         !! after the basis; NOT retroactive on a density already given
-         !! through trc_set_guess. See trc_capi.F90's "AO NORMALISATION"
-         !! header section for exactly which entries this changes.
-         import :: c_int, c_ptr
-         implicit none
-         type(c_ptr), value :: handle
-         integer(c_int), value :: kind
-      end function trc_set_ao_norm
-
-      integer(c_int) function trc_get_ao_norm(handle, kind) bind(c) result(res)
-         !! The AO normalisation this context is set to.
-         import :: c_int, c_ptr
-         implicit none
-         type(c_ptr), value :: handle
-         integer(c_int), intent(out) :: kind
-      end function trc_get_ao_norm
-
-      integer(c_int) function trc_set_force_cartesian(handle, flag) bind(c) result(res)
-         !! Non-zero: every basis this context loads from here on runs
-         !! Cartesian regardless of its JSON function_type -- for
-         !! comparison against pyscf's cart=True, or an existing
-         !! Cartesian-only reference. NOT retroactive; call before
-         !! trc_set_basis_json/trc_set_aux_json.
-         import :: c_int, c_ptr
-         implicit none
-         type(c_ptr), value :: handle
-         integer(c_int), value :: flag
-      end function trc_set_force_cartesian
+         real(c_double), value :: shift
+      end function trc_set_level_shift
 
       integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
-         !! 1 makes every later SCF density-fitted J and K (restricted only);
-         !! the fitting basis comes from trc_set_jkfit_json. 0 turns it off.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -577,38 +562,121 @@ module trc_c_interfaces
       end function trc_set_df
 
       integer(c_int) function trc_set_jkfit_json(handle, path) bind(c) result(res)
-         !! The --df fitting basis, a Basis Set Exchange JSON file, NUL-terminated.
-         import :: c_int, c_ptr, c_char
+         import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(in) :: path(*)
       end function trc_set_jkfit_json
 
-      integer(c_int) function trc_run_gradient(handle) bind(c) result(res)
-         !! EXPERIMENTAL: validated, not performance-tuned, single rank. The
-         !! analytic nuclear gradient at the context's converged SCF (RHF/UHF,
-         !! KS-DFT, --df); read it with trc_gradient.
+      integer(c_int) function trc_set_jkfit_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) bind(c) result(res)
+         !! The --df fitting basis from libcint's packed arrays, the same
+         !! shape and `cartesian` convention as trc_set_aux_libcint; refused
+         !! rather than coerced if it disagrees with the orbital basis
+         !! already set (pyscf's auxmol.cart = mol.cart rule).
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(in) :: atm(*)
+         integer(c_int), value :: natm
+         integer(c_int), intent(in) :: bas(*)
+         integer(c_int), value :: nshell
+         real(c_double), intent(in) :: env(*)
+         integer(c_int), value :: nenv
+         integer(c_int), value :: cartesian
+      end function trc_set_jkfit_libcint
+
+      integer(c_int) function trc_set_batching(handle, res) bind(c) result(res_)
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-      end function trc_run_gradient
+         integer(c_int), value :: res
+      end function trc_set_batching
 
-      integer(c_int) function trc_gradient(handle, grad) bind(c) result(res)
-         !! The gradient trc_run_gradient computed, Eh/Bohr, as 3*natm values
-         !! (x, y, z per atom, in trc_set_molecule's atom order).
-         import :: c_int, c_double, c_ptr
+      integer(c_int) function trc_set_force_cartesian(handle, flag) bind(c) result(res)
+         !! Force the Cartesian AO space on every basis this context loads
+         !! from here on, regardless of what a JSON file's function_type says
+         !! (trc_scf_options_t%force_cartesian). `flag` non-zero sets it.
+         !!
+         !! NOT RETROACTIVE: a basis already loaded (trc_set_basis_json) kept
+         !! whichever space it was built in at that call -- the same way
+         !! trc_set_ao_norm's own comment describes for a TRC_GUESS_GIVEN
+         !! density already copied. Call this BEFORE trc_set_basis_json/
+         !! trc_set_aux_json for it to take effect on that basis; a caller
+         !! wanting it to also apply to a basis already loaded has to load
+         !! the file again.
+         import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         real(c_double), intent(out) :: grad(*)
-      end function trc_gradient
+         integer(c_int), value :: flag
+      end function trc_set_force_cartesian
 
-      integer(c_int) function trc_cart_order() bind(c) result(res)
-         !! 0 (lexicographic: xx, xy, xz, yy, yz, zz -- libcint's) or 1 (gamess):
-         !! the within-shell Cartesian order of every AO-indexed array, fixed
-         !! at compile time (TRC_CART_ORDER). No handle; always succeeds.
-         import :: c_int
+      integer(c_int) function trc_set_guess(handle, kind, dguess, nspin) bind(c) result(res)
+         !! `kind` one of TRC_GUESS_*. For TRC_GUESS_GIVEN, `dguess` is
+         !! (nao, nao, nspin) column-major and is COPIED here; the caller's array
+         !! is free afterwards. The basis must be set first for that copy.
+         !!
+         !! CONTRAVARIANT under trc_set_ao_norm: a density given in
+         !! TRC_AO_NORM_UNIT is converted to terco's own shell-normalised
+         !! convention here, once, at the copy -- D_terco = N D_given N (see
+         !! trc_ao_norm.F90's header; this is the "guess coming IN" direction,
+         !! the covariant congruence run forward). Everything downstream of
+         !! this copy, including trc_run_scf's own iteration, only ever sees
+         !! terco's native convention.
+         import :: c_int, c_ptr
          implicit none
-      end function trc_cart_order
+         type(c_ptr), value :: handle
+         integer(c_int), value :: kind
+         type(c_ptr), value :: dguess
+         integer(c_int), value :: nspin
+      end function trc_set_guess
+
+      integer(c_int) function trc_set_ao_norm(handle, kind) bind(c) result(res)
+         !! How this context's AO-indexed C API entries normalise a Cartesian
+         !! shell's components: TRC_AO_NORM_SHELL (0, the default -- terco's
+         !! own convention, and libcint's) or TRC_AO_NORM_UNIT (1 -- every
+         !! component individually normalised to 1, GAMESS's convention; see
+         !! trc_ao_norm.F90's header for the closed form and which entries
+         !! convert). Defaulting to SHELL means no caller that never calls
+         !! this sees any difference from before this entry existed.
+         !!
+         !! Order-independent of trc_set_basis* and trc_set_aux*: settable before
+         !! or after either, and takes effect on whichever basis is present now
+         !! and on any set afterwards. NOT retroactive on an already-copied
+         !! TRC_GUESS_GIVEN density, though -- that conversion happened once,
+         !! at trc_set_guess's own call, under whatever mode was active then;
+         !! call this before trc_set_guess if the two must agree.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: kind
+      end function trc_set_ao_norm
+
+      integer(c_int) function trc_get_ao_norm(handle, kind) bind(c) result(res)
+         !! The AO normalisation this context is set to -- TRC_AO_NORM_SHELL
+         !! unless trc_set_ao_norm was called with TRC_AO_NORM_UNIT.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: kind
+      end function trc_get_ao_norm
+
+      integer(c_int) function trc_set_comm(handle, fcomm) bind(c) result(res)
+         !! `fcomm` is the Fortran handle of ANY intra-communicator the caller
+         !! already has open and collective over -- MPI_Comm_c2f from C, or
+         !! the integer a Fortran caller holds (mpi_f08's MPI_VAL, or the
+         !! legacy `mpi` module's handle directly); -1 means one rank, no MPI.
+         !! It need not be MPI_COMM_WORLD: GAMESS, for example, hands this
+         !! DDI's compute communicator, whose data-server ranks are not part
+         !! of it and never call trc_run_scf/trc_run_rimp2 at all. terco
+         !! duplicates whatever `fcomm` names (MPI_Comm_dup) the first time a
+         !! run needs it, so every rank of THAT communicator must reach the
+         !! run together; the caller keeps ownership of its own communicator,
+         !! since only terco's duplicate is ever freed.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: fcomm
+      end function trc_set_comm
 
       integer(c_int) function trc_set_verbose(handle, level) bind(c) result(res)
          import :: c_int, c_ptr
@@ -618,68 +686,313 @@ module trc_c_interfaces
       end function trc_set_verbose
 
       integer(c_int) function trc_set_rimp2(handle, nfrozen, aux_block) bind(c) result(res)
-         !! `nfrozen` -1 counts the core from the elements; `aux_block` <= 0
-         !! takes the auxiliary basis in one block.
+         !! `nfrozen` -1 counts the core from the elements; `aux_block` <= 0 is
+         !! the whole auxiliary basis at once.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         integer(c_int), value :: nfrozen, aux_block
+         integer(c_int), value :: nfrozen
+         integer(c_int), value :: aux_block
       end function trc_set_rimp2
 
       integer(c_int) function trc_run_scf(handle) bind(c) result(res)
-         !! TRC_ERR_NOCONV when the iterations ran out; the last iteration's
-         !! numbers are still readable.
+         !! Needs the molecule and the basis. Builds the guess it was asked for,
+         !! runs, keeps everything in the context.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
       end function trc_run_scf
 
+      integer(c_int) function trc_run_gradient(handle) bind(c) result(res)
+         !! The full analytic RHF/UHF nuclear gradient at the converged SCF
+         !! this context already holds (trc_scf_grad%trc_scf_gradient: the
+         !! one-electron terms, eri%gradient's two-electron part, and nuclear
+         !! repulsion -- see that module's own header for the assembly order
+         !! and the factor of 1/2). When the orbital basis is spherical,
+         !! `trc_scf_gradient` itself folds D and W to the Cartesian space the
+         !! derivative kernels need (T D T^T) before touching an integral;
+         !! nothing here has to know which case it is in.
+         !!
+         !! Reuses `cx%la` (initialised once per context by `trc_run_scf`,
+         !! released only at `trc_destroy`) rather than a `trc_linalg_t` of
+         !! its own: a second handle here would need its own release before
+         !! going out of scope (trc_linalg_t has no finalizer), for no reason
+         !! -- the gradient's GEMMs are the same size `cx%la` was already
+         !! sized for.
+         !!
+         !! NOT refused any more: a functional with VV10 nonlocal correlation
+         !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
+         !! term on top of the semilocal one, on VV10's own grid
+         !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
+         !! it on). wB97M-V is meta-GGA and cannot reach this point at all (see
+         !! below), so it is not a case this routine has to decide about.
+         !!
+         !! REFUSED, clearly, rather than attempted:
+         !!   - meta-GGA or a double hybrid: `trc_xc_functional_t` has no
+         !!     meta-GGA family and no MP2-fraction field on this branch, so
+         !!     neither can reach this point at all -- `trc_set_method` already
+         !!     refused it (func%missing) before a functional name naming one
+         !!     could be stored in `cx%opts%functional`. Nothing to check here.
+         !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
+         !!     gradient exists; `trc_scf_gradient` is the SCF reference term
+         !!     only.
+         !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
+         !!     range-separated -- the SCF refuses those first), or with the fit
+         !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
+         !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
+         !!   - PCM: no cavity/surface-charge derivative exists.
+         !!   - a multi-rank context (`cx%fcomm /= -1`). `trc_scf_gradient`
+         !!     takes no communicator: it rebuilds the pair list and ERI
+         !!     engine from `cx%bb%b` alone, so on a collective run it would
+         !!     rebuild the FULL (unsplit) pair list, Schwarz screen and ERI
+         !!     structures on EVERY rank's own device -- not merely redundant
+         !!     work, but re-materialising, on one GPU, exactly the memory a
+         !!     multi-rank SCF split across ranks to avoid. `eri%gradient`
+         !!     itself DOES support a rank split (`this%rank`/`this%nranks`,
+         !!     `sum_ranks`'s allreduce) but only when its own `eri%build` is
+         !!     given a `comm` -- a plumbing `trc_scf_gradient` does not do
+         !!     today, found by reading trc_eri.F90's `eri_gradient` and
+         !!     comparing it against `eri_build`'s own comm handling.
+         !!
+         !! A plain LDA/GGA functional, a GLOBAL hybrid of one (b3lyp and
+         !! friends), or a RANGE-SEPARATED hybrid (wb97x and friends: nonzero
+         !! `func%omega`/`exx_lr`, `nlc_b`/`nlc_c` still zero) is NOT refused:
+         !! `func` is looked up again here (same `xc_functional_by_name`
+         !! trc_set_method already validated the name with) and handed to
+         !! `trc_scf_gradient`, along with the SAME grid settings
+         !! (`cx%opts%grid_level`, `grid_max_pts`, `rho_tol`) the SCF itself
+         !! converged with -- the gradient's quadrature has to be the SCF's,
+         !! or the two are not derivatives of the same energy.
+         !! `trc_scf_gradient` itself builds the erf(omega r)/r long-range
+         !! exchange term (a second eri%gradient pass, its own header) and
+         !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
+         !! GGA part exactly as for any other GGA -- see that module's own
+         !! header on why `omega`/`exx_lr` do not affect it.
+         !!
+         !! GRID REUSE. `cx%kgrid`, the SCF's own grid(s) kept alive since
+         !! `trc_run_scf` (`context_box%kgrid`'s own header), is handed
+         !! straight to `trc_scf_gradient` when it is built AND matches
+         !! every setting the gradient's quadrature has to match the SCF's
+         !! on (`reuse_grid`/`reuse_nlc`, below) -- the same list this
+         !! routine's own header already promises (grid level, max points
+         !! per batch, rho_tol, nlc grid level); geometry and basis are
+         !! covered for free, because ANY change to either would have
+         !! cleared `cx%scf_ok` (`invalidate_runs`) before this point could
+         !! ever be reached. Otherwise `trc_scf_gradient` rebuilds exactly as
+         !! it always has -- this is a pure performance path, never a
+         !! correctness one: `grid`/`xg` are read-only there, so a mismatch
+         !! caught here is the only thing standing between "reuse" and
+         !! "quietly wrong".
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_run_gradient
+
+      integer(c_int) function trc_gradient(handle, grad) bind(c) result(res)
+         !! (3, natm), Eh/Bohr, column-major (x, y, z fastest, then atom, the
+         !! same atom order `trc_set_molecule` was given) -- after a
+         !! successful `trc_run_gradient`. NOT AO-indexed data (see
+         !! trc_capi.F90's own "AO NORMALISATION" header): a nuclear gradient
+         !! is a derivative of the SCF energy, which does not depend on which
+         !! AO normalisation convention computed it, so `trc_set_ao_norm`
+         !! plays no role here.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: grad(*)
+      end function trc_gradient
+
+      integer(c_int) function trc_run_polarizability(handle) bind(c) result(res)
+         !! The static dipole polarizability at the converged SCF this
+         !! context already holds: CPHF (trc_cphf%trc_scf_polarizability)
+         !! for RHF or UHF, Hartree-Fock only; CPKS
+         !! (trc_cpks%trc_scf_polarizability_rks) when a functional is set --
+         !! restricted only, trc_cpks has no unrestricted entry. Builds its
+         !! own pair list and ERI engine at the context's own screening
+         !! threshold, and (for CPKS) its own XC grid from `cx%res%grid_r`/
+         !! `grid_w` -- the SAME quadrature `trc_run_scf` converged the
+         !! density with, since a CPKS response built on a different grid is
+         !! not a derivative of the energy that converged. All three are
+         !! released before returning; `cx%la` is reused, as `trc_run_gradient`
+         !! reuses it.
+         !!
+         !! REFUSED, as `trc_run_gradient` is and for the same reasons: a
+         !! correlated (RI-MP2 or double-hybrid) reference, `--df`, PCM, or a
+         !! multi-rank context. An unrestricted functional reference is
+         !! refused here too (`trc_cpks` has nothing else to call). A
+         !! meta-GGA or double-hybrid functional cannot reach this point at
+         !! all -- `trc_set_method` already refused it.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_run_polarizability
+
+      integer(c_int) function trc_polarizability(handle, alpha) bind(c) result(res)
+         !! The static dipole polarizability tensor `trc_run_polarizability`
+         !! computed, a.u., column-major (3, 3).
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: alpha(*)
+      end function trc_polarizability
+
       integer(c_int) function trc_run_rimp2(handle) bind(c) result(res)
-         !! After a converged closed-shell SCF, with an auxiliary basis set.
+         !! Needs a converged SCF in the context (restricted, or unrestricted --
+         !! UHF or UKS, cx%res%nspin == 2) and an auxiliary basis. An
+         !! unrestricted reference refuses more than one rank below (see
+         !! trc_urimp2_run's own header for why the restricted ring is not a
+         !! clean generalisation here). The orbital basis may be spherical:
+         !! `cx%res%cmo`/`eps` (at whatever space the SCF ran in) are folded
+         !! into the Cartesian, zero-padded space `trc_rimp2_run`/
+         !! `trc_urimp2_run` themselves run in by `rimp2_mo_to_cart`
+         !! (trc_rimp2_driver.F90's own header says why the pad is exact).
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
       end function trc_run_rimp2
 
       integer(c_int) function trc_save_scf(handle, path) bind(c) result(res)
-         !! The SCF result (orbitals, orbital energies, density, energies)
-         !! to a file, NUL-terminated path, with the molecule, basis and
-         !! method it belongs to.
-         import :: c_int, c_ptr, c_char
+         !! Write the context's SCF result -- orbitals, orbital energies,
+         !! density, energies -- to `path` (NUL-terminated), with the molecule,
+         !! basis and method it belongs to; trc_load_scf reads it back. One
+         !! rank is enough: every rank holds the same result.
+         import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(in) :: path(*)
       end function trc_save_scf
 
       integer(c_int) function trc_load_scf(handle, path) bind(c) result(res)
-         !! In place of trc_run_scf: the result trc_save_scf wrote, refused
-         !! unless the molecule, basis, method and solvent set here match.
-         import :: c_int, c_ptr, c_char
+         !! In place of trc_run_scf: take the SCF result from a file
+         !! trc_save_scf wrote, so a correlated step (trc_run_rimp2) can follow
+         !! without repeating the SCF. The molecule, basis, method and solvent
+         !! must be set as for trc_run_scf, and must be the ones the file was
+         !! made with; anything else is refused, naming the difference. Every
+         !! rank reads the file itself. TRC_ERR_NOCONV if the saved SCF had not
+         !! converged, as trc_run_scf would have said.
+         import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(in) :: path(*)
       end function trc_load_scf
 
+      integer(c_int) function trc_cart_order() bind(c) result(res)
+         !! 0 (lexicographic) or 1 (gamess): the within-shell Cartesian order every
+         !! AO-indexed array this API exchanges uses, fixed at compile time
+         !! (TRC_CART_ORDER) and the same for every handle -- no handle argument,
+         !! and it always succeeds.
+         import :: c_int
+         implicit none
+      end function trc_cart_order
+
+      integer(c_int) function trc_abi_version(major, minor) bind(c) result(res)
+         !! This build's ABI version (TRC_ABI_MAJOR, TRC_ABI_MINOR above), so
+         !! a host can compare it against the constants the header it
+         !! compiled against carries before trusting any other entry point.
+         !! Bump TRC_ABI_MINOR for an additive change (a new entry point, a
+         !! new enum value appended at the end); bump TRC_ABI_MAJOR, and
+         !! reset TRC_ABI_MINOR to 0, for anything that changes an existing
+         !! signature or an existing enum value's meaning. No handle; always
+         !! succeeds.
+         import :: c_int
+         implicit none
+         integer(c_int), intent(out) :: major
+         integer(c_int), intent(out) :: minor
+      end function trc_abi_version
+
+      integer(c_int) function trc_functional_info(name, flags, exx, c_os, c_ss) bind(c) result(res)
+         !! Look up a functional by name (case-insensitive, trc_xc_functional's
+         !! own table) without a context: `flags` is a bitmask --
+         !!
+         !!   1  known      -- runnable today (trc_set_method would accept it)
+         !!   2  hybrid     -- exx or exx_lr nonzero (some exact exchange)
+         !!   4  range-separated -- omega nonzero
+         !!   8  VV10       -- nlc_b nonzero (nonlocal correlation)
+         !!   16 meta-GGA   -- needs a kinetic-energy-density kernel; always
+         !!      paired with bit 64 today, since terco has none translated yet
+         !!   32 double hybrid -- xc_is_double_hybrid (pt2_cos or pt2_css nonzero)
+         !!   64 listed but not runnable -- trc_xc_functional_t%missing is set;
+         !!      bit 1 is then NOT set, and `exx`/`c_os`/`c_ss`/the other bits
+         !!      reflect only whatever the table's own entry set before
+         !!      giving up (most "missing" entries set nothing at all, so
+         !!      every other bit and output reads zero -- that is the table's
+         !!      gap, not this entry's)
+         !!
+         !! `exx` is the fraction of ordinary (full-range) exact exchange;
+         !! `c_os`/`c_ss` are the opposite-/same-spin RI-MP2 weights a double
+         !! hybrid adds on top (both 0 for anything that is not one). An
+         !! unknown name returns a non-OK status with flags = 0 and every
+         !! output zeroed, rather than TRC_OK with nothing found.
+         import :: c_char, c_double, c_int
+         implicit none
+         character(kind=c_char), intent(in) :: name(*)
+         integer(c_int), intent(out) :: flags
+         real(c_double), intent(out) :: exx
+         real(c_double), intent(out) :: c_os
+         real(c_double), intent(out) :: c_ss
+      end function trc_functional_info
+
+      integer(c_int) function trc_functional_list(buf, buflen, reqlen) bind(c) result(res)
+         !! XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
+         !! trc_functional_info can look up that terco can actually run today
+         !! -- space-separated and NUL-terminated into `buf` (capacity
+         !! `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
+         !! number of bytes that call needed, NUL included, whether or not it
+         !! fit: a caller queries it with `buflen = 0` (`buf` is never
+         !! touched then) and allocates exactly `reqlen` bytes for a second,
+         !! filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
+         !! `buflen` is positive but smaller than `reqlen`.
+         import :: c_char, c_int
+         implicit none
+         character(kind=c_char), intent(out) :: buf(*)
+         integer(c_int), value :: buflen
+         integer(c_int), intent(out) :: reqlen
+      end function trc_functional_list
+
       integer(c_int) function trc_nao(handle, nao) bind(c) result(res)
-         !! The AO count every SCF-facing entry below sizes its arrays by
-         !! (trc_density, trc_mo_coefficients, trc_mo_energies,
-         !! trc_set_guess's `dguess`): nao_sph if the basis is spherical
-         !! (trc_is_spherical), the Cartesian count otherwise. The
-         !! raw-basis-handle entries (trc_compute_1e and friends,
-         !! trc_fock/trc_scf taking a bare basis handle rather than a
-         !! context) are unaffected -- those always report and use the
-         !! Cartesian count, because a basis built through
-         !! trc_basis_create/trc_basis_create_libcint has no JSON file to
-         !! ever mark spherical.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: nao
       end function trc_nao
 
+      integer(c_int) function trc_nmo(handle, nmo) bind(c) result(res)
+         !! Molecular-orbital count: `trc_nao`'s own AO count minus whatever
+         !! canonical orthogonalisation dropped as linearly dependent at the
+         !! last `trc_run_scf` (`trc_scf_result_t%n_lindep` -- 0 for every
+         !! compact basis, nonzero only for a diffuse one close to linear
+         !! dependency). Before the first `trc_run_scf` that count is
+         !! unknown, so `nmo` is `trc_nao`'s own number.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: nmo
+      end function trc_nmo
+
+      integer(c_int) function trc_mo_occupations(handle, occ) bind(c) result(res)
+         !! Occupation numbers, (nmo, nspin) column-major (`trc_nmo`'s own
+         !! size), for the last converged `trc_run_scf`: 2.0 per orbital up
+         !! to `nalpha` and restricted (nspin 1), or 1.0 up to `nalpha`/
+         !! `nbeta` on each spin's own column (nspin 2); 0 above. REFUSED
+         !! (TRC_ERR_UNSUPPORTED) if this context's guess used fractional
+         !! occupation: that per-orbital Aufbau split is private to
+         !! `trc_scf_run` (its own `frac_occupations`) and not re-derivable
+         !! from the stored result alone -- unreachable through this C API
+         !! today, since nothing here sets fractional occupation, but
+         !! refused rather than silently wrong for a Fortran-driver-built
+         !! context that did.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: occ(*)
+      end function trc_mo_occupations
+
       integer(c_int) function trc_is_spherical(handle, flag) bind(c) result(res)
-         !! Non-zero if this context's orbital basis is running in the
-         !! spherical AO space trc_nao's number is in.
+         !! Non-zero if the orbital basis this context holds is running in
+         !! the spherical AO space (nao_sph of trc_nao, rather than the
+         !! Cartesian nao) -- the basis's own JSON function_type unless
+         !! force_cartesian overrode it. For a caller checking which space
+         !! `trc_nao`'s number, and every AO-indexed array it sizes, is in.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -694,18 +1007,29 @@ module trc_c_interfaces
       end function trc_nspin
 
       integer(c_int) function trc_energy(handle, energy) bind(c) result(res)
-         !! The SCF total, plus the RI-MP2 correlation once that has run.
-         import :: c_int, c_double, c_ptr
+         !! The SCF total, plus the RI-MP2 correlation if that ran: the FULL
+         !! E_os + E_ss for a plain post-SCF RI-MP2 (any functional, or
+         !! Hartree-Fock), or c_os E_os + c_ss E_ss for a double hybrid --
+         !! trc_rimp2_energy below always reports the raw, unscaled E_os/E_ss
+         !! either way, so a caller after the PT2 part alone never sees this
+         !! weighting. A caller asking for a double hybrid's total needs
+         !! nothing beyond the ordinary trc_run_scf/trc_run_rimp2/trc_energy
+         !! sequence any RI-MP2 run already uses -- the weighting is applied
+         !! here, once, from the functional's own pt2_cos/pt2_css.
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: energy
       end function trc_energy
 
       integer(c_int) function trc_energy_parts(handle, e_nuc, e_one, e_two, e_xc) bind(c) result(res)
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         real(c_double), intent(out) :: e_nuc, e_one, e_two, e_xc
+         real(c_double), intent(out) :: e_nuc
+         real(c_double), intent(out) :: e_one
+         real(c_double), intent(out) :: e_two
+         real(c_double), intent(out) :: e_xc
       end function trc_energy_parts
 
       integer(c_int) function trc_converged(handle, flag) bind(c) result(res)
@@ -723,39 +1047,46 @@ module trc_c_interfaces
       end function trc_iterations
 
       integer(c_int) function trc_density(handle, dmat) bind(c) result(res)
-         !! (nao, nao, nspin) column-major; restricted holds the total.
-         import :: c_int, c_double, c_ptr
+         !! (nao, nao, nspin), column-major; restricted holds the total.
+         !!
+         !! CONTRAVARIANT under trc_set_ao_norm: D_out = N^-1 D_terco N^-1 per
+         !! spin slice when UNIT. Scaled on a COPY -- `cx%res%dmat` itself
+         !! stays in terco's own convention, because trc_run_rimp2 and a
+         !! second trc_run_scf both read it as such internally.
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: dmat(*)
       end function trc_density
 
       integer(c_int) function trc_mo_coefficients(handle, cmo) bind(c) result(res)
-         !! (nao, nao, nspin) column-major, columns are orbitals.
-         import :: c_int, c_double, c_ptr
+         !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:
+         !! C_out = N^-1 C_terco per spin slice when UNIT -- see trc_density
+         !! for why this scales a copy, not `cx%res%cmo` itself.
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: cmo(*)
       end function trc_mo_coefficients
 
       integer(c_int) function trc_mo_energies(handle, eps) bind(c) result(res)
-         !! (nao, nspin).
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: eps(*)
       end function trc_mo_energies
 
       integer(c_int) function trc_rimp2_energy(handle, e_os, e_ss) bind(c) result(res)
-         import :: c_int, c_double, c_ptr
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         real(c_double), intent(out) :: e_os, e_ss
+         real(c_double), intent(out) :: e_os
+         real(c_double), intent(out) :: e_ss
       end function trc_rimp2_energy
 
       integer(c_int) function trc_message(handle, buf, buflen) bind(c) result(res)
-         !! The last message, NUL-terminated into `buf`.
-         import :: c_int, c_ptr, c_char
+         !! The last message, NUL-terminated into `buf` of `buflen` chars.
+         import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          character(kind=c_char), intent(out) :: buf(*)
@@ -763,8 +1094,8 @@ module trc_c_interfaces
       end function trc_message
 
       integer(c_int) function trc_context_basis(handle, basis) bind(c) result(res)
-         !! The basis handle inside the context, for trc_compute_* and the
-         !! Fock family. BORROWED: never pass it to trc_basis_destroy.
+         !! The basis handle inside the context: BORROWED, never destroyed by
+         !! the caller, valid until the context is destroyed or the basis reset.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -772,8 +1103,8 @@ module trc_c_interfaces
       end function trc_context_basis
 
       integer(c_int) function trc_context_eri(handle, eri) bind(c) result(res)
-         !! The ERI context at the context's screening threshold, built on
-         !! first use. BORROWED: never pass it to trc_eri_destroy.
+         !! The ERI context at the context's screening threshold, built on first
+         !! use. BORROWED, as trc_context_basis.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

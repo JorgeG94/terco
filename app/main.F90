@@ -34,7 +34,7 @@ module terco_run
    implicit none
    private
    public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
-             gradient_summary, experimental_gradient_banner
+             gradient_summary
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -355,7 +355,6 @@ contains
       real(dp) :: rms, gmax
       integer :: ia
       call global_logger%info("")
-      call experimental_gradient_banner()
       call global_logger%info("   gradient (Eh/Bohr)")
       call global_logger%info("   ----------------------------------------------------------")
       do ia = 1, r%natm
@@ -379,19 +378,6 @@ contains
          call global_logger%info(trim(logline))
       end block
    end subroutine gradient_summary
-
-   subroutine experimental_gradient_banner()
-      !! The analytic gradients are validated (pyscf, finite differences)
-      !! but not yet performance-tuned, and run on one rank only. Printed
-      !! wherever a gradient is requested or reported, so nobody mistakes
-      !! them for a production code path.
-      call global_logger%warning("   ==========================================================================")
-      call global_logger%warning("     !!!  EXPERIMENTAL: ANALYTIC GRADIENTS  !!!")
-      call global_logger%warning("     Validated against pyscf and finite differences, but NOT performance-")
-      call global_logger%warning("     tuned: the --df gradient can be much slower than the energy.")
-      call global_logger%warning("     Single rank only. Use for testing; do not rely on its cost yet.")
-      call global_logger%warning("   ==========================================================================")
-   end subroutine experimental_gradient_banner
 
    subroutine line(label, e)
       character(len=*), intent(in) :: label
@@ -492,7 +478,7 @@ contains
       integer :: ia
       real(dp) :: rms, gmax
       character(len=2) :: closing
-      write (u, "(a)") '  "gradient status": "experimental: validated, not performance-tuned, single rank",'
+      write (u, "(a)") '  "gradient status": "validated: single rank",'
       write (u, "(a)") '  "gradient": ['
       do ia = 1, r%natm
          closing = merge("] ", "],", ia == r%natm)
@@ -541,7 +527,7 @@ program terco_main
                                 xc_is_double_hybrid
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env, lower
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
-                       gradient_summary, experimental_gradient_banner
+                       gradient_summary
    implicit none
 
    type(run_t) :: r
@@ -606,11 +592,10 @@ program terco_main
    call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
                          "SCF, e.g. to go straight to --rimp2; the molecule, basis and method must match")
    call r%cli%add_option("json", "also write a JSON summary to this file")
-   call r%cli%add_flag("grad", "EXPERIMENTAL (validated, not performance-tuned; single rank). "// &
-                       "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
+   call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
-                       "refused for --rimp2, --pcm, or more than one rank")
+                       "refused for --rimp2, a double hybrid, --pcm, or more than one rank")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -704,8 +689,6 @@ program terco_main
    r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
    r%df = r%cli%is_set("df")
    r%grad = r%cli%is_set("grad")
-   ! Unmissable, and on stderr so --silent and redirected output still show it.
-   if (r%grad .and. r%rank0) call experimental_gradient_banner()
    cart = r%cli%is_set("cart")
    r%pcm = ""
    r%eps = 0.0_dp
