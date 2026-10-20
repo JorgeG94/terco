@@ -33,7 +33,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 0
+   integer(c_int), parameter :: TRC_ABI_MINOR = 1
 
    interface
 
@@ -899,6 +899,21 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: major
          integer(c_int), intent(out) :: minor
       end function trc_abi_version
+
+      integer(c_int) function trc_select_device(rank, dev) bind(c) result(res)
+         !! Bind this process to a GPU by its node-local rank: device
+         !! mod(rank, number of devices), what trc_api's trc_bind_device does
+         !! for terco's own MPI runs. A host code that runs one single-rank
+         !! context per process and never calls trc_set_comm (one fragment per
+         !! rank, say) calls this once, before the first trc_create, or every
+         !! rank lands on device 0. `dev` is the device chosen, -1 on a build
+         !! without the GPU or a node without one. Process-wide; no handle;
+         !! always succeeds.
+         import :: c_int
+         implicit none
+         integer(c_int), value :: rank
+         integer(c_int), intent(out) :: dev
+      end function trc_select_device
 
       integer(c_int) function trc_functional_info(name, flags, exx, c_os, c_ss) bind(c) result(res)
          !! Look up a functional by name (case-insensitive, trc_xc_functional's
