@@ -33,6 +33,7 @@
 !
 module trc_batch
    use pic_types, only: dp
+   use pic_logger, only: global_logger
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX, LTOT, NHERM_MAX, NHERM_PAIR, nherm, tables_init, &
                            hidx, hdir, hm1, hm2, hcf, nherm_of, &
@@ -171,8 +172,12 @@ contains
 
       if (bp_t) then
          call system_clock(bp_c1)
-         print "(a,f9.3,a,i0,a,i0)", "    [pairs] count   ", &
-            real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s   npp ", npp, "  ne ", NE_PAIR
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f9.3,a,i0,a,i0)") "    [pairs] count   ", &
+               real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s   npp ", npp, "  ne ", NE_PAIR
+            call global_logger%performance(trim(logline))
+         end block
          bp_c0 = bp_c1
       end if
       allocate (pp_p(npp), pp_r(npp, 3), pp_c(npp), pp_e(npp, NE_PAIR))
@@ -185,7 +190,11 @@ contains
       ! zeroing has to come back.
       if (bp_t) then
          call system_clock(bp_c1)
-         print "(a,f9.3,a)", "    [pairs] alloc   ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f9.3,a)") "    [pairs] alloc   ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
+            call global_logger%performance(trim(logline))
+         end block
          bp_c0 = bp_c1
       end if
 
@@ -234,7 +243,11 @@ contains
       end do
       if (bp_t) then
          call system_clock(bp_c1)
-         print "(a,f9.3,a)", "    [pairs] fill    ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,f9.3,a)") "    [pairs] fill    ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
+            call global_logger%performance(trim(logline))
+         end block
       end if
    end subroutine build_pairs
 

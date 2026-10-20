@@ -87,6 +87,16 @@ class RestaleTests(unittest.TestCase):
         self.assertEqual(BASE.function("scf_df"), "gen_scf_df")
         self.assertEqual(BASE.function("rys_fock_water_ccpvdz"), "gen_rys_fock")
 
+    def test_imports_hash_the_same_on_every_python(self):
+        # 3.15 gave Import/ImportFrom an `is_lazy` field (PEP 810); a plain
+        # import must serialise as it did before, or every generator with a
+        # function-local import restales when CI's Python moves.
+        tree = ast.parse("import numpy\nfrom pyscf import gto")
+        self.assertEqual(refhash._canon(tree.body[0]),
+                         "Import(names=[alias(name='numpy')])")
+        self.assertEqual(refhash._canon(tree.body[1]),
+                         "ImportFrom(module='pyscf',names=[alias(name='gto')],level=0)")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

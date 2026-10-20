@@ -17,10 +17,10 @@
 !
 module trc_step_table
    use pic_types, only: dp, int64
+   use pic_logger, only: global_logger
    use trc_linalg, only: trc_linalg_t
    use pic_flop_recorder, only: flop_recorder_type
    use pic_profiler, only: profiler_start, profiler_stop
-   use pic_logger, only: global_logger
    implicit none
    private
 
@@ -180,30 +180,44 @@ contains
       character(len=*), intent(in), optional :: subtotal_label
       integer :: k
       real(dp) :: gf, gb, tg, fg
-      character(len=200) :: line
-      ! Through pic's logger at PERFORMANCE, as the SCF's own timing table
-      ! is: no bare console output from the library.
-      call global_logger%performance("  "//this%prefix//": step"// &
-                                     "                   time (s)        GFLOP     GFLOP/s")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,a)") "  "//this%prefix//": step", "                   time (s)        GFLOP     GFLOP/s"
+         call global_logger%performance(trim(logline))
+      end block
       do k = 1, this%n
          if (this%is_bytes(k)) then
             gb = real(this%bytes(k), dp)*1.0e-9_dp
             if (this%bytes(k) > 0 .and. this%t(k) > 0.0_dp) then
-               write (line, "(a,a24,f12.3,a13,f12.1,a)") "  "//this%prefix//":   ", this%names(k), this%t(k), &
-                  "-", gb/this%t(k), " GB/s"
+               block
+                  character(len=1024) :: logline
+                  write (logline, "(a,a24,f12.3,a13,f12.1,a)") "  "//this%prefix//":   ", this%names(k), this%t(k), &
+                     "-", gb/this%t(k), " GB/s"
+                  call global_logger%performance(trim(logline))
+               end block
             else
-               write (line, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+               block
+                  character(len=1024) :: logline
+                  write (logline, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+                  call global_logger%performance(trim(logline))
+               end block
             end if
          else
             gf = real(this%fl(k)%get(), dp)*1.0e-9_dp
             if (this%fl(k)%get() > 0 .and. this%t(k) > 0.0_dp) then
-               write (line, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", this%names(k), this%t(k), &
-                  gf, gf/this%t(k)
+               block
+                  character(len=1024) :: logline
+                  write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", this%names(k), this%t(k), gf, gf/this%t(k)
+                  call global_logger%performance(trim(logline))
+               end block
             else
-               write (line, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+               block
+                  character(len=1024) :: logline
+                  write (logline, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
+                  call global_logger%performance(trim(logline))
+               end block
             end if
          end if
-         call global_logger%performance(trim(line))
       end do
       if (present(subtotal_mask)) then
          tg = 0.0_dp
@@ -215,13 +229,20 @@ contains
             end if
          end do
          if (tg > 0.0_dp) then
-            write (line, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", label(subtotal_label), tg, fg, fg/tg
-            call global_logger%performance(trim(line))
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", &
+                  label(subtotal_label), tg, fg, fg/tg
+               call global_logger%performance(trim(logline))
+            end block
          end if
       end if
-      write (line, "(a,a24,f12.3,a,i0,a,i0)") "  "//this%prefix//":   ", label("total"), t_total, &
-         "   rank ", rank, " of ", nranks
-      call global_logger%performance(trim(line))
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,a24,f12.3,a,i0,a,i0)") "  "//this%prefix//":   ", label("total"), t_total, &
+            "   rank ", rank, " of ", nranks
+         call global_logger%performance(trim(logline))
+      end block
 
    contains
 

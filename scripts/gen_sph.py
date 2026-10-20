@@ -23,7 +23,7 @@ THE COEFFICIENTS ARE DERIVED, NOT TRANSCRIBED
 Frisch, Int. J. Quant. Chem. 54 (1995) 83-87 ("Factor of xyz component for
 normalised real spherical harmonic functions", their eq. for
 `xyz2sph_real`), the same formula libcint's own scripts/cart2sph.py
-(vendored guide: docs/LIBFINT_GENERATORS.md) uses to generate libcint's
+uses to generate libcint's
 compiled cart2sph.c table -- re-derived here in Python's exact `Fraction`
 arithmetic rather than imported, because nothing on the Fortran side of this
 boundary can call out to a Python or libcint dependency at BUILD time (the

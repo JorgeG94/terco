@@ -26,6 +26,8 @@ module terco_run
    use pic_types, only: dp, int64
    use pic_error, only: error_t
    use pic_cli, only: cli_t
+   use pic_logger, only: global_logger
+   use pic_strings, only: to_string
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
    use trc_capi, only: trc_message, TRC_OK
    use terco_app, only: element_symbol, f_string
@@ -74,7 +76,7 @@ contains
       !! the same `code` regardless.
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: msg
-      if (r%rank0) write (error_unit, "(a)") "terco: "//msg
+      if (r%rank0) call global_logger%error("terco: "//msg)
       call quit(r, 1)
    end subroutine die
 
@@ -166,38 +168,62 @@ contains
 
    subroutine banner(r)
       type(run_t), intent(in) :: r
-      write (output_unit, "(a)") ""
-      write (output_unit, "(a)") "      -----------------------------------------------------------"
-      write (output_unit, "(a)") "     |                  t e r c o   "//VERSION
-      write (output_unit, "(a)") "     |   Hartree-Fock and DFT through do concurrent, in Fortran"
-      write (output_unit, "(a)") "      -----------------------------------------------------------"
-      write (output_unit, "(a)") ""
-      write (output_unit, "(a,a)") "   geometry         : ", r%geom
-      if (len_trim(r%title) > 0) write (output_unit, "(a,a)") "   title            : ", trim(r%title)
-      write (output_unit, "(a,i0,a)", advance="no") "   atoms            : ", r%natm, "  ("
-      call formula(r%z, r%natm)
-      write (output_unit, "(a)") ")"
-      write (output_unit, "(a,i0,a,i0,a,i0)") "   charge           : ", r%chrg, "   unpaired: ", r%uhf, &
-         "   electrons: ", r%nelec
-      if (r%nranks > 1) write (output_unit, "(a,i0,a)") "   ranks            : ", r%nranks, " (one GPU each)"
-      write (output_unit, "(a,a)") "   method           : ", method(r)
-      write (output_unit, "(a,a)") "   basis            : ", r%basis_path
-      if (r%rimp2) write (output_unit, "(a,a)") "   auxiliary basis  : ", r%aux_path
+      call global_logger%info("")
+      call global_logger%info("      -----------------------------------------------------------")
+      call global_logger%info("     |                  t e r c o   "//VERSION)
+      call global_logger%info("     |   Hartree-Fock and DFT through do concurrent, in Fortran")
+      call global_logger%info("      -----------------------------------------------------------")
+      call global_logger%info("")
+      call global_logger%info("   geometry         : "//r%geom)
+      if (len_trim(r%title) > 0) call global_logger%info("   title            : "//trim(r%title))
+      call global_logger%info("   atoms            : "//to_string(r%natm)//"  ("//formula(r%z, r%natm)//")")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,i0,a,i0,a,i0)") "   charge           : ", r%chrg, "   unpaired: ", r%uhf, &
+            "   electrons: ", r%nelec
+         call global_logger%info(trim(logline))
+      end block
+      if (r%nranks > 1) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i0,a)") "   ranks            : ", r%nranks, " (one GPU each)"
+            call global_logger%info(trim(logline))
+         end block
+      end if
+      call global_logger%info("   method           : "//method(r))
+      call global_logger%info("   basis            : "//r%basis_path)
+      if (r%rimp2) call global_logger%info("   auxiliary basis  : "//r%aux_path)
       ! The AO space itself (spherical or Cartesian) is not known until the
       ! basis is loaded, below -- `summary`'s own "AO basis" line reports
       ! it, for every run, once it is.
       if (len(r%restart) > 0) then
-         write (output_unit, "(a,a,a)") "   SCF              : read from ", r%restart, ", not run"
+         call global_logger%info("   SCF              : read from "//r%restart//", not run")
       else
-         write (output_unit, "(a,a)") "   guess            : ", r%guess
+         call global_logger%info("   guess            : "//r%guess)
       end if
-      write (output_unit, "(a,es8.1,a,es8.1,a,es8.1)") "   convergence      : dE ", r%econv, &
-         "   |FDS-SDF| ", r%gconv, "   screening ", r%thresh
-      if (len(r%func) > 0) write (output_unit, "(a,i0)") "   grid level       : ", r%grid
-      if (len(r%pcm) > 0) write (output_unit, "(a,a,a,f0.4)") "   solvation        : ", r%pcm, ", eps ", r%eps
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,es8.1,a,es8.1,a,es8.1)") "   convergence      : dE ", r%econv, &
+            "   |FDS-SDF| ", r%gconv, "   screening ", r%thresh
+         call global_logger%info(trim(logline))
+      end block
+      if (len(r%func) > 0) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i0)") "   grid level       : ", r%grid
+            call global_logger%info(trim(logline))
+         end block
+      end if
+      if (len(r%pcm) > 0) then
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,a,a,f0.4)") "   solvation        : ", r%pcm, ", eps ", r%eps
+            call global_logger%info(trim(logline))
+         end block
+      end if
    end subroutine banner
 
-   subroutine formula(z, natm)
+   function formula(z, natm) result(f)
       !! Hill order: with carbon, C then H then the rest alphabetically;
       !! without, everything alphabetically.
       !!
@@ -210,6 +236,7 @@ contains
       integer, parameter :: NELEM = 118
       integer :: ia, k, n
       integer :: cnt(NELEM), order(NELEM)
+      character(len=:), allocatable :: f
       cnt = 0
       do ia = 1, natm
          if (z(ia) >= 1 .and. z(ia) <= NELEM) cnt(z(ia)) = cnt(z(ia)) + 1
@@ -231,11 +258,12 @@ contains
          order(n) = ia
       end do
       call sort_by_symbol(order(k + 1:n))
+      f = ""
       do ia = 1, n
-         write (output_unit, "(a)", advance="no") trim(element_symbol(order(ia)))
-         if (cnt(order(ia)) > 1) write (output_unit, "(i0)", advance="no") cnt(order(ia))
+         f = f//trim(element_symbol(order(ia)))
+         if (cnt(order(ia)) > 1) f = f//to_string(cnt(order(ia)))
       end do
-   end subroutine formula
+   end function formula
 
    subroutine sort_by_symbol(a)
       integer, intent(inout) :: a(:)
@@ -255,18 +283,23 @@ contains
    subroutine summary(r)
       type(run_t), intent(in) :: r
       character(len=*), parameter :: bar = "          ---------------------------------------------------"
-      write (output_unit, "(a)") ""
-      write (output_unit, "(a,i0,a,a)") "   AO basis         : ", r%nao, " functions, ", &
-         merge("spherical", "Cartesian", r%sph /= 0)
-      write (output_unit, "(a,i0,a)", advance="no") "   SCF              : ", r%niter, &
-         trim(merge(" iterations, converged    ", " iterations, NOT converged", r%conv /= 0))
+      call global_logger%info("")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,i0,a,a)") "   AO basis         : ", r%nao, " functions, ", &
+            merge("spherical", "Cartesian", r%sph /= 0)
+         call global_logger%info(trim(logline))
+      end block
       if (len(r%restart) > 0) then
-         write (output_unit, "(a,a,a)") " (read from ", r%restart, ")"
+         call global_logger%info("   SCF              : "//to_string(r%niter) &
+                                 //trim(merge(" iterations, converged    ", " iterations, NOT converged", r%conv /= 0)) &
+                                 //" (read from "//r%restart//")")
       else
-         write (output_unit, "(a)") ""
+         call global_logger%info("   SCF              : "//to_string(r%niter) &
+                                 //trim(merge(" iterations, converged    ", " iterations, NOT converged", r%conv /= 0)))
       end if
-      write (output_unit, "(a)") ""
-      write (output_unit, "(a)") bar
+      call global_logger%info("")
+      call global_logger%info(bar)
       ! "TOTAL ENERGY"/"total energy" means the SAME thing in text and
       ! JSON: the double hybrid's weighted total when one ran, the SCF
       ! total otherwise -- JSON already worked this way; this merge
@@ -287,11 +320,11 @@ contains
             call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
          end if
       end if
-      write (output_unit, "(a)") bar
-      write (output_unit, "(a)") ""
-      write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
-      write (output_unit, "(a)") "   ::"//repeat(" ", 21)//"SUMMARY"//repeat(" ", 22)//"::"
-      write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
+      call global_logger%info(bar)
+      call global_logger%info("")
+      call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
+      call global_logger%info("   ::"//repeat(" ", 21)//"SUMMARY"//repeat(" ", 22)//"::")
+      call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
       call row("total energy", merge(r%etot_dh, r%etot, r%dh .and. r%conv /= 0))
       call row("scf energy", r%etot)
       call row("nuclear repulsion", r%enuc)
@@ -304,8 +337,12 @@ contains
          call row(merge("PT2 same spin    ", "MP2 same spin    ", r%dh), r%ess)
          if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
-      write (output_unit, "(a)") "   ::::::::::::::::::::::::::::::::::::::::::::::::::::::"
-      write (output_unit, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
+      call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
+         call global_logger%info(trim(logline))
+      end block
    end subroutine summary
 
    subroutine gradient_summary(r)
@@ -317,44 +354,63 @@ contains
       type(run_t), intent(in) :: r
       real(dp) :: rms, gmax
       integer :: ia
-      write (output_unit, "(a)") ""
-      call experimental_gradient_banner(output_unit)
-      write (output_unit, "(a)") "   gradient (Eh/Bohr)"
-      write (output_unit, "(a)") "   ----------------------------------------------------------"
+      call global_logger%info("")
+      call experimental_gradient_banner()
+      call global_logger%info("   gradient (Eh/Bohr)")
+      call global_logger%info("   ----------------------------------------------------------")
       do ia = 1, r%natm
-         write (output_unit, "(a,i4,2x,a2,3f16.8)") "   ", ia, element_symbol(r%z(ia)), r%gradient(:, ia)
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i4,2x,a2,3f16.8)") "   ", ia, element_symbol(r%z(ia)), r%gradient(:, ia)
+            call global_logger%info(trim(logline))
+         end block
       end do
       rms = sqrt(sum(r%gradient**2)/real(3*r%natm, dp))
       gmax = sqrt(maxval(sum(r%gradient**2, dim=1)))
-      write (output_unit, "(a)") "   ----------------------------------------------------------"
-      write (output_unit, "(a,es12.4)") "   RMS gradient     : ", rms
-      write (output_unit, "(a,es12.4)") "   max |gradient|   : ", gmax
+      call global_logger%info("   ----------------------------------------------------------")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,es12.4)") "   RMS gradient     : ", rms
+         call global_logger%info(trim(logline))
+      end block
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,es12.4)") "   max |gradient|   : ", gmax
+         call global_logger%info(trim(logline))
+      end block
    end subroutine gradient_summary
 
-   subroutine experimental_gradient_banner(u)
+   subroutine experimental_gradient_banner()
       !! The analytic gradients are validated (pyscf, finite differences)
       !! but not yet performance-tuned, and run on one rank only. Printed
       !! wherever a gradient is requested or reported, so nobody mistakes
       !! them for a production code path.
-      integer, intent(in) :: u
-      write (u, "(a)") "   =========================================================================="
-      write (u, "(a)") "     !!!  EXPERIMENTAL: ANALYTIC GRADIENTS  !!!"
-      write (u, "(a)") "     Validated against pyscf and finite differences, but NOT performance-"
-      write (u, "(a)") "     tuned: the --df gradient can be much slower than the energy."
-      write (u, "(a)") "     Single rank only. Use for testing; do not rely on its cost yet."
-      write (u, "(a)") "   =========================================================================="
+      call global_logger%warning("   ==========================================================================")
+      call global_logger%warning("     !!!  EXPERIMENTAL: ANALYTIC GRADIENTS  !!!")
+      call global_logger%warning("     Validated against pyscf and finite differences, but NOT performance-")
+      call global_logger%warning("     tuned: the --df gradient can be much slower than the energy.")
+      call global_logger%warning("     Single rank only. Use for testing; do not rely on its cost yet.")
+      call global_logger%warning("   ==========================================================================")
    end subroutine experimental_gradient_banner
 
    subroutine line(label, e)
       character(len=*), intent(in) :: label
       real(c_double), intent(in) :: e
-      write (output_unit, "(a,a20,f22.12,a)") "          | ", label, e, " Eh    |"
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,a20,f22.12,a)") "          | ", label, e, " Eh    |"
+         call global_logger%info(trim(logline))
+      end block
    end subroutine line
 
    subroutine row(label, e)
       character(len=*), intent(in) :: label
       real(c_double), intent(in) :: e
-      write (output_unit, "(a,a22,f22.12,a)") "   :: ", label, e, " Eh  ::"
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,a22,f22.12,a)") "   :: ", label, e, " Eh  ::"
+         call global_logger%info(trim(logline))
+      end block
    end subroutine row
 
    pure function json_escape(t) result(esc)
@@ -465,11 +521,11 @@ program terco_main
    !! terco_run's header comment for why that is load-bearing, not a style
    !! choice, the moment more than one rank is involved.
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
-   use, intrinsic :: iso_fortran_env, only: output_unit, error_unit
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
    use pic_knowledge, only: get_knowledge
    use pic_profiler, only: profiler_init
+   use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
                        trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
@@ -561,11 +617,11 @@ program terco_main
    call r%cli%parse(r%err)
    if (r%err%has_error()) call die(r, r%err%get_message()//new_line("a")//"try 'terco --help'")
    if (r%cli%help_requested()) then
-      if (r%rank0) write (output_unit, "(a)") r%cli%help_text()
+      if (r%rank0) call global_logger%info(r%cli%help_text())
       call quit(r, 0)
    end if
    if (r%cli%is_set("version")) then
-      if (r%rank0) write (output_unit, "(a)") "terco version "//VERSION
+      if (r%rank0) call global_logger%info("terco version "//VERSION)
       call quit(r, 0)
    end if
    call r%cli%get("geometry", r%geom, r%err)
@@ -649,7 +705,7 @@ program terco_main
    r%df = r%cli%is_set("df")
    r%grad = r%cli%is_set("grad")
    ! Unmissable, and on stderr so --silent and redirected output still show it.
-   if (r%grad .and. r%rank0) call experimental_gradient_banner(error_unit)
+   if (r%grad .and. r%rank0) call experimental_gradient_banner()
    cart = r%cli%is_set("cart")
    r%pcm = ""
    r%eps = 0.0_dp
@@ -823,10 +879,13 @@ program terco_main
    st = trc_destroy(r%h)
 
    if (r%conv == 0) then
-      if (r%rank0) write (error_unit, "(a)") "terco: the SCF did not converge in "//itoa(int(r%niter))//" iterations"
+      if (r%rank0) call global_logger%error("terco: the SCF did not converge in "//itoa(int(r%niter))//" iterations")
       call quit(r, 2)
    end if
-   if (r%rank0) write (output_unit, "(/,a)") " normal termination of terco"
+   if (r%rank0) then
+      call global_logger%info("")
+      call global_logger%info(" normal termination of terco")
+   end if
    ! A line of pic's collected lore, as metalquicha prints at the end of a
    ! successful run: rank 0 only, and not under --silent, whose promise is
    ! the summary and nothing else.
