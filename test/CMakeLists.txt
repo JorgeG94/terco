@@ -1013,6 +1013,20 @@ add_test(NAME terco/check_capi_libcint_sph COMMAND check_capi_libcint_sph)
 set_tests_properties(terco/check_capi_libcint_sph PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+#
+# terco driven from C, through include/terco.h only -- the C-side proof
+# trc_c_interfaces.f90 is for a Fortran caller (test/link_gfortran.F90).
+# Needs the C compiler, which nothing else in this build does; enabled
+# here, scoped to this one target, rather than at the top level.
+#
+enable_language(C)
+add_executable(link_c link_c.c)
+target_link_libraries(link_c PRIVATE ${main_lib})
+target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+add_test(NAME terco/link_c COMMAND link_c)
+set_tests_properties(terco/link_c PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 # GAMESS's per-component AO normalisation (trc_set_ao_norm): the factor
 # itself against scripts/cartorder.py's recorded reference, l = 0..4, then
 # the overlap diagonal, the SCF energy, Tr(D S) and a guess round trip, all

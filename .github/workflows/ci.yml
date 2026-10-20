@@ -344,6 +344,24 @@ jobs:
             exit 1
           fi
 
+  capi-headers:
+    name: generated C ABI headers are up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # include/terco.h and include/trc_c_interfaces.f90 are committed, not
+      # built, so a host without Python can still compile against them --
+      # and so a change to src/api/trc_capi.F90 that forgot to regenerate
+      # them is a wrong ABI description rather than a build failure: same
+      # trap as the kernel generators above (docs/GENERATORS.md), for the
+      # same reason, on the ABI this project ships to other languages.
+      - name: Regenerate and diff
+        run: python3 tools/gen_capi_headers.py --check
+
   rys-generators:
     name: Rys root tables are up to date
     runs-on: ubuntu-latest
