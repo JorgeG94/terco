@@ -48,6 +48,8 @@ module trc_scf_grad
    use trc_scf_grad_df, only: df_two_electron_gradient
    use trc_vv10_grad, only: vv10_gradient_add
    use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
+   use trc_dft_grid, only: dft_grid_t
+   use trc_xc_batch, only: trc_xc_grid_t
    implicit none
    private
    public :: trc_scf_gradient, nuclear_repulsion_gradient, energy_weighted_density
@@ -128,7 +130,7 @@ contains
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
                                func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux, &
-                               verbose)
+                               verbose, grid, xg, grid_nlc, xg_nlc)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -223,6 +225,17 @@ contains
       logical, intent(in), optional :: verbose
       !! Log the gradient's timing table, its phases and the XC term's
       !! steps, through pic's logger at PERFORMANCE. Default off.
+      type(dft_grid_t), intent(in), optional, target :: grid, grid_nlc
+      type(trc_xc_grid_t), intent(in), optional, target :: xg, xg_nlc
+      !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its own
+      !! nlc grid (`grid_nlc`/`xg_nlc`) -- present, forwarded verbatim into
+      !! `xc_gradient_add`/`vv10_gradient_add`, which then skip their own
+      !! rebuild entirely (see either module's own header, REUSE/GRID).
+      !! Each pair is present together or not at all. Absent (every
+      !! Fortran-side caller, and a C API gradient at settings the SCF's
+      !! own kept grid no longer matches), both terms rebuild their grid
+      !! exactly as before this argument existed -- trc_capi.F90's
+      !! `trc_run_gradient` is the only caller that ever passes these.
 
       type(trc_pairlist_t) :: pl
       type(step_table_t) :: gst, xst, vst
@@ -340,9 +353,16 @@ contains
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) then
          call gst%step_on(lp, 4, tc)
-         call xc_gradient_add(b, lp, func, nspin, dens, grad, &
-                              grid_level=grid_level, grid_max_pts=grid_max_pts, &
-                              grid_response=grid_response, rho_tol=rho_tol, timing=xst)
+         if (present(grid) .and. present(xg)) then
+            call xc_gradient_add(b, lp, func, nspin, dens, grad, &
+                                 grid_level=grid_level, grid_max_pts=grid_max_pts, &
+                                 grid_response=grid_response, rho_tol=rho_tol, timing=xst, &
+                                 grid=grid, xg=xg)
+         else
+            call xc_gradient_add(b, lp, func, nspin, dens, grad, &
+                                 grid_level=grid_level, grid_max_pts=grid_max_pts, &
+                                 grid_response=grid_response, rho_tol=rho_tol, timing=xst)
+         end if
          call gst%step_off(lp, 4, tc)
          ! --- VV10 nonlocal correlation, added on top. Its own grid, its
          ! own screen -- see trc_vv10_grad's own header. `dens` is still
@@ -356,9 +376,16 @@ contains
             ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
             ! see that module's own header.
             call gst%step_on(lp, 5, tc)
-            call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
-                                   grid_level=nlc_level, grid_max_pts=grid_max_pts, &
-                                   grid_response=grid_response, timing=vst)
+            if (present(grid_nlc) .and. present(xg_nlc)) then
+               call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
+                                      grid_level=nlc_level, grid_max_pts=grid_max_pts, &
+                                      grid_response=grid_response, timing=vst, &
+                                      grid=grid_nlc, xg=xg_nlc)
+            else
+               call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
+                                      grid_level=nlc_level, grid_max_pts=grid_max_pts, &
+                                      grid_response=grid_response, timing=vst)
+            end if
             call gst%step_off(lp, 5, tc)
          end if
       end if

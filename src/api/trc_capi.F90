@@ -185,7 +185,7 @@ module trc_capi
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
    use trc_eri, only: trc_eri_t
-   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t
    use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
    use trc_scf_df, only: df_jk_t
@@ -356,6 +356,20 @@ module trc_capi
       ! context no longer holds is not a gradient of anything.
       real(dp), allocatable :: grad(:, :)
       logical :: grad_ok = .false.
+      ! `trc_run_scf`'s own DFT grid(s), kept alive (device-resident) for
+      ! `trc_run_gradient` to reuse instead of rebuilding -- see
+      ! trc_scf_context.F90's `trc_grid_cache_t` and trc_scf_driver.F90's
+      ! `trc_scf_run`'s own `grid_cache` argument. `kgrid_level`/
+      ! `kgrid_max_pts`/`kgrid_rho_tol`/`kgrid_nlc_level` are the settings
+      ! it was built at, snapshotted the moment `trc_run_scf` succeeds, so
+      ! `trc_run_gradient` can check them against `cx%opts`'s CURRENT
+      ! values rather than trust `scf_ok` alone. Released (and these reset)
+      ! by `invalidate_runs`, by `trc_load_scf` (a loaded result has no
+      ! grid of its own -- see that function's own header) and by
+      ! `trc_destroy`.
+      type(trc_grid_cache_t) :: kgrid
+      integer :: kgrid_level = -1, kgrid_max_pts = -1, kgrid_nlc_level = -1
+      real(dp) :: kgrid_rho_tol = -1.0_dp
       character(len=256) :: message = ""
    end type context_box
 
@@ -1338,6 +1352,7 @@ contains
       call drop_eri(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       call cx%la%release()
+      call cx%kgrid%release()
       if (cx%have_basis) call cx%bb%b%release()
       if (cx%have_aux) call cx%ab%b%release()
       if (cx%have_jkfit) call cx%jb%b%release()
@@ -1374,6 +1389,11 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
+      call cx%kgrid%release()
+      cx%kgrid_level = -1
+      cx%kgrid_max_pts = -1
+      cx%kgrid_nlc_level = -1
+      cx%kgrid_rho_tol = -1.0_dp
       cx%message = ""
    end subroutine invalidate_runs
 
@@ -2484,21 +2504,26 @@ contains
       end if
       if (allocated(dg)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la, scf_dfjk=cx%dfjk)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
+                             grid_cache=cx%kgrid)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la, scf_dfjk=cx%dfjk)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la, scf_dfjk=cx%dfjk, &
+                             grid_cache=cx%kgrid)
          end if
       else if (allocated(hsap)) then
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk, &
+                             grid_cache=cx%kgrid)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk, &
+                             grid_cache=cx%kgrid)
          end if
       else
          if (collective) then
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, scf_dfjk=cx%dfjk)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
+                             grid_cache=cx%kgrid)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, grid_cache=cx%kgrid)
          end if
       end if
       if (collective) call comm%finalize()
@@ -2517,6 +2542,13 @@ contains
       cx%nalpha = nalpha
       cx%nbeta = nbeta
       cx%scf_ok = .true.
+      ! The settings `cx%kgrid` was just built at (empty/false if `opts%dft`
+      ! was false), snapshotted for `trc_run_gradient`'s own staleness
+      ! check -- see `context_box%kgrid`'s own header.
+      cx%kgrid_level = opts%grid_level
+      cx%kgrid_max_pts = opts%grid_max_pts
+      cx%kgrid_rho_tol = opts%rho_tol
+      cx%kgrid_nlc_level = opts%nlc_grid_level
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
 
@@ -2592,10 +2624,26 @@ contains
       !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
       !! GGA part exactly as for any other GGA -- see that module's own
       !! header on why `omega`/`exx_lr` do not affect it.
+      !!
+      !! GRID REUSE. `cx%kgrid`, the SCF's own grid(s) kept alive since
+      !! `trc_run_scf` (`context_box%kgrid`'s own header), is handed
+      !! straight to `trc_scf_gradient` when it is built AND matches
+      !! every setting the gradient's quadrature has to match the SCF's
+      !! on (`reuse_grid`/`reuse_nlc`, below) -- the same list this
+      !! routine's own header already promises (grid level, max points
+      !! per batch, rho_tol, nlc grid level); geometry and basis are
+      !! covered for free, because ANY change to either would have
+      !! cleared `cx%scf_ok` (`invalidate_runs`) before this point could
+      !! ever be reached. Otherwise `trc_scf_gradient` rebuilds exactly as
+      !! it always has -- this is a pure performance path, never a
+      !! correctness one: `grid`/`xg` are read-only there, so a mismatch
+      !! caught here is the only thing standing between "reuse" and
+      !! "quietly wrong".
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
       type(trc_xc_functional_t) :: func
+      logical :: reuse_grid, reuse_nlc
       logical :: have_func
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -2619,6 +2667,12 @@ contains
             return
          end if
       end if
+      ! GRID REUSE -- see this function's own header.
+      reuse_grid = have_func .and. cx%kgrid%grid_built .and. &
+                   cx%kgrid_level == cx%opts%grid_level .and. cx%kgrid_max_pts == cx%opts%grid_max_pts .and. &
+                   cx%kgrid_rho_tol == cx%opts%rho_tol
+      reuse_nlc = reuse_grid .and. cx%kgrid%nlc_built .and. (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) .and. &
+                  cx%kgrid_nlc_level == cx%opts%nlc_grid_level
       if (cx%rimp2_ok) then
          cx%message = "trc_run_gradient: RI-MP2/double-hybrid correlation gradient not implemented yet"
          return
@@ -2668,23 +2722,57 @@ contains
          ! (trc_run_scf's `pl%build(cx%bb%b, cx%opts%eri_thresh)`), so the
          ! derivative runs over exactly the (mu nu|P) the energy used.
          if (have_func) then
-            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                  cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                  func=func, grid_level=cx%opts%grid_level, &
-                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                  nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
-                                  verbose=cx%opts%verbose)
+            if (reuse_nlc) then
+               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                     cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                     func=func, grid_level=cx%opts%grid_level, &
+                                     grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                     verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
+                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
+            else if (reuse_grid) then
+               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                     cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                     func=func, grid_level=cx%opts%grid_level, &
+                                     grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                     verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg)
+            else
+               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                     cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                     func=func, grid_level=cx%opts%grid_level, &
+                                     grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                     verbose=cx%opts%verbose)
+            end if
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                   dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose)
          end if
       else if (have_func) then
-         call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                               func=func, grid_level=cx%opts%grid_level, &
-                               grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                               nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose)
+         if (reuse_nlc) then
+            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                  func=func, grid_level=cx%opts%grid_level, &
+                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                  nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                  grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
+                                  grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
+         else if (reuse_grid) then
+            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                  func=func, grid_level=cx%opts%grid_level, &
+                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                  nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                  grid=cx%kgrid%grid, xg=cx%kgrid%xg)
+         else
+            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                  func=func, grid_level=cx%opts%grid_level, &
+                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                  nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose)
+         end if
       else
          call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
@@ -2922,6 +3010,15 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
+      ! A loaded result has no grid of its own -- any grid `trc_run_scf`
+      ! kept on this handle belongs to a DIFFERENT (possibly stale) run,
+      ! so `trc_run_gradient` must rebuild (this function's own header,
+      ! and trc_capi.F90's REUSE note on `context_box%kgrid`).
+      call cx%kgrid%release()
+      cx%kgrid_level = -1
+      cx%kgrid_max_pts = -1
+      cx%kgrid_nlc_level = -1
+      cx%kgrid_rho_tol = -1.0_dp
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_load_scf: set the molecule and the basis first"

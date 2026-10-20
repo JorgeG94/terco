@@ -29,7 +29,7 @@ module trc_scf_context
    implicit none
    private
 
-   public :: scf_ctx_t, bcast_flat
+   public :: scf_ctx_t, bcast_flat, trc_grid_cache_t
    integer, parameter, public :: NSETUP = 6
    !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
    !! linear-algebra handles, orthogonaliser -- `ts`'s six slots, printed
@@ -38,6 +38,22 @@ module trc_scf_context
    !! grid's own sub-steps: point generation (radial x Lebedev x pruning),
    !! the Becke/Stratmann partition, `trc_xc_grid_t%build`'s spatial
    !! batching, and `%to_device`'s upload -- `t_grid_sub`'s four slots.
+
+   type :: trc_grid_cache_t
+      !! The semilocal and (for VV10) nonlocal DFT grids a run built, kept
+      !! apart from `scf_ctx_t` so a caller that wants them ALIVE past
+      !! `setup`'s own run (trc_capi.F90's context handle, so the gradient
+      !! that follows can reuse exactly what the SCF converged with rather
+      !! than rebuild it -- see trc_scf_driver's `trc_scf_run`'s own
+      !! `grid_cache` argument) can own one across more than one call,
+      !! the same pattern `la`/`dfjk` already use. Owned by `scf_ctx_t`'s
+      !! own `gc_own` when no caller hands one in.
+      type(dft_grid_t) :: grid, grid_nlc
+      type(trc_xc_grid_t) :: xg, xg_nlc
+      logical :: grid_built = .false., nlc_built = .false.
+   contains
+      procedure :: release => grid_cache_release
+   end type trc_grid_cache_t
 
    type :: scf_ctx_t
       !! Geometry-lifetime state: everything above is built once and read
@@ -48,8 +64,11 @@ module trc_scf_context
       logical :: sph = .false.
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
-      type(dft_grid_t) :: grid, grid_nlc
-      type(trc_xc_grid_t) :: xg, xg_nlc
+      type(trc_grid_cache_t) :: gc_own
+      !! TARGET for `gc` to point to comes from `this` itself, the same
+      !! reason `la_own` is -- see `lp`'s own comment, right below.
+      type(trc_grid_cache_t), pointer :: gc => null()
+      logical :: owns_grid = .false.
       type(trc_pcm_t) :: pcm
       type(trc_linalg_t) :: la_own
       !! TARGET for `lp` to point to comes from `this` itself (see `setup`'s
@@ -69,7 +88,7 @@ module trc_scf_context
       real(dp) :: ts(NSETUP) = 0.0_dp
       real(dp) :: t_grid_sub(NGRID) = 0.0_dp
       real(dp) :: t_setup = 0.0_dp, t_grid = 0.0_dp, t_pcm_setup = 0.0_dp
-      logical :: grid_built = .false., nlc_built = .false., released = .false.
+      logical :: released = .false.
    contains
       procedure :: setup => scf_ctx_setup
       procedure :: release => scf_ctx_release
@@ -77,7 +96,7 @@ module trc_scf_context
 
 contains
 
-   subroutine scf_ctx_setup(this, b, opts, cfg, err, comm, la, dfjk)
+   subroutine scf_ctx_setup(this, b, opts, cfg, err, comm, la, dfjk, grid_cache)
       class(scf_ctx_t), intent(inout), target :: this
       !! TARGET: `this%lp` may end up pointing at `this%la_own`, and that
       !! association must survive the return into `trc_scf_run`, which
@@ -92,6 +111,17 @@ contains
       !! Already fitted by the caller (see `scf_ctx_t%dfj`'s own comment);
       !! required when `cfg%df` is true, checked here rather than left for
       !! `build_g` to find out at the first Fock build.
+      type(trc_grid_cache_t), intent(inout), optional, target :: grid_cache
+      !! A caller-owned grid cache (trc_capi.F90's context handle) that
+      !! this run builds the DFT grid DIRECTLY INTO -- not into a local
+      !! object that is then copied or moved -- so the grid (and, once
+      !! `%to_device` runs below, its device mapping) is built once, at
+      !! its final, long-lived address, and stays valid for a gradient
+      !! that runs after this call returns (the same reason `take_basis`
+      !! in trc_capi.F90 copies a basis up BEFORE uploading it, never
+      !! after: the device present-table is keyed on host addresses).
+      !! Absent, `this%gc_own` plays the same role but does not outlive
+      !! this call -- unchanged from before this argument existed.
       type(timer_type) :: tm
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
 
@@ -104,6 +134,12 @@ contains
          this%lp => la
       else
          this%lp => this%la_own
+      end if
+      this%owns_grid = .not. present(grid_cache)
+      if (present(grid_cache)) then
+         this%gc => grid_cache
+      else
+         this%gc => this%gc_own
       end if
       if (cfg%df) then
          if (.not. present(dfjk)) then
@@ -210,11 +246,11 @@ contains
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
-            call build_dft_grid_block(b%at_r, nint(b%at_z), this%grid, err, comm%rank(), comm%size(), &
+            call build_dft_grid_block(b%at_r, nint(b%at_z), this%gc%grid, err, comm%rank(), comm%size(), &
                                       level=opts%grid_level, &
                                       t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          else
-            call build_dft_grid(b%at_r, nint(b%at_z), this%grid, err, level=opts%grid_level, &
+            call build_dft_grid(b%at_r, nint(b%at_z), this%gc%grid, err, level=opts%grid_level, &
                                 t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          end if
          if (err%has_error()) then
@@ -223,26 +259,28 @@ contains
             return
          end if
          if (present(comm)) then
-            if (comm%size() > 1) call sum_flat(comm, this%grid%weights, this%grid%n_points)
+            if (comm%size() > 1) call sum_flat(comm, this%gc%grid%weights, this%gc%grid%n_points)
          end if
          call tm%start()
-         call this%xg%build(this%grid%n_points, this%grid%coords, this%grid%weights, b, max_pts=opts%grid_max_pts)
+         call this%gc%xg%build(this%gc%grid%n_points, this%gc%grid%coords, this%gc%grid%weights, b, &
+                               max_pts=opts%grid_max_pts, atom=this%gc%grid%atom, qw=this%gc%grid%quad_weights)
          this%t_grid_sub(3) = tm%get_elapsed_time()
          call tm%start()
-         call this%xg%to_device()
+         call this%gc%xg%to_device()
          this%t_grid_sub(4) = tm%get_elapsed_time()
-         this%grid_built = .true.
+         this%gc%grid_built = .true.
          if (cfg%nlc) then
-            call build_dft_grid(b%at_r, nint(b%at_z), this%grid_nlc, err, level=opts%nlc_grid_level)
+            call build_dft_grid(b%at_r, nint(b%at_z), this%gc%grid_nlc, err, level=opts%nlc_grid_level)
             if (err%has_error()) then
                call profiler_stop("scf: grid")
                call this%release()
                return
             end if
-            call this%xg_nlc%build(this%grid_nlc%n_points, this%grid_nlc%coords, this%grid_nlc%weights, b, &
-                                   max_pts=opts%grid_max_pts)
-            call this%xg_nlc%to_device()
-            this%nlc_built = .true.
+            call this%gc%xg_nlc%build(this%gc%grid_nlc%n_points, this%gc%grid_nlc%coords, this%gc%grid_nlc%weights, &
+                                      b, max_pts=opts%grid_max_pts, &
+                                      atom=this%gc%grid_nlc%atom, qw=this%gc%grid_nlc%quad_weights)
+            call this%gc%xg_nlc%to_device()
+            this%gc%nlc_built = .true.
          end if
          call profiler_stop("scf: grid")
          this%t_grid = tphase%get_elapsed_time()
@@ -260,6 +298,19 @@ contains
       if (this%owns_la) call this%lp%release()
       call this%eri%release()
       call this%pl%release()
+      ! A caller-owned cache (grid_cache present at `setup`) outlives this
+      ! context on purpose -- see `scf_ctx_setup`'s own header on
+      ! `grid_cache` -- so only an OWNED cache (`this%gc_own`, the default)
+      ! is released here.
+      if (this%owns_grid) call this%gc%release()
+      this%released = .true.
+   end subroutine scf_ctx_release
+
+   subroutine grid_cache_release(this)
+      !! Idempotent, same reason as `scf_ctx_release`'s own: a cache that
+      !! was never built (no DFT run reached it, or it has already been
+      !! released) costs nothing to release again.
+      class(trc_grid_cache_t), intent(inout) :: this
       if (this%grid_built) then
          call this%xg%release()
          call this%grid%destroy()
@@ -267,9 +318,10 @@ contains
             call this%xg_nlc%release()
             call this%grid_nlc%destroy()
          end if
+         this%grid_built = .false.
+         this%nlc_built = .false.
       end if
-      this%released = .true.
-   end subroutine scf_ctx_release
+   end subroutine grid_cache_release
 
    real(dp) function nuclear_repulsion(b) result(e)
       type(trc_basis_t), intent(in) :: b
