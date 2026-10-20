@@ -38,9 +38,12 @@
 !      one triangular solve over every (ij) row at once.
 !   3. Z: an outer product plus, for K, one GEMM X^T X. Then the two-centre
 !      derivative kernels (trc_df_grad_kernels' df_grad_2c_driver).
-!   4. Y one auxiliary block at a time: the J part directly, the K part as
-!      one strided batch and one GEMM; the three-centre derivative kernels
-!      run on that block's own auxiliary subset (df_grad_3c_driver).
+!   4. The three-centre derivative kernels, on the pair plan built once
+!      (df_grad_3c_plan) and Y = j c_P D_mn + Y_K, whose J part the kernels
+!      form themselves from c and D (df_grad_3c_driver). J only: one pass
+!      over the whole auxiliary basis, no Y tensor. With K: Y_K one
+!      auxiliary block at a time, one strided batch and one GEMM, and the
+!      kernels on that block's own auxiliary subset.
 !
 ! MEMORY. X is nocc^2 naux doubles. When the device cannot hold it next to
 ! everything else (choose_grad_blocks), steps 2-4 run once per CHUNK of
@@ -60,7 +63,8 @@ module trc_scf_grad_df
    use trc_linalg, only: trc_linalg_t
    use trc_step_table, only: step_table_t
    use pic_timer, only: timer_type
-   use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, DFG_LMAX, DFG_LMAX_AUX
+   use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
+                                  DFG_LMAX_AUX, DFG_NPCLS
 #ifdef _OPENACC
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                       acc_property_free_memory
@@ -76,11 +80,11 @@ module trc_scf_grad_df
    ! operation count is a property of each generated class, measured with
    ! a profiler, not modelled here.
    integer, parameter :: ST_JGAM = 1, ST_CSOL = 2, ST_UNPK = 3, ST_HGEMM = 4, ST_XTRSM = 5, &
-                         ST_ZGEMM = 6, ST_YJ = 7, ST_YK = 8, ST_D3C = 9, ST_D2C = 10, NSTEP = 10
+                         ST_ZGEMM = 6, ST_PLAN = 7, ST_YK = 8, ST_D3C = 9, ST_D2C = 10, NSTEP = 10
    character(len=22), parameter :: NAMES(NSTEP) = [character(len=22) :: &
                                    "J gamma (gemv)", "c = L^-T gamma (trsm)", "unpack B", &
                                    "H = C^T B C (gemm)", "X = H L^-1 (trsm)", "Z += X^T X (gemm)", &
-                                   "Y: J part", "Y: K part (gemm)", "3c derivative kernels", &
+                                   "3c pair plan (host)", "Y = K part (gemm)", "3c derivative kernels", &
                                    "2c derivative kernels"]
 
 contains
@@ -104,10 +108,13 @@ contains
 
       real(dp), pointer :: bpk(:, :), chol(:, :)
       real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xh(:)
-      real(dp), allocatable :: tens(:, :, :), half(:, :, :)
+      real(dp), allocatable :: tens(:, :, :), half(:, :, :), ydum(:, :, :)
       type(trc_basis_t) :: blk
       integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, nrow, s0, s1, p0, np, mu, nu, q, i, p
-      integer(int64) :: n8, o8, c8
+      integer(int64) :: n8, o8, c8, t
+      integer :: coff(0:DFG_NPCLS)
+      integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
+      real(dp), allocatable :: pd(:, :)
       logical :: do_k
       real(dp) :: occ_s, jc, tc
       type(step_table_t) :: tbl
@@ -122,7 +129,7 @@ contains
       call dfjk%dims(n, naux, npack)
       if (n /= b%nao .or. naux /= aux%nao) error stop "trc_scf_grad_df: the fit does not match these bases"
       if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
-      call tbl%init("dfgrad", NAMES, bytes_steps=[ST_JGAM, ST_UNPK, ST_YJ])
+      call tbl%init("dfgrad", NAMES, bytes_steps=[ST_JGAM, ST_UNPK])
       call lp%sync()
       call tall%start()
       bpk => dfjk%packed_b()
@@ -131,12 +138,15 @@ contains
       do_k = k_scale /= 0.0_dp .and. nocc > 0
       n8 = int(n, int64)
       o8 = int(max(nocc, 1), int64)
-
       ! --- 1. c = M^-1 t: the energy's own J gamma, then L^T c = gamma -----
       allocate (dpk(npack), cq(naux), zmat(naux, naux))
       !$acc enter data create(dpk, cq, zmat)
-      do concurrent(mu=1:n, nu=1:n, nu <= mu)
-         dpk(pack_idx(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*dens(mu, nu)
+      ! One flat index (a masked two-index form left one loop sequential
+      ! on the device): the lower triangle of D, off-diagonal doubled.
+      do concurrent(t=0:n8*n8 - 1) local(mu, nu)
+         mu = int(mod(t, n8)) + 1
+         nu = int(t/n8) + 1
+         if (nu <= mu) dpk(pack_idx(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*dens(mu, nu)
       end do
       call tbl%step_on(lp, ST_JGAM, tc)
       call lp%gemv("T", npack, naux, 1.0_dp, bpk, npack, dpk, 0.0_dp, cq)
@@ -167,11 +177,38 @@ contains
       nchunk = 1
       if (do_k) nchunk = (nocc + nci - 1)/nci
 
-      ! --- 2-4, per occupied chunk [i0, i1] (one chunk without K) -----------
+      ! The three-centre kernels' pair plan: every screened pair turned to
+      ! its canonical class, sorted by primitive count, its primitive pairs
+      ! precomputed (trc_df_grad_kernels' df_grad_3c_plan), once.
+      call tbl%step_on(lp, ST_PLAN, tc)
+      call df_grad_3c_plan(b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, pl%npair, pl%p_i, &
+                           pl%p_j, coff, q_a, q_b, q_o, q_n, pd)
+      !$acc enter data copyin(q_a, q_b, q_o, q_n, pd)
+      call tbl%step_off(lp, ST_PLAN, tc)
+
+      ! --- J only: Y = j c_P D_mn is formed inside the three-centre kernels
+      ! from c and D -- no (n, n, naux) tensor, no auxiliary blocks, one pass.
+      if (.not. do_k) then
+         allocate (ydum(1, 1, 1))
+         ydum = 0.0_dp
+         !$acc enter data copyin(ydum)
+         call tbl%step_on(lp, ST_D3C, tc)
+         call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
+                                size(pd, 2), pd, aux%nshell, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, &
+                                aux%sh_at, aux%sh_e, aux%sh_c, aux%sh_r, b%natm, .false., 1, 1, ydum, j_scale, &
+                                naux, 0, cq, dens, grad)
+         call tbl%step_off(lp, ST_D3C, tc)
+         !$acc exit data delete(ydum)
+         deallocate (ydum)
+         nchunk = 0
+      end if
+
+      ! --- 2-4, with K, per occupied chunk [i0, i1] ------------------------
       ! K is a sum over occupied i, so X's rows i in [i0, i1] give that
       ! chunk's share of Z (X_c^T X_c) and of Y (C_c X_c^P C^T) on their
       ! own; the three-centre derivative is linear in Y, so it runs once
-      ! per chunk on that chunk's Y. The J part rides with the first chunk.
+      ! per chunk on that chunk's Y. The J part (formed in the kernels)
+      ! rides with the first chunk.
       do ic = 1, nchunk
          i0 = 1 + (ic - 1)*nci
          i1 = min(nocc, ic*nci)
@@ -181,41 +218,45 @@ contains
          jc = merge(j_scale, 0.0_dp, ic == 1)
 
          ! --- 2. K: H(ij, P) = C_c^T B_P C for i in the chunk, X = H L^-1 --
-         if (do_k) then
-            allocate (xh(c8*o8*int(naux, int64)))
-            !$acc enter data create(xh)
-            s0 = 1
-            do while (s0 <= aux%nshell)
-               call next_block(aux, s0, ablk, s1, p0, np)
-               allocate (tens(n, n, np), half(nc, n, np))
-               !$acc enter data create(tens, half)
-               call tbl%step_on(lp, ST_UNPK, tc)
-               do concurrent(q=1:np, nu=1:n, mu=1:n)
-                  tens(mu, nu, q) = bpk(pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
-               end do
-               call tbl%step_off(lp, ST_UNPK, tc)
-               call tbl%add_bytes(ST_UNPK, 8_int64*n8*n8*int(np, int64))
-               call tbl%step_on(lp, ST_HGEMM, tc)
-               call lp%gemm("T", "N", nc, n*np, n, 1.0_dp, cocc(1, i0), n, tens, n, 0.0_dp, half, nc)
-               call lp%gemm_strided("N", "N", nc, nocc, n, 1.0_dp, half, nc, c8*n8, cocc, n, 0_int64, &
-                                    0.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, c8*o8, np)
-               call tbl%step_off(lp, ST_HGEMM, tc)
-               call tbl%add_flop(ST_HGEMM, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
-               !$acc exit data delete(tens, half)
-               deallocate (tens, half)
-               s0 = s1 + 1
+         allocate (xh(c8*o8*int(naux, int64)))
+         !$acc enter data create(xh)
+         s0 = 1
+         do while (s0 <= aux%nshell)
+            call next_block(aux, s0, ablk, s1, p0, np)
+            allocate (tens(n, n, np), half(nc, n, np))
+            !$acc enter data create(tens, half)
+            call tbl%step_on(lp, ST_UNPK, tc)
+            ! One flat index over the whole (n, n, np) block: the three-
+            ! index form ran its q loop sequentially inside each thread
+            ! (nvfortran -Minfo), 62 GB/s on a V100.
+            do concurrent(t=0:n8*n8*int(np, int64) - 1) local(mu, nu, q)
+               mu = int(mod(t, n8)) + 1
+               nu = int(mod(t/n8, n8)) + 1
+               q = int(t/(n8*n8)) + 1
+               tens(mu, nu, q) = bpk(pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
             end do
-            call tbl%step_on(lp, ST_XTRSM, tc)
-            call lp%trsm("R", "L", "N", nrow, naux, 1.0_dp, chol, naux, xh, nrow)
-            call tbl%step_off(lp, ST_XTRSM, tc)
-            call tbl%add_flop(ST_XTRSM, int(nrow, int64)*int(naux, int64)**2)
-            ! --- 3a. Z's K share, this chunk ---
-            call tbl%step_on(lp, ST_ZGEMM, tc)
-            call lp%gemm("T", "N", naux, naux, nrow, 0.25_dp*k_scale*occ_s*occ_s, xh, nrow, xh, nrow, &
-                         1.0_dp, zmat, naux)
-            call tbl%step_off(lp, ST_ZGEMM, tc)
-            call tbl%add_flop(ST_ZGEMM, 2_int64*int(nrow, int64)*int(naux, int64)**2)
-         end if
+            call tbl%step_off(lp, ST_UNPK, tc)
+            call tbl%add_bytes(ST_UNPK, 8_int64*n8*n8*int(np, int64))
+            call tbl%step_on(lp, ST_HGEMM, tc)
+            call lp%gemm("T", "N", nc, n*np, n, 1.0_dp, cocc(1, i0), n, tens, n, 0.0_dp, half, nc)
+            call lp%gemm_strided("N", "N", nc, nocc, n, 1.0_dp, half, nc, c8*n8, cocc, n, 0_int64, &
+                                 0.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, c8*o8, np)
+            call tbl%step_off(lp, ST_HGEMM, tc)
+            call tbl%add_flop(ST_HGEMM, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
+            !$acc exit data delete(tens, half)
+            deallocate (tens, half)
+            s0 = s1 + 1
+         end do
+         call tbl%step_on(lp, ST_XTRSM, tc)
+         call lp%trsm("R", "L", "N", nrow, naux, 1.0_dp, chol, naux, xh, nrow)
+         call tbl%step_off(lp, ST_XTRSM, tc)
+         call tbl%add_flop(ST_XTRSM, int(nrow, int64)*int(naux, int64)**2)
+         ! --- 3a. Z's K share, this chunk ---
+         call tbl%step_on(lp, ST_ZGEMM, tc)
+         call lp%gemm("T", "N", naux, naux, nrow, 0.25_dp*k_scale*occ_s*occ_s, xh, nrow, xh, nrow, &
+                      1.0_dp, zmat, naux)
+         call tbl%step_off(lp, ST_ZGEMM, tc)
+         call tbl%add_flop(ST_ZGEMM, 2_int64*int(nrow, int64)*int(naux, int64)**2)
 
          ! --- 4. Y, one auxiliary block at a time, and the three-centre one -
          s0 = 1
@@ -223,45 +264,35 @@ contains
             call next_block(aux, s0, ablk, s1, p0, np)
             call aux%subset(s0, s1, blk)
             call blk%to_device()
-            allocate (tens(n, n, np))
-            !$acc enter data create(tens)
-            call tbl%step_on(lp, ST_YJ, tc)
-            do concurrent(q=1:np, nu=1:n, mu=1:n)
-               tens(mu, nu, q) = jc*cq(p0 - 1 + q)*dens(mu, nu)
-            end do
-            call tbl%step_off(lp, ST_YJ, tc)
-            call tbl%add_bytes(ST_YJ, 8_int64*n8*n8*int(np, int64))
-            if (do_k) then
-               allocate (half(nc, n, np))
-               !$acc enter data create(half)
-               ! half_q = X_c^q C^T (nc x n), then Y += -(k/2) occ_s^2 C_c half,
-               ! every q of the block in one GEMM.
-               call tbl%step_on(lp, ST_YK, tc)
-               call lp%gemm_strided("N", "T", nc, n, nocc, 1.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, &
-                                    c8*o8, cocc, n, 0_int64, 0.0_dp, half, nc, c8*n8, np)
-               call lp%gemm("N", "N", n, n*np, nc, -0.5_dp*k_scale*occ_s*occ_s, cocc(1, i0), n, half, nc, &
-                            1.0_dp, tens, n)
-               call tbl%step_off(lp, ST_YK, tc)
-               call tbl%add_flop(ST_YK, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
-               !$acc exit data delete(half)
-               deallocate (half)
-            end if
+            allocate (tens(n, n, np), half(nc, n, np))
+            !$acc enter data create(tens, half)
+            ! half_q = X_c^q C^T (nc x n), then Y_K = -(k/2) occ_s^2 C_c half,
+            ! every q of the block in one GEMM; the J part is the kernels'.
+            call tbl%step_on(lp, ST_YK, tc)
+            call lp%gemm_strided("N", "T", nc, n, nocc, 1.0_dp, xh(1 + int(p0 - 1, int64)*c8*o8), nc, &
+                                 c8*o8, cocc, n, 0_int64, 0.0_dp, half, nc, c8*n8, np)
+            call lp%gemm("N", "N", n, n*np, nc, -0.5_dp*k_scale*occ_s*occ_s, cocc(1, i0), n, half, nc, &
+                         0.0_dp, tens, n)
+            call tbl%step_off(lp, ST_YK, tc)
+            call tbl%add_flop(ST_YK, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
+            !$acc exit data delete(half)
+            deallocate (half)
             call tbl%step_on(lp, ST_D3C, tc)
-            call df_grad_3c_driver(b%nshell, n, b%maxnp, b%sh_l, b%sh_np, b%sh_ao, b%sh_at, &
-                                   b%sh_e, b%sh_c, b%sh_r, pl%npair, pl%p_i, pl%p_j, &
-                                   blk%nshell, blk%nao, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, blk%sh_at, &
-                                   blk%sh_e, blk%sh_c, blk%sh_r, b%natm, tens, grad)
+            call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
+                                   size(pd, 2), pd, blk%nshell, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, &
+                                   blk%sh_at, blk%sh_e, blk%sh_c, blk%sh_r, b%natm, .true., n, np, tens, jc, &
+                                   naux, p0 - 1, cq, dens, grad)
             call tbl%step_off(lp, ST_D3C, tc)
             !$acc exit data delete(tens)
             deallocate (tens)
             call blk%release()
             s0 = s1 + 1
          end do
-         if (do_k) then
-            !$acc exit data delete(xh)
-            deallocate (xh)
-         end if
+         !$acc exit data delete(xh)
+         deallocate (xh)
       end do
+      !$acc exit data delete(q_a, q_b, q_o, q_n, pd)
+      deallocate (q_a, q_b, q_o, q_n, pd)
 
       ! --- 3b. the two-centre derivative, once Z is complete ---------------
       call tbl%step_on(lp, ST_D2C, tc)

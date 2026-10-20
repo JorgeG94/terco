@@ -100,8 +100,8 @@ contains
       real(dp), intent(in)  :: y(1)
       real(dp), intent(out) :: ga(3)
 
-      integer  :: ip, jp, kp
-      real(dp) :: al, be, zeta, eta, zpe, rho, kab, pref, rab2
+      integer  :: ip, kp
+      real(dp) :: al, be, zeta, eta, zpe, rho, kab, pref
       real(dp) :: px, py, pz, pqx, pqy, pqz, tval
       real(dp) :: pax, pay, paz, qcx, qcy, qcz, abx, aby, abz
       real(dp) :: ru(1), rw(1)
@@ -118,7 +118,6 @@ contains
       gax = 0.0_dp; gay = 0.0_dp; gaz = 0.0_dp
       gbx = 0.0_dp; gby = 0.0_dp; gbz = 0.0_dp
       abx = 0.0_dp; aby = 0.0_dp; abz = 0.0_dp
-      rab2 = 0.0_dp
       be = 0.0_dp
 
       do ip = 1, npa

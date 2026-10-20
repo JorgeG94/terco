@@ -153,7 +153,8 @@ end module check_df_grad_ints_m
 program check_df_grad_ints
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c
-   use trc_df_grad_kernels, only: df_grad_3c_driver, df_grad_2c_driver, DFG_LMAX, DFG_LMAX_AUX
+   use trc_df_grad_kernels, only: df_grad_3c_plan, df_grad_3c_driver, df_grad_2c_driver, DFG_LMAX, DFG_LMAX_AUX, &
+                                  DFG_NPCLS
    use trc_basis_json, only: trc_basis_from_json
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
@@ -175,6 +176,9 @@ program check_df_grad_ints
    real(dp), allocatable :: ip1(:, :, :, :), gbsw(:, :, :, :), ip2c(:, :, :)
    real(dp), allocatable :: y(:, :, :), z(:, :), g3(:, :), g2(:, :), g3h(:, :), g2h(:, :)
    real(dp) :: dsw, inv3, inv2, d3, d2, scale3, scale2, dmax(3)
+   integer :: coff(0:DFG_NPCLS)
+   integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
+   real(dp), allocatable :: pd(:, :), cq0(:), d0(:, :)
 
    if (command_argument_count() < 5) then
       print '(a)', 'usage: check_df_grad_ints <xyz> <basis.json> <aux.json> <dump.bin> <case>'; stop 1
@@ -236,15 +240,19 @@ program check_df_grad_ints
    call synth_y(nao, naux, y)
    call synth_z(naux, z)
    g3 = 0.0_dp; g2 = 0.0_dp
-   !$acc enter data copyin(y, z, g3, g2)
-   call df_grad_3c_driver(bas%nshell, nao, bas%maxnp, bas%sh_l, bas%sh_np, bas%sh_ao, bas%sh_at, &
-                          bas%sh_e, bas%sh_c, bas%sh_r, pl%npair, pl%p_i, pl%p_j, &
-                          aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
-                          aux%sh_e, aux%sh_c, aux%sh_r, nat, y, g3)
+   ! Y alone (the drivers' K-style dense input): the J part's c and D zero.
+   allocate (cq0(naux), d0(nao, nao))
+   cq0 = 0.0_dp; d0 = 0.0_dp
+   call df_grad_3c_plan(bas%nshell, bas%maxnp, bas%sh_l, bas%sh_np, bas%sh_e, bas%sh_c, bas%sh_r, &
+                        pl%npair, pl%p_i, pl%p_j, coff, q_a, q_b, q_o, q_n, pd)
+   !$acc enter data copyin(y, z, g3, g2, cq0, d0, q_a, q_b, q_o, q_n, pd)
+   call df_grad_3c_driver(bas%nshell, nao, bas%sh_ao, bas%sh_at, bas%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
+                          size(pd, 2), pd, aux%nshell, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
+                          aux%sh_e, aux%sh_c, aux%sh_r, nat, .true., nao, naux, y, 0.0_dp, naux, 0, cq0, d0, g3)
    call df_grad_2c_driver(aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
                           aux%sh_e, aux%sh_c, aux%sh_r, nat, z, g2)
    !$acc update self(g3, g2)
-   !$acc exit data delete(y, z, g3, g2)
+   !$acc exit data delete(y, z, g3, g2, cq0, d0, q_a, q_b, q_o, q_n, pd)
 
    ! --- the same contraction from the raw host tensors ---
    allocate (aoat(nao), axat(naux))

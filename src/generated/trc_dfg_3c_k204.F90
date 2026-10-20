@@ -20,6 +20,7 @@ module trc_dfg_3c_k204
    public :: dfg_3c_k204, dfg_3c204
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
+   integer, parameter :: PD_W = 8
    integer, parameter :: cnx0_3c204(6) = [2, 1, 1, 0, 0, 0]
    integer, parameter :: cnx1_3c204(1) = [0]
    integer, parameter :: cnx2_3c204(15) = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0]
@@ -32,62 +33,65 @@ module trc_dfg_3c_k204
 
 contains
 
-   subroutine dfg_3c_k204(nsh, nao, mnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, &
-                    npair, p_i, p_j, npc, ord_p, &
-                    nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
-                    natm, nlane, ytens, gp)
-      !! (20|4) launch: `do concurrent` over the npc x nac cross product of
-      !! a shell-pair index LIST and an auxiliary-shell index LIST, grouped by
-      !! angular momentum on the host (trc_df_grad_kernels.F90's
-      !! df_grad_3c_driver).
-      integer,  intent(in)    :: nsh, nao, mnp, npair, npc, nsx, nax, mnx, nac, natm, nlane
-      integer,  intent(in)    :: sh_np(nsh), sh_ao(nsh), sh_at(nsh)
-      real(dp), intent(in)    :: sh_e(mnp, nsh), sh_c(mnp, nsh), sh_r(3, nsh)
-      integer,  intent(in)    :: p_i(npair), p_j(npair), ord_p(npc)
+   subroutine dfg_3c_k204(nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+                    nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
+                    natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
+      !! (20|4) launch: `do concurrent` over the npq x nac cross product of
+      !! this class's shell pairs (q_a/q_b, la >= lb, sorted by primitive
+      !! count: trc_df_grad_kernels.F90's df_grad_3c_plan) and an auxiliary-
+      !! shell index LIST (df_grad_3c_driver).
+      integer,  intent(in)    :: nsh, nao, npq, npp, nsx, mnx, nac, natm, nlane, ny1, ny3, nqc, qoff
+      integer,  intent(in)    :: sh_ao(nsh), sh_at(nsh)
+      real(dp), intent(in)    :: sh_r(3, nsh)
+      integer,  intent(in)    :: q_a(npq), q_b(npq), q_o(npq), q_n(npq)
+      real(dp), intent(in)    :: pd(PD_W, npp)
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      real(dp), intent(in)    :: ytens(nao, nao, nax)
+      logical,  intent(in)    :: ky
+      real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
       integer(int64) :: t
 
-      if (npc <= 0 .or. nac <= 0) return
-      do concurrent(t = 0:int(npc, int64)*nac - 1)
-         call dfg_3c_i204(t, nsh, nao, mnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, &
-                   npair, p_i, p_j, npc, ord_p, &
-                   nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
-                   natm, nlane, ytens, gp)
+      if (npq <= 0 .or. nac <= 0) return
+      do concurrent(t = 0:int(npq, int64)*nac - 1)
+         call dfg_3c_i204(t, nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+                   nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
+                   natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
       end do
    end subroutine dfg_3c_k204
 
-   pure subroutine dfg_3c_i204(t, nsh, nao, mnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, &
-                         npair, p_i, p_j, npc, ord_p, &
-                         nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
-                         natm, nlane, ytens, gp)
-      !! One (shell pair, auxiliary shell) triple: its Y block (weighted 2 for
-      !! an off-diagonal pair, which stands for both (mu,nu) and (nu,mu)), the
-      !! contracted derivative, and nine atomic adds into lane
-      !! mod(t, nlane)+1 of `gp`. A triple on one atom is skipped: its three
-      !! derivatives sum to zero on that atom.
+   pure subroutine dfg_3c_i204(t, nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+                         nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
+                         natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
+      !! One (shell pair, auxiliary shell) triple: its Y block, the J part
+      !! jc c_P D_mn formed here from c and D (never stored as a tensor) plus,
+      !! when `ky`, the K part read from `ytens` -- weighted 2 for an
+      !! off-diagonal pair, which stands for both (mu,nu) and (nu,mu) -- the
+      !! contracted derivative, and nine atomic adds into lane mod(t, nlane)+1
+      !! of `gp`. A triple on one atom is skipped: its three derivatives sum
+      !! to zero on that atom.
       !$acc routine seq
       integer(int64), intent(in) :: t
-      integer,  intent(in)    :: nsh, nao, mnp, npair, npc, nsx, nax, mnx, nac, natm, nlane
-      integer,  intent(in)    :: sh_np(nsh), sh_ao(nsh), sh_at(nsh)
-      real(dp), intent(in)    :: sh_e(mnp, nsh), sh_c(mnp, nsh), sh_r(3, nsh)
-      integer,  intent(in)    :: p_i(npair), p_j(npair), ord_p(npc)
+      integer,  intent(in)    :: nsh, nao, npq, npp, nsx, mnx, nac, natm, nlane, ny1, ny3, nqc, qoff
+      integer,  intent(in)    :: sh_ao(nsh), sh_at(nsh)
+      real(dp), intent(in)    :: sh_r(3, nsh)
+      integer,  intent(in)    :: q_a(npq), q_b(npq), q_o(npq), q_n(npq)
+      real(dp), intent(in)    :: pd(PD_W, npp)
       integer,  intent(in)    :: ax_np(nsx), ax_ao(nsx), ax_at(nsx)
       real(dp), intent(in)    :: ax_e(mnx, nsx), ax_c(mnx, nsx), ax_r(3, nsx)
       integer,  intent(in)    :: ord_a(nac)
-      real(dp), intent(in)    :: ytens(nao, nao, nax)
+      logical,  intent(in)    :: ky
+      real(dp), intent(in)    :: ytens(ny1, ny1, ny3), jc, cq(nqc), dens(nao, nao)
       real(dp), intent(inout) :: gp(3, natm, nlane)
 
       integer  :: ip, kk, ii, jj, a, c, e, mu, nu, pq, lane, ia, ib, ic
-      real(dp) :: yb(90), ga(3), gb(3), wt
+      real(dp) :: yb(90), ga(3), gb(3), wt, yv
 
-      ip = ord_p(int(mod(t, int(npc, int64))) + 1)
-      kk = ord_a(int(t/npc) + 1)
-      ii = p_i(ip); jj = p_j(ip)
+      ip = int(mod(t, int(npq, int64))) + 1
+      kk = ord_a(int(t/npq) + 1)
+      ii = q_a(ip); jj = q_b(ip)
       ia = sh_at(ii); ib = sh_at(jj); ic = ax_at(kk)
       if (ia == ib .and. ia == ic) return
       wt = merge(1.0_dp, 2.0_dp, ii == jj)
@@ -97,13 +101,14 @@ contains
             nu = sh_ao(jj) + c
             do a = 0, 5
                mu = sh_ao(ii) + a
-               yb(1 + a + 6*(c + 1*e)) = wt*ytens(mu, nu, pq)
+               yv = jc*cq(qoff + pq)*dens(mu, nu)
+               if (ky) yv = yv + ytens(mu, nu, pq)
+               yb(1 + a + 6*(c + 1*e)) = wt*yv
             end do
          end do
       end do
 
-      call dfg_3c204(sh_np(ii), sh_e(:, ii), sh_c(:, ii), sh_r(:, ii), &
-                 sh_np(jj), sh_e(:, jj), sh_c(:, jj), sh_r(:, jj), &
+      call dfg_3c204(q_n(ip), q_o(ip), pd, sh_r(:, ii), sh_r(:, jj), &
                  ax_np(kk), ax_e(:, kk), ax_c(:, kk), ax_r(:, kk), yb, ga, gb)
 
       lane = int(mod(t, int(nlane, int64))) + 1
@@ -127,20 +132,21 @@ contains
       gp(3, ic, lane) = gp(3, ic, lane) - (ga(3) + gb(3))
    end subroutine dfg_3c_i204
 
-   pure subroutine dfg_3c204(npa, ea, ca, ra, npb, eb, cb, rb, npc, ec, cc_, rc, y, ga, gb)
+   pure subroutine dfg_3c204(npp, poff, pd, ra, rb, npc, ec, cc_, rc, y, ga, gb)
       !! d(ab|c)/dA and d(ab|c)/dB of class (20|4), contracted with
       !! y(slot): ga = sum y d/dA, gb = sum y d/dB (dC = -(ga+gb)). Rys,
       !! 4 roots, loop form.
+      !! The bra's npp primitive pairs are columns poff+1..poff+npp of pd
+      !! (zeta, K_ab, P, alpha, beta: trc_df_grad_kernels' df_grad_3c_plan).
       !$acc routine seq
-      integer,  intent(in)  :: npa, npb, npc
-      real(dp), intent(in)  :: ea(npa), ca(npa), ra(3)
-      real(dp), intent(in)  :: eb(npb), cb(npb), rb(3)
+      integer,  intent(in)  :: npp, poff, npc
+      real(dp), intent(in)  :: pd(PD_W, *), ra(3), rb(3)
       real(dp), intent(in)  :: ec(npc), cc_(npc), rc(3)
       real(dp), intent(in)  :: y(90)
       real(dp), intent(out) :: ga(3), gb(3)
 
-      integer  :: ip, jp, kp
-      real(dp) :: al, be, zeta, eta, zpe, rho, kab, pref, rab2
+      integer  :: ip, kp
+      real(dp) :: al, be, zeta, eta, zpe, rho, kab, pref
       real(dp) :: px, py, pz, pqx, pqy, pqz, tval
       real(dp) :: pax, pay, paz, qcx, qcy, qcz, abx, aby, abz
       real(dp) :: ru(4), rw(4)
@@ -162,193 +168,187 @@ contains
       gax = 0.0_dp; gay = 0.0_dp; gaz = 0.0_dp
       gbx = 0.0_dp; gby = 0.0_dp; gbz = 0.0_dp
       abx = 0.0_dp; aby = 0.0_dp; abz = 0.0_dp
-      rab2 = 0.0_dp
       be = 0.0_dp
 
       abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
-      rab2 = abx*abx + aby*aby + abz*abz
-      do ip = 1, npa
-         al = ea(ip)
-         do jp = 1, npb
-            be = eb(jp)
-            zeta = al + be
-            kab = ca(ip)*cb(jp)*exp(-al*be/zeta*rab2)
-            px = (al*ra(1) + be*rb(1))/zeta
-            py = (al*ra(2) + be*rb(2))/zeta
-            pz = (al*ra(3) + be*rb(3))/zeta
-            pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+      do ip = poff + 1, poff + npp
+         zeta = pd(1, ip)
+         kab = pd(2, ip)
+         px = pd(3, ip); py = pd(4, ip); pz = pd(5, ip)
+         al = pd(6, ip)
+         be = pd(7, ip)
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
 
-            do kp = 1, npc
-               eta = ec(kp)
-               zpe = zeta + eta
-               rho = zeta*eta/zpe
-               ! The ket is one auxiliary shell: Q = C, QC = 0, K_cd = 1.
-               qcx = 0.0_dp; qcy = 0.0_dp; qcz = 0.0_dp
-               pqx = px - rc(1); pqy = py - rc(2); pqz = pz - rc(3)
-               tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
-               pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*kab*cc_(kp)
+         do kp = 1, npc
+            eta = ec(kp)
+            zpe = zeta + eta
+            rho = zeta*eta/zpe
+            ! The ket is one auxiliary shell: Q = C, QC = 0, K_cd = 1.
+            qcx = 0.0_dp; qcy = 0.0_dp; qcz = 0.0_dp
+            pqx = px - rc(1); pqy = py - rc(2); pqz = pz - rc(3)
+            tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
+            pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*kab*cc_(kp)
 
-               ! Rys root/weight lookup, inlined from trc_rys_roots4_tab -- same
-               ! table, interval and Chebyshev evaluation; the early return there
-               ! becomes this if/else (a return here would exit the whole kernel).
-               if (tval >= RYS_XMAX4) then
-                  fr = 1.0_dp/tval
-                  fw = sqrt(fr)
-                  do s = 1, RYS_NROOTS4
-                     ru(s) = RYS_ASY_R4(s)*fr
-                     rw(s) = RYS_ASY_W4(s)*fw
+            ! Rys root/weight lookup, inlined from trc_rys_roots4_tab -- same
+            ! table, interval and Chebyshev evaluation; the early return there
+            ! becomes this if/else (a return here would exit the whole kernel).
+            if (tval >= RYS_XMAX4) then
+               fr = 1.0_dp/tval
+               fw = sqrt(fr)
+               do s = 1, RYS_NROOTS4
+                  ru(s) = RYS_ASY_R4(s)*fr
+                  rw(s) = RYS_ASY_W4(s)*fw
+               end do
+            else
+               xc = max(tval, 0.0_dp)
+               iv = min(int(xc/RYS_WIDTH4) + 1, RYS_NINT4)
+               rlt = (2.0_dp*xc - (2*iv - 1)*RYS_WIDTH4)/RYS_WIDTH4
+               t2 = 2.0_dp*rlt
+               do s = 1, 2*RYS_NROOTS4
+                  base = ((iv - 1)*2*RYS_NROOTS4 + (s - 1))*(RYS_DEGREE4 + 1)
+                  d0 = 0.0_dp
+                  d1 = 0.0_dp
+                  do j = RYS_DEGREE4, 1, -1
+                     tmp = d0
+                     d0 = t2*d0 - d1 + RYS_C4(base + j + 1)
+                     d1 = tmp
                   end do
-               else
-                  xc = max(tval, 0.0_dp)
-                  iv = min(int(xc/RYS_WIDTH4) + 1, RYS_NINT4)
-                  rlt = (2.0_dp*xc - (2*iv - 1)*RYS_WIDTH4)/RYS_WIDTH4
-                  t2 = 2.0_dp*rlt
-                  do s = 1, 2*RYS_NROOTS4
-                     base = ((iv - 1)*2*RYS_NROOTS4 + (s - 1))*(RYS_DEGREE4 + 1)
-                     d0 = 0.0_dp
-                     d1 = 0.0_dp
-                     do j = RYS_DEGREE4, 1, -1
-                        tmp = d0
-                        d0 = t2*d0 - d1 + RYS_C4(base + j + 1)
-                        d1 = tmp
-                     end do
-                     tmp = rlt*d0 - d1 + RYS_C4(base + 1)
-                     if (s <= RYS_NROOTS4) then
-                        ru(s) = tmp
-                     else
-                        rw(s - RYS_NROOTS4) = tmp
-                     end if
-                  end do
-               end if
-               do rr = 1, 4
-                  u2 = ru(rr)/(1.0_dp - ru(rr))*rho
-                  dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
-                  b00r  = 0.5_dp*u2*dinv
-                  b10r  = 0.5_dp*(eta + u2)*dinv
-                  bp01r = 0.5_dp*(zeta + u2)*dinv
-                  f00 = pref*rw(rr)
-                  c00x = pax - u2*eta*dinv*pqx
-                  c00y = pay - u2*eta*dinv*pqy
-                  c00z = paz - u2*eta*dinv*pqz
-                  cp0x = qcx + u2*zeta*dinv*pqx
-                  cp0y = qcy + u2*zeta*dinv*pqy
-                  cp0z = qcz + u2*zeta*dinv*pqz
-                  gx(0, 0) = 1.0_dp
-                  gx(1, 0) = c00x*1.0_dp
-                  do i = 1, 2
-                     gx(i + 1, 0) = real(i, dp)*b10r*gx(i - 1, 0) + c00x*gx(i, 0)
-                  end do
-                  gx(0, 1) = cp0x*1.0_dp
+                  tmp = rlt*d0 - d1 + RYS_C4(base + 1)
+                  if (s <= RYS_NROOTS4) then
+                     ru(s) = tmp
+                  else
+                     rw(s - RYS_NROOTS4) = tmp
+                  end if
+               end do
+            end if
+            do rr = 1, 4
+               u2 = ru(rr)/(1.0_dp - ru(rr))*rho
+               dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+               b00r  = 0.5_dp*u2*dinv
+               b10r  = 0.5_dp*(eta + u2)*dinv
+               bp01r = 0.5_dp*(zeta + u2)*dinv
+               f00 = pref*rw(rr)
+               c00x = pax - u2*eta*dinv*pqx
+               c00y = pay - u2*eta*dinv*pqy
+               c00z = paz - u2*eta*dinv*pqz
+               cp0x = qcx + u2*zeta*dinv*pqx
+               cp0y = qcy + u2*zeta*dinv*pqy
+               cp0z = qcz + u2*zeta*dinv*pqz
+               gx(0, 0) = 1.0_dp
+               gx(1, 0) = c00x*1.0_dp
+               do i = 1, 2
+                  gx(i + 1, 0) = real(i, dp)*b10r*gx(i - 1, 0) + c00x*gx(i, 0)
+               end do
+               gx(0, 1) = cp0x*1.0_dp
+               do i = 1, 3
+                  gx(i, 1) = real(i, dp)*b00r*gx(i - 1, 0) + cp0x*gx(i, 0)
+               end do
+               do k = 1, 3
+                  gx(0, k + 1) = real(k, dp)*bp01r*gx(0, k - 1) + cp0x*gx(0, k)
                   do i = 1, 3
-                     gx(i, 1) = real(i, dp)*b00r*gx(i - 1, 0) + cp0x*gx(i, 0)
+                     gx(i, k + 1) = real(i, dp)*b00r*gx(i - 1, k) &
+                                 + real(k, dp)*bp01r*gx(i, k - 1) + cp0x*gx(i, k)
                   end do
-                  do k = 1, 3
-                     gx(0, k + 1) = real(k, dp)*bp01r*gx(0, k - 1) + cp0x*gx(0, k)
-                     do i = 1, 3
-                        gx(i, k + 1) = real(i, dp)*b00r*gx(i - 1, k) &
-                                    + real(k, dp)*bp01r*gx(i, k - 1) + cp0x*gx(i, k)
-                     end do
-                  end do
-                  gy(0, 0) = 1.0_dp
-                  gy(1, 0) = c00y*1.0_dp
-                  do i = 1, 2
-                     gy(i + 1, 0) = real(i, dp)*b10r*gy(i - 1, 0) + c00y*gy(i, 0)
-                  end do
-                  gy(0, 1) = cp0y*1.0_dp
+               end do
+               gy(0, 0) = 1.0_dp
+               gy(1, 0) = c00y*1.0_dp
+               do i = 1, 2
+                  gy(i + 1, 0) = real(i, dp)*b10r*gy(i - 1, 0) + c00y*gy(i, 0)
+               end do
+               gy(0, 1) = cp0y*1.0_dp
+               do i = 1, 3
+                  gy(i, 1) = real(i, dp)*b00r*gy(i - 1, 0) + cp0y*gy(i, 0)
+               end do
+               do k = 1, 3
+                  gy(0, k + 1) = real(k, dp)*bp01r*gy(0, k - 1) + cp0y*gy(0, k)
                   do i = 1, 3
-                     gy(i, 1) = real(i, dp)*b00r*gy(i - 1, 0) + cp0y*gy(i, 0)
+                     gy(i, k + 1) = real(i, dp)*b00r*gy(i - 1, k) &
+                                 + real(k, dp)*bp01r*gy(i, k - 1) + cp0y*gy(i, k)
                   end do
-                  do k = 1, 3
-                     gy(0, k + 1) = real(k, dp)*bp01r*gy(0, k - 1) + cp0y*gy(0, k)
-                     do i = 1, 3
-                        gy(i, k + 1) = real(i, dp)*b00r*gy(i - 1, k) &
-                                    + real(k, dp)*bp01r*gy(i, k - 1) + cp0y*gy(i, k)
-                     end do
-                  end do
-                  gz(0, 0) = f00
-                  gz(1, 0) = c00z*f00
-                  do i = 1, 2
-                     gz(i + 1, 0) = real(i, dp)*b10r*gz(i - 1, 0) + c00z*gz(i, 0)
-                  end do
-                  gz(0, 1) = cp0z*f00
+               end do
+               gz(0, 0) = f00
+               gz(1, 0) = c00z*f00
+               do i = 1, 2
+                  gz(i + 1, 0) = real(i, dp)*b10r*gz(i - 1, 0) + c00z*gz(i, 0)
+               end do
+               gz(0, 1) = cp0z*f00
+               do i = 1, 3
+                  gz(i, 1) = real(i, dp)*b00r*gz(i - 1, 0) + cp0z*gz(i, 0)
+               end do
+               do k = 1, 3
+                  gz(0, k + 1) = real(k, dp)*bp01r*gz(0, k - 1) + cp0z*gz(0, k)
                   do i = 1, 3
-                     gz(i, 1) = real(i, dp)*b00r*gz(i - 1, 0) + cp0z*gz(i, 0)
+                     gz(i, k + 1) = real(i, dp)*b00r*gz(i - 1, k) &
+                                 + real(k, dp)*bp01r*gz(i, k - 1) + cp0z*gz(i, k)
                   end do
-                  do k = 1, 3
-                     gz(0, k + 1) = real(k, dp)*bp01r*gz(0, k - 1) + cp0z*gz(0, k)
-                     do i = 1, 3
-                        gz(i, k + 1) = real(i, dp)*b00r*gz(i - 1, k) &
-                                    + real(k, dp)*bp01r*gz(i, k - 1) + cp0z*gz(i, k)
-                     end do
+               end do
+               ab2 = abx*abx
+               cd2 = 0.0_dp*0.0_dp
+               do a = 0, 3
+                  do c = 0, 4
+                     ht(a, 0, c) = gx(a + 0, c)
                   end do
-                  ab2 = abx*abx
-                  cd2 = 0.0_dp*0.0_dp
-                  do a = 0, 3
+               end do
+               do a = 0, 3
+                  do b = 0, 0
                      do c = 0, 4
-                        ht(a, 0, c) = gx(a + 0, c)
+                        hx(a, b, c, 0) = ht(a, b, c + 0)
                      end do
                   end do
-                  do a = 0, 3
-                     do b = 0, 0
-                        do c = 0, 4
-                           hx(a, b, c, 0) = ht(a, b, c + 0)
-                        end do
-                     end do
+               end do
+               ab2 = aby*aby
+               cd2 = 0.0_dp*0.0_dp
+               do a = 0, 3
+                  do c = 0, 4
+                     ht(a, 0, c) = gy(a + 0, c)
                   end do
-                  ab2 = aby*aby
-                  cd2 = 0.0_dp*0.0_dp
-                  do a = 0, 3
+               end do
+               do a = 0, 3
+                  do b = 0, 0
                      do c = 0, 4
-                        ht(a, 0, c) = gy(a + 0, c)
+                        hy(a, b, c, 0) = ht(a, b, c + 0)
                      end do
                   end do
-                  do a = 0, 3
-                     do b = 0, 0
-                        do c = 0, 4
-                           hy(a, b, c, 0) = ht(a, b, c + 0)
-                        end do
-                     end do
+               end do
+               ab2 = abz*abz
+               cd2 = 0.0_dp*0.0_dp
+               do a = 0, 3
+                  do c = 0, 4
+                     ht(a, 0, c) = gz(a + 0, c)
                   end do
-                  ab2 = abz*abz
-                  cd2 = 0.0_dp*0.0_dp
-                  do a = 0, 3
+               end do
+               do a = 0, 3
+                  do b = 0, 0
                      do c = 0, 4
-                        ht(a, 0, c) = gz(a + 0, c)
+                        hz(a, b, c, 0) = ht(a, b, c + 0)
                      end do
                   end do
-                  do a = 0, 3
-                     do b = 0, 0
-                        do c = 0, 4
-                           hz(a, b, c, 0) = ht(a, b, c + 0)
-                        end do
-                     end do
-                  end do
-                  do ce = 1, 15
-                     do bb = 1, 1
-                        do aa = 1, 6
-                           yv = y(aa + 6*(bb - 1 + 1*(ce - 1)))
-                           ix = cnx0_3c204(aa); jx = cnx1_3c204(bb); kx = cnx2_3c204(ce)
-                           iy = cny0_3c204(aa); jy = cny1_3c204(bb); ky = cny2_3c204(ce)
-                           iz = cnz0_3c204(aa); jz = cnz1_3c204(bb); kz = cnz2_3c204(ce)
-                           vx = hx(ix, jx, kx, 0)
-                           fix = 2.0_dp*al*hx(ix + 1, jx, kx, 0)
-                           if (ix > 0) fix = fix - real(ix, dp)*hx(ix - 1, jx, kx, 0)
-                           fjx = 2.0_dp*be*(hx(ix + 1, jx, kx, 0) + abx*vx)
-                           if (jx > 0) fjx = fjx - real(jx, dp)*hx(ix, jx - 1, kx, 0)
-                           vy = hy(iy, jy, ky, 0)
-                           fiy = 2.0_dp*al*hy(iy + 1, jy, ky, 0)
-                           if (iy > 0) fiy = fiy - real(iy, dp)*hy(iy - 1, jy, ky, 0)
-                           fjy = 2.0_dp*be*(hy(iy + 1, jy, ky, 0) + aby*vy)
-                           if (jy > 0) fjy = fjy - real(jy, dp)*hy(iy, jy - 1, ky, 0)
-                           vz = hz(iz, jz, kz, 0)
-                           fiz = 2.0_dp*al*hz(iz + 1, jz, kz, 0)
-                           if (iz > 0) fiz = fiz - real(iz, dp)*hz(iz - 1, jz, kz, 0)
-                           fjz = 2.0_dp*be*(hz(iz + 1, jz, kz, 0) + abz*vz)
-                           if (jz > 0) fjz = fjz - real(jz, dp)*hz(iz, jz - 1, kz, 0)
-                           pyz = yv*vy*vz; pxz = yv*vx*vz; pxy = yv*vx*vy
-                           gax = gax + fix*pyz; gay = gay + fiy*pxz; gaz = gaz + fiz*pxy
-                           gbx = gbx + fjx*pyz; gby = gby + fjy*pxz; gbz = gbz + fjz*pxy
-                        end do
+               end do
+               do ce = 1, 15
+                  do bb = 1, 1
+                     do aa = 1, 6
+                        yv = y(aa + 6*(bb - 1 + 1*(ce - 1)))
+                        ix = cnx0_3c204(aa); jx = cnx1_3c204(bb); kx = cnx2_3c204(ce)
+                        iy = cny0_3c204(aa); jy = cny1_3c204(bb); ky = cny2_3c204(ce)
+                        iz = cnz0_3c204(aa); jz = cnz1_3c204(bb); kz = cnz2_3c204(ce)
+                        vx = hx(ix, jx, kx, 0)
+                        fix = 2.0_dp*al*hx(ix + 1, jx, kx, 0)
+                        if (ix > 0) fix = fix - real(ix, dp)*hx(ix - 1, jx, kx, 0)
+                        fjx = 2.0_dp*be*(hx(ix + 1, jx, kx, 0) + abx*vx)
+                        if (jx > 0) fjx = fjx - real(jx, dp)*hx(ix, jx - 1, kx, 0)
+                        vy = hy(iy, jy, ky, 0)
+                        fiy = 2.0_dp*al*hy(iy + 1, jy, ky, 0)
+                        if (iy > 0) fiy = fiy - real(iy, dp)*hy(iy - 1, jy, ky, 0)
+                        fjy = 2.0_dp*be*(hy(iy + 1, jy, ky, 0) + aby*vy)
+                        if (jy > 0) fjy = fjy - real(jy, dp)*hy(iy, jy - 1, ky, 0)
+                        vz = hz(iz, jz, kz, 0)
+                        fiz = 2.0_dp*al*hz(iz + 1, jz, kz, 0)
+                        if (iz > 0) fiz = fiz - real(iz, dp)*hz(iz - 1, jz, kz, 0)
+                        fjz = 2.0_dp*be*(hz(iz + 1, jz, kz, 0) + abz*vz)
+                        if (jz > 0) fjz = fjz - real(jz, dp)*hz(iz, jz - 1, kz, 0)
+                        pyz = yv*vy*vz; pxz = yv*vx*vz; pxy = yv*vx*vy
+                        gax = gax + fix*pyz; gay = gay + fiy*pxz; gaz = gaz + fiz*pxy
+                        gbx = gbx + fjx*pyz; gby = gby + fjy*pxz; gbz = gbz + fjz*pxy
                      end do
                   end do
                end do
