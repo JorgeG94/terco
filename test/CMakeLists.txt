@@ -1047,8 +1047,20 @@ set_tests_properties(terco/check_capi_charge_unrestricted PROPERTIES WORKING_DIR
 #
 enable_language(C)
 add_executable(link_c link_c.c)
-target_link_libraries(link_c PRIVATE ${main_lib})
+# Linked against libterco's own FILE, not the CMake target name: going
+# through the target name pulls in terco's PUBLIC usage requirements,
+# including -cudalib=cublas,cusolver under TERCO_ENABLE_GPU (top-level
+# CMakeLists.txt) -- an nvfortran flag the C compiler linking this
+# executable does not understand. Linking nvfortran itself as the
+# driver instead does understand that flag, but then supplies its OWN
+# `main` (expecting a Fortran program's `MAIN_` entry), which collides
+# with link_c.c's own `main` -- worse, not better. The file path sidesteps
+# both: the shared library already carries cuBLAS/cuSOLVER as its own
+# linked dependencies, so nothing here needs to ask for them again.
+add_dependencies(link_c ${main_lib})
+target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+set_target_properties(link_c PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:${main_lib}>")
 add_test(NAME terco/link_c COMMAND link_c)
 set_tests_properties(terco/link_c PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                              ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
