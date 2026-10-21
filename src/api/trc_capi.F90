@@ -199,7 +199,8 @@ module trc_capi
                                 XC_AVAILABLE_FUNCTIONALS, XC_FAMILY_MGGA
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
-   use pic_mpi_lib, only: comm_t, comm_from_handle
+   use pic_mpi_lib, only: comm_t, comm_from_handle, bcast
+   use pic_logger, only: global_logger
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
    use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
    use trc_scf_file, only: trc_scf_save, trc_scf_load
@@ -2888,18 +2889,15 @@ contains
       !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
       !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
       !!   - PCM: no cavity/surface-charge derivative exists.
-      !!   - a multi-rank context (`cx%fcomm /= -1`). `trc_scf_gradient`
-      !!     takes no communicator: it rebuilds the pair list and ERI
-      !!     engine from `cx%bb%b` alone, so on a collective run it would
-      !!     rebuild the FULL (unsplit) pair list, Schwarz screen and ERI
-      !!     structures on EVERY rank's own device -- not merely redundant
-      !!     work, but re-materialising, on one GPU, exactly the memory a
-      !!     multi-rank SCF split across ranks to avoid. `eri%gradient`
-      !!     itself DOES support a rank split (`this%rank`/`this%nranks`,
-      !!     `sum_ranks`'s allreduce) but only when its own `eri%build` is
-      !!     given a `comm` -- a plumbing `trc_scf_gradient` does not do
-      !!     today, found by reading trc_eri.F90's `eri_gradient` and
-      !!     comparing it against `eri_build`'s own comm handling.
+      !!
+      !! A multi-rank context (`cx%fcomm /= -1`) is NOT refused: the
+      !! gradient is not rank-split yet, so rank 0 computes it alone and
+      !! broadcasts it, with a warning (see the comment at the call). Only
+      !! rank 0's device rebuilds the full pair list, Schwarz screen and ERI
+      !! structures for it, which is the memory a split SCF avoided; a real
+      !! split is the follow-up. `eri%gradient` itself already supports one
+      !! (`this%rank`/`this%nranks`, `sum_ranks`'s allreduce) once
+      !! `trc_scf_gradient` passes its `eri%build` a `comm`.
       !!
       !! A plain LDA/GGA functional, a GLOBAL hybrid of one (b3lyp and
       !! friends), or a RANGE-SEPARATED hybrid (wb97x and friends: nonzero
@@ -2936,6 +2934,9 @@ contains
       type(trc_xc_functional_t) :: func
       logical :: reuse_grid, reuse_nlc
       logical :: have_func
+      type(comm_t) :: comm
+      logical :: collective, root
+      real(dp), allocatable :: gbuf(:)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -3011,72 +3012,96 @@ contains
          cx%message = "trc_run_gradient: PCM gradient not implemented yet (no cavity/charge derivative)"
          return
       end if
-      if (cx%fcomm /= -1) then
-         cx%message = "trc_run_gradient: the gradient path is not rank-split; run it on a single rank"
-         return
+      ! More than one rank: the SCF ran split, but the gradient is not split
+      ! yet, so rank 0 computes it alone on its own device and broadcasts
+      ! it, and every rank's trc_gradient returns the same numbers. That is
+      ! safe because every rank holds the whole converged SCF: the
+      ! orbitals, the full XC grids (only the XC evaluation is split, by
+      ! batch) and, for --df, the full fitted tensor (cx%dfjk%setup takes
+      ! no communicator). It costs one GPU's time and memory for the
+      ! gradient, hence the warning.
+      call trc_build_comm(cx%fcomm, comm, collective, status)
+      if (status /= TRC_OK) return
+      root = .true.
+      if (collective) then
+         root = comm%rank() == 0
+         if (root .and. comm%size() > 1) then
+            call global_logger%warning("trc_run_gradient: the gradient is single GPU for now; rank 0 "// &
+                                       "computes it and broadcasts it to the other ranks")
+         end if
       end if
       if (allocated(cx%grad)) deallocate (cx%grad)
       allocate (cx%grad(3, cx%natm))
-      if (cx%opts%df) then
-         ! The pair list at the threshold the fit's own was built with
-         ! (trc_run_scf's `pl%build(cx%bb%b, cx%opts%eri_thresh)`), so the
-         ! derivative runs over exactly the (mu nu|P) the energy used.
-         if (have_func) then
-            if (reuse_nlc) then
-               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                     cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                     func=func, grid_level=cx%opts%grid_level, &
-                                     grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
-                                     verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
-            else if (reuse_grid) then
-               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                     cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                     func=func, grid_level=cx%opts%grid_level, &
-                                     grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
-                                     verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg)
+      if (root) then
+         if (cx%opts%df) then
+            ! The pair list at the threshold the fit's own was built with
+            ! (trc_run_scf's `pl%build(cx%bb%b, cx%opts%eri_thresh)`), so the
+            ! derivative runs over exactly the (mu nu|P) the energy used.
+            if (have_func) then
+               if (reuse_nlc) then
+                  call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                        cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                        func=func, grid_level=cx%opts%grid_level, &
+                                        grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
+                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
+               else if (reuse_grid) then
+                  call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                        cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                        func=func, grid_level=cx%opts%grid_level, &
+                                        grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg)
+               else
+                  call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                        cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                        func=func, grid_level=cx%opts%grid_level, &
+                                        grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        verbose=cx%opts%verbose)
+               end if
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
+                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose)
+            end if
+         else if (have_func) then
+            if (reuse_nlc) then
+               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                     cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
-                                     verbose=cx%opts%verbose)
+                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
+                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
+            else if (reuse_grid) then
+               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                     cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                     func=func, grid_level=cx%opts%grid_level, &
+                                     grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg)
+            else
+               call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
+                                     cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                     func=func, grid_level=cx%opts%grid_level, &
+                                     grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose)
             end if
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                  cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                  dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose)
+                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                  verbose=cx%opts%verbose)
          end if
-      else if (have_func) then
-         if (reuse_nlc) then
-            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                                  func=func, grid_level=cx%opts%grid_level, &
-                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                  nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
-                                  grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                  grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
-         else if (reuse_grid) then
-            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                                  func=func, grid_level=cx%opts%grid_level, &
-                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                  nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
-                                  grid=cx%kgrid%grid, xg=cx%kgrid%xg)
-         else
-            call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                                  func=func, grid_level=cx%opts%grid_level, &
-                                  grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                  nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose)
-         end if
-      else
-         call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                               cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                               verbose=cx%opts%verbose)
+      end if
+      if (collective) then
+         allocate (gbuf(3*cx%natm))
+         if (root) gbuf = reshape(cx%grad, [3*cx%natm])
+         call bcast(comm, gbuf, 3*cx%natm, 0)
+         cx%grad = reshape(gbuf, [3, cx%natm])
+         deallocate (gbuf)
+         call comm%finalize()
       end if
       cx%grad_ok = .true.
       status = TRC_OK
