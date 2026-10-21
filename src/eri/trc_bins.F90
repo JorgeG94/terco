@@ -43,7 +43,7 @@ module trc_bins
    integer, parameter :: BIN_CAP = 32768
    !! Most pairs one bin may hold. A segment is the cross product of two
    !! bins, and the kernels index within a segment by a default integer
-   !! (one_bin_item's `t`), so a segment must stay below 2**31 quartets:
+   !! (each Fock kernel's within-segment `t`), so a segment must stay below 2**31 quartets:
    !! 32768**2 is 2**30. A bin past this is split by split_large_bins.
    !! TRC_BIN_CAP in the environment lowers it, for testing the split on a
    !! system small enough for CI (terco/check_binfock_split).

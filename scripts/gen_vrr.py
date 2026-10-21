@@ -370,7 +370,7 @@ def main():
 ! procedures these measured 2.4x SLOWER than the generic table-driven loop
 ! (1.466 s against 0.604 s at 32 waters), because NVHPC does not inline across
 ! a module boundary: `v` has to be fully materialised in memory to cross the
-! call, and 35 kB of spill appears.  Pasted textually into one_bin_item, `v`
+! call, and 35 kB of spill appears.  Pasted textually into the kernel, `v`
 ! stays a local and the compiler sees the whole recurrence.
 !
 ! Expects in scope: v, f, pref, pax/pay/paz, qcx/qcy/qcz, wpx/wpy/wpz,

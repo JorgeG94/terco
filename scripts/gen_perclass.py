@@ -473,6 +473,80 @@ def emit_scalar_decode():
 DIGEST_MARKER = "         ! BLOCK-ACCUMULATED DIGESTION.\n"
 
 
+def _do(var, n, ind):
+    """Open the loop `do var = 0, n - 1` at indent `ind`; for a single-trip
+    loop (n == 1, an s shell) assign `var = 0` instead and open nothing."""
+    return f"{ind}do {var} = 0, {n - 1}\n" if n > 1 else f"{ind}{var} = 0\n"
+
+
+def _end(n, ind):
+    """Close what `_do(var, n, ind)` opened: nothing for n == 1."""
+    return f"{ind}end do\n" if n > 1 else ""
+
+
+def _jonly_digestion(na, nb, nc, nd):
+    """The kfac = 0 branch of emit_digestion, from its density loop through
+    the J scatters. Its statements are the general branch's J statements,
+    but it emits no single-trip loop: an s shell's `do ia = 0, 0` becomes
+    `ia = 0`, so every index and every floating-point operation is the one
+    the loop would have run.
+
+    Why: with those loops, nvfortran 26.5's fort2 fails on the classes with
+    two or more s shells -- signal 11 in acc_remove_code, or the internal
+    error "ili_hash_func: invalid opc 65535" -- while compiling the
+    `routine seq` item routine. Whether a given file fails depends on
+    fort2's heap layout, not on its code: the same file compiles or not as
+    the length of its absolute path changes (a build-directory name is
+    enough; a Perlmutter LMAX=3 MPI build lost (10|10) that way), and the
+    include list, the mpif90 wrapper and TRC_LMAX move the failing lengths.
+    With LMAX=3 flags, (00|00), (00|10), (01|00), (10|00) and (10|10) each
+    failed for some path lengths between 45 and 200; at LMAX=2, (00|01),
+    (01|00), (00|10) and (10|00) failed between 60 and 130. With no
+    single-trip loop in this branch, no class failed at any of those
+    lengths and configurations, and 26.9 compiles either form. The general
+    branch keeps its loops: without this branch, it failed in none of them
+    either."""
+    i9, i12, i15 = " " * 9, " " * 12, " " * 15
+    o = f"{i9}do idens = 1, ndens\n\n"
+    o += _do("ib", nb, i9) + _do("ia", na, i12)
+    o += (f"{i15}dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)\n"
+          f"{i15}jab(1 + ia + {na}*ib) = 0.0_dp\n")
+    o += _end(na, i12) + _end(nb, i9)
+    o += _do("id", nd, i9) + _do("ic", nc, i12)
+    o += (f"{i15}dcd(1 + ic + {nc}*id) = dmat(idens, lamk + ic, sigl + id)\n"
+          f"{i15}jcd(1 + ic + {nc}*id) = 0.0_dp\n")
+    o += _end(nc, i12) + _end(nd, i9)
+    o += """
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. A second
+         ! counted loop fails to translate the Rys launch under nvfortran
+         ! 26.5 ("Missing increment value", trc_pc_rys1102).
+"""
+    o += _do("id", nd, i9) + _do("ic", nc, i9) + _do("ib", nb, i9) + _do("ia", na, i9)
+    vb = f"(wq*vbuf(1 + ia + {na}*ib + {na*nb}*ic + {na*nb*nc}*id))"
+    o += (f"{i12}jab(1 + ia + {na}*ib) = jab(1 + ia + {na}*ib) &\n"
+          f"{' ' * 36}+ 4.0_dp*jfac*{vb} &\n"
+          f"{' ' * 36}*dcd(1 + ic + {nc}*id)\n"
+          f"{i12}jcd(1 + ic + {nc}*id) = jcd(1 + ic + {nc}*id) &\n"
+          f"{' ' * 36}+ 4.0_dp*jfac*{vb} &\n"
+          f"{' ' * 36}*dab(1 + ia + {na}*ib)\n")
+    o += _end(na, i9) + _end(nb, i9) + _end(nc, i9) + _end(nd, i9)
+    o += "\n"
+    o += _do("ib", nb, i9) + _do("ia", na, i12)
+    o += (f"{i15}!$acc atomic update\n"
+          f"{i15}jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &\n"
+          f"{' ' * 42}+ jab(1 + ia + {na}*ib)\n")
+    o += _end(na, i12) + _end(nb, i9)
+    o += _do("id", nd, i9) + _do("ic", nc, i12)
+    o += (f"{i15}!$acc atomic update\n"
+          f"{i15}jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &\n"
+          f"{' ' * 44}+ jcd(1 + ic + {nc}*id)\n")
+    o += _end(nc, i12) + _end(nd, i9)
+    o += "\n"
+    return o
+
+
 def emit_digestion(na, nb, nc, nd):
     """Block-accumulated, density-batched Fock digestion from `vbuf`.
     Its second line is DIGEST_MARKER, which the splicing generators search
@@ -517,59 +591,7 @@ def emit_digestion(na, nb, nc, nd):
          ! kfac is uniform over the launch, so no warp diverges here.
          !
          if (kfac == 0.0_dp) then
-         do idens = 1, ndens
-
-         do ib = 0, {nb - 1}
-            do ia = 0, {na - 1}
-               dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)
-               jab(1 + ia + {na}*ib) = 0.0_dp
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ic = 0, {nc - 1}
-               dcd(1 + ic + {nc}*id) = dmat(idens, lamk + ic, sigl + id)
-               jcd(1 + ic + {nc}*id) = 0.0_dp
-            end do
-         end do
-
-         ! Spelled differently from the general branch, on purpose, and with
-         ! the same arithmetic: the component index in closed form and the
-         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
-         ! 26.5 rejects every closer copy somewhere in the class set -- a
-         ! second counted loop fails to translate the Rys launch ("Missing
-         ! increment value", trc_pc_rys1102), and the closed form through
-         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
-         do id = 0, {nd - 1}
-         do ic = 0, {nc - 1}
-         do ib = 0, {nb - 1}
-         do ia = 0, {na - 1}
-            jab(1 + ia + {na}*ib) = jab(1 + ia + {na}*ib) &
-                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + {na}*ib + {na*nb}*ic + {na*nb*nc}*id)) &
-                                    *dcd(1 + ic + {nc}*id)
-            jcd(1 + ic + {nc}*id) = jcd(1 + ic + {nc}*id) &
-                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + {na}*ib + {na*nb}*ic + {na*nb*nc}*id)) &
-                                    *dab(1 + ia + {na}*ib)
-         end do
-         end do
-         end do
-         end do
-
-         do ib = 0, {nb - 1}
-            do ia = 0, {na - 1}
-               !$acc atomic update
-               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
-                                          + jab(1 + ia + {na}*ib)
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ic = 0, {nc - 1}
-               !$acc atomic update
-               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
-                                            + jcd(1 + ic + {nc}*id)
-            end do
-         end do
-
-         end do   ! idens
+{_jonly_digestion(na, nb, nc, nd)}         end do   ! idens
          else
 
          !
