@@ -243,6 +243,24 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_Fortran_COMPILER_ID S
     PROPERTIES COMPILE_OPTIONS "-fp-model=precise")
 endif()
 
+# The translated kernels' Maple literals go in instructions, not constant bank
+# 2. Every functional is reachable from the trc_xc_*_points kernels, so their
+# literals and jump tables add up in those kernels' c[0x2] bank: 35808 of its
+# 64 KiB on main, and over 64 KiB with the 47 meta-GGA kernels, where
+# CUDA 12.9's nvlink silently mis-links (see TERCO_CHECK_DEVICE_LINK in the
+# top-level CMakeLists.txt). With the literals inlined the largest bank is
+# 1080 bytes (an ERI kernel), the energies are bit-identical, and the point
+# kernel's time is unchanged within 1% (bench_xc gly10/cc-pVDZ level 3, V100:
+# PBE here; PBE, B3LYP, wB97X-V, r2SCAN, TPSS and M06 on the meta-GGA branch).
+# Device code grows by 0.5 MB of 33 MB (1.2 MB of 37 MB with the meta-GGAs).
+if(TERCO_ENABLE_GPU)
+  get_target_property(_trc_srcs ${main_lib} SOURCES)
+  list(FILTER _trc_srcs INCLUDE REGEX "xc/functionals/")
+  set_source_files_properties(
+    ${_trc_srcs} DIRECTORY ${PROJECT_SOURCE_DIR}
+    PROPERTIES COMPILE_OPTIONS "-Wptxas,--disable-optimizer-constants")
+endif()
+
 # `trc_binkernel.F90` textually includes the quartet body rather than calling
 # it. NVHPC will not inline an `!$acc routine seq` across a module boundary --
 # `v` has to be materialised in memory to cross the call and 35 kB of spill
