@@ -1,7 +1,7 @@
 # terco golden v1
 # case: rys_fock_formamide_def2tzvp
-# from: gfortran build bgold3 at 29a704b, by test/goldens/regen_goldens.py
-TR_DG 9.9355760831723092e+03
-NORM_G 1.3149182855696508e+03
-WSUM_G 6.1688859929211702e+01
+# from: gfortran build c3 at df07f9f, by test/goldens/regen_goldens.py
+TR_DG 9.9355760831723674e+03
+NORM_G 1.3149182855696520e+03
+WSUM_G 6.1688859929217465e+01
 END
