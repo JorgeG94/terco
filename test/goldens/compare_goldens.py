@@ -26,30 +26,40 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-#: (case, key prefix, absolute tolerance, why), first match wins; case "*"
-#: is any case. Each is about 10x the largest |diff| measured across CI's
-#: jobs (gcc-15, intel, nvidia-hpc, OpenACC-to-OpenMP, LMAX=3, DF_LMAX=3)
-#: against these gfortran 15 goldens -- see "Two tiers" in
-#: test/pyscf_refs/README.md for the measurements.
+#: (case, key prefix, absolute tolerance, relative tolerance, why), first
+#: match wins; case "*" is any case. A quantity passes within
+#: max(absolute, relative * |golden|). The absolute ones are about 10x the
+#: largest |diff| measured across CI's jobs (gcc-15, intel, nvidia-hpc,
+#: OpenACC-to-OpenMP, LMAX=3, DF_LMAX=3) against these gfortran 15 goldens
+#: -- see "Two tiers" in test/pyscf_refs/README.md for the measurements.
+#: CI builds the host library only, so those never saw a GPU build. The
+#: relative ones are about 10x the largest |diff|/|golden| measured on the
+#: V100 GPU builds (nvfortran 26.5, LMAX=2 and LMAX=3, 2026-10-21): 3.3e-15
+#: for NORM_ (formamide/def2-TZVP, |G| = 1315), 2.4e-15 for TR_D and 6e-15
+#: for a CPU re-routing of the d classes, 4e-14 for WSUM_. On a large
+#: Fock build one fixed absolute bound is ~1000x tighter in relative terms
+#: than on a small one, and at |G| ~ 1e3 the 2e-12 NORM_ bound was 9 ULPs:
+#: below what device summation order alone moves. Energies keep their
+#: absolute bounds only.
 TOLERANCES = [
     # The synthetic auxiliary ladder on uncontracted 6-31G is badly
     # conditioned: its correlation energy moves 1.04e-10 between runs of
     # the 4-thread OpenMP build (9.85e-11 on intel) while E_RHF agrees to
     # 5e-13. scf_rimp2_ccpvdz, with a real RI basis, agrees to 1e-15.
-    ("scf_rimp2", "E_OS", 1.0e-9, "RI-MP2, synthetic aux, Eh"),
-    ("scf_rimp2", "E_SS", 1.0e-9, "RI-MP2, synthetic aux, Eh"),
-    ("scf_rimp2", "E_CORR", 1.0e-9, "RI-MP2, synthetic aux, Eh"),
-    ("*", "E_", 2.0e-10, "energies, Eh"),
-    ("*", "TR_D", 5.0e-11, "tr(D G) of a fixed-density Fock build"),
-    ("*", "WSUM_", 2.0e-11, "fixed-weight element sum of a Fock build"),
-    ("*", "NORM_", 2.0e-12, "Frobenius norm of a Fock build"),
+    ("scf_rimp2", "E_OS", 1.0e-9, 0.0, "RI-MP2, synthetic aux, Eh"),
+    ("scf_rimp2", "E_SS", 1.0e-9, 0.0, "RI-MP2, synthetic aux, Eh"),
+    ("scf_rimp2", "E_CORR", 1.0e-9, 0.0, "RI-MP2, synthetic aux, Eh"),
+    ("*", "E_", 2.0e-10, 0.0, "energies, Eh"),
+    ("*", "TR_D", 5.0e-11, 5.0e-14, "tr(D G) of a fixed-density Fock build"),
+    ("*", "WSUM_", 2.0e-11, 4.0e-13, "fixed-weight element sum of a Fock build"),
+    ("*", "NORM_", 2.0e-12, 3.0e-14, "Frobenius norm of a Fock build"),
 ]
 
 
-def tolerance(case: str, key: str) -> float:
-    for c, prefix, tol, _ in TOLERANCES:
+def tolerance(case: str, key: str, golden: float) -> float:
+    for c, prefix, tol_abs, tol_rel, _ in TOLERANCES:
         if c in ("*", case) and key.startswith(prefix):
-            return tol
+            return max(tol_abs, tol_rel*abs(golden))
     raise SystemExit(f"compare_goldens: no tolerance for {case} {key!r}; add it to TOLERANCES")
 
 
@@ -83,7 +93,7 @@ def report(out_dir: Path) -> int:
         for key, val in got.items():
             if key not in want:
                 continue
-            prefix = next((p for c, p, _, _ in TOLERANCES
+            prefix = next((p for c, p, _, _, _ in TOLERANCES
                            if c in ("*", case) and key.startswith(p)), "?")
             diff = abs(val - want[key])
             print(f"golden-spread {case:34s} {key:44s} {diff:9.2e}")
@@ -125,7 +135,7 @@ def main() -> int:
             print(f"{key:48s} {'(none)':>24s} {val:24.16e}   FAIL: no golden for this key")
             nfail += 1
             continue
-        tol = tolerance(case, key)
+        tol = tolerance(case, key, want[key])
         diff = abs(val - want[key])
         ok = diff <= tol
         nfail += not ok

@@ -220,8 +220,14 @@ the Fock builds, which have no single energy, the golden is three scalars
 of each matrix: `tr(D G)`, its Frobenius norm, and a sum with fixed uneven
 weights, which moves when any element does.
 
-Tolerances (`TOLERANCES` in `compare_goldens.py`) are absolute and set at
-about ten times the largest spread measured in CI.
+Tolerances (`TOLERANCES` in `compare_goldens.py`) are an absolute bound and,
+for the Fock-matrix quantities, a relative one: a quantity passes within
+max(absolute, relative × |golden|). The absolute bounds are about ten times
+the largest spread measured in CI. CI builds the host library only, so the
+relative bounds are about ten times the largest |diff|/|golden| measured on
+the V100 GPU builds (below). On a large Fock build a fixed absolute bound is
+far tighter in relative terms than on a small one: at |G| ~ 1e3 the 2e-12
+`NORM_` bound was 9 ULPs, under what device summation order alone moves.
 
 **Where the goldens come from.** They were written by gfortran 15 with
 OpenBLAS. Two gfortran 15 builds, at `TERCO_LMAX=2` and `=3`, agree on
@@ -232,13 +238,13 @@ prints every quantity's |diff| against those goldens. The jobs measured
 were gcc-15 with reference BLAS, intel 2025.0, nvidia-hpc 26.9,
 OpenACC-to-OpenMP at 4 threads, `TERCO_LMAX=3` and `TERCO_DF_LMAX=3`.
 
-| quantity | key | largest |diff| measured | tolerance |
-|---|---|---|---|
-| energies, Eh | `E_` | 1.66e-11 (`scf_robust` w5/d-aug-cc-pVDZ, cond(S) ~5e7, gcc-15); 3.6e-12 elsewhere | `2e-10` |
-| `scf_rimp2` (synthetic aux) E_os, E_ss, E_corr | `E_OS`, `E_SS`, `E_CORR` | 1.04e-10 (OpenMP; 9.85e-11 intel) | `1e-9` |
-| `tr(D G)` of a fixed-density Fock build | `TR_D` | 4.3e-12 (`erf_fock` formamide, nvidia-hpc) | `5e-11` |
-| fixed-weight element sum | `WSUM_` | 1.1e-12 (intel) | `2e-11` |
-| Frobenius norm | `NORM_` | 1.7e-13 (nvidia-hpc) | `2e-12` |
+| quantity | key | largest |diff| measured, CI | largest |diff|/|golden|, V100 GPU | tolerance |
+|---|---|---|---|---|
+| energies, Eh | `E_` | 1.66e-11 (`scf_robust` w5/d-aug-cc-pVDZ, cond(S) ~5e7, gcc-15); 3.6e-12 elsewhere | (absolute only) | `2e-10` |
+| `scf_rimp2` (synthetic aux) E_os, E_ss, E_corr | `E_OS`, `E_SS`, `E_CORR` | 1.04e-10 (OpenMP; 9.85e-11 intel) | (absolute only) | `1e-9` |
+| `tr(D G)` of a fixed-density Fock build | `TR_D` | 4.3e-12 (`erf_fock` formamide, nvidia-hpc) | 2.4e-15 (6e-15 for a CPU re-routing of the d classes) | `5e-11`, `5e-14` relative |
+| fixed-weight element sum | `WSUM_` | 1.1e-12 (intel) | 4e-14 | `2e-11`, `4e-13` relative |
+| Frobenius norm | `NORM_` | 1.7e-13 (nvidia-hpc) | 3.3e-15 (`rys_fock` formamide/def2-TZVP, |G| = 1315) | `2e-12`, `3e-14` relative |
 
 **The one exception.** `scf_rimp2`'s default case uses uncontracted 6-31G
 with the synthetic auxiliary ladder, which is badly conditioned. Its
