@@ -29,7 +29,7 @@ homepage = "https://github.com/JorgeG94/terco"
 [preprocess.cpp]
 suffixes = ["F90", "f90"]
 # The definitions CMake always sets (CMakeLists.txt, target_compile_definitions).
-macros = ["TRC_LMAX=2", "TRC_FOCK6", "TRC_PERCLASS"]
+macros = ["TRC_LMAX=2", "TRC_FOCK6"]
 
 [library]
 source-dir = "src"

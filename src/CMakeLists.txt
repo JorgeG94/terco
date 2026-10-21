@@ -595,8 +595,8 @@ if(_regen)
     terco_gen("gen_sph.py" ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag}
               -o ${_gen_out}/trc_sph_tables.F90)
 
-    # The unrolled recurrences are textual includes, and only the shared kernel
-    # uses them -- at LMAX<=1, for the reason the top-level CMakeLists gives.
+    # The unrolled recurrences are textual includes, and only the non-symmetric
+    # kernel (one_bin_item_nosym) uses them -- at LMAX<=1, for the reason the top-level CMakeLists gives.
     # They carry a `#if TRC_LMAX != n / #error` guard, so a stale one is a
     # compile error rather than a wrong number. That guard exists because a
     # stale one WAS a wrong number, silently, for a month. gen_hrr.py's output

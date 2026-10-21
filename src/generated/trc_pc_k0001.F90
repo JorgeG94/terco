@@ -453,30 +453,25 @@ contains
          if (kfac == 0.0_dp) then
          do idens = 1, ndens
 
-         do ib = 0, 0
-            do ia = 0, 0
+         ib = 0
+            ia = 0
                dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
                jab(1 + ia + 1*ib) = 0.0_dp
-            end do
-         end do
          do id = 0, 2
-            do ic = 0, 0
+            ic = 0
                dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
                jcd(1 + ic + 1*id) = 0.0_dp
-            end do
          end do
 
          ! Spelled differently from the general branch, on purpose, and with
          ! the same arithmetic: the component index in closed form and the
-         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
-         ! 26.5 rejects every closer copy somewhere in the class set -- a
-         ! second counted loop fails to translate the Rys launch ("Missing
-         ! increment value", trc_pc_rys1102), and the closed form through
-         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         ! scaled integral inline rather than in `idx` and `sc`. A second
+         ! counted loop fails to translate the Rys launch under nvfortran
+         ! 26.5 ("Missing increment value", trc_pc_rys1102).
          do id = 0, 2
-         do ic = 0, 0
-         do ib = 0, 0
-         do ia = 0, 0
+         ic = 0
+         ib = 0
+         ia = 0
             jab(1 + ia + 1*ib) = jab(1 + ia + 1*ib) &
                                     + 4.0_dp*jfac*(wq*vbuf(1 + ia + 1*ib + 1*ic + 1*id)) &
                                     *dcd(1 + ic + 1*id)
@@ -484,23 +479,17 @@ contains
                                     + 4.0_dp*jfac*(wq*vbuf(1 + ia + 1*ib + 1*ic + 1*id)) &
                                     *dab(1 + ia + 1*ib)
          end do
-         end do
-         end do
-         end do
 
-         do ib = 0, 0
-            do ia = 0, 0
+         ib = 0
+            ia = 0
                !$acc atomic update
                jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
                                           + jab(1 + ia + 1*ib)
-            end do
-         end do
          do id = 0, 2
-            do ic = 0, 0
+            ic = 0
                !$acc atomic update
                jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
                                             + jcd(1 + ic + 1*id)
-            end do
          end do
 
          end do   ! idens
