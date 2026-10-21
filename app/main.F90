@@ -52,12 +52,13 @@ module terco_run
       character(len=:), allocatable :: pcm
       character(len=:), allocatable :: save_scf, restart   !! "" when not asked for
       integer, allocatable :: z(:)
-      integer :: natm, chrg, uhf, nelec, mult, grid
+      integer :: natm, chrg, uhf, nelec, mult, grid, nlc_grid
       integer(c_int) :: nao, conv, niter, sph, npcm
       real(dp) :: econv, gconv, thresh, eps
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
+      logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
       integer(int64) :: t0, t1, rate
       type(comm_t) :: wcomm
@@ -204,6 +205,8 @@ contains
          block
             character(len=1024) :: logline
             write (logline, "(a,i0)") "   grid level       : ", r%grid
+            if (r%vv10) write (logline, "(a,i0,a,i0)") "   grid level       : ", r%grid, &
+               "   VV10: ", r%nlc_grid
             call global_logger%info(trim(logline))
          end block
       end if
@@ -510,7 +513,7 @@ program terco_main
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
    real(c_double), allocatable :: gradbuf(:)
-   integer :: nlc_grid, maxiter, nfrozen, guess_kind, dev, aux_block
+   integer :: maxiter, nfrozen, guess_kind, dev, aux_block
    integer(c_int) :: st, nspin
    logical :: cart
 
@@ -620,7 +623,10 @@ program terco_main
    if (len(r%func) > 0) then
       block
          type(trc_xc_functional_t) :: func_spec
-         if (xc_functional_by_name(r%func, func_spec)) r%dh = xc_is_double_hybrid(func_spec)
+         if (xc_functional_by_name(r%func, func_spec)) then
+            r%dh = xc_is_double_hybrid(func_spec)
+            r%vv10 = func_spec%nlc_b /= 0.0_dp
+         end if
          if (r%dh) then
             r%pt2_cos = real(func_spec%pt2_cos, c_double)
             r%pt2_css = real(func_spec%pt2_css, c_double)
@@ -651,7 +657,7 @@ program terco_main
 
    call r%cli%get("grid", r%grid, r%err)
    call check(r, "--grid")
-   call r%cli%get("nlc-grid", nlc_grid, r%err)
+   call r%cli%get("nlc-grid", r%nlc_grid, r%err)
    call check(r, "--nlc-grid")
    call r%cli%get("iterations", maxiter, r%err)
    call check(r, "--iterations")
@@ -762,7 +768,7 @@ program terco_main
       call api(r, trc_set_df(r%h, 1_c_int))
    end if
    call api(r, trc_set_method(r%h, c_string(r%func), int(r%grid, c_int)))
-   call api(r, trc_set_nlc_grid(r%h, int(nlc_grid, c_int)))
+   call api(r, trc_set_nlc_grid(r%h, int(r%nlc_grid, c_int)))
    if (len(r%pcm) > 0) call api(r, trc_set_pcm(r%h, c_string(r%pcm), real(r%eps, c_double), 0_c_int, 0.0_c_double))
    call api(r, trc_set_convergence(r%h, real(r%econv, c_double), real(r%gconv, c_double), int(maxiter, c_int), &
                                    10_c_int))
