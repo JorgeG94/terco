@@ -410,18 +410,15 @@ int trc_run_scf(trc_handle_t handle);
  *     gone. A --df gradient otherwise runs the FITTED J/K gradient
  *     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
  *   - PCM: no cavity/surface-charge derivative exists.
- *   - a multi-rank context (`cx%fcomm /= -1`). `trc_scf_gradient`
- *     takes no communicator: it rebuilds the pair list and ERI
- *     engine from `cx%bb%b` alone, so on a collective run it would
- *     rebuild the FULL (unsplit) pair list, Schwarz screen and ERI
- *     structures on EVERY rank's own device -- not merely redundant
- *     work, but re-materialising, on one GPU, exactly the memory a
- *     multi-rank SCF split across ranks to avoid. `eri%gradient`
- *     itself DOES support a rank split (`this%rank`/`this%nranks`,
- *     `sum_ranks`'s allreduce) but only when its own `eri%build` is
- *     given a `comm` -- a plumbing `trc_scf_gradient` does not do
- *     today, found by reading trc_eri.F90's `eri_gradient` and
- *     comparing it against `eri_build`'s own comm handling.
+ *
+ * A multi-rank context (`cx%fcomm /= -1`) is NOT refused: the
+ * gradient is not rank-split yet, so rank 0 computes it alone and
+ * broadcasts it, with a warning (see the comment at the call). Only
+ * rank 0's device rebuilds the full pair list, Schwarz screen and ERI
+ * structures for it, which is the memory a split SCF avoided; a real
+ * split is the follow-up. `eri%gradient` itself already supports one
+ * (`this%rank`/`this%nranks`, `sum_ranks`'s allreduce) once
+ * `trc_scf_gradient` passes its `eri%build` a `comm`.
  *
  * A plain LDA/GGA functional, a GLOBAL hybrid of one (b3lyp and
  * friends), or a RANGE-SEPARATED hybrid (wb97x and friends: nonzero
