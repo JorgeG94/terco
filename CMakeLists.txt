@@ -389,6 +389,45 @@ if(TERCO_ENABLE_GPU)
 endif()
 
 #
+# Check the device link after every link of libterco.so. A kernel reads its
+# compiler constants -- double literals and `select case` jump tables -- from
+# constant bank 2, which holds 64 KiB. When the constants one kernel can reach
+# exceed that, CUDA 12.9's nvlink (the last toolkit for sm_70) folds every
+# kernel's constants into one de-duplicated bank and leaves some jump-table
+# offsets unpatched, without a word: the meta-GGA dispatch did this, and
+# pcm_fock_driver then died with CUDA_ERROR_INVALID_PC (or, in another
+# layout, the meta-GGA energies came out wrong). tools/check_device_cbank.py
+# verifies every c[0x2] reference against the objects (3-4 s on the full
+# library), prints the largest bank -- main's is trc_xc_*_points at 35808
+# bytes, 55% -- and deletes the library when the check fails, so a broken
+# libterco.so never reaches a test. A static library is device-linked into
+# whatever links it, so there is nothing to check here.
+#
+if(TERCO_ENABLE_GPU AND TERCO_BUILD_SHARED)
+  option(TERCO_CHECK_DEVICE_LINK "Verify libterco.so's constant-bank relocations after linking" ON)
+  if(TERCO_CHECK_DEVICE_LINK)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    get_filename_component(_trc_nvhpc_root "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+    get_filename_component(_trc_nvhpc_root "${_trc_nvhpc_root}/../.." ABSOLUTE)
+    find_program(
+      TERCO_CUOBJDUMP cuobjdump
+      HINTS "${_trc_nvhpc_root}/cuda/${TERCO_CUDA_VERSION}/bin" "${_trc_nvhpc_root}/cuda/bin"
+      DOC "cuobjdump for the device-link check (tools/check_device_cbank.py)")
+    if(NOT TERCO_CUOBJDUMP)
+      message(FATAL_ERROR "TERCO_CHECK_DEVICE_LINK needs cuobjdump; set TERCO_CUOBJDUMP, or "
+                          "-DTERCO_CHECK_DEVICE_LINK=OFF")
+    endif()
+    add_custom_command(
+      TARGET ${main_lib}
+      POST_BUILD
+      COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_device_cbank.py --cuobjdump
+              ${TERCO_CUOBJDUMP} --remove-on-failure $<TARGET_FILE:${main_lib}>
+              "$<TARGET_OBJECTS:${main_lib}>"
+      COMMAND_EXPAND_LISTS VERBATIM)
+  endif()
+endif()
+
+#
 # pic-blas, for the SCF driver (src/scf/trc_scf_driver.F90): the orthogonaliser and the
 # core guess go through its explicit-interface wrappers in every build, and
 # under a host build so do the eigenproblem, the products and the dot
