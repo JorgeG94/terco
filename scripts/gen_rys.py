@@ -61,9 +61,18 @@ comment where it is built (`unrolled_energy_middle` and this module's
 `main`): t^2 -> theta*t^2 inside u2's own formula, NOT rho -> theta*rho the
 way HGP's VRR does, confirmed by comparing against pyscf's
 `mol.with_range_coulomb` (test/check_erf_fock_vs_pyscf.F90).
+
+THE CHUNKED FOCK PASS
+---------------------
+A class in FOCK_CHUNK_PLAN (the f classes the pair bins launch) keeps the
+HEAD but replaces the integral AND the digestion: it is cut into chunks of
+output components, each its own primitive/root loop and digestion, so one
+thread never holds the whole Cartesian block. See the section comment
+above FOCK_CHUNK_PLAN for the design and the measurements.
 """
 import argparse
 import importlib.util
+import itertools
 import math
 import os
 import re
@@ -80,6 +89,468 @@ def _load(name, path):
 
 co = _load("co", os.path.join(HERE, "cartorder.py"))
 ri = _load("ri", os.path.join(HERE, "rys_inline.py"))
+# ---------------------------------------------------------------------------
+# CHUNKED FOCK PASS
+# ---------------------------------------------------------------------------
+#
+# WHY. The f classes are Rys only, and the array form below holds one
+# quartet's WHOLE Cartesian block in one thread: vbuf(na*nb*nc*nd), the
+# gx/gy/gz and hx/hy/hz tables indexed by runtime loop variables, and the
+# twelve density/Fock blocks of the digestion. That is far past the
+# 255-register file, so it lives in local memory, and with ~20k resident
+# threads it streams through DRAM. Nsight Compute, w20 cc-pVTZ, 1e-13, V100,
+# one SCF launch of (fp|dp): 137.5 ms, 255 registers, 7.5 KB of stack, 103 GB
+# of local loads and 38 GB of local stores against 3.2 GB of global loads,
+# 93 GB of DRAM traffic, 3.5% SM throughput. The heaviest classes were worse
+# for a second reason: (ff|ff) has 10000 components and few quartets, so its
+# 97 KB-stack threads were also too FEW to fill the GPU.
+#
+# WHAT. The item routine is ordered, as the gradient's CHUNKED RHF COMPACT
+# PASS (gen_rys_grad.py) is,
+#
+#     chunk of output components -> primitive quartet -> root
+#
+# The four shells split into INSIDE and OUTER (FOCK_CHUNK_PLAN). A chunk is
+# every Cartesian component of the inside shells for one component of each
+# outer shell, and its integrals accumulate in named scalars vq_0.. across
+# the primitive and root loops. Per root, the chunk builds the 2D-table
+# corner its components read and the horizontal transfer, all named scalars
+# with literal indices: over an inside shell with the literal binomials, over
+# an outer shell with RUNTIME weights -- wb_s = C(eb, s) ab^(eb-s), zero past
+# eb, set once per chunk from the outer component's exponent eb (the cn
+# tables) -- so that h(..) = sum_s wb_s g(.. + s ..) has literal indices
+# either way and EVERY chunk runs the same code. The source is one chunk
+# long, not one class long. Then the chunk is digested on its own: each Fock
+# element it touches gets one partial sum (the chunk's components that land
+# on it times the density element each pairs with, read straight from dmat)
+# and one atomic.
+#
+# The outer sets supported are, per side, nothing, the second shell, or both
+# (_FOCK_OUTER_SETS): an outer FIRST shell alone would pick a 2D-table row
+# by a runtime index, and a runtime index into per-thread scratch is exactly
+# what puts it back in local memory.
+#
+# Chunk -> primitive, not the other way round: with the chunk loop inside
+# the primitive loop the compiler hoists every chunk's state out of it and
+# rebuilds the whole block in registers (measured on the gradient, see
+# gen_rys_grad.py).
+#
+# LOOP OR THREAD. 'loop' runs every chunk in one thread per quartet;
+# 'thread' gives each (quartet, chunk) its own `do concurrent` iteration,
+# quartet fastest so a warp shares one chunk, and redoes the decode and the
+# screens per chunk. 'thread' multiplies the parallelism by the chunk count,
+# which is what the heavy classes lacked: (ff|ff) 502 -> 225 ms over the run
+# in loop form, 15 ms in thread form.
+#
+# The price is recomputation -- the primitive setup, the roots and the
+# 2D-table corner per chunk -- and atomics: a Fock element several chunks
+# touch is written once per chunk instead of once per quartet. Which shape
+# wins is not predictable from a register model (the gradient's live-set
+# rule picks badly here), so FOCK_CHUNK_PLAN is measured.
+#
+# The density loop runs per chunk, around the digestion only, so any ndens
+# (UHF, the response batches) reuses the chunk's integrals the way the array
+# form reuses vbuf. kfac = 0 skips the exchange half per chunk: one uniform
+# test per chunk, not per component.
+#
+# A first version kept every chunk's indices literal, gen_rys_grad.py's
+# select case over chunks. It was no faster where it compiled (within 5% of
+# the plan below on every class it was built for) and it did not compile in
+# budget: 570-583 s per object at 900-1080 components, and (ff|fd) at 1000
+# had not finished after 25 minutes. The runtime-outer form takes at most
+# 12 s per object.
+
+#: The measured chunk shape per class: outer shells (0..3 = a, b, c, d; ()
+#: is one chunk of the whole class) and the form. w20 (the first 60 atoms of
+#: w172), cc-pVTZ, 1e-13, V100, every one of the nine shapes in both forms;
+#: the per-class time over the whole 11-iteration run, array form -> this
+#: plan, in ms (the full table is in the commit that introduced this):
+#:   (fp|dp) 1496 -> 385, (fd|dp) 1120 -> 327, (fp|ps) 1104 -> 231,
+#:   (fp|pp) 1056 -> 218, (fp|ds) 966 -> 254, (fs|dp) 943 -> 266,
+#:   (fd|ps) 835 -> 226, (fp|dd) 760 -> 208, (fd|pp) 757 -> 170,
+#:   (fd|ds) 650 -> 194, (fd|fp) 588 -> 155, (fs|pp) 580 -> 117,
+#:   (fp|fp) 578 -> 101, (ff|dp) 518 -> 141, (ff|ff) 502 -> 15,
+#:   (ff|pp) 481 -> 77, (ff|fp) 476 -> 63, (fd|dd) 476 -> 159,
+#:   (fs|dd) 409 -> 129, (fp|fs) 386 -> 108, (fd|fs) 329 -> 90,
+#:   (ff|fd) 326 -> 46, (ff|ps) 287 -> 95, (ff|dd) 281 -> 65,
+#:   (fd|fd) 276 -> 68, (ff|ds) 271 -> 90, (fs|fs) 266 -> 48,
+#:   (fs|ds) 177 -> 146, (ff|fs) 141 -> 47, (ff|ss) 122 -> 39.
+#: A class not listed keeps the array form: d and below (HGP's, whose Rys
+#: kernels stay exactly as they were), the tags the pair bins never launch
+#: (la < lb, lc < ld or (la, lb) < (lc, ld); trc_bins.F90's ANGULAR-MOMENTUM
+#: CANONICAL), and (fs|ss), (fs|ps), (fp|ss), (fd|ss), which measured the
+#: same in every shape (104, 153, 81, 64 ms).
+FOCK_CHUNK_PLAN = {
+    "3020": ((), "loop"),
+    "3030": ((), "loop"),
+    "3300": ((), "loop"),
+    "3011": ((3,), "thread"),
+    "3021": ((3,), "thread"),
+    "3022": ((3,), "thread"),
+    "3310": ((1,), "loop"),
+    "3320": ((1,), "loop"),
+    "3110": ((2, 3), "loop"),
+    "3120": ((2, 3), "loop"),
+    "3210": ((2, 3), "loop"),
+    "3111": ((2, 3), "thread"),
+    "3121": ((2, 3), "thread"),
+    "3122": ((2, 3), "thread"),
+    "3130": ((2, 3), "thread"),
+    "3131": ((2, 3), "thread"),
+    "3211": ((2, 3), "thread"),
+    "3220": ((2, 3), "thread"),
+    "3221": ((2, 3), "thread"),
+    "3222": ((2, 3), "thread"),
+    "3230": ((2, 3), "thread"),
+    "3231": ((2, 3), "thread"),
+    "3232": ((2, 3), "thread"),
+    "3311": ((1, 3), "thread"),
+    "3321": ((1, 3), "thread"),
+    "3330": ((1, 3), "thread"),
+    "3322": ((0, 1), "thread"),
+    "3331": ((0, 1), "thread"),
+    "3332": ((0, 1), "thread"),
+    "3333": ((0, 1), "thread"),
+}
+
+#: Live-set ceiling, in doubles, for chunk_plan_fock: only the fallback for
+#: a class forced with --chunk-classes and not in FOCK_CHUNK_PLAN.
+CHUNK_LIVE_MAX = 160
+
+
+#: Fock pairs the digestion writes, as (shell, shell, the density pair it
+#: multiplies, the scale): J_ab with D_cd, J_cd with D_ab, and the four
+#: exchange blocks with the opposite pair. Shells are 0..3 = a, b, c, d.
+_FOCK_PAIRS = (((0, 1), (2, 3), "cj"), ((2, 3), (0, 1), "cj"),
+               ((0, 2), (1, 3), "ck"), ((0, 3), (1, 2), "ck"),
+               ((1, 2), (0, 3), "ck"), ((1, 3), (0, 2), "ck"))
+_AO = ("mui", "nuj", "lamk", "sigl")
+_DN = ("a", "b", "c", "d")
+
+
+def _ao(s, x):
+    if x == "o":
+        return f"{_AO[s]} + jo{s}"
+    return _AO[s] if x == 0 else f"{_AO[s]} + {x}"
+
+
+def _dname(p, q, x, y):
+    return f"d{_DN[p]}{_DN[q]}_{x}_{y}"
+
+
+def _sum_lines(terms, pad):
+    """`terms` joined by ' + ', wrapped at four terms per line."""
+    rows = [" + ".join(terms[i:i + 4]) for i in range(0, len(terms), 4)]
+    return (" &\n" + pad + "   + ").join(rows)
+
+
+def _chunk_digest(chunk, vnames, pad, dnames, which):
+    """One chunk's digestion for one density: for each Fock element the chunk
+    touches in the pairs `which` (indices into _FOCK_PAIRS), one partial
+    sum over the chunk's components that land on it and one atomic. The
+    density elements are loaded once into named scalars first."""
+    out = []
+    need = {}
+    for w in which:
+        (p, q), (r, s), _ = _FOCK_PAIRS[w]
+        for comp in chunk:
+            need[(r, s, comp[r], comp[s])] = None
+    for (r, s, x, y) in need:
+        nmd = _dname(r, s, x, y)
+        dnames.add(nmd)
+        out.append(f"{pad}{nmd} = dmat(idens, {_ao(r, x)}, {_ao(s, y)})\n")
+    for w in which:
+        (p, q), (r, s), scale = _FOCK_PAIRS[w]
+        groups = {}
+        for comp, vn in zip(chunk, vnames):
+            groups.setdefault((comp[p], comp[q]), []).append(
+                f"{vn}*{_dname(r, s, comp[r], comp[s])}")
+        sign = "+" if scale == "cj" else "-"
+        for (x, y), terms in groups.items():
+            out.append(f"{pad}sc = {_sum_lines(terms, pad)}\n")
+            el = f"jmat(idens, {_ao(p, x)}, {_ao(q, y)})"
+            out.append(f"{pad}!$acc atomic update\n"
+                       f"{pad}{el} = {el} {sign} {scale}*sc\n")
+    return "".join(out)
+
+
+#: The outer sets the chunked pass supports: per side, nothing, the second
+#: shell, or both -- never the first shell alone (see the section comment).
+_FOCK_OUTER_SETS = [tuple(sorted(br + kt)) for br in ((), (1,), (0, 1)) for kt in ((), (3,), (2, 3))]
+
+
+def _chunk_keys(comps, outer, axis):
+    """Per axis, the (bra key, ket key) of every inside component: the
+    exponents of the inside shells on each side, () where a side is all
+    outer. Returns the inside component list and the per-component keys."""
+    inside = [s for s in range(4) if s not in outer]
+    dims = [len(c) for c in comps]
+    inner = []
+    for ic in itertools.product(*[range(dims[x]) for x in reversed(inside)]):
+        full = dict(zip(reversed(inside), ic))
+        inner.append(tuple(full.get(x, "o") for x in range(4)))
+    keys = []
+    for comp in inner:
+        e = [None if comp[x] == "o" else comps[x][comp[x]][axis] for x in range(4)]
+        bk = tuple(v for v in e[:2] if v is not None)
+        kk = tuple(v for v in e[2:] if v is not None)
+        keys.append((bk, kk))
+    return inner, keys
+
+
+def _chunk_axis(tag, outer, keys, ax, pad):
+    """One axis of a chunk, per root: the 2D-table corner,
+    the bra transfer (literal binomials where both bra shells are inside,
+    runtime weights wb/wbb where they are not), then the ket transfer the
+    same way. Returns (text, names, {(bk, kk): scalar})."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    ni, nk = la + lb, lc + ld
+    bo = (1 in outer) + (0 in outer)
+    ko = (3 in outer) + (2 in outer)
+    g = lambda i, k: ri.nm(f"qg{ax}", i, k)
+    out, names = [], []
+    hkeys = sorted(set(keys))
+
+    # The k range the ket stage reads, per bra key.
+    def kneed(kk):
+        if ko == 0:
+            ec, ed = kk
+            return [ec + u for u in range(ed + 1)]
+        if ko == 1:
+            return [kk[0] + u for u in range(ld + 1)]
+        return list(range(nk + 1))
+    tneed = sorted({(bk, k) for (bk, kk) in hkeys for k in kneed(kk)})
+
+    def ineed(bk):
+        if bo == 0:
+            ea, eb = bk
+            return [ea + s for s in range(eb + 1)]
+        if bo == 1:
+            return [bk[0] + s for s in range(lb + 1)]
+        return list(range(ni + 1))
+    imax = max(i for (bk, k) in tneed for i in ineed(bk))
+    kmax = max(k for (bk, k) in tneed)
+    g00 = "f00" if ax == "z" else "1.0_dp"
+    out.append(ri.rys2d_scalar_assignments(imax, kmax, f"c00{ax}", f"cp0{ax}",
+                                           "b00r", "b10r", "bp01r", g00, f"qg{ax}", len(pad)))
+    names += ri.rys2d_scalar_names(imax, kmax, f"qg{ax}")
+
+    tname = {}
+    for (bk, k) in tneed:
+        if bo == 0:
+            ea, eb = bk
+            if eb == 0:
+                tname[(bk, k)] = g(ea, k)
+                continue
+            terms = []
+            for t in range(eb + 1):
+                coef, p = ri.binom(eb, t), eb - t
+                pre = "" if coef == 1 else f"{float(coef)}_dp*"
+                mul = "" if p == 0 else (f"ab{ax}*" if p == 1 else f"ab{ax}{p}*")
+                terms.append(f"{pre}{mul}{g(ea + t, k)}")
+        elif bo == 1:
+            terms = [f"wb{ax}_{t}*{g(bk[0] + t, k)}" for t in range(lb + 1)]
+        else:
+            terms = [f"wbb{ax}_{i}*{g(i, k)}" for i in range(ni + 1)]
+        nmv = ri.nm(f"qt{ax}", *bk, k)
+        names.append(nmv)
+        tname[(bk, k)] = nmv
+        out.append(f"{pad}{nmv} = {_sum_lines(terms, pad)}")
+    hmap = {}
+    for (bk, kk) in hkeys:
+        if ko == 0:
+            ec, ed = kk
+            if ed == 0:
+                hmap[(bk, kk)] = tname[(bk, ec)]
+                continue
+            terms = []
+            for u in range(ed + 1):
+                coef, p = ri.binom(ed, u), ed - u
+                pre = "" if coef == 1 else f"{float(coef)}_dp*"
+                mul = "" if p == 0 else (f"cd{ax}*" if p == 1 else f"cd{ax}{p}*")
+                terms.append(f"{pre}{mul}{tname[(bk, ec + u)]}")
+        elif ko == 1:
+            terms = [f"wd{ax}_{u}*{tname[(bk, kk[0] + u)]}" for u in range(ld + 1)]
+        else:
+            terms = [f"wdd{ax}_{k}*{tname[(bk, k)]}" for k in range(nk + 1)]
+        nmv = ri.nm(f"qh{ax}", *bk, "k", *kk)
+        names.append(nmv)
+        hmap[(bk, kk)] = nmv
+        out.append(f"{pad}{nmv} = {_sum_lines(terms, pad)}")
+    return "\n".join(out) + "\n", names, hmap
+
+
+def chunk_live_fock(tag, comps, outer):
+    """The live-set model, in doubles: the chunk's integrals plus, per
+    axis, the 2D-table corner, the transfer intermediates and the slice."""
+    inner, _ = _chunk_keys(comps, outer, 0)
+    live = len(inner)
+    for axis in range(3):
+        _, keys = _chunk_keys(comps, outer, axis)
+        txt, nms, _ = _chunk_axis(tag, outer, keys, "x", "")
+        live += len(nms)
+    return live
+
+
+def chunk_plan_fock(tag, comps, live_max=CHUNK_LIVE_MAX):
+    """The supported outer set with the fewest chunks under `live_max`."""
+    dims = [len(c) for c in comps]
+    best = None
+    for outer in _FOCK_OUTER_SETS:
+        nch = 1
+        for x in outer:
+            nch *= dims[x]
+        live = chunk_live_fock(tag, comps, outer)
+        if live > live_max:
+            continue
+        key = (nch, live)
+        if best is None or key < best[0]:
+            best = (key, outer)
+    return None if best is None else best[1]
+
+
+def _weight_lines(tag, outer, pad):
+    """The runtime transfer weights of one chunk, per axis: wb_s = C(eb, s)
+    ab^(eb-s) (0 past eb) for an outer b, and wbb_i = sum_s [ea + s = i] wb_s
+    when a is outer too; the same on the ket side. Per chunk, outside the
+    primitive loop: they depend on the quartet and the chunk only."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    ni, nk = la + lb, lc + ld
+    out, names = [], []
+    for (first, second, lsec, ltot, w, W, ab) in ((0, 1, lb, ni, "wb", "wbb", "ab"),
+                                                   (2, 3, ld, nk, "wd", "wdd", "cd")):
+        if second not in outer:
+            continue
+        for ax in "xyz":
+            out.append(f"{pad}select case (ex{second}{ax})")
+            for e in range(lsec + 1):
+                out.append(f"{pad}case ({e})")
+                for t in range(lsec + 1):
+                    if t > e:
+                        val = "0.0_dp"
+                    else:
+                        coef, p = ri.binom(e, t), e - t
+                        f = [] if coef == 1 else [f"{float(coef)}_dp"]
+                        if p == 1:
+                            f.append(f"{ab}{ax}")
+                        elif p > 1:
+                            f.append(f"{ab}{ax}{p}")
+                        val = "*".join(f) if f else "1.0_dp"
+                    out.append(f"{pad}   {w}{ax}_{t} = {val}")
+            out.append(f"{pad}end select")
+            names += [f"{w}{ax}_{t}" for t in range(lsec + 1)]
+            if first in outer:
+                for i in range(ltot + 1):
+                    out.append(f"{pad}{W}{ax}_{i} = 0.0_dp")
+                for t in range(lsec + 1):
+                    for i in range(t, ltot + 1):
+                        out.append(f"{pad}if (ex{first}{ax} == {i - t}) {W}{ax}_{i} = {W}{ax}_{i} + {w}{ax}_{t}")
+                names += [f"{W}{ax}_{i}" for i in range(ltot + 1)]
+    return "\n".join(out) + ("\n" if out else ""), names
+
+
+def chunked_fock_middle(tag, comps, outer, nroots, pre_loop, prim_hdr, thread=False):
+    """The CHUNKED FOCK PASS's item body after the decode (see the section
+    comment above): the chunk loop (or, for `thread`, the one chunk `jch`
+    this iteration owns), the outer components and their transfer weights,
+    the primitive loop (`prim_hdr`, the spliced text from `do k1` through
+    the tval line) and roots, and the chunk's digestion. Returns (text, real
+    names, integer names, chunk count, the outer shells' cn tables)."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    dims = [len(c) for c in comps]
+    nch = 1
+    for x in outer:
+        nch *= dims[x]
+    inner, _ = _chunk_keys(comps, outer, 0)
+    vn = [f"vq_{n}" for n in range(len(inner))]
+    names = set(vn) | {"cj", "ck"}
+    dnames = set()
+    pw = []
+    for ax in "xyz":
+        for p in range(2, lb + 1):
+            pw.append(f"ab{ax}{p} = " + ("*".join([f"ab{ax}"]*p)))
+            names.add(f"ab{ax}{p}")
+        for p in range(2, ld + 1):
+            pw.append(f"cd{ax}{p} = " + ("*".join([f"cd{ax}"]*p)))
+            names.add(f"cd{ax}{p}")
+    body = [pre_loop,
+            "         ! The six Fock scatters' scales, with the degeneracy weight in.\n"
+            "         cj = 4.0_dp*jfac*wq\n"
+            "         ck = kfac*wq\n"]
+    if pw:
+        body.append("".join(f"         {x}\n" for x in pw))
+    if thread:
+        body.append(f"         ! CHUNKED FOCK PASS (scripts/gen_rys.py): chunk jch of {nch}.\n")
+    else:
+        body.append(f"         ! CHUNKED FOCK PASS (scripts/gen_rys.py): {nch} chunks.\n"
+                    f"         do jch = 1, {nch}\n")
+    # Outer component indices (0-based) and their exponents, per chunk.
+    rem = "jch - 1"
+    for n, x in enumerate(outer):
+        if n == len(outer) - 1:
+            body.append(f"            jo{x} = {rem}\n")
+        else:
+            body.append(f"            jo{x} = mod({rem}, {dims[x]})\n")
+            rem = f"({rem})/{dims[x]}"
+        for a, ax in enumerate("xyz"):
+            body.append(f"            ex{x}{ax} = cn{ax}{x}_{tag}(jo{x} + 1)\n")
+    wtxt, wn = _weight_lines(tag, outer, " "*12)
+    body.append(wtxt)
+    names.update(wn)
+    body.append("".join(f"            {v} = 0.0_dp\n" for v in vn))
+    body.append(prim_hdr)
+    body.append(ri.roots_inline_body(nroots, "tval", 18))
+    body.append(f"""\
+                  pref = pref*sqrt(theta)
+                  do jrt = 1, {nroots}
+                     ! RANGE SEPARATION -- see unrolled_energy_middle's own
+                     ! comment (scripts/gen_rys.py): t^2 -> theta*t^2 in u2.
+                     u2 = (theta*ru(jrt))/(1.0_dp - theta*ru(jrt))*rho
+                     dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+                     b00r  = 0.5_dp*u2*dinv
+                     b10r  = 0.5_dp*(eta + u2)*dinv
+                     bp01r = 0.5_dp*(zeta + u2)*dinv
+                     f00 = pref*rw(jrt)
+                     c00x = pax - u2*eta*dinv*pqx
+                     c00y = pay - u2*eta*dinv*pqy
+                     c00z = paz - u2*eta*dinv*pqz
+                     cp0x = qcx + u2*zeta*dinv*pqx
+                     cp0y = qcy + u2*zeta*dinv*pqy
+                     cp0z = qcz + u2*zeta*dinv*pqz
+""")
+    pad = " "*21
+    hmaps, keyss = [], []
+    for axis, ax in enumerate("xyz"):
+        _, keys = _chunk_keys(comps, outer, axis)
+        txt, nms, hmap = _chunk_axis(tag, outer, keys, ax, pad)
+        body.append(txt)
+        names.update(nms)
+        hmaps.append(hmap)
+        keyss.append(keys)
+    for m in range(len(inner)):
+        h = [hmaps[axis][keyss[axis][m]] for axis in range(3)]
+        body.append(f"{pad}{vn[m]} = {vn[m]} + {h[0]}*{h[1]}*{h[2]}\n")
+    body.append("""\
+                  end do
+               end do
+            end do
+            do idens = 1, ndens
+""")
+    pad = " "*15
+    body.append(_chunk_digest(inner, vn, pad, dnames, (0, 1)))
+    body.append(f"{pad}! kfac is uniform over the launch: no warp diverges here.\n"
+                f"{pad}if (kfac /= 0.0_dp) then\n")
+    body.append(_chunk_digest(inner, vn, pad + "   ", dnames, (2, 3, 4, 5)))
+    body.append(f"{pad}end if\n            end do\n")
+    if not thread:
+        body.append("         end do\n")
+    tabs = ""
+    for x in outer:
+        for cnm, a in (("cnx", 0), ("cny", 1), ("cnz", 2)):
+            vals = ", ".join(str(c[a]) for c in comps[x])
+            tabs += f"   integer, parameter :: {cnm}{x}_{tag}({dims[x]}) = [{vals}]\n"
+    ints = [f"jo{x}" for x in outer] + [f"ex{x}{ax}" for x in outer for ax in "xyz"]
+    return "".join(body), sorted(names) + sorted(dnames), ints, nch, tabs
 
 
 def _parse_unroll_max(s):
@@ -178,6 +649,19 @@ def main():
                          "na*nb*nc*nd is at most this; 'inf'/'all' unrolls "
                          "every class. Default 0: no class is unrolled, "
                          "i.e. today's array/loop form, unchanged")
+    ap.add_argument("--chunk-classes", default="auto",
+                    help="classes that get the CHUNKED FOCK PASS: 'auto' "
+                         "(FOCK_CHUNK_PLAN's), 'none', or a comma-separated "
+                         "list of tags (for measurement)")
+    ap.add_argument("--chunk-outer", default=None,
+                    help="for measurement: the outer shells, e.g. '2,3', or "
+                         "'none' for one chunk, overriding FOCK_CHUNK_PLAN "
+                         "(must be one of _FOCK_OUTER_SETS)")
+    ap.add_argument("--chunk-form", choices=("loop", "thread"), default=None,
+                    help="for measurement: override FOCK_CHUNK_PLAN's form")
+    ap.add_argument("--chunk-live-max", type=int, default=CHUNK_LIVE_MAX,
+                    help="live-set ceiling chunk_plan_fock picks the shape "
+                         "under, for a class FOCK_CHUNK_PLAN does not list")
     ap.add_argument("-o", "--output", required=True,
                     help="required, and never a path under src/generated: "
                          "unlike the Rys root tables, these per-class "
@@ -191,7 +675,28 @@ def main():
     nroots = (la + lb + lc + ld)//2 + 1
     dims = [len(co.components(l, args.order)) for l in (la, lb, lc, ld)]
     nv = dims[0]*dims[1]*dims[2]*dims[3]
-    unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
+    comps = [co.components(l, args.order) for l in (la, lb, lc, ld)]
+    # chunk_outer: the CHUNKED FOCK PASS's outer shells, None for the array
+    # form. () is a real plan (one chunk), so test it with `is None`.
+    if args.chunk_classes == "auto":
+        chunked = tag in FOCK_CHUNK_PLAN
+    elif args.chunk_classes == "none":
+        chunked = False
+    else:
+        chunked = tag in args.chunk_classes.split(",")
+    chunk_outer, chunk_form = None, None
+    if chunked:
+        chunk_outer, chunk_form = FOCK_CHUNK_PLAN.get(tag, (None, "loop"))
+        if args.chunk_outer is not None:
+            chunk_outer = () if args.chunk_outer == "none" else \
+                tuple(sorted(int(x) for x in args.chunk_outer.split(",")))
+        if chunk_outer is None:
+            chunk_outer = chunk_plan_fock(tag, comps, args.chunk_live_max)
+        assert chunk_outer in _FOCK_OUTER_SETS, chunk_outer
+        if args.chunk_form is not None:
+            chunk_form = args.chunk_form
+    # The chunked form is never unrolled: it already has literal indices.
+    unroll = chunk_outer is None and nv <= _parse_unroll_max(args.unroll_max_comp)
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
     src = open(src_path).read()
@@ -233,12 +738,14 @@ def main():
         "the --order argument likely does not match the source file")
 
     decl_new = (
-        f"      real(dp) :: vbuf({nv})\n"
-        f"      real(dp) :: ru({nroots}), rw({nroots})\n"
+        ("" if chunk_outer is not None else f"      real(dp) :: vbuf({nv})\n")
+        + f"      real(dp) :: ru({nroots}), rw({nroots})\n"
         f"      real(dp) :: u2, dinv, b00r, b10r, bp01r, f00\n"
         f"      real(dp) :: c00x, c00y, c00z, cp0x, cp0y, cp0z\n"
         + ri.roots_decls())
-    if unroll:
+    if chunk_outer is not None:
+        decl_new += "      integer  :: jch, jrt\n@@CHUNK_DECLS@@"
+    elif unroll:
         decl_new += ri.unrolled_table_decls(ni, nk, la, lb, lc, ld, 6)
     else:
         decl_new += (
@@ -261,7 +768,19 @@ def main():
     # Rys zeroes `vbuf` there instead, since nothing defers the transfer.
     zero_re = re.compile(r"(            do x = 1, )" + str(nv_vrr) +
                          r"(\n               )g1\(x\)( = 0\.0_dp\n            end do\n)")
-    head, n1 = zero_re.subn(lambda g: f"{g.group(1)}{nv}{g.group(2)}vbuf(x){g.group(3)}", head, 1)
+    if chunk_outer is None:
+        head, n1 = zero_re.subn(lambda g: f"{g.group(1)}{nv}{g.group(2)}vbuf(x){g.group(3)}", head, 1)
+    else:
+        # The chunked pass zeroes its own accumulators per chunk; the split
+        # point is where the chunk loop goes, and the digestion blocks are
+        # replaced by its named scalars.
+        head, n1 = zero_re.subn("@@CHUNK_SPLIT@@", head, 1)
+        for pat in (r"      real\(dp\) :: jab\(\d+\), jcd\(\d+\), kac\(\d+\)\n",
+                    r"      real\(dp\) :: kad\(\d+\), kbc\(\d+\), kbd\(\d+\)\n",
+                    r"      real\(dp\) :: dab\(\d+\), dcd\(\d+\), dac\(\d+\)\n",
+                    r"      real\(dp\) :: dad\(\d+\), dbc\(\d+\), dbd\(\d+\)\n"):
+            head, n2 = re.subn(pat, "", head, count=1)
+            assert n2 == 1, pat
     assert n1 == 1, "could not find the g1 zero loop to retarget at vbuf"
 
     # No Boys function; the root lookup replaces it, inlined (see
@@ -285,6 +804,10 @@ def main():
     old_header_re = re.compile(r"\A!\n.*?#endif\n", re.S)
     assert old_header_re.search(head)
     order_val = 0 if args.order == "lexicographic" else 1
+    chunk_note = ""
+    if chunk_outer is not None:
+        chunk_note = ("\n!\n! CHUNKED FOCK PASS (gen_rys.py): the integral and the digestion are\n"
+                      "! replaced, chunk by chunk; the prologue is still spliced.")
     new_header = f"""!
 ! Class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}) kernel, Rys quadrature.
 !
@@ -294,7 +817,7 @@ def main():
 ! prologue (segment decode, screens, the primitive-pair loads, the
 ! primitive-quartet prescreen) and the folded six-atomic digestion are that
 ! file's text, verbatim; only the integral itself differs. See this
-! generator's module docstring for the cut points.
+! generator's module docstring for the cut points.{chunk_note}
 !
 ! TRC_CART_ORDER GUARD -- see gen_perclass.py's non-split header for the
 ! full explanation; same guard, carried over from the file this was spliced
@@ -370,8 +893,39 @@ def main():
     # the tail this file reused verbatim. An unrolled class needs none of
     # this: the component triples are read straight off `co.components` at
     # GENERATION time instead (see unrolled_energy_middle).
-    tabs = ""
-    if not unroll:
+    if chunk_outer is not None:
+        pre, prim_hdr = head.split("@@CHUNK_SPLIT@@")
+        pre_loop = decode + """\
+         ! Degeneracy weight, as the block digestion forms it.
+         wq = 1.0_dp
+         if (.not. dij) wq = wq*0.5_dp
+         if (.not. dkl) wq = wq*0.5_dp
+         if (.not. dpq) wq = wq*0.5_dp
+"""
+        thread = chunk_form == "thread"
+        middle, cnames, cints, nch, ctabs = chunked_fock_middle(
+            tag, comps, chunk_outer, nroots, pre_loop, prim_hdr, thread)
+        cdecl = ri.scalar_decl_lines(cnames, 6)
+        if cints:
+            cdecl += f"      integer  :: {', '.join(cints)}\n"
+        head = pre.replace("@@CHUNK_DECLS@@", cdecl)
+        if thread:
+            # One thread per (quartet, chunk), quartet fastest, so a warp's
+            # lanes share one chunk and its select case does not diverge.
+            for a, b in (("      do concurrent(i=1:nr)\n", f"      do concurrent(i=1:nr*{nch})\n"),
+                         (f"call rysi{tag}(g0 + (i - 1)*nranks, ",
+                          f"call rysi{tag}(g0 + mod(i - 1, nr)*nranks, int((i - 1)/nr) + 1, "),
+                         (f"pure subroutine rysi{tag}(gt, ", f"pure subroutine rysi{tag}(gt, jch, "),
+                         ("      integer  :: jch, jrt\n", "      integer  :: jrt\n")):
+                assert head.count(a) == 1, a
+                head = head.replace(a, b)
+            a = "      !$acc routine seq\n      integer(int64), intent(in) :: gt\n"
+            assert head.count(a) == 1
+            head = head.replace(a, a + "      integer, intent(in) :: jch\n")
+        decode, tail = "", f"   end subroutine rysi{tag}\n"
+
+    tabs = ctabs if chunk_outer is not None else ""
+    if not unroll and chunk_outer is None:
         for cnm, ax in (("cnx", 0), ("cny", 1), ("cnz", 2)):
             for which, l in enumerate((la, lb, lc, ld)):
                 comps = co.components(l, args.order)
