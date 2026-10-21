@@ -152,7 +152,7 @@ contains
       case ("Pople1979_225")  ! CPHF
          text = "J. A. Pople, R. Krishnan, H. B. Schlegel, and J. S. Binkley, " // &
                 "Int. J. Quantum Chem. 16, 225 (1979)"
-      case ("Stocks2024_7503")  ! RI-MP2 multi-GPU pair distribution
+      case ("Stocks2024_7503")  ! DF-JK (the resident metric factor) and the RI-MP2 pair distribution
          text = "R. Stocks, E. Palethorpe, and G. M. J. Barca, J. Chem. Theory Comput. 20, 7503 (2024)"
       case default
          found = .false.

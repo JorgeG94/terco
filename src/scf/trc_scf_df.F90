@@ -80,6 +80,7 @@ module trc_scf_df
    use trc_sph, only: sph_metric_cart_to_sph, sph_aux3c_to_sph
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_citations, only: trc_cite
    use, intrinsic :: iso_fortran_env, only: output_unit
 #ifdef _OPENACC
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
@@ -188,6 +189,7 @@ contains
 
       call err%clear()
       if (this%ready) return
+      call trc_cite("Stocks2024_7503")
       ! The orbital basis `b` is only ever read here at its CARTESIAN size
       ! (`n = b%nao`, never `b%nao_sph`) -- `d_c`/`gmat_c` in `build`
       ! below are the Cartesian-space scratch trc_scf_fock.F90's `to_cart`/
