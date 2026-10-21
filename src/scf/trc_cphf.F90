@@ -77,6 +77,7 @@ module trc_cphf
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_result_t
+   use trc_citations, only: trc_cite
    implicit none
    private
 
@@ -133,6 +134,7 @@ contains
       integer :: it, comp, i, a
       logical :: broke
 
+      call trc_cite("Pople1979_225")
       allocate (d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao))
       allocate (tmp_no(nao, nocc), tmp_no2(nao, nocc))
       allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
@@ -260,6 +262,7 @@ contains
       integer :: it, comp, i, a
       logical :: broke
 
+      call trc_cite("Pople1979_225")
       allocate (d_ua(nao, nao), d_ub(nao, nao), d_t(nao, nao), d_tmp(nao, nao))
       allocate (g_j(nao, nao), g_ka(nao, nao), g_kb(nao, nao), g_eff_a(nao, nao), g_eff_b(nao, nao))
       allocate (tmp_a(nao, noa), tmp_a2(nao, noa), tmp_b(nao, nob), tmp_b2(nao, nob))

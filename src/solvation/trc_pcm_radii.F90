@@ -28,6 +28,7 @@
 module trc_pcm_radii
    use pic_types, only: dp
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_citations, only: trc_cite
    implicit none
    private
 
@@ -57,6 +58,8 @@ contains
       type(error_t), intent(inout) :: error
       character(len=16) :: num
 
+      call trc_cite("Bondi1964_441")
+      call trc_cite("Mantina2009_5806")
       radius = 0.0_dp
       if (atomic_number < 1 .or. atomic_number > PCM_MAX_ELEMENT) then
          write (num, "(i0)") atomic_number

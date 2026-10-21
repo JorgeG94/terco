@@ -503,6 +503,7 @@ program terco_main
    use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
                                 xc_is_double_hybrid
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env
+   use trc_citations, only: trc_citations_report
    use pic_ascii, only: to_lower
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
@@ -841,6 +842,8 @@ program terco_main
    call system_clock(r%t1)
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
+   ! The papers behind what this run used, not under --silent (see below).
+   if (r%rank0 .and. .not. r%cli%is_set("silent")) call trc_citations_report()
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
    st = trc_destroy(r%h)
 

@@ -76,6 +76,7 @@ module trc_rimp2_driver
    use trc_mpi_device, only: trc_mpi_device_direct
    use pic_flop_recorder, only: flop_recorder_type
    use trc_step_table, only: step_table_t
+   use trc_citations, only: trc_cite
    use trc_scf_df, only: df_jk_t
    use trc_sph, only: sph_metric_cart_to_sph, sph_mo_to_cart, sph_aux3c_to_sph
    implicit none
@@ -183,6 +184,7 @@ contains
       logical :: dense_mask(NSTEP)
       integer(int64) :: nv8, nao8, naux8
 
+      call trc_cite("Stocks2024_7503")
       nao = b%nao
       ! `cmo`/`eps` above are declared (b%nao, b%nao)/(b%nao): ALWAYS the
       ! Cartesian AO space, whether `b` itself is spherical or not. A
@@ -719,6 +721,7 @@ contains
       logical :: dense_mask(NSTEP)
       integer(int64) :: nao8, naux8, nva8, nvb8, noa8, nob8, novr_a8, novr_b8
 
+      call trc_cite("Stocks2024_7503")
       nao = b%nao
       ! `cmo_a`/`cmo_b`/`eps_a`/`eps_b` are the Cartesian-space, fold-and-
       ! pad result of `rimp2_mo_to_cart` when `b` is spherical -- see

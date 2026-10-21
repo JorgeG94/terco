@@ -269,6 +269,11 @@ interpolation. The sources cite it as `[1]` where it is relevant. The rest is
 the surrounding literature on GPU integral evaluation and on offloading GAMESS,
 which is where the conventions and the comparison points come from.
 
+A run prints, at its end, the papers behind the methods it actually used: the
+grid, the guess, the solvent model, ADIIS, the functional's own papers (taken
+from libxc's reference list by `tools/gen_xc_citations.py`). The C API returns
+the same list from `trc_citation_list`.
+
 > **[1]** J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
 > *High-performance GPU-accelerated evaluation of electron repulsion integrals*,
 > **Molecular Physics** **121** (2022), e2112987.

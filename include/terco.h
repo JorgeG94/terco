@@ -36,7 +36,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 1
+#define TRC_ABI_MINOR 2
 
 int trc_basis_create(int nshell, int maxnp, const int* l, const int* nprim, const double* exps, const double* coefs, const double* centres, int natm, const double* zatm, const double* ratm, trc_handle_t* handle);
 
@@ -592,6 +592,24 @@ int trc_functional_info(const char* name, int* flags, double* exx, double* c_os,
  * `buflen` is positive but smaller than `reqlen`.
  */
 int trc_functional_list(char* buf, int buflen, int* reqlen);
+
+/**
+ * The papers behind what this process has run since the last
+ * trc_citation_reset (the methods, the grid, the functional's own),
+ * one numbered reference per line, newline-terminated, NUL-terminated
+ * into `buf` (capacity `buflen` bytes, NUL included). An empty string
+ * when nothing has run. `reqlen` follows trc_functional_list's
+ * convention: always set, query with `buflen = 0`, TRC_ERR_BADARG if
+ * `buflen` is positive but too small.
+ */
+int trc_citation_list(char* buf, int buflen, int* reqlen);
+
+/**
+ * Forget every reference cited so far, so trc_citation_list reports only
+ * what runs after this call. The list is per process, shared by every
+ * context.
+ */
+int trc_citation_reset(void);
 
 int trc_nao(trc_handle_t handle, int* nao);
 

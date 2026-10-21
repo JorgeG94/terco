@@ -37,6 +37,7 @@ module trc_sap
    use pic_blas_interfaces, only: pic_gemm
    use trc_api, only: trc_pairlist_t, trc_df_3c
    use trc_basis_json, only: trc_fitted_shell_from_json
+   use trc_citations, only: trc_cite
    implicit none
    private
 
@@ -281,6 +282,7 @@ contains
       real(dp) :: cfac, acc
       logical :: talk
 
+      call trc_cite("Lehtola2019_1593")
       talk = .false.
       if (present(verbose)) talk = verbose
       nao = b%nao
@@ -427,6 +429,7 @@ contains
       integer :: c0, c1, crate
       logical :: talk
 
+      call trc_cite("Lehtola2019_1593")
       talk = .false.
       if (present(verbose)) talk = verbose
       hsap = 0.0_dp

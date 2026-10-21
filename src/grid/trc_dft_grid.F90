@@ -23,7 +23,8 @@ module trc_dft_grid
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid
    use trc_dft_radial, only: treutler_ahlrichs_radial
-   use trc_dft_partition, only: becke_partition_weights, PARTITION_BECKE, ADJUST_TREUTLER
+   use trc_dft_partition, only: becke_partition_weights, PARTITION_BECKE, PARTITION_STRATMANN, ADJUST_TREUTLER
+   use trc_citations, only: trc_cite
    use trc_dft_prune, only: prune_angular_orders, PRUNE_NONE, PRUNE_NWCHEM
    implicit none
    private
@@ -231,6 +232,10 @@ contains
       if (present(adjust)) used_adjust = adjust
       used_prune = DEFAULT_PRUNE
       if (present(prune)) used_prune = prune
+      call trc_cite("Treutler1995_346")
+      call trc_cite("Lebedev1999_477")
+      call trc_cite("Becke1988_2547")
+      if (used_scheme == PARTITION_STRATMANN) call trc_cite("Stratmann1996_213")
 
       if (present(n_radial) .neqv. present(n_angular)) then
          call error%set(ERROR_VALIDATION, &

@@ -100,6 +100,7 @@ module trc_scf_driver
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use pic_mpi_lib, only: comm_t
+   use trc_citations, only: trc_cite, trc_cite_functional
    implicit none
    private
 
@@ -248,6 +249,19 @@ contains
       linalg_provider => scf_context%lp
       scf_result%e_nuc = scf_context%e_nuc
       scf_result%n_lindep = scf_context%n_lindep
+      ! The papers behind what this run does; the grid, guess, PCM radii
+      ! and ADIIS cite their own where they run.
+      call trc_cite("GalvezVallejo2022_e2112987")
+      if (sph) call trc_cite("Schlegel1995_83")
+      if (scf_config%dft) then
+         call trc_cite_functional(scf_config%func%name)
+         call trc_cite("Stocks2025_10263")
+         if (scf_config%nlc) call trc_cite("Vydrov2010_244103")
+      end if
+      if (scf_config%pcm_on) then
+         call trc_cite("Lange2010_244111")
+         call trc_cite("Lebedev1999_477")
+      end if
       if (scf_config%pcm_on) scf_result%pcm_npoints = scf_context%pcm%surface%n_points
       if (scf_config%dft) then
          scf_result%grid_r = scf_context%gc%grid%coords
@@ -426,6 +440,7 @@ contains
          ! once, after the loop.
          if (scf_config%root) then
             if (adiis_active) then
+               call trc_cite("Hu2010_054109")
                call adiis%push(linalg_provider, nao, scf_config%nspin, scf_state%fock, scf_state%dold)
                call adiis%extrapolate(nao, scf_config%nspin, scf_state%fock)
             end if

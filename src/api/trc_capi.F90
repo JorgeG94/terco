@@ -194,6 +194,7 @@ module trc_capi
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
+   use trc_citations, only: trc_citations_text, trc_citations_reset
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
                                 XC_AVAILABLE_FUNCTIONALS, XC_FAMILY_MGGA
@@ -249,6 +250,7 @@ module trc_capi
    public :: capi_scf, capi_scf_mpi, capi_rimp2
    public :: trc_cart_order
    public :: trc_functional_info, trc_functional_list
+   public :: trc_citation_list, trc_citation_reset
    public :: trc_abi_version
    public :: trc_run_polarizability, trc_polarizability
    public :: trc_nmo, trc_mo_occupations
@@ -282,7 +284,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 1
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 2
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -3651,6 +3653,43 @@ contains
       end do
       buf(k + 1) = c_null_char
    end function trc_functional_list
+
+   function trc_citation_list(buf, buflen, reqlen) result(status) bind(c, name="trc_citation_list")
+      !! The papers behind what this process has run since the last
+      !! trc_citation_reset (the methods, the grid, the functional's own),
+      !! one numbered reference per line, newline-terminated, NUL-terminated
+      !! into `buf` (capacity `buflen` bytes, NUL included). An empty string
+      !! when nothing has run. `reqlen` follows trc_functional_list's
+      !! convention: always set, query with `buflen = 0`, TRC_ERR_BADARG if
+      !! `buflen` is positive but too small.
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int), intent(out) :: reqlen
+      integer(c_int) :: status
+      character(len=:), allocatable :: lines
+      integer :: i
+      lines = trc_citations_text()
+      reqlen = int(len(lines) + 1, c_int)
+      status = TRC_OK
+      if (buflen <= 0) return
+      if (buflen < reqlen) then
+         status = TRC_ERR_BADARG
+         return
+      end if
+      do i = 1, len(lines)
+         buf(i) = lines(i:i)
+      end do
+      buf(len(lines) + 1) = c_null_char
+   end function trc_citation_list
+
+   function trc_citation_reset() result(status) bind(c, name="trc_citation_reset")
+      !! Forget every reference cited so far, so trc_citation_list reports only
+      !! what runs after this call. The list is per process, shared by every
+      !! context.
+      integer(c_int) :: status
+      call trc_citations_reset()
+      status = TRC_OK
+   end function trc_citation_reset
 
    function trc_nao(handle, nao) result(status) bind(c, name="trc_nao")
       type(c_ptr), value :: handle

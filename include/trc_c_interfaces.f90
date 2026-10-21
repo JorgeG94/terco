@@ -33,7 +33,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 1
+   integer(c_int), parameter :: TRC_ABI_MINOR = 2
 
    interface
 
@@ -958,6 +958,29 @@ module trc_c_interfaces
          integer(c_int), value :: buflen
          integer(c_int), intent(out) :: reqlen
       end function trc_functional_list
+
+      integer(c_int) function trc_citation_list(buf, buflen, reqlen) bind(c) result(res)
+         !! The papers behind what this process has run since the last
+         !! trc_citation_reset (the methods, the grid, the functional's own),
+         !! one numbered reference per line, newline-terminated, NUL-terminated
+         !! into `buf` (capacity `buflen` bytes, NUL included). An empty string
+         !! when nothing has run. `reqlen` follows trc_functional_list's
+         !! convention: always set, query with `buflen = 0`, TRC_ERR_BADARG if
+         !! `buflen` is positive but too small.
+         import :: c_char, c_int
+         implicit none
+         character(kind=c_char), intent(out) :: buf(*)
+         integer(c_int), value :: buflen
+         integer(c_int), intent(out) :: reqlen
+      end function trc_citation_list
+
+      integer(c_int) function trc_citation_reset() bind(c) result(res)
+         !! Forget every reference cited so far, so trc_citation_list reports only
+         !! what runs after this call. The list is per process, shared by every
+         !! context.
+         import :: c_int
+         implicit none
+      end function trc_citation_reset
 
       integer(c_int) function trc_nao(handle, nao) bind(c) result(res)
          import :: c_int, c_ptr

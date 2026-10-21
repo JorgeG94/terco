@@ -1066,6 +1066,15 @@ add_test(NAME terco/check_capi_pcm_radii COMMAND check_capi_pcm_radii)
 set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# The reference list a run prints: every runnable functional cites a paper,
+# and an RHF and a PBE run on water cite what each one used, no more.
+add_executable(check_citations check_citations.F90)
+target_compile_definitions(check_citations PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_citations PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+add_test(NAME terco/check_citations COMMAND check_citations)
+set_tests_properties(terco/check_citations PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 #
 # terco driven from C, through include/terco.h only -- the C-side proof
 # trc_c_interfaces.f90 is for a Fortran caller (test/link_gfortran.F90).
