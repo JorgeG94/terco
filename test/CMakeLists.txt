@@ -249,10 +249,10 @@ set_tests_properties(
 
 #
 # eri%gradient (Rys, the only scheme it has) against a central difference
-# of eri%fock's (HGP by default) energy, RHF and UHF, water/6-31G* and
-# water/cc-pVDZ. No
-# TRC_RYS_CLASSES override here, deliberately -- the finite-difference
-# reference goes through HGP, so this cross-validates the gradient's
+# of eri%fock's energy through HGP, RHF and UHF, water/6-31G* and
+# water/cc-pVDZ. TRC_RYS_CLASSES=none, deliberately -- the default routes
+# some d classes to the Rys energy kernels, and the finite-difference
+# reference must go through HGP, so this cross-validates the gradient's
 # algebra against an UNRELATED energy path, not Rys against itself.
 #
 terco_add_check(check_rys_grad_fd_631gs check_rys_grad_fd.F90 NEEDS_BASIS
@@ -261,7 +261,7 @@ terco_add_check(check_rys_grad_fd_ccpvdz check_rys_grad_fd.F90 NEEDS_BASIS
                 ARGS basis_sets/cc-pvdz.json)
 set_tests_properties(
   terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
-  PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+  PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
 
 #
 # eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
@@ -672,7 +672,7 @@ endforeach()
 # -- see check_erf_fock_vs_pyscf.F90's own header for the J/K-isolation
 # trick). water/6-31G* and water/cc-pVDZ exercise s/p only; formamide/cc-pVDZ
 # puts d functions on every heavy atom. Each case runs three ways:
-# eri%fock through HGP (the default), eri%fock through Rys
+# eri%fock through HGP (TRC_RYS_CLASSES=none), eri%fock through Rys
 # (TRC_RYS_CLASSES=all), and eri%fock_nosym (the enumerated/general path) --
 # the same substitution has to be right in all three, and all three compare
 # against the SAME reference file (the fixed density and pyscf's J/K do not
@@ -700,6 +700,9 @@ foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
                     check_erf_fock_vs_pyscf.F90
                     NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${nosym_flag} ${case})
   endforeach()
+  # "hgp" is HGP for every class: the default sends some d classes to Rys.
+  set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_hgp
+    PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
   # Same as the "hgp" case above, but routed through the Rys kernels
   # instead of HGP's (TRC_RYS_CLASSES=all).
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_${case}_rys.bin)

@@ -674,10 +674,11 @@ target_sources(
           generated/rys/trc_rys_table9.F90)
 
 # Every class with at least one d shell, plus (pp|pp) and (pp|ps) as the
-# light end of the HGP/Rys comparison: measured on a 450-atom water cluster
-# in 6-31G*, Rys only beats HGP at (dd|dd) (1.11x) and is 1.1-7.4x slower
-# everywhere below, (pp|pp) the slowest, which is why HGP stays the energy
-# default for every class. The gradient family covers all 81. Regenerated
+# light end of the HGP/Rys comparison. Seven heavy d classes take their
+# chunked Rys kernel by default (gen_rys.py's FOCK_RYS_DEFAULT, measured);
+# HGP stays faster everywhere else it has a kernel, including (ss|ss),
+# (ps|ss), (ps|ps) and (pp|ss), which is why those have no Rys energy
+# kernel at all. The gradient family covers all 81. Regenerated
 # at configure time into the build tree, never committed: unlike the root
 # tables above, a per-class kernel needs no mpmath, and it is only ever as
 # current as the HGP scalar kernel it is spliced from, which this project
@@ -721,8 +722,8 @@ file(MAKE_DIRECTORY "${_hgp_template}")
 
 # Every class with a shell of d or above, plus (pp|pp) and (pp|ps). Above
 # d these are the only kernels a class has (trc_rys_select.F90 routes
-# them unconditionally); up to d, HGP stays the default and these exist
-# for TRC_RYS_CLASSES.
+# them unconditionally); up to d, HGP is the default except for
+# FOCK_RYS_DEFAULT's classes, and TRC_RYS_CLASSES picks either per class.
 set(_rys_classes "")
 foreach(_tag ${_all_classes})
   string(REGEX MATCH "[2-9]" _has_d "${_tag}")

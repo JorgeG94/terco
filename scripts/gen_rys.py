@@ -64,7 +64,8 @@ way HGP's VRR does, confirmed by comparing against pyscf's
 
 THE CHUNKED FOCK PASS
 ---------------------
-A class in FOCK_CHUNK_PLAN (the f classes the pair bins launch) keeps the
+A class in FOCK_CHUNK_PLAN (the f classes the pair bins launch, and the d
+classes FOCK_RYS_DEFAULT routes from HGP to Rys) keeps the
 HEAD but replaces the integral AND the digestion: it is cut into chunks of
 output components, each its own primitive/root loop and digestion, so one
 thread never holds the whole Cartesian block. See the section comment
@@ -175,12 +176,23 @@ ri = _load("ri", os.path.join(HERE, "rys_inline.py"))
 #:   (ff|fd) 326 -> 46, (ff|ps) 287 -> 95, (ff|dd) 281 -> 65,
 #:   (fd|fd) 276 -> 68, (ff|ds) 271 -> 90, (fs|fs) 266 -> 48,
 #:   (fs|ds) 177 -> 146, (ff|fs) 141 -> 47, (ff|ss) 122 -> 39.
-#: A class not listed keeps the array form: d and below (HGP's, whose Rys
-#: kernels stay exactly as they were), the tags the pair bins never launch
-#: (la < lb, lc < ld or (la, lb) < (lc, ld); trc_bins.F90's ANGULAR-MOMENTUM
+#:
+#: The d classes listed are the ones FOCK_RYS_DEFAULT routes away from HGP,
+#: raced the same way against HGP (pcs/pcr) on six systems; see there.
+#: A class not listed keeps the array form: the d and p classes that stay
+#: on HGP by default (their Rys kernels exist for TRC_RYS_CLASSES and are
+#: exactly as they were), the tags the pair bins never launch (la < lb,
+#: lc < ld or (la, lb) < (lc, ld); trc_bins.F90's ANGULAR-MOMENTUM
 #: CANONICAL), and (fs|ss), (fs|ps), (fp|ss), (fd|ss), which measured the
 #: same in every shape (104, 153, 81, 64 ms).
 FOCK_CHUNK_PLAN = {
+    "2111": ((1,), "thread"),
+    "2120": ((1,), "thread"),
+    "2211": ((1,), "thread"),
+    "2121": ((1, 3), "thread"),
+    "2210": ((2, 3), "thread"),
+    "2221": ((2, 3), "thread"),
+    "2222": ((2, 3), "thread"),
     "3020": ((), "loop"),
     "3030": ((), "loop"),
     "3300": ((), "loop"),
@@ -212,6 +224,36 @@ FOCK_CHUNK_PLAN = {
     "3332": ((0, 1), "thread"),
     "3333": ((0, 1), "thread"),
 }
+
+#: The classes up to d whose Fock build goes to the chunked Rys kernel
+#: rather than HGP when TRC_RYS_CLASSES is unset (gen_rys_dispatch.py's
+#: rys_default_class; trc_rys_select.F90). HGP's heavy d kernels have the
+#: f kernels' array-form disease: 255 registers plus local-memory stack,
+#: e.g. 3.1 and 1.9 KB per thread in the pcr2221 and pcr2121 warp-role
+#: kernels that run (cuobjdump -res-usage).
+#:
+#: Each of the 21 canonical s/p/d classes was raced (the s/p ones through
+#: Rys kernels built for the race only), HGP against the array Rys form and
+#: every chunk shape in both forms, on six systems at 1e-13 on a V100: w20
+#: (the first 60 atoms of w172) in cc-pVTZ, cc-pVDZ and def2-SVP,
+#: gly10/6-31G* (Cartesian), w60 (180 atoms)/def2-SVP and gly3/def2-SVPD.
+#: A class is here only if its plan shape beat HGP on all six (repeat runs
+#: vary by under 0.5% per class), and on NA-040 (89 atoms)/def2-SVPD too.
+#: Per class, HGP -> chunked Rys, ms over the whole run (w20 cc-pVTZ,
+#: gly10, w60 def2-SVP, gly3 def2-SVPD) or over three iterations (NA-040):
+#:            w20 TZ       gly10       w60 SVP     gly3 SVPD      NA-040
+#:   (dd|dp) 1469 -> 452  356 -> 122  296 -> 114  601 -> 212  15576 -> 5073
+#:   (dp|dp) 1204 -> 539  321 -> 169  587 -> 310  433 -> 211  10488 -> 5595
+#:   (dp|ds)  677 -> 595  278 -> 176  481 -> 442  256 -> 171   5530 -> 4512
+#:   (dd|pp)  571 -> 212  202 ->  77  327 -> 161  232 ->  84   4626 -> 1699
+#:   (dd|ps)  486 -> 290  170 -> 111  353 -> 241  142 ->  95   3088 -> 1862
+#:   (dd|dd)  564 -> 133  176 ->  30   67 ->  15  254 ->  59   5541 -> 1547
+#:   (dp|pp)  427 -> 381  186 -> 158  574 -> 561  180 -> 149   3331 -> 2819
+#: HGP stays faster on every system for (ss|ss), (ps|ss), (ps|ps), (pp|ss),
+#: (pp|ps), (ds|ss), (ds|ps), (dp|ss), (dp|ps), (ds|ds) and (dd|ss), by up
+#: to 80% against the best Rys shape; (pp|pp), (dd|ds) and (ds|pp) win on
+#: some systems and lose or tie on others, so they stay on HGP too.
+FOCK_RYS_DEFAULT = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
 
 #: Live-set ceiling, in doubles, for chunk_plan_fock: only the fallback for
 #: a class forced with --chunk-classes and not in FOCK_CHUNK_PLAN.

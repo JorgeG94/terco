@@ -9,6 +9,10 @@ has to collect the classes CMake asked for into the two entry points
   `rys_has_class(key)`  -- is there a Rys kernel for this class at all,
   `rys_dispatch(key, ...)` -- call it.
 
+  `rys_default_class(key)` -- does this class go to Rys when
+                           TRC_RYS_CLASSES is unset (gen_rys.py's
+                           FOCK_RYS_DEFAULT, measured).
+
 `rys_has_class` is what keeps an unrecognised or ungenerated class key from
 being an unbuilt reference or, worse, a silent no-op that leaves `jmat`
 stale: `trc_rys_select` only ever reaches `rys_dispatch` after checking it.
@@ -28,6 +32,7 @@ def _load(name, path):
 
 
 gp = _load("gp", os.path.join(HERE, "gen_perclass.py"))
+gr = _load("gr", os.path.join(HERE, "gen_rys.py"))
 
 
 def main():
@@ -47,6 +52,12 @@ def main():
         keys.append((key, tag))
         use_lines.append(f"   use trc_pc_rys{tag}, only: rys{tag}")
     keys.sort()
+    # The default-routed classes this build has a kernel for; an empty list
+    # still needs a case that can never match.
+    dkeys = [k for k, t in keys if t in gr.FOCK_RYS_DEFAULT] or [-1]
+    default_list = ", &\n               ".join(
+        ", ".join(str(k) for k in dkeys[i:i + 16])
+        for i in range(0, len(dkeys), 16))
 
     # Wrapped, not one line: at TERCO_LMAX=3 the list runs to 242 keys
     # (~1400 characters), which nvfortran rejects as a source line too long.
@@ -71,7 +82,7 @@ module trc_rys_kernels
 {chr(10).join(use_lines)}
    implicit none
    private
-   public :: rys_dispatch, rys_has_class
+   public :: rys_dispatch, rys_has_class, rys_default_class
 
 contains
 
@@ -89,6 +100,20 @@ contains
          rys_has_class = .false.
       end select
    end function rys_has_class
+
+   pure logical function rys_default_class(key)
+      !! Does this class go to Rys rather than HGP when TRC_RYS_CLASSES is
+      !! unset? gen_rys.py's FOCK_RYS_DEFAULT: the classes whose chunked Rys
+      !! kernel measured faster than HGP on every benchmark system (the
+      !! measurements are there).
+      integer, intent(in) :: key
+      select case (key)
+      case ({default_list})
+         rys_default_class = .true.
+      case default
+         rys_default_class = .false.
+      end select
+   end function rys_default_class
 
    subroutine rys_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
