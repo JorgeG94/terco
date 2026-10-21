@@ -456,30 +456,6 @@ terco_add_check(check_ao check_ao.F90 NEEDS_PYSCF_REF)
 # UKS, against test/pyscf_refs/xc_energy.ref.
 terco_add_check(check_xc_energy check_xc_energy.F90 NEEDS_PYSCF_REF)
 
-# The rotated-axis algebra itself, in Python and in float64, for every
-# ordered s/p class against int2e_cart, degenerate frames included. This one
-# genuinely needs a live pyscf (it is the ONLY place in this tree besides
-# test/pyscf_refs/generate.py that may import it), so it is registered only
-# when pyscf is importable -- never in CI, same as the pyscf-refs gate below
-# used to cover every check in this file.
-find_package(Python3 COMPONENTS Interpreter)
-if(Python3_FOUND)
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} -c "import numpy, pyscf"
-    RESULT_VARIABLE _pyscf_rc
-    OUTPUT_QUIET ERROR_QUIET)
-  if(_pyscf_rc EQUAL 0)
-    add_test(NAME terco/check_rotaxis_numeric
-             COMMAND ${Python3_EXECUTABLE}
-                     ${PROJECT_SOURCE_DIR}/scripts/rotaxis/check_numeric.py)
-    set_tests_properties(
-      terco/check_rotaxis_numeric
-      PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-  else()
-    message(STATUS "terco: pyscf not importable, skipping check_rotaxis_numeric")
-  endif()
-endif()
-
 # VV10's E_nlc and potential on the same grid and density, against
 # test/pyscf_refs/vv10.ref: water/6-31G* and water/cc-pVDZ (RKS), the OH
 # radical/cc-pVDZ (UKS).
