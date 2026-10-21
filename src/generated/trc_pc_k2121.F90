@@ -2749,6 +2749,76 @@ contains
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, 2
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do ic = 0, 5
+               dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 6*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, 2
+         do ic = 0, 5
+         do ib = 0, 2
+         do ia = 0, 5
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*ic + 108*id)) &
+                                    *dcd(1 + ic + 6*id)
+            jcd(1 + ic + 6*id) = jcd(1 + ic + 6*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*ic + 108*id)) &
+                                    *dab(1 + ia + 6*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do ic = 0, 5
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -2842,17 +2912,6 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do ic = 0, 5
             do ia = 0, 5
                !$acc atomic update
@@ -2881,9 +2940,9 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
    end subroutine pcsi2121
 
    subroutine pcr2121(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
@@ -4007,6 +4066,79 @@ contains
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, 2
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc0(gi)
+               dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 6*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc0(gi)
+         do ib = 0, 2
+         do ia = 0, 5
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dcd(1 + ic + 6*id)
+            jcd(1 + ic + 6*id) = jcd(1 + ic + 6*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dab(1 + ia + 6*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc0(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -4105,17 +4237,6 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc0(gi)
             do ia = 0, 5
@@ -4146,9 +4267,9 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
          case (2)
             do x = 1, 64
                g1(x) = 0.0_dp
@@ -5115,6 +5236,79 @@ contains
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, 2
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc1(gi)
+               dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 6*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc1(gi)
+         do ib = 0, 2
+         do ia = 0, 5
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dcd(1 + ic + 6*id)
+            jcd(1 + ic + 6*id) = jcd(1 + ic + 6*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dab(1 + ia + 6*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc1(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -5213,17 +5407,6 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc1(gi)
             do ia = 0, 5
@@ -5254,9 +5437,9 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
          case (3)
             do x = 1, 64
                g1(x) = 0.0_dp
@@ -6210,6 +6393,79 @@ contains
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, 2
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc2(gi)
+               dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 6*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc2(gi)
+         do ib = 0, 2
+         do ia = 0, 5
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dcd(1 + ic + 6*id)
+            jcd(1 + ic + 6*id) = jcd(1 + ic + 6*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dab(1 + ia + 6*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc2(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -6308,17 +6564,6 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc2(gi)
             do ia = 0, 5
@@ -6349,9 +6594,9 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
          case (4)
             do x = 1, 64
                g1(x) = 0.0_dp
@@ -7228,6 +7473,79 @@ contains
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, 2
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc3(gi)
+               dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 6*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc3(gi)
+         do ib = 0, 2
+         do ia = 0, 5
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dcd(1 + ic + 6*id)
+            jcd(1 + ic + 6*id) = jcd(1 + ic + 6*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dab(1 + ia + 6*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc3(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -7326,17 +7644,6 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc3(gi)
             do ia = 0, 5
@@ -7367,9 +7674,9 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
          case (5)
             do x = 1, 64
                g1(x) = 0.0_dp
@@ -8334,6 +8641,79 @@ contains
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, 2
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc4(gi)
+               dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 6*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc4(gi)
+         do ib = 0, 2
+         do ia = 0, 5
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dcd(1 + ic + 6*id)
+            jcd(1 + ic + 6*id) = jcd(1 + ic + 6*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dab(1 + ia + 6*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc4(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -8432,17 +8812,6 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc4(gi)
             do ia = 0, 5
@@ -8473,9 +8842,9 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
          case (6)
             do x = 1, 64
                g1(x) = 0.0_dp
@@ -9325,6 +9694,79 @@ contains
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, 2
+            do ia = 0, 5
+               dab(1 + ia + 6*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + 6*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc5(gi)
+               dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + 6*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, 2
+         do gi = 1, 1
+            ic = rc5(gi)
+         do ib = 0, 2
+         do ia = 0, 5
+            jab(1 + ia + 6*ib) = jab(1 + ia + 6*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dcd(1 + ic + 6*id)
+            jcd(1 + ic + 6*id) = jcd(1 + ic + 6*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + 6*ib + 18*id)) &
+                                    *dab(1 + ia + 6*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, 2
+            do ia = 0, 5
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + 6*ib)
+            end do
+         end do
+         do id = 0, 2
+            do gi = 1, 1
+               ic = rc5(gi)
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + 6*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -9423,17 +9865,6 @@ contains
                                             + jcd(1 + ic + 6*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do gi = 1, 1
             ic = rc5(gi)
             do ia = 0, 5
@@ -9464,9 +9895,9 @@ contains
                                            + kbd(1 + ib + 3*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
          end select
    end subroutine pcri2121
 

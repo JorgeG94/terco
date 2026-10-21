@@ -503,6 +503,76 @@ def emit_digestion(na, nb, nc, nd):
          if (.not. dpq) wq = wq*0.5_dp
 
          !
+         ! J-ONLY DIGESTION, for kfac = 0 (a pure LDA/GGA functional, or the
+         ! Coulomb-only pass of the response equations). The exchange half of
+         ! the general digestion below is then four density-block gathers and
+         ! four multiply-adds per component that all come out exactly
+         ! 0.0_dp, plus four accumulator blocks held live for nothing. This
+         ! copy drops them; its J statements are the general branch's,
+         ! character for character, so every jmat element is bit-identical
+         ! to what that branch would have produced. A separate branch and not
+         ! a test inside the component loop: guarding the K updates per
+         ! component was measured 22% slower on a hybrid (w20/6-31G* B3LYP,
+         ! V100), because the test sits on the branch that is always taken.
+         ! kfac is uniform over the launch, so no warp diverges here.
+         !
+         if (kfac == 0.0_dp) then
+         do idens = 1, ndens
+
+         do ib = 0, {nb - 1}
+            do ia = 0, {na - 1}
+               dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)
+               jab(1 + ia + {na}*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ic = 0, {nc - 1}
+               dcd(1 + ic + {nc}*id) = dmat(idens, lamk + ic, sigl + id)
+               jcd(1 + ic + {nc}*id) = 0.0_dp
+            end do
+         end do
+
+         ! Spelled differently from the general branch, on purpose, and with
+         ! the same arithmetic: the component index in closed form and the
+         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
+         ! 26.5 rejects every closer copy somewhere in the class set -- a
+         ! second counted loop fails to translate the Rys launch ("Missing
+         ! increment value", trc_pc_rys1102), and the closed form through
+         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         do id = 0, {nd - 1}
+         do ic = 0, {nc - 1}
+         do ib = 0, {nb - 1}
+         do ia = 0, {na - 1}
+            jab(1 + ia + {na}*ib) = jab(1 + ia + {na}*ib) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + {na}*ib + {na*nb}*ic + {na*nb*nc}*id)) &
+                                    *dcd(1 + ic + {nc}*id)
+            jcd(1 + ic + {nc}*id) = jcd(1 + ic + {nc}*id) &
+                                    + 4.0_dp*jfac*(wq*vbuf(1 + ia + {na}*ib + {na*nb}*ic + {na*nb*nc}*id)) &
+                                    *dab(1 + ia + {na}*ib)
+         end do
+         end do
+         end do
+         end do
+
+         do ib = 0, {nb - 1}
+            do ia = 0, {na - 1}
+               !$acc atomic update
+               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
+                                          + jab(1 + ia + {na}*ib)
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ic = 0, {nc - 1}
+               !$acc atomic update
+               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
+                                            + jcd(1 + ic + {nc}*id)
+            end do
+         end do
+
+         end do   ! idens
+         else
+
+         !
          ! BATCHED OVER DENSITIES.
          !
          ! The integral is formed once, in `vbuf`, and contracted against every
@@ -596,17 +666,6 @@ def emit_digestion(na, nb, nc, nd):
                                             + jcd(1 + ic + {nc}*id)
             end do
          end do
-         !
-         ! K-FREE SCATTER. kac/kad/kbc/kbd are exactly 0.0_dp here when
-         ! kfac = 0 -- the gather above never put the density into d..,
-         ! and 0.0_dp*anything_finite stays 0.0_dp through the idx loop --
-         ! so skipping their atomic add is the same no-op-removal argument
-         ! as the gather: every jmat element comes out bit-identical to
-         ! letting the zero-valued atomics run. This is the traffic the
-         ! ablation in FOCK6's own comment calls out as what matters; the
-         ! idx loop above is unconditional on purpose (see its own note).
-         !
-         if (kfac /= 0.0_dp) then
          do ic = 0, {nc - 1}
             do ia = 0, {na - 1}
                !$acc atomic update
@@ -635,9 +694,9 @@ def emit_digestion(na, nb, nc, nd):
                                            + kbd(1 + ib + {nb}*id)
             end do
          end do
-         end if
 
          end do   ! idens
+         end if
 """
 
 
@@ -1426,8 +1485,22 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
             for i in role["vb"])
         dg = digest.replace(f"         do idx = 1, {na*nb*nc*nd}\n",
                             f"         do idx = 1, {len(role['vb'])}\n")
+        # The J-only branch indexes vbuf in closed form; a role's vbuf holds
+        # only its one component of the split shell, so that shell drops out
+        # of the strides.
+        assert len(role["comps"]) == 1
+        jl_old = f"(wq*vbuf(1 + ia + {na}*ib + {na*nb}*ic + {na*nb*nc}*id))"
+        assert dg.count(jl_old) == 2, (tag, shell)
+        dims = [("ia", na), ("ib", nb), ("ic", nc), ("id", nd)]
+        terms, stride = ["1"], 1
+        for v, n in dims:
+            if v == ivar:
+                continue
+            terms.append(v if stride == 1 else f"{stride}*{v}")
+            stride *= n
+        dg = dg.replace(jl_old, "(wq*vbuf(" + " + ".join(terms) + "))")
         n_loops = dg.count(f"do {ivar} = 0, {nX - 1}")
-        assert n_loops == 7, (tag, shell, n_loops)
+        assert n_loops == 10, (tag, shell, n_loops)
         dg = re.sub(r"^([ \t]*)do " + ivar + f" = 0, {nX - 1}\n",
                     lambda m: f"{m.group(1)}do gi = 1, {len(role['comps'])}\n"
                               f"{m.group(1)}   {ivar} = rc{r}(gi)\n", dg, flags=re.M)
