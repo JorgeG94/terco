@@ -14,10 +14,12 @@ module terco_app
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
    use pic_types, only: dp, default_int
    use pic_error, only: error_t, ERROR_IO, ERROR_PARSE, ERROR_VALIDATION
+   use pic_ascii, only: to_lower
+   use pic_strings, only: to_string, ends_with
    implicit none
    private
 
-   public :: read_xyz, resolve_basis, element_symbol, c_string, f_string, set_env, lower
+   public :: read_xyz, resolve_basis, element_symbol, c_string, f_string, set_env
 
    real(dp), parameter, public :: BOHR_PER_ANGSTROM = 1.0_dp/0.529177210903_dp
       !! CODATA 2018, the constant every reference terco is checked against uses.
@@ -55,18 +57,6 @@ module terco_app
 
 contains
 
-   pure function lower(s) result(r)
-      !! ASCII lower case.
-      character(len=*), intent(in) :: s
-      character(len=len(s)) :: r
-      integer :: i, c
-      r = s
-      do i = 1, len(s)
-         c = iachar(s(i:i))
-         if (c >= iachar("A") .and. c <= iachar("Z")) r(i:i) = achar(c + 32)
-      end do
-   end function lower
-
    pure function element_symbol(z) result(sym)
       !! The symbol for nuclear charge `z`, or "?" outside 1..118.
       integer, intent(in) :: z
@@ -88,9 +78,9 @@ contains
          return
       end if
       if (len_trim(tok) > 2) return
-      s = lower(adjustl(tok))
+      s = to_lower(adjustl(tok))
       do i = 1, NELEM
-         if (lower(SYMBOLS(i)) == s) then
+         if (to_lower(SYMBOLS(i)) == s) then
             z = i
             return
          end if
@@ -133,20 +123,20 @@ contains
          read (u, "(a)", iostat=ios) line
          if (ios /= 0) then
             call err%set(int(ERROR_PARSE, default_int), trim(path)//": expected "// &
-                         itoa(natm)//" atoms, the file ends after "//itoa(i - 1))
+                         to_string(natm)//" atoms, the file ends after "//to_string(i - 1))
             close (u)
             return
          end if
          read (line, *, iostat=ios) tok, r
          if (ios /= 0) then
-            call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//itoa(i)// &
+            call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//to_string(i)// &
                          " is not 'symbol x y z': '"//trim(line)//"'")
             close (u)
             return
          end if
          z(i) = atomic_number(tok)
          if (z(i) == 0) then
-            call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//itoa(i)// &
+            call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//to_string(i)// &
                          ": unknown element '"//trim(tok)//"'")
             close (u)
             return
@@ -176,12 +166,8 @@ contains
          path = trim(name)
          return
       end if
-      file = lower(trim(name))
-      if (len(file) < 5) then
-         file = file//".json"
-      else if (file(len(file) - 4:) /= ".json") then
-         file = file//".json"
-      end if
+      file = to_lower(trim(name))
+      if (.not. ends_with(file, ".json")) file = file//".json"
 
       call get_environment_variable("TERCO_BASIS_PATH", env, n, stat)
       dirs = ""
@@ -259,13 +245,5 @@ contains
       integer(c_int) :: rc
       rc = c_setenv(c_string(name), c_string(value), 1_c_int)
    end subroutine set_env
-
-   pure function itoa(i) result(s)
-      integer, intent(in) :: i
-      character(len=:), allocatable :: s
-      character(len=16) :: b
-      write (b, "(i0)") i
-      s = trim(b)
-   end function itoa
 
 end module terco_app

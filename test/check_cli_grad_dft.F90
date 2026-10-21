@@ -22,6 +22,8 @@
 program check_cli_grad_dft
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use json_module, only: json_file
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_method, trc_set_guess, trc_set_convergence, trc_set_screening, &
                        trc_set_incremental, trc_run_scf, trc_run_gradient, trc_gradient, &
@@ -33,14 +35,15 @@ program check_cli_grad_dft
    character(len=:), allocatable :: cli_exe, probe_json, probe_out
    character(len=1024) :: arg
    character(len=:), allocatable :: cmd
-   integer :: nat, i, rc, u, ios
+   integer :: nat, i, rc
    integer, allocatable :: at_z(:)
    real(dp), allocatable :: r(:, :)
    real(dp), allocatable :: grad_api(:, :), grad_cli(:, :)
    type(c_ptr) :: h
    integer(c_int) :: st
-   character(len=256) :: line
    logical :: found
+   type(json_file) :: json
+   real(dp), allocatable :: row(:)
    real(dp) :: worst
    real(dp), parameter :: TOL = 1.0e-6_dp
    !! Same value and reasoning as check_cli_grad.F90's own TOL: two
@@ -103,28 +106,19 @@ program check_cli_grad_dft
    end if
 
    allocate (grad_cli(3, nat))
-   open (newunit=u, file=probe_json, status='old', action='read', iostat=ios)
-   if (ios /= 0) then
-      print '(a)', 'check_cli_grad_dft: cannot open '//probe_json; stop 1
-   end if
-   found = .false.
-   do
-      read (u, '(a)', iostat=ios) line
-      if (ios /= 0) exit
-      if (index(line, '"gradient"') > 0) then
-         found = .true.
-         exit
-      end if
-   end do
-   if (.not. found) then
-      print '(a)', 'check_cli_grad_dft: no "gradient" array in the CLI''s JSON output'; stop 1
+   call json%initialize()
+   call json%load(filename=probe_json)
+   if (json%failed()) then
+      print '(a)', 'check_cli_grad_dft: cannot read '//probe_json; stop 1
    end if
    do i = 1, nat
-      read (u, '(a)') line
-      call strip_brackets(line)
-      read (line, *) grad_cli(1, i), grad_cli(2, i), grad_cli(3, i)
+      call json%get('gradient('//to_string(i)//')', row, found)
+      if (.not. found .or. size(row) /= 3) then
+         print '(a,i0,a)', 'check_cli_grad_dft: no gradient row ', i, ' in the CLI''s JSON output'; stop 1
+      end if
+      grad_cli(:, i) = row
    end do
-   close (u)
+   call json%destroy()
 
    worst = maxval(abs(grad_api - grad_cli))
    print '(a,es10.2)', '  check_cli_grad_dft: worst|CLI JSON - direct trc_gradient| ', worst
@@ -142,14 +136,6 @@ contains
          print '(a,a,a,i0)', 'check_cli_grad_dft: ', what, ' failed, status ', status; stop 1
       end if
    end subroutine must_ok
-
-   subroutine strip_brackets(line)
-      character(*), intent(inout) :: line
-      integer :: k
-      do k = 1, len(line)
-         if (line(k:k) == '[' .or. line(k:k) == ']') line(k:k) = ' '
-      end do
-   end subroutine strip_brackets
 
    pure function c_string_local(s) result(cs)
       !! `s` NUL-terminated, for a `character(kind=c_char) :: x(*)` dummy --
