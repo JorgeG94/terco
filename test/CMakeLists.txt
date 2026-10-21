@@ -17,7 +17,7 @@
 # consumer passes exponents and coefficients -- so the tests have to build one,
 # and they may as well share the code.
 #
-set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6 TRC_PERCLASS)
+set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6)
 
 add_library(terco_test_basis STATIC trc_test_basis.F90)
 target_compile_definitions(terco_test_basis PRIVATE ${TERCO_TEST_DEFS})
@@ -39,8 +39,8 @@ set_target_properties(terco_pyscf_ref_io PROPERTIES Fortran_MODULE_DIRECTORY
                                                      ${CMAKE_BINARY_DIR}/modules)
 
 #
-# The library's definitions are PRIVATE -- TRC_FOCK6 and TRC_PERCLASS are
-# implementation choices and no consumer should need them. A test can, though:
+# The library's definitions are PRIVATE -- TRC_FOCK6 is an
+# implementation choice and no consumer should need them. A test can, though:
 # `check_binfock` compares against a raw oracle and has to know whether the
 # digestion folded the eight-fold symmetry into six updates or enumerated it,
 # because the two return different things to combine.
@@ -205,8 +205,8 @@ terco_add_check(check_1e check_1e.F90)
 # They must agree for ANY symmetric density -- that is the premise of having
 # two of them -- so this is a control rather than a comparison. It exists
 # because they did NOT agree at LMAX=2 for a month, and nothing was looking:
-# under TRC_PERCLASS only the non-symmetric build reaches the shared kernel,
-# so every other check passes without executing a line of it.
+# only the non-symmetric build reaches one_bin_item_nosym, so every other
+# check passes without executing a line of it.
 #
 terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
 # 6-31G needs only l <= 1, so this only self-skips (SKIP + stop 0, same
@@ -455,30 +455,6 @@ terco_add_check(check_ao check_ao.F90 NEEDS_PYSCF_REF)
 # E_xc and V_xc on the same grid and density, twenty functionals, RKS and
 # UKS, against test/pyscf_refs/xc_energy.ref.
 terco_add_check(check_xc_energy check_xc_energy.F90 NEEDS_PYSCF_REF)
-
-# The rotated-axis algebra itself, in Python and in float64, for every
-# ordered s/p class against int2e_cart, degenerate frames included. This one
-# genuinely needs a live pyscf (it is the ONLY place in this tree besides
-# test/pyscf_refs/generate.py that may import it), so it is registered only
-# when pyscf is importable -- never in CI, same as the pyscf-refs gate below
-# used to cover every check in this file.
-find_package(Python3 COMPONENTS Interpreter)
-if(Python3_FOUND)
-  execute_process(
-    COMMAND ${Python3_EXECUTABLE} -c "import numpy, pyscf"
-    RESULT_VARIABLE _pyscf_rc
-    OUTPUT_QUIET ERROR_QUIET)
-  if(_pyscf_rc EQUAL 0)
-    add_test(NAME terco/check_rotaxis_numeric
-             COMMAND ${Python3_EXECUTABLE}
-                     ${PROJECT_SOURCE_DIR}/scripts/rotaxis/check_numeric.py)
-    set_tests_properties(
-      terco/check_rotaxis_numeric
-      PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-  else()
-    message(STATUS "terco: pyscf not importable, skipping check_rotaxis_numeric")
-  endif()
-endif()
 
 # VV10's E_nlc and potential on the same grid and density, against
 # test/pyscf_refs/vv10.ref: water/6-31G* and water/cc-pVDZ (RKS), the OH

@@ -311,14 +311,16 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 
 #
 # TRC_FOCK6 folds the eight-fold permutational symmetry into six atomic
-# updates per quartet; TRC_PERCLASS launches one kernel per angular-momentum
-# class so ptxas budgets registers for that class rather than the worst one.
-# Both are measured wins and neither is optional in practice, so they are
-# definitions rather than options -- an option nobody should turn off is a
-# configuration that nobody tests.
+# updates per quartet. It is a measured win and not optional in practice, so
+# it is a definition rather than an option -- an option nobody should turn
+# off is a configuration that nobody tests. The symmetric Fock build always
+# launches one kernel per angular-momentum class, so ptxas budgets registers
+# for that class rather than the worst one; the shared kernel that once
+# covered every class is gone, and only the non-symmetric build
+# (one_bin_item_nosym) still uses a single kernel.
 #
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
-                                               TRC_FOCK6 TRC_PERCLASS)
+                                               TRC_FOCK6)
 #
 # TRC_CART_ORDER: 0 = lexicographic, 1 = gamess. Defined ONLY for gamess, left
 # UNDEFINED for the default: every guard this feature adds reads as
@@ -355,14 +357,11 @@ if(TERCO_MPI_DEVICE)
   target_compile_definitions(${main_lib} PRIVATE TRC_MPI_DEVICE=1)
 endif()
 #
-# The unrolled VRR/HRR go into the SHARED kernel only, and only at LMAX<=1.
-#
-# That kernel holds two copies of the recurrence, so unrolling it at LMAX=2
-# puts twice the entire per-class kernel set into one translation unit and
-# nvfortran does not finish. Under TRC_PERCLASS the shared kernel carries only
-# the non-symmetric Fock build, while every SCF quartet goes through a
-# per-class kernel that is unaffected -- so the 2.4x the unroll is worth there
-# buys nothing an SCF can see.
+# The unrolled VRR/HRR go into the non-symmetric kernel (one_bin_item_nosym)
+# only, and only at LMAX<=1: unrolling it at LMAX=2 puts the entire per-class
+# recurrence set into one translation unit and nvfortran does not finish.
+# Every SCF quartet goes through a per-class kernel that is unaffected, so
+# the 2.4x the unroll is worth there buys nothing an SCF can see.
 #
 if(TERCO_LMAX LESS_EQUAL 1)
   target_compile_definitions(${main_lib} PRIVATE TRC_UNROLL_VRR TRC_UNROLL_HRR)

@@ -37,8 +37,8 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 
 | Script | Emits | Used by |
 |---|---|---|
-| `gen_vrr.py` | Obara–Saika vertical recurrence | `gen_perclass`, and `--mode include` for the shared kernel |
-| `gen_hrr.py` | horizontal transfer plus the digestion, as `case` blocks | the shared kernel |
+| `gen_vrr.py` | Obara–Saika vertical recurrence | `gen_perclass`, and `--mode include` for the non-symmetric kernel |
+| `gen_hrr.py` | horizontal transfer plus the digestion, as `case` blocks | the non-symmetric kernel (`one_bin_item_nosym`) |
 | `gen_perclass.py` | one four-centre Fock kernel per class, `--split` one module each | the four-centre path |
 | `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock` |
 | `gen_df.py` | two- and three-centre Coulomb, one module per class (`--split`, the only mode) | `trc_df_2c`, `trc_df_3c` |
@@ -134,9 +134,9 @@ contributes nothing — while the classes where base 2 and base 3 coincide keep
 working. Partly right is far worse than zero; a zero would have been noticed
 immediately.
 
-That happened, and it survived for a month because under `TRC_PERCLASS` only
-the non-symmetric Fock build reaches the shared kernel: every other check
-passes without executing a line of it.
+That happened, and it survived for a month because only the non-symmetric
+Fock build reaches the generic kernel: every other check passes without
+executing a line of it.
 
 **Both generators now emit a guard:**
 
@@ -172,9 +172,9 @@ Two instances, both fixed by splitting rather than by optimising:
   LMAX=2 without finishing. Split into its own module: **2m27s**. Both
   quantities are computed once per geometry, so sharing the 1-D tables saved
   nothing and cost everything.
-- **The unrolled recurrence in the shared kernel at LMAX=2.** That kernel holds
-  two copies, so unrolling it puts twice the entire per-class kernel set into
-  one translation unit. Still compiling after twenty-five minutes. The unroll
+- **The unrolled recurrence in the generic kernel at LMAX=2.** The old shared
+  kernel held two copies (the non-symmetric one remains), so unrolling it put
+  twice the entire per-class kernel set into one translation unit. Still compiling after twenty-five minutes. The unroll
   is now emitted only for `LMAX<=1`.
 
 The rule that falls out: **one module per class, and never fuse two quantities
