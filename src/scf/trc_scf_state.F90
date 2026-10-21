@@ -27,14 +27,14 @@ module trc_scf_state
       !! first statement and read at its last, and their running totals
       !! (`trc_scf_context`'s `scf_ctx_t` owns the once-per-geometry setup
       !! timings). A pic timer measures one interval, so the totals over
-      !! iterations are kept beside it. `tf_it`/`tx_it` are this
+      !! iterations are kept beside it. `tf_it`/`tx_it`/`tr_it` are this
       !! iteration's own share, not a running total (see `trc_scf_driver`'s
       !! own header on why that differs between SAD's first iteration and
       !! its plateau).
       type(timer_type) :: fock, xc, pcm, rest
       real(dp) :: t_fock = 0.0_dp, t_xc = 0.0_dp, t_rest = 0.0_dp
       real(dp) :: t_pcm = 0.0_dp
-      real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp
+      real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp, tr_it = 0.0_dp
       real(dp) :: tx_pts = 0.0_dp, tx_prs = 0.0_dp
       real(dp) :: t_vv10 = 0.0_dp
       !! Running total of the VV10 calls `build_vxc` wraps in their own

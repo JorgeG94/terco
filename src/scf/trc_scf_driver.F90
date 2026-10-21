@@ -334,10 +334,10 @@ contains
       if (scf_config%talk) then
          if (scf_config%dft) then
             call global_logger%info("   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
-               //"   fock(s)     xc(s)")
+               //"   fock(s)     xc(s) linalg(s)")
          else
             call global_logger%info("   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
-               //"   fock(s)")
+               //"   fock(s) linalg(s)")
          end if
       end if
       do it = 1, scf_options%max_iter
@@ -460,16 +460,20 @@ contains
          end if
          call scf_state%update_errv(nao, scf_config%nspin, scf_result%dmat)
          drms = sqrt(linalg_provider%dot_3d(scf_state%errv, scf_state%errv))/real(nao, dp)
-         scf_timers%t_rest = scf_timers%t_rest + scf_timers%rest%get_elapsed_time()
+         ! The linear algebra between the XC build and the next Fock build:
+         ! energy, Fock assembly, commutator, DIIS, eigensolve, density and
+         ! its broadcast (PCM excluded, it has its own timer).
+         scf_timers%tr_it = scf_timers%rest%get_elapsed_time()
+         scf_timers%t_rest = scf_timers%t_rest + scf_timers%tr_it
          if (scf_config%talk) then
             if (scf_config%dft) then
-               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,f10.3,a)") &
+               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,3f10.3,a)") &
                   it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, scf_timers%tx_it, &
-                  merge(" i", "  ", incr_now)
+                  scf_timers%tr_it, merge(" i", "  ", incr_now)
             else
-               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,f10.3,a)") &
+               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,2f10.3,a)") &
                   it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, &
-                  merge(" i", "  ", incr_now)
+                  scf_timers%tr_it, merge(" i", "  ", incr_now)
             end if
             call global_logger%info(trim(line))
          end if
@@ -556,7 +560,7 @@ contains
          write (line, "(a,7f10.3)") "          ", scf_context%t_setup, scf_context%t_grid, scf_timers%t_fock, scf_timers%t_xc, &
             scf_timers%tx_pts, scf_timers%tx_prs, scf_timers%t_rest
          call global_logger%performance( &
-            "   time (s)   setup      grid      fock        xc   (points     pairs)   diag+diis")
+            "   time (s)   setup      grid      fock        xc   (points     pairs)      linalg")
          call global_logger%performance(trim(line))
          call global_logger%performance( &
             "   setup (s)  pairs        1e   sph fold       eri    linalg    orthog")
