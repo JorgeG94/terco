@@ -46,6 +46,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 | **Multipoles** | full Cartesian tensors through the **octupole** — 3 + 9 + 27 components |
 | **Density fitting** | two- and three-centre Coulomb integrals |
 | **Kohn-Sham DFT** | LDA, GGA and meta-GGA (tau-dependent: r2SCAN, SCAN, TPSS, the Minnesota M05-M15 family, ...) functionals, global, range-separated and double hybrids and VV10, RKS and UKS; every kernel checked against libxc ([docs/functionals.md](docs/functionals.md)) |
+| **Correlation methods** | Terco runs ri-mp2 and also supports Double-Hybrid DFT energies  |
 | **Solvation** | C-PCM and IEF-PCM SCF energies (pyscf's SWIG cavity, term for term), RKS and UKS, any functional, CPU and GPU |
 | **Analytic gradients** | HF/UHF, LDA/GGA/hybrid/range-separated KS-DFT with VV10, and the `--df` fitted RHF/RKS gradient; validated against pyscf and finite differences; single GPU (a multi-GPU run computes the gradient on rank 0 and warns); no meta-GGA, PCM, RI-MP2 or double-hybrid gradients |
 | **Interfaces** | a Fortran API, and a `bind(c)` ABI for host codes built with another compiler |
@@ -54,7 +55,9 @@ terco **ships no basis set**. A consumer passes exponents, coefficients and
 centres — or hands over libcint's `atm`/`bas`/`env` directly — and terco builds
 the basis object, the shell-pair container and the screening tables from that.
 
-## What it does not do
+Terco will read the qcshema basis set format so if you have those, you can use them.
+
+## Caveats (?) 
 
 **The code has not been tested on AMD or Intel GPUs**. This is future work, if anyone is happy to try.
 
@@ -91,6 +94,9 @@ that depends on the offload model is a bug in the offload model.
 In theory `do concurrent` can be parallelised over CPU threads: ifx, flang and
 nvfortran will do it. This is not tested in CI at the moment. Work is underway
 in gfortran to enable it.
+
+The parallelism model exposed in terco is suited for GPU execution it might be 
+crap on the CPU. Don't quote me on this (Jorge).
 
 ### CMake
 
@@ -147,20 +153,6 @@ terco water.xyz -f b3lyp --pcm cpcm --eps 78.3553   # in water, C-PCM
 terco --help
 ```
 
-| option | |
-|---|---|
-| `-b, --basis` | a Basis Set Exchange JSON file, or a name (default `def2-svp`) |
-| `-c, --chrg` / `-u, --uhf` | charge and number of unpaired electrons; else `.CHRG`/`.UHF` in the working directory, as xtb reads them |
-| `-f, --func` | `hf` (default) or a functional (`lda`, `pbe`, `blyp`, `b3lyp`, `wb97x-v`, ...; `--help` lists every one that runs, [docs/functionals.md](docs/functionals.md) every one registered, including those that don't yet) |
-| `-g, --guess` | `sad` (default), `sadq` (default for an ion), `sap`, `gwh`, `core` |
-| `--cart` | Cartesian AOs even for a basis defined spherical |
-| `--grid`, `--iterations`, `--econv`, `--gconv`, `--thresh` | DFT grid level and SCF/screening thresholds |
-| `--incremental` | build later Fock matrices from the density difference (closed shell only, `trc_set_incremental`). Off by default: it pays only on large systems, and was about 5% slower on ionic05/STO-3G |
-| `--nlc-grid` | grid level for VV10 nonlocal correlation (`wb97x-v`), default 1 |
-| `--pcm`, `--eps` | polarisable continuum solvation, `cpcm` or `iefpcm`, with the solvent's dielectric constant (required; water is 78.3553) |
-| `--rimp2`, `--aux`, `--frozen` | RI-MP2 after a closed-shell SCF; runs Cartesian AOs, as RI-MP2 needs today |
-| `-s, --silent` | only the summary: no SCF iterations, timings or guess details |
-
 A basis name is looked up as `<name>.json` in each directory of
 `$TERCO_BASIS_PATH`, then in `share/terco/basis_sets` under the install prefix,
 where `cmake --install` puts the basis sets terco is tested with. The exit
@@ -175,24 +167,12 @@ above), then run under `mpiexec`:
 mpiexec -np 4 terco water.xyz -b 6-31g*       # one GPU per rank
 ```
 
-`terco` initialises and finalises MPI itself (through pic-mpi; a build with
-`TERCO_ENABLE_MPI=OFF` makes this a no-op, so the command is the same either
-way). Every rank binds its own device and runs the same input; the Fock
-build, RI-MP2 (`--rimp2`) and PCM solvation (`--pcm`) split across ranks --
-PCM keeps the whole cavity and its LU replicated on every rank (cheap next
-to the integrals) and splits only its two solute-surface integral passes,
-over a contiguous range of surface points per rank -- and the SCF/guess/
-summary output prints once (rank 0); the energies agree with a single-rank
-run to the same tolerance `test/scf_mpi.F90` checks (1e-8). The exchange-
-correlation quadrature splits too, its grid batches dealt across ranks, and
-VV10 nonlocal correlation (`wb97x-v`) splits with it: its O(N^2) double sum
-over grid points splits by a contiguous range of outer points per rank,
-with a single allreduce putting the full potential and energy back
-on every rank before the (replicated) contraction that follows -- the
-energy agrees with a single-rank run to the same tolerance. An error on
-any rank (a bad argument, a
-missing basis file, an unsupported functional) ends every rank, not just
-the one that saw it.
+Work is divided among GPUs in a mostly load balanced way - no dynamic
+load balancing is enabled (yet). The code is able to run in a distributed
+fashion, i.e. (with slurm because it is very nice to read), you do:
+`srun -N 2 --ntasks=8 --ntasks-per-node=4 --ngpus-per-node=4 ./terco big.xyz`
+it will run on two nodes and distribute among 8 GPUs. All methods that can 
+do multi GPU can do this. I.e. just the gradients cannot.
 
 ### From Fortran
 
@@ -217,7 +197,8 @@ call eri%fock_many(bas, n, dmats, gmats) ! N densities, ONE integral pass
 
 The basis, the pair list and the ERI object are built **once per geometry** and
 reused by every Fock build. Rebuilding them per SCF iteration throws away the
-container's entire reason for existing.
+container's entire reason for existing. If used in a fragmentation code, this can 
+be done better. 
 
 `fock_many` takes `(ndens, nao, nao)` — the density index **first**. That is not
 arbitrary: with it last, the N atomic updates for one `(mu,nu)` sit `nao²` apart
@@ -242,8 +223,6 @@ rc = trc_basis_create_libcint(atm, natm, bas, nbas, env, nenv, 1, hbas)
 rc = trc_eri_create(hbas, 1.0e-10_dp, heri)
 rc = trc_fock(heri, hbas, d, g, 1.0d0, 1.0d0, 1, 0.0d0)   ! last: omega, 0 = Coulomb
 ```
-
-This hasn't been tested thoroughly so be wary! 
 
 ---
 
@@ -407,8 +386,8 @@ which is where the conventions and the comparison points come from.
 
 </details>
 
-Validation and comparison targets used during development, all open source and
-all reproducible: [libcint], [pyscf], [gpu4pyscf], and [GAMESS libERI].
+Validation and comparison targets used during development, all open source:
+ [libcint], [pyscf], [gpu4pyscf], and [GAMESS libERI].
 
 [libcint]: https://github.com/sunqm/libcint
 [pyscf]: https://github.com/pyscf/pyscf
