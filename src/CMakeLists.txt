@@ -125,6 +125,54 @@ target_sources(
           xc/functionals/trc_xc_lrcwpbeh_hjs_pbe_x.F90
           xc/functionals/trc_xc_wb97x_d_xc.F90
           xc/functionals/trc_xc_wb97x_d3_xc.F90
+          # meta-GGA kernels: exc and exc_vxc only (see tools/exchcxx_to_fortran.py)
+          xc/functionals/trc_xc_bc95_c.F90
+          xc/functionals/trc_xc_bmk_x.F90
+          xc/functionals/trc_xc_cf22d_c.F90
+          xc/functionals/trc_xc_cf22d_x.F90
+          xc/functionals/trc_xc_m05_2x_c.F90
+          xc/functionals/trc_xc_m05_2x_x.F90
+          xc/functionals/trc_xc_m05_c.F90
+          xc/functionals/trc_xc_m05_x.F90
+          xc/functionals/trc_xc_m06_2x_c.F90
+          xc/functionals/trc_xc_m06_2x_x.F90
+          xc/functionals/trc_xc_m06_c.F90
+          xc/functionals/trc_xc_m06_hf_c.F90
+          xc/functionals/trc_xc_m06_hf_x.F90
+          xc/functionals/trc_xc_m06_l_c.F90
+          xc/functionals/trc_xc_m06_l_x.F90
+          xc/functionals/trc_xc_m06_sx_c.F90
+          xc/functionals/trc_xc_m06_sx_x.F90
+          xc/functionals/trc_xc_m06_x.F90
+          xc/functionals/trc_xc_m08_hx_c.F90
+          xc/functionals/trc_xc_m08_hx_x.F90
+          xc/functionals/trc_xc_m08_so_c.F90
+          xc/functionals/trc_xc_m08_so_x.F90
+          xc/functionals/trc_xc_m11_c.F90
+          xc/functionals/trc_xc_m11_x.F90
+          xc/functionals/trc_xc_mbeef_x.F90
+          xc/functionals/trc_xc_mn12_l_c.F90
+          xc/functionals/trc_xc_mn12_l_x.F90
+          xc/functionals/trc_xc_mn12_sx_c.F90
+          xc/functionals/trc_xc_mn12_sx_x.F90
+          xc/functionals/trc_xc_mn15_c.F90
+          xc/functionals/trc_xc_mn15_l_c.F90
+          xc/functionals/trc_xc_mn15_l_x.F90
+          xc/functionals/trc_xc_mn15_x.F90
+          xc/functionals/trc_xc_pkzb_c.F90
+          xc/functionals/trc_xc_pkzb_x.F90
+          xc/functionals/trc_xc_r2scan_c.F90
+          xc/functionals/trc_xc_r2scan_x.F90
+          xc/functionals/trc_xc_rev_m06_l_c.F90
+          xc/functionals/trc_xc_rev_m06_l_x.F90
+          xc/functionals/trc_xc_revtpss_c.F90
+          xc/functionals/trc_xc_revtpss_x.F90
+          xc/functionals/trc_xc_rscan_c.F90
+          xc/functionals/trc_xc_rscan_x.F90
+          xc/functionals/trc_xc_scan_c.F90
+          xc/functionals/trc_xc_scan_x.F90
+          xc/functionals/trc_xc_tpss_c.F90
+          xc/functionals/trc_xc_tpss_x.F90
           xc/trc_xc_functional.F90  # compositions, and the per-point dispatch
           xc/trc_collocation.F90    # basis functions and gradients at a point
           xc/trc_xc_batch.F90       # the grid, batched and screened

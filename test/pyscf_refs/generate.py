@@ -551,14 +551,54 @@ def gen_xc_energy():
 
     NAMES = ['lda_x', 'svwn', 'pbe', 'blyp', 'b3lyp', 'b3lyp5', 'wb97x-v', 'wb97x', 'wb97',
              'vwn5', 'pw91', 'bp86', 'rpbe', 'o3lyp', 'revb3lyp', 'x3lyp', 'bhandh', 'sogga11x',
-             'bhhlyp', 'hflyp']
+             'bhhlyp', 'hflyp',
+             # The meta-GGAs. As for the hybrids above, E_xc and V_xc are the
+             # semilocal part alone; pyscf's own name where it has one.
+             'r2scan', 'tpss', 'm06l', 'scan', 'revtpss', 'tpssh', 'm06',
+             'm062x', 'r2scan0', 'bmk', 'cf22d', 'm05', 'm052x', 'm06hf',
+             'm06sx', 'm08hx', 'm08so', 'm11', 'mbeef', 'mn12l', 'mn12sx',
+             'mn15', 'mn15l', 'pkzb', 'pw86b95', 'r2scan50', 'r2scanh', 'revm06l',
+             'revtpssh', 'rscan', 'scan0', 'tpss0']
     PYSCF = {'lda_x': 'LDA_X', 'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'blyp': 'BLYP',
              'b3lyp': 'HYB_GGA_XC_B3LYP', 'b3lyp5': 'HYB_GGA_XC_B3LYP5',
              'wb97x-v': 'HYB_GGA_XC_WB97X_V', 'wb97x': 'HYB_GGA_XC_WB97X', 'wb97': 'HYB_GGA_XC_WB97',
              'vwn5': 'LDA_C_VWN_RPA', 'pw91': 'GGA_X_PW91,GGA_C_PW91', 'bp86': 'GGA_X_B88,GGA_C_P86',
              'rpbe': 'GGA_X_RPBE,GGA_C_PBE', 'o3lyp': 'O3LYP', 'revb3lyp': 'REVB3LYP', 'x3lyp': 'X3LYP',
              'bhandh': '0.5*HF + 0.5*LDA_X, GGA_C_LYP', 'sogga11x': 'HYB_GGA_X_SOGGA11_X,GGA_C_SOGGA11_X',
-             'bhhlyp': 'HYB_GGA_XC_BHANDHLYP', 'hflyp': 'HF,GGA_C_LYP'}
+             'bhhlyp': 'HYB_GGA_XC_BHANDHLYP', 'hflyp': 'HF,GGA_C_LYP',
+             'r2scan': 'R2SCAN',
+             'tpss': 'TPSS',
+             'm06l': 'M06L',
+             'scan': 'SCAN',
+             'revtpss': 'REVTPSS',
+             'tpssh': 'TPSSH',
+             'm06': 'M06',
+             'm062x': 'M062X',
+             'r2scan0': 'R2SCAN0',
+             'bmk': 'HYB_MGGA_X_BMK,GGA_C_BMK',
+             'cf22d': 'CF22D',
+             'm05': 'M05',
+             'm052x': 'M052X',
+             'm06hf': 'M06HF',
+             'm06sx': 'HYB_MGGA_X_M06_SX,MGGA_C_M06_SX',
+             'm08hx': 'HYB_MGGA_X_M08_HX,MGGA_C_M08_HX',
+             'm08so': 'HYB_MGGA_X_M08_SO,MGGA_C_M08_SO',
+             'm11': 'HYB_MGGA_X_M11,MGGA_C_M11',
+             'mbeef': 'MBEEF',
+             'mn12l': 'MN12L',
+             'mn12sx': 'MN12SX',
+             'mn15': 'MN15',
+             'mn15l': 'MN15L',
+             'pkzb': 'PKZB',
+             'pw86b95': 'PW86B95',
+             'r2scan50': 'R2SCAN50',
+             'r2scanh': 'R2SCANH',
+             'revm06l': 'MGGA_X_REVM06_L,MGGA_C_REVM06_L',
+             'revtpssh': 'REVTPSSH',
+             'rscan': 'RSCAN',
+             'scan0': 'SCAN0',
+             'tpss0': 'TPSS0',
+             }
 
     run_bin("check_xc_energy", [])
     dump = TEST / "xc_probe.bin"
@@ -1918,6 +1958,126 @@ def gen_rks():
     dump.unlink()
 
 
+def gen_scf_mgga():
+    """scf_mgga.F90's 12 cases: water r2SCAN/TPSS/M06-L/SCAN/TPSSh/r2SCAN0/
+    M06/M06-2X restricted and the OH radical r2SCAN/TPSS/M06-L/TPSSh
+    unrestricted, 6-31G uncontracted to primitives, on terco's own grid.
+    gen_rks's record and its at-density control, for meta-GGAs: pyscf's
+    converged energy and density per case. OH's first case starts from
+    gen_rks's symmetry-broken core guess and every later one from the case
+    before it, for gen_rks's reason (the 2-Pi hole's orientation)."""
+    SYMBOL = {1: 'H', 8: 'O'}
+    PYSCF = {'r2scan': 'R2SCAN', 'tpss': 'TPSS', 'm06l': 'M06L', 'scan': 'SCAN', 'tpssh': 'TPSSH',
+             'r2scan0': 'R2SCAN0', 'm06': 'M06', 'm062x': 'M062X'}
+
+    run_bin("scf_mgga", [])
+    dump = TEST / "mgga_probe.bin"
+    r = BinReader(dump)
+    ncase = r.i8()
+    w = RefWriter("mgga.ref")
+    w.header("scf_mgga", [ROOT / "test" / "scf_mgga.F90",
+                          TEST / "basis_sets" / "6-31g.json", TEST / "water.xyz", TEST / "oh.xyz"])
+    w.int_("NCASE", ncase)
+    oh_cascade_dm = None
+    for ic in range(ncase):
+        n, natm, nsh, nspin, na, nb = r.i8(), r.i8(), r.i8(), r.i8(), r.i8(), r.i8()
+        z = r.f8(natm)
+        rr = r.f8(3 * natm).reshape(3, natm, order='F').T
+        shells = []
+        for _ in range(nsh):
+            a, l = r.i8(), r.i8()
+            e = r.f8(1)[0]
+            shells.append((int(a), int(l), float(e)))
+        name = r.str_(8)
+        npts = r.i8()
+        pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+        wts = r.f8(npts)
+        if r.i8() != 0:
+            raise RuntimeError(f"gen_scf_mgga case {ic}: no case here has VV10")
+        e_t = r.f8(1)[0]
+        dm = r.f8(n * n * nspin).reshape(n, n, nspin, order='F')
+
+        atoms, bas = [], {}
+        for a in range(natm):
+            lab = f'{SYMBOL[int(round(z[a]))]}{a + 1}'
+            atoms.append([lab, tuple(rr[a])])
+            bas[lab] = [[l, [e, 1.0]] for (aa, l, e) in shells if aa == a + 1]
+        charge = int(round(z.sum())) - (na + nb)
+        mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Bohr', charge=charge, spin=na - nb, verbose=0)
+        if mol.nao_nr() != n:
+            raise RuntimeError(f"gen_scf_mgga case {ic}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+        off, k = {}, 0
+        for (aa, l, e) in shells:
+            off[(aa, l, round(e, 10))] = k
+            k += (l + 1) * (l + 2) // 2
+        perm = []
+        for ib in range(mol.nbas):
+            key = (mol.bas_atom(ib) + 1, mol.bas_angular(ib), round(float(mol.bas_exp(ib)[0]), 10))
+            perm.extend(range(off[key], off[key] + mol.bas_len_cart(ib)))
+        perm = np.array(perm)
+        inv_perm = np.argsort(perm)
+
+        def make_mf():
+            m = dft.RKS(mol) if nspin == 1 else dft.UKS(mol)
+            m.xc = PYSCF[name]
+            m.grids.coords = np.ascontiguousarray(pts)
+            m.grids.weights = wts
+            m.grids.non0tab = None
+            return m
+
+        label = name + ('/U' if nspin == 2 else '/R')
+        if nspin == 1:
+            dm0 = dm[perm][:, perm][:, :, 0]
+            dm0_terco = None
+        else:
+            if oh_cascade_dm is None:
+                ovlp = mol.intor('int1e_ovlp')
+                dip = mol.intor('int1e_r')
+                hcore_pert = scf.hf.get_hcore(mol) + 0.05*dip[1]
+                ea, ca = scipy.linalg.eigh(hcore_pert, ovlp)
+                dm0_a = ca[:, :na] @ ca[:, :na].T
+                dm0_b = ca[:, :nb] @ ca[:, :nb].T
+            else:
+                dm0_a, dm0_b = oh_cascade_dm
+            dm0 = (dm0_a, dm0_b)
+            dm0_terco = np.stack([dm0_a[np.ix_(inv_perm, inv_perm)],
+                                  dm0_b[np.ix_(inv_perm, inv_perm)]], axis=2)
+        # A first pass, then converge_tight from its density: from terco's
+        # density alone pyscf's own convergence test passed with the final
+        # |g| at 1.3e-8 for r2SCAN/R, just past converge_tight's 1e-8.
+        pre = make_mf()
+        pre.conv_tol, pre.conv_tol_grad, pre.max_cycle, pre.verbose = 1.0e-12, 1.0e-9, 200, 0
+        pre.kernel(dm0=dm0)
+        mf, grad_norm = converge_tight(make_mf, pre.make_rdm1(), f"mgga case {ic} ({label})")
+        e_p = mf.e_tot
+
+        dm_conv = mf.make_rdm1()
+        if nspin == 1:
+            dm_conv_terco = dm_conv[np.ix_(inv_perm, inv_perm)][:, :, None]
+        else:
+            dm_conv_terco = np.stack([dm_conv[0][np.ix_(inv_perm, inv_perm)],
+                                      dm_conv[1][np.ix_(inv_perm, inv_perm)]], axis=2)
+            oh_cascade_dm = (dm_conv[0], dm_conv[1])
+
+        w.str_(f"NAME_{ic}", name)
+        w.int_(f"NSPIN_{ic}", nspin)
+        w.int_(f"NAO_{ic}", n)
+        # DM0_i before E_i/DM_i, gen_rks's order (scf_mgga.F90 reads it first).
+        if dm0_terco is not None:
+            w.matrix3(f"DM0_{ic}", dm0_terco)
+        w.real(f"E_{ic}", e_p)
+        w.real(f"CONV_TOL_{ic}", mf.conv_tol)
+        w.real(f"CONV_TOL_GRAD_{ic}", mf.conv_tol_grad)
+        w.real(f"GRAD_NORM_{ic}", grad_norm)
+        w.matrix3(f"DM_{ic}", dm_conv_terco)
+        print(f"  mgga case {ic:2d} {label:10s} E(terco, this run) {e_t:18.12f}  "
+              f"E(pyscf,converged) {e_p:18.12f}  |dE| {abs(e_t - e_p):.2e}  |g| {grad_norm:.2e}")
+    w.end()
+    w.write()
+    dump.unlink()
+
+
 def gen_scf_robust():
     """scf_robust.F90's 4 hard cases: cache pyscf's own converged energy,
     at pyscf's own basis library where it has the name (6-31G, aug-cc-pVDZ)
@@ -2946,6 +3106,34 @@ def gen_xc_kernels():
         "ityh_x_033": ("GGA_X_ITYH", "gga", 0.33),
         "hjs_pbe_x": ("GGA_X_HJS_PBE", "gga", 0.11), "lrcwpbe_hjs_pbe_x": ("GGA_X_HJS_PBE", "gga", 0.3),
         "lrcwpbeh_hjs_pbe_x": ("GGA_X_HJS_PBE", "gga", 0.2),
+        # Meta-GGA kernels: ExchCXX's own src/libxc.cxx Kernel -> libxc map.
+        # A HYB_ kernel is evaluated for its semilocal part only, the same as
+        # sogga11_x_x above; range-separated ones (m06_sx_x, m11_x,
+        # mn12_sx_x) at libxc's own default omega, which is ExchCXX's.
+        "bc95_c": ("MGGA_C_BC95", "mgga"), "bmk_x": ("HYB_MGGA_X_BMK", "mgga"),
+        "cf22d_c": ("MGGA_C_CF22D", "mgga"), "cf22d_x": ("HYB_MGGA_X_CF22D", "mgga"),
+        "m05_2x_c": ("MGGA_C_M05_2X", "mgga"), "m05_2x_x": ("HYB_MGGA_X_M05_2X", "mgga"),
+        "m05_c": ("MGGA_C_M05", "mgga"), "m05_x": ("HYB_MGGA_X_M05", "mgga"),
+        "m06_2x_c": ("MGGA_C_M06_2X", "mgga"), "m06_2x_x": ("HYB_MGGA_X_M06_2X", "mgga"),
+        "m06_c": ("MGGA_C_M06", "mgga"), "m06_hf_c": ("MGGA_C_M06_HF", "mgga"),
+        "m06_hf_x": ("HYB_MGGA_X_M06_HF", "mgga"), "m06_l_c": ("MGGA_C_M06_L", "mgga"),
+        "m06_l_x": ("MGGA_X_M06_L", "mgga"), "m06_sx_c": ("MGGA_C_M06_SX", "mgga"),
+        "m06_sx_x": ("HYB_MGGA_X_M06_SX", "mgga"), "m06_x": ("HYB_MGGA_X_M06", "mgga"),
+        "m08_hx_c": ("MGGA_C_M08_HX", "mgga"), "m08_hx_x": ("HYB_MGGA_X_M08_HX", "mgga"),
+        "m08_so_c": ("MGGA_C_M08_SO", "mgga"), "m08_so_x": ("HYB_MGGA_X_M08_SO", "mgga"),
+        "m11_c": ("MGGA_C_M11", "mgga"), "m11_x": ("HYB_MGGA_X_M11", "mgga"),
+        "mbeef_x": ("MGGA_X_MBEEF", "mgga"), "mn12_l_c": ("MGGA_C_MN12_L", "mgga"),
+        "mn12_l_x": ("MGGA_X_MN12_L", "mgga"), "mn12_sx_c": ("MGGA_C_MN12_SX", "mgga"),
+        "mn12_sx_x": ("HYB_MGGA_X_MN12_SX", "mgga"), "mn15_c": ("MGGA_C_MN15", "mgga"),
+        "mn15_l_c": ("MGGA_C_MN15_L", "mgga"), "mn15_l_x": ("MGGA_X_MN15_L", "mgga"),
+        "mn15_x": ("HYB_MGGA_X_MN15", "mgga"), "pkzb_c": ("MGGA_C_PKZB", "mgga"),
+        "pkzb_x": ("MGGA_X_PKZB", "mgga"), "r2scan_c": ("MGGA_C_R2SCAN", "mgga"),
+        "r2scan_x": ("MGGA_X_R2SCAN", "mgga"), "rev_m06_l_c": ("MGGA_C_REVM06_L", "mgga"),
+        "rev_m06_l_x": ("MGGA_X_REVM06_L", "mgga"), "revtpss_c": ("MGGA_C_REVTPSS", "mgga"),
+        "revtpss_x": ("MGGA_X_REVTPSS", "mgga"), "rscan_c": ("MGGA_C_RSCAN", "mgga"),
+        "rscan_x": ("MGGA_X_RSCAN", "mgga"), "scan_c": ("MGGA_C_SCAN", "mgga"),
+        "scan_x": ("MGGA_X_SCAN", "mgga"), "tpss_c": ("MGGA_C_TPSS", "mgga"),
+        "tpss_x": ("MGGA_X_TPSS", "mgga"),
     }
 
     RHO = np.logspace(-9, 1, 11)
@@ -2982,11 +3170,37 @@ def gen_xc_kernels():
     _OMEGA = {"wb97x_v_xc": 0.3, "wb97x_xc": 0.3, "wb97_xc": 0.4,
               "wb97x_d_xc": 0.2, "wb97x_d3_xc": 0.25}
 
+    # Meta-GGA: tau = tau_W + alpha tau_unif, so alpha is the iso-orbital
+    # indicator SCAN-type kernels switch on (r2SCAN's interpolation joins at
+    # alpha = 2.5, so 2.6 is just past it), and 0.01 is near the
+    # single-orbital limit. Not alpha = 0 itself: tau = tau_W exactly is
+    # where TPSS-type correlation's z = tau_W/tau reaches its clamp at 1, a
+    # kink in the derivatives, and which side of it a point lands on is the
+    # last bit of 8 rho tau against sigma -- measured: the two codes' vtau
+    # there 0 and -0.098. Nor alpha < 0 (tau below von Weizsaecker's), which
+    # a density cannot have.
+    S_MGGA = np.array([0.0, 0.1, 1.0, 10.0])
+    ALPHA = np.array([0.01, 0.5, 1.0, 2.6, 10.0])
+    #: polarised (s, cos_ab, alpha_a, alpha_b) combinations
+    MGGA_POLAR = [(0.0, 0.0, 0.5, 1.0), (0.1, -0.8, 1.0, 0.01), (1.0, 0.6, 0.01, 2.6),
+                  (1.0, 0.0, 2.6, 0.5), (10.0, 0.6, 10.0, 0.3)]
+    C_TAU = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0)
+
+    def tau_of(rho, sigma, alpha, spin_scale):
+        #: spin_scale = 1 for the total density, 2**(2/3) per spin (the
+        #: uniform-gas tau of one spin channel at density rho_s)
+        return sigma / (8.0 * rho) + alpha * spin_scale * C_TAU * rho ** (5.0 / 3.0)
+
     def unpolar_points(family):
         pts = []
         for rho in RHO:
             if family == "lda":
                 pts.append((rho,))
+            elif family == "mgga":
+                for s in S_MGGA:
+                    sig = s * rho ** (8.0 / 3.0)
+                    for a in ALPHA:
+                        pts.append((rho, sig, tau_of(rho, sig, a, 1.0)))
             else:
                 for s in S_RED:
                     pts.append((rho, s * rho ** (8.0 / 3.0)))
@@ -2999,6 +3213,13 @@ def gen_xc_kernels():
                 ra, rb = 0.5 * rho * (1 + z), 0.5 * rho * (1 - z)
                 if family == "lda":
                     pts.append((ra, rb))
+                elif family == "mgga":
+                    for s, c, aa, ab in MGGA_POLAR:
+                        saa = s * ra ** (8.0 / 3.0)
+                        sbb = s * rb ** (8.0 / 3.0)
+                        pts.append((ra, rb, saa, c * np.sqrt(saa * sbb), sbb,
+                                    tau_of(ra, saa, aa, 2.0 ** (2.0 / 3.0)),
+                                    tau_of(rb, sbb, ab, 2.0 ** (2.0 / 3.0))))
                 else:
                     for s in S_RED[::2]:
                         saa = s * ra ** (8.0 / 3.0)
@@ -3008,20 +3229,28 @@ def gen_xc_kernels():
         return np.array(pts)
 
     def libxc_rho(family, polar, pts):
+        #: pyscf's layout: (rho, d/dx, d/dy, d/dz) for a GGA, and a meta-GGA
+        #: appends (laplacian, tau) -- zero Laplacian, unused by every
+        #: kernel here (exchcxx_to_fortran.py refuses one that needs it).
         n = len(pts)
+        nrow = 6 if family == "mgga" else 4
         if not polar:
             if family == "lda":
                 return pts[:, 0]
-            r = np.zeros((4, n))
+            r = np.zeros((nrow, n))
             r[0] = pts[:, 0]
             r[1] = np.sqrt(pts[:, 1])
+            if family == "mgga":
+                r[5] = pts[:, 2]
             return r
         if family == "lda":
             return np.stack([pts[:, 0], pts[:, 1]])
-        ra, rb, saa, sab, sbb = pts.T
-        a = np.zeros((4, n))
-        b = np.zeros((4, n))
+        ra, rb, saa, sab, sbb = pts[:, :5].T
+        a = np.zeros((nrow, n))
+        b = np.zeros((nrow, n))
         a[0], b[0] = ra, rb
+        if family == "mgga":
+            a[5], b[5] = pts[:, 5], pts[:, 6]
         a[1] = np.sqrt(saa)
         gb = np.sqrt(sbb)
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -3044,10 +3273,21 @@ def gen_xc_kernels():
             if stem in _OMEGA:
                 pts = np.concatenate([pts, wb97_extra_points(_OMEGA[stem], polar == 1)])
             rho = libxc_rho(family, polar, pts)
-            exc, vxc, fxc, _ = libxc.eval_xc(name, rho, spin=polar, deriv=2, omega=eval_omega)
-            cols = [exc]
             nv = 2 if polar else 1
             ns = 3 if polar else 1
+            if family == "mgga":
+                # First order only: terco translates no meta-GGA fxc.
+                exc, vxc, _, _ = libxc.eval_xc(name, rho, spin=polar, deriv=1, omega=eval_omega)
+                cols = [exc, vxc[0].reshape(len(pts), nv), vxc[1].reshape(len(pts), ns),
+                        vxc[3].reshape(len(pts), nv)]
+                ref = np.column_stack([c.reshape(len(pts), -1) for c in cols])
+                lines.append(f"{stem} {family} {polar} {len(pts)} {pts.shape[1]} {ref.shape[1]}")
+                for p, r_ in zip(pts, ref):
+                    lines.append(" ".join(f"{x:.17e}" for x in np.concatenate([p, r_])))
+                print(f"  xc kernel {stem:16s} polar={polar} {len(pts):4d} points, {ref.shape[1]:2d} outputs")
+                continue
+            exc, vxc, fxc, _ = libxc.eval_xc(name, rho, spin=polar, deriv=2, omega=eval_omega)
+            cols = [exc]
             cols.append(vxc[0].reshape(len(pts), nv))
             if family == "gga":
                 cols.append(vxc[1].reshape(len(pts), ns))
@@ -3539,6 +3779,7 @@ CASES = {
     "dfg_formamide_b3lyp_ccpvdz": lambda: gen_df_grad(
         "formamide_b3lyp_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
     "rks": gen_rks,
+    "scf_mgga": gen_scf_mgga,
     "scf_robust": gen_scf_robust,
     "rimp2": gen_rimp2,
     "cphf": gen_cphf,

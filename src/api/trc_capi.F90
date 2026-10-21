@@ -196,7 +196,7 @@ module trc_capi
    use trc_sap, only: trc_sap_build
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
-                                XC_AVAILABLE_FUNCTIONALS
+                                XC_AVAILABLE_FUNCTIONALS, XC_FAMILY_MGGA
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle, bcast
@@ -2875,15 +2875,12 @@ contains
       !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
       !! term on top of the semilocal one, on VV10's own grid
       !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
-      !! it on). wB97M-V is meta-GGA and cannot reach this point at all (see
-      !! below), so it is not a case this routine has to decide about.
+      !! it on). wB97M-V is not in terco's table, and a meta-GGA is refused
+      !! below, so it is not a case this routine has to decide about.
       !!
       !! REFUSED, clearly, rather than attempted:
-      !!   - meta-GGA or a double hybrid: `trc_xc_functional_t` has no
-      !!     meta-GGA family and no MP2-fraction field on this branch, so
-      !!     neither can reach this point at all -- `trc_set_method` already
-      !!     refused it (func%missing) before a functional name naming one
-      !!     could be stored in `cx%opts%functional`. Nothing to check here.
+      !!   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
+      !!     the gradient is refused here with a message.
       !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
       !!     gradient exists; `trc_scf_gradient` is the SCF reference term
       !!     only.
@@ -2971,6 +2968,15 @@ contains
       if (cx%rimp2_ok) then
          cx%message = "trc_run_gradient: RI-MP2/double-hybrid correlation gradient not implemented yet"
          return
+      end if
+      if (have_func) then
+         if (func%family == XC_FAMILY_MGGA) then
+            ! The energy runs; its tau term has no nuclear gradient in
+            ! trc_xc_grad yet, which only does LDA and GGA.
+            cx%message = "trc_run_gradient: meta-GGA ('"//trim(cx%opts%functional)// &
+                         "') exchange-correlation gradient not implemented yet"
+            return
+         end if
       end if
       if (cx%opts%df) then
          ! The fitted gradient differentiates the SAME fit the SCF converged
@@ -3559,8 +3565,9 @@ contains
       !!   2  hybrid     -- exx or exx_lr nonzero (some exact exchange)
       !!   4  range-separated -- omega nonzero
       !!   8  VV10       -- nlc_b nonzero (nonlocal correlation)
-      !!   16 meta-GGA   -- needs a kinetic-energy-density kernel; always
-      !!      paired with bit 64 today, since terco has none translated yet
+      !!   16 meta-GGA   -- depends on the kinetic-energy density tau; runs
+      !!      (bit 1) unless it also needs the density Laplacian (r2SCAN-L),
+      !!      which terco does not evaluate (bit 64)
       !!   32 double hybrid -- xc_is_double_hybrid (pt2_cos or pt2_css nonzero)
       !!   64 listed but not runnable -- trc_xc_functional_t%missing is set;
       !!      bit 1 is then NOT set, and `exx`/`c_os`/`c_ss`/the other bits
@@ -3595,9 +3602,10 @@ contains
       status = TRC_OK
       if (len_trim(f%missing) > 0) then
          flags = ibset(flags, 6)                                    ! 64: listed, not runnable
-         if (index(f%missing, "meta-GGA") > 0) flags = ibset(flags, 4)  ! 16: meta-GGA
+         if (index(f%missing, "Laplacian") > 0) flags = ibset(flags, 4)  ! 16: meta-GGA
       else
          flags = ibset(flags, 0)                                    ! 1: known/runnable
+         if (f%family == XC_FAMILY_MGGA) flags = ibset(flags, 4)    ! 16: meta-GGA
       end if
       if (f%exx /= 0.0_dp .or. f%exx_lr /= 0.0_dp) flags = ibset(flags, 1)  ! 2: hybrid
       if (f%omega /= 0.0_dp) flags = ibset(flags, 2)                       ! 4: range-separated

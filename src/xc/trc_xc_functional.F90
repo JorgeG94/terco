@@ -25,6 +25,13 @@
 ! with allocatable components is exactly what a `do concurrent` body should
 ! not touch.
 !
+! A meta-GGA has its own pair, `xc_eval_point_mgga` and its polarised twin:
+! tau in, vtau out, dispatching every kernel a meta-GGA composition uses
+! (its meta-GGA kernels and any LDA/GGA ones beside them). The LDA/GGA
+! evaluators dispatch only LDA and GGA kernels, so the meta-GGA family
+! leaves what they compile to unchanged. Kernel ids are LDA/GGA first and
+! meta-GGA after, for the same reason.
+!
 ! A double hybrid (b2plyp, b2gp-plyp, mpw2plyp) is still just a (coef,
 ! kernel) composition plus `exx` for its SCF -- `pt2_cos`/`pt2_css` are
 ! the RI-MP2 fraction on top, which this module only STORES; running it
@@ -71,16 +78,64 @@ module trc_xc_functional
    use trc_xc_wb97x_d_xc, only: wb97x_d_xc_exc_vxc_unpolar, wb97x_d_xc_exc_vxc_polar, wb97x_d_xc_vxc_fxc_unpolar
    use trc_xc_wb97x_v_xc, only: wb97x_v_xc_exc_vxc_unpolar, wb97x_v_xc_exc_vxc_polar, wb97x_v_xc_vxc_fxc_unpolar
    use trc_xc_wb97x_xc, only: wb97x_xc_exc_vxc_unpolar, wb97x_xc_exc_vxc_polar, wb97x_xc_vxc_fxc_unpolar
+   use trc_xc_bc95_c, only: bc95_c_exc_vxc_unpolar, bc95_c_exc_vxc_polar
+   use trc_xc_bmk_x, only: bmk_x_exc_vxc_unpolar, bmk_x_exc_vxc_polar
+   use trc_xc_cf22d_c, only: cf22d_c_exc_vxc_unpolar, cf22d_c_exc_vxc_polar
+   use trc_xc_cf22d_x, only: cf22d_x_exc_vxc_unpolar, cf22d_x_exc_vxc_polar
+   use trc_xc_m05_2x_c, only: m05_2x_c_exc_vxc_unpolar, m05_2x_c_exc_vxc_polar
+   use trc_xc_m05_2x_x, only: m05_2x_x_exc_vxc_unpolar, m05_2x_x_exc_vxc_polar
+   use trc_xc_m05_c, only: m05_c_exc_vxc_unpolar, m05_c_exc_vxc_polar
+   use trc_xc_m05_x, only: m05_x_exc_vxc_unpolar, m05_x_exc_vxc_polar
+   use trc_xc_m06_2x_c, only: m06_2x_c_exc_vxc_unpolar, m06_2x_c_exc_vxc_polar
+   use trc_xc_m06_2x_x, only: m06_2x_x_exc_vxc_unpolar, m06_2x_x_exc_vxc_polar
+   use trc_xc_m06_c, only: m06_c_exc_vxc_unpolar, m06_c_exc_vxc_polar
+   use trc_xc_m06_hf_c, only: m06_hf_c_exc_vxc_unpolar, m06_hf_c_exc_vxc_polar
+   use trc_xc_m06_hf_x, only: m06_hf_x_exc_vxc_unpolar, m06_hf_x_exc_vxc_polar
+   use trc_xc_m06_l_c, only: m06_l_c_exc_vxc_unpolar, m06_l_c_exc_vxc_polar
+   use trc_xc_m06_l_x, only: m06_l_x_exc_vxc_unpolar, m06_l_x_exc_vxc_polar
+   use trc_xc_m06_sx_c, only: m06_sx_c_exc_vxc_unpolar, m06_sx_c_exc_vxc_polar
+   use trc_xc_m06_sx_x, only: m06_sx_x_exc_vxc_unpolar, m06_sx_x_exc_vxc_polar
+   use trc_xc_m06_x, only: m06_x_exc_vxc_unpolar, m06_x_exc_vxc_polar
+   use trc_xc_m08_hx_c, only: m08_hx_c_exc_vxc_unpolar, m08_hx_c_exc_vxc_polar
+   use trc_xc_m08_hx_x, only: m08_hx_x_exc_vxc_unpolar, m08_hx_x_exc_vxc_polar
+   use trc_xc_m08_so_c, only: m08_so_c_exc_vxc_unpolar, m08_so_c_exc_vxc_polar
+   use trc_xc_m08_so_x, only: m08_so_x_exc_vxc_unpolar, m08_so_x_exc_vxc_polar
+   use trc_xc_m11_c, only: m11_c_exc_vxc_unpolar, m11_c_exc_vxc_polar
+   use trc_xc_m11_x, only: m11_x_exc_vxc_unpolar, m11_x_exc_vxc_polar
+   use trc_xc_mbeef_x, only: mbeef_x_exc_vxc_unpolar, mbeef_x_exc_vxc_polar
+   use trc_xc_mn12_l_c, only: mn12_l_c_exc_vxc_unpolar, mn12_l_c_exc_vxc_polar
+   use trc_xc_mn12_l_x, only: mn12_l_x_exc_vxc_unpolar, mn12_l_x_exc_vxc_polar
+   use trc_xc_mn12_sx_c, only: mn12_sx_c_exc_vxc_unpolar, mn12_sx_c_exc_vxc_polar
+   use trc_xc_mn12_sx_x, only: mn12_sx_x_exc_vxc_unpolar, mn12_sx_x_exc_vxc_polar
+   use trc_xc_mn15_c, only: mn15_c_exc_vxc_unpolar, mn15_c_exc_vxc_polar
+   use trc_xc_mn15_l_c, only: mn15_l_c_exc_vxc_unpolar, mn15_l_c_exc_vxc_polar
+   use trc_xc_mn15_l_x, only: mn15_l_x_exc_vxc_unpolar, mn15_l_x_exc_vxc_polar
+   use trc_xc_mn15_x, only: mn15_x_exc_vxc_unpolar, mn15_x_exc_vxc_polar
+   use trc_xc_pkzb_c, only: pkzb_c_exc_vxc_unpolar, pkzb_c_exc_vxc_polar
+   use trc_xc_pkzb_x, only: pkzb_x_exc_vxc_unpolar, pkzb_x_exc_vxc_polar
+   use trc_xc_r2scan_c, only: r2scan_c_exc_vxc_unpolar, r2scan_c_exc_vxc_polar
+   use trc_xc_r2scan_x, only: r2scan_x_exc_vxc_unpolar, r2scan_x_exc_vxc_polar
+   use trc_xc_rev_m06_l_c, only: rev_m06_l_c_exc_vxc_unpolar, rev_m06_l_c_exc_vxc_polar
+   use trc_xc_rev_m06_l_x, only: rev_m06_l_x_exc_vxc_unpolar, rev_m06_l_x_exc_vxc_polar
+   use trc_xc_revtpss_c, only: revtpss_c_exc_vxc_unpolar, revtpss_c_exc_vxc_polar
+   use trc_xc_revtpss_x, only: revtpss_x_exc_vxc_unpolar, revtpss_x_exc_vxc_polar
+   use trc_xc_rscan_c, only: rscan_c_exc_vxc_unpolar, rscan_c_exc_vxc_polar
+   use trc_xc_rscan_x, only: rscan_x_exc_vxc_unpolar, rscan_x_exc_vxc_polar
+   use trc_xc_scan_c, only: scan_c_exc_vxc_unpolar, scan_c_exc_vxc_polar
+   use trc_xc_scan_x, only: scan_x_exc_vxc_unpolar, scan_x_exc_vxc_polar
+   use trc_xc_tpss_c, only: tpss_c_exc_vxc_unpolar, tpss_c_exc_vxc_polar
+   use trc_xc_tpss_x, only: tpss_x_exc_vxc_unpolar, tpss_x_exc_vxc_polar
    implicit none
    private
 
    public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name
    public :: xc_eval_point_fxc
+   public :: xc_eval_point_mgga, xc_eval_point_mgga_polar
    public :: xc_is_double_hybrid
-   public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
+   public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_FAMILY_MGGA, XC_MAX_KERNELS
    public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS
 
-   integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2
+   integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2, XC_FAMILY_MGGA = 3
    integer, parameter :: XC_MAX_KERNELS = 8
 
    integer, parameter :: XC_K_B88 = 1
@@ -115,6 +170,53 @@ module trc_xc_functional
    integer, parameter :: XC_K_WB97X_D_XC = 30
    integer, parameter :: XC_K_WB97X_V_XC = 31
    integer, parameter :: XC_K_WB97X_XC = 32
+   integer, parameter :: XC_K_BC95_C = 33
+   integer, parameter :: XC_K_BMK_X = 34
+   integer, parameter :: XC_K_CF22D_C = 35
+   integer, parameter :: XC_K_CF22D_X = 36
+   integer, parameter :: XC_K_M05_2X_C = 37
+   integer, parameter :: XC_K_M05_2X_X = 38
+   integer, parameter :: XC_K_M05_C = 39
+   integer, parameter :: XC_K_M05_X = 40
+   integer, parameter :: XC_K_M06_2X_C = 41
+   integer, parameter :: XC_K_M06_2X_X = 42
+   integer, parameter :: XC_K_M06_C = 43
+   integer, parameter :: XC_K_M06_HF_C = 44
+   integer, parameter :: XC_K_M06_HF_X = 45
+   integer, parameter :: XC_K_M06_L_C = 46
+   integer, parameter :: XC_K_M06_L_X = 47
+   integer, parameter :: XC_K_M06_SX_C = 48
+   integer, parameter :: XC_K_M06_SX_X = 49
+   integer, parameter :: XC_K_M06_X = 50
+   integer, parameter :: XC_K_M08_HX_C = 51
+   integer, parameter :: XC_K_M08_HX_X = 52
+   integer, parameter :: XC_K_M08_SO_C = 53
+   integer, parameter :: XC_K_M08_SO_X = 54
+   integer, parameter :: XC_K_M11_C = 55
+   integer, parameter :: XC_K_M11_X = 56
+   integer, parameter :: XC_K_MBEEF_X = 57
+   integer, parameter :: XC_K_MN12_L_C = 58
+   integer, parameter :: XC_K_MN12_L_X = 59
+   integer, parameter :: XC_K_MN12_SX_C = 60
+   integer, parameter :: XC_K_MN12_SX_X = 61
+   integer, parameter :: XC_K_MN15_C = 62
+   integer, parameter :: XC_K_MN15_L_C = 63
+   integer, parameter :: XC_K_MN15_L_X = 64
+   integer, parameter :: XC_K_MN15_X = 65
+   integer, parameter :: XC_K_PKZB_C = 66
+   integer, parameter :: XC_K_PKZB_X = 67
+   integer, parameter :: XC_K_R2SCAN_C = 68
+   integer, parameter :: XC_K_R2SCAN_X = 69
+   integer, parameter :: XC_K_REV_M06_L_C = 70
+   integer, parameter :: XC_K_REV_M06_L_X = 71
+   integer, parameter :: XC_K_REVTPSS_C = 72
+   integer, parameter :: XC_K_REVTPSS_X = 73
+   integer, parameter :: XC_K_RSCAN_C = 74
+   integer, parameter :: XC_K_RSCAN_X = 75
+   integer, parameter :: XC_K_SCAN_C = 76
+   integer, parameter :: XC_K_SCAN_X = 77
+   integer, parameter :: XC_K_TPSS_C = 78
+   integer, parameter :: XC_K_TPSS_X = 79
 
    !! Every selectable name, available or `missing`: the CLI's --func
    !! help and trc_capi's unknown-functional message are built from this
@@ -138,7 +240,7 @@ module trc_xc_functional
       "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", "wb97x        ", &
       "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", "x3lyp        ", &
       "xlyp         "]
-   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b2gp-plyp, b2gpplyp, b2plyp, b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bp86, bp86vwn, hf-lyp, hf_lyp, hflyp, lda, lda_x, mpw1k, mpw2-plyp, mpw2plyp, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pw86pbe, pw91, revb3lyp, revpbe, revpbe0, rpbe, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
+   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b2gp-plyp, b2gpplyp, b2plyp, b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bmk, bp86, bp86vwn, cf22d, hf-lyp, hf_lyp, hflyp, lda, lda_x, m05, m052x, m06, m062x, m06hf, m06l, m06sx, m08hx, m08so, m11, mbeef, mn12l, mn12sx, mn15, mn15l, mpw1k, mpw2-plyp, mpw2plyp, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pkzb, pw86b95, pw86pbe, pw91, r2scan, r2scan0, r2scan50, r2scanh, revb3lyp, revm06l, revpbe, revpbe0, revtpss, revtpssh, rpbe, rscan, scan, scan0, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, tpss, tpss0, tpssh, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
 
    type :: trc_xc_functional_t
       character(len=24) :: name = ""
@@ -177,8 +279,8 @@ module trc_xc_functional
       real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction
       character(len=160) :: missing = ""
       !! Empty when the functional runs; otherwise exactly what it needs
-      !! that terco does not have, e.g. "needs TPSS_X: meta-GGA kernels
-      !! are not translated yet". Selecting it by name still succeeds;
+      !! that terco does not have, e.g. "needs R2SCANL_C: needs the
+      !! density Laplacian, ...". Selecting it by name still succeeds;
       !! running it is what the caller must refuse.
    end type trc_xc_functional_t
 
@@ -514,6 +616,340 @@ contains
    end subroutine xc_eval_point_polar
 
    !
+   ! Energy per particle and first derivatives of a composed meta-GGA at one
+   ! point of a closed-shell density: `sigma` is |grad rho|^2 and `tau` the
+   ! kinetic-energy density 1/2 sum_i |grad psi_i|^2 of the total density,
+   ! libxc's and pyscf's convention. `vtau` is d(rho eps)/d tau. An LDA or
+   ! GGA kernel in the composition ignores tau.
+   !
+   pure subroutine xc_eval_point_mgga(nk, kid, coef, rho, sigma, tau, eps, vrho, vsigma, vtau)
+      !$acc routine seq
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho, sigma, tau
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      real(dp), intent(out) :: eps, vrho, vsigma, vtau
+      real(dp) :: e, vr, vs, vt
+      integer :: k
+
+      eps = 0.0_dp
+      vrho = 0.0_dp
+      vsigma = 0.0_dp
+      vtau = 0.0_dp
+      do k = 1, nk
+         vs = 0.0_dp
+         vt = 0.0_dp
+         select case (kid(k))
+         case (XC_K_BMK_C)
+         call bmk_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PBE_SOL_C)
+         call pbe_sol_c_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_PW86_X)
+         call pw86_x_exc_vxc_unpolar(rho, sigma, e, vr, vs)
+         case (XC_K_BC95_C)
+         call bc95_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_BMK_X)
+         call bmk_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_CF22D_C)
+         call cf22d_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_CF22D_X)
+         call cf22d_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M05_2X_C)
+         call m05_2x_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M05_2X_X)
+         call m05_2x_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M05_C)
+         call m05_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M05_X)
+         call m05_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_2X_C)
+         call m06_2x_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_2X_X)
+         call m06_2x_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_C)
+         call m06_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_HF_C)
+         call m06_hf_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_HF_X)
+         call m06_hf_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_L_C)
+         call m06_l_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_L_X)
+         call m06_l_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_SX_C)
+         call m06_sx_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_SX_X)
+         call m06_sx_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M06_X)
+         call m06_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M08_HX_C)
+         call m08_hx_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M08_HX_X)
+         call m08_hx_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M08_SO_C)
+         call m08_so_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M08_SO_X)
+         call m08_so_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M11_C)
+         call m11_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_M11_X)
+         call m11_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MBEEF_X)
+         call mbeef_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN12_L_C)
+         call mn12_l_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN12_L_X)
+         call mn12_l_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN12_SX_C)
+         call mn12_sx_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN12_SX_X)
+         call mn12_sx_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN15_C)
+         call mn15_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN15_L_C)
+         call mn15_l_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN15_L_X)
+         call mn15_l_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_MN15_X)
+         call mn15_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_PKZB_C)
+         call pkzb_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_PKZB_X)
+         call pkzb_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_R2SCAN_C)
+         call r2scan_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_R2SCAN_X)
+         call r2scan_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_REV_M06_L_C)
+         call rev_m06_l_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, &
+            vt)
+         case (XC_K_REV_M06_L_X)
+         call rev_m06_l_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, &
+            vt)
+         case (XC_K_REVTPSS_C)
+         call revtpss_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_REVTPSS_X)
+         call revtpss_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_RSCAN_C)
+         call rscan_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_RSCAN_X)
+         call rscan_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_SCAN_C)
+         call scan_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_SCAN_X)
+         call scan_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_TPSS_C)
+         call tpss_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_TPSS_X)
+         call tpss_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case default
+         e = 0.0_dp
+         vr = 0.0_dp
+         end select
+         eps = eps + coef(k)*e
+         vrho = vrho + coef(k)*vr
+         vsigma = vsigma + coef(k)*vs
+         vtau = vtau + coef(k)*vt
+      end do
+   end subroutine xc_eval_point_mgga
+
+   !
+   ! The same for a spin-polarised density: per-spin densities, the three
+   ! gradient invariants and per-spin tau_s = 1/2 sum_i |grad psi_is|^2.
+   !
+   pure subroutine xc_eval_point_mgga_polar(nk, kid, coef, rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb, vtau_a, vtau_b)
+      !$acc routine seq
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, tau_b
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      real(dp), intent(out) :: eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb, vtau_a, vtau_b
+      real(dp) :: e, va, vb, saa, sab, sbb, ta, tb
+      integer :: k
+
+      eps = 0.0_dp
+      vrho_a = 0.0_dp
+      vrho_b = 0.0_dp
+      vs_aa = 0.0_dp
+      vs_ab = 0.0_dp
+      vs_bb = 0.0_dp
+      vtau_a = 0.0_dp
+      vtau_b = 0.0_dp
+      do k = 1, nk
+         saa = 0.0_dp
+         sab = 0.0_dp
+         sbb = 0.0_dp
+         ta = 0.0_dp
+         tb = 0.0_dp
+         select case (kid(k))
+         case (XC_K_BMK_C)
+         call bmk_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+            vb, saa, sab, sbb)
+         case (XC_K_PBE_SOL_C)
+         call pbe_sol_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            e, va, vb, saa, sab, sbb)
+         case (XC_K_PW86_X)
+         call pw86_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, &
+            vb, saa, sab, sbb)
+         case (XC_K_BC95_C)
+         call bc95_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_BMK_X)
+         call bmk_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_CF22D_C)
+         call cf22d_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_CF22D_X)
+         call cf22d_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M05_2X_C)
+         call m05_2x_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M05_2X_X)
+         call m05_2x_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M05_C)
+         call m05_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M05_X)
+         call m05_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_2X_C)
+         call m06_2x_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_2X_X)
+         call m06_2x_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_C)
+         call m06_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_HF_C)
+         call m06_hf_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_HF_X)
+         call m06_hf_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_L_C)
+         call m06_l_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_L_X)
+         call m06_l_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_SX_C)
+         call m06_sx_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_SX_X)
+         call m06_sx_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M06_X)
+         call m06_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M08_HX_C)
+         call m08_hx_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M08_HX_X)
+         call m08_hx_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M08_SO_C)
+         call m08_so_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M08_SO_X)
+         call m08_so_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M11_C)
+         call m11_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_M11_X)
+         call m11_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MBEEF_X)
+         call mbeef_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN12_L_C)
+         call mn12_l_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN12_L_X)
+         call mn12_l_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN12_SX_C)
+         call mn12_sx_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN12_SX_X)
+         call mn12_sx_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN15_C)
+         call mn15_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN15_L_C)
+         call mn15_l_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN15_L_X)
+         call mn15_l_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_MN15_X)
+         call mn15_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_PKZB_C)
+         call pkzb_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_PKZB_X)
+         call pkzb_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_R2SCAN_C)
+         call r2scan_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_R2SCAN_X)
+         call r2scan_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_REV_M06_L_C)
+         call rev_m06_l_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
+            s_bb, tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_REV_M06_L_X)
+         call rev_m06_l_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, &
+            s_bb, tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_REVTPSS_C)
+         call revtpss_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_REVTPSS_X)
+         call revtpss_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_RSCAN_C)
+         call rscan_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_RSCAN_X)
+         call rscan_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_SCAN_C)
+         call scan_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_SCAN_X)
+         call scan_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_TPSS_C)
+         call tpss_c_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_TPSS_X)
+         call tpss_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
+            tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case default
+         e = 0.0_dp
+         va = 0.0_dp
+         vb = 0.0_dp
+         end select
+         eps = eps + coef(k)*e
+         vrho_a = vrho_a + coef(k)*va
+         vrho_b = vrho_b + coef(k)*vb
+         vs_aa = vs_aa + coef(k)*saa
+         vs_ab = vs_ab + coef(k)*sab
+         vs_bb = vs_bb + coef(k)*sbb
+         vtau_a = vtau_a + coef(k)*ta
+         vtau_b = vtau_b + coef(k)*tb
+      end do
+   end subroutine xc_eval_point_mgga_polar
+
+   !
    ! libxc's compositions where terco has one; ExchCXX's own table for
    ! everything else. Names are case-insensitive. A functional this build
    ! cannot run yet is still returned, ok = .true., with `missing` set.
@@ -617,15 +1053,16 @@ contains
       case ("svwn3")
          f%missing = "needs VWN3: translated kernel disagrees with libxc on the GPU (polarised eps off by 1.41e-11 at rho ~ 1e-8, zeta ~ 1; agrees on the CPU), and its UKS potential missed pyscf on terco's grid -- under investigation"
       case ("scan")
-         f%missing = "needs SCAN_C, SCAN_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_SCAN_X, XC_K_SCAN_C], [1.0_dp, 1.0_dp])
       case ("r2scan")
-         f%missing = "needs R2SCAN_C, R2SCAN_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_R2SCAN_X, XC_K_R2SCAN_C], [1.0_dp, 1.0_dp])
       case ("pkzb")
-         f%missing = "needs PKZB_C, PKZB_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_PKZB_X, XC_K_PKZB_C], [1.0_dp, 1.0_dp])
       case ("m062x")
-         f%missing = "needs M062X_C, M062X_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M06_2X_X, XC_K_M06_2X_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.54_dp
       case ("r2scanl")
-         f%missing = "needs R2SCANL_C, R2SCANL_X: kernel declares neither LDA nor GGA"
+         f%missing = "needs R2SCANL_C, R2SCANL_X: needs the density Laplacian, which terco does not evaluate"
       case ("revpbe")
          call set(f, XC_FAMILY_GGA, [XC_K_REV_PBE_X, XC_K_PBE_C], [1.0_dp, 1.0_dp])
       case ("epc17_1")
@@ -643,17 +1080,20 @@ contains
       case ("camb3lyp")
          f%missing = "needs ITYH_X_033: translated kernel disagrees with libxc (fxc off by up to 6.6e-4)"
       case ("m06l")
-         f%missing = "needs M06_L_C, M06_L_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M06_L_X, XC_K_M06_L_C], [1.0_dp, 1.0_dp])
       case ("scan0")
-         f%missing = "needs SCAN_C, SCAN_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_SCAN_X, XC_K_SCAN_C], [0.75_dp, 1.0_dp])
+         f%exx = 0.25_dp
       case ("spw92")
          call set(f, XC_FAMILY_LDA, [XC_K_SLATER_EXCHANGE, XC_K_PW91_LDA], [1.0_dp, 1.0_dp])
       case ("tpss")
-         f%missing = "needs TPSS_C, TPSS_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_TPSS_X, XC_K_TPSS_C], [1.0_dp, 1.0_dp])
       case ("tpssh")
-         f%missing = "needs TPSS_C, TPSS_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_TPSS_X, XC_K_TPSS_C], [0.9_dp, 1.0_dp])
+         f%exx = 0.1_dp
       case ("tpss0")
-         f%missing = "needs TPSS_C, TPSS_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_TPSS_X, XC_K_TPSS_C], [0.75_dp, 1.0_dp])
+         f%exx = 0.25_dp
       case ("vwn3")
          f%missing = "needs VWN3: translated kernel disagrees with libxc on the GPU (polarised eps off by 1.41e-11 at rho ~ 1e-8, zeta ~ 1; agrees on the CPU), and its UKS potential missed pyscf on terco's grid -- under investigation"
       case ("vwn5")
@@ -676,13 +1116,14 @@ contains
          call set(f, XC_FAMILY_GGA, [XC_K_REV_PBE_X, XC_K_PBE_C], [0.75_dp, 1.0_dp])
          f%exx = 0.25_dp
       case ("revtpss")
-         f%missing = "needs revTPSS_C, revTPSS_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_REVTPSS_X, XC_K_REVTPSS_C], [1.0_dp, 1.0_dp])
       case ("revtpssh")
-         f%missing = "needs revTPSS_C, revTPSS_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_REVTPSS_X, XC_K_REVTPSS_C], [0.9_dp, 1.0_dp])
+         f%exx = 0.1_dp
       case ("pw91")
          call set(f, XC_FAMILY_GGA, [XC_K_PW91_X, XC_K_PW91_C], [1.0_dp, 1.0_dp])
       case ("mbeef")
-         f%missing = "needs mBEEF_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_MBEEF_X, XC_K_PBE_SOL_C], [1.0_dp, 1.0_dp])
       case ("b3pw91")
          call set(f, XC_FAMILY_GGA, [XC_K_SLATER_EXCHANGE, XC_K_B88, XC_K_PW91_LDA, &
             XC_K_PW91_C], [0.08_dp, 0.72_dp, 0.19_dp, 0.81_dp])
@@ -713,7 +1154,7 @@ contains
       case ("mpw91")
          call set(f, XC_FAMILY_GGA, [XC_K_MPW91_X, XC_K_PW91_C], [1.0_dp, 1.0_dp])
       case ("rscan")
-         f%missing = "needs RSCAN_C, RSCAN_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_RSCAN_X, XC_K_RSCAN_C], [1.0_dp, 1.0_dp])
       case ("tunedcamb3lyp")
          f%missing = "needs ITYH_X_015: translated kernel disagrees with libxc (fxc off by up to 4.6e-5)"
       case ("wb97xd")
@@ -733,50 +1174,72 @@ contains
          call set(f, XC_FAMILY_GGA, [XC_K_SLATER_EXCHANGE, XC_K_LYP], [0.5_dp, 1.0_dp])
          f%exx = 0.5_dp
       case ("bmk")
-         f%missing = "needs BMK_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_BMK_X, XC_K_BMK_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.42_dp
       case ("bp86vwn")
          call set(f, XC_FAMILY_GGA, [XC_K_B88, XC_K_P86VWN_FT_C], [1.0_dp, 1.0_dp])
       case ("pw86b95")
-         f%missing = "needs BC95_C: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_PW86_X, XC_K_BC95_C], [0.71_dp, 1.0_dp])
+         f%exx = 0.29_dp
       case ("pw86pbe")
          call set(f, XC_FAMILY_GGA, [XC_K_PW86_X, XC_K_PBE_C], [1.0_dp, 1.0_dp])
       case ("r2scan0")
-         f%missing = "needs R2SCAN_C, R2SCAN_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_R2SCAN_X, XC_K_R2SCAN_C], [0.75_dp, 1.0_dp])
+         f%exx = 0.25_dp
       case ("r2scanh")
-         f%missing = "needs R2SCAN_C, R2SCAN_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_R2SCAN_X, XC_K_R2SCAN_C], [0.9_dp, 1.0_dp])
+         f%exx = 0.1_dp
       case ("r2scan50")
-         f%missing = "needs R2SCAN_C, R2SCAN_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_R2SCAN_X, XC_K_R2SCAN_C], [0.5_dp, 1.0_dp])
+         f%exx = 0.5_dp
       case ("m05")
-         f%missing = "needs M05_C, M05_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M05_X, XC_K_M05_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.28_dp
       case ("m06")
-         f%missing = "needs M06_C, M06_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M06_X, XC_K_M06_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.27_dp
       case ("m08hx")
-         f%missing = "needs M08_HX_C, M08_HX_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M08_HX_X, XC_K_M08_HX_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.5223_dp
       case ("m08so")
-         f%missing = "needs M08_SO_C, M08_SO_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M08_SO_X, XC_K_M08_SO_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.5679_dp
       case ("m052x")
-         f%missing = "needs M05_2X_C, M05_2X_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M05_2X_X, XC_K_M05_2X_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.56_dp
       case ("m06sx")
-         f%missing = "needs M06_SX_C, M06_SX_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M06_SX_X, XC_K_M06_SX_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.335_dp
+         f%exx_lr = -0.335_dp
+         f%omega = 0.1_dp
       case ("cf22d")
-         f%missing = "needs CF22D_C, CF22D_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_CF22D_X, XC_K_CF22D_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.462806_dp
       case ("sogga11x")
          call set(f, XC_FAMILY_GGA, [XC_K_SOGGA11_X_X, XC_K_SOGGA11_X_C], [1.0_dp, 1.0_dp])
          f%exx = 0.4015_dp
       case ("m06hf")
-         f%missing = "needs M06_HF_C, M06_HF_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M06_HF_X, XC_K_M06_HF_C], [1.0_dp, 1.0_dp])
+         f%exx = 1.0_dp
       case ("m11")
-         f%missing = "needs M11_C, M11_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_M11_X, XC_K_M11_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.42800000000000005_dp
+         f%exx_lr = 0.572_dp
+         f%omega = 0.25_dp
       case ("mn12l")
-         f%missing = "needs MN12_L_C, MN12_L_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_MN12_L_X, XC_K_MN12_L_C], [1.0_dp, 1.0_dp])
       case ("mn12sx")
-         f%missing = "needs MN12_SX_C, MN12_SX_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_MN12_SX_X, XC_K_MN12_SX_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.25_dp
+         f%exx_lr = -0.25_dp
+         f%omega = 0.11_dp
       case ("mn15")
-         f%missing = "needs MN15_C, MN15_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_MN15_X, XC_K_MN15_C], [1.0_dp, 1.0_dp])
+         f%exx = 0.44_dp
       case ("mn15l")
-         f%missing = "needs MN15_L_C, MN15_L_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_MN15_L_X, XC_K_MN15_L_C], [1.0_dp, 1.0_dp])
       case ("revm06l")
-         f%missing = "needs revM06_L_C, revM06_L_X: meta-GGA kernels are not translated yet"
+         call set(f, XC_FAMILY_MGGA, [XC_K_REV_M06_L_X, XC_K_REV_M06_L_C], [1.0_dp, 1.0_dp])
       case default
          ok = .false.
       end select

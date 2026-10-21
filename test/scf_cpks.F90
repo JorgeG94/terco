@@ -26,7 +26,7 @@ program scf_cpks
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_FAMILY_MGGA
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t
    use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason, trc_cpks_solve_rks
@@ -169,19 +169,24 @@ program scf_cpks
    end block
 
    ! --- cpks_refuse_reason: pure, so no basis/SCF/device state is needed
-   ! -- four trc_xc_functional_t values built DIRECTLY (not through
+   ! -- five trc_xc_functional_t values built DIRECTLY (not through
    ! xc_functional_by_name: no named functional in today's table has
    ! nlc_b nonzero with omega zero, since every VV10 entry is also a
    ! range-separated hybrid, which would exercise the omega branch
-   ! instead -- see this module's own header) so each of the four
+   ! instead -- see this module's own header) so each of the five
    ! branches is exercised on its own.
    block
-      type(trc_xc_functional_t) :: f_missing, f_rsh, f_vv10, f_clean
+      type(trc_xc_functional_t) :: f_missing, f_rsh, f_vv10, f_clean, f_mgga
       character(len=256) :: msg
 
-      f_missing%missing = "needs TPSS_X: meta-GGA kernels are not translated yet"
+      f_missing%missing = "needs R2SCANL_X: needs the density Laplacian, which terco does not evaluate"
       msg = cpks_refuse_reason(f_missing)
-      call check_refused(msg, "meta-GGA (missing)", trim(f_missing%missing))
+      call check_refused(msg, "unavailable (missing)", trim(f_missing%missing))
+
+      ! A runnable meta-GGA: no second derivatives translated, so no response.
+      f_mgga%family = XC_FAMILY_MGGA
+      msg = cpks_refuse_reason(f_mgga)
+      call check_refused(msg, "meta-GGA (family)", "meta-GGA")
 
       f_rsh%omega = 0.3_dp
       f_rsh%exx_lr = 0.833_dp

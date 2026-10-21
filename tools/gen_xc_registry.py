@@ -54,6 +54,7 @@ import xc_kernel_discovery  # noqa: E402
 
 INDENT = "   "
 LINE_WIDTH = 96
+USE_WIDTH = 112  # a `use` line that fits stays one line
 
 # --------------------------------------------------------------------------
 # terco-only entries, unchanged from the hand-written registry. `kernels`
@@ -66,7 +67,7 @@ LINE_WIDTH = 96
 class Entry:
     name: str
     aliases: tuple[str, ...]
-    family: str  # "lda" | "gga"
+    family: str  # "lda" | "gga" | "mgga"
     kernels: list[tuple[float, str]]
     exx: float = 0.0
     exx_lr: float = 0.0
@@ -78,6 +79,7 @@ class Entry:
     comment: list[str] = field(default_factory=list)
     missing: str | None = None
     source: str = "local"  # local | exchcxx
+    after: str | None = None  # emit right after this (ExchCXX) entry, not in LOCAL's place
 
 
 LOCAL: list[Entry] = [
@@ -103,6 +105,36 @@ LOCAL: list[Entry] = [
         "bhandhlyp", ("bhhlyp",), "gga", [(0.5, "b88"), (1.0, "lyp")], exx=0.5,
         comment=["libxc HYB_GGA_XC_BHANDHLYP (Gaussian's BHandHLYP): 0.5 B88 + LYP,",
                  "half exact exchange. Not in ExchCXX's functional table."],
+    ),
+    # Double hybrids: a_x exact exchange plus (1 - a_x) of a GGA exchange
+    # kernel, (1 - c) of a GGA correlation kernel plus c of RI-MP2
+    # correlation on the converged KS orbitals (c_os = c_ss = c for all
+    # three -- no spin-component scaling, unlike a DSD-type double
+    # hybrid). Not in libxc (metalquicha's mqc_xc_spec.f90 carries the
+    # same citations and the same a_x/c split; terco's own PT2 part is
+    # driven by trc_capi.F90's trc_run_rimp2/trc_energy, never libxc).
+    Entry(
+        "b2plyp", (), "gga", [(0.47, "b88"), (0.73, "lyp")], exx=0.53,
+        pt2_cos=0.27, pt2_css=0.27,
+        comment=["Grimme, J. Chem. Phys. 124, 034108 (2006): a_x = 0.53, c = 0.27.",
+                 "Not in libxc (no double hybrid is); the hybrid part is 0.53 HF +",
+                 "0.47 B88 exchange, 0.73 LYP correlation, and c is the RI-MP2",
+                 "fraction trc_run_rimp2/trc_energy add on top (pt2_cos = pt2_css,",
+                 "no spin-component scaling)."],
+    ),
+    Entry(
+        "b2gp-plyp", ("b2gpplyp",), "gga", [(0.35, "b88"), (0.64, "lyp")], exx=0.65,
+        pt2_cos=0.36, pt2_css=0.36,
+        comment=["Karton, Tarnopolsky, Lamere, Schatz and Martin, J. Phys. Chem. A",
+                 "112, 12868 (2008): a_x = 0.65, c = 0.36."],
+    ),
+    Entry(
+        "mpw2plyp", ("mpw2-plyp",), "gga", [(0.45, "mpw91_x"), (0.75, "lyp")], exx=0.55,
+        pt2_cos=0.25, pt2_css=0.25,
+        comment=["Schwabe and Grimme, Phys. Chem. Chem. Phys. 8, 4398 (2006):",
+                 "a_x = 0.55, c = 0.25; the GGA exchange kernel is mPW91's, not",
+                 "B88's -- the other difference from b2plyp/b2gp-plyp above."],
+        after="mpw1k",
     ),
     Entry(
         "hflyp", ("hf-lyp", "hf_lyp"), "gga", [(1.0, "lyp")], exx=1.0,
@@ -140,31 +172,6 @@ LOCAL: list[Entry] = [
             "1 -- a pure range-separated functional, no global HF mixing. No",
             "VV10. The kernel's own translated `beta` is -1.0 exactly.",
         ],
-    ),
-    # Double hybrids: a_x exact exchange plus (1 - a_x) of a GGA exchange
-    # kernel, (1 - c) of a GGA correlation kernel plus c of RI-MP2
-    # correlation on the converged KS orbitals (c_os = c_ss = c for all
-    # three -- no spin-component scaling, unlike a DSD-type double
-    # hybrid). Not in libxc (metalquicha's mqc_xc_spec.f90 carries the
-    # same citations and the same a_x/c split; terco's own PT2 part is
-    # driven by trc_capi.F90's trc_run_rimp2/trc_energy, never libxc).
-    Entry(
-        "b2plyp", (), "gga", [(0.47, "b88"), (0.73, "lyp")], exx=0.53,
-        pt2_cos=0.27, pt2_css=0.27,
-        comment=["Grimme, J. Chem. Phys. 124, 034108 (2006): a_x = 0.53, c = 0.27."],
-    ),
-    Entry(
-        "b2gp-plyp", ("b2gpplyp",), "gga", [(0.35, "b88"), (0.64, "lyp")], exx=0.65,
-        pt2_cos=0.36, pt2_css=0.36,
-        comment=["Karton, Tarnopolsky, Lamere, Schatz and Martin, J. Phys.",
-                 "Chem. A 112, 12868 (2008): a_x = 0.65, c = 0.36."],
-    ),
-    Entry(
-        "mpw2plyp", ("mpw2-plyp",), "gga", [(0.45, "mpw91_x"), (0.75, "lyp")], exx=0.55,
-        pt2_cos=0.25, pt2_css=0.25,
-        comment=["Schwabe and Grimme, Phys. Chem. Chem. Phys. 8, 4398 (2006):",
-                 "a_x = 0.55, c = 0.25; the GGA exchange kernel is mPW91's,",
-                 "not B88's."],
     ),
 ]
 
@@ -291,6 +298,12 @@ def build_registry(exchcxx: Path) -> tuple[list[Entry], list[str]]:
             fams = {f for s, f in translated if s in {st for _, st in kernel_stems}}
             if fams == {"lda"}:
                 family = "lda"
+            elif "mgga" in fams:
+                # Any meta-GGA kernel makes the whole functional one (PW86B95
+                # is a GGA exchange under BC95's meta-GGA correlation): the
+                # integrator then evaluates tau and calls xc_eval_point_mgga,
+                # which dispatches the LDA/GGA kernels too.
+                family = "mgga"
 
         exx = exx_lr = omega = 0.0
         if fn.hyb:
@@ -299,8 +312,8 @@ def build_registry(exchcxx: Path) -> tuple[list[Entry], list[str]]:
             exx_lr = -beta
 
         if problems:
-            # Group enums by identical reason so "needs TPSS_X, TPSS_C:
-            # meta-GGA kernels are not translated yet" prints once.
+            # Group enums by identical reason so "needs R2SCANL_C, R2SCANL_X:
+            # needs the density Laplacian, ..." prints once.
             by_reason: dict[str, list[str]] = {}
             for enum, reason in problems.items():
                 by_reason.setdefault(reason, []).append(enum)
@@ -311,6 +324,9 @@ def build_registry(exchcxx: Path) -> tuple[list[Entry], list[str]]:
         else:
             entries.append(Entry(lname, (), family, kernel_stems, exx, exx_lr, omega, source="exchcxx"))
 
+    for e in [e for e in entries if e.after]:
+        entries.remove(e)
+        entries.insert(next(i for i, x in enumerate(entries) if x.name == e.after) + 1, e)
     return entries, notes
 
 
@@ -343,6 +359,12 @@ def fortran_real(x: float) -> str:
 
 def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     kid_name = {stem: f"XC_K_{stem.upper()}" for stem in available_kernels}
+    semilocal = [st for st in available_kernels if _family_of(st) != "mgga"]
+    # What xc_eval_point_mgga dispatches: every meta-GGA kernel, plus the
+    # LDA/GGA kernels some available meta-GGA composition puts beside them.
+    mgga_used = {st for e in entries if e.family == "mgga" and e.missing is None for _, st in e.kernels}
+    mgga_dispatch = [st for st in semilocal if st in mgga_used] + \
+        [st for st in available_kernels if _family_of(st) == "mgga"]
     lines = [
         "!",
         "! A density functional, as the integrator sees it: a short list of",
@@ -371,29 +393,46 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
         "! with allocatable components is exactly what a `do concurrent` body should",
         "! not touch.",
         "!",
+        "! A meta-GGA has its own pair, `xc_eval_point_mgga` and its polarised twin:",
+        "! tau in, vtau out, dispatching every kernel a meta-GGA composition uses",
+        "! (its meta-GGA kernels and any LDA/GGA ones beside them). The LDA/GGA",
+        "! evaluators dispatch only LDA and GGA kernels, so the meta-GGA family",
+        "! leaves what they compile to unchanged. Kernel ids are LDA/GGA first and",
+        "! meta-GGA after, for the same reason.",
+        "!",
         "! A double hybrid (b2plyp, b2gp-plyp, mpw2plyp) is still just a (coef,",
         "! kernel) composition plus `exx` for its SCF -- `pt2_cos`/`pt2_css` are",
-        "! the RI-MP2 fraction on top, which this module only STORES; running",
-        "! it (always RI, on the converged KS orbitals) is trc_capi.F90's",
+        "! the RI-MP2 fraction on top, which this module only STORES; running it",
+        "! (always RI, on the converged KS orbitals) is trc_capi.F90's",
         "! trc_run_rimp2/trc_energy, never anything in here.",
         "!",
         "module trc_xc_functional",
         f"{INDENT}use pic_types, only: dp",
     ]
     for stem in available_kernels:
-        lines.append(f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar, &")
-        lines.append(f"{INDENT}{INDENT}{stem}_vxc_fxc_unpolar")
+        if _family_of(stem) == "mgga":
+            # No second derivatives translated for a meta-GGA.
+            lines.append(f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar")
+            continue
+        one = (f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar, "
+               f"{stem}_vxc_fxc_unpolar")
+        if len(one) <= USE_WIDTH:
+            lines.append(one)
+        else:
+            lines.append(f"{INDENT}use trc_xc_{stem}, only: {stem}_exc_vxc_unpolar, {stem}_exc_vxc_polar, &")
+            lines.append(f"{INDENT}{INDENT}{stem}_vxc_fxc_unpolar")
     lines += [
         f"{INDENT}implicit none",
         f"{INDENT}private",
         "",
         f"{INDENT}public :: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, xc_functional_by_name",
         f"{INDENT}public :: xc_eval_point_fxc",
+        f"{INDENT}public :: xc_eval_point_mgga, xc_eval_point_mgga_polar",
         f"{INDENT}public :: xc_is_double_hybrid",
-        f"{INDENT}public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS",
+        f"{INDENT}public :: XC_FAMILY_LDA, XC_FAMILY_GGA, XC_FAMILY_MGGA, XC_MAX_KERNELS",
         f"{INDENT}public :: XC_FUNCTIONAL_NAMES, XC_AVAILABLE_FUNCTIONALS",
         "",
-        f"{INDENT}integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2",
+        f"{INDENT}integer, parameter :: XC_FAMILY_LDA = 1, XC_FAMILY_GGA = 2, XC_FAMILY_MGGA = 3",
         f"{INDENT}integer, parameter :: XC_MAX_KERNELS = 8",
         "",
     ]
@@ -410,7 +449,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     for i in range(0, len(names_sorted), 6):
         chunk = names_sorted[i:i + 6]
         items = ", ".join(f'"{n:<{namelen}}"' for n in chunk)
-        suffix = " ]" if i + 6 >= len(names_sorted) else ", &"
+        suffix = "]" if i + 6 >= len(names_sorted) else ", &"
         lines.append(f"{INDENT}{INDENT}{items}{suffix}")
     available_names = sorted({e.name for e in entries if e.missing is None} |
                               {a for e in entries if e.missing is None for a in e.aliases})
@@ -430,10 +469,10 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}! the fraction of FULL-range exact exchange, 1/r12. These four are")
     lines.append(f"{INDENT}{INDENT}! zero for every functional that is not one.")
     lines.append(f"{INDENT}{INDENT}!")
-    lines.append(f"{INDENT}{INDENT}real(dp) :: exx_lr = 0.0_dp !! extra fraction of LONG-RANGE exact exchange, erf(omega r)/r")
-    lines.append(f"{INDENT}{INDENT}real(dp) :: omega  = 0.0_dp !! range-separation parameter, bohr^-1; 0 = none")
-    lines.append(f"{INDENT}{INDENT}real(dp) :: nlc_b  = 0.0_dp !! VV10 b; 0 = no nonlocal correlation")
-    lines.append(f"{INDENT}{INDENT}real(dp) :: nlc_c  = 0.0_dp !! VV10 C")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: exx_lr = 0.0_dp  !! extra fraction of LONG-RANGE exact exchange, erf(omega r)/r")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: omega  = 0.0_dp  !! range-separation parameter, bohr^-1; 0 = none")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: nlc_b  = 0.0_dp  !! VV10 b; 0 = no nonlocal correlation")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: nlc_c  = 0.0_dp  !! VV10 C")
     lines.append(f"{INDENT}{INDENT}!")
     lines.append(f"{INDENT}{INDENT}! Double hybrids: the RI-MP2 fraction on top of the semilocal/exact-")
     lines.append(f"{INDENT}{INDENT}! exchange composition above, split opposite-/same-spin so a")
@@ -451,12 +490,12 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}! where that gap is called out and why literal-coefficient")
     lines.append(f"{INDENT}{INDENT}! assertions alone do not close it.")
     lines.append(f"{INDENT}{INDENT}!")
-    lines.append(f"{INDENT}{INDENT}real(dp) :: pt2_cos = 0.0_dp !! opposite-spin RI-MP2 fraction")
-    lines.append(f"{INDENT}{INDENT}real(dp) :: pt2_css = 0.0_dp !! same-spin RI-MP2 fraction")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: pt2_cos = 0.0_dp  !! opposite-spin RI-MP2 fraction")
+    lines.append(f"{INDENT}{INDENT}real(dp) :: pt2_css = 0.0_dp  !! same-spin RI-MP2 fraction")
     lines.append(f"{INDENT}{INDENT}character(len=160) :: missing = \"\"")
     lines.append(f"{INDENT}{INDENT}!! Empty when the functional runs; otherwise exactly what it needs")
-    lines.append(f"{INDENT}{INDENT}!! that terco does not have, e.g. \"needs TPSS_X: meta-GGA kernels")
-    lines.append(f'{INDENT}{INDENT}!! are not translated yet\". Selecting it by name still succeeds;')
+    lines.append(f"{INDENT}{INDENT}!! that terco does not have, e.g. \"needs R2SCANL_C: needs the")
+    lines.append(f'{INDENT}{INDENT}!! density Laplacian, ...\". Selecting it by name still succeeds;')
     lines.append(f"{INDENT}{INDENT}!! running it is what the caller must refuse.")
     lines.append(f"{INDENT}end type trc_xc_functional_t")
     lines.append("")
@@ -471,21 +510,20 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}!")
     lines.append(f"{INDENT}pure subroutine xc_eval_point(nk, kid, coef, rho, sigma, eps, vrho, vsigma)")
     lines.append(f"{INDENT}{INDENT}!$acc routine seq")
-    lines.append(f"{INDENT}{INDENT}integer, intent(in) :: nk, kid(XC_MAX_KERNELS)")
-    lines.append(f"{INDENT}{INDENT}real(dp), intent(in) :: coef(XC_MAX_KERNELS), rho, sigma")
+    lines.extend(_kid_decls(["rho", "sigma"]))
     lines.append(f"{INDENT}{INDENT}real(dp), intent(out) :: eps, vrho, vsigma")
     lines.append(f"{INDENT}{INDENT}real(dp) :: e, vr, vs")
     lines.append(f"{INDENT}{INDENT}integer :: k")
     lines.append("")
-    lines.append(f"{INDENT}{INDENT}eps = 0.0_dp; vrho = 0.0_dp; vsigma = 0.0_dp")
+    lines.extend(_zero(2, ["eps", "vrho", "vsigma"]))
     lines.append(f"{INDENT}{INDENT}do k = 1, nk")
-    lines.append(f"{INDENT}{INDENT}{INDENT}vs = 0.0_dp")
+    lines.extend(_zero(3, ["vs"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}select case (kid(k))")
-    for stem in available_kernels:
+    for stem in semilocal:
         call = f"call {stem}_exc_vxc_unpolar(rho, sigma, e, vr, vs)" if \
             _family_of(stem) == "gga" else f"call {stem}_exc_vxc_unpolar(rho, e, vr)"
-        lines.append(f"{INDENT}{INDENT}{INDENT}case ({kid_name[stem]}); {call}")
-    lines.append(f"{INDENT}{INDENT}{INDENT}case default; e = 0.0_dp; vr = 0.0_dp")
+        lines.extend(_case(kid_name[stem], call))
+    lines.extend(_case_default(["e", "vr"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}end select")
     lines.append(f"{INDENT}{INDENT}{INDENT}eps = eps + coef(k)*e")
     lines.append(f"{INDENT}{INDENT}{INDENT}vrho = vrho + coef(k)*vr")
@@ -504,29 +542,33 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     # new kernel arithmetic, only a new way of calling what is there.
     lines.append(f"{INDENT}!")
     lines.append(f"{INDENT}! The second derivatives of the composed functional at one point of a")
-    lines.append(f"{INDENT}! closed-shell density, plus vsigma (the GGA response needs both): the")
-    lines.append(f"{INDENT}! inputs trc_cpks's f_xc[D_U] contraction needs. `sigma` is |grad rho|^2;")
-    lines.append(f"{INDENT}! an LDA kernel leaves vsigma, v2rhosigma and v2sigma2 at zero.")
+    lines.append(f"{INDENT}! closed-shell density, plus vsigma -- the GGA response term needs both")
+    lines.append(f"{INDENT}! the kernel's second derivative AND its first derivative, since the")
+    lines.append(f"{INDENT}! grad-rho factor the energy path's vsigma multiplies is itself")
+    lines.append(f"{INDENT}! unperturbed; only vsigma's own value and the trial density's gradient")
+    lines.append(f"{INDENT}! respond. Same `_vxc_fxc_unpolar` routine check_xc.F90 already validates")
+    lines.append(f"{INDENT}! against libxc (tol_f = 1e-10 relative, see that program's header) --")
+    lines.append(f"{INDENT}! this calls what is there, with no new kernel arithmetic. An LDA kernel")
+    lines.append(f"{INDENT}! leaves vsigma, v2rhosigma and v2sigma2 at zero.")
     lines.append(f"{INDENT}!")
     lines.append(f"{INDENT}pure subroutine xc_eval_point_fxc(nk, kid, coef, rho, sigma, vsigma, v2rho2, v2rhosigma, v2sigma2)")
     lines.append(f"{INDENT}{INDENT}!$acc routine seq")
-    lines.append(f"{INDENT}{INDENT}integer, intent(in) :: nk, kid(XC_MAX_KERNELS)")
-    lines.append(f"{INDENT}{INDENT}real(dp), intent(in) :: coef(XC_MAX_KERNELS), rho, sigma")
+    lines.extend(_kid_decls(["rho", "sigma"]))
     lines.append(f"{INDENT}{INDENT}real(dp), intent(out) :: vsigma, v2rho2, v2rhosigma, v2sigma2")
     lines.append(f"{INDENT}{INDENT}real(dp) :: vr, vs, f2rr, f2rs, f2ss")
     lines.append(f"{INDENT}{INDENT}integer :: k")
     lines.append("")
-    lines.append(f"{INDENT}{INDENT}vsigma = 0.0_dp; v2rho2 = 0.0_dp; v2rhosigma = 0.0_dp; v2sigma2 = 0.0_dp")
+    lines.extend(_zero(2, ["vsigma", "v2rho2", "v2rhosigma", "v2sigma2"]))
     lines.append(f"{INDENT}{INDENT}do k = 1, nk")
-    lines.append(f"{INDENT}{INDENT}{INDENT}vs = 0.0_dp; f2rs = 0.0_dp; f2ss = 0.0_dp")
+    lines.extend(_zero(3, ["vs", "f2rs", "f2ss"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}select case (kid(k))")
-    for stem in available_kernels:
+    for stem in semilocal:
         if _family_of(stem) == "gga":
             call = f"call {stem}_vxc_fxc_unpolar(rho, sigma, vr, vs, f2rr, f2rs, f2ss)"
         else:
             call = f"call {stem}_vxc_fxc_unpolar(rho, vr, f2rr)"
-        lines.append(f"{INDENT}{INDENT}{INDENT}case ({kid_name[stem]}); {call}")
-    lines.append(f"{INDENT}{INDENT}{INDENT}case default; vr = 0.0_dp; f2rr = 0.0_dp")
+        lines.extend(_case(kid_name[stem], call))
+    lines.extend(_case_default(["f2rr"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}end select")
     lines.append(f"{INDENT}{INDENT}{INDENT}vsigma = vsigma + coef(k)*vs")
     lines.append(f"{INDENT}{INDENT}{INDENT}v2rho2 = v2rho2 + coef(k)*f2rr")
@@ -545,25 +587,22 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{sig}")
     lines.append(f"{INDENT}{INDENT}{INDENT}{INDENT}eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb)")
     lines.append(f"{INDENT}{INDENT}!$acc routine seq")
-    lines.append(f"{INDENT}{INDENT}integer, intent(in) :: nk, kid(XC_MAX_KERNELS)")
-    lines.append(f"{INDENT}{INDENT}real(dp), intent(in) :: coef(XC_MAX_KERNELS), rho_a, rho_b, s_aa, s_ab, s_bb")
+    lines.extend(_kid_decls(["rho_a", "rho_b", "s_aa", "s_ab", "s_bb"]))
     lines.append(f"{INDENT}{INDENT}real(dp), intent(out) :: eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb")
     lines.append(f"{INDENT}{INDENT}real(dp) :: e, va, vb, saa, sab, sbb")
     lines.append(f"{INDENT}{INDENT}integer :: k")
     lines.append("")
-    lines.append(f"{INDENT}{INDENT}eps = 0.0_dp; vrho_a = 0.0_dp; vrho_b = 0.0_dp")
-    lines.append(f"{INDENT}{INDENT}vs_aa = 0.0_dp; vs_ab = 0.0_dp; vs_bb = 0.0_dp")
+    lines.extend(_zero(2, ["eps", "vrho_a", "vrho_b", "vs_aa", "vs_ab", "vs_bb"]))
     lines.append(f"{INDENT}{INDENT}do k = 1, nk")
-    lines.append(f"{INDENT}{INDENT}{INDENT}saa = 0.0_dp; sab = 0.0_dp; sbb = 0.0_dp")
+    lines.extend(_zero(3, ["saa", "sab", "sbb"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}select case (kid(k))")
-    for stem in available_kernels:
+    for stem in semilocal:
         if _family_of(stem) == "gga":
             call = f"call {stem}_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)"
         else:
             call = f"call {stem}_exc_vxc_polar(rho_a, rho_b, e, va, vb)"
-        for ln in wrap(f"{INDENT}{INDENT}{INDENT}case ({kid_name[stem]}); {call}", INDENT*3):
-            lines.append(ln)
-    lines.append(f"{INDENT}{INDENT}{INDENT}case default; e = 0.0_dp; va = 0.0_dp; vb = 0.0_dp")
+        lines.extend(_case(kid_name[stem], call, wrapped=True))
+    lines.extend(_case_default(["e", "va", "vb"]))
     lines.append(f"{INDENT}{INDENT}{INDENT}end select")
     lines.append(f"{INDENT}{INDENT}{INDENT}eps = eps + coef(k)*e")
     lines.append(f"{INDENT}{INDENT}{INDENT}vrho_a = vrho_a + coef(k)*va")
@@ -574,6 +613,8 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}{INDENT}end do")
     lines.append(f"{INDENT}end subroutine xc_eval_point_polar")
     lines.append("")
+
+    lines.extend(emit_mgga_eval(mgga_dispatch, kid_name))
 
     # xc_functional_by_name
     lines.append(f"{INDENT}!")
@@ -590,7 +631,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append("")
     lines.append(f"{INDENT}{INDENT}key = name")
     lines.append(f"{INDENT}{INDENT}do i = 1, len_trim(key)")
-    lines.append(f"{INDENT}{INDENT}{INDENT}if (key(i:i) >= 'A' .and. key(i:i) <= 'Z') key(i:i) = achar(iachar(key(i:i)) + 32)")
+    lines.append(f'{INDENT}{INDENT}{INDENT}if (key(i:i) >= "A" .and. key(i:i) <= "Z") key(i:i) = achar(iachar(key(i:i)) + 32)')
     lines.append(f"{INDENT}{INDENT}end do")
     lines.append(f"{INDENT}{INDENT}f%name = key")
     lines.append(f"{INDENT}{INDENT}ok = .true.")
@@ -609,7 +650,7 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
             esc = e.missing.replace('"', "'")
             lines.append(f'{INDENT}{INDENT}{INDENT}f%missing = "{esc}"')
         else:
-            family_param = "XC_FAMILY_GGA" if e.family == "gga" else "XC_FAMILY_LDA"
+            family_param = {"lda": "XC_FAMILY_LDA", "gga": "XC_FAMILY_GGA", "mgga": "XC_FAMILY_MGGA"}[e.family]
             kids = ", ".join(kid_name[s] for _, s in e.kernels)
             coefs = ", ".join(fortran_real(c) for c, _ in e.kernels)
             for ln in wrap(f"{INDENT}{INDENT}{INDENT}call set(f, {family_param}, [{kids}], [{coefs}])", INDENT*3):
@@ -634,11 +675,13 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}contains")
     lines.append(f"{INDENT}{INDENT}subroutine set(f, family, kid, coef)")
     lines.append(f"{INDENT}{INDENT}{INDENT}type(trc_xc_functional_t), intent(inout) :: f")
-    lines.append(f"{INDENT}{INDENT}{INDENT}integer, intent(in) :: family, kid(:)")
+    lines.append(f"{INDENT}{INDENT}{INDENT}integer, intent(in) :: family")
+    lines.append(f"{INDENT}{INDENT}{INDENT}integer, intent(in) :: kid(:)")
     lines.append(f"{INDENT}{INDENT}{INDENT}real(dp), intent(in) :: coef(:)")
     lines.append(f"{INDENT}{INDENT}{INDENT}f%family = family")
     lines.append(f"{INDENT}{INDENT}{INDENT}f%nk = size(kid)")
-    lines.append(f"{INDENT}{INDENT}{INDENT}f%kid = 0; f%coef = 0.0_dp")
+    lines.append(f"{INDENT}{INDENT}{INDENT}f%kid = 0")
+    lines.append(f"{INDENT}{INDENT}{INDENT}f%coef = 0.0_dp")
     lines.append(f"{INDENT}{INDENT}{INDENT}f%kid(1:f%nk) = kid")
     lines.append(f"{INDENT}{INDENT}{INDENT}f%coef(1:f%nk) = coef")
     lines.append(f"{INDENT}{INDENT}end subroutine set")
@@ -647,8 +690,8 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
     lines.append(f"{INDENT}!")
     lines.append(f"{INDENT}! Whether `f` needs an RI-MP2 pass on top of its SCF: either PT2")
     lines.append(f"{INDENT}! fraction nonzero. The one place this is asked, rather than reading")
-    lines.append(f"{INDENT}! pt2_cos/pt2_css directly, so a future third PT2 field cannot leave")
-    lines.append(f"{INDENT}! a caller checking only the first two of three.")
+    lines.append(f"{INDENT}! pt2_cos/pt2_css directly, so a future third PT2 field cannot leave a")
+    lines.append(f"{INDENT}! caller checking only the first two of three.")
     lines.append(f"{INDENT}!")
     lines.append(f"{INDENT}pure function xc_is_double_hybrid(f) result(is_dh)")
     lines.append(f"{INDENT}{INDENT}type(trc_xc_functional_t), intent(in) :: f")
@@ -664,6 +707,125 @@ def emit_fortran(entries: list[Entry], available_kernels: list[str]) -> str:
 _FAMILY_CACHE: dict[str, str] = {}
 
 
+def emit_mgga_eval(dispatch: list[str], kid_name: dict[str, str]) -> list[str]:
+    """xc_eval_point_mgga and xc_eval_point_mgga_polar, the meta-GGA point
+    evaluators. An LDA or GGA kernel among them ignores tau and contributes
+    no vtau, the way libxc evaluates a mixed composition kernel by kernel."""
+    I = INDENT
+    out = [
+        f"{I}!",
+        f"{I}! Energy per particle and first derivatives of a composed meta-GGA at one",
+        f"{I}! point of a closed-shell density: `sigma` is |grad rho|^2 and `tau` the",
+        f"{I}! kinetic-energy density 1/2 sum_i |grad psi_i|^2 of the total density,",
+        f"{I}! libxc's and pyscf's convention. `vtau` is d(rho eps)/d tau. An LDA or",
+        f"{I}! GGA kernel in the composition ignores tau.",
+        f"{I}!",
+        f"{I}pure subroutine xc_eval_point_mgga(nk, kid, coef, rho, sigma, tau, eps, vrho, vsigma, vtau)",
+        f"{I}{I}!$acc routine seq",
+    ]
+    out += _kid_decls(["rho", "sigma", "tau"])
+    out += [
+        f"{I}{I}real(dp), intent(out) :: eps, vrho, vsigma, vtau",
+        f"{I}{I}real(dp) :: e, vr, vs, vt",
+        f"{I}{I}integer :: k",
+        "",
+    ]
+    out += _zero(2, ["eps", "vrho", "vsigma", "vtau"])
+    out.append(f"{I}{I}do k = 1, nk")
+    out += _zero(3, ["vs", "vt"])
+    out.append(f"{I}{I}{I}select case (kid(k))")
+    for stem in dispatch:
+        fam = _family_of(stem)
+        if fam == "mgga":
+            call = f"call {stem}_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)"
+        elif fam == "gga":
+            call = f"call {stem}_exc_vxc_unpolar(rho, sigma, e, vr, vs)"
+        else:
+            call = f"call {stem}_exc_vxc_unpolar(rho, e, vr)"
+        out += _case(kid_name[stem], call, wrapped=True)
+    out += _case_default(["e", "vr"])
+    out += [
+        f"{I}{I}{I}end select",
+        f"{I}{I}{I}eps = eps + coef(k)*e",
+        f"{I}{I}{I}vrho = vrho + coef(k)*vr",
+        f"{I}{I}{I}vsigma = vsigma + coef(k)*vs",
+        f"{I}{I}{I}vtau = vtau + coef(k)*vt",
+        f"{I}{I}end do",
+        f"{I}end subroutine xc_eval_point_mgga",
+        "",
+        f"{I}!",
+        f"{I}! The same for a spin-polarised density: per-spin densities, the three",
+        f"{I}! gradient invariants and per-spin tau_s = 1/2 sum_i |grad psi_is|^2.",
+        f"{I}!",
+        f"{I}pure subroutine xc_eval_point_mgga_polar(nk, kid, coef, rho_a, rho_b, s_aa, s_ab, s_bb, &",
+        f"{I}{I}{I}{I}tau_a, tau_b, eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb, vtau_a, vtau_b)",
+        f"{I}{I}!$acc routine seq",
+    ]
+    out += _kid_decls(["rho_a", "rho_b", "s_aa", "s_ab", "s_bb", "tau_a", "tau_b"])
+    out += [
+        f"{I}{I}real(dp), intent(out) :: eps, vrho_a, vrho_b, vs_aa, vs_ab, vs_bb, vtau_a, vtau_b",
+        f"{I}{I}real(dp) :: e, va, vb, saa, sab, sbb, ta, tb",
+        f"{I}{I}integer :: k",
+        "",
+    ]
+    out += _zero(2, ["eps", "vrho_a", "vrho_b", "vs_aa", "vs_ab", "vs_bb", "vtau_a", "vtau_b"])
+    out.append(f"{I}{I}do k = 1, nk")
+    out += _zero(3, ["saa", "sab", "sbb", "ta", "tb"])
+    out.append(f"{I}{I}{I}select case (kid(k))")
+    for stem in dispatch:
+        fam = _family_of(stem)
+        if fam == "mgga":
+            call = (f"call {stem}_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, tau_b, "
+                    f"e, va, vb, saa, sab, sbb, ta, tb)")
+        elif fam == "gga":
+            call = f"call {stem}_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, e, va, vb, saa, sab, sbb)"
+        else:
+            call = f"call {stem}_exc_vxc_polar(rho_a, rho_b, e, va, vb)"
+        out += _case(kid_name[stem], call, wrapped=True)
+    out += _case_default(["e", "va", "vb"])
+    out += [
+        f"{I}{I}{I}end select",
+        f"{I}{I}{I}eps = eps + coef(k)*e",
+        f"{I}{I}{I}vrho_a = vrho_a + coef(k)*va",
+        f"{I}{I}{I}vrho_b = vrho_b + coef(k)*vb",
+        f"{I}{I}{I}vs_aa = vs_aa + coef(k)*saa",
+        f"{I}{I}{I}vs_ab = vs_ab + coef(k)*sab",
+        f"{I}{I}{I}vs_bb = vs_bb + coef(k)*sbb",
+        f"{I}{I}{I}vtau_a = vtau_a + coef(k)*ta",
+        f"{I}{I}{I}vtau_b = vtau_b + coef(k)*tb",
+        f"{I}{I}end do",
+        f"{I}end subroutine xc_eval_point_mgga_polar",
+        "",
+    ]
+    return out
+
+
+# One statement per line and one kind of declaration per line: the style
+# fortitude's S-rules hold src/xc/ to (see fpm.toml).
+def _kid_decls(scalars_in: list[str]) -> list[str]:
+    return [f"{INDENT}{INDENT}integer, intent(in) :: nk",
+            f"{INDENT}{INDENT}integer, intent(in) :: kid(XC_MAX_KERNELS)",
+            f"{INDENT}{INDENT}real(dp), intent(in) :: {', '.join(scalars_in)}",
+            f"{INDENT}{INDENT}real(dp), intent(in) :: coef(XC_MAX_KERNELS)"]
+
+
+def _zero(depth: int, names: list[str]) -> list[str]:
+    return [f"{INDENT * depth}{n} = 0.0_dp" for n in names]
+
+
+def _case(kid: str, call: str, wrapped: bool = False) -> list[str]:
+    """`case (kid)` and its call, at the select's own indent. A wrapped call
+    breaks as if it still followed `case (kid); ` on the same line."""
+    ind = INDENT * 3
+    out = wrap(f"{ind}case ({kid}); {call}", ind) if wrapped else [f"{ind}case ({kid}); {call}"]
+    head, first = out[0].split("; ", 1)
+    return [head, ind + first] + out[1:]
+
+
+def _case_default(names: list[str]) -> list[str]:
+    return [f"{INDENT * 3}case default"] + _zero(3, names)
+
+
 def _family_of(stem: str) -> str:
     return _FAMILY_CACHE[stem]
 
@@ -671,6 +833,9 @@ def _family_of(stem: str) -> str:
 # --------------------------------------------------------------------------
 # Emitting docs/functionals.md.
 # --------------------------------------------------------------------------
+
+
+NUMBER_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
 
 
 def emit_docs(entries: list[Entry], notes: list[str], nkernel_translated: int,
@@ -692,12 +857,26 @@ def emit_docs(entries: list[Entry], notes: list[str], nkernel_translated: int,
         f"check_xc's tolerances and {nkernel_disagree} do not (listed under their "
         f"functionals below); {nkernel_refused} refused outright.",
         "",
+    ]
+    dh = [e for e in avail if e.pt2_cos or e.pt2_css]
+    if dh:
+        names = ", ".join(e.name for e in dh)
+        lines += [
+            f"{NUMBER_WORDS.get(len(dh), str(len(dh)))} of the {len(avail)} are double hybrids ({names}): the table",
+            "below lists their SCF composition only (a_x exact exchange plus a GGA",
+            "exchange/correlation mix), not the RI-MP2 fraction on top, which is never a",
+            "kernel -- see `trc_xc_functional_t`'s own `pt2_cos`/`pt2_css` and",
+            "`trc_capi.F90`'s `trc_run_rimp2`/`trc_energy`.",
+            "",
+        ]
+    lines += [
         "## Available",
         "",
         "| name | aliases | family |",
         "| --- | --- | --- |",
     ]
-    for e in sorted(avail, key=lambda e: e.name):
+    # The double hybrids first, in their own order, then everything else.
+    for e in dh + sorted((e for e in avail if e not in dh), key=lambda e: e.name):
         lines.append(f"| `{e.name}` | {', '.join(e.aliases) or '--'} | {e.family} |")
     lines += ["", "## Missing", "", "| name | reason |", "| --- | --- |"]
     for e in sorted(miss, key=lambda e: e.name):
@@ -721,8 +900,13 @@ def main(argv=None) -> int:
         _FAMILY_CACHE[stem] = fam
     available_kernels = [s for s, _ in translated if s not in xc_kernel_discovery.DISAGREES_WITH_LIBXC]
 
+    # LDA/GGA ids first, meta-GGA after: adding the meta-GGA family must not
+    # renumber the LDA/GGA dispatch.
+    ordered = sorted(st for st in available_kernels if _FAMILY_CACHE[st] != "mgga") + \
+        sorted(st for st in available_kernels if _FAMILY_CACHE[st] == "mgga")
+
     entries, notes = build_registry(args.exchcxx)
-    args.output.write_text(emit_fortran(entries, sorted(available_kernels)))
+    args.output.write_text(emit_fortran(entries, ordered))
     args.docs.write_text(emit_docs(entries, notes, len(translated), len(refused),
                                     len(xc_kernel_discovery.DISAGREES_WITH_LIBXC)))
     navail = sum(1 for e in entries if e.missing is None)

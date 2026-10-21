@@ -45,8 +45,9 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 | **One electron** | overlap, kinetic, nuclear attraction |
 | **Multipoles** | full Cartesian tensors through the **octupole** — 3 + 9 + 27 components |
 | **Density fitting** | two- and three-centre Coulomb integrals |
+| **Kohn-Sham DFT** | LDA, GGA and meta-GGA (tau-dependent: r2SCAN, SCAN, TPSS, the Minnesota M05-M15 family, ...) functionals, global, range-separated and double hybrids and VV10, RKS and UKS; every kernel checked against libxc ([docs/functionals.md](docs/functionals.md)) |
 | **Solvation** | C-PCM and IEF-PCM SCF energies (pyscf's SWIG cavity, term for term), RKS and UKS, any functional, CPU and GPU |
-| **Analytic gradients** | HF/UHF, LDA/GGA/hybrid/range-separated KS-DFT with VV10, and the `--df` fitted RHF/RKS gradient; validated against pyscf and finite differences; single GPU (a multi-GPU run computes the gradient on rank 0 and warns); no PCM, RI-MP2 or double-hybrid gradients |
+| **Analytic gradients** | HF/UHF, LDA/GGA/hybrid/range-separated KS-DFT with VV10, and the `--df` fitted RHF/RKS gradient; validated against pyscf and finite differences; single GPU (a multi-GPU run computes the gradient on rank 0 and warns); no meta-GGA, PCM, RI-MP2 or double-hybrid gradients |
 | **Interfaces** | a Fortran API, and a `bind(c)` ABI for host codes built with another compiler |
 
 terco **ships no basis set**. A consumer passes exponents, coefficients and

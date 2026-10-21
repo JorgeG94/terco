@@ -571,8 +571,8 @@ program terco_main
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
-                       "refused for --rimp2, a double hybrid or --pcm; with more than one rank it is "// &
-                       "computed on rank 0 alone, with a warning")
+                       "refused for a meta-GGA, --rimp2, a double hybrid or --pcm; with more than "// &
+                       "one rank it is computed on rank 0 alone, with a warning")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 

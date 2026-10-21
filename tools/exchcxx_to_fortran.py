@@ -35,8 +35,20 @@ only above `dens_tol` clamp the inputs and call the body -- are emitted from
 a template rather than translated, since they are the same for every kernel
 of a family.
 
-Meta-GGA kernels are refused. Their wrapper has one more rule (the Fermi
-hole curvature bound) and nothing needs them yet.
+Meta-GGA kernels take the kinetic-energy density tau as well, and their
+wrapper has one more rule: after the floors on sigma and tau, sigma is
+capped at 8 rho tau (the Fermi-hole curvature, i.e. von Weizsaecker,
+bound), per spin in the polarised case. For a meta-GGA only the energy
+and first-derivative routines, `exc` and `exc_vxc`, are emitted: the
+second-derivative pair is three quarters of the Maple output (tpss_c's
+`fxc_polar` alone is 3600 lines) and nothing in terco calls it yet, since
+the coupled-perturbed response refuses a meta-GGA. A kernel that needs the
+density Laplacian (`needs_laplacian = true`: FT98, the deorbitalised
+SCAN-L/r2SCAN-L, the kinetic PC07s) is refused, because terco does not
+evaluate the Laplacian. Every other meta-GGA ignores its `lapl` argument
+and sets `vlapl` to zero, so both are dropped from the Fortran signature
+-- checked, not assumed: a body that reads `lapl` or sets `vlapl` to
+anything but zero is refused.
 
 Usage:
     python tools/exchcxx_to_fortran.py --exchcxx ~/dev/ExchCXX \
@@ -83,10 +95,23 @@ CONSTANT_NAMES = {
     # Not a `constants::` member -- a bare libm macro like M_PI, present in
     # kernels after the ones already translated (p86_c's `t118`, say).
     "m_sqrt2",
+    # <cfloat>'s DBL_EPSILON, which the SCAN exchange and correlation kernels take
+    # the log of (scan_c's `t184`, say).
+    "dbl_epsilon",
 }
 
 LINE_WIDTH = 96
 INDENT = "   "
+
+FAMILY_TITLE = {"lda": "LDA", "gga": "GGA", "mgga": "meta-GGA"}
+MGGA_NOTE = [
+    "! A meta-GGA also takes the kinetic-energy density tau = 1/2 sum_i",
+    "! |grad psi_i|^2 (the total in the unpolarised routines, one per spin in",
+    "! the polarised ones) and returns vtau = d(rho eps)/d tau. Only `exc` and",
+    "! `exc_vxc` are translated, and the Laplacian argument ExchCXX carries",
+    "! (unused by this kernel) is dropped; see tools/exchcxx_to_fortran.py.",
+    "!",
+]
 
 
 class Unsupported(Exception):
@@ -223,9 +248,16 @@ class Function:
 @dataclass
 class Kernel:
     name: str
-    family: str  # lda | gga
+    family: str  # lda | gga | mgga
     params: list[tuple[str, str]]  # (name, fortran literal)
     functions: list[Function]
+
+    def emitted(self) -> list[Function]:
+        """The routines the Fortran module carries: all eight for LDA and
+        GGA, `exc` and `exc_vxc` for a meta-GGA (see the module docstring)."""
+        if self.family != "mgga":
+            return self.functions
+        return [f for f in self.functions if "fxc" not in f.name]
 
 
 _STATIC = re.compile(r"static\s+constexpr\s+(double|bool)\s+(\w+)\s*=\s*([^;]+);")
@@ -246,13 +278,18 @@ def parse_kernel(path: Path) -> Kernel:
     is_lda = statics.get("is_lda") == "true"
     is_gga = statics.get("is_gga") == "true"
     is_mgga = statics.get("is_mgga") == "true"
-    if is_mgga:
-        raise Unsupported("meta-GGA kernels are not translated yet")
+    if "Deorbitalized<" in text:
+        # r2SCAN-L and friends inherit their traits from deorbitalized.hpp's
+        # template, which evaluates tau from the Laplacian through a kinetic
+        # functional; their own header carries only the thresholds.
+        raise Unsupported("needs the density Laplacian, which terco does not evaluate")
     if statics.get("is_kedf") == "true" or statics.get("is_epc") == "true":
         raise Unsupported("kinetic-energy and electron-proton kernels are not translated")
-    family = "lda" if is_lda else "gga" if is_gga else None
+    if is_mgga and statics.get("needs_laplacian") == "true":
+        raise Unsupported("needs the density Laplacian, which terco does not evaluate")
+    family = "lda" if is_lda else "gga" if is_gga else "mgga" if is_mgga else None
     if family is None:
-        raise Unsupported("kernel declares neither LDA nor GGA")
+        raise Unsupported("kernel declares neither LDA, GGA nor meta-GGA")
 
     params: list[tuple[str, str]] = []
     for name, val in statics.items():
@@ -294,11 +331,34 @@ def parse_kernel(path: Path) -> Kernel:
             if not sm:
                 raise Unsupported(f"statement {raw!r} in {fname}")
             fn.stmts.append((sm.group(2), sm.group(3).strip(), sm.group(1) is not None))
+        if family == "mgga":
+            _drop_laplacian(fn)
         functions.append(fn)
 
     if len(functions) != 8:
         raise Unsupported(f"expected 8 eval functions, found {len(functions)}")
     return Kernel(path.stem, family, params, functions)
+
+
+_ZERO = re.compile(r"^0*\.?0*(?:e[+-]?\d+)?$")
+
+
+def _drop_laplacian(fn: Function) -> None:
+    """Remove the `lapl*` inputs and every Laplacian output (`vlapl*`,
+    `v2*lapl*`) of a meta-GGA routine that does not need the Laplacian,
+    after checking that it really does not: no statement may read a
+    Laplacian input, and every Laplacian output must be a literal zero."""
+    lapl_in = [x for x in fn.inputs if x.startswith("lapl")]
+    lapl_out = [x for x in fn.outputs if "lapl" in x]
+    for lhs, rhs, _ in fn.stmts:
+        for nm in lapl_in:
+            if re.search(rf"\b{nm}\b", rhs):
+                raise Unsupported(f"{fn.name} reads {nm} although needs_laplacian is false")
+        if lhs in lapl_out and not _ZERO.match(rhs.replace(" ", "")):
+            raise Unsupported(f"{fn.name} sets {lhs} = {rhs}, not zero")
+    fn.inputs = [x for x in fn.inputs if x not in lapl_in]
+    fn.outputs = [x for x in fn.outputs if x not in lapl_out]
+    fn.stmts = [st for st in fn.stmts if st[0] not in lapl_out]
 
 
 # --------------------------------------------------------------------------
@@ -360,7 +420,8 @@ def emit_impl(k: Kernel, fn: Function, used: set[str]) -> list[str]:
 
 
 def emit_wrapper(k: Kernel, fn: Function) -> list[str]:
-    """The screening_interface.hpp rule, one template for LDA and GGA."""
+    """The screening_interface.hpp rule, one template for LDA, GGA and
+    meta-GGA."""
     pub = f"{k.name}_{fn.name[5:-5]}"  # drop "eval_" and "_impl"
     impl = f"{k.name}_{fn.name[5:]}"
     polar = fn.name.endswith("polar_impl") and "unpolar" not in fn.name
@@ -379,14 +440,23 @@ def emit_wrapper(k: Kernel, fn: Function) -> list[str]:
     if polar:
         lines.append(f"{b}rho_a_c = max(rho_a, dens_tol)")
         lines.append(f"{b}rho_b_c = max(rho_b, dens_tol)")
-        if k.family == "gga":
+        if k.family in ("gga", "mgga"):
             lines.append(f"{b}sigma_aa_c = max(sigma_aa, sigma_tol*sigma_tol)")
             lines.append(f"{b}sigma_bb_c = max(sigma_bb, sigma_tol*sigma_tol)")
+        if k.family == "mgga":
+            lines.append(f"{b}tau_a_c = max(tau_a, tau_tol)")
+            lines.append(f"{b}tau_b_c = max(tau_b, tau_tol)")
+            lines.append(f"{b}sigma_aa_c = enforce_fermi_hole_curvature(sigma_aa_c, rho_a_c, tau_a_c)")
+            lines.append(f"{b}sigma_bb_c = enforce_fermi_hole_curvature(sigma_bb_c, rho_b_c, tau_b_c)")
+        if k.family in ("gga", "mgga"):
             lines.append(f"{b}sigma_ab_c = enforce_polar_sigma_constraints(sigma_aa_c, sigma_ab, sigma_bb_c)")
     else:
         lines.append(f"{b}rho_c = rho")
-        if k.family == "gga":
+        if k.family in ("gga", "mgga"):
             lines.append(f"{b}sigma_c = max(sigma, sigma_tol*sigma_tol)")
+        if k.family == "mgga":
+            lines.append(f"{b}tau_c = max(tau, tau_tol)")
+            lines.append(f"{b}sigma_c = enforce_fermi_hole_curvature(sigma_c, rho_c, tau_c)")
     call = f"{b}call {impl}({', '.join(clamped + fn.outputs)})"
     lines.extend(wrap(call, b))
     lines.append(f"{ind}{INDENT}end if")
@@ -411,16 +481,18 @@ def emit_module(k: Kernel, src: Path) -> str:
             nm_lower = nm.lower()
             if nm_lower in UTIL_NAMES or nm_lower in CONSTANT_NAMES:
                 used.add(nm_lower)
-    for fn in k.functions:
+    for fn in k.emitted():
         impls.extend(emit_impl(k, fn, used))
         wrappers.extend(emit_wrapper(k, fn))
         publics.append(f"{k.name}_{fn.name[5:-5]}")
-    if k.family == "gga":
+    if k.family in ("gga", "mgga"):
         used.add("enforce_polar_sigma_constraints")
+    if k.family == "mgga":
+        used.add("enforce_fermi_hole_curvature")
     mod = f"trc_xc_{k.name}"
     head = [
         "!",
-        f"! {k.name.upper()}: {k.family.upper()} exchange-correlation kernel.",
+        f"! {k.name.upper()}: {FAMILY_TITLE[k.family]} exchange-correlation kernel.",
         "!",
         f"! GENERATED by tools/exchcxx_to_fortran.py from ExchCXX's",
         f"! {src.relative_to(src.parents[5])} -- do not edit.",
@@ -441,6 +513,7 @@ def emit_module(k: Kernel, src: Path) -> str:
         "! gradient invariants. `eps` is the energy per particle, so the",
         "! integrand is rho * eps.",
         "!",
+    ] + (MGGA_NOTE if k.family == "mgga" else []) + [
         f"module {mod}",
         f"{INDENT}use pic_types, only: dp",
     ]

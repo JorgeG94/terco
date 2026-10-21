@@ -50,6 +50,9 @@ module trc_xc_util
    ! above is one too, matched case-insensitively (see
    ! tools/exchcxx_to_fortran.py's CONSTANT_NAMES comment); glibc's value.
    real(dp), parameter, public :: m_sqrt2    = 1.41421356237309504880e+00_dp
+   ! <cfloat>'s DBL_EPSILON, the same kind of bare macro (the SCAN exchange and
+   ! correlation kernels take its log): 2^-52, which is epsilon(1.0_dp).
+   real(dp), parameter, public :: dbl_epsilon = epsilon(1.0_dp)
 
 contains
 

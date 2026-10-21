@@ -724,15 +724,12 @@ module trc_c_interfaces
          !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
          !! term on top of the semilocal one, on VV10's own grid
          !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
-         !! it on). wB97M-V is meta-GGA and cannot reach this point at all (see
-         !! below), so it is not a case this routine has to decide about.
+         !! it on). wB97M-V is not in terco's table, and a meta-GGA is refused
+         !! below, so it is not a case this routine has to decide about.
          !!
          !! REFUSED, clearly, rather than attempted:
-         !!   - meta-GGA or a double hybrid: `trc_xc_functional_t` has no
-         !!     meta-GGA family and no MP2-fraction field on this branch, so
-         !!     neither can reach this point at all -- `trc_set_method` already
-         !!     refused it (func%missing) before a functional name naming one
-         !!     could be stored in `cx%opts%functional`. Nothing to check here.
+         !!   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
+         !!     the gradient is refused here with a message.
          !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
          !!     gradient exists; `trc_scf_gradient` is the SCF reference term
          !!     only.
@@ -920,8 +917,9 @@ module trc_c_interfaces
          !!   2  hybrid     -- exx or exx_lr nonzero (some exact exchange)
          !!   4  range-separated -- omega nonzero
          !!   8  VV10       -- nlc_b nonzero (nonlocal correlation)
-         !!   16 meta-GGA   -- needs a kinetic-energy-density kernel; always
-         !!      paired with bit 64 today, since terco has none translated yet
+         !!   16 meta-GGA   -- depends on the kinetic-energy density tau; runs
+         !!      (bit 1) unless it also needs the density Laplacian (r2SCAN-L),
+         !!      which terco does not evaluate (bit 64)
          !!   32 double hybrid -- xc_is_double_hybrid (pt2_cos or pt2_css nonzero)
          !!   64 listed but not runnable -- trc_xc_functional_t%missing is set;
          !!      bit 1 is then NOT set, and `exx`/`c_os`/`c_ss`/the other bits

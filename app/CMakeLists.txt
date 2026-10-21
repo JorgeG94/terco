@@ -90,6 +90,15 @@ if(TERCO_ENABLE_TESTING)
                "TOTAL ENERGY +-7[0-9]\\." FAIL_REGULAR_EXPRESSION
                "TOTAL ENERGY +-?0\\.0+ ")
 
+  # A meta-GGA's energy runs; its gradient is refused with a message rather
+  # than computed without the tau term.
+  add_test(NAME terco/cli_grad_mgga_refused COMMAND terco_cli ${_xyz}/water.xyz -b
+                                                    6-31g -f r2scan --grad)
+  set_tests_properties(
+    terco/cli_grad_mgga_refused
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "meta-GGA \\('r2scan'\\) exchange-correlation gradient not implemented")
+
   add_test(NAME terco/cli_missing_file COMMAND terco_cli no_such_file.xyz)
   set_tests_properties(terco/cli_missing_file PROPERTIES WILL_FAIL TRUE)
 
