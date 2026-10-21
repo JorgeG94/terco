@@ -25,9 +25,7 @@ module trc_binkernel
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, ncart_of
    use trc_bins, only: pair_bins_t, SMAX, sort_bins_by_weight, build_pair_quartets
-#ifdef TRC_PERCLASS
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
-#endif
    use trc_rys_select, only: rys_select_init, rys_route
    use trc_rys_kernels, only: rys_dispatch
    implicit none
@@ -308,7 +306,7 @@ contains
                nt = int(nA, int64)*int(nB, int64)
             end if
             !
-            ! one_bin_item takes its within-segment index as a default integer,
+            ! The kernels take their within-segment index as a default integer,
             ! so a segment must fit in one. Widening it would cost registers
             ! in the hot kernel, which are the binding constraint; instead
             ! build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
@@ -316,7 +314,7 @@ contains
             ! This guard is the backstop if that cap is ever raised.
             !
             if (nt > 2147483000_int64) error stop &
-               "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"
+               "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
             sOff(is + 1) = sOff(is) + nt
          end do
       end do
@@ -353,7 +351,7 @@ contains
 
       if (nosym) then
          ! Every per-class kernel is folded, so a general density goes through
-         ! the enumerated shared kernel instead.
+         ! the enumerated non-symmetric kernel, one_bin_item_nosym, instead.
          !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
          call fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, omega, dsh, &
@@ -366,7 +364,6 @@ contains
          return
       end if
 
-#ifdef TRC_PERCLASS
       !
       ! Per-class launches.  The descriptors are sorted by class so each class
       ! occupies a contiguous run of segments, then one kernel per class covers
@@ -458,16 +455,6 @@ contains
          deallocate (ord, ckey)
       end block
       deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
-      return
-#endif
-
-      !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
-      call fock_all(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
-                    b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
-                    pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
-      !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
-
-      deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
    end subroutine fock_bins
 
    !
@@ -511,8 +498,6 @@ contains
    ! exists so the effect of density screening is a measured number rather
    ! than an inference from wall-clock.
    !
-#ifdef TRC_PERCLASS
-#endif
 
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
                          npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, nkept)
@@ -616,79 +601,6 @@ contains
       deallocate (t, tl, to)
    end subroutine permute_segments
 
-   !
-   ! The single launch.  Each thread locates its segment by binary search over
-   ! the prefix sums -- about log2(nseg) steps, and uniform within a warp since
-   ! neighbouring threads almost always share a segment.
-   !
-   subroutine fock_all(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
-                       npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
-                       pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, ndens, dmat, jmat, kmat, rank, nranks)
-      integer,  intent(in)    :: nseg, npair, nbas, npp, nao, rank, nranks
-      integer(int64), intent(in) :: nwork
-      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
-      logical,  intent(in)    :: sD(nseg)
-      integer(int64), intent(in) :: sOff(nseg + 1)
-      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in) :: thresh
-      real(dp), intent(in) :: sp_q(npair)
-      real(dp), intent(in)    :: jfac, kfac
-      real(dp), intent(in)    :: omega
-      real(dp), intent(in)    :: dsh(nbas, nbas)
-      integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
-      integer,  intent(in)    :: ndens
-      real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
-
-      integer(int64) :: gt, nr, i
-      integer :: lo, hi, mid, seg, t
-
-      !
-      ! `do concurrent`, and only that.
-      !
-      ! This was written twice for a while -- an OpenACC `parallel loop`
-      ! behind -DTRC_ACC_LOOP -- to compare the two offload models on
-      ! identical work.  The comparison has been made; carrying a directive
-      ! version afterwards is a second thing to keep correct for no result.
-      !
-      ! OpenACC remains for the two jobs `do concurrent` genuinely cannot do:
-      ! `routine seq` on the device helpers, and the atomic updates in the
-      ! digestion, where a quartet scatters into six overlapping blocks and
-      ! the standard has no atomic to offer.
-      !
-      ! `local()` names every per-iteration scalar explicitly. A scalar
-      ! assigned before it is read is privatised without one, so this is not
-      ! load-bearing -- it is the difference between the compiler inferring
-      ! the intent and the source stating it, and the second is what someone
-      ! reading this in a year needs.
-      !
-      ! Fortran 2018, and gfortran took it in 15, which is this project's
-      ! minimum for that reason among others.
-      ! This rank's stride through the sorted list; see the per-class kernels.
-      nr = 0
-      if (nwork >= rank + 1) nr = (nwork - rank - 1)/nranks + 1
-      do concurrent(i=1:nr) local(gt, lo, hi, mid, seg, t)
-         gt = rank + 1 + (i - 1)*nranks
-         lo = 1; hi = nseg
-         do while (lo < hi)
-            mid = (lo + hi + 1)/2
-            if (sOff(mid) < gt) then
-               lo = mid
-            else
-               hi = mid - 1
-            end if
-         end do
-         seg = lo
-         t = int(gt - sOff(seg))
-         call one_bin_item(t, sD(seg), sA(seg), sNB(seg), sOA(seg), sOB(seg), &
-                           npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
-                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                           ndens, dmat, jmat, kmat)
-      end do
-   end subroutine fock_all
-
    subroutine fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                              npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, &
                              nbas, npp, nao, sh_l, ao_off, &
@@ -748,35 +660,6 @@ contains
                                  ndens, dmat, jmat, kmat)
       end do
    end subroutine fock_all_nosym
-
-   subroutine fock_one_bin(nt, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
-                           sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
-                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                           ndens, dmat, jmat, kmat)
-      integer,  intent(in)    :: nt, nA, nB, offA, offB, npair, nbas, npp, nao
-      logical,  intent(in)    :: diag
-      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in) :: thresh
-      real(dp), intent(in) :: sp_q(npair)
-      real(dp), intent(in)    :: jfac, kfac
-      real(dp), intent(in)    :: omega
-      real(dp), intent(in)    :: dsh(nbas, nbas)
-      integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
-      integer,  intent(in)    :: ndens
-      real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
-
-      integer :: t
-
-      do concurrent(t=1:nt)
-         call one_bin_item(t, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
-                           sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
-                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                           ndens, dmat, jmat, kmat)
-      end do
-   end subroutine fock_one_bin
 
    !
    ! General-density item routine: no assumption that D is symmetric.
@@ -1191,491 +1074,6 @@ contains
 #endif
    end subroutine one_bin_item_nosym
 
-   pure subroutine one_bin_item(t, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
-                                sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
-                                pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                                ndens, dmat, jmat, kmat)
-      !$acc routine seq
-      integer,  intent(in)    :: t, nA, nB, offA, offB, npair, nbas, npp, nao
-      logical,  intent(in)    :: diag
-      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in) :: thresh
-      real(dp), intent(in) :: sp_q(npair)
-      real(dp), intent(in)    :: jfac, kfac
-      real(dp), intent(in)    :: omega
-      real(dp), intent(in)    :: dsh(nbas, nbas)
-      integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
-      integer,  intent(in)    :: ndens
-      real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
-
-      integer  :: iab, icd, si, sj, sk, sl
-      real(dp) :: qcut
-      integer  :: la, lb, lc, ld, lab, lcd, lt, nca, ncc
-      integer  :: keyab, keycd, offab, offcd, nab, ncd
-      integer  :: kp, kq, m, d, x, cur, nxt, lim, dn
-      integer  :: ia, ic, xd1, xd2, xc1, xc2, xac, ai, dd
-      real(dp) :: zeta, eta, zpe, rho, tval, pref, wc, acc
-      real(dp) :: theta, rho_theta
-      real(dp) :: pa(3), qc(3), wp(3), wq(3), pq(3)
-      real(dp) :: pax, pay, paz, qcx, qcy, qcz
-      real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
-      real(dp) :: oo2z, oo2e, oo2ze, rz, re
-      real(dp) :: f(0:BOYS_MMAX)
-      real(dp) :: v(NCUM*NCUM, 0:1), g(NCUM*NCUM)
-      integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
-      integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
-      integer  :: px, py, pz, qx, qy, qz, ja, jc
-      real(dp) :: cb, cdc, vv, sc
-      integer  :: idens
-      real(dp) :: abx, aby, abz, cdx, cdy, cdz
-      integer  :: mui, nuj, lamk, sigl
-      ! largest Cartesian block this LMAX allows: ((L+1)(L+2)/2)^4
-      real(dp) :: vbuf((((LMAX + 1)*(LMAX + 2)/2)**4))
-      integer  :: pij, pkl
-      logical  :: dij, dkl, dpq
-
-      ! --- linear index -> (ab, cd) within the bin cross product ---
-      if (diag) then
-         ! lower triangle including the diagonal, row-major by ab
-         iab = int((1.0_dp + sqrt(1.0_dp + 8.0_dp*real(t - 1, dp)))/2.0_dp)
-         if (iab*(iab + 1)/2 > t - 1) iab = iab - 1
-         icd = (t - 1) - iab*(iab + 1)/2 + 1
-         iab = iab + 1
-      else
-         iab = (t - 1)/nB + 1
-         icd = t - (iab - 1)*nB
-      end if
-
-      ! exact Schwarz, per quartet.  The host bin-pair test is only
-      ! decade-granular (`int(-log10 Q)` clamped to 9) and so admits up to two
-      ! decades too much; at RNA3 that was 46% of all quartets.
-      qcut = sp_q(offA + iab)*sp_q(offB + icd)
-      if (qcut <= thresh) return
-
-      si = sp_i(offA + iab); sj = sp_j(offA + iab)
-      sk = sp_i(offB + icd); sl = sp_j(offB + icd)
-
-      ! Density-weighted screen -- see the note in scripts/gen_perclass.py.
-      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                   dsh(si, sk), dsh(si, sl), &
-                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return
-
-      !
-      ! NO canonical swap between bra and ket.
-      !
-      ! An earlier version enforced pair_ab >= pair_cd by swapping the two
-      ! pairs per thread.  That silently destroyed the property the bins exist
-      ! to provide: bin A and bin B have different (l, K) types, so after a
-      ! per-thread swap some threads in a warp hold (A|B) and others (B|A),
-      ! with different loop bounds and different primitive counts.  Nsight
-      ! measured 21.3 of 32 threads active, against 30.1 before the binning.
-      !
-      ! The swap is not needed.  Symmetry only requires each unordered pair of
-      ! shell pairs once, and the bin loop already guarantees that: distinct
-      ! bins contribute every (A_i, B_j) exactly once, and the diagonal bin
-      ! walks its own triangle.  So "the two pairs differ" -- which is all the
-      ! digestion needs -- is a property of the bin pair, not of the shell
-      ! indices.
-      !
-      pij = si*(si - 1)/2 + sj
-      pkl = sk*(sk - 1)/2 + sl
-
-      la = sh_l(si); lb = sh_l(sj); lc = sh_l(sk); ld = sh_l(sl)
-      lab = la + lb; lcd = lc + ld; lt = lab + lcd
-      nca = ncum_of(lab); ncc = ncum_of(lcd)
-
-      keyab = (si - 1)*nbas + sj
-      keycd = (sk - 1)*nbas + sl
-      offab = pp_off(keyab); nab = pp_n(keyab)
-      offcd = pp_off(keycd); ncd = pp_n(keycd)
-
-      do x = 1, nca*ncc
-         g(x) = 0.0_dp
-      end do
-
-      do kp = offab + 1, offab + nab
-         zeta = pp_p(kp)
-         do kq = offcd + 1, offcd + ncd
-            eta = pp_p(kq)
-            zpe = zeta + eta
-            rho = zeta*eta/zpe
-            ! RANGE SEPARATION -- same substitution as the generated kernels
-            ! (scripts/gen_perclass.py's primitive loop): erf(omega*r12)/r12
-            ! is the Coulomb integral with rho replaced everywhere by
-            ! rho_theta = theta*rho, theta = omega^2/(rho + omega^2), and the
-            ! prefactor scaled by sqrt(theta). omega == 0 sets theta = 1.0_dp
-            ! exactly, so every "theta*"/"rho_theta" below reproduces the
-            ! Coulomb value bit-for-bit -- there is no screen here to protect
-            ! (this whole bin pair already survived one at admission), so
-            ! theta is computed unconditionally rather than branched.
-            if (omega > 0.0_dp) then
-               theta = omega*omega/(rho + omega*omega)
-            else
-               theta = 1.0_dp
-            end if
-            rho_theta = theta*rho
-            do d = 1, 3
-               pq(d) = pp_r(kp, d) - pp_r(kq, d)
-               wc = (zeta*pp_r(kp, d) + eta*pp_r(kq, d))/zpe
-               pa(d) = pp_r(kp, d) - pp_ra(kp, d)
-               qc(d) = pp_r(kq, d) - pp_ra(kq, d)
-               wp(d) = theta*(wc - pp_r(kp, d))
-               wq(d) = theta*(wc - pp_r(kq, d))
-            end do
-            tval = rho_theta*(pq(1)*pq(1) + pq(2)*pq(2) + pq(3)*pq(3))
-            call boys_eval(lt, tval, f)
-
-            oo2z = 0.5_dp/zeta; oo2e = 0.5_dp/eta; oo2ze = theta*(0.5_dp/zpe)
-            rz = rho_theta/zeta; re = rho_theta/eta
-            pref = sqrt(theta)*TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_c(kp)*pp_c(kq)
-
-#ifdef TRC_UNROLL_VRR
-            !
-            ! Unrolled VRR: every index a literal, no table loads, no branches.
-            ! See scripts/gen_vrr.py.
-            !
-            ! Straight-line VRR, textually inside this procedure so `v` never
-            ! crosses a call boundary.  See scripts/gen_vrr.py --mode include.
-            pax = pa(1); pay = pa(2); paz = pa(3)
-            qcx = qc(1); qcy = qc(2); qcz = qc(3)
-            wpx = wp(1); wpy = wp(2); wpz = wp(3)
-            wqx = wq(1); wqy = wq(2); wqz = wq(3)
-#include "trc_vrr_cases.inc"
-#else
-            cur = 0
-            v(1, cur) = pref*f(lt)
-            do m = lt - 1, 0, -1
-               nxt = 1 - cur
-               lim = lt - m
-               v(1, nxt) = pref*f(m)
-               do ia = 2, nca
-                  if (cll(ia) > lim) exit
-                  dd = cdir(ia); xd1 = cdn1(ia); xd2 = cdn2(ia)
-                  acc = pa(dd)*v(xd1, nxt) + wp(dd)*v(xd1, cur)
-                  if (xd2 > 0) acc = acc + cf2(ia)*oo2z*(v(xd2, nxt) - rz*v(xd2, cur))
-                  v(ia, nxt) = acc
-               end do
-               do ic = 2, ncc
-                  if (cll(ic) > lim) exit
-                  dd = cdir(ic); xc1 = cdn1(ic); xc2 = cdn2(ic)
-                  do ia = 1, nca
-                     if (cll(ia) + cll(ic) > lim) exit
-                     x = ia + (ic - 1)*nca
-                     acc = qc(dd)*v(ia + (xc1 - 1)*nca, nxt) &
-                           + wq(dd)*v(ia + (xc1 - 1)*nca, cur)
-                     if (xc2 > 0) acc = acc + cf2(ic)*oo2e* &
-                        (v(ia + (xc2 - 1)*nca, nxt) - re*v(ia + (xc2 - 1)*nca, cur))
-                     ai = 0; xac = 0
-                     if (dd == 1) then
-                        ai = cnx(ia)
-                        if (ai > 0) xac = cidx(cnx(ia) - 1, cny(ia), cnz(ia))
-                     else if (dd == 2) then
-                        ai = cny(ia)
-                        if (ai > 0) xac = cidx(cnx(ia), cny(ia) - 1, cnz(ia))
-                     else
-                        ai = cnz(ia)
-                        if (ai > 0) xac = cidx(cnx(ia), cny(ia), cnz(ia) - 1)
-                     end if
-                     if (xac > 0) acc = acc + real(ai, dp)*oo2ze*v(xac + (xc1 - 1)*nca, cur)
-                     v(x, nxt) = acc
-                  end do
-               end do
-               cur = nxt
-            end do
-
-#endif
-            do x = 1, nca*ncc
-               g(x) = g(x) + v(x, cur)
-            end do
-         end do
-      end do
-
-      ! --- HRR and fused digestion, straight from g ---
-      na_ = ncart_of(la); nb_ = ncart_of(lb)
-      nc_ = ncart_of(lc); nd_ = ncart_of(ld)
-      dij = (si /= sj); dkl = (sk /= sl)
-      ! distinct bins are always distinct pairs; the diagonal bin's
-      ! triangle makes them equal only on iab == icd
-      dpq = (.not. diag) .or. (iab /= icd)
-
-#ifdef TRC_UNROLL_HRR
-      ! Straight-line HRR + digestion, textually here so `g` never crosses a
-      ! call boundary.  See scripts/gen_hrr.py.
-      mui = ao_off(si); nuj = ao_off(sj)
-      lamk = ao_off(sk); sigl = ao_off(sl)
-      abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)
-      aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)
-      abz = pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3)
-      cdx = pp_ra(offcd + 1, 1) - pp_rb(offcd + 1, 1)
-      cdy = pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2)
-      cdz = pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3)
-#include "trc_hrr_cases.inc"
-      !
-      ! ONE copy of the scatter, looping over the unrolled dot products.
-      !
-      ! Emitting the digestion per component beside each dot product -- 81
-      ! copies for (pp|pp) -- measured 17% SLOWER than the generic HRR (5.76 s
-      ! against 4.91 s at 75 waters).  The atomics are free per the ablation,
-      ! so replicating them is instruction-cache cost with no work removed.
-      ! Unroll the arithmetic; loop the scatter.
-      !
-      idx = 0
-      do id_ = 0, nd_ - 1
-         sig = sigl + id_
-      do ic = 0, nc_ - 1
-         lam = lamk + ic
-      do ib_ = 0, nb_ - 1
-         nu = nuj + ib_
-      do ia = 0, na_ - 1
-         mu = mui + ia
-         idx = idx + 1
-         vv = vbuf(idx)
-#if defined(TRC_FOCK6)
-         !
-         ! SIX atomic updates into a single G = 2J - K, the form used in [1].
-         !
-         ! The eight-permutation version below writes sixteen times per
-         ! component.  Ten of those are transposes of the other six, so
-         ! accumulating into symmetric storage and symmetrising once at the end
-         ! cuts the digestion's global read-modify-writes by 2.7x.  The earlier
-         ! ablation said atomics cost nothing, but it removed only the atomic
-         ! DIRECTIVE and kept the stores -- it measured the instruction, not the
-         ! traffic.  The traffic is the part that matters.
-         !
-         ! The 0.5 factors are the standard degeneracy scales: a quartet with
-         ! i==j, k==l or (ij)==(kl) stands for fewer than eight ordered tuples,
-         ! and the halvings compensate exactly.  This is where prefactor-based
-         ! digestions usually go wrong, which is why it is validated against the
-         ! same libfint reference as the enumerated form.
-         !
-         sc = vv
-         if (.not. dij) sc = sc*0.5_dp
-         if (.not. dkl) sc = sc*0.5_dp
-         if (.not. dpq) sc = sc*0.5_dp
-         do idens = 1, ndens
-         !$acc atomic update
-         jmat(idens, mu, nu) = jmat(idens, mu, nu) &
-                               + 4.0_dp*jfac*sc*dmat(idens, lam, sig)
-         !$acc atomic update
-         jmat(idens, lam, sig) = jmat(idens, lam, sig) + 4.0_dp*jfac*sc*dmat(idens, mu, nu)
-         !$acc atomic update
-         jmat(idens, mu, lam) = jmat(idens, mu, lam) - kfac*sc*dmat(idens, nu, sig)
-         !$acc atomic update
-         jmat(idens, mu, sig) = jmat(idens, mu, sig) - kfac*sc*dmat(idens, nu, lam)
-         !$acc atomic update
-         jmat(idens, nu, lam) = jmat(idens, nu, lam) - kfac*sc*dmat(idens, mu, sig)
-         !$acc atomic update
-         jmat(idens, nu, sig) = jmat(idens, nu, sig) - kfac*sc*dmat(idens, mu, lam)
-      end do
-#else
-
-         !$acc atomic update
-         jmat(mu, nu) = jmat(mu, nu) + vv*dmat(lam, sig)
-         !$acc atomic update
-         kmat(mu, lam) = kmat(mu, lam) + vv*dmat(nu, sig)
-         if (dij) then
-            !$acc atomic update
-            jmat(nu, mu) = jmat(nu, mu) + vv*dmat(lam, sig)
-            !$acc atomic update
-            kmat(nu, lam) = kmat(nu, lam) + vv*dmat(mu, sig)
-         end if
-         if (dkl) then
-            !$acc atomic update
-            jmat(mu, nu) = jmat(mu, nu) + vv*dmat(sig, lam)
-            !$acc atomic update
-            kmat(mu, sig) = kmat(mu, sig) + vv*dmat(nu, lam)
-         end if
-         if (dij .and. dkl) then
-            !$acc atomic update
-            jmat(nu, mu) = jmat(nu, mu) + vv*dmat(sig, lam)
-            !$acc atomic update
-            kmat(nu, sig) = kmat(nu, sig) + vv*dmat(mu, lam)
-         end if
-         if (dpq) then
-            !$acc atomic update
-            jmat(lam, sig) = jmat(lam, sig) + vv*dmat(mu, nu)
-            !$acc atomic update
-            kmat(lam, mu) = kmat(lam, mu) + vv*dmat(sig, nu)
-            if (dkl) then
-               !$acc atomic update
-               jmat(sig, lam) = jmat(sig, lam) + vv*dmat(mu, nu)
-               !$acc atomic update
-               kmat(sig, mu) = kmat(sig, mu) + vv*dmat(lam, nu)
-            end if
-            if (dij) then
-               !$acc atomic update
-               jmat(lam, sig) = jmat(lam, sig) + vv*dmat(nu, mu)
-               !$acc atomic update
-               kmat(lam, nu) = kmat(lam, nu) + vv*dmat(sig, mu)
-            end if
-            if (dij .and. dkl) then
-               !$acc atomic update
-               jmat(sig, lam) = jmat(sig, lam) + vv*dmat(nu, mu)
-               !$acc atomic update
-               kmat(sig, nu) = kmat(sig, nu) + vv*dmat(lam, mu)
-            end if
-         end if
-#endif
-      end do
-      end do
-      end do
-      end do
-#else
-      do id_ = 0, nd_ - 1
-         call comp(ld, id_, dx, dy, dz)
-         sig = ao_off(sl) + id_
-      do ic = 0, nc_ - 1
-         call comp(lc, ic, cx, cy, cz)
-         lam = ao_off(sk) + ic
-      do ib_ = 0, nb_ - 1
-         call comp(lb, ib_, bx, by, bz)
-         nu = ao_off(sj) + ib_
-      do ia = 0, na_ - 1
-         call comp(la, ia, ax, ay, az)
-         mu = ao_off(si) + ia
-
-         acc = 0.0_dp
-         do pz = 0, bz
-         do py = 0, by
-         do px = 0, bx
-            cb = binom(bx, px)*binom(by, py)*binom(bz, pz) &
-                 *powi(pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1), bx - px) &
-                 *powi(pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2), by - py) &
-                 *powi(pp_ra(offab + 1, 3) - pp_rb(offab + 1, 3), bz - pz)
-            if (cb == 0.0_dp) cycle
-            ja = cidx(ax + px, ay + py, az + pz)
-            do qz = 0, dz
-            do qy = 0, dy
-            do qx = 0, dx
-               cdc = binom(dx, qx)*binom(dy, qy)*binom(dz, qz) &
-                     *powi(pp_ra(offcd + 1, 1) - pp_rb(offcd + 1, 1), dx - qx) &
-                     *powi(pp_ra(offcd + 1, 2) - pp_rb(offcd + 1, 2), dy - qy) &
-                     *powi(pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3), dz - qz)
-               if (cdc == 0.0_dp) cycle
-               jc = cidx(cx + qx, cy + qy, cz + qz)
-               acc = acc + cb*cdc*g(ja + (jc - 1)*nca)
-            end do
-            end do
-            end do
-         end do
-         end do
-         end do
-         vv = acc
-
-
-#if defined(TRC_FOCK6)
-         !
-         ! The SAME six updates the per-class kernels make, and they were
-         ! missing here.
-         !
-         ! This is the generic HRR branch, compiled only when TRC_UNROLL_HRR is
-         ! off -- every build at LMAX >= 2 -- and under TRC_PERCLASS nothing
-         ! reached it, because every SCF quartet went to an unrolled per-class
-         ! kernel instead. So it had no folded digestion at all: it wrote
-         ! unfolded J into jmat and K into kmat while its caller, compiled for
-         ! FOCK6, read jmat as the finished G. check_nosym catches it in one
-         ! line, but only in a TERCO_PERCLASS=OFF build, and none was run.
-         !
-         ! Reachable today only with -DTERCO_PERCLASS=OFF, which is why it
-         ! stayed broken: no default build runs it, and no CI job configures
-         ! that way. A kernel nothing executes is a kernel nothing checks.
-         !
-         sc = vv
-         if (.not. dij) sc = sc*0.5_dp
-         if (.not. dkl) sc = sc*0.5_dp
-         if (.not. dpq) sc = sc*0.5_dp
-         do dn = 1, ndens
-            !$acc atomic update
-            jmat(dn, mu, nu) = jmat(dn, mu, nu) &
-                               + 4.0_dp*jfac*sc*dmat(dn, lam, sig)
-            !$acc atomic update
-            jmat(dn, lam, sig) = jmat(dn, lam, sig) &
-                                 + 4.0_dp*jfac*sc*dmat(dn, mu, nu)
-            !$acc atomic update
-            jmat(dn, mu, lam) = jmat(dn, mu, lam) - kfac*sc*dmat(dn, nu, sig)
-            !$acc atomic update
-            jmat(dn, mu, sig) = jmat(dn, mu, sig) - kfac*sc*dmat(dn, nu, lam)
-            !$acc atomic update
-            jmat(dn, nu, lam) = jmat(dn, nu, lam) - kfac*sc*dmat(dn, mu, sig)
-            !$acc atomic update
-            jmat(dn, nu, sig) = jmat(dn, nu, sig) - kfac*sc*dmat(dn, mu, lam)
-         end do
-#else
-         !
-         ! ONE UPDATE PER DENSITY. These references carried two subscripts
-         ! against rank-three arrays -- `jmat(mu, nu)` on
-         ! `jmat(ndens, nao, nao)` -- left behind when batching added the
-         ! density index. nvfortran accepts that and only WARNS
-         ! (NVFORTRAN-W-0155), so it compiled, and would have written to
-         ! whatever those two subscripts happened to address.
-         !
-         ! It stayed hidden because this is the GENERIC digestion, compiled
-         ! only when the unrolled HRR is off -- which no default build has
-         ! been. Forty-eight warnings appeared the moment LMAX=2 stopped
-         ! unrolling the shared kernel, and not before.
-         !
-         ! The same trap cost a day in Phase 3 on a different array. The
-         ! lesson has not changed: a rank mismatch here is a warning, not
-         ! an error, and warnings scroll past.
-         !
-         do dn = 1, ndens
-            !$acc atomic update
-            jmat(dn, mu, nu) = jmat(dn, mu, nu) + vv*dmat(dn, lam, sig)
-            !$acc atomic update
-            kmat(dn, mu, lam) = kmat(dn, mu, lam) + vv*dmat(dn, nu, sig)
-            if (dij) then
-               !$acc atomic update
-               jmat(dn, nu, mu) = jmat(dn, nu, mu) + vv*dmat(dn, lam, sig)
-               !$acc atomic update
-               kmat(dn, nu, lam) = kmat(dn, nu, lam) + vv*dmat(dn, mu, sig)
-            end if
-            if (dkl) then
-               !$acc atomic update
-               jmat(dn, mu, nu) = jmat(dn, mu, nu) + vv*dmat(dn, sig, lam)
-               !$acc atomic update
-               kmat(dn, mu, sig) = kmat(dn, mu, sig) + vv*dmat(dn, nu, lam)
-            end if
-            if (dij .and. dkl) then
-               !$acc atomic update
-               jmat(dn, nu, mu) = jmat(dn, nu, mu) + vv*dmat(dn, sig, lam)
-               !$acc atomic update
-               kmat(dn, nu, sig) = kmat(dn, nu, sig) + vv*dmat(dn, mu, lam)
-            end if
-            if (dpq) then
-               !$acc atomic update
-               jmat(dn, lam, sig) = jmat(dn, lam, sig) + vv*dmat(dn, mu, nu)
-               !$acc atomic update
-               kmat(dn, lam, mu) = kmat(dn, lam, mu) + vv*dmat(dn, sig, nu)
-               if (dkl) then
-                  !$acc atomic update
-                  jmat(dn, sig, lam) = jmat(dn, sig, lam) + vv*dmat(dn, mu, nu)
-                  !$acc atomic update
-                  kmat(dn, sig, mu) = kmat(dn, sig, mu) + vv*dmat(dn, lam, nu)
-               end if
-               if (dij) then
-                  !$acc atomic update
-                  jmat(dn, lam, sig) = jmat(dn, lam, sig) + vv*dmat(dn, nu, mu)
-                  !$acc atomic update
-                  kmat(dn, lam, nu) = kmat(dn, lam, nu) + vv*dmat(dn, sig, mu)
-               end if
-               if (dij .and. dkl) then
-                  !$acc atomic update
-                  jmat(dn, sig, lam) = jmat(dn, sig, lam) + vv*dmat(dn, nu, mu)
-                  !$acc atomic update
-                  kmat(dn, sig, nu) = kmat(dn, sig, nu) + vv*dmat(dn, lam, mu)
-               end if
-            end if
-         end do
-#endif
-      end do
-      end do
-      end do
-      end do
-#endif
-   end subroutine one_bin_item
 
 
    subroutine plan_build(this, b, thresh, use_dens)
@@ -1748,7 +1146,7 @@ contains
                nt = int(nA, int64)*int(nB, int64)
             end if
             !
-            ! one_bin_item takes its within-segment index as a default integer,
+            ! The kernels take their within-segment index as a default integer,
             ! so a segment must fit in one. Widening it would cost registers
             ! in the hot kernel, which are the binding constraint; instead
             ! build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
@@ -1756,7 +1154,7 @@ contains
             ! This guard is the backstop if that cap is ever raised.
             !
             if (nt > 2147483000_int64) error stop &
-               "terco: bin-pair segment exceeds a default integer; widen t in one_bin_item"
+               "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
             sOff(is + 1) = sOff(is) + nt
          end do
       end do

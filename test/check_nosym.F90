@@ -14,7 +14,7 @@
 ! IT IS ALSO THE ORACLE FOR THE HYBRID DISPATCH, which is why it takes a basis
 ! ceiling. `fock` routes each class to an unrolled kernel or, when none exists,
 ! to the general path over the same segments; `fock_nosym` sends every class
-! through the shared kernel. So running this with f functions tests both halves
+! through the non-symmetric kernel, one_bin_item_nosym. So running this with f functions tests both halves
 ! of the routing at once: a dropped f class shows up as a disagreement, and so
 ! does an s..d class digested twice.
 !

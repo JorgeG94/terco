@@ -17,7 +17,7 @@
 # consumer passes exponents and coefficients -- so the tests have to build one,
 # and they may as well share the code.
 #
-set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6 TRC_PERCLASS)
+set(TERCO_TEST_DEFS TRC_LMAX=${TERCO_LMAX} TRC_FOCK6)
 
 add_library(terco_test_basis STATIC trc_test_basis.F90)
 target_compile_definitions(terco_test_basis PRIVATE ${TERCO_TEST_DEFS})
@@ -39,8 +39,8 @@ set_target_properties(terco_pyscf_ref_io PROPERTIES Fortran_MODULE_DIRECTORY
                                                      ${CMAKE_BINARY_DIR}/modules)
 
 #
-# The library's definitions are PRIVATE -- TRC_FOCK6 and TRC_PERCLASS are
-# implementation choices and no consumer should need them. A test can, though:
+# The library's definitions are PRIVATE -- TRC_FOCK6 is an
+# implementation choice and no consumer should need them. A test can, though:
 # `check_binfock` compares against a raw oracle and has to know whether the
 # digestion folded the eight-fold symmetry into six updates or enumerated it,
 # because the two return different things to combine.
@@ -205,8 +205,8 @@ terco_add_check(check_1e check_1e.F90)
 # They must agree for ANY symmetric density -- that is the premise of having
 # two of them -- so this is a control rather than a comparison. It exists
 # because they did NOT agree at LMAX=2 for a month, and nothing was looking:
-# under TRC_PERCLASS only the non-symmetric build reaches the shared kernel,
-# so every other check passes without executing a line of it.
+# only the non-symmetric build reaches one_bin_item_nosym, so every other
+# check passes without executing a line of it.
 #
 terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
 # 6-31G needs only l <= 1, so this only self-skips (SKIP + stop 0, same
