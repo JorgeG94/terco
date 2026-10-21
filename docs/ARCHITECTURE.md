@@ -141,24 +141,25 @@ own:
 
 Each class has its own generated kernel:
 
-- **Head-Gordon–Pople** for classes up to d: an unrolled Obara–Saika
+- **Head-Gordon–Pople** for the light classes up to d: an unrolled Obara–Saika
   vertical recurrence followed by the Head-Gordon–Pople horizontal
   recurrence, with every index a literal (`scripts/gen_perclass.py`, output
   `src/generated/trc_pc_k*.F90`). The Boys function is a degree-5 Chebyshev
   interpolation on 960 intervals up to T = 30, the per-order layout of [1]
   (`src/core/trc_boys.F90`).
-- **Rys quadrature** for every class with an f (or higher) shell, and
-  optionally for chosen lower classes (`TRC_RYS_CLASSES`). The kernels are
+- **Rys quadrature** for every class with an f (or higher) shell and, by
+  default, for the seven heaviest d classes (below). The kernels are
   spliced from the HGP kernel skeleton by `scripts/gen_rys.py`, using Rys
   roots and weights from Chebyshev tables generated with mpmath
   (`scripts/gen_rys_roots.py`). `rys_route` (`src/eri/trc_rys_select.F90`)
-  picks the kernel per class.
+  picks the kernel per class; `TRC_RYS_CLASSES` overrides the default, and
+  `TRC_RYS_CLASSES=none` uses HGP for every class up to d.
 
-**Chunked f classes.** A Rys kernel that holds a whole quartet block in one
+**Chunked Rys kernels.** A Rys kernel that holds a whole quartet block in one
 thread does not fit in registers once f shells appear: for (fp|dp) one
 thread held 7.5 KB of stack, and Nsight Compute measured 103 GB of local
 loads and 38 GB of local stores per launch against 3.2 GB of global loads,
-with SM throughput at 3.5%. The f-class kernels are therefore ordered as
+with SM throughput at 3.5%. The chunked kernels are therefore ordered as
 
     chunk of output components → primitive quartet → root
 
@@ -171,6 +172,40 @@ chunks of a quartet run in one thread or in separate threads. On a V100 for
 launch, its stack from 7.5 KB to 136 B, and the Fock build from 2.42 s to
 1.37 s (GPU4PySCF on the same system: 1.02 s), with the energy unchanged to
 10⁻¹⁵.
+
+**Heavy d classes.** HGP's heaviest d kernels have the same problem: 255
+registers and a local-memory stack per thread (59 KB for (dd|dd)). Every
+canonical s, p and d class was raced at τ = 10⁻¹³ on a V100: HGP against
+array Rys and all nine chunk shapes, in loop and thread form, on seven
+systems (20 waters in cc-pVTZ, cc-pVDZ and def2-SVP, 60 waters in
+def2-SVP, gly10 in 6-31G\*, gly3 and NA-040 in def2-SVPD). A class is
+routed to chunked Rys only if one shape beat HGP on all seven:
+
+| Class | HGP → chunked Rys, w20 cc-pVTZ (ms over the run) |
+|---|---|
+| (dd\|dp) | 1469 → 452 |
+| (dp\|dp) | 1204 → 539 |
+| (dp\|ds) | 677 → 595 |
+| (dd\|pp) | 571 → 212 |
+| (dd\|ps) | 486 → 290 |
+| (dd\|dd) | 564 → 133 |
+| (dp\|pp) | 427 → 381 |
+
+Their stack drops to 104–384 B. The lighter classes stay on HGP, which is
+faster for them on every system, as do (pp|pp), (dd|ds) and (ds|pp), which
+win on some systems and lose on others. The Fock build per iteration,
+against GPU4PySCF's `get_jk` at the same density and threshold:
+
+| System | Before → after | GPU4PySCF |
+|---|---|---|
+| 20 waters, cc-pVTZ | 1.357 → 1.100 s | 1.02 s |
+| gly10, 6-31G\* (Cartesian) | 0.236 → 0.178 s | 0.417 s |
+| gly3, def2-SVPD | 0.212 → 0.139 s | 0.224 s |
+| 60 waters, def2-SVP | 0.948 → 0.893 s | 1.108 s |
+| NA-040, def2-SVPD | 28.11 → 18.19 s | 14.65 s |
+
+Total energies move by at most 4 × 10⁻¹² Eh, and by 3 × 10⁻¹¹ Eh on NA-040,
+inside the run-to-run scatter of HGP's own atomic summation there.
 
 ### 4.6 Digestion
 
