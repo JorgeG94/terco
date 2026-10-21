@@ -173,9 +173,11 @@ option(TERCO_FORCE_REGENERATE
        "Regenerate the build-tree kernels once, ignoring the generation stamps" OFF)
 #
 # Rys quadrature is always built: it is the only source of the analytic
-# two-electron gradient (eri%gradient) and every class above d. HGP stays
-# the energy path for every class it has unless TRC_RYS_CLASSES routes one
-# to Rys at runtime (trc_rys_select.F90). Its cost is compile time --
+# two-electron gradient (eri%gradient), every class above d, and the Fock
+# build of the heavy d classes gen_rys.py's FOCK_RYS_DEFAULT lists, where
+# its chunked kernels beat HGP's; HGP stays the energy path for the rest,
+# and TRC_RYS_CLASSES overrides either way at runtime (trc_rys_select.F90).
+# Its cost is compile time --
 # roughly 25 CPU-minutes of extra nvfortran GPU compilation, measured per
 # object (the chunked heavy gradient classes run to 1-3 min each) -- and
 # Python 3 at configure time, which generates the per-class kernels into

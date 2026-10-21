@@ -1,14 +1,18 @@
 !
 ! Runtime selection of Rys over HGP, per class, from TRC_RYS_CLASSES.
 !
-! Below HGP_LMAX, Rys is a measurement tool next to HGP, not a replacement
-! for it. Above it there is no HGP kernel at all -- HGP stops at d -- so a
-! class with any shell above HGP_LMAX goes to Rys whatever TRC_RYS_CLASSES
-! says. This module is the only place that decides which one a launch uses,
-! and it is
-! hand-written rather than generated because the decision itself -- parse an
-! environment variable, look up a key -- has nothing to do with angular
-! momentum and nothing to regenerate if LMAX or TRC_CART_ORDER changes.
+! Up to HGP_LMAX both schemes have a kernel, and the default is per class:
+! the classes in gen_rys.py's FOCK_RYS_DEFAULT (rys_default_class) go to the
+! chunked Rys kernels, where that measured faster than HGP on every system
+! tried, and the rest to HGP. TRC_RYS_CLASSES overrides the default for the
+! whole build. Above HGP_LMAX there is no HGP kernel at all -- HGP stops at
+! d -- so a class with any shell above it goes to Rys whatever
+! TRC_RYS_CLASSES says. This module is the only place that decides which one
+! a launch uses, and it is hand-written rather than generated because the
+! decision itself -- parse an environment variable, look up a key -- has
+! nothing to do with angular momentum and nothing to regenerate if LMAX or
+! TRC_CART_ORDER changes; the default list itself is generated with the
+! kernels it names.
 !
 ! READ ONCE PER FOCK BUILD, ON THE HOST. `rys_select_init` is an ordinary
 ! subroutine called from trc_eri.F90 before any kernel launches; the result
@@ -19,7 +23,7 @@
 !
 module trc_rys_select
    use pic_types, only: dp
-   use trc_rys_kernels, only: rys_has_class
+   use trc_rys_kernels, only: rys_has_class, rys_default_class
    implicit none
    private
    public :: rys_select_init, rys_route
@@ -41,22 +45,29 @@ module trc_rys_select
    !! anyway.
 
    logical, save :: rys_all = .false.
+   logical, save :: rys_default = .true.
+   !! TRC_RYS_CLASSES unset, empty or "default": route by rys_default_class.
    logical, save :: rys_table(0:RYS_KEY_MAX) = .false.
 
 contains
 
    subroutine rys_select_init()
-      !! "none" (unset, or anything unrecognised) selects no class; "all"
-      !! every class the build generated a kernel for; a comma-separated list
-      !! of four-digit class tags (e.g. "2222,2221,1111") selects exactly
-      !! those that also have a kernel. A tag that is not exactly four ASCII
-      !! digits is ignored rather than failing the whole value over one typo.
+      !! Unset, empty or "default" keeps the measured per-class default
+      !! (rys_default_class); "none" sends every class up to HGP_LMAX to HGP;
+      !! "all" every class the build generated a kernel for to Rys; a
+      !! comma-separated list of four-digit class tags (e.g. "2222,2221,1111")
+      !! selects exactly those that also have a kernel, and HGP for the rest.
+      !! A tag that is not exactly four ASCII digits is ignored rather than
+      !! failing the whole value over one typo.
       character(len=256) :: val
       integer :: stat, length, p, q, key
       rys_all = .false.
+      rys_default = .true.
       rys_table = .false.
       call get_environment_variable("TRC_RYS_CLASSES", val, length, stat)
       if (stat /= 0 .or. length == 0) return
+      if (trim(val) == "default") return
+      rys_default = .false.
       if (trim(val) == "all") then
          rys_all = .true.
          return
@@ -97,6 +108,8 @@ contains
       end if
       if (rys_all) then
          wanted = .true.
+      else if (rys_default) then
+         wanted = rys_default_class(key)
       else if (key >= 0 .and. key <= RYS_KEY_MAX) then
          wanted = rys_table(key)
       else

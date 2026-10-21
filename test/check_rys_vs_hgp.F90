@@ -16,6 +16,10 @@
 !   - water/cc-pVDZ: the oxygen s and p shells are generally contracted, so
 !     this exercises trc_decontract's split alongside the same comparison.
 !
+! The default routing (TRC_RYS_CLASSES unset: HGP, except the d classes
+! gen_rys.py's FOCK_RYS_DEFAULT sends to the chunked Rys kernels) is a
+! third build, compared against HGP the same way.
+!
 ! TRC_RYS_CLASSES is read ONCE PER FOCK BUILD (trc_rys_select), so toggling
 ! it between the two eri%fock calls below -- rather than, say, building two
 ! separate eri_t objects -- is exactly the intended use: same bins, same
@@ -85,7 +89,7 @@ contains
       type(trc_basis_t) :: bas
       type(trc_eri_t)   :: eri
       type(error_t) :: err
-      real(dp), allocatable :: dmat(:, :), g_hgp(:, :), g_rys(:, :)
+      real(dp), allocatable :: dmat(:, :), g_hgp(:, :), g_rys(:, :), g_def(:, :)
       real(dp) :: thresh, local_worst
       integer :: nao, ii, jj, nbad0
 
@@ -100,7 +104,7 @@ contains
       call bas%to_device()
       call eri%build(bas, thresh)
 
-      allocate (dmat(nao, nao), g_hgp(nao, nao), g_rys(nao, nao))
+      allocate (dmat(nao, nao), g_hgp(nao, nao), g_rys(nao, nao), g_def(nao, nao))
       ! Deterministic, dense, symmetric -- same density for both builds, as
       ! the gate requires, and not sparse enough to hide an indexing slip.
       do j = 1, nao
@@ -114,6 +118,8 @@ contains
       call eri%fock(bas, dmat, g_hgp, density_screen=.false.)
       call set_rys('all')
       call eri%fock(bas, dmat, g_rys, density_screen=.false.)
+      call set_rys('default')
+      call eri%fock(bas, dmat, g_def, density_screen=.false.)
       call set_rys('none')
 
       local_worst = 0.0_dp; nbad0 = 0
@@ -121,6 +127,8 @@ contains
          do ii = 1, nao
             local_worst = max(local_worst, abs(g_hgp(ii, jj) - g_rys(ii, jj)))
             if (abs(g_hgp(ii, jj) - g_rys(ii, jj)) > ATOL) nbad0 = nbad0 + 1
+            local_worst = max(local_worst, abs(g_hgp(ii, jj) - g_def(ii, jj)))
+            if (abs(g_hgp(ii, jj) - g_def(ii, jj)) > ATOL) nbad0 = nbad0 + 1
          end do
       end do
       print '(a,a,a,i0,a,es10.2,a,i0)', '  ', tag, ': nao ', nao, &
@@ -128,7 +136,7 @@ contains
       worst = max(worst, local_worst)
       nbad = nbad + nbad0
 
-      deallocate (dmat, g_hgp, g_rys, at_z, at_r)
+      deallocate (dmat, g_hgp, g_rys, g_def, at_z, at_r)
    end subroutine run_system
 
 end program check_rys_vs_hgp
