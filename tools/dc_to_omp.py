@@ -243,13 +243,18 @@ def find_dc_block(lines: list[str], start: int) -> tuple[Header, int, int] | Non
             else:
                 t = after
 
+        # A masked or index-less header is left as written, and the scan goes
+        # on past it: returning None here would end transform_lines for the
+        # whole file, leaving every later loop unconverted too.
         if has_mask:
             sys.stderr.write(
                 f"  skip: header has mask at line {first + 1}; manual handling needed\n"
             )
-            return None
+            i = last + 1
+            continue
         if not indices:
-            return None
+            i = last + 1
+            continue
 
         indent = lines[first][: len(lines[first]) - len(lines[first].lstrip())]
         return (Header(indent=indent, indices=indices, privates=privates, has_mask=False),
