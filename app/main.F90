@@ -29,11 +29,12 @@ module terco_run
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
+   use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
    use terco_app, only: element_symbol, f_string
    implicit none
    private
-   public :: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
+   public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
              gradient_summary
 
 #ifndef TERCO_VERSION
@@ -147,14 +148,6 @@ contains
       close (u)
       if (ios /= 0) call die(r, file//" does not start with an integer")
    end function int_option
-
-   pure function itoa(i) result(s)
-      integer, intent(in) :: i
-      character(len=:), allocatable :: s
-      character(len=16) :: b
-      write (b, "(i0)") i
-      s = trim(b)
-   end function itoa
 
    function method(r) result(m)
       type(run_t), intent(in) :: r
@@ -399,98 +392,79 @@ contains
       end block
    end subroutine row
 
-   pure function json_escape(t) result(esc)
-      !! `t` as the inside of a JSON string: backslash and quote escaped.
-      character(len=*), intent(in) :: t
-      character(len=:), allocatable :: esc
-      integer :: i
-      esc = ""
-      do i = 1, len(t)
-         ! achar(92), not a literal: some compilers read a backslash in a
-         ! string as an escape unless told otherwise.
-         if (t(i:i) == '"' .or. t(i:i) == achar(92)) then
-            esc = esc//achar(92)//t(i:i)
-         else
-            esc = esc//t(i:i)
-         end if
-      end do
-   end function json_escape
-
    subroutine write_json(r, path)
+      !! The run's JSON summary, built with json-fortran, which escapes the
+      !! strings and writes the reals at full precision. The key names and
+      !! their order are an interface: scripts and the check_cli_grad tests
+      !! read them.
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
-      integer :: u, ios
-      open (newunit=u, file=path, status="replace", action="write", iostat=ios)
-      if (ios /= 0) call die(r, "cannot write "//path)
-      write (u, "(a)") "{"
-      write (u, "(a)") '  "program": "terco",'
-      write (u, "(a)") '  "version": "'//VERSION//'",'
-      write (u, "(a)") '  "geometry": "'//json_escape(r%geom)//'",'
-      write (u, "(a)") '  "method": "'//json_escape(method(r))//'",'
-      write (u, "(a)") '  "basis": "'//json_escape(r%basis_path)//'",'
-      write (u, "(a)") '  "guess": "'//json_escape(r%guess)//'",'
-      write (u, "(a,i0,a)") '  "charge": ', r%chrg, ","
-      write (u, "(a,i0,a)") '  "unpaired electrons": ', r%uhf, ","
-      write (u, "(a,i0,a)") '  "number of basis functions": ', r%nao, ","
-      write (u, "(a,a,a)") '  "spherical": ', trim(merge("true ", "false", r%sph /= 0)), ","
-      write (u, "(a,i0,a)") '  "iterations": ', r%niter, ","
-      write (u, "(a,a,a)") '  "converged": ', trim(merge("true ", "false", r%conv /= 0)), ","
-      write (u, "(a,es23.15e3,a)") '  "nuclear repulsion energy": ', r%enuc, ","
-      write (u, "(a,es23.15e3,a)") '  "one-electron energy": ', r%eone, ","
-      write (u, "(a,es23.15e3,a)") '  "two-electron energy": ', r%etwo, ","
-      write (u, "(a,es23.15e3,a)") '  "exchange-correlation energy": ', r%exc, ","
+      type(json_core) :: json
+      type(json_value), pointer :: root
+      call json%initialize()
+      call json%create_object(root, "")
+      call json%add(root, "program", "terco")
+      call json%add(root, "version", VERSION)
+      call json%add(root, "geometry", r%geom)
+      call json%add(root, "method", method(r))
+      call json%add(root, "basis", r%basis_path)
+      call json%add(root, "guess", r%guess)
+      call json%add(root, "charge", r%chrg)
+      call json%add(root, "unpaired electrons", r%uhf)
+      call json%add(root, "number of basis functions", int(r%nao))
+      call json%add(root, "spherical", r%sph /= 0)
+      call json%add(root, "iterations", int(r%niter))
+      call json%add(root, "converged", r%conv /= 0)
+      call json%add(root, "nuclear repulsion energy", real(r%enuc, dp))
+      call json%add(root, "one-electron energy", real(r%eone, dp))
+      call json%add(root, "two-electron energy", real(r%etwo, dp))
+      call json%add(root, "exchange-correlation energy", real(r%exc, dp))
       if (len(r%pcm) > 0) then
-         write (u, "(a,a,a)") '  "solvation model": "', r%pcm, '",'
-         write (u, "(a,es23.15e3,a)") '  "dielectric constant": ', r%eps, ","
-         write (u, "(a,es23.15e3,a)") '  "solvation energy": ', r%epcm, ","
-         write (u, "(a,i0,a)") '  "solvation surface points": ', r%npcm, ","
+         call json%add(root, "solvation model", r%pcm)
+         call json%add(root, "dielectric constant", r%eps)
+         call json%add(root, "solvation energy", real(r%epcm, dp))
+         call json%add(root, "solvation surface points", int(r%npcm))
       end if
       if (r%rimp2 .and. r%conv /= 0) then
-         write (u, "(a,es23.15e3,a)") '  "mp2 opposite-spin energy": ', r%eos, ","
-         write (u, "(a,es23.15e3,a)") '  "mp2 same-spin energy": ', r%ess, ","
-         if (r%dh) then
-            write (u, "(a,es23.15e3,a)") '  "pt2 opposite-spin fraction": ', r%pt2_cos, ","
-            write (u, "(a,es23.15e3,a)") '  "pt2 same-spin fraction": ', r%pt2_css, ","
-            write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
-            write (u, "(a,es23.15e3)") '  "total energy": ', r%etot_dh
-            write (u, "(a)") "}"
-            close (u)
-            return
-         end if
+         call json%add(root, "mp2 opposite-spin energy", real(r%eos, dp))
+         call json%add(root, "mp2 same-spin energy", real(r%ess, dp))
       end if
-      write (u, "(a,es23.15e3,a)") '  "scf energy": ', r%etot, ","
-      if (r%grad .and. allocated(r%gradient)) then
-         write (u, "(a,es23.15e3,a)") '  "total energy": ', r%etot, ","
-         call write_json_gradient(u, r)
+      if (r%rimp2 .and. r%conv /= 0 .and. r%dh) then
+         call json%add(root, "pt2 opposite-spin fraction", real(r%pt2_cos, dp))
+         call json%add(root, "pt2 same-spin fraction", real(r%pt2_css, dp))
+         call json%add(root, "scf energy", real(r%etot, dp))
+         call json%add(root, "total energy", real(r%etot_dh, dp))
       else
-         write (u, "(a,es23.15e3)") '  "total energy": ', r%etot
+         call json%add(root, "scf energy", real(r%etot, dp))
+         call json%add(root, "total energy", real(r%etot, dp))
+         if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       end if
-      write (u, "(a)") "}"
-      close (u)
+      call json%print(root, path)
+      if (json%failed()) then
+         call json%destroy(root)
+         call die(r, "cannot write "//path)
+      end if
+      call json%destroy(root)
    end subroutine write_json
 
-   subroutine write_json_gradient(u, r)
-      !! The analytic gradient as a JSON array of [x, y, z] triples, one per
-      !! atom in `r%gradient`'s own (and `trc_set_molecule`'s) atom order,
-      !! plus the RMS and max per-atom norm `gradient_summary` also prints.
-      integer, intent(in) :: u
+   subroutine add_gradient(json, root, r)
+      !! The analytic gradient as an array of [x, y, z] triples, one per atom
+      !! in `r%gradient`'s own (and `trc_set_molecule`'s) atom order, plus the
+      !! RMS and max per-atom norm `gradient_summary` also prints.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
+      type(json_value), pointer :: rows
       integer :: ia
-      real(dp) :: rms, gmax
-      character(len=2) :: closing
-      write (u, "(a)") '  "gradient status": "validated: single rank (rank 0 alone on a multi-rank run)",'
-      write (u, "(a)") '  "gradient": ['
+      call json%add(root, "gradient status", "validated: single rank (rank 0 alone on a multi-rank run)")
+      call json%create_array(rows, "gradient")
       do ia = 1, r%natm
-         closing = merge("] ", "],", ia == r%natm)
-         write (u, "(a,es23.15e3,a,es23.15e3,a,es23.15e3,a)") "    [", r%gradient(1, ia), ", ", &
-            r%gradient(2, ia), ", ", r%gradient(3, ia), trim(closing)
+         call json%add(rows, "", r%gradient(:, ia))
       end do
-      write (u, "(a)") "  ],"
-      rms = sqrt(sum(r%gradient**2)/real(3*r%natm, dp))
-      gmax = sqrt(maxval(sum(r%gradient**2, dim=1)))
-      write (u, "(a,es23.15e3,a)") '  "gradient rms": ', rms, ","
-      write (u, "(a,es23.15e3)") '  "gradient max": ', gmax
-   end subroutine write_json_gradient
+      call json%add(root, rows)
+      call json%add(root, "gradient rms", sqrt(sum(r%gradient**2)/real(3*r%natm, dp)))
+      call json%add(root, "gradient max", sqrt(maxval(sum(r%gradient**2, dim=1))))
+   end subroutine add_gradient
 
 end module terco_run
 
@@ -525,8 +499,10 @@ program terco_main
    use trc_api, only: trc_bind_device
    use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
                                 xc_is_double_hybrid
-   use terco_app, only: read_xyz, resolve_basis, c_string, set_env, lower
-   use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, itoa, banner, summary, write_json, &
+   use terco_app, only: read_xyz, resolve_basis, c_string, set_env
+   use pic_ascii, only: to_lower
+   use pic_strings, only: to_string
+   use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary
    implicit none
 
@@ -625,16 +601,16 @@ program terco_main
 
    r%chrg = int_option(r, "chrg", ".CHRG", 0)
    r%nelec = sum(r%z) - r%chrg
-   if (r%nelec < 1) call die(r, "charge "//itoa(r%chrg)//" leaves "//itoa(r%nelec)//" electrons")
+   if (r%nelec < 1) call die(r, "charge "//to_string(r%chrg)//" leaves "//to_string(r%nelec)//" electrons")
    r%uhf = int_option(r, "uhf", ".UHF", mod(r%nelec, 2))
    if (r%uhf < 0 .or. r%uhf > r%nelec .or. mod(r%nelec - r%uhf, 2) /= 0) then
-     call die(r, "--uhf "//itoa(r%uhf)//" is impossible with "//itoa(r%nelec)//" electrons: the unpaired "// &
+     call die(r, "--uhf "//to_string(r%uhf)//" is impossible with "//to_string(r%nelec)//" electrons: the unpaired "// &
                "count must be between 0 and the electron count, with the same parity")
    end if
    r%mult = r%uhf + 1
 
    call r%cli%get("func", sval, r%err)
-   r%func = lower(trim(sval))
+   r%func = to_lower(trim(sval))
    if (r%func == "hf" .or. r%func == "rhf" .or. r%func == "uhf") r%func = ""
 
    ! A double hybrid's PT2 part is always RI-MP2 on the converged KS
@@ -656,7 +632,7 @@ program terco_main
    if (r%chrg /= 0) r%guess = "sadq"
    if (r%cli%is_set("guess")) then
       call r%cli%get("guess", sval, r%err)
-      r%guess = lower(trim(sval))
+      r%guess = to_lower(trim(sval))
    end if
    select case (r%guess)
    case ("sad")
@@ -695,7 +671,7 @@ program terco_main
    r%eps = 0.0_dp
    if (r%cli%is_set("pcm")) then
       call r%cli%get("pcm", sval, r%err)
-      r%pcm = lower(trim(sval))
+      r%pcm = to_lower(trim(sval))
       if (r%pcm /= "cpcm" .and. r%pcm /= "iefpcm") call die(r, "unknown --pcm '"//r%pcm//"': use cpcm or iefpcm")
       if (.not. r%cli%is_set("eps")) call die(r, "--pcm needs the solvent's dielectric constant: "// &
                                               "--eps 78.3553 for water; nothing is assumed")
@@ -863,7 +839,7 @@ program terco_main
    st = trc_destroy(r%h)
 
    if (r%conv == 0) then
-      if (r%rank0) call global_logger%error("terco: the SCF did not converge in "//itoa(int(r%niter))//" iterations")
+      if (r%rank0) call global_logger%error("terco: the SCF did not converge in "//to_string(int(r%niter))//" iterations")
       call quit(r, 2)
    end if
    if (r%rank0) then
