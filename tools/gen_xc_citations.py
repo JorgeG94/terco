@@ -96,7 +96,7 @@ def parse_func_info(libxc: Path) -> dict[str, tuple[str, list[str]]]:
     return out
 
 
-def functional_keys(exchcxx: Path, libxc: Path, refs: dict) -> dict[str, list[str]]:
+def functional_keys(exchcxx: Path, libxc: Path, refs: dict) -> dict[tuple[str, ...], list[str]]:
     info = parse_func_info(libxc)
     lx = gen_xc_registry.strip_comments((exchcxx / "src/libxc.cxx").read_text())
     enum_to_xc = dict(re.findall(r"\{\s*Kernel::(\w+)\s*,\s*(XC_\w+)\s*\}", lx))
@@ -126,7 +126,9 @@ def functional_keys(exchcxx: Path, libxc: Path, refs: dict) -> dict[str, list[st
                     keys.append(k)
         if not keys:
             raise SystemExit(f"{e.name}: no reference found")
-        out[e.name] = keys
+        # An alias selects the same functional, and trc_xc_functional_t
+        # keeps the name it was selected by: cite under every one.
+        out[(e.name, *e.aliases)] = keys
     return out
 
 
@@ -153,7 +155,7 @@ def emit_string(lhs: str, s: str, indent: str) -> list[str]:
     return lines
 
 
-def emit(fkeys: dict[str, list[str]], refs: dict[str, tuple[str, str]], version: str) -> str:
+def emit(fkeys: dict[tuple[str, ...], list[str]], refs: dict[str, tuple[str, str]], version: str) -> str:
     used = []
     for keys in fkeys.values():
         used += [k for k in keys if k not in used]
@@ -178,15 +180,15 @@ def emit(fkeys: dict[str, list[str]], refs: dict[str, tuple[str, str]], version:
           "contains",
           "",
           "   pure subroutine xc_functional_ref_keys(name, keys, nkeys)",
-          "      !! The reference keys a functional cites, by its registry name",
-          "      !! (`trc_xc_functional_t%name`); `nkeys` is 0 for an unknown name.",
+          "      !! The reference keys a functional cites, by its registry name or an",
+          "      !! alias (`trc_xc_functional_t%name`); `nkeys` is 0 for an unknown name.",
           "      character(len=*), intent(in) :: name",
           "      character(len=XC_REF_KEY_LEN), intent(out) :: keys(XC_MAX_REFS)",
           "      integer, intent(out) :: nkeys",
           '      keys = ""',
           "      select case (name)"]
-    for name, keys in fkeys.items():
-        L.append(f"      case ({fstr(name)})")
+    for names, keys in fkeys.items():
+        L.append(f"      case ({', '.join(fstr(n) for n in names)})")
         L.append(f"         nkeys = {len(keys)}")
         for i, k in enumerate(keys, 1):
             L.append(f"         keys({i}) = {fstr(k)}")

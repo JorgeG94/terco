@@ -1,6 +1,6 @@
 program check_citations
-   !! The reference list a run prints (trc_citations, through the C API's
-   !! trc_citation_list/trc_citation_reset).
+   !! The reference list a run prints: trc_citations, through the C API
+   !! entries trc_citation_list and trc_citation_reset.
    !!
    !! Static: every functional terco runs resolves to at least one paper,
    !! and every key it cites has text. A functional added to the registry
@@ -123,9 +123,10 @@ contains
    function citation_list() result(s)
       character(len=:), allocatable :: s
       character(kind=c_char), allocatable :: buf(:)
+      character(kind=c_char) :: unused(1)
       integer(c_int) :: reqlen, rc
       integer :: i
-      rc = trc_citation_list(buf_dummy(), 0_c_int, reqlen)
+      rc = trc_citation_list(unused, 0_c_int, reqlen)
       call expect(rc == TRC_OK .and. reqlen >= 1, "citation_list: length query")
       allocate (buf(reqlen))
       rc = trc_citation_list(buf, reqlen, reqlen)
@@ -136,11 +137,6 @@ contains
          s(i:i) = buf(i)
       end do
    end function citation_list
-
-   function buf_dummy() result(b)
-      character(kind=c_char) :: b(1)
-      b = c_null_char
-   end function buf_dummy
 
    subroutine check_buffer_protocol()
       character(kind=c_char) :: small(4)

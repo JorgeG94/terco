@@ -16,18 +16,18 @@ module trc_xc_citations
 contains
 
    pure subroutine xc_functional_ref_keys(name, keys, nkeys)
-      !! The reference keys a functional cites, by its registry name
-      !! (`trc_xc_functional_t%name`); `nkeys` is 0 for an unknown name.
+      !! The reference keys a functional cites, by its registry name or an
+      !! alias (`trc_xc_functional_t%name`); `nkeys` is 0 for an unknown name.
       character(len=*), intent(in) :: name
       character(len=XC_REF_KEY_LEN), intent(out) :: keys(XC_MAX_REFS)
       integer, intent(out) :: nkeys
       keys = ""
       select case (name)
-      case ("lda_x")
+      case ("lda_x", "slater")
          nkeys = 2
          keys(1) = "Dirac1930_376"
          keys(2) = "Bloch1929_545"
-      case ("svwn")
+      case ("svwn", "lda", "svwn5")
          nkeys = 3
          keys(1) = "Dirac1930_376"
          keys(2) = "Bloch1929_545"
@@ -70,7 +70,7 @@ contains
          keys(5) = "Vosko1980_1200"
          keys(6) = "Lee1988_785"
          keys(7) = "Miehlich1989_200"
-      case ("bhandhlyp")
+      case ("bhandhlyp", "bhhlyp")
          nkeys = 5
          keys(1) = "Becke1993_1372"
          keys(2) = "gaussianimplementation"
@@ -83,17 +83,17 @@ contains
          keys(2) = "Becke1988_3098"
          keys(3) = "Lee1988_785"
          keys(4) = "Miehlich1989_200"
-      case ("b2gp-plyp")
+      case ("b2gp-plyp", "b2gpplyp")
          nkeys = 4
          keys(1) = "Karton2008_12868"
          keys(2) = "Becke1988_3098"
          keys(3) = "Lee1988_785"
          keys(4) = "Miehlich1989_200"
-      case ("hflyp")
+      case ("hflyp", "hf-lyp", "hf_lyp")
          nkeys = 2
          keys(1) = "Lee1988_785"
          keys(2) = "Miehlich1989_200"
-      case ("wb97x-v")
+      case ("wb97x-v", "wb97xv", "wb97x_v")
          nkeys = 1
          keys(1) = "Mardirossian2014_9904"
       case ("wb97x")
@@ -223,7 +223,7 @@ contains
          keys(3) = "Perdew1991"
          keys(4) = "Perdew1992_6671"
          keys(5) = "Perdew1993_4978"
-      case ("mpw2plyp")
+      case ("mpw2plyp", "mpw2-plyp")
          nkeys = 4
          keys(1) = "Schwabe2006_4398"
          keys(2) = "Adamo1998_664"

@@ -45,7 +45,7 @@ contains
    end subroutine trc_cite
 
    subroutine trc_cite_functional(name)
-      !! Record every paper a functional cites, by its registry name
+      !! Record every paper a functional cites, by its registry name or alias
       !! (`trc_xc_functional_t%name`), plus libxc's own, which its kernels'
       !! definitions come from.
       character(len=*), intent(in) :: name
@@ -82,7 +82,7 @@ contains
       do i = 1, ncited
          call reference(trim(cited(i)), text, doi, found)
          write (num, "(a,i2,a)") "[", i, "] "
-         lines = lines//num//text
+         lines = lines//trim(num)//" "//text
          if (len(doi) > 0) lines = lines//", doi:"//doi
          lines = lines//new_line("a")
       end do
