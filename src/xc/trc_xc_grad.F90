@@ -216,9 +216,25 @@ module trc_xc_grad
    integer, parameter :: XC_GRAD_NPC = 12
    !! Per-point coefficients the force kernels read, at most (unrestricted):
    !! w, v_a, v_b, v_aa, v_ab, v_bb, grad rho_a, grad rho_b. Restricted uses 6.
+#ifdef _OPENACC
+   integer, parameter :: XC_GRAD_LANES = 32
+#else
+   integer, parameter :: XC_GRAD_LANES = 1
+#endif
+   !! Threads that share one function's Pulay sum on the device, adjacent
+   !! threads adjacent points (xc_grad_forces); one on the host, which
+   !! walks a column in one iteration.
+#ifdef _OPENACC
    integer(int64), parameter :: XC_GRAD_TILE_CAP = 8388608_int64
+#else
+   integer(int64), parameter :: XC_GRAD_TILE_CAP = 262144_int64
+#endif
    !! Doubles in one tile of a chunk (chi, say); a GGA chunk holds about
    !! thirteen such tiles, so 64 MB here is about 0.8 GB of device memory.
+   !! On the host, 2 MB, so a chunk's tiles stay in cache from one kernel
+   !! to the next: each kernel is a pass over every tile it reads, and at
+   !! 64 MB every pass went to memory (w20/def2-SVP PBE, one core:
+   !! collocate 3.9 -> 3.0 s, points 1.6 -> 1.2 s).
 
    real(dp), parameter :: XC_GRAD_RHO_TOL = 1.0e-12_dp
    !! Same role and value as trc_xc.F90's XC_RHO_TOL: a batch whose bound on
@@ -485,10 +501,10 @@ contains
       integer, allocatable :: active(:), npp(:), nlp(:), c_off(:), pr_off(:)
       integer, allocatable :: ord(:), pb_off(:), wk_off(:), mw_off(:), ch_lo(:), ch_hi(:)
       real(dp), allocatable :: chi(:), gchi(:, :), hchi(:, :), xt(:, :), rt(:, :), rd(:, :), rdx(:, :)
-      real(dp), allocatable :: dloc(:, :), pc(:, :)
+      real(dp), allocatable :: dloc(:, :), pc(:, :), fp(:, :), qp(:, :), eb(:, :)
       integer(int64) :: need, nchi, nchi_max, sa, sb, ldt, ldh, ldr, ldx
       integer :: ib, npb, nloc, nch, ic, b0, b1, nb, k, k0, k1, cnt, mp, ml, s, p0, np
-      integer :: npairs, nwork, nmu, npairs_max, np_max, nb_max, npc, nhs
+      integer :: npairs, nwork, nmu, npairs_max, np_max, nb_max, npc, nhs, nmu_c, nmu_max, ldf, nq
       real(dp) :: tc
 
       ! --- screen: which batches carry density at all -------------------
@@ -521,17 +537,21 @@ contains
       npairs_max = 1
       np_max = 1
       nb_max = 1
+      nmu_max = 1
       b0 = 1
       do while (b0 <= xg%nbatch)
          need = 0
          npairs = 0
+         nmu_c = 0
          b1 = b0 - 1
          do ib = b0, xg%nbatch
             if (need + int(npp(ib), int64)*int(nlp(ib), int64) > XC_GRAD_TILE_CAP .and. ib > b0) exit
             need = need + int(npp(ib), int64)*int(nlp(ib), int64)
             npairs = npairs + nlp(ib)*nlp(ib)
+            nmu_c = nmu_c + (xg%b_aooff(ib + 1) - xg%b_aooff(ib))*active(ib)
             b1 = ib
          end do
+         nmu_max = max(nmu_max, nmu_c)
          nch = nch + 1
          ch_lo(nch) = b0
          ch_hi(nch) = b1
@@ -555,13 +575,18 @@ contains
          allocate (rt(1, nspin), rd(1, nspin), rdx(1, nspin))
       end if
       allocate (dloc(npairs_max, nspin), pc(np_max, npc))
+      ! The force partials (xc_grad_forces): a row per (function, lane),
+      ! and, on the host only, two rows per point.
+      ldf = nmu_max*XC_GRAD_LANES
+      nq = merge(np_max, 1, XC_GRAD_LANES == 1)
+      allocate (fp(ldf, 3), qp(nq, 3), eb(nq, 3))
       allocate (ord(nb_max), pb_off(nb_max + 1), wk_off(nb_max + 1), mw_off(nb_max + 1))
       ldt = nchi_max
       ldh = size(hchi, 1, int64)
       ldr = size(rt, 1, int64)
       ldx = size(rdx, 1, int64)
       !$acc enter data copyin(active, npp, nlp, c_off, pr_off) &
-      !$acc      create(chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc, ord, pb_off, wk_off, mw_off)
+      !$acc      create(chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc, fp, qp, eb, ord, pb_off, wk_off, mw_off)
       call tbl%step_off(lp, ST_ALLOC, tc)
 
       do ic = 1, nch
@@ -675,22 +700,18 @@ contains
          ! The forces: Pulay onto each function's atom, point motion onto
          ! each point's owner.
          call tbl%step_on(lp, ST_SCATTER, tc)
-         call xc_grad_pulay(nmu, nb, ord, mw_off, nspin, is_gga, xg%npts, p0, np_max, xg%b_off, xg%b_aooff, &
-                            size(xg%b_ao), xg%b_ao, b%nao, ao_atom, c_off, npp, xg%nbatch, ldt, ldh, nhs, ldr, ldx, &
-                            npc, gchi, hchi, xt, rd, rdx, pc, b%natm, grad)
-         if (gresp) then
-            call xc_grad_pointmotion(np, p0, nspin, is_gga, xg%npts, xg%atom, xg%batch_of, xg%b_off, &
-                                     xg%b_aooff, c_off, npp, active, xg%nbatch, ldt, ldh, nhs, ldr, ldx, npc, &
-                                     gchi, hchi, xt, rd, rdx, pc, np_max, b%natm, grad)
-         end if
+         call xc_grad_forces(nmu, nb, ord, mw_off, nspin, is_gga, gresp, np, p0, xg%npts, xg%atom, xg%batch_of, &
+                             xg%b_off, xg%b_aooff, size(xg%b_ao), xg%b_ao, b%nao, ao_atom, c_off, npp, active, &
+                             xg%nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, np_max, pc, ldf, &
+                             fp, nq, qp, eb, b%natm, grad)
          call tbl%step_off(lp, ST_SCATTER, tc)
       end do
 
       call tbl%step_on(lp, ST_ALLOC, tc)
       !$acc exit data delete(active, npp, nlp, c_off, pr_off, chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc, &
-      !$acc                  ord, pb_off, wk_off, mw_off)
+      !$acc                  fp, qp, eb, ord, pb_off, wk_off, mw_off)
       deallocate (active, npp, nlp, c_off, pr_off, ord, pb_off, wk_off, mw_off, ch_lo, ch_hi)
-      deallocate (chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc)
+      deallocate (chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc, fp, qp, eb)
       call tbl%step_off(lp, ST_ALLOC, tc)
    end subroutine xc_grad_drive
 
@@ -930,12 +951,57 @@ contains
       real(dp), intent(in) :: dmat(nao, nao, nspin)
       integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
       real(dp), intent(inout) :: dloc(ldd, nspin)
+#ifdef _OPENACC
       integer :: t
       do concurrent(t=1:npairs)
          call xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
                                        ldd, dloc)
       end do
+#else
+      ! On the host, a batch per iteration, its tile column by column: the
+      ! flat form's search for each element's batch, and its mod and
+      ! divide, cost several times the copy itself.
+      integer :: k
+      do concurrent(k=1:nb)
+         call xc_grad_gather_batch(k, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, ldd, &
+                                   dloc)
+      end do
+#endif
    end subroutine xc_grad_gather_tiles
+
+   ! Stored batch k's density tiles, as xc_grad_gather_tile_body writes
+   ! them element by element.
+   pure subroutine xc_grad_gather_batch(k, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
+                                        ldd, dloc)
+      integer, intent(in) :: k, nb, nspin, nao, nbao, nbatch, ldd
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      real(dp), intent(in) :: dmat(nao, nao, nspin)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(inout) :: dloc(ldd, nspin)
+      integer :: ib, nloc, ld, a0, u, v, s, t
+
+      ib = ord(k)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = nlp(ib)
+      a0 = b_aooff(ib) - 1
+      do s = 1, nspin
+         do v = 1, ld
+            t = pb_off(k) + (v - 1)*ld
+            if (v > nloc) then
+               do u = 1, ld
+                  dloc(t + u, s) = 0.0_dp
+               end do
+            else
+               do u = 1, nloc
+                  dloc(t + u, s) = dmat(b_ao(a0 + u), b_ao(a0 + v), s)
+               end do
+               do u = nloc + 1, ld
+                  dloc(t + u, s) = 0.0_dp
+               end do
+            end if
+         end do
+      end do
+   end subroutine xc_grad_gather_batch
 
    pure subroutine xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, &
                                             nbatch, ldd, dloc)
@@ -1180,106 +1246,362 @@ contains
    end subroutine xc_grad_term
 
    !
-   ! The Pulay force: one thread per local function mu of every stored
-   ! batch, summing its force density over the batch's points, -2 x that
-   ! onto the atom mu sits on. Atomic, as xc_grad_scatter: functions of
-   ! different batches share atoms.
+   ! The forces of one chunk: Pulay onto each function's atom and, with
+   ! `gresp`, point motion onto each point's owner. The same two sums of
+   ! xc_grad_term's force density, laid out for the device or the host.
    !
-   subroutine xc_grad_pulay(nmu, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, b_ao, &
-                            nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, &
-                            pc, natm, grad)
-      integer, intent(in) :: nmu, nb, nspin, npts, p0, ldp, nbao, nao, nbatch, npc, natm, nhs
-      logical, intent(in) :: is_gga
-      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), b_aooff(nbatch + 1), b_ao(nbao)
-      integer, intent(in) :: ao_atom(nao), c_off(nbatch + 1), npp(nbatch)
+   ! DEVICE. The Pulay sum is one thread per (function, lane): the
+   ! XC_GRAD_LANES threads of a function walk its tile column, contiguous,
+   ! point fastest, at a stride of XC_GRAD_LANES points, so adjacent
+   ! threads read adjacent points and every load coalesces. One thread per
+   ! function put adjacent threads a padded column (npp) apart: w60/def2-SVP
+   ! PBE on a V100, 470 ms -> 39 ms over the gradient's 36 launches, 16 and
+   ! 64 lanes a little slower than 32. A second kernel sums each
+   ! function's lanes and scatters, atomic: functions of different batches
+   ! share atoms. The point-motion sum stays one thread per point
+   ! (xc_grad_pointmotion), whose adjacent threads read adjacent points.
+   !
+   ! HOST. One iteration per stored batch walks each function's column once
+   ! and adds every (point, function) density into both sums, the
+   ! function's (Pulay) and the point's (point motion), so the density is
+   ! formed once and from contiguous loads. The device's point-motion form,
+   ! a point at a time across its functions a padded column apart, is what
+   ! made the host's force step 3.8 s at w20/def2-SVP PBE (0.5 s now).
+   ! Iterations write disjoint slices of fp, qp and eb (a batch's own
+   ! functions and points), so only the scatter onto atoms is a plain loop,
+   ! as xc_scatter's is. Every sum runs in the device's one-lane order.
+   !
+   subroutine xc_grad_forces(nmu, nb, ord, mw_off, nspin, is_gga, gresp, np, p0, npts, g_atom, batch_of, &
+                             b_off, b_aooff, nbao, b_ao, nao, ao_atom, c_off, npp, active, nbatch, ldt, ldh, &
+                             nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, ldp, pc, ldf, fp, ldq, qp, eb, natm, grad)
+      integer, intent(in) :: nmu, nb, nspin, np, p0, npts, nbao, nao, nbatch, nhs, npc, ldp, ldf, ldq, natm
+      logical, intent(in) :: is_gga, gresp
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), g_atom(npts), batch_of(npts), b_off(nbatch + 1)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), ao_atom(nao), c_off(nbatch + 1), npp(nbatch)
+      integer, intent(in) :: active(nbatch)
       integer(int64), intent(in) :: ldt, ldh, ldr, ldx
       real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
       real(dp), intent(in) :: pc(ldp, npc)
-      real(dp), intent(inout) :: grad(3, natm)
+      real(dp), intent(inout) :: fp(ldf, 3), qp(ldq, 3), eb(ldq, 3), grad(3, natm)
       integer :: t, at
-      real(dp) :: f(3)
 #ifdef _OPENACC
-      do concurrent(t=1:nmu) local(f, at)
-         call xc_grad_pulay_body(t, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, b_ao, &
-                                 nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, &
-                                 rdx, pc, f, at)
-         !$acc atomic update
-         grad(1, at) = grad(1, at) + f(1)
-         !$acc atomic update
-         grad(2, at) = grad(2, at) + f(2)
-         !$acc atomic update
-         grad(3, at) = grad(3, at) + f(3)
-      end do
-#else
-      do t = 1, nmu
-         call xc_grad_pulay_body(t, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, b_ao, &
-                                 nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, &
-                                 rdx, pc, f, at)
-         grad(1, at) = grad(1, at) + f(1)
-         grad(2, at) = grad(2, at) + f(2)
-         grad(3, at) = grad(3, at) + f(3)
-      end do
-#endif
-   end subroutine xc_grad_pulay
+      real(dp) :: f(3)
+      integer :: m
 
-   pure subroutine xc_grad_pulay_body(t, nb, ord, mw_off, nspin, is_gga, npts, p0, ldp, b_off, b_aooff, nbao, &
-                                      b_ao, nao, ao_atom, c_off, npp, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, &
-                                      hchi, xt, rd, rdx, pc, f, at)
+      do concurrent(t=1:nmu*XC_GRAD_LANES) local(f)
+         call xc_grad_pulay_lane(t, nb, ord, mw_off, nspin, is_gga, p0, b_off, c_off, npp, nbatch, ldt, ldh, &
+                                 nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, ldp, pc, f)
+         fp(t, 1) = f(1)
+         fp(t, 2) = f(2)
+         fp(t, 3) = f(3)
+      end do
+      do concurrent(m=1:nmu) local(f, at)
+         call xc_grad_pulay_sum(m, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, f, at)
+         !$acc atomic update
+         grad(1, at) = grad(1, at) + f(1)
+         !$acc atomic update
+         grad(2, at) = grad(2, at) + f(2)
+         !$acc atomic update
+         grad(3, at) = grad(3, at) + f(3)
+      end do
+      if (gresp) then
+         call xc_grad_pointmotion(np, p0, nspin, is_gga, npts, g_atom, batch_of, b_off, b_aooff, c_off, npp, &
+                                  active, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, pc, ldp, &
+                                  natm, grad)
+      end if
+#else
+      integer :: k, ib, mu, g, gg
+
+      do concurrent(k=1:nb)
+         call xc_grad_force_batch(k, nb, ord, mw_off, nspin, is_gga, gresp, p0, b_off, c_off, npp, nbatch, &
+                                  ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, ldp, pc, ldf, fp, ldq, qp, eb)
+      end do
+      do k = 1, nb
+         ib = ord(k)
+         do mu = 1, mw_off(k + 1) - mw_off(k)
+            t = mw_off(k) + mu
+            at = ao_atom(b_ao(b_aooff(ib) + mu - 1))
+            grad(1, at) = grad(1, at) + fp(t, 1)
+            grad(2, at) = grad(2, at) + fp(t, 2)
+            grad(3, at) = grad(3, at) + fp(t, 3)
+         end do
+      end do
+      if (gresp) then
+         do g = 1, np
+            gg = p0 + g - 1
+            if (active(batch_of(gg)) == 0) cycle
+            at = g_atom(gg)
+            if (at > 0) then
+               grad(1, at) = grad(1, at) + qp(g, 1)
+               grad(2, at) = grad(2, at) + qp(g, 2)
+               grad(3, at) = grad(3, at) + qp(g, 3)
+            end if
+         end do
+      end if
+#endif
+   end subroutine xc_grad_forces
+
+   !
+   ! One (function, lane) of the device's Pulay sum: lane l of function m
+   ! (t = (m-1) XC_GRAD_LANES + l) sums the force density over the points
+   ! l, l + XC_GRAD_LANES, ... of m's batch.
+   !
+   pure subroutine xc_grad_pulay_lane(t, nb, ord, mw_off, nspin, is_gga, p0, b_off, c_off, npp, nbatch, ldt, &
+                                      ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, ldp, pc, f)
       !$acc routine seq
-      integer, intent(in) :: t, nb, nspin, npts, p0, ldp, nbao, nao, nbatch, npc, nhs
+      integer, intent(in) :: t, nb, nspin, p0, nbatch, nhs, npc, ldp
       logical, intent(in) :: is_gga
-      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), b_aooff(nbatch + 1), b_ao(nbao)
-      integer, intent(in) :: ao_atom(nao), c_off(nbatch + 1), npp(nbatch)
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch)
       integer(int64), intent(in) :: ldt, ldh, ldr, ldx
       real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
       real(dp), intent(in) :: pc(ldp, npc)
       real(dp), intent(out) :: f(3)
-      integer, intent(out) :: at
-      integer :: k, ib, mu, npb, ld, gl, lg, s, j
-      integer(int64) :: col, i
-      real(dp) :: pcv(XC_GRAD_NPC), gx(3), hx(NHESS), x(2), rm(2), rx(2), e(3)
+      integer :: k, ib, mu, m, lane, npb, lg0
+      integer(int64) :: col
 
-      call grad_item_batch(t, nb, mw_off, k, mu)
+      m = (t - 1)/XC_GRAD_LANES + 1
+      lane = t - (m - 1)*XC_GRAD_LANES
+      call grad_item_batch(m, nb, mw_off, k, mu)
       ib = ord(k)
-      mu = mu + 1
       npb = b_off(ib + 1) - b_off(ib)
-      ld = npp(ib)
-      col = int(c_off(ib), int64) + int(mu - 1, int64)*int(ld, int64)
-      at = ao_atom(b_ao(b_aooff(ib) + mu - 1))
+      col = int(c_off(ib), int64) + int(mu, int64)*int(npp(ib), int64)
+      lg0 = b_off(ib) - p0
+      call xc_grad_column_sum(lane, XC_GRAD_LANES, npb, col, lg0, nspin, is_gga, ldt, ldh, nhs, ldr, ldx, &
+                              npc, gchi, hchi, xt, rd, rdx, ldp, pc, f)
+   end subroutine xc_grad_pulay_lane
+
+   !
+   ! Function m's lanes summed, -2 x that, and the atom m sits on.
+   !
+   pure subroutine xc_grad_pulay_sum(m, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, &
+                                     f, at)
+      !$acc routine seq
+      integer, intent(in) :: m, nb, nbao, nao, nbatch, ldf
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_aooff(nbatch + 1), b_ao(nbao), ao_atom(nao)
+      real(dp), intent(in) :: fp(ldf, 3)
+      real(dp), intent(out) :: f(3)
+      integer, intent(out) :: at
+      integer :: k, mu, l, t0
+
+      call grad_item_batch(m, nb, mw_off, k, mu)
+      at = ao_atom(b_ao(b_aooff(ord(k)) + mu))
+      t0 = (m - 1)*XC_GRAD_LANES
+      f = 0.0_dp
+      do l = 1, XC_GRAD_LANES
+         f(1) = f(1) + fp(t0 + l, 1)
+         f(2) = f(2) + fp(t0 + l, 2)
+         f(3) = f(3) + fp(t0 + l, 3)
+      end do
+      f(1) = -2.0_dp*f(1)
+      f(2) = -2.0_dp*f(2)
+      f(3) = -2.0_dp*f(3)
+   end subroutine xc_grad_pulay_sum
+
+   !
+   ! The force density of one function, summed over the points
+   ! first, first + stride, ... (1-based, at most npb) of its tile column,
+   ! which starts after element `col`; point gl's coefficients are pc's row
+   ! lg0 + gl.
+   !
+   pure subroutine xc_grad_column_sum(first, stride, npb, col, lg0, nspin, is_gga, ldt, ldh, nhs, ldr, ldx, &
+                                      npc, gchi, hchi, xt, rd, rdx, ldp, pc, f)
+      !$acc routine seq
+      integer, intent(in) :: first, stride, npb, lg0, nspin, nhs, npc, ldp
+      integer(int64), intent(in) :: col, ldt, ldh, ldr, ldx
+      logical, intent(in) :: is_gga
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(out) :: f(3)
+      real(dp) :: pcv(XC_GRAD_NPC), gx(3), hx(NHESS), x(2), rm(2), rx(2), e(3)
+      integer(int64) :: i
+      integer :: gl
+
       pcv = 0.0_dp
       hx = 0.0_dp
       x = 0.0_dp
       rm = 0.0_dp
       rx = 0.0_dp
       f = 0.0_dp
-      do gl = 1, npb
+      do gl = first, npb, stride
          i = col + gl
-         lg = b_off(ib) + gl - 1 - p0 + 1
-         do j = 1, npc
-            pcv(j) = pc(lg, j)
-         end do
-         gx(1) = gchi(i, 1)
-         gx(2) = gchi(i, 2)
-         gx(3) = gchi(i, 3)
-         if (is_gga) then
-            do j = 1, NHESS
-               hx(j) = hchi(i, j)
-            end do
-         end if
-         do s = 1, nspin
-            x(s) = xt(i, s)
-            if (is_gga) rm(s) = rd(i, s)
-            if (is_gga .and. nspin == 2) rx(s) = rdx(i, s)
-         end do
+         call xc_grad_load(i, lg0 + gl, nspin, is_gga, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, &
+                           ldp, pc, pcv, gx, hx, x, rm, rx)
          call xc_grad_term(nspin, is_gga, pcv, gx, hx, x, rm, rx, e)
          f(1) = f(1) + e(1)
          f(2) = f(2) + e(2)
          f(3) = f(3) + e(3)
       end do
-      f(1) = -2.0_dp*f(1)
-      f(2) = -2.0_dp*f(2)
-      f(3) = -2.0_dp*f(3)
-   end subroutine xc_grad_pulay_body
+   end subroutine xc_grad_column_sum
+
+   !
+   ! The host's per-batch form (xc_grad_forces, HOST): batch k's functions
+   ! into fp's rows mw_off(k) + 1.., -2 x their sums, and, with `gresp`,
+   ! its points into qp's rows b_off - p0 + 1.., 2 x theirs. A column's
+   ! densities go through eb's rows for those points first, so the loop
+   ! that forms them carries no sum and vectorises.
+   !
+   pure subroutine xc_grad_force_batch(k, nb, ord, mw_off, nspin, is_gga, gresp, p0, b_off, c_off, npp, nbatch, &
+                                       ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, ldp, pc, ldf, fp, &
+                                       ldq, qp, eb)
+      integer, intent(in) :: k, nb, nspin, p0, nbatch, nhs, npc, ldp, ldf, ldq
+      logical, intent(in) :: is_gga, gresp
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr, ldx
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(inout) :: fp(ldf, 3), qp(ldq, 3), eb(ldq, 3)
+      real(dp) :: f(3)
+      integer(int64) :: col
+      integer :: ib, mu, nloc, npb, lg0, gl, lg, t
+
+      ib = ord(k)
+      nloc = mw_off(k + 1) - mw_off(k)
+      if (nloc == 0) return
+      npb = b_off(ib + 1) - b_off(ib)
+      lg0 = b_off(ib) - p0
+      if (gresp) then
+         do gl = 1, npb
+            qp(lg0 + gl, 1) = 0.0_dp
+            qp(lg0 + gl, 2) = 0.0_dp
+            qp(lg0 + gl, 3) = 0.0_dp
+         end do
+      end if
+      do mu = 1, nloc
+         col = int(c_off(ib), int64) + int(mu - 1, int64)*int(npp(ib), int64)
+         ! Literal nspin, is_gga and npc, so the inlined density has no
+         ! branches left in it.
+         if (nspin == 1 .and. is_gga) then
+            call xc_grad_column(1, .true., 6, npb, col, lg0, ldt, ldh, nhs, ldr, ldx, gchi, hchi, xt, rd, rdx, &
+                                ldp, pc, ldq, eb)
+         else if (nspin == 1) then
+            call xc_grad_column(1, .false., 6, npb, col, lg0, ldt, ldh, nhs, ldr, ldx, gchi, hchi, xt, rd, rdx, &
+                                ldp, pc, ldq, eb)
+         else if (is_gga) then
+            call xc_grad_column(2, .true., XC_GRAD_NPC, npb, col, lg0, ldt, ldh, nhs, ldr, ldx, gchi, hchi, xt, &
+                                rd, rdx, ldp, pc, ldq, eb)
+         else
+            call xc_grad_column(2, .false., XC_GRAD_NPC, npb, col, lg0, ldt, ldh, nhs, ldr, ldx, gchi, hchi, xt, &
+                                rd, rdx, ldp, pc, ldq, eb)
+         end if
+         f = 0.0_dp
+         do gl = 1, npb
+            lg = lg0 + gl
+            f(1) = f(1) + eb(lg, 1)
+            f(2) = f(2) + eb(lg, 2)
+            f(3) = f(3) + eb(lg, 3)
+         end do
+         t = mw_off(k) + mu
+         fp(t, 1) = -2.0_dp*f(1)
+         fp(t, 2) = -2.0_dp*f(2)
+         fp(t, 3) = -2.0_dp*f(3)
+         if (gresp) then
+            do gl = 1, npb
+               lg = lg0 + gl
+               qp(lg, 1) = qp(lg, 1) + eb(lg, 1)
+               qp(lg, 2) = qp(lg, 2) + eb(lg, 2)
+               qp(lg, 3) = qp(lg, 3) + eb(lg, 3)
+            end do
+         end if
+      end do
+      if (gresp) then
+         do gl = 1, npb
+            qp(lg0 + gl, 1) = 2.0_dp*qp(lg0 + gl, 1)
+            qp(lg0 + gl, 2) = 2.0_dp*qp(lg0 + gl, 2)
+            qp(lg0 + gl, 3) = 2.0_dp*qp(lg0 + gl, 3)
+         end do
+      end if
+   end subroutine xc_grad_force_batch
+
+   ! One function's force density at each of its batch's npb points, into
+   ! eb's rows lg0 + 1...
+   pure subroutine xc_grad_column(nspin, is_gga, npc, npb, col, lg0, ldt, ldh, nhs, ldr, ldx, gchi, hchi, xt, &
+                                  rd, rdx, ldp, pc, ldq, eb)
+      integer, intent(in) :: nspin, npc, npb, lg0, nhs, ldp, ldq
+      logical, intent(in) :: is_gga
+      integer(int64), intent(in) :: col, ldt, ldh, ldr, ldx
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(inout) :: eb(ldq, 3)
+      real(dp) :: pcv(XC_GRAD_NPC), gx(3), hx(NHESS), x(2), rm(2), rx(2), e(3)
+      real(dp) :: wg, h1, h2, h3, gk
+      integer(int64) :: i
+      integer :: gl, lg, kk
+
+      if (nspin == 1) then
+         ! xc_grad_term's restricted lines, term for term in its order.
+         if (is_gga) then
+            do gl = 1, npb
+               i = col + gl
+               lg = lg0 + gl
+               wg = pc(lg, 1)
+               h1 = pc(lg, 4)*hchi(i, 1) + pc(lg, 5)*hchi(i, 2) + pc(lg, 6)*hchi(i, 3)
+               h2 = pc(lg, 4)*hchi(i, 2) + pc(lg, 5)*hchi(i, 4) + pc(lg, 6)*hchi(i, 5)
+               h3 = pc(lg, 4)*hchi(i, 3) + pc(lg, 5)*hchi(i, 5) + pc(lg, 6)*hchi(i, 6)
+               eb(lg, 1) = wg*(pc(lg, 2)*gchi(i, 1) + 2.0_dp*pc(lg, 3)*h1)*xt(i, 1) &
+                           + wg*2.0_dp*pc(lg, 3)*gchi(i, 1)*rd(i, 1)
+               eb(lg, 2) = wg*(pc(lg, 2)*gchi(i, 2) + 2.0_dp*pc(lg, 3)*h2)*xt(i, 1) &
+                           + wg*2.0_dp*pc(lg, 3)*gchi(i, 2)*rd(i, 1)
+               eb(lg, 3) = wg*(pc(lg, 2)*gchi(i, 3) + 2.0_dp*pc(lg, 3)*h3)*xt(i, 1) &
+                           + wg*2.0_dp*pc(lg, 3)*gchi(i, 3)*rd(i, 1)
+            end do
+         else
+            do gl = 1, npb
+               i = col + gl
+               lg = lg0 + gl
+               do kk = 1, 3
+                  gk = gchi(i, kk)
+                  eb(lg, kk) = pc(lg, 1)*pc(lg, 2)*gk*xt(i, 1)
+               end do
+            end do
+         end if
+         return
+      end if
+      pcv = 0.0_dp
+      hx = 0.0_dp
+      x = 0.0_dp
+      rm = 0.0_dp
+      rx = 0.0_dp
+      do gl = 1, npb
+         call xc_grad_load(col + gl, lg0 + gl, nspin, is_gga, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, &
+                           rdx, ldp, pc, pcv, gx, hx, x, rm, rx)
+         call xc_grad_term(nspin, is_gga, pcv, gx, hx, x, rm, rx, e)
+         eb(lg0 + gl, 1) = e(1)
+         eb(lg0 + gl, 2) = e(2)
+         eb(lg0 + gl, 3) = e(3)
+      end do
+   end subroutine xc_grad_column
+
+   !
+   ! What xc_grad_term reads for tile element i, point row lg of pc.
+   !
+   pure subroutine xc_grad_load(i, lg, nspin, is_gga, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, &
+                                ldp, pc, pcv, gx, hx, x, rm, rx)
+      !$acc routine seq
+      integer(int64), intent(in) :: i, ldt, ldh, ldr, ldx
+      integer, intent(in) :: lg, nspin, nhs, npc, ldp
+      logical, intent(in) :: is_gga
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nspin), rd(ldr, nspin), rdx(ldx, nspin)
+      real(dp), intent(in) :: pc(ldp, npc)
+      real(dp), intent(inout) :: pcv(XC_GRAD_NPC), gx(3), hx(NHESS), x(2), rm(2), rx(2)
+      integer :: j, s
+
+      do j = 1, npc
+         pcv(j) = pc(lg, j)
+      end do
+      gx(1) = gchi(i, 1)
+      gx(2) = gchi(i, 2)
+      gx(3) = gchi(i, 3)
+      if (is_gga) then
+         do j = 1, NHESS
+            hx(j) = hchi(i, j)
+         end do
+      end if
+      do s = 1, nspin
+         x(s) = xt(i, s)
+         if (is_gga) rm(s) = rd(i, s)
+         if (is_gga .and. nspin == 2) rx(s) = rdx(i, s)
+      end do
+   end subroutine xc_grad_load
 
    !
    ! GRID RESPONSE, point-motion piece (this module's header, A): the same
