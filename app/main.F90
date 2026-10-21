@@ -478,7 +478,7 @@ contains
       integer :: ia
       real(dp) :: rms, gmax
       character(len=2) :: closing
-      write (u, "(a)") '  "gradient status": "validated: single rank",'
+      write (u, "(a)") '  "gradient status": "validated: single rank (rank 0 alone on a multi-rank run)",'
       write (u, "(a)") '  "gradient": ['
       do ia = 1, r%natm
          closing = merge("] ", "],", ia == r%natm)
@@ -595,7 +595,8 @@ program terco_main
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
-                       "refused for --rimp2, a double hybrid, --pcm, or more than one rank")
+                       "refused for --rimp2, a double hybrid or --pcm; with more than one rank it is "// &
+                       "computed on rank 0 alone, with a warning")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -841,7 +842,7 @@ program terco_main
       if (r%dh) call api(r, trc_energy(r%h, r%etot_dh))
    end if
    if (r%grad .and. r%conv /= 0) then
-      ! trc_run_gradient's own refusals (RI-MP2, PCM, multi-rank) come
+      ! trc_run_gradient's own refusals (RI-MP2, PCM) come
       ! back through `api`, which prints the library's own message and
       ! stops -- the same clear-refusal path every other unsupported
       ! combination in this CLI already takes. An LDA/GGA --func (global

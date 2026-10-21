@@ -211,9 +211,12 @@ program scf_mpi
       block
          use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_arrays, &
                                      trc_set_guess, trc_set_comm, trc_set_method, trc_run_scf, trc_energy, &
-                                     TRC_GUESS_GWH
-         type(c_ptr) :: h
+                                     trc_run_gradient, trc_gradient, TRC_GUESS_GWH
+         type(c_ptr) :: h, h1
          real(c_double) :: e_h(2)
+         real(c_double), allocatable :: g_h(:), g_1(:)
+         real(dp) :: gmax, gmin, gspread, gdiff
+         integer :: k
          rc = trc_create(h)
          if (rc == TRC_OK) rc = trc_set_molecule(h, int(natm, c_int), zat, reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
          if (rc == TRC_OK) rc = trc_set_basis_arrays(h, int(nsh, c_int), int(maxnp, c_int), lc, npc, &
@@ -227,7 +230,42 @@ program scf_mpi
          if (rc == TRC_OK) rc = trc_run_scf(h)
          if (rc == TRC_OK) rc = trc_energy(h, e_h(2))
          if (rc /= TRC_OK) ok = .false.
+         ! The PBE gradient after the split SCF. It is not rank-split: rank 0
+         ! computes it and broadcasts it, with a warning, so every rank must
+         ! hold the same numbers, and they must match a one-rank context's
+         ! gradient on the same molecule (the SCFs differ only in summation
+         ! order, so the gradients agree to well inside the SCF's own
+         ! convergence).
+         allocate (g_h(3*natm), g_1(3*natm))
+         rc = trc_run_gradient(h)
+         if (rc == TRC_OK) rc = trc_gradient(h, g_h)
+         if (rc /= TRC_OK) ok = .false.
          rc = trc_destroy(h)
+         rc = trc_create(h1)
+         if (rc == TRC_OK) rc = trc_set_molecule(h1, int(natm, c_int), zat, reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+         if (rc == TRC_OK) rc = trc_set_basis_arrays(h1, int(nsh, c_int), int(maxnp, c_int), lc, npc, &
+                                                     reshape(sh_e, [size(sh_e)]), reshape(sh_c, [size(sh_c)]), &
+                                                     reshape(sh_r, [size(sh_r)]))
+         if (rc == TRC_OK) rc = trc_set_guess(h1, TRC_GUESS_GWH, c_null_ptr, 1_c_int)
+         if (rc == TRC_OK) rc = trc_set_method(h1, 'pbe'//c_null_char, 3_c_int)
+         if (rc == TRC_OK) rc = trc_run_scf(h1)
+         if (rc == TRC_OK) rc = trc_run_gradient(h1)
+         if (rc == TRC_OK) rc = trc_gradient(h1, g_1)
+         if (rc /= TRC_OK) ok = .false.
+         rc = trc_destroy(h1)
+         gspread = 0.0_dp
+         do k = 1, 3*natm
+            gmax = g_h(k); gmin = g_h(k)
+            if (comm%size() > 1) then
+               call allreduce(comm, gmax, op=MPI_MAX)
+               call allreduce(comm, gmin, op=MPI_MIN)
+            end if
+            gspread = max(gspread, gmax - gmin)
+         end do
+         gdiff = maxval(abs(g_h - g_1))
+         if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "scf_mpi: context gradient       spread over ranks ", &
+            gspread, "  vs one rank ", gdiff
+         if (gspread /= 0.0_dp .or. gdiff > 1.0e-8_dp) ok = .false.
          if (comm%rank() == 0) print '(a,es9.2,a,es9.2)', "scf_mpi: context vs driver      rhf ", &
             abs(e_h(1) - e(1)), "  pbe ", abs(e_h(2) - e(2))
          if (any(abs(e_h - e) > 1.0e-10_dp)) ok = .false.
