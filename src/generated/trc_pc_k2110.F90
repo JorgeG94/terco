@@ -713,21 +713,18 @@ contains
                jab(1 + ia + 6*ib) = 0.0_dp
             end do
          end do
-         do id = 0, 0
+         id = 0
             do ic = 0, 2
                dcd(1 + ic + 3*id) = dmat(idens, lamk + ic, sigl + id)
                jcd(1 + ic + 3*id) = 0.0_dp
             end do
-         end do
 
          ! Spelled differently from the general branch, on purpose, and with
          ! the same arithmetic: the component index in closed form and the
-         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
-         ! 26.5 rejects every closer copy somewhere in the class set -- a
-         ! second counted loop fails to translate the Rys launch ("Missing
-         ! increment value", trc_pc_rys1102), and the closed form through
-         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
-         do id = 0, 0
+         ! scaled integral inline rather than in `idx` and `sc`. A second
+         ! counted loop fails to translate the Rys launch under nvfortran
+         ! 26.5 ("Missing increment value", trc_pc_rys1102).
+         id = 0
          do ic = 0, 2
          do ib = 0, 2
          do ia = 0, 5
@@ -740,7 +737,6 @@ contains
          end do
          end do
          end do
-         end do
 
          do ib = 0, 2
             do ia = 0, 5
@@ -749,13 +745,12 @@ contains
                                           + jab(1 + ia + 6*ib)
             end do
          end do
-         do id = 0, 0
+         id = 0
             do ic = 0, 2
                !$acc atomic update
                jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
                                             + jcd(1 + ic + 3*id)
             end do
-         end do
 
          end do   ! idens
          else

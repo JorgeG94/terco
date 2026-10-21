@@ -3780,11 +3780,9 @@ contains
 
          ! Spelled differently from the general branch, on purpose, and with
          ! the same arithmetic: the component index in closed form and the
-         ! scaled integral inline rather than in `idx` and `sc`. nvfortran
-         ! 26.5 rejects every closer copy somewhere in the class set -- a
-         ! second counted loop fails to translate the Rys launch ("Missing
-         ! increment value", trc_pc_rys1102), and the closed form through
-         ! `idx` or `sc` crashes fort2 (trc_pc_k0100, trc_pc_k1010).
+         ! scaled integral inline rather than in `idx` and `sc`. A second
+         ! counted loop fails to translate the Rys launch under nvfortran
+         ! 26.5 ("Missing increment value", trc_pc_rys1102).
          do id = 0, 5
          do ic = 0, 2
          do ib = 0, 2
