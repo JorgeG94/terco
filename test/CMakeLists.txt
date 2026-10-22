@@ -93,6 +93,9 @@ terco_add_check(check_selftest check_selftest.F90)
 #
 terco_add_check(check_linalg_mat check_linalg_mat.F90)
 
+# The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
+terco_add_check(check_si check_si.F90)
+
 #
 # The staleness guard over every committed pyscf reference under
 # test/pyscf_refs/ (see that directory's README.md and check_staleness.py's
