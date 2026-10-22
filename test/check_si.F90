@@ -79,7 +79,11 @@ program check_si
    implicit none
    integer :: stat
    stat = 0
-   call run_testsuite(collect_si, error_unit, stat)
+   ! Serial: under -fopenmp test-drive runs the cases on separate threads,
+   ! and gfortran 15 keeps a string-length temporary of pic's
+   ! to_string_fixed in static storage, so concurrent calls corrupt each
+   ! other's digits ("53.2 TFLOP/s"). terco formats only on the host thread.
+   call run_testsuite(collect_si, error_unit, stat, parallel=.false.)
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1
