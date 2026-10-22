@@ -64,6 +64,10 @@ pic-blas = { git = "https://github.com/JorgeG94/pic-blas", tag = "v0.3.1" }
 pic-mpi = { git = "https://github.com/JorgeG94/pic-mpi", tag = "v0.6.8" }
 json-fortran = { git = "https://github.com/jacobwilliams/json-fortran", tag = "9.3.1" }
 
+[dev-dependencies]
+# The unit-test framework, at the commit cmake/modules/Findtest-drive.cmake pins.
+test-drive = { git = "https://github.com/fortran-lang/test-drive", rev = "791484a79a24cbc00be6f74e53c6e030cb75efe2" }
+
 [extra.fortitude.check]
 select = ["C", "E", "S", "PORT", "OB041"]
 

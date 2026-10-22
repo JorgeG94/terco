@@ -1,4 +1,11 @@
 #
+# New checks are test-drive suites (a module of named unit tests, `check`
+# with a message, run_testsuite); see AGENTS.md. The older checks are plain
+# programs and move over when they are next touched.
+#
+find_package("test-drive" REQUIRED)
+
+#
 # The checks.
 #
 # Every one compares against something outside terco -- libfint through a
@@ -95,6 +102,7 @@ terco_add_check(check_linalg_mat check_linalg_mat.F90)
 
 # The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
 terco_add_check(check_si check_si.F90)
+target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
 #
 # The staleness guard over every committed pyscf reference under
