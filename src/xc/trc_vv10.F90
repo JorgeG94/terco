@@ -118,6 +118,7 @@
 !
 module trc_vv10
    use pic_types, only: dp, int64
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: shell_collocate, NCART_MAX
@@ -139,7 +140,6 @@ module trc_vv10
    real(dp), parameter :: VV10_RHO_TOL = 1.0e-8_dp
    !! pyscf's `_vv10nlc` threshold, outer and inner grid alike: a density
    !! below this contributes nothing, neither evaluated nor summed over.
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
    real(dp), parameter :: PI43 = 4.0_dp*PI/3.0_dp
    integer, parameter :: VV10_NP_PAD = 128  !! tile rows padded to a multiple of this
    integer, parameter :: VV10_NL_PAD = 32   !! tile columns padded to a multiple of this

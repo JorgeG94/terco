@@ -109,6 +109,14 @@ target_link_libraries(check_si PRIVATE test-drive::test-drive)
 terco_add_check(check_lmax_refusal check_lmax_refusal.F90)
 target_link_libraries(check_lmax_refusal PRIVATE test-drive::test-drive terco_c_interfaces)
 
+# trc_constants' derived relations (ANGSTROM_TO_BOHR vs BOHR_TO_ANGSTROM,
+# KB_HARTREE, HARTREE_TO_KCALMOL, HARTREE_TO_CM1, all against the OTHER
+# CODATA 2018 values on the same file) and the atomic-mass tables, H/C/O/P
+# and the out-of-range refusal. No basis, no pyscf: these are closed-form
+# identities and a lookup table.
+terco_add_check(check_constants check_constants.F90)
+target_link_libraries(check_constants PRIVATE test-drive::test-drive)
+
 #
 # The staleness guard over every committed pyscf reference under
 # test/pyscf_refs/ (see that directory's README.md and check_staleness.py's

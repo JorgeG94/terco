@@ -40,6 +40,7 @@
 !
 module trc_pcm
    use pic_types, only: dp
+   use trc_constants, only: PI
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid, lebedev_is_available
@@ -61,8 +62,6 @@ module trc_pcm
       !! integral equation formalism: the D terms, scaled by (eps-1)/(eps+1)
    integer, parameter :: PCM_DEFAULT_LEBEDEV = 302
       !! points per sphere; pyscf's lebedev_order = 29
-
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    ! The Lebedev orders the SWIG exponents are fitted for, and the fitted
    ! values: Table II of [J. Chem. Phys. 122, 194110 (2005)], as pyscf's

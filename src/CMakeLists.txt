@@ -25,6 +25,7 @@ target_sources(
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           core/trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX
           core/trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
+          core/trc_constants.F90  # the single source of truth for math/CODATA constants and atomic masses
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
           solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
           scf/trc_scf_settings.F90      # trc_scf_options_t/result_t and the options a run resolves them to

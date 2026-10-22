@@ -103,6 +103,7 @@
 !
 module trc_vv10_grad
    use pic_types, only: dp, int64
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_grad, only: xc_grad_drive, xc_grad_step_names, ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
@@ -118,7 +119,6 @@ module trc_vv10_grad
 
    public :: vv10_gradient_add
 
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
    integer(int64), parameter :: VV10_GRAD_TILE_CAP = 8388608_int64
    !! The chunk-size budget (padded rows x padded columns) handed to
    !! `vv10_density_tile`'s own batching loop -- trc_vv10.F90's `vv10_drive`

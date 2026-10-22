@@ -26,6 +26,7 @@ module trc_sap
    !! short-ranged screening potential is integrated.
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
@@ -50,8 +51,6 @@ module trc_sap
    !! Angular order for the spherical average of the atomic density. The
    !! free-atom density is already spherical; averaging is free and makes a
    !! non-spherical atom degrade the guess rather than silently tilt it.
-
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    character(len=*), parameter :: SAP_BASIS_DEFAULT = "basis_sets/sap_helfem_large.json"
    !! The fitted potential set, unless a caller names another: Lehtola's fully

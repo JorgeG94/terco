@@ -39,6 +39,7 @@
 !
 module trc_api
    use pic_types, only: dp
+   use trc_constants, only: PI
    use trc_boys, only: boys_init
    use trc_tables, only: LMAX
    use trc_1e_kernels, only: one_e_driver, ONE_E_LMAX
@@ -108,7 +109,6 @@ module trc_api
    ! the four *_driver.inc files under src/inc, included into the kernel modules they dispatch
    ! into: called from here they crossed a module boundary, and stdpar only
    ! inlines within a translation unit.
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    !
    ! Structure of arrays, not array of structures: the kernels read one field

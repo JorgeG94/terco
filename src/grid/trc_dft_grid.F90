@@ -20,6 +20,7 @@ module trc_dft_grid
    !! default and is the one a production calculation should start from.
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
+   use trc_constants, only: PI
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid
    use trc_dft_radial, only: treutler_ahlrichs_radial
@@ -27,9 +28,6 @@ module trc_dft_grid
    use trc_dft_prune, only: prune_angular_orders, PRUNE_NONE, PRUNE_NWCHEM
    implicit none
    private
-
-   ! PI was mqc_physical_constants; terco carries no constants module.
-   real(dp), parameter :: PI = 3.14159265358979323846264338327950288_dp
 
    public :: dft_grid_t
    public :: build_dft_grid, build_dft_grid_block

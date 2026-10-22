@@ -36,6 +36,7 @@
 !
 module trc_guess_json
    use pic_types, only: dp
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_cart_perm, only: build_ao_perm
@@ -44,8 +45,6 @@ module trc_guess_json
    private
 
    public :: trc_guess_from_json
-
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
 contains
 
