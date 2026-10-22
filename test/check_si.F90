@@ -81,7 +81,7 @@ program check_si
    stat = 0
    call run_testsuite(collect_si, error_unit, stat)
    if (stat > 0) then
-      write (error_unit, '(i0, a)') stat, " test(s) failed"
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1
    end if
 end program check_si
