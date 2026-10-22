@@ -1,5 +1,7 @@
 # terco
 
+<img src="docs/assets/powered_by_Fortran_switch_LC.svg" alt="powered by Fortran" width="320">
+
 ```
 Adjective, from Spanish: Stubborn
 ```
@@ -408,6 +410,12 @@ California, through Lawrence Berkeley National Laboratory; portions
 Copyright (c) Microsoft Corporation). Each translated file's own header
 carries that notice; ExchCXX's original is at
 `include/exchcxx/impl/builtin/kernels/` in its own repository.
+
+The "powered by Fortran" logo at the top of this file,
+`docs/assets/powered_by_Fortran_switch_LC.svg`, is the switch logo from
+[powered_by_fortran_logo](https://github.com/sebastian-mutz/powered_by_fortran_logo)
+(MIT; Copyright (c) 2026 Sebastian G. Mutz), unchanged; its licence is
+`docs/assets/LICENSE.powered_by_fortran_logo`.
 
 [libxc](https://github.com/libxc/libxc) is used only as the test reference
 for `check_xc` and friends, reached through [pyscf] -- never linked into
