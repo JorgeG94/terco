@@ -18,7 +18,7 @@ module trc_scf_context
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_sph, only: sph_cart_to_sph
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_error, only: error_t, ERROR_GENERIC
    use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
    use trc_xc_batch, only: trc_xc_grid_t
@@ -124,6 +124,18 @@ contains
       !! this call -- unchanged from before this argument existed.
       type(timer_type) :: tm
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
+      character(len=:), allocatable :: refusal
+
+      ! Before anything is allocated or uploaded: a shell above this build's
+      ! four-centre kernels has no kernel, and its integrals would come out
+      ! as NaN. A --df run checks its own ceiling in df_jk_t%setup.
+      if (.not. cfg%df) then
+         refusal = eri_lmax_refusal(b)
+         if (len(refusal) > 0) then
+            call err%set(ERROR_GENERIC, "trc_scf: "//refusal)
+            return
+         end if
+      end if
 
       this%nao_c = b%nao
       this%sph = b%spherical

@@ -99,6 +99,11 @@ int trc_multipole_count(void);
  */
 int trc_compute_multipoles(trc_handle_t basis, trc_handle_t pairs, const double* origin, double* mmat);
 
+/**
+ * The four-centre engine for `basis` at screening threshold `thresh`.
+ * TRC_ERR_UNSUPPORTED, and no handle, when the basis has a shell
+ * above this build's four-centre ceiling (trc_max_angular_momentum).
+ */
 int trc_eri_create(trc_handle_t basis, double thresh, trc_handle_t* handle);
 
 int trc_eri_destroy(trc_handle_t handle);

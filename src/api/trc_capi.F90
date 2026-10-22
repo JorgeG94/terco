@@ -186,7 +186,7 @@ module trc_capi
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t
    use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
@@ -767,6 +767,9 @@ contains
    !
    function trc_eri_create(basis, thresh, handle) result(status) &
       bind(c, name="trc_eri_create")
+      !! The four-centre engine for `basis` at screening threshold `thresh`.
+      !! TRC_ERR_UNSUPPORTED, and no handle, when the basis has a shell
+      !! above this build's four-centre ceiling (trc_max_angular_momentum).
       type(c_ptr), value :: basis
       real(c_double), value :: thresh
       type(c_ptr), intent(out) :: handle
@@ -777,6 +780,10 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(basis)) return
       call c_f_pointer(basis, bb)
+      ! No context to carry a message: the status alone says the basis is
+      ! above this build's four-centre kernels (trc_max_angular_momentum).
+      status = TRC_ERR_UNSUPPORTED
+      if (len(eri_lmax_refusal(bb%b)) > 0) return
       allocate (eb)
       call eb%e%build(bb%b, real(thresh, dp))
       handle = c_loc(eb)
@@ -2637,6 +2644,22 @@ contains
       if (nalpha > n) then
          cx%message = "trc_run_scf: more electrons than functions"
          return
+      end if
+      ! A shell above this build's four-centre kernels has no kernel: its
+      ! integrals came out as NaN and the run died much later in the
+      ! eigensolver. Checked even under --df, whose SAD guess still runs
+      ! four-centre atomic SCFs; trc_max_angular_momentum gives the
+      ! ceilings up front.
+      if (.not. cx%opts%df .or. cx%guess_kind == TRC_GUESS_SAD .or. cx%guess_kind == TRC_GUESS_SADQ) then
+         block
+            character(len=:), allocatable :: refusal
+            refusal = eri_lmax_refusal(cx%bb%b)
+            if (len(refusal) > 0) then
+               status = TRC_ERR_UNSUPPORTED
+               cx%message = "trc_run_scf: "//refusal
+               return
+            end if
+         end block
       end if
       call scf_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
       ! The communicator first, so the guess below binds the same device
