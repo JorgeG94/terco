@@ -31,7 +31,8 @@ module trc_scf_state
       !! iteration's own share, not a running total (see `trc_scf_driver`'s
       !! own header on why that differs between SAD's first iteration and
       !! its plateau).
-      type(timer_type) :: fock, xc, pcm, rest
+      type(timer_type) :: fock, xc, pcm, rest, run
+      !! `run` times the whole of `trc_scf_run`, setup to the last iteration.
       real(dp) :: t_fock = 0.0_dp, t_xc = 0.0_dp, t_rest = 0.0_dp
       real(dp) :: t_pcm = 0.0_dp
       real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp, tr_it = 0.0_dp

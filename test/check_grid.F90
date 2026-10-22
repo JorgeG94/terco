@@ -2,8 +2,9 @@
 ! The molecular quadrature: closed forms and identities.
 !
 ! The grid modules came from metalquicha with a test-drive suite of fifty
-! cases. terco does not carry test-drive, so this is the subset of those
-! cases that a wrong grid cannot pass, as one program:
+! cases. terco did not carry test-drive when this was written, so this is
+! the subset of those cases that a wrong grid cannot pass, as one program
+! (still to be ported to test-drive):
 !
 !   * a Lebedev order integrates low polynomials over the sphere exactly,
 !     its weights sum to one, and every point has its antipode -- the

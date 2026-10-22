@@ -127,6 +127,12 @@ before any non-trivial change. The rules that most often break builds:
 - New behaviour needs a check under `test/` that fails without the change,
   against an external reference where one exists. A test that only checks
   that a run completes is not a test.
+- **New checks use [test-drive](https://github.com/fortran-lang/test-drive)**
+  (`cmake/modules/Findtest-drive.cmake`): a module whose `collect_*` routine
+  returns `new_unittest` entries, each a `check` with a message, run by
+  `run_testsuite`; link it with `test-drive::test-drive`. `test/check_si.F90`
+  is the pattern. Most existing checks are still plain programs; port one
+  when you touch it.
 - **Two tiers** (`test/pyscf_refs/README.md`):
   - *Anchors*: `test/pyscf_refs/*.ref`, written offline by
     `generate.py` (pyscf never runs in CI). Each `.ref` carries a

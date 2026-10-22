@@ -1,14 +1,14 @@
 !
 ! A named set of timed steps, shared by every driver that reports a table
 ! like RI-MP2's: device-synced wall time per step, an optional flop count
-! (GFLOP/s), an optional byte count for a bandwidth-bound step (GB/s
-! instead), an NVTX range opened and closed at the same device syncs as the
+! (FLOP/s), an optional byte count for a bandwidth-bound step (B/s
+! instead, both SI-prefixed), an NVTX range opened and closed at the same device syncs as the
 ! timer, and a report routine that prints the table the way RI-MP2 always
 ! has. Lifted out of trc_rimp2_driver.F90 so trc_scf_df.F90 (DF-JK) reports
 ! in exactly the same shape rather than a second copy of the same bookkeeping.
 !
 ! ONE OBJECT, N STEPS. `init` takes the step names and (for a bandwidth-bound
-! step) which ones report GB/s instead of GFLOP/s; `step_on`/`step_off`
+! step) which ones report B/s instead of FLOP/s; `step_on`/`step_off`
 ! bracket one call to a step, `add_flop`/`add_bytes` record its operation
 ! count once (added, so a step called many times across an iteration loop
 ! accumulates both time and operations the same way); `report` prints the
@@ -21,6 +21,8 @@ module trc_step_table
    use trc_linalg, only: trc_linalg_t
    use pic_flop_recorder, only: flop_recorder_type
    use pic_profiler, only: profiler_start, profiler_stop
+   use trc_si, only: si_string
+   use pic_strings, only: to_string
    implicit none
    private
 
@@ -36,7 +38,7 @@ module trc_step_table
       type(flop_recorder_type), allocatable :: fl(:)
       integer(int64), allocatable :: bytes(:)
       logical, allocatable :: is_bytes(:)
-      !! This step reports GB/s (from `bytes`) rather than GFLOP/s (from `fl`).
+      !! This step reports B/s (from `bytes`) rather than FLOP/s (from `fl`).
       integer :: n = 0
    contains
       procedure :: init => step_table_init
@@ -166,8 +168,9 @@ contains
 
    !
    ! One line per step: device time, operations (or bytes) executed and the
-   ! rate; then, when `subtotal_mask` is given, one more line summing the
-   ! time and flops of the masked steps under `subtotal_label` (RI-MP2's
+   ! rate, each count printed with the SI prefix that keeps it under 1000
+   ! (trc_si); then, when `subtotal_mask` is given, one more line summing
+   ! the time and flops of the masked steps under `subtotal_label` (RI-MP2's
    ! "all dense algebra" row); then a total. `rank`/`nranks` are printed
    ! next to the total only -- the caller's own job to decide whether the
    ! per-step numbers are one rank's share or already summed.
@@ -178,44 +181,25 @@ contains
       integer, intent(in) :: rank, nranks
       logical, intent(in), optional :: subtotal_mask(:)
       character(len=*), intent(in), optional :: subtotal_label
+      integer, parameter :: TIME_W = 12, WORK_W = 15, RATE_W = 16
       integer :: k
-      real(dp) :: gf, gb, tg, fg
-      block
-         character(len=1024) :: logline
-         write (logline, "(a,a)") "  "//this%prefix//": step", "                   time (s)        GFLOP     GFLOP/s"
-         call global_logger%performance(trim(logline))
-      end block
+      real(dp) :: tg, fg, fa
+      call global_logger%performance("  "//this%prefix//": step"//repeat(" ", 3 + NAME_LEN - 4) &
+                                     //right("time (s)", TIME_W)//right("work", WORK_W)//right("rate", RATE_W))
       do k = 1, this%n
          if (this%is_bytes(k)) then
-            gb = real(this%bytes(k), dp)*1.0e-9_dp
             if (this%bytes(k) > 0 .and. this%t(k) > 0.0_dp) then
-               block
-                  character(len=1024) :: logline
-                  write (logline, "(a,a24,f12.3,a13,f12.1,a)") "  "//this%prefix//":   ", this%names(k), this%t(k), &
-                     "-", gb/this%t(k), " GB/s"
-                  call global_logger%performance(trim(logline))
-               end block
+               call row(this%names(k), this%t(k), right("-", WORK_W), &
+                        si_string(real(this%bytes(k), dp)/this%t(k), "B/s", RATE_W))
             else
-               block
-                  character(len=1024) :: logline
-                  write (logline, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
-                  call global_logger%performance(trim(logline))
-               end block
+               call row(this%names(k), this%t(k), right("-", WORK_W), right("-", RATE_W))
             end if
          else
-            gf = real(this%fl(k)%get(), dp)*1.0e-9_dp
             if (this%fl(k)%get() > 0 .and. this%t(k) > 0.0_dp) then
-               block
-                  character(len=1024) :: logline
-                  write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", this%names(k), this%t(k), gf, gf/this%t(k)
-                  call global_logger%performance(trim(logline))
-               end block
+               call row(this%names(k), this%t(k), si_string(real(this%fl(k)%get(), dp), "FLOP", WORK_W), &
+                        si_string(real(this%fl(k)%get(), dp)/this%t(k), "FLOP/s", RATE_W))
             else
-               block
-                  character(len=1024) :: logline
-                  write (logline, "(a,a24,f12.3,a13,a12)") "  "//this%prefix//":   ", this%names(k), this%t(k), "-", "-"
-                  call global_logger%performance(trim(logline))
-               end block
+               call row(this%names(k), this%t(k), right("-", WORK_W), right("-", RATE_W))
             end if
          end if
       end do
@@ -225,28 +209,48 @@ contains
          do k = 1, this%n
             if (subtotal_mask(k)) then
                tg = tg + this%t(k)
-               fg = fg + real(this%fl(k)%get(), dp)*1.0e-9_dp
+               fg = fg + real(this%fl(k)%get(), dp)
             end if
          end do
-         if (tg > 0.0_dp) then
-            if (tg > 0.0_dp) then
-               block
-                  character(len=1024) :: logline
-                  write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  "//this%prefix//":   ", &
-                     label(subtotal_label), tg, fg, fg/tg
-                  call global_logger%performance(trim(logline))
-               end block
-            end if
-         end if
+         if (tg > 0.0_dp) call row(label(subtotal_label), tg, si_string(fg, "FLOP", WORK_W), &
+                                   si_string(fg/tg, "FLOP/s", RATE_W))
       end if
-      block
-         character(len=1024) :: logline
-         write (logline, "(a,a24,f12.3,a,i0,a,i0)") "  "//this%prefix//":   ", label("total"), t_total, &
-            "   rank ", rank, " of ", nranks
-         call global_logger%performance(trim(logline))
-      end block
+      ! The whole table's work over its whole wall time (setup, transfers and
+      ! untimed host work included): the rate the run actually achieved.
+      fa = 0.0_dp
+      do k = 1, this%n
+         if (.not. this%is_bytes(k)) fa = fa + real(this%fl(k)%get(), dp)
+      end do
+      if (fa > 0.0_dp .and. t_total > 0.0_dp) then
+         call row(label("total"), t_total, si_string(fa, "FLOP", WORK_W), si_string(fa/t_total, "FLOP/s", RATE_W), &
+                  "   rank "//to_string(rank)//" of "//to_string(nranks))
+      else
+         call row(label("total"), t_total, right("-", WORK_W), right("-", RATE_W), &
+                  "   rank "//to_string(rank)//" of "//to_string(nranks))
+      end if
 
    contains
+
+      subroutine row(name, t, work, rate, tail)
+         character(len=*), intent(in) :: name, work, rate
+         real(dp), intent(in) :: t
+         character(len=*), intent(in), optional :: tail
+         character(len=TIME_W) :: tbuf
+         write (tbuf, "(f12.3)") t
+         if (present(tail)) then
+            call global_logger%performance("  "//this%prefix//":   "//label(name)//tbuf//work//rate//tail)
+         else
+            call global_logger%performance("  "//this%prefix//":   "//label(name)//tbuf//work//rate)
+         end if
+      end subroutine row
+
+      pure function right(t, w) result(r)
+         !! `t` right-justified in `w` characters.
+         character(len=*), intent(in) :: t
+         integer, intent(in) :: w
+         character(len=:), allocatable :: r
+         r = repeat(" ", max(0, w - len(t)))//t
+      end function right
 
       pure function label(t) result(l)
          !! `t` left-justified in the table's column, as a24 would otherwise
