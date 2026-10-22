@@ -24,7 +24,8 @@ module trc_eri
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
    use trc_boys, only: boys_init
-   use trc_tables, only: tables_init
+   use trc_tables, only: tables_init, LMAX
+   use pic_strings, only: to_string
    use trc_cart, only: cart_init
    use trc_hgp, only: build_pairs_hgp
    use trc_screen, only: schwarz_bounds_hgp, pair_index
@@ -39,7 +40,7 @@ module trc_eri
                              decon_expand_host, decon_fold_host
    implicit none
    private
-   public :: trc_eri_t
+   public :: trc_eri_t, eri_lmax_refusal
 
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
@@ -116,6 +117,28 @@ module trc_eri
 
 contains
 
+   function eri_lmax_refusal(b) result(msg)
+      !! "" when this build's four-centre integrals cover every shell of
+      !! `b`; otherwise why not, naming the rebuild that would.
+      type(trc_basis_t), intent(in) :: b
+      character(len=:), allocatable :: msg
+      character(len=*), parameter :: LNAME = "spdfghik"
+      integer, parameter :: LMAX_BUILDABLE = 3
+      !! The highest TERCO_LMAX the generators support.
+      integer :: lb
+      msg = ""
+      if (b%nshell == 0) return
+      lb = maxval(b%sh_l)
+      if (lb <= LMAX) return
+      msg = "the basis has "//LNAME(lb + 1:lb + 1)//" functions (l = "//to_string(lb)//"), but this build's " &
+            //"four-centre integrals stop at "//LNAME(LMAX + 1:LMAX + 1)//" (l = "//to_string(LMAX)//"); "
+      if (lb <= LMAX_BUILDABLE) then
+         msg = msg//"rebuild with -DTERCO_LMAX="//to_string(lb)
+      else
+         msg = msg//"terco's integrals go up to f (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
+      end if
+   end function eri_lmax_refusal
+
    !
    ! Everything that depends on the geometry and not on the density.
    !
@@ -139,6 +162,15 @@ contains
 
       integer :: bres
       character(len=8) :: bt_env
+      character(len=:), allocatable :: refusal
+
+      ! A shell above the generated kernels has no kernel at all: the
+      ! integrals came out as NaN and the run died much later, in the
+      ! eigensolver, with nothing pointing at the basis. The SCF and the C
+      ! API refuse this with a status first; this is the last line for a
+      ! caller that builds the engine directly, which has no error path.
+      refusal = eri_lmax_refusal(b)
+      if (len(refusal) > 0) error stop "trc_eri: "//refusal
 
       this%rank = 0
       this%nranks = 1

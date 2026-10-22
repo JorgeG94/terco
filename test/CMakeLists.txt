@@ -104,6 +104,11 @@ terco_add_check(check_linalg_mat check_linalg_mat.F90)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# A basis above this build's four-centre ceiling is refused with a message,
+# not run into NaN integrals and an eigensolver failure.
+terco_add_check(check_lmax_refusal check_lmax_refusal.F90)
+target_link_libraries(check_lmax_refusal PRIVATE test-drive::test-drive terco_c_interfaces)
+
 #
 # The staleness guard over every committed pyscf reference under
 # test/pyscf_refs/ (see that directory's README.md and check_staleness.py's

@@ -178,6 +178,9 @@ module trc_c_interfaces
       end function trc_compute_multipoles
 
       integer(c_int) function trc_eri_create(basis, thresh, handle) bind(c) result(res)
+         !! The four-centre engine for `basis` at screening threshold `thresh`.
+         !! TRC_ERR_UNSUPPORTED, and no handle, when the basis has a shell
+         !! above this build's four-centre ceiling (trc_max_angular_momentum).
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: basis
