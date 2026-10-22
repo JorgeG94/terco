@@ -27,6 +27,8 @@ module trc_constants
    public :: AMU_TO_KG, AMU_TO_ME
    public :: KB_SI, H_SI, HBAR_SI, C_SI, NA_SI, E_CHARGE_SI
    public :: KB_HARTREE, R_CALMOLK, CAL_TO_J, ATM_TO_PA, AU_TO_DEBYE
+   public :: HARTREE_TO_CALMOL, CM1_TO_KELVIN
+   public :: HARTREE_PER_AMU_BOHR2_TO_CM1, ROTTEMP_AMUA2_TO_K, ROTCONST_AMUA2_TO_GHZ
 
    ! --- legacy, kept on purpose -------------------------------------------------
    public :: BOHR_TO_ANGSTROM_CODATA2010
@@ -91,6 +93,43 @@ module trc_constants
    real(dp), parameter :: AU_TO_DEBYE = 2.541746473_dp
       !! CODATA 2018: the atomic unit of electric dipole moment (e*a0),
       !! in Debye.
+   real(dp), parameter :: HARTREE_TO_CALMOL = HARTREE_TO_KCALMOL*1000.0_dp
+      !! Derived: HARTREE_TO_KCALMOL, in cal/mol instead of kcal/mol -- the
+      !! denominator trc_thermo.F90 uses to fold an entropy term (already
+      !! in cal/(mol K)) back into a Gibbs correction in Hartree.
+   real(dp), parameter :: CM1_TO_KELVIN = H_SI*C_SI*1.0e2_dp/KB_SI
+      !! Derived: h*c/k_B, converted from m^-1 to cm^-1 (the 1e2) -- a
+      !! vibrational wavenumber's characteristic temperature, theta_v =
+      !! CM1_TO_KELVIN * nu_tilde. mqc's own CM1_TO_KELVIN literal
+      !! (1.4387773538277) is the CODATA 2014 value; this one, computed
+      !! from the CODATA 2018 constants already above, is 1.438776877,
+      !! 3.3e-7 relative higher -- negligible next to the SCF/gradient
+      !! noise a finite-difference Hessian carries (trc_vib.F90's header).
+   real(dp), parameter :: HARTREE_PER_AMU_BOHR2_TO_CM1 = &
+      sqrt(HARTREE_TO_J/(AMU_TO_KG*(BOHR_TO_ANGSTROM*1.0e-10_dp)**2))/(TWO_PI*C_SI)*1.0e-2_dp
+      !! Derived: sqrt(E_h / (amu * a0^2)) in cm^-1 -- the factor
+      !! trc_vib.F90 multiplies sign(lambda)*sqrt(|lambda|) by to turn a
+      !! mass-weighted-Hessian eigenvalue (Hartree/(amu bohr^2)) into a
+      !! wavenumber. The 1e-10 is Angstrom -> metre (folded into
+      !! BOHR_TO_ANGSTROM to get a0 in metres) and the 1e-2 is m^-1 ->
+      !! cm^-1; both exact unit conversions, not measured constants. Same
+      !! formula pyscf's hessian/thermo.py uses (`au2hz`, CODATA-2014-ish
+      !! nist values there); the two agree to ~1e-9 relative (measured),
+      !! which is why a finite-difference frequency test can hold a tight
+      !! tolerance despite the different CODATA years.
+   real(dp), parameter :: ROTTEMP_AMUA2_TO_K = H_SI**2/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2*KB_SI)
+      !! Derived: h^2 / (8 pi^2 * amu * Angstrom^2 * k_B) -- the
+      !! rotational temperature theta_r = ROTTEMP_AMUA2_TO_K / I, I in
+      !! amu*Angstrom^2. mqc's own ROTTEMP_AMUA2_TO_K literal, 24.2637, is
+      !! wrong in the 4th digit (mqc's defect D5); this evaluates to
+      !! 24.2544, matching the corrected value mqc's own validation
+      !! section computed against pyscf.
+   real(dp), parameter :: ROTCONST_AMUA2_TO_GHZ = H_SI/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2)*1.0e-9_dp
+      !! Derived: h / (8 pi^2 * amu * Angstrom^2), in GHz -- a rotational
+      !! constant B = ROTCONST_AMUA2_TO_GHZ / I. mqc's own
+      !! ROTCONST_AMUA2_TO_GHZ literal, 505379.07, is this same physical
+      !! coefficient but in MHz, mislabelled GHz (mqc's defect D3); this
+      !! evaluates to 505.379, the GHz value.
 
    real(dp), parameter :: BOHR_TO_ANGSTROM_CODATA2010 = 0.52917721092_dp
       !! CODATA 2010, NOT 2018 -- kept so trc_pcm_radii.F90's cavity table,

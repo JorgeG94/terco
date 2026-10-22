@@ -40,6 +40,8 @@ target_sources(
           scf/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
           scf/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
           scf/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
+          scf/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
+          scf/trc_thermo.F90             # ideal-gas RRHO thermochemistry from trc_vib's frequencies
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks

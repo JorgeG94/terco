@@ -851,6 +851,15 @@ set_tests_properties(
 # surface arrays from test/pyscf_refs/pcm_cavity_water.ref.
 #
 terco_add_check(check_pcm_cavity check_pcm_cavity.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+#
+# Harmonic vibrational analysis and RRHO thermochemistry (trc_vib.F90,
+# trc_thermo.F90) against pyscf's own analytic RHF/STO-3G Hessian,
+# harmonic_analysis and thermo on water/HCN/planar-NH3
+# (test/pyscf_refs/vib_thermo_*.ref) -- plus the TR-invariance and
+# linear-molecule properties no stored number can check.
+#
+terco_add_check(check_vib_thermo_vs_pyscf check_vib_thermo_vs_pyscf.F90 NEEDS_PYSCF_REF)
 #
 # Its solute-surface integrals (gen_1e.py's --pcm kernels) on fixed inputs
 # against pyscf's int3c2e/fakemol path: water/6-31G* (d) at every ceiling,

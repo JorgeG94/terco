@@ -7,10 +7,11 @@ module check_constants_suite
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
-   use trc_constants, only: PI, SQRT_PI, ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, &
-                            HARTREE_TO_J, HARTREE_TO_KCALMOL, HARTREE_TO_CM1, &
-                            KB_SI, KB_HARTREE, H_SI, C_SI, NA_SI, CAL_TO_J, N_ELEMENTS, &
-                            trc_atomic_mass, trc_atomic_mass_average
+   use trc_constants, only: PI, TWO_PI, SQRT_PI, ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM, &
+                            HARTREE_TO_J, HARTREE_TO_KCALMOL, HARTREE_TO_CM1, HARTREE_TO_CALMOL, &
+                            KB_SI, KB_HARTREE, H_SI, C_SI, NA_SI, CAL_TO_J, AMU_TO_KG, N_ELEMENTS, &
+                            CM1_TO_KELVIN, HARTREE_PER_AMU_BOHR2_TO_CM1, ROTTEMP_AMUA2_TO_K, &
+                            ROTCONST_AMUA2_TO_GHZ, trc_atomic_mass, trc_atomic_mass_average
    implicit none
    private
    public :: collect_constants
@@ -25,6 +26,14 @@ contains
                   new_unittest("kB in Hartree matches kB in J / Hartree in J", test_kb_hartree), &
                   new_unittest("Hartree->kcal/mol matches Hartree->J * NA / 4184", test_hartree_kcalmol), &
                   new_unittest("Hartree->cm-1 matches Hartree->J / (h c 100)", test_hartree_cm1), &
+                  new_unittest("Hartree->cal/mol matches Hartree->kcal/mol * 1000", test_hartree_calmol), &
+                  new_unittest("cm-1 -> K matches h c 100 / kB", test_cm1_to_kelvin), &
+                  new_unittest("vib. freq. coefficient matches sqrt(Eh/(amu a0^2))/(2 pi c) 1e-2", &
+                               test_freq_coeff), &
+                  new_unittest("rotational-temperature coefficient matches h^2/(8 pi^2 amu Ang^2 kB)", &
+                               test_rottemp), &
+                  new_unittest("rotational-constant coefficient matches h/(8 pi^2 amu Ang^2) in GHz", &
+                               test_rotconst_ghz), &
                   new_unittest("isotope masses: H, C, O, P", test_isotope_masses), &
                   new_unittest("standard atomic weights: H, C, O, P", test_average_masses), &
                   new_unittest("an atomic number outside [1, N_ELEMENTS] is refused", test_bad_z) &
@@ -58,6 +67,56 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call check(error, HARTREE_TO_CM1, HARTREE_TO_J/(H_SI*C_SI*100.0_dp), thr=1.0e-10_dp, rel=.true.)
    end subroutine test_hartree_cm1
+
+   subroutine test_hartree_calmol(error)
+      type(error_type), allocatable, intent(out) :: error
+      call check(error, HARTREE_TO_CALMOL, HARTREE_TO_KCALMOL*1000.0_dp, thr=1.0e-12_dp, rel=.true.)
+   end subroutine test_hartree_calmol
+
+   subroutine test_cm1_to_kelvin(error)
+      !! trc_vib.F90/trc_thermo.F90's own vibrational-temperature factor:
+      !! theta_v = CM1_TO_KELVIN * wavenumber.
+      type(error_type), allocatable, intent(out) :: error
+      call check(error, CM1_TO_KELVIN, H_SI*C_SI*1.0e2_dp/KB_SI, thr=1.0e-10_dp, rel=.true.)
+   end subroutine test_cm1_to_kelvin
+
+   subroutine test_freq_coeff(error)
+      !! trc_vib.F90's own cm^-1 conversion: freq_cm1 = sign(lambda) *
+      !! sqrt(|lambda|) * HARTREE_PER_AMU_BOHR2_TO_CM1, lambda a
+      !! mass-weighted-Hessian eigenvalue in Hartree/(amu bohr^2).
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: expect
+      expect = sqrt(HARTREE_TO_J/(AMU_TO_KG*(BOHR_TO_ANGSTROM*1.0e-10_dp)**2))/(TWO_PI*C_SI)*1.0e-2_dp
+      call check(error, HARTREE_PER_AMU_BOHR2_TO_CM1, expect, thr=1.0e-10_dp, rel=.true.)
+      ! And the value itself: CODATA 2018 gives ~5140.487 (mqc's own ad hoc
+      ! sqrt(AU_TO_CM1) = 5140.48733 cm^-1, 3.6e-8 relative higher --
+      ! HESSIAN_VIB_THERMO_SPEC.md section 3.4).
+      if (allocated(error)) return
+      call check(error, HARTREE_PER_AMU_BOHR2_TO_CM1, 5140.487_dp, thr=1.0e-3_dp, rel=.true.)
+   end subroutine test_freq_coeff
+
+   subroutine test_rottemp(error)
+      !! mqc's defect D5: its own ROTTEMP_AMUA2_TO_K literal is 24.2637,
+      !! wrong in the 4th digit; this one evaluates to 24.2544.
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: expect
+      expect = H_SI**2/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2*KB_SI)
+      call check(error, ROTTEMP_AMUA2_TO_K, expect, thr=1.0e-10_dp, rel=.true.)
+      if (allocated(error)) return
+      call check(error, ROTTEMP_AMUA2_TO_K, 24.2544_dp, thr=1.0e-4_dp, rel=.true.)
+   end subroutine test_rottemp
+
+   subroutine test_rotconst_ghz(error)
+      !! mqc's defect D3: its own ROTCONST_AMUA2_TO_GHZ literal (505379.07)
+      !! is the MHz coefficient mislabelled GHz; this one evaluates to
+      !! 505.379, the actual GHz value.
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: expect
+      expect = H_SI/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2)*1.0e-9_dp
+      call check(error, ROTCONST_AMUA2_TO_GHZ, expect, thr=1.0e-10_dp, rel=.true.)
+      if (allocated(error)) return
+      call check(error, ROTCONST_AMUA2_TO_GHZ, 505.379_dp, thr=1.0e-4_dp, rel=.true.)
+   end subroutine test_rotconst_ghz
 
    subroutine test_isotope_masses(error)
       !! pyscf 2.14.0's COMMON_ISOTOPE_MASSES[1, 6, 8, 15].
