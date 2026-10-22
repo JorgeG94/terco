@@ -223,6 +223,7 @@ contains
       ! defaults, and the env-hook overrides (trc_scf_settings). `scf_config` is
       ! immutable from here on, and the rest of this routine reads it
       ! directly.
+      call scf_timers%run%start()
       ok = scf_config%resolve(scf_options, nalpha, nbeta, msg=msg, comm=comm)
       if (.not. ok) then
          scf_result%message = msg
@@ -557,10 +558,12 @@ contains
          !! which its default INFO level shows: the phases, then setup and
          !! the ERI engine's build broken into their steps.
          character(len=160) :: line
-         write (line, "(a,7f10.3)") "          ", scf_context%t_setup, scf_context%t_grid, scf_timers%t_fock, scf_timers%t_xc, &
-            scf_timers%tx_pts, scf_timers%tx_prs, scf_timers%t_rest
+         ! `total` is the run's own wall time, so it also holds what no column
+         ! times (PCM, the guess density's upload, the final transfers).
+         write (line, "(a,8f10.3)") "          ", scf_context%t_setup, scf_context%t_grid, scf_timers%t_fock, scf_timers%t_xc, &
+            scf_timers%tx_pts, scf_timers%tx_prs, scf_timers%t_rest, scf_timers%run%get_elapsed_time()
          call global_logger%performance( &
-            "   time (s)   setup      grid      fock        xc   (points     pairs)      linalg")
+            "   time (s)   setup      grid      fock        xc   (points     pairs)      linalg     total")
          call global_logger%performance(trim(line))
          call global_logger%performance( &
             "   setup (s)  pairs        1e   sph fold       eri    linalg    orthog")

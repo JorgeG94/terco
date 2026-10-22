@@ -21,7 +21,8 @@ module trc_step_table
    use trc_linalg, only: trc_linalg_t
    use pic_flop_recorder, only: flop_recorder_type
    use pic_profiler, only: profiler_start, profiler_stop
-   use trc_si, only: si_value_t
+   use trc_si, only: si_string
+   use pic_strings, only: to_string
    implicit none
    private
 
@@ -182,21 +183,21 @@ contains
       character(len=*), intent(in), optional :: subtotal_label
       integer, parameter :: TIME_W = 12, WORK_W = 15, RATE_W = 16
       integer :: k
-      real(dp) :: tg, fg
+      real(dp) :: tg, fg, fa
       call global_logger%performance("  "//this%prefix//": step"//repeat(" ", 3 + NAME_LEN - 4) &
                                      //right("time (s)", TIME_W)//right("work", WORK_W)//right("rate", RATE_W))
       do k = 1, this%n
          if (this%is_bytes(k)) then
             if (this%bytes(k) > 0 .and. this%t(k) > 0.0_dp) then
                call row(this%names(k), this%t(k), right("-", WORK_W), &
-                        si_value_t(real(this%bytes(k), dp)/this%t(k), "B/s")%to_string(RATE_W))
+                        si_string(real(this%bytes(k), dp)/this%t(k), "B/s", RATE_W))
             else
                call row(this%names(k), this%t(k), right("-", WORK_W), right("-", RATE_W))
             end if
          else
             if (this%fl(k)%get() > 0 .and. this%t(k) > 0.0_dp) then
-               call row(this%names(k), this%t(k), si_value_t(real(this%fl(k)%get(), dp), "FLOP")%to_string(WORK_W), &
-                        si_value_t(real(this%fl(k)%get(), dp)/this%t(k), "FLOP/s")%to_string(RATE_W))
+               call row(this%names(k), this%t(k), si_string(real(this%fl(k)%get(), dp), "FLOP", WORK_W), &
+                        si_string(real(this%fl(k)%get(), dp)/this%t(k), "FLOP/s", RATE_W))
             else
                call row(this%names(k), this%t(k), right("-", WORK_W), right("-", RATE_W))
             end if
@@ -211,24 +212,36 @@ contains
                fg = fg + real(this%fl(k)%get(), dp)
             end if
          end do
-         if (tg > 0.0_dp) call row(label(subtotal_label), tg, si_value_t(fg, "FLOP")%to_string(WORK_W), &
-                                   si_value_t(fg/tg, "FLOP/s")%to_string(RATE_W))
+         if (tg > 0.0_dp) call row(label(subtotal_label), tg, si_string(fg, "FLOP", WORK_W), &
+                                   si_string(fg/tg, "FLOP/s", RATE_W))
       end if
-      block
-         character(len=1024) :: logline
-         write (logline, "(a,a24,f12.3,a,i0,a,i0)") "  "//this%prefix//":   ", label("total"), t_total, &
-            "   rank ", rank, " of ", nranks
-         call global_logger%performance(trim(logline))
-      end block
+      ! The whole table's work over its whole wall time (setup, transfers and
+      ! untimed host work included): the rate the run actually achieved.
+      fa = 0.0_dp
+      do k = 1, this%n
+         if (.not. this%is_bytes(k)) fa = fa + real(this%fl(k)%get(), dp)
+      end do
+      if (fa > 0.0_dp .and. t_total > 0.0_dp) then
+         call row(label("total"), t_total, si_string(fa, "FLOP", WORK_W), si_string(fa/t_total, "FLOP/s", RATE_W), &
+                  "   rank "//to_string(rank)//" of "//to_string(nranks))
+      else
+         call row(label("total"), t_total, right("-", WORK_W), right("-", RATE_W), &
+                  "   rank "//to_string(rank)//" of "//to_string(nranks))
+      end if
 
    contains
 
-      subroutine row(name, t, work, rate)
+      subroutine row(name, t, work, rate, tail)
          character(len=*), intent(in) :: name, work, rate
          real(dp), intent(in) :: t
+         character(len=*), intent(in), optional :: tail
          character(len=TIME_W) :: tbuf
          write (tbuf, "(f12.3)") t
-         call global_logger%performance("  "//this%prefix//":   "//label(name)//tbuf//work//rate)
+         if (present(tail)) then
+            call global_logger%performance("  "//this%prefix//":   "//label(name)//tbuf//work//rate//tail)
+         else
+            call global_logger%performance("  "//this%prefix//":   "//label(name)//tbuf//work//rate)
+         end if
       end subroutine row
 
       pure function right(t, w) result(r)

@@ -4,7 +4,7 @@ program check_si
    !! rounding up to "1000.00", and right-justified when a width is given.
    !! The cases are the RI-MP2 table's own (2453056.2 GFLOP and friends).
    use pic_types, only: dp
-   use trc_si, only: si_value_t
+   use trc_si, only: si_value_t, si_string
    implicit none
    logical :: ok
 
@@ -18,8 +18,8 @@ program check_si
    call expect(si_value_t(999.996e12_dp, "FLOP"), "1.00 PFLOP")
    call expect(si_value_t(0.5_dp, "FLOP"), "0.50 FLOP")
    call expect(si_value_t(3.0e21_dp, "FLOP"), "3000.00 EFLOP")
-   if (si_value_t(2453056.2e9_dp, "FLOP")%to_string(15) /= "     2.45 PFLOP") then
-      print '(a)', "check_si: FAILED: width 15 gave '"//si_value_t(2453056.2e9_dp, "FLOP")%to_string(15)//"'"
+   if (si_string(2453056.2e9_dp, "FLOP", 15) /= "     2.45 PFLOP") then
+      print '(a)', "check_si: FAILED: width 15 gave '"//si_string(2453056.2e9_dp, "FLOP", 15)//"'"
       ok = .false.
    end if
 

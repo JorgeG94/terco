@@ -10,7 +10,7 @@ module trc_si
    implicit none
    private
 
-   public :: si_value_t
+   public :: si_value_t, si_string
 
    integer, parameter :: NPREFIX = 6
    !! Prefixes past none: kilo through exa.
@@ -47,5 +47,17 @@ contains
          if (len(s) < width) s = repeat(" ", width - len(s))//s
       end if
    end function si_value_to_string
+
+   function si_string(value, unit, width) result(s)
+      !! `si_value_t(value, unit)%to_string(width)` in one call, since a
+      !! method cannot be called on a structure constructor directly.
+      real(dp), intent(in) :: value
+      character(len=*), intent(in) :: unit
+      integer, intent(in), optional :: width
+      character(len=:), allocatable :: s
+      type(si_value_t) :: q
+      q = si_value_t(value, unit)
+      s = q%to_string(width)
+   end function si_string
 
 end module trc_si
