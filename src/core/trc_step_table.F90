@@ -15,6 +15,13 @@
 ! table, an optional "all dense algebra"-style subtotal row over a caller-
 ! chosen subset of steps, and a total.
 !
+! OVER MPI RANKS each rank fills its own table; `reduce` (collective) turns
+! them into the job's: a step's time is the slowest rank's, since the job
+! waits for it, and its operations are summed over the ranks, except for a
+! step every rank runs in full (`replicated_steps` in `init`), whose work
+! counts once. A per-rank table instead shows one rank's share, and its
+! rate stays flat however many ranks run.
+!
 module trc_step_table
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
@@ -23,6 +30,7 @@ module trc_step_table
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_si, only: si_string
    use pic_strings, only: to_string
+   use pic_mpi_lib, only: comm_t, allreduce, MPI_SUM, MPI_MAX
    implicit none
    private
 
@@ -39,7 +47,11 @@ module trc_step_table
       integer(int64), allocatable :: bytes(:)
       logical, allocatable :: is_bytes(:)
       !! This step reports B/s (from `bytes`) rather than FLOP/s (from `fl`).
+      logical, allocatable :: replicated(:)
+      !! Every rank runs this step in full: `reduce` counts its work once.
       integer :: n = 0
+      integer :: nranks_reduced = 0
+      !! The rank count `reduce` summed over; 0 while the table is one rank's.
    contains
       procedure :: init => step_table_init
       procedure :: step_on => step_table_on
@@ -47,6 +59,7 @@ module trc_step_table
       procedure :: add_time => step_table_add_time
       procedure :: add_flop => step_table_add_flop
       procedure :: add_bytes => step_table_add_bytes
+      procedure :: reduce => step_table_reduce
       procedure :: report => step_table_report
       procedure :: reset => step_table_reset
    end type step_table_t
@@ -56,30 +69,39 @@ contains
    !
    ! `names` fixes the step count and their print order; `bytes_steps`
    ! (optional, by 1-based index into `names`) marks which ones are
-   ! bandwidth- rather than flop-bound. Safe to call again (e.g. a second
-   ! build on the same object): resets every total to zero.
+   ! bandwidth- rather than flop-bound, and `replicated_steps` which ones
+   ! every rank runs in full. Safe to call again (e.g. a second build on the
+   ! same object): resets every total to zero.
    !
-   subroutine step_table_init(this, prefix, names, bytes_steps)
+   subroutine step_table_init(this, prefix, names, bytes_steps, replicated_steps)
       class(step_table_t), intent(inout) :: this
       character(len=*), intent(in) :: prefix
       character(len=*), intent(in) :: names(:)
       integer, intent(in), optional :: bytes_steps(:)
+      integer, intent(in), optional :: replicated_steps(:)
       integer :: i
       ! Safe to call more than once on the same object (a df_jk_t released
       ! and set up again on a new geometry, say): deallocate whatever an
       ! earlier `init` left rather than erroring on a re-allocate.
-      if (allocated(this%names)) deallocate (this%names, this%t, this%fl, this%bytes, this%is_bytes)
+      if (allocated(this%names)) deallocate (this%names, this%t, this%fl, this%bytes, this%is_bytes, this%replicated)
       this%prefix = trim(prefix)
       this%n = size(names)
       allocate (this%names(this%n))
       do i = 1, this%n
          this%names(i) = names(i)
       end do
-      allocate (this%t(this%n), this%fl(this%n), this%bytes(this%n), this%is_bytes(this%n))
+      allocate (this%t(this%n), this%fl(this%n), this%bytes(this%n), this%is_bytes(this%n), &
+                this%replicated(this%n))
       this%is_bytes = .false.
       if (present(bytes_steps)) then
          do i = 1, size(bytes_steps)
             this%is_bytes(bytes_steps(i)) = .true.
+         end do
+      end if
+      this%replicated = .false.
+      if (present(replicated_steps)) then
+         do i = 1, size(replicated_steps)
+            this%replicated(replicated_steps(i)) = .true.
          end do
       end if
       call this%reset()
@@ -92,6 +114,7 @@ contains
       integer :: i
       this%t = 0.0_dp
       this%bytes = 0_int64
+      this%nranks_reduced = 0
       do i = 1, this%n
          call this%fl(i)%reset()
       end do
@@ -167,13 +190,46 @@ contains
    end subroutine step_table_add_bytes
 
    !
+   ! Collective over `comm`: every rank's table becomes the job's. Each
+   ! step's time becomes the slowest rank's; its operations and bytes the
+   ! sum over the ranks, or this rank's own for a replicated step, which
+   ! every rank ran in full. Call it once, after the last step and before
+   ! `report`; `report` then labels the total with the rank count.
+   ! Operations travel as doubles (pic-mpi has no int64 reduction): exact
+   ! below 2^53, about 9 PFLOP per step.
+   !
+   subroutine step_table_reduce(this, comm)
+      class(step_table_t), intent(inout) :: this
+      type(comm_t), intent(in) :: comm
+      real(dp), allocatable :: w(:)
+      integer :: k
+      call allreduce(comm, this%t, op=MPI_MAX)
+      allocate (w(2*this%n))
+      do k = 1, this%n
+         if (this%replicated(k) .and. comm%rank() /= 0) then
+            w(k) = 0.0_dp
+            w(this%n + k) = 0.0_dp
+         else
+            w(k) = real(this%fl(k)%get(), dp)
+            w(this%n + k) = real(this%bytes(k), dp)
+         end if
+      end do
+      call allreduce(comm, w, op=MPI_SUM)
+      do k = 1, this%n
+         call this%fl(k)%reset()
+         call this%fl(k)%add(nint(w(k), int64))
+         this%bytes(k) = nint(w(this%n + k), int64)
+      end do
+      this%nranks_reduced = comm%size()
+   end subroutine step_table_reduce
+
+   !
    ! One line per step: device time, operations (or bytes) executed and the
    ! rate, each count printed with the SI prefix that keeps it under 1000
    ! (trc_si); then, when `subtotal_mask` is given, one more line summing
    ! the time and flops of the masked steps under `subtotal_label` (RI-MP2's
-   ! "all dense algebra" row); then a total. `rank`/`nranks` are printed
-   ! next to the total only -- the caller's own job to decide whether the
-   ! per-step numbers are one rank's share or already summed.
+   ! "all dense algebra" row); then a total, which says whose numbers these
+   ! are: "all N ranks" after `reduce`, else "rank r of N", one rank's share.
    !
    subroutine step_table_report(this, t_total, rank, nranks, subtotal_mask, subtotal_label)
       class(step_table_t), intent(in) :: this
@@ -184,6 +240,12 @@ contains
       integer, parameter :: TIME_W = 12, WORK_W = 15, RATE_W = 16
       integer :: k
       real(dp) :: tg, fg, fa
+      character(len=:), allocatable :: whose
+      if (this%nranks_reduced > 0) then
+         whose = "   all "//to_string(this%nranks_reduced)//" ranks"
+      else
+         whose = "   rank "//to_string(rank)//" of "//to_string(nranks)
+      end if
       call global_logger%performance("  "//this%prefix//": step"//repeat(" ", 3 + NAME_LEN - 4) &
                                      //right("time (s)", TIME_W)//right("work", WORK_W)//right("rate", RATE_W))
       do k = 1, this%n
@@ -223,10 +285,10 @@ contains
       end do
       if (fa > 0.0_dp .and. t_total > 0.0_dp) then
          call row(label("total"), t_total, si_string(fa, "FLOP", WORK_W), si_string(fa/t_total, "FLOP/s", RATE_W), &
-                  "   rank "//to_string(rank)//" of "//to_string(nranks))
+                  whose)
       else
          call row(label("total"), t_total, right("-", WORK_W), right("-", RATE_W), &
-                  "   rank "//to_string(rank)//" of "//to_string(nranks))
+                  whose)
       end if
 
    contains

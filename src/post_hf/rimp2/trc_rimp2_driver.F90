@@ -177,7 +177,6 @@ contains
       integer(int64) :: novr8
       real(dp) :: e_os, e_ss
       real(dp) :: es(2)
-      real(dp) :: gf_all(1)
       real(dp) :: tc
       type(step_table_t) :: stab
       logical :: dense_mask(NSTEP)
@@ -291,7 +290,8 @@ contains
       nv8 = nv
       nao8 = nao
       naux8 = naux
-      call stab%init("rimp2", STEP_NAME)
+      ! The metric, its factor and the integrals run in full on every rank.
+      call stab%init("rimp2", STEP_NAME, replicated_steps=[ST_METRIC, ST_CHOL, ST_3C])
       tw0 = tick(lp)
       ! --- 1. the metric and its Cholesky factor (skipped when chained) ----
       if (.not. chained) then
@@ -550,13 +550,10 @@ contains
          e_os = es(1)
          e_ss = es(2)
       end if
-      ! Every rank's operations, for the rate of the whole job: the table
-      ! below is rank 0's own share.
-      gf_all(1) = 0.0_dp
-      do i = 1, NSTEP
-         gf_all(1) = gf_all(1) + real(stab%fl(i)%get(), dp)*1.0e-9_dp
-      end do
-      if (nranks > 1) call allreduce(comm, gf_all, op=MPI_SUM)
+      ! The job's table, not rank 0's share: the slowest rank's time and the
+      ! work of every rank. The energy reduction above has already lined the
+      ! ranks up, so rank 0's wall time below is the job's.
+      if (nranks > 1) call stab%reduce(comm)
       if (talk) then
          block
             character(len=1024) :: logline
@@ -569,14 +566,6 @@ contains
          dense_mask(ST_TRSM) = .true.
          dense_mask(ST_KGEMM) = .true.
          call stab%report(tick(lp) - tw0, rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
-         if (nranks > 1) then
-            block
-               character(len=1024) :: logline
-               write (logline, "(a,a24,f12.3,f13.1,f12.1)") "  rimp2:   ", "all ranks", tick(lp) - tw0, &
-                  gf_all(1), gf_all(1)/(tick(lp) - tw0)
-               call global_logger%performance(trim(logline))
-            end block
-         end if
       end if
       res%e_os = e_os
       res%e_ss = e_ss
