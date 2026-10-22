@@ -1200,6 +1200,13 @@ terco_add_check(scf_cpks_formamide_pbe scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
 # when MPI is on, each run asserting the single-rank energies. No
 # CUDA_VISIBLE_DEVICES here: the point is one card per rank.
 #
+# step_table_t%reduce: a step table's time, work and bytes over the ranks
+# (RI-MP2's table is the job's, not rank 0's share). A test-drive suite;
+# registered beside scf_mpi, on the same launcher.
+add_executable(check_step_table_mpi check_step_table_mpi.F90)
+target_link_libraries(check_step_table_mpi PRIVATE ${main_lib} test-drive::test-drive)
+target_include_directories(check_step_table_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
+
 add_executable(scf_mpi scf_mpi.F90)
 target_compile_definitions(scf_mpi PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(scf_mpi PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
@@ -1223,8 +1230,13 @@ if(TERCO_ENABLE_MPI)
              COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:scf_mpi>)
     set_tests_properties(terco/scf_mpi_np${np} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   endforeach()
+  foreach(np 1 2 4)
+    add_test(NAME terco/check_step_table_mpi_np${np}
+             COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:check_step_table_mpi>)
+  endforeach()
 else()
   add_test(NAME terco/scf_mpi COMMAND scf_mpi)
+  add_test(NAME terco/check_step_table_mpi COMMAND check_step_table_mpi)
   set_tests_properties(terco/scf_mpi PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 endif()
