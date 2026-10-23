@@ -90,7 +90,7 @@ module trc_scf_driver
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t
-   use trc_scf_context, only: scf_ctx_t, bcast_flat, trc_grid_cache_t
+   use trc_scf_context, only: scf_ctx_t, bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, project_density
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: build_g, build_vxc, build_pcm, scf_energy, assemble_fock, &
                            commutator_error, to_cart, to_sph
@@ -103,7 +103,7 @@ module trc_scf_driver
    implicit none
    private
 
-   public :: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t
+   public :: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
 
 contains
 
@@ -145,13 +145,21 @@ contains
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
    subroutine trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, scf_dfjk, &
-                          grid_cache)
+                          grid_cache, pair_eri_cache, cmo_project)
       type(trc_basis_t), intent(in) :: scf_basis
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: scf_options
       type(trc_scf_result_t), intent(out) :: scf_result
       real(dp), intent(in), optional :: dguess(:, :, :)
       real(dp), intent(in), optional :: hguess(:, :)
+      real(dp), intent(in), optional :: cmo_project(:, :, :)
+      !! A PREVIOUS geometry's converged orbitals (SAME molecule/basis, so
+      !! the same nao), re-orthonormalised into a guess density at THIS
+      !! geometry's own overlap once `scf_context%setup` below has built
+      !! it (`trc_scf_context%project_density`) -- trc_capi.F90's
+      !! TRC_GUESS_PROJECTED, lowest priority of the three guess-density
+      !! arguments (checked after `dguess` and `hguess`, same as every
+      !! other guess kind the plain `scf_options%guess` string selects).
       !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
       !! how SAP gets in (see trc_sap), which cannot come through `dguess`
       !! because what it produces is a one-electron operator and not a
@@ -180,6 +188,15 @@ contains
       !! resident) in `grid_cache` after this call returns, for a
       !! gradient run right after to reuse (trc_capi.F90's
       !! `trc_run_gradient`); absent, the run's own grid is released with
+      !! `scf_context` as before this argument existed.
+      type(trc_pair_eri_cache_t), intent(inout), optional, target :: pair_eri_cache
+      !! A caller-owned pair-list/ERI cache -- forwarded verbatim to
+      !! `scf_context%setup` (trc_scf_context.F90's `trc_pair_eri_cache_t`
+      !! own header). Present, the pair list and (outside `--df`) the
+      !! four-centre engine stay alive in it after this call returns, for a
+      !! gradient run right after at the SAME geometry and threshold to
+      !! reuse (trc_capi.F90's `trc_run_gradient`) instead of rebuilding
+      !! both; absent, the run's own copies are released with
       !! `scf_context` as before this argument existed.
 
       integer :: nao, nao_c, s, it, i, j, n2
@@ -237,7 +254,7 @@ contains
       ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
       ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
       call scf_context%setup(scf_basis, scf_options, scf_config, err, comm=comm, la=la, dfjk=scf_dfjk, &
-                             grid_cache=grid_cache)
+                             grid_cache=grid_cache, pair_eri_cache=pair_eri_cache)
       if (err%has_error()) then
          scf_result%message = "trc_scf: "//err%get_message()
          return
@@ -290,6 +307,9 @@ contains
          do s = 1, scf_config%nspin
             call guess_from(hguess, scf_config%nocc(s), scf_result%dmat(:, :, s))
          end do
+      else if (present(cmo_project)) then
+         call project_density(linalg_provider, nao, scf_config%nspin, scf_config%nocc, cmo_project, &
+                              scf_context%smat, scf_result%dmat)
       else if (scf_options%guess == "core") then
          do s = 1, scf_config%nspin
             call guess_from(scf_context%hcore, scf_config%nocc(s), scf_result%dmat(:, :, s))
@@ -571,7 +591,7 @@ contains
          call global_logger%performance(trim(line))
          call global_logger%performance( &
             "   eri (s) hgp pairs   schwarz      bins  quartets    upload")
-         write (line, "(a,5f10.3)") "          ", scf_context%eri%t_build
+         write (line, "(a,5f10.3)") "          ", scf_context%pec%eri%t_build
          call global_logger%performance(trim(line))
          if (scf_config%dft) then
             call global_logger%performance( &

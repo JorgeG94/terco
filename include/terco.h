@@ -33,6 +33,7 @@ typedef void* trc_handle_t;
 #define TRC_GUESS_GIVEN 3
 #define TRC_GUESS_SADQ 4
 #define TRC_GUESS_SAP 5
+#define TRC_GUESS_PROJECTED 6
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1

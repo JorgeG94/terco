@@ -308,6 +308,14 @@ set_tests_properties(
 # SCF energy -- RHF water, UHF OH -- see check_full_grad_fd.F90's header.
 terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 
+#
+# The SCF/gradient reuse added for a sequence of nearby geometries (the FD
+# Hessian, a later geometry optimiser): trc_pair_eri_cache_t and
+# project_density (trc_scf_context.F90) -- see check_scf_reuse.F90's own
+# header.
+#
+terco_add_check(check_scf_reuse check_scf_reuse.F90 NEEDS_BASIS)
+
 # The same full analytic gradient, on SPHERICAL cc-pVDZ bases (water/RHF,
 # formamide/RHF, OH/UHF), against pyscf's own Gradients class at a
 # converged density -- the one check that exercises trc_scf_gradient's own
@@ -1343,7 +1351,12 @@ target_link_libraries(bench_sph PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_grad_1e bench_grad_1e.F90)
 target_compile_definitions(bench_grad_1e PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_grad_1e PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e)
+# Warm-start iteration counts, density vs orbital-projection -- see
+# bench_warmstart.F90's own header. Not a pass/fail, like its siblings.
+add_executable(bench_warmstart bench_warmstart.F90)
+target_compile_definitions(bench_warmstart PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_warmstart PRIVATE ${main_lib} terco_test_basis)
+foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
 

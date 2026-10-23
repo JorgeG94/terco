@@ -30,6 +30,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_GUESS_GIVEN = 3
    integer(c_int), parameter :: TRC_GUESS_SADQ = 4
    integer(c_int), parameter :: TRC_GUESS_SAP = 5
+   integer(c_int), parameter :: TRC_GUESS_PROJECTED = 6
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
