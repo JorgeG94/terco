@@ -1274,8 +1274,10 @@ contains
    !
    subroutine exchange_x(comm, rank, nranks, nv8, bn, plo, soff, ysend, xr, direct)
       type(comm_t), intent(in) :: comm
-      integer, intent(in) :: rank, nranks, bn(0:), plo(0:)
-      integer(int64), intent(in) :: nv8, soff(0:)
+      integer, intent(in) :: rank, nranks
+      integer, intent(in) :: bn(0:), plo(0:)
+      integer(int64), intent(in) :: nv8
+      integer(int64), intent(in) :: soff(0:)
       real(dp), intent(inout) :: ysend(:), xr(:)
       logical, intent(in) :: direct
       integer :: k, dest, src, nreq

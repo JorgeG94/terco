@@ -285,7 +285,7 @@ contains
    !
    function trc_local_rank_env() result(lr)
       integer :: lr
-      character(len=*), parameter :: VARS(5) = [character(len=26) :: &
+      character(len=*), parameter :: VARS(*) = [character(len=26) :: &
                                                 "OMPI_COMM_WORLD_LOCAL_RANK", "PALS_LOCAL_RANKID", &
                                                 "MPI_LOCALRANKID", "MV2_COMM_WORLD_LOCAL_RANK", "SLURM_LOCALID"]
       character(len=32) :: val
