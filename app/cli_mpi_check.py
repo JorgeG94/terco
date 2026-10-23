@@ -28,9 +28,10 @@
 # to-run and across np 1/2/3 at the same 1e-8 TOL every RKS case uses.
 #
 # RI-MP2's correlation energy must match between np 1 and np 2 to 1e-10,
-# with B distributed over the ranks and passed round them, both with the
-# build's default transport and staged through the host
-# (TERCO_MPI_DEVICE=0).
+# with (mu nu|P) split by auxiliary shell and B distributed over the ranks
+# and passed round them, both with the build's default transport and
+# staged through the host (TERCO_MPI_DEVICE=0), and between np 1 and np 3
+# with uneven occupied blocks and several auxiliary blocks per rank.
 #
 import os
 import re
@@ -141,22 +142,28 @@ def main():
             if diff3 > TOL or xdiff3 > TOL:
                 ok = False
 
-    # RI-MP2 with B split over the ranks: the default transport, then
-    # through the host. OpenMPI passes the environment to every rank.
+    # RI-MP2 with (mu nu|P) split by auxiliary shell and B by occupied
+    # block: the default transport, then through the host, then np 3 with
+    # small auxiliary blocks, so the occupied blocks are uneven (water
+    # 6-31G correlates 4 orbitals: 2, 1, 1) and each rank's auxiliary
+    # shells take several blocks. OpenMPI passes the environment to every
+    # rank.
     m1 = run(mpiexec, npflag, 1, terco_cli, xyz, basis_dir, "--rimp2")
     mm1 = MP2_RE.search(m1.stdout)
-    for label, env in [("default", None), ("host-staged", {"TERCO_MPI_DEVICE": "0"})]:
-        m2 = run(mpiexec, npflag, 2, terco_cli, xyz, basis_dir, "--rimp2", extra_env=env)
+    for label, np, env, extra in [("default", 2, None, []),
+                                  ("host-staged", 2, {"TERCO_MPI_DEVICE": "0"}, []),
+                                  ("np 3, aux blocks of 8", 3, None, ["--aux-block", "8"])]:
+        m2 = run(mpiexec, npflag, np, terco_cli, xyz, basis_dir, "--rimp2", *extra, extra_env=env)
         mm2 = MP2_RE.search(m2.stdout)
         if m1.returncode != 0 or m2.returncode != 0 or mm1 is None or mm2 is None:
             print(f"cli_mpi_check: RI-MP2 ({label}) did not run cleanly "
-                  f"(np1 rc={m1.returncode}, np2 rc={m2.returncode})")
+                  f"(np1 rc={m1.returncode}, np{np} rc={m2.returncode})")
             print(m1.stdout, m1.stderr, m2.stdout, m2.stderr)
             ok = False
             continue
         c1, c2 = float(mm1.group(1)), float(mm2.group(1))
         diff = abs(c1 - c2)
-        print(f"cli_mpi_check: RI-MP2 ({label})  np1 = {c1:.12f}  np2 = {c2:.12f}  diff = {diff:.2e}")
+        print(f"cli_mpi_check: RI-MP2 ({label})  np1 = {c1:.12f}  np{np} = {c2:.12f}  diff = {diff:.2e}")
         if diff > MP2_TOL:
             ok = False
 

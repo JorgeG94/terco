@@ -183,7 +183,7 @@ module trc_capi
    use, intrinsic :: iso_c_binding, only: c_associated, c_char, c_double, c_f_pointer, c_int, c_loc, &
                                           c_null_char, c_null_ptr, c_ptr
    use pic_types, only: dp, int64
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, &
+   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, trc_bind_device_env, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
@@ -3995,6 +3995,23 @@ contains
       dev = int(trc_bind_device(int(rank)), c_int)
       status = TRC_OK
    end function trc_select_device
+
+   function trc_select_device_env(dev) result(status) bind(c, name="trc_select_device_env")
+      !! trc_select_device by the node-local rank the launcher exports
+      !! (OMPI_COMM_WORLD_LOCAL_RANK, PALS_LOCAL_RANKID, MPI_LOCALRANKID,
+      !! MV2_COMM_WORLD_LOCAL_RANK, then SLURM_LOCALID), with no MPI needed.
+      !! Call it BEFORE MPI_Init. A GPU-aware MPI records the current device
+      !! there, and a process that switches devices later loses CUDA IPC
+      !! between the node's ranks under Cray MPICH. trc_set_comm's own bind
+      !! then picks the same device and leaves it alone. `dev` is the device
+      !! chosen, -1 when no launcher variable is set (nothing is bound), on
+      !! a build without the GPU, or on a node without one. Process-wide; no
+      !! handle; always succeeds.
+      integer(c_int), intent(out) :: dev
+      integer(c_int) :: status
+      dev = int(trc_bind_device_env(), c_int)
+      status = TRC_OK
+   end function trc_select_device_env
 
    function trc_functional_info(name, flags, exx, c_os, c_ss) result(status) bind(c, name="trc_functional_info")
       !! Look up a functional by name (case-insensitive, trc_xc_functional's

@@ -15,13 +15,14 @@
 ! THE STEPS
 ! ---------
 !   1. (P|Q) by trc_df_2c, Cholesky on the device (trc_linalg%potrf).
-!   2. (mu nu|P) by trc_df_3c, a block of auxiliary shells at a time so the
-!      tensor never exceeds `aux_block` functions deep; each block is an
-!      auxiliary basis of its own, built from a shell range, and the
-!      kernels see nothing unusual.
-!   3. (ia|P) = C_occ^T (mu nu|P) C_vir for this rank's occupied block
-!      only, into X(ia, P) with a fastest: one GEMM and one strided batch
-!      per auxiliary block.
+!   2. (mu nu|P) by trc_df_3c for this rank's auxiliary shells, a block of
+!      them at a time so the tensor never exceeds `aux_block` functions
+!      deep; each block is an auxiliary basis of its own, built from a
+!      shell range, and the kernels see nothing unusual.
+!   3. (ia|P) = C_occ^T (mu nu|P) C_vir for every correlated i and this
+!      rank's P, a fastest: one GEMM and one strided batch per auxiliary
+!      block and destination rank. Then one exchange, after which each rank
+!      holds X(ia, P) for its own occupied block and every P.
 !   4. B = X L^-T: one triangular solve from the right, on this rank's rows.
 !   5. K(ia, jb) = sum_Q B(ia, Q) B(jb, Q) for the pairs this rank owns, a
 !      group of occupied i per GEMM; then a kernel over (j, a) summing b
@@ -36,9 +37,22 @@
 ! The correlated occupied orbitals are split into one contiguous block per
 ! rank, O_r, and rank r holds only B_r, the rows ia with i in O_r: nocc nvir
 ! naux / nranks doubles instead of all of them, which is what bounds the
-! system on one device. The integrals of step 2 are computed on every rank
-! (they are the cheap part, and the transform needs every P of them); the
-! transform and the solve are each rank's own rows.
+! system on one device.
+!
+! The integrals are split the other way, by auxiliary shell: rank r builds
+! (mu nu|P) only for P in P_r, a contiguous shell range holding about
+! naux/nranks Cartesian functions, and transforms it for every occupied
+! orbital, which is the same transform work as before. Built on every
+! rank, they had been half of the run: ionic05 cc-pVTZ/cc-pVTZ-RIFIT on
+! 16 A100s, 9.50 s of 19.18. That leaves rank r with X(ia, P in P_r) for
+! every i. The block of rows for O_q goes to rank q, and the block for
+! O_r is written straight into this rank's own X, so a one-rank run sends
+! nothing and needs no extra memory. The exchange is nranks - 1 pairwise
+! shifts. At step k rank r sends to r + k and receives from r - k, and
+! what it receives is X(O_r, P_{r-k}), a contiguous column block of X.
+! The send buffer is about one rank's share of B and is freed before the
+! ring's two visiting buffers are allocated, so the peak memory does not
+! change.
 !
 ! The pairs then come from a ring. At step s = 0 .. nranks/2 rank r holds
 ! the block of rank r + s (its own at s = 0, then each step passes the held
@@ -101,13 +115,13 @@ module trc_rimp2_driver
    ! syncs as the timer, so on an Nsight Systems timeline a range covers its
    ! kernels and not only their launches.
    !
-   integer, parameter :: NSTEP = 8
-   integer, parameter :: ST_METRIC = 1, ST_CHOL = 2, ST_3C = 3, ST_TRANS = 4, ST_TRSM = 5, &
-                         ST_KGEMM = 6, ST_PAIR = 7, ST_RING = 8
+   integer, parameter :: NSTEP = 9
+   integer, parameter :: ST_METRIC = 1, ST_CHOL = 2, ST_3C = 3, ST_TRANS = 4, ST_XCHG = 5, ST_TRSM = 6, &
+                         ST_KGEMM = 7, ST_PAIR = 8, ST_RING = 9
    character(len=18), parameter :: STEP_NAME(NSTEP) = [character(len=18) :: &
                                                        "metric (P|Q)", "Cholesky", "(mu nu|P)", &
-                                                       "transform (ia|P)", "B = X L^-T", "K_i GEMMs", &
-                                                       "pair energies", "B exchange"]
+                                                       "transform (ia|P)", "(ia|P) exchange", "B = X L^-T", &
+                                                       "K_i GEMMs", "pair energies", "B exchange"]
 
    !
    ! The largest message the ring sends in one call: MPI counts are 32-bit,
@@ -168,13 +182,15 @@ contains
       integer :: lo, nb, nmax, novr, step, nstep_ring, qv, cur, ncolmax, ldv
       integer :: ilo, ihi, jlo, jhi, jbase, jstart, ncol, roff, coff, jfirst, ncol_i
       integer :: n_chk, naux_chk, npack_chk, mu, nu, q
-      integer, allocatable :: blo(:), bn(:)
+      integer, allocatable :: blo(:), bn(:), shlo(:), shhi(:), plo(:)
+      integer(int64), allocatable :: soff(:)
       logical :: diag, direct
       real(dp), allocatable :: jm(:, :), jmc(:, :), cocc(:, :), cvir(:, :)
       real(dp), allocatable :: tens(:, :, :), tcart3(:, :, :), half(:, :, :)
-      real(dp), allocatable :: xr(:), vis(:, :)
+      real(dp), allocatable :: xr(:), vis(:, :), ysend(:)
       real(dp), allocatable :: ki(:, :), kt(:, :), part(:), eo(:), ev(:)
-      integer(int64) :: novr8
+      integer(int64) :: novr8, nsend8, nq8
+      integer :: npr
       real(dp) :: e_os, e_ss
       real(dp) :: es(2)
       real(dp) :: tc
@@ -282,6 +298,28 @@ contains
       nmax = maxval(bn)
       novr = nb*nv
       novr8 = novr
+      ! Every rank's auxiliary shells, P_q = shells shlo(q) .. shhi(q) (empty
+      ! when shhi < shlo): a shell goes to rank q while fewer than
+      ! naux_c (q + 1) / nranks Cartesian functions come before it, so the
+      ! integral work, which is Cartesian, is split evenly. plo(q) is where
+      ! P_q starts among X's columns (spherical when `aux` is) and
+      ! plo(q + 1) - plo(q) is its width.
+      allocate (shlo(0:nranks - 1), shhi(0:nranks - 1), plo(0:nranks))
+      ish = 1
+      do q = 0, nranks - 1
+         shlo(q) = ish
+         do while (ish <= aux%nshell)
+            if (int(aux%sh_ao(ish) - 1, int64) >= (int(naux_c, int64)*(q + 1))/nranks) exit
+            ish = ish + 1
+         end do
+         shhi(q) = ish - 1
+         if (shlo(q) <= aux%nshell) then
+            plo(q) = merge(aux%sh_ao_sph(shlo(q)), aux%sh_ao(shlo(q)), aux%spherical)
+         else
+            plo(q) = naux + 1
+         end if
+      end do
+      plo(nranks) = naux + 1
       ! Create-once: a caller's handles are kept, the workspace only grows.
       call lp%init(naux)
 
@@ -290,8 +328,9 @@ contains
       nv8 = nv
       nao8 = nao
       naux8 = naux
-      ! The metric, its factor and the integrals run in full on every rank.
-      call stab%init("rimp2", STEP_NAME, replicated_steps=[ST_METRIC, ST_CHOL, ST_3C])
+      ! The metric and its factor run in full on every rank; the integrals are
+      ! split by auxiliary shell.
+      call stab%init("rimp2", STEP_NAME, replicated_steps=[ST_METRIC, ST_CHOL])
       tw0 = tick(lp)
       ! --- 1. the metric and its Cholesky factor (skipped when chained) ----
       if (.not. chained) then
@@ -328,16 +367,27 @@ contains
          end block
       end if
 
-      ! --- 3. (ia|P) for i in this rank's block, an auxiliary block at a time
-      allocate (cocc(nao, max(nb, 1)), cvir(nao, nv), xr(max(novr8*naux8, 1_int64)))
-      if (nb > 0) cocc(:, 1:nb) = cmo(:, nfz + lo:nfz + lo + nb - 1)
+      ! --- 3. (ia|P) for every correlated i and this rank's P, an auxiliary
+      ! block at a time. The rows for O_q, q /= rank, go to `ysend`, one
+      ! contiguous (bn(q) nv) x |P_rank| segment per q starting at soff(q);
+      ! the rows for O_rank go straight into `xr`, in the columns they keep.
+      direct = trc_mpi_device_direct()
+      npr = plo(rank + 1) - plo(rank)
+      allocate (soff(0:nranks - 1))
+      nsend8 = 0
+      do q = 0, nranks - 1
+         soff(q) = nsend8
+         if (q /= rank) nsend8 = nsend8 + int(bn(q), int64)*nv8*int(npr, int64)
+      end do
+      allocate (cocc(nao, no), cvir(nao, nv), xr(max(novr8*naux8, 1_int64)), ysend(max(nsend8, 1_int64)))
+      cocc = cmo(:, nfz + 1:nocc)
       cvir = cmo(:, nocc + 1:nao)
-      !$acc enter data copyin(cocc, cvir) create(xr)
-      s0 = 1
-      do while (s0 <= aux%nshell .and. nb > 0)
+      !$acc enter data copyin(cocc, cvir) create(xr, ysend)
+      s0 = shlo(rank)
+      do while (s0 <= shhi(rank))
          ! Shells s0..s1 hold at most nblk functions (and at least one shell).
          s1 = s0
-         do ish = s0 + 1, aux%nshell
+         do ish = s0 + 1, shhi(rank)
             if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > nblk) exit
             s1 = ish
          end do
@@ -356,7 +406,7 @@ contains
             p0 = p0c
             np = npc
          end if
-         allocate (tens(nao, nao, np), half(nb, nao, np))
+         allocate (tens(nao, nao, np), half(no, nao, np))
          !$acc enter data create(tens, half)
          call stab%step_on(lp, ST_3C, tc)
          if (chained) then
@@ -384,27 +434,45 @@ contains
          end if
          call stab%step_off(lp, ST_3C, tc)
          call stab%step_on(lp, ST_TRANS, tc)
-         ! Two library calls per block, not two per auxiliary function: the
-         ! occupied side of the whole block is one GEMM,
-         !   half(i, nu q) = sum_mu C_occ(mu, i) T(mu, nu q)   (nb x nao np),
-         ! and the virtual side one strided batch over q with C_vir shared,
-         !   X(:, P) = C_vir^T half_q^T                        (nv x nb, a fastest).
+         ! A few library calls per block, not two per auxiliary function:
+         ! the occupied side of the whole block is one GEMM,
+         !   half(i, nu q) = sum_mu C_occ(mu, i) T(mu, nu q)   (no x nao np),
+         ! and the virtual side one strided batch over q with C_vir shared
+         ! per destination rank, on that rank's rows of `half`,
+         !   X(:, P) = C_vir^T half_q^T                        (nv x bn(q), a fastest).
          ! 2 x 3840 calls at w40 cc-pVDZ ran at 41% of the device's peak.
-         call lp%gemm("T", "N", nb, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, nb)
-         call lp%gemm_strided("T", "T", nv, nb, nao, 1.0_dp, cvir, nao, 0_int64, half, nb, &
-                              int(nb, int64)*nao8, 0.0_dp, xr(1 + int(p0 - 1, int64)*novr8), nv, novr8, np)
+         call lp%gemm("T", "N", no, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, no)
+         do q = 0, nranks - 1
+            if (bn(q) == 0) cycle
+            if (q == rank) then
+               call lp%gemm_strided("T", "T", nv, nb, nao, 1.0_dp, cvir, nao, 0_int64, half(lo, 1, 1), no, &
+                                    int(no, int64)*nao8, 0.0_dp, xr(1 + int(p0 - 1, int64)*novr8), nv, novr8, np)
+            else
+               nq8 = int(bn(q), int64)*nv8
+               call lp%gemm_strided("T", "T", nv, bn(q), nao, 1.0_dp, cvir, nao, 0_int64, half(blo(q), 1, 1), no, &
+                                    int(no, int64)*nao8, 0.0_dp, ysend(1 + soff(q) + int(p0 - plo(rank), int64)*nq8), &
+                                    nv, nq8, np)
+            end if
+         end do
          call stab%step_off(lp, ST_TRANS, tc)
-         call stab%add_flop(ST_TRANS, int(np, int64)*(2*int(nb, int64)*nao8*nao8 + 2*nv8*int(nb, int64)*nao8))
+         call stab%add_flop(ST_TRANS, int(np, int64)*(2*int(no, int64)*nao8*nao8 + 2*nv8*int(no, int64)*nao8))
          !$acc exit data delete(tens, half)
          deallocate (tens, half)
          call blk%release()
          s0 = s1 + 1
       end do
+      if (nranks > 1) then
+         call stab%step_on(lp, ST_XCHG, tc)
+         call exchange_x(comm, rank, nranks, nv8, bn, plo, soff, ysend, xr, direct)
+         call stab%step_off(lp, ST_XCHG, tc)
+      end if
+      !$acc exit data delete(ysend)
+      deallocate (ysend)
       if (talk) then
          block
             character(len=1024) :: logline
-            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
-               stab%t(ST_TRANS), " s"
+            write (logline, "(a,f8.2,a,f8.2,a,f8.2,a)") "  rimp2: (mu nu|P) ", stab%t(ST_3C), " s, transform to (ia|P) ", &
+               stab%t(ST_TRANS), " s, exchange ", stab%t(ST_XCHG), " s"
             call global_logger%performance(trim(logline))
          end block
       end if
@@ -431,7 +499,6 @@ contains
       ! The visiting blocks need two buffers, the one in use and the one
       ! arriving; one rank needs neither.
       nstep_ring = nranks/2
-      direct = trc_mpi_device_direct()
       if (talk .and. nranks > 1) then
          block
             character(len=1024) :: logline
@@ -1193,6 +1260,126 @@ contains
          k = k + m
       end do
    end subroutine recv_block_dev
+
+   !
+   ! Step 3's exchange. Rank r holds X(ia, P in P_r) for every i, with the
+   ! rows for O_q (q /= r) packed in `ysend` from soff(q). It needs
+   ! X(ia in O_r, P) for every P. The exchange runs nranks - 1 shifts: at
+   ! step k rank r sends its segment to rank r + k and receives from rank
+   ! r - k the columns P_{r-k} of its own X, which are contiguous in `xr`.
+   ! As in ring_shift, each send is posted non-blocking before the blocking
+   ! receive, so neither side can wait on the other. Messages go in
+   ! MSG_CHUNK pieces. Sender and receiver compute the same count,
+   ! bn(dest) nv |P_r|, so an empty one is skipped on both sides.
+   !
+   subroutine exchange_x(comm, rank, nranks, nv8, bn, plo, soff, ysend, xr, direct)
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: rank, nranks
+      integer, intent(in) :: bn(0:), plo(0:)
+      integer(int64), intent(in) :: nv8
+      integer(int64), intent(in) :: soff(0:)
+      real(dp), intent(inout) :: ysend(:), xr(:)
+      logical, intent(in) :: direct
+      integer :: k, dest, src, nreq
+      integer(int64) :: nsend, nrecv, roff, novr8
+      type(request_t), allocatable :: reqs(:)
+      novr8 = int(bn(rank), int64)*nv8
+      if (.not. direct) then
+         !$acc update self(ysend)
+      end if
+      do k = 1, nranks - 1
+         dest = mod(rank + k, nranks)
+         src = mod(rank - k + nranks, nranks)
+         nsend = int(bn(dest), int64)*nv8*int(plo(rank + 1) - plo(rank), int64)
+         nrecv = novr8*int(plo(src + 1) - plo(src), int64)
+         roff = int(plo(src) - 1, int64)*novr8
+         nreq = int((nsend + MSG_CHUNK - 1)/MSG_CHUNK)
+         allocate (reqs(max(nreq, 1)))
+         if (direct) then
+            !$acc host_data use_device(ysend, xr)
+            call send_seg_dev(comm, ysend, soff(dest), nsend, dest, reqs)
+            call recv_seg_dev(comm, xr, roff, nrecv, src)
+            !$acc end host_data
+         else
+            call send_seg(comm, ysend, soff(dest), nsend, dest, reqs)
+            call recv_seg(comm, xr, roff, nrecv, src)
+         end if
+         if (nreq > 0) call waitall(reqs(1:nreq))
+         if (.not. direct .and. nrecv > 0) then
+            !$acc update device(xr(roff + 1:roff + nrecv))
+         end if
+         deallocate (reqs)
+      end do
+   end subroutine exchange_x
+
+   !
+   ! buf(off + 1 : off + n) to `dest` and from `source`, in MSG_CHUNK pieces,
+   ! host addresses (send_seg, recv_seg) or device ones inside `host_data`
+   ! (the _dev pair, by pic-mpi's specific names as send_block_dev does).
+   !
+   subroutine send_seg(comm, buf, off, n, dest, reqs)
+      type(comm_t), intent(in) :: comm
+      real(dp), intent(in), target :: buf(:)
+      integer(int64), intent(in) :: off, n
+      integer, intent(in) :: dest
+      type(request_t), intent(inout) :: reqs(:)
+      integer(int64) :: k, m
+      integer :: r
+      k = 1
+      r = 0
+      do while (k <= n)
+         m = min(MSG_CHUNK, n - k + 1)
+         r = r + 1
+         call isend(comm, buf(off + k:off + k + m - 1), dest, 8, reqs(r))
+         k = k + m
+      end do
+   end subroutine send_seg
+
+   subroutine recv_seg(comm, buf, off, n, source)
+      type(comm_t), intent(in) :: comm
+      real(dp), intent(inout) :: buf(:)
+      integer(int64), intent(in) :: off, n
+      integer, intent(in) :: source
+      integer(int64) :: k, m
+      k = 1
+      do while (k <= n)
+         m = min(MSG_CHUNK, n - k + 1)
+         call recv(comm, buf(off + k:off + k + m - 1), int(m), source, 8)
+         k = k + m
+      end do
+   end subroutine recv_seg
+
+   subroutine send_seg_dev(comm, buf, off, n, dest, reqs)
+      type(comm_t), intent(in) :: comm
+      real(dp), intent(in), target :: buf(:)
+      integer(int64), intent(in) :: off, n
+      integer, intent(in) :: dest
+      type(request_t), intent(inout) :: reqs(:)
+      integer(int64) :: k, m
+      integer :: r
+      k = 1
+      r = 0
+      do while (k <= n)
+         m = min(MSG_CHUNK, n - k + 1)
+         r = r + 1
+         call comm_isend_real_dp_array_n(comm, buf(off + k:off + k + m - 1), int(m), dest, 8, reqs(r))
+         k = k + m
+      end do
+   end subroutine send_seg_dev
+
+   subroutine recv_seg_dev(comm, buf, off, n, source)
+      type(comm_t), intent(in) :: comm
+      real(dp), intent(inout), target :: buf(:)
+      integer(int64), intent(in) :: off, n
+      integer, intent(in) :: source
+      integer(int64) :: k, m
+      k = 1
+      do while (k <= n)
+         m = min(MSG_CHUNK, n - k + 1)
+         call comm_recv_real_dp_array_n(comm, buf(off + k:off + k + m - 1), int(m), source, 8)
+         k = k + m
+      end do
+   end subroutine recv_seg_dev
 
    integer function k_group(no, nv, ncol) result(ng)
 #ifdef _OPENACC

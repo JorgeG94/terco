@@ -1016,6 +1016,22 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: dev
       end function trc_select_device
 
+      integer(c_int) function trc_select_device_env(dev) bind(c) result(res)
+         !! trc_select_device by the node-local rank the launcher exports
+         !! (OMPI_COMM_WORLD_LOCAL_RANK, PALS_LOCAL_RANKID, MPI_LOCALRANKID,
+         !! MV2_COMM_WORLD_LOCAL_RANK, then SLURM_LOCALID), with no MPI needed.
+         !! Call it BEFORE MPI_Init. A GPU-aware MPI records the current device
+         !! there, and a process that switches devices later loses CUDA IPC
+         !! between the node's ranks under Cray MPICH. trc_set_comm's own bind
+         !! then picks the same device and leaves it alone. `dev` is the device
+         !! chosen, -1 when no launcher variable is set (nothing is bound), on
+         !! a build without the GPU, or on a node without one. Process-wide; no
+         !! handle; always succeeds.
+         import :: c_int
+         implicit none
+         integer(c_int), intent(out) :: dev
+      end function trc_select_device_env
+
       integer(c_int) function trc_functional_info(name, flags, exx, c_os, c_ss) bind(c) result(res)
          !! Look up a functional by name (case-insensitive, trc_xc_functional's
          !! own table) without a context: `flags` is a bitmask --
