@@ -56,10 +56,6 @@ program check_opt_refusals
    call refuse(cli_exe, work_dir, '--opt-saddle-method dimer', nfail)
    ! --opt-connect with a minimum target
    call refuse(cli_exe, work_dir, '--opt-connect', nfail)
-   ! --opt-connect with P-RFO: crashes inside libdlfind itself (confirmed
-   ! with a debug build, see app/main.F90's own refusal message) --
-   ! refused before DL-FIND ever runs, not left to crash the process.
-   call refuse(cli_exe, work_dir, '--opt-target saddle --opt-saddle-method prfo --opt-connect', nfail)
    ! an unknown algorithm
    call refuse(cli_exe, work_dir, '--opt-algorithm bogus', nfail)
    ! an unknown coordinate system
@@ -80,13 +76,16 @@ program check_opt_refusals
    ! a print level DL-FIND does not accept
    call refuse(cli_exe, work_dir, '--opt-print-level 3', nfail)
 
-   ! --opt-algorithm stochastic/genetic: refused unconditionally --
-   ! libdlfind's own dlf_parallel_opt.f90 segfaults (a missing `kiter`
-   ! argument at every one of its three dlf_get_gradient calls, confirmed
-   ! by reading the pinned source -- app/main.F90's own refusal message
-   ! and app/trc_dlfind_bridge.F90's header).
-   call refuse(cli_exe, work_dir, '--opt-algorithm stochastic', nfail)
-   call refuse(cli_exe, work_dir, '--opt-algorithm genetic', nfail)
+   ! --opt-global-*/--opt-seed without --opt-algorithm stochastic/genetic,
+   ! an --opt-global-* parameter the OTHER search does not read, and an
+   ! out-of-range one (parse_opt_global_options, app/main.F90).
+   call refuse(cli_exe, work_dir, '--opt-global-pop-size 10', nfail)
+   call refuse(cli_exe, work_dir, '--opt-seed 1', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm stochastic --opt-global-mutation-rate 0.1', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm genetic --opt-global-contraction 0.5', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm stochastic --opt-global-distribution 5', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm stochastic --opt-global-contraction 1.5', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm genetic --opt-global-pop-size 0', nfail)
 
    ! --opt-neb: mutually exclusive with a saddle target/algorithm this
    ! bridge does not offer for a chain.

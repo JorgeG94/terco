@@ -42,6 +42,7 @@ module terco_run
    public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
              gradient_summary, hessian_summary, build_masses
    public :: opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
+   public :: parse_opt_global_options
    public :: opt_geometry_is_linear, write_labelled_xyz
    public :: parse_frozen_list, parse_constraints, check_neb_endpoint, write_neb_path_xyz
    public :: read_xyz_frames
@@ -168,10 +169,19 @@ module terco_run
          !! under TERCO_ENABLE_DLFIND=OFF, same reason opt_coords_kind
          !! above is a plain integer).
 
-      ! --opt-algorithm stochastic/genetic (iopt 51/52) and its own
-      ! --opt-global-* parameters are refused at the CLI, not stored here
-      ! -- see that refusal's own comment (app/main.F90, where
-      ! --opt-algorithm is parsed) for why.
+      ! --- added in this branch: global optimisation (stochastic/genetic) ---
+      logical :: opt_is_global = .false.   !! --opt-algorithm stochastic or genetic
+      integer :: opt_seed = huge(0)        !! --opt-seed; huge(0) sentinel, trc_dlfind_bridge's own
+      integer :: opt_global_pop_size = -1, opt_global_maxcycle = -1, opt_global_init_pop_size = -1, &
+                opt_global_nsave = -1, opt_global_distribution = -1, opt_global_reset = -1
+      real(dp) :: opt_global_radius = -1.0_dp, opt_global_contraction = -1.0_dp, opt_global_tolerance_r = -1.0_dp, &
+                 opt_global_tolerance_g = -1.0_dp, opt_global_mutation_rate = -1.0_dp, &
+                 opt_global_death_rate = -1.0_dp, opt_global_scalefac = -1.0_dp
+         !! trc_dlfind_bridge's own trc_opt_options_t%po_*/seed, one for
+         !! one -- parsed and range-checked in parse_opt_global_options,
+         !! below, then copied across verbatim in the --opt dispatch
+         !! (same "plain fields here, enums/values match the bridge's
+         !! own module exactly" reason opt_coords_kind above gives).
    end type run_t
 
 contains
@@ -651,6 +661,136 @@ contains
          end do
       end do
    end subroutine build_opt_residues
+
+   !
+   ! --opt-seed and --opt-global-*: refused unless --opt-algorithm is
+   ! stochastic or genetic (r%opt_is_global, set above), so a command
+   ! line that asks for a global-search parameter without the search
+   ! that reads it never means something different from what it says --
+   ! the same convention --opt-algorithm itself follows against
+   ! --opt-target saddle. Validated here (positive, and distribution in
+   ! DL-FIND's own {1,2,3}) rather than left for trc_dlfind_bridge to
+   ! pass straight through to libdlfind.
+   !
+   subroutine parse_opt_global_options(r)
+      type(run_t), intent(inout) :: r
+      integer, parameter :: ALG_STOCHASTIC = 51, ALG_GENETIC = 52
+         !! trc_dlfind_bridge's own TRC_OPT_ALG_STOCHASTIC/GENETIC values,
+         !! not imported directly (this module builds without
+         !! trc_dlfind_bridge under TERCO_ENABLE_DLFIND=OFF) -- the same
+         !! "plain integer, both modules define it identically" convention
+         !! run_t%opt_algorithm_kind's own comment gives.
+      character(len=24), parameter :: GLOBAL_OPTS(*) = [character(len=24) :: &
+         "opt-seed", "opt-global-pop-size", "opt-global-maxcycle", "opt-global-init-pop-size", &
+         "opt-global-nsave", "opt-global-distribution", "opt-global-reset", "opt-global-radius", &
+         "opt-global-contraction", "opt-global-tolerance-r", "opt-global-tolerance-g", &
+         "opt-global-mutation-rate", "opt-global-death-rate"]
+      integer :: i
+
+      if (.not. r%opt_is_global) then
+         do i = 1, size(GLOBAL_OPTS)
+            if (r%cli%is_set(trim(GLOBAL_OPTS(i)))) call die(r, "--"//trim(GLOBAL_OPTS(i))// &
+                     " needs --opt-algorithm stochastic or genetic")
+         end do
+         if (r%cli%is_set("opt-global-scalefac")) call die(r, "--opt-global-scalefac needs "// &
+                  "--opt-algorithm stochastic or genetic")
+         return
+      end if
+
+      if (r%cli%is_set("opt-seed")) then
+         call r%cli%get("opt-seed", r%opt_seed, r%err)
+         call check(r, "--opt-seed")
+      end if
+      if (r%cli%is_set("opt-global-pop-size")) then
+         call r%cli%get("opt-global-pop-size", r%opt_global_pop_size, r%err)
+         call check(r, "--opt-global-pop-size")
+         if (r%opt_global_pop_size < 1) call die(r, "--opt-global-pop-size must be at least 1")
+      end if
+      if (r%cli%is_set("opt-global-maxcycle")) then
+         call r%cli%get("opt-global-maxcycle", r%opt_global_maxcycle, r%err)
+         call check(r, "--opt-global-maxcycle")
+         if (r%opt_global_maxcycle < 1) call die(r, "--opt-global-maxcycle must be at least 1")
+      end if
+      if (r%cli%is_set("opt-global-init-pop-size")) then
+         call r%cli%get("opt-global-init-pop-size", r%opt_global_init_pop_size, r%err)
+         call check(r, "--opt-global-init-pop-size")
+         if (r%opt_global_init_pop_size < 1) call die(r, "--opt-global-init-pop-size must be at least 1")
+         if (r%opt_algorithm_kind /= ALG_GENETIC) call die(r, "--opt-global-init-pop-size "// &
+                  "needs --opt-algorithm genetic")
+      end if
+      if (r%cli%is_set("opt-global-nsave")) then
+         call r%cli%get("opt-global-nsave", r%opt_global_nsave, r%err)
+         call check(r, "--opt-global-nsave")
+         if (r%opt_global_nsave < 1) call die(r, "--opt-global-nsave must be at least 1")
+      end if
+      if (r%cli%is_set("opt-global-distribution")) then
+         call r%cli%get("opt-global-distribution", r%opt_global_distribution, r%err)
+         call check(r, "--opt-global-distribution")
+         if (r%opt_global_distribution < 1 .or. r%opt_global_distribution > 3) then
+            call die(r, "--opt-global-distribution must be 1 (box), 2 (sphere) or 3 (Gaussian)")
+         end if
+         if (r%opt_algorithm_kind /= ALG_STOCHASTIC) call die(r, "--opt-global-distribution "// &
+                  "needs --opt-algorithm stochastic")
+      end if
+      if (r%cli%is_set("opt-global-reset")) then
+         call r%cli%get("opt-global-reset", r%opt_global_reset, r%err)
+         call check(r, "--opt-global-reset")
+         if (r%opt_global_reset < 1) call die(r, "--opt-global-reset must be at least 1")
+         if (r%opt_algorithm_kind /= ALG_GENETIC) call die(r, "--opt-global-reset "// &
+                  "needs --opt-algorithm genetic")
+      end if
+      if (r%cli%is_set("opt-global-radius")) then
+         call r%cli%get("opt-global-radius", r%opt_global_radius, r%err)
+         call check(r, "--opt-global-radius")
+         if (r%opt_global_radius <= 0.0_dp) call die(r, "--opt-global-radius must be positive")
+      end if
+      if (r%cli%is_set("opt-global-contraction")) then
+         call r%cli%get("opt-global-contraction", r%opt_global_contraction, r%err)
+         call check(r, "--opt-global-contraction")
+         if (r%opt_global_contraction <= 0.0_dp .or. r%opt_global_contraction >= 1.0_dp) then
+            call die(r, "--opt-global-contraction must be in (0, 1)")
+         end if
+         if (r%opt_algorithm_kind /= ALG_STOCHASTIC) call die(r, "--opt-global-contraction "// &
+                  "needs --opt-algorithm stochastic")
+      end if
+      if (r%cli%is_set("opt-global-tolerance-r")) then
+         call r%cli%get("opt-global-tolerance-r", r%opt_global_tolerance_r, r%err)
+         call check(r, "--opt-global-tolerance-r")
+         if (r%opt_global_tolerance_r <= 0.0_dp) call die(r, "--opt-global-tolerance-r must be positive")
+         if (r%opt_algorithm_kind /= ALG_STOCHASTIC) call die(r, "--opt-global-tolerance-r "// &
+                  "needs --opt-algorithm stochastic")
+      end if
+      if (r%cli%is_set("opt-global-tolerance-g")) then
+         call r%cli%get("opt-global-tolerance-g", r%opt_global_tolerance_g, r%err)
+         call check(r, "--opt-global-tolerance-g")
+         if (r%opt_global_tolerance_g <= 0.0_dp) call die(r, "--opt-global-tolerance-g must be positive")
+      end if
+      if (r%cli%is_set("opt-global-mutation-rate")) then
+         call r%cli%get("opt-global-mutation-rate", r%opt_global_mutation_rate, r%err)
+         call check(r, "--opt-global-mutation-rate")
+         if (r%opt_global_mutation_rate <= 0.0_dp .or. r%opt_global_mutation_rate >= 1.0_dp) then
+            call die(r, "--opt-global-mutation-rate must be in (0, 1)")
+         end if
+         if (r%opt_algorithm_kind /= ALG_GENETIC) call die(r, "--opt-global-mutation-rate "// &
+                  "needs --opt-algorithm genetic")
+      end if
+      if (r%cli%is_set("opt-global-death-rate")) then
+         call r%cli%get("opt-global-death-rate", r%opt_global_death_rate, r%err)
+         call check(r, "--opt-global-death-rate")
+         if (r%opt_global_death_rate <= 0.0_dp .or. r%opt_global_death_rate >= 1.0_dp) then
+            call die(r, "--opt-global-death-rate must be in (0, 1)")
+         end if
+         if (r%opt_algorithm_kind /= ALG_GENETIC) call die(r, "--opt-global-death-rate "// &
+                  "needs --opt-algorithm genetic")
+      end if
+      if (r%cli%is_set("opt-global-scalefac")) then
+         call r%cli%get("opt-global-scalefac", r%opt_global_scalefac, r%err)
+         call check(r, "--opt-global-scalefac")
+         if (r%opt_global_scalefac <= 0.0_dp) call die(r, "--opt-global-scalefac must be positive")
+         if (r%opt_algorithm_kind /= ALG_STOCHASTIC) call die(r, "--opt-global-scalefac "// &
+                  "needs --opt-algorithm stochastic")
+      end if
+   end subroutine parse_opt_global_options
 
    !
    ! --opt-frozen "1-3,7": a comma-separated list of 1-based atom indices
@@ -1567,7 +1707,7 @@ program terco_main
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary, hessian_summary, build_masses, &
                        opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz, &
-                       opt_geometry_is_linear, write_labelled_xyz, &
+                       opt_geometry_is_linear, write_labelled_xyz, parse_opt_global_options, &
                        parse_frozen_list, parse_constraints, check_neb_endpoint, write_neb_path_xyz, &
                        read_xyz_frames
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
@@ -1698,9 +1838,11 @@ program terco_main
    call r%cli%add_option("opt-guess", "SCF warm start between --opt steps: density (the previous step's "// &
                          "converged density) or projected (its orbitals re-orthonormalised in the new "// &
                          "overlap) (density)", default="density")
-   call r%cli%add_option("opt-algorithm", "--opt's minimiser: sd, cg, cg-auto, lbfgs, nr, damped or prfo "// &
-                         "(lbfgs); refused together with --opt-target saddle, which picks its own "// &
-                         "algorithm from --opt-saddle-method", default="lbfgs")
+   call r%cli%add_option("opt-algorithm", "--opt's minimiser: sd, cg, cg-auto, lbfgs, nr, damped, prfo, "// &
+                         "stochastic or genetic (lbfgs); refused together with --opt-target saddle, "// &
+                         "which picks its own algorithm from --opt-saddle-method. stochastic/genetic "// &
+                         "take --opt-seed and the --opt-global-* parameters instead of the single-state "// &
+                         "controls above", default="lbfgs")
    call r%cli%add_option("opt-target", "minimum or saddle (minimum)", default="minimum")
    call r%cli%add_option("opt-saddle-method", "prfo (uses a Hessian, --opt-init-hessian) or dimer (no "// &
                          "Hessian); needs --opt-target saddle (prfo)", default="prfo")
@@ -1764,12 +1906,39 @@ program terco_main
                          "Cartesian component), 'bond-difference i j k' (bond(i,j) - bond(j,k)). The "// &
                          "constrained value is always the START geometry's -- DL-FIND's own public "// &
                          "interface has no way to set a different target")
-   ! --opt-algorithm stochastic/genetic (iopt 51/52) and its own --opt-
-   ! global-* parameters are NOT exposed here: libdlfind's own
-   ! dlf_parallel_opt.f90 segfaults before the first energy evaluation on
-   ! every attempt (its own calls to dlf_get_gradient are missing the
-   ! `kiter` argument, a bug in the pinned dependency itself) -- see the
-   ! refusal message where --opt-algorithm is parsed for the detail.
+   ! --opt-algorithm stochastic/genetic (iopt 51/52, dlf_parallel_opt.f90)
+   ! and the population/cycle/radius/mutation settings it reads --
+   ! refused together with any other --opt-algorithm (parse_opt_global_
+   ! options). DL-FIND's own defaults are documented per option below;
+   ! app/trc_dlfind_bridge.F90's own header has the full dl-find.f90
+   ! table and which ones apply to stochastic (SS) vs genetic (GA) only.
+   call r%cli%add_option("opt-seed", "integer seed for --opt-algorithm stochastic/genetic, "// &
+                         "reproducible across runs (sets DLF_PO_SEED; DL-FIND's own default reseeds "// &
+                         "from the wall clock, so two runs never agree without this)")
+   call r%cli%add_option("opt-global-pop-size", "population size (DL-FIND's own default, 25)")
+   call r%cli%add_option("opt-global-maxcycle", "maximum cycles (DL-FIND's own default, 10000)")
+   call r%cli%add_option("opt-global-init-pop-size", "initial population size, genetic only "// &
+                         "(DL-FIND's own default, 2x --opt-global-pop-size)")
+   call r%cli%add_option("opt-global-nsave", "how many of the best points to keep (DL-FIND's own "// &
+                         "default, 10)")
+   call r%cli%add_option("opt-global-distribution", "stochastic's initial distribution: 1 uniform "// &
+                         "in a box, 2 uniform in a sphere, 3 Gaussian (DL-FIND's own default)")
+   call r%cli%add_option("opt-global-reset", "cycles without improvement before a reset, genetic "// &
+                         "only (DL-FIND's own default, 500)")
+   call r%cli%add_option("opt-global-radius", "initial search radius, Bohr in Cartesians "// &
+                         "(DL-FIND's own default, 1.0)")
+   call r%cli%add_option("opt-global-contraction", "radius contraction per cycle, stochastic only "// &
+                         "(DL-FIND's own default, 0.9)")
+   call r%cli%add_option("opt-global-tolerance-r", "radius convergence tolerance, stochastic only "// &
+                         "(DL-FIND's own default, 1e-8)")
+   call r%cli%add_option("opt-global-tolerance-g", "gradient-norm convergence tolerance "// &
+                         "(DL-FIND's own default, 1e-3)")
+   call r%cli%add_option("opt-global-mutation-rate", "mutation rate, genetic only (DL-FIND's own "// &
+                         "default, 0.15)")
+   call r%cli%add_option("opt-global-death-rate", "fraction of the population replaced per cycle, "// &
+                         "genetic only (DL-FIND's own default, 0.5)")
+   call r%cli%add_option("opt-global-scalefac", "step scale factor, stochastic only (DL-FIND's own "// &
+                         "default, 10.0)")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -2015,43 +2184,19 @@ program terco_main
                r%opt_algorithm_kind = TRC_OPT_ALG_NR
             case ("damped")
                r%opt_algorithm_kind = TRC_OPT_ALG_DAMPED
-            case ("stochastic", "genetic")
-               ! iopt 51/52 (dlf_parallel_opt.f90): confirmed single-task-
-               ! safe by reading the source ("call this subroutine even if
-               ! glob%ntasks == 1"), but ALL THREE of its own calls to
-               ! dlf_get_gradient there are missing the `kiter` argument
-               ! that api.f90's own dlf_get_gradient subroutine requires
-               ! (every other call site in libdlfind, dl-find.f90's own
-               ! main loop included, passes all 7) -- confirmed by reading
-               ! dlf_parallel_opt.f90 directly (three call sites, lines
-               ! ~254, ~354, ~643, none of them has kiter). Positional
-               ! Fortran argument binding with one argument short shifts
-               ! every later dummy by one slot, so `status` never gets
-               ! written and the real 7th slot is read from whatever
-               ! memory followed the caller's actual argument list --
-               ! measured: every attempt at --opt-algorithm stochastic
-               ! segfaults before the first energy evaluation even
-               ! prints, with no SCF or geometry involved, so this is not
-               ! this molecule's or this bridge's own doing. A bug in the
-               ! pinned, unmodified LGPL dependency, not something this
-               ! bridge can route around (there is no OTHER way to reach
-               ! dlf_get_gradient from here) or patch (the point of
-               ! pinning libdlfind is that terco carries no changes to
-               ! it) -- refused here rather than left to crash the
-               ! process.
-               call die(r, "--opt-algorithm "//r%opt_algorithm_arg//" is refused: libdlfind's own "// &
-                        "dlf_parallel_opt.f90 (iopt 51/52) calls dlf_get_gradient with one argument "// &
-                        "missing (kiter) at every one of its three call sites, which segfaults before "// &
-                        "the first energy evaluation -- a bug in the pinned libdlfind dependency itself, "// &
-                        "confirmed by reading its source; not something this bridge can work around "// &
-                        "without patching that pinned dependency.")
+            case ("stochastic")
+               r%opt_algorithm_kind = TRC_OPT_ALG_STOCHASTIC
+            case ("genetic")
+               r%opt_algorithm_kind = TRC_OPT_ALG_GENETIC
             case default
-               call die(r, "--opt-algorithm must be sd, cg, cg-auto, lbfgs, nr, damped or prfo, got '"// &
-                        r%opt_algorithm_arg//"'")
+               call die(r, "--opt-algorithm must be sd, cg, cg-auto, lbfgs, nr, damped, prfo, stochastic "// &
+                        "or genetic, got '"//r%opt_algorithm_arg//"'")
             end select
          else
             r%opt_algorithm_kind = TRC_OPT_ALG_LBFGS
          end if
+         r%opt_is_global = (r%opt_algorithm_kind == TRC_OPT_ALG_STOCHASTIC .or. &
+                            r%opt_algorithm_kind == TRC_OPT_ALG_GENETIC)
       else
          ! target = saddle: the saddle method fixes DL-FIND's own
          ! algorithm/coordinate family (cb_get_params) -- --opt-algorithm
@@ -2071,28 +2216,14 @@ program terco_main
          case default
             call die(r, "--opt-saddle-method must be prfo or dimer, got '"//r%opt_saddle_method_arg//"'")
          end select
-         ! --opt-connect with P-RFO crashes INSIDE libdlfind itself, not in
-         ! this bridge: confirmed with a debug (-fcheck=all) build of
-         ! libdlfind, the fault is a bad array copy at
-         ! dlf_formstep.f90:2362 (`array(:)=tsmode_r(:)` in
-         ! dlf_formstep_get_ra, called from dlf_task.f90's task=1011 case
-         ! right after the TS sub-search converges) -- the size check one
-         ! line above it passes, so `tsmode_r` itself is a corrupted
-         ! allocation by the time the downhill phase asks for it, not a
-         ! size mismatch this bridge could catch or avoid. The dimer
-         ! method's own TS-mode bookkeeping does not go through
-         ! dlf_formstep_set_tsmode's mode 10/11 path at all and does not
-         ! reproduce this: a connect run from the SAME geometry with
-         ! --opt-saddle-method dimer finds the TS and both downhill minima
-         ! correctly (test/check_opt_connect.F90). Refused here rather
-         ! than left to crash the process.
-         if (r%opt_connect .and. r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) then
-            call die(r, "--opt-connect with --opt-saddle-method prfo is refused: it crashes inside "// &
-                     "libdlfind itself (a corrupted TS-mode array in dlf_formstep.f90, confirmed with "// &
-                     "a debug build -- not something this bridge can work around). Use "// &
-                     "--opt-saddle-method dimer with --opt-connect instead.")
-         end if
+         ! --opt-connect with --opt-saddle-method prfo used to be refused
+         ! here (a bad array copy inside libdlfind's own dlf_formstep.f90,
+         ! confirmed with a debug build): cmake/modules/Findlibdlfind.cmake's
+         ! pin now carries the fix (3c27977) -- see
+         ! app/trc_dlfind_bridge.F90's own header for the detail.
+         ! test/check_opt_connect.F90 runs connect with both methods.
       end if
+      call parse_opt_global_options(r)
 
       ! ---- --opt-neb: nudged elastic band / climbing-image NEB -----------
       r%opt_neb = r%cli%is_set("opt-neb")
@@ -2432,10 +2563,26 @@ program terco_main
          end block
       end if
 
-      ! --opt-algorithm stochastic/genetic (iopt 51/52) is refused at the
-      ! CLI (where --opt-algorithm is parsed, above) -- opt_opts%po_* are
-      ! never set, so trc_dlfind_bridge always sees their sentinel
-      ! defaults, which is correct: that algorithm can never be selected.
+      ! --opt-algorithm stochastic/genetic (iopt 51/52): opt_opts%po_*
+      ! stay at their sentinel defaults (DL-FIND's own inline values,
+      ! trc_dlfind_bridge's own header) unless parse_opt_global_options
+      ! validated one above, which it refuses together with any other
+      ! --opt-algorithm, so these are always still at their r%-type
+      ! sentinel (-1/-1.0/huge(0)) when opt_is_global is false.
+      opt_opts%seed = r%opt_seed
+      opt_opts%po_pop_size = r%opt_global_pop_size
+      opt_opts%po_maxcycle = r%opt_global_maxcycle
+      opt_opts%po_init_pop_size = r%opt_global_init_pop_size
+      opt_opts%po_nsave = r%opt_global_nsave
+      opt_opts%po_distribution = r%opt_global_distribution
+      opt_opts%po_reset = r%opt_global_reset
+      opt_opts%po_radius = r%opt_global_radius
+      opt_opts%po_contraction = r%opt_global_contraction
+      opt_opts%po_tolerance_r = r%opt_global_tolerance_r
+      opt_opts%po_tolerance_g = r%opt_global_tolerance_g
+      opt_opts%po_mutation_rate = r%opt_global_mutation_rate
+      opt_opts%po_death_rate = r%opt_global_death_rate
+      opt_opts%po_scalefac = r%opt_global_scalefac
 
       call trc_dlfind_optimize(r%h, r%natm, r%z, opt_residues, xyz, opt_opts, opt_res)
       if (opt_res%failed) call die(r, "--opt: "//opt_res%message)

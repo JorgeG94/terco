@@ -98,33 +98,42 @@
 !       constrained value is always whatever the START geometry has --
 !       not a choice this bridge makes, the only thing DL-FIND's public
 !       interface can do.
+!     * Global optimisation, iopt 51/52 (dlf_parallel_opt.f90):
+!       --opt-algorithm stochastic/genetic, with --opt-seed and the
+!       --opt-global-* population/cycle/radius/mutation parameters
+!       dlf_parallel_opt.f90 reads (trc_opt_options_t%po_*, dispatched in
+!       cb_get_params below). Confirmed single-task-safe by reading
+!       dlf_parallel_opt.f90 directly ("call this subroutine even if
+!       glob%ntasks == 1", iimage fixed at 1 -- no MPI task farm needed).
+!       UNTIL cmake/modules/Findlibdlfind.cmake's pin moved past upstream
+!       4167998, every one of dlf_parallel_opt.f90's own three calls to
+!       dlf_get_gradient was missing the `kiter` argument that api.f90's
+!       own dlf_get_gradient subroutine requires (every OTHER call site
+!       in libdlfind, including dl-find.f90's own main loop, passes all
+!       seven) -- Positional Fortran argument binding one argument short
+!       shifted every later dummy by one slot, so `status` was never
+!       written and the real status was read from whatever memory
+!       followed the actual argument list, segfaulting before the first
+!       energy evaluation on every attempt, independent of molecule,
+!       basis or population settings. The pin's own terco-patches branch
+!       fixes it (86ca316). The same commit also lets DLF_PO_SEED, an
+!       integer environment variable this module sets (terco_app%set_env,
+!       trc_dlfind_optimize below) right before api_dl_find runs, replace
+!       dlf_parallel_opt.f90's own wall-clock reseed on every call -- with
+!       no such variable in the environment DL-FIND's behaviour is
+!       unchanged (clock-seeded, as before the patch).
+!     * --opt-connect with --opt-saddle-method prfo: used to be refused
+!       outright (a bad array copy at dlf_formstep.f90:2362, confirmed
+!       with a debug (-fcheck=all) build -- glob%xcoords2 is allocated
+!       only when the caller supplies a second geometry, which a connect
+!       run never does, so task 1011's own `xcoords2(:,:,1)=tsmode_r`
+!       wrote through an unallocated array; the dimer method was
+!       unaffected because dlf_dimer allocates xcoords2 for its own
+!       direction first). The pin's terco-patches branch fixes this too
+!       (3c27977: allocates xcoords2 and sets tcoords2 before task 1011
+!       needs them, the same way dlf_dimer already did for the dimer
+!       path). test/check_opt_connect.F90 runs connect with both methods.
 !   - NOT exposed, and why:
-!       * Global optimisation, iopt 51/52 (dlf_parallel_opt.f90) --
-!         TRC_OPT_ALG_STOCHASTIC/GENETIC and trc_opt_options_t%po_* exist
-!         in this module (the plumbing was written and confirmed single-
-!         task-safe by reading dlf_parallel_opt.f90 directly: "call this
-!         subroutine even if glob%ntasks == 1", iimage fixed at 1 -- no
-!         MPI task farm needed), but app/main.F90 REFUSES --opt-algorithm
-!         stochastic/genetic at the CLI rather than ever calling into it:
-!         every one of dlf_parallel_opt.f90's own three calls to
-!         dlf_get_gradient (lines ~254, ~354, ~643) is missing the
-!         `kiter` argument that api.f90's own dlf_get_gradient subroutine
-!         requires (every OTHER call site in libdlfind, including
-!         dl-find.f90's own main loop, passes all seven). Positional
-!         Fortran argument binding one argument short shifts every later
-!         dummy by one slot, so `status` is never written and the real
-!         status comes from whatever memory followed the actual argument
-!         list -- measured: every attempt segfaults before the first
-!         energy evaluation even prints, independent of molecule, basis
-!         or population settings. A bug in the pinned, unmodified LGPL
-!         dependency itself (confirmed by reading its source), not
-!         something this bridge can route around (there is no other path
-!         to dlf_get_gradient from here) or fix (the point of pinning
-!         libdlfind is that terco carries no changes to it). Also would
-!         have had no reproducible seed even if it ran: the same file
-!         unconditionally reseeds Fortran's RANDOM_SEED from wall-clock
-!         time on every call, with no argument anywhere in its interface
-!         to override that.
 !       * imultistate (conical intersections, Lagrange-Newton, iopt 40) --
 !         needs excited-state gradients/couplings terco has no reference
 !         for; cb_get_multistate_gradients always declines (status 1).
@@ -162,7 +171,7 @@ module trc_dlfind_bridge
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
-   use terco_app, only: f_string
+   use terco_app, only: f_string, set_env
    implicit none
    private
 
@@ -281,6 +290,12 @@ module trc_dlfind_bridge
       !! 1 an ordinary accepted step; 3 the transition structure (also
       !! the final answer of a plain, non-connect P-RFO/dimer search); 4
       !! and 5 the two downhill minima a `connect` run adds afterwards.
+   integer(c_int), parameter :: DLF_PUT_GLOBAL_BEST = -1_c_int
+      !! --opt-algorithm genetic's own final answer (dlf_parallel_opt.f90's
+      !! po_nsave-slot report after its cycles loop, switch = -i, lowest
+      !! energy first) -- stochastic reports through DLF_PUT_STEP instead
+      !! (dlf_stoch_endcycle calls dlf_put_coords with switch 1 directly,
+      !! mid-loop, once it converges or printf>=2).
    integer(c_int), parameter :: DLF_TASK_CONNECT = 1011_c_int
    integer, parameter :: MSG_LEN = 1024
       !! trc_message's own buffer length convention (app/main.F90's `api`)
@@ -351,8 +366,18 @@ module trc_dlfind_bridge
       ! find.f90's own inline defaults, not a separate dlf_default_set
       ! routine -- see this module's own header for the numbers).
       integer :: po_pop_size = -1, po_maxcycle = -1, po_init_pop_size = -1, po_nsave = -1, po_distribution = -1
+      integer :: po_reset = -1
       real(dp) :: po_radius = -1.0_dp, po_contraction = -1.0_dp, po_tolerance_r = -1.0_dp, po_tolerance_g = -1.0_dp, &
                   po_mutation_rate = -1.0_dp, po_death_rate = -1.0_dp, po_scalefac = -1.0_dp
+      integer :: seed = huge(0)
+         !! --opt-seed: DLF_PO_SEED, set in THIS process's own environment
+         !! (terco_app%set_env) right before api_dl_find runs below --
+         !! dlf_parallel_opt.f90's own only path to a reproducible seed
+         !! (see this module's own header). Sentinel huge(0): no call to
+         !! set_env at all, so an unrelated DLF_PO_SEED already in the
+         !! environment (another terco_cli invocation's leftover, in the
+         !! same shell) is never silently read by a run that did not ask
+         !! for one.
    end type trc_opt_options_t
 
    type :: trc_opt_result_t
@@ -643,6 +668,18 @@ contains
       end if
 
       if (.not. res%failed) then
+         ! --opt-seed: the pinned libdlfind's own dlf_parallel_opt.f90
+         ! reads DLF_PO_SEED from THIS process's environment (the
+         ! terco-patches branch's 86ca316) in place of its wall-clock
+         ! reseed, on every call -- the only path a caller outside
+         ! libdlfind has to a reproducible global search. Set right
+         ! before api_dl_find, not in cb_get_params: dlf_default_init/
+         ! dlf_default_set run before the first callback, but the
+         ! environment is read inside dlf_parallel_opt.f90 itself, at
+         ! the FIRST seeding call, which only --opt-algorithm stochastic/
+         ! genetic ever reaches, so setting it unconditionally here is
+         ! harmless for every other algorithm too.
+         if (opts%seed /= huge(0)) call set_env("DLF_PO_SEED", to_string(opts%seed))
          call api_dl_find(nvar, nvar2, nspec, 1_c_int, &
                           c_funloc(cb_error), c_funloc(cb_get_gradient), c_funloc(cb_get_hessian), &
                           c_funloc(cb_get_multistate_gradients), c_funloc(cb_get_params), &
@@ -1189,6 +1226,17 @@ contains
          ! dlf_task.f90's task==1011 case writes TS.xyz/minimum_+-.xyz and
          ! calls dlf_put_coords for switches 3/4/5 ONLY under printf>=4.
          printf = 4_c_int
+      else if (iopt == TRC_OPT_ALG_STOCHASTIC .or. iopt == TRC_OPT_ALG_GENETIC) then
+         ! dlf_stoch_endcycle's own report of the best point
+         ! (DLF_PUT_GLOBAL_BEST/DLF_PUT_STEP, this module's own cb_put_
+         ! coords) is itself gated on printf>=2 (dlf_parallel_opt.f90,
+         ! independent of the printf>=1 the rest of DL-FIND uses) --
+         ! left at 1 like every other algorithm, stochastic would run to
+         ! completion and report "DL-FIND returned without reporting a
+         ! geometry" regardless of how it converged. Genetic's own final
+         ! report (the po_nsave-slot loop) is unconditional, so 2 is
+         ! harmless for it too.
+         printf = 2_c_int
       else
          ! printf >= 1 is what makes DL-FIND call dlf_put_coords at all
          ! for an ordinary run -- left at DL-FIND's own default of 0, a
@@ -1208,23 +1256,21 @@ contains
       restart = 0_c_int
 
       ! --opt-algorithm stochastic/genetic (iopt 51/52): dlf_parallel_opt.f90
-      ! is confirmed single-task-safe (iimage fixed at 1, "call this
-      ! subroutine even if glob%ntasks == 1") and reads these po_* variables
-      ! directly -- sentinels here leave dl-find.f90's own inline defaults
-      ! (po_pop_size=25, po_radius=1.0, po_contraction=0.9,
-      ! po_tolerance_r=1e-8, po_tolerance_g=1e-3, po_distribution=3,
-      ! po_maxcycle=10000, po_init_pop_size=2*po_pop_size, po_mutation_rate=
-      ! 0.15, po_death_rate=0.5, po_scalefac=10.0, po_nsave=10). There is NO
-      ! way to inject a reproducible random seed through this interface --
-      ! dlf_parallel_opt.f90 unconditionally reseeds Fortran's own
-      ! RANDOM_SEED from wall-clock time on every call, with no argument to
-      ! override it -- see this module's own header for why --opt-global-*
-      ! does not offer a seed option.
+      ! reads these po_* variables directly -- sentinels here leave
+      ! dl-find.f90's own inline defaults (po_pop_size=25, po_radius=1.0,
+      ! po_contraction=0.9, po_tolerance_r=1e-8, po_tolerance_g=1e-3,
+      ! po_distribution=3, po_maxcycle=10000, po_init_pop_size=2*
+      ! po_pop_size, po_reset=500 (genetic only), po_mutation_rate=0.15,
+      ! po_death_rate=0.5, po_scalefac=10.0, po_nsave=10). The reproducible
+      ! seed (--opt-seed, DLF_PO_SEED) is set in trc_dlfind_optimize,
+      ! before api_dl_find runs, not here -- this callback only forwards
+      ! the population/cycle/radius/mutation settings.
       if (cur_opts%po_pop_size > 0) po_pop_size = int(cur_opts%po_pop_size, c_int)
       if (cur_opts%po_maxcycle > 0) po_maxcycle = int(cur_opts%po_maxcycle, c_int)
       if (cur_opts%po_init_pop_size > 0) po_init_pop_size = int(cur_opts%po_init_pop_size, c_int)
       if (cur_opts%po_nsave > 0) po_nsave = int(cur_opts%po_nsave, c_int)
       if (cur_opts%po_distribution > 0) po_distribution = int(cur_opts%po_distribution, c_int)
+      if (cur_opts%po_reset > 0) po_reset = int(cur_opts%po_reset, c_int)   !! genetic-only; dl-find.f90's own default 500
       if (cur_opts%po_radius > 0.0_dp) po_radius = real(cur_opts%po_radius, c_double)
       if (cur_opts%po_contraction > 0.0_dp) po_contraction = real(cur_opts%po_contraction, c_double)
       if (cur_opts%po_tolerance_r > 0.0_dp) po_tolerance_r = real(cur_opts%po_tolerance_r, c_double)
@@ -1541,7 +1587,15 @@ contains
       end if
 
       select case (switch)
-      case (DLF_PUT_STEP, DLF_PUT_TS)
+      case (DLF_PUT_STEP, DLF_PUT_TS, DLF_PUT_GLOBAL_BEST)
+         ! DLF_PUT_GLOBAL_BEST (-1): dlf_parallel_opt.f90's own genetic
+         ! algorithm never calls dlf_put_coords with switch 1 the way
+         ! stochastic's dlf_stoch_endcycle does -- its only report is the
+         ! po_nsave-slot loop after the cycles loop ends, switch = -i for
+         ! the i-th saved minimum, LOWEST energy first (dlf_sort runs
+         ! before each slot is saved). -1 is that lowest one; -2 and
+         ! below (a second, third, ... local minimum the population also
+         ! found) are not this run's own answer and are ignored below.
          call record_step(coords, energy)
          if (switch == DLF_PUT_TS) then
             have_ts = .true.

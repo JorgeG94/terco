@@ -84,8 +84,10 @@ module trc_dlfind_bridge
       logical :: neb_shared_density = .false.
       type(trc_opt_constraint_t), allocatable :: constraints(:)
       integer :: po_pop_size = -1, po_maxcycle = -1, po_init_pop_size = -1, po_nsave = -1, po_distribution = -1
+      integer :: po_reset = -1
       real(dp) :: po_radius = -1.0_dp, po_contraction = -1.0_dp, po_tolerance_r = -1.0_dp, po_tolerance_g = -1.0_dp, &
                   po_mutation_rate = -1.0_dp, po_death_rate = -1.0_dp, po_scalefac = -1.0_dp
+      integer :: seed = huge(0)
    end type trc_opt_options_t
 
    type :: trc_opt_result_t

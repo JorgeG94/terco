@@ -573,13 +573,22 @@ if(TERCO_BUILD_APP)
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_ts_workdir})
     unset(_cli_opt_ts_workdir)
 
-    # --opt-connect: works via the dimer method (no Hessian); P-RFO is
-    # refused at the CLI (see app/main.F90's own refusal message) --
-    # see check_opt_connect.F90's own header.
+    # --opt-connect: both the dimer method and P-RFO (the pinned
+    # libdlfind's terco-patches branch fixes the crash the latter used
+    # to hit) -- see check_opt_connect.F90's own header.
     set(_cli_opt_connect_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_connect_work)
     terco_add_check(check_opt_connect check_opt_connect.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_connect_workdir})
     unset(_cli_opt_connect_workdir)
+
+    # --opt-algorithm stochastic, a fast fixed-seed global search --
+    # see check_opt_global.F90's own header.
+    set(_cli_opt_global_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_global_probe.json)
+    set(_cli_opt_global_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_global_work)
+    terco_add_check(check_opt_global check_opt_global.F90 NEEDS_PYSCF_REF
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_global_probe} ${_cli_opt_global_workdir})
+    unset(_cli_opt_global_probe)
+    unset(_cli_opt_global_workdir)
 
     # --opt-neb / climbing-image NEB on HCN<->HNC -- see check_opt_neb.F90's
     # own header for why its settings are what they are (measured to
