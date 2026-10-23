@@ -3,7 +3,9 @@ module check_constants_suite
    !! 2018 values on the same file (so a mistyped literal shows up as a
    !! failed identity, not just "looks plausible"), and the two atomic-mass
    !! tables, spot-checked against pyscf 2.14.0's own arrays plus the
-   !! out-of-range refusal.
+   !! out-of-range refusal. The base literals themselves are pinned
+   !! against CODATA 2018 too: an identity between two constants cannot
+   !! catch a typo in the one both are built from.
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
@@ -11,7 +13,8 @@ module check_constants_suite
                             HARTREE_TO_J, HARTREE_TO_KCALMOL, HARTREE_TO_CM1, HARTREE_TO_CALMOL, &
                             KB_SI, KB_HARTREE, H_SI, C_SI, NA_SI, CAL_TO_J, AMU_TO_KG, N_ELEMENTS, &
                             CM1_TO_KELVIN, HARTREE_PER_AMU_BOHR2_TO_CM1, ROTTEMP_AMUA2_TO_K, &
-                            ROTCONST_AMUA2_TO_GHZ, trc_atomic_mass, trc_atomic_mass_average
+                            ROTCONST_AMUA2_TO_GHZ, trc_atomic_mass, trc_atomic_mass_average, &
+                            HARTREE_TO_EV, E_CHARGE_SI
    implicit none
    private
    public :: collect_constants
@@ -21,6 +24,7 @@ contains
    subroutine collect_constants(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
+                  new_unittest("base literals are CODATA 2018 (and pi is acos(-1))", test_base_literals), &
                   new_unittest("angstrom/bohr round trip to one", test_bohr_round_trip), &
                   new_unittest("sqrt(pi) matches pi", test_sqrt_pi), &
                   new_unittest("kB in Hartree matches kB in J / Hartree in J", test_kb_hartree), &
@@ -39,6 +43,32 @@ contains
                   new_unittest("an atomic number outside [1, N_ELEMENTS] is refused", test_bad_z) &
                   ]
    end subroutine collect_constants
+
+   subroutine test_base_literals(error)
+      !! CODATA 2018 (physics.nist.gov/cuu/Constants); k_B, h, c, N_A and e
+      !! are exact since the 2019 SI redefinition. Compared exactly: each
+      !! is the same decimal literal, so any edit to trc_constants shows.
+      type(error_type), allocatable, intent(out) :: error
+      call check(error, PI == acos(-1.0_dp), "PI is acos(-1)")
+      if (allocated(error)) return
+      call check(error, BOHR_TO_ANGSTROM == 0.529177210903_dp, "Bohr radius, Angstrom")
+      if (allocated(error)) return
+      call check(error, HARTREE_TO_EV == 27.211386245988_dp, "Hartree, eV")
+      if (allocated(error)) return
+      call check(error, HARTREE_TO_J == 4.3597447222071e-18_dp, "Hartree, J")
+      if (allocated(error)) return
+      call check(error, AMU_TO_KG == 1.66053906660e-27_dp, "atomic mass constant, kg")
+      if (allocated(error)) return
+      call check(error, KB_SI == 1.380649e-23_dp, "Boltzmann constant, J/K")
+      if (allocated(error)) return
+      call check(error, H_SI == 6.62607015e-34_dp, "Planck constant, J s")
+      if (allocated(error)) return
+      call check(error, C_SI == 299792458.0_dp, "speed of light, m/s")
+      if (allocated(error)) return
+      call check(error, NA_SI == 6.02214076e23_dp, "Avogadro constant, 1/mol")
+      if (allocated(error)) return
+      call check(error, E_CHARGE_SI == 1.602176634e-19_dp, "elementary charge, C")
+   end subroutine test_base_literals
 
    subroutine test_bohr_round_trip(error)
       !! ANGSTROM_TO_BOHR is 1/BOHR_TO_ANGSTROM: the product must be 1 to
@@ -88,16 +118,13 @@ contains
       real(dp) :: expect
       expect = sqrt(HARTREE_TO_J/(AMU_TO_KG*(BOHR_TO_ANGSTROM*1.0e-10_dp)**2))/(TWO_PI*C_SI)*1.0e-2_dp
       call check(error, HARTREE_PER_AMU_BOHR2_TO_CM1, expect, thr=1.0e-10_dp, rel=.true.)
-      ! And the value itself: CODATA 2018 gives ~5140.487 (mqc's own ad hoc
-      ! sqrt(AU_TO_CM1) = 5140.48733 cm^-1, 3.6e-8 relative higher --
-      ! HESSIAN_VIB_THERMO_SPEC.md section 3.4).
+      ! And the value itself: CODATA 2018 gives ~5140.487.
       if (allocated(error)) return
       call check(error, HARTREE_PER_AMU_BOHR2_TO_CM1, 5140.487_dp, thr=1.0e-3_dp, rel=.true.)
    end subroutine test_freq_coeff
 
    subroutine test_rottemp(error)
-      !! mqc's defect D5: its own ROTTEMP_AMUA2_TO_K literal is 24.2637,
-      !! wrong in the 4th digit; this one evaluates to 24.2544.
+      !! 24.2544; the 24.2637 sometimes quoted is wrong in the 4th digit.
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: expect
       expect = H_SI**2/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2*KB_SI)
@@ -107,9 +134,7 @@ contains
    end subroutine test_rottemp
 
    subroutine test_rotconst_ghz(error)
-      !! mqc's defect D3: its own ROTCONST_AMUA2_TO_GHZ literal (505379.07)
-      !! is the MHz coefficient mislabelled GHz; this one evaluates to
-      !! 505.379, the actual GHz value.
+      !! 505.379 GHz; 505379.07 is the same coefficient in MHz.
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: expect
       expect = H_SI/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2)*1.0e-9_dp

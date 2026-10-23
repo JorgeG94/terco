@@ -100,10 +100,9 @@ module trc_constants
    real(dp), parameter :: CM1_TO_KELVIN = H_SI*C_SI*1.0e2_dp/KB_SI
       !! Derived: h*c/k_B, converted from m^-1 to cm^-1 (the 1e2) -- a
       !! vibrational wavenumber's characteristic temperature, theta_v =
-      !! CM1_TO_KELVIN * nu_tilde. mqc's own CM1_TO_KELVIN literal
-      !! (1.4387773538277) is the CODATA 2014 value; this one, computed
-      !! from the CODATA 2018 constants already above, is 1.438776877,
-      !! 3.3e-7 relative higher -- negligible next to the SCF/gradient
+      !! CM1_TO_KELVIN * nu_tilde. The CODATA 2014 value is
+      !! 1.4387773538277; this one, computed from the CODATA 2018
+      !! constants already above, is 1.438776877, 3.3e-7 relative lower -- negligible next to the SCF/gradient
       !! noise a finite-difference Hessian carries (trc_vib.F90's header).
    real(dp), parameter :: HARTREE_PER_AMU_BOHR2_TO_CM1 = &
       sqrt(HARTREE_TO_J/(AMU_TO_KG*(BOHR_TO_ANGSTROM*1.0e-10_dp)**2))/(TWO_PI*C_SI)*1.0e-2_dp
@@ -120,16 +119,13 @@ module trc_constants
    real(dp), parameter :: ROTTEMP_AMUA2_TO_K = H_SI**2/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2*KB_SI)
       !! Derived: h^2 / (8 pi^2 * amu * Angstrom^2 * k_B) -- the
       !! rotational temperature theta_r = ROTTEMP_AMUA2_TO_K / I, I in
-      !! amu*Angstrom^2. mqc's own ROTTEMP_AMUA2_TO_K literal, 24.2637, is
-      !! wrong in the 4th digit (mqc's defect D5); this evaluates to
-      !! 24.2544, matching the corrected value mqc's own validation
-      !! section computed against pyscf.
+      !! amu*Angstrom^2. Evaluates to 24.2544 (pyscf agrees); the 24.2637
+      !! sometimes quoted for it is wrong in the 4th digit, which is why
+      !! this is derived rather than typed in.
    real(dp), parameter :: ROTCONST_AMUA2_TO_GHZ = H_SI/(8.0_dp*PI**2*AMU_TO_KG*(1.0e-10_dp)**2)*1.0e-9_dp
       !! Derived: h / (8 pi^2 * amu * Angstrom^2), in GHz -- a rotational
-      !! constant B = ROTCONST_AMUA2_TO_GHZ / I. mqc's own
-      !! ROTCONST_AMUA2_TO_GHZ literal, 505379.07, is this same physical
-      !! coefficient but in MHz, mislabelled GHz (mqc's defect D3); this
-      !! evaluates to 505.379, the GHz value.
+      !! constant B = ROTCONST_AMUA2_TO_GHZ / I. Evaluates to 505.379;
+      !! 505379.07 is the same coefficient in MHz, an easy one to mislabel.
 
    real(dp), parameter :: BOHR_TO_ANGSTROM_CODATA2010 = 0.52917721092_dp
       !! CODATA 2010, NOT 2018 -- kept so trc_pcm_radii.F90's cavity table,

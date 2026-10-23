@@ -72,7 +72,7 @@ module terco_run
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
       ! --hessian: the FD Hessian (trc_run_hessian/trc_hessian) and the
       ! vibrational analysis/thermochemistry built on it (trc_vib/
-      ! trc_thermo, the previous commit on this branch).
+      ! trc_thermo).
       logical :: hessian = .false.
       real(dp) :: hess_step = 0.005_dp, temperature_k = 298.15_dp, pressure_atm = 1.0_dp
       integer :: sym_number = 1
