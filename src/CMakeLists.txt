@@ -21,6 +21,7 @@ target_sources(
           api/trc_api.F90        # basis, pair list, 1e, multipoles, DF
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_eri.F90       # the four-centre Fock builds
+          core/trc_hip.F90        # hipBLAS/hipSOLVER C interfaces (empty unless TERCO_HIP)
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           core/trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX

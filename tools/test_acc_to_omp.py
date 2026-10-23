@@ -117,3 +117,11 @@ def test_declare_targets_in_separate_procedures_kept(tmp_path):
     acc_to_omp.process_file(p, True, Counter(), [], "gpu")
     out = p.read_text()
     assert out.count("!$omp declare target") == 2
+
+
+def test_update_host_and_self_become_from():
+    # `update host(x)` is OpenACC's synonym for `update self(x)`; OpenMP has
+    # only from(), and amdflang rejects a leftover host().
+    for clause in ("host", "self"):
+        out = _xform(f"      !$acc update {clause}(ctr)\n", "gpu")
+        assert "!$omp target update from(ctr)" in out

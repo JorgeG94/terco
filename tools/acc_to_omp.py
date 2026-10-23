@@ -33,6 +33,7 @@ Clause translations (applied across the directive block — head + continuations
   create(  → map(alloc:
   delete(  → map(delete:
   self(    → from(    (only on update directives)
+  host(    → from(    (synonym of self)
   device(  → to(      (only on update directives)
 
 Stripped (OpenACC-only, no OpenMP equivalent — emit as-is would fail):
@@ -157,6 +158,7 @@ CLAUSE_MAP_DATA = {
 }
 CLAUSE_MAP_UPDATE = {
     "self":   "from(",
+    "host":   "from(",     # OpenACC's synonym for self(); OpenMP has no host()
     "device": "to(",
 }
 CLAUSE_RE_DATA = re.compile(
