@@ -37,7 +37,7 @@ program check_opt_vs_pyscf
                            ref_read_matrix, ref_report
    implicit none
 
-   character(len=:), allocatable :: cli_exe, xyzfile, ref_base, probe_json, probe_out, cmd
+   character(len=:), allocatable :: cli_exe, xyzfile, ref_base, probe_json, probe_out, cmd, work_dir
    character(len=1024) :: arg
    integer :: rc, nfail, nat, k
    real(dp), allocatable :: z_ref(:), coords_ref(:, :), coords_json(:, :)
@@ -56,14 +56,27 @@ program check_opt_vs_pyscf
    call get_command_argument(2, arg); xyzfile = trim(arg)
    call get_command_argument(3, arg); ref_base = trim(arg)
    call get_command_argument(4, arg); probe_json = trim(arg)
-   if (len(cli_exe) == 0 .or. len(xyzfile) == 0 .or. len(ref_base) == 0 .or. len(probe_json) == 0) then
-      print '(a)', 'check_opt_vs_pyscf: usage: check_opt_vs_pyscf <terco CLI> <xyz> <ref base> <scratch .json>'
+   call get_command_argument(5, arg); work_dir = trim(arg)
+   if (len(cli_exe) == 0 .or. len(xyzfile) == 0 .or. len(ref_base) == 0 .or. len(probe_json) == 0 .or. &
+       len(work_dir) == 0) then
+      print '(a)', 'check_opt_vs_pyscf: usage: check_opt_vs_pyscf <terco CLI> <xyz> <ref base> <scratch .json> '// &
+                 '<scratch dir>'
       stop 1
    end if
+   ! Run with WORKING_DIRECTORY set to work_dir (not test/ itself, this
+   ! program's own WORKING_DIRECTORY, ctest's convention) -- --opt writes
+   ! <geometry>_opt.xyz/_traj.xyz into the CLI's CWD (app/main.F90);
+   ! check_opt_connect.F90's own `cd work_dir &&` pattern. One work dir per
+   ! case (water/hcn, test/CMakeLists.txt's own foreach): this program is
+   ! run twice, never sharing a CWD with its sibling.
+   call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+   call execute_command_line('cp -f '//xyzfile//' '//work_dir//'/'//xyzfile, exitstat=rc, wait=.true.)
+   call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                             exitstat=rc, wait=.true.)
    probe_out = probe_json//'.out'
 
-   cmd = trim(cli_exe)//' '//xyzfile//' -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 --silent --json '// &
-         probe_json//' > '//probe_out//' 2>&1'
+   cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' '//xyzfile//' -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 '// &
+         '--silent --json '//probe_json//' > '//probe_out//' 2>&1'
    call execute_command_line(cmd, exitstat=rc, wait=.true.)
    if (rc /= 0) then
       print '(a,i0)', 'check_opt_vs_pyscf: the CLI run itself failed, exit code ', rc; stop 1
@@ -121,6 +134,26 @@ program check_opt_vs_pyscf
       call ref_report(nfail, abs(ang_json - ang_ref) < ANGLE_TOL, &
                      'check_opt_vs_pyscf ('//ref_base//'): bond angle vs pyscf+scipy, deg', abs(ang_json - ang_ref))
    end if
+
+   ! <xyz base>_opt.xyz/_traj.xyz must not have landed in test/ itself
+   ! (this program's own WORKING_DIRECTORY, ctest's convention) -- the
+   ! whole point of the `cd work_dir &&` above.
+   block
+      character(len=:), allocatable :: base
+      logical :: exists_opt, exists_traj
+      integer :: dotpos
+      base = xyzfile
+      dotpos = index(base, '.xyz')
+      if (dotpos > 0) base = base(1:dotpos - 1)
+      inquire (file=base//'_opt.xyz', exist=exists_opt)
+      inquire (file=base//'_traj.xyz', exist=exists_traj)
+      call ref_report(nfail, .not. exists_opt, &
+                      'check_opt_vs_pyscf ('//ref_base//'): '//base//'_opt.xyz was not left in test/ itself', &
+                      merge(1.0_dp, 0.0_dp, exists_opt))
+      call ref_report(nfail, .not. exists_traj, &
+                      'check_opt_vs_pyscf ('//ref_base//'): '//base//'_traj.xyz was not left in test/ itself', &
+                      merge(1.0_dp, 0.0_dp, exists_traj))
+   end block
 
    if (nfail > 0) then
       print '(a,i0,a)', 'check_opt_vs_pyscf ('//ref_base//'): ', nfail, ' check(s) FAILED'; stop 1

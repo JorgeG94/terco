@@ -13,13 +13,31 @@ module trc_dlfind_bridge
    private
 
    public :: trc_dlfind_available
-   public :: TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_DLC
+   public :: TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
+             TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC
    public :: TRC_OPT_GUESS_DENSITY, TRC_OPT_GUESS_PROJECTED, TRC_OPT_GUESS_NONE
+   public :: TRC_OPT_ALG_SD, TRC_OPT_ALG_CG_AUTO, TRC_OPT_ALG_CG, TRC_OPT_ALG_LBFGS, &
+             TRC_OPT_ALG_PRFO, TRC_OPT_ALG_NR, TRC_OPT_ALG_DAMPED
+   public :: TRC_OPT_TARGET_MINIMUM, TRC_OPT_TARGET_SADDLE
+   public :: TRC_OPT_SADDLE_PRFO, TRC_OPT_SADDLE_DIMER
+   public :: TRC_OPT_HESS_TERCO, TRC_OPT_HESS_DLFIND
+   public :: TRC_OPT_HUPD_NONE, TRC_OPT_HUPD_POWELL, TRC_OPT_HUPD_BOFILL, TRC_OPT_HUPD_BFGS
+   public :: TRC_OPT_LINE_AUTO, TRC_OPT_LINE_SCALING, TRC_OPT_LINE_ENERGY_TRUST, TRC_OPT_LINE_GRADIENT_TRUST
    public :: trc_opt_options_t, trc_opt_result_t
    public :: trc_dlfind_optimize
 
-   integer, parameter :: TRC_OPT_COORDS_CARTESIAN = 0, TRC_OPT_COORDS_HDLC = 1, TRC_OPT_COORDS_DLC = 2
+   integer, parameter :: TRC_OPT_COORDS_CARTESIAN = 0, TRC_OPT_COORDS_HDLC = 1, TRC_OPT_COORDS_HDLC_TC = 2, &
+                         TRC_OPT_COORDS_DLC = 3, TRC_OPT_COORDS_DLC_TC = 4
    integer, parameter :: TRC_OPT_GUESS_DENSITY = 0, TRC_OPT_GUESS_PROJECTED = 1, TRC_OPT_GUESS_NONE = 2
+   integer, parameter :: TRC_OPT_ALG_SD = 0, TRC_OPT_ALG_CG_AUTO = 1, TRC_OPT_ALG_CG = 2, TRC_OPT_ALG_LBFGS = 3, &
+                         TRC_OPT_ALG_PRFO = 10, TRC_OPT_ALG_NR = 20, TRC_OPT_ALG_DAMPED = 30
+   integer, parameter :: TRC_OPT_TARGET_MINIMUM = 0, TRC_OPT_TARGET_SADDLE = 1
+   integer, parameter :: TRC_OPT_SADDLE_PRFO = 0, TRC_OPT_SADDLE_DIMER = 1
+   integer, parameter :: TRC_OPT_HESS_TERCO = 0, TRC_OPT_HESS_DLFIND = 1
+   integer, parameter :: TRC_OPT_HUPD_NONE = 0, TRC_OPT_HUPD_POWELL = 1, TRC_OPT_HUPD_BOFILL = 2, &
+                         TRC_OPT_HUPD_BFGS = 3
+   integer, parameter :: TRC_OPT_LINE_AUTO = -1, TRC_OPT_LINE_SCALING = 0, TRC_OPT_LINE_ENERGY_TRUST = 1, &
+                         TRC_OPT_LINE_GRADIENT_TRUST = 2
 
    type :: trc_opt_options_t
       integer :: coords_kind = TRC_OPT_COORDS_CARTESIAN
@@ -27,6 +45,22 @@ module trc_dlfind_bridge
       integer(c_int) :: fallback_guess_kind = 2_c_int
       integer :: maxiter = 100
       real(dp) :: gtol = 4.5e-4_dp
+      integer :: algorithm = TRC_OPT_ALG_LBFGS
+      integer :: target_kind = TRC_OPT_TARGET_MINIMUM
+      integer :: saddle_method = TRC_OPT_SADDLE_PRFO
+      logical :: connect = .false.
+      logical :: is_linear = .false.
+      integer :: hessian_source = TRC_OPT_HESS_TERCO
+      integer :: hessian_update = -1
+      integer :: max_updates = -1
+      integer :: zero_modes = -1
+      real(dp) :: soft_modes = -1.0_dp
+      real(dp) :: max_step = -1.0_dp
+      integer :: linesearch = TRC_OPT_LINE_AUTO
+      real(dp) :: scalestep = -1.0_dp
+      integer :: lbfgs_memory = -1
+      real(dp) :: etol = -1.0_dp
+      integer :: print_level = -1
    end type trc_opt_options_t
 
    type :: trc_opt_result_t
@@ -35,6 +69,7 @@ module trc_dlfind_bridge
       character(len=:), allocatable :: message
       integer :: steps = 0
       integer :: energy_evaluations = 0
+      integer :: hessian_evaluations = 0
       real(dp) :: final_energy = 0.0_dp
       real(dp) :: final_gmax = 0.0_dp
       real(dp) :: final_grms = 0.0_dp
@@ -43,6 +78,12 @@ module trc_dlfind_bridge
       real(dp), allocatable :: traj_energy(:)
       real(dp), allocatable :: traj_coords(:, :, :)
       integer :: total_scf_iterations = 0
+      logical :: have_ts = .false.
+      real(dp) :: ts_energy = 0.0_dp
+      real(dp), allocatable :: ts_coords(:, :)
+      logical :: have_minimum_plus = .false., have_minimum_minus = .false.
+      real(dp) :: minimum_plus_energy = 0.0_dp, minimum_minus_energy = 0.0_dp
+      real(dp), allocatable :: minimum_plus_coords(:, :), minimum_minus_coords(:, :)
    end type trc_opt_result_t
 
 contains

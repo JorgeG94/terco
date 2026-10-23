@@ -32,12 +32,20 @@ program check_cli_opt
       print '(a)', 'check_cli_opt: usage: check_cli_opt <terco CLI> <scratch .json> <scratch dir>'
       stop 1
    end if
-   call execute_command_line('mkdir -p '//work_dir, exitstat=rc, wait=.true.)
+   ! Run with WORKING_DIRECTORY set to work_dir (not test/ itself, this
+   ! program's own WORKING_DIRECTORY, ctest's convention): --opt writes
+   ! <geometry>_opt.xyz/_traj.xyz into the CLI's CWD (app/main.F90), and
+   ! everything the subprocess needs is copied in so the `cd work_dir &&`
+   ! below can use plain relative paths -- check_opt_connect.F90's own
+   ! pattern.
+   call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
    call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
+   call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                             exitstat=rc, wait=.true.)
    probe_out = probe_json//'.out'
 
-   cmd = trim(cli_exe)//' '//work_dir//'/water.xyz -b basis_sets/sto-3g.json --opt --opt-maxiter 50 --silent --json '// &
-         probe_json//' > '//probe_out//' 2>&1'
+   cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --opt-maxiter 50 '// &
+         '--silent --json '//probe_json//' > '//probe_out//' 2>&1'
    call execute_command_line(cmd, exitstat=rc, wait=.true.)
    call expect(rc == 0, 'check_cli_opt: the CLI run itself failed')
 
@@ -108,6 +116,19 @@ program check_cli_opt
       end block
       close (u)
    end if
+
+   ! water_opt.xyz/water_traj.xyz must not have landed in test/ itself
+   ! (this program's own WORKING_DIRECTORY, ctest's convention) -- the
+   ! whole point of the `cd work_dir &&` above.
+   block
+      character(len=*), parameter :: stray(2) = [character(len=14) :: 'water_opt.xyz', 'water_traj.xyz']
+      integer :: k
+      logical :: exists
+      do k = 1, size(stray)
+         inquire (file=trim(stray(k)), exist=exists)
+         call report(nfail, .not. exists, 'check_cli_opt: '//trim(stray(k))//' was not left in test/ itself')
+      end do
+   end block
 
    if (nfail > 0) then
       print '(a,i0,a)', 'check_cli_opt: ', nfail, ' check(s) FAILED'; stop 1

@@ -461,16 +461,22 @@ if(TERCO_BUILD_APP)
   # even with DL-FIND on (where it is skipped, below: there is nothing
   # "without DL-FIND built" to assert there).
   #
+  # The geometry and the basis path are spelled out here: _xyz and _env
+  # belong to app/CMakeLists.txt, which is configured after this file.
+  # No WILL_FAIL: PASS_REGULAR_EXPRESSION already decides the result, and
+  # WILL_FAIL would invert it.
+  set(_opt_xyz ${PROJECT_SOURCE_DIR}/test)
+  set(_opt_env "TERCO_BASIS_PATH=${PROJECT_SOURCE_DIR}/test/basis_sets")
   if(NOT TERCO_ENABLE_DLFIND)
     # $<TARGET_FILE:terco_cli>, not a bare target name: terco_cli is not
     # defined yet in THIS directory's configure pass (app/ is added AFTER
     # test/ by the root CMakeLists.txt) -- same forward-reference as
     # terco_add_check's own ARGS above, see that comment.
     add_test(NAME terco/cli_opt_refused_without_dlfind
-             COMMAND $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz -b sto-3g.json --opt --silent)
+             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b sto-3g --opt --silent)
     set_tests_properties(
       terco/cli_opt_refused_without_dlfind
-      PROPERTIES ENVIRONMENT "${_env}" WILL_FAIL TRUE PASS_REGULAR_EXPRESSION
+      PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
                  "TERCO_ENABLE_DLFIND=OFF")
   endif()
 
@@ -481,10 +487,10 @@ if(TERCO_BUILD_APP)
     # this statically from the command line, so there is no "iterations"
     # line in the output at all when this fires.
     add_test(NAME terco/cli_opt_refused_mgga
-             COMMAND $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz -b 6-31g -f r2scan --opt --silent)
+             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f r2scan --opt --silent)
     set_tests_properties(
       terco/cli_opt_refused_mgga
-      PROPERTIES ENVIRONMENT "${_env}" WILL_FAIL TRUE PASS_REGULAR_EXPRESSION
+      PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
                  "needs a gradient.*meta-GGA" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
 
     # The CLI's --opt --json end to end: the "optimization" JSON block,
@@ -499,24 +505,73 @@ if(TERCO_BUILD_APP)
 
     # The loose sanity check against metalquicha's own quoted water/HCN
     # optimisations (mqc's basis differs from terco's by ~2e-8 Eh) --
-    # see check_opt_vs_mqc.F90's own header.
+    # see check_opt_vs_mqc.F90's own header. A scratch work dir, same
+    # reasoning as check_cli_opt's own _cli_opt_workdir: --opt now writes
+    # <geometry>_opt.xyz/_traj.xyz into the CLI's CWD (app/main.F90), so
+    # the CLI runs with that CWD set to a dir under the BUILD tree, never
+    # test/ itself (this check's own WORKING_DIRECTORY, ctest's convention).
     set(_cli_opt_mqc_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_mqc_probe.json)
+    set(_cli_opt_mqc_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_mqc_work)
     terco_add_check(check_opt_vs_mqc check_opt_vs_mqc.F90
-                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_mqc_probe})
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_mqc_probe} ${_cli_opt_mqc_workdir})
     unset(_cli_opt_mqc_probe)
+    unset(_cli_opt_mqc_workdir)
 
     # The real anchor: terco's --opt (tight --opt-gtol 1e-5) against
     # pyscf's own analytic RHF/STO-3G gradient driving scipy's L-BFGS-B
     # (test/pyscf_refs/generate.py's gen_opt, opt_water.ref/opt_hcn.ref)
     # -- a different language, SCF implementation and optimiser, from
     # the SAME start geometries as mqc's note. See check_opt_vs_pyscf.F90's
-    # own header for the tolerances.
+    # own header for the tolerances. A separate work dir PER CASE, so the
+    # water and hcn ctest cases (which can run concurrently under -j) never
+    # share a CWD.
     foreach(case water hcn)
       set(_cli_opt_pyscf_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_probe_${case}.json)
+      set(_cli_opt_pyscf_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_work_${case})
       terco_add_check(check_opt_vs_pyscf_${case} check_opt_vs_pyscf.F90 NEEDS_PYSCF_REF
-                      ARGS $<TARGET_FILE:terco_cli> ${case}.xyz opt_${case} ${_cli_opt_pyscf_probe})
+                      ARGS $<TARGET_FILE:terco_cli> ${case}.xyz opt_${case} ${_cli_opt_pyscf_probe}
+                           ${_cli_opt_pyscf_workdir})
       unset(_cli_opt_pyscf_probe)
+      unset(_cli_opt_pyscf_workdir)
     endforeach()
+
+    # Every --opt-algorithm/--opt-coords this PR exposes converges
+    # water/STO-3G to the existing opt_water anchor -- see
+    # check_opt_algorithms.F90's own header. One shared work dir: the 11
+    # runs inside this single ctest case are sequential (the program's own
+    # do loop), so they can reuse it.
+    set(_cli_opt_alg_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_algorithms_work)
+    terco_add_check(check_opt_algorithms check_opt_algorithms.F90
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_alg_workdir})
+    unset(_cli_opt_alg_workdir)
+
+    # Invalid --opt-* combinations are refused before DL-FIND ever runs --
+    # see check_opt_refusals.F90's own header. None of these ever reach
+    # the write-the-xyz-outputs code (every case is refused before DL-FIND
+    # runs at all), but the CLI still writes its --silent run's redirected
+    # stdout somewhere, so it gets a work dir too, for the same reason as
+    # every other check here.
+    set(_cli_opt_refusals_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_refusals_work)
+    terco_add_check(check_opt_refusals check_opt_refusals.F90
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_refusals_workdir})
+    unset(_cli_opt_refusals_workdir)
+
+    # The transition-state search: P-RFO (Cartesian, terco's own
+    # analytic-from-FD Hessian) and the dimer method (no Hessian) on the
+    # HCN<->HNC isomerisation, agreeing with each other and showing
+    # exactly one imaginary mode -- see check_opt_ts.F90's own header.
+    set(_cli_opt_ts_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_ts_work)
+    terco_add_check(check_opt_ts check_opt_ts.F90 NEEDS_PYSCF_REF
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_ts_workdir})
+    unset(_cli_opt_ts_workdir)
+
+    # --opt-connect: works via the dimer method (no Hessian); P-RFO is
+    # refused at the CLI (see app/main.F90's own refusal message) --
+    # see check_opt_connect.F90's own header.
+    set(_cli_opt_connect_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_connect_work)
+    terco_add_check(check_opt_connect check_opt_connect.F90 NEEDS_PYSCF_REF
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_connect_workdir})
+    unset(_cli_opt_connect_workdir)
   endif()
 endif()
 

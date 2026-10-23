@@ -20,7 +20,7 @@ program check_opt_vs_mqc
    use json_module, only: json_file
    implicit none
 
-   character(len=:), allocatable :: cli_exe, probe_json, probe_out, cmd
+   character(len=:), allocatable :: cli_exe, probe_json, probe_out, cmd, work_dir
    character(len=1024) :: arg
    integer :: rc, nfail
    real(dp) :: e_json
@@ -37,14 +37,25 @@ program check_opt_vs_mqc
    nfail = 0
    call get_command_argument(1, arg); cli_exe = trim(arg)
    call get_command_argument(2, arg); probe_json = trim(arg)
-   if (len(cli_exe) == 0 .or. len(probe_json) == 0) then
-      print '(a)', 'check_opt_vs_mqc: usage: check_opt_vs_mqc <terco CLI binary> <scratch .json path>'
+   call get_command_argument(3, arg); work_dir = trim(arg)
+   if (len(cli_exe) == 0 .or. len(probe_json) == 0 .or. len(work_dir) == 0) then
+      print '(a)', 'check_opt_vs_mqc: usage: check_opt_vs_mqc <terco CLI binary> <scratch .json path> <scratch dir>'
       stop 1
    end if
+   ! Run with WORKING_DIRECTORY set to work_dir (not test/ itself, this
+   ! program's own WORKING_DIRECTORY, ctest's convention) -- --opt writes
+   ! <geometry>_opt.xyz/_traj.xyz into the CLI's CWD (app/main.F90);
+   ! check_opt_connect.F90's own `cd work_dir &&` pattern.
+   call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+   call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
+   call execute_command_line('cp -f hcn.xyz '//work_dir//'/hcn.xyz', exitstat=rc, wait=.true.)
+   call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                             exitstat=rc, wait=.true.)
    probe_out = probe_json//'.water.out'
 
    ! --- water -------------------------------------------------------------
-   cmd = trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json//' > '//probe_out//' 2>&1'
+   cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --silent --json '// &
+         probe_json//' > '//probe_out//' 2>&1'
    call execute_command_line(cmd, exitstat=rc, wait=.true.)
    call expect(rc == 0, 'check_opt_vs_mqc: the water CLI run itself failed')
    call json%initialize(); call json%load(filename=probe_json)
@@ -71,7 +82,8 @@ program check_opt_vs_mqc
 
    ! --- hcn -----------------------------------------------------------------
    probe_out = probe_json//'.hcn.out'
-   cmd = trim(cli_exe)//' hcn.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json//' > '//probe_out//' 2>&1'
+   cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' hcn.xyz -b basis_sets/sto-3g.json --opt --silent --json '// &
+         probe_json//' > '//probe_out//' 2>&1'
    call execute_command_line(cmd, exitstat=rc, wait=.true.)
    call expect(rc == 0, 'check_opt_vs_mqc: the hcn CLI run itself failed')
    call json%initialize(); call json%load(filename=probe_json)
@@ -83,6 +95,21 @@ program check_opt_vs_mqc
    call json%destroy()
    call report(nfail, abs(e_json - (-91.67520899058249_dp)) < ENERGY_TOL, &
               'check_opt_vs_mqc: hcn final energy vs mqc, Eh', abs(e_json - (-91.67520899058249_dp)))
+
+   ! water_opt.xyz/water_traj.xyz/hcn_opt.xyz/hcn_traj.xyz must not have
+   ! landed in test/ itself (this program's own WORKING_DIRECTORY, ctest's
+   ! convention) -- the whole point of the `cd work_dir &&` above.
+   block
+      character(len=*), parameter :: stray(4) = &
+         [character(len=14) :: 'water_opt.xyz', 'water_traj.xyz', 'hcn_opt.xyz', 'hcn_traj.xyz']
+      integer :: k
+      logical :: exists
+      do k = 1, size(stray)
+         inquire (file=trim(stray(k)), exist=exists)
+         call report(nfail, .not. exists, 'check_opt_vs_mqc: '//trim(stray(k))//' was not left in test/ itself', &
+                    merge(1.0_dp, 0.0_dp, exists))
+      end do
+   end block
 
    if (nfail > 0) then
       print '(a,i0,a)', 'check_opt_vs_mqc: ', nfail, ' check(s) FAILED'; stop 1
