@@ -477,10 +477,10 @@ if(TERCO_BUILD_APP)
 
   if(TERCO_ENABLE_DLFIND)
     # --opt refuses a method with no gradient (a meta-GGA) BEFORE any SCF
-    # runs at all -- DLFIND_INTEGRATION_NOTE.md section 7.5's own "drop
-    # the probe gradient" lift: app/main.F90's opt_capability_check reads
-    # this statically from the command line, so there is no "iterations"
-    # line in the output at all when this fires.
+    # runs at all: app/main.F90's opt_capability_check knows statically,
+    # from the command line's own --func, which functionals have no
+    # analytic gradient, so there is no "iterations" line in the output
+    # at all when this fires.
     add_test(NAME terco/cli_opt_refused_mgga
              COMMAND $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz -b 6-31g -f r2scan --opt --silent)
     set_tests_properties(

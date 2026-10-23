@@ -440,12 +440,12 @@ contains
 
    !
    ! Whether this run's method has a gradient at all, checked BEFORE any
-   ! SCF runs -- DLFIND_INTEGRATION_NOTE.md section 7.5 ("drop the probe
-   ! gradient if the method's capability is known statically"): every one
-   ! of these conditions is already known from the command line alone, the
-   ! same set trc_run_gradient's own gradient_capability_check refuses
-   ! after a converged SCF (src/api/trc_capi.F90). Returns "" when a
-   ! gradient is available, the refusal message otherwise.
+   ! SCF runs: every one of these conditions is already known from the
+   ! command line alone, so there is no need to spend an SCF on a probe
+   ! gradient just to find out. The same set trc_run_gradient's own
+   ! gradient_capability_check refuses after a converged SCF
+   ! (src/api/trc_capi.F90). Returns "" when a gradient is available, the
+   ! refusal message otherwise.
    !
    function opt_capability_check(r) result(refusal)
       use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_FAMILY_MGGA
@@ -475,16 +475,15 @@ contains
    !
    ! Connected components of the covalent-bond graph (Cordero radii,
    ! trc_constants%trc_covalent_radius, bond threshold 1.3x the sum of two
-   ! atoms' radii -- the same tolerance metalquicha's own
-   ! mqc_bond_perception.f90 uses), 1-based, for --opt-coords hdlc's
-   ! `residues`: one residue per covalently bonded molecule, so HDLC
-   ! builds internal coordinates within each and Cartesians between them
-   ! (DLFIND_INTEGRATION_NOTE.md section 4, "Residues"). --opt-coords
+   ! atoms' radii), 1-based, for --opt-coords hdlc's `residues`: one
+   ! residue per covalently bonded molecule, so HDLC builds internal
+   ! coordinates within each and Cartesians between them. --opt-coords
    ! cartesian/dlc never calls this -- trc_dlfind_bridge's driver takes
    ! all-ones directly, which is correct for cartesian and for a single
    ! bonded molecule in dlc (a multi-fragment cluster in pure dlc fails
-   ! inside DL-FIND itself, "cyclic failure" -- out of scope here, same as
-   ! mqc's own note).
+   ! inside DL-FIND itself with "cyclic failure at residue 1" -- fixing
+   ! that would need a real multi-residue partition for dlc too, out of
+   ! scope here).
    !
    subroutine build_opt_residues(natm, z, xyz, residues, err)
       integer, intent(in) :: natm
@@ -532,8 +531,7 @@ contains
 
    !
    ! The optimisation's own final summary: converged or not, steps,
-   ! energy evaluations and the final energy -- the three numbers
-   ! DLFIND_INTEGRATION_NOTE.md section 6's own log table ends a run with.
+   ! energy evaluations and the final energy.
    ! Per-step lines (energy, max/rms |g|, SCF iterations, wall time) are
    ! logged from trc_dlfind_bridge%cb_put_coords itself as each step is
    ! accepted, not replayed here.
@@ -575,8 +573,8 @@ contains
    !
    ! `<geometry base>_opt.xyz`: the optimised geometry in Angstrom, same
    ! atom order as the input. Written whether or not the run converged
-   ! (the comment line says which), same as metalquicha's own
-   ! `output_<name>_optimized.xyz` (DLFIND_INTEGRATION_NOTE.md section 6).
+   ! (the comment line says which), so a failed optimisation's last
+   ! geometry is never silently lost.
    !
    subroutine write_opt_xyz(r, path, xyz_bohr)
       type(run_t), intent(in) :: r
@@ -1171,8 +1169,8 @@ program terco_main
    ! resolved (not just r%cli%is_set) for the check to see what the run
    ! will actually do -- a PCM run that reached DL-FIND with this check
    ! run too early crashed with `error stop` instead of this message
-   ! (the opt gradient-capability check existing at all is the whole
-   ! point of DLFIND_INTEGRATION_NOTE.md section 7.5).
+   ! (this is exactly why opt_capability_check exists: DL-FIND itself
+   ! has no graceful way to decline a run it cannot do).
    if (r%opt) then
       if (.not. trc_dlfind_available()) call die(r, "--opt needs libdlfind: this terco was built with "// &
                                                   "-DTERCO_ENABLE_DLFIND=OFF (the default). Reconfigure "// &

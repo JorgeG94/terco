@@ -3805,9 +3805,11 @@ def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, tempe
 
 
 def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
-    """RHF/STO-3G (pyscf's own internal basis, same as gen_vib_thermo):
-    optimise `atoms_ang` with scipy.optimize's L-BFGS-B driven by pyscf's
-    own analytic RHF gradient at every trial geometry, to a TIGHT
+    """RHF/STO-3G, built from terco's own basis file (not pyscf's built-in
+    STO-3G, same reasoning as gen_vib_thermo: the anchor then follows the
+    file the tests read, which is on this ref's files: line): optimise
+    `atoms_ang` with scipy.optimize's L-BFGS-B driven by pyscf's own
+    analytic RHF gradient at every trial geometry, to a TIGHT
     max-gradient-component tolerance (1e-8 Eh/Bohr -- two orders tighter
     than terco's own --opt-gtol 1e-5 anchor comparison below, so the
     comparison's error is dominated by terco's convergence, not pyscf's).
@@ -3824,7 +3826,9 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
     place either side's internal coordinates come from."""
     natm = len(atoms_ang)
     symbols = [a[0] for a in atoms_ang]
-    mol0 = gto.M(atom=atoms_ang, basis='sto-3g', unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol0 = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
     x0 = mol0.atom_coords().reshape(-1).copy()   # bohr
 
     cache = {}
@@ -3834,7 +3838,7 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
         if key in cache:
             return cache[key]
         coords = x.reshape(natm, 3)
-        mol = gto.M(atom=list(zip(symbols, coords)), basis='sto-3g', unit='Bohr',
+        mol = gto.M(atom=list(zip(symbols, coords)), basis=basis_arg, unit='Bohr',
                     charge=charge, spin=mult - 1, verbose=0)
         mf = scf.RHF(mol)
         mf.conv_tol = 1e-13
@@ -3863,7 +3867,7 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
     coords_final = res.x.reshape(natm, 3)
 
     w = RefWriter(f"opt_{case}.ref")
-    w.header("opt " + case, [])
+    w.header("opt " + case, [TEST / "basis_sets" / "sto-3g.json", TEST / "check_opt_vs_pyscf.F90"])
     w.comment(f"scipy L-BFGS-B, {res.nit} iterations, final max|g| {gmax_final:.3e} Eh/Bohr")
     w.int_("NAT", natm)
     w.vector("Z", np.array(mass_z, dtype=np.float64))

@@ -1,8 +1,9 @@
 !
 ! SCF iterations per --opt step (summed over every accepted step,
 ! trc_opt_result_t%total_scf_iterations), for the mqc baseline
-! (TRC_OPT_GUESS_NONE: re-run SAD at every step, DLFIND_INTEGRATION_
-! NOTE.md section 5) against the two warm starts (density, projected),
+! (TRC_OPT_GUESS_NONE: re-run SAD at every step, with no density,
+! orbitals or DIIS history carried over -- mqc's own approach) against
+! the two warm starts (density, projected),
 ! water/STO-3G and a 6-water cluster/def2-SVP, HF and B3LYP -- this PR's
 ! own warm-start measurement. Informational only, like bench_warmstart.F90
 ! (which measures the SAME two warm starts for trc_run_hessian's

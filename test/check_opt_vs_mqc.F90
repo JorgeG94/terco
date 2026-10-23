@@ -1,14 +1,14 @@
 !
 ! A LOOSE sanity check against metalquicha's own reference optimisations
-! (/home/jorge/dev/metalquicha/DLFIND_INTEGRATION_NOTE.md section 6: water
-! and HCN, RHF/STO-3G, Cartesian, DL-FIND's own engine default gtol
+! (water and HCN, RHF/STO-3G, Cartesian, DL-FIND's own engine default gtol
 ! 4.5e-4 Eh/Bohr -- terco's own CLI default, so no --opt-gtol override is
 ! passed here, unlike check_opt_vs_pyscf's tight comparison).
 !
 ! mqc's own STO-3G basis file differs from pyscf's (and so from terco's
 ! test/basis_sets/sto-3g.json, generated from pyscf's table) by ~2e-8 Eh
-! at this geometry -- the note's own words. This check's tolerances carry
-! that difference plus the two optimisers' independent convergence paths
+! at this geometry, measured when mqc's reference runs were made. This
+! check's tolerances carry that difference plus the two optimisers'
+! independent convergence paths
 ! at a loose gtol; check_opt_vs_pyscf.F90, against a pyscf+scipy
 ! reference generated through terco's OWN basis file at a tight gtol, is
 ! the real anchor. This one exists only to show terco's --opt lands on

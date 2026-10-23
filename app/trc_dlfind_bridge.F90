@@ -2,8 +2,10 @@
 ! terco's side of DL-FIND: fills libdlfind's `spec`/parameter block, turns
 ! its seven callbacks into calls on a terco context handle (trc_set_geometry
 ! / trc_run_scf / trc_run_gradient), and turns the result back into a
-! trc_opt_result_t. See /home/jorge/dev/metalquicha/DLFIND_INTEGRATION_NOTE.md
-! for the upstream contract this follows (section numbers below refer to it).
+! trc_opt_result_t. The seven-callback contract, the `spec` layout and its
+! traps below come from reading libdlfind's own api.f90 and
+! dlf_parameter_module.f90 directly; each one is explained inline where it
+! applies rather than pointed at elsewhere.
 !
 ! THIS MODULE IS NEVER COMPILED INTO libterco. It lives in app/ and is
 ! linked only into the terco_cli executable (app/CMakeLists.txt), which is
@@ -15,10 +17,12 @@
 ! ONE OPTIMIZATION AT A TIME. DL-FIND's callbacks are plain function
 ! pointers with no user-data argument (api_dl_find takes them as
 ! type(c_funptr), nothing else), so the system being optimized has to live
-! in module `save` state where the callbacks can reach it -- note section
-! 3, "how state reaches the callbacks". `active` below is the guard.
+! in module `save` state where the callbacks can reach it: the context
+! handle, counters and latest result below, all reset at the start of each
+! run so nothing from a previous optimisation in the same process leaks
+! into the next one. `active` is the guard against two running at once.
 !
-! CONVERGENCE AUTHORITY (note section 7.3). This bridge reports its own
+! CONVERGENCE AUTHORITY. This bridge reports its own
 ! verdict -- the max Cartesian gradient component of the LAST accepted
 ! step against `opts%gtol` -- not DL-FIND's internal one. DL-FIND tests
 ! five criteria (max/RMS gradient, max/RMS step, energy change) and, in
@@ -71,8 +75,8 @@ module trc_dlfind_bridge
    ! is a small subset of (no NEB, no dimer, no P-RFO: out of scope here).
    integer(c_int), parameter :: DLF_COORDS_CARTESIAN = 0, DLF_COORDS_HDLC = 1, DLF_COORDS_DLC = 3
    integer(c_int), parameter :: DLF_OPT_LBFGS = 3
-      !! mqc's own default and DLFIND_INTEGRATION_NOTE.md section 4's
-      !! "engine default"; this PR offers no --opt-algorithm, so it is the
+      !! DL-FIND's own engine default (dlf_default_set's inline default
+      !! for iopt); this PR offers no --opt-algorithm, so it is the
       !! only one wired up. The code is shaped so a later PR can add one
       !! (trc_opt_options_t gains a field, cb_get_params's `iopt` branches
       !! on it) without touching anything else here.
@@ -233,7 +237,7 @@ contains
       traj_n = 0
 
       nvar = int(3*n, c_int)
-      nvar2 = 0_c_int   !! no second structure (no NEB endpoint, no dimer) -- note section 3
+      nvar2 = 0_c_int   !! no second structure (no NEB endpoint, no dimer)
       nspec = int(3*n, c_int)   !! [residue(n), znuc(n), micspec(n)]: no constraints, so no icons block
 
       call api_dl_find(nvar, nvar2, nspec, 1_c_int, &
@@ -249,9 +253,11 @@ contains
          res%message = "geometry optimisation stopped: "//trim(eval_fail_msg)
       else if (.not. have_result) then
          ! DL-FIND reports a geometry through dlf_put_coords only when
-         ! printf >= 1 (cb_get_params sets it to 1 always -- note section
-         ! 3's own trap). Reaching here with have_result still false means
-         ! api_dl_find returned without ever calling it.
+         ! printf >= 1 -- leaving it at DL-FIND's own default of 0 lets a
+         ! run converge with no geometry ever reported back, which is why
+         ! cb_get_params always sets it to 1 below. Reaching here with
+         ! have_result still false means api_dl_find returned without
+         ! ever calling it.
          res%failed = .true.
          res%message = "DL-FIND returned without reporting a geometry"
       else
@@ -290,7 +296,7 @@ contains
       !! DL-FIND asking for the start geometry and every setting this run
       !! cares about. Every argument arrives already holding DL-FIND's own
       !! default (dlf_default_init ran first), so only what this bridge
-      !! actually sets below is touched -- note section 3 and 4.
+      !! actually sets below is touched.
       integer(c_int), intent(in), value :: nvar, nvar2, nspec
       real(c_double), intent(inout) :: coords(nvar), coords2(nvar2)
       integer(c_int), intent(inout) :: spec(nspec)
@@ -333,24 +339,25 @@ contains
       ! block, so no 5*ncons entries between them. The FIRST block is
       ! residue numbers, never a frozen/free flag: a positive entry is the
       ! residue the atom belongs to (all 1 means "ignore residues", which
-      ! Cartesian/DLC do; HDLC needs the real partition -- note section 3's
-      ! "all zeros breaks HDLC" trap, avoided here because residues(:) is
-      ! never zero by construction, app/main.F90's own build_opt_residues).
+      ! Cartesian/DLC do; HDLC needs the real partition -- an all-zero
+      ! residue block breaks HDLC outright, avoided here because
+      ! residues(:) is never zero by construction, app/main.F90's own
+      ! build_opt_residues).
       do i = 1, natm
          spec(i) = int(residues(i), c_int)
       end do
       do i = 1, natm
          spec(natm + i) = int(znuc(i), c_int)
       end do
-      spec(2*natm + 1:3*natm) = 1_c_int   !! micspec: 0 or 1, 1 everywhere (note section 3)
+      spec(2*natm + 1:3*natm) = 1_c_int   !! micspec: DL-FIND requires 0 or 1 here; 1 everywhere
 
       nz = int(natm, c_int)       !! lets HDLC/DLC perceive connectivity on their own
       ncons = 0_c_int
-      nconn = 0_c_int             !! note section 3: nconn and micspec are read at inconsistent offsets together
+      nconn = 0_c_int             !! DL-FIND reads nconn and micspec at inconsistent offsets when both are present; 0 avoids that
       tatoms = 1_c_int            !! the variables are atoms, not arbitrary DOF -- HDLC needs to know
 
-      ! Arrive uninitialised, or at -1 and then checked positive -- note
-      ! section 3's "these must be set even though they look optional".
+      ! Arrive uninitialised, or at -1 and then checked positive, so each
+      ! needs an explicit value even though it looks optional.
       nframe = 0_c_int
       nmass = 0_c_int
       nweight = 0_c_int
@@ -370,10 +377,11 @@ contains
       tolerance = real(cur_opts%gtol, c_double)
       maxcycle = int(cur_opts%maxiter, c_int)
 
-      ! printf >= 1 is what makes DL-FIND call dlf_put_coords at all (note
-      ! section 3's "no put_coords ever arrives" trap). printl follows
-      ! this process's own logger level, so --silent also quiets DL-FIND's
-      ! stdout convergence table.
+      ! printf >= 1 is what makes DL-FIND call dlf_put_coords at all --
+      ! left at DL-FIND's own default of 0, a run converges silently with
+      ! no geometry ever reported back. printl follows this process's own
+      ! logger level, so --silent also quiets DL-FIND's stdout convergence
+      ! table.
       printf = 1_c_int
       printl = dlfind_print_level()
 
@@ -385,7 +393,9 @@ contains
    subroutine cb_get_gradient(nvar, coords, energy, gradient, iimage, kiter, status) bind(c)
       !! DL-FIND asking for the energy and gradient at a geometry -- an
       !! accepted step OR a line-search trial point; cb_put_coords, not
-      !! this, is where an ACCEPTED step is recorded (note section 3).
+      !! this, is where an ACCEPTED step is recorded (line-search trials
+      !! hit this callback too, so counting evaluations here would
+      !! overcount accepted steps).
       integer(c_int), intent(in), value :: nvar
       real(c_double), intent(in) :: coords(nvar)
       real(c_double), intent(out) :: energy
@@ -438,9 +448,10 @@ contains
             return
          end if
       else if (have_prev_scf) then
-         ! TRC_OPT_GUESS_NONE: the mqc baseline (section 5, "no previous
-         ! density, orbitals or DIIS history is reused") -- re-run the
-         ! ordinary guess every step, for the warm-start measurement.
+         ! TRC_OPT_GUESS_NONE re-runs the ordinary guess every step with
+         ! no density, orbitals or DIIS history carried over -- the
+         ! baseline the warm-start measurement (--opt-guess density vs
+         ! projected) compares against.
          st = trc_set_guess(ctx, cur_opts%fallback_guess_kind, c_null_ptr, 1_c_int)
          if (st /= TRC_OK) then
             call fail_eval(nvar, energy, gradient, status, "trc_set_guess (baseline) failed mid-optimisation")
@@ -513,10 +524,10 @@ contains
 
    subroutine fail_eval(nvar, energy, gradient, status, why)
       !! One place to mark an evaluation failed and hand DL-FIND a zero
-      !! energy/gradient and status = 1 -- note section 3's own contract
-      !! ("a failed gradient sets status = 1"; there is no recovery inside
-      !! DL-FIND for this, it is trc_dlfind_optimize's caller that reports
-      !! the run failed once api_dl_find returns).
+      !! energy/gradient and status = 1 -- DL-FIND's own contract for a
+      !! failed evaluation. There is no recovery inside DL-FIND for this;
+      !! trc_dlfind_optimize's caller reports the run failed once
+      !! api_dl_find returns.
       integer(c_int), intent(in), value :: nvar
       real(c_double), intent(out) :: energy
       real(c_double), intent(out) :: gradient(nvar)
@@ -581,9 +592,9 @@ contains
 
    subroutine cb_get_hessian(nvar, coords, hessian, status) bind(c)
       !! Second derivatives for P-RFO/NR -- always declined. A non-zero
-      !! status is a SUPPORTED answer (note section 3): DL-FIND falls
-      !! back to a two-point finite difference of the gradients it is
-      !! already requesting. Never reached anyway, since iopt is always
+      !! status is a SUPPORTED answer: DL-FIND falls back to a two-point
+      !! finite difference of the gradients it is already requesting.
+      !! Never reached anyway, since iopt is always
       !! DLF_OPT_LBFGS, but every one of the seven callbacks must exist.
       integer(c_int), intent(in), value :: nvar
       real(c_double), intent(in) :: coords(nvar)
@@ -611,10 +622,10 @@ contains
 
    subroutine cb_error() bind(c)
       !! DL-FIND's last word before libdlfind's own api.f90 executes
-      !! `error stop` -- there is no recovering from this (note section 3
-      !! and 7.2, and why this bridge is linked only into terco_cli,
-      !! never into libterco). Say what was being optimised while there
-      !! is still somewhere to say it.
+      !! `error stop` -- there is no recovering from this, which is why
+      !! this bridge is linked only into terco_cli, never into libterco.
+      !! Say what was being optimised while there is still somewhere to
+      !! say it.
       call global_logger%error("--opt: DL-FIND failed internally and is about to stop the process "// &
                                "(atoms: "//to_string(natm)//", accepted steps so far: "//to_string(n_steps)// &
                                ", energy evaluations: "//to_string(n_evals)//")")

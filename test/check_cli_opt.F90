@@ -1,8 +1,8 @@
 !
 ! `terco water.xyz -b basis_sets/sto-3g.json --opt --json <probe>`, end to end: the
 ! JSON "optimization" block, and that <geometry>_opt.xyz/_traj.xyz were
-! actually written with the right shape -- the three things this PR's
-! brief names explicitly, in the style of check_cli_grad/check_cli_hessian.
+! actually written with the right shape, in the style of
+! check_cli_grad/check_cli_hessian.
 ! Numerical agreement with an external reference is check_opt_vs_pyscf.F90
 ! (tight) and check_opt_vs_mqc.F90 (loose sanity); this one is the CLI
 ! plumbing: does --opt --json write what it says it writes, in a shape a
@@ -46,28 +46,30 @@ program check_cli_opt
    call expect(.not. json%failed(), 'check_cli_opt: cannot read '//probe_json)
    call json%get('optimization.converged', converged, found)
    call expect(found, 'check_cli_opt: no optimization.converged')
-   call report(nfail, converged, 'check_cli_opt: optimization.converged is true')
+   call report(nfail, converged, 'check_cli_opt: optimization.converged is true', 0.0_dp)
    call json%get('optimization.steps', steps, found)
    call expect(found, 'check_cli_opt: no optimization.steps')
-   call report(nfail, steps > 0, 'check_cli_opt: optimization.steps > 0')
+   call report(nfail, steps > 0, 'check_cli_opt: optimization.steps', real(steps, dp))
    call json%get('optimization.energy_evaluations', evals, found)
    call expect(found, 'check_cli_opt: no optimization.energy_evaluations')
-   call report(nfail, evals >= steps, 'check_cli_opt: energy_evaluations >= steps')
+   call report(nfail, evals >= steps, 'check_cli_opt: energy_evaluations - steps', real(evals - steps, dp))
    call json%get('optimization.final_energy', final_energy, found)
    call expect(found, 'check_cli_opt: no optimization.final_energy')
    call report(nfail, final_energy < -70.0_dp .and. final_energy > -80.0_dp, &
-              'check_cli_opt: optimization.final_energy is a plausible water RHF/STO-3G number')
+              'check_cli_opt: optimization.final_energy is a plausible water RHF/STO-3G number, Eh', final_energy)
    call json%get('optimization.final_gradient_max', gmax, found)
    call expect(found, 'check_cli_opt: no optimization.final_gradient_max')
    call json%get('optimization.final_gradient_rms', grms, found)
    call expect(found, 'check_cli_opt: no optimization.final_gradient_rms')
-   call report(nfail, gmax >= grms, 'check_cli_opt: final_gradient_max >= final_gradient_rms')
+   call report(nfail, gmax >= grms, 'check_cli_opt: final_gradient_max - final_gradient_rms, Eh/Bohr', gmax - grms)
    call json%get('optimization.coordinates', coord_str, found)
    call expect(found, 'check_cli_opt: no optimization.coordinates')
-   call report(nfail, coord_str == 'cartesian', 'check_cli_opt: optimization.coordinates is the default (cartesian)')
+   call report(nfail, coord_str == 'cartesian', 'check_cli_opt: optimization.coordinates is the default (cartesian)', &
+              0.0_dp)
    call json%get('optimization.trajectory_energies', traj_e, found)
    call expect(found, 'check_cli_opt: no optimization.trajectory_energies')
-   call report(nfail, size(traj_e) == steps, 'check_cli_opt: trajectory_energies has one entry per step')
+   call report(nfail, size(traj_e) == steps, 'check_cli_opt: size(trajectory_energies) - steps', &
+              real(size(traj_e) - steps, dp))
    call json%get('optimization.final_geometry_angstrom(1)', row, found)
    call expect(found .and. size(row) == 3, 'check_cli_opt: no final_geometry_angstrom(1)')
    natm_json = 0
@@ -76,21 +78,22 @@ program check_cli_opt
       if (.not. found) exit
       natm_json = natm_json + 1
    end do
-   call report(nfail, natm_json == 3, 'check_cli_opt: final_geometry_angstrom has 3 rows (water)')
+   call report(nfail, natm_json == 3, 'check_cli_opt: final_geometry_angstrom rows (water)', real(natm_json, dp))
    call json%destroy()
 
    ! --- the xyz files themselves -------------------------------------------
    inquire (file=work_dir//'/water_opt.xyz', exist=exists_opt)
-   call report(nfail, exists_opt, 'check_cli_opt: water_opt.xyz was written')
+   call report(nfail, exists_opt, 'check_cli_opt: water_opt.xyz was written', 0.0_dp)
    inquire (file=work_dir//'/water_traj.xyz', exist=exists_traj)
-   call report(nfail, exists_traj, 'check_cli_opt: water_traj.xyz was written')
+   call report(nfail, exists_traj, 'check_cli_opt: water_traj.xyz was written', 0.0_dp)
    if (exists_opt) then
       open (newunit=u, file=work_dir//'/water_opt.xyz', status='old', action='read', iostat=ios)
       read (u, '(a)', iostat=ios) line
-      call report(nfail, ios == 0 .and. trim(line) == '3', 'check_cli_opt: water_opt.xyz starts with atom count 3')
+      call report(nfail, ios == 0 .and. trim(line) == '3', 'check_cli_opt: water_opt.xyz starts with atom count 3', &
+                 0.0_dp)
       read (u, '(a)', iostat=ios) line
       call report(nfail, ios == 0 .and. index(line, 'converged') == 1, &
-                 'check_cli_opt: water_opt.xyz''s comment line starts with converged/NOT converged')
+                 'check_cli_opt: water_opt.xyz''s comment line starts with converged/NOT converged', 0.0_dp)
       close (u)
    end if
    if (exists_traj) then
@@ -104,7 +107,7 @@ program check_cli_opt
             nlines = nlines + 1
          end do
          frames = nlines/5   !! each frame is natm(1) + comment(1) + 3 atom lines
-         call report(nfail, frames == steps, 'check_cli_opt: water_traj.xyz has one frame per accepted step')
+         call report(nfail, frames == steps, 'check_cli_opt: traj.xyz frames - steps', real(frames - steps, dp))
       end block
       close (u)
    end if
@@ -124,14 +127,15 @@ contains
       end if
    end subroutine expect
 
-   subroutine report(nf, cond, what)
+   subroutine report(nf, cond, what, value)
       integer, intent(inout) :: nf
       logical, intent(in) :: cond
       character(len=*), intent(in) :: what
+      real(dp), intent(in) :: value
       if (cond) then
-         print '(a,a)', '  PASS  ', what
+         print '(a,a,1x,es10.2)', '  PASS  ', what, value
       else
-         print '(a,a)', '  FAIL  ', what
+         print '(a,a,1x,es10.2)', '  FAIL  ', what, value
          nf = nf + 1
       end if
    end subroutine report
