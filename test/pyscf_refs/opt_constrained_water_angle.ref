@@ -1,0 +1,18 @@
+# terco pyscf reference v1
+# case: opt_constrained water_angle
+# generator: test/pyscf_refs/generate.py CASES["opt_constrained_water_angle"] -> gen_opt_constrained
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: c01308cbcddfcc6e275050844dd19f1ef2ace4c52952e84abeedc61d6d71237f
+# files: test/basis_sets/sto-3g.json test/check_opt_constrain.F90
+# scipy L-BFGS-B over the 2 free bond lengths at a FIXED angle (104.4798388184 deg), 5 iterations, final max|g| 8.311e-14 Eh/Bohr
+NAT 3
+Z 3
+8.00000000000000000e+00 1.00000000000000000e+00 1.00000000000000000e+00
+COORDS 3 3
+0.00000000000000000e+00 0.00000000000000000e+00 2.21664874411481749e-01 0.00000000000000000e+00 1.47457821851042126e+00 -9.20490599910179563e-01
+0.00000000000000000e+00 -1.47457821851041948e+00 -9.20490599910178231e-01
+E_FINAL -7.49650380070493441e+01
+GMAX_FINAL 8.31140711810007815e-14
+ANGLE_DEG 1.04479838818366417e+02
+END

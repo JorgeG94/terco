@@ -30,17 +30,32 @@ program check_opt_refusals
    ! every other opt check -- check_opt_connect.F90's own pattern.
    call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
    call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
+   call execute_command_line('cp -f hcn.xyz '//work_dir//'/hcn.xyz', exitstat=rc, wait=.true.)
    call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
                              exitstat=rc, wait=.true.)
+
+   ! water.xyz with its two H atoms swapped: refuse()'s own start geometry
+   ! is always water.xyz, so linear interpolation toward THIS as the NEB
+   ! product endpoint puts both H atoms on the SAME point (the midpoint
+   ! of their swapped positions, water's own mirror plane) at the image
+   ! halfway along the path -- a cheap, deterministic way to make
+   ! check_neb_initial_path's "two atoms closer than 0.5 Bohr" pre-check
+   ! actually fire (app/trc_dlfind_bridge.F90), not just reason about it.
+   block
+      integer :: u
+      open (newunit=u, file=work_dir//'/water_hswap.xyz', status='replace', action='write')
+      write (u, '(a)') '3'
+      write (u, '(a)') 'water.xyz with its two H atoms swapped'
+      write (u, '(a)') 'O   0.0000000   0.0000000   0.1173000'
+      write (u, '(a)') 'H   0.0000000  -0.7572000  -0.4692000'
+      write (u, '(a)') 'H   0.0000000   0.7572000  -0.4692000'
+      close (u)
+   end block
 
    ! dimer with a minimum target (--opt-target defaults to minimum)
    call refuse(cli_exe, work_dir, '--opt-saddle-method dimer', nfail)
    ! --opt-connect with a minimum target
    call refuse(cli_exe, work_dir, '--opt-connect', nfail)
-   ! --opt-connect with P-RFO: crashes inside libdlfind itself (confirmed
-   ! with a debug build, see app/main.F90's own refusal message) --
-   ! refused before DL-FIND ever runs, not left to crash the process.
-   call refuse(cli_exe, work_dir, '--opt-target saddle --opt-saddle-method prfo --opt-connect', nfail)
    ! an unknown algorithm
    call refuse(cli_exe, work_dir, '--opt-algorithm bogus', nfail)
    ! an unknown coordinate system
@@ -60,6 +75,65 @@ program check_opt_refusals
    call refuse(cli_exe, work_dir, '--opt-linesearch bogus', nfail)
    ! a print level DL-FIND does not accept
    call refuse(cli_exe, work_dir, '--opt-print-level 3', nfail)
+
+   ! --opt-global-*/--opt-seed without --opt-algorithm stochastic/genetic,
+   ! an --opt-global-* parameter the OTHER search does not read, and an
+   ! out-of-range one (parse_opt_global_options, app/main.F90).
+   call refuse(cli_exe, work_dir, '--opt-global-pop-size 10', nfail)
+   call refuse(cli_exe, work_dir, '--opt-seed 1', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm stochastic --opt-global-mutation-rate 0.1', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm genetic --opt-global-contraction 0.5', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm stochastic --opt-global-distribution 5', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm stochastic --opt-global-contraction 1.5', nfail)
+   call refuse(cli_exe, work_dir, '--opt-algorithm genetic --opt-global-pop-size 0', nfail)
+
+   ! --opt-neb: mutually exclusive with a saddle target/algorithm this
+   ! bridge does not offer for a chain.
+   call refuse(cli_exe, work_dir, '--opt-neb water.xyz --opt-target saddle', nfail)
+   call refuse(cli_exe, work_dir, '--opt-neb water.xyz --opt-algorithm prfo', nfail)
+   ! a NEB sub-option without --opt-neb itself
+   call refuse(cli_exe, work_dir, '--opt-neb-images 10', nfail)
+   call refuse(cli_exe, work_dir, '--opt-neb-climb', nfail)
+   ! below DL-FIND's own minimum (3 -- dlf_neb.f90: "More than 2 images
+   ! have to be used in NEB"); water.xyz as its own endpoint is fine here,
+   ! this never reaches DL-FIND either way.
+   call refuse(cli_exe, work_dir, '--opt-neb water.xyz --opt-neb-images 2', nfail)
+   ! an unknown --opt-neb-endpoints
+   call refuse(cli_exe, work_dir, '--opt-neb water.xyz --opt-neb-endpoints bogus', nfail)
+   ! a missing endpoint file
+   call refuse(cli_exe, work_dir, '--opt-neb does_not_exist.xyz', nfail)
+   ! mismatched atoms/order: hcn.xyz (H,C,N) as the endpoint of a water
+   ! (O,H,H) start -- different atom count AND different elements.
+   call refuse(cli_exe, work_dir, '--opt-neb hcn.xyz', nfail)
+
+   ! --opt-neb-via: an orphan sub-option, a missing file, a via frame
+   ! with mismatched atoms (hcn.xyz again, same reason as above), and the
+   ! "two atoms closer than 0.5 Bohr" pre-check actually firing (the
+   ! water_hswap.xyz product above, no via point needed to trigger it).
+   call refuse(cli_exe, work_dir, '--opt-neb-via hcn.xyz', nfail)
+   call refuse(cli_exe, work_dir, '--opt-neb water.xyz --opt-neb-via does_not_exist.xyz', nfail)
+   call refuse(cli_exe, work_dir, '--opt-neb water.xyz --opt-neb-via hcn.xyz', nfail)
+   call refuse(cli_exe, work_dir, '--opt-neb water_hswap.xyz --opt-neb-images 10', nfail)
+
+   ! --opt-frozen: refused together with pure DLC/DLC-TC (DL-FIND itself
+   ! rejects a frozen atom there -- dlf_coords.f90's own check), and a bad
+   ! index.
+   call refuse(cli_exe, work_dir, '--opt-frozen 1 --opt-coords dlc', nfail)
+   call refuse(cli_exe, work_dir, '--opt-frozen 1 --opt-coords dlc-tc', nfail)
+   call refuse(cli_exe, work_dir, '--opt-frozen 0', nfail)
+   call refuse(cli_exe, work_dir, '--opt-frozen 99', nfail)
+   call refuse(cli_exe, work_dir, '--opt-frozen bogus', nfail)
+
+   ! --opt-constrain: refused with Cartesian coordinates outright, and
+   ! 'cartesian i' refused with DLC/DLC-TC specifically (dlf_hdlc_
+   ! interface.f90's own hdlc%internal=(icoord>=3) check); plus bad types
+   ! and bad indices.
+   call refuse(cli_exe, work_dir, '--opt-constrain "angle 2 1 3"', nfail)   !! default --opt-coords cartesian
+   call refuse(cli_exe, work_dir, '--opt-constrain "cartesian 1" --opt-coords dlc', nfail)
+   call refuse(cli_exe, work_dir, '--opt-constrain "cartesian 1" --opt-coords dlc-tc', nfail)
+   call refuse(cli_exe, work_dir, '--opt-constrain "bogus 1 2" --opt-coords hdlc', nfail)
+   call refuse(cli_exe, work_dir, '--opt-constrain "bond 1 99" --opt-coords hdlc', nfail)
+   call refuse(cli_exe, work_dir, '--opt-constrain "bond 1" --opt-coords hdlc', nfail)   !! too few indices
 
    ! None of the above ever runs DL-FIND, so none of them could have
    ! written water_opt.xyz/water_traj.xyz -- checked anyway, for the same

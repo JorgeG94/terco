@@ -51,6 +51,7 @@ program check_linalg_mat
    call test_gemm_mat()
    call test_dot_mat()
    call test_syev_mat()
+   call test_syev_failure()
    call test_density()
 
    call lp%release()
@@ -261,6 +262,42 @@ contains
       call report('syev_mat eigenvalues vs raw syev', all(w_mat == w_raw))
       deallocate (a_mat, a_raw, w_mat, w_raw)
    end subroutine test_syev_mat
+
+   ! =======================================================================
+   ! 3b. A diagonalisation `pic_syev`/cuSOLVER genuinely cannot do (a
+   ! signalling NaN -- a QUIET NaN propagates through dsyev with info=0 on
+   ! this LAPACK, measured separately; a SIGNALLING one does not) must
+   ! come back through the OPTIONAL `info` argument, not `error stop` --
+   ! app/trc_dlfind_bridge.F90's own NEB crash and its root cause (a
+   ! density read past the end of an undersized per-image buffer, now
+   ! fixed) is exactly this failure mode one level up, in
+   ! trc_scf_driver.F90's Fock diagonalisation; this is the cheap,
+   ! deterministic version of the same thing, at the trc_linalg level.
+   ! =======================================================================
+   subroutine test_syev_failure()
+      use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_signaling_nan
+      integer, parameter :: N = 6
+      real(dp), allocatable :: a(:, :), w(:)
+      integer :: info
+
+      allocate (a(N, N), w(N))
+      a = 0.0_dp
+      block
+         integer :: i
+         do i = 1, N
+            a(i, i) = 1.0_dp
+         end do
+      end block
+      a(2, 5) = ieee_value(a(2, 5), ieee_signaling_nan)
+      a(5, 2) = a(2, 5)
+
+      !$acc enter data copyin(a) create(w)
+      call lp%syev(a, w, info)
+      !$acc exit data delete(a, w)
+
+      call report('syev_mat reports a signalling-NaN matrix through info, not error stop', info /= 0)
+      deallocate (a, w)
+   end subroutine test_syev_failure
 
    ! =======================================================================
    ! 4. density vs one raw gemm; density(k<=0)
