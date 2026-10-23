@@ -23,23 +23,24 @@ module terco_run
    !! toolchain; worth a closer look (and a vendor report) on its own.
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char
    use, intrinsic :: iso_fortran_env, only: output_unit, error_unit
-   use pic_types, only: dp, int64
-   use pic_error, only: error_t
+   use pic_types, only: dp, int64, default_int
+   use pic_error, only: error_t, ERROR_VALIDATION
    use pic_cli, only: cli_t
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
-   use terco_app, only: element_symbol, f_string
+   use terco_app, only: element_symbol, f_string, BOHR_PER_ANGSTROM
    use trc_vib, only: trc_vib_log_table
    use trc_thermo, only: trc_thermo_result_t, trc_thermo_log_summary
-   use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average
+   use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average, trc_covalent_radius
    use trc_error, only: mass_error_t => error_t
    implicit none
    private
    public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
              gradient_summary, hessian_summary, build_masses
+   public :: opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -83,6 +84,24 @@ module terco_run
       logical :: is_linear = .false.
       integer :: n_tr = 0
       type(trc_thermo_result_t) :: thermo
+      ! --opt: geometry optimisation through app/trc_dlfind_bridge.F90's
+      ! trc_dlfind_optimize (TERCO_ENABLE_DLFIND=ON) or its stub (OFF, the
+      ! default -- always refused with a message). opt_coords_kind/
+      ! opt_guess_kind are trc_dlfind_bridge's own TRC_OPT_COORDS_*/
+      ! TRC_OPT_GUESS_* enums, resolved from --opt-coords/--opt-guess here
+      ! so main.F90 need not import that module's constants under every
+      ! build configuration.
+      logical :: opt = .false.
+      character(len=:), allocatable :: opt_coords_arg, opt_guess_arg
+      integer :: opt_coords_kind = 0, opt_guess_kind = 0
+      integer :: opt_maxiter = 100
+      real(dp) :: opt_gtol = 4.5e-4_dp
+      logical :: opt_converged = .false.
+      integer :: opt_steps = 0, opt_evals = 0
+      real(dp) :: opt_gmax = 0.0_dp, opt_grms = 0.0_dp
+      integer :: opt_n_traj = 0
+      real(dp), allocatable :: opt_traj_energy(:)
+      real(dp), allocatable :: opt_final_xyz(:, :)   !! (3, natm), Bohr -- the optimised geometry
    end type run_t
 
 contains
@@ -420,6 +439,184 @@ contains
    end subroutine build_masses
 
    !
+   ! Whether this run's method has a gradient at all, checked BEFORE any
+   ! SCF runs -- DLFIND_INTEGRATION_NOTE.md section 7.5 ("drop the probe
+   ! gradient if the method's capability is known statically"): every one
+   ! of these conditions is already known from the command line alone, the
+   ! same set trc_run_gradient's own gradient_capability_check refuses
+   ! after a converged SCF (src/api/trc_capi.F90). Returns "" when a
+   ! gradient is available, the refusal message otherwise.
+   !
+   function opt_capability_check(r) result(refusal)
+      use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_FAMILY_MGGA
+      type(run_t), intent(in) :: r
+      character(len=:), allocatable :: refusal
+      type(trc_xc_functional_t) :: func
+      refusal = ""
+      if (len(r%func) > 0) then
+         if (xc_functional_by_name(r%func, func)) then
+            if (func%family == XC_FAMILY_MGGA) then
+               refusal = "--opt needs a gradient at every step; meta-GGA ('"//trim(r%func)// &
+                        "') exchange-correlation gradient not implemented"
+               return
+            end if
+         end if
+      end if
+      if (r%rimp2 .or. r%dh) then
+         refusal = "--opt needs a gradient at every step; RI-MP2/double-hybrid correlation has none"
+         return
+      end if
+      if (len(r%pcm) > 0) then
+         refusal = "--opt needs a gradient at every step; PCM gradient not implemented"
+         return
+      end if
+   end function opt_capability_check
+
+   !
+   ! Connected components of the covalent-bond graph (Cordero radii,
+   ! trc_constants%trc_covalent_radius, bond threshold 1.3x the sum of two
+   ! atoms' radii -- the same tolerance metalquicha's own
+   ! mqc_bond_perception.f90 uses), 1-based, for --opt-coords hdlc's
+   ! `residues`: one residue per covalently bonded molecule, so HDLC
+   ! builds internal coordinates within each and Cartesians between them
+   ! (DLFIND_INTEGRATION_NOTE.md section 4, "Residues"). --opt-coords
+   ! cartesian/dlc never calls this -- trc_dlfind_bridge's driver takes
+   ! all-ones directly, which is correct for cartesian and for a single
+   ! bonded molecule in dlc (a multi-fragment cluster in pure dlc fails
+   ! inside DL-FIND itself, "cyclic failure" -- out of scope here, same as
+   ! mqc's own note).
+   !
+   subroutine build_opt_residues(natm, z, xyz, residues, err)
+      integer, intent(in) :: natm
+      integer, intent(in) :: z(natm)
+      real(dp), intent(in) :: xyz(3, natm)
+      integer, intent(out) :: residues(natm)
+      type(error_t), intent(inout) :: err
+      real(dp), parameter :: BOND_SCALE = 1.3_dp
+      real(dp) :: radius(natm)
+      type(mass_error_t) :: rerr
+      integer :: i, j, comp, sp, a
+      integer :: stack(natm)
+      logical :: visited(natm)
+      do i = 1, natm
+         radius(i) = trc_covalent_radius(z(i), rerr)
+         if (rerr%has_error()) then
+            call err%set(int(ERROR_VALIDATION, default_int), "--opt-coords hdlc: "//rerr%get_message())
+            return
+         end if
+      end do
+      residues = 0
+      visited = .false.
+      comp = 0
+      do i = 1, natm
+         if (visited(i)) cycle
+         comp = comp + 1
+         sp = 1
+         stack(1) = i
+         visited(i) = .true.
+         do while (sp > 0)
+            a = stack(sp)
+            sp = sp - 1
+            residues(a) = comp
+            do j = 1, natm
+               if (visited(j) .or. j == a) cycle
+               if (norm2(xyz(:, a) - xyz(:, j)) <= BOND_SCALE*(radius(a) + radius(j))) then
+                  visited(j) = .true.
+                  sp = sp + 1
+                  stack(sp) = j
+               end if
+            end do
+         end do
+      end do
+   end subroutine build_opt_residues
+
+   !
+   ! The optimisation's own final summary: converged or not, steps,
+   ! energy evaluations and the final energy -- the three numbers
+   ! DLFIND_INTEGRATION_NOTE.md section 6's own log table ends a run with.
+   ! Per-step lines (energy, max/rms |g|, SCF iterations, wall time) are
+   ! logged from trc_dlfind_bridge%cb_put_coords itself as each step is
+   ! accepted, not replayed here.
+   !
+   subroutine opt_summary(r)
+      type(run_t), intent(in) :: r
+      call global_logger%info("")
+      call global_logger%info("   geometry optimisation (--opt)")
+      call global_logger%info("   ----------------------------------------------------------")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,a,a,i0,a,i0,a,a,a,es10.3,a)") "   ", &
+            trim(merge("converged    ", "NOT converged", r%opt_converged)), &
+            "   steps: ", r%opt_steps, "   energy evaluations: ", r%opt_evals, &
+            "   coordinates: ", trim(opt_coords_name(r%opt_coords_kind)), &
+            "   final max|g|: ", r%opt_gmax, " Eh/Bohr"
+         call global_logger%info(trim(logline))
+      end block
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,f22.12,a)") "   final energy     : ", r%etot, " Eh"
+         call global_logger%info(trim(logline))
+      end block
+   end subroutine opt_summary
+
+   pure function opt_coords_name(kind) result(name)
+      integer, intent(in) :: kind
+      character(len=:), allocatable :: name
+      select case (kind)
+      case (1)
+         name = "hdlc"
+      case (2)
+         name = "dlc"
+      case default
+         name = "cartesian"
+      end select
+   end function opt_coords_name
+
+   !
+   ! `<geometry base>_opt.xyz`: the optimised geometry in Angstrom, same
+   ! atom order as the input. Written whether or not the run converged
+   ! (the comment line says which), same as metalquicha's own
+   ! `output_<name>_optimized.xyz` (DLFIND_INTEGRATION_NOTE.md section 6).
+   !
+   subroutine write_opt_xyz(r, path, xyz_bohr)
+      type(run_t), intent(in) :: r
+      character(len=*), intent(in) :: path
+      real(dp), intent(in) :: xyz_bohr(3, r%natm)
+      integer :: u, ia
+      open (newunit=u, file=path, status="replace", action="write")
+      write (u, "(i0)") r%natm
+      write (u, "(a,a,f0.12)") trim(merge("converged    ", "NOT converged", r%opt_converged)), &
+         "   E = ", r%etot
+      do ia = 1, r%natm
+         write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
+      end do
+      close (u)
+   end subroutine write_opt_xyz
+
+   !
+   ! `<geometry base>_traj.xyz`: one frame per ACCEPTED step (never a
+   ! line-search trial -- trc_dlfind_bridge%cb_put_coords's own
+   ! distinction), Angstrom, comment line carries the step index and
+   ! energy.
+   !
+   subroutine write_traj_xyz(r, path, traj_xyz_bohr, traj_energy)
+      type(run_t), intent(in) :: r
+      character(len=*), intent(in) :: path
+      real(dp), intent(in) :: traj_xyz_bohr(3, r%natm, r%opt_n_traj)
+      real(dp), intent(in) :: traj_energy(r%opt_n_traj)
+      integer :: u, ia, k
+      open (newunit=u, file=path, status="replace", action="write")
+      do k = 1, r%opt_n_traj
+         write (u, "(i0)") r%natm
+         write (u, "(a,i0,a,f0.12)") "step ", k, "   E = ", traj_energy(k)
+         do ia = 1, r%natm
+            write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), traj_xyz_bohr(:, ia, k)/BOHR_PER_ANGSTROM
+         end do
+      end do
+      close (u)
+   end subroutine write_traj_xyz
+
+   !
    ! The frequency table and thermochemistry summary for --hessian,
    ! through trc_vib's/trc_thermo's own logger helpers -- `r%freq_cm1`
    ! etc. and `r%thermo` are already filled by terco_main itself, right
@@ -508,6 +705,7 @@ contains
          if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       end if
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
+      if (r%opt) call add_optimization(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
          call json%destroy(root)
@@ -611,6 +809,44 @@ contains
       call json%add(root, tobj)
    end subroutine add_hessian
 
+   !
+   ! --opt's JSON block: converged, step/evaluation counts, the final
+   ! energy and gradient, the coordinate system, the trajectory's
+   ! per-step energies and the final geometry -- the fields this PR's
+   ! brief asks --json to carry for --opt. The final geometry is in
+   ! Angstrom, named accordingly so a reader never has to guess the unit
+   ! the way it would from a bare "final_geometry".
+   !
+   subroutine add_optimization(json, root, r)
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      type(json_value), pointer :: oobj, rows
+      integer :: ia
+
+      call json%create_object(oobj, "optimization")
+      call json%add(oobj, "converged", r%opt_converged)
+      call json%add(oobj, "steps", r%opt_steps)
+      call json%add(oobj, "energy_evaluations", r%opt_evals)
+      call json%add(oobj, "final_energy", real(r%etot, dp))
+      call json%add(oobj, "final_gradient_max", r%opt_gmax)
+      call json%add(oobj, "final_gradient_rms", r%opt_grms)
+      call json%add(oobj, "gradient_tolerance", r%opt_gtol)
+      call json%add(oobj, "coordinates", opt_coords_name(r%opt_coords_kind))
+      call json%add(oobj, "guess", trim(r%opt_guess_arg))
+      if (allocated(r%opt_traj_energy)) then
+         call json%add(oobj, "trajectory_energies", r%opt_traj_energy)
+      end if
+      if (allocated(r%opt_final_xyz)) then
+         call json%create_array(rows, "final_geometry_angstrom")
+         do ia = 1, r%natm
+            call json%add(rows, "", r%opt_final_xyz(:, ia)/BOHR_PER_ANGSTROM)
+         end do
+         call json%add(oobj, rows)
+      end if
+      call json%add(root, oobj)
+   end subroutine add_optimization
+
 end module terco_run
 
 program terco_main
@@ -638,7 +874,8 @@ program terco_main
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
-                       trc_run_gradient, trc_gradient, trc_set_hessian_step, trc_run_hessian, trc_hessian, &
+                       trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
+                       trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
@@ -653,7 +890,11 @@ program terco_main
    use pic_ascii, only: to_lower
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
-                       gradient_summary, hessian_summary, build_masses
+                       gradient_summary, hessian_summary, build_masses, &
+                       opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
+   use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
+                                TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_DLC, &
+                                TRC_OPT_GUESS_DENSITY, TRC_OPT_GUESS_PROJECTED
    implicit none
 
    type(run_t) :: r
@@ -665,6 +906,11 @@ program terco_main
    integer :: maxiter, nfrozen, guess_kind, dev, aux_block, ndof
    integer(c_int) :: st, nspin
    logical :: cart
+   ! --opt
+   character(len=:), allocatable :: opt_base, opt_refusal
+   integer, allocatable :: opt_residues(:)
+   type(trc_opt_options_t) :: opt_opts
+   type(trc_opt_result_t) :: opt_res
 
    ! MPI, in every build: pic-mpi's single-rank backend (TERCO_ENABLE_MPI=OFF)
    ! makes this a no-op, so the rest of the program need not branch on it.
@@ -739,6 +985,20 @@ program terco_main
    call r%cli%add_option("masses", "isotope (trc_atomic_mass, the most-abundant isotope) or average "// &
                          "(trc_atomic_mass_average, the isotope-averaged standard atomic weight), for "// &
                          "--hessian's vibrational analysis (isotope)", default="isotope")
+   call r%cli%add_flag("opt", "optimise the geometry with DL-FIND (needs a TERCO_ENABLE_DLFIND=ON build; "// &
+                       "refused otherwise). Warm-starts the SCF between steps; writes <geometry>_opt.xyz "// &
+                       "and <geometry>_traj.xyz next to the input, and an 'optimization' block to --json. "// &
+                       "Combined with --hessian, the Hessian runs at the OPTIMISED geometry")
+   call r%cli%add_option("opt-coords", "internal coordinates for --opt: cartesian, hdlc or dlc (cartesian)", &
+                         default="cartesian")
+   call r%cli%add_option("opt-maxiter", "maximum number of --opt steps (100)", default="100")
+   call r%cli%add_option("opt-gtol", "--opt convergence: this run's own verdict is the max Cartesian "// &
+                         "gradient component of the last accepted step, Eh/Bohr (4.5e-4) -- NOT "// &
+                         "DL-FIND's own five-criterion internal test, which in hdlc/dlc is over internal "// &
+                         "coordinates and is not this number", default="4.5e-4")
+   call r%cli%add_option("opt-guess", "SCF warm start between --opt steps: density (the previous step's "// &
+                         "converged density) or projected (its orbitals re-orthonormalised in the new "// &
+                         "overlap) (density)", default="density")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -861,6 +1121,7 @@ program terco_main
          call die(r, "--masses must be isotope or average, got '"//r%masses_kind//"'")
       end if
    end if
+   r%opt = r%cli%is_set("opt")
    r%pcm = ""
    r%eps = 0.0_dp
    if (r%cli%is_set("pcm")) then
@@ -898,6 +1159,53 @@ program terco_main
       call r%cli%get("jkfit", sval, r%err)
       call resolve_basis(sval, r%jkfit_path, r%err)
       if (r%err%has_error()) call die(r, "--jkfit: "//r%err%get_message())
+   end if
+   ! Validated LAST among the feature flags above: opt_capability_check
+   ! reads r%func/r%rimp2/r%dh/r%pcm, every one of which must already be
+   ! resolved (not just r%cli%is_set) for the check to see what the run
+   ! will actually do -- a PCM run that reached DL-FIND with this check
+   ! run too early crashed with `error stop` instead of this message
+   ! (the opt gradient-capability check existing at all is the whole
+   ! point of DLFIND_INTEGRATION_NOTE.md section 7.5).
+   if (r%opt) then
+      if (.not. trc_dlfind_available()) call die(r, "--opt needs libdlfind: this terco was built with "// &
+                                                  "-DTERCO_ENABLE_DLFIND=OFF (the default). Reconfigure "// &
+                                                  "with -DTERCO_ENABLE_DLFIND=ON.")
+      if (r%nranks > 1) call die(r, "--opt is single-rank only for now (DL-FIND itself is serial; it is "// &
+                                   "driven from the CLI, never run collectively)")
+      if (len(r%restart) > 0) call die(r, "--opt cannot start from --restart: restart loads one SCF "// &
+                                       "result, and --opt needs to move the geometry and build a new "// &
+                                       "one at every step")
+      opt_refusal = opt_capability_check(r)
+      if (len(opt_refusal) > 0) call die(r, opt_refusal)
+      call r%cli%get("opt-coords", sval, r%err)
+      r%opt_coords_arg = to_lower(trim(sval))
+      select case (r%opt_coords_arg)
+      case ("cartesian")
+         r%opt_coords_kind = TRC_OPT_COORDS_CARTESIAN
+      case ("hdlc")
+         r%opt_coords_kind = TRC_OPT_COORDS_HDLC
+      case ("dlc")
+         r%opt_coords_kind = TRC_OPT_COORDS_DLC
+      case default
+         call die(r, "--opt-coords must be cartesian, hdlc or dlc, got '"//r%opt_coords_arg//"'")
+      end select
+      call r%cli%get("opt-guess", sval, r%err)
+      r%opt_guess_arg = to_lower(trim(sval))
+      select case (r%opt_guess_arg)
+      case ("density")
+         r%opt_guess_kind = TRC_OPT_GUESS_DENSITY
+      case ("projected")
+         r%opt_guess_kind = TRC_OPT_GUESS_PROJECTED
+      case default
+         call die(r, "--opt-guess must be density or projected, got '"//r%opt_guess_arg//"'")
+      end select
+      call r%cli%get("opt-maxiter", r%opt_maxiter, r%err)
+      call check(r, "--opt-maxiter")
+      if (r%opt_maxiter < 1) call die(r, "--opt-maxiter must be at least 1")
+      call r%cli%get("opt-gtol", r%opt_gtol, r%err)
+      call check(r, "--opt-gtol")
+      if (r%opt_gtol <= 0.0_dp) call die(r, "--opt-gtol must be positive")
    end if
    r%json = ""
    if (r%cli%is_set("json")) call r%cli%get("json", r%json, r%err)
@@ -982,7 +1290,42 @@ program terco_main
       call api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), int(aux_block, c_int)))
    end if
 
-   if (len(r%restart) > 0) then
+   if (r%opt) then
+      allocate (opt_residues(r%natm))
+      if (r%opt_coords_kind == TRC_OPT_COORDS_HDLC) then
+         call build_opt_residues(r%natm, r%z, xyz, opt_residues, r%err)
+         if (r%err%has_error()) call die(r, r%err%get_message())
+      else
+         opt_residues = 1   !! cartesian/dlc: trc_dlfind_bridge's own driver needs no real partition
+      end if
+
+      opt_opts%coords_kind = r%opt_coords_kind
+      opt_opts%guess_kind = r%opt_guess_kind
+      opt_opts%fallback_guess_kind = int(guess_kind, c_int)
+      opt_opts%maxiter = r%opt_maxiter
+      opt_opts%gtol = r%opt_gtol
+
+      call trc_dlfind_optimize(r%h, r%natm, r%z, opt_residues, xyz, opt_opts, opt_res)
+      if (opt_res%failed) call die(r, "--opt: "//opt_res%message)
+
+      r%opt_converged = opt_res%converged
+      r%opt_steps = opt_res%steps
+      r%opt_evals = opt_res%energy_evaluations
+      r%opt_gmax = opt_res%final_gmax
+      r%opt_grms = opt_res%final_grms
+      r%opt_n_traj = opt_res%n_traj
+      if (allocated(opt_res%traj_energy)) r%opt_traj_energy = opt_res%traj_energy
+      xyz = opt_res%final_coords
+      r%opt_final_xyz = xyz
+      r%grad = .true.   !! so the existing --grad path below reports the final gradient too
+
+      ! Re-converge the context at the reported final geometry: api_dl_find
+      ! may leave the context at one more (rejected) line-search trial
+      ! past the last ACCEPTED step by the time it returns, and every
+      ! getter below must report exactly the geometry --opt writes out.
+      call api(r, trc_set_geometry(r%h, reshape(real(xyz, c_double), [3*r%natm])))
+      st = trc_run_scf(r%h)
+   else if (len(r%restart) > 0) then
       st = trc_load_scf(r%h, c_string(r%restart))
    else
       st = trc_run_scf(r%h)
@@ -1053,8 +1396,18 @@ program terco_main
    call system_clock(r%t1)
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
+   if (r%rank0 .and. r%opt) call opt_summary(r)
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
+   if (r%rank0 .and. r%opt) then
+      opt_base = r%geom
+      if (len(opt_base) > 4) then
+         if (to_lower(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
+      end if
+      call write_opt_xyz(r, opt_base//"_opt.xyz", xyz)
+      if (r%opt_n_traj > 0) call write_traj_xyz(r, opt_base//"_traj.xyz", opt_res%traj_coords, r%opt_traj_energy)
+      call global_logger%info("   wrote "//opt_base//"_opt.xyz and "//opt_base//"_traj.xyz")
+   end if
    st = trc_destroy(r%h)
 
    if (r%conv == 0) then

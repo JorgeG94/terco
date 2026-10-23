@@ -243,6 +243,7 @@ module trc_capi
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
+   public :: trc_set_geometry
    public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian
    public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_set_pcm_radii, trc_pcm_energy
@@ -3088,6 +3089,57 @@ contains
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
    end subroutine hessian_set_geometry
+
+   function trc_set_geometry(handle, xyz) result(status) bind(c, name="trc_set_geometry")
+      !! Move every atom to a NEW geometry, same molecule and atom order
+      !! `trc_set_molecule` built (same count, same nuclear charges, same
+      !! charge/multiplicity) -- the one call a geometry optimiser's step
+      !! loop needs between gradients. Built on `hessian_set_geometry`
+      !! (trc_run_hessian's own displacement primitive, PRIVATE until now):
+      !! moves the orbital basis's centres in place, and the auxiliary/
+      !! jkfit bases' if present, then invalidates exactly as that routine
+      !! does -- the last SCF/gradient/polarizability/Hessian result, the
+      !! DFT grid cache and the --df fit, all geometry-dependent.
+      !!
+      !! `trc_set_molecule` is NOT a substitute for this: it replaces
+      !! `cx%at_z`/`cx%at_r` and invalidates the same things, but it never
+      !! touches a basis already built (`cx%bb`/`cx%ab`/`cx%jb`) -- the
+      !! shells stay at their OLD centres, which is correct for setting up
+      !! a NEW molecule before any basis exists, and wrong for moving the
+      !! atoms of one that already has one. A caller wanting the latter
+      !! (an optimiser, or trc_run_hessian's own displacements) uses this.
+      !!
+      !! `xyz` is atom-major Bohr (x1 y1 z1 x2 ...), the same convention
+      !! `trc_set_molecule` takes and `trc_gradient` returns, length
+      !! 3*natm. A guess density/orbitals carried across the move (SAD
+      !! stays SAD; TRC_GUESS_GIVEN's density and TRC_GUESS_PROJECTED's
+      !! "this context's last converged orbitals" are both still valid at
+      !! the new geometry -- that overlap-reprojection is exactly what
+      !! TRC_GUESS_PROJECTED is for) is a caller choice, not this call's.
+      type(c_ptr), value :: handle
+      real(c_double), intent(in) :: xyz(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      real(dp), allocatable :: new_r(:, :)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_geometry: set the molecule first")
+         return
+      end if
+      if (.not. cx%have_basis) then
+         call refuse(cx, "trc_set_geometry: set the basis first -- this moves an existing "// &
+                     "basis's centres, it does not build one")
+         return
+      end if
+      allocate (new_r(3, cx%natm))
+      new_r = reshape(real(xyz(1:3*cx%natm), dp), [3, cx%natm])
+      call hessian_set_geometry(cx, new_r)
+      deallocate (new_r)
+      status = TRC_OK
+   end function trc_set_geometry
 
    function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
       !! The full analytic RHF/UHF nuclear gradient at the converged SCF

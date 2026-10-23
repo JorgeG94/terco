@@ -44,6 +44,7 @@ from pathlib import Path
 
 import numpy as np
 import scipy.linalg
+import scipy.optimize as sp_optimize
 import pyscf
 from pyscf import df, gto, mp, scf, dft
 from pyscf.dft import libxc, numint
@@ -3808,6 +3809,77 @@ def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, tempe
     return results
 
 
+def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
+    """RHF/STO-3G (pyscf's own internal basis, same as gen_vib_thermo):
+    optimise `atoms_ang` with scipy.optimize's L-BFGS-B driven by pyscf's
+    own analytic RHF gradient at every trial geometry, to a TIGHT
+    max-gradient-component tolerance (1e-8 Eh/Bohr -- two orders tighter
+    than terco's own --opt-gtol 1e-5 anchor comparison below, so the
+    comparison's error is dominated by terco's convergence, not pyscf's).
+
+    This is independent of terco's optimiser end to end: a different
+    language, a different SCF implementation, and scipy's L-BFGS-B
+    rather than DL-FIND's. Agreement on the optimised energy and bond
+    lengths/angles is therefore real validation of terco's --opt, not a
+    restatement of the same algorithm.
+
+    Stores the final Cartesian geometry (Bohr) and energy; the Fortran
+    check computes bond lengths/angles from COORDS itself rather than
+    pyscf computing and committing them separately, so there is only one
+    place either side's internal coordinates come from."""
+    natm = len(atoms_ang)
+    symbols = [a[0] for a in atoms_ang]
+    mol0 = gto.M(atom=atoms_ang, basis='sto-3g', unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
+    x0 = mol0.atom_coords().reshape(-1).copy()   # bohr
+
+    cache = {}
+
+    def energy_grad(x):
+        key = tuple(np.round(x, 12))
+        if key in cache:
+            return cache[key]
+        coords = x.reshape(natm, 3)
+        mol = gto.M(atom=list(zip(symbols, coords)), basis='sto-3g', unit='Bohr',
+                    charge=charge, spin=mult - 1, verbose=0)
+        mf = scf.RHF(mol)
+        mf.conv_tol = 1e-13
+        mf.conv_tol_grad = 1e-11
+        mf.max_cycle = 200
+        e = mf.kernel()
+        if not mf.converged:
+            raise ConvergenceError(f"opt {case}: SCF did not converge at a trial geometry")
+        g = mf.nuc_grad_method().kernel().reshape(-1)
+        cache[key] = (float(e), g)
+        return cache[key]
+
+    def fun(x):
+        return energy_grad(x)[0]
+
+    def jac(x):
+        return energy_grad(x)[1]
+
+    res = sp_optimize.minimize(fun, x0, jac=jac, method='L-BFGS-B',
+                                options={'gtol': 1.0e-8, 'ftol': 1.0e-15, 'maxiter': 300, 'maxfun': 2000})
+    gmax_final = np.abs(jac(res.x)).max()
+    if gmax_final > 1.0e-6:
+        raise ConvergenceError(f"opt {case}: scipy L-BFGS-B stopped at max|g| {gmax_final:.3e}, "
+                               f"above the 1e-6 Eh/Bohr this reference promises")
+    e_final = fun(res.x)
+    coords_final = res.x.reshape(natm, 3)
+
+    w = RefWriter(f"opt_{case}.ref")
+    w.header("opt " + case, [])
+    w.comment(f"scipy L-BFGS-B, {res.nit} iterations, final max|g| {gmax_final:.3e} Eh/Bohr")
+    w.int_("NAT", natm)
+    w.vector("Z", np.array(mass_z, dtype=np.float64))
+    w.matrix("COORDS", coords_final.T)      # bohr, (3, natm)
+    w.real("E_FINAL", e_final)
+    w.real("GMAX_FINAL", gmax_final)
+    w.end()
+    w.write()
+    print(f"  opt {case}: E_final={e_final:.12f} gmax={gmax_final:.3e} nit={res.nit}")
+
+
 def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, pressure=101325.0):
     """RHF/STO-3G: pyscf's own analytic Hessian, harmonic_analysis (with
     exclude_trans/exclude_rot, imaginary_freq=False so an unstable mode
@@ -4005,6 +4077,18 @@ CASES = {
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "pcm_scf_main": lambda: gen_pcm_scf("main"),
     "pcm_scf_f": lambda: gen_pcm_scf("f"),
+    "opt_water": lambda: gen_opt(
+        "water",
+        [("O", (0.00000000000000, 0.00000000009155, 0.10077199490609)),
+         ("H", (0.00000000000000, 0.77250895271063, -0.46780199741728)),
+         ("H", (0.00000000000000, -0.77250895280218, -0.46780199748881))],
+        [8, 1, 1]),
+    "opt_hcn": lambda: gen_opt(
+        "hcn",
+        [("H", (0.0, 0.0, 0.000)),
+         ("C", (0.0, 0.0, 1.064)),
+         ("N", (0.0, 0.0, 2.220))],
+        [1, 6, 7]),
     "vib_thermo_water": lambda: gen_vib_thermo(
         "water",
         [("O", (0.00000000000000, 0.00000000009155, 0.10077199490609)),

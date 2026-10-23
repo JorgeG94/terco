@@ -453,6 +453,71 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_hessian check_cli_hessian.F90 NEEDS_PYSCF_REF
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_hessian_probe})
   unset(_cli_hessian_probe)
+
+  #
+  # --opt (DL-FIND). The stub refusal runs in EVERY build (TERCO_BUILD_APP
+  # alone, not TERCO_ENABLE_DLFIND) -- it is exactly the path the default
+  # TERCO_ENABLE_DLFIND=OFF build takes, and it costs nothing to check
+  # even with DL-FIND on (where it is skipped, below: there is nothing
+  # "without DL-FIND built" to assert there).
+  #
+  if(NOT TERCO_ENABLE_DLFIND)
+    # $<TARGET_FILE:terco_cli>, not a bare target name: terco_cli is not
+    # defined yet in THIS directory's configure pass (app/ is added AFTER
+    # test/ by the root CMakeLists.txt) -- same forward-reference as
+    # terco_add_check's own ARGS above, see that comment.
+    add_test(NAME terco/cli_opt_refused_without_dlfind
+             COMMAND $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz -b sto-3g.json --opt --silent)
+    set_tests_properties(
+      terco/cli_opt_refused_without_dlfind
+      PROPERTIES ENVIRONMENT "${_env}" WILL_FAIL TRUE PASS_REGULAR_EXPRESSION
+                 "TERCO_ENABLE_DLFIND=OFF")
+  endif()
+
+  if(TERCO_ENABLE_DLFIND)
+    # --opt refuses a method with no gradient (a meta-GGA) BEFORE any SCF
+    # runs at all -- DLFIND_INTEGRATION_NOTE.md section 7.5's own "drop
+    # the probe gradient" lift: app/main.F90's opt_capability_check reads
+    # this statically from the command line, so there is no "iterations"
+    # line in the output at all when this fires.
+    add_test(NAME terco/cli_opt_refused_mgga
+             COMMAND $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz -b 6-31g -f r2scan --opt --silent)
+    set_tests_properties(
+      terco/cli_opt_refused_mgga
+      PROPERTIES ENVIRONMENT "${_env}" WILL_FAIL TRUE PASS_REGULAR_EXPRESSION
+                 "needs a gradient.*meta-GGA" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
+
+    # The CLI's --opt --json end to end: the "optimization" JSON block,
+    # and that <name>_opt.xyz/_traj.xyz were actually written -- see
+    # check_cli_opt.F90's own header.
+    set(_cli_opt_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_probe.json)
+    set(_cli_opt_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_work)
+    terco_add_check(check_cli_opt check_cli_opt.F90
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_probe} ${_cli_opt_workdir})
+    unset(_cli_opt_probe)
+    unset(_cli_opt_workdir)
+
+    # The loose sanity check against metalquicha's own quoted water/HCN
+    # optimisations (mqc's basis differs from terco's by ~2e-8 Eh) --
+    # see check_opt_vs_mqc.F90's own header.
+    set(_cli_opt_mqc_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_mqc_probe.json)
+    terco_add_check(check_opt_vs_mqc check_opt_vs_mqc.F90
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_mqc_probe})
+    unset(_cli_opt_mqc_probe)
+
+    # The real anchor: terco's --opt (tight --opt-gtol 1e-5) against
+    # pyscf's own analytic RHF/STO-3G gradient driving scipy's L-BFGS-B
+    # (test/pyscf_refs/generate.py's gen_opt, opt_water.ref/opt_hcn.ref)
+    # -- a different language, SCF implementation and optimiser, from
+    # the SAME start geometries as mqc's note. See check_opt_vs_pyscf.F90's
+    # own header for the tolerances.
+    foreach(case water hcn)
+      set(_cli_opt_pyscf_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_probe_${case}.json)
+      terco_add_check(check_opt_vs_pyscf_${case} check_opt_vs_pyscf.F90 NEEDS_PYSCF_REF
+                      ARGS $<TARGET_FILE:terco_cli> ${case}.xyz opt_${case} ${_cli_opt_pyscf_probe})
+      unset(_cli_opt_pyscf_probe)
+    endforeach()
+  endif()
 endif()
 
 # The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA
@@ -1359,6 +1424,29 @@ target_link_libraries(bench_warmstart PRIVATE ${main_lib} terco_test_basis)
 foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
+
+# --opt's own warm-start measurement (bench_opt_warmstart.F90's own
+# header): SCF iterations per step, mqc's own baseline vs the density and
+# projected warm starts. Needs trc_dlfind_bridge (app/, not a reusable
+# library target -- app/terco_app.F90 is its one non-trc_capi dependency,
+# so both are added as extra sources here rather than restructuring
+# app/CMakeLists.txt for one informational benchmark). TERCO_ENABLE_DLFIND
+# only: the stub build has no optimiser to measure.
+if(TERCO_ENABLE_DLFIND)
+  # Not yet found: app/CMakeLists.txt's own find_package(libdlfind) runs
+  # AFTER this directory (root CMakeLists.txt adds app/ after test/), and
+  # this target needs libdlfind::libdlfind NOW to link against. Calling
+  # it again there is harmless -- Findlibdlfind.cmake's own `if(NOT
+  # TARGET ...)` guards make a second call a no-op.
+  find_package(libdlfind REQUIRED)
+  add_executable(bench_opt_warmstart bench_opt_warmstart.F90 ${PROJECT_SOURCE_DIR}/app/terco_app.F90
+                                      ${PROJECT_SOURCE_DIR}/app/trc_dlfind_bridge.F90)
+  target_compile_definitions(bench_opt_warmstart PRIVATE ${TERCO_TEST_DEFS})
+  target_link_libraries(bench_opt_warmstart PRIVATE ${main_lib} terco_test_basis libdlfind::libdlfind)
+  target_include_directories(bench_opt_warmstart PRIVATE ${CMAKE_BINARY_DIR}/modules)
+  set_target_properties(bench_opt_warmstart PROPERTIES Fortran_MODULE_DIRECTORY
+                                                        ${CMAKE_CURRENT_BINARY_DIR}/modules_opt_bench)
+endif()
 
 #
 # The golden tier ("Two tiers" in test/pyscf_refs/README.md): terco checked

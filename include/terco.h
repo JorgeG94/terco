@@ -379,6 +379,35 @@ int trc_set_rimp2(trc_handle_t handle, int nfrozen, int aux_block);
 int trc_run_scf(trc_handle_t handle);
 
 /**
+ * Move every atom to a NEW geometry, same molecule and atom order
+ * `trc_set_molecule` built (same count, same nuclear charges, same
+ * charge/multiplicity) -- the one call a geometry optimiser's step
+ * loop needs between gradients. Built on `hessian_set_geometry`
+ * (trc_run_hessian's own displacement primitive, PRIVATE until now):
+ * moves the orbital basis's centres in place, and the auxiliary/
+ * jkfit bases' if present, then invalidates exactly as that routine
+ * does -- the last SCF/gradient/polarizability/Hessian result, the
+ * DFT grid cache and the --df fit, all geometry-dependent.
+ *
+ * `trc_set_molecule` is NOT a substitute for this: it replaces
+ * `cx%at_z`/`cx%at_r` and invalidates the same things, but it never
+ * touches a basis already built (`cx%bb`/`cx%ab`/`cx%jb`) -- the
+ * shells stay at their OLD centres, which is correct for setting up
+ * a NEW molecule before any basis exists, and wrong for moving the
+ * atoms of one that already has one. A caller wanting the latter
+ * (an optimiser, or trc_run_hessian's own displacements) uses this.
+ *
+ * `xyz` is atom-major Bohr (x1 y1 z1 x2 ...), the same convention
+ * `trc_set_molecule` takes and `trc_gradient` returns, length
+ * 3*natm. A guess density/orbitals carried across the move (SAD
+ * stays SAD; TRC_GUESS_GIVEN's density and TRC_GUESS_PROJECTED's
+ * "this context's last converged orbitals" are both still valid at
+ * the new geometry -- that overlap-reprojection is exactly what
+ * TRC_GUESS_PROJECTED is for) is a caller choice, not this call's.
+ */
+int trc_set_geometry(trc_handle_t handle, const double* xyz);
+
+/**
  * The full analytic RHF/UHF nuclear gradient at the converged SCF
  * this context already holds (trc_scf_grad%trc_scf_gradient: the
  * one-electron terms, eri%gradient's two-electron part, and nuclear

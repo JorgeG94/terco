@@ -10,7 +10,26 @@ include(GNUInstallDirs)
 
 set(TERCO_BASIS_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/terco/basis_sets")
 
-add_executable(terco_cli main.F90 terco_app.F90)
+#
+# --opt (DL-FIND), behind TERCO_ENABLE_DLFIND -- see that option's own
+# comment in the root CMakeLists.txt for the licensing reason it defaults
+# OFF. Either way terco_cli gets exactly one of the two bridge sources,
+# both module `trc_dlfind_bridge` with the same public interface
+# (trc_dlfind_optimize), so main.F90 never branches on which build this is:
+# with the option OFF, the stub refuses --opt with a message instead of
+# failing to link. libdlfind itself (fetched by cmake/modules/
+# Findlibdlfind.cmake) is linked ONLY here, into the executable, never into
+# ${main_lib} -- that is what keeps the LGPL relink obligation and
+# DL-FIND's `error stop` out of the library.
+#
+if(TERCO_ENABLE_DLFIND)
+  find_package(libdlfind REQUIRED)
+  set(_dlfind_bridge_src trc_dlfind_bridge.F90)
+else()
+  set(_dlfind_bridge_src trc_dlfind_stub.F90)
+endif()
+
+add_executable(terco_cli main.F90 terco_app.F90 ${_dlfind_bridge_src})
 set_target_properties(
   terco_cli PROPERTIES OUTPUT_NAME terco Fortran_MODULE_DIRECTORY
                                          ${CMAKE_CURRENT_BINARY_DIR}/modules)
@@ -22,6 +41,11 @@ target_compile_definitions(
 # communicator's Fortran handle, itself (app/main.F90) -- the library only
 # ever sees the handle trc_set_comm hands it.
 target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi)
+if(TERCO_ENABLE_DLFIND)
+  target_compile_definitions(terco_cli PRIVATE TERCO_ENABLE_DLFIND)
+  target_link_libraries(terco_cli PRIVATE libdlfind::libdlfind)
+endif()
+unset(_dlfind_bridge_src)
 # Find libterco next to the install's bin/, wherever the prefix is moved to.
 # The library installs to lib/ (the root CMakeLists.txt), not LIBDIR.
 if(APPLE)
@@ -46,6 +70,18 @@ endif()
 if(TERCO_ENABLE_TESTING AND TARGET check_cli_hessian)
   add_dependencies(check_cli_hessian terco_cli)
 endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_opt)
+  add_dependencies(check_cli_opt terco_cli)
+endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_opt_vs_mqc)
+  add_dependencies(check_opt_vs_mqc terco_cli)
+endif()
+foreach(_opt_pyscf_case water hcn)
+  if(TERCO_ENABLE_TESTING AND TARGET check_opt_vs_pyscf_${_opt_pyscf_case})
+    add_dependencies(check_opt_vs_pyscf_${_opt_pyscf_case} terco_cli)
+  endif()
+endforeach()
+unset(_opt_pyscf_case)
 
 # The basis sets the tests use, so `--basis def2-svp` works out of the box
 # after an install. sap_helfem_large.json is not a basis but the fitted atomic
