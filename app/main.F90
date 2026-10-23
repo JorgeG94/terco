@@ -72,7 +72,7 @@ module terco_run
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
       ! --hessian: the FD Hessian (trc_run_hessian/trc_hessian) and the
       ! vibrational analysis/thermochemistry built on it (trc_vib/
-      ! trc_thermo, the previous commit on this branch).
+      ! trc_thermo).
       logical :: hessian = .false.
       real(dp) :: hess_step = 0.005_dp, temperature_k = 298.15_dp, pressure_atm = 1.0_dp
       integer :: sym_number = 1
@@ -641,7 +641,7 @@ program terco_main
                        trc_run_gradient, trc_gradient, trc_set_hessian_step, trc_run_hessian, trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
-   use trc_api, only: trc_bind_device
+   use trc_api, only: trc_bind_device, trc_bind_device_env
    use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
                                 xc_is_double_hybrid
    use trc_vib, only: trc_vibrational_analysis
@@ -671,6 +671,12 @@ program terco_main
    ! `r%wcomm` and `r%nranks` answer everything the rest of this file needs
    ! to know about ranks; `r%rank0` is what gates every print below so N
    ! ranks produce ONE copy of the output, not N.
+   !
+   ! The device first, from the launcher's node-local rank: a GPU-aware MPI
+   ! records the current device in MPI_Init, and switching afterwards costs
+   ! Cray MPICH its CUDA IPC (trc_bind_device_env). The split-communicator
+   ! bind below still runs, and is a no-op when it lands on this device.
+   dev = trc_bind_device_env()
    call pic_mpi_init()
    ! pic's region profiler, which is what puts the library's named NVTX
    ! ranges on an Nsight Systems timeline (a TERCO_NVTX build); without NVTX
@@ -929,7 +935,9 @@ program terco_main
    ! inside the library, done here too because device binding must happen
    ! before anything reaches the device, and the guess the library builds
    ! starts doing that before it gets to call trc_build_comm itself. A host
-   ! build has nothing to bind either way.
+   ! build has nothing to bind either way. When trc_bind_device_env above
+   ! already bound this device before MPI_Init, this picks the same one and
+   ! changes nothing.
    if (r%nranks > 1) then
       block
          type(comm_t) :: node_comm

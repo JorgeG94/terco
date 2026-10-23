@@ -183,7 +183,7 @@ module trc_capi
    use, intrinsic :: iso_c_binding, only: c_associated, c_char, c_double, c_f_pointer, c_int, c_loc, &
                                           c_null_char, c_null_ptr, c_ptr
    use pic_types, only: dp, int64
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, &
+   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, trc_bind_device_env, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
@@ -296,7 +296,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 1
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 3
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -3040,10 +3040,10 @@ contains
    ! far-field check -- trc_api.F90's own comment) is left alone: it is
    ! not ON any molecule atom, so no displacement of one moves it.
    !
-   ! `!$acc update device` only if this basis is already device-resident
-   ! (today's host-only Hessian never sets `on_device`, but a later GPU
-   ! build must not read a device copy that still holds the OLD centre
-   ! under -acc's separate memory).
+   ! `!$acc update device` when this basis is device-resident, which on a
+   ! GPU build it always is (take_basis calls to_device): the kernels must
+   ! not read a device copy that still holds the OLD centre under -acc's
+   ! separate memory.
    !
    subroutine move_basis_centre(b, atom_idx, r)
       type(trc_basis_t), intent(inout) :: b
@@ -3313,9 +3313,10 @@ contains
 
    function trc_set_hessian_step(handle, step) result(status) bind(c, name="trc_set_hessian_step")
       !! The Cartesian displacement trc_run_hessian's central differences
-      !! use, in Bohr; must be positive. Default 0.005 (mqc's own
-      !! DEFAULT_DISPLACEMENT, HESSIAN_VIB_THERMO_SPEC.md section 1.2),
-      !! unchanged until this is called. Invalidates the last
+      !! use, in Bohr; must be positive. Default 0.005: its truncation
+      !! error, about 1e-5 Eh/Bohr^2 on water/STO-3G, sits well above the
+      !! SCF noise trc_run_hessian's tightened convergence leaves.
+      !! Unchanged until this is called. Invalidates the last
       !! trc_run_hessian result (a Hessian at the OLD step is not a
       !! Hessian at the new one), not the SCF/gradient it is built from.
       type(c_ptr), value :: handle
@@ -3359,13 +3360,12 @@ contains
       !!
       !!   H[k,j] = (g_j(x + h e_k) - g_j(x - h e_k)) / (2h)     Eh/Bohr^2
       !!
-      !! k = 3*(atom-1)+{x,y,z}, 1-based, row = the displaced coordinate
-      !! -- mqc's own convention (HESSIAN_VIB_THERMO_SPEC.md section 1.2)
-      !! -- then symmetrised, H <- (H + H^T)/2. 6N displaced SCF+gradient
+      !! k = 3*(atom-1)+{x,y,z}, 1-based, row = the displaced coordinate,
+      !! then symmetrised, H <- (H + H^T)/2. 6N displaced SCF+gradient
       !! pairs plus one more to restore the reference state (below).
       !!
       !! REFUSED UP FRONT, before any displacement spends SCF time:
-      !!   - no converged SCF yet (TRC_ERR_STATE, as trc_run_gradient);
+      !!   - no SCF yet, or one that did not converge (TRC_ERR_STATE);
       !!   - more than one rank (trc_set_comm): the loop below is already
       !!     written so a later split is "rank r takes k = r, r+P, ..."
       !!     plus a reduction over the gradients, but nothing here runs
@@ -3378,10 +3378,10 @@ contains
       !!     one, so this is the backstop, not the primary gate).
       !!
       !! SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
-      !! (gradient error)/(2h) = 100x the gradient error at h = 0.005 --
-      !! see this file's own PR description for the water/STO-3G
-      !! measurement that set HESSIAN_MAX_CONV_ENERGY/HESSIAN_MAX_CONV_DIIS
-      !! below. This context's OWN conv_energy/conv_diis (trc_set_
+      !! (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
+      !! the displaced SCFs need tighter convergence than a single point
+      !! (water/STO-3G: HESSIAN_MAX_CONV_ENERGY/HESSIAN_MAX_CONV_DIIS
+      !! below say how much). This context's OWN conv_energy/conv_diis (trc_set_
       !! convergence) are tightened to at least those floors for every
       !! displaced SCF -- never loosened, so a caller who already asked
       !! for tighter still gets it -- and restored to the caller's own
@@ -3423,15 +3423,14 @@ contains
       character(len=:), allocatable :: refusal
       real(dp), parameter :: HESSIAN_MAX_CONV_ENERGY = 1.0e-12_dp
       real(dp), parameter :: HESSIAN_MAX_CONV_DIIS = 1.0e-9_dp
-      !! Measured on water/STO-3G (this file's own PR description): at
+      !! Measured on water/STO-3G against pyscf's analytic Hessian: at
       !! the CLI's own defaults (econv 1e-10, gconv/conv_diis 1e-5) the
       !! FD Hessian disagreed with pyscf's analytic one by far more than
       !! the h=0.005 truncation error alone predicts; tightening conv_diis
       !! (the DIIS commutator gate, trc_scf_options_t%conv_diis's own
       !! comment) to 1e-9 and conv_energy to 1e-12 brought the worst
       !! element back down to the truncation-error floor (~1e-5
-      !! Eh/Bohr^2, matching mqc's own measurement of FD against pyscf
-      !! analytic at this h). conv_diis is the tighter requirement here:
+      !! Eh/Bohr^2 at this h). conv_diis is the tighter requirement here:
       !! it gates the orthogonalised commutator |FDS-SDF|, which is what
       !! actually bounds the gradient's own residual error, not the
       !! energy (quadratic in the density error, and so a much blunter
@@ -3455,7 +3454,7 @@ contains
       call c_f_pointer(handle, cx)
 
       status = TRC_ERR_STATE
-      if (.not. cx%scf_ok) then
+      if (.not. cx%scf_ok .or. .not. cx%res%converged) then
          cx%message = "trc_run_hessian: run a converged SCF first"
          return
       end if
@@ -3577,6 +3576,9 @@ contains
 
       if (failed) then
          cx%message = fail_message
+         ! The caller must also learn that the context no longer holds a
+         ! converged SCF, not only why the loop stopped.
+         if (st /= TRC_OK) cx%message = trim(fail_message)//"; restoring the reference SCF then failed too"
          cx%hess_ok = .false.
          if (allocated(cx%hess)) deallocate (cx%hess)
          status = fail_status
@@ -4048,6 +4050,23 @@ contains
       dev = int(trc_bind_device(int(rank)), c_int)
       status = TRC_OK
    end function trc_select_device
+
+   function trc_select_device_env(dev) result(status) bind(c, name="trc_select_device_env")
+      !! trc_select_device by the node-local rank the launcher exports
+      !! (OMPI_COMM_WORLD_LOCAL_RANK, PALS_LOCAL_RANKID, MPI_LOCALRANKID,
+      !! MV2_COMM_WORLD_LOCAL_RANK, then SLURM_LOCALID), with no MPI needed.
+      !! Call it BEFORE MPI_Init. A GPU-aware MPI records the current device
+      !! there, and a process that switches devices later loses CUDA IPC
+      !! between the node's ranks under Cray MPICH. trc_set_comm's own bind
+      !! then picks the same device and leaves it alone. `dev` is the device
+      !! chosen, -1 when no launcher variable is set (nothing is bound), on
+      !! a build without the GPU, or on a node without one. Process-wide; no
+      !! handle; always succeeds.
+      integer(c_int), intent(out) :: dev
+      integer(c_int) :: status
+      dev = int(trc_bind_device_env(), c_int)
+      status = TRC_OK
+   end function trc_select_device_env
 
    function trc_functional_info(name, flags, exx, c_os, c_ss) result(status) bind(c, name="trc_functional_info")
       !! Look up a functional by name (case-insensitive, trc_xc_functional's
