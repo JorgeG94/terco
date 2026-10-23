@@ -436,6 +436,15 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_grad_df check_cli_grad_df.F90 NEEDS_BASIS
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
   unset(_cli_grad_df_probe)
+
+  # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
+  # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_
+  # analysis/thermo, water -- see check_cli_hessian.F90's own header for
+  # the tolerances and why they are what they are.
+  set(_cli_hessian_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_hessian_probe.json)
+  terco_add_check(check_cli_hessian check_cli_hessian.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_hessian_probe})
+  unset(_cli_hessian_probe)
 endif()
 
 # The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA
@@ -1076,6 +1085,20 @@ target_link_libraries(check_capi_pcm_radii PRIVATE ${main_lib} terco_test_basis 
                                                     terco_pyscf_ref_io)
 add_test(NAME terco/check_capi_pcm_radii COMMAND check_capi_pcm_radii)
 set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# trc_run_hessian/trc_hessian (the finite-difference Cartesian Hessian),
+# through the context API, against pyscf's own ANALYTIC RHF/STO-3G
+# Hessian already in test/pyscf_refs/vib_thermo_{water,hcn,
+# nh3_planar}.ref (check_vib_thermo_vs_pyscf.F90's own references); plus
+# trc_run_hessian's up-front refusal of a meta-GGA, before any
+# displacement runs.
+add_executable(check_fd_hessian_vs_pyscf check_fd_hessian_vs_pyscf.F90)
+target_compile_definitions(check_fd_hessian_vs_pyscf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_fd_hessian_vs_pyscf PRIVATE ${main_lib} terco_c_interfaces terco_pyscf_ref_io)
+add_test(NAME terco/check_fd_hessian_vs_pyscf COMMAND check_fd_hessian_vs_pyscf)
+set_tests_properties(terco/check_fd_hessian_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #

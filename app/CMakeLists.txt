@@ -43,6 +43,9 @@ endif()
 if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad_df)
   add_dependencies(check_cli_grad_df terco_cli)
 endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_hessian)
+  add_dependencies(check_cli_hessian terco_cli)
+endif()
 
 # The basis sets the tests use, so `--basis def2-svp` works out of the box
 # after an install. sap_helfem_large.json is not a basis but the fitted atomic

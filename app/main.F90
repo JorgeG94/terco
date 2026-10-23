@@ -32,10 +32,14 @@ module terco_run
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
    use terco_app, only: element_symbol, f_string
+   use trc_vib, only: trc_vib_log_table
+   use trc_thermo, only: trc_thermo_result_t, trc_thermo_log_summary
+   use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average
+   use trc_error, only: mass_error_t => error_t
    implicit none
    private
    public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
-             gradient_summary
+             gradient_summary, hessian_summary, build_masses
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -66,6 +70,19 @@ module terco_run
       logical :: rank0
       logical :: grad
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
+      ! --hessian: the FD Hessian (trc_run_hessian/trc_hessian) and the
+      ! vibrational analysis/thermochemistry built on it (trc_vib/
+      ! trc_thermo, the previous commit on this branch).
+      logical :: hessian = .false.
+      real(dp) :: hess_step = 0.005_dp, temperature_k = 298.15_dp, pressure_atm = 1.0_dp
+      integer :: sym_number = 1
+      character(len=:), allocatable :: masses_kind   !! "isotope" or "average"
+      real(dp), allocatable :: hess(:, :)            !! (3*natm, 3*natm), Eh/Bohr^2
+      real(dp), allocatable :: freq_cm1(:), redmass_amu(:), force_const(:)
+      logical :: hess_ok = .false.
+      logical :: is_linear = .false.
+      integer :: n_tr = 0
+      type(trc_thermo_result_t) :: thermo
    end type run_t
 
 contains
@@ -377,6 +394,52 @@ contains
       end block
    end subroutine gradient_summary
 
+   !
+   ! Per-atom masses for --hessian's vibrational analysis: "isotope"
+   ! (trc_atomic_mass, the most-abundant isotope -- the CLI's own
+   ! default) or "average" (trc_atomic_mass_average, the isotope-averaged
+   ! standard atomic weight). `kind` is already lower-cased by the
+   ! caller; anything else is a programming error (the CLI validates
+   ! --masses before this is ever called).
+   !
+   subroutine build_masses(z, kind, mass, err)
+      integer, intent(in) :: z(:)
+      character(len=*), intent(in) :: kind
+      real(dp), allocatable, intent(out) :: mass(:)
+      type(mass_error_t), intent(inout) :: err
+      integer :: i
+      allocate (mass(size(z)))
+      do i = 1, size(z)
+         if (kind == "average") then
+            mass(i) = trc_atomic_mass_average(z(i), err)
+         else
+            mass(i) = trc_atomic_mass(z(i), err)
+         end if
+         if (err%has_error()) return
+      end do
+   end subroutine build_masses
+
+   !
+   ! The frequency table and thermochemistry summary for --hessian,
+   ! through trc_vib's/trc_thermo's own logger helpers -- `r%freq_cm1`
+   ! etc. and `r%thermo` are already filled by terco_main itself, right
+   ! after trc_vibrational_analysis/trc_thermochemistry succeed.
+   !
+   subroutine hessian_summary(r)
+      type(run_t), intent(in) :: r
+      call global_logger%info("")
+      call global_logger%info("   vibrational analysis and thermochemistry (--hessian)")
+      call global_logger%info("   ----------------------------------------------------------")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,f0.4,a,a,a,i0,a,i0)") "   step ", r%hess_step, " Bohr   masses: ", r%masses_kind, &
+            "   symmetry number: ", r%sym_number, " (not determined automatically)   mult: ", r%mult
+         call global_logger%info(trim(logline))
+      end block
+      call trc_vib_log_table(r%freq_cm1, r%redmass_amu, r%force_const)
+      call trc_thermo_log_summary(r%thermo)
+   end subroutine hessian_summary
+
    subroutine line(label, e)
       character(len=*), intent(in) :: label
       real(c_double), intent(in) :: e
@@ -444,6 +507,7 @@ contains
          call json%add(root, "total energy", real(r%etot, dp))
          if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       end if
+      if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
          call json%destroy(root)
@@ -470,6 +534,82 @@ contains
       call json%add(root, "gradient rms", sqrt(sum(r%gradient**2)/real(3*r%natm, dp)))
       call json%add(root, "gradient max", sqrt(maxval(sum(r%gradient**2, dim=1))))
    end subroutine add_gradient
+
+   !
+   ! --hessian's JSON: three blocks, as asked for -- "hessian" (the
+   ! matrix itself and the step it was built at), "frequencies"
+   ! (trc_vibrational_analysis's own per-mode output) and
+   ! "thermochemistry" (trc_thermo_result_t, trc_thermo.F90's own
+   ! fields, nothing recomputed here). Row/column k = 3*(atom-1)+
+   ! {x,y,z}, the same order `trc_hessian` and `trc_set_molecule` use.
+   !
+   subroutine add_hessian(json, root, r)
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      type(json_value), pointer :: hobj, hrows, fobj, tobj, tsub
+      integer :: ia, ndof
+
+      ndof = 3*r%natm
+
+      call json%create_object(hobj, "hessian")
+      call json%add(hobj, "step_bohr", r%hess_step)
+      call json%create_array(hrows, "matrix")
+      do ia = 1, ndof
+         call json%add(hrows, "", r%hess(ia, :))
+      end do
+      call json%add(hobj, hrows)
+      call json%add(root, hobj)
+
+      call json%create_object(fobj, "frequencies")
+      call json%add(fobj, "n_modes", size(r%freq_cm1))
+      call json%add(fobj, "n_imaginary", r%thermo%n_imaginary)
+      call json%add(fobj, "is_linear", r%is_linear)
+      call json%add(fobj, "frequencies_cm1", r%freq_cm1)
+      call json%add(fobj, "reduced_masses_amu", r%redmass_amu)
+      call json%add(fobj, "force_constants_hartree_bohr2", r%force_const)
+      call json%add(root, fobj)
+
+      call json%create_object(tobj, "thermochemistry")
+      call json%add(tobj, "temperature_K", r%thermo%temperature_k)
+      call json%add(tobj, "pressure_atm", r%pressure_atm)
+      call json%add(tobj, "symmetry_number", r%sym_number)
+      call json%add(tobj, "spin_multiplicity", r%mult)
+      call json%add(tobj, "masses", r%masses_kind)
+      call json%add(tobj, "zero_point_energy_hartree", r%thermo%zpe_hartree)
+
+      call json%create_object(tsub, "thermal_corrections_hartree")
+      call json%add(tsub, "to_energy", r%thermo%delta_e_hartree)
+      call json%add(tsub, "to_enthalpy", r%thermo%delta_h_hartree)
+      call json%add(tsub, "to_gibbs", r%thermo%delta_g_hartree)
+      call json%add(tobj, tsub)
+
+      call json%create_object(tsub, "total_energies_hartree")
+      call json%add(tsub, "electronic", r%thermo%e_elec_hartree)
+      call json%add(tsub, "electronic_plus_zpe", r%thermo%e_zpe_hartree)
+      call json%add(tsub, "electronic_plus_thermal_E", r%thermo%e_tot_hartree)
+      call json%add(tsub, "electronic_plus_thermal_H", r%thermo%h_tot_hartree)
+      call json%add(tsub, "electronic_plus_thermal_G", r%thermo%g_tot_hartree)
+      call json%add(tobj, tsub)
+
+      call json%create_object(tsub, "entropy_cal_mol_K")
+      call json%add(tsub, "translational", r%thermo%s_trans_calmolk)
+      call json%add(tsub, "rotational", r%thermo%s_rot_calmolk)
+      call json%add(tsub, "vibrational", r%thermo%s_vib_calmolk)
+      call json%add(tsub, "electronic", r%thermo%s_elec_calmolk)
+      call json%add(tsub, "total", r%thermo%s_tot_calmolk)
+      call json%add(tobj, tsub)
+
+      call json%create_object(tsub, "heat_capacity_cal_mol_K")
+      call json%add(tsub, "translational", r%thermo%cv_trans_calmolk)
+      call json%add(tsub, "rotational", r%thermo%cv_rot_calmolk)
+      call json%add(tsub, "vibrational", r%thermo%cv_vib_calmolk)
+      call json%add(tsub, "electronic", r%thermo%cv_elec_calmolk)
+      call json%add(tsub, "total", r%thermo%cv_tot_calmolk)
+      call json%add(tobj, tsub)
+
+      call json%add(root, tobj)
+   end subroutine add_hessian
 
 end module terco_run
 
@@ -498,24 +638,31 @@ program terco_main
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
-                       trc_run_gradient, trc_gradient, &
+                       trc_run_gradient, trc_gradient, trc_set_hessian_step, trc_run_hessian, trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
    use trc_api, only: trc_bind_device
    use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
                                 xc_is_double_hybrid
+   use trc_vib, only: trc_vibrational_analysis
+   use trc_thermo, only: trc_thermochemistry
+   use trc_constants, only: ATM_TO_PA
+   use trc_error, only: hess_err_t => error_t
+   use pic_logger, only: global_logger
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env
    use pic_ascii, only: to_lower
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
-                       gradient_summary
+                       gradient_summary, hessian_summary, build_masses
    implicit none
 
    type(run_t) :: r
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
-   real(c_double), allocatable :: gradbuf(:)
-   integer :: maxiter, nfrozen, guess_kind, dev, aux_block
+   real(c_double), allocatable :: gradbuf(:), hessbuf(:)
+   real(dp), allocatable :: mass(:), displacement(:, :, :)
+   type(hess_err_t) :: herr
+   integer :: maxiter, nfrozen, guess_kind, dev, aux_block, ndof
    integer(c_int) :: st, nspin
    logical :: cart
 
@@ -578,6 +725,20 @@ program terco_main
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
                        "refused for a meta-GGA, --rimp2, a double hybrid or --pcm; with more than "// &
                        "one rank it is computed on rank 0 alone, with a warning")
+   call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
+                       "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
+                       "thermochemistry; refused wherever --grad is (meta-GGA, --rimp2, a double "// &
+                       "hybrid, --pcm), checked before any displacement runs; single rank only for now")
+   call r%cli%add_option("step", "--hessian's displacement, Bohr (0.005)", default="0.005")
+   call r%cli%add_option("temperature", "temperature for --hessian's thermochemistry, K (298.15)", &
+                         default="298.15")
+   call r%cli%add_option("pressure", "pressure for --hessian's thermochemistry, atm (1.0)", default="1.0")
+   call r%cli%add_option("symmetry-number", "rotational symmetry number for --hessian's thermochemistry "// &
+                         "(1; not determined automatically -- a warning names the quantities it affects)", &
+                         default="1")
+   call r%cli%add_option("masses", "isotope (trc_atomic_mass, the most-abundant isotope) or average "// &
+                         "(trc_atomic_mass_average, the isotope-averaged standard atomic weight), for "// &
+                         "--hessian's vibrational analysis (isotope)", default="isotope")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -674,7 +835,32 @@ program terco_main
    r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
    r%df = r%cli%is_set("df")
    r%grad = r%cli%is_set("grad")
+   r%hessian = r%cli%is_set("hessian")
    cart = r%cli%is_set("cart")
+   if (r%hessian) then
+      call r%cli%get("step", r%hess_step, r%err)
+      call check(r, "--step")
+      if (r%hess_step <= 0.0_dp) call die(r, "--step must be positive, got "//to_string(r%hess_step))
+      call r%cli%get("temperature", r%temperature_k, r%err)
+      call check(r, "--temperature")
+      if (r%temperature_k <= 0.0_dp) call die(r, "--temperature must be positive")
+      call r%cli%get("pressure", r%pressure_atm, r%err)
+      call check(r, "--pressure")
+      if (r%pressure_atm <= 0.0_dp) call die(r, "--pressure must be positive")
+      call r%cli%get("symmetry-number", r%sym_number, r%err)
+      call check(r, "--symmetry-number")
+      if (r%sym_number < 1) call die(r, "--symmetry-number must be at least 1")
+      if (r%rank0) call global_logger%warning("--hessian: the rotational symmetry number ("// &
+         to_string(r%sym_number)//") is not determined automatically -- it affects the rotational "// &
+         "entropy and so the Gibbs free energy; pass --symmetry-number if the molecule's point group "// &
+         "has one above 1 (water: 2, ammonia: 3, ...)")
+      call r%cli%get("masses", sval, r%err)
+      call check(r, "--masses")
+      r%masses_kind = to_lower(trim(sval))
+      if (r%masses_kind /= "isotope" .and. r%masses_kind /= "average") then
+         call die(r, "--masses must be isotope or average, got '"//r%masses_kind//"'")
+      end if
+   end if
    r%pcm = ""
    r%eps = 0.0_dp
    if (r%cli%is_set("pcm")) then
@@ -839,10 +1025,35 @@ program terco_main
       r%gradient = reshape(real(gradbuf, dp), [3, r%natm])
       deallocate (gradbuf)
    end if
+   if (r%hessian .and. r%conv /= 0) then
+      ! trc_run_hessian's own refusals (meta-GGA, --rimp2, a double
+      ! hybrid, --pcm, --df outside its own scope, more than one rank)
+      ! come back through `api`, exactly as --grad's do -- checked
+      ! before any displacement, so a refused run costs nothing beyond
+      ! the SCF this CLI already ran for --grad/the energy anyway.
+      call api(r, trc_set_hessian_step(r%h, real(r%hess_step, c_double)))
+      call api(r, trc_run_hessian(r%h))
+      ndof = 3*r%natm
+      allocate (hessbuf(ndof*ndof), r%hess(ndof, ndof))
+      call api(r, trc_hessian(r%h, hessbuf))
+      r%hess = reshape(real(hessbuf, dp), [ndof, ndof])
+      deallocate (hessbuf)
+
+      call build_masses(r%z, r%masses_kind, mass, herr)
+      if (herr%has_error()) call die(r, "--masses: "//herr%get_message())
+      call trc_vibrational_analysis(mass, xyz, r%hess, r%freq_cm1, r%redmass_amu, r%force_const, &
+                                    displacement, r%is_linear, r%n_tr, herr)
+      if (herr%has_error()) call die(r, "--hessian: vibrational analysis: "//herr%get_message())
+      call trc_thermochemistry(mass, xyz, r%freq_cm1, real(r%etot, dp), r%sym_number, r%mult, r%thermo, herr, &
+                               temperature_k=r%temperature_k, pressure_pa=r%pressure_atm*ATM_TO_PA)
+      if (herr%has_error()) call die(r, "--hessian: thermochemistry: "//herr%get_message())
+      r%hess_ok = .true.
+   end if
 
    call system_clock(r%t1)
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
+   if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
    st = trc_destroy(r%h)
 

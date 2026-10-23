@@ -799,6 +799,110 @@ module trc_c_interfaces
          real(c_double), intent(out) :: grad(*)
       end function trc_gradient
 
+      integer(c_int) function trc_set_hessian_step(handle, step) bind(c) result(res)
+         !! The Cartesian displacement trc_run_hessian's central differences
+         !! use, in Bohr; must be positive. Default 0.005 (mqc's own
+         !! DEFAULT_DISPLACEMENT, HESSIAN_VIB_THERMO_SPEC.md section 1.2),
+         !! unchanged until this is called. Invalidates the last
+         !! trc_run_hessian result (a Hessian at the OLD step is not a
+         !! Hessian at the new one), not the SCF/gradient it is built from.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), value :: step
+      end function trc_set_hessian_step
+
+      integer(c_int) function trc_hessian_step(handle, step) bind(c) result(res)
+         !! The displacement trc_run_hessian would use (or last used) --
+         !! trc_set_hessian_step's own default or override.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: step
+      end function trc_hessian_step
+
+      integer(c_int) function trc_run_hessian(handle) bind(c) result(res)
+         !! A finite-difference Cartesian Hessian from this context's own
+         !! analytic gradient, central differences at trc_set_hessian_step's
+         !! own h (default 0.005 Bohr) around the converged SCF this context
+         !! already holds (trc_run_scf; trc_gradient's reference "run the
+         !! SCF first" state requirement, same as trc_run_gradient):
+         !!
+         !!   H[k,j] = (g_j(x + h e_k) - g_j(x - h e_k)) / (2h)     Eh/Bohr^2
+         !!
+         !! k = 3*(atom-1)+{x,y,z}, 1-based, row = the displaced coordinate
+         !! -- mqc's own convention (HESSIAN_VIB_THERMO_SPEC.md section 1.2)
+         !! -- then symmetrised, H <- (H + H^T)/2. 6N displaced SCF+gradient
+         !! pairs plus one more to restore the reference state (below).
+         !!
+         !! REFUSED UP FRONT, before any displacement spends SCF time:
+         !!   - no converged SCF yet (TRC_ERR_STATE, as trc_run_gradient);
+         !!   - more than one rank (trc_set_comm): the loop below is already
+         !!     written so a later split is "rank r takes k = r, r+P, ..."
+         !!     plus a reduction over the gradients, but nothing here runs
+         !!     that split yet (TRC_ERR_UNSUPPORTED);
+         !!   - anything trc_run_gradient itself would refuse (meta-GGA,
+         !!     RI-MP2/double-hybrid, PCM, --df outside its own scope --
+         !!     gradient_capability_check, the SAME check trc_run_gradient
+         !!     makes, so the two can never disagree about what runs);
+         !!   - a non-positive step (trc_set_hessian_step already refuses
+         !!     one, so this is the backstop, not the primary gate).
+         !!
+         !! SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
+         !! (gradient error)/(2h) = 100x the gradient error at h = 0.005 --
+         !! see this file's own PR description for the water/STO-3G
+         !! measurement that set HESSIAN_MAX_CONV_ENERGY/HESSIAN_MAX_CONV_DIIS
+         !! below. This context's OWN conv_energy/conv_diis (trc_set_
+         !! convergence) are tightened to at least those floors for every
+         !! displaced SCF -- never loosened, so a caller who already asked
+         !! for tighter still gets it -- and restored to the caller's own
+         !! values before this returns, success or failure.
+         !!
+         !! WARM START. Every displaced SCF starts from THIS run's own
+         !! converged density (TRC_GUESS_GIVEN), not the previous
+         !! displacement's -- no guess drift accumulates across 6N points.
+         !! The reference density, this context's guess kind/density and
+         !! conv_energy/conv_diis are all restored before returning.
+         !!
+         !! A displaced SCF that fails to converge, or a gradient that
+         !! fails, stops the loop (TRC_ERR_NOCONV or whatever status that
+         !! call returned) rather than filling the Hessian with whatever
+         !! that point produced; the context is still restored to the
+         !! reference geometry/density before returning, as on success.
+         !!
+         !! RESTORING THE REFERENCE STATE. After the loop (success or
+         !! failure), the geometry goes back to the one this context held
+         !! when trc_run_hessian was called, and the reference SCF is RE-RUN
+         !! (warm-started from its own converged density, so it reconverges
+         !! in very few iterations) rather than merely remembered -- cheap
+         !! next to 6N displaced solves, and it leaves cx%res/cx%grad in
+         !! whatever state an ordinary trc_run_scf leaves them (grad_ok
+         !! false; call trc_run_gradient again for the reference gradient).
+         !! This context's guess kind/density, as set before this call, are
+         !! restored afterwards too, for the same reason the convergence
+         !! settings are: trc_run_hessian's own internal warm start must not
+         !! leak into what a caller sees after it returns.
+         !!
+         !! trc_hessian reads the result out; cx%hess is deallocated and
+         !! hess_ok left false on any failure, so a caller cannot read a
+         !! partial Hessian by mistake.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_run_hessian
+
+      integer(c_int) function trc_hessian(handle, hess) bind(c) result(res)
+         !! (3*natm, 3*natm), Eh/Bohr^2, column-major, row/column k =
+         !! 3*(atom-1)+{x,y,z} (trc_set_molecule's own atom order) -- after a
+         !! successful trc_run_hessian. NOT AO-indexed data, same as
+         !! trc_gradient: a Hessian is a second derivative of the SCF
+         !! energy, independent of any AO normalisation convention.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: hess(*)
+      end function trc_hessian
+
       integer(c_int) function trc_run_polarizability(handle) bind(c) result(res)
          !! The static dipole polarizability at the converged SCF this
          !! context already holds: CPHF (trc_cphf%trc_scf_polarizability)
