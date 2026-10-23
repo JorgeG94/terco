@@ -3880,6 +3880,95 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
     print(f"  opt {case}: E_final={e_final:.12f} gmax={gmax_final:.3e} nit={res.nit}")
 
 
+def gen_opt_constrained(case, atoms_ang, mass_z, angle_atoms, charge=0, mult=1):
+    """RHF/STO-3G: terco's own --opt-constrain 'angle i j k' (HDLC), the
+    independent anchor. The two bond-direction unit vectors O->H1, O->H2
+    are taken from `atoms_ang` ITSELF and held fixed throughout -- so the
+    constrained angle is EXACTLY `atoms_ang`'s own H-O-H angle (the same
+    value terco's run starts from and DL-FIND keeps fixed, see
+    app/trc_dlfind_bridge.F90's own header on why there is no separate
+    target-value slot to disagree about) -- and the ONLY two free
+    parameters scipy's L-BFGS-B minimises over are the two O-H bond
+    lengths r1, r2 (in Bohr, matching gen_opt's own choice of working
+    units). `angle_atoms` is a 0-based (vertex, atom1, atom2) triple.
+
+    Independent of terco end to end: pyscf's own analytic RHF gradient,
+    projected onto the two bond directions by the chain rule (other atoms
+    never move, so this is exact, not a finite difference), drives scipy
+    over exactly 2 degrees of freedom -- a from-scratch, reduced-dimension
+    optimiser, not DL-FIND's internal-coordinate machinery."""
+    natm = len(atoms_ang)
+    symbols = [a[0] for a in atoms_ang]
+    mol0 = gto.M(atom=atoms_ang, basis='sto-3g', unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
+    coords0 = mol0.atom_coords().copy()   # bohr, (natm, 3)
+    iv, i1, i2 = angle_atoms
+    origin = coords0[iv].copy()
+    u1 = coords0[i1] - origin
+    r1_0 = np.linalg.norm(u1)
+    u1 = u1 / r1_0
+    u2 = coords0[i2] - origin
+    r2_0 = np.linalg.norm(u2)
+    u2 = u2 / r2_0
+    angle_deg = float(np.degrees(np.arccos(np.clip(np.dot(u1, u2), -1.0, 1.0))))
+
+    cache = {}
+
+    def build(r1, r2):
+        c = coords0.copy()
+        c[i1] = origin + r1 * u1
+        c[i2] = origin + r2 * u2
+        return c
+
+    def energy_grad(params):
+        key = tuple(np.round(params, 12))
+        if key in cache:
+            return cache[key]
+        coords = build(*params)
+        mol = gto.M(atom=list(zip(symbols, coords)), basis='sto-3g', unit='Bohr',
+                    charge=charge, spin=mult - 1, verbose=0)
+        mf = scf.RHF(mol)
+        mf.conv_tol = 1e-13
+        mf.conv_tol_grad = 1e-11
+        mf.max_cycle = 200
+        e = mf.kernel()
+        if not mf.converged:
+            raise ConvergenceError(f"opt_constrained {case}: SCF did not converge at a trial geometry")
+        g_cart = mf.nuc_grad_method().kernel()   # (natm, 3), Eh/Bohr
+        g = np.array([np.dot(g_cart[i1], u1), np.dot(g_cart[i2], u2)])
+        cache[key] = (float(e), g)
+        return cache[key]
+
+    def fun(params):
+        return energy_grad(params)[0]
+
+    def jac(params):
+        return energy_grad(params)[1]
+
+    res = sp_optimize.minimize(fun, np.array([r1_0, r2_0]), jac=jac, method='L-BFGS-B',
+                                options={'gtol': 1.0e-10, 'ftol': 1.0e-16, 'maxiter': 300, 'maxfun': 2000})
+    gmax_final = np.abs(jac(res.x)).max()
+    if gmax_final > 1.0e-8:
+        raise ConvergenceError(f"opt_constrained {case}: scipy L-BFGS-B stopped at max|g| {gmax_final:.3e}, "
+                               f"above the 1e-8 Eh/Bohr this reference promises")
+    e_final = fun(res.x)
+    coords_final = build(*res.x)
+
+    w = RefWriter(f"opt_constrained_{case}.ref")
+    w.header("opt_constrained " + case, [])
+    w.comment(f"scipy L-BFGS-B over the 2 free bond lengths at a FIXED angle "
+              f"({angle_deg:.10f} deg), {res.nit} iterations, final max|g| {gmax_final:.3e} Eh/Bohr")
+    w.int_("NAT", natm)
+    w.vector("Z", np.array(mass_z, dtype=np.float64))
+    w.matrix("COORDS", coords_final.T)      # bohr, (3, natm)
+    w.real("E_FINAL", e_final)
+    w.real("GMAX_FINAL", gmax_final)
+    w.real("ANGLE_DEG", angle_deg)
+    w.end()
+    w.write()
+    print(f"  opt_constrained {case}: E_final={e_final:.12f} gmax={gmax_final:.3e} nit={res.nit} "
+          f"r1={res.x[0]:.8f} r2={res.x[1]:.8f} angle={angle_deg:.6f}")
+
+
 def _rigid_body_basis(coords):
     """Orthonormal basis of the (up to 6) rigid-body Cartesian displacement
     directions at `coords` ((natm,3), any unit): 3 translations, 3
@@ -4239,6 +4328,15 @@ CASES = {
          ("C", (0.0, 0.0, 1.064)),
          ("N", (0.0, 0.0, 2.220))],
         [1, 6, 7]),
+    "opt_constrained_water_angle": lambda: gen_opt_constrained(
+        "water_angle",
+        # test/water.xyz's own geometry, duplicated here by hand -- the
+        # same convention opt_water/opt_hcn above already use.
+        [("O", (0.0000000, 0.0000000, 0.1173000)),
+         ("H", (0.0000000, 0.7572000, -0.4692000)),
+         ("H", (0.0000000, -0.7572000, -0.4692000))],
+        [8, 1, 1],
+        (0, 1, 2)),
     "opt_ts_hcn": lambda: gen_opt_ts(
         "hcn",
         # test/hcn_ts_guess.xyz's own geometry, duplicated here by hand --

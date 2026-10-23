@@ -100,6 +100,13 @@ terco_add_check(check_selftest check_selftest.F90)
 #
 terco_add_check(check_linalg_mat check_linalg_mat.F90)
 
+# A signalling-NaN SCF guess density -- what a density read past the end
+# of an undersized buffer (app/trc_dlfind_bridge.F90's own --opt-neb
+# per-image density, found and fixed on feat/opt-neb) can hand back --
+# comes back through trc_run_scf's own status/message, not `error stop`
+# inside the eigensolver. See check_scf_diag_failure.F90's own header.
+terco_add_check(check_scf_diag_failure check_scf_diag_failure.F90 NEEDS_BASIS)
+
 # The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
@@ -572,6 +579,32 @@ if(TERCO_BUILD_APP)
     terco_add_check(check_opt_connect check_opt_connect.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_connect_workdir})
     unset(_cli_opt_connect_workdir)
+
+    # --opt-neb / climbing-image NEB on HCN<->HNC -- see check_opt_neb.F90's
+    # own header for why its settings are what they are (measured to
+    # finish cleanly on this delicate 3-atom system without ever hitting
+    # terco's own overlap-matrix diagonalisation failure).
+    set(_cli_opt_neb_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_neb_work)
+    terco_add_check(check_opt_neb check_opt_neb.F90 NEEDS_PYSCF_REF
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_neb_workdir})
+    unset(_cli_opt_neb_workdir)
+
+    # --opt-frozen: water with atom 1 frozen -- see check_opt_frozen.F90's
+    # own header.
+    set(_cli_opt_frozen_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_frozen_work)
+    terco_add_check(check_opt_frozen check_opt_frozen.F90 NEEDS_PYSCF_REF
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_frozen_workdir})
+    unset(_cli_opt_frozen_workdir)
+
+    # --opt-constrain: water's H-O-H angle (HDLC) against a from-scratch
+    # 2-parameter scipy minimisation of the two free O-H bond lengths
+    # (test/pyscf_refs/generate.py's gen_opt_constrained,
+    # opt_constrained_water_angle.ref), plus a bond constraint checked for
+    # internal consistency only -- see check_opt_constrain.F90's own header.
+    set(_cli_opt_constrain_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_constrain_work)
+    terco_add_check(check_opt_constrain check_opt_constrain.F90 NEEDS_PYSCF_REF
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_constrain_workdir})
+    unset(_cli_opt_constrain_workdir)
   endif()
 endif()
 
@@ -1501,6 +1534,19 @@ if(TERCO_ENABLE_DLFIND)
   target_include_directories(bench_opt_warmstart PRIVATE ${CMAKE_BINARY_DIR}/modules)
   set_target_properties(bench_opt_warmstart PROPERTIES Fortran_MODULE_DIRECTORY
                                                         ${CMAKE_CURRENT_BINARY_DIR}/modules_opt_bench)
+
+  # The per-image-vs-shared-density NEB warm start measurement
+  # (bench_opt_neb_warmstart.F90's own header) -- this PR's own analogue
+  # of the above for --opt-neb. A SEPARATE module directory: two targets
+  # compiling the same trc_dlfind_bridge.F90 source into the SAME
+  # Fortran_MODULE_DIRECTORY under -j>1 is a write race on the .mod file.
+  add_executable(bench_opt_neb_warmstart bench_opt_neb_warmstart.F90 ${PROJECT_SOURCE_DIR}/app/terco_app.F90
+                                          ${PROJECT_SOURCE_DIR}/app/trc_dlfind_bridge.F90)
+  target_compile_definitions(bench_opt_neb_warmstart PRIVATE ${TERCO_TEST_DEFS})
+  target_link_libraries(bench_opt_neb_warmstart PRIVATE ${main_lib} terco_test_basis libdlfind::libdlfind)
+  target_include_directories(bench_opt_neb_warmstart PRIVATE ${CMAKE_BINARY_DIR}/modules)
+  set_target_properties(bench_opt_neb_warmstart PROPERTIES Fortran_MODULE_DIRECTORY
+                                                            ${CMAKE_CURRENT_BINARY_DIR}/modules_opt_neb_bench)
 endif()
 
 #

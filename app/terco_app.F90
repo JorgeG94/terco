@@ -20,7 +20,7 @@ module terco_app
    implicit none
    private
 
-   public :: read_xyz, resolve_basis, element_symbol, c_string, f_string, set_env
+   public :: read_xyz, resolve_basis, element_symbol, atomic_number, c_string, f_string, set_env
    public :: BOHR_PER_ANGSTROM
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR

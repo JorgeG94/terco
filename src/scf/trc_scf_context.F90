@@ -12,6 +12,7 @@
 !
 module trc_scf_context
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
    use pic_logger, only: global_logger
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
@@ -271,7 +272,11 @@ contains
       call this%lp%init(this%nao)
       this%ts(5) = tm%get_elapsed_time()
       call tm%start()
-      call sym_orthog(this%lp, this%nao, this%smat, this%x, opts%lindep_thresh, this%n_lindep)
+      call sym_orthog(this%lp, this%nao, this%smat, this%x, err, opts%lindep_thresh, this%n_lindep)
+      if (err%has_error()) then
+         call this%release()
+         return
+      end if
       if (cfg%talk .and. this%n_lindep > 0) then
          block
             character(len=1024) :: logline
@@ -424,49 +429,81 @@ contains
    ! columns of U are zeroed rather than divided by sqrt(sqrt(w)), which is what
    ! makes symmetric orthogonalisation diverge on a near-null mode. A zeroed column
    ! decouples that mode from X^T F X. Once per geometry, on the host side.
-   subroutine sym_orthog(la, n, s, x, lindep_thresh, ndropped)
+   !
+   ! `err` instead of `error stop` on either failure (the overlap's own
+   ! diagonalisation not converging, or -- when the caller left
+   ! lindep_thresh at 0, so canonical orthogonalisation never engages --
+   ! a non-positive eigenvalue): a malformed overlap must come back as a
+   ! clean SCF failure, the same way `scf_ctx_setup`'s other refusals
+   ! (the LMAX ceiling, a missing --df fit) already do, not take the
+   ! whole process down. Structured so every path still reaches the
+   ! matching `!$acc end data` -- `return`ing out of an OpenACC `data`
+   ! region partway through is not something the directive allows.
+   subroutine sym_orthog(la, n, s, x, err, lindep_thresh, ndropped)
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n)
       real(dp), intent(out) :: x(n, n)
+      type(error_t), intent(inout) :: err
       real(dp), intent(in), optional :: lindep_thresh
       integer, intent(out), optional :: ndropped
       real(dp), allocatable :: u(:, :), w(:)
       real(dp) :: thr
-      integer :: i, k, ndrop
+      integer :: i, k, ndrop, info
+      logical :: bad_info, bad_pd
       allocate (u(n, n), w(n))
       u = s
+      x = 0.0_dp
       thr = 0.0_dp
       if (present(lindep_thresh)) thr = lindep_thresh
-      !$acc data copy(u) create(w) copyout(x)
-      call la%syev(u, w)
-      !$acc update self(w)
-      ! w is ascending (LAPACK/cuSOLVER convention), so the near-null modes
-      ! -- the ones canonical orthogonalisation drops -- are the leading
-      ! entries, the same ones the old unconditional check read as w(1).
+      info = 0
+      bad_info = .false.
+      bad_pd = .false.
       ndrop = 0
-      if (thr > 0.0_dp) then
-         do k = 1, n
-            if (w(k) < thr) ndrop = ndrop + 1
-         end do
-      else if (w(1) <= 0.0_dp) then
-         error stop "trc_scf: the overlap is not positive definite"
+      !$acc data copy(u) create(w) copyout(x)
+      call la%syev(u, w, info)
+      if (info /= 0) then
+         bad_info = .true.
+      else
+         !$acc update self(w)
+         ! w is ascending (LAPACK/cuSOLVER convention), so the near-null
+         ! modes -- the ones canonical orthogonalisation drops -- are the
+         ! leading entries, the same ones the old unconditional check read
+         ! as w(1).
+         if (thr > 0.0_dp) then
+            do k = 1, n
+               if (w(k) < thr) ndrop = ndrop + 1
+            end do
+         else if (w(1) <= 0.0_dp) then
+            bad_pd = .true.
+         end if
+         if (.not. bad_pd) then
+            ! Columns scaled by w^-1/4 on the device, then X = U U^T; the
+            ! first `ndrop` columns -- the near-null modes -- are zeroed
+            ! instead, so they carry no weight into X^T F X and never has
+            ! to divide by a near-zero w.
+            !$acc update device(w)
+            do concurrent(i=1:n, k=1:n)
+               if (k <= ndrop) then
+                  u(i, k) = 0.0_dp
+               else
+                  u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
+               end if
+            end do
+            call la%gemm_mat(u, u, x, transb="T")
+         end if
+      end if
+      !$acc end data
+      if (bad_info) then
+         call err%set(ERROR_GENERIC, "trc_scf: the overlap diagonalisation did not converge "// &
+                      "(pic_syev info="//to_string(info)//")")
+         return
+      end if
+      if (bad_pd) then
+         call err%set(ERROR_GENERIC, "trc_scf: the overlap is not positive definite")
+         return
       end if
       if (present(ndropped)) ndropped = ndrop
-      ! Columns scaled by w^-1/4 on the device, then X = U U^T; the first
-      ! `ndrop` columns -- the near-null modes -- are zeroed instead, so
-      ! they carry no weight into X^T F X and never has to divide by a
-      ! near-zero w.
-      !$acc update device(w)
-      do concurrent(i=1:n, k=1:n)
-         if (k <= ndrop) then
-            u(i, k) = 0.0_dp
-         else
-            u(i, k) = u(i, k)/sqrt(sqrt(w(k)))
-         end if
-      end do
-      call la%gemm_mat(u, u, x, transb="T")
-      !$acc end data
    end subroutine sym_orthog
 
    ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
@@ -514,6 +551,7 @@ contains
       real(dp) :: occ_s
       integer :: s, n
       real(dp), allocatable :: cocc(:, :), m(:, :), x(:, :), cproj(:, :)
+      type(error_t) :: err
 
       occ_s = merge(2.0_dp, 1.0_dp, nspin == 1)
       dmat = 0.0_dp
@@ -524,7 +562,20 @@ contains
          cocc = cmo_old(:, 1:n, s)
          m = matmul(transpose(cocc), matmul(s_new, cocc))
          m = 0.5_dp*(m + transpose(m))   ! host round-off symmetrisation
-         call sym_orthog(lp, n, m, x)
+         call sym_orthog(lp, n, m, x, err)
+         if (err%has_error()) then
+            ! Argued unreachable by this routine's own header (M is a Gram
+            ! matrix of independent vectors, positive definite by
+            ! construction) -- defensive only: leave this spin's slice at
+            ! the zero `dmat` already set above rather than use a
+            ! half-written `x`, and let the caller fall back to its own
+            ! ordinary guess rather than crash.
+            call global_logger%warning("trc_scf: the projected-guess overlap failed to diagonalise "// &
+                                       "for spin "//to_string(s)//" ("//err%get_message()// &
+                                       "); falling back to a zero density for that spin")
+            deallocate (cocc, m, x, cproj)
+            cycle
+         end if
          cproj = matmul(cocc, x)
          dmat(:, :, s) = occ_s*matmul(cproj, transpose(cproj))
          deallocate (cocc, m, x, cproj)
