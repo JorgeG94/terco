@@ -2,9 +2,10 @@
 ! --opt-algorithm stochastic, a fast fixed-population/fixed-cycle search
 ! on water/STO-3G: with --opt-seed set, reaches the same basin
 ! opt_water.ref's own minimum sits in, and running the SAME command
-! twice gives IDENTICAL results -- the whole point of --opt-seed
-! (dlf_parallel_opt.f90 otherwise reseeds from the wall clock on every
-! call, so two runs never agree without it; app/trc_dlfind_bridge.F90's
+! twice reproduces the SAME search (DL-FIND's own trajectory through
+! the population is bit-for-bit identical: --opt-seed's whole point;
+! dlf_parallel_opt.f90 otherwise reseeds from the wall clock on every
+! call, so two runs never agree without it -- app/trc_dlfind_bridge.F90's
 ! own header). Genetic is not covered here: it needs more cycles to
 ! reach its own po_tolerance_g test before it reports anything at all
 ! (dlf_parallel_opt.f90's dlf_genetic_endcycle only calls dlf_put_coords
@@ -12,17 +13,31 @@
 ! check_opt_refusals.F90 covers its CLI validation the same way
 ! stochastic's is covered there.
 !
-! TOLERANCE. ENERGY_TOL = 1e-3 Eh is loose on purpose: population 8,
-! 20 cycles is a SMALL search, and the exact trajectory through that
-! population depends on the Fortran compiler's own RANDOM_NUMBER
-! stream for the SAME seed array (the standard guarantees a seed
-! reproduces a sequence only within one implementation, not across
-! compilers) -- a GPU build driving the same DL-FIND (itself CPU-only,
-! serial) through nvfortran instead of gfortran is not guaranteed the
+! TOLERANCES.
+!
+! REPRO_TOL = 1e-10 Eh/Angstrom, not exact equality: the two runs follow
+! the IDENTICAL seeded trajectory through the population, but each
+! geometry's own energy/gradient still comes from a fresh terco_cli
+! process's own SCF, and on the GPU build a Fock build's reduction
+! order is not guaranteed bit-identical run to run (thread-scheduling-
+! dependent partial sums, same source of non-reproducibility as any
+! other `do concurrent` reduction here) -- measured on a GPU build:
+! |diff| 2.8e-14 Eh, 1.2e-13 Angstrom over 20 cycles' worth of
+! accumulated round-off, four orders of headroom under this gate. The
+! gfortran host build reproduces bit-for-bit (|diff| exactly 0).
+!
+! ENERGY_TOL = 1e-3 Eh is loose on purpose: population 8, 20 cycles is
+! a SMALL search, and the exact trajectory through that population
+! depends on the Fortran compiler's own RANDOM_NUMBER stream for the
+! SAME seed array (the standard guarantees a seed reproduces a
+! sequence only within one implementation, not across compilers) --
+! a GPU build driving the same DL-FIND (itself CPU-only, serial)
+! through nvfortran instead of gfortran is not guaranteed the
 ! IDENTICAL sequence this seed gives here, only its OWN reproducible
-! one. Measured with gfortran 15 (host): final energy -74.965899825171
-! Eh against opt_water.ref's -74.965901192300 Eh, |diff| 1.4e-6 Eh --
-! three orders of headroom under the gate, left there for a different
+! one. Measured: final energy -74.965899825171 Eh (gfortran 15, host)
+! and -74.965899686593 Eh (nvfortran 26.5, GPU) against opt_water.ref's
+! -74.965901192300 Eh, |diff| 1.4e-6 and 1.5e-6 Eh -- three orders of
+! headroom under the gate either way, left there for a different
 ! compiler's own stream to land somewhere else in the same basin.
 !
 program check_opt_global
@@ -40,6 +55,7 @@ program check_opt_global
    logical :: found1, found2
    type(json_file) :: j1, j2
    real(dp), parameter :: ENERGY_TOL = 1.0e-3_dp   !! Eh -- see this file's own header
+   real(dp), parameter :: REPRO_TOL = 1.0e-10_dp   !! Eh/Angstrom -- see this file's own header
    character(len=*), parameter :: SEED_ARGS = '--opt-algorithm stochastic --opt-seed 42 '// &
       '--opt-global-pop-size 8 --opt-global-maxcycle 20 --opt-gtol 1e-4'
 
@@ -87,10 +103,10 @@ program check_opt_global
    print '(a,f20.12)', '  run 1 final energy = ', e1
    print '(a,f20.12)', '  run 2 final energy = ', e2
 
-   call report(nfail, e1 == e2, 'check_opt_global: --opt-seed: run 1 and run 2 final_energy are IDENTICAL', &
-              abs(e1 - e2))
-   call report(nfail, all(row1 == row2), &
-              'check_opt_global: --opt-seed: run 1 and run 2 final_geometry_angstrom(1) are IDENTICAL', &
+   call report(nfail, abs(e1 - e2) < REPRO_TOL, &
+              'check_opt_global: --opt-seed: run 1 and run 2 final_energy reproduce, Eh', abs(e1 - e2))
+   call report(nfail, maxval(abs(row1 - row2)) < REPRO_TOL, &
+              'check_opt_global: --opt-seed: run 1 and run 2 final_geometry_angstrom(1) reproduce, Angstrom', &
               maxval(abs(row1 - row2)))
 
    block
