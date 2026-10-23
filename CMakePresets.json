@@ -36,6 +36,24 @@
       }
     },
     {
+      "name": "frontier-cpu",
+      "displayName": "Frontier, CPU only (amdflang)",
+      "description": "module load rocm. Host build, no GPU offload (TERCO_ENABLE_GPU=OFF), single rank. amdflang for Fortran, Cray cc for C, OpenBLAS for BLAS/LAPACK. -z execstack because ld.lld refuses json-fortran's object, which flang marks as needing an executable stack (nested callbacks passed as arguments).",
+      "binaryDir": "${sourceDir}/build-frontier-cpu",
+      "installDir": "${sourceDir}/../../install/terco",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_Fortran_COMPILER": "amdflang",
+        "CMAKE_C_COMPILER": "cc",
+        "CMAKE_SHARED_LINKER_FLAGS": "-Wl,-z,execstack",
+        "CMAKE_EXE_LINKER_FLAGS": "-Wl,-z,execstack",
+        "TERCO_ENABLE_GPU": "OFF",
+        "TERCO_ENABLE_MPI": "OFF",
+        "BLAS_LIBRARIES": "/lustre/orion/scratch/jg4/csc693/install/openblas/v0.3.34/lib/libopenblas.so",
+        "LAPACK_LIBRARIES": "/lustre/orion/scratch/jg4/csc693/install/openblas/v0.3.34/lib/libopenblas.so"
+      }
+    },
+    {
       "name": "gadi",
       "displayName": "Gadi (nvidia-hpc-sdk, V100)",
       "description": "source gadi_envsh (nvidia-hpc-sdk, openmpi/5.0.5, intel-mkl, cmake/3.31.12). Single rank (TERCO_ENABLE_MPI=OFF). nvfortran/nvc/nvc++ wrappers, sequential LP64 MKL for BLAS/LAPACK, cc70 for the gpuvolta V100s.",
@@ -77,6 +95,11 @@
     {
       "name": "perlmutter-mpi",
       "configurePreset": "perlmutter-mpi",
+      "jobs": 32
+    },
+    {
+      "name": "frontier-cpu",
+      "configurePreset": "frontier-cpu",
       "jobs": 32
     },
     {
