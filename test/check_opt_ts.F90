@@ -11,9 +11,8 @@
 !     the start geometry is not linear);
 !   - the dimer method (--opt-saddle-method dimer), no Hessian at all.
 ! Both must land on the same energy and geometry, and --hessian at the
-! result must show EXACTLY ONE imaginary mode (the TS check this PR's
-! brief asks the final report to state) -- the saddle check, not a second
-! copy of the energy comparison.
+! result must show EXACTLY ONE imaginary mode -- the saddle check, not a
+! second copy of the energy comparison.
 !
 ! EXTERNAL anchor: test/pyscf_refs/opt_ts_hcn.ref, written by
 ! test/pyscf_refs/generate.py's own gen_opt_ts -- a from-scratch

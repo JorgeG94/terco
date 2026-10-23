@@ -23,22 +23,21 @@
 # someone pushed to the fork. 4167998 is upstream's own
 # (digital-chemistry-laboratory/libdlfind) HEAD as of 2026-04-06 ("Update
 # README.md"); JorgeG94/libdlfind is a fork that exists only so this pin
-# cannot move under us, same as mqc's own copy of it -- see
-# /home/jorge/dev/metalquicha/DLFIND_INTEGRATION_NOTE.md section 1. terco
-# carries no patches of its own on top of it either.
+# cannot move under us. terco carries no patches of its own on top of it
+# either.
 #
 # Offline builds (a compute node with no network): point
-# -DFETCHCONTENT_SOURCE_DIR_LIBDLFIND=<a local clone at this same commit>.
-# /home/jorge/dev/metalquicha/libdlfind is such a clone.
+# -DFETCHCONTENT_SOURCE_DIR_LIBDLFIND=<a local clone checked out to the
+# pinned commit above>.
 #
 # libdlfind's OWN CMakeLists.txt (not terco's) builds it: a SHARED library
 # named `dlfind`, serial (dlf_serial.f90 -- no MPI inside DL-FIND at all),
 # linked against BLAS/LAPACK it finds itself, with `-std=legacy` under GNU
 # only (DL-FIND's F90 predates gfortran's current strictness; nvfortran
-# needs no extra flag -- mqc's note, section 2). terco adds nothing to that
-# build and declares `api_dl_find` itself in app/trc_dlfind_bridge.F90's own
-# bind(C) interface block rather than reading libdlfind's .mod files, so the
-# two projects may be built by different Fortran compilers.
+# needs no extra flag). terco adds nothing to that build and declares
+# `api_dl_find` itself in app/trc_dlfind_bridge.F90's own bind(C) interface
+# block rather than reading libdlfind's .mod files, so the two projects may
+# be built by different Fortran compilers.
 #
 include(FetchContent)
 

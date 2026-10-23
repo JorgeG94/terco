@@ -12,8 +12,9 @@
 ! step uses DL-FIND's "random/internal" initial direction (app/
 ! trc_dlfind_bridge.F90's own header), so a FRESH --opt-connect run lands
 ! on the SAME two minima rotated/translated differently in space each
-! time, and MEASURED (this branch's own PR description/final report):
-! some of those equally-valid rotations drive at least one interpolated
+! time, and measured directly by running --opt-connect repeatedly from
+! test/hcn_ts_guess.xyz: some of those equally-valid rotations drive at
+! least one interpolated
 ! NEB image into a geometry so distorted that terco's own overlap-matrix
 ! diagonalisation fails outright (`trc_linalg: pic_syev failed`, an
 ! unconditional `error stop` deep in pic, not a condition trc_run_scf's

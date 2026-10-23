@@ -1,9 +1,9 @@
 !
 ! terco's --opt against an independent optimisation: pyscf's own RHF/STO-3G
 ! analytic gradient driving scipy's L-BFGS-B (test/pyscf_refs/generate.py's
-! gen_opt, committed as opt_water.ref/opt_hcn.ref), from the SAME start
-! geometries as /home/jorge/dev/metalquicha/DLFIND_INTEGRATION_NOTE.md
-! section 6 (water.xyz, hcn.xyz). Different language, different SCF code,
+! gen_opt, committed as opt_water.ref/opt_hcn.ref), from the same start
+! geometries check_opt_vs_mqc.F90 uses (water.xyz, hcn.xyz). Different
+! language, different SCF code,
 ! different optimiser (scipy's Cartesian L-BFGS-B vs DL-FIND's own, here in
 ! Cartesian too) -- agreement is independent validation of trc_dlfind_bridge
 ! end to end, not a restatement of the same algorithm.

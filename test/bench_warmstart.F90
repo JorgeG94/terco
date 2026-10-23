@@ -4,9 +4,8 @@
 ! orbital-projection warm start (`cmo_project`, trc_scf_context's
 ! `project_density`), at the SAME displaced geometry -- water/def2-SVP,
 ! HF and B3LYP, at trc_run_hessian's own h=0.005 Bohr and a larger,
-! geometry-optimiser-sized step. Informational only (prints a table,
-! asserts nothing) -- see .claude/notes or the PR description for the
-! numbers this run produced.
+! geometry-optimiser-sized step. Informational only: prints a table,
+! asserts nothing, and is not registered as a ctest.
 !
 program bench_warmstart
    use pic_types, only: dp

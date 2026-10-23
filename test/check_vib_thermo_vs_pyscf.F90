@@ -2,12 +2,10 @@
 ! trc_vib/trc_thermo against pyscf's own analytic RHF/STO-3G Hessian,
 ! harmonic_analysis and thermo (test/pyscf_refs/vib_thermo_{water,hcn,
 ! nh3_planar}.ref, generate.py's gen_vib_thermo -- see src/scf/trc_vib.F90
-! and src/scf/trc_thermo.F90's own headers for every formula and where
-! this reimplementation departs from mqc's HESSIAN_VIB_THERMO_SPEC.md on
-! purpose: D1 (sigma), D2 (mult), D3 (GHz, not MHz), D4 (imaginary modes
-! counted among the true vibrations only), D5 (the rotational-temperature
-! constant), D6/D7 (one mode set), D8 (every constant from
-! trc_constants.F90, CODATA 2018).
+! and src/scf/trc_thermo.F90's own headers for every formula: sigma and
+! mult as inputs, rotational constants in GHz, imaginary modes counted
+! among the true vibrations only, one mode set, and every constant from
+! trc_constants.F90 (CODATA 2018).
 !
 ! Water (sigma=2) and HCN (linear, sigma=1) are minima at this geometry/
 ! basis; planar NH3 (sigma=6) has one genuine imaginary umbrella mode.
@@ -19,39 +17,137 @@
 ! Also checks two properties no stored number can: a pure rigid-
 ! translation perturbation added to the raw Hessian leaves every
 ! frequency unchanged (trc_vib's TR removal is exact, not approximate --
-! see trc_vib.F90's own header), and HCN's linear path gives exactly
-! 3*3-5 = 4 modes.
+! see trc_vib.F90's own header), HCN's linear path gives exactly
+! 3*3-5 = 4 modes, and a slightly bent HCN is called linear by trc_vib
+! and trc_thermo alike.
 !
-program check_vib_thermo_vs_pyscf
+! A test-drive suite: each case is one unit test, which fails when any of
+! its checks does; every check still prints its value through ref_report.
+!
+module check_vib_thermo_suite
    use pic_types, only: dp
+   use testdrive, only: new_unittest, unittest_type, error_type, test_failed
    use trc_error, only: error_t
-   use trc_constants, only: trc_atomic_mass
+   use trc_constants, only: trc_atomic_mass, BOHR_TO_ANGSTROM
    use trc_vib, only: trc_vibrational_analysis
    use trc_thermo, only: trc_thermo_result_t, trc_thermochemistry
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, &
                            ref_read_vector, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
-
-   integer :: nfail
-
-   nfail = 0
-   call check_case("water")
-   call check_case("hcn")
-   call check_case("nh3_planar")
-   call check_tr_invariance()
-   if (nfail > 0) then
-      print '(a,i0,a)', 'check_vib_thermo_vs_pyscf: ', nfail, ' check(s) FAILED'; stop 1
-   end if
-   print '(a)', 'check_vib_thermo_vs_pyscf: RESULT: PASS'
+   private
+   public :: collect_vib_thermo
 
 contains
+
+   subroutine collect_vib_thermo(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("water vs pyscf", test_water), &
+                  new_unittest("hcn vs pyscf", test_hcn), &
+                  new_unittest("planar nh3 vs pyscf", test_nh3_planar), &
+                  new_unittest("a rigid translation leaves frequencies unchanged", test_tr_invariance), &
+                  new_unittest("trc_vib and trc_thermo agree on a near-linear molecule", test_near_linear) &
+                  ]
+   end subroutine collect_vib_thermo
+
+   subroutine verdict(error, nfail, what)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: nfail
+      character(len=*), intent(in) :: what
+      character(len=12) :: buf
+      if (nfail == 0) return
+      write (buf, "(i0)") nfail
+      call test_failed(error, what//": "//trim(buf)//" check(s) failed (see the FAIL lines above)")
+   end subroutine verdict
+
+   subroutine test_water(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nfail
+      nfail = 0
+      call check_case(nfail, "water")
+      call verdict(error, nfail, "water")
+   end subroutine test_water
+
+   subroutine test_hcn(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nfail
+      nfail = 0
+      call check_case(nfail, "hcn")
+      call verdict(error, nfail, "hcn")
+   end subroutine test_hcn
+
+   subroutine test_nh3_planar(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nfail
+      nfail = 0
+      call check_case(nfail, "nh3_planar")
+      call verdict(error, nfail, "nh3_planar")
+   end subroutine test_nh3_planar
+
+   subroutine test_tr_invariance(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nfail
+      nfail = 0
+      call check_tr_invariance(nfail)
+      call verdict(error, nfail, "tr_invariance")
+   end subroutine test_tr_invariance
+
+   !
+   ! HCN with the H moved 1e-5 Angstrom off the axis, the noise a geometry
+   ! pasted from another code carries. trc_vib used to keep a sixth rigid-
+   ! body direction for it (a singular-value test of its own), so returned
+   ! 3 modes, while trc_thermo's moment test still called it linear and
+   ! applied the linear rotor: the ZPE came out one bend short. Both now
+   ! decide from the same moments, so a linear call means 3N-5 modes. The
+   ! Hessian is the linear one from the reference; only the geometry
+   ! moves, which is all the rotor test reads.
+   !
+   subroutine test_near_linear(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nfail, u, natm, ndof, sigma, mult
+      real(dp), allocatable :: coords(:, :), mass(:), hess(:, :), ztmp(:)
+      real(dp), allocatable :: freq(:), redmass(:), fc(:), displacement(:, :, :)
+      real(dp) :: temperature_k, pressure_pa, e_elec
+      logical :: is_linear
+      integer :: n_tr
+      type(error_t) :: err
+      type(trc_thermo_result_t) :: th
+      nfail = 0
+      call ref_require('vib_thermo_hcn.ref', u)
+      call ref_read_int(u, 'NAT', natm)
+      ndof = 3*natm
+      allocate (coords(3, natm), mass(natm), hess(ndof, ndof), ztmp(natm))
+      call ref_read_vector(u, 'Z', natm, ztmp)
+      call ref_read_matrix(u, 'COORDS', 3, natm, coords)
+      call ref_read_vector(u, 'MASS', natm, mass)
+      call ref_read_int(u, 'SIGMA', sigma)
+      call ref_read_int(u, 'MULT', mult)
+      call ref_read_real(u, 'TEMPERATURE_K', temperature_k)
+      call ref_read_real(u, 'PRESSURE_PA', pressure_pa)
+      call ref_read_real(u, 'E_ELEC', e_elec)
+      call ref_read_matrix(u, 'HESS', ndof, ndof, hess)
+      call ref_close(u)
+      coords(1, 1) = coords(1, 1) + 1.0e-5_dp/BOHR_TO_ANGSTROM   ! the H, off the axis
+      call trc_vibrational_analysis(mass, coords, hess, freq, redmass, fc, displacement, is_linear, n_tr, err)
+      call ref_report(nfail, .not. err%has_error(), 'near_linear: trc_vibrational_analysis: no error', &
+                      real(err%get_code(), dp))
+      call trc_thermochemistry(mass, coords, freq, e_elec, sigma, mult, th, err)
+      call ref_report(nfail, .not. err%has_error(), 'near_linear: trc_thermochemistry: no error', &
+                      real(err%get_code(), dp))
+      call ref_report(nfail, is_linear .eqv. th%is_linear, 'near_linear: trc_vib and trc_thermo agree on linear', &
+                      real(merge(1, 0, is_linear) - merge(1, 0, th%is_linear), dp))
+      call ref_report(nfail, size(freq) == 3*natm - 5, 'near_linear: 3N-5 modes, as for the linear rotor', &
+                      real(size(freq) - (3*natm - 5), dp))
+      call verdict(error, nfail, "near_linear")
+   end subroutine test_near_linear
 
    !
    ! One case's full pipeline: read the reference, run trc_vibrational_
    ! analysis and trc_thermochemistry on pyscf's own Hessian and masses,
    ! and compare every quantity the task asked for.
    !
-   subroutine check_case(case_name)
+   subroutine check_case(nfail, case_name)
+      integer, intent(inout) :: nfail
       character(len=*), intent(in) :: case_name
       integer :: u, natm, ndof, n_modes_ref, is_linear_ref, n_imag_ref, k
       integer, allocatable :: zat(:)
@@ -167,7 +263,7 @@ contains
       call ref_report(nfail, .not. err%has_error(), case_name//': trc_thermochemistry: no error', &
                       real(err%get_code(), dp))
       call ref_report(nfail, th%n_imaginary == n_imag_ref, case_name// &
-                      ': n_imaginary (among true vibrations only, mqc D4) matches pyscf', &
+                      ': n_imaginary (among true vibrations only) matches pyscf', &
                       real(th%n_imaginary - n_imag_ref, dp))
 
       worst = maxval(abs(th%moments_of_inertia_amua2 - moments_ref))
@@ -216,7 +312,7 @@ contains
       ! ln(q_trans) term, propagating the SAME constants through
       ! (kB*T/P)*(2 pi m kB T/h^2)^1.5, differs by 1.31-1.36e-5 cal/mol/K
       ! (confirmed by recomputing q_trans with both constant sets in
-      ! Python -- see this program's own commit message/PR description).
+      ! Python).
       ! Tolerances below sit at roughly 1.5x the measured figure, not
       ! loosened to paper over a mismatch.
       call ref_report(nfail, abs(th%s_trans_calmolk - strans_ref) < 2.0e-5_dp, &
@@ -265,7 +361,8 @@ contains
    ! precision, not merely "close". Built directly from water's own
    ! reference Hessian and masses.
    !
-   subroutine check_tr_invariance()
+   subroutine check_tr_invariance(nfail)
+      integer, intent(inout) :: nfail
       integer :: u, natm, ndof, pa, pb, sigma, mult
       real(dp), allocatable :: coords(:, :), mass(:), hess(:, :), hess_pert(:, :), ztmp(:)
       real(dp), allocatable :: freq(:), freq_pert(:), redmass(:), fc(:)
@@ -319,4 +416,19 @@ contains
                       'tr_invariance: a pure translation added to the Hessian leaves frequencies unchanged', worst)
    end subroutine check_tr_invariance
 
+end module check_vib_thermo_suite
+
+program check_vib_thermo_vs_pyscf
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_vib_thermo_suite, only: collect_vib_thermo
+   implicit none
+   integer :: stat
+   stat = 0
+   ! Serial, so the cases' ref_report lines do not interleave.
+   call run_testsuite(collect_vib_thermo, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_vib_thermo_vs_pyscf

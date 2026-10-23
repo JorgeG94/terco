@@ -77,7 +77,7 @@ module terco_run
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
       ! --hessian: the FD Hessian (trc_run_hessian/trc_hessian) and the
       ! vibrational analysis/thermochemistry built on it (trc_vib/
-      ! trc_thermo, the previous commit on this branch).
+      ! trc_thermo).
       logical :: hessian = .false.
       real(dp) :: hess_step = 0.005_dp, temperature_k = 298.15_dp, pressure_atm = 1.0_dp
       integer :: sym_number = 1
@@ -510,12 +510,12 @@ contains
 
    !
    ! Whether this run's method has a gradient at all, checked BEFORE any
-   ! SCF runs -- DLFIND_INTEGRATION_NOTE.md section 7.5 ("drop the probe
-   ! gradient if the method's capability is known statically"): every one
-   ! of these conditions is already known from the command line alone, the
-   ! same set trc_run_gradient's own gradient_capability_check refuses
-   ! after a converged SCF (src/api/trc_capi.F90). Returns "" when a
-   ! gradient is available, the refusal message otherwise.
+   ! SCF runs: every one of these conditions is already known from the
+   ! command line alone, so there is no need to spend an SCF on a probe
+   ! gradient just to find out. The same set trc_run_gradient's own
+   ! gradient_capability_check refuses after a converged SCF
+   ! (src/api/trc_capi.F90). Returns "" when a gradient is available, the
+   ! refusal message otherwise.
    !
    function opt_capability_check(r) result(refusal)
       use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_FAMILY_MGGA
@@ -548,7 +548,8 @@ contains
    ! trc_vib's own is_linear, which comes out of a moment-of-inertia
    ! analysis AFTER a Hessian exists). Used only to pick --opt-zero-modes'
    ! own auto-default (5 for a linear molecule's Cartesian P-RFO saddle
-   ! search, 6 otherwise -- DLFIND_INTEGRATION_NOTE.md section 4). Two
+   ! search, 6 otherwise -- DL-FIND's own zero-mode count for the rigid
+   ! translations/rotations a Cartesian search carries). Two
    ! atoms: always linear. Three or more: every atom's perpendicular
    ! distance from the line through the two FARTHEST-apart atoms must be
    ! below TOL times that distance, so the test is scale-invariant and
@@ -597,16 +598,15 @@ contains
    !
    ! Connected components of the covalent-bond graph (Cordero radii,
    ! trc_constants%trc_covalent_radius, bond threshold 1.3x the sum of two
-   ! atoms' radii -- the same tolerance metalquicha's own
-   ! mqc_bond_perception.f90 uses), 1-based, for --opt-coords hdlc's
-   ! `residues`: one residue per covalently bonded molecule, so HDLC
-   ! builds internal coordinates within each and Cartesians between them
-   ! (DLFIND_INTEGRATION_NOTE.md section 4, "Residues"). --opt-coords
+   ! atoms' radii), 1-based, for --opt-coords hdlc's `residues`: one
+   ! residue per covalently bonded molecule, so HDLC builds internal
+   ! coordinates within each and Cartesians between them. --opt-coords
    ! cartesian/dlc never calls this -- trc_dlfind_bridge's driver takes
    ! all-ones directly, which is correct for cartesian and for a single
    ! bonded molecule in dlc (a multi-fragment cluster in pure dlc fails
-   ! inside DL-FIND itself, "cyclic failure" -- out of scope here, same as
-   ! mqc's own note).
+   ! inside DL-FIND itself with "cyclic failure at residue 1" -- fixing
+   ! that would need a real multi-residue partition for dlc too, out of
+   ! scope here).
    !
    subroutine build_opt_residues(natm, z, xyz, residues, err)
       integer, intent(in) :: natm
@@ -967,8 +967,8 @@ contains
    !
    ! `<geometry base>_neb.xyz`: the converged NEB path, one frame per image
    ! (both endpoints included), Angstrom, comment line carries the image
-   ! index and energy, with the climbing/highest-energy image marked --
-   ! this branch's own multi-frame path output (the brief's own ask).
+   ! index and energy, with the climbing/highest-energy image marked, so
+   ! the whole path can be inspected or animated without re-running DL-FIND.
    !
    subroutine write_neb_path_xyz(r, path)
       type(run_t), intent(in) :: r
@@ -991,8 +991,7 @@ contains
 
    !
    ! The optimisation's own final summary: converged or not, steps,
-   ! energy evaluations and the final energy -- the three numbers
-   ! DLFIND_INTEGRATION_NOTE.md section 6's own log table ends a run with.
+   ! energy evaluations and the final energy.
    ! Per-step lines (energy, max/rms |g|, SCF iterations, wall time) are
    ! logged from trc_dlfind_bridge%cb_put_coords itself as each step is
    ! accepted, not replayed here.
@@ -1163,8 +1162,8 @@ contains
    !
    ! `<geometry base>_opt.xyz`: the optimised geometry in Angstrom, same
    ! atom order as the input. Written whether or not the run converged
-   ! (the comment line says which), same as metalquicha's own
-   ! `output_<name>_optimized.xyz` (DLFIND_INTEGRATION_NOTE.md section 6).
+   ! (the comment line says which), so a failed optimisation's last
+   ! geometry is never silently lost.
    !
    subroutine write_opt_xyz(r, path, xyz_bohr)
       type(run_t), intent(in) :: r
@@ -1554,7 +1553,7 @@ program terco_main
                        trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP
-   use trc_api, only: trc_bind_device
+   use trc_api, only: trc_bind_device, trc_bind_device_env
    use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
                                 xc_is_double_hybrid
    use trc_vib, only: trc_vibrational_analysis
@@ -1610,6 +1609,12 @@ program terco_main
    ! `r%wcomm` and `r%nranks` answer everything the rest of this file needs
    ! to know about ranks; `r%rank0` is what gates every print below so N
    ! ranks produce ONE copy of the output, not N.
+   !
+   ! The device first, from the launcher's node-local rank: a GPU-aware MPI
+   ! records the current device in MPI_Init, and switching afterwards costs
+   ! Cray MPICH its CUDA IPC (trc_bind_device_env). The split-communicator
+   ! bind below still runs, and is a no-op when it lands on this device.
+   dev = trc_bind_device_env()
    call pic_mpi_init()
    ! pic's region profiler, which is what puts the library's named NVTX
    ! ranges on an Nsight Systems timeline (a TERCO_NVTX build); without NVTX
@@ -1713,8 +1718,8 @@ program terco_main
                          "(DL-FIND's own default, 50)")
    call r%cli%add_option("opt-zero-modes", "modes assumed to have zero vibrational frequency, for "// &
                          "prfo/nr's Hessian (nzero); default 6 for a Cartesian P-RFO saddle search (5 "// &
-                         "if the start geometry is linear -- otherwise the search climbs a rotation, "// &
-                         "DLFIND_INTEGRATION_NOTE.md section 4), DL-FIND's own default (0) otherwise")
+                         "if the start geometry is linear -- otherwise the search climbs a rotation), "// &
+                         "DL-FIND's own default (0) otherwise")
    call r%cli%add_option("opt-soft-modes", "eigenmodes of prfo/nr's Hessian below this value (Eh/Bohr^2) "// &
                          "are treated as soft (DL-FIND's own default: none)")
    call r%cli%add_option("opt-max-step", "maximum step size, Bohr in Cartesians (DL-FIND's own default, 0.5)")
@@ -1764,8 +1769,7 @@ program terco_main
    ! dlf_parallel_opt.f90 segfaults before the first energy evaluation on
    ! every attempt (its own calls to dlf_get_gradient are missing the
    ! `kiter` argument, a bug in the pinned dependency itself) -- see the
-   ! refusal message where --opt-algorithm is parsed, and this branch's PR
-   ! description/final report for the detail.
+   ! refusal message where --opt-algorithm is parsed for the detail.
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -1932,8 +1936,8 @@ program terco_main
    ! resolved (not just r%cli%is_set) for the check to see what the run
    ! will actually do -- a PCM run that reached DL-FIND with this check
    ! run too early crashed with `error stop` instead of this message
-   ! (the opt gradient-capability check existing at all is the whole
-   ! point of DLFIND_INTEGRATION_NOTE.md section 7.5).
+   ! (this is exactly why opt_capability_check exists: DL-FIND itself
+   ! has no graceful way to decline a run it cannot do).
    if (r%opt) then
       if (.not. trc_dlfind_available()) call die(r, "--opt needs libdlfind: this terco was built with "// &
                                                   "-DTERCO_ENABLE_DLFIND=OFF (the default). Reconfigure "// &
@@ -2306,7 +2310,9 @@ program terco_main
    ! inside the library, done here too because device binding must happen
    ! before anything reaches the device, and the guess the library builds
    ! starts doing that before it gets to call trc_build_comm itself. A host
-   ! build has nothing to bind either way.
+   ! build has nothing to bind either way. When trc_bind_device_env above
+   ! already bound this device before MPI_Init, this picks the same one and
+   ! changes nothing.
    if (r%nranks > 1) then
       block
          type(comm_t) :: node_comm
