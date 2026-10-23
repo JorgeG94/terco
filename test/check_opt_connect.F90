@@ -22,13 +22,14 @@
 ! path_force.xyz unconditionally into its CWD once printf>=3 (dl-find.f90
 ! -- confirmed by reading it; the condition is `printf`, not `printl`),
 ! and a `connect` run needs printf=4 for the TS/minima callbacks to fire
-! at all (note section 3). This check also asserts those files do NOT
-! land in test/ itself.
+! at all. This check also asserts those files do NOT land in test/
+! itself.
 !
 ! Validation: the two minima are HCN and HNC. Whichever is energetically
 ! lower (HCN; opt_hcn.ref, -91.67520899058249 Eh) is checked against that
-! EXISTING anchor directly -- the brief's own ask ("HCN minimum energy vs
-! the opt_hcn anchor"). The higher one (HNC) is checked with --hessian for
+! EXISTING anchor directly, since a connect run from this start should
+! land on the SAME HCN minimum --opt alone already validates there. The
+! higher one (HNC) is checked with --hessian for
 ! ZERO imaginary modes -- a genuine minimum, not a second saddle a bad
 ! connect run slid into.
 !
@@ -56,10 +57,10 @@ program check_opt_connect
    end if
    ! Everything the subprocess needs is copied INTO work_dir, so `cd
    ! work_dir &&` below can use plain relative paths: DL-FIND's own
-   ! path*.xyz (note section 3; the condition is dl-find.f90's own
-   ! `printf`, confirmed by reading it) then land there too, not in
-   ! test/ itself (this program's own WORKING_DIRECTORY, ctest's
-   ! convention) -- see this file's own header.
+   ! path*.xyz (gated on `printf`, confirmed by reading dl-find.f90)
+   ! then land there too, not in test/ itself (this program's own
+   ! WORKING_DIRECTORY, ctest's convention) -- see this file's own
+   ! header.
    call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
    call execute_command_line('cp -f hcn_ts_guess.xyz '//work_dir//'/hcn_ts_guess.xyz', exitstat=rc, wait=.true.)
    call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &

@@ -4,7 +4,7 @@
     "schema_version": "0.1"
   },
   "name": "STO-3G",
-  "description": "STO-3G minimal basis (raw, un-normalised contraction coefficients, as read from pyscf.gto.basis.load, bit-identical to the official BSE STO-3G set)",
+  "description": "STO-3G minimal basis (raw, un-normalised contraction coefficients, as read from pyscf 2.14 gto.basis.load: the BSE STO-3G values with exponents and coefficients rounded to 8 significant digits, and SP shells split into s and p)",
   "elements": {
     "1": {
       "electron_shells": [

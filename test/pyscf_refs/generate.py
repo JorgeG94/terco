@@ -3695,15 +3695,11 @@ def gen_pcm_scf(set_name):
 # =========================================================================
 # Vibrational analysis and thermochemistry (src/scf/trc_vib.F90,
 # src/scf/trc_thermo.F90): pyscf's own analytic RHF Hessian,
-# harmonic_analysis and thermo, at the geometries, basis, sigma and mult
-# HESSIAN_VIB_THERMO_SPEC.md section 4 uses (metalquicha's own reference
-# document for this reimplementation, written from a build this generator
-# does not depend on -- the geometries are plain literals below, not read
-# from that file). No terco binary is run for this case: there is no AO
-# permutation or fixed density to match, only a Cartesian Hessian and a
-# handful of scalars, so pyscf runs on a geometry/basis this script owns
-# outright. See trc_vib.F90/trc_thermo.F90's own module headers for every
-# formula this reproduces and where it departs from mqc's (D1-D8).
+# harmonic_analysis and thermo, at the geometries, sigma and mult in CASES
+# below, with terco's own test/basis_sets/sto-3g.json. No terco binary is
+# run for this case: there is no AO permutation or fixed density to match,
+# only a Cartesian Hessian and a handful of scalars. See trc_vib.F90/
+# trc_thermo.F90's own module headers for every formula this reproduces.
 # =========================================================================
 
 CAL_TO_J = 4.184  # thermochemical calorie, exact by definition -- trc_constants.F90's CAL_TO_J.
@@ -3739,9 +3735,8 @@ def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, tempe
     """pyscf's hessian/thermo.py `thermo()`, transcribed rather than called
     directly: that function always re-derives mass (isotope-averaged),
     sigma (symm.detect_symm) and mult (mol.multiplicity) from its `model`
-    argument, with no parameter to override any of the three -- exactly
-    the gap mqc's defects D1/D2 fell into and this generator must not
-    reproduce. Every formula below is copied verbatim from that function
+    argument, with no parameter to override any of the three, and this
+    generator must pass terco's own. Every formula below is copied verbatim from that function
     (same variable names), substituting the passed-in mass/sigma/mult for
     its internal lookups; rotation_const and _get_rotor_type ARE pyscf's
     own, imported, not re-derived."""
@@ -3810,9 +3805,11 @@ def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, tempe
 
 
 def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
-    """RHF/STO-3G (pyscf's own internal basis, same as gen_vib_thermo):
-    optimise `atoms_ang` with scipy.optimize's L-BFGS-B driven by pyscf's
-    own analytic RHF gradient at every trial geometry, to a TIGHT
+    """RHF/STO-3G, built from terco's own basis file (not pyscf's built-in
+    STO-3G, same reasoning as gen_vib_thermo: the anchor then follows the
+    file the tests read, which is on this ref's files: line): optimise
+    `atoms_ang` with scipy.optimize's L-BFGS-B driven by pyscf's own
+    analytic RHF gradient at every trial geometry, to a TIGHT
     max-gradient-component tolerance (1e-8 Eh/Bohr -- two orders tighter
     than terco's own --opt-gtol 1e-5 anchor comparison below, so the
     comparison's error is dominated by terco's convergence, not pyscf's).
@@ -3829,7 +3826,9 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
     place either side's internal coordinates come from."""
     natm = len(atoms_ang)
     symbols = [a[0] for a in atoms_ang]
-    mol0 = gto.M(atom=atoms_ang, basis='sto-3g', unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol0 = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
     x0 = mol0.atom_coords().reshape(-1).copy()   # bohr
 
     cache = {}
@@ -3839,7 +3838,7 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
         if key in cache:
             return cache[key]
         coords = x.reshape(natm, 3)
-        mol = gto.M(atom=list(zip(symbols, coords)), basis='sto-3g', unit='Bohr',
+        mol = gto.M(atom=list(zip(symbols, coords)), basis=basis_arg, unit='Bohr',
                     charge=charge, spin=mult - 1, verbose=0)
         mf = scf.RHF(mol)
         mf.conv_tol = 1e-13
@@ -3868,7 +3867,7 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
     coords_final = res.x.reshape(natm, 3)
 
     w = RefWriter(f"opt_{case}.ref")
-    w.header("opt " + case, [])
+    w.header("opt " + case, [TEST / "basis_sets" / "sto-3g.json", TEST / "check_opt_vs_pyscf.F90"])
     w.comment(f"scipy L-BFGS-B, {res.nit} iterations, final max|g| {gmax_final:.3e} Eh/Bohr")
     w.int_("NAT", natm)
     w.vector("Z", np.array(mass_z, dtype=np.float64))
@@ -3927,14 +3926,16 @@ def _rfo_minimise_lambda(g, h):
 
 
 def gen_opt_ts(case, atoms_ang, mass_z, charge=0, mult=1, gtol=1.0e-8, maxiter=60):
-    """RHF/STO-3G: locate a transition state with pyscf ALONE -- partitioned
+    """RHF/STO-3G, built from terco's own basis file (same reasoning as
+    gen_vib_thermo/gen_opt): locate a transition state with pyscf ALONE -- partitioned
     rational-function (eigenvector-following) optimisation on pyscf's own
     analytic RHF gradient and Hessian (`mf.Hessian().kernel()`), with
     translation and rotation projected out of both before diagonalising
     (`_rigid_body_basis`/the projector `P = I - V V^T` below) so the lowest
     curvature direction found is a real vibrational mode, never a rigid-body
     one -- the same failure terco's own bridge documents for Cartesian
-    P-RFO/dimer without `nzero` (DLFIND_INTEGRATION_NOTE.md section 4).
+    P-RFO/dimer without `nzero` (app/trc_dlfind_bridge.F90's own
+    cb_get_params comment).
 
     At each geometry: the step that MAXIMISES energy along the lowest
     projected eigenmode (the one-mode RFO root lambda = (h + sqrt(h^2 +
@@ -3955,12 +3956,14 @@ def gen_opt_ts(case, atoms_ang, mass_z, charge=0, mult=1, gtol=1.0e-8, maxiter=6
     symbols = [a[0] for a in atoms_ang]
     mass = np.array([_TRC_ATOMIC_MASS[z] for z in mass_z], dtype=np.float64)
     nvar = 3 * natm
-    mol0 = gto.M(atom=atoms_ang, basis='sto-3g', unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol0 = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
     x = mol0.atom_coords().reshape(-1).copy()   # bohr
 
     def energy_grad_hess(xx):
         coords = xx.reshape(natm, 3)
-        mol = gto.M(atom=list(zip(symbols, coords)), basis='sto-3g', unit='Bohr',
+        mol = gto.M(atom=list(zip(symbols, coords)), basis=basis_arg, unit='Bohr',
                     charge=charge, spin=mult - 1, verbose=0)
         mf, _ = converge_tight(lambda: scf.RHF(mol), None, f"opt_ts {case}",
                                 conv_tol=1.0e-13, conv_tol_grad=1.0e-11, max_cycle=200)
@@ -4003,7 +4006,7 @@ def gen_opt_ts(case, atoms_ang, mass_z, charge=0, mult=1, gtol=1.0e-8, maxiter=6
 
     e_final = mf.e_tot
     coords_final = x.reshape(natm, 3)
-    mol_final = gto.M(atom=list(zip(symbols, coords_final)), basis='sto-3g', unit='Bohr',
+    mol_final = gto.M(atom=list(zip(symbols, coords_final)), basis=basis_arg, unit='Bohr',
                       charge=charge, spin=mult - 1, verbose=0)
     hess_final = mf.Hessian().kernel()
     va = harmonic_analysis(mol_final, hess_final, mass=mass, imaginary_freq=False)
@@ -4014,7 +4017,7 @@ def gen_opt_ts(case, atoms_ang, mass_z, charge=0, mult=1, gtol=1.0e-8, maxiter=6
                                f"imaginary mode(s), not exactly 1 -- not a first-order saddle")
 
     w = RefWriter(f"opt_ts_{case}.ref")
-    w.header("opt_ts " + case, [])
+    w.header("opt_ts " + case, [TEST / "basis_sets" / "sto-3g.json", TEST / "check_opt_ts.F90"])
     w.comment(f"P-RFO (this file's own gen_opt_ts), {it + 1} iterations, "
               f"final max|g| {gmax:.3e} Eh/Bohr, n_imaginary={n_imaginary}")
     w.int_("NAT", natm)
@@ -4044,7 +4047,11 @@ def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, p
     either function's own general default. Passing mass explicitly, as
     this generator always does, sidesteps the mismatch entirely."""
     natm = len(atoms_ang)
-    mol = gto.M(atom=atoms_ang, basis='sto-3g', unit='Angstrom', charge=0, spin=mult - 1, verbose=0)
+    # terco's own basis file, not pyscf's built-in STO-3G, so the anchor
+    # follows the file the tests read (it is on this ref's files: line).
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=0, spin=mult - 1, verbose=0)
     mass = np.array([_TRC_ATOMIC_MASS[z] for z in mass_z], dtype=np.float64)
 
     mf, gnorm = converge_tight(lambda: scf.RHF(mol), None, f"vib_thermo {case}",
@@ -4071,7 +4078,9 @@ def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, p
     th = _thermo_with_mass(mf.e_tot, freq_au, mass, mol.atom_coords(), sigma, mult, temperature, pressure)
 
     w = RefWriter(f"vib_thermo_{case}.ref")
-    w.header("vib_thermo " + case, [])
+    w.header("vib_thermo " + case, [TEST / "basis_sets" / "sto-3g.json",
+                                    ROOT / "test" / "check_vib_thermo_vs_pyscf.F90",
+                                    ROOT / "test" / "check_fd_hessian_vs_pyscf.F90"])
     w.comment(f"GRAD_NORM {gnorm:.3e}")
     w.int_("NAT", natm)
     w.vector("Z", np.array(mass_z, dtype=np.float64))
@@ -4096,8 +4105,8 @@ def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, p
     # in E0 once, through E_elec = H_elec = e_tot -- G_elec = e_tot -
     # T*S_elec is NOT zero. So these three ARE the grand totals; the
     # thermal-correction-only fields (trc_thermo_result_t's
-    # delta_e/h/g_hartree, which never carry e_elec at all -- mqc's own
-    # convention, section 3.3) are recovered by subtracting e_tot back out.
+    # delta_e/h/g_hartree, which never carry e_elec at all) are recovered
+    # by subtracting e_tot back out.
     w.real("ZPE", th['ZPE'])
     w.real("DELTA_E", th['E_tot'] - mf.e_tot)
     w.real("DELTA_H", th['H_tot'] - mf.e_tot)

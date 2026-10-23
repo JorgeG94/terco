@@ -3,8 +3,7 @@
 ! validation BEFORE trc_dlfind_optimize/api_dl_find ever runs -- the
 ! point of validating up front at all (DL-FIND itself answers an invalid
 ! setting with `error stop`, which is unacceptable to let through; see
-! app/trc_dlfind_bridge.F90's own header and
-! DLFIND_INTEGRATION_NOTE.md section 7.2). Every case here must exit
+! app/trc_dlfind_bridge.F90's own header). Every case here must exit
 ! non-zero with a clear message and NEVER reach an "SCF :" line (the
 ! marker that validation passed and a run started) -- same contract
 ! check_cli_opt's sibling refusal tests use.

@@ -5,8 +5,7 @@
 ! Follows pyscf's hessian/thermo.py `thermo()` formulas and conventions
 ! (read, not guessed -- see the comments below for where each term maps),
 ! because that is this project's external reference, with three
-! deliberate inputs pyscf's own convenience wrapper does not expose and
-! mqc (HESSIAN_VIB_THERMO_SPEC.md, defects D1/D2) never passes at all:
+! deliberate inputs pyscf's own convenience wrapper does not expose:
 !
 !   * the rotational symmetry number sigma is a REQUIRED argument. pyscf's
 !     own `thermo()` derives it from point-group detection
@@ -14,19 +13,19 @@
 !     caller (the CLI's own symmetry detection, or 1 if it has none),
 !     exactly so a caller is never silently handed sigma=1 for a water
 !     molecule (sigma=2) without choosing to be.
-!   * the spin multiplicity is a REQUIRED argument, for the same reason
-!     (mqc's defect D2: an open-shell reference always got S_elec=0).
+!   * the spin multiplicity is a REQUIRED argument, for the same reason:
+!     a default of 1 would silently give an open-shell molecule S_elec=0.
 !   * ONE vibrational mode set. trc_vib never returns a translation or
 !     rotation mode in the first place (see that module's own header), so
 !     "which frequencies enter which term" is pyscf's single rule --
 !     every nu > 0 enters ZPE and the vibrational partition function,
 !     nu <= 0 (imaginary) is skipped everywhere -- with no second,
-!     inconsistent mode set to reconcile (mqc's defects D4/D6/D7).
+!     inconsistent mode set to reconcile.
 !
 ! UNITS, deliberately pyscf's split, not SI throughout: energies (ZPE, the
 ! thermal corrections, the totals) in Hartree per molecule; entropies and
-! heat capacities in cal/(mol K), the way HESSIAN_VIB_THERMO_SPEC.md's own
-! reference numbers are reported. Converting between the two uses
+! heat capacities in cal/(mol K), the units thermochemistry tables are
+! usually reported in. Converting between the two uses
 ! KB_HARTREE (the Boltzmann constant in Hartree/K -- pyscf's own `R_Eh` is
 ! numerically this SAME constant, kB/HARTREE2J, despite the name: pyscf
 ! reports its own S/Cv in Eh/K, per molecule, not cal/(mol K)) and
@@ -34,19 +33,18 @@
 ! both from trc_constants, never recomputed here.
 !
 ! NO low-frequency cutoff. pyscf's `thermo()` applies none beyond nu > 0
-! (read its source: `idx = freq.real > 0`, nothing else) -- mqc's own
-! "drop nu < 10 cm^-1 or u > 100" (HESSIAN_VIB_THERMO_SPEC.md section 3.2)
-! is mqc-specific, not pyscf's, and is not reproduced here.
+! (read its source: `idx = freq.real > 0`, nothing else), so a cutoff
+! such as "drop nu < 10 cm^-1" is not applied here either.
 !
 module trc_thermo
-   use pic_types, only: dp, default_int
-   use pic_lapack_interfaces, only: pic_syev
+   use pic_types, only: dp
    use pic_strings, only: to_string
    use pic_logger, only: global_logger
    use trc_constants, only: PI, SQRT_PI, KB_HARTREE, R_CALMOLK, KB_SI, H_SI, AMU_TO_KG, &
-                            BOHR_TO_ANGSTROM, CM1_TO_KELVIN, ROTTEMP_AMUA2_TO_K, ROTCONST_AMUA2_TO_GHZ, &
+                            CM1_TO_KELVIN, ROTTEMP_AMUA2_TO_K, ROTCONST_AMUA2_TO_GHZ, &
                             HARTREE_TO_CALMOL
    use trc_error, only: error_t, ERROR_VALIDATION, ERROR_GENERIC
+   use trc_vib, only: trc_moments_of_inertia, MOMENT_LINEAR_TOL_AMUA2
    implicit none
    private
 
@@ -59,12 +57,6 @@ module trc_thermo
       !! 1 atm; trc_constants' own ATM_TO_PA, spelled out so a caller
       !! reading this module's signature sees the number without having
       !! to chase the constants module too.
-   real(dp), parameter :: MOMENT_LINEAR_TOL_AMUA2 = 1.0e-6_dp
-      !! Below this (amu*Angstrom^2), a principal moment of inertia is
-      !! treated as zero -- mqc's own threshold (HESSIAN_VIB_THERMO_SPEC.md
-      !! section 3.1), which pyscf's rotor-type test (rot_const > 1e8 GHz,
-      !! the same statement inverted) agrees with to several more digits
-      !! than this analysis needs.
 
    type :: trc_thermo_result_t
       real(dp) :: temperature_k = DEFAULT_TEMPERATURE_K
@@ -171,7 +163,7 @@ contains
       result%mult = mult
       result%e_elec_hartree = e_elec_hartree
       result%n_vib = size(freq_vib_cm1)
-      result%n_imaginary = count(freq_vib_cm1 <= 0.0_dp)   ! among the vibrations only -- mqc's D4
+      result%n_imaginary = count(freq_vib_cm1 <= 0.0_dp)   ! among the true vibrations only
 
       mass_tot_amu = sum(mass)
       result%molecular_mass_amu = mass_tot_amu
@@ -261,47 +253,6 @@ contains
       result%h_tot_hartree = e_elec_hartree + result%delta_h_hartree
       result%g_tot_hartree = e_elec_hartree + result%delta_g_hartree
    end subroutine trc_thermochemistry
-
-   !
-   ! Principal moments of inertia, ascending, in amu*Angstrom^2 -- the same
-   ! convention pyscf's `rotation_const` builds from before converting to
-   ! GHz, computed independently of trc_vib's own TR-generator SVD (this
-   ! is pyscf's `thermo()` own recipe: moments of inertia first, rotor
-   ! type from THOSE, never reusing harmonic_analysis's projector).
-   !
-   subroutine trc_moments_of_inertia(mass, coords_bohr, moments_amua2, info)
-      real(dp), intent(in) :: mass(:)
-      real(dp), intent(in) :: coords_bohr(:, :)
-      real(dp), intent(out) :: moments_amua2(3)
-      integer, intent(out) :: info
-      integer :: natm, a, r, s
-      real(dp) :: com(3), rvec(3), im(3, 3)
-      integer(default_int) :: linfo
-
-      natm = size(mass)
-      com = 0.0_dp
-      do a = 1, natm
-         com = com + mass(a)*coords_bohr(:, a)*BOHR_TO_ANGSTROM
-      end do
-      com = com/sum(mass)
-
-      im = 0.0_dp
-      do a = 1, natm
-         rvec = coords_bohr(:, a)*BOHR_TO_ANGSTROM - com
-         do s = 1, 3
-            do r = 1, 3
-               im(r, s) = im(r, s) - mass(a)*rvec(r)*rvec(s)
-            end do
-         end do
-         im(1, 1) = im(1, 1) + mass(a)*sum(rvec**2)
-         im(2, 2) = im(2, 2) + mass(a)*sum(rvec**2)
-         im(3, 3) = im(3, 3) + mass(a)*sum(rvec**2)
-      end do
-
-      call pic_syev(im, moments_amua2, jobz="V", uplo="U", info=linfo)
-      info = int(linfo)
-      where (abs(moments_amua2) < 1.0e-9_dp) moments_amua2 = 0.0_dp
-   end subroutine trc_moments_of_inertia
 
    !
    ! The thermochemistry summary through global_logger, for the CLI's

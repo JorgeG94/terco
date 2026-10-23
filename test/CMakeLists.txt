@@ -452,6 +452,7 @@ if(TERCO_BUILD_APP)
   set(_cli_hessian_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_hessian_probe.json)
   terco_add_check(check_cli_hessian check_cli_hessian.F90 NEEDS_PYSCF_REF
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_hessian_probe})
+  target_link_libraries(check_cli_hessian PRIVATE test-drive::test-drive)
   unset(_cli_hessian_probe)
 
   #
@@ -482,10 +483,10 @@ if(TERCO_BUILD_APP)
 
   if(TERCO_ENABLE_DLFIND)
     # --opt refuses a method with no gradient (a meta-GGA) BEFORE any SCF
-    # runs at all -- DLFIND_INTEGRATION_NOTE.md section 7.5's own "drop
-    # the probe gradient" lift: app/main.F90's opt_capability_check reads
-    # this statically from the command line, so there is no "iterations"
-    # line in the output at all when this fires.
+    # runs at all: app/main.F90's opt_capability_check knows statically,
+    # from the command line's own --func, which functionals have no
+    # analytic gradient, so there is no "iterations" line in the output
+    # at all when this fires.
     add_test(NAME terco/cli_opt_refused_mgga
              COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f r2scan --opt --silent)
     set_tests_properties(
@@ -997,6 +998,7 @@ terco_add_check(check_pcm_cavity check_pcm_cavity.F90 NEEDS_BASIS NEEDS_PYSCF_RE
 # linear-molecule properties no stored number can check.
 #
 terco_add_check(check_vib_thermo_vs_pyscf check_vib_thermo_vs_pyscf.F90 NEEDS_PYSCF_REF)
+target_link_libraries(check_vib_thermo_vs_pyscf PRIVATE test-drive::test-drive)
 #
 # Its solute-surface integrals (gen_1e.py's --pcm kernels) on fixed inputs
 # against pyscf's int3c2e/fakemol path: water/6-31G* (d) at every ceiling,
@@ -1224,7 +1226,8 @@ set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${C
 # displacement runs.
 add_executable(check_fd_hessian_vs_pyscf check_fd_hessian_vs_pyscf.F90)
 target_compile_definitions(check_fd_hessian_vs_pyscf PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(check_fd_hessian_vs_pyscf PRIVATE ${main_lib} terco_c_interfaces terco_pyscf_ref_io)
+target_link_libraries(check_fd_hessian_vs_pyscf PRIVATE ${main_lib} terco_c_interfaces terco_pyscf_ref_io
+                      test-drive::test-drive)
 add_test(NAME terco/check_fd_hessian_vs_pyscf COMMAND check_fd_hessian_vs_pyscf)
 set_tests_properties(terco/check_fd_hessian_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")

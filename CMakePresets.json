@@ -10,9 +10,9 @@
       "installDir": "${sourceDir}/../../install/terco",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_Fortran_COMPILER": "nvfortran",
-        "CMAKE_C_COMPILER": "nvc",
-        "CMAKE_CXX_COMPILER": "nvc++",
+        "CMAKE_Fortran_COMPILER": "ftn",
+        "CMAKE_C_COMPILER": "cc",
+        "CMAKE_CXX_COMPILER": "CC",
         "TERCO_GPU_ARCH": "cc80",
         "TERCO_CUDA_VERSION": "13.2",
         "TERCO_ENABLE_MPI": "OFF",

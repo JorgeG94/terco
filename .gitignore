@@ -84,9 +84,14 @@ __pycache__/
 #           *.xyz            geometries
 #   ignore  *.bin            multipole dumps, rewritten on every run
 #           *.efp            the fragment potential demo_makefp writes
+#           *_opt.xyz        check_opt_vs_mqc/check_opt_vs_pyscf's --opt
+#           *_traj.xyz       output, written beside the input geometry
+#                            they ran terco_cli on (water.xyz, hcn.xyz)
 #
 test/*.bin
 test/*.efp
+test/*_opt.xyz
+test/*_traj.xyz
 
 # fpm's build tree, if it is not called `build/`.
 build*/
