@@ -3695,15 +3695,11 @@ def gen_pcm_scf(set_name):
 # =========================================================================
 # Vibrational analysis and thermochemistry (src/scf/trc_vib.F90,
 # src/scf/trc_thermo.F90): pyscf's own analytic RHF Hessian,
-# harmonic_analysis and thermo, at the geometries, basis, sigma and mult
-# HESSIAN_VIB_THERMO_SPEC.md section 4 uses (metalquicha's own reference
-# document for this reimplementation, written from a build this generator
-# does not depend on -- the geometries are plain literals below, not read
-# from that file). No terco binary is run for this case: there is no AO
-# permutation or fixed density to match, only a Cartesian Hessian and a
-# handful of scalars, so pyscf runs on a geometry/basis this script owns
-# outright. See trc_vib.F90/trc_thermo.F90's own module headers for every
-# formula this reproduces and where it departs from mqc's (D1-D8).
+# harmonic_analysis and thermo, at the geometries, sigma and mult in CASES
+# below, with terco's own test/basis_sets/sto-3g.json. No terco binary is
+# run for this case: there is no AO permutation or fixed density to match,
+# only a Cartesian Hessian and a handful of scalars. See trc_vib.F90/
+# trc_thermo.F90's own module headers for every formula this reproduces.
 # =========================================================================
 
 CAL_TO_J = 4.184  # thermochemical calorie, exact by definition -- trc_constants.F90's CAL_TO_J.
@@ -3739,9 +3735,8 @@ def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, tempe
     """pyscf's hessian/thermo.py `thermo()`, transcribed rather than called
     directly: that function always re-derives mass (isotope-averaged),
     sigma (symm.detect_symm) and mult (mol.multiplicity) from its `model`
-    argument, with no parameter to override any of the three -- exactly
-    the gap mqc's defects D1/D2 fell into and this generator must not
-    reproduce. Every formula below is copied verbatim from that function
+    argument, with no parameter to override any of the three, and this
+    generator must pass terco's own. Every formula below is copied verbatim from that function
     (same variable names), substituting the passed-in mass/sigma/mult for
     its internal lookups; rotation_const and _get_rotor_type ARE pyscf's
     own, imported, not re-derived."""
@@ -3894,7 +3889,11 @@ def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, p
     either function's own general default. Passing mass explicitly, as
     this generator always does, sidesteps the mismatch entirely."""
     natm = len(atoms_ang)
-    mol = gto.M(atom=atoms_ang, basis='sto-3g', unit='Angstrom', charge=0, spin=mult - 1, verbose=0)
+    # terco's own basis file, not pyscf's built-in STO-3G, so the anchor
+    # follows the file the tests read (it is on this ref's files: line).
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=0, spin=mult - 1, verbose=0)
     mass = np.array([_TRC_ATOMIC_MASS[z] for z in mass_z], dtype=np.float64)
 
     mf, gnorm = converge_tight(lambda: scf.RHF(mol), None, f"vib_thermo {case}",
@@ -3921,7 +3920,9 @@ def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, p
     th = _thermo_with_mass(mf.e_tot, freq_au, mass, mol.atom_coords(), sigma, mult, temperature, pressure)
 
     w = RefWriter(f"vib_thermo_{case}.ref")
-    w.header("vib_thermo " + case, [])
+    w.header("vib_thermo " + case, [TEST / "basis_sets" / "sto-3g.json",
+                                    ROOT / "test" / "check_vib_thermo_vs_pyscf.F90",
+                                    ROOT / "test" / "check_fd_hessian_vs_pyscf.F90"])
     w.comment(f"GRAD_NORM {gnorm:.3e}")
     w.int_("NAT", natm)
     w.vector("Z", np.array(mass_z, dtype=np.float64))
@@ -3946,8 +3947,8 @@ def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, p
     # in E0 once, through E_elec = H_elec = e_tot -- G_elec = e_tot -
     # T*S_elec is NOT zero. So these three ARE the grand totals; the
     # thermal-correction-only fields (trc_thermo_result_t's
-    # delta_e/h/g_hartree, which never carry e_elec at all -- mqc's own
-    # convention, section 3.3) are recovered by subtracting e_tot back out.
+    # delta_e/h/g_hartree, which never carry e_elec at all) are recovered
+    # by subtracting e_tot back out.
     w.real("ZPE", th['ZPE'])
     w.real("DELTA_E", th['E_tot'] - mf.e_tot)
     w.real("DELTA_H", th['H_tot'] - mf.e_tot)

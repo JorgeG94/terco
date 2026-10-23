@@ -34,7 +34,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 1
+   integer(c_int), parameter :: TRC_ABI_MINOR = 4
 
    interface
 
@@ -834,9 +834,10 @@ module trc_c_interfaces
 
       integer(c_int) function trc_set_hessian_step(handle, step) bind(c) result(res)
          !! The Cartesian displacement trc_run_hessian's central differences
-         !! use, in Bohr; must be positive. Default 0.005 (mqc's own
-         !! DEFAULT_DISPLACEMENT, HESSIAN_VIB_THERMO_SPEC.md section 1.2),
-         !! unchanged until this is called. Invalidates the last
+         !! use, in Bohr; must be positive. Default 0.005: its truncation
+         !! error, about 1e-5 Eh/Bohr^2 on water/STO-3G, sits well above the
+         !! SCF noise trc_run_hessian's tightened convergence leaves.
+         !! Unchanged until this is called. Invalidates the last
          !! trc_run_hessian result (a Hessian at the OLD step is not a
          !! Hessian at the new one), not the SCF/gradient it is built from.
          import :: c_double, c_int, c_ptr
@@ -863,13 +864,12 @@ module trc_c_interfaces
          !!
          !!   H[k,j] = (g_j(x + h e_k) - g_j(x - h e_k)) / (2h)     Eh/Bohr^2
          !!
-         !! k = 3*(atom-1)+{x,y,z}, 1-based, row = the displaced coordinate
-         !! -- mqc's own convention (HESSIAN_VIB_THERMO_SPEC.md section 1.2)
-         !! -- then symmetrised, H <- (H + H^T)/2. 6N displaced SCF+gradient
+         !! k = 3*(atom-1)+{x,y,z}, 1-based, row = the displaced coordinate,
+         !! then symmetrised, H <- (H + H^T)/2. 6N displaced SCF+gradient
          !! pairs plus one more to restore the reference state (below).
          !!
          !! REFUSED UP FRONT, before any displacement spends SCF time:
-         !!   - no converged SCF yet (TRC_ERR_STATE, as trc_run_gradient);
+         !!   - no SCF yet, or one that did not converge (TRC_ERR_STATE);
          !!   - more than one rank (trc_set_comm): the loop below is already
          !!     written so a later split is "rank r takes k = r, r+P, ..."
          !!     plus a reduction over the gradients, but nothing here runs
@@ -882,10 +882,10 @@ module trc_c_interfaces
          !!     one, so this is the backstop, not the primary gate).
          !!
          !! SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
-         !! (gradient error)/(2h) = 100x the gradient error at h = 0.005 --
-         !! see this file's own PR description for the water/STO-3G
-         !! measurement that set HESSIAN_MAX_CONV_ENERGY/HESSIAN_MAX_CONV_DIIS
-         !! below. This context's OWN conv_energy/conv_diis (trc_set_
+         !! (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
+         !! the displaced SCFs need tighter convergence than a single point
+         !! (water/STO-3G: HESSIAN_MAX_CONV_ENERGY/HESSIAN_MAX_CONV_DIIS
+         !! below say how much). This context's OWN conv_energy/conv_diis (trc_set_
          !! convergence) are tightened to at least those floors for every
          !! displaced SCF -- never loosened, so a caller who already asked
          !! for tighter still gets it -- and restored to the caller's own
@@ -1048,6 +1048,22 @@ module trc_c_interfaces
          integer(c_int), value :: rank
          integer(c_int), intent(out) :: dev
       end function trc_select_device
+
+      integer(c_int) function trc_select_device_env(dev) bind(c) result(res)
+         !! trc_select_device by the node-local rank the launcher exports
+         !! (OMPI_COMM_WORLD_LOCAL_RANK, PALS_LOCAL_RANKID, MPI_LOCALRANKID,
+         !! MV2_COMM_WORLD_LOCAL_RANK, then SLURM_LOCALID), with no MPI needed.
+         !! Call it BEFORE MPI_Init. A GPU-aware MPI records the current device
+         !! there, and a process that switches devices later loses CUDA IPC
+         !! between the node's ranks under Cray MPICH. trc_set_comm's own bind
+         !! then picks the same device and leaves it alone. `dev` is the device
+         !! chosen, -1 when no launcher variable is set (nothing is bound), on
+         !! a build without the GPU, or on a node without one. Process-wide; no
+         !! handle; always succeeds.
+         import :: c_int
+         implicit none
+         integer(c_int), intent(out) :: dev
+      end function trc_select_device_env
 
       integer(c_int) function trc_functional_info(name, flags, exx, c_os, c_ss) bind(c) result(res)
          !! Look up a functional by name (case-insensitive, trc_xc_functional's
