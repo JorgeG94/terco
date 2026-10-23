@@ -36,7 +36,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 1
+#define TRC_ABI_MINOR 2
 
 int trc_basis_create(int nshell, int maxnp, const int* l, const int* nprim, const double* exps, const double* coefs, const double* centres, int natm, const double* zatm, const double* ratm, trc_handle_t* handle);
 
@@ -557,6 +557,20 @@ int trc_abi_version(int* major, int* minor);
  * always succeeds.
  */
 int trc_select_device(int rank, int* dev);
+
+/**
+ * trc_select_device by the node-local rank the launcher exports
+ * (OMPI_COMM_WORLD_LOCAL_RANK, PALS_LOCAL_RANKID, MPI_LOCALRANKID,
+ * MV2_COMM_WORLD_LOCAL_RANK, then SLURM_LOCALID), with no MPI needed.
+ * Call it BEFORE MPI_Init. A GPU-aware MPI records the current device
+ * there, and a process that switches devices later loses CUDA IPC
+ * between the node's ranks under Cray MPICH. trc_set_comm's own bind
+ * then picks the same device and leaves it alone. `dev` is the device
+ * chosen, -1 when no launcher variable is set (nothing is bound), on
+ * a build without the GPU, or on a node without one. Process-wide; no
+ * handle; always succeeds.
+ */
+int trc_select_device_env(int* dev);
 
 /**
  * Look up a functional by name (case-insensitive, trc_xc_functional's
