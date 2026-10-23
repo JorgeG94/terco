@@ -7,6 +7,7 @@
 !
 module trc_basis_json
    use pic_types, only: dp
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use json_module, only: json_file
@@ -14,8 +15,6 @@ module trc_basis_json
    private
 
    public :: trc_basis_from_json, trc_fitted_shell_from_json
-
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    type :: shell_t
       integer :: l = 0, np = 0

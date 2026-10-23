@@ -47,6 +47,8 @@ import scipy.linalg
 import pyscf
 from pyscf import df, gto, mp, scf, dft
 from pyscf.dft import libxc, numint
+from pyscf.data import nist
+from pyscf.hessian.thermo import harmonic_analysis, rotation_const, _get_rotor_type
 from pyscf.grad import rhf as pyscf_grad_rhf
 
 HERE = Path(__file__).resolve().parent              # test/pyscf_refs
@@ -3689,6 +3691,215 @@ def gen_pcm_scf(set_name):
     dump.unlink()
 
 
+# =========================================================================
+# Vibrational analysis and thermochemistry (src/scf/trc_vib.F90,
+# src/scf/trc_thermo.F90): pyscf's own analytic RHF Hessian,
+# harmonic_analysis and thermo, at the geometries, sigma and mult in CASES
+# below, with terco's own test/basis_sets/sto-3g.json. No terco binary is
+# run for this case: there is no AO permutation or fixed density to match,
+# only a Cartesian Hessian and a handful of scalars. See trc_vib.F90/
+# trc_thermo.F90's own module headers for every formula this reproduces.
+# =========================================================================
+
+CAL_TO_J = 4.184  # thermochemical calorie, exact by definition -- trc_constants.F90's CAL_TO_J.
+
+# trc_atomic_mass(Z) (trc_constants.F90's ISOTOPE_MASS_TABLE, the
+# most-abundant-isotope table, terco's own vibrational-analysis default --
+# see gen_vib_thermo's own docstring for why this is passed explicitly
+# rather than left to pyscf's default).
+_TRC_ATOMIC_MASS = {1: 1.007825, 6: 12.0, 7: 14.003074, 8: 15.994915}
+
+
+def _eh_per_k_to_calmolk(x):
+    return x * nist.HARTREE2J * nist.AVOGADRO / CAL_TO_J
+
+
+def _moments_amua2(mass, atom_coords_bohr):
+    """Principal moments of inertia, ascending, amu*Angstrom^2 -- the same
+    tensor rotation_const diagonalises before inverting to a GHz constant,
+    returned here before that inversion so the .ref carries the moments
+    directly (trc_thermo.F90's own quantity, no GHz round-trip needed to
+    check it)."""
+    coords_ang = atom_coords_bohr * nist.BOHR
+    com = np.einsum('z,zx->x', mass, coords_ang) / mass.sum()
+    r = coords_ang - com
+    im = np.einsum('z,zr,zs->rs', mass, r, r)
+    im = np.eye(3) * im.trace() - im
+    e = np.sort(np.linalg.eigvalsh(im))
+    e[np.abs(e) < 1e-9] = 0.0
+    return e
+
+
+def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, temperature, pressure):
+    """pyscf's hessian/thermo.py `thermo()`, transcribed rather than called
+    directly: that function always re-derives mass (isotope-averaged),
+    sigma (symm.detect_symm) and mult (mol.multiplicity) from its `model`
+    argument, with no parameter to override any of the three, and this
+    generator must pass terco's own. Every formula below is copied verbatim from that function
+    (same variable names), substituting the passed-in mass/sigma/mult for
+    its internal lookups; rotation_const and _get_rotor_type ARE pyscf's
+    own, imported, not re-derived."""
+    atom_coords = atom_coords_bohr - np.einsum('z,zx->x', mass, atom_coords_bohr) / mass.sum()
+    kB = nist.BOLTZMANN
+    h = nist.PLANCK
+    R_Eh = kB * nist.AVOGADRO / (nist.HARTREE2J * nist.AVOGADRO)
+
+    results = {}
+    results['S_elec'] = R_Eh * np.log(mult)
+    results['Cv_elec'] = 0.0
+    results['E_elec'] = results['H_elec'] = e_tot
+
+    mass_tot = mass.sum() * nist.ATOMIC_MASS
+    q_trans = (2.0 * np.pi * mass_tot * kB * temperature / h**2)**1.5 * kB * temperature / pressure
+    results['S_trans'] = R_Eh * (2.5 + np.log(q_trans))
+    results['Cv_trans'] = 1.5 * R_Eh
+    results['E_trans'] = 1.5 * R_Eh * temperature
+    results['H_trans'] = 2.5 * R_Eh * temperature
+
+    rot_const = rotation_const(mass, atom_coords, 'GHz')
+    rotor_type = _get_rotor_type(rot_const)
+    if rotor_type == 'ATOM':
+        results['S_rot'] = 0.0
+        results['Cv_rot'] = 0.0
+        results['E_rot'] = results['H_rot'] = 0.0
+    elif rotor_type == 'LINEAR':
+        B = rot_const[1] * 1e9
+        q_rot = kB * temperature / (sigma * h * B)
+        results['S_rot'] = R_Eh * (1 + np.log(q_rot))
+        results['Cv_rot'] = R_Eh
+        results['E_rot'] = results['H_rot'] = R_Eh * temperature
+    else:
+        ABC = rot_const * 1e9
+        q_rot = (kB * temperature / h)**1.5 * np.pi**0.5 / (sigma * np.prod(ABC)**0.5)
+        results['S_rot'] = R_Eh * (1.5 + np.log(q_rot))
+        results['Cv_rot'] = 1.5 * R_Eh
+        results['E_rot'] = results['H_rot'] = 1.5 * R_Eh * temperature
+
+    au2hz = (nist.HARTREE2J / (nist.ATOMIC_MASS * nist.BOHR_SI**2))**0.5 / (2 * np.pi)
+    idx = freq_au.real > 0
+    vib_temperature = freq_au.real[idx] * au2hz * h / kB
+    rt = vib_temperature / max(1e-14, temperature)
+    e = np.exp(-rt)
+    ZPE = R_Eh * 0.5 * vib_temperature.sum()
+    results['ZPE'] = ZPE
+    results['S_vib'] = R_Eh * (rt * e / (1 - e) - np.log(1 - e)).sum()
+    results['Cv_vib'] = R_Eh * (e * rt**2 / (1 - e)**2).sum()
+    results['E_vib'] = results['H_vib'] = ZPE + R_Eh * temperature * (rt * e / (1 - e)).sum()
+
+    results['G_elec'] = results['H_elec'] - temperature * results['S_elec']
+    results['G_trans'] = results['H_trans'] - temperature * results['S_trans']
+    results['G_rot'] = results['H_rot'] - temperature * results['S_rot']
+    results['G_vib'] = results['H_vib'] - temperature * results['S_vib']
+
+    def _sum(f):
+        return sum(results.get(f + '_' + k, 0.0) for k in ('elec', 'trans', 'rot', 'vib'))
+    results['S_tot'] = _sum('S')
+    results['Cv_tot'] = _sum('Cv')
+    results['E_tot'] = _sum('E')
+    results['H_tot'] = _sum('H')
+    results['G_tot'] = _sum('G')
+    results['rot_const_ghz'] = rot_const
+    results['is_linear'] = (rotor_type == 'LINEAR')
+    return results
+
+
+def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, pressure=101325.0):
+    """RHF/STO-3G: pyscf's own analytic Hessian, harmonic_analysis (with
+    exclude_trans/exclude_rot, imaginary_freq=False so an unstable mode
+    comes back as a plain negative real number -- trc_vib.F90's own sign
+    convention) and the thermo formulas above, masses = terco's own
+    default (trc_atomic_mass, the most-abundant isotope) passed EXPLICITLY
+    throughout. This matters because pyscf's mol.atom_mass_list() own
+    default (no arguments) is isotope_avg=False -- ISOTOPE_MAIN, the same
+    table trc_atomic_mass is built from -- but harmonic_analysis/thermo's
+    OWN internal fallback when no mass is given is isotope_avg=True (the
+    averaged table, == trc_atomic_mass_average), a different table from
+    either function's own general default. Passing mass explicitly, as
+    this generator always does, sidesteps the mismatch entirely."""
+    natm = len(atoms_ang)
+    # terco's own basis file, not pyscf's built-in STO-3G, so the anchor
+    # follows the file the tests read (it is on this ref's files: line).
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=0, spin=mult - 1, verbose=0)
+    mass = np.array([_TRC_ATOMIC_MASS[z] for z in mass_z], dtype=np.float64)
+
+    mf, gnorm = converge_tight(lambda: scf.RHF(mol), None, f"vib_thermo {case}",
+                                conv_tol=1.0e-12, conv_tol_grad=1.0e-10)
+
+    hess = mf.Hessian().kernel()
+    hess_flat = hess.transpose(0, 2, 1, 3).reshape(3 * natm, 3 * natm)
+
+    va = harmonic_analysis(mol, hess, mass=mass, imaginary_freq=False)
+    freq_cm1 = np.asarray(va['freq_wavenumber'].real, dtype=np.float64)
+    freq_au = np.asarray(va['freq_au'].real, dtype=np.float64)
+    reduced_mass = np.asarray(va['reduced_mass'].real, dtype=np.float64)
+    # va['force_const_au'] is LAMBDA, the mass-weighted eigenvalue
+    # (Hartree/(amu*Bohr^2)) -- NOT the physical force constant despite
+    # the name (trc_vib.F90's own header explains the mismatch). The
+    # physical one, matching trc_vib's force_const_hartree_bohr2, is
+    # lambda * reduced_mass.
+    force_const_true = reduced_mass * np.asarray(va['force_const_au'].real, dtype=np.float64)
+    norm_mode = np.asarray(va['norm_mode'].real, dtype=np.float64)   # (nmode, natm, 3)
+    n_modes = freq_cm1.shape[0]
+    n_imaginary = int(np.count_nonzero(freq_cm1 <= 0.0))
+
+    moments = _moments_amua2(mass, mol.atom_coords())
+    th = _thermo_with_mass(mf.e_tot, freq_au, mass, mol.atom_coords(), sigma, mult, temperature, pressure)
+
+    w = RefWriter(f"vib_thermo_{case}.ref")
+    w.header("vib_thermo " + case, [TEST / "basis_sets" / "sto-3g.json",
+                                    ROOT / "test" / "check_vib_thermo_vs_pyscf.F90",
+                                    ROOT / "test" / "check_fd_hessian_vs_pyscf.F90"])
+    w.comment(f"GRAD_NORM {gnorm:.3e}")
+    w.int_("NAT", natm)
+    w.vector("Z", np.array(mass_z, dtype=np.float64))
+    w.matrix("COORDS", mol.atom_coords().T)           # bohr, (3, natm)
+    w.vector("MASS", mass)
+    w.int_("SIGMA", sigma)
+    w.int_("MULT", mult)
+    w.real("TEMPERATURE_K", temperature)
+    w.real("PRESSURE_PA", pressure)
+    w.real("E_ELEC", mf.e_tot)
+    w.matrix("HESS", hess_flat)
+    w.int_("N_MODES", n_modes)
+    w.vector("FREQ_CM1", freq_cm1)
+    w.vector("REDUCED_MASS_AMU", reduced_mass)
+    w.vector("FORCE_CONST_AU", force_const_true)
+    w.matrix3("NORM_MODE", np.transpose(norm_mode, (2, 1, 0)))   # (3, natm, n_modes)
+    w.int_("IS_LINEAR", 1 if th['is_linear'] else 0)
+    w.int_("N_IMAGINARY", n_imaginary)
+    w.vector("MOMENTS_AMUA2", moments)
+    w.vector("ROTCONST_GHZ", th['rot_const_ghz'])
+    # pyscf's own E_tot/H_tot/G_tot (the `_sum` helper above) already fold
+    # in E0 once, through E_elec = H_elec = e_tot -- G_elec = e_tot -
+    # T*S_elec is NOT zero. So these three ARE the grand totals; the
+    # thermal-correction-only fields (trc_thermo_result_t's
+    # delta_e/h/g_hartree, which never carry e_elec at all) are recovered
+    # by subtracting e_tot back out.
+    w.real("ZPE", th['ZPE'])
+    w.real("DELTA_E", th['E_tot'] - mf.e_tot)
+    w.real("DELTA_H", th['H_tot'] - mf.e_tot)
+    w.real("DELTA_G", th['G_tot'] - mf.e_tot)
+    w.real("E_TOT", th['E_tot'])
+    w.real("H_TOT", th['H_tot'])
+    w.real("G_TOT", th['G_tot'])
+    w.real("S_TRANS_CALMOLK", _eh_per_k_to_calmolk(th['S_trans']))
+    w.real("S_ROT_CALMOLK", _eh_per_k_to_calmolk(th['S_rot']))
+    w.real("S_VIB_CALMOLK", _eh_per_k_to_calmolk(th['S_vib']))
+    w.real("S_ELEC_CALMOLK", _eh_per_k_to_calmolk(th['S_elec']))
+    w.real("S_TOT_CALMOLK", _eh_per_k_to_calmolk(th['S_tot']))
+    w.real("CV_TRANS_CALMOLK", _eh_per_k_to_calmolk(th['Cv_trans']))
+    w.real("CV_ROT_CALMOLK", _eh_per_k_to_calmolk(th['Cv_rot']))
+    w.real("CV_VIB_CALMOLK", _eh_per_k_to_calmolk(th['Cv_vib']))
+    w.real("CV_ELEC_CALMOLK", _eh_per_k_to_calmolk(th['Cv_elec']))
+    w.real("CV_TOT_CALMOLK", _eh_per_k_to_calmolk(th['Cv_trans'] + th['Cv_rot'] + th['Cv_vib'] + th['Cv_elec']))
+    w.end()
+    w.write()
+    print(f"  vib_thermo {case}: n_modes={n_modes} n_imaginary={n_imaginary} "
+          f"ZPE={th['ZPE']:.10f} G_tot={th['G_tot']:.10f} (gnorm {gnorm:.2e})")
+
+
 CASES = {
     "mult": gen_mult,
     "ao": gen_ao,
@@ -3795,6 +4006,25 @@ CASES = {
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "pcm_scf_main": lambda: gen_pcm_scf("main"),
     "pcm_scf_f": lambda: gen_pcm_scf("f"),
+    "vib_thermo_water": lambda: gen_vib_thermo(
+        "water",
+        [("O", (0.00000000000000, 0.00000000009155, 0.10077199490609)),
+         ("H", (0.00000000000000, 0.77250895271063, -0.46780199741728)),
+         ("H", (0.00000000000000, -0.77250895280218, -0.46780199748881))],
+        [8, 1, 1], sigma=2),
+    "vib_thermo_hcn": lambda: gen_vib_thermo(
+        "hcn",
+        [("H", (0.0, 0.0, 0.000)),
+         ("C", (0.0, 0.0, 1.064)),
+         ("N", (0.0, 0.0, 2.220))],
+        [1, 6, 7], sigma=1),
+    "vib_thermo_nh3_planar": lambda: gen_vib_thermo(
+        "nh3_planar",
+        [("N", (0.000000000000, 0.000000000000, 0.000000000000)),
+         ("H", (1.000000000000, 0.000000000000, 0.000000000000)),
+         ("H", (-0.500000000000, 0.866025403784, 0.000000000000)),
+         ("H", (-0.500000000000, -0.866025403784, 0.000000000000))],
+        [7, 1, 1, 1], sigma=6),
 }
 
 

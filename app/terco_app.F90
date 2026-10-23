@@ -16,13 +16,17 @@ module terco_app
    use pic_error, only: error_t, ERROR_IO, ERROR_PARSE, ERROR_VALIDATION
    use pic_ascii, only: to_lower
    use pic_strings, only: to_string, ends_with
+   use trc_constants, only: ANGSTROM_TO_BOHR
    implicit none
    private
 
    public :: read_xyz, resolve_basis, element_symbol, c_string, f_string, set_env
+   public :: BOHR_PER_ANGSTROM
 
-   real(dp), parameter, public :: BOHR_PER_ANGSTROM = 1.0_dp/0.529177210903_dp
-      !! CODATA 2018, the constant every reference terco is checked against uses.
+   real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
+      !! CODATA 2018 (trc_constants' ANGSTROM_TO_BOHR), the constant every
+      !! reference terco is checked against uses. Kept under this name
+      !! rather than renamed at the use site.
 
    integer, parameter :: NELEM = 118
    character(len=2), parameter :: SYMBOLS(NELEM) = [character(len=2) :: &

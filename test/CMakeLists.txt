@@ -109,6 +109,14 @@ target_link_libraries(check_si PRIVATE test-drive::test-drive)
 terco_add_check(check_lmax_refusal check_lmax_refusal.F90)
 target_link_libraries(check_lmax_refusal PRIVATE test-drive::test-drive terco_c_interfaces)
 
+# trc_constants' derived relations (ANGSTROM_TO_BOHR vs BOHR_TO_ANGSTROM,
+# KB_HARTREE, HARTREE_TO_KCALMOL, HARTREE_TO_CM1, all against the OTHER
+# CODATA 2018 values on the same file) and the atomic-mass tables, H/C/O/P
+# and the out-of-range refusal. No basis, no pyscf: these are closed-form
+# identities and a lookup table.
+terco_add_check(check_constants check_constants.F90)
+target_link_libraries(check_constants PRIVATE test-drive::test-drive)
+
 #
 # The staleness guard over every committed pyscf reference under
 # test/pyscf_refs/ (see that directory's README.md and check_staleness.py's
@@ -428,6 +436,16 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_grad_df check_cli_grad_df.F90 NEEDS_BASIS
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
   unset(_cli_grad_df_probe)
+
+  # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
+  # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_
+  # analysis/thermo, water -- see check_cli_hessian.F90's own header for
+  # the tolerances and why they are what they are.
+  set(_cli_hessian_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_hessian_probe.json)
+  terco_add_check(check_cli_hessian check_cli_hessian.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_hessian_probe})
+  target_link_libraries(check_cli_hessian PRIVATE test-drive::test-drive)
+  unset(_cli_hessian_probe)
 endif()
 
 # The FULL KS-DFT gradient (the above, plus trc_xc_grad's LDA/GGA
@@ -843,6 +861,16 @@ set_tests_properties(
 # surface arrays from test/pyscf_refs/pcm_cavity_water.ref.
 #
 terco_add_check(check_pcm_cavity check_pcm_cavity.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+
+#
+# Harmonic vibrational analysis and RRHO thermochemistry (trc_vib.F90,
+# trc_thermo.F90) against pyscf's own analytic RHF/STO-3G Hessian,
+# harmonic_analysis and thermo on water/HCN/planar-NH3
+# (test/pyscf_refs/vib_thermo_*.ref) -- plus the TR-invariance and
+# linear-molecule properties no stored number can check.
+#
+terco_add_check(check_vib_thermo_vs_pyscf check_vib_thermo_vs_pyscf.F90 NEEDS_PYSCF_REF)
+target_link_libraries(check_vib_thermo_vs_pyscf PRIVATE test-drive::test-drive)
 #
 # Its solute-surface integrals (gen_1e.py's --pcm kernels) on fixed inputs
 # against pyscf's int3c2e/fakemol path: water/6-31G* (d) at every ceiling,
@@ -1059,6 +1087,21 @@ target_link_libraries(check_capi_pcm_radii PRIVATE ${main_lib} terco_test_basis 
                                                     terco_pyscf_ref_io)
 add_test(NAME terco/check_capi_pcm_radii COMMAND check_capi_pcm_radii)
 set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# trc_run_hessian/trc_hessian (the finite-difference Cartesian Hessian),
+# through the context API, against pyscf's own ANALYTIC RHF/STO-3G
+# Hessian already in test/pyscf_refs/vib_thermo_{water,hcn,
+# nh3_planar}.ref (check_vib_thermo_vs_pyscf.F90's own references); plus
+# trc_run_hessian's up-front refusal of a meta-GGA, before any
+# displacement runs.
+add_executable(check_fd_hessian_vs_pyscf check_fd_hessian_vs_pyscf.F90)
+target_compile_definitions(check_fd_hessian_vs_pyscf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_fd_hessian_vs_pyscf PRIVATE ${main_lib} terco_c_interfaces terco_pyscf_ref_io
+                      test-drive::test-drive)
+add_test(NAME terco/check_fd_hessian_vs_pyscf COMMAND check_fd_hessian_vs_pyscf)
+set_tests_properties(terco/check_fd_hessian_vs_pyscf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #

@@ -25,6 +25,7 @@ target_sources(
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           core/trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX
           core/trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
+          core/trc_constants.F90  # the single source of truth for math/CODATA constants and atomic masses
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
           solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
           scf/trc_scf_settings.F90      # trc_scf_options_t/result_t and the options a run resolves them to
@@ -39,6 +40,8 @@ target_sources(
           scf/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
           scf/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
           scf/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
+          scf/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
+          scf/trc_thermo.F90             # ideal-gas RRHO thermochemistry from trc_vib's frequencies
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
