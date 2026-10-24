@@ -267,7 +267,9 @@ jobs:
     # (app/trc_dlfind_bridge.F90) turned on -- OFF by default (the root
     # CMakeLists.txt's TERCO_ENABLE_DLFIND option), so none of the --opt
     # checks (check_cli_opt, check_opt_vs_mqc, check_opt_vs_pyscf_water/
-    # hcn, terco/install_dlfind) run in any OTHER job. Needs network:
+    # hcn, check_opt_algorithms, check_opt_refusals, check_opt_ts,
+    # check_opt_connect, terco/install_dlfind) run in any OTHER job. Needs
+    # network:
     # cmake/modules/Findlibdlfind.cmake fetches libdlfind from GitHub at
     # its pinned commit, which GitHub-hosted runners have.
     steps:

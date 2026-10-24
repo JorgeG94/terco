@@ -65,11 +65,19 @@ contains
       character(len=:), allocatable :: coord_str
 
       nfail = 0
-      call execute_command_line('mkdir -p '//work_dir, exitstat=rc, wait=.true.)
+      ! Run with WORKING_DIRECTORY set to work_dir (not test/ itself, this
+      ! program's own WORKING_DIRECTORY, ctest's convention): --opt writes
+      ! <geometry>_opt.xyz/_traj.xyz into the CLI's CWD (app/main.F90), and
+      ! everything the subprocess needs is copied in so the `cd work_dir &&`
+      ! below can use plain relative paths -- check_opt_connect.F90's own
+      ! pattern.
+      call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
       call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
       probe_out = probe_json//'.out'
 
-      cmd = trim(cli_exe)//' '//work_dir//'/water.xyz -b basis_sets/sto-3g.json --opt --opt-maxiter 50 '// &
+      cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --opt-maxiter 50 '// &
             '--silent --json '//probe_json//' > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
@@ -153,6 +161,20 @@ contains
          end block
          close (u)
       end if
+
+      ! water_opt.xyz/water_traj.xyz must not have landed in test/ itself
+      ! (this program's own WORKING_DIRECTORY, ctest's convention) -- the
+      ! whole point of the `cd work_dir &&` above.
+      block
+         character(len=*), parameter :: stray(2) = [character(len=14) :: 'water_opt.xyz', 'water_traj.xyz']
+         integer :: k
+         logical :: exists
+         do k = 1, size(stray)
+            inquire (file=trim(stray(k)), exist=exists)
+            call ref_report(nfail, .not. exists, 'check_cli_opt: '//trim(stray(k))//' was not left in test/ itself', &
+                            0.0_dp)
+         end do
+      end block
 
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_cli_opt_json
@@ -394,13 +416,21 @@ contains
       character(len=:), allocatable :: reason_str
 
       nfail = 0
+      ! Same CWD reasoning as test_cli_opt_json: --opt writes _opt.xyz/
+      ! _traj.xyz into the CLI's own CWD, so this run needs its own `cd`
+      ! and its own copy of water.xyz/basis_sets, not the shared work_dir
+      ! that test_cli_opt_json already populated (and whose own
+      ! water_opt.xyz/water_traj.xyz would otherwise be overwritten here).
       fail_work = work_dir//'/fail'
-      call execute_command_line('mkdir -p '//fail_work, exitstat=rc, wait=.true.)
+      call execute_command_line('mkdir -p '//fail_work//'/basis_sets', exitstat=rc, wait=.true.)
       call execute_command_line('cp -f water.xyz '//fail_work//'/water.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//fail_work//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
       probe_out = probe_json//'.fail.out'
 
-      cmd = 'TRC_OPT_TEST_FAIL_AFTER_EVALS=2 '//trim(cli_exe)//' '//fail_work//'/water.xyz -b basis_sets/sto-3g.json '// &
-            '--opt --opt-maxiter 50 --silent --json '//probe_json//'.fail > '//probe_out//' 2>&1'
+      cmd = 'cd '//fail_work//' && TRC_OPT_TEST_FAIL_AFTER_EVALS=2 '//trim(cli_exe)//' water.xyz '// &
+            '-b basis_sets/sto-3g.json --opt --opt-maxiter 50 --silent --json '//probe_json//'.fail > '// &
+            probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       call ref_report(nfail, rc /= 0, 'check_cli_opt: a forced failed evaluation exits non-zero', real(rc, dp))
 
