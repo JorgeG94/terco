@@ -29,7 +29,7 @@ module check_cli_opt_suite
       !! Where the CLI writes its --json, from the command line.
    character(len=:), allocatable :: work_dir
       !! A scratch directory this check owns, for the xyz outputs.
-   real(dp), parameter :: TOL_SAME_POINT = 1.0e-6_dp
+   real(dp), parameter :: TOL_SAME_POINT = 1.0e-8_dp
       !! test_truncated_keeps_accepted's own tolerance for "two CLI runs
       !! reported the SAME accepted point" -- see that test's own header.
 
@@ -281,7 +281,8 @@ contains
    ! invocations, and on the GPU build the Fock digestion's atomic updates
    ! settle in a different order run to run, so even the identical point
    ! does not come back bit-for-bit (measured ~2e-9 Eh on an nvfortran GPU
-   ! build at this size). A leaked rejected trial's energy is a genuinely
+   ! build at this size; 1e-8 held over repeated GPU runs). A leaked
+   ! rejected trial's energy is a genuinely
    ! different point on the PES -- a rejection only happens because the
    ! energy moved enough to overshoot, orders of magnitude above this.
    !
