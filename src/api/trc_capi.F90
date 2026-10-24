@@ -2688,6 +2688,19 @@ contains
       if (collective) talk = talk .and. comm%rank() == 0
       ! Once per context; a later run only grows the workspace to n.
       call cx%la%init(n)
+      ! The sizes first, before any guess runs: a SAD guess on a large
+      ! system takes long enough that a wrong basis file should show now,
+      ! not after it.
+      if (talk) then
+         call global_logger%info("   basis functions  : "//to_string(scf_space_nao(cx%bb))// &
+                                 merge(" (spherical)", " (Cartesian)", cx%bb%b%spherical))
+         if (cx%have_jkfit .and. cx%opts%df) then
+            call global_logger%info("   auxiliary (JK)   : "//to_string(scf_space_nao(cx%jb))//" functions")
+         end if
+         if (cx%have_aux) then
+            call global_logger%info("   auxiliary (MP2)  : "//to_string(scf_space_nao(cx%ab))//" functions")
+         end if
+      end if
       ! --- the guess, BEFORE the --df fit below -----------------------------
       ! SAD/SADQ's atomic sub-SCFs (trc_sad_build/trc_sadq_build) run the
       ! ordinary four-centre `eri%fock_resident` path regardless of
