@@ -27,6 +27,13 @@ module trc_dlfind_bridge
       integer(c_int) :: fallback_guess_kind = 2_c_int
       integer :: maxiter = 100
       real(dp) :: gtol = 4.5e-4_dp
+      real(dp) :: max_step = -1.0_dp
+      character(len=:), allocatable :: opt_xyz_path
+      character(len=:), allocatable :: traj_xyz_path
+      character(len=:), allocatable :: json_path
+      character(len=:), allocatable :: geometry_path
+      character(len=:), allocatable :: coords_name
+      character(len=:), allocatable :: guess_name
    end type trc_opt_options_t
 
    type :: trc_opt_result_t

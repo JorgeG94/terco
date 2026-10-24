@@ -269,20 +269,15 @@ contains
       !! Cordero et al., Dalton Trans. 2008, 2832-2838 ("Covalent radii
       !! revisited") covalent radius, in Bohr, Z = 1..96 (the set stops at
       !! curium; past it there is no consensus single-bond radius). This is
-      !! the table most codes use for distance-based bond perception --
-      !! same source and same numeric values as metalquicha's
-      !! `covalent_radius_cordero` (mqc_atomic_radii.f90), copied here
-      !! rather than shared because the two projects do not share a build.
+      !! the table most codes use for distance-based bond perception.
       !!
-      !! The ONLY consumer today is app/trc_dlfind_bridge.F90's HDLC
-      !! residue builder (--opt-coords hdlc): a bond is perceived at
-      !! |r_i - r_j| <= scale * (radius_i + radius_j), scale = 1.3 (the
-      !! same tolerance mqc's own mqc_bond_perception.f90 uses, loose
-      !! enough that a stretched bond mid-optimisation is not lost), and
+      !! The ONLY consumer today is app/main.F90's build_opt_residues
+      !! (--opt-coords hdlc): a bond is perceived at
+      !! |r_i - r_j| <= scale * (radius_i + radius_j), scale = 1.3, loose
+      !! enough that a stretched bond mid-optimisation is not lost, and
       !! residues are the connected components of that graph. Getting a
       !! bond wrong here changes which internal coordinates DL-FIND builds
-      !! for HDLC, never an energy or a gradient (mqc's own
-      !! mqc_optimizer_types.f90 makes the same observation).
+      !! for HDLC, never an energy or a gradient.
       integer, intent(in) :: z
       type(error_t), intent(inout) :: error
       real(dp) :: radius

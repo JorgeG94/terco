@@ -31,7 +31,7 @@ module terco_run
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
-   use terco_app, only: element_symbol, f_string, BOHR_PER_ANGSTROM
+   use terco_app, only: element_symbol, f_string, BOHR_PER_ANGSTROM, write_opt_xyz_frame, write_traj_xyz_frames
    use trc_vib, only: trc_vib_log_table
    use trc_thermo, only: trc_thermo_result_t, trc_thermo_log_summary
    use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average, trc_covalent_radius
@@ -96,6 +96,7 @@ module terco_run
       integer :: opt_coords_kind = 0, opt_guess_kind = 0
       integer :: opt_maxiter = 100
       real(dp) :: opt_gtol = 4.5e-4_dp
+      real(dp) :: opt_max_step = -1.0_dp   !! negative = DL-FIND's own default (trc_opt_options_t%max_step)
       logical :: opt_converged = .false.
       integer :: opt_steps = 0, opt_evals = 0
       real(dp) :: opt_gmax = 0.0_dp, opt_grms = 0.0_dp
@@ -580,15 +581,8 @@ contains
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: xyz_bohr(3, r%natm)
-      integer :: u, ia
-      open (newunit=u, file=path, status="replace", action="write")
-      write (u, "(i0)") r%natm
-      write (u, "(a,a,f0.12)") trim(merge("converged    ", "NOT converged", r%opt_converged)), &
-         "   E = ", r%etot
-      do ia = 1, r%natm
-         write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
-      end do
-      close (u)
+      call write_opt_xyz_frame(path, r%natm, r%z, real(r%etot, dp), xyz_bohr, &
+                               trim(merge("converged    ", "NOT converged", r%opt_converged)))
    end subroutine write_opt_xyz
 
    !
@@ -602,16 +596,7 @@ contains
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: traj_xyz_bohr(3, r%natm, r%opt_n_traj)
       real(dp), intent(in) :: traj_energy(r%opt_n_traj)
-      integer :: u, ia, k
-      open (newunit=u, file=path, status="replace", action="write")
-      do k = 1, r%opt_n_traj
-         write (u, "(i0)") r%natm
-         write (u, "(a,i0,a,f0.12)") "step ", k, "   E = ", traj_energy(k)
-         do ia = 1, r%natm
-            write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), traj_xyz_bohr(:, ia, k)/BOHR_PER_ANGSTROM
-         end do
-      end do
-      close (u)
+      call write_traj_xyz_frames(path, r%natm, r%z, r%opt_n_traj, traj_xyz_bohr, traj_energy)
    end subroutine write_traj_xyz
 
    !
@@ -810,8 +795,7 @@ contains
    !
    ! --opt's JSON block: converged, step/evaluation counts, the final
    ! energy and gradient, the coordinate system, the trajectory's
-   ! per-step energies and the final geometry -- the fields this PR's
-   ! brief asks --json to carry for --opt. The final geometry is in
+   ! per-step energies and the final geometry. The final geometry is in
    ! Angstrom, named accordingly so a reader never has to guess the unit
    ! the way it would from a bare "final_geometry".
    !
@@ -992,7 +976,10 @@ program terco_main
    call r%cli%add_flag("opt", "optimise the geometry with DL-FIND (needs a TERCO_ENABLE_DLFIND=ON build; "// &
                        "refused otherwise). Warm-starts the SCF between steps; writes <geometry>_opt.xyz "// &
                        "and <geometry>_traj.xyz next to the input, and an 'optimization' block to --json. "// &
-                       "Combined with --hessian, the Hessian runs at the OPTIMISED geometry")
+                       "Combined with --hessian, the Hessian runs at the OPTIMISED geometry. If a step's "// &
+                       "SCF fails to converge even after one retry, DL-FIND has no recovery: terco writes "// &
+                       "the files/JSON above (marked failed, with the last ACCEPTED geometry) and the "// &
+                       "process then stops abnormally from inside DL-FIND, not through terco's own exit path")
    call r%cli%add_option("opt-coords", "internal coordinates for --opt: cartesian, hdlc or dlc (cartesian)", &
                          default="cartesian")
    call r%cli%add_option("opt-maxiter", "maximum number of --opt steps (100)", default="100")
@@ -1003,6 +990,10 @@ program terco_main
    call r%cli%add_option("opt-guess", "SCF warm start between --opt steps: density (the previous step's "// &
                          "converged density) or projected (its orbitals re-orthonormalised in the new "// &
                          "overlap) (density)", default="density")
+   call r%cli%add_option("opt-max-step", "DL-FIND's own ceiling on a trust-radius step, Bohr -- also the "// &
+                         "ceiling the trust radius may grow to across accepted steps (DL-FIND's own "// &
+                         "default, 0.5, unless given); raising it lets the optimiser attempt a larger, "// &
+                         "possibly-rejected trial sooner")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
@@ -1210,6 +1201,11 @@ program terco_main
       call r%cli%get("opt-gtol", r%opt_gtol, r%err)
       call check(r, "--opt-gtol")
       if (r%opt_gtol <= 0.0_dp) call die(r, "--opt-gtol must be positive")
+      if (r%cli%is_set("opt-max-step")) then
+         call r%cli%get("opt-max-step", r%opt_max_step, r%err)
+         call check(r, "--opt-max-step")
+         if (r%opt_max_step <= 0.0_dp) call die(r, "--opt-max-step must be positive")
+      end if
    end if
    r%json = ""
    if (r%cli%is_set("json")) call r%cli%get("json", r%json, r%err)
@@ -1302,7 +1298,7 @@ program terco_main
          call build_opt_residues(r%natm, r%z, xyz, opt_residues, r%err)
          if (r%err%has_error()) call die(r, r%err%get_message())
       else
-         opt_residues = 1   !! cartesian/dlc: trc_dlfind_bridge's own driver needs no real partition
+         opt_residues = 1   ! cartesian/dlc: trc_dlfind_bridge's own driver needs no real partition
       end if
 
       opt_opts%coords_kind = r%opt_coords_kind
@@ -1310,6 +1306,24 @@ program terco_main
       opt_opts%fallback_guess_kind = int(guess_kind, c_int)
       opt_opts%maxiter = r%opt_maxiter
       opt_opts%gtol = r%opt_gtol
+      opt_opts%max_step = r%opt_max_step
+
+      ! <geometry base>_opt.xyz/_traj.xyz's own path, and --json's (if
+      ! given): trc_dlfind_optimize needs these BEFORE it runs, not after,
+      ! because an unrecoverable mid-run SCF failure writes them from
+      ! inside a DL-FIND callback (trc_dlfind_bridge%fail_eval) -- DL-FIND
+      ! itself stops the process right after, so nothing after this call
+      ! returns would ever get the chance.
+      opt_base = r%geom
+      if (len(opt_base) > 4) then
+         if (to_lower(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
+      end if
+      opt_opts%opt_xyz_path = opt_base//"_opt.xyz"
+      opt_opts%traj_xyz_path = opt_base//"_traj.xyz"
+      opt_opts%json_path = r%json
+      opt_opts%geometry_path = r%geom
+      opt_opts%coords_name = r%opt_coords_arg
+      opt_opts%guess_name = r%opt_guess_arg
 
       call trc_dlfind_optimize(r%h, r%natm, r%z, opt_residues, xyz, opt_opts, opt_res)
       if (opt_res%failed) call die(r, "--opt: "//opt_res%message)
@@ -1323,12 +1337,16 @@ program terco_main
       if (allocated(opt_res%traj_energy)) r%opt_traj_energy = opt_res%traj_energy
       xyz = opt_res%final_coords
       r%opt_final_xyz = xyz
-      r%grad = .true.   !! so the existing --grad path below reports the final gradient too
+      r%grad = .true.   ! so the existing --grad path below reports the final gradient too
 
-      ! Re-converge the context at the reported final geometry: api_dl_find
-      ! may leave the context at one more (rejected) line-search trial
-      ! past the last ACCEPTED step by the time it returns, and every
-      ! getter below must report exactly the geometry --opt writes out.
+      ! Re-converge the context at the reported final (ACCEPTED) geometry:
+      ! cb_get_gradient calls trc_set_geometry/trc_run_scf for EVERY
+      ! evaluation, including a rejected trial that happens after the last
+      ! accepted step (e.g. --opt-maxiter stops the run right after one),
+      ! so by the time api_dl_find returns, the context may be sitting at
+      ! that later trial's geometry/SCF, not opt_res%final_coords's own.
+      ! Every getter below must report exactly the geometry --opt writes
+      ! out.
       call api(r, trc_set_geometry(r%h, reshape(real(xyz, c_double), [3*r%natm])))
       st = trc_run_scf(r%h)
    else if (len(r%restart) > 0) then
@@ -1406,10 +1424,8 @@ program terco_main
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
    if (r%rank0 .and. r%opt) then
-      opt_base = r%geom
-      if (len(opt_base) > 4) then
-         if (to_lower(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
-      end if
+      ! opt_base (and opt_opts%opt_xyz_path/traj_xyz_path built from it)
+      ! was already computed before trc_dlfind_optimize ran, above.
       call write_opt_xyz(r, opt_base//"_opt.xyz", xyz)
       if (r%opt_n_traj > 0) call write_traj_xyz(r, opt_base//"_traj.xyz", opt_res%traj_coords, r%opt_traj_energy)
       call global_logger%info("   wrote "//opt_base//"_opt.xyz and "//opt_base//"_traj.xyz")
@@ -1418,6 +1434,15 @@ program terco_main
 
    if (r%conv == 0) then
       if (r%rank0) call global_logger%error("terco: the SCF did not converge in "//to_string(int(r%niter))//" iterations")
+      call quit(r, 2)
+   end if
+   if (r%opt .and. .not. r%opt_converged) then
+      ! Matches the SCF's own non-convergence above: a CLI run that did
+      ! not reach the thing it was asked to do must not exit 0 and claim
+      ! "normal termination" -- opt_summary already printed "NOT
+      ! converged" above, this just makes the exit code agree with it.
+      if (r%rank0) call global_logger%error("terco: --opt did not converge in "// &
+                                             to_string(r%opt_steps)//" accepted step(s)")
       call quit(r, 2)
    end if
    if (r%rank0) then

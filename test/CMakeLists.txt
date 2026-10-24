@@ -494,8 +494,9 @@ if(TERCO_BUILD_APP)
     # check_cli_opt.F90's own header.
     set(_cli_opt_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_probe.json)
     set(_cli_opt_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_work)
-    terco_add_check(check_cli_opt check_cli_opt.F90
+    terco_add_check(check_cli_opt check_cli_opt.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_probe} ${_cli_opt_workdir})
+    target_link_libraries(check_cli_opt PRIVATE test-drive::test-drive)
     unset(_cli_opt_probe)
     unset(_cli_opt_workdir)
 
@@ -503,22 +504,48 @@ if(TERCO_BUILD_APP)
     # optimisations (mqc's basis differs from terco's by ~2e-8 Eh) --
     # see check_opt_vs_mqc.F90's own header.
     set(_cli_opt_mqc_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_mqc_probe.json)
-    terco_add_check(check_opt_vs_mqc check_opt_vs_mqc.F90
+    terco_add_check(check_opt_vs_mqc check_opt_vs_mqc.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_mqc_probe})
+    target_link_libraries(check_opt_vs_mqc PRIVATE test-drive::test-drive)
     unset(_cli_opt_mqc_probe)
 
     # The real anchor: terco's --opt (tight --opt-gtol 1e-5) against
     # pyscf's own analytic RHF/STO-3G gradient driving scipy's L-BFGS-B
     # (test/pyscf_refs/generate.py's gen_opt, opt_water.ref/opt_hcn.ref)
-    # -- a different language, SCF implementation and optimiser, from
-    # the SAME start geometries as mqc's note. See check_opt_vs_pyscf.F90's
-    # own header for the tolerances.
+    # -- a different language, SCF implementation and optimiser. hcn.xyz
+    # starts from the exact geometry gen_opt's "hcn" case does; water.xyz
+    # does not (see check_opt_vs_pyscf.F90's own header) -- both converge
+    # to the same minimum regardless, which is what this check compares.
+    # See check_opt_vs_pyscf.F90's own header for the tolerances.
     foreach(case water hcn)
       set(_cli_opt_pyscf_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_probe_${case}.json)
       terco_add_check(check_opt_vs_pyscf_${case} check_opt_vs_pyscf.F90 NEEDS_PYSCF_REF
                       ARGS $<TARGET_FILE:terco_cli> ${case}.xyz opt_${case} ${_cli_opt_pyscf_probe})
+      target_link_libraries(check_opt_vs_pyscf_${case} PRIVATE test-drive::test-drive)
+      # Its own module directory: both cases compile the same source, whose
+      # helper module would otherwise race into one shared directory (see
+      # check_df_grad_ints_${case}'s own comment above for the same fix).
+      set_target_properties(check_opt_vs_pyscf_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                            ${CMAKE_CURRENT_BINARY_DIR}/mod_check_opt_vs_pyscf_${case})
       unset(_cli_opt_pyscf_probe)
     endforeach()
+
+    # An installed DLFIND=ON terco can start at all: cmake --install to a
+    # scratch prefix, then run the installed binary for real (not just
+    # check libdlfind.so landed in lib/) -- see
+    # app/install_dlfind_check.cmake's own header for why this needs its
+    # own check (Findlibdlfind.cmake's EXCLUDE_FROM_ALL drops libdlfind's
+    # own install() rules, so without app/CMakeLists.txt's explicit
+    # install(TARGETS dlfind ...) the installed binary fails at load,
+    # silently as far as the REST of this test suite is concerned since
+    # none of it runs installed). Fast: one install (copying what is
+    # already built) and one `terco --version`.
+    add_test(
+      NAME terco/install_dlfind
+      COMMAND
+        ${CMAKE_COMMAND} -DCMAKE_COMMAND=${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
+        -DPREFIX=${CMAKE_CURRENT_BINARY_DIR}/install_dlfind_check_prefix -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/install_dlfind_check.cmake)
   endif()
 endif()
 

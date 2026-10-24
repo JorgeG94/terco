@@ -43,7 +43,7 @@ module trc_dlfind_bridge
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
-   use terco_app, only: f_string
+   use terco_app, only: f_string, write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
    implicit none
    private
 
@@ -62,11 +62,12 @@ module trc_dlfind_bridge
       !! --opt-guess: the previous step's converged density (TRC_GUESS_GIVEN,
       !! fetched with trc_density before the geometry moves) or its
       !! orbitals re-orthonormalised in the new overlap (TRC_GUESS_PROJECTED,
-      !! a338056's warm start -- needs no density fetch at all, see
-      !! cb_get_gradient's own comment). TRC_OPT_GUESS_NONE re-runs
-      !! `fallback_guess_kind` (ordinarily SAD/SADQ) at every step, the
-      !! mqc baseline this PR's warm-start measurement compares the other
-      !! two against; not reachable from --opt-guess (only "density" and
+      !! trc_scf_context%project_density's own warm start -- needs no
+      !! density fetch at all, see cb_get_gradient's own comment).
+      !! TRC_OPT_GUESS_NONE re-runs `fallback_guess_kind` (ordinarily
+      !! SAD/SADQ) at every step, the mqc baseline the warm-start
+      !! measurement (test/bench_opt_warmstart.F90) compares the other two
+      !! against; not reachable from --opt-guess (only "density" and
       !! "projected" are), used only by the measurement itself.
 
    ! DL-FIND's own numbering (api_dl_find's icoord/iopt/switch) -- this
@@ -76,8 +77,8 @@ module trc_dlfind_bridge
    integer(c_int), parameter :: DLF_COORDS_CARTESIAN = 0, DLF_COORDS_HDLC = 1, DLF_COORDS_DLC = 3
    integer(c_int), parameter :: DLF_OPT_LBFGS = 3
       !! DL-FIND's own engine default (dlf_default_set's inline default
-      !! for iopt); this PR offers no --opt-algorithm, so it is the
-      !! only one wired up. The code is shaped so a later PR can add one
+      !! for iopt); there is no --opt-algorithm yet, so it is the only one
+      !! wired up. The code is shaped so a later option can add one
       !! (trc_opt_options_t gains a field, cb_get_params's `iopt` branches
       !! on it) without touching anything else here.
    integer(c_int), parameter :: DLF_INITHESS_TWO_POINT = 2
@@ -100,26 +101,46 @@ module trc_dlfind_bridge
          !! this molecule would have used.
       integer :: maxiter = 100
       real(dp) :: gtol = 4.5e-4_dp
+      real(dp) :: max_step = -1.0_dp
+         !! DL-FIND's own `maxstep`: a hard clamp on an internal-coordinate
+         !! step AND (dlf_scalestep.f90's tr%maxrad=glob%maxstep,
+         !! tr%startrad=min(0.1,glob%maxstep)) the ceiling the trust radius
+         !! may grow to across successive ACCEPTED steps. Negative (the
+         !! default) leaves DL-FIND's own default of 0.5 Bohr in place
+         !! (cb_get_params never touches the `maxstep` argument then, so
+         !! dlf_default_set's own fallback fills it). A caller raising this
+         !! lets the trust radius grow more aggressively and risk an
+         !! overshoot -- a rejected trial, test_acceptance's own
+         !! energy-increases branch -- which is how --opt-max-step and this
+         !! module's own rejected-trial test construct one on purpose.
+      character(len=:), allocatable :: opt_xyz_path   !! unallocated/"" = do not write
+      character(len=:), allocatable :: traj_xyz_path  !! unallocated/"" = do not write
+      character(len=:), allocatable :: json_path      !! unallocated/"" = no --json requested
+      character(len=:), allocatable :: geometry_path  !! for the failure JSON's "geometry" field
+      character(len=:), allocatable :: coords_name    !! "cartesian"/"hdlc"/"dlc", for the failure JSON
+      character(len=:), allocatable :: guess_name     !! "density"/"projected", for the failure JSON
    end type trc_opt_options_t
 
    type :: trc_opt_result_t
       logical :: converged = .false.
       logical :: failed = .false.
       character(len=:), allocatable :: message
-      integer :: steps = 0               !! accepted geometries (cb_put_coords, switch 1)
-      integer :: energy_evaluations = 0  !! every cb_get_gradient call, line-search trials included
+      integer :: steps = 0               !! ACCEPTED geometries (cb_put_coords, test_acceptance's verdict)
+      integer :: energy_evaluations = 0  !! every cb_get_gradient call, rejected trials included
       real(dp) :: final_energy = 0.0_dp
       real(dp) :: final_gmax = 0.0_dp
       real(dp) :: final_grms = 0.0_dp
-      real(dp), allocatable :: final_coords(:, :)     !! (3, natm), Bohr
+      real(dp), allocatable :: final_coords(:, :)     !! (3, natm), Bohr -- the last ACCEPTED geometry
       integer :: n_traj = 0
       real(dp), allocatable :: traj_energy(:)
-      real(dp), allocatable :: traj_coords(:, :, :)   !! (3, natm, n_traj), Bohr
+      real(dp), allocatable :: traj_coords(:, :, :)   !! (3, natm, n_traj), Bohr -- ACCEPTED steps only
       integer :: total_scf_iterations = 0
-         !! Sum of trc_iterations over every ACCEPTED step -- the single
-         !! number the warm-start measurement (--opt-guess density vs
-         !! projected vs the mqc baseline, trc_opt_options_t's own
-         !! TRC_OPT_GUESS_NONE) compares.
+         !! Sum of trc_iterations over EVERY evaluation, rejected trials
+         !! included (cb_get_gradient's own `st = trc_iterations` runs for
+         !! each one) -- the single number the warm-start measurement
+         !! (--opt-guess density vs projected vs the mqc baseline,
+         !! trc_opt_options_t's own TRC_OPT_GUESS_NONE) compares, since a
+         !! rejected trial's SCF iterations are real work too.
    end type trc_opt_result_t
 
    interface
@@ -159,7 +180,34 @@ module trc_dlfind_bridge
    real(dp), save :: latest_energy = 0.0_dp
    real(dp), allocatable, save :: latest_coords(:, :)
    real(dp), save :: last_gmax = 0.0_dp, last_grms = 0.0_dp
+      !! THIS evaluation's own max/rms |g| (cb_get_gradient), whether or
+      !! not it turns out accepted -- cb_put_coords reads these to decide
+      !! what to snapshot into accepted_gmax/accepted_grms below. Never
+      !! read directly by trc_dlfind_optimize's own result assembly: a run
+      !! that stops right after a REJECTED trial would otherwise report
+      !! that trial's gradient against an ACCEPTED geometry.
    integer, save :: last_niter = 0
+   logical, save :: have_accepted_energy = .false.
+   real(dp), save :: last_accepted_energy = 0.0_dp
+      !! DL-FIND's own `glob%oldenergy` (dlf_scalestep.f90's test_acceptance,
+      !! run for every evaluation here since cb_get_params always selects
+      !! iline=1/iopt=LBFGS): an evaluation is accepted iff it is the FIRST
+      !! one, or its energy is lower than this. Neither callback DL-FIND
+      !! calls carries its own verdict (dlf_put_coords runs at dl-find.f90:
+      !! 679, before test_acceptance at :820), so this replicates the SAME
+      !! comparison here instead of reading a verdict that was never
+      !! offered. The one case this does not replicate is test_acceptance's
+      !! own fallback when the trust radius collapses below tr%minrad
+      !! (dlf_scalestep.f90:285-291): DL-FIND force-accepts that trial too,
+      !! to get unstuck, even though its energy is higher. This bridge has
+      !! no access to tr%radius and will under-count that one trial as
+      !! rejected -- rare (several consecutive rejections first) and never
+      !! hit by any case this module's own tests construct.
+   real(dp), save :: accepted_gmax = 0.0_dp, accepted_grms = 0.0_dp
+      !! The max/rms |g| of the last ACCEPTED evaluation -- what
+      !! trc_dlfind_optimize reports as final_gmax/final_grms and what the
+      !! CLI's convergence verdict is tested against, never last_gmax/
+      !! last_grms above.
    type(timer_type), save :: step_clock
    logical, save :: step_clock_running = .false.
    integer, save :: traj_cap = 0, traj_n = 0
@@ -226,10 +274,18 @@ contains
       last_gmax = 0.0_dp
       last_grms = 0.0_dp
       last_niter = 0
+      have_accepted_energy = .false.
+      last_accepted_energy = 0.0_dp
+      accepted_gmax = 0.0_dp
+      accepted_grms = 0.0_dp
       step_clock_running = .false.
 
-      ! Upper bound on accepted steps: DL-FIND itself enforces maxcycle,
-      ! so this never has to grow.
+      ! A starting capacity, not an upper bound: HDLC/DLC's own
+      ! `trerun_energy` evaluations (dl-find.f90's own COORDS TRANSFORM
+      ! section) don't advance `stat%ccycle`, so more than maxiter+4
+      ! ACCEPTED steps is possible even though DL-FIND enforces maxcycle on
+      ! cycles, not on accepted steps as such -- grow_traj (cb_put_coords)
+      ! doubles these with move_alloc rather than drop a frame past this.
       traj_cap = max(opts%maxiter + 4, 8)
       if (allocated(traj_e)) deallocate (traj_e)
       if (allocated(traj_xyz)) deallocate (traj_xyz)
@@ -237,8 +293,8 @@ contains
       traj_n = 0
 
       nvar = int(3*n, c_int)
-      nvar2 = 0_c_int   !! no second structure (no NEB endpoint, no dimer)
-      nspec = int(3*n, c_int)   !! [residue(n), znuc(n), micspec(n)]: no constraints, so no icons block
+      nvar2 = 0_c_int   ! no second structure (no NEB endpoint, no dimer)
+      nspec = int(3*n, c_int)   ! [residue(n), znuc(n), micspec(n)]: no constraints, so no icons block
 
       call api_dl_find(nvar, nvar2, nspec, 1_c_int, &
                        c_funloc(cb_error), c_funloc(cb_get_gradient), c_funloc(cb_get_hessian), &
@@ -249,6 +305,17 @@ contains
       res%energy_evaluations = n_evals
       res%total_scf_iterations = total_scf_iters
       if (eval_failed) then
+         ! In practice UNREACHABLE for a failed evaluation under the
+         ! pinned libdlfind commit (fail_eval's own header): dl-find.f90
+         ! turns status=1 straight into `dlf_fail`, which api.f90's
+         ! `dlf_error` ends with `error stop` before api_dl_find above
+         ! ever returns. Kept as the defensive path for the ONE other way
+         ! eval_failed could be seen here (none today -- every fail_eval
+         ! call site is inside cb_get_gradient) and for a future libdlfind
+         ! commit that recovers instead of stopping the process; the
+         ! operative behaviour for an actual mid-run failure is
+         ! write_failure_outputs (fail_eval), called before that
+         ! `error stop`, which is what a user sees on disk.
          res%failed = .true.
          res%message = "geometry optimisation stopped: "//trim(eval_fail_msg)
       else if (.not. have_result) then
@@ -261,11 +328,16 @@ contains
          res%failed = .true.
          res%message = "DL-FIND returned without reporting a geometry"
       else
+         ! latest_coords/latest_energy and accepted_gmax/accepted_grms are
+         ! the last ACCEPTED evaluation's own (cb_put_coords), never
+         ! whatever cb_get_gradient last happened to compute -- a run that
+         ! stops right after a rejected trial must still report the
+         ! accepted point.
          res%final_energy = latest_energy
          res%final_coords = latest_coords
-         res%final_gmax = last_gmax
-         res%final_grms = last_grms
-         res%converged = last_gmax <= opts%gtol
+         res%final_gmax = accepted_gmax
+         res%final_grms = accepted_grms
+         res%converged = accepted_gmax <= opts%gtol
       end if
       res%n_traj = traj_n
       if (traj_n > 0) then
@@ -349,12 +421,12 @@ contains
       do i = 1, natm
          spec(natm + i) = int(znuc(i), c_int)
       end do
-      spec(2*natm + 1:3*natm) = 1_c_int   !! micspec: DL-FIND requires 0 or 1 here; 1 everywhere
+      spec(2*natm + 1:3*natm) = 1_c_int   ! micspec: DL-FIND requires 0 or 1 here; 1 everywhere
 
-      nz = int(natm, c_int)       !! lets HDLC/DLC perceive connectivity on their own
+      nz = int(natm, c_int)       ! lets HDLC/DLC perceive connectivity on their own
       ncons = 0_c_int
-      nconn = 0_c_int             !! DL-FIND reads nconn and micspec at inconsistent offsets when both are present; 0 avoids that
-      tatoms = 1_c_int            !! the variables are atoms, not arbitrary DOF -- HDLC needs to know
+      nconn = 0_c_int             ! DL-FIND reads nconn and micspec at inconsistent offsets when both are present; 0 avoids that
+      tatoms = 1_c_int            ! the variables are atoms, not arbitrary DOF -- HDLC needs to know
 
       ! Arrive uninitialised, or at -1 and then checked positive, so each
       ! needs an explicit value even though it looks optional.
@@ -372,10 +444,15 @@ contains
          icoord = DLF_COORDS_CARTESIAN
       end select
       iopt = DLF_OPT_LBFGS
-      inithessian = DLF_INITHESS_TWO_POINT   !! never consulted: LBFGS holds no Hessian
+      inithessian = DLF_INITHESS_TWO_POINT   ! never consulted: LBFGS holds no Hessian
 
       tolerance = real(cur_opts%gtol, c_double)
       maxcycle = int(cur_opts%maxiter, c_int)
+
+      ! Negative (the default) leaves `maxstep` at dlf_default_init's own
+      ! -1 sentinel, which dlf_default_set fills with DL-FIND's own 0.5
+      ! Bohr afterwards -- see trc_opt_options_t%max_step's own comment.
+      if (cur_opts%max_step > 0.0_dp) maxstep = real(cur_opts%max_step, c_double)
 
       ! printf >= 1 is what makes DL-FIND call dlf_put_coords at all --
       ! left at DL-FIND's own default of 0, a run converges silently with
@@ -385,7 +462,7 @@ contains
       printf = 1_c_int
       printl = dlfind_print_level()
 
-      dump = 0_c_int      !! no checkpoint files -- two optimisations sharing a CWD must not read each other's
+      dump = 0_c_int      ! no checkpoint files -- two optimisations sharing a CWD must not read each other's
       restart = 0_c_int
 
    end subroutine cb_get_params
@@ -415,11 +492,23 @@ contains
       n_evals = n_evals + 1
       xyz = reshape(real(coords, dp), [3, natm])
 
+      ! Test-only hook: TRC_OPT_TEST_FAIL_AFTER_EVALS, read only here, lets
+      ! a test force a failing evaluation at a chosen point deterministically
+      ! (never from a real SCF non-convergence, which would be a flaky
+      ! trigger) to exercise fail_eval's write-before-error-stop path
+      ! (test/check_cli_opt.F90's own "a failed step still writes its
+      ! outputs" case). Unset or non-positive: no effect, every build.
+      if (test_fail_after_evals() > 0 .and. n_evals >= test_fail_after_evals()) then
+         call fail_eval(nvar, energy, gradient, status, &
+                        "TRC_OPT_TEST_FAIL_AFTER_EVALS forced a failure at evaluation "//to_string(n_evals))
+         return
+      end if
+
       ! The warm-start density has to be read BEFORE the geometry moves:
       ! trc_set_geometry invalidates the context's scf_ok, and trc_density
       ! refuses once that happens. TRC_GUESS_PROJECTED needs no such fetch
       ! -- it reads the context's own last-converged orbitals internally
-      ! (a338056's trc_scf_context%project_density), which invalidate_runs
+      ! (trc_scf_context%project_density), which invalidate_runs
       ! never clears.
       if (have_prev_scf .and. cur_opts%guess_kind == TRC_OPT_GUESS_DENSITY) then
          st = trc_nao(ctx, nao_c)
@@ -511,7 +600,13 @@ contains
       cached_nspin = nspin_c
       st = trc_iterations(ctx, niter)
       last_niter = int(niter)
-      last_gmax = sqrt(maxval(sum(reshape(real(gbuf, dp), [3, natm])**2, dim=1)))
+      ! The max CARTESIAN COMPONENT, matching DL-FIND's own test
+      ! (dlf_convergence.f90's convergence_set_info: valg=maxval(abs(
+      ! gradient))) and what --opt-gtol's own help/the JSON document --
+      ! NOT the largest per-atom gradient NORM, which is a different,
+      ! larger number for the same gradient whenever more than one
+      ! component of an atom's gradient is non-negligible.
+      last_gmax = maxval(abs(real(gbuf, dp)))
       last_grms = sqrt(sum(real(gbuf, dp)**2)/real(nvar, dp))
 
       energy = e
@@ -525,9 +620,16 @@ contains
    subroutine fail_eval(nvar, energy, gradient, status, why)
       !! One place to mark an evaluation failed and hand DL-FIND a zero
       !! energy/gradient and status = 1 -- DL-FIND's own contract for a
-      !! failed evaluation. There is no recovery inside DL-FIND for this;
-      !! trc_dlfind_optimize's caller reports the run failed once
-      !! api_dl_find returns.
+      !! failed evaluation. There is no recovery inside DL-FIND for this:
+      !! dl-find.f90's own EANDG block turns a non-zero status straight
+      !! into `dlf_fail("Energy evaluation failed")`, which api.f90's
+      !! `dlf_error` ends with `error stop` -- api_dl_find NEVER returns on
+      !! this path, so trc_dlfind_optimize's own post-call reporting
+      !! (res%failed, its message) never runs either. Whatever a finished
+      !! run writes to disk (app/main.F90's write_opt_xyz/write_traj_xyz/
+      !! add_optimization) has to be written from HERE instead, before
+      !! `status = 1` is handed back, while there still is somewhere to
+      !! write it.
       integer(c_int), intent(in), value :: nvar
       real(c_double), intent(out) :: energy
       real(c_double), intent(out) :: gradient(nvar)
@@ -536,36 +638,106 @@ contains
       eval_failed = .true.
       eval_fail_msg = why
       call global_logger%error("--opt: "//trim(why))
+      call global_logger%error("--opt: DL-FIND has no recovery from a failed evaluation and is about "// &
+                               "to stop this process -- writing the last accepted geometry, the "// &
+                               "trajectory so far and the JSON optimization block (if requested) now")
+      call write_failure_outputs(why)
       energy = 0.0_c_double
       gradient = 0.0_c_double
       status = 1_c_int
    end subroutine fail_eval
 
+   subroutine write_failure_outputs(reason)
+      !! See fail_eval's own header for why this runs from inside a
+      !! callback rather than after trc_dlfind_optimize returns. Always the
+      !! last ACCEPTED geometry/energy (latest_coords/latest_energy) and
+      !! the ACCEPTED trajectory collected so far -- never this failed
+      !! trial's own coordinates, which cb_get_gradient's caller (DL-FIND)
+      !! is about to discard anyway.
+      character(len=*), intent(in) :: reason
+      if (opt_str_set(cur_opts%opt_xyz_path)) then
+         call write_opt_xyz_frame(cur_opts%opt_xyz_path, natm, znuc, latest_energy, latest_coords, &
+                                  "NOT CONVERGED / FAILED: "//trim(reason))
+      end if
+      if (opt_str_set(cur_opts%traj_xyz_path) .and. traj_n > 0) then
+         call write_traj_xyz_frames(cur_opts%traj_xyz_path, natm, znuc, traj_n, traj_xyz(:, :, 1:traj_n), &
+                                    traj_e(1:traj_n))
+      end if
+      if (opt_str_set(cur_opts%json_path)) then
+         call write_opt_failure_json(cur_opts%json_path, opt_str_or_blank(cur_opts%geometry_path), reason, &
+                                     n_steps, n_evals, latest_energy, accepted_gmax, accepted_grms, &
+                                     opt_str_or_blank(cur_opts%coords_name), opt_str_or_blank(cur_opts%guess_name), &
+                                     traj_e(1:traj_n))
+      end if
+   end subroutine write_failure_outputs
+
+   pure function opt_str_set(s) result(set)
+      !! Whether an optional trc_opt_options_t path field was actually
+      !! given a value -- unallocated (a caller that never set it, e.g.
+      !! test/bench_opt_warmstart.F90) and "" (set, but asking for no file)
+      !! both mean "do not write", and `len()` on an unallocated deferred-
+      !! length allocatable is undefined, so this checks `allocated` first.
+      character(len=:), allocatable, intent(in) :: s
+      logical :: set
+      set = allocated(s)
+      if (set) set = len(s) > 0
+   end function opt_str_set
+
+   pure function opt_str_or_blank(s) result(text)
+      character(len=:), allocatable, intent(in) :: s
+      character(len=:), allocatable :: text
+      if (allocated(s)) then
+         text = s
+      else
+         text = ""
+      end if
+   end function opt_str_or_blank
+
    subroutine cb_put_coords(nvar, switch, energy, coords, iam) bind(c)
-      !! DL-FIND reporting an ACCEPTED geometry -- switch 1 (an ordinary
-      !! step) here; this bridge offers no P-RFO/TS mode, so switch 3
-      !! (the transition structure) is accepted as an ordinary step too
-      !! rather than ignored, and nothing else (switch 2/4/5: a
-      !! transition mode or a `connect` run's downhill minima) is ever
-      !! sent, since neither feature is wired up on the DL-FIND side
-      !! (iopt is always DLF_OPT_LBFGS).
+      !! DL-FIND reporting the geometry it just evaluated -- switch 1 (an
+      !! ordinary step) here; this bridge offers no P-RFO/TS mode, so
+      !! switch 3 (the transition structure) is treated as an ordinary step
+      !! too, and nothing else (switch 2/4/5) is ever sent, since neither
+      !! feature is wired up (iopt is always DLF_OPT_LBFGS). This call
+      !! happens for EVERY evaluation, accepted or not (dl-find.f90 calls
+      !! it right after dlf_get_gradient, before test_acceptance decides),
+      !! so whether THIS one is accepted is decided below, replicating
+      !! test_acceptance's own rule (last_accepted_energy's own header) --
+      !! everything from n_steps down is touched only when it is.
       integer(c_int), intent(in), value :: nvar
       integer(c_int), intent(in), value :: switch
       real(c_double), intent(in), value :: energy
       real(c_double), intent(in) :: coords(nvar)
       integer(c_int), intent(in), value :: iam   !! task id; only task 0 ever reports (ntasks = 1 here anyway)
 
-      real(dp) :: wall
+      real(dp) :: wall, e
+      logical :: accepted
 
       if (iam /= 0_c_int) return
       if (switch /= DLF_PUT_STEP .and. switch /= DLF_PUT_TS) return
       if (nvar /= 3*natm) return
 
+      e = real(energy, dp)
+      ! total_scf_iters counts EVERY evaluation (trc_opt_result_t%
+      ! total_scf_iterations's own header) -- a rejected trial's SCF
+      ! iterations are real work too, so this runs before the accept test.
+      total_scf_iters = total_scf_iters + last_niter
+
+      accepted = (.not. have_accepted_energy) .or. (e < last_accepted_energy)
+      if (.not. accepted) then
+         call global_logger%verbose("   opt trial rejected: E = "//to_string(e)// &
+                                    " Eh (last accepted "//to_string(last_accepted_energy)//" Eh)")
+         return
+      end if
+      have_accepted_energy = .true.
+      last_accepted_energy = e
+
       latest_coords = reshape(real(coords, dp), [3, natm])
-      latest_energy = real(energy, dp)
+      latest_energy = e
+      accepted_gmax = last_gmax
+      accepted_grms = last_grms
       have_result = .true.
       n_steps = n_steps + 1
-      total_scf_iters = total_scf_iters + last_niter
 
       wall = 0.0_dp
       if (step_clock_running) then
@@ -575,20 +747,39 @@ contains
       block
          character(len=1024) :: line
          write (line, "(a,i5,a,f20.12,a,es11.4,a,es11.4,a,i5,a,f10.2,a)") &
-            "   opt step ", n_steps, "   E = ", latest_energy, "   max|g| = ", last_gmax, &
-            "   rms|g| = ", last_grms, "   SCF iters ", last_niter, "   t = ", wall, " s"
+            "   opt step ", n_steps, "   E = ", latest_energy, "   max|g| = ", accepted_gmax, &
+            "   rms|g| = ", accepted_grms, "   SCF iters ", last_niter, "   t = ", wall, " s"
          call global_logger%info(trim(line))
       end block
       call step_clock%start()
       step_clock_running = .true.
 
-      if (traj_n < traj_cap) then
-         traj_n = traj_n + 1
-         traj_e(traj_n) = latest_energy
-         traj_xyz(:, :, traj_n) = latest_coords
-      end if
+      if (traj_n >= traj_cap) call grow_traj()
+      traj_n = traj_n + 1
+      traj_e(traj_n) = latest_energy
+      traj_xyz(:, :, traj_n) = latest_coords
 
    end subroutine cb_put_coords
+
+   subroutine grow_traj()
+      !! Doubles traj_e/traj_xyz's capacity with move_alloc rather than
+      !! drop a frame past traj_cap -- HDLC/DLC's `trerun_energy`
+      !! evaluations (dl-find.f90's own COORDS TRANSFORM section) do not
+      !! advance `stat%ccycle`, so more accepted steps than
+      !! trc_dlfind_optimize's own starting traj_cap (maxiter+4) is
+      !! possible in those coordinate systems.
+      real(dp), allocatable :: new_e(:)
+      real(dp), allocatable :: new_xyz(:, :, :)
+      integer :: new_cap
+      new_cap = traj_cap*2
+      allocate (new_e(new_cap))
+      allocate (new_xyz(3, natm, new_cap))
+      new_e(1:traj_cap) = traj_e
+      new_xyz(:, :, 1:traj_cap) = traj_xyz
+      call move_alloc(new_e, traj_e)
+      call move_alloc(new_xyz, traj_xyz)
+      traj_cap = new_cap
+   end subroutine grow_traj
 
    subroutine cb_get_hessian(nvar, coords, hessian, status) bind(c)
       !! Second derivatives for P-RFO/NR -- always declined. A non-zero
@@ -634,6 +825,27 @@ contains
    subroutine cb_update() bind(c)
       !! Called between steps; nothing here needs to happen then.
    end subroutine cb_update
+
+   function test_fail_after_evals() result(n)
+      !! TRC_OPT_TEST_FAIL_AFTER_EVALS, cached after the first read (one
+      !! `get_environment_variable` call per process, not per evaluation).
+      !! -1 (the cache's own "not read yet" AND "unset/unparseable" value)
+      !! means disabled -- see cb_get_gradient's own comment for what this
+      !! is for.
+      integer :: n
+      integer, save :: cached = -2   !! -2: not read yet; -1: read, disabled
+      character(len=32) :: buf
+      integer :: ios, slen, stat
+      if (cached == -2) then
+         call get_environment_variable("TRC_OPT_TEST_FAIL_AFTER_EVALS", buf, slen, stat)
+         cached = -1
+         if (stat == 0 .and. slen > 0) then
+            read (buf, *, iostat=ios) cached
+            if (ios /= 0) cached = -1
+         end if
+      end if
+      n = cached
+   end function test_fail_after_evals
 
    function dlfind_print_level() result(printl)
       !! DL-FIND's own `printl`, from this process's logger level --
