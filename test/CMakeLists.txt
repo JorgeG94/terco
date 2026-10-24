@@ -547,14 +547,15 @@ if(TERCO_BUILD_APP)
       unset(_cli_opt_pyscf_workdir)
     endforeach()
 
-    # Every --opt-algorithm/--opt-coords this PR exposes converges
-    # water/STO-3G to the existing opt_water anchor -- see
-    # check_opt_algorithms.F90's own header. One shared work dir: the 11
-    # runs inside this single ctest case are sequential (the program's own
-    # do loop), so they can reuse it.
+    # Every --opt-algorithm/--opt-coords combination terco exposes
+    # converges water/STO-3G to the existing opt_water anchor -- see
+    # check_opt_algorithms.F90's own header. One shared work dir: the
+    # runs inside this single ctest case are sequential (test-drive's own
+    # parallel=.false.), so they can reuse it.
     set(_cli_opt_alg_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_algorithms_work)
-    terco_add_check(check_opt_algorithms check_opt_algorithms.F90
+    terco_add_check(check_opt_algorithms check_opt_algorithms.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_alg_workdir})
+    target_link_libraries(check_opt_algorithms PRIVATE test-drive::test-drive)
     unset(_cli_opt_alg_workdir)
 
     # Invalid --opt-* combinations are refused before DL-FIND ever runs --
@@ -566,6 +567,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_refusals_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_refusals_work)
     terco_add_check(check_opt_refusals check_opt_refusals.F90
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_refusals_workdir})
+    target_link_libraries(check_opt_refusals PRIVATE test-drive::test-drive)
     unset(_cli_opt_refusals_workdir)
 
     # The transition-state search: P-RFO (Cartesian, terco's own
@@ -575,6 +577,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_ts_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_ts_work)
     terco_add_check(check_opt_ts check_opt_ts.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_ts_workdir})
+    target_link_libraries(check_opt_ts PRIVATE test-drive::test-drive)
     unset(_cli_opt_ts_workdir)
 
     # --opt-connect: works via the dimer method (no Hessian); P-RFO is
@@ -583,6 +586,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_connect_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_connect_work)
     terco_add_check(check_opt_connect check_opt_connect.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_connect_workdir})
+    target_link_libraries(check_opt_connect PRIVATE test-drive::test-drive)
     unset(_cli_opt_connect_workdir)
 
     # An installed DLFIND=ON terco can start at all: cmake --install to a
