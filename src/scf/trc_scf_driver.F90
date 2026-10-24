@@ -152,6 +152,11 @@ contains
       type(trc_scf_result_t), intent(out) :: scf_result
       real(dp), intent(in), optional :: dguess(:, :, :)
       real(dp), intent(in), optional :: hguess(:, :)
+      !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
+      !! how SAP gets in (see trc_sap), which cannot come through `dguess`
+      !! because what it produces is a one-electron operator and not a
+      !! density. Ignored if `dguess` is also given: a density the caller
+      !! already has is more specific than a matrix to make one from.
       real(dp), intent(in), optional :: cmo_project(:, :, :)
       !! A PREVIOUS geometry's converged orbitals (SAME molecule/basis, so
       !! the same nao), re-orthonormalised into a guess density at THIS
@@ -160,11 +165,6 @@ contains
       !! TRC_GUESS_PROJECTED, lowest priority of the three guess-density
       !! arguments (checked after `dguess` and `hguess`, same as every
       !! other guess kind the plain `scf_options%guess` string selects).
-      !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
-      !! how SAP gets in (see trc_sap), which cannot come through `dguess`
-      !! because what it produces is a one-electron operator and not a
-      !! density. Ignored if `dguess` is also given: a density the caller
-      !! already has is more specific than a matrix to make one from.
       type(comm_t), intent(in), optional :: comm
       !! Ranks. Every rank runs the same iteration on the same matrices;
       !! the quartets are split across them and the Fock matrix summed

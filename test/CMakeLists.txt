@@ -315,6 +315,7 @@ terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 # header.
 #
 terco_add_check(check_scf_reuse check_scf_reuse.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_reuse PRIVATE test-drive::test-drive terco_c_interfaces)
 
 # The same full analytic gradient, on SPHERICAL cc-pVDZ bases (water/RHF,
 # formamide/RHF, OH/UHF), against pyscf's own Gradients class at a
