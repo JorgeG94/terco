@@ -49,6 +49,10 @@
 !   9. `TRC_GUESS_PROJECTED` through `trc_set_guess`: both its own
 !      refusals (no previous SCF orbitals; a size/spin mismatch against
 !      the previous ones), each with TRC_ERR_STATE.
+!   10. the full C-API path `trc_set_geometry` makes possible: trc_run_scf
+!       at one geometry, trc_set_geometry to a moved one, TRC_GUESS_PROJECTED,
+!       trc_run_scf again -- converges to the same energy as a fresh SAD
+!       run at the moved geometry.
 !
 module check_scf_reuse_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_null_ptr
@@ -64,7 +68,8 @@ module check_scf_reuse_suite
    use trc_error, only: error_t
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                                trc_set_guess, trc_set_unrestricted, trc_set_screening, trc_run_scf, &
-                               trc_run_gradient, TRC_OK, TRC_ERR_STATE, TRC_GUESS_GWH, TRC_GUESS_PROJECTED
+                               trc_run_gradient, trc_set_geometry, trc_energy, trc_converged, &
+                               TRC_OK, TRC_ERR_STATE, TRC_GUESS_GWH, TRC_GUESS_SAD, TRC_GUESS_PROJECTED
    implicit none
    private
    public :: collect_scf_reuse
@@ -109,7 +114,9 @@ contains
          new_unittest("C API: TRC_GUESS_PROJECTED refuses with no previous SCF", &
                       test_capi_projected_no_scf), &
          new_unittest("C API: TRC_GUESS_PROJECTED refuses a size/spin mismatch", &
-                      test_capi_projected_size_mismatch) &
+                      test_capi_projected_size_mismatch), &
+         new_unittest("C API: trc_run_scf -> trc_set_geometry -> TRC_GUESS_PROJECTED -> trc_run_scf "// &
+                      "converges like SAD", test_capi_projected_after_set_geometry) &
          ]
    end subroutine collect_scf_reuse
 
@@ -553,7 +560,8 @@ contains
       end if
 
       ! A setting change -- trc_set_screening calls invalidate_runs too,
-      ! same as every other setter the maintainer's review traced.
+      ! same as every other setter that changes something a cached result
+      ! depends on.
       rc = trc_set_screening(h, 1.0e-10_c_double)
       rc_grad = trc_run_gradient(h)
       rc = trc_destroy(h)
@@ -612,6 +620,83 @@ contains
       call check(error, rc_run == TRC_ERR_STATE, &
                  "TRC_GUESS_PROJECTED at a size/spin mismatch must refuse with TRC_ERR_STATE")
    end subroutine test_capi_projected_size_mismatch
+
+   subroutine test_capi_projected_after_set_geometry(error)
+      !! The path `trc_set_geometry` exists for: trc_run_scf at geometry A,
+      !! trc_set_geometry to geometry B (no basis rebuild), TRC_GUESS_PROJECTED,
+      !! trc_run_scf again. `cx%bb%cmo` (trc_run_scf's own last converged
+      !! orbitals) survives trc_set_geometry's invalidate_runs -- that
+      !! survival is the whole point of TRC_GUESS_PROJECTED's doc comment on
+      !! trc_set_geometry -- so this must converge, and to the SAME energy a
+      !! fresh SAD run at geometry B does.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h_proj, h_sad
+      integer(c_int) :: rc, rc_run, conv_proj, conv_sad
+      integer :: natm
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :), at_r_moved(:, :)
+      real(c_double) :: e_proj, e_sad
+
+      call read_xyz("water.xyz", natm, zint, at_r)
+      allocate (at_r_moved, source=at_r)
+      at_r_moved(3, 1) = at_r_moved(3, 1) + 0.3_dp
+
+      rc = trc_create(h_proj)
+      rc = trc_set_molecule(h_proj, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), &
+                             0_c_int, 1_c_int)
+      rc = trc_set_basis_json(h_proj, "basis_sets/6-31g.json"//c_null_char)
+      rc = trc_set_guess(h_proj, TRC_GUESS_GWH, c_null_ptr, 1_c_int)
+      rc = trc_run_scf(h_proj)
+      call check(error, rc == TRC_OK, "the geometry-A SCF through the C API must converge")
+      if (allocated(error)) then
+         rc = trc_destroy(h_proj)
+         return
+      end if
+
+      rc = trc_set_geometry(h_proj, reshape(at_r_moved, [3*natm]))
+      call check(error, rc == TRC_OK, "trc_set_geometry to the moved geometry must succeed")
+      if (allocated(error)) then
+         rc = trc_destroy(h_proj)
+         return
+      end if
+
+      rc = trc_set_guess(h_proj, TRC_GUESS_PROJECTED, c_null_ptr, 1_c_int)
+      rc_run = trc_run_scf(h_proj)
+      call check(error, rc_run == TRC_OK, "TRC_GUESS_PROJECTED after trc_set_geometry must converge")
+      if (allocated(error)) then
+         rc = trc_destroy(h_proj)
+         return
+      end if
+      rc = trc_converged(h_proj, conv_proj)
+      rc = trc_energy(h_proj, e_proj)
+      rc = trc_destroy(h_proj)
+
+      ! An independent context started fresh at the SAME moved geometry
+      ! with the default SAD guess -- the stationary point the projected
+      ! warm start must agree with.
+      rc = trc_create(h_sad)
+      rc = trc_set_molecule(h_sad, int(natm, c_int), real(zint, c_double), reshape(at_r_moved, [3*natm]), &
+                             0_c_int, 1_c_int)
+      rc = trc_set_basis_json(h_sad, "basis_sets/6-31g.json"//c_null_char)
+      rc = trc_set_guess(h_sad, TRC_GUESS_SAD, c_null_ptr, 1_c_int)
+      rc = trc_run_scf(h_sad)
+      call check(error, rc == TRC_OK, "the reference SAD SCF at the moved geometry must converge")
+      if (allocated(error)) then
+         rc = trc_destroy(h_sad)
+         return
+      end if
+      rc = trc_converged(h_sad, conv_sad)
+      rc = trc_energy(h_sad, e_sad)
+      rc = trc_destroy(h_sad)
+
+      call check(error, conv_proj /= 0_c_int, "trc_converged must report the projected run as converged")
+      if (allocated(error)) return
+      call check(error, conv_sad /= 0_c_int, "trc_converged must report the SAD reference run as converged")
+      if (allocated(error)) return
+      call check(error, real(e_proj, dp), real(e_sad, dp), thr=TOL_ENERGY, &
+                 message="TRC_GUESS_PROJECTED after trc_set_geometry converges to a different "// &
+                 "energy than a fresh SAD run")
+   end subroutine test_capi_projected_after_set_geometry
 
 end module check_scf_reuse_suite
 

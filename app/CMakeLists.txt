@@ -10,7 +10,26 @@ include(GNUInstallDirs)
 
 set(TERCO_BASIS_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/terco/basis_sets")
 
-add_executable(terco_cli main.F90 terco_app.F90)
+#
+# --opt (DL-FIND), behind TERCO_ENABLE_DLFIND -- see that option's own
+# comment in the root CMakeLists.txt for the licensing reason it defaults
+# OFF. Either way terco_cli gets exactly one of the two bridge sources,
+# both module `trc_dlfind_bridge` with the same public interface
+# (trc_dlfind_optimize), so main.F90 never branches on which build this is:
+# with the option OFF, the stub refuses --opt with a message instead of
+# failing to link. libdlfind itself (fetched by cmake/modules/
+# Findlibdlfind.cmake) is linked ONLY here, into the executable, never into
+# ${main_lib} -- that is what keeps the LGPL relink obligation and
+# DL-FIND's `error stop` out of the library.
+#
+if(TERCO_ENABLE_DLFIND)
+  find_package(libdlfind REQUIRED)
+  set(_dlfind_bridge_src trc_dlfind_bridge.F90)
+else()
+  set(_dlfind_bridge_src trc_dlfind_stub.F90)
+endif()
+
+add_executable(terco_cli main.F90 terco_app.F90 ${_dlfind_bridge_src})
 set_target_properties(
   terco_cli PROPERTIES OUTPUT_NAME terco Fortran_MODULE_DIRECTORY
                                          ${CMAKE_CURRENT_BINARY_DIR}/modules)
@@ -22,6 +41,32 @@ target_compile_definitions(
 # communicator's Fortran handle, itself (app/main.F90) -- the library only
 # ever sees the handle trc_set_comm hands it.
 target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi)
+if(TERCO_ENABLE_DLFIND)
+  target_compile_definitions(terco_cli PRIVATE TERCO_ENABLE_DLFIND)
+  target_link_libraries(terco_cli PRIVATE libdlfind::libdlfind)
+  # Findlibdlfind.cmake's EXCLUDE_FROM_ALL keeps libdlfind's OWN
+  # install() rules (its own CMakeLists.txt, not this one) from firing --
+  # it is a dependency built for terco_cli to link, not libterco's to
+  # ship. That does not exempt terco_cli's own RPATH ($ORIGIN/../lib,
+  # below) from needing it there too: an installed DLFIND=ON terco could
+  # not start at all without this, since libdlfind.so was never copied
+  # anywhere under the install prefix. Installed here, from THIS
+  # directory's scope (install() on an EXCLUDE_FROM_ALL target still
+  # works when a target outside that subdirectory asks for it), into the
+  # SAME lib/ libterco installs to (the root CMakeLists.txt) -- still a
+  # separate file from libterco.so, still never linked into it.
+  # libdlfind's own CMakeLists.txt also sets a PUBLIC_HEADER property on
+  # this target (include/libdlfind.h, relative to ITS source directory).
+  # Naming a PUBLIC_HEADER DESTINATION here would make CMake resolve that
+  # relative path against THIS directory instead and fail to find it --
+  # cross-directory install() has no way to ask for the original
+  # directory back. Harmless to skip: terco_cli never reads that header
+  # (trc_dlfind_bridge.F90 declares api_dl_find's interface itself), so
+  # the resulting "no PUBLIC_HEADER DESTINATION" dev warning is the
+  # correct outcome here, not a bug to silence.
+  install(TARGETS dlfind LIBRARY DESTINATION lib RUNTIME DESTINATION lib)
+endif()
+unset(_dlfind_bridge_src)
 # Find libterco next to the install's bin/, wherever the prefix is moved to.
 # The library installs to lib/ (the root CMakeLists.txt), not LIBDIR.
 if(APPLE)
@@ -46,6 +91,18 @@ endif()
 if(TERCO_ENABLE_TESTING AND TARGET check_cli_hessian)
   add_dependencies(check_cli_hessian terco_cli)
 endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_opt)
+  add_dependencies(check_cli_opt terco_cli)
+endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_opt_vs_mqc)
+  add_dependencies(check_opt_vs_mqc terco_cli)
+endif()
+foreach(_opt_pyscf_case water hcn)
+  if(TERCO_ENABLE_TESTING AND TARGET check_opt_vs_pyscf_${_opt_pyscf_case})
+    add_dependencies(check_opt_vs_pyscf_${_opt_pyscf_case} terco_cli)
+  endif()
+endforeach()
+unset(_opt_pyscf_case)
 
 # The basis sets the tests use, so `--basis def2-svp` works out of the box
 # after an install. sap_helfem_large.json is not a basis but the fitted atomic
