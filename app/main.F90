@@ -1139,6 +1139,7 @@ program terco_main
    ! --opt
    character(len=:), allocatable :: opt_base, opt_refusal
    integer :: opt_base_slash
+   logical :: opt_hessian_relevant, opt_zero_soft_relevant
    integer, allocatable :: opt_residues(:)
    type(trc_opt_options_t) :: opt_opts
    type(trc_opt_result_t) :: opt_res
@@ -1442,6 +1443,23 @@ program terco_main
       call resolve_basis(sval, r%jkfit_path, r%err)
       if (r%err%has_error()) call die(r, "--jkfit: "//r%err%get_message())
    end if
+   ! Every --opt-* option is parsed inside `if (r%opt) then` below, so one
+   ! given without --opt itself would otherwise do nothing silently --
+   ! refused here instead, before that block, so a command line that sets
+   ! one always means what it says.
+   if (.not. r%opt) then
+      block
+         character(len=*), parameter :: opt_options(*) = [character(len=18) :: &
+            "opt-coords", "opt-guess", "opt-maxiter", "opt-gtol", "opt-target", "opt-saddle-method", &
+            "opt-connect", "opt-algorithm", "opt-init-hessian", "opt-hessian-update", "opt-max-updates", &
+            "opt-zero-modes", "opt-soft-modes", "opt-max-step", "opt-linesearch", "opt-scalestep", &
+            "opt-lbfgs-memory", "opt-etol", "opt-print-level"]
+         integer :: k
+         do k = 1, size(opt_options)
+            if (r%cli%is_set(trim(opt_options(k)))) call die(r, "--"//trim(opt_options(k))//" needs --opt")
+         end do
+      end block
+   end if
    ! Validated LAST among the feature flags above: opt_capability_check
    ! reads r%func/r%rimp2/r%dh/r%pcm, every one of which must already be
    ! resolved (not just r%cli%is_set) for the check to see what the run
@@ -1607,7 +1625,11 @@ program terco_main
       if (r%cli%is_set("opt-max-updates")) then
          call r%cli%get("opt-max-updates", r%opt_max_updates, r%err)
          call check(r, "--opt-max-updates")
-         if (r%opt_max_updates < 1) call die(r, "--opt-max-updates must be at least 1")
+         ! 0 is accepted by DL-FIND itself (dlf_formstep.f90's own
+         ! iupd>=maxupd test, iupd starting at 0): it recomputes the
+         ! Hessian fresh every step rather than ever updating it, not a
+         ! degenerate "no Hessian" case.
+         if (r%opt_max_updates < 0) call die(r, "--opt-max-updates must be at least 0")
       end if
       if (r%cli%is_set("opt-zero-modes")) then
          call r%cli%get("opt-zero-modes", r%opt_zero_modes, r%err)
@@ -1621,6 +1643,53 @@ program terco_main
          call r%cli%get("opt-soft-modes", r%opt_soft_modes, r%err)
          call check(r, "--opt-soft-modes")
          if (r%opt_soft_modes <= 0.0_dp) call die(r, "--opt-soft-modes must be positive")
+      end if
+
+      ! --opt-init-hessian/--opt-hessian-update/--opt-max-updates:
+      ! meaningful only for P-RFO or NR (cb_get_params' own
+      ! is_prfo_or_nr branch; DL-FIND never reads inithessian/update/
+      ! maxupd for any other algorithm) -- refused rather than silently
+      ! ignored, so a command line that sets one means what it says.
+      opt_hessian_relevant = (r%opt_target_kind == TRC_OPT_TARGET_SADDLE .and. &
+                              r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) .or. &
+                             (r%opt_target_kind == TRC_OPT_TARGET_MINIMUM .and. &
+                              (r%opt_algorithm_kind == TRC_OPT_ALG_PRFO .or. r%opt_algorithm_kind == TRC_OPT_ALG_NR))
+      if (.not. opt_hessian_relevant) then
+         if (r%cli%is_set("opt-init-hessian")) call die(r, "--opt-init-hessian needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle --opt-saddle-method prfo")
+         if (r%cli%is_set("opt-hessian-update")) call die(r, "--opt-hessian-update needs --opt-algorithm "// &
+                  "prfo/nr or --opt-target saddle --opt-saddle-method prfo")
+         if (r%cli%is_set("opt-max-updates")) call die(r, "--opt-max-updates needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle --opt-saddle-method prfo")
+      end if
+
+      ! --opt-zero-modes/--opt-soft-modes: meaningful for P-RFO, NR or
+      ! the dimer method (cb_get_params' own nzero/soft handling) --
+      ! refused the same way for every algorithm that never reads them.
+      opt_zero_soft_relevant = (r%opt_target_kind == TRC_OPT_TARGET_SADDLE) .or. &
+                               (r%opt_target_kind == TRC_OPT_TARGET_MINIMUM .and. &
+                                (r%opt_algorithm_kind == TRC_OPT_ALG_PRFO .or. r%opt_algorithm_kind == TRC_OPT_ALG_NR))
+      if (.not. opt_zero_soft_relevant) then
+         if (r%cli%is_set("opt-zero-modes")) call die(r, "--opt-zero-modes needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle")
+         if (r%cli%is_set("opt-soft-modes")) call die(r, "--opt-soft-modes needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle")
+      end if
+
+      ! A single atom has no internal degrees of freedom: P-RFO/NR/the
+      ! dimer method in Cartesian coordinates default nzero to 6 (5 if
+      ! linear, never reached with one atom), which already exceeds
+      ! nvar=3 before any eigenvector-following step could even be
+      ! attempted -- refused here rather than left to DL-FIND, which has
+      ! no graceful way to decline a run it cannot do.
+      if (r%natm == 1 .and. r%opt_coords_kind == TRC_OPT_COORDS_CARTESIAN .and. opt_zero_soft_relevant) then
+         call die(r, "--opt-algorithm prfo/nr and --opt-target saddle need more than one atom in Cartesian "// &
+                  "coordinates: a single atom has no internal degrees of freedom to search over")
+      end if
+      if (r%cli%is_set("opt-zero-modes") .and. r%opt_zero_modes > 3*r%natm - 1) then
+         call die(r, "--opt-zero-modes "//to_string(r%opt_zero_modes)//" leaves fewer than one true "// &
+                  "degree of freedom for a "//to_string(r%natm)//"-atom molecule (3*natm = "// &
+                  to_string(3*r%natm)//")")
       end if
 
       ! ---- step/trust controls -------------------------------------------
