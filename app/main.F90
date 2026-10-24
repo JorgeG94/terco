@@ -31,8 +31,8 @@ module terco_run
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
-   use terco_app, only: element_symbol, f_string, BOHR_PER_ANGSTROM
-   use trc_vib, only: trc_vib_log_table
+   use terco_app, only: element_symbol, f_string, BOHR_PER_ANGSTROM, write_opt_xyz_frame, write_traj_xyz_frames
+   use trc_vib, only: trc_vib_log_table, trc_vib_rotor
    use trc_thermo, only: trc_thermo_result_t, trc_thermo_log_summary
    use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average, trc_covalent_radius
    use trc_error, only: mass_error_t => error_t
@@ -97,15 +97,16 @@ module terco_run
       integer :: opt_coords_kind = 0, opt_guess_kind = 0
       integer :: opt_maxiter = 100
       real(dp) :: opt_gtol = 4.5e-4_dp
+      real(dp) :: opt_max_step = -1.0_dp   !! negative = DL-FIND's own default (trc_opt_options_t%max_step)
       logical :: opt_converged = .false.
       integer :: opt_steps = 0, opt_evals = 0, opt_hess_evals = 0
       real(dp) :: opt_gmax = 0.0_dp, opt_grms = 0.0_dp
       integer :: opt_n_traj = 0
       real(dp), allocatable :: opt_traj_energy(:)
       real(dp), allocatable :: opt_final_xyz(:, :)   !! (3, natm), Bohr -- the optimised geometry
-      ! Added on top of feat/geo-opt: algorithm, target (minimum/saddle),
-      ! the two saddle methods, `connect`, and the external-Hessian
-      ! control -- every one of these is also one of
+      ! Algorithm, target (minimum/saddle), the two saddle methods,
+      ! `connect`, and the external-Hessian control -- every one of these
+      ! is also one of
       ! trc_dlfind_bridge's own TRC_OPT_* enums (app/trc_dlfind_bridge.F90,
       ! app/trc_dlfind_stub.F90), stored here as the plain integer both
       ! modules define identically, same reason opt_coords_kind/
@@ -119,7 +120,7 @@ module terco_run
       logical :: opt_is_linear = .false.
       integer :: opt_hessian_source_kind = 0  !! TRC_OPT_HESS_TERCO
       integer :: opt_hessian_update_kind = -1, opt_max_updates = -1, opt_zero_modes = -1
-      real(dp) :: opt_soft_modes = -1.0_dp, opt_max_step = -1.0_dp, opt_scalestep = -1.0_dp
+      real(dp) :: opt_soft_modes = -1.0_dp, opt_scalestep = -1.0_dp
       integer :: opt_linesearch_kind = -1   !! TRC_OPT_LINE_AUTO
       integer :: opt_lbfgs_memory = -1
       real(dp) :: opt_etol = -1.0_dp
@@ -129,6 +130,8 @@ module terco_run
       ! not fail.
       logical :: opt_have_ts = .false., opt_have_min_plus = .false., opt_have_min_minus = .false.
       real(dp) :: opt_ts_energy = 0.0_dp, opt_min_plus_energy = 0.0_dp, opt_min_minus_energy = 0.0_dp
+      real(dp) :: opt_ts_gmax = 0.0_dp, opt_min_plus_gmax = 0.0_dp, opt_min_minus_gmax = 0.0_dp
+      logical :: opt_ts_converged = .false., opt_min_plus_converged = .false., opt_min_minus_converged = .false.
       real(dp), allocatable :: opt_ts_xyz(:, :), opt_min_plus_xyz(:, :), opt_min_minus_xyz(:, :)
    end type run_t
 
@@ -501,56 +504,36 @@ contains
    end function opt_capability_check
 
    !
-   ! A cheap GEOMETRIC linearity test on the start geometry (no masses, no
-   ! Hessian -- those are not available yet at --opt's own start, unlike
-   ! trc_vib's own is_linear, which comes out of a moment-of-inertia
-   ! analysis AFTER a Hessian exists). Used only to pick --opt-zero-modes'
-   ! own auto-default (5 for a linear molecule's Cartesian P-RFO saddle
+   ! Whether the start geometry is linear, for --opt-zero-modes' own
+   ! auto-default (5 for a linear molecule's Cartesian P-RFO/NR/dimer
    ! search, 6 otherwise -- DL-FIND's own zero-mode count for the rigid
-   ! translations/rotations a Cartesian search carries). Two
-   ! atoms: always linear. Three or more: every atom's perpendicular
-   ! distance from the line through the two FARTHEST-apart atoms must be
-   ! below TOL times that distance, so the test is scale-invariant and
-   ! never trips on a loose --opt-gtol's worth of bending.
+   ! translations/rotations a Cartesian search carries). Reuses
+   ! trc_vib's own moment-of-inertia rotor test (trc_vib_rotor,
+   ! MOMENT_LINEAR_TOL_AMUA2) rather than a separate geometric criterion,
+   ! so "linear" means the same thing everywhere in terco: trc_thermo's
+   ! own is_atom/is_linear picks its rotor formulas from the SAME
+   ! threshold, and this and that can never disagree on the same
+   ! geometry. trc_vib_rotor needs only masses and Cartesian coordinates,
+   ! no Hessian -- what this is available with at --opt's own start.
    !
-   pure function opt_geometry_is_linear(natm, xyz) result(linear)
+   ! This runs ONCE, on the start geometry: DL-FIND's own interface takes
+   ! `nzero` as a fixed parameter at cb_get_params (called once, before
+   ! the search begins, see trc_dlfind_bridge), so a search that bends a
+   ! started-linear molecule (or straightens a bent one) cannot have its
+   ! zero-mode count re-evaluated mid-search through that interface.
+   !
+   function opt_geometry_is_linear(natm, z, xyz, err) result(linear)
       integer, intent(in) :: natm
+      integer, intent(in) :: z(natm)
       real(dp), intent(in) :: xyz(3, natm)
+      type(mass_error_t), intent(inout) :: err
       logical :: linear
-      real(dp), parameter :: TOL = 1.0e-3_dp
-      real(dp) :: dmax, d, t
-      real(dp) :: axis(3), v(3), perp(3)
-      integer :: i, j, imax, jmax, k
-      linear = .true.
-      if (natm <= 2) return
-      dmax = -1.0_dp
-      imax = 1
-      jmax = 2
-      do i = 1, natm - 1
-         do j = i + 1, natm
-            d = norm2(xyz(:, i) - xyz(:, j))
-            if (d > dmax) then
-               dmax = d
-               imax = i
-               jmax = j
-            end if
-         end do
-      end do
-      if (dmax <= 0.0_dp) then
-         linear = .false.   !! coincident atoms: not a sane geometry to call linear
-         return
-      end if
-      axis = (xyz(:, jmax) - xyz(:, imax))/dmax
-      do k = 1, natm
-         if (k == imax .or. k == jmax) cycle
-         v = xyz(:, k) - xyz(:, imax)
-         t = dot_product(v, axis)
-         perp = v - t*axis
-         if (norm2(perp) > TOL*dmax) then
-            linear = .false.
-            return
-         end if
-      end do
+      real(dp), allocatable :: mass(:)
+      integer :: n_tr, info
+      linear = .false.
+      call build_masses(z, "isotope", mass, err)
+      if (err%has_error()) return
+      call trc_vib_rotor(mass, xyz, linear, n_tr, info)
    end function opt_geometry_is_linear
 
    !
@@ -678,21 +661,27 @@ contains
          if (r%opt_have_ts) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,f22.12,a)") "   transition state : ", r%opt_ts_energy, " Eh"
+               write (logline, "(a,f22.12,a,a,a,es10.3,a)") "   transition state : ", r%opt_ts_energy, " Eh   ", &
+                  trim(merge("converged    ", "NOT converged", r%opt_ts_converged)), "   max|g|: ", r%opt_ts_gmax, &
+                  " Eh/Bohr"
                call global_logger%info(trim(logline))
             end block
          end if
          if (r%opt_have_min_minus) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,f22.12,a)") "   minimum (-distort): ", r%opt_min_minus_energy, " Eh"
+               write (logline, "(a,f22.12,a,a,a,es10.3,a)") "   minimum (-distort): ", r%opt_min_minus_energy, " Eh   ", &
+                  trim(merge("converged    ", "NOT converged", r%opt_min_minus_converged)), "   max|g|: ", &
+                  r%opt_min_minus_gmax, " Eh/Bohr"
                call global_logger%info(trim(logline))
             end block
          end if
          if (r%opt_have_min_plus) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,f22.12,a)") "   minimum (+distort): ", r%opt_min_plus_energy, " Eh"
+               write (logline, "(a,f22.12,a,a,a,es10.3,a)") "   minimum (+distort): ", r%opt_min_plus_energy, " Eh   ", &
+                  trim(merge("converged    ", "NOT converged", r%opt_min_plus_converged)), "   max|g|: ", &
+                  r%opt_min_plus_gmax, " Eh/Bohr"
                call global_logger%info(trim(logline))
             end block
          end if
@@ -767,15 +756,8 @@ contains
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: xyz_bohr(3, r%natm)
-      integer :: u, ia
-      open (newunit=u, file=path, status="replace", action="write")
-      write (u, "(i0)") r%natm
-      write (u, "(a,a,f0.12)") trim(merge("converged    ", "NOT converged", r%opt_converged)), &
-         "   E = ", r%etot
-      do ia = 1, r%natm
-         write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
-      end do
-      close (u)
+      call write_opt_xyz_frame(path, r%natm, r%z, real(r%etot, dp), xyz_bohr, &
+                               trim(merge("converged    ", "NOT converged", r%opt_converged)))
    end subroutine write_opt_xyz
 
    !
@@ -813,16 +795,7 @@ contains
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: traj_xyz_bohr(3, r%natm, r%opt_n_traj)
       real(dp), intent(in) :: traj_energy(r%opt_n_traj)
-      integer :: u, ia, k
-      open (newunit=u, file=path, status="replace", action="write")
-      do k = 1, r%opt_n_traj
-         write (u, "(i0)") r%natm
-         write (u, "(a,i0,a,f0.12)") "step ", k, "   E = ", traj_energy(k)
-         do ia = 1, r%natm
-            write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), traj_xyz_bohr(:, ia, k)/BOHR_PER_ANGSTROM
-         end do
-      end do
-      close (u)
+      call write_traj_xyz_frames(path, r%natm, r%z, r%opt_n_traj, traj_xyz_bohr, traj_energy)
    end subroutine write_traj_xyz
 
    !
@@ -1021,8 +994,7 @@ contains
    !
    ! --opt's JSON block: converged, step/evaluation counts, the final
    ! energy and gradient, the coordinate system, the trajectory's
-   ! per-step energies and the final geometry -- the fields this PR's
-   ! brief asks --json to carry for --opt. The final geometry is in
+   ! per-step energies and the final geometry. The final geometry is in
    ! Angstrom, named accordingly so a reader never has to guess the unit
    ! the way it would from a bare "final_geometry".
    !
@@ -1030,7 +1002,7 @@ contains
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
-      type(json_value), pointer :: oobj, rows
+      type(json_value), pointer :: oobj, rows, csub
       integer :: ia
 
       call json%create_object(oobj, "optimization")
@@ -1062,12 +1034,35 @@ contains
          call json%add(oobj, rows)
       end if
       if (r%opt_connect) then
+         ! Each sub-search's OWN convergence verdict and gradient, never
+         ! another sub-search's -- the top-level converged/final_gradient_max
+         ! above are the TS search's own (trc_dlfind_bridge's own override),
+         ! but a reader who wants the two downhill minima's separately
+         ! finds them here instead of having to infer them.
          call json%add(oobj, "ts_found", r%opt_have_ts)
-         if (r%opt_have_ts) call json%add(oobj, "ts_energy", r%opt_ts_energy)
+         if (r%opt_have_ts) then
+            call json%create_object(csub, "ts")
+            call json%add(csub, "energy", r%opt_ts_energy)
+            call json%add(csub, "converged", r%opt_ts_converged)
+            call json%add(csub, "final_gradient_max", r%opt_ts_gmax)
+            call json%add(oobj, csub)
+         end if
          call json%add(oobj, "minimum_minus_found", r%opt_have_min_minus)
-         if (r%opt_have_min_minus) call json%add(oobj, "minimum_minus_energy", r%opt_min_minus_energy)
+         if (r%opt_have_min_minus) then
+            call json%create_object(csub, "minimum_minus")
+            call json%add(csub, "energy", r%opt_min_minus_energy)
+            call json%add(csub, "converged", r%opt_min_minus_converged)
+            call json%add(csub, "final_gradient_max", r%opt_min_minus_gmax)
+            call json%add(oobj, csub)
+         end if
          call json%add(oobj, "minimum_plus_found", r%opt_have_min_plus)
-         if (r%opt_have_min_plus) call json%add(oobj, "minimum_plus_energy", r%opt_min_plus_energy)
+         if (r%opt_have_min_plus) then
+            call json%create_object(csub, "minimum_plus")
+            call json%add(csub, "energy", r%opt_min_plus_energy)
+            call json%add(csub, "converged", r%opt_min_plus_converged)
+            call json%add(csub, "final_gradient_max", r%opt_min_plus_gmax)
+            call json%add(oobj, csub)
+         end if
       end if
       call json%add(root, oobj)
    end subroutine add_optimization
@@ -1231,7 +1226,10 @@ program terco_main
                        "refused otherwise). Warm-starts the SCF between steps; writes <geometry>_opt.xyz "// &
                        "and <geometry>_traj.xyz into the CURRENT WORKING DIRECTORY (named from the input "// &
                        "geometry's own base name), and an 'optimization' block to --json. "// &
-                       "Combined with --hessian, the Hessian runs at the OPTIMISED geometry")
+                       "Combined with --hessian, the Hessian runs at the OPTIMISED geometry. If a step's "// &
+                       "SCF fails to converge even after one retry, DL-FIND has no recovery: terco writes "// &
+                       "the files/JSON above (marked failed, with the last ACCEPTED geometry) and the "// &
+                       "process then stops abnormally from inside DL-FIND, not through terco's own exit path")
    call r%cli%add_option("opt-coords", "internal coordinates for --opt: cartesian, hdlc, hdlc-tc, dlc "// &
                          "or dlc-tc (cartesian)", default="cartesian")
    call r%cli%add_option("opt-maxiter", "maximum number of --opt steps (100)", default="100")
@@ -1261,12 +1259,16 @@ program terco_main
    call r%cli%add_option("opt-max-updates", "maximum Hessian updates before prfo/nr recomputes one "// &
                          "(DL-FIND's own default, 50)")
    call r%cli%add_option("opt-zero-modes", "modes assumed to have zero vibrational frequency, for "// &
-                         "prfo/nr's Hessian (nzero); default 6 for a Cartesian P-RFO saddle search (5 "// &
+                         "prfo/nr's Hessian (nzero); default 6 with --opt-coords cartesian and "// &
+                         "--opt-algorithm prfo/nr (minimum or saddle) or --opt-saddle-method dimer (5 "// &
                          "if the start geometry is linear -- otherwise the search climbs a rotation), "// &
                          "DL-FIND's own default (0) otherwise")
    call r%cli%add_option("opt-soft-modes", "eigenmodes of prfo/nr's Hessian below this value (Eh/Bohr^2) "// &
                          "are treated as soft (DL-FIND's own default: none)")
-   call r%cli%add_option("opt-max-step", "maximum step size, Bohr in Cartesians (DL-FIND's own default, 0.5)")
+   call r%cli%add_option("opt-max-step", "DL-FIND's own ceiling on a trust-radius step, Bohr -- also the "// &
+                         "ceiling the trust radius may grow to across accepted steps (DL-FIND's own "// &
+                         "default, 0.5, unless given); raising it lets the optimiser attempt a larger, "// &
+                         "possibly-rejected trial sooner")
    call r%cli%add_option("opt-linesearch", "trust radius/line search: auto (DL-FIND's own default, which "// &
                          "depends on --opt-algorithm), scaling, energy-trust or gradient-trust (auto)", &
                          default="auto")
@@ -1519,7 +1521,7 @@ program terco_main
             case ("lbfgs")
                r%opt_algorithm_kind = TRC_OPT_ALG_LBFGS
             case ("prfo")
-               r%opt_algorithm_kind = TRC_OPT_ALG_PRFO   !! P-RFO as a plain minimiser: valid, just unusual
+               r%opt_algorithm_kind = TRC_OPT_ALG_PRFO   ! P-RFO as a plain minimiser: valid, just unusual
             case ("nr")
                r%opt_algorithm_kind = TRC_OPT_ALG_NR
             case ("damped")
@@ -1754,9 +1756,10 @@ program terco_main
          call build_opt_residues(r%natm, r%z, xyz, opt_residues, r%err)
          if (r%err%has_error()) call die(r, r%err%get_message())
       else
-         opt_residues = 1   !! cartesian/dlc/dlc-tc: trc_dlfind_bridge's own driver needs no real partition
+         opt_residues = 1   ! cartesian/dlc/dlc-tc: trc_dlfind_bridge's own driver needs no real partition
       end if
-      r%opt_is_linear = opt_geometry_is_linear(r%natm, xyz)
+      r%opt_is_linear = opt_geometry_is_linear(r%natm, r%z, xyz, herr)
+      if (herr%has_error()) call die(r, "--opt: "//herr%get_message())
 
       opt_opts%coords_kind = r%opt_coords_kind
       opt_opts%guess_kind = r%opt_guess_kind
@@ -1780,6 +1783,31 @@ program terco_main
       opt_opts%etol = r%opt_etol
       opt_opts%print_level = r%opt_print_level
 
+      ! <geometry base>_opt.xyz/_traj.xyz's own path, and --json's (if
+      ! given): trc_dlfind_optimize needs these BEFORE it runs, not after,
+      ! because an unrecoverable mid-run SCF failure writes them from
+      ! inside a DL-FIND callback (trc_dlfind_bridge%fail_eval) -- DL-FIND
+      ! itself stops the process right after, so nothing after this call
+      ! returns would ever get the chance.
+      opt_base = r%geom
+      if (len(opt_base) > 4) then
+         if (to_lower(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
+      end if
+      ! Written into the CURRENT WORKING DIRECTORY, not next to the input
+      ! geometry: a directory part in r%geom (an absolute path, or one
+      ! outside the CWD) must not steer these writes somewhere a test's
+      ! own WORKING_DIRECTORY (ctest's convention, test/CMakeLists.txt)
+      ! does not expect -- DL-FIND's own path*.xyz already go to the CWD
+      ! (dl-find.f90), so this matches.
+      opt_base_slash = scan(opt_base, "/", back=.true.)
+      if (opt_base_slash > 0) opt_base = opt_base(opt_base_slash + 1:)
+      opt_opts%opt_xyz_path = opt_base//"_opt.xyz"
+      opt_opts%traj_xyz_path = opt_base//"_traj.xyz"
+      opt_opts%json_path = r%json
+      opt_opts%geometry_path = r%geom
+      opt_opts%coords_name = r%opt_coords_arg
+      opt_opts%guess_name = r%opt_guess_arg
+
       call trc_dlfind_optimize(r%h, r%natm, r%z, opt_residues, xyz, opt_opts, opt_res)
       if (opt_res%failed) call die(r, "--opt: "//opt_res%message)
 
@@ -1795,25 +1823,35 @@ program terco_main
       if (opt_res%have_ts) then
          r%opt_ts_energy = opt_res%ts_energy
          r%opt_ts_xyz = opt_res%ts_coords
+         r%opt_ts_gmax = opt_res%ts_gmax
+         r%opt_ts_converged = opt_res%ts_converged
       end if
       r%opt_have_min_plus = opt_res%have_minimum_plus
       if (opt_res%have_minimum_plus) then
          r%opt_min_plus_energy = opt_res%minimum_plus_energy
          r%opt_min_plus_xyz = opt_res%minimum_plus_coords
+         r%opt_min_plus_gmax = opt_res%minimum_plus_gmax
+         r%opt_min_plus_converged = opt_res%minimum_plus_converged
       end if
       r%opt_have_min_minus = opt_res%have_minimum_minus
       if (opt_res%have_minimum_minus) then
          r%opt_min_minus_energy = opt_res%minimum_minus_energy
          r%opt_min_minus_xyz = opt_res%minimum_minus_coords
+         r%opt_min_minus_gmax = opt_res%minimum_minus_gmax
+         r%opt_min_minus_converged = opt_res%minimum_minus_converged
       end if
       xyz = opt_res%final_coords
       r%opt_final_xyz = xyz
-      r%grad = .true.   !! so the existing --grad path below reports the final gradient too
+      r%grad = .true.   ! so the existing --grad path below reports the final gradient too
 
-      ! Re-converge the context at the reported final geometry: api_dl_find
-      ! may leave the context at one more (rejected) line-search trial
-      ! past the last ACCEPTED step by the time it returns, and every
-      ! getter below must report exactly the geometry --opt writes out.
+      ! Re-converge the context at the reported final (ACCEPTED) geometry:
+      ! cb_get_gradient calls trc_set_geometry/trc_run_scf for EVERY
+      ! evaluation, including a rejected trial that happens after the last
+      ! accepted step (e.g. --opt-maxiter stops the run right after one),
+      ! so by the time api_dl_find returns, the context may be sitting at
+      ! that later trial's geometry/SCF, not opt_res%final_coords's own.
+      ! Every getter below must report exactly the geometry --opt writes
+      ! out.
       call api(r, trc_set_geometry(r%h, reshape(real(xyz, c_double), [3*r%natm])))
       st = trc_run_scf(r%h)
    else if (len(r%restart) > 0) then
@@ -1891,18 +1929,8 @@ program terco_main
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
    if (r%rank0 .and. r%opt) then
-      opt_base = r%geom
-      if (len(opt_base) > 4) then
-         if (to_lower(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
-      end if
-      ! Written into the CURRENT WORKING DIRECTORY, not next to the input
-      ! geometry: a directory part in r%geom (an absolute path, or one
-      ! outside the CWD) must not steer these writes somewhere a test's
-      ! own WORKING_DIRECTORY (ctest's convention, test/CMakeLists.txt)
-      ! does not expect -- DL-FIND's own path*.xyz already go to the CWD
-      ! (dl-find.f90), so this now matches.
-      opt_base_slash = scan(opt_base, "/", back=.true.)
-      if (opt_base_slash > 0) opt_base = opt_base(opt_base_slash + 1:)
+      ! opt_base (and opt_opts%opt_xyz_path/traj_xyz_path built from it)
+      ! was already computed before trc_dlfind_optimize ran, above.
       call write_opt_xyz(r, opt_base//"_opt.xyz", xyz)
       if (r%opt_n_traj > 0) call write_traj_xyz(r, opt_base//"_traj.xyz", opt_res%traj_coords, r%opt_traj_energy)
       call global_logger%info("   wrote "//opt_base//"_opt.xyz and "//opt_base//"_traj.xyz")
@@ -1926,6 +1954,15 @@ program terco_main
 
    if (r%conv == 0) then
       if (r%rank0) call global_logger%error("terco: the SCF did not converge in "//to_string(int(r%niter))//" iterations")
+      call quit(r, 2)
+   end if
+   if (r%opt .and. .not. r%opt_converged) then
+      ! Matches the SCF's own non-convergence above: a CLI run that did
+      ! not reach the thing it was asked to do must not exit 0 and claim
+      ! "normal termination" -- opt_summary already printed "NOT
+      ! converged" above, this just makes the exit code agree with it.
+      if (r%rank0) call global_logger%error("terco: --opt did not converge in "// &
+                                             to_string(r%opt_steps)//" accepted step(s)")
       call quit(r, 2)
    end if
    if (r%rank0) then

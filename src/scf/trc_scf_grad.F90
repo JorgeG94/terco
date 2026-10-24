@@ -130,7 +130,7 @@ contains
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
                                func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux, &
-                               verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache)
+                               verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -208,18 +208,29 @@ contains
       !! The SCF's own pair list and (outside `--df`) four-centre engine,
       !! kept alive since `trc_scf_run` (trc_scf_context.F90's
       !! `trc_pair_eri_cache_t` own header) -- reused here INSTEAD of a
-      !! fresh `pl%build`/`eri%build` when `pair_eri_cache%built` and its
-      !! `thresh_built` matches this call's own `thresh` EXACTLY (both
+      !! fresh `pl%build`/`eri%build` when `pair_eri_cache%matches(b, thresh)`
+      !! (that function's own header: the build threshold EXACTLY, both
       !! sides read it from the same deterministic `eri_thresh_env`, so a
-      !! real match is bit-identical, never a near-miss): geometry is
-      !! covered for free, because any change to it would have cleared
-      !! `cx%scf_ok` before trc_capi.F90 could reach this call (the same
-      !! reasoning `trc_run_gradient`'s own GRID REUSE already relies on
-      !! for `grid`/`xg`, right above). A mismatch (a different `--thresh`
-      !! set after the SCF ran, or the cache simply absent) rebuilds a
-      !! fresh pair list/engine exactly as before this argument existed --
-      !! this is a pure performance path, never a correctness one, same as
-      !! the grid's.
+      !! real match is bit-identical, never a near-miss, AND the cache's
+      !! own geometry/basis fingerprint still matches `b` -- the backstop a
+      !! Fortran caller needs, since the C API's own staleness check
+      !! (`cx%scf_ok`, `trc_run_gradient`'s own GRID REUSE note above) is
+      !! what covers geometry for THAT caller, not this routine). The
+      !! four-centre engine is reused only when, on top of that,
+      !! `batch_res_built` is the default (1) -- the same batching this
+      !! routine's OWN fresh build below always uses (`eri%build` with no
+      !! `batch_res`), so a cache built at a non-default
+      !! `trc_set_batching` would otherwise make "with cache" and "without"
+      !! differ by more than round-off. A mismatch (a different `--thresh`
+      !! or batching set after the SCF ran, a moved geometry, or the cache
+      !! simply absent) rebuilds a fresh pair list/engine exactly as before
+      !! this argument existed -- this is a pure performance path, never a
+      !! correctness one, same as the grid's.
+      logical, intent(out), optional :: reused
+      !! Set to whether this call actually took the reuse path (the pair
+      !! list, and -- outside `--df` -- the four-centre engine too) rather
+      !! than rebuilding: the only way a caller or a test can tell the two
+      !! paths apart, since they agree on the numbers by construction.
       integer, intent(in), optional :: nlc_grid_level
       !! VV10's own grid level -- see this subroutine's own header, VV10.
       !! Absent means `trc_scf_settings%DEFAULT_NLC_GRID_LEVEL`, the SAME
@@ -338,14 +349,17 @@ contains
 
       call gst%step_off(lp, 1, tc)
       call gst%step_on(lp, 2, tc)
-      ! REUSE, see `pair_eri_cache`'s own header above: a real match is
-      ! bit-identical (both `thresh_built` and this call's own `thresh`
-      ! come from the same `eri_thresh_env`), so comparing them with ==
-      ! is exactly the gate wanted, not a near-miss worth a tolerance.
+      ! REUSE, see `pair_eri_cache`'s own header above: `matches` is the
+      ! threshold-and-geometry gate (bit-identical thresholds, exact
+      ! fingerprint match), `batch_res_built == 1` the extra gate the
+      ! four-centre engine alone needs on top (this routine's own fresh
+      ! build never batches, so a cache built at any other value would
+      ! not reproduce it to round-off).
       reuse_pl = present(pair_eri_cache)
-      if (reuse_pl) reuse_pl = pair_eri_cache%built .and. pair_eri_cache%thresh_built == thresh
+      if (reuse_pl) reuse_pl = pair_eri_cache%matches(b, thresh)
       reuse_eri = .false.
-      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri
+      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1
+      if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
       if (reuse_pl) then
          plp => pair_eri_cache%pl
       else

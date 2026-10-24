@@ -61,6 +61,12 @@ module trc_dlfind_bridge
       integer :: lbfgs_memory = -1
       real(dp) :: etol = -1.0_dp
       integer :: print_level = -1
+      character(len=:), allocatable :: opt_xyz_path
+      character(len=:), allocatable :: traj_xyz_path
+      character(len=:), allocatable :: json_path
+      character(len=:), allocatable :: geometry_path
+      character(len=:), allocatable :: coords_name
+      character(len=:), allocatable :: guess_name
    end type trc_opt_options_t
 
    type :: trc_opt_result_t
@@ -80,9 +86,14 @@ module trc_dlfind_bridge
       integer :: total_scf_iterations = 0
       logical :: have_ts = .false.
       real(dp) :: ts_energy = 0.0_dp
+      real(dp) :: ts_gmax = 0.0_dp, ts_grms = 0.0_dp
+      logical :: ts_converged = .false.
       real(dp), allocatable :: ts_coords(:, :)
       logical :: have_minimum_plus = .false., have_minimum_minus = .false.
       real(dp) :: minimum_plus_energy = 0.0_dp, minimum_minus_energy = 0.0_dp
+      real(dp) :: minimum_plus_gmax = 0.0_dp, minimum_plus_grms = 0.0_dp
+      real(dp) :: minimum_minus_gmax = 0.0_dp, minimum_minus_grms = 0.0_dp
+      logical :: minimum_plus_converged = .false., minimum_minus_converged = .false.
       real(dp), allocatable :: minimum_plus_coords(:, :), minimum_minus_coords(:, :)
    end type trc_opt_result_t
 
