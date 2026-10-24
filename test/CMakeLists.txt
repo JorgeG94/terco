@@ -446,6 +446,15 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
   unset(_cli_grad_df_probe)
 
+  # terco_main's own CLI-string lowercasing (--func, --guess, ...) --
+  # see check_cli_lowercase.F90's own header for the nvfortran miscompile
+  # this guards against.
+  set(_cli_lowercase_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_lowercase_probe.json)
+  terco_add_check(check_cli_lowercase check_cli_lowercase.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_lowercase_probe})
+  target_link_libraries(check_cli_lowercase PRIVATE test-drive::test-drive)
+  unset(_cli_lowercase_probe)
+
   # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
   # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_
   # analysis/thermo, water -- see check_cli_hessian.F90's own header for

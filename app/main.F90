@@ -41,7 +41,7 @@ module terco_run
    public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
              gradient_summary, hessian_summary, build_masses
    public :: opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
-   public :: opt_geometry_is_linear, write_labelled_xyz
+   public :: opt_geometry_is_linear, write_labelled_xyz, to_lower_alloc
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -216,6 +216,36 @@ contains
       close (u)
       if (ios /= 0) call die(r, file//" does not start with an integer")
    end function int_option
+
+   function to_lower_alloc(s) result(lower_s)
+      !! A non-elemental, allocatable-result ASCII lowercaser for every CLI
+      !! normalisation site in `terco_main` below (`--func`, `--guess`,
+      !! `--masses`, `--pcm`, the `--opt-*` string options, and the geometry
+      !! file-extension check). It replaces pic's `to_lower`
+      !! (`pic_ascii.f90`): nvfortran 26.5 and 26.9, host and GPU builds
+      !! alike, with `terco_main`'s real `-fast -O3` flags, miscompile
+      !! pic's `to_lower` -- `pure elemental`, automatic-length (not
+      !! allocatable) result -- at those call sites. The result comes back
+      !! with the right length but blank (all-space) content, so e.g.
+      !! `--func pbe` silently falls back to a plain SCF with no exchange-
+      !! correlation term. A non-elemental function with an allocatable
+      !! result, called the same way, is unaffected; see
+      !! `.claude/context/gpu-pitfalls.md` for the trap. `terco_main` has no
+      !! internal procedures (see this module's header comment), so this
+      !! lives here instead.
+      character(len=*), intent(in) :: s
+      character(len=:), allocatable :: lower_s
+      integer :: i, c
+      allocate (character(len=len(s)) :: lower_s)
+      do i = 1, len(s)
+         c = iachar(s(i:i))
+         if (c >= iachar("A") .and. c <= iachar("Z")) then
+            lower_s(i:i) = achar(c + 32)
+         else
+            lower_s(i:i) = s(i:i)
+         end if
+      end do
+   end function to_lower_alloc
 
    function method(r) result(m)
       type(run_t), intent(in) :: r
@@ -1107,12 +1137,11 @@ program terco_main
    use trc_error, only: hess_err_t => error_t
    use pic_logger, only: global_logger
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env
-   use pic_ascii, only: to_lower
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary, hessian_summary, build_masses, &
                        opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz, &
-                       opt_geometry_is_linear, write_labelled_xyz
+                       opt_geometry_is_linear, write_labelled_xyz, to_lower_alloc
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -1319,7 +1348,7 @@ program terco_main
    r%mult = r%uhf + 1
 
    call r%cli%get("func", sval, r%err)
-   r%func = to_lower(trim(sval))
+   r%func = to_lower_alloc(trim(sval))
    if (r%func == "hf" .or. r%func == "rhf" .or. r%func == "uhf") r%func = ""
 
    ! A double hybrid's PT2 part is always RI-MP2 on the converged KS
@@ -1344,7 +1373,7 @@ program terco_main
    if (r%chrg /= 0) r%guess = "sadq"
    if (r%cli%is_set("guess")) then
       call r%cli%get("guess", sval, r%err)
-      r%guess = to_lower(trim(sval))
+      r%guess = to_lower_alloc(trim(sval))
    end if
    select case (r%guess)
    case ("sad")
@@ -1399,7 +1428,7 @@ program terco_main
          "has one above 1 (water: 2, ammonia: 3, ...)")
       call r%cli%get("masses", sval, r%err)
       call check(r, "--masses")
-      r%masses_kind = to_lower(trim(sval))
+      r%masses_kind = to_lower_alloc(trim(sval))
       if (r%masses_kind /= "isotope" .and. r%masses_kind /= "average") then
          call die(r, "--masses must be isotope or average, got '"//r%masses_kind//"'")
       end if
@@ -1409,7 +1438,7 @@ program terco_main
    r%eps = 0.0_dp
    if (r%cli%is_set("pcm")) then
       call r%cli%get("pcm", sval, r%err)
-      r%pcm = to_lower(trim(sval))
+      r%pcm = to_lower_alloc(trim(sval))
       if (r%pcm /= "cpcm" .and. r%pcm /= "iefpcm") call die(r, "unknown --pcm '"//r%pcm//"': use cpcm or iefpcm")
       if (.not. r%cli%is_set("eps")) call die(r, "--pcm needs the solvent's dielectric constant: "// &
                                               "--eps 78.3553 for water; nothing is assumed")
@@ -1479,7 +1508,7 @@ program terco_main
       opt_refusal = opt_capability_check(r)
       if (len(opt_refusal) > 0) call die(r, opt_refusal)
       call r%cli%get("opt-coords", sval, r%err)
-      r%opt_coords_arg = to_lower(trim(sval))
+      r%opt_coords_arg = to_lower_alloc(trim(sval))
       select case (r%opt_coords_arg)
       case ("cartesian")
          r%opt_coords_kind = TRC_OPT_COORDS_CARTESIAN
@@ -1495,7 +1524,7 @@ program terco_main
          call die(r, "--opt-coords must be cartesian, hdlc, hdlc-tc, dlc or dlc-tc, got '"//r%opt_coords_arg//"'")
       end select
       call r%cli%get("opt-guess", sval, r%err)
-      r%opt_guess_arg = to_lower(trim(sval))
+      r%opt_guess_arg = to_lower_alloc(trim(sval))
       select case (r%opt_guess_arg)
       case ("density")
          r%opt_guess_kind = TRC_OPT_GUESS_DENSITY
@@ -1513,7 +1542,7 @@ program terco_main
 
       ! ---- target, saddle method, connect -------------------------------
       call r%cli%get("opt-target", sval, r%err)
-      r%opt_target_arg = to_lower(trim(sval))
+      r%opt_target_arg = to_lower_alloc(trim(sval))
       select case (r%opt_target_arg)
       case ("minimum")
          r%opt_target_kind = TRC_OPT_TARGET_MINIMUM
@@ -1528,7 +1557,7 @@ program terco_main
          if (r%opt_connect) call die(r, "--opt-connect needs --opt-target saddle")
          if (r%cli%is_set("opt-algorithm")) then
             call r%cli%get("opt-algorithm", sval, r%err)
-            r%opt_algorithm_arg = to_lower(trim(sval))
+            r%opt_algorithm_arg = to_lower_alloc(trim(sval))
             select case (r%opt_algorithm_arg)
             case ("sd")
                r%opt_algorithm_kind = TRC_OPT_ALG_SD
@@ -1561,7 +1590,7 @@ program terco_main
                                                      "saddle: --opt-saddle-method (prfo or dimer) fixes "// &
                                                      "DL-FIND's own algorithm/coordinate family")
          call r%cli%get("opt-saddle-method", sval, r%err)
-         r%opt_saddle_method_arg = to_lower(trim(sval))
+         r%opt_saddle_method_arg = to_lower_alloc(trim(sval))
          select case (r%opt_saddle_method_arg)
          case ("prfo")
             r%opt_saddle_method_kind = TRC_OPT_SADDLE_PRFO
@@ -1596,7 +1625,7 @@ program terco_main
       ! ---- Hessian handling (meaningful for prfo/nr; harmless, DL-FIND
       ! simply ignores them, for every other algorithm) -------------------
       call r%cli%get("opt-init-hessian", sval, r%err)
-      r%opt_init_hessian_arg = to_lower(trim(sval))
+      r%opt_init_hessian_arg = to_lower_alloc(trim(sval))
       select case (r%opt_init_hessian_arg)
       case ("terco")
          r%opt_hessian_source_kind = TRC_OPT_HESS_TERCO
@@ -1607,7 +1636,7 @@ program terco_main
       end select
       if (r%cli%is_set("opt-hessian-update")) then
          call r%cli%get("opt-hessian-update", sval, r%err)
-         r%opt_hessian_update_arg = to_lower(trim(sval))
+         r%opt_hessian_update_arg = to_lower_alloc(trim(sval))
          select case (r%opt_hessian_update_arg)
          case ("none")
             r%opt_hessian_update_kind = TRC_OPT_HUPD_NONE
@@ -1699,7 +1728,7 @@ program terco_main
          if (r%opt_max_step <= 0.0_dp) call die(r, "--opt-max-step must be positive")
       end if
       call r%cli%get("opt-linesearch", sval, r%err)
-      r%opt_linesearch_arg = to_lower(trim(sval))
+      r%opt_linesearch_arg = to_lower_alloc(trim(sval))
       select case (r%opt_linesearch_arg)
       case ("auto")
          r%opt_linesearch_kind = TRC_OPT_LINE_AUTO
@@ -1860,7 +1889,7 @@ program terco_main
       ! returns would ever get the chance.
       opt_base = r%geom
       if (len(opt_base) > 4) then
-         if (to_lower(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
+         if (to_lower_alloc(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
       end if
       ! Written into the CURRENT WORKING DIRECTORY, not next to the input
       ! geometry: a directory part in r%geom (an absolute path, or one
