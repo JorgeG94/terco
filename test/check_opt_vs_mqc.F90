@@ -15,101 +15,143 @@
 ! the same answer mqc's own run (and so, by that run's own validation,
 ! DL-FIND itself) does.
 !
-program check_opt_vs_mqc
+! A test-drive suite.
+!
+module check_opt_vs_mqc_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use json_module, only: json_file
+   use testdrive, only: new_unittest, unittest_type, error_type, test_failed
+   use pyscf_ref_io, only: ref_report
    implicit none
+   private
+   public :: collect_opt_vs_mqc, cli_exe, probe_json
 
-   character(len=:), allocatable :: cli_exe, probe_json, probe_out, cmd
-   character(len=1024) :: arg
-   integer :: rc, nfail
-   real(dp) :: e_json
-   logical :: converged_json, found
-   type(json_file) :: json
-   real(dp), allocatable :: row(:)
-   real(dp) :: oh
+   character(len=:), allocatable :: cli_exe
+      !! The terco CLI binary, from the command line.
+   character(len=:), allocatable :: probe_json
+      !! Where the CLI writes its --json, from the command line.
    real(dp), parameter :: ENERGY_TOL = 2.0e-6_dp
       !! mqc's own ~2e-8 Eh basis difference, plus generous headroom for
       !! two different optimisers both sitting somewhere under a loose
       !! 4.5e-4 Eh/Bohr gradient tolerance rather than at a shared point.
-   real(dp), parameter :: BOND_TOL = 2.0e-4_dp   !! Angstrom
-
-   nfail = 0
-   call get_command_argument(1, arg); cli_exe = trim(arg)
-   call get_command_argument(2, arg); probe_json = trim(arg)
-   if (len(cli_exe) == 0 .or. len(probe_json) == 0) then
-      print '(a)', 'check_opt_vs_mqc: usage: check_opt_vs_mqc <terco CLI binary> <scratch .json path>'
-      stop 1
-   end if
-   probe_out = probe_json//'.water.out'
-
-   ! --- water -------------------------------------------------------------
-   cmd = trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json//' > '//probe_out//' 2>&1'
-   call execute_command_line(cmd, exitstat=rc, wait=.true.)
-   call expect(rc == 0, 'check_opt_vs_mqc: the water CLI run itself failed')
-   call json%initialize(); call json%load(filename=probe_json)
-   call expect(.not. json%failed(), 'check_opt_vs_mqc: cannot read '//probe_json)
-   call json%get('optimization.converged', converged_json, found)
-   call expect(found .and. converged_json, 'check_opt_vs_mqc: water run did not converge')
-   call json%get('optimization.final_energy', e_json, found)
-   call expect(found, 'check_opt_vs_mqc: no optimization.final_energy')
-   call report(nfail, abs(e_json - (-74.96590121729567_dp)) < ENERGY_TOL, &
-              'check_opt_vs_mqc: water final energy vs mqc, Eh', abs(e_json - (-74.96590121729567_dp)))
-   call json%get('optimization.final_geometry_angstrom(1)', row, found)
-   call expect(found .and. size(row) == 3, 'check_opt_vs_mqc: no water final_geometry_angstrom(1) (O)')
-   block
-      real(dp) :: o(3), h1(3)
-      o = row
-      call json%get('optimization.final_geometry_angstrom(2)', row, found)
-      call expect(found .and. size(row) == 3, 'check_opt_vs_mqc: no water final_geometry_angstrom(2) (H)')
-      h1 = row
-      oh = norm2(o - h1)
-   end block
-   call json%destroy()
-   call report(nfail, abs(oh - 0.98941_dp) < BOND_TOL, 'check_opt_vs_mqc: water O-H vs mqc, Angstrom', &
-              abs(oh - 0.98941_dp))
-
-   ! --- hcn -----------------------------------------------------------------
-   probe_out = probe_json//'.hcn.out'
-   cmd = trim(cli_exe)//' hcn.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json//' > '//probe_out//' 2>&1'
-   call execute_command_line(cmd, exitstat=rc, wait=.true.)
-   call expect(rc == 0, 'check_opt_vs_mqc: the hcn CLI run itself failed')
-   call json%initialize(); call json%load(filename=probe_json)
-   call expect(.not. json%failed(), 'check_opt_vs_mqc: cannot read '//probe_json)
-   call json%get('optimization.converged', converged_json, found)
-   call expect(found .and. converged_json, 'check_opt_vs_mqc: hcn run did not converge')
-   call json%get('optimization.final_energy', e_json, found)
-   call expect(found, 'check_opt_vs_mqc: no optimization.final_energy (hcn)')
-   call json%destroy()
-   call report(nfail, abs(e_json - (-91.67520899058249_dp)) < ENERGY_TOL, &
-              'check_opt_vs_mqc: hcn final energy vs mqc, Eh', abs(e_json - (-91.67520899058249_dp)))
-
-   if (nfail > 0) then
-      print '(a,i0,a)', 'check_opt_vs_mqc: ', nfail, ' check(s) FAILED'; stop 1
-   end if
-   print '(a)', 'check_opt_vs_mqc: RESULT: PASS'
+   real(dp), parameter :: BOND_TOL = 2.0e-4_dp
+      !! Angstrom.
 
 contains
 
-   subroutine expect(cond, what)
-      logical, intent(in) :: cond
-      character(len=*), intent(in) :: what
-      if (.not. cond) then
-         print '(a)', what; stop 1
-      end if
-   end subroutine expect
+   subroutine collect_opt_vs_mqc(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+         new_unittest("--opt vs mqc's own reference, water", test_water), &
+         new_unittest("--opt vs mqc's own reference, hcn", test_hcn) &
+         ]
+   end subroutine collect_opt_vs_mqc
 
-   subroutine report(nf, cond, what, diff)
-      integer, intent(inout) :: nf
-      logical, intent(in) :: cond
-      character(len=*), intent(in) :: what
-      real(dp), intent(in) :: diff
-      if (cond) then
-         print '(a,a,es10.2)', '  PASS  ', what, diff
-      else
-         print '(a,a,es10.2)', '  FAIL  ', what, diff
-         nf = nf + 1
-      end if
-   end subroutine report
+   subroutine test_water(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd, probe_out
+      integer :: rc, nfail
+      real(dp) :: e_json, oh
+      logical :: converged_json, found
+      type(json_file) :: json
+      real(dp), allocatable :: row(:)
 
+      nfail = 0
+      probe_out = probe_json//'.water.out'
+      cmd = trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json// &
+            ' > '//probe_out//' 2>&1'
+      call execute_command_line(cmd, exitstat=rc, wait=.true.)
+      if (rc /= 0) then
+         call test_failed(error, "the water CLI run itself failed, exit code "//to_string(rc)); return
+      end if
+      call json%initialize(); call json%load(filename=probe_json)
+      if (json%failed()) then
+         call test_failed(error, "cannot read "//probe_json); return
+      end if
+      call json%get('optimization.converged', converged_json, found)
+      if (.not. (found .and. converged_json)) then
+         call json%destroy(); call test_failed(error, "the water run did not converge"); return
+      end if
+      call json%get('optimization.final_energy', e_json, found)
+      if (.not. found) then
+         call json%destroy(); call test_failed(error, "no optimization.final_energy"); return
+      end if
+      call ref_report(nfail, abs(e_json - (-74.96590121729567_dp)) < ENERGY_TOL, &
+                      'check_opt_vs_mqc: water final energy vs mqc, Eh', abs(e_json - (-74.96590121729567_dp)))
+      call json%get('optimization.final_geometry_angstrom(1)', row, found)
+      if (.not. (found .and. size(row) == 3)) then
+         call json%destroy(); call test_failed(error, "no water final_geometry_angstrom(1) (O)"); return
+      end if
+      block
+         real(dp) :: o(3), h1(3)
+         o = row
+         call json%get('optimization.final_geometry_angstrom(2)', row, found)
+         if (.not. (found .and. size(row) == 3)) then
+            call json%destroy(); call test_failed(error, "no water final_geometry_angstrom(2) (H)"); return
+         end if
+         h1 = row
+         oh = norm2(o - h1)
+      end block
+      call json%destroy()
+      call ref_report(nfail, abs(oh - 0.98941_dp) < BOND_TOL, 'check_opt_vs_mqc: water O-H vs mqc, Angstrom', &
+                      abs(oh - 0.98941_dp))
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_water
+
+   subroutine test_hcn(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd, probe_out
+      integer :: rc, nfail
+      real(dp) :: e_json
+      logical :: converged_json, found
+      type(json_file) :: json
+
+      nfail = 0
+      probe_out = probe_json//'.hcn.out'
+      cmd = trim(cli_exe)//' hcn.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json// &
+            ' > '//probe_out//' 2>&1'
+      call execute_command_line(cmd, exitstat=rc, wait=.true.)
+      if (rc /= 0) then
+         call test_failed(error, "the hcn CLI run itself failed, exit code "//to_string(rc)); return
+      end if
+      call json%initialize(); call json%load(filename=probe_json)
+      if (json%failed()) then
+         call test_failed(error, "cannot read "//probe_json); return
+      end if
+      call json%get('optimization.converged', converged_json, found)
+      if (.not. (found .and. converged_json)) then
+         call json%destroy(); call test_failed(error, "the hcn run did not converge"); return
+      end if
+      call json%get('optimization.final_energy', e_json, found)
+      call json%destroy()
+      if (.not. found) then
+         call test_failed(error, "no optimization.final_energy (hcn)"); return
+      end if
+      call ref_report(nfail, abs(e_json - (-91.67520899058249_dp)) < ENERGY_TOL, &
+                      'check_opt_vs_mqc: hcn final energy vs mqc, Eh', abs(e_json - (-91.67520899058249_dp)))
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_hcn
+
+end module check_opt_vs_mqc_suite
+
+program check_opt_vs_mqc
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_opt_vs_mqc_suite, only: collect_opt_vs_mqc, cli_exe, probe_json
+   implicit none
+   character(len=1024) :: arg
+   integer :: stat
+   call get_command_argument(1, arg); cli_exe = trim(arg)
+   call get_command_argument(2, arg); probe_json = trim(arg)
+   if (len(cli_exe) == 0 .or. len(probe_json) == 0) then
+      write (error_unit, "(a)") "check_opt_vs_mqc: usage: check_opt_vs_mqc <terco CLI binary> <scratch .json path>"
+      error stop 1
+   end if
+   stat = 0
+   call run_testsuite(collect_opt_vs_mqc, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_opt_vs_mqc

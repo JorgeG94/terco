@@ -4,8 +4,8 @@
 ! (TRC_OPT_GUESS_NONE: re-run SAD at every step, with no density,
 ! orbitals or DIIS history carried over -- mqc's own approach) against
 ! the two warm starts (density, projected),
-! water/STO-3G and a 6-water cluster/def2-SVP, HF and B3LYP -- this PR's
-! own warm-start measurement. Informational only, like bench_warmstart.F90
+! water/STO-3G and a 6-water cluster/def2-SVP, HF and B3LYP. Informational
+! only, like bench_warmstart.F90
 ! (which measures the SAME two warm starts for trc_run_hessian's
 ! displacements, at a much smaller step): prints a table, asserts
 ! nothing, and is not registered as a ctest. Run by hand:
@@ -87,7 +87,7 @@ contains
       st = trc_set_guess(h, TRC_GUESS_SAD, c_null_ptr, 1_c_int)
 
       allocate (residues(nat)); residues = 1
-      opts%coords_kind = 0   !! cartesian
+      opts%coords_kind = 0   ! cartesian
       opts%guess_kind = guess_kind
       opts%fallback_guess_kind = TRC_GUESS_SAD
       opts%maxiter = 60

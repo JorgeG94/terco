@@ -1,12 +1,17 @@
 !
 ! terco's --opt against an independent optimisation: pyscf's own RHF/STO-3G
 ! analytic gradient driving scipy's L-BFGS-B (test/pyscf_refs/generate.py's
-! gen_opt, committed as opt_water.ref/opt_hcn.ref), from the same start
-! geometries check_opt_vs_mqc.F90 uses (water.xyz, hcn.xyz). Different
-! language, different SCF code,
-! different optimiser (scipy's Cartesian L-BFGS-B vs DL-FIND's own, here in
-! Cartesian too) -- agreement is independent validation of trc_dlfind_bridge
-! end to end, not a restatement of the same algorithm.
+! gen_opt, committed as opt_water.ref/opt_hcn.ref), run here from the same
+! xyz files check_opt_vs_mqc.F90 uses (water.xyz, hcn.xyz). gen_opt's own
+! "hcn" case starts from exactly hcn.xyz's geometry; its "water" case does
+! NOT start from water.xyz's (O at z=0.10077199490609 Bohr there, vs
+! water.xyz's 0.1173 Angstrom) -- this does not weaken the comparison below,
+! which checks the CONVERGED minimum (energy, bond lengths, angle) that a
+! correct optimiser reaches independent of where it started. Different
+! language, different SCF code, different optimiser (scipy's Cartesian
+! L-BFGS-B vs DL-FIND's own, here in Cartesian too) -- agreement is
+! independent validation of trc_dlfind_bridge end to end, not a restatement
+! of the same algorithm.
 !
 ! Both references optimised to max|g| < 1e-6 Eh/Bohr (actually ~1e-9,
 ! generate.py's own log); this CLI run uses --opt-gtol 1e-5, two orders
@@ -27,115 +32,131 @@
 ! ~5e-11 Eh, O-H/H-C/C-N to <1e-5 Bohr (test/pyscf_refs/opt_water.ref,
 ! opt_hcn.ref).
 !
-program check_opt_vs_pyscf
+! A test-drive suite. CMakeLists.txt builds this source TWICE, once per
+! case (check_opt_vs_pyscf_water/_hcn), each with its own xyzfile/ref_base
+! command-line arguments -- one unit test runs whichever case this
+! particular executable was given.
+!
+module check_opt_vs_pyscf_suite
    use, intrinsic :: iso_c_binding, only: c_double
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
    use trc_constants, only: ANGSTROM_TO_BOHR
+   use testdrive, only: new_unittest, unittest_type, error_type, test_failed
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_vector, &
                            ref_read_matrix, ref_report
    implicit none
+   private
+   public :: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json
 
-   character(len=:), allocatable :: cli_exe, xyzfile, ref_base, probe_json, probe_out, cmd
-   character(len=1024) :: arg
-   integer :: rc, nfail, nat, k
-   real(dp), allocatable :: z_ref(:), coords_ref(:, :), coords_json(:, :)
-   real(dp) :: e_ref, gmax_ref, e_json
-   logical :: converged_json, found
-   type(json_file) :: json
-   real(dp), allocatable :: row(:)
-   real(dp) :: d1_ref, d2_ref, d3_ref, ang_ref
-   real(dp) :: d1_json, d2_json, d3_json, ang_json
+   character(len=:), allocatable :: cli_exe
+      !! The terco CLI binary, from the command line.
+   character(len=:), allocatable :: xyzfile
+      !! water.xyz or hcn.xyz, from the command line.
+   character(len=:), allocatable :: ref_base
+      !! opt_water or opt_hcn (its .ref's basename), from the command line.
+   character(len=:), allocatable :: probe_json
+      !! Where the CLI writes its --json, from the command line.
    real(dp), parameter :: ENERGY_TOL = 5.0e-8_dp
    real(dp), parameter :: BOND_TOL = 3.0e-4_dp
    real(dp), parameter :: ANGLE_TOL = 0.05_dp
 
-   nfail = 0
-   call get_command_argument(1, arg); cli_exe = trim(arg)
-   call get_command_argument(2, arg); xyzfile = trim(arg)
-   call get_command_argument(3, arg); ref_base = trim(arg)
-   call get_command_argument(4, arg); probe_json = trim(arg)
-   if (len(cli_exe) == 0 .or. len(xyzfile) == 0 .or. len(ref_base) == 0 .or. len(probe_json) == 0) then
-      print '(a)', 'check_opt_vs_pyscf: usage: check_opt_vs_pyscf <terco CLI> <xyz> <ref base> <scratch .json>'
-      stop 1
-   end if
-   probe_out = probe_json//'.out'
-
-   cmd = trim(cli_exe)//' '//xyzfile//' -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 --silent --json '// &
-         probe_json//' > '//probe_out//' 2>&1'
-   call execute_command_line(cmd, exitstat=rc, wait=.true.)
-   if (rc /= 0) then
-      print '(a,i0)', 'check_opt_vs_pyscf: the CLI run itself failed, exit code ', rc; stop 1
-   end if
-
-   call json%initialize()
-   call json%load(filename=probe_json)
-   if (json%failed()) then
-      print '(a)', 'check_opt_vs_pyscf: cannot read '//probe_json; stop 1
-   end if
-   call json%get('optimization.converged', converged_json, found)
-   call expect(found, 'check_opt_vs_pyscf: no optimization.converged in the CLI''s JSON output')
-   call expect(converged_json, 'check_opt_vs_pyscf: the CLI run did not converge at --opt-gtol 1e-5')
-   call json%get('optimization.final_energy', e_json, found)
-   call expect(found, 'check_opt_vs_pyscf: no optimization.final_energy in the CLI''s JSON output')
-
-   ! Read NAT from the reference FIRST, so the geometry array below is
-   ! sized correctly before either set of coordinates is read.
-   block
-      integer :: uu
-      call ref_require(ref_base//'.ref', uu)
-      call ref_read_int(uu, 'NAT', nat)
-      allocate (z_ref(nat), coords_ref(3, nat))
-      call ref_read_vector(uu, 'Z', nat, z_ref)
-      call ref_read_matrix(uu, 'COORDS', 3, nat, coords_ref)
-      call ref_read_real(uu, 'E_FINAL', e_ref)
-      call ref_read_real(uu, 'GMAX_FINAL', gmax_ref)
-      call ref_close(uu)
-   end block
-   call expect(nat == 3, 'check_opt_vs_pyscf: this check only knows water/hcn (nat=3)')
-
-   allocate (coords_json(3, nat))
-   do k = 1, nat
-      call json%get('optimization.final_geometry_angstrom('//to_string(k)//')', row, found)
-      if (.not. found .or. size(row) /= 3) then
-         print '(a,i0,a)', 'check_opt_vs_pyscf: no final_geometry_angstrom row ', k, ' in the CLI''s JSON output'
-         stop 1
-      end if
-      coords_json(:, k) = row*ANGSTROM_TO_BOHR   !! back to Bohr, the .ref's own unit
-   end do
-   call json%destroy()
-
-   call ref_report(nfail, abs(e_json - e_ref) < ENERGY_TOL, &
-                   'check_opt_vs_pyscf ('//ref_base//'): final energy vs pyscf+scipy, Eh', abs(e_json - e_ref))
-
-   call two_shortest_and_angle(coords_ref, d1_ref, d2_ref, d3_ref, ang_ref)
-   call two_shortest_and_angle(coords_json, d1_json, d2_json, d3_json, ang_json)
-   call ref_report(nfail, abs(d1_json - d1_ref) < BOND_TOL, &
-                   'check_opt_vs_pyscf ('//ref_base//'): shorter bond vs pyscf+scipy, Bohr', abs(d1_json - d1_ref))
-   call ref_report(nfail, abs(d2_json - d2_ref) < BOND_TOL, &
-                   'check_opt_vs_pyscf ('//ref_base//'): longer bond vs pyscf+scipy, Bohr', abs(d2_json - d2_ref))
-   call ref_report(nfail, abs(d3_json - d3_ref) < BOND_TOL, &
-                   'check_opt_vs_pyscf ('//ref_base//'): third distance vs pyscf+scipy, Bohr', abs(d3_json - d3_ref))
-   if (ang_ref > 0.0_dp) then
-      call ref_report(nfail, abs(ang_json - ang_ref) < ANGLE_TOL, &
-                     'check_opt_vs_pyscf ('//ref_base//'): bond angle vs pyscf+scipy, deg', abs(ang_json - ang_ref))
-   end if
-
-   if (nfail > 0) then
-      print '(a,i0,a)', 'check_opt_vs_pyscf ('//ref_base//'): ', nfail, ' check(s) FAILED'; stop 1
-   end if
-   print '(a)', 'check_opt_vs_pyscf ('//ref_base//'): RESULT: PASS'
-
 contains
 
-   subroutine expect(cond, what)
-      logical, intent(in) :: cond
-      character(len=*), intent(in) :: what
-      if (.not. cond) then
-         print '(a)', what; stop 1
+   subroutine collect_opt_vs_pyscf(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [new_unittest("--opt vs pyscf+scipy's own optimisation ("//ref_base//")", test_opt_vs_pyscf)]
+   end subroutine collect_opt_vs_pyscf
+
+   subroutine test_opt_vs_pyscf(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd, probe_out
+      integer :: rc, nfail, nat, k
+      real(dp), allocatable :: z_ref(:), coords_ref(:, :), coords_json(:, :)
+      real(dp) :: e_ref, gmax_ref, e_json
+      logical :: converged_json, found
+      type(json_file) :: json
+      real(dp), allocatable :: row(:)
+      real(dp) :: d1_ref, d2_ref, d3_ref, ang_ref
+      real(dp) :: d1_json, d2_json, d3_json, ang_json
+
+      nfail = 0
+      probe_out = probe_json//'.out'
+      cmd = trim(cli_exe)//' '//xyzfile//' -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 --silent --json '// &
+            probe_json//' > '//probe_out//' 2>&1'
+      call execute_command_line(cmd, exitstat=rc, wait=.true.)
+      if (rc /= 0) then
+         call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)); return
       end if
-   end subroutine expect
+
+      call json%initialize()
+      call json%load(filename=probe_json)
+      if (json%failed()) then
+         call test_failed(error, "cannot read "//probe_json); return
+      end if
+      call json%get('optimization.converged', converged_json, found)
+      if (.not. found) then
+         call json%destroy(); call test_failed(error, "no optimization.converged in the CLI's JSON output"); return
+      end if
+      if (.not. converged_json) then
+         call json%destroy(); call test_failed(error, "the CLI run did not converge at --opt-gtol 1e-5"); return
+      end if
+      call json%get('optimization.final_energy', e_json, found)
+      if (.not. found) then
+         call json%destroy(); call test_failed(error, "no optimization.final_energy in the CLI's JSON output")
+         return
+      end if
+
+      ! Read NAT from the reference FIRST, so the geometry array below is
+      ! sized correctly before either set of coordinates is read.
+      block
+         integer :: uu
+         call ref_require(ref_base//'.ref', uu)
+         call ref_read_int(uu, 'NAT', nat)
+         allocate (z_ref(nat), coords_ref(3, nat))
+         call ref_read_vector(uu, 'Z', nat, z_ref)
+         call ref_read_matrix(uu, 'COORDS', 3, nat, coords_ref)
+         call ref_read_real(uu, 'E_FINAL', e_ref)
+         call ref_read_real(uu, 'GMAX_FINAL', gmax_ref)
+         call ref_close(uu)
+      end block
+      if (nat /= 3) then
+         call json%destroy(); call test_failed(error, "this check only knows water/hcn (nat=3)"); return
+      end if
+
+      allocate (coords_json(3, nat))
+      do k = 1, nat
+         call json%get('optimization.final_geometry_angstrom('//to_string(k)//')', row, found)
+         if (.not. found .or. size(row) /= 3) then
+            call json%destroy()
+            call test_failed(error, "no final_geometry_angstrom row "//to_string(k)//" in the CLI's JSON output")
+            return
+         end if
+         coords_json(:, k) = row*ANGSTROM_TO_BOHR   ! back to Bohr, the .ref's own unit
+      end do
+      call json%destroy()
+
+      call ref_report(nfail, abs(e_json - e_ref) < ENERGY_TOL, &
+                      'check_opt_vs_pyscf ('//ref_base//'): final energy vs pyscf+scipy, Eh', abs(e_json - e_ref))
+
+      call two_shortest_and_angle(coords_ref, d1_ref, d2_ref, d3_ref, ang_ref)
+      call two_shortest_and_angle(coords_json, d1_json, d2_json, d3_json, ang_json)
+      call ref_report(nfail, abs(d1_json - d1_ref) < BOND_TOL, &
+                      'check_opt_vs_pyscf ('//ref_base//'): shorter bond vs pyscf+scipy, Bohr', abs(d1_json - d1_ref))
+      call ref_report(nfail, abs(d2_json - d2_ref) < BOND_TOL, &
+                      'check_opt_vs_pyscf ('//ref_base//'): longer bond vs pyscf+scipy, Bohr', abs(d2_json - d2_ref))
+      call ref_report(nfail, abs(d3_json - d3_ref) < BOND_TOL, &
+                      'check_opt_vs_pyscf ('//ref_base//'): third distance vs pyscf+scipy, Bohr', &
+                      abs(d3_json - d3_ref))
+      if (ang_ref > 0.0_dp) then
+         call ref_report(nfail, abs(ang_json - ang_ref) < ANGLE_TOL, &
+                         'check_opt_vs_pyscf ('//ref_base//'): bond angle vs pyscf+scipy, deg', &
+                         abs(ang_json - ang_ref))
+      end if
+
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_opt_vs_pyscf
 
    !
    ! For a 3-atom molecule only (water, hcn): the two SHORTEST pairwise
@@ -150,9 +171,9 @@ contains
       real(dp), intent(out) :: d1, d2, d3, angle_deg
       real(dp) :: d(3), v1(3), v2(3)
       integer :: apex
-      d(1) = norm2(xyz(:, 1) - xyz(:, 2))   !! 1-2
-      d(2) = norm2(xyz(:, 1) - xyz(:, 3))   !! 1-3
-      d(3) = norm2(xyz(:, 2) - xyz(:, 3))   !! 2-3
+      d(1) = norm2(xyz(:, 1) - xyz(:, 2))   ! 1-2
+      d(2) = norm2(xyz(:, 1) - xyz(:, 3))   ! 1-3
+      d(3) = norm2(xyz(:, 2) - xyz(:, 3))   ! 2-3
       ! The longest distance is the one NOT touching the shared vertex;
       ! the apex is whichever atom is common to the other two pairs.
       if (d(1) >= d(2) .and. d(1) >= d(3)) then
@@ -183,4 +204,28 @@ contains
       p = 4.0_dp*atan(1.0_dp)
    end function PI_LOCAL
 
+end module check_opt_vs_pyscf_suite
+
+program check_opt_vs_pyscf
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_opt_vs_pyscf_suite, only: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json
+   implicit none
+   character(len=1024) :: arg
+   integer :: stat
+   call get_command_argument(1, arg); cli_exe = trim(arg)
+   call get_command_argument(2, arg); xyzfile = trim(arg)
+   call get_command_argument(3, arg); ref_base = trim(arg)
+   call get_command_argument(4, arg); probe_json = trim(arg)
+   if (len(cli_exe) == 0 .or. len(xyzfile) == 0 .or. len(ref_base) == 0 .or. len(probe_json) == 0) then
+      write (error_unit, "(a)") "check_opt_vs_pyscf: usage: check_opt_vs_pyscf <terco CLI> <xyz> <ref base> "// &
+         "<scratch .json>"
+      error stop 1
+   end if
+   stat = 0
+   call run_testsuite(collect_opt_vs_pyscf, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_opt_vs_pyscf
