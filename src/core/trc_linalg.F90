@@ -1,27 +1,27 @@
-!
-! Dense linear algebra on matrices that live on the device.
-!
-! The SCF keeps its nao x nao matrices resident across iterations, and a
-! Fock build on the device is worth much less if the diagonalisation drags
-! them back every step: metalquicha measured 0.33 s of Fock against 0.92 s
-! of host LAPACK plus copies at 832 functions, and the ratio only worsens
-! with size since the eigenproblem is cubic. So the eigenproblem, the
-! products and the dot products are cuSOLVER and cuBLAS here, reached from
-! OpenACC through `host_data use_device` on arrays the caller has already
-! put on the device.
-!
-! Under a host build the same calls go to pic-blas on the same arrays,
-! which are then simply host arrays, and the directives are comments. One
-! source, two builds, the same numbers to rounding -- which is how every
-! terco driver is arranged, and the reason a CI runner without a GPU can
-! still validate the SCF. pic-blas rather than raw BLAS because its
-! wrappers carry explicit interfaces: nothing in terco is called through
-! an implicit one.
-!
-! Every array argument must be present on the device in the OpenACC build.
-! A host array passed here under -acc is a segfault, not a wrong number,
-! and that is by design: it cannot pass silently.
-!
+!!
+!! Dense linear algebra on matrices that live on the device.
+!!
+!! The SCF keeps its nao x nao matrices resident across iterations, and a
+!! Fock build on the device is worth much less if the diagonalisation drags
+!! them back every step: metalquicha measured 0.33 s of Fock against 0.92 s
+!! of host LAPACK plus copies at 832 functions, and the ratio only worsens
+!! with size since the eigenproblem is cubic. So the eigenproblem, the
+!! products and the dot products are cuSOLVER and cuBLAS here, reached from
+!! OpenACC through `host_data use_device` on arrays the caller has already
+!! put on the device.
+!!
+!! Under a host build the same calls go to pic-blas on the same arrays,
+!! which are then simply host arrays, and the directives are comments. One
+!! source, two builds, the same numbers to rounding -- which is how every
+!! terco driver is arranged, and the reason a CI runner without a GPU can
+!! still validate the SCF. pic-blas rather than raw BLAS because its
+!! wrappers carry explicit interfaces: nothing in terco is called through
+!! an implicit one.
+!!
+!! Every array argument must be present on the device in the OpenACC build.
+!! A host array passed here under -acc is a segfault, not a wrong number,
+!! and that is by design: it cannot pass silently.
+!!
 module trc_linalg
    use, intrinsic :: iso_c_binding, only: c_int, c_size_t
    use pic_types, only: dp, int64, default_int
@@ -39,6 +39,7 @@ module trc_linalg
    public :: trc_release_local_mem_reservation
 
    type :: trc_linalg_t
+    !! long lived object that on device enabled builds holds a buffer space and cublas and cusolver handles
       integer :: n = 0
       logical :: ready = .false.
 #ifdef _OPENACC
@@ -93,18 +94,17 @@ module trc_linalg
 
 contains
 
-   !
-   ! Handles, the solver's workspace for an n x n eigenproblem, and the
-   ! library streams set to the OpenACC synchronous queue so a kernel that
-   ! wrote a matrix has finished before cuBLAS reads it.
-   !
-   ! CREATED ONCE. A second init on a ready object keeps its handles and only
-   ! grows the eigensolver's workspace if n is larger than any seen so far,
-   ! so one object can be made at the start of a calculation and carried
-   ! through all of it -- the SAD atoms, the SCF, the XC quadrature, RI-MP2 --
-   ! instead of each of them creating and destroying cuBLAS and cuSOLVER.
-   !
+
    subroutine linalg_init(this, n)
+    !! Handles, the solver's workspace for an n x n eigenproblem, and the
+    !! library streams set to the OpenACC synchronous queue so a kernel that
+    !! wrote a matrix has finished before cuBLAS reads it.
+    !!
+    !! CREATED ONCE. A second init on a ready object keeps its handles and only
+    !! grows the eigensolver's workspace if n is larger than any seen so far,
+    !! so one object can be made at the start of a calculation and carried
+    !! through all of it -- the SAD atoms, the SCF, the XC quadrature, RI-MP2 --
+    !! instead of each of them creating and destroying cuBLAS and cuSOLVER.
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n
 #ifdef _OPENACC
@@ -126,8 +126,8 @@ contains
       if (n > this%n) call grow_workspace(this, n)
    end subroutine linalg_init
 
-   ! The dsyevd workspace for n x n, replacing a smaller one.
    subroutine grow_workspace(this, n)
+   !! The dsyevd workspace for n x n, replacing a smaller one.
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n
 #ifdef _OPENACC
@@ -158,6 +158,7 @@ contains
    ! before it reads the clock. A no-op on the host build.
    !
    subroutine linalg_sync(this)
+    !! GPU synchoronize, TODO(chore): abstract to its own type of procedure this does not belong here
       class(trc_linalg_t), intent(in) :: this
 #ifdef _OPENACC
       interface
@@ -176,6 +177,7 @@ contains
    end subroutine linalg_sync
 
    subroutine linalg_release(this)
+    !! at the end relrease the handles
       class(trc_linalg_t), intent(inout) :: this
 #ifdef _OPENACC
       integer :: st
@@ -193,8 +195,9 @@ contains
       this%n = 0
    end subroutine linalg_release
 
-   ! C = alpha op(A) op(B) + beta C, with 'N' or 'T' for each operand.
    subroutine linalg_gemm_raw(this, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+   !! C = alpha op(A) op(B) + beta C, with 'N' or 'T' for each operand.
+   !! if not a GPU enabled build, it will run on the host
       class(trc_linalg_t), intent(in) :: this
       character, intent(in) :: ta, tb
       integer, intent(in) :: m, n, k, lda, ldb, ldc
@@ -240,6 +243,8 @@ contains
    ! tile staged through shared memory hides that.
    !
    subroutine linalg_transpose(this, m, n, a, lda, c, ldc)
+    !! transpose using cublasDgeam can be done better, see the transpose in the tools/
+    !! however that tranpose needs cuda and we are a do concurrent codebase
       class(trc_linalg_t), intent(in) :: this
       integer, intent(in) :: m, n, lda, ldc
       real(dp), intent(in) :: a(lda, *)
@@ -373,10 +378,10 @@ contains
 #endif
    end subroutine linalg_potrf
 
-   ! LU factorisation with partial pivoting, A = P L U, in place; `ipiv` is
-   ! LAPACK's (1-based rows). The pivots live where A does: on the device
-   ! under the OpenACC build, so `ipiv` must be present there too.
    subroutine linalg_getrf(this, n, a, lda, ipiv, info)
+   !! LU factorisation with partial pivoting, A = P L U, in place; `ipiv` is
+   !! LAPACK's (1-based rows). The pivots live where A does: on the device
+   !! under the OpenACC build, so `ipiv` must be present there too.
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
@@ -399,6 +404,7 @@ contains
       !$acc update self(this%devinfo)
       info = this%devinfo
 #else
+      ! TODO(chore): should use pic_lapack_interfaces
       interface
          subroutine dgetrf(m, n, a, lda, ipiv, info)
             import :: dp
