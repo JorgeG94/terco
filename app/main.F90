@@ -64,7 +64,7 @@ module terco_run
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
       logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
-      integer(int64) :: t0, t1, rate
+      integer(int64) :: t0, rate
       type(comm_t) :: wcomm
       integer :: nranks
       logical :: rank0
@@ -353,11 +353,6 @@ contains
          if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
       call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
-      block
-         character(len=1024) :: logline
-         write (logline, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
-         call global_logger%info(trim(logline))
-      end block
    end subroutine summary
 
    subroutine gradient_summary(r)
@@ -1058,7 +1053,6 @@ program terco_main
       r%hess_ok = .true.
    end if
 
-   call system_clock(r%t1)
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
@@ -1072,6 +1066,15 @@ program terco_main
    if (r%rank0) then
       call global_logger%info("")
       call global_logger%info(" normal termination of terco")
+      ! Re-read the clock: the Hessian and JSON output above come after the
+      ! summary's wall time, which would otherwise be buried.
+      block
+         character(len=1024) :: logline
+         integer(int64) :: t_end
+         call system_clock(t_end)
+         write (logline, "(a,f12.3,a)") " total wall time    : ", real(t_end - r%t0, dp)/real(r%rate, dp), " s"
+         call global_logger%info(trim(logline))
+      end block
    end if
    ! A line of pic's collected lore, as metalquicha prints at the end of a
    ! successful run: rank 0 only, and not under --silent, whose promise is
