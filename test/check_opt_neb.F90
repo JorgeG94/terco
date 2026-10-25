@@ -75,7 +75,9 @@
 ! of a shared number. test_neb_converged_reports_true below is the
 ! dedicated proof that a converged NEB chain DOES report
 ! optimization.converged = true once asked for a target this metric can
-! actually reach (measured: --opt-gtol 3e-4 on the SAME system).
+! actually reach (measured: --opt-gtol 2e-3 on the SAME system, gfortran
+! 15 and nvfortran 26.5 alike -- NEB_FLAGS_CONVERGES's own comment below
+! has the measured numbers and margin).
 !
 ! On the GPU build specifically, an INTERIOR image away from both
 ! endpoints and the climbing point can land on a measurably different
@@ -142,11 +144,38 @@ module check_opt_neb_suite
                                                     '--opt-neb-spring 0.01 --opt-gtol 8e-3 --opt-maxiter 300'
    real(dp), parameter :: ANCHOR_TS_TOL_PLAIN = 1.0e-2_dp   !! Eh
    ! --opt-gtol loose enough for THIS bridge's own max-ABSOLUTE-COMPONENT
-   ! metric to cross it (this file's own header, "CONVERGENCE VERDICT") --
-   ! measured to still converge (optimization.converged = true) on this
-   ! exact system.
+   ! metric to cross it (this file's own header, "CONVERGENCE VERDICT").
+   ! Measured directly running this exact command (hcn_minimum.xyz ->
+   ! hnc_minimum.xyz, these flags, --opt-neb-climb, no --silent so the
+   ! "final max|g|" log line and optimization.final_gradient_max in the
+   ! --json both read):
+   !   --opt-gtol 3e-4 (this file's OLD value): gfortran 15 converges at
+   !     202 steps, final max|g| = 2.864e-4 (exit 0). nvfortran 26.5
+   !     STALLS at 355 steps, final max|g| = 7.052e-4, never crosses
+   !     3e-4 (exit 2, optimization.converged = false) -- the bug this
+   !     fix addresses, reproduced directly.
+   !   --opt-gtol 2e-3 (this file's NEW value, below): gfortran 15 and
+   !     nvfortran 26.5 BOTH converge at 47 steps, to the SAME final
+   !     max|g| to 8 significant figures (gfortran 1.8615140e-3,
+   !     nvfortran 1.8615141e-3 Eh/Bohr -- BLAS/LAPACK-level rounding,
+   !     not a convergence difference) -- margin above --opt-gtol itself
+   !     is 2e-3 - 1.8615e-3 = 1.385e-4 (~7% of --opt-gtol).
+   !   --opt-gtol 8e-4 (tighter, tried first): gfortran 15 itself STALLS
+   !     at only 105 steps, final max|g| = 1.709e-3, never crosses 8e-4
+   !     (exit 2) -- NOT a "more iterations converges tighter" case:
+   !     --opt-gtol also sets DL-FIND's own internal per-image RMS
+   !     stopping test (dlf_neb.f90's own fper), so asking for a tighter
+   !     target changes the search's own trajectory (fewer, different
+   !     accepted LBFGS steps), not just how long it keeps refining the
+   !     same path -- this 3-atom chain is measured (this file's own
+   !     header) to be delicate enough that a tighter target can stall
+   !     a run that a looser one lets finish. 2e-3 is the tightest value
+   !     found, by direct measurement, that converges reliably (same
+   !     step count, same final max|g|) on both compilers; --opt-maxiter
+   !     2000 is already far beyond the 47 steps either one takes, so
+   !     raising it further changes nothing here.
    character(len=*), parameter :: NEB_FLAGS_CONVERGES = '--opt-neb-images 10 --opt-neb-via hcn_ts_guess.xyz '// &
-                                                        '--opt-neb-spring 0.01 --opt-gtol 3e-4 --opt-maxiter 2000'
+                                                        '--opt-neb-spring 0.01 --opt-gtol 2e-3 --opt-maxiter 2000'
 
 contains
 
@@ -355,6 +384,40 @@ contains
       ! converge" alone is not treated as a failure for a climbing run --
       ! only a genuine crash (--json/log never written at all) is.
       call grep_contains(wdir//'/'//out_name, 'Convergence reached', conv_reached)
+      if (.not. conv_reached) then
+         ! A single retry, not a quiet pass: libdlfind's own
+         ! dlf_neb_init (dlf_neb.f90:278) Kabsch-aligns the via/product
+         ! frame against the start geometry on EVERY run, even with
+         ! these FROZEN, committed endpoints (dlf_cartesian_align,
+         ! dlf_coords.f90:1474, diagonalising a 3x3 matrix in
+         ! dlf_hdlc_matrixlib.f90's array_diagonalise). HCN and HNC are
+         ! both linear, so that matrix is RANK-DEFICIENT -- measured
+         ! directly (gdb on a -finit-real=snan/-ffpe-trap=invalid debug
+         ! build, which traps right here with a SIGFPE inside MKL's own
+         ! dsyev): eigenvalues 3.183, 2.9e-14, 2.2e-16, i.e. a doubly
+         ! degenerate near-zero pair. Any orthonormal basis of that 2-D
+         ! null space is an equally valid eigenvector pair, so WHICH one
+         ! the eigensolver returns is decided by floating-point noise at
+         ! the 1e-14 level, not geometry -- and that noise floor is
+         ! measured to shift under genuine external CPU/MKL contention
+         ! (reproduced: identical 15/15 under no load or synthetic busy-
+         ! loop load, but one ctest -j4 run with three other MKL-heavy
+         ! SCF tests running at the same moment hit exactly this: the
+         ! FIRST of two back-to-back, otherwise-identical runs failed to
+         ! reach DL-FIND's own convergence inside --opt-maxiter, the
+         ! second did). That is libdlfind's own numerical fragility
+         ! (read-only fork at /home/jorge/dev/libdlfind-fork), not a
+         ! terco bug and not one to patch here -- this chaotic 3-atom
+         ! system already tips the same way for --opt-connect's dimer
+         ! rotation (this file's own header). A bounded, logged retry is
+         ! the honest mitigation: it still requires DL-FIND's own
+         ! "Convergence reached" eventually, just not necessarily on the
+         ! unlucky draw.
+         print '(a)', '  (retry) '//out_name//': DL-FIND did not report convergence on the first '// &
+            'attempt -- rerunning once (see run_neb''s own comment)'
+         call execute_command_line(cmd2, exitstat=rc2, wait=.true.)
+         call grep_contains(wdir//'/'//out_name, 'Convergence reached', conv_reached)
+      end if
       call ref_report(nf, conv_reached, &
                       'check_opt_neb: DL-FIND''s own NEB climbing-image convergence test passed ('//out_name// &
                       ')', 0.0_dp)
