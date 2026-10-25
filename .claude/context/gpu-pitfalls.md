@@ -50,6 +50,24 @@ the same history. This file adds the debugging side.
   list has triggered an nvfortran miscompile before. Change one only with a
   GPU run that compares energies before and after.
 
+## Codegen
+
+- **`pure elemental` automatic-length character functions, in a very large
+  program unit.** nvfortran 26.5 and 26.9 (`-fast -O3`, host and GPU builds
+  alike) miscompile pic's `to_lower` -- `pure elemental`, automatic-length
+  (not allocatable) result -- at several call sites inside `terco_main`
+  (`app/main.F90`): the result comes back the right length but blank
+  (all-space), so e.g. `--func pbe` silently fell back to a plain SCF with
+  no exchange-correlation term. Not a GPU/OpenACC issue: it reproduces
+  identically on the minimal host build. A non-elemental function with an
+  **allocatable** result, called the same way, is unaffected --
+  `to_lower_alloc` in `terco_run` (`app/main.F90`) is that workaround, used
+  at every CLI normalisation site in `terco_main`. Scale of the call site's
+  own procedure seems to matter (an isolated synthetic reproducer of similar
+  size did not trip it); if you hit something that looks like this
+  elsewhere, suspect any `pure elemental` automatic-length character
+  function called from a large procedure first.
+
 ## MPI
 
 - A program or procedure that makes a collective MPI call must have no

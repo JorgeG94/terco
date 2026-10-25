@@ -48,7 +48,7 @@ module check_opt_vs_pyscf_suite
                            ref_read_matrix, ref_report
    implicit none
    private
-   public :: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json
+   public :: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json, work_dir
 
    character(len=:), allocatable :: cli_exe
       !! The terco CLI binary, from the command line.
@@ -58,6 +58,10 @@ module check_opt_vs_pyscf_suite
       !! opt_water or opt_hcn (its .ref's basename), from the command line.
    character(len=:), allocatable :: probe_json
       !! Where the CLI writes its --json, from the command line.
+   character(len=:), allocatable :: work_dir
+      !! A scratch directory this check owns, for the xyz outputs -- one
+      !! per case (water/hcn, test/CMakeLists.txt's own foreach), never
+      !! shared with its sibling.
    real(dp), parameter :: ENERGY_TOL = 5.0e-8_dp
    real(dp), parameter :: BOND_TOL = 3.0e-4_dp
    real(dp), parameter :: ANGLE_TOL = 0.05_dp
@@ -82,9 +86,17 @@ contains
       real(dp) :: d1_json, d2_json, d3_json, ang_json
 
       nfail = 0
+      ! Run with WORKING_DIRECTORY set to work_dir (not test/ itself, this
+      ! program's own WORKING_DIRECTORY, ctest's convention) -- --opt
+      ! writes <geometry>_opt.xyz/_traj.xyz into the CLI's own CWD
+      ! (app/main.F90), so everything the subprocess needs is copied in.
+      call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f '//xyzfile//' '//work_dir//'/'//xyzfile, exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
       probe_out = probe_json//'.out'
-      cmd = trim(cli_exe)//' '//xyzfile//' -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 --silent --json '// &
-            probe_json//' > '//probe_out//' 2>&1'
+      cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' '//xyzfile//' -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 '// &
+            '--silent --json '//probe_json//' > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
          call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)); return
@@ -155,6 +167,23 @@ contains
                          abs(ang_json - ang_ref))
       end if
 
+      block
+         character(len=:), allocatable :: base
+         logical :: exists_opt, exists_traj
+         integer :: dotpos
+         base = xyzfile
+         dotpos = index(base, '.xyz')
+         if (dotpos > 0) base = base(1:dotpos - 1)
+         inquire (file=base//'_opt.xyz', exist=exists_opt)
+         inquire (file=base//'_traj.xyz', exist=exists_traj)
+         call ref_report(nfail, .not. exists_opt, &
+                         'check_opt_vs_pyscf ('//ref_base//'): '//base//'_opt.xyz was not left in test/ itself', &
+                         merge(1.0_dp, 0.0_dp, exists_opt))
+         call ref_report(nfail, .not. exists_traj, &
+                         'check_opt_vs_pyscf ('//ref_base//'): '//base//'_traj.xyz was not left in test/ itself', &
+                         merge(1.0_dp, 0.0_dp, exists_traj))
+      end block
+
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_opt_vs_pyscf
 
@@ -209,7 +238,7 @@ end module check_opt_vs_pyscf_suite
 program check_opt_vs_pyscf
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_opt_vs_pyscf_suite, only: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json
+   use check_opt_vs_pyscf_suite, only: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json, work_dir
    implicit none
    character(len=1024) :: arg
    integer :: stat
@@ -217,9 +246,11 @@ program check_opt_vs_pyscf
    call get_command_argument(2, arg); xyzfile = trim(arg)
    call get_command_argument(3, arg); ref_base = trim(arg)
    call get_command_argument(4, arg); probe_json = trim(arg)
-   if (len(cli_exe) == 0 .or. len(xyzfile) == 0 .or. len(ref_base) == 0 .or. len(probe_json) == 0) then
+   call get_command_argument(5, arg); work_dir = trim(arg)
+   if (len(cli_exe) == 0 .or. len(xyzfile) == 0 .or. len(ref_base) == 0 .or. len(probe_json) == 0 .or. &
+       len(work_dir) == 0) then
       write (error_unit, "(a)") "check_opt_vs_pyscf: usage: check_opt_vs_pyscf <terco CLI> <xyz> <ref base> "// &
-         "<scratch .json>"
+         "<scratch .json> <scratch dir>"
       error stop 1
    end if
    stat = 0
