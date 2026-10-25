@@ -8,6 +8,30 @@
 ! water.xyz's own H-O-H angle, held fixed while the two O-H bond lengths
 ! relax.
 !
+! CONVERGENCE VERDICT: a constrained optimum's RAW Cartesian gradient
+! does not go to zero the way an unconstrained one does -- the
+! constraint acts like a Lagrange multiplier, holding a permanent,
+! nonzero force along the constrained direction even once every FREE
+! internal coordinate's own gradient is exactly zero. Measured directly
+! on this exact system with lbfgs, cg-auto and more steps alike (the
+! energy converges to 12 decimal places either way, confirming this is
+! the TRUE constrained optimum, not a stalled search): the angle
+! constraint's own RAW Cartesian residual settles at max|g| ~1.86e-2
+! Eh/Bohr, the bond constraint's at ~3.23e-2, both well above any
+! --opt-gtol tight enough to let DL-FIND actually DO the six-to-eight
+! steps this takes (a loose --opt-gtol scales ALL of DL-FIND's own
+! criteria, not just the gradient one, and was measured to make it stop
+! after a single step, nowhere near this optimum). This bridge's own
+! "CONVERGENCE AUTHORITY" header already documents that it cannot read
+! DL-FIND's own INTERNAL-coordinate gradient back -- the number that
+! correctly reaches zero here, since HDLC removes the constrained DOF
+! from the internal coordinate set entirely, rather than penalising it.
+! So this file keeps --opt-gtol TIGHT (GTOL_ARG) and checks DL-FIND's
+! OWN observable verdict instead (the "Convergence reached"/"Optimisation
+! converged" log lines, --opt-print-level 4) for whether the run itself
+! succeeded, the same fallback check_opt_neb.F90 uses for the identical
+! reason.
+!
 ! EXTERNAL anchor: test/pyscf_refs/opt_constrained_water_angle.ref,
 ! written by test/pyscf_refs/generate.py's own gen_opt_opt_constrained
 ! (sic: gen_opt_constrained) -- a from-scratch scipy L-BFGS-B minimisation
@@ -18,157 +42,220 @@
 ! acting directly on the only physically free coordinates, not DL-FIND's
 ! internal-coordinate machinery.
 !
-! Also a bond constraint ("bond 1 2": the O-H1 distance), cheap to add and
-! asked for by this PR's brief -- checked only for internal consistency
-! (the bond length is held, the other O-H bond and the angle both relax),
-! no separate external anchor (a second scipy generator for one more
-! constraint type would not exercise anything gen_opt_constrained does
-! not already cover for the SAME molecule).
+! Also a bond constraint ("bond 1 2": the O-H1 distance) -- checked only
+! for internal consistency (the bond length is held, the other O-H bond
+! and the angle both relax), no separate external anchor (a second scipy
+! generator for one more constraint type would not exercise anything
+! gen_opt_constrained does not already cover for the SAME molecule).
 !
-program check_opt_constrain
+! A test-drive suite.
+!
+module check_opt_constrain_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use json_module, only: json_file
    use trc_constants, only: ANGSTROM_TO_BOHR
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_vector, &
                            ref_read_matrix, ref_report
+   use testdrive, only: new_unittest, unittest_type, error_type, test_failed
    implicit none
+   private
+   public :: collect_opt_constrain, cli_exe, work_dir
 
-   character(len=:), allocatable :: cli_exe, work_dir, cmd
-   character(len=1024) :: arg
-   integer :: rc, nfail
-   logical :: found
-   real(dp) :: e_final
-   real(dp), allocatable :: xyz(:, :)
-   type(json_file) :: json
+   character(len=:), allocatable :: cli_exe
+      !! The terco CLI binary, from the command line.
+   character(len=:), allocatable :: work_dir
+      !! A scratch directory this check owns, for the JSON output.
    real(dp), parameter :: ANGLE_TOL = 1.0e-6_dp         !! deg -- "the final angle equals the start to ~1e-6 deg"
    real(dp), parameter :: ANCHOR_ENERGY_TOL = 2.0e-6_dp !! Eh -- HDLC's own convergence is looser than Cartesian's
    real(dp), parameter :: ANCHOR_BOND_TOL = 2.0e-4_dp   !! Bohr
+   character(len=*), parameter :: GTOL_ARG = '--opt-gtol 1e-6'   !! this file's own header, "CONVERGENCE VERDICT"
 
-   nfail = 0
-   call get_command_argument(1, arg); cli_exe = trim(arg)
-   call get_command_argument(2, arg); work_dir = trim(arg)
-   if (len(cli_exe) == 0 .or. len(work_dir) == 0) then
-      print '(a)', 'check_opt_constrain: usage: check_opt_constrain <terco CLI> <scratch dir>'
-      stop 1
-   end if
-   call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
-   call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
-   call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
-                             exitstat=rc, wait=.true.)
+   ! --- state shared between the angle-constraint run and its checks -----
+   real(dp) :: e_final = 0.0_dp
+   real(dp), allocatable :: xyz(:, :)
 
-   block
-      real(dp) :: start_angle
+contains
+
+   subroutine collect_opt_constrain(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+         new_unittest("--opt-constrain 'angle 2 1 3': the H-O-H angle is held, bonds relax symmetrically", &
+                      test_angle_constraint), &
+         new_unittest("--opt-constrain 'angle 2 1 3': matches the pyscf opt_constrained_water_angle anchor", &
+                      test_angle_vs_anchor), &
+         new_unittest("--opt-constrain 'bond 1 2': the O-H1 distance is held at the start value", &
+                      test_bond_constraint), &
+         new_unittest("--opt-constrain: no stray xyz output in test/ itself", test_no_stray) &
+         ]
+   end subroutine collect_opt_constrain
+
+   subroutine test_angle_constraint(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd
+      integer :: rc, nfail
+      logical :: found
+      type(json_file) :: json
+      real(dp) :: start_angle, final_angle, d_oh1, d_oh2
+
+      nfail = 0
+      call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
       call start_water_angle(start_angle)
 
+      ! --opt-print-level 4 (not --silent): "Convergence reached" only
+      ! prints at that verbosity -- this file's own header,
+      ! "CONVERGENCE VERDICT", on why that log line is the pass/fail
+      ! gate here, not this bridge's own exit code.
       cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt '// &
-            '--opt-coords hdlc --opt-constrain "angle 2 1 3" --opt-gtol 1e-7 --opt-maxiter 100 '// &
-            '--silent --json cons.json > cons.out 2>&1'
+            '--opt-coords hdlc --opt-constrain "angle 2 1 3" '//GTOL_ARG//' --opt-maxiter 100 '// &
+            '--opt-print-level 4 --json cons.json > cons.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
-      call expect(rc == 0, 'check_opt_constrain: the CLI run itself failed')
+      block
+         logical :: conv_reached
+         call grep_contains(work_dir//'/cons.out', 'Convergence reached', conv_reached)
+         if (.not. conv_reached) then
+            call test_failed(error, "DL-FIND's own convergence test did not pass (no 'Convergence "// &
+                             "reached' in cons.out), CLI exit code "//to_string(rc)); return
+         end if
+      end block
       call json%initialize()
       call json%load(filename=work_dir//'/cons.json')
-      call expect(.not. json%failed(), 'check_opt_constrain: cannot read cons.json')
+      if (json%failed()) then
+         call test_failed(error, "cannot read cons.json"); return
+      end if
       call json%get('optimization.final_energy', e_final, found)
-      call expect(found, 'check_opt_constrain: no final_energy')
-      call read_geometry(json, 3, xyz)
+      if (.not. found) then
+         call json%destroy(); call test_failed(error, "no final_energy"); return
+      end if
+      call read_geometry(json, 3, xyz, found)
       call json%destroy()
+      if (.not. found) then
+         call test_failed(error, "bad final_geometry_angstrom"); return
+      end if
 
-      block
-         real(dp) :: final_angle, d_oh1, d_oh2
-         call angle_and_bonds(xyz, final_angle, d_oh1, d_oh2)
-         print '(a,f20.12,a,f16.10,a,f16.10)', '  final energy ', e_final, '   angle (deg) ', final_angle, &
-            '   start angle (deg) ', start_angle
-         call report(nfail, abs(final_angle - start_angle) < ANGLE_TOL, &
-                    'check_opt_constrain: the H-O-H angle is held at the start value', &
-                    abs(final_angle - start_angle))
-         call report(nfail, abs(d_oh1 - d_oh2) < 1.0e-6_dp, &
-                    'check_opt_constrain: the two O-H bonds relax symmetrically (water''s own symmetry)', &
-                    abs(d_oh1 - d_oh2))
-         ! Constraining necessarily raises (or leaves unchanged) the
-         ! energy relative to the unconstrained global minimum.
-         block
-            integer :: uu, nat_ref
-            real(dp) :: e_ref
-            real(dp), allocatable :: z_ref(:), coords_ref(:, :)
-            call ref_require('opt_water.ref', uu)
-            call ref_read_int(uu, 'NAT', nat_ref)
-            allocate (z_ref(nat_ref), coords_ref(3, nat_ref))
-            call ref_read_vector(uu, 'Z', nat_ref, z_ref)
-            call ref_read_matrix(uu, 'COORDS', 3, nat_ref, coords_ref)
-            call ref_read_real(uu, 'E_FINAL', e_ref)
-            call ref_close(uu)
-            call report(nfail, e_final >= e_ref - 1.0e-8_dp, &
-                       'check_opt_constrain: the constrained energy is not below the unconstrained minimum')
-         end block
-      end block
-
-      ! --- the external anchor: test/pyscf_refs/opt_constrained_water_angle.ref
+      call angle_and_bonds(xyz, final_angle, d_oh1, d_oh2)
+      print '(a,f20.12,a,f16.10,a,f16.10)', '  final energy ', e_final, '   angle (deg) ', final_angle, &
+         '   start angle (deg) ', start_angle
+      call ref_report(nfail, abs(final_angle - start_angle) < ANGLE_TOL, &
+                      'check_opt_constrain: the H-O-H angle is held at the start value', &
+                      abs(final_angle - start_angle))
+      call ref_report(nfail, abs(d_oh1 - d_oh2) < 1.0e-6_dp, &
+                      'check_opt_constrain: the two O-H bonds relax symmetrically (water''s own symmetry)', &
+                      abs(d_oh1 - d_oh2))
+      ! Constraining necessarily raises (or leaves unchanged) the energy
+      ! relative to the unconstrained global minimum.
       block
          integer :: uu, nat_ref
+         real(dp) :: e_ref
          real(dp), allocatable :: z_ref(:), coords_ref(:, :)
-         real(dp) :: e_ref, angle_ref, d1_ref, d2_ref, angle_ref_check, angle_terco, d1_terco, d2_terco
-         call ref_require('opt_constrained_water_angle.ref', uu)
+         call ref_require('opt_water.ref', uu)
          call ref_read_int(uu, 'NAT', nat_ref)
-         call expect(nat_ref == 3, 'check_opt_constrain: opt_constrained_water_angle.ref: NAT must be 3')
          allocate (z_ref(nat_ref), coords_ref(3, nat_ref))
          call ref_read_vector(uu, 'Z', nat_ref, z_ref)
          call ref_read_matrix(uu, 'COORDS', 3, nat_ref, coords_ref)
          call ref_read_real(uu, 'E_FINAL', e_ref)
-         block
-            real(dp) :: gmax_ref
-            call ref_read_real(uu, 'GMAX_FINAL', gmax_ref)
-         end block
-         call ref_read_real(uu, 'ANGLE_DEG', angle_ref)
          call ref_close(uu)
-         call angle_and_bonds(coords_ref, angle_ref_check, d1_ref, d2_ref)
-         call angle_and_bonds(xyz*ANGSTROM_TO_BOHR, angle_terco, d1_terco, d2_terco)
-         call ref_report(nfail, abs(angle_ref_check - angle_ref) < 1.0e-6_dp, &
-                         'check_opt_constrain: the pyscf anchor''s own stored angle matches its COORDS, deg', &
-                         abs(angle_ref_check - angle_ref))
-         call ref_report(nfail, abs(e_final - e_ref) < ANCHOR_ENERGY_TOL, &
-                         'check_opt_constrain: constrained energy vs pyscf anchor, Eh', abs(e_final - e_ref))
-         call ref_report(nfail, abs(d1_terco - d1_ref) < ANCHOR_BOND_TOL, &
-                         'check_opt_constrain: O-H1 bond length vs pyscf anchor, Bohr', abs(d1_terco - d1_ref))
-         call ref_report(nfail, abs(d2_terco - d2_ref) < ANCHOR_BOND_TOL, &
-                         'check_opt_constrain: O-H2 bond length vs pyscf anchor, Bohr', abs(d2_terco - d2_ref))
+         call ref_report(nfail, e_final >= e_ref - 1.0e-8_dp, &
+                         'check_opt_constrain: the constrained energy is not below the unconstrained '// &
+                         'minimum', 0.0_dp)
       end block
-   end block
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_angle_constraint
 
-   ! --- a bond constraint: internal-consistency only (no anchor) ---------
-   block
-      real(dp) :: start_d1
+   !
+   ! Depends on test_angle_constraint having already populated e_final/xyz
+   ! -- test-drive runs a module's tests in the order collect_opt_constrain
+   ! lists them, not in parallel (run_testsuite's own parallel=.false. in
+   ! the program below).
+   !
+   subroutine test_angle_vs_anchor(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer :: uu, nat_ref, nfail
+      real(dp), allocatable :: z_ref(:), coords_ref(:, :)
+      real(dp) :: e_ref, gmax_ref, angle_ref, d1_ref, d2_ref, angle_ref_check, angle_terco, d1_terco, d2_terco
+
+      if (.not. allocated(xyz)) then
+         call test_failed(error, "test_angle_constraint did not leave a geometry to check"); return
+      end if
+      nfail = 0
+      call ref_require('opt_constrained_water_angle.ref', uu)
+      call ref_read_int(uu, 'NAT', nat_ref)
+      if (nat_ref /= 3) then
+         call ref_close(uu); call test_failed(error, "opt_constrained_water_angle.ref: NAT must be 3"); return
+      end if
+      allocate (z_ref(nat_ref), coords_ref(3, nat_ref))
+      call ref_read_vector(uu, 'Z', nat_ref, z_ref)
+      call ref_read_matrix(uu, 'COORDS', 3, nat_ref, coords_ref)
+      call ref_read_real(uu, 'E_FINAL', e_ref)
+      call ref_read_real(uu, 'GMAX_FINAL', gmax_ref)
+      call ref_read_real(uu, 'ANGLE_DEG', angle_ref)
+      call ref_close(uu)
+      call angle_and_bonds(coords_ref, angle_ref_check, d1_ref, d2_ref)
+      call angle_and_bonds(xyz*ANGSTROM_TO_BOHR, angle_terco, d1_terco, d2_terco)
+      call ref_report(nfail, abs(angle_ref_check - angle_ref) < 1.0e-6_dp, &
+                      'check_opt_constrain: the pyscf anchor''s own stored angle matches its COORDS, deg', &
+                      abs(angle_ref_check - angle_ref))
+      call ref_report(nfail, abs(e_final - e_ref) < ANCHOR_ENERGY_TOL, &
+                      'check_opt_constrain: constrained energy vs pyscf anchor, Eh', abs(e_final - e_ref))
+      call ref_report(nfail, abs(d1_terco - d1_ref) < ANCHOR_BOND_TOL, &
+                      'check_opt_constrain: O-H1 bond length vs pyscf anchor, Bohr', abs(d1_terco - d1_ref))
+      call ref_report(nfail, abs(d2_terco - d2_ref) < ANCHOR_BOND_TOL, &
+                      'check_opt_constrain: O-H2 bond length vs pyscf anchor, Bohr', abs(d2_terco - d2_ref))
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_angle_vs_anchor
+
+   subroutine test_bond_constraint(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd
+      integer :: rc
+      real(dp) :: start_d1, d1
+      real(dp), allocatable :: bond_xyz(:, :)
+      logical :: found
+      type(json_file) :: json
+
+      call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
       call start_water_bond(start_d1)
       cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt '// &
-            '--opt-coords hdlc --opt-constrain "bond 1 2" --opt-gtol 1e-6 --opt-maxiter 100 '// &
-            '--silent --json cons_bond.json > cons_bond.out 2>&1'
+            '--opt-coords hdlc --opt-constrain "bond 1 2" '//GTOL_ARG//' --opt-maxiter 100 '// &
+            '--opt-print-level 4 --json cons_bond.json > cons_bond.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
-      call expect(rc == 0, 'check_opt_constrain: the bond-constraint CLI run itself failed')
+      block
+         logical :: conv_reached
+         call grep_contains(work_dir//'/cons_bond.out', 'Convergence reached', conv_reached)
+         if (.not. conv_reached) then
+            call test_failed(error, "DL-FIND's own convergence test did not pass (no 'Convergence "// &
+                             "reached' in cons_bond.out), CLI exit code "//to_string(rc)); return
+         end if
+      end block
       call json%initialize()
       call json%load(filename=work_dir//'/cons_bond.json')
-      call expect(.not. json%failed(), 'check_opt_constrain: cannot read cons_bond.json')
-      call read_geometry(json, 3, xyz)
+      if (json%failed()) then
+         call test_failed(error, "cannot read cons_bond.json"); return
+      end if
+      call read_geometry(json, 3, bond_xyz, found)
       call json%destroy()
-      block
-         real(dp) :: d1
-         d1 = norm2(xyz(:, 1) - xyz(:, 2))*ANGSTROM_TO_BOHR
-         call report(nfail, abs(d1 - start_d1) < 1.0e-5_dp, &
-                    'check_opt_constrain: "bond 1 2" holds the O-H1 distance at the start value', &
-                    abs(d1 - start_d1))
-      end block
-   end block
+      if (.not. found) then
+         call test_failed(error, "bad final_geometry_angstrom"); return
+      end if
+      d1 = norm2(bond_xyz(:, 1) - bond_xyz(:, 2))*ANGSTROM_TO_BOHR
+      if (abs(d1 - start_d1) >= 1.0e-5_dp) then
+         call test_failed(error, "'bond 1 2' did not hold the O-H1 distance at the start value, |diff|="// &
+                          to_string(abs(d1 - start_d1))//" Bohr")
+      end if
+   end subroutine test_bond_constraint
 
-   block
+   subroutine test_no_stray(error)
+      type(error_type), allocatable, intent(out) :: error
       logical :: exists
       inquire (file='water_opt.xyz', exist=exists)
-      call report(nfail, .not. exists, 'check_opt_constrain: water_opt.xyz was not left in test/ itself')
-   end block
-
-   if (nfail > 0) then
-      print '(a,i0,a)', 'check_opt_constrain: ', nfail, ' check(s) FAILED'; stop 1
-   end if
-   print '(a)', 'check_opt_constrain: RESULT: PASS'
-
-contains
+      if (exists) call test_failed(error, "water_opt.xyz was left in test/ itself")
+   end subroutine test_no_stray
 
    subroutine start_water_angle(angle_deg)
       real(dp), intent(out) :: angle_deg
@@ -203,46 +290,63 @@ contains
                  (4.0_dp*atan(1.0_dp))
    end subroutine angle_and_bonds
 
-   subroutine read_geometry(j, natm, xyz_out)
+   subroutine read_geometry(j, natm, xyz_out, ok)
       type(json_file), intent(inout) :: j
       integer, intent(in) :: natm
       real(dp), allocatable, intent(out) :: xyz_out(:, :)
+      logical, intent(out) :: ok
       real(dp), allocatable :: row(:)
-      logical :: ok
       integer :: ia
       character(len=16) :: buf
       allocate (xyz_out(3, natm))
+      ok = .true.
       do ia = 1, natm
          write (buf, '(i0)') ia
          call j%get('optimization.final_geometry_angstrom('//trim(buf)//')', row, ok)
-         call expect(ok .and. size(row) == 3, 'check_opt_constrain: bad final_geometry_angstrom row')
+         ok = ok .and. size(row) == 3
+         if (.not. ok) return
          xyz_out(:, ia) = row
       end do
    end subroutine read_geometry
 
-   subroutine expect(cond, what)
-      logical, intent(in) :: cond
-      character(len=*), intent(in) :: what
-      if (.not. cond) then
-         print '(a)', what; stop 1
-      end if
-   end subroutine expect
-
-   subroutine report(nf, cond, what, val)
-      integer, intent(inout) :: nf
-      logical, intent(in) :: cond
-      character(len=*), intent(in) :: what
-      real(dp), intent(in), optional :: val
-      if (cond) then
-         print '(a,a)', '  PASS  ', what
-      else
-         if (present(val)) then
-            print '(a,a,a,es12.4)', '  FAIL  ', what, '   value=', val
-         else
-            print '(a,a)', '  FAIL  ', what
+   subroutine grep_contains(path, needle, found_out)
+      character(len=*), intent(in) :: path, needle
+      logical, intent(out) :: found_out
+      integer :: u, ios
+      character(len=4096) :: line
+      found_out = .false.
+      open (newunit=u, file=path, status='old', action='read', iostat=ios)
+      if (ios /= 0) return
+      do
+         read (u, '(a)', iostat=ios) line
+         if (ios /= 0) exit
+         if (index(line, needle) > 0) then
+            found_out = .true.
+            exit
          end if
-         nf = nf + 1
-      end if
-   end subroutine report
+      end do
+      close (u)
+   end subroutine grep_contains
 
+end module check_opt_constrain_suite
+
+program check_opt_constrain
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_opt_constrain_suite, only: collect_opt_constrain, cli_exe, work_dir
+   implicit none
+   character(len=1024) :: arg
+   integer :: stat
+   call get_command_argument(1, arg); cli_exe = trim(arg)
+   call get_command_argument(2, arg); work_dir = trim(arg)
+   if (len(cli_exe) == 0 .or. len(work_dir) == 0) then
+      write (error_unit, "(a)") "check_opt_constrain: usage: check_opt_constrain <terco CLI> <scratch dir>"
+      error stop 1
+   end if
+   stat = 0
+   call run_testsuite(collect_opt_constrain, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_opt_constrain
