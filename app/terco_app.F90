@@ -21,7 +21,7 @@ module terco_app
    implicit none
    private
 
-   public :: read_xyz, resolve_basis, element_symbol, atomic_number, c_string, f_string, set_env
+   public :: read_xyz, resolve_basis, element_symbol, terco_app_atomic_number, c_string, f_string, set_env
    public :: BOHR_PER_ANGSTROM
    public :: write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
 
@@ -71,7 +71,7 @@ contains
       if (z >= 1 .and. z <= NELEM) sym = SYMBOLS(z)
    end function element_symbol
 
-   pure integer function atomic_number(tok) result(z)
+   pure integer function terco_app_atomic_number(tok) result(z)
       !! Nuclear charge from an element symbol in any case, or from an
       !! integer (some xyz writers use Z). Zero if it is neither.
       character(len=*), intent(in) :: tok
@@ -91,7 +91,7 @@ contains
             return
          end if
       end do
-   end function atomic_number
+   end function terco_app_atomic_number
 
    subroutine read_xyz(path, natm, z, xyz, title, err)
       !! A standard xyz file: atom count, a title line, then one
@@ -140,7 +140,7 @@ contains
             close (u)
             return
          end if
-         z(i) = atomic_number(tok)
+         z(i) = terco_app_atomic_number(tok)
          if (z(i) == 0) then
             call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//to_string(i)// &
                          ": unknown element '"//trim(tok)//"'")

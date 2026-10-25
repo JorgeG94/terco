@@ -622,7 +622,7 @@ module trc_dlfind_bridge
       !! "ACCEPTED-STEP BOOKKEEPING".
    logical, allocatable, save :: have_prev_scf_img(:)
    integer(c_int), allocatable, save :: cached_nspin_img(:)
-   real(c_double), allocatable, save :: dens_buf_img(:, :)
+   real(c_double), allocatable, save :: image_densities(:, :)
       !! (nao*nao*nspin, n_images_dlf) -- grown from an initial size of 1
       !! the first time it is actually written (scf_at_geometry's own
       !! comment for why it cannot be sized any earlier).
@@ -769,7 +769,7 @@ contains
       else
          n_images_dlf = 1
       end if
-      ! dens_buf_img starts at size 1 and is grown the first time a
+      ! image_densities starts at size 1 and is grown the first time a
       ! density is actually persisted (scf_at_geometry, below): trc_nspin
       ! refuses (TRC_ERR_STATE) until the FIRST SCF on this context has
       ! run (cx%scf_ok), which is always still false here -- no SCF has
@@ -847,11 +847,11 @@ contains
             call set_env("DLF_PO_SEED", to_string(opts%seed))
             block
                integer :: nseed, i
-               integer, allocatable :: seed_arr(:)
+               integer, allocatable :: seed_values(:)
                call random_seed(size=nseed)
-               allocate (seed_arr(nseed))
-               seed_arr = [(opts%seed + i, i=1, nseed)]
-               call random_seed(put=seed_arr)
+               allocate (seed_values(nseed))
+               seed_values = [(opts%seed + i, i=1, nseed)]
+               call random_seed(put=seed_values)
             end block
          end if
          call api_dl_find(nvar, nvar2, nspec, 1_c_int, &
@@ -1108,19 +1108,19 @@ contains
       natm = 0
    end subroutine trc_dlfind_optimize
 
-   subroutine reset_image_state(n, nimg, dens_size)
+   subroutine reset_image_state(n, nimg, density_size)
       !! (Re)allocate the per-image warm-start/path bookkeeping for `nimg`
       !! DL-FIND images (1 for every non-NEB run, so the rest of this
       !! module can always index these arrays by image without a branch),
-      !! each with room for a density of `dens_size` reals (every image
+      !! each with room for a density of `density_size` reals (every image
       !! shares the same basis, so this is the same number for all of
       !! them). Called with nimg=0 at the end of trc_dlfind_optimize to
       !! release everything between runs.
       integer, intent(in) :: n, nimg
-      integer, intent(in) :: dens_size
+      integer, intent(in) :: density_size
       if (allocated(have_prev_scf_img)) deallocate (have_prev_scf_img)
       if (allocated(cached_nspin_img)) deallocate (cached_nspin_img)
-      if (allocated(dens_buf_img)) deallocate (dens_buf_img)
+      if (allocated(image_densities)) deallocate (image_densities)
       if (allocated(neb_last_coords)) deallocate (neb_last_coords)
       if (allocated(neb_last_energy)) deallocate (neb_last_energy)
       if (allocated(neb_last_gmax)) deallocate (neb_last_gmax)
@@ -1131,7 +1131,7 @@ contains
       if (nimg <= 0) return
       allocate (have_prev_scf_img(nimg), source=.false.)
       allocate (cached_nspin_img(nimg), source=1_c_int)
-      allocate (dens_buf_img(max(1, dens_size), nimg), source=0.0_c_double)
+      allocate (image_densities(max(1, density_size), nimg), source=0.0_c_double)
       allocate (neb_last_coords(3, max(n, 1), nimg), source=0.0_dp)
       allocate (neb_last_energy(nimg), source=0.0_dp)
       allocate (neb_last_gmax(nimg), source=0.0_dp)
@@ -1616,7 +1616,7 @@ contains
       !! outside --opt-neb). For --opt-neb (and not opts%neb_shared_density,
       !! the benchmark-only override), the warm-start density/orbital-count
       !! bookkeeping below is kept ONE SLOT PER IMAGE
-      !! (have_prev_scf_img/cached_nspin_img/dens_buf_img), because the
+      !! (have_prev_scf_img/cached_nspin_img/image_densities), because the
       !! shared trc context is reused across every image in turn: by the
       !! time this image comes round again, `ctx` holds whatever image ran
       !! most recently, not this one's own last converged state. The
@@ -1659,8 +1659,8 @@ contains
             ! bottom of this routine, the last time it converged) -- not
             ! whatever `ctx` currently holds, which belongs to whichever
             ! image was evaluated last.
-            allocate (dens_buf(size(dens_buf_img, 1)))
-            dens_buf = dens_buf_img(:, image)
+            allocate (dens_buf(size(image_densities, 1)))
+            dens_buf = image_densities(:, image)
          else
             st = trc_nao(ctx, nao_c)
             allocate (dens_buf(int(nao_c)*int(nao_c)*cached_nspin))
@@ -1747,7 +1747,7 @@ contains
          ! Persist THIS image's own converged density for the NEXT time it
          ! is evaluated -- fetched fresh now, since `dens_buf` above (if
          ! allocated at all) still held the OLD one. nao/nspin are only
-         ! KNOWN now (a successful SCF just ran), so dens_buf_img is grown
+         ! KNOWN now (a successful SCF just ran), so image_densities is grown
          ! to the real size the first time this fires -- see
          ! trc_dlfind_optimize's own comment on why it cannot be sized
          ! any earlier.
@@ -1755,17 +1755,17 @@ contains
          block
             integer :: real_size
             real_size = int(nao_c)*int(nao_c)*int(nspin_c)
-            if (real_size > 0 .and. real_size /= size(dens_buf_img, 1)) then
+            if (real_size > 0 .and. real_size /= size(image_densities, 1)) then
                block
                   real(c_double), allocatable :: grown(:, :)
                   integer :: copy_n
                   allocate (grown(real_size, n_images_dlf), source=0.0_c_double)
-                  copy_n = min(real_size, size(dens_buf_img, 1))
-                  grown(1:copy_n, :) = dens_buf_img(1:copy_n, :)
-                  call move_alloc(grown, dens_buf_img)
+                  copy_n = min(real_size, size(image_densities, 1))
+                  grown(1:copy_n, :) = image_densities(1:copy_n, :)
+                  call move_alloc(grown, image_densities)
                end block
             end if
-            if (real_size == size(dens_buf_img, 1)) st = trc_density(ctx, dens_buf_img(:, image))
+            if (real_size == size(image_densities, 1)) st = trc_density(ctx, image_densities(:, image))
          end block
       else
          have_prev_scf = .true.

@@ -254,7 +254,7 @@ contains
    ! --opt-global-*/--opt-seed without --opt-algorithm stochastic/genetic
    ! (and --opt-seed without --opt-saddle-method dimer either), an
    ! --opt-global-* parameter the OTHER search does not read, and an
-   ! out-of-range one (parse_opt_global_options, app/main.F90).
+   ! out-of-range one (terco_run_parse_opt_global_options, app/main.F90).
    !
    subroutine test_global_opt_without_algorithm(error)
       type(error_type), allocatable, intent(out) :: error
@@ -367,7 +367,7 @@ contains
 
    !
    ! hcn.xyz (H,C,N) as the endpoint of a water (O,H,H) start: SAME atom
-   ! count (3) but different elements, so check_neb_endpoint's per-atom Z
+   ! count (3) but different elements, so terco_run_check_neb_endpoint's per-atom Z
    ! check fires, not its atom-count check.
    !
    subroutine test_neb_mismatched_atoms(error)
@@ -476,7 +476,7 @@ contains
    end subroutine test_constrain_index_too_large
 
    !
-   ! A typed 0 used to pass parse_constraints' own range check (it tested
+   ! A typed 0 used to pass terco_run_parse_constraints' own range check (it tested
    ! idx(k) /= 0 "is this slot even used", not "is 0 a valid atom"), then
    ! reached DL-FIND's own assign_cons, which reports "crosses residue
    ! boundary" for atom 0 (it belongs to no residue) and `error stop`s.

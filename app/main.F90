@@ -34,7 +34,7 @@ module terco_run
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
-   use terco_app, only: element_symbol, atomic_number, f_string, BOHR_PER_ANGSTROM, &
+   use terco_app, only: element_symbol, terco_app_atomic_number, f_string, BOHR_PER_ANGSTROM, &
                          write_opt_xyz_frame, write_traj_xyz_frames
    use trc_vib, only: trc_vib_log_table, trc_vib_rotor
    use trc_thermo, only: trc_thermo_result_t, trc_thermo_log_summary
@@ -45,11 +45,11 @@ module terco_run
    public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
              gradient_summary, hessian_summary, build_masses
    public :: opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
-   public :: parse_opt_global_options
+   public :: terco_run_parse_opt_global_options
    public :: opt_geometry_is_linear, write_labelled_xyz, to_lower_alloc
-   public :: parse_frozen_list, parse_constraints, check_opt_constrain_residues, check_neb_endpoint, &
-             write_neb_path_xyz
-   public :: read_xyz_frames
+   public :: terco_run_parse_frozen_list, terco_run_parse_constraints, terco_run_check_opt_constrain_residues, &
+             terco_run_check_neb_endpoint, terco_run_write_neb_path_xyz
+   public :: terco_run_read_xyz_frames
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -185,7 +185,7 @@ module terco_run
                  opt_global_tolerance_g = -1.0_dp, opt_global_mutation_rate = -1.0_dp, &
                  opt_global_death_rate = -1.0_dp, opt_global_scalefac = -1.0_dp
          !! trc_dlfind_bridge's own trc_opt_options_t%po_*/seed, one for
-         !! one -- parsed and range-checked in parse_opt_global_options,
+         !! one -- parsed and range-checked in terco_run_parse_opt_global_options,
          !! below, then copied across verbatim in the --opt dispatch
          !! (same "plain fields here, enums/values match the bridge's
          !! own module exactly" reason opt_coords_kind above gives).
@@ -688,7 +688,7 @@ contains
    ! glob%xcoords2) reads, the only way to make that initial direction
    ! reproducible (that module's own header).
    !
-   subroutine parse_opt_global_options(r)
+   subroutine terco_run_parse_opt_global_options(r)
       type(run_t), intent(inout) :: r
       integer, parameter :: ALG_STOCHASTIC = 51, ALG_GENETIC = 52
          !! trc_dlfind_bridge's own TRC_OPT_ALG_STOCHASTIC/GENETIC values,
@@ -818,7 +818,7 @@ contains
          if (r%opt_algorithm_kind /= ALG_STOCHASTIC) call die(r, "--opt-global-scalefac "// &
                   "needs --opt-algorithm stochastic")
       end if
-   end subroutine parse_opt_global_options
+   end subroutine terco_run_parse_opt_global_options
 
    !
    ! --opt-frozen "1-3,7": a comma-separated list of 1-based atom indices
@@ -827,7 +827,7 @@ contains
    ! trc_dlfind_optimize ever runs, the same convention every other --opt-*
    ! validation in this file follows.
    !
-   subroutine parse_frozen_list(spec, natm, frozen, err)
+   subroutine terco_run_parse_frozen_list(spec, natm, frozen, err)
       character(len=*), intent(in) :: spec
       integer, intent(in) :: natm
       integer, allocatable, intent(out) :: frozen(:)
@@ -886,7 +886,7 @@ contains
             frozen(cnt) = i
          end if
       end do
-   end subroutine parse_frozen_list
+   end subroutine terco_run_parse_frozen_list
 
    !
    ! --opt-constrain "angle 1 2 3; bond 2 4": a ';'-separated list (pic_cli's
@@ -902,7 +902,7 @@ contains
    ! values (1..5) by construction -- see run_t%opt_cons_kind's own comment
    ! for why this module cannot just import that enum.
    !
-   subroutine parse_constraints(spec, natm, cons_kind, cons_a, cons_b, cons_c, cons_d, err)
+   subroutine terco_run_parse_constraints(spec, natm, cons_kind, cons_a, cons_b, cons_c, cons_d, err)
       character(len=*), intent(in) :: spec
       integer, intent(in) :: natm
       integer, allocatable, intent(out) :: cons_kind(:), cons_a(:), cons_b(:), cons_c(:), cons_d(:)
@@ -911,15 +911,15 @@ contains
       integer, parameter :: N_CONS_KINDS = 5   !! TRC_OPT_CONS_{BOND,ANGLE,TORSION,CARTESIAN,BOND_DIFF}
       integer, parameter :: NSLOTS(N_CONS_KINDS) = [2, 3, 4, 1, 3]
          !! atom slots TRC_OPT_CONS_{BOND,ANGLE,TORSION,CARTESIAN,BOND_DIFF}
-         !! (1..5, tmp_kind's own values) actually use -- the rest of
-         !! idx(:) stays the 0 this subroutine's own reset put there.
+         !! (1..5, found_kind's own values) actually use -- the rest of
+         !! atom_index(:) stays the 0 this subroutine's own reset put there.
       character(len=:), allocatable :: entry, kind_tok
       type(string_type), allocatable :: entries(:), words(:)
       type(error_t) :: perr
       integer :: i, ncons, k, k2, nslots_here
-      integer :: tmp_kind(MAX_CONSTRAINTS), tmp_a(MAX_CONSTRAINTS), tmp_b(MAX_CONSTRAINTS)
-      integer :: tmp_c(MAX_CONSTRAINTS), tmp_d(MAX_CONSTRAINTS)
-      integer :: idx(4)
+      integer :: found_kind(MAX_CONSTRAINTS), found_a(MAX_CONSTRAINTS), found_b(MAX_CONSTRAINTS)
+      integer :: found_c(MAX_CONSTRAINTS), found_d(MAX_CONSTRAINTS)
+      integer :: atom_index(4)
       logical :: bad
 
       ncons = 0
@@ -928,9 +928,9 @@ contains
          entry = strip(char(entries(i)))
          if (len(entry) == 0) cycle
          ncons = ncons + 1
-         if (ncons > size(tmp_kind)) then
+         if (ncons > size(found_kind)) then
             call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: more than "// &
-                         to_string(size(tmp_kind))//" constraints in one run is not supported")
+                         to_string(size(found_kind))//" constraints in one run is not supported")
             return
          end if
          words = tokenize(entry)
@@ -942,26 +942,26 @@ contains
          kind_tok = to_lower_alloc(char(words(1)))
          select case (kind_tok)
          case ("bond")
-            tmp_kind(ncons) = 1
+            found_kind(ncons) = 1
          case ("angle")
-            tmp_kind(ncons) = 2
+            found_kind(ncons) = 2
          case ("torsion")
-            tmp_kind(ncons) = 3
+            found_kind(ncons) = 3
          case ("cartesian")
-            tmp_kind(ncons) = 4
+            found_kind(ncons) = 4
          case ("bond-difference")
-            tmp_kind(ncons) = 5
+            found_kind(ncons) = 5
          case default
             call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: unknown type '"//kind_tok// &
                          "': use bond, angle, torsion, cartesian or bond-difference")
             return
          end select
-         nslots_here = NSLOTS(tmp_kind(ncons))
-         idx = 0
+         nslots_here = NSLOTS(found_kind(ncons))
+         atom_index = 0
          bad = (size(words) - 1 < nslots_here)
          if (.not. bad) then
             do k = 1, nslots_here
-               call parse_int(words(k + 1), idx(k), perr)
+               call parse_int(words(k + 1), atom_index(k), perr)
                bad = bad .or. perr%has_error()
             end do
          end if
@@ -970,27 +970,27 @@ contains
                          "' does not have the atom indices '"//kind_tok//"' needs")
             return
          end if
-         tmp_a(ncons) = idx(1)
-         tmp_b(ncons) = idx(2)
-         tmp_c(ncons) = idx(3)
-         tmp_d(ncons) = idx(4)
-         ! Only the first NSLOTS(kind) entries of idx are atoms THIS type
-         ! uses; the rest are the 0 this subroutine's own `idx = 0` reset
+         found_a(ncons) = atom_index(1)
+         found_b(ncons) = atom_index(2)
+         found_c(ncons) = atom_index(3)
+         found_d(ncons) = atom_index(4)
+         ! Only the first NSLOTS(kind) entries of atom_index are atoms THIS type
+         ! uses; the rest are the 0 this subroutine's own `atom_index = 0` reset
          ! put there and must stay 0 (never a slot a caller filled in).
-         ! Checking idx(k) /= 0 here (the bug this replaced) let a TYPED 0
+         ! Checking atom_index(k) /= 0 here (the bug this replaced) let a TYPED 0
          ! through as if it meant "unused": DL-FIND's own assign_cons then
          ! reports "crosses residue boundary" and `error stop`s, since
          ! atom 0 belongs to no residue at all.
-         do k = 1, NSLOTS(tmp_kind(ncons))
-            if (idx(k) < 1 .or. idx(k) > natm) then
+         do k = 1, NSLOTS(found_kind(ncons))
+            if (atom_index(k) < 1 .or. atom_index(k) > natm) then
                call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: '"//entry// &
                             "': atom index out of range for "//to_string(natm)//" atoms")
                return
             end if
          end do
-         do k = 1, NSLOTS(tmp_kind(ncons))
-            do k2 = k + 1, NSLOTS(tmp_kind(ncons))
-               if (idx(k) == idx(k2)) then
+         do k = 1, NSLOTS(found_kind(ncons))
+            do k2 = k + 1, NSLOTS(found_kind(ncons))
+               if (atom_index(k) == atom_index(k2)) then
                   call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: '"//entry// &
                                "': the same atom appears twice in one constraint")
                   return
@@ -1003,29 +1003,29 @@ contains
                       trim(spec)//"'")
          return
       end if
-      allocate (cons_kind(ncons), source=tmp_kind(1:ncons))
-      allocate (cons_a(ncons), source=tmp_a(1:ncons))
-      allocate (cons_b(ncons), source=tmp_b(1:ncons))
-      allocate (cons_c(ncons), source=tmp_c(1:ncons))
-      allocate (cons_d(ncons), source=tmp_d(1:ncons))
-   end subroutine parse_constraints
+      allocate (cons_kind(ncons), source=found_kind(1:ncons))
+      allocate (cons_a(ncons), source=found_a(1:ncons))
+      allocate (cons_b(ncons), source=found_b(1:ncons))
+      allocate (cons_c(ncons), source=found_c(1:ncons))
+      allocate (cons_d(ncons), source=found_d(1:ncons))
+   end subroutine terco_run_parse_constraints
 
    !
    ! Checks every --opt-constrain entry against the HDLC residue
    ! partition and the --opt-frozen list, both only known once the
    ! geometry-dependent residues are built (trc_constants%trc_covalent_
-   ! radius-based, build_opt_residues) -- parse_constraints above only
+   ! radius-based, build_opt_residues) -- terco_run_parse_constraints above only
    ! has `natm`, so a syntactically valid entry can still name two atoms
    ! DL-FIND's own assign_cons would refuse once it ran. `die`s on the
    ! first bad entry, the same convention every other --opt-* validation
    ! in this file follows.
    !
-   subroutine check_opt_constrain_residues(r, opt_residues)
+   subroutine terco_run_check_opt_constrain_residues(r, opt_residues)
       type(run_t), intent(in) :: r
       integer, intent(in) :: opt_residues(:)
       integer, parameter :: N_CONS_KINDS = 5   !! TRC_OPT_CONS_{BOND,ANGLE,TORSION,CARTESIAN,BOND_DIFF}
       integer, parameter :: NSLOTS(N_CONS_KINDS) = [2, 3, 4, 1, 3]
-         !! parse_constraints' own NSLOTS -- which of atoms(1:4) a given
+         !! terco_run_parse_constraints' own NSLOTS -- which of atoms(1:4) a given
          !! TRC_OPT_CONS_* kind actually uses.
       integer :: ic, k, na, res1
       integer :: atoms(4)
@@ -1049,7 +1049,7 @@ contains
             end if
          end do
       end do
-   end subroutine check_opt_constrain_residues
+   end subroutine terco_run_check_opt_constrain_residues
 
    !
    ! --opt-neb <endpoint.xyz>: the product geometry must have the SAME
@@ -1058,14 +1058,14 @@ contains
    ! silently reordered or substituted atom would just move the wrong
    ! nucleus. Checked element-by-element rather than just atom count.
    !
-   subroutine check_neb_endpoint(natm, z, z2, natm2, err, what)
+   subroutine terco_run_check_neb_endpoint(natm, z, z2, natm2, err, what)
       integer, intent(in) :: natm, natm2
       integer, intent(in) :: z(natm), z2(natm2)
       type(error_t), intent(inout) :: err
       character(len=*), intent(in), optional :: what
          !! What to call the file that failed in the message -- "the
          !! endpoint geometry" (--opt-neb's own default) or "--opt-neb-via
-         !! frame N" (read_xyz_frames' own caller, below).
+         !! frame N" (terco_run_read_xyz_frames' own caller, below).
       character(len=:), allocatable :: label
       integer :: i
       label = "the endpoint geometry"
@@ -1082,22 +1082,22 @@ contains
             return
          end if
       end do
-   end subroutine check_neb_endpoint
+   end subroutine terco_run_check_neb_endpoint
 
    !
    ! --opt-neb-via <file.xyz>: one or more xyz FRAMES, standard multi-frame
    ! xyz (each frame is its own "natm / title / natm atom lines" block,
    ! concatenated -- the same convention write_traj_xyz already writes),
    ! read until end of file. Each frame's own atom count/order is checked
-   ! against the start geometry by the caller (check_neb_endpoint, above),
+   ! against the start geometry by the caller (terco_run_check_neb_endpoint, above),
    ! not here -- this only parses.
    !
-   subroutine read_xyz_frames(path, natm, z, nframes, xyz, err)
+   subroutine terco_run_read_xyz_frames(path, natm, z, nframes, xyz, err)
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
       integer, intent(in) :: z(natm)
          !! the start geometry's own atomic numbers -- every frame is
-         !! checked against this directly (check_neb_endpoint's own
+         !! checked against this directly (terco_run_check_neb_endpoint's own
          !! element-by-element comparison), same atoms, same order.
       integer, intent(out) :: nframes
       real(dp), allocatable, intent(out) :: xyz(:, :, :)   !! (3, natm, nframes), Bohr
@@ -1107,7 +1107,7 @@ contains
       character(len=16) :: tok
       integer :: z_f(natm)
       real(dp) :: r(3)
-      real(dp), allocatable :: tmp(:, :, :)
+      real(dp), allocatable :: frames_read(:, :, :)
 
       nframes = 0
       open (newunit=u, file=path, status="old", action="read", iostat=ios)
@@ -1115,7 +1115,7 @@ contains
          call err%set(int(ERROR_IO, default_int), "--opt-neb-via: cannot open '"//trim(path)//"'")
          return
       end if
-      allocate (tmp(3, natm, 16))   ! grown below if more frames turn up
+      allocate (frames_read(3, natm, 16))   ! grown below if more frames turn up
       do
          read (u, *, iostat=ios) natm_f
          if (ios /= 0) exit   ! clean end of file: done
@@ -1134,12 +1134,12 @@ contains
             return
          end if
          nframes = nframes + 1
-         if (nframes > size(tmp, 3)) then
+         if (nframes > size(frames_read, 3)) then
             block
                real(dp), allocatable :: grown(:, :, :)
-               allocate (grown(3, natm, 2*size(tmp, 3)))
-               grown(:, :, 1:size(tmp, 3)) = tmp
-               call move_alloc(grown, tmp)
+               allocate (grown(3, natm, 2*size(frames_read, 3)))
+               grown(:, :, 1:size(frames_read, 3)) = frames_read
+               call move_alloc(grown, frames_read)
             end block
          end if
          do ia = 1, natm
@@ -1159,10 +1159,10 @@ contains
                close (u)
                return
             end if
-            z_f(ia) = atomic_number(tok)
-            tmp(:, ia, nframes) = r*BOHR_PER_ANGSTROM
+            z_f(ia) = terco_app_atomic_number(tok)
+            frames_read(:, ia, nframes) = r*BOHR_PER_ANGSTROM
          end do
-         call check_neb_endpoint(natm, z, z_f, natm, err, what="--opt-neb-via frame "//to_string(nframes))
+         call terco_run_check_neb_endpoint(natm, z, z_f, natm, err, what="--opt-neb-via frame "//to_string(nframes))
          if (err%has_error()) then
             close (u)
             return
@@ -1173,8 +1173,8 @@ contains
          call err%set(int(ERROR_PARSE, default_int), "--opt-neb-via: '"//trim(path)//"' has no frames")
          return
       end if
-      allocate (xyz(3, natm, nframes), source=tmp(:, :, 1:nframes))
-   end subroutine read_xyz_frames
+      allocate (xyz(3, natm, nframes), source=frames_read(:, :, 1:nframes))
+   end subroutine terco_run_read_xyz_frames
 
    !
    ! `<geometry base>_neb.xyz`: the converged NEB path, one frame per image
@@ -1182,7 +1182,7 @@ contains
    ! index and energy, with the climbing/highest-energy image marked, so
    ! the whole path can be inspected or animated without re-running DL-FIND.
    !
-   subroutine write_neb_path_xyz(r, path)
+   subroutine terco_run_write_neb_path_xyz(r, path)
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       integer :: u, ia, k
@@ -1199,7 +1199,7 @@ contains
          end do
       end do
       close (u)
-   end subroutine write_neb_path_xyz
+   end subroutine terco_run_write_neb_path_xyz
 
    !
    ! The optimisation's own final summary: converged or not, steps,
@@ -1790,10 +1790,10 @@ program terco_main
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary, hessian_summary, build_masses, &
                        opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz, &
-                       opt_geometry_is_linear, write_labelled_xyz, parse_opt_global_options, &
-                       parse_frozen_list, parse_constraints, check_opt_constrain_residues, &
-                       check_neb_endpoint, write_neb_path_xyz, &
-                       read_xyz_frames, to_lower_alloc
+                       opt_geometry_is_linear, write_labelled_xyz, terco_run_parse_opt_global_options, &
+                       terco_run_parse_frozen_list, terco_run_parse_constraints, terco_run_check_opt_constrain_residues, &
+                       terco_run_check_neb_endpoint, terco_run_write_neb_path_xyz, &
+                       terco_run_read_xyz_frames, to_lower_alloc
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -2334,7 +2334,7 @@ program terco_main
          ! app/trc_dlfind_bridge.F90's own header for the detail.
          ! test/check_opt_connect.F90 runs connect with both methods.
       end if
-      call parse_opt_global_options(r)
+      call terco_run_parse_opt_global_options(r)
 
       ! ---- --opt-neb: nudged elastic band / climbing-image NEB -----------
       r%opt_neb = r%cli%is_set("opt-neb")
@@ -2356,7 +2356,7 @@ program terco_main
             character(len=:), allocatable :: title2
             call read_xyz(r%opt_neb_endpoint_path, natm2, z2, xyz2, title2, r%err)
             if (r%err%has_error()) call die(r, "--opt-neb: "//r%err%get_message())
-            call check_neb_endpoint(r%natm, r%z, z2, natm2, r%err)
+            call terco_run_check_neb_endpoint(r%natm, r%z, z2, natm2, r%err)
             if (r%err%has_error()) call die(r, r%err%get_message())
             r%opt_neb_product_xyz = xyz2
          end block
@@ -2389,7 +2389,7 @@ program terco_main
             call r%cli%get("opt-neb-via", r%opt_neb_via_path, r%err)
             block
                integer :: n_via
-               call read_xyz_frames(r%opt_neb_via_path, r%natm, r%z, n_via, r%opt_neb_via_xyz, r%err)
+               call terco_run_read_xyz_frames(r%opt_neb_via_path, r%natm, r%z, n_via, r%opt_neb_via_xyz, r%err)
                if (r%err%has_error()) call die(r, r%err%get_message())
             end block
          end if
@@ -2549,7 +2549,7 @@ program terco_main
                      "pure internals')")
          end if
          call r%cli%get("opt-frozen", r%opt_frozen_arg, r%err)
-         call parse_frozen_list(r%opt_frozen_arg, r%natm, r%opt_frozen_atoms, r%err)
+         call terco_run_parse_frozen_list(r%opt_frozen_arg, r%natm, r%opt_frozen_atoms, r%err)
          if (r%err%has_error()) call die(r, r%err%get_message())
       end if
 
@@ -2561,7 +2561,7 @@ program terco_main
                      "would just ignore it")
          end if
          call r%cli%get("opt-constrain", r%opt_constrain_arg, r%err)
-         call parse_constraints(r%opt_constrain_arg, r%natm, r%opt_cons_kind, r%opt_cons_a, r%opt_cons_b, &
+         call terco_run_parse_constraints(r%opt_constrain_arg, r%natm, r%opt_cons_kind, r%opt_cons_a, r%opt_cons_b, &
                                 r%opt_cons_c, r%opt_cons_d, r%err)
          if (r%err%has_error()) call die(r, r%err%get_message())
          if ((r%opt_coords_kind == TRC_OPT_COORDS_DLC .or. r%opt_coords_kind == TRC_OPT_COORDS_DLC_TC) .and. &
@@ -2675,7 +2675,7 @@ program terco_main
       ! below turns every frozen atom's own real residue number into -1
       ! and would make this check see every pair of frozen atoms as
       ! "different residues" even when they share one).
-      if (allocated(r%opt_cons_kind)) call check_opt_constrain_residues(r, opt_residues)
+      if (allocated(r%opt_cons_kind)) call terco_run_check_opt_constrain_residues(r, opt_residues)
       ! --opt-frozen: -1 in the SAME spec slot residues already occupy
       ! (app/trc_dlfind_bridge.F90's own cb_get_params copies spec(1:natm)
       ! straight from this array, no translation) -- validated against
@@ -2738,7 +2738,7 @@ program terco_main
 
       ! --opt-algorithm stochastic/genetic (iopt 51/52): opt_opts%po_*
       ! stay at their sentinel defaults (DL-FIND's own inline values,
-      ! trc_dlfind_bridge's own header) unless parse_opt_global_options
+      ! trc_dlfind_bridge's own header) unless terco_run_parse_opt_global_options
       ! validated one above, which it refuses together with any other
       ! --opt-algorithm, so these are always still at their r%-type
       ! sentinel (-1/-1.0/huge(0)) when opt_is_global is false.
@@ -2931,7 +2931,7 @@ program terco_main
                                  opt_base//"_plus.xyz")
       end if
       if (r%opt_neb_have) then
-         call write_neb_path_xyz(r, opt_base//"_neb.xyz")
+         call terco_run_write_neb_path_xyz(r, opt_base//"_neb.xyz")
          call global_logger%info("   opt-neb: wrote "//opt_base//"_neb.xyz ("//to_string(r%opt_neb_n_images)// &
                                  " images)")
       end if
