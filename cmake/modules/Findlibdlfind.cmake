@@ -37,9 +37,12 @@
 # GIT_TAG is the commit, not the branch name, so a push to terco-patches
 # after this cannot move the build out from under us either; terco-patches
 # itself exists only so these two commits have somewhere to live upstream
-# of a fork PR. The branch is not the default one FetchContent's shallow
-# fetch assumes, so GIT_SHALLOW is forced FALSE below -- a full clone,
-# which can check out any commit the remote advertises on any ref.
+# of a fork PR. GIT_SHALLOW FALSE below is spelled out explicitly (it is
+# already FetchContent_Declare's own default) because it is load-bearing
+# here: terco-patches is not libdlfind's default branch, and a shallow
+# clone only fetches the tip of whichever ref it resolves, so a full
+# clone is what lets the pin above -- reachable from terco-patches, not
+# from the default branch -- resolve at all.
 #
 # Offline builds (a compute node with no network): point
 # -DFETCHCONTENT_SOURCE_DIR_LIBDLFIND=<a local clone checked out to the
@@ -67,13 +70,8 @@ message(STATUS "Retrieving libdlfind from https://github.com/JorgeG94/libdlfind.
 # EXCLUDE_FROM_ALL: a dependency built for terco_cli to link, not shipped --
 # same reasoning as my_fetch_package's own comment (otherwise libdlfind's
 # own `install()` rules would install into terco's prefix too).
-# GIT_SHALLOW FALSE: a shallow clone fetches only the tip of the branch
-# GIT_REPOSITORY defaults to (or of a ref CMake resolves with `git ls-
-# remote` first); terco-patches is not libdlfind's default branch, and a
-# plain shallow fetch of the default branch would never see this commit
-# at all. A full clone fetches every ref the remote advertises, so the
-# commit above -- reachable from terco-patches, not from the default
-# branch -- resolves either way.
+# GIT_SHALLOW FALSE: see this file's own header for why this is spelled
+# out rather than left at its default.
 FetchContent_Declare(
   libdlfind
   GIT_REPOSITORY "https://github.com/JorgeG94/libdlfind.git"

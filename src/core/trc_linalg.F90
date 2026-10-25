@@ -525,8 +525,8 @@ contains
    ! (trc_scf_context.F90%sym_orthog, trc_scf_driver.F90%orbitals_and_
    ! density) use this to report a clean `error_t`/non-convergence instead:
    ! a malformed input matrix (a density read past the end of an
-   ! undersized buffer was one real cause, found and fixed on this branch)
-   ! must not take the whole process down with it.
+   ! undersized buffer is one real cause) must not take the whole process
+   ! down with it.
    subroutine linalg_syev_raw(this, n, a, lda, w, info)
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda

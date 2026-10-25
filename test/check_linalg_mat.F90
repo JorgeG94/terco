@@ -264,14 +264,19 @@ contains
    end subroutine test_syev_mat
 
    ! =======================================================================
-   ! 3b. A diagonalisation `pic_syev`/cuSOLVER genuinely cannot do (a
-   ! signalling NaN -- a QUIET NaN propagates through dsyev with info=0 on
-   ! this LAPACK, measured separately; a SIGNALLING one does not) must
-   ! come back through the OPTIONAL `info` argument, not `error stop` --
-   ! app/trc_dlfind_bridge.F90's own NEB crash and its root cause (a
-   ! density read past the end of an undersized per-image buffer, now
-   ! fixed) is exactly this failure mode one level up, in
-   ! trc_scf_driver.F90's Fock diagonalisation; this is the cheap,
+   ! 3b. A diagonalisation `pic_syev`/cuSOLVER genuinely cannot do must
+   ! come back through the OPTIONAL `info` argument, not `error stop`.
+   ! dsyev returns a nonzero info ("failed to converge") for a NaN
+   ! matrix whether it started quiet or signalling -- any ordinary
+   ! arithmetic on a signalling NaN quiets it (the standard IEEE 754
+   ! trap-then-return-qNaN behaviour), so by the time a NaN seeded
+   ! earlier reaches an eigensolver it is already quiet either way;
+   ! `ieee_signaling_nan` here is just the intrinsic this test uses to
+   ! seed one deliberately, not a distinction dsyev's own result
+   ! depends on. A density read past the end of an undersized buffer
+   ! (an SCF guess, or app/trc_dlfind_bridge.F90's own per-image warm
+   ! start) is exactly how a NaN like this reaches the diagonalisation
+   ! one level up, in trc_scf_driver.F90; this is the cheap,
    ! deterministic version of the same thing, at the trc_linalg level.
    ! =======================================================================
    subroutine test_syev_failure()
