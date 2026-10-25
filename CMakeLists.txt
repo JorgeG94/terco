@@ -259,6 +259,14 @@ option(TERCO_BUILD_SHARED
 # depends on the offload model is a bug in the offload model.
 #
 option(TERCO_ENABLE_GPU "Offload with -stdpar=gpu (needs NVHPC)" ON)
+option(TERCO_ENABLE_MULTICORE
+       "Host build with -stdpar=multicore -acc=multicore (needs NVHPC)" OFF)
+if(TERCO_ENABLE_GPU AND TERCO_ENABLE_MULTICORE)
+  message(FATAL_ERROR "TERCO_ENABLE_MULTICORE needs -DTERCO_ENABLE_GPU=OFF")
+endif()
+if(TERCO_ENABLE_MULTICORE AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+  message(FATAL_ERROR "TERCO_ENABLE_MULTICORE requires the NVHPC Fortran compiler")
+endif()
 #
 if(TERCO_ENABLE_GPU AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
   message(

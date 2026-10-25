@@ -21,7 +21,7 @@ homepage = "https://github.com/JorgeG94/terco"
 # on the compiler and they are meaningless to anything but nvfortran. Add them
 # on the command line:
 #
-#   fpm build --compiler mpifort --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate"
+#   fpm build --compiler mpifort --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate -DTRC_DEVICE"
 #
 # Without -stdpar=gpu this compiles to a correct and very slow CPU library.
 

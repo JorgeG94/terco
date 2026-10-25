@@ -96,7 +96,7 @@
 ! GPU. Measured correct and consistent with CPU to ~1e-11/1e-12 (the
 ! fixed-density FD check, check_vv10_grad_fixedd_fd.F90, three repeated
 ! GPU runs) -- built from the same idioms (`do concurrent`/`routine seq`,
-! the `_OPENACC` CPU/GPU pass-2 split trc_vv10.F90's own header explains)
+! the `TRC_DEVICE` CPU/GPU pass-2 split trc_vv10.F90's own header explains)
 ! as the two modules it reuses. Not yet measured for its OWN cost next to
 ! the rest of the gradient at more than one case; see the branch report
 ! that added this module for the one case it does measure.
@@ -402,7 +402,7 @@ contains
    ! that body has no `dedw`/`fexp` outputs (see this module's header,
    ! ENERGY-SIDE REUSE).
    !
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    subroutine vv10_grad_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                vrho, vsigma, dedw, fexp)
       integer, intent(in) :: npts, npass

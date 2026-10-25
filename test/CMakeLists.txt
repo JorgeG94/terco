@@ -1298,6 +1298,11 @@ add_executable(link_c link_c.c)
 add_dependencies(link_c ${main_lib})
 target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+# A C main has to be linked with the OpenACC multicore runtime itself: without
+# it the energy comes back as the nuclear repulsion alone (9.19 for water).
+if(TERCO_ENABLE_MULTICORE)
+  target_link_options(link_c PRIVATE -acc=multicore)
+endif()
 set_target_properties(link_c PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:${main_lib}>")
 add_test(NAME terco/link_c COMMAND link_c)
 set_tests_properties(terco/link_c PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

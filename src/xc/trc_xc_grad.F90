@@ -217,7 +217,7 @@ module trc_xc_grad
    integer, parameter :: XC_GRAD_NPC = 12
    !! Per-point coefficients the force kernels read, at most (unrestricted):
    !! w, v_a, v_b, v_aa, v_ab, v_bb, grad rho_a, grad rho_b. Restricted uses 6.
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    integer, parameter :: XC_GRAD_LANES = 32
 #else
    integer, parameter :: XC_GRAD_LANES = 1
@@ -225,7 +225,7 @@ module trc_xc_grad
    !! Threads that share one function's Pulay sum on the device, adjacent
    !! threads adjacent points (xc_grad_forces); one on the host, which
    !! walks a column in one iteration.
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    integer(int64), parameter :: XC_GRAD_TILE_CAP = 8388608_int64
 #else
    integer(int64), parameter :: XC_GRAD_TILE_CAP = 262144_int64
@@ -952,7 +952,7 @@ contains
       real(dp), intent(in) :: dmat(nao, nao, nspin)
       integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
       real(dp), intent(inout) :: dloc(ldd, nspin)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: t
       do concurrent(t=1:npairs)
          call xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
@@ -1285,7 +1285,7 @@ contains
       real(dp), intent(in) :: pc(ldp, npc)
       real(dp), intent(inout) :: fp(ldf, 3), qp(ldq, 3), eb(ldq, 3), grad(3, natm)
       integer :: t, at
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       real(dp) :: f(3)
       integer :: m
 
@@ -1622,7 +1622,7 @@ contains
       real(dp), intent(inout) :: grad(3, natm)
       integer :: g, at
       real(dp) :: q(3)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       do concurrent(g=1:np) local(q, at)
          call xc_grad_pointmotion_body(g, p0, nspin, is_gga, npts, g_atom, batch_of, b_off, b_aooff, c_off, npp, &
                                        active, nbatch, ldt, ldh, nhs, ldr, ldx, npc, gchi, hchi, xt, rd, rdx, pc, ldp, &

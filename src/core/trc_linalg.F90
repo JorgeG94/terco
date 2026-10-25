@@ -27,7 +27,7 @@ module trc_linalg
    use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm, pic_dot
    use pic_lapack_interfaces, only: pic_syev
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    use cublas
    use cusolverdn
    use openacc, only: acc_get_cuda_stream, acc_async_sync
@@ -41,7 +41,7 @@ module trc_linalg
    type :: trc_linalg_t
       integer :: n = 0
       logical :: ready = .false.
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       type(cublasHandle) :: hb
       type(cusolverDnHandle) :: hs
       real(dp), allocatable :: dwork(:)
@@ -107,11 +107,11 @@ contains
    subroutine linalg_init(this, n)
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st
 #endif
       if (.not. this%ready) then
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
          st = cublasCreate(this%hb)
          if (st /= 0) error stop "trc_linalg: cublasCreate failed"
          st = cusolverDnCreate(this%hs)
@@ -130,7 +130,7 @@ contains
    subroutine grow_workspace(this, n)
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       real(dp), allocatable :: a(:, :), w(:)
       integer :: st
       if (allocated(this%dwork)) then
@@ -159,7 +159,7 @@ contains
    !
    subroutine linalg_sync(this)
       class(trc_linalg_t), intent(in) :: this
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       interface
          function cudaDeviceSynchronize() result(res) bind(c, name="cudaDeviceSynchronize")
             import :: c_int
@@ -177,7 +177,7 @@ contains
 
    subroutine linalg_release(this)
       class(trc_linalg_t), intent(inout) :: this
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st
       if (this%ready) then
          if (allocated(this%dwork)) then
@@ -204,7 +204,7 @@ contains
       logical :: tra, trb
       tra = ta == "T" .or. ta == "t"
       trb = tb == "T" .or. tb == "t"
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       block
          integer :: st, oa, ob
          oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
@@ -244,7 +244,7 @@ contains
       integer, intent(in) :: m, n, lda, ldc
       real(dp), intent(in) :: a(lda, *)
       real(dp), intent(inout) :: c(ldc, *)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st
       ! beta = 0: the second operand is not read, but cuBLAS still checks
       ! its leading dimension against C's shape, so it is C itself -- the
@@ -282,7 +282,7 @@ contains
       integer, intent(in) :: n, lds, ldc
       real(dp), intent(in) :: s(lds, *)
       real(dp), intent(inout) :: c(ldc, *)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st
       !$acc host_data use_device(s, c)
       st = cublasDgeam(this%hb, CUBLAS_OP_T, CUBLAS_OP_N, n, n, 1.0_dp, s, lds, 1.0_dp, s, lds, c, ldc)
@@ -308,7 +308,7 @@ contains
       tra = ta == "T" .or. ta == "t"
       trb = tb == "T" .or. tb == "t"
       if (count < 1) return
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       block
          integer :: st, oa, ob
          oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
@@ -339,7 +339,7 @@ contains
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st, lw, info
       real(dp), allocatable :: work(:)
       !$acc host_data use_device(a)
@@ -382,7 +382,7 @@ contains
       real(dp), intent(inout) :: a(lda, *)
       integer, intent(out) :: ipiv(*)
       integer, intent(out) :: info   !! 0, or the first zero pivot as LAPACK reports it
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st, lw
       real(dp), allocatable :: work(:)
       !$acc host_data use_device(a)
@@ -422,7 +422,7 @@ contains
       real(dp), intent(in) :: a(lda, *)
       integer, intent(in) :: ipiv(*)
       real(dp), intent(inout) :: b(ldb, *)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st, ct
       ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
       !$acc host_data use_device(a, ipiv, b, this%devinfo)
@@ -456,7 +456,7 @@ contains
       real(dp), intent(in) :: alpha, beta
       real(dp), intent(in) :: a(lda, *), x(*)
       real(dp), intent(inout) :: y(*)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st, ct
       ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
       !$acc host_data use_device(a, x, y)
@@ -489,7 +489,7 @@ contains
       real(dp), intent(in) :: alpha
       real(dp), intent(in) :: a(lda, *)
       real(dp), intent(inout) :: b(ldb, *)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st, cs, cu, ct
       cs = merge(CUBLAS_SIDE_RIGHT, CUBLAS_SIDE_LEFT, side == "R" .or. side == "r")
       cu = merge(CUBLAS_FILL_MODE_UPPER, CUBLAS_FILL_MODE_LOWER, uplo == "U" .or. uplo == "u")
@@ -521,7 +521,7 @@ contains
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
       real(dp), intent(out) :: w(*)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st, info
       if (n > this%n) error stop "trc_linalg: eigenproblem larger than the workspace"
       !$acc host_data use_device(a, w, this%dwork, this%devinfo)
@@ -546,7 +546,7 @@ contains
       integer, intent(in) :: n
       real(dp), intent(in) :: x(*), y(*)
       real(dp) :: r
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer :: st
       !$acc host_data use_device(x, y)
       st = cublasDdot_v2(this%hb, n, x, 1, y, 1, r)
@@ -721,7 +721,7 @@ contains
    ! A no-op on the host build (no device, nothing to reserve).
    !
    subroutine trc_release_local_mem_reservation()
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       interface
          function cudadevicesetlimit(limit, lim_value) bind(c, name="cudaDeviceSetLimit") result(ierr)
             import :: c_int, c_size_t
