@@ -23,11 +23,12 @@ module terco_run
    !! toolchain; worth a closer look (and a vendor report) on its own.
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char
    use, intrinsic :: iso_fortran_env, only: output_unit, error_unit
-   use pic_types, only: dp, int64, default_int
+   use pic_types, only: dp, default_int
    use pic_error, only: error_t, ERROR_VALIDATION
    use pic_cli, only: cli_t
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
@@ -66,7 +67,7 @@ module terco_run
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
       logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
-      integer(int64) :: t0, t1, rate
+      type(timer_type) :: wall
       type(comm_t) :: wcomm
       integer :: nranks
       logical :: rank0
@@ -433,11 +434,6 @@ contains
          if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
       call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
-      block
-         character(len=1024) :: logline
-         write (logline, "(a,f12.3,a)") "   wall time        : ", real(r%t1 - r%t0, dp)/real(r%rate, dp), " s"
-         call global_logger%info(trim(logline))
-      end block
    end subroutine summary
 
    subroutine gradient_summary(r)
@@ -1193,7 +1189,7 @@ program terco_main
    r%nranks = r%wcomm%size()
    r%rank0 = r%wcomm%leader()
 
-   call system_clock(r%t0, r%rate)
+   call r%wall%start()
 
    ! ---- the interface ---------------------------------------------------
    call r%cli%set_program("terco", "Hartree-Fock and Kohn-Sham DFT, in standard Fortran")
@@ -2020,7 +2016,6 @@ program terco_main
       r%hess_ok = .true.
    end if
 
-   call system_clock(r%t1)
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
    if (r%rank0 .and. r%opt) call opt_summary(r)
@@ -2066,6 +2061,14 @@ program terco_main
    if (r%rank0) then
       call global_logger%info("")
       call global_logger%info(" normal termination of terco")
+      ! Re-read the clock: the Hessian and JSON output above come after the
+      ! summary wall time, which would otherwise be buried.
+      block
+         character(len=1024) :: logline
+         call r%wall%stop()
+         write (logline, "(a,f12.3,a)") " total wall time    : ", r%wall%get_elapsed_time(), " s"
+         call global_logger%info(trim(logline))
+      end block
    end if
    ! A line of pic's collected lore, as metalquicha prints at the end of a
    ! successful run: rank 0 only, and not under --silent, whose promise is
