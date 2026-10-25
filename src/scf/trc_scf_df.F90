@@ -73,6 +73,7 @@
 !
 module trc_scf_df
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
@@ -184,7 +185,7 @@ contains
       real(dp), allocatable :: jmc(:, :), tens(:, :, :), tsph(:, :, :)
       integer :: n, naux, naux_c, npack, ablk, omax0
       integer :: s0, s1, ish, p0, p0s, np, nps, mu, nu, q
-      real(dp) :: tc
+      type(timer_type) :: tc
 
       call err%clear()
       if (this%ready) return
@@ -402,7 +403,8 @@ contains
       !! -- 0.5625 at 8) but a smaller N per GEMM; 8 keeps every panel's
       !! N >= 125 at w40 (n=1000) while buying back most of the savings a
       !! much larger panel count would.
-      real(dp) :: tc, eval_cut
+      real(dp) :: eval_cut
+      type(timer_type) :: tc
 
       n = this%n
       n8 = int(n, int64)

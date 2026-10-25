@@ -125,7 +125,8 @@ contains
       integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
       real(dp), allocatable :: pd(:, :)
       logical :: do_k
-      real(dp) :: occ_s, jc, tc
+      real(dp) :: occ_s, jc
+      type(timer_type) :: tc
       type(step_table_t) :: tbl
       type(timer_type) :: tall
       logical :: dense(NSTEP)

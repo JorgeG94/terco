@@ -19,7 +19,8 @@
 ! (test/CMakeLists.txt, same as bench_vv10).
 !
 program bench_vv10_grad
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -40,8 +41,8 @@ program bench_vv10_grad
    type(trc_xc_functional_t) :: func, func_novv10
    type(trc_linalg_t) :: lp
    type(error_t) :: err
-   real(dp) :: t0, t1, t_full, t_novv10
-   integer(int64) :: cc, rate
+   real(dp) :: t1, t_full, t_novv10
+   type(timer_type) :: tm
 
    if (command_argument_count() < 4) then
       print '(a)', 'usage: bench_vv10_grad <xyz> <basis.json> <nalpha> <nbeta>'; stop 1
@@ -66,13 +67,13 @@ program bench_vv10_grad
    opts%functional = 'wb97x-v'
    opts%grid_level = 3
    opts%conv_energy = 1.0e-10_dp; opts%conv_diis = 1.0e-8_dp; opts%max_iter = 100
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   call tm%start()
    call trc_scf_run(bas, nalpha, nbeta, opts, res)
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+   t1 = tm%get_elapsed_time()
    if (.not. res%converged) then
       print '(a)', 'bench_vv10_grad: SCF did not converge'; stop 1
    end if
-   print '(a,i0,a,i0,a,f8.3,a)', 'bench_vv10_grad: ', nat, ' atoms, ', bas%nao, ' AOs; SCF ', t1 - t0, ' s'
+   print '(a,i0,a,i0,a,f8.3,a)', 'bench_vv10_grad: ', nat, ' atoms, ', bas%nao, ' AOs; SCF ', t1, ' s'
 
    ! "The rest": the same functional with VV10's two coefficients zeroed,
    ! so trc_xc_grad's semilocal GGA term and trc_scf_grad.F90's own
@@ -85,19 +86,19 @@ program bench_vv10_grad
    allocate (grad_full(3, nat), grad_novv10(3, nat))
    call lp%init(bas%nao)
 
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   call tm%start()
    call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_full, &
                          func=func, grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, &
                          rho_tol=opts%rho_tol, nlc_grid_level=opts%nlc_grid_level)
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
-   t_full = t1 - t0
+   t1 = tm%get_elapsed_time()
+   t_full = t1
 
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   call tm%start()
    call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_novv10, &
                          func=func_novv10, grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, &
                          rho_tol=opts%rho_tol, nlc_grid_level=opts%nlc_grid_level)
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
-   t_novv10 = t1 - t0
+   t1 = tm%get_elapsed_time()
+   t_novv10 = t1
 
    call lp%release()
    call bas%release()

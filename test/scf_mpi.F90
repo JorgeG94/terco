@@ -27,7 +27,8 @@
 ! against this program's own np 1 water/6-31G* values (2026-10-15).
 !
 program scf_mpi
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, MPI_MAX, MPI_MIN
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -57,8 +58,8 @@ program scf_mpi
    character(len=8) :: names(2) = [character(len=8) :: "", "pbe"]
    logical :: ok
    character(len=256) :: xyz, xyz_arg
-   real(dp) :: t0, t1
-   integer(int64) :: cc, rate
+   real(dp) :: t1
+   type(timer_type) :: tm
 
    call pic_mpi_init()
    comm = comm_world()
@@ -92,9 +93,9 @@ program scf_mpi
       if (command_argument_count() >= 4) then
          call get_command_argument(4, xyz_arg); read (xyz_arg, *) opts%damp
       end if
-      call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+      call tm%start()
       call trc_scf_run(bas, nint(sum(at_z))/2, nint(sum(at_z))/2, opts, res, comm=comm)
-      call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+      t1 = tm%get_elapsed_time()
       e(ic) = res%energy
       emax = e(ic); emin = e(ic)
       ! pic-mpi's single-rank backend refuses a collective outright.
@@ -107,7 +108,7 @@ program scf_mpi
          print '(a,i0,a,a5,a,f20.12,a,i0,a,es9.2,a,es9.2)', "scf_mpi: ", comm%size(), " rank(s)  ", &
             merge("rhf  ", names(ic)(1:5), ic == 1), "  E = ", e(ic), "  iter ", res%iterations, &
             "  spread over ranks ", emax - emin, "  vs reference ", abs(e(ic) - ref)
-         print '(a,f8.2,a)', "         wall ", t1 - t0, " s"
+         print '(a,f8.2,a)', "         wall ", t1, " s"
       end if
       if (.not. res%converged .or. emax - emin > 1.0e-12_dp) ok = .false.
       if (trim(xyz) == 'water.xyz' .and. abs(e(ic) - ref) > 1.0e-8_dp) ok = .false.
