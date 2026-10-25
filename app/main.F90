@@ -23,7 +23,7 @@ module terco_run
    !! toolchain; worth a closer look (and a vendor report) on its own.
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char
    use, intrinsic :: iso_fortran_env, only: output_unit, error_unit
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
    use pic_error, only: error_t
    use pic_cli, only: cli_t
    use pic_logger, only: global_logger
@@ -64,7 +64,7 @@ module terco_run
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
       logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
-      integer(int64) :: t0, rate
+      type(timer_type) :: wall
       type(comm_t) :: wcomm
       integer :: nranks
       logical :: rank0
@@ -624,6 +624,7 @@ program terco_main
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
    use pic_knowledge, only: get_knowledge
+   use pic_timer, only: timer_type
    use pic_profiler, only: profiler_init
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
@@ -681,7 +682,7 @@ program terco_main
    r%nranks = r%wcomm%size()
    r%rank0 = r%wcomm%leader()
 
-   call system_clock(r%t0, r%rate)
+   call r%wall%start()
 
    ! ---- the interface ---------------------------------------------------
    call r%cli%set_program("terco", "Hartree-Fock and Kohn-Sham DFT, in standard Fortran")
@@ -1067,12 +1068,11 @@ program terco_main
       call global_logger%info("")
       call global_logger%info(" normal termination of terco")
       ! Re-read the clock: the Hessian and JSON output above come after the
-      ! summary's wall time, which would otherwise be buried.
+      ! summary wall time, which would otherwise be buried.
       block
          character(len=1024) :: logline
-         integer(int64) :: t_end
-         call system_clock(t_end)
-         write (logline, "(a,f12.3,a)") " total wall time    : ", real(t_end - r%t0, dp)/real(r%rate, dp), " s"
+         call r%wall%stop()
+         write (logline, "(a,f12.3,a)") " total wall time    : ", r%wall%get_elapsed_time(), " s"
          call global_logger%info(trim(logline))
       end block
    end if
