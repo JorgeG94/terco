@@ -18,6 +18,7 @@
 !
 program bench_binwater
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_cart, only: cart_init
@@ -69,7 +70,8 @@ program bench_binwater
    real(dp), allocatable :: dmat(:,:), jmat(:,:), kmat(:,:), dsh(:,:)
    logical :: DSCREEN = .true.
    integer, parameter :: CHUNK = 400000
-   real(dp) :: t0, t1, t, best, worst
+   real(dp) :: t1, t, best, worst
+   type(timer_type) :: tm
 
    call read_args()
    call build_water_631g()
@@ -83,18 +85,18 @@ program bench_binwater
 
    allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
    dmax = 1.0_dp
-   call tick(t0)
+   call tm%start()
    call schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
-   call tick(t1)
-   print '(a,f8.3,a)', '  schwarz bounds  : ', t1 - t0, ' s'
+   t1 = tm%get_elapsed_time()
+   print '(a,f8.3,a)', '  schwarz bounds  : ', t1, ' s'
 
-   call tick(t0)
+   call tm%start()
    call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=hp_n)
    call build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                             qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
-   call tick(t1)
-   print '(a,f8.3,a)', '  bin the pairs   : ', t1 - t0, ' s'
+   t1 = tm%get_elapsed_time()
+   print '(a,f8.3,a)', '  bin the pairs   : ', t1, ' s'
 
    allocate (dmat(nao, nao), jmat(nao, nao), kmat(nao, nao))
    if (len_trim(DMFILE) > 0) then
@@ -170,11 +172,12 @@ program bench_binwater
    ! API's sake and not for speed. Measure rather than assume.
    block
       type(trc_plan_t) :: pln
-      real(dp) :: tp0, tp1
-      call tick(tp0)
+      real(dp) :: tp1
+      type(timer_type) :: tmp
+      call tmp%start()
       call pln%build(bins, THRESH, .false.)
-      call tick(tp1)
-      print '(a,f9.5,a,i0,a,i0)', '  plan build      ', tp1 - tp0, &
+      tp1 = tmp%get_elapsed_time()
+      print '(a,f9.5,a,i0,a,i0)', '  plan build      ', tp1, &
          ' s   segments ', pln%nseg, '   work ', pln%nwork
       call pln%release()
    end block
@@ -185,7 +188,7 @@ program bench_binwater
       ! and any checksum taken afterwards depends on the repetition count.
       jmat = 0.0_dp; kmat = 0.0_dp
       !$acc update device(jmat, kmat)
-      call tick(t0)
+      call tm%start()
       call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
                      1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
@@ -193,8 +196,8 @@ program bench_binwater
                      sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                      1, dmat, jmat, kmat, 0, 1, nlaunch, nwork)
       !$acc wait
-      call tick(t1)
-      t = t1 - t0
+      t1 = tm%get_elapsed_time()
+      t = t1
       if (r > 0) then
          best = min(best, t); worst = max(worst, t)
       end if
@@ -537,11 +540,5 @@ contains
       gto_norm = 1.0_dp/sqrt(gi)
    end function gto_norm
 
-   subroutine tick(tt)
-      real(dp), intent(out) :: tt
-      integer(int64) :: c, rate
-      call system_clock(c, rate)
-      tt = real(c, dp)/real(rate, dp)
-   end subroutine tick
 
 end program bench_binwater
