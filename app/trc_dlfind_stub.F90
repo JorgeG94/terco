@@ -23,6 +23,10 @@ module trc_dlfind_bridge
    public :: TRC_OPT_HESS_TERCO, TRC_OPT_HESS_DLFIND
    public :: TRC_OPT_HUPD_NONE, TRC_OPT_HUPD_POWELL, TRC_OPT_HUPD_BOFILL, TRC_OPT_HUPD_BFGS
    public :: TRC_OPT_LINE_AUTO, TRC_OPT_LINE_SCALING, TRC_OPT_LINE_ENERGY_TRUST, TRC_OPT_LINE_GRADIENT_TRUST
+   public :: TRC_OPT_ALG_STOCHASTIC, TRC_OPT_ALG_GENETIC
+   public :: TRC_OPT_NEB_FREE, TRC_OPT_NEB_PERP, TRC_OPT_NEB_FROZEN
+   public :: TRC_OPT_CONS_BOND, TRC_OPT_CONS_ANGLE, TRC_OPT_CONS_TORSION, TRC_OPT_CONS_CARTESIAN, TRC_OPT_CONS_BOND_DIFF
+   public :: trc_opt_constraint_t
    public :: trc_opt_options_t, trc_opt_result_t
    public :: trc_dlfind_optimize
 
@@ -38,6 +42,15 @@ module trc_dlfind_bridge
                          TRC_OPT_HUPD_BFGS = 3
    integer, parameter :: TRC_OPT_LINE_AUTO = -1, TRC_OPT_LINE_SCALING = 0, TRC_OPT_LINE_ENERGY_TRUST = 1, &
                          TRC_OPT_LINE_GRADIENT_TRUST = 2
+   integer, parameter :: TRC_OPT_ALG_STOCHASTIC = 51, TRC_OPT_ALG_GENETIC = 52
+   integer, parameter :: TRC_OPT_NEB_FREE = 0, TRC_OPT_NEB_PERP = 1, TRC_OPT_NEB_FROZEN = 2
+   integer, parameter :: TRC_OPT_CONS_BOND = 1, TRC_OPT_CONS_ANGLE = 2, TRC_OPT_CONS_TORSION = 3, &
+                         TRC_OPT_CONS_CARTESIAN = 4, TRC_OPT_CONS_BOND_DIFF = 5
+
+   type :: trc_opt_constraint_t
+      integer :: kind = 0
+      integer :: a = 0, b = 0, c = 0, d = 0
+   end type trc_opt_constraint_t
 
    type :: trc_opt_options_t
       integer :: coords_kind = TRC_OPT_COORDS_CARTESIAN
@@ -61,6 +74,20 @@ module trc_dlfind_bridge
       integer :: lbfgs_memory = -1
       real(dp) :: etol = -1.0_dp
       integer :: print_level = -1
+      logical :: neb = .false.
+      integer :: neb_images = -1
+      real(dp) :: neb_spring = -1.0_dp
+      logical :: neb_climb = .false.
+      integer :: neb_endpoints = TRC_OPT_NEB_PERP
+      real(dp), allocatable :: neb_product(:, :)
+      real(dp), allocatable :: neb_via(:, :, :)
+      logical :: neb_shared_density = .false.
+      type(trc_opt_constraint_t), allocatable :: constraints(:)
+      integer :: po_pop_size = -1, po_maxcycle = -1, po_init_pop_size = -1, po_nsave = -1, po_distribution = -1
+      integer :: po_reset = -1
+      real(dp) :: po_radius = -1.0_dp, po_contraction = -1.0_dp, po_tolerance_r = -1.0_dp, po_tolerance_g = -1.0_dp, &
+                  po_mutation_rate = -1.0_dp, po_death_rate = -1.0_dp, po_scalefac = -1.0_dp
+      integer :: seed = huge(0)
       character(len=:), allocatable :: opt_xyz_path
       character(len=:), allocatable :: traj_xyz_path
       character(len=:), allocatable :: json_path
@@ -95,6 +122,12 @@ module trc_dlfind_bridge
       real(dp) :: minimum_minus_gmax = 0.0_dp, minimum_minus_grms = 0.0_dp
       logical :: minimum_plus_converged = .false., minimum_minus_converged = .false.
       real(dp), allocatable :: minimum_plus_coords(:, :), minimum_minus_coords(:, :)
+      logical :: have_neb = .false.
+      integer :: neb_n_images = 0
+      real(dp), allocatable :: neb_image_energy(:)
+      real(dp), allocatable :: neb_image_coords(:, :, :)
+      integer :: neb_climb_image = 0
+      integer, allocatable :: neb_scf_iterations_per_image(:)
    end type trc_opt_result_t
 
 contains

@@ -522,13 +522,25 @@ contains
 
    ! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
    ! the eigenvalues ascending. Upper triangle is read.
-   subroutine linalg_syev_raw(this, n, a, lda, w)
+   !
+   ! `info` is optional so this stays source-compatible with every existing
+   ! caller that never checks it (trc_scf_df.F90's own call among them):
+   ! absent, a diagonalisation failure is still `error stop` (unchanged
+   ! behaviour). Present, the caller gets LAPACK's/cuSOLVER's own info/
+   ! devinfo code back instead of a crash -- the SCF's own two callers
+   ! (trc_scf_context.F90%sym_orthog, trc_scf_driver.F90%orbitals_and_
+   ! density) use this to report a clean `error_t`/non-convergence instead:
+   ! a malformed input matrix (a density read past the end of an
+   ! undersized buffer is one real cause) must not take the whole process
+   ! down with it.
+   subroutine linalg_syev_raw(this, n, a, lda, w, info)
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
       real(dp), intent(out) :: w(*)
+      integer, intent(out), optional :: info
 #ifdef _OPENACC
-      integer :: st, info
+      integer :: st, devinfo
       if (n > this%n) error stop "trc_linalg: eigenproblem larger than the workspace"
       !$acc host_data use_device(a, w, this%dwork, this%devinfo)
       st = cusolverDnDsyevd(this%hs, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, n, a, lda, w, &
@@ -537,12 +549,20 @@ contains
       if (st /= 0) error stop "trc_linalg: cusolverDnDsyevd failed"
       ! Non-convergence is reported through the device int, not the status.
       !$acc update self(this%devinfo)
-      info = this%devinfo
-      if (info /= 0) error stop "trc_linalg: cusolverDnDsyevd did not converge"
+      devinfo = this%devinfo
+      if (present(info)) then
+         info = devinfo
+      else if (devinfo /= 0) then
+         error stop "trc_linalg: cusolverDnDsyevd did not converge"
+      end if
 #else
-      integer(default_int) :: info
-      call pic_syev(a(1:n, 1:n), w(1:n), "V", "U", info)
-      if (info /= 0) error stop "trc_linalg: pic_syev failed"
+      integer(default_int) :: linfo
+      call pic_syev(a(1:n, 1:n), w(1:n), "V", "U", linfo)
+      if (present(info)) then
+         info = int(linfo)
+      else if (linfo /= 0) then
+         error stop "trc_linalg: pic_syev failed"
+      end if
 #endif
    end subroutine linalg_syev_raw
 
@@ -666,13 +686,14 @@ contains
    !! the raw call -- a segfault. Pass a whole matrix or a contiguous
    !! section.
    !!
-   subroutine linalg_syev_mat(this, a, w)
+   subroutine linalg_syev_mat(this, a, w, info)
       class(trc_linalg_t), intent(inout) :: this
       real(dp), intent(inout), contiguous :: a(:, :)
       real(dp), intent(out), contiguous :: w(:)
+      integer, intent(out), optional :: info
       integer :: n
       n = size(a, 1)
-      call this%linalg_syev_raw(n, a, n, w)
+      call this%linalg_syev_raw(n, a, n, w, info)
    end subroutine linalg_syev_mat
 
    !!
