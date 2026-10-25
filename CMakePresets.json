@@ -54,6 +54,17 @@
       }
     },
     {
+      "name": "frontier-gpu",
+      "inherits": "frontier-cpu",
+      "displayName": "Frontier, MI250X (amdflang, OpenMP offload, hipBLAS)",
+      "description": "module load rocm. Needs the OpenMP-converted source (tools/dc_to_omp.py then tools/acc_to_omp.py, both --target gpu, on src test app): the OpenACC source has no data movement under amdflang. TERCO_ENABLE_HIP adds -fopenmp --offload-arch=gfx90a and links hipBLAS/hipSOLVER.",
+      "binaryDir": "${sourceDir}/build-frontier-gpu",
+      "cacheVariables": {
+        "TERCO_ENABLE_HIP": "ON",
+        "TERCO_HIP_ARCH": "gfx90a"
+      }
+    },
+    {
       "name": "gadi",
       "displayName": "Gadi (nvidia-hpc-sdk, V100)",
       "description": "source gadi_envsh (nvidia-hpc-sdk, openmpi/5.0.5, intel-mkl, cmake/3.31.12). Single rank (TERCO_ENABLE_MPI=OFF). nvfortran/nvc/nvc++ wrappers, sequential LP64 MKL for BLAS/LAPACK, cc70 for the gpuvolta V100s.",
@@ -100,6 +111,11 @@
     {
       "name": "frontier-cpu",
       "configurePreset": "frontier-cpu",
+      "jobs": 32
+    },
+    {
+      "name": "frontier-gpu",
+      "configurePreset": "frontier-gpu",
       "jobs": 32
     },
     {

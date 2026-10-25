@@ -273,6 +273,11 @@ add_subdirectory(cmake)
 # configuration a host code built with another compiler needs.
 #
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# CMake 3.28 defines no PIC flag for the LLVMFlang compiler id (amdflang), so
+# the property above silently adds nothing and libterco.so fails to link.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "LLVMFlang" AND NOT CMAKE_Fortran_COMPILE_OPTIONS_PIC)
+  set(CMAKE_Fortran_COMPILE_OPTIONS_PIC -fPIC)
+endif()
 
 #
 # PIC, for one thing: `sort_index` on 64-bit Morton codes, to order the shell
@@ -409,13 +414,18 @@ if(TERCO_ENABLE_HIP)
                HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
   find_library(TERCO_HIPSOLVER_LIBRARY hipsolver
                HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
+  # hipDeviceSynchronize (trc_linalg's sync) lives in the HIP runtime, which
+  # neither hipBLAS nor -fopenmp pulls in for a static libterco.
+  find_library(TERCO_HIPRT_LIBRARY amdhip64
+               HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
   target_compile_definitions(${main_lib} PUBLIC TERCO_HIP)
   target_compile_options(
     ${main_lib}
     PUBLIC $<$<COMPILE_LANGUAGE:Fortran>:-fopenmp --offload-arch=${TERCO_HIP_ARCH}>)
   target_link_options(${main_lib} PUBLIC -fopenmp --offload-arch=${TERCO_HIP_ARCH})
   target_link_libraries(${main_lib} PUBLIC ${TERCO_HIPBLAS_LIBRARY}
-                                           ${TERCO_HIPSOLVER_LIBRARY})
+                                           ${TERCO_HIPSOLVER_LIBRARY}
+                                           ${TERCO_HIPRT_LIBRARY})
 endif()
 
 #
