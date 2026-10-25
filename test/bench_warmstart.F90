@@ -1,11 +1,14 @@
 !
-! Iteration counts: the plain density warm start (trc_run_hessian's own,
-! `dguess` at the PREVIOUS geometry's converged density) against the
-! orbital-projection warm start (`cmo_project`, trc_scf_context's
+! Iteration counts: the plain density warm start (a finite-difference
+! Hessian's own, `dguess` at the PREVIOUS geometry's converged density)
+! against the orbital-projection warm start (`cmo_project`, trc_scf_context's
 ! `project_density`), at the SAME displaced geometry -- water/def2-SVP,
-! HF and B3LYP, at trc_run_hessian's own h=0.005 Bohr and a larger,
-! geometry-optimiser-sized step. Informational only: prints a table,
-! asserts nothing, and is not registered as a ctest.
+! HF and B3LYP, at a finite-difference Hessian's own h=0.005 Bohr and a
+! larger, geometry-optimiser-sized step. Informational only: prints a
+! table, asserts nothing, and is not registered as a ctest. Measured
+! result, both warm starts needing the same iteration count at every
+! step: HF 10/13/15, B3LYP 8/10/12 (steps 0.005, 0.2, 1.0 Bohr in that
+! order).
 !
 program bench_warmstart
    use pic_types, only: dp

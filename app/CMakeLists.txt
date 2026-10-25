@@ -44,6 +44,27 @@ target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi)
 if(TERCO_ENABLE_DLFIND)
   target_compile_definitions(terco_cli PRIVATE TERCO_ENABLE_DLFIND)
   target_link_libraries(terco_cli PRIVATE libdlfind::libdlfind)
+  # Findlibdlfind.cmake's EXCLUDE_FROM_ALL keeps libdlfind's OWN
+  # install() rules (its own CMakeLists.txt, not this one) from firing --
+  # it is a dependency built for terco_cli to link, not libterco's to
+  # ship. That does not exempt terco_cli's own RPATH ($ORIGIN/../lib,
+  # below) from needing it there too: an installed DLFIND=ON terco could
+  # not start at all without this, since libdlfind.so was never copied
+  # anywhere under the install prefix. Installed here, from THIS
+  # directory's scope (install() on an EXCLUDE_FROM_ALL target still
+  # works when a target outside that subdirectory asks for it), into the
+  # SAME lib/ libterco installs to (the root CMakeLists.txt) -- still a
+  # separate file from libterco.so, still never linked into it.
+  # libdlfind's own CMakeLists.txt also sets a PUBLIC_HEADER property on
+  # this target (include/libdlfind.h, relative to ITS source directory).
+  # Naming a PUBLIC_HEADER DESTINATION here would make CMake resolve that
+  # relative path against THIS directory instead and fail to find it --
+  # cross-directory install() has no way to ask for the original
+  # directory back. Harmless to skip: terco_cli never reads that header
+  # (trc_dlfind_bridge.F90 declares api_dl_find's interface itself), so
+  # the resulting "no PUBLIC_HEADER DESTINATION" dev warning is the
+  # correct outcome here, not a bug to silence.
+  install(TARGETS dlfind LIBRARY DESTINATION lib RUNTIME DESTINATION lib)
 endif()
 unset(_dlfind_bridge_src)
 # Find libterco next to the install's bin/, wherever the prefix is moved to.
@@ -66,6 +87,9 @@ if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad)
 endif()
 if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad_df)
   add_dependencies(check_cli_grad_df terco_cli)
+endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_cli_lowercase)
+  add_dependencies(check_cli_lowercase terco_cli)
 endif()
 if(TERCO_ENABLE_TESTING AND TARGET check_cli_hessian)
   add_dependencies(check_cli_hessian terco_cli)

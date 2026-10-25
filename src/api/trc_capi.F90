@@ -269,16 +269,20 @@ module trc_capi
                                         TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
                                         TRC_GUESS_SAP = 5, TRC_GUESS_PROJECTED = 6
    !! TRC_GUESS_PROJECTED: the density from THIS context's own last
-   !! converged orbitals (cx%bb%cmo), re-orthonormalised in the CURRENT
+   !! orbitals (cx%bb%cmo, stored by any run with at least one iteration,
+   !! not only a converged one), re-orthonormalised in the CURRENT
    !! geometry's overlap (trc_scf_context's `project_density`) -- a warm
    !! start for a SEQUENCE of nearby geometries at the SAME molecule and
-   !! basis (a geometry optimiser's steps, or trc_run_hessian's own
+   !! basis (a geometry optimiser's steps, or a finite-difference Hessian's
    !! displacements) that is exact when the geometry has not moved at all
    !! and degrades gracefully as it does, unlike reusing the raw density
    !! unprojected. Refused (TRC_ERR_STATE) if no previous SCF at this nao
-   !! has converged yet. See trc_run_scf's own dispatch and
-   !! trc_run_hessian's own measurement of it against the plain density
-   !! warm start at h=0.005 Bohr.
+   !! has run yet, if it was run with fractional occupation (`project_density`
+   !! only builds integer occupations), or at a size/spin mismatch. See
+   !! trc_run_scf's own dispatch; test/bench_warmstart.F90 measured it
+   !! against the plain density warm start at water/def2-SVP, steps
+   !! 0.005-1.0 Bohr: the two warm starts needed the same iteration count
+   !! at every step (HF 10/13/15, B3LYP 8/10/12).
    !! Appended, not inserted: 0-3 are what they have always been, so a
    !! caller built against the old header keeps working.
    ! AO normalisation kinds for trc_set_ao_norm -- re-exported from
@@ -2834,10 +2838,21 @@ contains
          ! to project into only exists once `trc_scf_run`'s own
          ! `scf_context%setup` has built it, so the projection itself runs
          ! INSIDE that call (its own `cmo_project` argument), not here.
-         ! This dispatch only validates that there IS a previous converged
-         ! orbital set, at THIS run's own size, to project.
+         ! This dispatch only validates that there IS a previous orbital
+         ! set, at THIS run's own size, to project: `cx%bb%cmo` is stored
+         ! by any run with at least one iteration (right after the
+         ! trc_scf_run call below, gated on `iterations == 0`, not on
+         ! `converged`), so "converged" below would overstate what is
+         ! actually required.
          if (.not. allocated(cx%bb%cmo)) then
-            cx%message = "trc_run_scf: guess projected but no previous SCF has converged yet"
+            cx%message = "trc_run_scf: guess projected but no previous SCF has run yet"
+            status = TRC_ERR_STATE
+            if (collective) call comm%finalize()
+            return
+         end if
+         if (cx%opts%frac_occ) then
+            cx%message = "trc_run_scf: guess projected does not support fractional occupation "// &
+                         "(project_density's occupations are integer)"
             status = TRC_ERR_STATE
             if (collective) call comm%finalize()
             return
@@ -2845,6 +2860,7 @@ contains
          if (size(cx%bb%cmo, 1) /= n .or. size(cx%bb%cmo, 3) /= nspin) then
             cx%message = "trc_run_scf: guess projected needs a previous SCF at the SAME size "// &
                          "and spin as this one (basis/molecule/unrestricted must not have changed)"
+            status = TRC_ERR_STATE
             if (collective) call comm%finalize()
             return
          end if
@@ -3745,6 +3761,16 @@ contains
          cx%message = "trc_run_polarizability: CPKS (a functional is set) is restricted only"
          return
       end if
+      ! `trc_cphf`/`trc_cpks` take a pair list and an ERI engine directly,
+      ! not `cx%peri` (there is no response-side cache to hand them), so
+      ! the build right below would otherwise sit ALONGSIDE the SCF's own
+      ! engine, still resident in `cx%peri` since `trc_run_scf` -- doubling
+      ! peak ERI device memory for no reason, since nothing reads the old
+      ! one once the response starts. Released here instead of reused: a
+      ! `trc_run_gradient` call after this one simply rebuilds its own,
+      ! same cost as before `cx%peri` existed, which is cheap next to not
+      ! fitting in device memory at all.
+      call cx%peri%release()
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
       call eri%build(cx%bb%b, cx%opts%eri_thresh)

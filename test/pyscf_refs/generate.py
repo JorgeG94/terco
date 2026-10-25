@@ -4109,7 +4109,8 @@ def gen_opt_ts(case, atoms_ang, mass_z, charge=0, mult=1, gtol=1.0e-8, maxiter=6
                                f"imaginary mode(s), not exactly 1 -- not a first-order saddle")
 
     w = RefWriter(f"opt_ts_{case}.ref")
-    w.header("opt_ts " + case, [TEST / "basis_sets" / "sto-3g.json", TEST / "check_opt_ts.F90"])
+    w.header("opt_ts " + case,
+             [TEST / "basis_sets" / "sto-3g.json", TEST / "check_opt_ts.F90", TEST / "hcn_ts_guess.xyz"])
     w.comment(f"P-RFO (this file's own gen_opt_ts), {it + 1} iterations, "
               f"final max|g| {gmax:.3e} Eh/Bohr, n_imaginary={n_imaginary}")
     w.int_("NAT", natm)

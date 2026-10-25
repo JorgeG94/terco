@@ -70,12 +70,34 @@ module trc_scf_context
       !! the same `eri_thresh_env` call) before trusting `pl`/`eri` at all;
       !! `has_eri` is false under `--df`, where `scf_ctx_setup` never calls
       !! `eri%build` (trc_scf_df's own J/K, not the four-centre engine).
+      !!
+      !! FINGERPRINT. `thresh_built` is the only gate a C API caller ever
+      !! needs (a geometry or basis change already clears `built` through
+      !! `invalidate_runs`, before a reuser could reach this far), but a
+      !! Fortran caller that keeps one `trc_pair_eri_cache_t` across more
+      !! than one `trc_scf_run`/`trc_scf_gradient` call, at a DIFFERENT
+      !! geometry, with no such invalidation to rely on, would otherwise
+      !! get a gradient from stale pair data, or out-of-bounds indexing if
+      !! `nshell` changed. `nshell_built`/`natm_built`/`at_r_built` are
+      !! that caller's own safety net: set once, at build time
+      !! (`scf_ctx_setup`), and checked by `matches` before ANY reuse,
+      !! Fortran or C API alike. `batch_res_built` is the quartet-bin
+      !! batching the engine was actually built with (`trc_scf_settings`'s
+      !! own `opts%batch_res`) -- `trc_scf_gradient`'s OWN fresh build
+      !! always uses the default (1), so a cache built at any other value
+      !! would give a reused-vs-fresh gradient that differs by more than
+      !! round-off; `matches` is the pair list's own gate (thresh and
+      !! geometry only), so the ERI engine's reuse checks `batch_res_built`
+      !! on top, in trc_scf_grad.F90.
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       real(dp) :: thresh_built = -1.0_dp
+      integer :: nshell_built = -1, natm_built = -1, batch_res_built = -1
+      real(dp), allocatable :: at_r_built(:, :)
       logical :: built = .false., has_eri = .false.
    contains
       procedure :: release => pair_eri_cache_release
+      procedure :: matches => pair_eri_cache_matches
    end type trc_pair_eri_cache_t
 
    type :: scf_ctx_t
@@ -216,6 +238,12 @@ contains
       this%pec%thresh_built = cfg%eri_thresh_run
       this%pec%built = .true.
       this%pec%has_eri = .false.
+      ! The fingerprint a Fortran caller's reuse is checked against --
+      ! see `trc_pair_eri_cache_t`'s own header, FINGERPRINT.
+      this%pec%nshell_built = b%nshell
+      this%pec%natm_built = b%natm
+      if (allocated(this%pec%at_r_built)) deallocate (this%pec%at_r_built)
+      this%pec%at_r_built = b%at_r
       this%ts(1) = tm%get_elapsed_time()
       call tm%start()
       ! The one-electron integrals are always Cartesian (trc_1e never
@@ -251,6 +279,7 @@ contains
       ! nothing off `eri` before checking `df_on`.
       if (.not. cfg%df) then
          this%pec%has_eri = .true.
+         this%pec%batch_res_built = opts%batch_res
          if (present(comm)) then
             call this%pec%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
             ! Not when `comm` is a real split (nranks > 1): each rank then
@@ -261,7 +290,14 @@ contains
             ! is a backstop, not the gate. `.and.` is not guaranteed to
             ! short-circuit, hence the nested `if` rather than one
             ! expression that would call `comm%size()` even when absent.
-            if (comm%size() > 1) this%pec%has_eri = .false.
+            ! The rank-partitioned engine is released right here too, not
+            ! merely marked unusable: nothing downstream ever reads it
+            ! (has_eri is false), so leaving it resident would hold its
+            ! device memory for the rest of the run for no reason.
+            if (comm%size() > 1) then
+               this%pec%has_eri = .false.
+               call this%pec%eri%release()
+            end if
          else
             call this%pec%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
          end if
@@ -411,7 +447,29 @@ contains
       this%built = .false.
       this%has_eri = .false.
       this%thresh_built = -1.0_dp
+      this%nshell_built = -1
+      this%natm_built = -1
+      this%batch_res_built = -1
+      if (allocated(this%at_r_built)) deallocate (this%at_r_built)
    end subroutine pair_eri_cache_release
+
+   logical function pair_eri_cache_matches(this, b, thresh) result(ok)
+      !! The reuse gate every caller (Fortran or, through
+      !! `trc_scf_gradient`'s `pair_eri_cache`, the C API) must pass before
+      !! trusting `pl`/`eri`: the build threshold EXACTLY (bit for bit, see
+      !! `thresh_built`'s own comment above) and the geometry/basis
+      !! fingerprint (`nshell`, `natm`, the atom centres) unchanged since
+      !! `scf_ctx_setup` built it. A cache that was never built, or has
+      !! since been released, fails on `built` alone.
+      class(trc_pair_eri_cache_t), intent(in) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      ok = this%built .and. this%thresh_built == thresh .and. &
+           this%nshell_built == b%nshell .and. this%natm_built == b%natm
+      if (ok) ok = allocated(this%at_r_built)
+      if (ok) ok = size(this%at_r_built, 2) == b%natm
+      if (ok) ok = all(this%at_r_built == b%at_r)
+   end function pair_eri_cache_matches
 
    real(dp) function nuclear_repulsion(b) result(e)
       type(trc_basis_t), intent(in) :: b
@@ -527,8 +585,10 @@ contains
       !! by construction, since X = M^(-1/2) commutes with M). D' =
       !! occ_s C' C'^T. At S' = S this is the identity transform (M = I
       !! already, X = I); trc_capi.F90's TRC_GUESS_PROJECTED is the public
-      !! way to this, and trc_run_hessian's own header has the measured
-      !! iteration counts against the plain density warm start.
+      !! way to this. test/bench_warmstart.F90 measured it against the
+      !! plain density warm start at water/def2-SVP, steps 0.005-1.0 Bohr:
+      !! both needed the same iteration count at every step (HF 10/13/15,
+      !! B3LYP 8/10/12).
       !!
       !! A near-singular M (an occupied orbital that left the space, e.g a
       !! very large step) is not refused here -- `sym_orthog`'s own

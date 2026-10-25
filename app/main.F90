@@ -27,13 +27,15 @@ module terco_run
    use pic_error, only: error_t, ERROR_VALIDATION, ERROR_IO, ERROR_PARSE
    use pic_cli, only: cli_t
    use pic_logger, only: global_logger
-   use pic_strings, only: to_string
+   use pic_strings, only: to_string, strip, find
+   use pic_string_type, only: string_type, char
+   use pic_tokenizer, only: split, tokenize, parse_int
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
-   use pic_ascii, only: to_lower
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
-   use terco_app, only: element_symbol, atomic_number, f_string, BOHR_PER_ANGSTROM
-   use trc_vib, only: trc_vib_log_table
+   use terco_app, only: element_symbol, atomic_number, f_string, BOHR_PER_ANGSTROM, &
+                         write_opt_xyz_frame, write_traj_xyz_frames
+   use trc_vib, only: trc_vib_log_table, trc_vib_rotor
    use trc_thermo, only: trc_thermo_result_t, trc_thermo_log_summary
    use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average, trc_covalent_radius
    use trc_error, only: mass_error_t => error_t
@@ -43,8 +45,9 @@ module terco_run
              gradient_summary, hessian_summary, build_masses
    public :: opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
    public :: parse_opt_global_options
-   public :: opt_geometry_is_linear, write_labelled_xyz
-   public :: parse_frozen_list, parse_constraints, check_neb_endpoint, write_neb_path_xyz
+   public :: opt_geometry_is_linear, write_labelled_xyz, to_lower_alloc
+   public :: parse_frozen_list, parse_constraints, check_opt_constrain_residues, check_neb_endpoint, &
+             write_neb_path_xyz
    public :: read_xyz_frames
 
 #ifndef TERCO_VERSION
@@ -101,15 +104,16 @@ module terco_run
       integer :: opt_coords_kind = 0, opt_guess_kind = 0
       integer :: opt_maxiter = 100
       real(dp) :: opt_gtol = 4.5e-4_dp
+      real(dp) :: opt_max_step = -1.0_dp   !! negative = DL-FIND's own default (trc_opt_options_t%max_step)
       logical :: opt_converged = .false.
       integer :: opt_steps = 0, opt_evals = 0, opt_hess_evals = 0
       real(dp) :: opt_gmax = 0.0_dp, opt_grms = 0.0_dp
       integer :: opt_n_traj = 0
       real(dp), allocatable :: opt_traj_energy(:)
       real(dp), allocatable :: opt_final_xyz(:, :)   !! (3, natm), Bohr -- the optimised geometry
-      ! Added on top of feat/geo-opt: algorithm, target (minimum/saddle),
-      ! the two saddle methods, `connect`, and the external-Hessian
-      ! control -- every one of these is also one of
+      ! Algorithm, target (minimum/saddle), the two saddle methods,
+      ! `connect`, and the external-Hessian control -- every one of these
+      ! is also one of
       ! trc_dlfind_bridge's own TRC_OPT_* enums (app/trc_dlfind_bridge.F90,
       ! app/trc_dlfind_stub.F90), stored here as the plain integer both
       ! modules define identically, same reason opt_coords_kind/
@@ -123,7 +127,7 @@ module terco_run
       logical :: opt_is_linear = .false.
       integer :: opt_hessian_source_kind = 0  !! TRC_OPT_HESS_TERCO
       integer :: opt_hessian_update_kind = -1, opt_max_updates = -1, opt_zero_modes = -1
-      real(dp) :: opt_soft_modes = -1.0_dp, opt_max_step = -1.0_dp, opt_scalestep = -1.0_dp
+      real(dp) :: opt_soft_modes = -1.0_dp, opt_scalestep = -1.0_dp
       integer :: opt_linesearch_kind = -1   !! TRC_OPT_LINE_AUTO
       integer :: opt_lbfgs_memory = -1
       real(dp) :: opt_etol = -1.0_dp
@@ -133,9 +137,11 @@ module terco_run
       ! not fail.
       logical :: opt_have_ts = .false., opt_have_min_plus = .false., opt_have_min_minus = .false.
       real(dp) :: opt_ts_energy = 0.0_dp, opt_min_plus_energy = 0.0_dp, opt_min_minus_energy = 0.0_dp
+      real(dp) :: opt_ts_gmax = 0.0_dp, opt_min_plus_gmax = 0.0_dp, opt_min_minus_gmax = 0.0_dp
+      logical :: opt_ts_converged = .false., opt_min_plus_converged = .false., opt_min_minus_converged = .false.
       real(dp), allocatable :: opt_ts_xyz(:, :), opt_min_plus_xyz(:, :), opt_min_minus_xyz(:, :)
 
-      ! --- added in this branch: NEB / climbing-image NEB --------------------
+      ! --- NEB / climbing-image NEB -------------------------------------------
       logical :: opt_neb = .false.
       character(len=:), allocatable :: opt_neb_endpoint_path, opt_neb_endpoints_arg
       integer :: opt_neb_images = -1
@@ -152,11 +158,11 @@ module terco_run
       integer :: opt_neb_climb_image = 0
       integer, allocatable :: opt_neb_scf_iters(:)
 
-      ! --- added in this branch: frozen atoms --------------------------------
+      ! --- frozen atoms --------------------------------------------------------
       character(len=:), allocatable :: opt_frozen_arg
       integer, allocatable :: opt_frozen_atoms(:)   !! 1-based, parsed from opt_frozen_arg
 
-      ! --- added in this branch: internal-coordinate constraints -------------
+      ! --- internal-coordinate constraints -------------------------------------
       character(len=:), allocatable :: opt_constrain_arg
          !! ';'-separated ("bond i j"/"angle i j k"/"torsion i j k l"/
          !! "cartesian i"/"bond-difference i j k") -- pic_cli's own options
@@ -169,7 +175,7 @@ module terco_run
          !! under TERCO_ENABLE_DLFIND=OFF, same reason opt_coords_kind
          !! above is a plain integer).
 
-      ! --- added in this branch: global optimisation (stochastic/genetic) ---
+      ! --- global optimisation (stochastic/genetic) ---------------------------
       logical :: opt_is_global = .false.   !! --opt-algorithm stochastic or genetic
       integer :: opt_seed = huge(0)        !! --opt-seed; huge(0) sentinel, trc_dlfind_bridge's own
       integer :: opt_global_pop_size = -1, opt_global_maxcycle = -1, opt_global_init_pop_size = -1, &
@@ -265,6 +271,36 @@ contains
       close (u)
       if (ios /= 0) call die(r, file//" does not start with an integer")
    end function int_option
+
+   function to_lower_alloc(s) result(lower_s)
+      !! A non-elemental, allocatable-result ASCII lowercaser for every CLI
+      !! normalisation site in `terco_main` below (`--func`, `--guess`,
+      !! `--masses`, `--pcm`, the `--opt-*` string options, and the geometry
+      !! file-extension check). It replaces pic's `to_lower`
+      !! (`pic_ascii.f90`): nvfortran 26.5 and 26.9, host and GPU builds
+      !! alike, with `terco_main`'s real `-fast -O3` flags, miscompile
+      !! pic's `to_lower` -- `pure elemental`, automatic-length (not
+      !! allocatable) result -- at those call sites. The result comes back
+      !! with the right length but blank (all-space) content, so e.g.
+      !! `--func pbe` silently falls back to a plain SCF with no exchange-
+      !! correlation term. A non-elemental function with an allocatable
+      !! result, called the same way, is unaffected; see
+      !! `.claude/context/gpu-pitfalls.md` for the trap. `terco_main` has no
+      !! internal procedures (see this module's header comment), so this
+      !! lives here instead.
+      character(len=*), intent(in) :: s
+      character(len=:), allocatable :: lower_s
+      integer :: i, c
+      allocate (character(len=len(s)) :: lower_s)
+      do i = 1, len(s)
+         c = iachar(s(i:i))
+         if (c >= iachar("A") .and. c <= iachar("Z")) then
+            lower_s(i:i) = achar(c + 32)
+         else
+            lower_s(i:i) = s(i:i)
+         end if
+      end do
+   end function to_lower_alloc
 
    function method(r) result(m)
       type(run_t), intent(in) :: r
@@ -553,56 +589,36 @@ contains
    end function opt_capability_check
 
    !
-   ! A cheap GEOMETRIC linearity test on the start geometry (no masses, no
-   ! Hessian -- those are not available yet at --opt's own start, unlike
-   ! trc_vib's own is_linear, which comes out of a moment-of-inertia
-   ! analysis AFTER a Hessian exists). Used only to pick --opt-zero-modes'
-   ! own auto-default (5 for a linear molecule's Cartesian P-RFO saddle
+   ! Whether the start geometry is linear, for --opt-zero-modes' own
+   ! auto-default (5 for a linear molecule's Cartesian P-RFO/NR/dimer
    ! search, 6 otherwise -- DL-FIND's own zero-mode count for the rigid
-   ! translations/rotations a Cartesian search carries). Two
-   ! atoms: always linear. Three or more: every atom's perpendicular
-   ! distance from the line through the two FARTHEST-apart atoms must be
-   ! below TOL times that distance, so the test is scale-invariant and
-   ! never trips on a loose --opt-gtol's worth of bending.
+   ! translations/rotations a Cartesian search carries). Reuses
+   ! trc_vib's own moment-of-inertia rotor test (trc_vib_rotor,
+   ! MOMENT_LINEAR_TOL_AMUA2) rather than a separate geometric criterion,
+   ! so "linear" means the same thing everywhere in terco: trc_thermo's
+   ! own is_atom/is_linear picks its rotor formulas from the SAME
+   ! threshold, and this and that can never disagree on the same
+   ! geometry. trc_vib_rotor needs only masses and Cartesian coordinates,
+   ! no Hessian -- what this is available with at --opt's own start.
    !
-   pure function opt_geometry_is_linear(natm, xyz) result(linear)
+   ! This runs ONCE, on the start geometry: DL-FIND's own interface takes
+   ! `nzero` as a fixed parameter at cb_get_params (called once, before
+   ! the search begins, see trc_dlfind_bridge), so a search that bends a
+   ! started-linear molecule (or straightens a bent one) cannot have its
+   ! zero-mode count re-evaluated mid-search through that interface.
+   !
+   function opt_geometry_is_linear(natm, z, xyz, err) result(linear)
       integer, intent(in) :: natm
+      integer, intent(in) :: z(natm)
       real(dp), intent(in) :: xyz(3, natm)
+      type(mass_error_t), intent(inout) :: err
       logical :: linear
-      real(dp), parameter :: TOL = 1.0e-3_dp
-      real(dp) :: dmax, d, t
-      real(dp) :: axis(3), v(3), perp(3)
-      integer :: i, j, imax, jmax, k
-      linear = .true.
-      if (natm <= 2) return
-      dmax = -1.0_dp
-      imax = 1
-      jmax = 2
-      do i = 1, natm - 1
-         do j = i + 1, natm
-            d = norm2(xyz(:, i) - xyz(:, j))
-            if (d > dmax) then
-               dmax = d
-               imax = i
-               jmax = j
-            end if
-         end do
-      end do
-      if (dmax <= 0.0_dp) then
-         linear = .false.   !! coincident atoms: not a sane geometry to call linear
-         return
-      end if
-      axis = (xyz(:, jmax) - xyz(:, imax))/dmax
-      do k = 1, natm
-         if (k == imax .or. k == jmax) cycle
-         v = xyz(:, k) - xyz(:, imax)
-         t = dot_product(v, axis)
-         perp = v - t*axis
-         if (norm2(perp) > TOL*dmax) then
-            linear = .false.
-            return
-         end if
-      end do
+      real(dp), allocatable :: mass(:)
+      integer :: n_tr, info
+      linear = .false.
+      call build_masses(z, "isotope", mass, err)
+      if (err%has_error()) return
+      call trc_vib_rotor(mass, xyz, linear, n_tr, info)
    end function opt_geometry_is_linear
 
    !
@@ -670,7 +686,11 @@ contains
    ! the same convention --opt-algorithm itself follows against
    ! --opt-target saddle. Validated here (positive, and distribution in
    ! DL-FIND's own {1,2,3}) rather than left for trc_dlfind_bridge to
-   ! pass straight through to libdlfind.
+   ! pass straight through to libdlfind. --opt-seed alone is ALSO
+   ! accepted for --opt-saddle-method dimer: trc_dlfind_bridge seeds the
+   ! Fortran intrinsic generator dlf_dimer.f90's own random_number(
+   ! glob%xcoords2) reads, the only way to make that initial direction
+   ! reproducible (that module's own header).
    !
    subroutine parse_opt_global_options(r)
       type(run_t), intent(inout) :: r
@@ -680,12 +700,20 @@ contains
          !! trc_dlfind_bridge under TERCO_ENABLE_DLFIND=OFF) -- the same
          !! "plain integer, both modules define it identically" convention
          !! run_t%opt_algorithm_kind's own comment gives.
+      integer, parameter :: SADDLE_DIMER = 1
+         !! trc_dlfind_bridge's own TRC_OPT_SADDLE_DIMER, same convention.
       character(len=24), parameter :: GLOBAL_OPTS(*) = [character(len=24) :: &
-         "opt-seed", "opt-global-pop-size", "opt-global-maxcycle", "opt-global-init-pop-size", &
+         "opt-global-pop-size", "opt-global-maxcycle", "opt-global-init-pop-size", &
          "opt-global-nsave", "opt-global-distribution", "opt-global-reset", "opt-global-radius", &
          "opt-global-contraction", "opt-global-tolerance-r", "opt-global-tolerance-g", &
          "opt-global-mutation-rate", "opt-global-death-rate"]
+      logical :: seed_ok
       integer :: i
+
+      seed_ok = r%opt_is_global .or. r%opt_saddle_method_kind == SADDLE_DIMER
+      if (r%cli%is_set("opt-seed") .and. .not. seed_ok) then
+         call die(r, "--opt-seed needs --opt-algorithm stochastic/genetic or --opt-saddle-method dimer")
+      end if
 
       if (.not. r%opt_is_global) then
          do i = 1, size(GLOBAL_OPTS)
@@ -694,6 +722,10 @@ contains
          end do
          if (r%cli%is_set("opt-global-scalefac")) call die(r, "--opt-global-scalefac needs "// &
                   "--opt-algorithm stochastic or genetic")
+         if (r%cli%is_set("opt-seed")) then
+            call r%cli%get("opt-seed", r%opt_seed, r%err)
+            call check(r, "--opt-seed")
+         end if
          return
       end if
 
@@ -804,35 +836,37 @@ contains
       integer, intent(in) :: natm
       integer, allocatable, intent(out) :: frozen(:)
       type(error_t), intent(inout) :: err
-      integer :: i, j, n, lo, hi, dash, ios, cnt
-      character(len=:), allocatable :: s, tok
+      type(string_type), allocatable :: toks(:), bounds(:)
+      type(error_t) :: perr
+      integer :: i, j, lo, hi, cnt
+      character(len=:), allocatable :: tok
       logical :: seen(natm)
+      logical :: bad, have_lo, have_hi
 
       seen = .false.
       cnt = 0
-      s = trim(spec)
-      n = len(s)
-      i = 1
-      do while (i <= n)
-         j = index(s(i:n), ",")
-         if (j == 0) then
-            tok = s(i:n)
-            i = n + 1
-         else
-            tok = s(i:i + j - 2)
-            i = i + j
-         end if
-         tok = trim(tok)
+      toks = split(strip(spec), ",")
+      do i = 1, size(toks)
+         tok = strip(char(toks(i)))
          if (len(tok) == 0) cycle
-         dash = index(tok, "-")
-         if (dash > 0) then
-            read (tok(1:dash - 1), *, iostat=ios) lo
-            if (ios == 0) read (tok(dash + 1:), *, iostat=ios) hi
+         bad = .false.
+         have_lo = .false.
+         have_hi = .false.
+         if (find(tok, "-") > 0) then
+            bounds = split(tok, "-")
+            if (size(bounds) == 2) then
+               call parse_int(bounds(1), lo, perr)
+               have_lo = .not. perr%has_error()
+               call parse_int(bounds(2), hi, perr)
+               have_hi = .not. perr%has_error()
+            end if
+            bad = .not. (have_lo .and. have_hi)
          else
-            read (tok, *, iostat=ios) lo
+            call parse_int(tok, lo, perr)
+            bad = perr%has_error()
             hi = lo
          end if
-         if (ios /= 0 .or. lo < 1 .or. hi < lo .or. hi > natm) then
+         if (bad .or. lo < 1 .or. hi < lo .or. hi > natm) then
             call err%set(int(ERROR_VALIDATION, default_int), "--opt-frozen: '"//tok// &
                          "' is not a valid 1-based atom index or range for "//to_string(natm)//" atoms")
             return
@@ -878,26 +912,24 @@ contains
       integer, allocatable, intent(out) :: cons_kind(:), cons_a(:), cons_b(:), cons_c(:), cons_d(:)
       type(error_t), intent(inout) :: err
       integer, parameter :: MAX_CONSTRAINTS = 64   !! generous fixed cap, checked below
-      character(len=:), allocatable :: s, entry, kind_tok
-      integer :: n, i, j, ncons, k, ios
+      integer, parameter :: N_CONS_KINDS = 5   !! TRC_OPT_CONS_{BOND,ANGLE,TORSION,CARTESIAN,BOND_DIFF}
+      integer, parameter :: NSLOTS(N_CONS_KINDS) = [2, 3, 4, 1, 3]
+         !! atom slots TRC_OPT_CONS_{BOND,ANGLE,TORSION,CARTESIAN,BOND_DIFF}
+         !! (1..5, tmp_kind's own values) actually use -- the rest of
+         !! idx(:) stays the 0 this subroutine's own reset put there.
+      character(len=:), allocatable :: entry, kind_tok
+      type(string_type), allocatable :: entries(:), words(:)
+      type(error_t) :: perr
+      integer :: i, ncons, k, k2, nslots_here
       integer :: tmp_kind(MAX_CONSTRAINTS), tmp_a(MAX_CONSTRAINTS), tmp_b(MAX_CONSTRAINTS)
       integer :: tmp_c(MAX_CONSTRAINTS), tmp_d(MAX_CONSTRAINTS)
       integer :: idx(4)
+      logical :: bad
 
-      s = trim(spec)
-      n = len(s)
       ncons = 0
-      i = 1
-      do while (i <= n)
-         j = index(s(i:n), ";")
-         if (j == 0) then
-            entry = s(i:n)
-            i = n + 1
-         else
-            entry = s(i:i + j - 2)
-            i = i + j
-         end if
-         entry = trim(entry)
+      entries = split(strip(spec), ";")
+      do i = 1, size(entries)
+         entry = strip(char(entries(i)))
          if (len(entry) == 0) cycle
          ncons = ncons + 1
          if (ncons > size(tmp_kind)) then
@@ -905,66 +937,69 @@ contains
                          to_string(size(tmp_kind))//" constraints in one run is not supported")
             return
          end if
-         k = index(entry, " ")
-         if (k == 0) then
+         words = tokenize(entry)
+         if (size(words) < 1) then
             call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: '"//entry// &
                          "' has no atom indices")
             return
          end if
-         kind_tok = to_lower(trim(entry(1:k - 1)))
-         idx = 0
+         kind_tok = to_lower_alloc(char(words(1)))
          select case (kind_tok)
          case ("bond")
-            read (entry(k + 1:), *, iostat=ios) idx(1), idx(2)
             tmp_kind(ncons) = 1
-            tmp_a(ncons) = idx(1)
-            tmp_b(ncons) = idx(2)
-            tmp_c(ncons) = 0
-            tmp_d(ncons) = 0
          case ("angle")
-            read (entry(k + 1:), *, iostat=ios) idx(1), idx(2), idx(3)
             tmp_kind(ncons) = 2
-            tmp_a(ncons) = idx(1)
-            tmp_b(ncons) = idx(2)
-            tmp_c(ncons) = idx(3)
-            tmp_d(ncons) = 0
          case ("torsion")
-            read (entry(k + 1:), *, iostat=ios) idx(1), idx(2), idx(3), idx(4)
             tmp_kind(ncons) = 3
-            tmp_a(ncons) = idx(1)
-            tmp_b(ncons) = idx(2)
-            tmp_c(ncons) = idx(3)
-            tmp_d(ncons) = idx(4)
          case ("cartesian")
-            read (entry(k + 1:), *, iostat=ios) idx(1)
             tmp_kind(ncons) = 4
-            tmp_a(ncons) = idx(1)
-            tmp_b(ncons) = 0
-            tmp_c(ncons) = 0
-            tmp_d(ncons) = 0
          case ("bond-difference")
-            read (entry(k + 1:), *, iostat=ios) idx(1), idx(2), idx(3)
             tmp_kind(ncons) = 5
-            tmp_a(ncons) = idx(1)
-            tmp_b(ncons) = idx(2)
-            tmp_c(ncons) = idx(3)
-            tmp_d(ncons) = 0
          case default
             call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: unknown type '"//kind_tok// &
                          "': use bond, angle, torsion, cartesian or bond-difference")
             return
          end select
-         if (ios /= 0) then
+         nslots_here = NSLOTS(tmp_kind(ncons))
+         idx = 0
+         bad = (size(words) - 1 < nslots_here)
+         if (.not. bad) then
+            do k = 1, nslots_here
+               call parse_int(words(k + 1), idx(k), perr)
+               bad = bad .or. perr%has_error()
+            end do
+         end if
+         if (bad) then
             call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: '"//entry// &
                          "' does not have the atom indices '"//kind_tok//"' needs")
             return
          end if
-         do k = 1, 4
-            if (idx(k) /= 0 .and. (idx(k) < 1 .or. idx(k) > natm)) then
+         tmp_a(ncons) = idx(1)
+         tmp_b(ncons) = idx(2)
+         tmp_c(ncons) = idx(3)
+         tmp_d(ncons) = idx(4)
+         ! Only the first NSLOTS(kind) entries of idx are atoms THIS type
+         ! uses; the rest are the 0 this subroutine's own `idx = 0` reset
+         ! put there and must stay 0 (never a slot a caller filled in).
+         ! Checking idx(k) /= 0 here (the bug this replaced) let a TYPED 0
+         ! through as if it meant "unused": DL-FIND's own assign_cons then
+         ! reports "crosses residue boundary" and `error stop`s, since
+         ! atom 0 belongs to no residue at all.
+         do k = 1, NSLOTS(tmp_kind(ncons))
+            if (idx(k) < 1 .or. idx(k) > natm) then
                call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: '"//entry// &
                             "': atom index out of range for "//to_string(natm)//" atoms")
                return
             end if
+         end do
+         do k = 1, NSLOTS(tmp_kind(ncons))
+            do k2 = k + 1, NSLOTS(tmp_kind(ncons))
+               if (idx(k) == idx(k2)) then
+                  call err%set(int(ERROR_VALIDATION, default_int), "--opt-constrain: '"//entry// &
+                               "': the same atom appears twice in one constraint")
+                  return
+               end if
+            end do
          end do
       end do
       if (ncons == 0) then
@@ -978,6 +1013,47 @@ contains
       allocate (cons_c(ncons), source=tmp_c(1:ncons))
       allocate (cons_d(ncons), source=tmp_d(1:ncons))
    end subroutine parse_constraints
+
+   !
+   ! Checks every --opt-constrain entry against the HDLC residue
+   ! partition and the --opt-frozen list, both only known once the
+   ! geometry-dependent residues are built (trc_constants%trc_covalent_
+   ! radius-based, build_opt_residues) -- parse_constraints above only
+   ! has `natm`, so a syntactically valid entry can still name two atoms
+   ! DL-FIND's own assign_cons would refuse once it ran. `die`s on the
+   ! first bad entry, the same convention every other --opt-* validation
+   ! in this file follows.
+   !
+   subroutine check_opt_constrain_residues(r, opt_residues)
+      type(run_t), intent(in) :: r
+      integer, intent(in) :: opt_residues(:)
+      integer, parameter :: N_CONS_KINDS = 5   !! TRC_OPT_CONS_{BOND,ANGLE,TORSION,CARTESIAN,BOND_DIFF}
+      integer, parameter :: NSLOTS(N_CONS_KINDS) = [2, 3, 4, 1, 3]
+         !! parse_constraints' own NSLOTS -- which of atoms(1:4) a given
+         !! TRC_OPT_CONS_* kind actually uses.
+      integer :: ic, k, na, res1
+      integer :: atoms(4)
+
+      do ic = 1, size(r%opt_cons_kind)
+         na = NSLOTS(r%opt_cons_kind(ic))
+         atoms = [r%opt_cons_a(ic), r%opt_cons_b(ic), r%opt_cons_c(ic), r%opt_cons_d(ic)]
+         do k = 1, na
+            if (allocated(r%opt_frozen_atoms)) then
+               if (any(r%opt_frozen_atoms == atoms(k))) then
+                  call die(r, "--opt-constrain: atom "//to_string(atoms(k))//" is frozen (--opt-frozen); "// &
+                           "a constraint cannot touch a frozen atom")
+               end if
+            end if
+         end do
+         res1 = opt_residues(atoms(1))
+         do k = 2, na
+            if (opt_residues(atoms(k)) /= res1) then
+               call die(r, "--opt-constrain: atoms "//to_string(atoms(1))//" and "//to_string(atoms(k))// &
+                        " are in different HDLC residues; DL-FIND cannot constrain across a residue boundary")
+            end if
+         end do
+      end do
+   end subroutine check_opt_constrain_residues
 
    !
    ! --opt-neb <endpoint.xyz>: the product geometry must have the SAME
@@ -1043,10 +1119,10 @@ contains
          call err%set(int(ERROR_IO, default_int), "--opt-neb-via: cannot open '"//trim(path)//"'")
          return
       end if
-      allocate (tmp(3, natm, 16))   !! grown below if more frames turn up
+      allocate (tmp(3, natm, 16))   ! grown below if more frames turn up
       do
          read (u, *, iostat=ios) natm_f
-         if (ios /= 0) exit   !! clean end of file: done
+         if (ios /= 0) exit   ! clean end of file: done
          if (natm_f /= natm) then
             call err%set(int(ERROR_PARSE, default_int), "--opt-neb-via: '"//trim(path)//"': frame "// &
                          to_string(nframes + 1)//" has "//to_string(natm_f)//" atoms, the start "// &
@@ -1054,7 +1130,7 @@ contains
             close (u)
             return
          end if
-         read (u, "(a)", iostat=ios) line   !! title line, discarded
+         read (u, "(a)", iostat=ios) line   ! title line, discarded
          if (ios /= 0) then
             call err%set(int(ERROR_PARSE, default_int), "--opt-neb-via: '"//trim(path)//"': frame "// &
                          to_string(nframes + 1)//" ends after its atom count, before its title line")
@@ -1197,21 +1273,27 @@ contains
          if (r%opt_have_ts) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,f22.12,a)") "   transition state : ", r%opt_ts_energy, " Eh"
+               write (logline, "(a,f22.12,a,a,a,es10.3,a)") "   transition state : ", r%opt_ts_energy, " Eh   ", &
+                  trim(merge("converged    ", "NOT converged", r%opt_ts_converged)), "   max|g|: ", r%opt_ts_gmax, &
+                  " Eh/Bohr"
                call global_logger%info(trim(logline))
             end block
          end if
          if (r%opt_have_min_minus) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,f22.12,a)") "   minimum (-distort): ", r%opt_min_minus_energy, " Eh"
+               write (logline, "(a,f22.12,a,a,a,es10.3,a)") "   minimum (-distort): ", r%opt_min_minus_energy, " Eh   ", &
+                  trim(merge("converged    ", "NOT converged", r%opt_min_minus_converged)), "   max|g|: ", &
+                  r%opt_min_minus_gmax, " Eh/Bohr"
                call global_logger%info(trim(logline))
             end block
          end if
          if (r%opt_have_min_plus) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,f22.12,a)") "   minimum (+distort): ", r%opt_min_plus_energy, " Eh"
+               write (logline, "(a,f22.12,a,a,a,es10.3,a)") "   minimum (+distort): ", r%opt_min_plus_energy, " Eh   ", &
+                  trim(merge("converged    ", "NOT converged", r%opt_min_plus_converged)), "   max|g|: ", &
+                  r%opt_min_plus_gmax, " Eh/Bohr"
                call global_logger%info(trim(logline))
             end block
          end if
@@ -1309,15 +1391,8 @@ contains
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: xyz_bohr(3, r%natm)
-      integer :: u, ia
-      open (newunit=u, file=path, status="replace", action="write")
-      write (u, "(i0)") r%natm
-      write (u, "(a,a,f0.12)") trim(merge("converged    ", "NOT converged", r%opt_converged)), &
-         "   E = ", r%etot
-      do ia = 1, r%natm
-         write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
-      end do
-      close (u)
+      call write_opt_xyz_frame(path, r%natm, r%z, real(r%etot, dp), xyz_bohr, &
+                               trim(merge("converged    ", "NOT converged", r%opt_converged)))
    end subroutine write_opt_xyz
 
    !
@@ -1355,16 +1430,7 @@ contains
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: traj_xyz_bohr(3, r%natm, r%opt_n_traj)
       real(dp), intent(in) :: traj_energy(r%opt_n_traj)
-      integer :: u, ia, k
-      open (newunit=u, file=path, status="replace", action="write")
-      do k = 1, r%opt_n_traj
-         write (u, "(i0)") r%natm
-         write (u, "(a,i0,a,f0.12)") "step ", k, "   E = ", traj_energy(k)
-         do ia = 1, r%natm
-            write (u, "(a2,3f20.12)") element_symbol(r%z(ia)), traj_xyz_bohr(:, ia, k)/BOHR_PER_ANGSTROM
-         end do
-      end do
-      close (u)
+      call write_traj_xyz_frames(path, r%natm, r%z, r%opt_n_traj, traj_xyz_bohr, traj_energy)
    end subroutine write_traj_xyz
 
    !
@@ -1563,8 +1629,7 @@ contains
    !
    ! --opt's JSON block: converged, step/evaluation counts, the final
    ! energy and gradient, the coordinate system, the trajectory's
-   ! per-step energies and the final geometry -- the fields this PR's
-   ! brief asks --json to carry for --opt. The final geometry is in
+   ! per-step energies and the final geometry. The final geometry is in
    ! Angstrom, named accordingly so a reader never has to guess the unit
    ! the way it would from a bare "final_geometry".
    !
@@ -1572,7 +1637,7 @@ contains
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
-      type(json_value), pointer :: oobj, rows
+      type(json_value), pointer :: oobj, rows, csub
       integer :: ia
 
       call json%create_object(oobj, "optimization")
@@ -1604,17 +1669,40 @@ contains
          call json%add(oobj, rows)
       end if
       if (r%opt_connect) then
+         ! Each sub-search's OWN convergence verdict and gradient, never
+         ! another sub-search's -- the top-level converged/final_gradient_max
+         ! above are the TS search's own (trc_dlfind_bridge's own override),
+         ! but a reader who wants the two downhill minima's separately
+         ! finds them here instead of having to infer them.
          call json%add(oobj, "ts_found", r%opt_have_ts)
-         if (r%opt_have_ts) call json%add(oobj, "ts_energy", r%opt_ts_energy)
+         if (r%opt_have_ts) then
+            call json%create_object(csub, "ts")
+            call json%add(csub, "energy", r%opt_ts_energy)
+            call json%add(csub, "converged", r%opt_ts_converged)
+            call json%add(csub, "final_gradient_max", r%opt_ts_gmax)
+            call json%add(oobj, csub)
+         end if
          call json%add(oobj, "minimum_minus_found", r%opt_have_min_minus)
-         if (r%opt_have_min_minus) call json%add(oobj, "minimum_minus_energy", r%opt_min_minus_energy)
+         if (r%opt_have_min_minus) then
+            call json%create_object(csub, "minimum_minus")
+            call json%add(csub, "energy", r%opt_min_minus_energy)
+            call json%add(csub, "converged", r%opt_min_minus_converged)
+            call json%add(csub, "final_gradient_max", r%opt_min_minus_gmax)
+            call json%add(oobj, csub)
+         end if
          call json%add(oobj, "minimum_plus_found", r%opt_have_min_plus)
-         if (r%opt_have_min_plus) call json%add(oobj, "minimum_plus_energy", r%opt_min_plus_energy)
+         if (r%opt_have_min_plus) then
+            call json%create_object(csub, "minimum_plus")
+            call json%add(csub, "energy", r%opt_min_plus_energy)
+            call json%add(csub, "converged", r%opt_min_plus_converged)
+            call json%add(csub, "final_gradient_max", r%opt_min_plus_gmax)
+            call json%add(oobj, csub)
+         end if
       end if
-      ! --opt-neb's own block: this PR's brief asks for image energies, the
-      ! max-energy (climbing) image and whether the run converged -- all
-      ! three are here, plus the per-image geometry so a JSON reader never
-      ! has to go back to the multi-frame xyz for it.
+      ! --opt-neb's own block: the image energies, the max-energy
+      ! (climbing) image and whether the run converged, plus the
+      ! per-image geometry so a JSON reader never has to go back to the
+      ! multi-frame xyz for it.
       if (r%opt_neb_have) call add_neb(json, oobj, r)
       call json%add(root, oobj)
    end subroutine add_optimization
@@ -1702,14 +1790,14 @@ program terco_main
    use trc_error, only: hess_err_t => error_t
    use pic_logger, only: global_logger
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env
-   use pic_ascii, only: to_lower
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary, hessian_summary, build_masses, &
                        opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz, &
                        opt_geometry_is_linear, write_labelled_xyz, parse_opt_global_options, &
-                       parse_frozen_list, parse_constraints, check_neb_endpoint, write_neb_path_xyz, &
-                       read_xyz_frames
+                       parse_frozen_list, parse_constraints, check_opt_constrain_residues, &
+                       check_neb_endpoint, write_neb_path_xyz, &
+                       read_xyz_frames, to_lower_alloc
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -1740,6 +1828,7 @@ program terco_main
    ! --opt
    character(len=:), allocatable :: opt_base, opt_refusal
    integer :: opt_base_slash
+   logical :: opt_hessian_relevant, opt_zero_soft_relevant
    integer, allocatable :: opt_residues(:)
    type(trc_opt_options_t) :: opt_opts
    type(trc_opt_result_t) :: opt_res
@@ -1827,7 +1916,10 @@ program terco_main
                        "refused otherwise). Warm-starts the SCF between steps; writes <geometry>_opt.xyz "// &
                        "and <geometry>_traj.xyz into the CURRENT WORKING DIRECTORY (named from the input "// &
                        "geometry's own base name), and an 'optimization' block to --json. "// &
-                       "Combined with --hessian, the Hessian runs at the OPTIMISED geometry")
+                       "Combined with --hessian, the Hessian runs at the OPTIMISED geometry. If a step's "// &
+                       "SCF fails to converge even after one retry, DL-FIND has no recovery: terco writes "// &
+                       "the files/JSON above (marked failed, with the last ACCEPTED geometry) and the "// &
+                       "process then stops abnormally from inside DL-FIND, not through terco's own exit path")
    call r%cli%add_option("opt-coords", "internal coordinates for --opt: cartesian, hdlc, hdlc-tc, dlc "// &
                          "or dlc-tc (cartesian)", default="cartesian")
    call r%cli%add_option("opt-maxiter", "maximum number of --opt steps (100)", default="100")
@@ -1859,12 +1951,16 @@ program terco_main
    call r%cli%add_option("opt-max-updates", "maximum Hessian updates before prfo/nr recomputes one "// &
                          "(DL-FIND's own default, 50)")
    call r%cli%add_option("opt-zero-modes", "modes assumed to have zero vibrational frequency, for "// &
-                         "prfo/nr's Hessian (nzero); default 6 for a Cartesian P-RFO saddle search (5 "// &
+                         "prfo/nr's Hessian (nzero); default 6 with --opt-coords cartesian and "// &
+                         "--opt-algorithm prfo/nr (minimum or saddle) or --opt-saddle-method dimer (5 "// &
                          "if the start geometry is linear -- otherwise the search climbs a rotation), "// &
                          "DL-FIND's own default (0) otherwise")
    call r%cli%add_option("opt-soft-modes", "eigenmodes of prfo/nr's Hessian below this value (Eh/Bohr^2) "// &
                          "are treated as soft (DL-FIND's own default: none)")
-   call r%cli%add_option("opt-max-step", "maximum step size, Bohr in Cartesians (DL-FIND's own default, 0.5)")
+   call r%cli%add_option("opt-max-step", "DL-FIND's own ceiling on a trust-radius step, Bohr -- also the "// &
+                         "ceiling the trust radius may grow to across accepted steps (DL-FIND's own "// &
+                         "default, 0.5, unless given); raising it lets the optimiser attempt a larger, "// &
+                         "possibly-rejected trial sooner")
    call r%cli%add_option("opt-linesearch", "trust radius/line search: auto (DL-FIND's own default, which "// &
                          "depends on --opt-algorithm), scaling, energy-trust or gradient-trust (auto)", &
                          default="auto")
@@ -1884,9 +1980,10 @@ program terco_main
                          "this many minus one points, both endpoints included (DL-FIND's own default, 10)")
    call r%cli%add_option("opt-neb-spring", "NEB spring constant, Eh/Bohr^2 (DL-FIND's own default, 0.01)")
    call r%cli%add_flag("opt-neb-climb", "climbing-image NEB: once the path is close to converged, refine "// &
-                       "its highest-energy image toward the saddle point. There is no separate on/off "// &
-                       "switch in DL-FIND's own interface for this -- see --opt-neb's help and the PR "// &
-                       "description for how this flag is implemented")
+                       "its highest-energy image toward the saddle point. DL-FIND has no separate on/off "// &
+                       "switch for this: giving the flag lowers its own neb_climb_test threshold to the "// &
+                       "default that actually spawns the climbing image; leaving it out keeps that "// &
+                       "threshold at a value no real run reaches")
    call r%cli%add_option("opt-neb-endpoints", "free, perpendicular (DL-FIND's own default: endpoints move "// &
                          "only perpendicular to the path) or frozen", default="perpendicular")
    call r%cli%add_option("opt-neb-via", "one or more intermediate geometries for --opt-neb's own initial "// &
@@ -1912,9 +2009,10 @@ program terco_main
    ! options). DL-FIND's own defaults are documented per option below;
    ! app/trc_dlfind_bridge.F90's own header has the full dl-find.f90
    ! table and which ones apply to stochastic (SS) vs genetic (GA) only.
-   call r%cli%add_option("opt-seed", "integer seed for --opt-algorithm stochastic/genetic, "// &
-                         "reproducible across runs (sets DLF_PO_SEED; DL-FIND's own default reseeds "// &
-                         "from the wall clock, so two runs never agree without this)")
+   call r%cli%add_option("opt-seed", "integer seed for --opt-algorithm stochastic/genetic (sets "// &
+                         "DLF_PO_SEED) or --opt-saddle-method dimer (seeds the Fortran intrinsic "// &
+                         "generator dlf_dimer.f90's own initial direction reads); without it both "// &
+                         "default to the wall clock, so two runs never agree")
    call r%cli%add_option("opt-global-pop-size", "population size (DL-FIND's own default, 25)")
    call r%cli%add_option("opt-global-maxcycle", "maximum cycles (DL-FIND's own default, 10000)")
    call r%cli%add_option("opt-global-init-pop-size", "initial population size, genetic only "// &
@@ -1976,7 +2074,7 @@ program terco_main
    r%mult = r%uhf + 1
 
    call r%cli%get("func", sval, r%err)
-   r%func = to_lower(trim(sval))
+   r%func = to_lower_alloc(trim(sval))
    if (r%func == "hf" .or. r%func == "rhf" .or. r%func == "uhf") r%func = ""
 
    ! A double hybrid's PT2 part is always RI-MP2 on the converged KS
@@ -2001,7 +2099,7 @@ program terco_main
    if (r%chrg /= 0) r%guess = "sadq"
    if (r%cli%is_set("guess")) then
       call r%cli%get("guess", sval, r%err)
-      r%guess = to_lower(trim(sval))
+      r%guess = to_lower_alloc(trim(sval))
    end if
    select case (r%guess)
    case ("sad")
@@ -2056,7 +2154,7 @@ program terco_main
          "has one above 1 (water: 2, ammonia: 3, ...)")
       call r%cli%get("masses", sval, r%err)
       call check(r, "--masses")
-      r%masses_kind = to_lower(trim(sval))
+      r%masses_kind = to_lower_alloc(trim(sval))
       if (r%masses_kind /= "isotope" .and. r%masses_kind /= "average") then
          call die(r, "--masses must be isotope or average, got '"//r%masses_kind//"'")
       end if
@@ -2066,7 +2164,7 @@ program terco_main
    r%eps = 0.0_dp
    if (r%cli%is_set("pcm")) then
       call r%cli%get("pcm", sval, r%err)
-      r%pcm = to_lower(trim(sval))
+      r%pcm = to_lower_alloc(trim(sval))
       if (r%pcm /= "cpcm" .and. r%pcm /= "iefpcm") call die(r, "unknown --pcm '"//r%pcm//"': use cpcm or iefpcm")
       if (.not. r%cli%is_set("eps")) call die(r, "--pcm needs the solvent's dielectric constant: "// &
                                               "--eps 78.3553 for water; nothing is assumed")
@@ -2100,6 +2198,23 @@ program terco_main
       call resolve_basis(sval, r%jkfit_path, r%err)
       if (r%err%has_error()) call die(r, "--jkfit: "//r%err%get_message())
    end if
+   ! Every --opt-* option is parsed inside `if (r%opt) then` below, so one
+   ! given without --opt itself would otherwise do nothing silently --
+   ! refused here instead, before that block, so a command line that sets
+   ! one always means what it says.
+   if (.not. r%opt) then
+      block
+         character(len=*), parameter :: opt_options(*) = [character(len=18) :: &
+            "opt-coords", "opt-guess", "opt-maxiter", "opt-gtol", "opt-target", "opt-saddle-method", &
+            "opt-connect", "opt-algorithm", "opt-init-hessian", "opt-hessian-update", "opt-max-updates", &
+            "opt-zero-modes", "opt-soft-modes", "opt-max-step", "opt-linesearch", "opt-scalestep", &
+            "opt-lbfgs-memory", "opt-etol", "opt-print-level"]
+         integer :: k
+         do k = 1, size(opt_options)
+            if (r%cli%is_set(trim(opt_options(k)))) call die(r, "--"//trim(opt_options(k))//" needs --opt")
+         end do
+      end block
+   end if
    ! Validated LAST among the feature flags above: opt_capability_check
    ! reads r%func/r%rimp2/r%dh/r%pcm, every one of which must already be
    ! resolved (not just r%cli%is_set) for the check to see what the run
@@ -2119,7 +2234,7 @@ program terco_main
       opt_refusal = opt_capability_check(r)
       if (len(opt_refusal) > 0) call die(r, opt_refusal)
       call r%cli%get("opt-coords", sval, r%err)
-      r%opt_coords_arg = to_lower(trim(sval))
+      r%opt_coords_arg = to_lower_alloc(trim(sval))
       select case (r%opt_coords_arg)
       case ("cartesian")
          r%opt_coords_kind = TRC_OPT_COORDS_CARTESIAN
@@ -2135,7 +2250,7 @@ program terco_main
          call die(r, "--opt-coords must be cartesian, hdlc, hdlc-tc, dlc or dlc-tc, got '"//r%opt_coords_arg//"'")
       end select
       call r%cli%get("opt-guess", sval, r%err)
-      r%opt_guess_arg = to_lower(trim(sval))
+      r%opt_guess_arg = to_lower_alloc(trim(sval))
       select case (r%opt_guess_arg)
       case ("density")
          r%opt_guess_kind = TRC_OPT_GUESS_DENSITY
@@ -2153,7 +2268,7 @@ program terco_main
 
       ! ---- target, saddle method, connect -------------------------------
       call r%cli%get("opt-target", sval, r%err)
-      r%opt_target_arg = to_lower(trim(sval))
+      r%opt_target_arg = to_lower_alloc(trim(sval))
       select case (r%opt_target_arg)
       case ("minimum")
          r%opt_target_kind = TRC_OPT_TARGET_MINIMUM
@@ -2168,7 +2283,7 @@ program terco_main
          if (r%opt_connect) call die(r, "--opt-connect needs --opt-target saddle")
          if (r%cli%is_set("opt-algorithm")) then
             call r%cli%get("opt-algorithm", sval, r%err)
-            r%opt_algorithm_arg = to_lower(trim(sval))
+            r%opt_algorithm_arg = to_lower_alloc(trim(sval))
             select case (r%opt_algorithm_arg)
             case ("sd")
                r%opt_algorithm_kind = TRC_OPT_ALG_SD
@@ -2179,7 +2294,7 @@ program terco_main
             case ("lbfgs")
                r%opt_algorithm_kind = TRC_OPT_ALG_LBFGS
             case ("prfo")
-               r%opt_algorithm_kind = TRC_OPT_ALG_PRFO   !! P-RFO as a plain minimiser: valid, just unusual
+               r%opt_algorithm_kind = TRC_OPT_ALG_PRFO   ! P-RFO as a plain minimiser: valid, just unusual
             case ("nr")
                r%opt_algorithm_kind = TRC_OPT_ALG_NR
             case ("damped")
@@ -2207,7 +2322,7 @@ program terco_main
                                                      "saddle: --opt-saddle-method (prfo or dimer) fixes "// &
                                                      "DL-FIND's own algorithm/coordinate family")
          call r%cli%get("opt-saddle-method", sval, r%err)
-         r%opt_saddle_method_arg = to_lower(trim(sval))
+         r%opt_saddle_method_arg = to_lower_alloc(trim(sval))
          select case (r%opt_saddle_method_arg)
          case ("prfo")
             r%opt_saddle_method_kind = TRC_OPT_SADDLE_PRFO
@@ -2262,7 +2377,7 @@ program terco_main
          end if
          r%opt_neb_climb = r%cli%is_set("opt-neb-climb")
          call r%cli%get("opt-neb-endpoints", sval, r%err)
-         r%opt_neb_endpoints_arg = to_lower(trim(sval))
+         r%opt_neb_endpoints_arg = to_lower_alloc(trim(sval))
          select case (r%opt_neb_endpoints_arg)
          case ("free")
             r%opt_neb_endpoints_kind = TRC_OPT_NEB_FREE
@@ -2292,7 +2407,7 @@ program terco_main
       ! ---- Hessian handling (meaningful for prfo/nr; harmless, DL-FIND
       ! simply ignores them, for every other algorithm) -------------------
       call r%cli%get("opt-init-hessian", sval, r%err)
-      r%opt_init_hessian_arg = to_lower(trim(sval))
+      r%opt_init_hessian_arg = to_lower_alloc(trim(sval))
       select case (r%opt_init_hessian_arg)
       case ("terco")
          r%opt_hessian_source_kind = TRC_OPT_HESS_TERCO
@@ -2303,7 +2418,7 @@ program terco_main
       end select
       if (r%cli%is_set("opt-hessian-update")) then
          call r%cli%get("opt-hessian-update", sval, r%err)
-         r%opt_hessian_update_arg = to_lower(trim(sval))
+         r%opt_hessian_update_arg = to_lower_alloc(trim(sval))
          select case (r%opt_hessian_update_arg)
          case ("none")
             r%opt_hessian_update_kind = TRC_OPT_HUPD_NONE
@@ -2321,7 +2436,11 @@ program terco_main
       if (r%cli%is_set("opt-max-updates")) then
          call r%cli%get("opt-max-updates", r%opt_max_updates, r%err)
          call check(r, "--opt-max-updates")
-         if (r%opt_max_updates < 1) call die(r, "--opt-max-updates must be at least 1")
+         ! 0 is accepted by DL-FIND itself (dlf_formstep.f90's own
+         ! iupd>=maxupd test, iupd starting at 0): it recomputes the
+         ! Hessian fresh every step rather than ever updating it, not a
+         ! degenerate "no Hessian" case.
+         if (r%opt_max_updates < 0) call die(r, "--opt-max-updates must be at least 0")
       end if
       if (r%cli%is_set("opt-zero-modes")) then
          call r%cli%get("opt-zero-modes", r%opt_zero_modes, r%err)
@@ -2337,6 +2456,53 @@ program terco_main
          if (r%opt_soft_modes <= 0.0_dp) call die(r, "--opt-soft-modes must be positive")
       end if
 
+      ! --opt-init-hessian/--opt-hessian-update/--opt-max-updates:
+      ! meaningful only for P-RFO or NR (cb_get_params' own
+      ! is_prfo_or_nr branch; DL-FIND never reads inithessian/update/
+      ! maxupd for any other algorithm) -- refused rather than silently
+      ! ignored, so a command line that sets one means what it says.
+      opt_hessian_relevant = (r%opt_target_kind == TRC_OPT_TARGET_SADDLE .and. &
+                              r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) .or. &
+                             (r%opt_target_kind == TRC_OPT_TARGET_MINIMUM .and. &
+                              (r%opt_algorithm_kind == TRC_OPT_ALG_PRFO .or. r%opt_algorithm_kind == TRC_OPT_ALG_NR))
+      if (.not. opt_hessian_relevant) then
+         if (r%cli%is_set("opt-init-hessian")) call die(r, "--opt-init-hessian needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle --opt-saddle-method prfo")
+         if (r%cli%is_set("opt-hessian-update")) call die(r, "--opt-hessian-update needs --opt-algorithm "// &
+                  "prfo/nr or --opt-target saddle --opt-saddle-method prfo")
+         if (r%cli%is_set("opt-max-updates")) call die(r, "--opt-max-updates needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle --opt-saddle-method prfo")
+      end if
+
+      ! --opt-zero-modes/--opt-soft-modes: meaningful for P-RFO, NR or
+      ! the dimer method (cb_get_params' own nzero/soft handling) --
+      ! refused the same way for every algorithm that never reads them.
+      opt_zero_soft_relevant = (r%opt_target_kind == TRC_OPT_TARGET_SADDLE) .or. &
+                               (r%opt_target_kind == TRC_OPT_TARGET_MINIMUM .and. &
+                                (r%opt_algorithm_kind == TRC_OPT_ALG_PRFO .or. r%opt_algorithm_kind == TRC_OPT_ALG_NR))
+      if (.not. opt_zero_soft_relevant) then
+         if (r%cli%is_set("opt-zero-modes")) call die(r, "--opt-zero-modes needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle")
+         if (r%cli%is_set("opt-soft-modes")) call die(r, "--opt-soft-modes needs --opt-algorithm prfo/nr "// &
+                  "or --opt-target saddle")
+      end if
+
+      ! A single atom has no internal degrees of freedom: P-RFO/NR/the
+      ! dimer method in Cartesian coordinates default nzero to 6 (5 if
+      ! linear, never reached with one atom), which already exceeds
+      ! nvar=3 before any eigenvector-following step could even be
+      ! attempted -- refused here rather than left to DL-FIND, which has
+      ! no graceful way to decline a run it cannot do.
+      if (r%natm == 1 .and. r%opt_coords_kind == TRC_OPT_COORDS_CARTESIAN .and. opt_zero_soft_relevant) then
+         call die(r, "--opt-algorithm prfo/nr and --opt-target saddle need more than one atom in Cartesian "// &
+                  "coordinates: a single atom has no internal degrees of freedom to search over")
+      end if
+      if (r%cli%is_set("opt-zero-modes") .and. r%opt_zero_modes > 3*r%natm - 1) then
+         call die(r, "--opt-zero-modes "//to_string(r%opt_zero_modes)//" leaves fewer than one true "// &
+                  "degree of freedom for a "//to_string(r%natm)//"-atom molecule (3*natm = "// &
+                  to_string(3*r%natm)//")")
+      end if
+
       ! ---- step/trust controls -------------------------------------------
       if (r%cli%is_set("opt-max-step")) then
          call r%cli%get("opt-max-step", r%opt_max_step, r%err)
@@ -2344,7 +2510,7 @@ program terco_main
          if (r%opt_max_step <= 0.0_dp) call die(r, "--opt-max-step must be positive")
       end if
       call r%cli%get("opt-linesearch", sval, r%err)
-      r%opt_linesearch_arg = to_lower(trim(sval))
+      r%opt_linesearch_arg = to_lower_alloc(trim(sval))
       select case (r%opt_linesearch_arg)
       case ("auto")
          r%opt_linesearch_kind = TRC_OPT_LINE_AUTO
@@ -2502,15 +2668,26 @@ program terco_main
          call build_opt_residues(r%natm, r%z, xyz, opt_residues, r%err)
          if (r%err%has_error()) call die(r, r%err%get_message())
       else
-         opt_residues = 1   !! cartesian/dlc/dlc-tc: trc_dlfind_bridge's own driver needs no real partition
+         opt_residues = 1   ! cartesian/dlc/dlc-tc: trc_dlfind_bridge's own driver needs no real partition
       end if
+      ! --opt-constrain: a constraint that crosses an HDLC residue
+      ! boundary, or touches a --opt-frozen atom, reaches DL-FIND's own
+      ! assign_cons and dies there with "crosses residue boundary" ->
+      ! hdlc_errflag('stop') -> dlf_fail -> error stop -- caught here,
+      ! against the SAME residue partition cb_get_params hands DL-FIND
+      ! (opt_residues, computed just above, BEFORE the frozen overwrite
+      ! below turns every frozen atom's own real residue number into -1
+      ! and would make this check see every pair of frozen atoms as
+      ! "different residues" even when they share one).
+      if (allocated(r%opt_cons_kind)) call check_opt_constrain_residues(r, opt_residues)
       ! --opt-frozen: -1 in the SAME spec slot residues already occupy
       ! (app/trc_dlfind_bridge.F90's own cb_get_params copies spec(1:natm)
       ! straight from this array, no translation) -- validated against
       ! pure DLC/DLC-TC before this point (app/main.F90's own --opt-frozen
       ! block, above).
       if (allocated(r%opt_frozen_atoms)) opt_residues(r%opt_frozen_atoms) = -1
-      r%opt_is_linear = opt_geometry_is_linear(r%natm, xyz)
+      r%opt_is_linear = opt_geometry_is_linear(r%natm, r%z, xyz, herr)
+      if (herr%has_error()) call die(r, "--opt: "//herr%get_message())
 
       opt_opts%coords_kind = r%opt_coords_kind
       opt_opts%guess_kind = r%opt_guess_kind
@@ -2584,6 +2761,31 @@ program terco_main
       opt_opts%po_death_rate = r%opt_global_death_rate
       opt_opts%po_scalefac = r%opt_global_scalefac
 
+      ! <geometry base>_opt.xyz/_traj.xyz's own path, and --json's (if
+      ! given): trc_dlfind_optimize needs these BEFORE it runs, not after,
+      ! because an unrecoverable mid-run SCF failure writes them from
+      ! inside a DL-FIND callback (trc_dlfind_bridge%fail_eval) -- DL-FIND
+      ! itself stops the process right after, so nothing after this call
+      ! returns would ever get the chance.
+      opt_base = r%geom
+      if (len(opt_base) > 4) then
+         if (to_lower_alloc(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
+      end if
+      ! Written into the CURRENT WORKING DIRECTORY, not next to the input
+      ! geometry: a directory part in r%geom (an absolute path, or one
+      ! outside the CWD) must not steer these writes somewhere a test's
+      ! own WORKING_DIRECTORY (ctest's convention, test/CMakeLists.txt)
+      ! does not expect -- DL-FIND's own path*.xyz already go to the CWD
+      ! (dl-find.f90), so this matches.
+      opt_base_slash = scan(opt_base, "/", back=.true.)
+      if (opt_base_slash > 0) opt_base = opt_base(opt_base_slash + 1:)
+      opt_opts%opt_xyz_path = opt_base//"_opt.xyz"
+      opt_opts%traj_xyz_path = opt_base//"_traj.xyz"
+      opt_opts%json_path = r%json
+      opt_opts%geometry_path = r%geom
+      opt_opts%coords_name = r%opt_coords_arg
+      opt_opts%guess_name = r%opt_guess_arg
+
       call trc_dlfind_optimize(r%h, r%natm, r%z, opt_residues, xyz, opt_opts, opt_res)
       if (opt_res%failed) call die(r, "--opt: "//opt_res%message)
 
@@ -2599,16 +2801,22 @@ program terco_main
       if (opt_res%have_ts) then
          r%opt_ts_energy = opt_res%ts_energy
          r%opt_ts_xyz = opt_res%ts_coords
+         r%opt_ts_gmax = opt_res%ts_gmax
+         r%opt_ts_converged = opt_res%ts_converged
       end if
       r%opt_have_min_plus = opt_res%have_minimum_plus
       if (opt_res%have_minimum_plus) then
          r%opt_min_plus_energy = opt_res%minimum_plus_energy
          r%opt_min_plus_xyz = opt_res%minimum_plus_coords
+         r%opt_min_plus_gmax = opt_res%minimum_plus_gmax
+         r%opt_min_plus_converged = opt_res%minimum_plus_converged
       end if
       r%opt_have_min_minus = opt_res%have_minimum_minus
       if (opt_res%have_minimum_minus) then
          r%opt_min_minus_energy = opt_res%minimum_minus_energy
          r%opt_min_minus_xyz = opt_res%minimum_minus_coords
+         r%opt_min_minus_gmax = opt_res%minimum_minus_gmax
+         r%opt_min_minus_converged = opt_res%minimum_minus_converged
       end if
       r%opt_neb_have = opt_res%have_neb
       if (opt_res%have_neb) then
@@ -2620,12 +2828,16 @@ program terco_main
       end if
       xyz = opt_res%final_coords
       r%opt_final_xyz = xyz
-      r%grad = .true.   !! so the existing --grad path below reports the final gradient too
+      r%grad = .true.   ! so the existing --grad path below reports the final gradient too
 
-      ! Re-converge the context at the reported final geometry: api_dl_find
-      ! may leave the context at one more (rejected) line-search trial
-      ! past the last ACCEPTED step by the time it returns, and every
-      ! getter below must report exactly the geometry --opt writes out.
+      ! Re-converge the context at the reported final (ACCEPTED) geometry:
+      ! cb_get_gradient calls trc_set_geometry/trc_run_scf for EVERY
+      ! evaluation, including a rejected trial that happens after the last
+      ! accepted step (e.g. --opt-maxiter stops the run right after one),
+      ! so by the time api_dl_find returns, the context may be sitting at
+      ! that later trial's geometry/SCF, not opt_res%final_coords's own.
+      ! Every getter below must report exactly the geometry --opt writes
+      ! out.
       call api(r, trc_set_geometry(r%h, reshape(real(xyz, c_double), [3*r%natm])))
       st = trc_run_scf(r%h)
    else if (len(r%restart) > 0) then
@@ -2703,18 +2915,8 @@ program terco_main
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
    if (r%rank0 .and. r%opt) then
-      opt_base = r%geom
-      if (len(opt_base) > 4) then
-         if (to_lower(opt_base(len(opt_base) - 3:)) == ".xyz") opt_base = opt_base(1:len(opt_base) - 4)
-      end if
-      ! Written into the CURRENT WORKING DIRECTORY, not next to the input
-      ! geometry: a directory part in r%geom (an absolute path, or one
-      ! outside the CWD) must not steer these writes somewhere a test's
-      ! own WORKING_DIRECTORY (ctest's convention, test/CMakeLists.txt)
-      ! does not expect -- DL-FIND's own path*.xyz already go to the CWD
-      ! (dl-find.f90), so this now matches.
-      opt_base_slash = scan(opt_base, "/", back=.true.)
-      if (opt_base_slash > 0) opt_base = opt_base(opt_base_slash + 1:)
+      ! opt_base (and opt_opts%opt_xyz_path/traj_xyz_path built from it)
+      ! was already computed before trc_dlfind_optimize ran, above.
       call write_opt_xyz(r, opt_base//"_opt.xyz", xyz)
       if (r%opt_n_traj > 0) call write_traj_xyz(r, opt_base//"_traj.xyz", opt_res%traj_coords, r%opt_traj_energy)
       call global_logger%info("   wrote "//opt_base//"_opt.xyz and "//opt_base//"_traj.xyz")
@@ -2743,6 +2945,15 @@ program terco_main
 
    if (r%conv == 0) then
       if (r%rank0) call global_logger%error("terco: the SCF did not converge in "//to_string(int(r%niter))//" iterations")
+      call quit(r, 2)
+   end if
+   if (r%opt .and. .not. r%opt_converged) then
+      ! Matches the SCF's own non-convergence above: a CLI run that did
+      ! not reach the thing it was asked to do must not exit 0 and claim
+      ! "normal termination" -- opt_summary already printed "NOT
+      ! converged" above, this just makes the exit code agree with it.
+      if (r%rank0) call global_logger%error("terco: --opt did not converge in "// &
+                                             to_string(r%opt_steps)//" accepted step(s)")
       call quit(r, 2)
    end if
    if (r%rank0) then

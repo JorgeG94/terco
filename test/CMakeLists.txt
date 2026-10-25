@@ -102,10 +102,11 @@ terco_add_check(check_linalg_mat check_linalg_mat.F90)
 
 # A signalling-NaN SCF guess density -- what a density read past the end
 # of an undersized buffer (app/trc_dlfind_bridge.F90's own --opt-neb
-# per-image density, found and fixed on feat/opt-neb) can hand back --
-# comes back through trc_run_scf's own status/message, not `error stop`
-# inside the eigensolver. See check_scf_diag_failure.F90's own header.
+# per-image density) can hand back -- comes back through trc_run_scf's
+# own status/message, not `error stop` inside the eigensolver. See
+# check_scf_diag_failure.F90's own header.
 terco_add_check(check_scf_diag_failure check_scf_diag_failure.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_diag_failure PRIVATE test-drive::test-drive)
 
 # The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
 terco_add_check(check_si check_si.F90)
@@ -322,6 +323,7 @@ terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 # header.
 #
 terco_add_check(check_scf_reuse check_scf_reuse.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_reuse PRIVATE test-drive::test-drive terco_c_interfaces)
 
 # The same full analytic gradient, on SPHERICAL cc-pVDZ bases (water/RHF,
 # formamide/RHF, OH/UHF), against pyscf's own Gradients class at a
@@ -452,6 +454,15 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
   unset(_cli_grad_df_probe)
 
+  # terco_main's own CLI-string lowercasing (--func, --guess, ...) --
+  # see check_cli_lowercase.F90's own header for the nvfortran miscompile
+  # this guards against.
+  set(_cli_lowercase_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_lowercase_probe.json)
+  terco_add_check(check_cli_lowercase check_cli_lowercase.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_lowercase_probe})
+  target_link_libraries(check_cli_lowercase PRIVATE test-drive::test-drive)
+  unset(_cli_lowercase_probe)
+
   # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
   # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_
   # analysis/thermo, water -- see check_cli_hessian.F90's own header for
@@ -506,8 +517,9 @@ if(TERCO_BUILD_APP)
     # check_cli_opt.F90's own header.
     set(_cli_opt_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_probe.json)
     set(_cli_opt_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_work)
-    terco_add_check(check_cli_opt check_cli_opt.F90
+    terco_add_check(check_cli_opt check_cli_opt.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_probe} ${_cli_opt_workdir})
+    target_link_libraries(check_cli_opt PRIVATE test-drive::test-drive)
     unset(_cli_opt_probe)
     unset(_cli_opt_workdir)
 
@@ -520,37 +532,47 @@ if(TERCO_BUILD_APP)
     # test/ itself (this check's own WORKING_DIRECTORY, ctest's convention).
     set(_cli_opt_mqc_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_mqc_probe.json)
     set(_cli_opt_mqc_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_mqc_work)
-    terco_add_check(check_opt_vs_mqc check_opt_vs_mqc.F90
+    terco_add_check(check_opt_vs_mqc check_opt_vs_mqc.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_mqc_probe} ${_cli_opt_mqc_workdir})
+    target_link_libraries(check_opt_vs_mqc PRIVATE test-drive::test-drive)
     unset(_cli_opt_mqc_probe)
     unset(_cli_opt_mqc_workdir)
 
     # The real anchor: terco's --opt (tight --opt-gtol 1e-5) against
     # pyscf's own analytic RHF/STO-3G gradient driving scipy's L-BFGS-B
     # (test/pyscf_refs/generate.py's gen_opt, opt_water.ref/opt_hcn.ref)
-    # -- a different language, SCF implementation and optimiser, from
-    # the SAME start geometries as mqc's note. See check_opt_vs_pyscf.F90's
-    # own header for the tolerances. A separate work dir PER CASE, so the
-    # water and hcn ctest cases (which can run concurrently under -j) never
-    # share a CWD.
+    # -- a different language, SCF implementation and optimiser. hcn.xyz
+    # starts from the exact geometry gen_opt's "hcn" case does; water.xyz
+    # does not (see check_opt_vs_pyscf.F90's own header) -- both converge
+    # to the same minimum regardless, which is what this check compares.
+    # See check_opt_vs_pyscf.F90's own header for the tolerances. A
+    # separate work dir PER CASE, so the water and hcn ctest cases (which
+    # can run concurrently under -j) never share a CWD.
     foreach(case water hcn)
       set(_cli_opt_pyscf_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_probe_${case}.json)
       set(_cli_opt_pyscf_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_work_${case})
       terco_add_check(check_opt_vs_pyscf_${case} check_opt_vs_pyscf.F90 NEEDS_PYSCF_REF
                       ARGS $<TARGET_FILE:terco_cli> ${case}.xyz opt_${case} ${_cli_opt_pyscf_probe}
                            ${_cli_opt_pyscf_workdir})
+      target_link_libraries(check_opt_vs_pyscf_${case} PRIVATE test-drive::test-drive)
+      # Its own module directory: both cases compile the same source, whose
+      # helper module would otherwise race into one shared directory (see
+      # check_df_grad_ints_${case}'s own comment above for the same fix).
+      set_target_properties(check_opt_vs_pyscf_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                            ${CMAKE_CURRENT_BINARY_DIR}/mod_check_opt_vs_pyscf_${case})
       unset(_cli_opt_pyscf_probe)
       unset(_cli_opt_pyscf_workdir)
     endforeach()
 
-    # Every --opt-algorithm/--opt-coords this PR exposes converges
-    # water/STO-3G to the existing opt_water anchor -- see
-    # check_opt_algorithms.F90's own header. One shared work dir: the 11
-    # runs inside this single ctest case are sequential (the program's own
-    # do loop), so they can reuse it.
+    # Every --opt-algorithm/--opt-coords combination terco exposes
+    # converges water/STO-3G to the existing opt_water anchor -- see
+    # check_opt_algorithms.F90's own header. One shared work dir: the
+    # runs inside this single ctest case are sequential (test-drive's own
+    # parallel=.false.), so they can reuse it.
     set(_cli_opt_alg_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_algorithms_work)
-    terco_add_check(check_opt_algorithms check_opt_algorithms.F90
+    terco_add_check(check_opt_algorithms check_opt_algorithms.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_alg_workdir})
+    target_link_libraries(check_opt_algorithms PRIVATE test-drive::test-drive)
     unset(_cli_opt_alg_workdir)
 
     # Invalid --opt-* combinations are refused before DL-FIND ever runs --
@@ -562,6 +584,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_refusals_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_refusals_work)
     terco_add_check(check_opt_refusals check_opt_refusals.F90
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_refusals_workdir})
+    target_link_libraries(check_opt_refusals PRIVATE test-drive::test-drive)
     unset(_cli_opt_refusals_workdir)
 
     # The transition-state search: P-RFO (Cartesian, terco's own
@@ -571,6 +594,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_ts_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_ts_work)
     terco_add_check(check_opt_ts check_opt_ts.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_ts_workdir})
+    target_link_libraries(check_opt_ts PRIVATE test-drive::test-drive)
     unset(_cli_opt_ts_workdir)
 
     # --opt-connect: both the dimer method and P-RFO (the pinned
@@ -579,6 +603,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_connect_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_connect_work)
     terco_add_check(check_opt_connect check_opt_connect.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_connect_workdir})
+    target_link_libraries(check_opt_connect PRIVATE test-drive::test-drive)
     unset(_cli_opt_connect_workdir)
 
     # --opt-algorithm stochastic, a fast fixed-seed global search --
@@ -587,6 +612,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_global_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_global_work)
     terco_add_check(check_opt_global check_opt_global.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_global_probe} ${_cli_opt_global_workdir})
+    target_link_libraries(check_opt_global PRIVATE test-drive::test-drive)
     unset(_cli_opt_global_probe)
     unset(_cli_opt_global_workdir)
 
@@ -597,6 +623,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_neb_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_neb_work)
     terco_add_check(check_opt_neb check_opt_neb.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_neb_workdir})
+    target_link_libraries(check_opt_neb PRIVATE test-drive::test-drive)
     unset(_cli_opt_neb_workdir)
 
     # --opt-frozen: water with atom 1 frozen -- see check_opt_frozen.F90's
@@ -604,6 +631,7 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_frozen_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_frozen_work)
     terco_add_check(check_opt_frozen check_opt_frozen.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_frozen_workdir})
+    target_link_libraries(check_opt_frozen PRIVATE test-drive::test-drive)
     unset(_cli_opt_frozen_workdir)
 
     # --opt-constrain: water's H-O-H angle (HDLC) against a from-scratch
@@ -614,7 +642,25 @@ if(TERCO_BUILD_APP)
     set(_cli_opt_constrain_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_constrain_work)
     terco_add_check(check_opt_constrain check_opt_constrain.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_constrain_workdir})
+    target_link_libraries(check_opt_constrain PRIVATE test-drive::test-drive)
     unset(_cli_opt_constrain_workdir)
+
+    # An installed DLFIND=ON terco can start at all: cmake --install to a
+    # scratch prefix, then run the installed binary for real (not just
+    # check libdlfind.so landed in lib/) -- see
+    # app/install_dlfind_check.cmake's own header for why this needs its
+    # own check (Findlibdlfind.cmake's EXCLUDE_FROM_ALL drops libdlfind's
+    # own install() rules, so without app/CMakeLists.txt's explicit
+    # install(TARGETS dlfind ...) the installed binary fails at load,
+    # silently as far as the REST of this test suite is concerned since
+    # none of it runs installed). Fast: one install (copying what is
+    # already built) and one `terco --version`.
+    add_test(
+      NAME terco/install_dlfind
+      COMMAND
+        ${CMAKE_COMMAND} -DCMAKE_COMMAND=${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
+        -DPREFIX=${CMAKE_CURRENT_BINARY_DIR}/install_dlfind_check_prefix -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/install_dlfind_check.cmake)
   endif()
 endif()
 
@@ -1548,8 +1594,8 @@ if(TERCO_ENABLE_DLFIND)
                                                         ${CMAKE_CURRENT_BINARY_DIR}/modules_opt_bench)
 
   # The per-image-vs-shared-density NEB warm start measurement
-  # (bench_opt_neb_warmstart.F90's own header) -- this PR's own analogue
-  # of the above for --opt-neb. A SEPARATE module directory: two targets
+  # (bench_opt_neb_warmstart.F90's own header) -- the --opt-neb analogue
+  # of bench_opt_warmstart above. A SEPARATE module directory: two targets
   # compiling the same trc_dlfind_bridge.F90 source into the SAME
   # Fortran_MODULE_DIRECTORY under -j>1 is a write race on the .mod file.
   add_executable(bench_opt_neb_warmstart bench_opt_neb_warmstart.F90 ${PROJECT_SOURCE_DIR}/app/terco_app.F90
