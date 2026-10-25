@@ -152,6 +152,11 @@ contains
       type(trc_scf_result_t), intent(out) :: scf_result
       real(dp), intent(in), optional :: dguess(:, :, :)
       real(dp), intent(in), optional :: hguess(:, :)
+      !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
+      !! how SAP gets in (see trc_sap), which cannot come through `dguess`
+      !! because what it produces is a one-electron operator and not a
+      !! density. Ignored if `dguess` is also given: a density the caller
+      !! already has is more specific than a matrix to make one from.
       real(dp), intent(in), optional :: cmo_project(:, :, :)
       !! A PREVIOUS geometry's converged orbitals (SAME molecule/basis, so
       !! the same nao), re-orthonormalised into a guess density at THIS
@@ -160,11 +165,6 @@ contains
       !! TRC_GUESS_PROJECTED, lowest priority of the three guess-density
       !! arguments (checked after `dguess` and `hguess`, same as every
       !! other guess kind the plain `scf_options%guess` string selects).
-      !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
-      !! how SAP gets in (see trc_sap), which cannot come through `dguess`
-      !! because what it produces is a one-electron operator and not a
-      !! density. Ignored if `dguess` is also given: a density the caller
-      !! already has is more specific than a matrix to make one from.
       type(comm_t), intent(in), optional :: comm
       !! Ranks. Every rank runs the same iteration on the same matrices;
       !! the quartets are split across them and the Fock matrix summed
@@ -208,6 +208,13 @@ contains
       !! rest of this routine, which needs scf_context itself to carry TARGET.
       type(scf_state_t) :: scf_state
       type(scf_timers_t) :: scf_timers
+      !! This iteration's share of the two totals (tf_it/t_fock, tx_it/t_xc,
+      !! tr_it/t_rest), so the table says where the time went while it is
+      !! going rather than only at the end. A Fock build is not the same
+      !! cost twice: the SAD guess is atomic, so density screening throws
+      !! nearly all of iteration 1 away, and the per-iteration cost then
+      !! climbs to a plateau. Comparing two runs by total/iterations is
+      !! therefore only valid at equal iteration counts.
       character(len=256) :: msg
       character(len=160) :: line
       logical :: incr_now
@@ -229,14 +236,9 @@ contains
       real(dp) :: eold, drms, errmax
       integer :: nfrac
       logical :: diag_failed      !! this iteration's Fock diagonalisation (every rank's own copy)
-      integer :: diag_info        !! the failing spin's own pic_syev/cuSOLVER info
+      integer :: diag_info        !! the FIRST failing spin's own eigensolver info, kept across the spin loop
+      integer :: info_s           !! this spin's own raw info from the call just made
       real(dp) :: diag_flag(2)    !! [0.0/1.0 failed, info], broadcast from root the same way `ctl` is
-      !! This iteration's share of the two totals, so the table says where
-      !! the time went while it is going rather than only at the end. A
-      !! Fock build is not the same cost twice: the SAD guess is atomic, so
-      !! density screening throws nearly all of iteration 1 away, and the
-      !! per-iteration cost then climbs to a plateau. Comparing two runs by
-      !! total/iterations is therefore only valid at equal iteration counts.
 
       ! Everything `scf_options` resolves to before the loop starts: the functional
       ! lookup and its rejections, the spin rule, the by-spin damping/DIIS
@@ -310,16 +312,18 @@ contains
          scf_result%dmat = dguess
       else if (present(hguess)) then
          do s = 1, scf_config%nspin
-            call guess_from(hguess, scf_config%nocc(s), scf_result%dmat(:, :, s), diag_info)
-            if (diag_info /= 0) diag_failed = .true.
+            call guess_from(hguess, scf_config%nocc(s), scf_result%dmat(:, :, s), info_s)
+            if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
+            if (info_s /= 0) diag_failed = .true.
          end do
       else if (present(cmo_project)) then
          call project_density(linalg_provider, nao, scf_config%nspin, scf_config%nocc, cmo_project, &
                               scf_context%smat, scf_result%dmat)
       else if (scf_options%guess == "core") then
          do s = 1, scf_config%nspin
-            call guess_from(scf_context%hcore, scf_config%nocc(s), scf_result%dmat(:, :, s), diag_info)
-            if (diag_info /= 0) diag_failed = .true.
+            call guess_from(scf_context%hcore, scf_config%nocc(s), scf_result%dmat(:, :, s), info_s)
+            if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
+            if (info_s /= 0) diag_failed = .true.
          end do
       else
          ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
@@ -330,8 +334,9 @@ contains
             scf_state%w1(j, j) = scf_context%hcore(j, j)
          end do
          do s = 1, scf_config%nspin
-            call guess_from(scf_state%w1, scf_config%nocc(s), scf_result%dmat(:, :, s), diag_info)
-            if (diag_info /= 0) diag_failed = .true.
+            call guess_from(scf_state%w1, scf_config%nocc(s), scf_result%dmat(:, :, s), info_s)
+            if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
+            if (info_s /= 0) diag_failed = .true.
          end do
       end if
       ! A diagonalisation failure in the INITIAL guess (core/GWH/a supplied
@@ -342,7 +347,7 @@ contains
       ! TRC_ERR_NOCONV -- this never started, rather than failed to finish).
       if (diag_failed) then
          scf_result%message = "trc_scf: the initial guess's own diagonalisation did not converge "// &
-                              "(pic_syev info="//to_string(diag_info)//")"
+                              "(eigensolver info="//to_string(diag_info)//")"
          call scf_context%release()
          return
       end if
@@ -485,8 +490,13 @@ contains
             do s = 1, scf_config%nspin
                call orbitals_and_density(scf_state%fock(:, :, s), scf_config%nocc(s), scf_options%frac_occ, &
                                          scf_state%w1, scf_state%w2, scf_result%eps(:, s), scf_result%cmo(:, :, s), &
-                                         scf_result%dmat(:, :, s), scf_state%ofrac, diag_info)
-               if (diag_info /= 0) diag_failed = .true.
+                                         scf_result%dmat(:, :, s), scf_state%ofrac, info_s)
+               ! The FIRST failing spin's own info, not whichever spin ran
+               ! last: an unrestricted run that fails on alpha and then
+               ! succeeds on beta must still report alpha's own info, not
+               ! overwrite it with beta's 0.
+               if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
+               if (info_s /= 0) diag_failed = .true.
             end do
             if (.not. diag_failed .and. .not. diis_on .and. .not. adiis_active) then
                call damp(nao, scf_config%nspin, scf_options%damp, scf_state%dold, scf_result%dmat)
@@ -517,7 +527,7 @@ contains
             ! (TRC_ERR_UNSUPPORTED) path -- the SAME two fields, and the
             ! SAME mapping, an ordinary non-converged run already uses.
             scf_result%message = "trc_scf: the Fock-matrix diagonalisation did not converge "// &
-                                 "(pic_syev info="//to_string(diag_info)//")"
+                                 "(eigensolver info="//to_string(diag_info)//")"
             scf_result%iterations = it
             exit
          end if
