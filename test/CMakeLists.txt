@@ -557,6 +557,7 @@ terco_add_check(check_xc_grad_fd check_xc_grad_fd.F90 NEEDS_BASIS)
 # LONG: over half of the whole suite's time (1091 of 1973 s on a gcc-15 CI
 # runner, 1920 s on a slow one), so pull requests skip it (`ctest -LE LONG`)
 # and the nightly scheduled CI run on main runs it with everything else.
+# scf_robust, scf_dh and check_df_grad_fd are LONG for the same reason.
 set_tests_properties(terco/check_xc_grad_fd PROPERTIES LABELS LONG)
 
 # The VV10 gradient's own formula, isolated from the SCF entirely: a
@@ -901,7 +902,9 @@ endforeach()
 # Richardson central finite difference of terco's own reconverged --df energy
 # -- RHF, RKS PBE, RKS B3LYP on water/6-31G*, see check_df_grad_fd.F90.
 terco_add_check(check_df_grad_fd check_df_grad_fd.F90 NEEDS_BASIS)
-set_tests_properties(terco/check_df_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# LONG: ~80 s on a gcc-15 CI runner; the nightly run keeps it (see
+# check_xc_grad_fd above), check_df_grad_fd_formamide runs on every PR.
+set_tests_properties(terco/check_df_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
 # The same, RHF on formamide/cc-pVDZ (cond(M) = 8.6e13), independent of
 # pyscf: ~25 s on 4 CPU cores.
 add_test(NAME terco/check_df_grad_fd_formamide COMMAND check_df_grad_fd formamide)
@@ -1109,7 +1112,8 @@ target_include_directories(scf_robust PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_robust COMMAND scf_robust)
 set_tests_properties(
   terco/scf_robust PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                              ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+                              ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+                              LABELS LONG)   # ~210 s on a gcc-15 CI runner; nightly only
 
 # The SAD guess read from mqc's JSON blocks, against terco's own start.
 add_executable(scf_sad scf_sad.F90)
@@ -1286,7 +1290,8 @@ target_include_directories(scf_dh PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_dh COMMAND scf_dh)
 set_tests_properties(
   terco/scf_dh PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+                          LABELS LONG)   # ~130-150 s on a gcc-15 CI runner; nightly only
 
 # SPHERICAL-basis RI-MP2 and `--df`: restricted RI-MP2 (water, formamide,
 # cc-pVDZ + cc-pVDZ-RIFIT), unrestricted RI-MP2 (OH, from a fixed initial
@@ -1503,6 +1508,10 @@ if(Python3_FOUND)
   terco_add_golden(scf_mgga scf_mgga)
   terco_add_golden(scf_df scf_df)
   terco_add_golden(scf_robust scf_robust)
+  # LONG with scf_robust: ctest pulls a fixture's setup test back into any
+  # run that selects a test requiring it, so an unlabelled golden check
+  # would run scf_robust under -LE LONG anyway.
+  set_tests_properties(terco/golden/scf_robust PROPERTIES LABELS LONG)
   terco_add_golden(scf_rimp2 scf_rimp2)
   terco_add_golden(scf_rimp2_ccpvdz scf_rimp2_ccpvdz)
   foreach(set main f)
