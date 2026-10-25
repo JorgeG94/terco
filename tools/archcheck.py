@@ -5,6 +5,7 @@
     python3 tools/archcheck.py --all               # list every violation
     python3 tools/archcheck.py --rule short-name   # one rule only
     python3 tools/archcheck.py --summary           # counts per rule
+    python3 tools/archcheck.py --score             # the code score, by rule and file
     python3 tools/archcheck.py --update-baseline   # accept the current state
 
 Rules (thresholds and word lists are the constants below):
@@ -62,6 +63,22 @@ EXEMPT = ("src/xc/functionals/",)
 RE_DECL = re.compile(
     r"^\s*(?:integer|real|logical|complex|character|double\s+precision|"
     r"type\s*\(|class\s*\(|procedure\s*\()", re.I)
+
+
+# Debt points per violation. Lower is better; zero means clean. Weights say
+# what hurts most: a layering leak costs ten renames. Length and argument
+# count grow with how far past the limit they are (arguments capped at 30
+# points per procedure).
+WEIGHTS = {"layer-up": 10, "module-prefix": 5, "proc-prefix": 1,
+           "short-name": 1}
+
+
+def points(v):
+    if v.rule == "arg-count":
+        return min(2 * (v.measure - MAX_ARGS), 30)  # capped: one giant callback is not 150 points
+    if v.rule == "proc-length":
+        return 5 + (v.measure - MAX_PROC_LINES) // 10
+    return WEIGHTS[v.rule]
 
 
 class Violation:
@@ -281,6 +298,9 @@ def main():
     ap.add_argument("--all", action="store_true", help="list every violation")
     ap.add_argument("--rule", action="append", help="only this rule (repeatable)")
     ap.add_argument("--summary", action="store_true", help="counts per rule")
+    ap.add_argument("--score", action="store_true",
+                    help="debt points by rule and by file")
+    ap.add_argument("--top", type=int, default=12, help="files shown by --score")
     ap.add_argument("--update-baseline", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -300,6 +320,21 @@ def main():
     gone = [k for k in base if k not in {v.key for v in found}
             and (not a.rule or k.split("|")[0] in a.rule)]
 
+    if a.score:
+        by_rule, by_file = Counter(), Counter()
+        for v in found:
+            by_rule[v.rule] += points(v)
+            by_file[v.path] += points(v)
+        total = sum(by_rule.values())
+        print(f"code score: {total} debt points (0 is clean)\n")
+        print(f"{'rule':<14}{'violations':>11}{'points':>8}{'share':>7}")
+        counts = Counter(v.rule for v in found)
+        for rule, pts in by_rule.most_common():
+            print(f"{rule:<14}{counts[rule]:>11}{pts:>8}{100 * pts // max(total, 1):>6}%")
+        print(f"\n{'worst files':<46}{'points':>7}")
+        for path, pts in by_file.most_common(a.top):
+            print(f"{path:<46}{pts:>7}")
+        return 0
     if a.json:
         print(json.dumps([vars(v) for v in (found if a.all else new)], indent=1))
     elif a.summary:

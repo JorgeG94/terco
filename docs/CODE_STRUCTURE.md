@@ -156,6 +156,23 @@ exempt from every rule except `layer-up`. `SHORT_NAMES`, the limits and the
 exempt paths are constants at the top of the script: change them there and
 update the table in section 3 in the same PR.
 
+## 7. The code score
+
+`python3 tools/archcheck.py --score` adds up debt points. Lower is better and
+zero is clean. It shows the total, points per rule and the worst files, so
+you can pick a target and watch the number fall.
+
+| Violation | Points |
+|---|---|
+| `layer-up` | 10 each |
+| `module-prefix` | 5 each |
+| `proc-length` | 5, plus 1 per 10 lines over 300 |
+| `arg-count` | 2 per argument over 8, at most 30 per procedure |
+| `proc-prefix`, `short-name` | 1 each |
+
+Weights are the `WEIGHTS` table and `points()` in the script. A PR that
+lowers the score says so in its description (`score: 2693 -> 2540`).
+
 `tools/modmap.py` is the exploration side:
 
 ```sh
