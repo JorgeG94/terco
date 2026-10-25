@@ -384,40 +384,6 @@ contains
       ! converge" alone is not treated as a failure for a climbing run --
       ! only a genuine crash (--json/log never written at all) is.
       call grep_contains(wdir//'/'//out_name, 'Convergence reached', conv_reached)
-      if (.not. conv_reached) then
-         ! A single retry, not a quiet pass: libdlfind's own
-         ! dlf_neb_init (dlf_neb.f90:278) Kabsch-aligns the via/product
-         ! frame against the start geometry on EVERY run, even with
-         ! these FROZEN, committed endpoints (dlf_cartesian_align,
-         ! dlf_coords.f90:1474, diagonalising a 3x3 matrix in
-         ! dlf_hdlc_matrixlib.f90's array_diagonalise). HCN and HNC are
-         ! both linear, so that matrix is RANK-DEFICIENT -- measured
-         ! directly (gdb on a -finit-real=snan/-ffpe-trap=invalid debug
-         ! build, which traps right here with a SIGFPE inside MKL's own
-         ! dsyev): eigenvalues 3.183, 2.9e-14, 2.2e-16, i.e. a doubly
-         ! degenerate near-zero pair. Any orthonormal basis of that 2-D
-         ! null space is an equally valid eigenvector pair, so WHICH one
-         ! the eigensolver returns is decided by floating-point noise at
-         ! the 1e-14 level, not geometry -- and that noise floor is
-         ! measured to shift under genuine external CPU/MKL contention
-         ! (reproduced: identical 15/15 under no load or synthetic busy-
-         ! loop load, but one ctest -j4 run with three other MKL-heavy
-         ! SCF tests running at the same moment hit exactly this: the
-         ! FIRST of two back-to-back, otherwise-identical runs failed to
-         ! reach DL-FIND's own convergence inside --opt-maxiter, the
-         ! second did). That is libdlfind's own numerical fragility
-         ! (read-only fork at /home/jorge/dev/libdlfind-fork), not a
-         ! terco bug and not one to patch here -- this chaotic 3-atom
-         ! system already tips the same way for --opt-connect's dimer
-         ! rotation (this file's own header). A bounded, logged retry is
-         ! the honest mitigation: it still requires DL-FIND's own
-         ! "Convergence reached" eventually, just not necessarily on the
-         ! unlucky draw.
-         print '(a)', '  (retry) '//out_name//': DL-FIND did not report convergence on the first '// &
-            'attempt -- rerunning once (see run_neb''s own comment)'
-         call execute_command_line(cmd2, exitstat=rc2, wait=.true.)
-         call grep_contains(wdir//'/'//out_name, 'Convergence reached', conv_reached)
-      end if
       call ref_report(nf, conv_reached, &
                       'check_opt_neb: DL-FIND''s own NEB climbing-image convergence test passed ('//out_name// &
                       ')', 0.0_dp)
