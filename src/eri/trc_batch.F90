@@ -34,6 +34,7 @@
 module trc_batch
    use pic_types, only: dp
    use pic_logger, only: global_logger
+   use pic_timer, only: timer_type
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX, LTOT, NHERM_MAX, NHERM_PAIR, nherm, tables_init, &
                            hidx, hdir, hm1, hm2, hcf, nherm_of, &
@@ -112,7 +113,7 @@ contains
       real(dp) :: ra(3), rb(3), pc(3)
       real(dp) :: e1(0:LMAX, 0:LMAX, 0:2*LMAX)
       real(dp) :: rab2, amp, cut
-      integer :: bp_c0, bp_c1, bp_rate
+      type(timer_type) :: bp_tm
       logical :: bp_t
       character(len=8) :: bp_env
 
@@ -144,7 +145,7 @@ contains
       bp_env = " "
       call get_environment_variable("TRC_BUILD_TIMING", bp_env)
       bp_t = len_trim(bp_env) > 0
-      call system_clock(bp_c0, bp_rate)
+      call bp_tm%start()
       cut = thresh*1.0e-3_dp
       npp = 0
       do i = 1, nbas
@@ -171,14 +172,13 @@ contains
       end do
 
       if (bp_t) then
-         call system_clock(bp_c1)
          block
             character(len=1024) :: logline
             write (logline, "(a,f9.3,a,i0,a,i0)") "    [pairs] count   ", &
-               real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s   npp ", npp, "  ne ", NE_PAIR
+               bp_tm%get_elapsed_time(), " s   npp ", npp, "  ne ", NE_PAIR
             call global_logger%performance(trim(logline))
          end block
-         bp_c0 = bp_c1
+         call bp_tm%start()
       end if
       allocate (pp_p(npp), pp_r(npp, 3), pp_c(npp), pp_e(npp, NE_PAIR))
       ! pp_e is deliberately NOT zeroed. It is npp x 135 doubles -- six
@@ -189,13 +189,12 @@ contains
       ! on the same three component powers. If that guard is ever removed the
       ! zeroing has to come back.
       if (bp_t) then
-         call system_clock(bp_c1)
          block
             character(len=1024) :: logline
-            write (logline, "(a,f9.3,a)") "    [pairs] alloc   ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
+            write (logline, "(a,f9.3,a)") "    [pairs] alloc   ", bp_tm%get_elapsed_time(), " s"
             call global_logger%performance(trim(logline))
          end block
-         bp_c0 = bp_c1
+         call bp_tm%start()
       end if
 
       do i = 1, nbas
@@ -242,10 +241,9 @@ contains
          end do
       end do
       if (bp_t) then
-         call system_clock(bp_c1)
          block
             character(len=1024) :: logline
-            write (logline, "(a,f9.3,a)") "    [pairs] fill    ", real(bp_c1 - bp_c0, dp)/real(bp_rate, dp), " s"
+            write (logline, "(a,f9.3,a)") "    [pairs] fill    ", bp_tm%get_elapsed_time(), " s"
             call global_logger%performance(trim(logline))
          end block
       end if

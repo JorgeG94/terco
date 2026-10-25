@@ -26,6 +26,7 @@
 !
 program bench_many
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_eri, only: trc_eri_t
    use trc_test_basis, only: read_xyz
@@ -45,7 +46,8 @@ program bench_many
    type(trc_basis_t)    :: bas
    type(trc_pairlist_t) :: pl
    type(trc_eri_t)      :: eri
-   real(dp) :: t0, t1, t_one, t_many, worst
+   real(dp) :: t1, t_one, t_many, worst
+   type(timer_type) :: tm
 
    nmax = 16; thresh = 1.0e-10_dp
    if (command_argument_count() < 2) then
@@ -103,17 +105,17 @@ program bench_many
       end do
 
       call eri%fock_many(bas, n, dmats, gmany)      ! warm
-      call tick(t0)
+      call tm%start()
       call eri%fock_many(bas, n, dmats, gmany)
-      call tick(t1)
-      t_many = t1 - t0
+      t1 = tm%get_elapsed_time()
+      t_many = t1
 
-      call tick(t0)
+      call tm%start()
       do d = 1, n
          call eri%fock(bas, dmats(d, :, :), gone)
       end do
-      call tick(t1)
-      t_one = t1 - t0
+      t1 = tm%get_elapsed_time()
+      t_one = t1
 
       ! and the batch must agree with the loop, set by set
       worst = 0.0_dp
@@ -136,12 +138,6 @@ program bench_many
 
 contains
 
-   subroutine tick(t)
-      real(dp), intent(out) :: t
-      integer(int64) :: c, rate
-      call system_clock(c, rate)
-      t = real(c, dp)/real(rate, dp)
-   end subroutine tick
 
    subroutine read_density(fn, nao, d)
       character(len=*), intent(in) :: fn

@@ -81,6 +81,7 @@
 ! (F2018 19.2); gfortran silently resolves the call to the wrong thing.
 module trc_rimp2_driver
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
@@ -171,7 +172,7 @@ contains
       logical, intent(in), optional :: verbose   !! one line per step with its wall time, rank 0
       type(df_jk_t), intent(in), optional, target :: dfjk
 
-      real(dp) :: tw0, tw1
+      type(timer_type) :: tw0, tw1
       logical :: talk, chained
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
@@ -193,7 +194,7 @@ contains
       integer :: npr
       real(dp) :: e_os, e_ss
       real(dp) :: es(2)
-      real(dp) :: tc
+      type(timer_type) :: tc
       type(step_table_t) :: stab
       logical :: dense_mask(NSTEP)
       integer(int64) :: nv8, nao8, naux8
@@ -331,7 +332,8 @@ contains
       ! The metric and its factor run in full on every rank; the integrals are
       ! split by auxiliary shell.
       call stab%init("rimp2", STEP_NAME, replicated_steps=[ST_METRIC, ST_CHOL])
-      tw0 = tick(lp)
+      call lp%sync()
+      call tw0%start()
       ! --- 1. the metric and its Cholesky factor (skipped when chained) ----
       if (.not. chained) then
          allocate (jm(naux, naux))
@@ -355,7 +357,7 @@ contains
          if (talk) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,i0,a,f8.2,a)") "  rimp2: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+               write (logline, "(a,i0,a,f8.2,a)") "  rimp2: metric (", naux, ") and Cholesky ", since(lp, tw0), " s"
                call global_logger%performance(trim(logline))
             end block
          end if
@@ -493,7 +495,8 @@ contains
             end block
          end if
       end if
-      tw1 = tick(lp)
+      call lp%sync()
+      call tw1%start()
 
       ! --- 5. the pair energies, over the ring ------------------------------
       ! The visiting blocks need two buffers, the one in use and the one
@@ -624,7 +627,7 @@ contains
       if (talk) then
          block
             character(len=1024) :: logline
-            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2: pair energies ", since(lp, tw1), " s;  total ", since(lp, tw0), " s"
             call global_logger%performance(trim(logline))
          end block
          dense_mask = .false.
@@ -632,7 +635,7 @@ contains
          dense_mask(ST_TRANS) = .true.
          dense_mask(ST_TRSM) = .true.
          dense_mask(ST_KGEMM) = .true.
-         call stab%report(tick(lp) - tw0, rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
+         call stab%report(since(lp, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
       end if
       res%e_os = e_os
       res%e_ss = e_ss
@@ -753,7 +756,7 @@ contains
       type(comm_t), intent(in), optional :: comm
       logical, intent(in), optional :: verbose
 
-      real(dp) :: tw0, tw1
+      type(timer_type) :: tw0, tw1
       logical :: talk
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
@@ -770,7 +773,8 @@ contains
       real(dp), allocatable :: ki_bb(:, :), kt_bb(:, :), part_bb(:)
       real(dp), allocatable :: ki_ab(:, :), part_ab(:)
       real(dp), allocatable :: eo_a(:), ev_a(:), eo_b(:), ev_b(:)
-      real(dp) :: e_aa, e_bb, e_ab, tc
+      real(dp) :: e_aa, e_bb, e_ab
+      type(timer_type) :: tc
       type(step_table_t) :: stab
       logical :: dense_mask(NSTEP)
       integer(int64) :: nao8, naux8, nva8, nvb8, noa8, nob8, novr_a8, novr_b8
@@ -844,7 +848,8 @@ contains
       talk = .false.
       if (present(verbose)) talk = verbose .and. rank == 0
       call stab%init("rimp2u", STEP_NAME)
-      tw0 = tick(lp)
+      call lp%sync()
+      call tw0%start()
 
       ! --- 1. the metric and its Cholesky factor (spin-independent) --------
       allocate (jm(naux, naux))
@@ -868,7 +873,7 @@ contains
       if (talk) then
          block
             character(len=1024) :: logline
-            write (logline, "(a,i0,a,f8.2,a)") "  rimp2u: metric (", naux, ") and Cholesky ", tick(lp) - tw0, " s"
+            write (logline, "(a,i0,a,f8.2,a)") "  rimp2u: metric (", naux, ") and Cholesky ", since(lp, tw0), " s"
             call global_logger%performance(trim(logline))
          end block
       end if
@@ -969,7 +974,8 @@ contains
             call global_logger%performance(trim(logline))
          end block
       end if
-      tw1 = tick(lp)
+      call lp%sync()
+      call tw1%start()
 
       ! --- 5a/5b. the like-spin pair energies, restricted's own triangle ---
       allocate (eo_a(noa), ev_a(nva), eo_b(nob), ev_b(nvb))
@@ -1078,7 +1084,7 @@ contains
       if (talk) then
          block
             character(len=1024) :: logline
-            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2u: pair energies ", tick(lp) - tw1, " s;  total ", tick(lp) - tw0, " s"
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2u: pair energies ", since(lp, tw1), " s;  total ", since(lp, tw0), " s"
             call global_logger%performance(trim(logline))
          end block
          dense_mask = .false.
@@ -1086,7 +1092,7 @@ contains
          dense_mask(ST_TRANS) = .true.
          dense_mask(ST_TRSM) = .true.
          dense_mask(ST_KGEMM) = .true.
-         call stab%report(tick(lp) - tw0, rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
+         call stab%report(since(lp, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
       end if
       res%e_os = e_ab
       res%e_ss = e_aa + e_bb
@@ -1094,22 +1100,17 @@ contains
       if (.not. present(la)) call la_own%release()
    end subroutine trc_urimp2_run
 
-   function wall() result(t)
-      real(dp) :: t
-      integer(int64) :: cc, rate
-      call system_clock(cc, rate)
-      t = real(cc, dp)/real(rate, dp)
-   end function wall
-
    !
-   ! The clock after everything queued on the device has finished.
+   ! The time `tm` has run, read after everything queued on the device has
+   ! finished.
    !
-   function tick(lp) result(t)
+   function since(lp, tm) result(t)
       type(trc_linalg_t), intent(in) :: lp
+      type(timer_type), intent(in) :: tm
       real(dp) :: t
       call lp%sync()
-      t = wall()
-   end function tick
+      t = tm%get_elapsed_time()
+   end function since
 
    !
    ! Occupied orbitals per K GEMM. One i gives cuBLAS nvir rows, which it
