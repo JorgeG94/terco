@@ -1346,9 +1346,12 @@ add_executable(link_c link_c.c)
 add_dependencies(link_c ${main_lib})
 target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
-# A C main has to be linked with the OpenACC multicore runtime itself: without
-# it the energy comes back as the nuclear repulsion alone (9.19 for water).
-if(TERCO_ENABLE_MULTICORE)
+# With nvc as the C compiler, a C main has to be linked with the OpenACC
+# multicore runtime itself: without -acc=multicore the energy comes back as
+# the nuclear repulsion alone (9.19 for water). Any other C compiler gets the
+# runtime through libterco.so's own NEEDED entries (libacchost, libnvomp, ...)
+# and would reject the flag; gcc 13 links and passes without it.
+if(TERCO_ENABLE_MULTICORE AND CMAKE_C_COMPILER_ID STREQUAL "NVHPC")
   target_link_options(link_c PRIVATE -acc=multicore)
 endif()
 set_target_properties(link_c PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:${main_lib}>")
