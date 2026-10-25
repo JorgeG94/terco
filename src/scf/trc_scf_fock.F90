@@ -62,7 +62,7 @@ contains
       logical, intent(in) :: incr_now
       !! This iteration builds G from the density difference (the caller's
       !! schedule: `incr_on`, the commutator below `incr_start`, not a reset).
-      call build_g_arrays(scf_basis, scf_context%eri, scf_context%nao_c, scf_config%nspin, &
+      call build_g_arrays(scf_basis, scf_context%pec%eri, scf_context%nao_c, scf_config%nspin, &
                           size(scf_state%dtot_c, 1), size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), &
                           incr_now, scf_config%incr_on, &
                           scf_config%exx, scf_config%exx_lr, scf_config%omega, scf_config%incr_scale_run, &
@@ -291,10 +291,10 @@ contains
       type(comm_t), intent(in), optional :: comm
       ! An absent `comm` passes through as absent: one rank, unsplit.
       if (scf_config%nspin == 1) then
-         call scf_context%pcm%operator(scf_basis, scf_context%pl, scf_state%d_c(:, :, 1), scf_state%vpcm_c, &
+         call scf_context%pcm%operator(scf_basis, scf_context%pec%pl, scf_state%d_c(:, :, 1), scf_state%vpcm_c, &
                                        scf_energies%pcm, comm)
       else
-         call scf_context%pcm%operator(scf_basis, scf_context%pl, scf_state%dtot_c, scf_state%vpcm_c, &
+         call scf_context%pcm%operator(scf_basis, scf_context%pec%pl, scf_state%dtot_c, scf_state%vpcm_c, &
                                        scf_energies%pcm, comm)
       end if
       call to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, scf_state%vpcm_c, scf_state%vpcm)
