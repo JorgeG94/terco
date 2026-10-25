@@ -319,7 +319,7 @@ contains
       n_modes = ndof - k_tr
 
       allocate (p_mat(ndof, ndof))
-      ! matmul is ok here since this is not a bottleneck 
+      ! matmul is ok here since this is not a bottleneck
       ! P = I - u_tr u_tr^T, the projector onto the orthogonal complement of u_tr
       ! Its eigenvalues are 0 (for u_tr) and 1 (for the complement)
       p_mat = -matmul(u_tr, transpose(u_tr))
@@ -342,7 +342,7 @@ contains
       end do
       nfound = j
       ! in theory we can rely on them being deallocated, but let's be good
-      deallocate(p_mat, eigval) 
+      deallocate(p_mat, eigval)
    end subroutine trc_vib_complement_basis
 
    !

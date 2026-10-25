@@ -94,7 +94,7 @@ module trc_linalg
 
 contains
 
-   
+
    subroutine linalg_init(this, n)
     !! Handles, the solver's workspace for an n x n eigenproblem, and the
     !! library streams set to the OpenACC synchronous queue so a kernel that

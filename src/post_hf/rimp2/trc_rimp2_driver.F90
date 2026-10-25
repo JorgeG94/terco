@@ -138,7 +138,7 @@ module trc_rimp2_driver
       real(dp) :: e_os = 0.0_dp     !! opposite-spin pair energy
       real(dp) :: e_ss = 0.0_dp     !! same-spin pair energy
       real(dp) :: e_corr = 0.0_dp   !! E_os + E_ss
-      integer :: naux = 0, nocc = 0, nvir = 0 !! number of auxiliary, occupied, and virtual orbitals
+      integer :: naux = 0, nocc = 0, nvir = 0  !! number of auxiliary, occupied, and virtual orbitals
       character(len=200) :: message = ""
    end type trc_rimp2_result_t
 
