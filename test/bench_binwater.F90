@@ -540,6 +540,7 @@ contains
    subroutine tick(tt)
       real(dp), intent(out) :: tt
       integer(int64) :: c, rate
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(c, rate)
       tt = real(c, dp)/real(rate, dp)
    end subroutine tick

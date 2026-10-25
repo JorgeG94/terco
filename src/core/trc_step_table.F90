@@ -130,6 +130,7 @@ contains
       real(dp) :: t
       integer(int64) :: cc, rate
       call lp%sync()
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(cc, rate)
       t = real(cc, dp)/real(rate, dp)
    end function tick

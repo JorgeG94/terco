@@ -229,6 +229,7 @@ contains
    subroutine tick(t)
       real(dp), intent(out) :: t
       integer(int64) :: c, rate
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(c, rate)
       t = real(c, dp)/real(rate, dp)
    end subroutine tick

@@ -277,8 +277,10 @@ contains
       integer(int64) :: cc, rate
 
       call read_xyz('gly10.xyz', nat, z, coords)
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
       call build_dft_grid(coords, z, grid, err, level=3)
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
       if (err%has_error()) then
          call report(.false., "screening: gly10 grid builds")
@@ -288,6 +290,7 @@ contains
       allocate (w_full(n), p_full(n))
       call becke_partition_weights(grid%coords, coords, z, grid%atom, grid%scheme, grid%adjust, &
                                    p_full, err, nu_max=2.0_dp)
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(cc, rate); t2 = real(cc, dp)/real(rate, dp)
       w_full = grid%quad_weights*p_full
       dmax = maxval(abs(grid%weights - w_full))

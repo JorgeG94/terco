@@ -92,8 +92,10 @@ program scf_mpi
       if (command_argument_count() >= 4) then
          call get_command_argument(4, xyz_arg); read (xyz_arg, *) opts%damp
       end if
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
       call trc_scf_run(bas, nint(sum(at_z))/2, nint(sum(at_z))/2, opts, res, comm=comm)
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
       e(ic) = res%energy
       emax = e(ic); emin = e(ic)

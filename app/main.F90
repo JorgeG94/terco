@@ -686,6 +686,7 @@ program terco_main
    r%nranks = r%wcomm%size()
    r%rank0 = r%wcomm%leader()
 
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(r%t0, r%rate)
 
    ! ---- the interface ---------------------------------------------------
@@ -1058,6 +1059,7 @@ program terco_main
       r%hess_ok = .true.
    end if
 
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(r%t1)
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)

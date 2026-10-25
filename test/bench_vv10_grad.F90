@@ -66,8 +66,10 @@ program bench_vv10_grad
    opts%functional = 'wb97x-v'
    opts%grid_level = 3
    opts%conv_energy = 1.0e-10_dp; opts%conv_diis = 1.0e-8_dp; opts%max_iter = 100
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
    call trc_scf_run(bas, nalpha, nbeta, opts, res)
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
    if (.not. res%converged) then
       print '(a)', 'bench_vv10_grad: SCF did not converge'; stop 1
@@ -85,17 +87,21 @@ program bench_vv10_grad
    allocate (grad_full(3, nat), grad_novv10(3, nat))
    call lp%init(bas%nao)
 
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
    call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_full, &
                          func=func, grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, &
                          rho_tol=opts%rho_tol, nlc_grid_level=opts%nlc_grid_level)
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
    t_full = t1 - t0
 
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
    call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_novv10, &
                          func=func_novv10, grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, &
                          rho_tol=opts%rho_tol, nlc_grid_level=opts%nlc_grid_level)
+   ! TODO(fix): system_clock -> pic_timer timer_type
    call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
    t_novv10 = t1 - t0
 

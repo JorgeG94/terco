@@ -144,6 +144,7 @@ contains
       bp_env = " "
       call get_environment_variable("TRC_BUILD_TIMING", bp_env)
       bp_t = len_trim(bp_env) > 0
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(bp_c0, bp_rate)
       cut = thresh*1.0e-3_dp
       npp = 0
@@ -171,6 +172,7 @@ contains
       end do
 
       if (bp_t) then
+         ! TODO(fix): system_clock -> pic_timer timer_type
          call system_clock(bp_c1)
          block
             character(len=1024) :: logline
@@ -189,6 +191,7 @@ contains
       ! on the same three component powers. If that guard is ever removed the
       ! zeroing has to come back.
       if (bp_t) then
+         ! TODO(fix): system_clock -> pic_timer timer_type
          call system_clock(bp_c1)
          block
             character(len=1024) :: logline
@@ -242,6 +245,7 @@ contains
          end do
       end do
       if (bp_t) then
+         ! TODO(fix): system_clock -> pic_timer timer_type
          call system_clock(bp_c1)
          block
             character(len=1024) :: logline

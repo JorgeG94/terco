@@ -429,6 +429,7 @@ contains
       talk = .false.
       if (present(verbose)) talk = verbose
       hsap = 0.0_dp
+      ! TODO(fix): system_clock -> pic_timer timer_type
       call system_clock(c0, crate)
 
       ! --- the free atoms, and their ranges -------------------------------
@@ -538,6 +539,7 @@ contains
          character(len=8) :: e
          e = " "
          call get_environment_variable("TRC_BUILD_TIMING", e)
+         ! TODO(fix): system_clock -> pic_timer timer_type
          call system_clock(c1)
          if (len_trim(e) > 0) then
             block
