@@ -69,7 +69,7 @@
       !! exactly for S/T (translational invariance) by just being added to
       !! the same atom, with no special case needed.
       !$acc routine seq
-      integer,  intent(in) :: ii, jj, ij, nshell, nao, natm, maxnp
+      integer,  value      :: ii, jj, ij, nshell, nao, natm, maxnp
       integer,  intent(in) :: sh_l(nshell), sh_np(nshell), sh_ao(nshell), sh_at(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
       real(dp), intent(in) :: sh_r(3, nshell)

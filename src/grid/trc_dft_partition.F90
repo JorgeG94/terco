@@ -729,7 +729,7 @@ contains
       !$acc      create(ract, cell, active, sig)
       do k0 = 1, n_points, chunk
          n = min(chunk, n_points - k0 + 1)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
          do concurrent(g=1:n)
             call partition_grad_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                       coef, shift, inv_distance, r_min, scheme, adjust, numax, &

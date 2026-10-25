@@ -773,7 +773,7 @@ contains
       integer :: t, au, av
       real(dp) :: acc_a
 
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       do concurrent(t=1:npairs) local(au, av, acc_a)
          call xc_resp_scatter_body(t, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
                                    au, av, acc_a)
@@ -1304,7 +1304,7 @@ contains
       ! is arranged the same way.
       ! Two complete loops rather than one with its header under #ifdef:
       ! the locality lint reads the source before the preprocessor does.
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       do concurrent(t=1:npairs) local(au, av, acc_a, acc_b)
          call xc_scatter_body(t, nb, ord, pb_off, nspin, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
                               au, av, acc_a, acc_b)
