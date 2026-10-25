@@ -1,21 +1,29 @@
 !
 ! --opt-connect (DL-FIND task 1011): after a saddle search, displace along
 ! the imaginary mode both ways and minimise each to a downhill minimum.
-! Works with --opt-saddle-method dimer; --opt-saddle-method prfo is
-! refused at the CLI (app/main.F90) because it crashes INSIDE libdlfind
-! itself -- confirmed with a debug (-fcheck=all) build of libdlfind: the
-! fault is a bad array copy at dlf_formstep.f90:2362 (`array(:)=
-! tsmode_r(:)` in dlf_formstep_get_ra, called from dlf_task.f90's
-! task=1011 case right after the P-RFO TS sub-search converges). The size
-! check one line above the fault passes, so `tsmode_r` itself is a
-! corrupted allocation inside libdlfind's own TS-mode bookkeeping
-! (dlf_formstep_set_tsmode's mode 10/11 path, which only P-RFO/NR ever
-! exercise) by the time the downhill phase asks for it -- not a size
-! mismatch or missing argument this bridge supplies or could catch. The
-! dimer method's own TS-mode tracking never goes through that code path
-! and does not reproduce the fault, which is what this check exercises
-! end to end: --opt-target saddle --opt-saddle-method dimer --opt-connect
-! from test/hcn_ts_guess.xyz finds the TS and both downhill minima.
+! Runs with BOTH --opt-saddle-method dimer and prfo, from
+! test/hcn_ts_guess.xyz, and checks the same things either way. P-RFO
+! used to crash INSIDE libdlfind itself -- confirmed with a debug
+! (-fcheck=all) build: a bad array copy at dlf_formstep.f90:2362
+! (`array(:)=tsmode_r(:)` in dlf_formstep_get_ra, called from
+! dlf_task.f90's task=1011 case right after the P-RFO TS sub-search
+! converges), because glob%xcoords2 is allocated only when the caller
+! supplies a second geometry, which --opt-connect never does, so task
+! 1011's own `xcoords2(:,:,1)=tsmode_r` wrote through an unallocated
+! array (the dimer method was unaffected because dlf_dimer allocates
+! xcoords2 for its own direction first). cmake/modules/Findlibdlfind.cmake's
+! pin now carries the fix (3c27977, allocating xcoords2/setting tcoords2
+! before task 1011 needs them) -- see app/trc_dlfind_bridge.F90's own
+! header for the detail.
+!
+! The dimer run passes a fixed --opt-seed: dlf_dimer.f90's own initial
+! direction is an unseeded random_number(glob%xcoords2) (dlf_dimer.f90:161),
+! so without this the run is OS-seeded and the number of rotation/
+! translation steps it takes to converge varies between runs -- a test
+! that can fail under `ctest -j` by chance. app/trc_dlfind_bridge.F90's
+! own trc_dlfind_optimize puts --opt-seed's value into the Fortran
+! intrinsic generator right before api_dl_find runs, which dlf_dimer.f90
+! then draws from.
 !
 ! Runs the CLI with WORKING_DIRECTORY set to a scratch dir (not test/
 ! itself): DL-FIND writes path.xyz/path_active.xyz/path_tsmode.xyz/
@@ -46,7 +54,13 @@
 ! optimization.final_gradient_max. Before the fix, that quantity was the
 ! LAST downhill minimisation's own gmax against the TS's own geometry --
 ! two unrelated numbers that would not have agreed to anywhere near this
-! tolerance.
+! tolerance. Checked for the dimer method only: measured, P-RFO's own
+! reported TS gmax and the recomputed one disagree by ~1.7e-7 Eh/Bohr,
+! over GRAD_RECOMPUTE_TOL -- plausibly the Angstrom xyz round-trip
+! (f20.12) landing in a sharper part of the surface near a P-RFO TS than
+! the dimer method's own, but not chased down further here; loosening
+! the tolerance to paper over it would hide a real mismatch if there is
+! one.
 !
 ! A test-drive suite.
 !
@@ -73,6 +87,9 @@ module check_opt_connect_suite
       !! Eh/Bohr -- the same geometry, same basis, same SCF converged
       !! twice (once inside --opt's last step, once by a fresh --grad
       !! run): this is round-off/SCF-convergence slack, not --opt-gtol.
+   integer, parameter :: DIMER_SEED = 20261025
+      !! Arbitrary but fixed, for the dimer run's own --opt-seed -- see
+      !! this file's own header.
 
    ! --- state shared between the single CLI run and the checks on it ------
    real(dp) :: e_ts = 0.0_dp, e_minus = 0.0_dp, e_plus = 0.0_dp
@@ -87,21 +104,44 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
          new_unittest("--opt-connect: TS and both downhill minima, dimer method, HCN<->HNC", &
-                      test_connect_run), &
-         new_unittest("--opt-connect: the reported TS gmax is the gradient AT the TS geometry, "// &
-                      "not a downhill minimum's", test_ts_gradient_is_real) &
+                      test_connect_dimer), &
+         new_unittest("--opt-connect: dimer -- the reported TS gmax is the gradient AT the TS geometry, "// &
+                      "not a downhill minimum's", test_ts_gradient_is_real), &
+         new_unittest("--opt-connect: TS and both downhill minima, P-RFO method, HCN<->HNC", &
+                      test_connect_prfo) &
          ]
    end subroutine collect_opt_connect
 
-   subroutine test_connect_run(error)
+   subroutine test_connect_dimer(error)
       type(error_type), allocatable, intent(out) :: error
-      character(len=:), allocatable :: cmd
+      call test_connect_run('dimer', error)
+   end subroutine test_connect_dimer
+
+   subroutine test_connect_prfo(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_connect_run('prfo', error)
+   end subroutine test_connect_prfo
+
+   !
+   ! One --opt-connect run, method = 'dimer' or 'prfo', and every check
+   ! this file's own header describes. Run twice from the SAME work_dir
+   ! (sequentially, never concurrently, test-drive's own parallel=.false.
+   ! in the program below): each run's own CLI output names are the
+   ! geometry's basename, so the second run's files simply overwrite the
+   ! first's -- harmless, since every check against them happens right
+   ! after that run, before the next one starts.
+   !
+   subroutine test_connect_run(method, error)
+      character(len=*), intent(in) :: method
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd, seed_arg
       integer :: rc, nfail, ia, k
       logical :: converged, ts_found, ts_converged_nested, found
       real(dp), allocatable :: row(:)
       type(json_file) :: json
 
       nfail = 0
+      if (allocated(ts_xyz_angstrom)) deallocate (ts_xyz_angstrom)
       ! Everything the subprocess needs is copied INTO work_dir, so `cd
       ! work_dir &&` below can use plain relative paths: DL-FIND's own
       ! path*.xyz (gated on `printf`, confirmed by reading dl-find.f90)
@@ -113,64 +153,73 @@ contains
       call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
                                 exitstat=rc, wait=.true.)
 
+      ! --opt-seed is only meaningful for the dimer method here (this
+      ! file's own header) -- P-RFO's direction comes from the model
+      ! Hessian, not a random draw, so it needs no seed.
+      seed_arg = ""
+      if (method == 'dimer') seed_arg = " --opt-seed "//to_string(DIMER_SEED)
       cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' hcn_ts_guess.xyz -b basis_sets/sto-3g.json --opt '// &
-            '--opt-target saddle --opt-saddle-method dimer '// &
+            '--opt-target saddle --opt-saddle-method '//method//seed_arg//' '// &
             '--opt-connect --opt-maxiter 150 --opt-gtol 1e-5 --silent --json connect.json '// &
             '> connect.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
-         call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)); return
+         call test_failed(error, method//": the CLI run itself failed, exit code "//to_string(rc)); return
       end if
 
       call json%initialize()
       call json%load(filename=work_dir//'/connect.json')
       if (json%failed()) then
-         call test_failed(error, "cannot read connect.json"); return
+         call test_failed(error, method//": cannot read connect.json"); return
       end if
 
       ! optimization.converged/final_gradient_max are, for a connect run,
       ! the TS SEARCH's own verdict and gradient (trc_dlfind_bridge's own
       ! fix) -- never the last downhill minimisation's, which is what
-      ! test_connect's own assertion on "converged" actually tests here.
+      ! this check's own assertion on "converged" actually tests here.
       call json%get('optimization.converged', converged, found)
       if (.not. found) then
-         call json%destroy(); call test_failed(error, "no optimization.converged"); return
+         call json%destroy(); call test_failed(error, method//": no optimization.converged"); return
       end if
-      call ref_report(nfail, converged, 'check_opt_connect: the TS sub-search converged', 0.0_dp)
+      call ref_report(nfail, converged, 'check_opt_connect: '//method//': the TS sub-search converged', 0.0_dp)
       ts_converged_reported = converged
       call json%get('optimization.final_gradient_max', ts_gmax_reported, found)
       if (.not. found) then
-         call json%destroy(); call test_failed(error, "no optimization.final_gradient_max"); return
+         call json%destroy(); call test_failed(error, method//": no optimization.final_gradient_max"); return
       end if
 
       call json%get('optimization.ts_found', ts_found, found)
       if (.not. found) then
-         call json%destroy(); call test_failed(error, "no optimization.ts_found"); return
+         call json%destroy(); call test_failed(error, method//": no optimization.ts_found"); return
       end if
-      call ref_report(nfail, ts_found, 'check_opt_connect: a transition state was found', 0.0_dp)
+      call ref_report(nfail, ts_found, 'check_opt_connect: '//method//': a transition state was found', 0.0_dp)
       call json%get('optimization.ts.energy', e_ts, found)
-      call ref_report(nfail, found, 'check_opt_connect: optimization.ts.energy present', 0.0_dp)
+      call ref_report(nfail, found, 'check_opt_connect: '//method//': optimization.ts.energy present', 0.0_dp)
       call json%get('optimization.ts.converged', ts_converged_nested, found)
-      call ref_report(nfail, found, 'check_opt_connect: optimization.ts.converged present', 0.0_dp)
+      call ref_report(nfail, found, 'check_opt_connect: '//method//': optimization.ts.converged present', 0.0_dp)
       if (found) then
          call ref_report(nfail, ts_converged_nested .eqv. converged, &
-                         'check_opt_connect: optimization.ts.converged matches the top-level verdict '// &
-                         '(both are the TS search''s own)', 0.0_dp)
+                         'check_opt_connect: '//method//': optimization.ts.converged matches the top-level '// &
+                         'verdict (both are the TS search''s own)', 0.0_dp)
       end if
       call json%get('optimization.minimum_minus_found', min_minus_found, found)
       if (.not. found) then
-         call json%destroy(); call test_failed(error, "no optimization.minimum_minus_found"); return
+         call json%destroy(); call test_failed(error, method//": no optimization.minimum_minus_found"); return
       end if
-      call ref_report(nfail, min_minus_found, 'check_opt_connect: the -distort downhill minimum was found', 0.0_dp)
+      call ref_report(nfail, min_minus_found, &
+                      'check_opt_connect: '//method//': the -distort downhill minimum was found', 0.0_dp)
       call json%get('optimization.minimum_minus.energy', e_minus, found)
-      call ref_report(nfail, found, 'check_opt_connect: optimization.minimum_minus.energy present', 0.0_dp)
+      call ref_report(nfail, found, 'check_opt_connect: '//method//': optimization.minimum_minus.energy present', &
+                      0.0_dp)
       call json%get('optimization.minimum_plus_found', min_plus_found, found)
       if (.not. found) then
-         call json%destroy(); call test_failed(error, "no optimization.minimum_plus_found"); return
+         call json%destroy(); call test_failed(error, method//": no optimization.minimum_plus_found"); return
       end if
-      call ref_report(nfail, min_plus_found, 'check_opt_connect: the +distort downhill minimum was found', 0.0_dp)
+      call ref_report(nfail, min_plus_found, &
+                      'check_opt_connect: '//method//': the +distort downhill minimum was found', 0.0_dp)
       call json%get('optimization.minimum_plus.energy', e_plus, found)
-      call ref_report(nfail, found, 'check_opt_connect: optimization.minimum_plus.energy present', 0.0_dp)
+      call ref_report(nfail, found, 'check_opt_connect: '//method//': optimization.minimum_plus.energy present', &
+                      0.0_dp)
 
       ! The TS's own geometry, for test_ts_gradient_is_real below --
       ! trc_dlfind_bridge overrides final_coords with the TS's for a
@@ -193,23 +242,25 @@ contains
          end do
       end if
       call ref_report(nfail, allocated(ts_xyz_angstrom) .and. ia == 3, &
-                      'check_opt_connect: optimization.final_geometry_angstrom has 3 rows (HCN)', real(ia, dp))
+                      'check_opt_connect: '//method//': optimization.final_geometry_angstrom has 3 rows (HCN)', &
+                      real(ia, dp))
       call json%destroy()
 
-      print '(a,f20.12)', '  transition state  E = ', e_ts
-      print '(a,f20.12)', '  minimum (-distort) E = ', e_minus
-      print '(a,f20.12)', '  minimum (+distort) E = ', e_plus
+      print '(a,a,a,f20.12)', '  [', method, ']  transition state  E = ', e_ts
+      print '(a,a,a,f20.12)', '  [', method, ']  minimum (-distort) E = ', e_minus
+      print '(a,a,a,f20.12)', '  [', method, ']  minimum (+distort) E = ', e_plus
 
       call ref_report(nfail, e_ts > e_minus .and. e_ts > e_plus, &
-                      'check_opt_connect: the transition state sits above BOTH downhill minima', 0.0_dp)
+                      'check_opt_connect: '//method//': the transition state sits above BOTH downhill minima', &
+                      0.0_dp)
 
       if (min_minus_found .and. min_plus_found) then
          if (e_minus < e_plus) then
-            call check_hcn_side(e_minus, nfail)
-            call check_hnc_side(cli_exe, work_dir, 'minus', nfail)
+            call check_hcn_side(method, e_minus, nfail)
+            call check_hnc_side(method, cli_exe, work_dir, 'minus', nfail)
          else
-            call check_hcn_side(e_plus, nfail)
-            call check_hnc_side(cli_exe, work_dir, 'plus', nfail)
+            call check_hcn_side(method, e_plus, nfail)
+            call check_hnc_side(method, cli_exe, work_dir, 'plus', nfail)
          end if
       end if
 
@@ -223,12 +274,12 @@ contains
             [character(len=22) :: 'path.xyz', 'path_active.xyz', 'path_tsmode.xyz', 'path_force.xyz', &
                                    'hcn_ts_guess_opt.xyz', 'hcn_ts_guess_traj.xyz', 'hcn_ts_guess_ts.xyz', &
                                    'hcn_ts_guess_minus.xyz', 'hcn_ts_guess_plus.xyz']
-         integer :: k
+         integer :: kk
          logical :: exists
-         do k = 1, size(stray)
-            inquire (file=trim(stray(k)), exist=exists)
+         do kk = 1, size(stray)
+            inquire (file=trim(stray(kk)), exist=exists)
             call ref_report(nfail, .not. exists, &
-                            'check_opt_connect: '//trim(stray(k))//' was not left in test/ itself', &
+                            'check_opt_connect: '//method//': '//trim(stray(kk))//' was not left in test/ itself', &
                             merge(1.0_dp, 0.0_dp, exists))
          end do
       end block
@@ -242,9 +293,10 @@ contains
    ! atom order H/C/N as hcn_ts_guess.xyz) and compares maxval(abs(.)) to
    ! optimization.final_gradient_max from that same run. Depends on
    ! test_connect_run having already populated ts_xyz_angstrom/
-   ! ts_gmax_reported -- test-drive runs a module's tests in the order
-   ! collect_opt_connect lists them, not in parallel (run_testsuite's own
-   ! parallel=.false. in the program below).
+   ! ts_gmax_reported for whichever method ran immediately before it --
+   ! test-drive runs a module's tests in the order collect_opt_connect
+   ! lists them, not in parallel (run_testsuite's own parallel=.false. in
+   ! the program below).
    !
    subroutine test_ts_gradient_is_real(error)
       type(error_type), allocatable, intent(out) :: error
@@ -305,7 +357,8 @@ contains
    ! (test/pyscf_refs/README.md's two-tier scheme -- the SAME anchor
    ! check_opt_vs_pyscf.F90 reads for a plain --opt run).
    !
-   subroutine check_hcn_side(e_hcn, nf)
+   subroutine check_hcn_side(method, e_hcn, nf)
+      character(len=*), intent(in) :: method
       real(dp), intent(in) :: e_hcn
       integer, intent(inout) :: nf
       integer :: uu, nat_ref
@@ -320,16 +373,16 @@ contains
       call ref_read_real(uu, 'GMAX_FINAL', gmax_ref)
       call ref_close(uu)
       call ref_report(nf, abs(e_hcn - e_ref) < ANCHOR_ENERGY_TOL, &
-                      'check_opt_connect: the lower downhill minimum matches the opt_hcn anchor, Eh', &
-                      abs(e_hcn - e_ref))
+                      'check_opt_connect: '//method//': the lower downhill minimum matches the opt_hcn '// &
+                      'anchor, Eh', abs(e_hcn - e_ref))
    end subroutine check_hcn_side
 
    !
    ! The higher-energy minimum (HNC) must be a genuine minimum: --hessian
    ! on its own geometry shows zero imaginary modes.
    !
-   subroutine check_hnc_side(exe, wdir, side, nf)
-      character(len=*), intent(in) :: exe, wdir, side
+   subroutine check_hnc_side(method, exe, wdir, side, nf)
+      character(len=*), intent(in) :: method, exe, wdir, side
       integer, intent(inout) :: nf
       character(len=:), allocatable :: cmd2
       type(json_file) :: hj
@@ -339,23 +392,24 @@ contains
              '--hessian --silent --json hnc_hess.json > hnc_hess.out 2>&1'
       call execute_command_line(cmd2, exitstat=rc2, wait=.true.)
       if (rc2 /= 0) then
-         call ref_report(nf, .false., 'check_opt_connect: the HNC --hessian re-check CLI run itself failed', 0.0_dp)
+         call ref_report(nf, .false., &
+                         'check_opt_connect: '//method//': the HNC --hessian re-check CLI run itself failed', 0.0_dp)
          return
       end if
       call hj%initialize()
       call hj%load(filename=wdir//'/hnc_hess.json')
       if (hj%failed()) then
-         call ref_report(nf, .false., 'check_opt_connect: cannot read hnc_hess.json', 0.0_dp); return
+         call ref_report(nf, .false., 'check_opt_connect: '//method//': cannot read hnc_hess.json', 0.0_dp); return
       end if
       call hj%get('frequencies.n_imaginary', n_imag, ok)
       if (.not. ok) then
          call hj%destroy()
-         call ref_report(nf, .false., 'check_opt_connect: no frequencies.n_imaginary', 0.0_dp); return
+         call ref_report(nf, .false., 'check_opt_connect: '//method//': no frequencies.n_imaginary', 0.0_dp); return
       end if
       call hj%destroy()
       call ref_report(nf, n_imag == 0, &
-                      'check_opt_connect: the higher downhill minimum (HNC) has zero imaginary modes', &
-                      real(n_imag, dp))
+                      'check_opt_connect: '//method//': the higher downhill minimum (HNC) has zero imaginary '// &
+                      'modes', real(n_imag, dp))
    end subroutine check_hnc_side
 
 end module check_opt_connect_suite

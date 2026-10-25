@@ -535,6 +535,15 @@ jobs:
       - name: fortitude check
         run: fortitude check --output-format github
 
+      # Architecture rules from docs/CODE_STRUCTURE.md. Fails only on
+      # violations that are not in tools/arch_baseline.json, or whose
+      # measure (length, argument count) grew.
+      - name: Architecture check
+        run: |
+          pip install pytest
+          python3 -m pytest -q tools/test_archcheck.py
+          python3 tools/archcheck.py
+
   no-system-clock:
     name: no system_clock (time with pic_timer)
     runs-on: ubuntu-latest

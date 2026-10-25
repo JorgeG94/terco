@@ -30,8 +30,6 @@ contains
       testsuite = [ &
          new_unittest("--opt-saddle-method dimer needs --opt-target saddle", test_dimer_needs_saddle), &
          new_unittest("--opt-connect needs --opt-target saddle", test_connect_needs_saddle), &
-         new_unittest("--opt-connect with --opt-saddle-method prfo is refused (libdlfind crash)", &
-                      test_connect_prfo_refused), &
          new_unittest("an unknown --opt-algorithm is refused", test_bad_algorithm), &
          new_unittest("an unknown --opt-coords is refused", test_bad_coords), &
          new_unittest("an unknown --opt-target is refused", test_bad_target), &
@@ -59,6 +57,46 @@ contains
                       test_single_atom_prfo), &
          new_unittest("--opt-max-updates 0 is accepted (DL-FIND's own 'always recompute')", &
                       test_max_updates_zero_accepted), &
+         new_unittest("--opt-global-pop-size without --opt-algorithm stochastic/genetic is refused", &
+                      test_global_opt_without_algorithm), &
+         new_unittest("--opt-seed without --opt-algorithm stochastic/genetic or --opt-saddle-method "// &
+                      "dimer is refused", test_seed_without_global_or_dimer), &
+         new_unittest("--opt-seed IS accepted for --opt-saddle-method dimer", test_seed_with_dimer_accepted), &
+         new_unittest("--opt-global-mutation-rate needs --opt-algorithm genetic, not stochastic", &
+                      test_global_mutation_wrong_algorithm), &
+         new_unittest("--opt-global-contraction needs --opt-algorithm stochastic, not genetic", &
+                      test_global_contraction_wrong_algorithm), &
+         new_unittest("an out-of-range --opt-global-distribution is refused", test_global_distribution_range), &
+         new_unittest("an out-of-range --opt-global-contraction is refused", test_global_contraction_range), &
+         new_unittest("--opt-global-pop-size 0 is refused", test_global_pop_size_zero), &
+         new_unittest("--opt-neb together with --opt-target saddle is refused", test_neb_with_saddle), &
+         new_unittest("--opt-neb together with an algorithm it cannot use is refused", test_neb_bad_algorithm), &
+         new_unittest("a NEB sub-option without --opt-neb itself is refused", test_neb_suboption_orphan), &
+         new_unittest("--opt-neb-images below DL-FIND's own minimum is refused", test_neb_images_too_few), &
+         new_unittest("an unknown --opt-neb-endpoints is refused", test_neb_bad_endpoints), &
+         new_unittest("a missing --opt-neb endpoint file is refused", test_neb_missing_file), &
+         new_unittest("an --opt-neb endpoint with mismatched atoms is refused", test_neb_mismatched_atoms), &
+         new_unittest("--opt-neb-via without --opt-neb itself is refused", test_neb_via_orphan), &
+         new_unittest("a missing --opt-neb-via file is refused", test_neb_via_missing_file), &
+         new_unittest("an --opt-neb-via frame with mismatched atoms is refused", test_neb_via_mismatched_atoms), &
+         new_unittest("two atoms landing on top of each other on the initial NEB path is refused", &
+                      test_neb_initial_path_overlap), &
+         new_unittest("--opt-frozen together with --opt-coords dlc is refused", test_frozen_with_dlc), &
+         new_unittest("--opt-frozen atom index 0 is refused", test_frozen_index_zero), &
+         new_unittest("--opt-frozen atom index out of range is refused", test_frozen_index_too_large), &
+         new_unittest("a non-numeric --opt-frozen entry is refused", test_frozen_bogus), &
+         new_unittest("--opt-constrain with Cartesian coordinates is refused", test_constrain_cartesian_coords), &
+         new_unittest("--opt-constrain 'cartesian' with --opt-coords dlc is refused", &
+                      test_constrain_cartesian_type_dlc), &
+         new_unittest("an unknown --opt-constrain type is refused", test_constrain_bad_type), &
+         new_unittest("an out-of-range --opt-constrain atom index is refused", test_constrain_index_too_large), &
+         new_unittest("--opt-constrain atom index 0 is refused", test_constrain_index_zero), &
+         new_unittest("--opt-constrain with too few atom indices is refused", test_constrain_too_few_indices), &
+         new_unittest("--opt-constrain with a repeated atom in one entry is refused", &
+                      test_constrain_repeated_atom), &
+         new_unittest("--opt-constrain across an HDLC residue boundary is refused", &
+                      test_constrain_crosses_residue), &
+         new_unittest("--opt-constrain touching a --opt-frozen atom is refused", test_constrain_touches_frozen), &
          new_unittest("none of the refusal cases above started an SCF or left xyz output in test/ itself", &
                       test_no_stray) &
          ]
@@ -73,12 +111,6 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-connect', 'needs --opt-target saddle', error)
    end subroutine test_connect_needs_saddle
-
-   subroutine test_connect_prfo_refused(error)
-      type(error_type), allocatable, intent(out) :: error
-      call refuse('water.xyz', '--opt --opt-target saddle --opt-saddle-method prfo --opt-connect', &
-                  'is refused: it crashes inside', error)
-   end subroutine test_connect_prfo_refused
 
    subroutine test_bad_algorithm(error)
       type(error_type), allocatable, intent(out) :: error
@@ -219,6 +251,275 @@ contains
    end subroutine test_max_updates_zero_accepted
 
    !
+   ! --opt-global-*/--opt-seed without --opt-algorithm stochastic/genetic
+   ! (and --opt-seed without --opt-saddle-method dimer either), an
+   ! --opt-global-* parameter the OTHER search does not read, and an
+   ! out-of-range one (terco_run_parse_opt_global_options, app/main.F90).
+   !
+   subroutine test_global_opt_without_algorithm(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-global-pop-size 10', 'needs --opt-algorithm stochastic or genetic', &
+                  error)
+   end subroutine test_global_opt_without_algorithm
+
+   subroutine test_seed_without_global_or_dimer(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-seed 1', &
+                  'needs --opt-algorithm stochastic/genetic or --opt-saddle-method dimer', error)
+   end subroutine test_seed_without_global_or_dimer
+
+   !
+   ! --opt-seed is accepted together with --opt-saddle-method dimer
+   ! (trc_dlfind_bridge's own dimer-seed fix, this file's header) -- a
+   ! connect run converges well inside --opt-maxiter 150, so reaching an
+   ! "SCF :" line here means the --opt-seed/dimer combination itself was
+   ! accepted, the opposite assertion from `refuse`.
+   !
+   subroutine test_seed_with_dimer_accepted(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd, out_path
+      integer :: rc
+      logical :: saw_refusal
+      call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f hcn_ts_guess.xyz '//work_dir//'/hcn_ts_guess.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
+      out_path = 'opt_refusal_seed_dimer.out'
+      cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' hcn_ts_guess.xyz -b basis_sets/sto-3g.json --opt '// &
+            '--opt-target saddle --opt-saddle-method dimer --opt-seed 1 --opt-maxiter 150 --opt-gtol 1e-5 '// &
+            '--silent > '//out_path//' 2>&1'
+      call execute_command_line(cmd, exitstat=rc, wait=.true.)
+      saw_refusal = scan_for(work_dir//'/'//out_path, 'needs --opt-algorithm')
+      if (saw_refusal) then
+         call test_failed(error, "--opt-seed with --opt-saddle-method dimer was refused at the CLI")
+      end if
+   end subroutine test_seed_with_dimer_accepted
+
+   subroutine test_global_mutation_wrong_algorithm(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-algorithm stochastic --opt-global-mutation-rate 0.1', &
+                  'needs --opt-algorithm genetic', error)
+   end subroutine test_global_mutation_wrong_algorithm
+
+   subroutine test_global_contraction_wrong_algorithm(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-algorithm genetic --opt-global-contraction 0.5', &
+                  'needs --opt-algorithm stochastic', error)
+   end subroutine test_global_contraction_wrong_algorithm
+
+   subroutine test_global_distribution_range(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-algorithm stochastic --opt-global-distribution 5', &
+                  'must be 1 (box), 2 (sphere) or 3 (Gaussian)', error)
+   end subroutine test_global_distribution_range
+
+   subroutine test_global_contraction_range(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-algorithm stochastic --opt-global-contraction 1.5', &
+                  'must be in (0, 1)', error)
+   end subroutine test_global_contraction_range
+
+   subroutine test_global_pop_size_zero(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-algorithm genetic --opt-global-pop-size 0', &
+                  '--opt-global-pop-size must be at least 1', error)
+   end subroutine test_global_pop_size_zero
+
+   !
+   ! --opt-neb: mutually exclusive with a saddle target/algorithm this
+   ! bridge does not offer for a chain.
+   !
+   subroutine test_neb_with_saddle(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-target saddle', 'needs --opt-target minimum', error)
+   end subroutine test_neb_with_saddle
+
+   subroutine test_neb_bad_algorithm(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-algorithm prfo', &
+                  'needs a Hessian-free, non-global --opt-algorithm', error)
+   end subroutine test_neb_bad_algorithm
+
+   subroutine test_neb_suboption_orphan(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb-images 10', 'need --opt-neb', error)
+   end subroutine test_neb_suboption_orphan
+
+   subroutine test_neb_images_too_few(error)
+      type(error_type), allocatable, intent(out) :: error
+      ! Below DL-FIND's own minimum (3 -- dlf_neb.f90: "More than 2
+      ! images have to be used in NEB"); water.xyz as its own endpoint is
+      ! fine here, this never reaches DL-FIND either way.
+      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-neb-images 2', '--opt-neb-images must be at '// &
+                  'least 3', error)
+   end subroutine test_neb_images_too_few
+
+   subroutine test_neb_bad_endpoints(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-neb-endpoints bogus', &
+                  '--opt-neb-endpoints must be free, perpendicular or frozen', error)
+   end subroutine test_neb_bad_endpoints
+
+   subroutine test_neb_missing_file(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb does_not_exist.xyz', 'cannot open geometry file', error)
+   end subroutine test_neb_missing_file
+
+   !
+   ! hcn.xyz (H,C,N) as the endpoint of a water (O,H,H) start: SAME atom
+   ! count (3) but different elements, so terco_run_check_neb_endpoint's per-atom Z
+   ! check fires, not its atom-count check.
+   !
+   subroutine test_neb_mismatched_atoms(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb hcn.xyz', 'differs between the start geometry', error, &
+                  extra='hcn.xyz')
+   end subroutine test_neb_mismatched_atoms
+
+   subroutine test_neb_via_orphan(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb-via hcn.xyz', 'need --opt-neb', error)
+   end subroutine test_neb_via_orphan
+
+   subroutine test_neb_via_missing_file(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-neb-via does_not_exist.xyz', &
+                  "--opt-neb-via: cannot open", error)
+   end subroutine test_neb_via_missing_file
+
+   subroutine test_neb_via_mismatched_atoms(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-neb-via hcn.xyz', 'differs between the '// &
+                  'start geometry', error, extra='hcn.xyz')
+   end subroutine test_neb_via_mismatched_atoms
+
+   !
+   ! water.xyz with its two H atoms swapped as the NEB product endpoint:
+   ! linear interpolation toward it puts both H atoms on the SAME point
+   ! (the midpoint of their swapped positions, water's own mirror plane)
+   ! at the image halfway along the path -- a cheap, deterministic way
+   ! to make app/trc_dlfind_bridge.F90%check_neb_initial_path's "two
+   ! atoms closer than 0.5 Bohr" pre-check actually fire, not just reason
+   ! about it. This refusal comes back from trc_dlfind_optimize itself
+   ! (opt_res%failed), not a CLI `die`, but still before any SCF runs --
+   ! the SAME "no SCF line" assertion `refuse` makes applies.
+   !
+   subroutine test_neb_initial_path_overlap(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer :: u, rc
+      call execute_command_line('mkdir -p '//work_dir, exitstat=rc, wait=.true.)
+      open (newunit=u, file=work_dir//'/water_hswap.xyz', status='replace', action='write')
+      write (u, '(a)') '3'
+      write (u, '(a)') 'water.xyz with its two H atoms swapped'
+      write (u, '(a)') 'O   0.0000000   0.0000000   0.1173000'
+      write (u, '(a)') 'H   0.0000000  -0.7572000  -0.4692000'
+      write (u, '(a)') 'H   0.0000000   0.7572000  -0.4692000'
+      close (u)
+      call refuse('water.xyz', '--opt --opt-neb water_hswap.xyz --opt-neb-images 10', 'Bohr apart at image', error)
+   end subroutine test_neb_initial_path_overlap
+
+   !
+   ! --opt-frozen: refused together with pure DLC/DLC-TC (DL-FIND itself
+   ! rejects a frozen atom there -- dlf_coords.f90's own check), and a bad
+   ! index.
+   !
+   subroutine test_frozen_with_dlc(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-frozen 1 --opt-coords dlc', &
+                  'refused together with --opt-coords dlc/dlc-tc', error)
+   end subroutine test_frozen_with_dlc
+
+   subroutine test_frozen_index_zero(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-frozen 0', 'is not a valid 1-based atom index', error)
+   end subroutine test_frozen_index_zero
+
+   subroutine test_frozen_index_too_large(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-frozen 99', 'is not a valid 1-based atom index', error)
+   end subroutine test_frozen_index_too_large
+
+   subroutine test_frozen_bogus(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-frozen bogus', 'is not a valid 1-based atom index', error)
+   end subroutine test_frozen_bogus
+
+   !
+   ! --opt-constrain: refused with Cartesian coordinates outright, and
+   ! 'cartesian i' refused with DLC/DLC-TC specifically (dlf_hdlc_
+   ! interface.f90's own hdlc%internal=(icoord>=3) check); plus bad
+   ! types, bad indices, repeated atoms, residue boundaries and frozen
+   ! atoms.
+   !
+   subroutine test_constrain_cartesian_coords(error)
+      type(error_type), allocatable, intent(out) :: error
+      ! default --opt-coords is cartesian
+      call refuse('water.xyz', '--opt --opt-constrain "angle 2 1 3"', &
+                  'needs --opt-coords hdlc, hdlc-tc, dlc or dlc-tc', error)
+   end subroutine test_constrain_cartesian_coords
+
+   subroutine test_constrain_cartesian_type_dlc(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-constrain "cartesian 1" --opt-coords dlc', &
+                  "needs --opt-coords hdlc or hdlc-tc", error)
+   end subroutine test_constrain_cartesian_type_dlc
+
+   subroutine test_constrain_bad_type(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-constrain "bogus 1 2" --opt-coords hdlc', 'unknown type', error)
+   end subroutine test_constrain_bad_type
+
+   subroutine test_constrain_index_too_large(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-constrain "bond 1 99" --opt-coords hdlc', &
+                  'atom index out of range', error)
+   end subroutine test_constrain_index_too_large
+
+   !
+   ! A typed 0 used to pass terco_run_parse_constraints' own range check (it tested
+   ! idx(k) /= 0 "is this slot even used", not "is 0 a valid atom"), then
+   ! reached DL-FIND's own assign_cons, which reports "crosses residue
+   ! boundary" for atom 0 (it belongs to no residue) and `error stop`s.
+   !
+   subroutine test_constrain_index_zero(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-constrain "bond 0 2" --opt-coords hdlc', &
+                  'atom index out of range', error)
+   end subroutine test_constrain_index_zero
+
+   subroutine test_constrain_too_few_indices(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-constrain "bond 1" --opt-coords hdlc', &
+                  'does not have the atom indices', error)
+   end subroutine test_constrain_too_few_indices
+
+   subroutine test_constrain_repeated_atom(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-constrain "angle 1 2 1" --opt-coords hdlc', &
+                  'the same atom appears twice', error)
+   end subroutine test_constrain_repeated_atom
+
+   !
+   ! w3.xyz is three separate, far-apart water molecules -- three HDLC
+   ! residues under --opt-coords hdlc (trc_constants%trc_covalent_radius-
+   ! based connected components, build_opt_residues). Atom 1 (O of the
+   ! first molecule) and atom 4 (H of the second) are in different
+   ! residues, which DL-FIND's own assign_cons refuses with "crosses
+   ! residue boundary" before this fix caught it here instead.
+   !
+   subroutine test_constrain_crosses_residue(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('w3.xyz', '--opt --opt-constrain "bond 1 4" --opt-coords hdlc', &
+                  'are in different HDLC residues', error)
+   end subroutine test_constrain_crosses_residue
+
+   subroutine test_constrain_touches_frozen(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-frozen 1 --opt-constrain "bond 1 2" --opt-coords hdlc', &
+                  'is frozen (--opt-frozen)', error)
+   end subroutine test_constrain_touches_frozen
+
+   !
    ! None of the refusal cases above ever reaches --opt's own
    ! write-the-xyz-outputs code (every one is refused before DL-FIND
    ! runs at all) -- checked anyway, for the same reason every other opt
@@ -245,11 +546,21 @@ contains
    ! the redirected stdout/stderr -- the specific message, not just "it
    ! failed somehow".
    !
-   subroutine refuse(xyz, flags, expect_substr, error)
+   ! `extra`, if present, is a space-separated list of further input
+   ! files `flags` names (an --opt-neb/--opt-neb-via endpoint, say) that
+   ! are NOT the primary `xyz` argument -- copied into work_dir the same
+   ! way, so a case that depends on one can never pass only because a
+   ! PREVIOUS run (in build-cpu, say) left that file lying around from an
+   ! earlier case and a fresh work_dir (program startup, below) would
+   ! otherwise make it fail for the wrong reason (missing file) instead
+   ! of exercising its own check.
+   !
+   subroutine refuse(xyz, flags, expect_substr, error, extra)
       character(len=*), intent(in) :: xyz, flags, expect_substr
       type(error_type), allocatable, intent(out) :: error
-      character(len=:), allocatable :: cmd, out_path
-      integer :: rc, u, ios
+      character(len=*), intent(in), optional :: extra
+      character(len=:), allocatable :: cmd, out_path, rest, name
+      integer :: rc, u, ios, k
       character(len=1024) :: line
       logical :: saw_scf_line, saw_message
 
@@ -257,6 +568,20 @@ contains
       call execute_command_line('cp -f '//xyz//' '//work_dir//'/'//xyz, exitstat=rc, wait=.true.)
       call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
                                 exitstat=rc, wait=.true.)
+      if (present(extra)) then
+         rest = trim(extra)
+         do while (len(rest) > 0)
+            k = index(rest, ' ')
+            if (k == 0) then
+               name = rest; rest = ''
+            else
+               name = rest(1:k - 1); rest = trim(adjustl(rest(k + 1:)))
+            end if
+            if (len(name) > 0) then
+               call execute_command_line('cp -f '//name//' '//work_dir//'/'//name, exitstat=rc, wait=.true.)
+            end if
+         end do
+      end if
       out_path = work_dir//'/opt_refusal.out'
       cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' '//xyz//' -b basis_sets/sto-3g.json '//flags// &
             ' --silent > opt_refusal.out 2>&1'
@@ -289,7 +614,8 @@ contains
 
    !
    ! Whether `substr` appears on any line of `path` -- used where a case
-   ! must assert a message's ABSENCE (test_max_updates_zero_accepted).
+   ! must assert a message's ABSENCE (test_max_updates_zero_accepted,
+   ! test_seed_with_dimer_accepted).
    !
    function scan_for(path, substr) result(found)
       character(len=*), intent(in) :: path, substr
@@ -322,6 +648,12 @@ program check_opt_refusals
       write (error_unit, "(a)") "check_opt_refusals: usage: check_opt_refusals <terco CLI> <scratch dir>"
       error stop 1
    end if
+   ! ctest reuses the same scratch dir run to run (CMakeLists.txt's own
+   ! _cli_opt_refusals_workdir): wipe it before this run's own cases ever
+   ! `cp` into it, so a file a PREVIOUS run left behind can never make a
+   ! case pass (or fail) for a reason other than the one it tests -- see
+   ! `refuse`'s own header.
+   call execute_command_line('rm -rf '//work_dir, wait=.true.)
    stat = 0
    call run_testsuite(collect_opt_refusals, error_unit, stat, parallel=.false.)
    if (stat > 0) then

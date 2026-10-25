@@ -117,12 +117,15 @@ module trc_rimp2_driver
    ! kernels and not only their launches.
    !
    integer, parameter :: NSTEP = 9
+    !! number of algorithmic steps in the precodure
    integer, parameter :: ST_METRIC = 1, ST_CHOL = 2, ST_3C = 3, ST_TRANS = 4, ST_XCHG = 5, ST_TRSM = 6, &
                          ST_KGEMM = 7, ST_PAIR = 8, ST_RING = 9
+    !! their map to an int
    character(len=18), parameter :: STEP_NAME(NSTEP) = [character(len=18) :: &
                                                        "metric (P|Q)", "Cholesky", "(mu nu|P)", &
                                                        "transform (ia|P)", "(ia|P) exchange", "B = X L^-T", &
                                                        "K_i GEMMs", "pair energies", "B exchange"]
+    !! the names of the stages for FLOP counting
 
    !
    ! The largest message the ring sends in one call: MPI counts are 32-bit,
@@ -131,10 +134,11 @@ module trc_rimp2_driver
    integer(int64), parameter :: MSG_CHUNK = 2_int64**30
 
    type :: trc_rimp2_result_t
+    !! holds the rimp2 result
       real(dp) :: e_os = 0.0_dp     !! opposite-spin pair energy
       real(dp) :: e_ss = 0.0_dp     !! same-spin pair energy
       real(dp) :: e_corr = 0.0_dp   !! E_os + E_ss
-      integer :: naux = 0, nocc = 0, nvir = 0
+      integer :: naux = 0, nocc = 0, nvir = 0  !! number of auxiliary, occupied, and virtual orbitals
       character(len=200) :: message = ""
    end type trc_rimp2_result_t
 
@@ -161,6 +165,7 @@ contains
    ! identical either way).
    !
    subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm, verbose, dfjk)
+      !! run a restricted ri-mp2 calculation
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       integer, intent(in) :: nocc
