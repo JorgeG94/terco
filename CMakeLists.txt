@@ -152,6 +152,19 @@ option(TERCO_BUILD_APP "Build and install the terco command line program" ON)
 #
 option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" OFF)
 #
+# Geometry optimisation (terco_cli's --opt), driven by DL-FIND through
+# libdlfind (Kjell Jorner's C-API wrapper around J. Kaestner's DL-FIND).
+# OFF by default for a licensing reason, not a size one: DL-FIND and
+# libdlfind are LGPL-3.0-or-later, and this library is not, so pulling that
+# code in is the builder's choice. app/CMakeLists.txt fetches libdlfind
+# (cmake/modules/Findlibdlfind.cmake) and builds it as its OWN shared
+# library, linked ONLY into the terco_cli executable -- never into
+# libterco -- so the LGPL relink obligation and DL-FIND's `error stop`
+# never reach the library. With this OFF, `--opt` is refused with a clear
+# message (app/trc_dlfind_stub.F90) and every other build is unaffected.
+#
+option(TERCO_ENABLE_DLFIND "Build the --opt geometry optimiser against libdlfind (LGPL-3.0-or-later)" OFF)
+#
 # Two different "regenerate" switches:
 #
 # TERCO_REGENERATE rewrites the COMMITTED kernels in src/generated in place,

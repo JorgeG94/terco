@@ -36,6 +36,9 @@ module trc_constants
    ! --- atomic masses -----------------------------------------------------------
    public :: N_ELEMENTS, trc_atomic_mass, trc_atomic_mass_average
 
+   ! --- covalent radii, for distance-based bond perception (HDLC residues) -----
+   public :: N_ELEMENTS_COVALENT, trc_covalent_radius
+
    real(dp), parameter :: PI = 3.14159265358979323846264338327950288_dp
       !! Mathematical constant, exact; the most precise literal already in
       !! the tree (trc_dft_grid.F90, trc_dft_radial.F90), kept at full
@@ -202,6 +205,27 @@ module trc_constants
       !! fine for mass-weighting a Hessian on an element terco's basis
       !! sets do not reach anyway.
 
+   integer, parameter :: N_ELEMENTS_COVALENT = 96
+      !! Highest Z Cordero et al. 2008 tabulates a covalent radius for.
+
+   real(dp), parameter :: CORDERO_RADII_ANGSTROM(N_ELEMENTS_COVALENT) = [ &
+      !! Covalent radii in Angstrom, from Cordero, Cordoba, Gomez, Platero-
+      !! Prats, Reves, Echeverria, Cremades, Barragan and Alvarez, Dalton
+      !! Trans. 2008, 2832-2838, Table 2 (the "single bond" column) --
+      !! the set most codes use for distance-based bond perception.
+                          0.31_dp, 0.28_dp, 1.28_dp, 0.96_dp, 0.84_dp, 0.76_dp, 0.71_dp, 0.66_dp, &  ! Z = 1-8
+                          0.57_dp, 0.58_dp, 1.66_dp, 1.41_dp, 1.21_dp, 1.11_dp, 1.07_dp, 1.05_dp, &  ! Z = 9-16
+                          1.02_dp, 1.06_dp, 2.03_dp, 1.76_dp, 1.70_dp, 1.60_dp, 1.53_dp, 1.39_dp, &  ! Z = 17-24
+                          1.39_dp, 1.32_dp, 1.26_dp, 1.24_dp, 1.32_dp, 1.22_dp, 1.22_dp, 1.20_dp, &  ! Z = 25-32
+                          1.19_dp, 1.20_dp, 1.20_dp, 1.16_dp, 2.20_dp, 1.95_dp, 1.90_dp, 1.75_dp, &  ! Z = 33-40
+                          1.64_dp, 1.54_dp, 1.47_dp, 1.46_dp, 1.42_dp, 1.39_dp, 1.45_dp, 1.44_dp, &  ! Z = 41-48
+                          1.42_dp, 1.39_dp, 1.39_dp, 1.38_dp, 1.39_dp, 1.40_dp, 2.44_dp, 2.15_dp, &  ! Z = 49-56
+                          2.07_dp, 2.04_dp, 2.03_dp, 2.01_dp, 1.99_dp, 1.98_dp, 1.98_dp, 1.96_dp, &  ! Z = 57-64
+                          1.94_dp, 1.92_dp, 1.92_dp, 1.89_dp, 1.90_dp, 1.87_dp, 1.87_dp, 1.75_dp, &  ! Z = 65-72
+                          1.70_dp, 1.62_dp, 1.51_dp, 1.44_dp, 1.41_dp, 1.36_dp, 1.36_dp, 1.32_dp, &  ! Z = 73-80
+                          1.45_dp, 1.46_dp, 1.48_dp, 1.40_dp, 1.50_dp, 1.50_dp, 2.60_dp, 2.21_dp, &  ! Z = 81-88
+                          2.15_dp, 2.06_dp, 2.00_dp, 1.96_dp, 1.90_dp, 1.87_dp, 1.80_dp, 1.69_dp]  ! Z = 89-96
+
 contains
 
    function trc_atomic_mass(z, error) result(mass)
@@ -240,5 +264,30 @@ contains
       end if
       mass = ATOMIC_WEIGHT_TABLE(z)
    end function trc_atomic_mass_average
+
+   function trc_covalent_radius(z, error) result(radius)
+      !! Cordero et al., Dalton Trans. 2008, 2832-2838 ("Covalent radii
+      !! revisited") covalent radius, in Bohr, Z = 1..96 (the set stops at
+      !! curium; past it there is no consensus single-bond radius). This is
+      !! the table most codes use for distance-based bond perception.
+      !!
+      !! The ONLY consumer today is app/main.F90's build_opt_residues
+      !! (--opt-coords hdlc): a bond is perceived at
+      !! |r_i - r_j| <= scale * (radius_i + radius_j), scale = 1.3, loose
+      !! enough that a stretched bond mid-optimisation is not lost, and
+      !! residues are the connected components of that graph. Getting a
+      !! bond wrong here changes which internal coordinates DL-FIND builds
+      !! for HDLC, never an energy or a gradient.
+      integer, intent(in) :: z
+      type(error_t), intent(inout) :: error
+      real(dp) :: radius
+      if (z < 1 .or. z > N_ELEMENTS_COVALENT) then
+         call error%set(ERROR_VALIDATION, "trc_constants: no Cordero covalent radius for atomic number "// &
+                        to_string(z)//" (tabulated for [1, "//to_string(N_ELEMENTS_COVALENT)//"])")
+         radius = 0.0_dp
+         return
+      end if
+      radius = CORDERO_RADII_ANGSTROM(z)*ANGSTROM_TO_BOHR
+   end function trc_covalent_radius
 
 end module trc_constants

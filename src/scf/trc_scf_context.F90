@@ -29,7 +29,7 @@ module trc_scf_context
    implicit none
    private
 
-   public :: scf_ctx_t, bcast_flat, trc_grid_cache_t
+   public :: scf_ctx_t, bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, project_density
    integer, parameter, public :: NSETUP = 6
    !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
    !! linear-algebra handles, orthogonaliser -- `ts`'s six slots, printed
@@ -55,6 +55,50 @@ module trc_scf_context
       procedure :: release => grid_cache_release
    end type trc_grid_cache_t
 
+   type :: trc_pair_eri_cache_t
+      !! The shell-pair list and (when built) the four-centre engine from
+      !! ONE `scf_ctx_t%setup` call, kept apart from `scf_ctx_t` so a caller
+      !! that wants them ALIVE past that call's own `release` (trc_capi.F90's
+      !! context handle) can hand them straight to a gradient run at the
+      !! SAME geometry and threshold right after -- the same pattern
+      !! `trc_grid_cache_t` already uses for the DFT grid, and for the same
+      !! reason: a gradient that follows the SCF immediately has nothing
+      !! left to learn from rebuilding a pair list and a Schwarz screen the
+      !! SCF already paid for at this geometry. `thresh_built` is what a
+      !! reuser must match EXACTLY (bit for bit -- both sides read it from
+      !! the same `eri_thresh_env` call) before trusting `pl`/`eri` at all;
+      !! `has_eri` is false under `--df`, where `scf_ctx_setup` never calls
+      !! `eri%build` (trc_scf_df's own J/K, not the four-centre engine).
+      !!
+      !! FINGERPRINT. `thresh_built` is the only gate a C API caller ever
+      !! needs (a geometry or basis change already clears `built` through
+      !! `invalidate_runs`, before a reuser could reach this far), but a
+      !! Fortran caller that keeps one `trc_pair_eri_cache_t` across more
+      !! than one `trc_scf_run`/`trc_scf_gradient` call, at a DIFFERENT
+      !! geometry, with no such invalidation to rely on, would otherwise
+      !! get a gradient from stale pair data, or out-of-bounds indexing if
+      !! `nshell` changed. `nshell_built`/`natm_built`/`at_r_built` are
+      !! that caller's own safety net: set once, at build time
+      !! (`scf_ctx_setup`), and checked by `matches` before ANY reuse,
+      !! Fortran or C API alike. `batch_res_built` is the quartet-bin
+      !! batching the engine was actually built with (`trc_scf_settings`'s
+      !! own `opts%batch_res`) -- `trc_scf_gradient`'s OWN fresh build
+      !! always uses the default (1), so a cache built at any other value
+      !! would give a reused-vs-fresh gradient that differs by more than
+      !! round-off; `matches` is the pair list's own gate (thresh and
+      !! geometry only), so the ERI engine's reuse checks `batch_res_built`
+      !! on top, in trc_scf_grad.F90.
+      type(trc_pairlist_t) :: pl
+      type(trc_eri_t) :: eri
+      real(dp) :: thresh_built = -1.0_dp
+      integer :: nshell_built = -1, natm_built = -1, batch_res_built = -1
+      real(dp), allocatable :: at_r_built(:, :)
+      logical :: built = .false., has_eri = .false.
+   contains
+      procedure :: release => pair_eri_cache_release
+      procedure :: matches => pair_eri_cache_matches
+   end type trc_pair_eri_cache_t
+
    type :: scf_ctx_t
       !! Geometry-lifetime state: everything above is built once and read
       !! by every iteration, never written by one. `nao`/`nao_c`/`sph` are
@@ -62,8 +106,11 @@ module trc_scf_context
       !! them as plain arguments instead of a basis handle.
       integer :: nao = 0, nao_c = 0
       logical :: sph = .false.
-      type(trc_pairlist_t) :: pl
-      type(trc_eri_t) :: eri
+      type(trc_pair_eri_cache_t) :: pec_own
+      !! TARGET for `pec` to point to comes from `this` itself, the same
+      !! reason `gc_own`/`la_own` are -- see `lp`'s own comment, right below.
+      type(trc_pair_eri_cache_t), pointer :: pec => null()
+      logical :: owns_pec = .false.
       type(trc_grid_cache_t) :: gc_own
       !! TARGET for `gc` to point to comes from `this` itself, the same
       !! reason `la_own` is -- see `lp`'s own comment, right below.
@@ -96,7 +143,7 @@ module trc_scf_context
 
 contains
 
-   subroutine scf_ctx_setup(this, b, opts, cfg, err, comm, la, dfjk, grid_cache)
+   subroutine scf_ctx_setup(this, b, opts, cfg, err, comm, la, dfjk, grid_cache, pair_eri_cache)
       class(scf_ctx_t), intent(inout), target :: this
       !! TARGET: `this%lp` may end up pointing at `this%la_own`, and that
       !! association must survive the return into `trc_scf_run`, which
@@ -122,6 +169,15 @@ contains
       !! after: the device present-table is keyed on host addresses).
       !! Absent, `this%gc_own` plays the same role but does not outlive
       !! this call -- unchanged from before this argument existed.
+      type(trc_pair_eri_cache_t), intent(inout), optional, target :: pair_eri_cache
+      !! A caller-owned pair-list/ERI cache (trc_capi.F90's context handle)
+      !! that this run builds the pair list -- and, outside `--df`, the
+      !! four-centre engine -- DIRECTLY INTO, same reasoning as
+      !! `grid_cache` right above: built once, at its final address, so a
+      !! gradient immediately after can reuse it without a second build at
+      !! the same geometry and threshold (`trc_pair_eri_cache_t`'s own
+      !! header). Absent, `this%pec_own` plays the same role but does not
+      !! outlive this call.
       type(timer_type) :: tm
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
       character(len=:), allocatable :: refusal
@@ -153,6 +209,12 @@ contains
       else
          this%gc => this%gc_own
       end if
+      this%owns_pec = .not. present(pair_eri_cache)
+      if (present(pair_eri_cache)) then
+         this%pec => pair_eri_cache
+      else
+         this%pec => this%pec_own
+      end if
       if (cfg%df) then
          if (.not. present(dfjk)) then
             call err%set(ERROR_GENERIC, "trc_scf: --df needs a density-fitted object already set up "// &
@@ -170,8 +232,17 @@ contains
       ! --- once per geometry, on the host ------------------------------------
       call tphase%start()
       call tm%start()
-      call this%pl%build(b, cfg%eri_thresh_run)
-      call this%pl%to_device()
+      call this%pec%pl%build(b, cfg%eri_thresh_run)
+      call this%pec%pl%to_device()
+      this%pec%thresh_built = cfg%eri_thresh_run
+      this%pec%built = .true.
+      this%pec%has_eri = .false.
+      ! The fingerprint a Fortran caller's reuse is checked against --
+      ! see `trc_pair_eri_cache_t`'s own header, FINGERPRINT.
+      this%pec%nshell_built = b%nshell
+      this%pec%natm_built = b%natm
+      if (allocated(this%pec%at_r_built)) deallocate (this%pec%at_r_built)
+      this%pec%at_r_built = b%at_r
       this%ts(1) = tm%get_elapsed_time()
       call tm%start()
       ! The one-electron integrals are always Cartesian (trc_1e never
@@ -180,7 +251,7 @@ contains
       block
          real(dp), allocatable :: s_c(:, :), h_c(:, :), v_c(:, :)
          allocate (s_c(this%nao_c, this%nao_c), h_c(this%nao_c, this%nao_c), v_c(this%nao_c, this%nao_c))
-         call trc_1e(b, this%pl, s_c, h_c, v_c)
+         call trc_1e(b, this%pec%pl, s_c, h_c, v_c)
          h_c = h_c + v_c
          this%ts(2) = tm%get_elapsed_time()
          call tm%start()
@@ -206,10 +277,28 @@ contains
       ! every deallocation on `allocated`/`on_device`, and build_g reads
       ! nothing off `eri` before checking `df_on`.
       if (.not. cfg%df) then
+         this%pec%has_eri = .true.
+         this%pec%batch_res_built = opts%batch_res
          if (present(comm)) then
-            call this%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
+            call this%pec%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
+            ! Not when `comm` is a real split (nranks > 1): each rank then
+            ! holds only ITS share of the quartets, which is not what a
+            ! reuser (a single-rank gradient right after, trc_capi.F90's
+            ! trc_run_gradient) expects of "the SCF's own engine" --
+            ! trc_run_hessian already refuses more than one rank, so this
+            ! is a backstop, not the gate. `.and.` is not guaranteed to
+            ! short-circuit, hence the nested `if` rather than one
+            ! expression that would call `comm%size()` even when absent.
+            ! The rank-partitioned engine is released right here too, not
+            ! merely marked unusable: nothing downstream ever reads it
+            ! (has_eri is false), so leaving it resident would hold its
+            ! device memory for the rest of the run for no reason.
+            if (comm%size() > 1) then
+               this%pec%has_eri = .false.
+               call this%pec%eri%release()
+            end if
          else
-            call this%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
+            call this%pec%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
          end if
       end if
       this%e_nuc = nuclear_repulsion(b)
@@ -313,8 +402,10 @@ contains
       if (this%released) return
       call this%pcm%release()
       if (this%owns_la) call this%lp%release()
-      call this%eri%release()
-      call this%pl%release()
+      ! A caller-owned cache (pair_eri_cache present at `setup`) outlives
+      ! this context on purpose, same reasoning as `gc` right below -- only
+      ! an OWNED cache (`this%pec_own`, the default) is released here.
+      if (this%owns_pec) call this%pec%release()
       ! A caller-owned cache (grid_cache present at `setup`) outlives this
       ! context on purpose -- see `scf_ctx_setup`'s own header on
       ! `grid_cache` -- so only an OWNED cache (`this%gc_own`, the default)
@@ -339,6 +430,41 @@ contains
          this%nlc_built = .false.
       end if
    end subroutine grid_cache_release
+
+   subroutine pair_eri_cache_release(this)
+      !! Idempotent, same reason as `scf_ctx_release`'s own: `pl%release`/
+      !! `eri%release` already guard every deallocation on `allocated`/
+      !! `on_device` (that module's own invariant), so releasing a cache
+      !! that was never built, or has already been released, costs nothing.
+      class(trc_pair_eri_cache_t), intent(inout) :: this
+      call this%eri%release()
+      call this%pl%release()
+      this%built = .false.
+      this%has_eri = .false.
+      this%thresh_built = -1.0_dp
+      this%nshell_built = -1
+      this%natm_built = -1
+      this%batch_res_built = -1
+      if (allocated(this%at_r_built)) deallocate (this%at_r_built)
+   end subroutine pair_eri_cache_release
+
+   logical function pair_eri_cache_matches(this, b, thresh) result(ok)
+      !! The reuse gate every caller (Fortran or, through
+      !! `trc_scf_gradient`'s `pair_eri_cache`, the C API) must pass before
+      !! trusting `pl`/`eri`: the build threshold EXACTLY (bit for bit, see
+      !! `thresh_built`'s own comment above) and the geometry/basis
+      !! fingerprint (`nshell`, `natm`, the atom centres) unchanged since
+      !! `scf_ctx_setup` built it. A cache that was never built, or has
+      !! since been released, fails on `built` alone.
+      class(trc_pair_eri_cache_t), intent(in) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      ok = this%built .and. this%thresh_built == thresh .and. &
+           this%nshell_built == b%nshell .and. this%natm_built == b%natm
+      if (ok) ok = allocated(this%at_r_built)
+      if (ok) ok = size(this%at_r_built, 2) == b%natm
+      if (ok) ok = all(this%at_r_built == b%at_r)
+   end function pair_eri_cache_matches
 
    real(dp) function nuclear_repulsion(b) result(e)
       type(trc_basis_t), intent(in) :: b
@@ -409,6 +535,61 @@ contains
       call allreduce(comm, g, op=MPI_SUM)
       call bcast(comm, g, n, 0)
    end subroutine sum_flat
+
+   subroutine project_density(lp, nao, nspin, nocc, cmo_old, s_new, dmat)
+      !! A warm-start density at a NEW geometry (same molecule/basis, so
+      !! `nao` is unchanged) from a PREVIOUS geometry's converged occupied
+      !! orbitals, re-orthonormalised in the new overlap `s_new`: for each
+      !! spin's occupied block C (nao x nocc), M = C^T S' C is its overlap
+      !! under S'; `sym_orthog`'s own symmetric/canonical orthogonalisation
+      !! works on ANY symmetric positive matrix handed to it, not only the
+      !! AO overlap, so calling it on M gives X = M^(-1/2); C' = C X is
+      !! once again orthonormal under S' (C'^T S' C' = X^T M X = X M X = I
+      !! by construction, since X = M^(-1/2) commutes with M). D' =
+      !! occ_s C' C'^T. At S' = S this is the identity transform (M = I
+      !! already, X = I); trc_capi.F90's TRC_GUESS_PROJECTED is the public
+      !! way to this. test/bench_warmstart.F90 measured it against the
+      !! plain density warm start at water/def2-SVP, steps 0.005-1.0 Bohr:
+      !! both needed the same iteration count at every step (HF 10/13/15,
+      !! B3LYP 8/10/12).
+      !!
+      !! A near-singular M (an occupied orbital that left the space, e.g a
+      !! very large step) is not refused here -- `sym_orthog`'s own
+      !! `lindep_thresh=0` default only error-stops on a NON-positive-
+      !! definite M, which this call never raises
+      !! (`lindep_thresh` absent): nocc columns of a full-rank C projected
+      !! through a nonsingular S' make M positive definite by
+      !! construction (it is a Gram matrix of independent vectors), so a
+      !! near-null mode is never actually reached by this routine's own
+      !! use. Host arrays in and out, the same residency the guess block
+      !! calling this already assumes; `sym_orthog`'s own `!$acc data`
+      !! moves the (small, nocc x nocc) eigenproblem to the device and
+      !! back.
+      type(trc_linalg_t), intent(inout) :: lp
+      integer, intent(in) :: nao, nspin
+      integer, intent(in) :: nocc(2)
+      real(dp), intent(in) :: cmo_old(nao, nao, nspin)
+      real(dp), intent(in) :: s_new(nao, nao)
+      real(dp), intent(out) :: dmat(nao, nao, nspin)
+      real(dp) :: occ_s
+      integer :: s, n
+      real(dp), allocatable :: cocc(:, :), m(:, :), x(:, :), cproj(:, :)
+
+      occ_s = merge(2.0_dp, 1.0_dp, nspin == 1)
+      dmat = 0.0_dp
+      do s = 1, nspin
+         n = nocc(s)
+         if (n <= 0) cycle
+         allocate (cocc(nao, n), m(n, n), x(n, n), cproj(nao, n))
+         cocc = cmo_old(:, 1:n, s)
+         m = matmul(transpose(cocc), matmul(s_new, cocc))
+         m = 0.5_dp*(m + transpose(m))   ! host round-off symmetrisation
+         call sym_orthog(lp, n, m, x)
+         cproj = matmul(cocc, x)
+         dmat(:, :, s) = occ_s*matmul(cproj, transpose(cproj))
+         deallocate (cocc, m, x, cproj)
+      end do
+   end subroutine project_density
 
    ! Broadcast rank 0's copy of a contiguous array of any rank. Public: the
    ! iteration loop (trc_scf_driver) broadcasts the density, orbitals and
