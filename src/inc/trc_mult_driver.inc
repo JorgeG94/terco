@@ -36,7 +36,7 @@
    pure subroutine mult_item(ii, jj, nshell, nao, maxnp, sh_l, sh_np, sh_ao, &
                              sh_e, sh_c, sh_r, orig, mmat)
       !$acc routine seq
-      integer,  intent(in)    :: ii, jj, nshell, nao, maxnp
+      integer,  value         :: ii, jj, nshell, nao, maxnp
       integer,  intent(in)    :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
       real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
       real(dp), intent(in)    :: sh_r(3, nshell), orig(3)

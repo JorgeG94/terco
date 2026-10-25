@@ -25,7 +25,20 @@ if(TERCO_ENABLE_GPU)
   if(TERCO_CUDA_VERSION)
     set(TERCO_GPU_OPTS "${TERCO_GPU_OPTS},cuda${TERCO_CUDA_VERSION}")
   endif()
-  set(TERCO_FLAGS "-stdpar=gpu -acc -gpu=${TERCO_GPU_OPTS} -Mpreprocess -traceback")
+  # TRC_DEVICE, not _OPENACC, selects the cuBLAS/cuSOLVER/device-binding
+  # paths: -acc=multicore defines _OPENACC too, with no GPU behind it.
+  set(TERCO_FLAGS "-stdpar=gpu -acc -gpu=${TERCO_GPU_OPTS} -Mpreprocess -traceback -DTRC_DEVICE")
+elseif(TERCO_ENABLE_MULTICORE)
+  #
+  # Threaded host build: `do concurrent` runs on CPU threads. `-acc=multicore`
+  # is required next to -stdpar=multicore: without it the `!$acc atomic`
+  # updates in the Fock scatter are inert comments and the threads race.
+  # It defines _OPENACC, which is why the device-only code keys on
+  # TRC_DEVICE (not defined here) and this build uses host BLAS/LAPACK.
+  # Thread count: OMP_NUM_THREADS / ACC_NUM_CORES.
+  #
+  set(TERCO_FLAGS "-stdpar=multicore -acc=multicore -Mpreprocess -traceback")
+  set(TERCO_HOST_NVHPC_OPTIONS "-Mnovect" PARENT_SCOPE)
 else()
   #
   # Host build. No `-acc`, so every OpenACC directive is an inert comment, and

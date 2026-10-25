@@ -54,7 +54,7 @@
                               sh_ao, sh_e, sh_c, sh_r, at_z, at_r, &
                               smat, tmat, vmat)
       !$acc routine seq
-      integer,  intent(in)    :: ii, jj, nshell, nao, natm, maxnp
+      integer,  value         :: ii, jj, nshell, nao, natm, maxnp
       integer,  intent(in)    :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
       real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
       real(dp), intent(in)    :: sh_r(3, nshell)

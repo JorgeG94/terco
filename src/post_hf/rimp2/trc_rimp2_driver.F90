@@ -1383,13 +1383,13 @@ contains
    end subroutine recv_seg_dev
 
    integer function k_group(no, nv, ncol) result(ng)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                          acc_property_free_memory
 #endif
       integer, intent(in) :: no, nv, ncol
       integer, parameter :: NG_BEST = 4
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer(int64) :: free, per_i, fixed
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)

@@ -27,12 +27,12 @@ contains
       logical :: direct
       character(len=8) :: e
       integer :: n, st
-#if defined(_OPENACC) && TRC_MPI_DEVICE
+#if defined(TRC_DEVICE) && TRC_MPI_DEVICE
       direct = .true.
 #else
       direct = .false.
 #endif
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       call get_environment_variable("TERCO_MPI_DEVICE", e, n, st)
       if (st == 0 .and. n > 0) direct = e(1:1) /= "0"
 #else
