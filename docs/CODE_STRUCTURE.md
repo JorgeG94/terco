@@ -68,13 +68,19 @@ Names should read as a sentence fragment and tell you where to look.
 - Public procedure: `<module-area>_<noun>_<verb>`, noun before verb, so
   related procedures sort together: `scf_fock_build`, `scf_fock_assemble`,
   `scf_density_project`. Type-bound procedures drop the prefix because the
-  type supplies it: `fock%build`, `ctx%setup`.
+  type supplies it: `fock%build`, `context%setup`.
 - Predicates start with `is_`/`has_`. Functions that return a count start
   with `n`.
 - Private helpers may be short, but still say what they do.
 - Types end in `_t`; keep the `trc_` prefix on the public ones.
-- Avoid abbreviations that are not in the domain's own vocabulary (`scf`,
-  `eri`, `diis` are; `asm`, `blk`, `calc` are not).
+- **Spell names out.** Readability beats brevity: `context`, not `ctx`;
+  `density`, not `dens`; `iteration`, not `iter`; `threshold`, not `thr`.
+  The same goes for variables, dummy arguments and types. Short names are
+  fine where the maths is short and the meaning is local: loop indices
+  (`i`, `j`, `ishell`), and symbols copied from a formula in the same
+  procedure, with the formula named in a comment. Abbreviations from the
+  domain's own vocabulary stay (`scf`, `eri`, `dft`, `diis`, `pcm`, `xc`);
+  invented ones (`asm`, `blk`, `calc`, `tmp`, `ctx`, `cfg`) do not.
 
 Existing names are renamed in batches, one module at a time, with the rename
 and nothing else in the commit. `modmap.py lint` reports the names that
