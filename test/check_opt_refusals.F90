@@ -372,7 +372,8 @@ contains
    !
    subroutine test_neb_mismatched_atoms(error)
       type(error_type), allocatable, intent(out) :: error
-      call refuse('water.xyz', '--opt --opt-neb hcn.xyz', 'differs between the start geometry', error)
+      call refuse('water.xyz', '--opt --opt-neb hcn.xyz', 'differs between the start geometry', error, &
+                  extra='hcn.xyz')
    end subroutine test_neb_mismatched_atoms
 
    subroutine test_neb_via_orphan(error)
@@ -389,7 +390,7 @@ contains
    subroutine test_neb_via_mismatched_atoms(error)
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-neb-via hcn.xyz', 'differs between the '// &
-                  'start geometry', error)
+                  'start geometry', error, extra='hcn.xyz')
    end subroutine test_neb_via_mismatched_atoms
 
    !
@@ -545,11 +546,21 @@ contains
    ! the redirected stdout/stderr -- the specific message, not just "it
    ! failed somehow".
    !
-   subroutine refuse(xyz, flags, expect_substr, error)
+   ! `extra`, if present, is a space-separated list of further input
+   ! files `flags` names (an --opt-neb/--opt-neb-via endpoint, say) that
+   ! are NOT the primary `xyz` argument -- copied into work_dir the same
+   ! way, so a case that depends on one can never pass only because a
+   ! PREVIOUS run (in build-cpu, say) left that file lying around from an
+   ! earlier case and a fresh work_dir (program startup, below) would
+   ! otherwise make it fail for the wrong reason (missing file) instead
+   ! of exercising its own check.
+   !
+   subroutine refuse(xyz, flags, expect_substr, error, extra)
       character(len=*), intent(in) :: xyz, flags, expect_substr
       type(error_type), allocatable, intent(out) :: error
-      character(len=:), allocatable :: cmd, out_path
-      integer :: rc, u, ios
+      character(len=*), intent(in), optional :: extra
+      character(len=:), allocatable :: cmd, out_path, rest, name
+      integer :: rc, u, ios, k
       character(len=1024) :: line
       logical :: saw_scf_line, saw_message
 
@@ -557,6 +568,20 @@ contains
       call execute_command_line('cp -f '//xyz//' '//work_dir//'/'//xyz, exitstat=rc, wait=.true.)
       call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
                                 exitstat=rc, wait=.true.)
+      if (present(extra)) then
+         rest = trim(extra)
+         do while (len(rest) > 0)
+            k = index(rest, ' ')
+            if (k == 0) then
+               name = rest; rest = ''
+            else
+               name = rest(1:k - 1); rest = trim(adjustl(rest(k + 1:)))
+            end if
+            if (len(name) > 0) then
+               call execute_command_line('cp -f '//name//' '//work_dir//'/'//name, exitstat=rc, wait=.true.)
+            end if
+         end do
+      end if
       out_path = work_dir//'/opt_refusal.out'
       cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' '//xyz//' -b basis_sets/sto-3g.json '//flags// &
             ' --silent > opt_refusal.out 2>&1'
@@ -623,6 +648,12 @@ program check_opt_refusals
       write (error_unit, "(a)") "check_opt_refusals: usage: check_opt_refusals <terco CLI> <scratch dir>"
       error stop 1
    end if
+   ! ctest reuses the same scratch dir run to run (CMakeLists.txt's own
+   ! _cli_opt_refusals_workdir): wipe it before this run's own cases ever
+   ! `cp` into it, so a file a PREVIOUS run left behind can never make a
+   ! case pass (or fail) for a reason other than the one it tests -- see
+   ! `refuse`'s own header.
+   call execute_command_line('rm -rf '//work_dir, wait=.true.)
    stat = 0
    call run_testsuite(collect_opt_refusals, error_unit, stat, parallel=.false.)
    if (stat > 0) then
