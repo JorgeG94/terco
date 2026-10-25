@@ -15,7 +15,7 @@
 !
 program bench_xc
    use pic_types, only: dp, int64
-   use trc_wall_clock, only: trc_wall
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -39,7 +39,8 @@ program bench_xc
    type(trc_xc_grid_t) :: xg
    type(trc_xc_functional_t) :: func
    type(error_t) :: err
-   real(dp) :: exc, nelec, seed, t0, t1, tp, tq, sp, sq, tmin
+   real(dp) :: exc, nelec, seed, t1, tp, tq, sp, sq, tmin
+   type(timer_type) :: tm
    integer :: nsk
    integer(int64) :: lcg
    logical :: ok
@@ -77,22 +78,22 @@ program bench_xc
    call bas%to_device()
    nao = bas%nao
 
-   t0 = wall()
+   call tm%start()
    call build_dft_grid(at_r, z, grid, err, level=level)
-   t1 = wall()
+   t1 = tm%get_elapsed_time()
    if (err%has_error()) then
       print '(a)', 'bench_xc: grid failed: '//err%get_message(); stop 1
    end if
-   print '(a,f8.3,a)', '  grid build (Lebedev, radial, partition) ', t1 - t0, ' s'
-   t0 = wall()
+   print '(a,f8.3,a)', '  grid build (Lebedev, radial, partition) ', t1, ' s'
+   call tm%start()
    call xg%build(grid%n_points, grid%coords, grid%weights, bas, max_pts=max_pts)
    call xg%to_device()
-   t1 = wall()
+   t1 = tm%get_elapsed_time()
    print '(a,i0,a,i0,a,i0,a,i0)', 'bench_xc: ', nat, ' atoms, ', nao, ' AOs, ', grid%n_points, &
       ' points at level ', level
    print '(a,i0,a,i0,a,f6.1,a,f8.3,a)', '  batches ', xg%nbatch, ', largest local basis ', xg%max_nloc, &
       ', mean ', real(xg%b_aooff(xg%nbatch + 1) - 1, dp)/real(xg%nbatch, dp), &
-      '   (batching ', t1 - t0, ' s)'
+      '   (batching ', t1, ' s)'
 
    allocate (c(nao, 8), dmat(nao, nao), vxc(nao, nao))
    lcg = 61_int64
@@ -117,11 +118,11 @@ program bench_xc
 
    sp = 0.0_dp; sq = 0.0_dp; tmin = huge(1.0_dp)
    do r = 1, reps + 1
-      t0 = wall()
+      call tm%start()
       call trc_xc_rks(bas, xg, func, dmat, vxc, exc, nelec, t_points=tp, t_pairs=tq, n_skipped=nsk)
-      t1 = wall()
+      t1 = tm%get_elapsed_time()
       if (r == 1) cycle   ! warm-up: first launches, allocations
-      sp = sp + tp; sq = sq + tq; tmin = min(tmin, t1 - t0)
+      sp = sp + tp; sq = sq + tq; tmin = min(tmin, t1)
    end do
    print '(a,f9.4,a,f9.4,a,f9.4,a,i0,a,i0,a)', '  per call: points ', sp/reps, ' s   pairs ', sq/reps, &
       ' s   total (best) ', tmin, ' s   (', nsk, ' of ', xg%nbatch, ' batches screened out)'
@@ -131,9 +132,5 @@ program bench_xc
 
 contains
 
-   function wall() result(t)
-      real(dp) :: t
-      t = trc_wall()
-   end function wall
 
 end program bench_xc

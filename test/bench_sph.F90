@@ -8,7 +8,7 @@ program bench_sph
    !! basis large enough (1000+ AO) that the O(nao^4) build and the
    !! O(nshell^2) transform are not both too small to time honestly.
    use pic_types, only: dp
-   use trc_wall_clock, only: trc_wall
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_eri, only: trc_eri_t
@@ -21,7 +21,8 @@ program bench_sph
    integer, allocatable :: zint(:)
    real(dp), allocatable :: at_r(:, :)
    real(dp), allocatable :: d_c(:, :), g_c(:, :), d_s(:, :), g_s(:, :)
-   real(dp) :: t0, t1, t_fock, t_c2s, t_s2c
+   real(dp) :: t1, t_fock, t_c2s, t_s2c
+   type(timer_type) :: tm
    type(trc_basis_t) :: b
    type(trc_eri_t) :: eri
    type(error_t) :: err
@@ -55,27 +56,27 @@ program bench_sph
 
    call eri%build(b, 1.0e-10_dp)
 
-   t0 = wall()
+   call tm%start()
    call eri%fock_resident(b, d_c, g_c, k_scale=1.0_dp)
    !$acc wait
-   t1 = wall()
-   t_fock = t1 - t0
+   t1 = tm%get_elapsed_time()
+   t_fock = t1
 
-   t0 = wall()
+   call tm%start()
    do r = 1, reps
       call sph_sph_to_cart(b, d_s, d_c)
    end do
    !$acc wait
-   t1 = wall()
-   t_s2c = (t1 - t0)/real(reps, dp)
+   t1 = tm%get_elapsed_time()
+   t_s2c = (t1)/real(reps, dp)
 
-   t0 = wall()
+   call tm%start()
    do r = 1, reps
       call sph_cart_to_sph(b, g_c, g_s)
    end do
    !$acc wait
-   t1 = wall()
-   t_c2s = (t1 - t0)/real(reps, dp)
+   t1 = tm%get_elapsed_time()
+   t_c2s = (t1)/real(reps, dp)
 
    print '(a,f12.6,a)', '  one Fock build (fock_resident)   : ', t_fock, ' s'
    print '(a,f12.6,a)', '  one sph_sph_to_cart (D_sph->D_cart): ', t_s2c, ' s'
@@ -87,9 +88,5 @@ program bench_sph
 
 contains
 
-   function wall() result(t)
-      real(dp) :: t
-      t = trc_wall()
-   end function wall
 
 end program bench_sph

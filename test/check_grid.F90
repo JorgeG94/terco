@@ -24,7 +24,7 @@
 !
 program check_grid
    use pic_types, only: dp
-   use trc_wall_clock, only: trc_wall
+   use pic_timer, only: timer_type
    use trc_error, only: error_t
    use trc_lebedev, only: lebedev_grid, lebedev_available_orders, lebedev_has_negative_weights
    use trc_dft_radial, only: treutler_ahlrichs_radial, radial_volume_weights
@@ -274,12 +274,14 @@ contains
       real(dp), allocatable :: coords(:, :), w_full(:), p_full(:)
       type(dft_grid_t) :: grid
       type(error_t) :: err
-      real(dp) :: dmax, rmax, t0, t1, t2, g_scr, g_full, wscale
+      real(dp) :: dmax, rmax, t1, t2, g_scr, g_full, wscale
+      type(timer_type) :: tm
 
       call read_xyz('gly10.xyz', nat, z, coords)
-      t0 = trc_wall()
+      call tm%start()
       call build_dft_grid(coords, z, grid, err, level=3)
-      t1 = trc_wall()
+      t1 = tm%get_elapsed_time()
+      call tm%start()
       if (err%has_error()) then
          call report(.false., "screening: gly10 grid builds")
          return
@@ -288,7 +290,7 @@ contains
       allocate (w_full(n), p_full(n))
       call becke_partition_weights(grid%coords, coords, z, grid%atom, grid%scheme, grid%adjust, &
                                    p_full, err, nu_max=2.0_dp)
-      t2 = trc_wall()
+      t2 = tm%get_elapsed_time()
       w_full = grid%quad_weights*p_full
       dmax = maxval(abs(grid%weights - w_full))
       wscale = maxval(abs(w_full))
@@ -305,7 +307,7 @@ contains
          g_full = integrate_gaussians(g2, coords, 1.3_dp)
       end block
       print '(a,i0,a,i0,a,f7.2,a,f7.2,a)', "screening: gly10, ", nat, " atoms, ", n, " points; grid build ", &
-         t1 - t0, " s screened, partition alone ", t2 - t1, " s unscreened"
+         t1, " s screened, partition alone ", t2, " s unscreened"
       call report(dmax < 1.0e-8_dp*wscale, "screening: max |dw| / max w", dmax/wscale)
       call report(rmax < 1.0e-6_dp, "screening: max relative dw on weights above 1e-10", rmax)
       call report(abs(g_scr - g_full) < 1.0e-9_dp*real(nat, dp), "screening: Gaussian sum, screened vs full", &

@@ -477,3 +477,14 @@ jobs:
 
       - name: fortitude check
         run: fortitude check --output-format github
+
+  no-system-clock:
+    name: no system_clock (time with pic_timer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: check_system_clock
+        run: python3 tools/check_system_clock.py src app test

@@ -36,6 +36,7 @@
 !
 module trc_scf_grad
    use pic_types, only: dp
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e_gradient
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
@@ -238,7 +239,7 @@ contains
 
       type(trc_pairlist_t) :: pl
       type(step_table_t) :: gst, xst, vst
-      real(dp) :: tc
+      type(timer_type) :: tc
       logical :: talk
       integer :: nlc_level
       integer :: nao, nsp, s

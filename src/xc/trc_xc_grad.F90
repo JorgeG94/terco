@@ -190,6 +190,7 @@
 !
 module trc_xc_grad
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
@@ -305,7 +306,7 @@ contains
       logical :: reuse_grid
       type(step_table_t), target :: tbl_own
       type(step_table_t), pointer :: tbl
-      real(dp) :: tc
+      type(timer_type) :: tc
       type(error_t) :: err
       logical :: is_gga, gresp
       integer :: glevel, gmaxpts, ish, i
@@ -505,7 +506,7 @@ contains
       integer(int64) :: need, nchi, nchi_max, sa, sb, ldt, ldh, ldr, ldx
       integer :: ib, npb, nloc, nch, ic, b0, b1, nb, k, k0, k1, cnt, mp, ml, s, p0, np
       integer :: npairs, nwork, nmu, npairs_max, np_max, nb_max, npc, nhs, nmu_c, nmu_max, ldf, nq
-      real(dp) :: tc
+      type(timer_type) :: tc
 
       ! --- screen: which batches carry density at all -------------------
       call tbl%step_on(lp, ST_SCREEN, tc)

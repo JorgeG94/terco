@@ -135,7 +135,7 @@ module trc_xc
       xc_eval_point_fxc, xc_eval_point_mgga, xc_eval_point_mgga_polar, XC_MAX_KERNELS, XC_FAMILY_MGGA
    use trc_collocation, only: shell_collocate, NCART_MAX
    use trc_linalg, only: trc_linalg_t
-   use trc_wall_clock, only: trc_wall
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
@@ -251,7 +251,7 @@ contains
       type(trc_linalg_t), pointer :: lp
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
-      real(dp) :: t0, t1, t2
+      type(timer_type) :: tm
       logical :: mgga
       integer :: x
 
@@ -367,7 +367,7 @@ contains
             !$acc enter data create(yt)
          end if
 
-         t0 = trc_wall()
+         call tm%start()
          ! Padding rows and columns must be zero, not whatever the allocation
          ! held: a NaN there would poison the GEMM. chi feeds both GEMMs, Z
          ! the second; X, D_b and V_b are written in full.
@@ -417,7 +417,8 @@ contains
             call xc_points(np, p0, nspin, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, active, &
                            xg%nbatch, func%nk, kid, coef, nchi, chi, gchi, xt, zt, eg, ng)
          end if
-         t1 = trc_wall()
+         t_points = t_points + tm%get_elapsed_time()
+         call tm%start()
 
          !$acc update self(eg, ng)
          exc = exc + sum(eg)
@@ -455,9 +456,7 @@ contains
          end do
          call xc_scatter(npairs, nb, ord, pb_off, nspin, b%nao, vxc, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
                          nlp, xg%nbatch, vloc)
-         t2 = trc_wall()
-         t_points = t_points + (t1 - t0)
-         t_pairs = t_pairs + (t2 - t1)
+         t_pairs = t_pairs + tm%get_elapsed_time()
 
          !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, eg, ng, c_off, pr_off, ord, pb_off, wk_off)
          deallocate (chi, gchi, xt, zt, dloc, vloc, eg, ng, ord, pb_off, wk_off)

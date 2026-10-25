@@ -29,7 +29,7 @@
 !
 program scf_rhf
    use pic_types, only: dp, int64
-   use trc_wall_clock, only: trc_wall
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
    use trc_test_basis, only: read_xyz
@@ -51,7 +51,8 @@ program scf_rhf
    type(trc_basis_t)    :: bas
    type(trc_pairlist_t) :: pl
    type(trc_eri_t)      :: eri
-   real(dp) :: enuc, e1, e2, etot, eold, drms, t0, t1, tscf
+   real(dp) :: enuc, e1, e2, etot, eold, drms, t1, tscf
+   type(timer_type) :: tm
 
    charge = 0; thresh = 1.0e-10_dp; maxiter = 60
    if (command_argument_count() < 1) then
@@ -108,10 +109,10 @@ program scf_rhf
 
    hcore = tmat + vmat
 
-   call tick(t0)
+   call tm%start()
    call eri%build(bas, thresh)
-   call tick(t1)
-   print '(a,f8.3,a)', '  ERI setup  : ', t1 - t0, ' s'
+   t1 = tm%get_elapsed_time()
+   print '(a,f8.3,a)', '  ERI setup  : ', t1, ' s'
 
    enuc = nuclear_repulsion(nat, zat, at_r)
 
@@ -185,24 +186,25 @@ program scf_rhf
             print '(a,es12.4)', '  [resident] vs host-copy path               ', &
                maxval(abs(gr - gh))
             block
-               real(dp) :: ta, tb
+               real(dp) :: tb
+               type(timer_type) :: tmr
                integer  :: rr
                integer, parameter :: NIT = 10
-               call tick(ta)
+               call tmr%start()
                do rr = 1, NIT
                   call eri%fock(bas, dmat, gh)
                end do
-               call tick(tb)
-               print '(a,i0,a,f9.4,a)', '  [resident] ', NIT, ' x fock (host copies)  ', tb - ta, ' s'
+               tb = tmr%get_elapsed_time()
+               print '(a,i0,a,f9.4,a)', '  [resident] ', NIT, ' x fock (host copies)  ', tb, ' s'
                !$acc enter data copyin(dmat) create(gr)
-               call tick(ta)
+               call tmr%start()
                do rr = 1, NIT
                   call eri%fock_resident(bas, dmat, gr)
                end do
                !$acc wait
-               call tick(tb)
+               tb = tmr%get_elapsed_time()
                !$acc exit data delete(dmat, gr)
-               print '(a,i0,a,f9.4,a)', '  [resident] ', NIT, ' x fock_resident       ', tb - ta, ' s'
+               print '(a,i0,a,f9.4,a)', '  [resident] ', NIT, ' x fock_resident       ', tb, ' s'
             end block
             deallocate (gr, gh)
          end block
@@ -220,10 +222,10 @@ program scf_rhf
    eold = 0.0_dp
    tscf = 0.0_dp
    do it = 1, maxiter
-      call tick(t0)
+      call tm%start()
       call eri%fock(bas, dmat, gmat)
-      call tick(t1)
-      tscf = tscf + (t1 - t0)
+      t1 = tm%get_elapsed_time()
+      tscf = tscf + (t1)
 
       ! `fock` returns J - K/2, so this needs no factor.
       fock = hcore + gmat
@@ -250,7 +252,7 @@ program scf_rhf
       end do
       drms = sqrt(drms/real(nao, dp)**2)
 
-      print '(i5,f22.12,es14.4,es14.4,f10.4)', it, etot, etot - eold, drms, t1 - t0
+      print '(i5,f22.12,es14.4,es14.4,f10.4)', it, etot, etot - eold, drms, t1
       if (it > 1 .and. abs(etot - eold) < 1.0e-9_dp .and. drms < 1.0e-7_dp) then
          print '(a)', ''
          print '(a,f22.12)', '  CONVERGED  E(RHF) = ', etot
@@ -275,10 +277,6 @@ contains
       call eri%release(); call pl%release(); call bas%release()
    end subroutine cleanup
 
-   subroutine tick(t)
-      real(dp), intent(out) :: t
-      t = trc_wall()
-   end subroutine tick
 
    real(dp) function nuclear_repulsion(nat, z, r) result(e)
       integer,  intent(in) :: nat

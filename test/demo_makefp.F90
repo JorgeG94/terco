@@ -52,7 +52,7 @@
 !
 program demo_makefp
    use pic_types, only: dp
-   use trc_wall_clock, only: trc_wall
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
@@ -109,7 +109,8 @@ program demo_makefp
    real(dp) :: alpha(3, 3)
    real(dp), allocatable :: alpha_lmo(:, :, :)
 
-   real(dp) :: t0, t1, tstage
+   real(dp) :: t1, tstage
+   type(timer_type) :: tm
    integer  :: i, j, k
 
    ! ==========================================================================
@@ -134,7 +135,7 @@ program demo_makefp
    print '(a)', '=================================================='
 
    ! --- stage 1: the basis and terco's containers ----------------------------
-   call tick(t0)
+   call tm%start()
    call read_xyz(xyzfile, nat, at_z, at_r)
    block
       type(error_t) :: err
@@ -160,14 +161,14 @@ program demo_makefp
    call bas%to_device()
    call pl%to_device()
    call eri%build(bas, thresh)
-   call tick(t1)
+   t1 = tm%get_elapsed_time()
    print '(a,a)',        '  geometry   ', trim(xyzfile)
    print '(a,i0,a,i0,a,i0)', '  6-31G      ', nao, ' functions, ', nsh, &
       ' shells, atoms ', nat
    print '(a,i0,a,i0,a,i0)', '  occupied   ', nocc, '   core ', ncore, &
       '   valence (localized) ', nval
    print '(a,es9.2)',    '  threshold  ', thresh
-   print '(a,f9.3,a)',   '  stage 1    ', t1 - t0, ' s   basis, pair list, Schwarz'
+   print '(a,f9.3,a)',   '  stage 1    ', t1, ' s   basis, pair list, Schwarz'
 
    ! --- stage 2: the SCF -----------------------------------------------------
    allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao), hcore(nao, nao))
@@ -180,44 +181,44 @@ program demo_makefp
 
    allocate (x(nao, nao), cmo(nao, nao), eps(nao))
    allocate (dmat(nao, nao), gmat(nao, nao), fock(nao, nao))
-   call tick(t0)
+   call tm%start()
    call run_scf()
-   call tick(t1)
-   print '(a,f9.3,a,f18.10)', '  stage 2    ', t1 - t0, ' s   RHF energy ', escf
+   t1 = tm%get_elapsed_time()
+   print '(a,f9.3,a,f18.10)', '  stage 2    ', t1, ' s   RHF energy ', escf
 
    ! --- stage 3: Boys localization -------------------------------------------
    ! The dipole matrices about the origin. Boys is origin-independent in its
    ! maximizer -- shifting the origin adds only terms invariant under an
    ! occupied-occupied rotation -- so no centre of mass is needed here.
-   call tick(t0)
+   call tm%start()
    call trc_multipoles(bas, pl, [0.0_dp, 0.0_dp, 0.0_dp], mm)
    !$acc update self(mm)
    allocate (loc(nao, nval), qrot(nval, nval), centroid(3, nval))
    call boys_localize()
-   call tick(t1)
-   print '(a,f9.3,a,i0,a)', '  stage 3    ', t1 - t0, ' s   localized ', nval, &
+   t1 = tm%get_elapsed_time()
+   print '(a,f9.3,a,i0,a)', '  stage 3    ', t1, ' s   localized ', nval, &
       ' valence orbitals'
 
    ! --- stage 4: distributed multipoles --------------------------------------
-   call tick(t0)
+   call tm%start()
    call distributed_multipoles()
-   call tick(t1)
-   print '(a,f9.3,a,i0,a)', '  stage 4    ', t1 - t0, ' s   ', npoint, &
+   t1 = tm%get_elapsed_time()
+   print '(a,f9.3,a,i0,a)', '  stage 4    ', t1, ' s   ', npoint, &
       ' expansion points, charge through octupole'
 
    ! --- stage 5: static polarizability by CPHF -------------------------------
    allocate (alpha_lmo(3, 3, nval))
-   call tick(t0)
+   call tm%start()
    call cphf_static()
-   call tick(t1)
-   print '(a,f9.3,a,f10.4,a)', '  stage 5    ', t1 - t0, ' s   isotropic alpha ', &
+   t1 = tm%get_elapsed_time()
+   print '(a,f9.3,a,f10.4,a)', '  stage 5    ', t1, ' s   isotropic alpha ', &
       (alpha(1, 1) + alpha(2, 2) + alpha(3, 3))/3.0_dp, ' a.u.'
 
    ! --- stage 6: write it ----------------------------------------------------
-   call tick(t0)
+   call tm%start()
    call write_efp('demo.efp')
-   call tick(t1)
-   print '(a,f9.3,a)', '  stage 6    ', t1 - t0, ' s   wrote demo.efp'
+   t1 = tm%get_elapsed_time()
+   print '(a,f9.3,a)', '  stage 6    ', t1, ' s   wrote demo.efp'
    print '(a)', ''
 
    call summary()
@@ -227,10 +228,6 @@ program demo_makefp
 
 contains
 
-   subroutine tick(t)
-      real(dp), intent(out) :: t
-      t = trc_wall()
-   end subroutine tick
 
    pure integer function frozen_core(n, z) result(c)
       !! The standard frozen core, which is what MAKEFP uses: its polarizable

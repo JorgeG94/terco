@@ -6,7 +6,7 @@ program bench_gc
    !! gets to screen on a block-diagonal guess. Reports the build time, the
    !! per-Fock time of each path, and how far the two Fock matrices differ.
    use pic_types, only: dp, int64
-   use trc_wall_clock, only: trc_wall
+   use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json
@@ -19,7 +19,8 @@ program bench_gc
    integer :: natm, n, i, j, dev, reps, r
    integer, allocatable :: zint(:)
    real(dp), allocatable :: at_r(:, :), d(:, :), g1(:, :), g2(:, :), gref(:, :)
-   real(dp) :: worst, t0, t1, tb1, tb2, tf1, tf2, thr, pmargin
+   real(dp) :: worst, t1, tb1, tb2, tf1, tf2, thr, pmargin
+   type(timer_type) :: tm
    integer :: bres
    type(trc_basis_t) :: b
    type(trc_eri_t) :: e1, e2
@@ -81,25 +82,25 @@ program bench_gc
    end if
    !$acc enter data copyin(d) create(g1, g2, gref)
 
-   call tick(t0)
+   call tm%start()
    call e1%build(b, thr, batch_res=bres)
-   call tick(t1); tb1 = t1 - t0
+   t1 = tm%get_elapsed_time(); tb1 = t1
    call e1%fock_resident(b, d, g1, k_scale=1.0_dp, count_survivors=.true.)   ! warm up, and count
-   call tick(t0)
+   call tm%start()
    do r = 1, reps
       call e1%fock_resident(b, d, g1, k_scale=1.0_dp)
    end do
-   call tick(t1); tf1 = (t1 - t0)/reps
+   t1 = tm%get_elapsed_time(); tf1 = (t1)/reps
 
-   call tick(t0)
+   call tm%start()
    call e2%build(b, thr, batch_res=bres)
-   call tick(t1); tb2 = t1 - t0
+   t1 = tm%get_elapsed_time(); tb2 = t1
    call e2%fock_resident(b, d, g2, k_scale=1.0_dp, count_survivors=.true.)
-   call tick(t0)
+   call tm%start()
    do r = 1, reps
       call e2%fock_resident(b, d, g2, k_scale=1.0_dp)
    end do
-   call tick(t1); tf2 = (t1 - t0)/reps
+   t1 = tm%get_elapsed_time(); tf2 = (t1)/reps
 
    ! What the prescreen margin costs, against the same path run at a
    ! margin tight enough to be a reference. The margin is read per call,
@@ -136,8 +137,4 @@ contains
       read (u) d
       close (u)
    end subroutine read_density
-   subroutine tick(t)
-      real(dp), intent(out) :: t
-      t = trc_wall()
-   end subroutine tick
 end program bench_gc

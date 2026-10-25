@@ -103,6 +103,7 @@
 !
 module trc_vv10_grad
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -185,7 +186,7 @@ contains
       integer, allocatable :: bact(:)
       integer :: kid0(XC_MAX_KERNELS)
       real(dp) :: coef0(XC_MAX_KERNELS)
-      real(dp) :: tc
+      type(timer_type) :: tc
       real(dp), allocatable :: fxc0(:), pcoef(:)
       type(error_t) :: err
       integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc, g, own
