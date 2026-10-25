@@ -25,12 +25,16 @@ module check_opt_vs_mqc_suite
    use pyscf_ref_io, only: ref_report
    implicit none
    private
-   public :: collect_opt_vs_mqc, cli_exe, probe_json
+   public :: collect_opt_vs_mqc, cli_exe, probe_json, work_dir
 
    character(len=:), allocatable :: cli_exe
       !! The terco CLI binary, from the command line.
    character(len=:), allocatable :: probe_json
       !! Where the CLI writes its --json, from the command line.
+   character(len=:), allocatable :: work_dir
+      !! A scratch directory this check owns, for the xyz outputs (--opt
+      !! writes <geometry>_opt.xyz/_traj.xyz into the CLI's own CWD,
+      !! app/main.F90, so each case runs with its own `cd work_dir &&`).
    real(dp), parameter :: ENERGY_TOL = 2.0e-6_dp
       !! mqc's own ~2e-8 Eh basis difference, plus generous headroom for
       !! two different optimisers both sitting somewhere under a loose
@@ -58,9 +62,13 @@ contains
       real(dp), allocatable :: row(:)
 
       nfail = 0
+      call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f water.xyz '//work_dir//'/water.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
       probe_out = probe_json//'.water.out'
-      cmd = trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json// &
-            ' > '//probe_out//' 2>&1'
+      cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' water.xyz -b basis_sets/sto-3g.json --opt --silent --json '// &
+            probe_json//' > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
          call test_failed(error, "the water CLI run itself failed, exit code "//to_string(rc)); return
@@ -96,6 +104,7 @@ contains
       call json%destroy()
       call ref_report(nfail, abs(oh - 0.98941_dp) < BOND_TOL, 'check_opt_vs_mqc: water O-H vs mqc, Angstrom', &
                       abs(oh - 0.98941_dp))
+      call check_stray(nfail, 'water')
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_water
 
@@ -108,9 +117,13 @@ contains
       type(json_file) :: json
 
       nfail = 0
+      call execute_command_line('mkdir -p '//work_dir//'/basis_sets', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f hcn.xyz '//work_dir//'/hcn.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
+                                exitstat=rc, wait=.true.)
       probe_out = probe_json//'.hcn.out'
-      cmd = trim(cli_exe)//' hcn.xyz -b basis_sets/sto-3g.json --opt --silent --json '//probe_json// &
-            ' > '//probe_out//' 2>&1'
+      cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' hcn.xyz -b basis_sets/sto-3g.json --opt --silent --json '// &
+            probe_json//' > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
          call test_failed(error, "the hcn CLI run itself failed, exit code "//to_string(rc)); return
@@ -130,22 +143,42 @@ contains
       end if
       call ref_report(nfail, abs(e_json - (-91.67520899058249_dp)) < ENERGY_TOL, &
                       'check_opt_vs_mqc: hcn final energy vs mqc, Eh', abs(e_json - (-91.67520899058249_dp)))
+      call check_stray(nfail, 'hcn')
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_hcn
+
+   !
+   ! <base>_opt.xyz/<base>_traj.xyz must not have landed in test/ itself
+   ! (this program's own WORKING_DIRECTORY, ctest's convention) -- the
+   ! whole point of each case's own `cd work_dir &&` above.
+   !
+   subroutine check_stray(nfail, base)
+      integer, intent(inout) :: nfail
+      character(len=*), intent(in) :: base
+      logical :: exists
+      inquire (file=base//'_opt.xyz', exist=exists)
+      call ref_report(nfail, .not. exists, 'check_opt_vs_mqc: '//base//'_opt.xyz was not left in test/ itself', &
+                      merge(1.0_dp, 0.0_dp, exists))
+      inquire (file=base//'_traj.xyz', exist=exists)
+      call ref_report(nfail, .not. exists, 'check_opt_vs_mqc: '//base//'_traj.xyz was not left in test/ itself', &
+                      merge(1.0_dp, 0.0_dp, exists))
+   end subroutine check_stray
 
 end module check_opt_vs_mqc_suite
 
 program check_opt_vs_mqc
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_opt_vs_mqc_suite, only: collect_opt_vs_mqc, cli_exe, probe_json
+   use check_opt_vs_mqc_suite, only: collect_opt_vs_mqc, cli_exe, probe_json, work_dir
    implicit none
    character(len=1024) :: arg
    integer :: stat
    call get_command_argument(1, arg); cli_exe = trim(arg)
    call get_command_argument(2, arg); probe_json = trim(arg)
-   if (len(cli_exe) == 0 .or. len(probe_json) == 0) then
-      write (error_unit, "(a)") "check_opt_vs_mqc: usage: check_opt_vs_mqc <terco CLI binary> <scratch .json path>"
+   call get_command_argument(3, arg); work_dir = trim(arg)
+   if (len(cli_exe) == 0 .or. len(probe_json) == 0 .or. len(work_dir) == 0) then
+      write (error_unit, "(a)") "check_opt_vs_mqc: usage: check_opt_vs_mqc <terco CLI binary> <scratch .json path> "// &
+         "<scratch dir>"
       error stop 1
    end if
    stat = 0
