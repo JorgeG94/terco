@@ -28,6 +28,7 @@ module terco_run
    use pic_cli, only: cli_t
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
+   use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
    use json_module, only: json_core, json_value
    use trc_capi, only: trc_message, TRC_OK
@@ -624,7 +625,6 @@ program terco_main
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init
    use pic_knowledge, only: get_knowledge
-   use pic_timer, only: timer_type
    use pic_profiler, only: profiler_init
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
