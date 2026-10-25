@@ -27,7 +27,8 @@
 ! against this program's own np 1 water/6-31G* values (2026-10-15).
 !
 program scf_mpi
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use trc_wall_clock, only: trc_wall
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, MPI_MAX, MPI_MIN
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -58,7 +59,6 @@ program scf_mpi
    logical :: ok
    character(len=256) :: xyz, xyz_arg
    real(dp) :: t0, t1
-   integer(int64) :: cc, rate
 
    call pic_mpi_init()
    comm = comm_world()
@@ -92,11 +92,9 @@ program scf_mpi
       if (command_argument_count() >= 4) then
          call get_command_argument(4, xyz_arg); read (xyz_arg, *) opts%damp
       end if
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+      t0 = trc_wall()
       call trc_scf_run(bas, nint(sum(at_z))/2, nint(sum(at_z))/2, opts, res, comm=comm)
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+      t1 = trc_wall()
       e(ic) = res%energy
       emax = e(ic); emin = e(ic)
       ! pic-mpi's single-rank backend refuses a collective outright.

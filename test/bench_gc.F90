@@ -6,6 +6,7 @@ program bench_gc
    !! gets to screen on a block-diagonal guess. Reports the build time, the
    !! per-Fock time of each path, and how far the two Fock matrices differ.
    use pic_types, only: dp, int64
+   use trc_wall_clock, only: trc_wall
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json
@@ -137,9 +138,6 @@ contains
    end subroutine read_density
    subroutine tick(t)
       real(dp), intent(out) :: t
-      integer(int64) :: c, rate
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(c, rate)
-      t = real(c, dp)/real(rate, dp)
+      t = trc_wall()
    end subroutine tick
 end program bench_gc

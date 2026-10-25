@@ -25,6 +25,7 @@
 module trc_step_table
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
+   use trc_wall_clock, only: trc_wall
    use trc_linalg, only: trc_linalg_t
    use pic_flop_recorder, only: flop_recorder_type
    use pic_profiler, only: profiler_start, profiler_stop
@@ -128,11 +129,8 @@ contains
    function tick(lp) result(t)
       type(trc_linalg_t), intent(in) :: lp
       real(dp) :: t
-      integer(int64) :: cc, rate
       call lp%sync()
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate)
-      t = real(cc, dp)/real(rate, dp)
+      t = trc_wall()
    end function tick
 
    !

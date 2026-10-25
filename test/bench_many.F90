@@ -26,6 +26,7 @@
 !
 program bench_many
    use pic_types, only: dp, int64
+   use trc_wall_clock, only: trc_wall
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_eri, only: trc_eri_t
    use trc_test_basis, only: read_xyz
@@ -138,10 +139,7 @@ contains
 
    subroutine tick(t)
       real(dp), intent(out) :: t
-      integer(int64) :: c, rate
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(c, rate)
-      t = real(c, dp)/real(rate, dp)
+      t = trc_wall()
    end subroutine tick
 
    subroutine read_density(fn, nao, d)

@@ -19,7 +19,8 @@
 ! (test/CMakeLists.txt, same as bench_vv10).
 !
 program bench_vv10_grad
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use trc_wall_clock, only: trc_wall
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -41,7 +42,6 @@ program bench_vv10_grad
    type(trc_linalg_t) :: lp
    type(error_t) :: err
    real(dp) :: t0, t1, t_full, t_novv10
-   integer(int64) :: cc, rate
 
    if (command_argument_count() < 4) then
       print '(a)', 'usage: bench_vv10_grad <xyz> <basis.json> <nalpha> <nbeta>'; stop 1
@@ -66,11 +66,9 @@ program bench_vv10_grad
    opts%functional = 'wb97x-v'
    opts%grid_level = 3
    opts%conv_energy = 1.0e-10_dp; opts%conv_diis = 1.0e-8_dp; opts%max_iter = 100
-   ! TODO(fix): system_clock -> pic_timer timer_type
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   t0 = trc_wall()
    call trc_scf_run(bas, nalpha, nbeta, opts, res)
-   ! TODO(fix): system_clock -> pic_timer timer_type
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+   t1 = trc_wall()
    if (.not. res%converged) then
       print '(a)', 'bench_vv10_grad: SCF did not converge'; stop 1
    end if
@@ -87,22 +85,18 @@ program bench_vv10_grad
    allocate (grad_full(3, nat), grad_novv10(3, nat))
    call lp%init(bas%nao)
 
-   ! TODO(fix): system_clock -> pic_timer timer_type
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   t0 = trc_wall()
    call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_full, &
                          func=func, grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, &
                          rho_tol=opts%rho_tol, nlc_grid_level=opts%nlc_grid_level)
-   ! TODO(fix): system_clock -> pic_timer timer_type
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+   t1 = trc_wall()
    t_full = t1 - t0
 
-   ! TODO(fix): system_clock -> pic_timer timer_type
-   call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+   t0 = trc_wall()
    call trc_scf_gradient(bas, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, 1.0e-12_dp, grad_novv10, &
                          func=func_novv10, grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, &
                          rho_tol=opts%rho_tol, nlc_grid_level=opts%nlc_grid_level)
-   ! TODO(fix): system_clock -> pic_timer timer_type
-   call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+   t1 = trc_wall()
    t_novv10 = t1 - t0
 
    call lp%release()

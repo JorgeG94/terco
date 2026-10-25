@@ -23,7 +23,8 @@
 ! pass: level 3 reaches 5.7e-9 on the Gaussian sum and the bound is 1e-8.
 !
 program check_grid
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use trc_wall_clock, only: trc_wall
    use trc_error, only: error_t
    use trc_lebedev, only: lebedev_grid, lebedev_available_orders, lebedev_has_negative_weights
    use trc_dft_radial, only: treutler_ahlrichs_radial, radial_volume_weights
@@ -274,14 +275,11 @@ contains
       type(dft_grid_t) :: grid
       type(error_t) :: err
       real(dp) :: dmax, rmax, t0, t1, t2, g_scr, g_full, wscale
-      integer(int64) :: cc, rate
 
       call read_xyz('gly10.xyz', nat, z, coords)
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate); t0 = real(cc, dp)/real(rate, dp)
+      t0 = trc_wall()
       call build_dft_grid(coords, z, grid, err, level=3)
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate); t1 = real(cc, dp)/real(rate, dp)
+      t1 = trc_wall()
       if (err%has_error()) then
          call report(.false., "screening: gly10 grid builds")
          return
@@ -290,8 +288,7 @@ contains
       allocate (w_full(n), p_full(n))
       call becke_partition_weights(grid%coords, coords, z, grid%atom, grid%scheme, grid%adjust, &
                                    p_full, err, nu_max=2.0_dp)
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate); t2 = real(cc, dp)/real(rate, dp)
+      t2 = trc_wall()
       w_full = grid%quad_weights*p_full
       dmax = maxval(abs(grid%weights - w_full))
       wscale = maxval(abs(w_full))

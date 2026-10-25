@@ -90,6 +90,7 @@ module trc_rimp2_driver
    use trc_mpi_device, only: trc_mpi_device_direct
    use pic_flop_recorder, only: flop_recorder_type
    use trc_step_table, only: step_table_t
+   use trc_wall_clock, only: trc_wall
    use trc_scf_df, only: df_jk_t
    use trc_sph, only: sph_metric_cart_to_sph, sph_mo_to_cart, sph_aux3c_to_sph
    implicit none
@@ -1094,14 +1095,6 @@ contains
       if (.not. present(la)) call la_own%release()
    end subroutine trc_urimp2_run
 
-   function wall() result(t)
-      real(dp) :: t
-      integer(int64) :: cc, rate
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate)
-      t = real(cc, dp)/real(rate, dp)
-   end function wall
-
    !
    ! The clock after everything queued on the device has finished.
    !
@@ -1109,7 +1102,7 @@ contains
       type(trc_linalg_t), intent(in) :: lp
       real(dp) :: t
       call lp%sync()
-      t = wall()
+      t = trc_wall()
    end function tick
 
    !

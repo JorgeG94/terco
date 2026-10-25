@@ -51,7 +51,8 @@
 !   demo_makefp <xyz> [charge] [thresh] [ncore]
 !
 program demo_makefp
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
+   use trc_wall_clock, only: trc_wall
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
@@ -228,10 +229,7 @@ contains
 
    subroutine tick(t)
       real(dp), intent(out) :: t
-      integer(int64) :: c, rate
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(c, rate)
-      t = real(c, dp)/real(rate, dp)
+      t = trc_wall()
    end subroutine tick
 
    pure integer function frozen_core(n, z) result(c)

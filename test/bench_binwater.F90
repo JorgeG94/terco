@@ -18,6 +18,7 @@
 !
 program bench_binwater
    use pic_types, only: dp, int64
+   use trc_wall_clock, only: trc_wall
    use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_cart, only: cart_init
@@ -539,10 +540,7 @@ contains
 
    subroutine tick(tt)
       real(dp), intent(out) :: tt
-      integer(int64) :: c, rate
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(c, rate)
-      tt = real(c, dp)/real(rate, dp)
+      tt = trc_wall()
    end subroutine tick
 
 end program bench_binwater

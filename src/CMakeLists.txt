@@ -23,6 +23,7 @@ target_sources(
           eri/trc_eri.F90       # the four-centre Fock builds
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
+          core/trc_wall_clock.F90 # seconds since first call, from a pic timer
           core/trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX
           core/trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
           core/trc_constants.F90  # the single source of truth for math/CODATA constants and atomic masses

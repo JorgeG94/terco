@@ -15,6 +15,7 @@
 !
 program bench_xc
    use pic_types, only: dp, int64
+   use trc_wall_clock, only: trc_wall
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
@@ -132,10 +133,7 @@ contains
 
    function wall() result(t)
       real(dp) :: t
-      integer(int64) :: cc, rate
-      ! TODO(fix): system_clock -> pic_timer timer_type
-      call system_clock(cc, rate)
-      t = real(cc, dp)/real(rate, dp)
+      t = trc_wall()
    end function wall
 
 end program bench_xc
