@@ -254,6 +254,7 @@ contains
       real(dp) :: com(3)
       real(dp), allocatable :: d_mat(:, :), s_vals(:), u_full(:, :)
       integer(default_int) :: linfo
+      integer(default_int) :: index
 
       natm = size(mass)
       ndof = 3*natm
@@ -272,15 +273,16 @@ contains
          rx = coords_bohr(1, a) - com(1)
          ry = coords_bohr(2, a) - com(2)
          rz = coords_bohr(3, a) - com(3)
-         d_mat(3*(a - 1) + 1, 1) = sm
-         d_mat(3*(a - 1) + 2, 2) = sm
-         d_mat(3*(a - 1) + 3, 3) = sm
-         d_mat(3*(a - 1) + 2, 4) = sm*rz
-         d_mat(3*(a - 1) + 3, 4) = -sm*ry
-         d_mat(3*(a - 1) + 1, 5) = -sm*rz
-         d_mat(3*(a - 1) + 3, 5) = sm*rx
-         d_mat(3*(a - 1) + 1, 6) = sm*ry
-         d_mat(3*(a - 1) + 2, 6) = -sm*rx
+         index = 3*(a - 1)
+         d_mat(index + 1, 1) = sm
+         d_mat(index + 2, 2) = sm
+         d_mat(index + 3, 3) = sm
+         d_mat(index + 2, 4) = sm*rz
+         d_mat(index + 3, 4) = -sm*ry
+         d_mat(index + 1, 5) = -sm*rz
+         d_mat(index + 3, 5) = sm*rx
+         d_mat(index + 1, 6) = sm*ry
+         d_mat(index + 2, 6) = -sm*rx
       end do
 
       allocate (s_vals(nsing), u_full(ndof, nsing))
@@ -317,6 +319,9 @@ contains
       n_modes = ndof - k_tr
 
       allocate (p_mat(ndof, ndof))
+      ! matmul is ok here since this is not a bottleneck 
+      ! P = I - u_tr u_tr^T, the projector onto the orthogonal complement of u_tr
+      ! Its eigenvalues are 0 (for u_tr) and 1 (for the complement)
       p_mat = -matmul(u_tr, transpose(u_tr))
       do i = 1, ndof
          p_mat(i, i) = p_mat(i, i) + 1.0_dp
@@ -336,6 +341,8 @@ contains
          end if
       end do
       nfound = j
+      ! in theory we can rely on them being deallocated, but let's be good
+      deallocate(p_mat, eigval) 
    end subroutine trc_vib_complement_basis
 
    !
