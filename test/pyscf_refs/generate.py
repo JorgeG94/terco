@@ -44,6 +44,7 @@ from pathlib import Path
 
 import numpy as np
 import scipy.linalg
+import scipy.optimize as sp_optimize
 import pyscf
 from pyscf import df, gto, mp, scf, dft
 from pyscf.dft import libxc, numint
@@ -3803,6 +3804,236 @@ def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, tempe
     return results
 
 
+def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
+    """RHF/STO-3G, built from terco's own basis file (not pyscf's built-in
+    STO-3G, same reasoning as gen_vib_thermo: the anchor then follows the
+    file the tests read, which is on this ref's files: line): optimise
+    `atoms_ang` with scipy.optimize's L-BFGS-B driven by pyscf's own
+    analytic RHF gradient at every trial geometry, to a TIGHT
+    max-gradient-component tolerance (1e-8 Eh/Bohr -- two orders tighter
+    than terco's own --opt-gtol 1e-5 anchor comparison below, so the
+    comparison's error is dominated by terco's convergence, not pyscf's).
+
+    This is independent of terco's optimiser end to end: a different
+    language, a different SCF implementation, and scipy's L-BFGS-B
+    rather than DL-FIND's. Agreement on the optimised energy and bond
+    lengths/angles is therefore real validation of terco's --opt, not a
+    restatement of the same algorithm.
+
+    Stores the final Cartesian geometry (Bohr) and energy; the Fortran
+    check computes bond lengths/angles from COORDS itself rather than
+    pyscf computing and committing them separately, so there is only one
+    place either side's internal coordinates come from."""
+    natm = len(atoms_ang)
+    symbols = [a[0] for a in atoms_ang]
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol0 = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
+    x0 = mol0.atom_coords().reshape(-1).copy()   # bohr
+
+    cache = {}
+
+    def energy_grad(x):
+        key = tuple(np.round(x, 12))
+        if key in cache:
+            return cache[key]
+        coords = x.reshape(natm, 3)
+        mol = gto.M(atom=list(zip(symbols, coords)), basis=basis_arg, unit='Bohr',
+                    charge=charge, spin=mult - 1, verbose=0)
+        mf = scf.RHF(mol)
+        mf.conv_tol = 1e-13
+        mf.conv_tol_grad = 1e-11
+        mf.max_cycle = 200
+        e = mf.kernel()
+        if not mf.converged:
+            raise ConvergenceError(f"opt {case}: SCF did not converge at a trial geometry")
+        g = mf.nuc_grad_method().kernel().reshape(-1)
+        cache[key] = (float(e), g)
+        return cache[key]
+
+    def fun(x):
+        return energy_grad(x)[0]
+
+    def jac(x):
+        return energy_grad(x)[1]
+
+    res = sp_optimize.minimize(fun, x0, jac=jac, method='L-BFGS-B',
+                                options={'gtol': 1.0e-8, 'ftol': 1.0e-15, 'maxiter': 300, 'maxfun': 2000})
+    gmax_final = np.abs(jac(res.x)).max()
+    if gmax_final > 1.0e-6:
+        raise ConvergenceError(f"opt {case}: scipy L-BFGS-B stopped at max|g| {gmax_final:.3e}, "
+                               f"above the 1e-6 Eh/Bohr this reference promises")
+    e_final = fun(res.x)
+    coords_final = res.x.reshape(natm, 3)
+
+    w = RefWriter(f"opt_{case}.ref")
+    w.header("opt " + case, [TEST / "basis_sets" / "sto-3g.json", TEST / "check_opt_vs_pyscf.F90"])
+    w.comment(f"scipy L-BFGS-B, {res.nit} iterations, final max|g| {gmax_final:.3e} Eh/Bohr")
+    w.int_("NAT", natm)
+    w.vector("Z", np.array(mass_z, dtype=np.float64))
+    w.matrix("COORDS", coords_final.T)      # bohr, (3, natm)
+    w.real("E_FINAL", e_final)
+    w.real("GMAX_FINAL", gmax_final)
+    w.end()
+    w.write()
+    print(f"  opt {case}: E_final={e_final:.12f} gmax={gmax_final:.3e} nit={res.nit}")
+
+
+def _rigid_body_basis(coords):
+    """Orthonormal basis of the (up to 6) rigid-body Cartesian displacement
+    directions at `coords` ((natm,3), any unit): 3 translations, 3
+    rotations about the centre of mass (a true linear molecule loses one
+    rotation -- about its own axis -- QR drops the resulting near-zero
+    column automatically). Returns (nvar, k) with k <= 6."""
+    natm = coords.shape[0]
+    com = coords.mean(axis=0)
+    rel = coords - com
+    vecs = []
+    for k in range(3):
+        v = np.zeros((natm, 3))
+        v[:, k] = 1.0
+        vecs.append(v.reshape(-1))
+    for k in range(3):
+        axis = np.zeros(3)
+        axis[k] = 1.0
+        vecs.append(np.cross(axis, rel).reshape(-1))
+    q, r = np.linalg.qr(np.array(vecs).T)
+    return q[:, np.abs(np.diag(r)) > 1.0e-6]
+
+
+def _rfo_minimise_lambda(g, h):
+    """The shared shift `lambda` for a JOINT (not mode-by-mode) RFO
+    minimisation step over several Hessian eigenmodes at once (gradient
+    components `g`, eigenvalues `h`, same length) -- the secular equation
+    lambda = sum_i g_i^2/(lambda - h_i), solved by damped Newton from a
+    safely-low starting guess, with `lambda` kept below every h_i (the
+    minimising root) throughout. Returns 0.0 for an empty subspace."""
+    if len(h) == 0:
+        return 0.0
+    lam = min(float(h.min()) - float(np.abs(g).max()) - 1.0, -1.0e-3)
+    for _ in range(200):
+        denom = lam - h
+        f = lam - np.sum(g**2 / denom)
+        df = 1.0 + np.sum(g**2 / denom**2)
+        lam_new = lam - f / df
+        if lam_new >= h.min():
+            lam_new = 0.5 * (lam + float(h.min()))
+        if abs(lam_new - lam) < 1.0e-14:
+            lam = lam_new
+            break
+        lam = lam_new
+    return lam
+
+
+def gen_opt_ts(case, atoms_ang, mass_z, charge=0, mult=1, gtol=1.0e-8, maxiter=60):
+    """RHF/STO-3G, built from terco's own basis file (same reasoning as
+    gen_vib_thermo/gen_opt): locate a transition state with pyscf ALONE -- partitioned
+    rational-function (eigenvector-following) optimisation on pyscf's own
+    analytic RHF gradient and Hessian (`mf.Hessian().kernel()`), with
+    translation and rotation projected out of both before diagonalising
+    (`_rigid_body_basis`/the projector `P = I - V V^T` below) so the lowest
+    curvature direction found is a real vibrational mode, never a rigid-body
+    one -- the same failure terco's own bridge documents for Cartesian
+    P-RFO/dimer without `nzero` (app/trc_dlfind_bridge.F90's own
+    cb_get_params comment).
+
+    At each geometry: the step that MAXIMISES energy along the lowest
+    projected eigenmode (the one-mode RFO root lambda = (h + sqrt(h^2 +
+    4g^2))/2, step g/(lambda-h) -- the textbook partitioned-RFO formula for
+    a single mode) plus a joint RFO MINIMISATION over every other non-zero
+    mode at once (`_rfo_minimise_lambda`), trust-radius capped. Independent
+    of terco end to end: different language, different SCF code, a from-
+    scratch optimiser, not DL-FIND's.
+
+    Converges to max|g| < `gtol` (1e-8, two orders tighter than terco's own
+    --opt-gtol 1e-5/1e-6 TS runs this anchors), then calls pyscf's own
+    `harmonic_analysis` (the SAME helper gen_vib_thermo uses) at the result
+    and REFUSES to commit a reference whose own analytic Hessian does not
+    show EXACTLY ONE imaginary mode -- this generator's own proof that what
+    it found is a genuine first-order saddle, not some other critical point
+    a bad start or a projection bug slid into."""
+    natm = len(atoms_ang)
+    symbols = [a[0] for a in atoms_ang]
+    mass = np.array([_TRC_ATOMIC_MASS[z] for z in mass_z], dtype=np.float64)
+    nvar = 3 * natm
+    elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
+    basis_arg = bse_json_basis(TEST / "basis_sets/sto-3g.json", elements)
+    mol0 = gto.M(atom=atoms_ang, basis=basis_arg, unit='Angstrom', charge=charge, spin=mult - 1, verbose=0)
+    x = mol0.atom_coords().reshape(-1).copy()   # bohr
+
+    def energy_grad_hess(xx):
+        coords = xx.reshape(natm, 3)
+        mol = gto.M(atom=list(zip(symbols, coords)), basis=basis_arg, unit='Bohr',
+                    charge=charge, spin=mult - 1, verbose=0)
+        mf, _ = converge_tight(lambda: scf.RHF(mol), None, f"opt_ts {case}",
+                                conv_tol=1.0e-13, conv_tol_grad=1.0e-11, max_cycle=200)
+        g = mf.nuc_grad_method().kernel().reshape(-1)
+        hh = mf.Hessian().kernel().transpose(0, 2, 1, 3).reshape(nvar, nvar)
+        return mf, g, 0.5 * (hh + hh.T)
+
+    mf = None
+    gmax = np.inf
+    for it in range(maxiter):
+        mf, g, h = energy_grad_hess(x)
+        gmax = np.abs(g).max()
+        if gmax < gtol:
+            break
+        vrr = _rigid_body_basis(x.reshape(natm, 3))
+        proj = np.eye(nvar) - vrr @ vrr.T
+        gp, hp = proj @ g, proj @ h @ proj
+        w, v = np.linalg.eigh(hp)
+        # The rigid-body subspace's eigenvalues are EXACTLY zero (the
+        # projector annihilates them); every other eigenvalue is a real
+        # vibrational curvature, unperturbed by the projection.
+        real_idx = np.argsort(np.abs(w))[vrr.shape[1]:]
+        real_idx = real_idx[np.argsort(w[real_idx])]
+        m, rest = real_idx[0], real_idx[1:]
+        hm, gm = w[m], v[:, m] @ gp
+        lam_ts = 0.5 * (hm + np.sqrt(hm**2 + 4.0 * gm**2))
+        step = (gm / (lam_ts - hm)) * v[:, m]
+        gr, hr = v[:, rest].T @ gp, w[rest]
+        lam_min = _rfo_minimise_lambda(gr, hr)
+        for k, idx in enumerate(rest):
+            step = step + (gr[k] / (lam_min - hr[k])) * v[:, idx]
+        step_norm = np.linalg.norm(step)
+        max_step = 0.3
+        if step_norm > max_step:
+            step = step / step_norm * max_step
+        x = x + step
+    else:
+        raise ConvergenceError(f"opt_ts {case}: P-RFO did not reach max|g| < {gtol:.1e} "
+                               f"in {maxiter} iterations (last max|g| {gmax:.3e})")
+
+    e_final = mf.e_tot
+    coords_final = x.reshape(natm, 3)
+    mol_final = gto.M(atom=list(zip(symbols, coords_final)), basis=basis_arg, unit='Bohr',
+                      charge=charge, spin=mult - 1, verbose=0)
+    hess_final = mf.Hessian().kernel()
+    va = harmonic_analysis(mol_final, hess_final, mass=mass, imaginary_freq=False)
+    freq_cm1 = np.asarray(va['freq_wavenumber'].real, dtype=np.float64)
+    n_imaginary = int(np.count_nonzero(freq_cm1 <= 0.0))
+    if n_imaginary != 1:
+        raise ConvergenceError(f"opt_ts {case}: the converged point has {n_imaginary} "
+                               f"imaginary mode(s), not exactly 1 -- not a first-order saddle")
+
+    w = RefWriter(f"opt_ts_{case}.ref")
+    w.header("opt_ts " + case,
+             [TEST / "basis_sets" / "sto-3g.json", TEST / "check_opt_ts.F90", TEST / "hcn_ts_guess.xyz"])
+    w.comment(f"P-RFO (this file's own gen_opt_ts), {it + 1} iterations, "
+              f"final max|g| {gmax:.3e} Eh/Bohr, n_imaginary={n_imaginary}")
+    w.int_("NAT", natm)
+    w.vector("Z", np.array(mass_z, dtype=np.float64))
+    w.matrix("COORDS", coords_final.T)      # bohr, (3, natm)
+    w.real("E_FINAL", e_final)
+    w.real("GMAX_FINAL", gmax)
+    w.int_("N_IMAGINARY", n_imaginary)
+    w.vector("FREQ_CM1", freq_cm1)
+    w.end()
+    w.write()
+    print(f"  opt_ts {case}: E_final={e_final:.12f} gmax={gmax:.3e} iters={it + 1} "
+          f"n_imaginary={n_imaginary} lowest_freq={freq_cm1.min():.4f} cm-1")
+
+
 def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, pressure=101325.0):
     """RHF/STO-3G: pyscf's own analytic Hessian, harmonic_analysis (with
     exclude_trans/exclude_rot, imaginary_freq=False so an unstable mode
@@ -4006,6 +4237,28 @@ CASES = {
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "pcm_scf_main": lambda: gen_pcm_scf("main"),
     "pcm_scf_f": lambda: gen_pcm_scf("f"),
+    "opt_water": lambda: gen_opt(
+        "water",
+        [("O", (0.00000000000000, 0.00000000009155, 0.10077199490609)),
+         ("H", (0.00000000000000, 0.77250895271063, -0.46780199741728)),
+         ("H", (0.00000000000000, -0.77250895280218, -0.46780199748881))],
+        [8, 1, 1]),
+    "opt_hcn": lambda: gen_opt(
+        "hcn",
+        [("H", (0.0, 0.0, 0.000)),
+         ("C", (0.0, 0.0, 1.064)),
+         ("N", (0.0, 0.0, 2.220))],
+        [1, 6, 7]),
+    "opt_ts_hcn": lambda: gen_opt_ts(
+        "hcn",
+        # test/hcn_ts_guess.xyz's own geometry, duplicated here by hand --
+        # the same convention opt_water/opt_hcn above already use (no file
+        # read; the committed .xyz and this literal must be kept in sync by
+        # hand, same as those two).
+        [("H", (1.010053511140153, -0.002437274323232, 0.320042591415386)),
+         ("C", (-0.048836927914860, 0.000171974332794, 0.002721376658496)),
+         ("N", (-0.011216583188155, 0.002265299995869, 1.197236031527656))],
+        [1, 6, 7]),
     "vib_thermo_water": lambda: gen_vib_thermo(
         "water",
         [("O", (0.00000000000000, 0.00000000009155, 0.10077199490609)),
