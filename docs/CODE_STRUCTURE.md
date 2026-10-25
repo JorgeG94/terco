@@ -127,12 +127,37 @@ The same habits help both:
 
 ## 6. Checking
 
+`tools/archcheck.py` enforces sections 1 to 4 deterministically: same tree,
+same output. It is regex based like `modmap.py`, so it checks terco's regular
+style and does not parse all of Fortran.
+
+| Rule | Flags |
+|---|---|
+| `layer-up` | a module using a module in a higher layer |
+| `module-prefix` | a module without the `trc_` prefix |
+| `proc-prefix` | a public procedure not starting with its module's name |
+| `short-name` | a procedure, argument, local or module variable containing a word from the `SHORT_NAMES` table (`ctx`, `cfg`, `dens`, ...) |
+| `proc-length` | a procedure over 300 lines |
+| `arg-count` | a procedure with more than 8 dummy arguments (`routine seq` item routines excepted) |
+
+```sh
+python3 tools/archcheck.py                    # fail on new violations only
+python3 tools/archcheck.py --summary          # counts per rule
+python3 tools/archcheck.py --all --rule short-name
+python3 tools/archcheck.py --update-baseline  # after paying debt down
+```
+
+Existing violations live in `tools/arch_baseline.json`. CI fails on a
+violation that is not in it, and on a length or argument count that grew past
+its baseline value. When you fix some, run `--update-baseline` and commit the
+smaller file, so the debt cannot return. `SHORT_NAMES`, the limits and the
+exempt paths are constants at the top of the script: change them there and
+update the table in section 3 in the same PR.
+
+`tools/modmap.py` is the exploration side:
+
 ```sh
 python3 tools/modmap.py layers     # layer matrix and upward edges
-python3 tools/modmap.py lint       # naming and public-surface checks
 python3 tools/modmap.py calls trc_scf_run --depth 2
 python3 tools/modmap.py graph --dir scf > scf.mmd
 ```
-
-The intent is a CI step that compares these results to a stored baseline and
-fails on new violations only, so existing debt does not block unrelated work.
