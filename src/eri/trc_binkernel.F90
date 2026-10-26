@@ -29,7 +29,7 @@ module trc_binkernel
    use trc_rys_select, only: rys_select_init, rys_route
    use trc_rys_kernels, only: rys_dispatch
    use trc_mdk_kernels, only: mdk_has_class, mdk_class_run
-   use trc_mdg_kernels, only: mdg_has_class, mdg_class_run
+   use trc_mdg, only: mdg_routes
    implicit none
    private
 
@@ -435,16 +435,10 @@ contains
             ! Rys kernel instead of HGP's, for classes that have one --
             ! `rys_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
-            if (class_listed(key2, "TRC_MDG_CLASSES") .and. mdg_has_class(key2)) then
-               ! TRC_MDG_CLASSES: the McMurchie-Davidson GEMM prototype
-               ! (scripts/gen_md_kgemm.py), on the same segments and screens.
-               if (nranks > 1) error stop "terco: TRC_MDG_CLASSES does not split over ranks yet"
-               call mdg_class_run(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                  b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
-                                  jfac, kfac, dsh, nbas, nao, ao_off, &
-                                  nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                                  ndens, dmat, jmat)
+            if (mdg_routes(key2)) then
+               ! TRC_MDG_CLASSES: done after the bins by the MD GEMM pass
+               ! (trc_mdg), which orders the work its own way.
+               continue
             else if (mdk_route(key2)) then
                ! TRC_MDK_CLASSES: the McMurchie-Davidson prototype, on the
                ! same segments, screens and digestion (scripts/gen_md_k.py).

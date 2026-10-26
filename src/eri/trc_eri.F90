@@ -35,6 +35,8 @@ module trc_eri
    use trc_binkernel, only: fock_bins
    use trc_grad, only: grad_bins
    use trc_mdj, only: trc_mdj_t
+   use trc_mdg, only: trc_mdg_t, trc_mdg_scales_t
+   use trc_binkernel, only: TRC_PRIM_MARGIN
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
@@ -85,6 +87,8 @@ module trc_eri
       type(decon_t) :: dec
       integer :: nao_w = 0
       type(trc_mdj_t) :: md
+      type(trc_mdg_t) :: mg
+      !! The MD GEMM pass over the same pairs, for TRC_MDG_CLASSES.
       !! The McMurchie-Davidson J engine over the same bins, built on the
       !! first `coulomb` call: an HGP/Rys-only run never pays for it.
       logical :: on_device = .false.
@@ -496,6 +500,7 @@ contains
                      this%sq_ax, this%sq_ay, this%sq_az, &
                      this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      call mdg_pass(this, b, dwork, jmat, jfac, kfac)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -552,6 +557,35 @@ contains
       call get_environment_variable("TRC_MDJ", e)
       res = trim(e) == "1"
    end function mdj_requested
+
+   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac)
+      !! The classes TRC_MDG_CLASSES routes away from fock_bins, into the same
+      !! folded matrix (both on the device). Builds the MD pair list and its
+      !! sorted groups on first use.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)    :: dwork(:, :, :)
+      real(dp), intent(inout) :: jmat(:, :, :)
+      real(dp), intent(in)    :: jfac, kfac
+      character(len=8) :: e
+      type(trc_mdg_scales_t) :: sc
+      e = " "
+      call get_environment_variable("TRC_MDG_CLASSES", e)
+      if (len_trim(e) == 0) return
+      if (.not. this%md%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh)
+         else
+            call this%md%build(b, this%bins, this%thresh)
+         end if
+      end if
+      if (.not. this%mg%built) call this%mg%build(this%md)
+      sc%thresh = this%thresh
+      sc%pcut = this%thresh*TRC_PRIM_MARGIN
+      sc%jfac = jfac
+      sc%kfac = kfac
+      call this%mg%fock(this%md, this%dsh, dwork, jmat, sc)
+   end subroutine mdg_pass
 
    subroutine add_scaled_device(n, f, x, y)
       !! y = y + f x on the device.
@@ -966,6 +1000,7 @@ contains
                         this%sq_ax, this%sq_ay, this%sq_az, &
                         this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                         1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+         call mdg_pass(this, b, dwork, jmat, jbins, kfac)
       end if
       !$acc wait
 
@@ -1208,6 +1243,7 @@ contains
 
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this
+      call this%mg%release()
       call this%md%release()
       if (this%on_device) then
          !$acc exit data delete(this%sh_l, this%ao_off, this%sh_at, this%dsh, &

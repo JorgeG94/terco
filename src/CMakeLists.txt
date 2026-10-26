@@ -21,6 +21,7 @@ target_sources(
           api/trc_api.F90        # basis, pair list, 1e, multipoles, DF
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_mdj.F90       # the McMurchie-Davidson J engine (no quartets)
+          eri/trc_mdg.F90       # MD exchange through batched GEMMs, for the classes TRC_MDG_CLASSES names
           eri/trc_eri.F90       # the four-centre Fock builds
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
