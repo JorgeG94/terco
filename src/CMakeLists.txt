@@ -833,13 +833,16 @@ set(_mdj_batch_flag "")
 if(NOT "${TERCO_MDJ_BATCHES}" STREQUAL "")
   set(_mdj_batch_flag "--batches" "${TERCO_MDJ_BATCHES}")
 endif()
+set(TERCO_MDK_CLASSES "2121,1010" CACHE STRING "classes with an MD Fock prototype kernel (TRC_MDK_CLASSES routes them)")
 macro(_terco_gen_mdj)
   terco_gen("gen_md_j.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_j.py
             --lmax ${TERCO_LMAX} ${_order_flag} ${_mdj_batch_flag} -o ${_mdj_stage})
+  terco_gen("gen_md_k.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_k.py
+            --lmax ${TERCO_LMAX} --classes ${TERCO_MDK_CLASSES} ${_order_flag} -o ${_mdj_stage})
 endmacro()
 terco_generate(
   "MD J kernels" _terco_gen_mdj "${_mdj_stage}" "${_mdj_dir}" ON ON
-  ${_s}/gen_md_j.py ${_s}/md/__init__.py ${_s}/md/hermite.py ${_s}/md/rtree.py ${_s}/cartorder.py)
+  ${_s}/gen_md_j.py ${_s}/gen_md_k.py ${_s}/md/__init__.py ${_s}/md/hermite.py ${_s}/md/rtree.py ${_s}/cartorder.py)
 file(GLOB _mdj_sources "${_mdj_dir}/*.F90")
 list(LENGTH _mdj_sources _nmdj)
 message(STATUS "terco: ${_nmdj} MD J engine modules in ${_mdj_dir}")
