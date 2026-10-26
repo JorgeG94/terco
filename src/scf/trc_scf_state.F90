@@ -127,6 +127,8 @@ contains
       class(scf_state_t), intent(inout) :: this
       type(scf_ctx_t), intent(in) :: ctx
       type(trc_scf_result_t), intent(in) :: res
+      ! The object first, then its members: see eri_build.
+      !$acc enter data copyin(this)
       !$acc enter data copyin(this%ofrac)
       !$acc enter data copyin(ctx%hcore, ctx%smat, ctx%x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(this%fock, this%gmat, this%vxc, this%dold, this%errv, this%w1, this%w2) &
@@ -143,6 +145,7 @@ contains
       !$acc           delete(this%fock, this%gmat, this%vxc, this%dold, this%errv, this%w1, this%w2) &
       !$acc           delete(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%jmat_c, this%w1_c, this%klr_c) &
       !$acc           delete(this%dref_c, this%gacc_c, this%ddif_c, this%vpcm_c, this%vpcm)
+      !$acc exit data delete(this)
    end subroutine scf_state_release_device
 
    subroutine scf_state_save_dold(this, nao, nspin, dmat)

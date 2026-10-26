@@ -84,6 +84,9 @@ module trc_eri
       type(decon_t) :: dec
       integer :: nao_w = 0
       logical :: on_device = .false.
+      logical :: parent_mapped = .false.
+      !! The object itself is on the device (eri_build maps it before any
+      !! member), so eri_release knows to unmap it last.
       integer :: nlaunch = 0
       integer(int64) :: nkept = 0
       !! Quartets that survive both screens in the last build, counted only
@@ -185,6 +188,19 @@ contains
       if (present(batch_res)) bres = batch_res
 
       call this%release()
+      ! The object first, then its members, as basis_to_device does. Under
+      ! OpenMP a member mapped without its parent leaves an implicit parent
+      ! entry spanning just those members; eri_release's member deletes never
+      ! remove it, and it lingers at this object's (stack) address until a
+      ! later routine's mapped locals overlap it ("explicit extension not
+      ! allowed"). OpenACC reference-counts the parent away on its own.
+      !
+      ! The price: the scalar members (thresh, nbas, nhpp, ...) are read in
+      ! kernels as the by-reference dummies of fock_bins and friends, and with
+      ! the parent present they resolve to the device copy, a snapshot from
+      ! here. eri_sync_scalars refreshes them before every use.
+      !$acc enter data copyin(this)
+      this%parent_mapped = .true.
       this%thresh = thresh
       this%nao = b%nao
 
@@ -260,8 +276,22 @@ contains
       end if
    end function decon_minprim
 
+   subroutine eri_sync_scalars(this)
+      !! Refresh the device copy of the scalar members that kernels read as
+      !! by-reference dummies (see eri_build). Free routine with a type(...)
+      !! dummy: a polymorphic one leaves its own descriptor mapped.
+      type(trc_eri_t), intent(inout) :: this
+      if (.not. this%parent_mapped) return
+      !$acc update device(this%thresh, this%nbas, this%nao, this%nhpp, this%nqp, &
+      !$acc               this%nao_w, this%rank, this%nranks)
+   end subroutine eri_sync_scalars
+
    subroutine build_structures(this, b, thresh, bres)
-      class(trc_eri_t), intent(inout) :: this
+      ! type, not class: this routine maps members of `this`, and a polymorphic
+      ! dummy gets its own descriptor in this frame that the maps pick up and
+      ! eri_release (another frame, another descriptor) can never unmap -- a
+      ! stale 40-byte entry on a dead stack address under OpenMP.
+      type(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bres
@@ -330,6 +360,7 @@ contains
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
+      call eri_sync_scalars(this)
       call schwarz_bounds_hgp(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
                               this%hp_p, this%hp_r, this%hp_ra, this%hp_rb, this%hp_c, qs)
       this%t_build(2) = tm%get_elapsed_time()
@@ -364,6 +395,7 @@ contains
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
+      call eri_sync_scalars(this)
       call build_pair_quartets(this%bins, b%nshell, this%nhpp, &
                                this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                                this%hp_ra, this%hp_rb, this%hp_c, &
@@ -481,6 +513,7 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
+      call eri_sync_scalars(this)
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, ow, .false., this%dsh, &
@@ -613,6 +646,7 @@ contains
 
       !$acc enter data copyin(dwork) copyin(grad)
       !$acc update device(this%dsh)
+      call eri_sync_scalars(this)
       call grad_bins(this%bins, this%nbas, nw, this%sh_l, this%ao_off, this%sh_at, b%natm, &
                      this%thresh, jfac, kfac, ow, this%dsh, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -716,6 +750,7 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
+      call eri_sync_scalars(this)
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, ow, .true., this%dsh, &
@@ -860,6 +895,7 @@ contains
          want = len_trim(ke) > 0
          if (present(count_survivors)) want = want .or. count_survivors
          if (want) then
+            call eri_sync_scalars(this)
             call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                            this%ao_off, this%thresh, .false., &
                            jfac, kfac, ow, .false., this%dsh, &
@@ -882,6 +918,7 @@ contains
             end if
          end if
       end block
+      call eri_sync_scalars(this)
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, ow, .false., this%dsh, &
@@ -1079,6 +1116,7 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
+      call eri_sync_scalars(this)
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, ow, .false., this%dsh, &
@@ -1158,6 +1196,10 @@ contains
       if (allocated(this%sh_at))  deallocate (this%sh_at)
       call decon_release(this%dec)
       call this%pb%release()
+      if (this%parent_mapped) then
+         !$acc exit data delete(this)
+         this%parent_mapped = .false.
+      end if
       this%nbas = 0
       this%nao = 0
       this%nao_w = 0
