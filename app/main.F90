@@ -38,6 +38,7 @@ module terco_run
                          write_opt_xyz_frame, write_traj_xyz_frames
    use trc_vib, only: trc_vib_log_table, trc_vib_rotor
    use trc_thermo, only: trc_thermo_result_t, trc_thermo_log_summary
+   use trc_dlfind_bridge, only: TRC_OPT_STEP_RULE
    use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average, trc_covalent_radius
    use trc_error, only: mass_error_t => error_t
    implicit none
@@ -1211,6 +1212,12 @@ contains
    subroutine opt_summary(r)
       type(run_t), intent(in) :: r
       integer :: n_imag
+      ! The step table's own closing rule (app/trc_dlfind_bridge.F90's
+      ! consider_step prints the header/rows; this is the one place that
+      ! knows the whole run is over) -- skipped for --opt-neb, which
+      ! never calls consider_step at all (cb_put_coords's own NEB branch:
+      ! no header was ever printed, so no rule belongs here either).
+      if (r%opt_steps > 0 .and. .not. r%opt_neb_have) call global_logger%info(TRC_OPT_STEP_RULE)
       call global_logger%info("")
       call global_logger%info("   geometry optimisation (--opt)")
       call global_logger%info("   ----------------------------------------------------------")
@@ -1820,6 +1827,14 @@ program terco_main
    type(hess_err_t) :: herr
    integer :: maxiter, nfrozen, guess_kind, dev, aux_block, ndof
    integer(c_int) :: st, nspin
+   integer(c_int) :: base_verbose, loop_verbose
+      !! trc_set_verbose's own argument: `base_verbose` is today's value
+      !! (on unless --silent), restored around every SCF a plain caller
+      !! would recognise as "the" SCF/gradient/Hessian run; `loop_verbose`
+      !! is on only at --logger verbose/debug, set for exactly the SCFs
+      !! evaluated INSIDE --opt/--opt-neb/DL-FIND's own loop and the FD
+      !! Hessian's displaced points -- see the two trc_set_verbose pairs
+      !! below.
    logical :: cart
    ! --opt
    character(len=:), allocatable :: opt_base, opt_refusal
@@ -2637,11 +2652,18 @@ program terco_main
    if (r%nranks > 1) call api(r, trc_set_comm(r%h, int(r%wcomm%fortran_handle(), c_int)))
    ! The SCF driver's own per-iteration table, basis/lindep/pcm lines and
    ! timing report (trc_scf_settings%verbose, "talk" in src/scf) are all
-   ! gated by this one flag -- on only at --logger verbose/debug, same as
-   ! --opt's per-step table switches from the terse step line to the full
-   ! per-evaluation SCF output. --silent always wins over --logger.
-   call api(r, trc_set_verbose(r%h, merge(0_c_int, 1_c_int, &
-                                          r%cli%is_set("silent") .or. global_logger%log_level < verbose_level)))
+   ! gated by this one flag. `base_verbose` is today's rule (on unless
+   ! --silent) and applies to every SCF a plain caller would recognise as
+   ! "the" SCF/gradient/Hessian run -- a single point, --grad, --hessian/
+   ! --freq's own reference SCF, DF, DFT, ... never quieted by --logger.
+   ! `loop_verbose` is what --opt/--opt-neb/DL-FIND's own evaluations and
+   ! the FD Hessian's displaced points are switched to instead, only for
+   ! the duration of those two loops (below) -- on again at verbose/debug,
+   ! same as mqc forcing its own logger down around a per-step QC call
+   ! unless already at large_info+.
+   base_verbose = merge(0_c_int, 1_c_int, r%cli%is_set("silent"))
+   loop_verbose = merge(0_c_int, base_verbose, global_logger%log_level < verbose_level)
+   call api(r, trc_set_verbose(r%h, base_verbose))
    call api(r, trc_set_molecule(r%h, int(r%natm, c_int), real(r%z, c_double), xyz, int(r%chrg, c_int), &
                                 int(r%mult, c_int)))
    call api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
@@ -2802,8 +2824,19 @@ program terco_main
       opt_opts%coords_name = r%opt_coords_arg
       opt_opts%guess_name = r%opt_guess_arg
 
+      ! Quiet for the whole DL-FIND run (every evaluation inside it,
+      ! --opt-neb included) and the reconvergence SCF right below, which
+      ! is the SAME geometry/density DL-FIND's own last accepted step
+      ! left behind -- not a fresh single point a plain caller asked for.
+      ! Restored to base_verbose before `die` on a failed run, and before
+      ! the --grad/--hessian/RI-MP2 reporting below, which DO behave like
+      ! an ordinary caller's own run.
+      call api(r, trc_set_verbose(r%h, loop_verbose))
       call trc_dlfind_optimize(r%h, r%natm, r%z, opt_residues, xyz, opt_opts, opt_res)
-      if (opt_res%failed) call die(r, "--opt: "//opt_res%message)
+      if (opt_res%failed) then
+         call api(r, trc_set_verbose(r%h, base_verbose))
+         call die(r, "--opt: "//opt_res%message)
+      end if
 
       r%opt_converged = opt_res%converged
       r%opt_steps = opt_res%steps
@@ -2856,6 +2889,12 @@ program terco_main
       ! out.
       call api(r, trc_set_geometry(r%h, reshape(real(xyz, c_double), [3*r%natm])))
       st = trc_run_scf(r%h)
+      ! Back to today's rule for everything from here on: --grad above
+      ! forced true already reports the final gradient at base_verbose
+      ! (an ordinary trc_run_gradient call, never run inside DL-FIND's own
+      ! loop), and so does --hessian/--opt-freq's own FD Hessian below,
+      ! which sets loop_verbose again itself, only around trc_run_hessian.
+      call api(r, trc_set_verbose(r%h, base_verbose))
    else if (len(r%restart) > 0) then
       st = trc_load_scf(r%h, c_string(r%restart))
    else
@@ -2906,7 +2945,15 @@ program terco_main
       ! before any displacement, so a refused run costs nothing beyond
       ! the SCF this CLI already ran for --grad/the energy anyway.
       call api(r, trc_set_hessian_step(r%h, real(r%hess_step, c_double)))
-      call api(r, trc_run_hessian(r%h))
+      ! Quiet for the 2*3*natm displaced SCFs only -- the reference SCF
+      ! trc_run_hessian itself requires (this context's own, already run
+      ! above at base_verbose, or at loop_verbose if --opt-freq's own
+      ! reconvergence SCF is what left it converged) is never re-run here.
+      ! Restored before `st` reaches `api`, which may die.
+      call api(r, trc_set_verbose(r%h, loop_verbose))
+      st = trc_run_hessian(r%h)
+      call api(r, trc_set_verbose(r%h, base_verbose))
+      call api(r, st)
       ndof = 3*r%natm
       allocate (hessbuf(ndof*ndof), r%hess(ndof, ndof))
       call api(r, trc_hessian(r%h, hessbuf))
