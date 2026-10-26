@@ -195,3 +195,80 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def md_k(mol, dm):
+    """K_ac = sum_bd (ab|cd) D_bd over canonical shell quartets, MD per quartet.
+
+    Each canonical quartet (a >= b, c >= d, ab >= cd) makes four updates,
+    K_ac += (ab|cd) D_bd, K_ad += .. D_bc, K_bc += .. D_ad, K_bd += .. D_ac,
+    weighted 1/m with m = (a==b ? 2:1)(c==d ? 2:1)(ab==cd ? 2:1); the other
+    four permutations are the transposes, so K = K4 + K4^T for symmetric D.
+    The quartet itself is E^ab [p|q] E^cd per primitive quartet, which is
+    what the K kernels form one bra component pair per thread.
+    """
+    shells, nao = shells_of(mol)
+    ns = len(shells)
+    K = np.zeros((nao, nao))
+    pairs = [(a, b) for a in range(ns) for b in range(a + 1)]
+    def prims(a, b):
+        la, ea, ca, ra, oa = shells[a]
+        lb, eb, cb, rb, ob = shells[b]
+        out = []
+        ab2 = np.sum((ra - rb) ** 2)
+        for x, c1 in zip(ea, ca):
+            for y, c2 in zip(eb, cb):
+                p = x + y
+                P = (x * ra + y * rb) / p
+                pp = dict(la=la, lb=lb, p=p, P=P, PA=P - ra, PB=P - rb,
+                          c=c1 * c2 * np.exp(-x * y / p * ab2))
+                pp["E"] = e3d(pp)
+                out.append(pp)
+        return out
+    pp_of = {pr: prims(*pr) for pr in pairs}
+    for i, (a, b) in enumerate(pairs):
+        for j, (c, d) in enumerate(pairs[:i + 1]):
+            la, lb = shells[a][0], shells[b][0]
+            lc, ld = shells[c][0], shells[d][0]
+            lp, lq = la + lb, lc + ld
+            L = lp + lq
+            hp, hq = herm(lp), herm(lq)
+            sgn = np.array([(-1.0) ** sum(h) for h in hq])
+            eri = 0.0
+            for P in pp_of[(a, b)]:
+                for Q in pp_of[(c, d)]:
+                    PQ = P["P"] - Q["P"]
+                    al = P["p"] * Q["p"] / (P["p"] + Q["p"])
+                    pref = TWO_PI_2_5 / (P["p"] * Q["p"] * np.sqrt(P["p"] + Q["p"]))
+                    F = boys(L, al * PQ @ PQ)
+                    env = {f"pq{DIRS[k]}": PQ[k] for k in range(3)}
+                    for m in range(L + 1):
+                        env[rtree.leaf_name(m)] = pref * (-2 * al) ** m * F[m]
+                    g = rtree.RDag(herm(L)); g.sieve()
+                    run(g.statements(), env)
+                    R = lambda r: env[rtree.leaf_name(0)] if r == (0, 0, 0) else env[rtree.r_name(r, 0)]
+                    pq = np.array([[R(tuple(x + y for x, y in zip(t, u))) for u in hq] for t in hp]) * sgn
+                    eri = eri + P["c"] * Q["c"] * np.einsum("xyp,pq,zwq->xyzw", P["E"], pq, Q["E"])
+            m = (2 if a == b else 1) * (2 if c == d else 1) * (2 if i == j else 1)
+            oa, ob, oc, od = (shells[s][4] for s in (a, b, c, d))
+            na, nb, nc, nd = eri.shape
+            A, B, C, Dd = (slice(o, o + n) for o, n in ((oa, na), (ob, nb), (oc, nc), (od, nd)))
+            K[A, C] += np.einsum("xyzw,yw->xz", eri, dm[B, Dd]) / m
+            K[A, Dd] += np.einsum("xyzw,yz->xw", eri, dm[B, C]) / m
+            K[B, C] += np.einsum("xyzw,xw->yz", eri, dm[A, Dd]) / m
+            K[B, Dd] += np.einsum("xyzw,xz->yw", eri, dm[A, C]) / m
+    return K + K.T
+
+
+def main_k():
+    from pyscf import gto
+    mol = gto.M(atom="O 0.0 0.1 -0.05; H 0.76 0.55 0.02; H -0.71 0.6 0.1", basis="6-31g*", cart=True)
+    eri = mol.intor("int2e_cart")
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal((mol.nao, mol.nao))
+    dm = a + a.T
+    kref = np.einsum("abcd,bd->ac", eri, dm)
+    k = md_k(mol, dm)
+    err = np.max(np.abs(k - kref)) / np.max(np.abs(kref))
+    print(f"K water 6-31G*: max rel err {err:.2e}")
+    return 0 if err < 1e-12 else 1

@@ -111,6 +111,11 @@ target_link_libraries(check_scf_diag_failure PRIVATE test-drive::test-drive)
 # The McMurchie-Davidson J engine against the Fock build's own J.
 terco_add_check(check_mdj check_mdj.F90 NEEDS_BASIS)
 target_link_libraries(check_mdj PRIVATE test-drive::test-drive)
+# Its timing harness: not a test, a tool (bench_mdj <xyz> <basis> [thresh] [repeats]).
+add_executable(bench_mdj bench_mdj.F90)
+target_compile_definitions(bench_mdj PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(bench_mdj PRIVATE ${main_lib} terco_test_basis)
+target_include_directories(bench_mdj PRIVATE ${CMAKE_BINARY_DIR}/modules)
 
 # The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
 terco_add_check(check_si check_si.F90)
