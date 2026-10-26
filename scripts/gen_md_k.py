@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cartorder  # noqa: E402
 from md import rtree  # noqa: E402
+from md.schedule import dfs_order  # noqa: E402
 from md.hermite import DIRS, herm, herm_index, e1d_statements, e_operand  # noqa: E402
 from gen_md_j import (ORDER_CODE, TWO_PI_2_5, decl, emit_sum, expr_of, lit,  # noqa: E402
                       wrap_args, nbatch_for)
@@ -131,6 +132,7 @@ def gen_class(la, lb, lc, ld, order, header, mode="fused"):
     o.append("contains")
     o.append("")
     o.append('#include "inc/trc_boys_eval.inc"')
+    o.append('#include "inc/trc_boys_down.inc"')
     o.append("")
     # ---- window driver ----
     o.extend(wrap_args(f"subroutine mdk_k{tag}", SEG_ARGS + ", " + WIN_ARGS, "   "))
@@ -146,8 +148,14 @@ def gen_class(la, lb, lc, ld, order, header, mode="fused"):
         o.append(f"      do concurrent(i = 1:nw*{nab})")
         o.extend(wrap_args(f"call mdk_d_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
     elif mode == "row":
-        o.append(f"      do concurrent(i = 1:nw*{nab})")
-        o.extend(wrap_args(f"call mdk_w_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
+        # One launch per bra component pair: each item routine gets its own
+        # register budget. As one launch with a select over the 18 pairs of
+        # (dp|dp), ptxas sized every thread for the worst branch (254).
+        for k in range(nab):
+            o.append("      do concurrent(i = 1:nw)")
+            o.extend(wrap_args(f"call mdk_w_item_{tag}_{k + 1}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
+            if k < nab - 1:
+                o.append("      end do")
     else:
         o.append(f"      do concurrent(i = 1:nw*{len(ca)})")
         o.extend(wrap_args(f"call mdk_f_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
@@ -576,38 +584,50 @@ def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
             allnames.update(st.lhs for st in g.statements())
             leaves_all.update(g.leaves())
     o = []
-    o.extend(wrap_args(f"pure subroutine mdk_w_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
+    for k, (xa, a, xb, b, box, g) in enumerate(branches):
+        o.extend(w_branch(tag, k + 1, la, lb, xa, a, xb, b, box, g, cc, cd, hq, k_lines, k_names, b_names, xs))
+        o.append("")
+    return o
+
+
+def w_branch(tag, kb, la, lb, xa, a, xb, b, box, g, cc, cd, hq, k_lines, k_names, b_names, xs):
+    nc, nd = len(cc), len(cd)
+    leaves = g.leaves()
+    o = []
+    o.extend(wrap_args(f"pure subroutine mdk_w_item_{tag}_{kb}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
+    o.append(f"      !! Row a = {a}, b = {b} of every quartet in the window.")
     o.append("      !$acc routine seq")
     o.append("      integer, intent(in) :: i")
     o.append(SEG_DECL)
     o.append(WIN_DECL)
-    o.append("      integer :: w, iab, seg, slotab, slotcd, si, sj, sk, sl, mui, nuj, lamk, sigl")
+    o.append("      integer :: w, seg, slotab, slotcd, si, sj, sk, sl, mui, nuj, lamk, sigl")
     o.append("      integer :: k1, k2, kp, kq, nab, ncd, idens")
     o.append("      real(dp) :: wqq, zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd")
     o.append("      real(dp) :: px, py, pz, pqx, pqy, pqz, s, dab")
     o.append("      real(dp) :: bpxa, bpya, bpza, bpxb, bpyb, bpzb, boo2p")
     o.append("      real(dp) :: kpxa, kpya, kpza, kpxb, kpyb, kpzb, koo2p")
+    o.append("      real(dp) :: cax, cay, caz, cabx, caby, cabz")
     o.append("      real(dp) :: f(0:BOYS_MMAX)")
-    o.append(decl("real(dp)", [rtree.leaf_name(m) for m in sorted(leaves_all)]))
-    o.append(decl("real(dp)", sorted(allnames)))
+    o.append(decl("real(dp)", [rtree.leaf_name(m) for m in leaves]))
+    o.append(decl("real(dp)", [st.lhs for st in g.statements()]))
     o.append(decl("real(dp)", k_names))
     o.append(decl("real(dp)", b_names))
     o.append(decl("real(dp)", [f"v{j + 1}" for j in range(len(hq))]))
     o.append(decl("real(dp)", xs))
     o.append("")
-    o.append("      ! Quartet fastest: a warp shares one (a, b), so the select does not diverge.")
-    o.append("      w = mod(i - 1, nw) + 1")
-    o.append("      iab = (i - 1)/nw + 1")
+    o.append("      w = i")
     o.append("      wqq = wq(w)")
     o.append("      if (wqq == 0.0_dp) return")
     o.append("      seg = wseg(w); slotab = wab(w); slotcd = wcd(w)")
     o.append("      si = sp_i(slotab); sj = sp_j(slotab); sk = sp_i(slotcd); sl = sp_j(slotcd)")
     o.append("      mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)")
     o.append("      nab = sq_n(slotab); ncd = sq_n(slotcd)")
-    o.append("      select case (iab)")
-    ind = " " * 9
-    for k, (xa, a, xb, b, box, g) in enumerate(branches):
-        o.append(f"      case ({k + 1})")
+    o.append("      ! The ket pair's centre and separation, once: per ket primitive they were")
+    o.append("      ! six of the loads the load/store queue was full of (ncu).")
+    o.append("      cax = sq_ax(slotcd); cay = sq_ay(slotcd); caz = sq_az(slotcd)")
+    o.append("      cabx = sq_abx(slotcd); caby = sq_aby(slotcd); cabz = sq_abz(slotcd)")
+    ind = " " * 6
+    if True:
         need_a = [set(), set(), set()]
         for d in range(3):
             for t in range(a[d] + b[d] + 1):
@@ -620,7 +640,6 @@ def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
             for j, q in enumerate(hq):
                 r = tuple(p[d] + q[d] for d in range(3))
                 scat.setdefault(r, []).append((j, fac))
-        leaves = g.leaves()
         for x in xs:
             o.append(f"{ind}{x} = 0.0_dp")
         o.append(f"{ind}do k1 = 1, nab")
@@ -641,7 +660,7 @@ def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
         o.append(f"{ind}      alpha = zeta*eta/zpe")
         o.append(f"{ind}      pqx = px - qp_px(kq); pqy = py - qp_py(kq); pqz = pz - qp_pz(kq)")
         o.append(f"{ind}      tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
-        o.append(f"{ind}      call boys_eval({max(leaves)}, tval, f)")
+        o.append(f"{ind}      call boys_down({max(leaves)}, tval, f)")
         o.append(f"{ind}      m2a = -2.0_dp*alpha")
         o.append(f"{ind}      ww = pref")
         for m in range(max(leaves) + 1):
@@ -658,7 +677,10 @@ def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
                 o.append(f"{ind}      v{j + 1} = v{j + 1} + " + "*".join(fac + [val]))
         if ((0, 0, 0), 0) in g.tset:
             scatter((0, 0, 0))
-        for st in g.statements():
+        # Depth-first from the targets, each scattered into v as it is formed:
+        # half the live R values of the level-by-level order (md/schedule.py).
+        order = dfs_order(g, sorted(g.targets, key=lambda n: (sum(n[0]), n[0])))
+        for st in order:
             o.extend(emit_sum(st.lhs, expr_of(st.terms), ind + "      "))
             fl = st.lhs[1:].split("_")
             if fl[3] == "0":
@@ -666,9 +688,8 @@ def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
                 if (r, 0) in g.tset:
                     scatter(r)
         o.append(f"{ind}      koo2p = 0.5_dp/eta")
-        o.append(f"{ind}      kpxa = qp_px(kq) - sq_ax(slotcd); kpya = qp_py(kq) - sq_ay(slotcd)")
-        o.append(f"{ind}      kpza = qp_pz(kq) - sq_az(slotcd)")
-        o.append(f"{ind}      kpxb = kpxa + sq_abx(slotcd); kpyb = kpya + sq_aby(slotcd); kpzb = kpza + sq_abz(slotcd)")
+        o.append(f"{ind}      kpxa = qp_px(kq) - cax; kpya = qp_py(kq) - cay; kpza = qp_pz(kq) - caz")
+        o.append(f"{ind}      kpxb = kpxa + cabx; kpyb = kpya + caby; kpzb = kpza + cabz")
         o.extend(["   " + ln for ln in k_lines])
         for xc, c in enumerate(cc):
             for xd, d in enumerate(cd):
@@ -683,14 +704,13 @@ def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
         o.append(f"{ind}   end do")
         o.append(f"{ind}end do")
         o.extend(w_digest(xa, xb, nc, nd, ind))
-    o.append("      end select")
-    o.append(f"   end subroutine mdk_w_item_{tag}")
+    o.append(f"   end subroutine mdk_w_item_{tag}_{kb}")
     return o
 
 
 def w_digest(xa, xb, nc, nd, ind):
-    """Row (a, b) of the quartet into K (and J when jfac /= 0)."""
-    o = [f"{ind}do idens = 1, ndens"]
+    """Row (a, b) of the quartet into K when kfac /= 0, and J when jfac /= 0."""
+    o = [f"{ind}do idens = 1, ndens", f"{ind}   if (kfac /= 0.0_dp) then"]
     for c in range(nc):
         t = [f"x{c + 1}_{d + 1}*dmat(idens, nuj + {xb}, sigl + {d})" for d in range(nd)]
         o.extend(emit_sum("s", t, ind + "   "))
@@ -709,6 +729,7 @@ def w_digest(xa, xb, nc, nd, ind):
         o.extend(emit_sum("s", t, ind + "   "))
         o.append(f"{ind}   !$acc atomic update")
         o.append(f"{ind}   jmat(idens, nuj + {xb}, sigl + {d}) = jmat(idens, nuj + {xb}, sigl + {d}) - kfac*wqq*s")
+    o.append(f"{ind}   end if")
     o.append(f"{ind}   if (jfac /= 0.0_dp) then")
     t = [f"x{c + 1}_{d + 1}*dmat(idens, lamk + {c}, sigl + {d})" for c in range(nc) for d in range(nd)]
     o.extend(emit_sum("s", t, ind + "      "))
