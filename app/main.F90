@@ -1785,7 +1785,7 @@ program terco_main
    use trc_constants, only: ATM_TO_PA
    use trc_error, only: hess_err_t => error_t
    use pic_logger, only: global_logger
-   use terco_app, only: read_xyz, resolve_basis, c_string, set_env, help_for_topic, set_log_level
+   use terco_app, only: read_xyz, resolve_basis, c_string, set_env, terco_app_help_for_topic, terco_app_set_log_level
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary, hessian_summary, build_masses, &
@@ -2048,7 +2048,7 @@ program terco_main
       ! geometry positional; read it back as the help topic.
       call r%cli%get("geometry", sval, r%err)
       if (.not. allocated(sval) .or. r%err%has_error()) sval = ""
-      if (r%rank0) call global_logger%info(help_for_topic(r%cli%help_text(), sval))
+      if (r%rank0) call global_logger%info(terco_app_help_for_topic(r%cli%help_text(), sval))
       call quit(r, 0)
    end if
    if (r%cli%is_set("version")) then
@@ -2057,7 +2057,7 @@ program terco_main
    end if
    call r%cli%get("logger", sval, r%err)
    call check(r, "--logger")
-   call set_log_level(sval, log_ok)
+   call terco_app_set_log_level(sval, log_ok)
    if (.not. log_ok) call die(r, "--logger must be knowledge, error, warning, performance, info, large_info, "// &
                               "verbose or debug, got '"//trim(sval)//"'")
    call r%cli%get("geometry", r%geom, r%err)

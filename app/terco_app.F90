@@ -25,7 +25,7 @@ module terco_app
 
    public :: read_xyz, resolve_basis, element_symbol, terco_app_atomic_number, c_string, f_string, set_env
    public :: BOHR_PER_ANGSTROM
-   public :: help_for_topic, set_log_level
+   public :: terco_app_help_for_topic, terco_app_set_log_level
    public :: write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
@@ -341,7 +341,7 @@ contains
       call json%destroy(root)
    end subroutine write_opt_failure_json
 
-   function help_for_topic(text, topic) result(out)
+   function terco_app_help_for_topic(text, topic) result(out)
       !! `pic_cli`'s help text cut down to one topic. Without a topic the
       !! `--opt-*` tuning options (about fifty lines) are dropped, except
       !! `--opt-freq`, which is a headline switch; with `--help opt` only the
@@ -386,9 +386,9 @@ contains
          out = out//new_line("a")//"Run 'terco --help opt' for the geometry-optimisation (--opt-*) options."// &
                new_line("a")
       end if
-   end function help_for_topic
+   end function terco_app_help_for_topic
 
-   subroutine set_log_level(name, ok)
+   subroutine terco_app_set_log_level(name, ok)
       !! Apply `--logger <name>` to the global logger. Names are pic_logger's
       !! own levels, quietest first: knowledge, error, warning, performance,
       !! info, large_info, verbose, debug.
@@ -416,7 +416,7 @@ contains
       case default
       ok = .false.
       end select
-   end subroutine set_log_level
+   end subroutine terco_app_set_log_level
 
    function to_lower_alloc_app(s) result(lower_s)
       character(len=*), intent(in) :: s
