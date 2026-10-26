@@ -173,6 +173,229 @@ def e3_factors(a, b, h):
     return f
 
 
+def gen_e_module_loops(la, lb, order, header):
+    """The ket, bra and bound stages of one (la, lb) type as loops over literal tables.
+
+    These stages are O(pairs) per build and a few per cent of the J time at
+    most, but written out they were the slowest part of the generated set to
+    compile: the (gg) module took 753 s and 2 GB with every component pair and
+    every Hermite product unrolled. Here only the tables are generated.
+    """
+    from gen_md_kgemm import e1d_loop, int_table  # noqa: E402 (shared emitters)
+    lp = la + lb
+    tag = f"{la}{lb}"
+    hs = herm(lp)
+    nh = len(hs)
+    ca, cb = comps(la, order), comps(lb, order)
+    na, nb = len(ca), len(cb)
+    # (h, h') pairs of the Coulomb self-norm, h <= h', all-even sums.
+    pi, pj, ps, pw = [], [], [], []
+    for i, h in enumerate(hs):
+        for j in range(i, nh):
+            h2 = hs[j]
+            r = tuple(h[d] + h2[d] for d in range(3))
+            if any(x % 2 for x in r):
+                continue
+            w = (1 if i == j else 2) * dfact(r[0]) * dfact(r[1]) * dfact(r[2])
+            if sum(h) % 2:
+                w = -w
+            pi.append(i + 1)
+            pj.append(j + 1)
+            ps.append(sum(r) // 2)
+            pw.append(w)
+    npr = len(pi)
+
+    def real_tab(name, vals):
+        toks = [lit(float(v)) for v in vals]
+        lines, cur = [], f"   real(dp), parameter :: {name}({len(vals)}) = ["
+        for tok in toks:
+            if len(cur) + len(tok) > 100:
+                lines.append(cur + " &")
+                cur = "      "
+            cur += tok + ", "
+        lines.append(cur.rstrip(", ") + "]")
+        return lines
+
+    o = [header.format(what=f"Class ({la}{lb}) ket, bra and bound stages of the MD J engine")]
+    o.append(f"module trc_mdj_e{tag}")
+    o.append("   use pic_types, only: dp")
+    o.append("   implicit none")
+    o.append("   private")
+    o.append(f"   public :: mdj_ket_{tag}, mdj_bra_{tag}, mdj_bound_{tag}")
+    o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
+    o.extend(int_table("HT", [h[0] for h in hs]))
+    o.extend(int_table("HU", [h[1] for h in hs]))
+    o.extend(int_table("HV", [h[2] for h in hs]))
+    o.extend(real_tab("SG", [(-1.0) ** sum(h) for h in hs]))
+    for nm, cs in (("A", ca), ("B", cb)):
+        for d, ax in enumerate("XYZ"):
+            o.extend(int_table(f"C{nm}{ax}", [c[d] for c in cs]))
+    o.extend(int_table("PI", pi))
+    o.extend(int_table("PJ", pj))
+    o.extend(int_table("PS", ps))
+    o.extend(real_tab("PW", pw))
+    o.extend(real_tab("RO", [1.0 / (2 * s_ + 1) for s_ in range(lp + 1)]))
+    o.append("")
+    o.append("contains")
+    o.append("")
+    ket_args = ("n, k0, kc, nkc, hb, nhp, mp_z, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, mp_c, mp_sp, "
+                "nsp, sp_ao1, sp_ao2, nao, dmat, ndt, dt, mp_nq")
+    bra_args = ("n, s0, kl0, nkc, hb, nhp, mp_z, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, mp_c, "
+                "nsp, sp_ao1, sp_ao2, sp_k0, sp_nk, ndt, jt, nao, jmat")
+    bnd_args = "n, k0, nhp, mp_z, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, mp_c, mp_ip"
+    common = """      real(dp), intent(in) :: mp_z(nhp), mp_ax(nhp), mp_ay(nhp), mp_az(nhp)
+      real(dp), intent(in) :: mp_bx(nhp), mp_by(nhp), mp_bz(nhp), mp_c(nhp)"""
+    ket_decl = f"""      integer,  intent(in) :: n, k0, kc, nkc, hb, nhp, nsp, nao, ndt
+{common}
+      integer,  intent(in) :: mp_sp(nhp), sp_ao1(nsp), sp_ao2(nsp)
+      real(dp), intent(in) :: dmat(nao, nao)
+      real(dp), intent(inout) :: dt(ndt), mp_nq(nhp)"""
+    bra_decl = f"""      integer,  intent(in) :: n, s0, kl0, nkc, hb, nhp, nsp, ndt, nao
+{common}
+      integer,  intent(in) :: sp_ao1(nsp), sp_ao2(nsp), sp_k0(nsp), sp_nk(nsp)
+      real(dp), intent(in) :: jt(ndt)
+      real(dp), intent(inout) :: jmat(nao, nao)"""
+    bnd_decl = f"""      integer,  intent(in) :: n, k0, nhp
+{common}
+      real(dp), intent(inout) :: mp_ip(nhp)"""
+    for kind, args, dcl in (("ket", ket_args, ket_decl), ("bra", bra_args, bra_decl), ("bound", bnd_args, bnd_decl)):
+        o.extend(wrap_args(f"subroutine mdj_{kind}_{tag}", args, "   "))
+        o.append(dcl)
+        o.append("      integer :: t")
+        o.append("      do concurrent(t = 1:n)")
+        o.extend(wrap_args(f"call mdj_{kind}_item_{tag}", "t, " + args, " " * 9))
+        o.append("      end do")
+        o.append(f"   end subroutine mdj_{kind}_{tag}")
+        o.append("")
+    box = (f"HT(hh) <= CAX(x1) + CBX(x2) .and. HU(hh) <= CAY(x1) + CBY(x2) .and. "
+           f"HV(hh) <= CAZ(x1) + CBZ(x2)")
+    eprod = "e(CAX(x1), CBX(x2), HT(hh), 1)*e(CAY(x1), CBY(x2), HU(hh), 2)*e(CAZ(x1), CBZ(x2), HV(hh), 3)"
+    e_setup = ["      oo2p = 0.5_dp/p",
+               "      xa(1) = mp_ax(k); xa(2) = mp_ay(k); xa(3) = mp_az(k)",
+               "      xb(1) = mp_bx(k); xb(2) = mp_by(k); xb(3) = mp_bz(k)"]
+    norm = ["      do s = 0, " + str(lp), "         acc(s) = 0.0_dp", "      end do",
+            f"      do q = 1, {npr}",
+            "         acc(PS(q)) = acc(PS(q)) + PW(q)*g(PI(q))*g(PJ(q))",
+            "      end do",
+            "      nq2 = acc(0)", "      ws = 1.0_dp",
+            f"      do s = 1, {lp}", "         ws = -p*ws", "         nq2 = nq2 + ws*acc(s)*RO(s + 1)", "      end do",
+            "      nq2 = nq2*TWO_PI_2_5/(p*p*sqrt(2.0_dp*p))"]
+    locals_ = [f"      real(dp) :: e(0:{la}, 0:{lb}, 0:{lp}, 3), g({nh}), acc(0:{lp})",
+               "      real(dp) :: p, oo2p, xa(3), xb(3), v, nq2, ws",
+               "      integer :: x1, x2, hh, q, s, d, ii, jj, tt"]
+    # ---- ket item ----
+    o.extend(wrap_args(f"pure subroutine mdj_ket_item_{tag}", "i, " + ket_args, "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer,  intent(in) :: i")
+    o.append(ket_decl)
+    o.extend(locals_)
+    o.append("      integer :: k, sp, mu0, nu0")
+    o.append("      real(dp) :: offd, dab, cs")
+    o.append("      k = k0 + i")
+    o.append("      sp = mp_sp(k)")
+    o.append("      mu0 = sp_ao1(sp) - 1")
+    o.append("      nu0 = sp_ao2(sp) - 1")
+    o.append("      ! One shell pair stands for both orders off the diagonal: D_cd + D_dc.")
+    o.append("      offd = 1.0_dp")
+    o.append("      if (mu0 == nu0) offd = 0.0_dp")
+    o.append("      p = mp_z(k)")
+    o.extend(e_setup)
+    o.extend(e1d_loop(la, lb, "      "))
+    o.append(f"      do hh = 1, {nh}")
+    o.append("         g(hh) = 0.0_dp")
+    o.append("      end do")
+    o.append(f"      do x2 = 1, {nb}")
+    o.append(f"         do x1 = 1, {na}")
+    o.append("            dab = dmat(mu0 + x1, nu0 + x2) + offd*dmat(nu0 + x2, mu0 + x1)")
+    o.append(f"            do hh = 1, {nh}")
+    o.append(f"               if ({box}) g(hh) = g(hh) + {eprod}*dab")
+    o.append("            end do")
+    o.append("         end do")
+    o.append("      end do")
+    o.append("      ! Sign (-1)^|tau| and the pair coefficient (with K_cd) folded in.")
+    o.append("      cs = mp_c(k)")
+    o.append(f"      do hh = 1, {nh}")
+    o.append("         g(hh) = cs*SG(hh)*g(hh)")
+    o.append("         dt(hb + (hh - 1)*nkc + kc + i) = g(hh)")
+    o.append("      end do")
+    o.extend(norm)
+    o.append("      mp_nq(k) = sqrt(max(nq2, 0.0_dp))")
+    o.append(f"   end subroutine mdj_ket_item_{tag}")
+    o.append("")
+    # ---- bra item ----
+    o.extend(wrap_args(f"pure subroutine mdj_bra_item_{tag}", "i, " + bra_args, "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer,  intent(in) :: i")
+    o.append(bra_decl)
+    o.extend(locals_)
+    o.append(f"      real(dp) :: jab({na}, {nb})")
+    o.append("      integer :: s2, mu0, nu0, kk, k")
+    o.append("      real(dp) :: cs")
+    o.append("      s2 = s0 + i")
+    o.append("      mu0 = sp_ao1(s2) - 1")
+    o.append("      nu0 = sp_ao2(s2) - 1")
+    o.append(f"      do x2 = 1, {nb}")
+    o.append(f"         do x1 = 1, {na}")
+    o.append("            jab(x1, x2) = 0.0_dp")
+    o.append("         end do")
+    o.append("      end do")
+    o.append("      do kk = 1, sp_nk(s2)")
+    o.append("         k = sp_k0(s2) + kk")
+    o.append("         p = mp_z(k)")
+    o.extend(["   " + ln for ln in e_setup])
+    o.extend(e1d_loop(la, lb, "         "))
+    o.append("         cs = mp_c(k)")
+    o.append(f"         do hh = 1, {nh}")
+    o.append("            g(hh) = cs*jt(hb + (hh - 1)*nkc + k - kl0)")
+    o.append("         end do")
+    o.append(f"         do x2 = 1, {nb}")
+    o.append(f"            do x1 = 1, {na}")
+    o.append(f"               do hh = 1, {nh}")
+    o.append(f"                  if ({box}) jab(x1, x2) = jab(x1, x2) + {eprod}*g(hh)")
+    o.append("               end do")
+    o.append("            end do")
+    o.append("         end do")
+    o.append("      end do")
+    o.append("      ! Shell pairs are canonical and distinct, so no other thread writes")
+    o.append("      ! either block: no atomics.")
+    o.append(f"      do x2 = 1, {nb}")
+    o.append(f"         do x1 = 1, {na}")
+    o.append("            jmat(mu0 + x1, nu0 + x2) = jab(x1, x2)")
+    o.append("            if (mu0 /= nu0) jmat(nu0 + x2, mu0 + x1) = jab(x1, x2)")
+    o.append("         end do")
+    o.append("      end do")
+    o.append(f"   end subroutine mdj_bra_item_{tag}")
+    o.append("")
+    # ---- bound item ----
+    o.extend(wrap_args(f"pure subroutine mdj_bound_item_{tag}", "i, " + bnd_args, "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer,  intent(in) :: i")
+    o.append(bnd_decl)
+    o.extend(locals_)
+    o.append("      integer :: k")
+    o.append("      real(dp) :: best")
+    o.append("      k = k0 + i")
+    o.append("      p = mp_z(k)")
+    o.extend(e_setup)
+    o.extend(e1d_loop(la, lb, "      "))
+    o.append("      best = 0.0_dp")
+    o.append(f"      do x2 = 1, {nb}")
+    o.append(f"         do x1 = 1, {na}")
+    o.append(f"            do hh = 1, {nh}")
+    o.append("               g(hh) = 0.0_dp")
+    o.append(f"               if ({box}) g(hh) = {eprod}")
+    o.append("            end do")
+    o.extend(["      " + ln for ln in norm])
+    o.append("            best = max(best, nq2)")
+    o.append("         end do")
+    o.append("      end do")
+    o.append("      mp_ip(k) = abs(mp_c(k))*sqrt(best)")
+    o.append(f"   end subroutine mdj_bound_item_{tag}")
+    o.append("")
+    o.append(f"end module trc_mdj_e{tag}")
+    return "\n".join(o) + "\n"
+
+
 def gen_e_module(la, lb, order, header):
     lp = la + lb
     tag = f"{la}{lb}"
@@ -753,7 +976,7 @@ def main():
 
     for la in range(a.lmax + 1):
         for lb in range(la + 1):
-            write(f"trc_mdj_e{la}{lb}.F90", gen_e_module(la, lb, a.order, e_header))
+            write(f"trc_mdj_e{la}{lb}.F90", gen_e_module_loops(la, lb, a.order, e_header))
     for lp in range(2 * a.lmax + 1):
         for lq in range(2 * a.lmax + 1):
             L = lp + lq
