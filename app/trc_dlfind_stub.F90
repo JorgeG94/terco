@@ -29,6 +29,16 @@ module trc_dlfind_bridge
    public :: trc_opt_constraint_t
    public :: trc_opt_options_t, trc_opt_result_t
    public :: trc_dlfind_optimize
+   public :: TRC_OPT_STEP_HEADER, TRC_OPT_STEP_RULE
+
+   character(len=*), parameter :: TRC_OPT_STEP_HEADER = &
+      "      step              E(total)             dE        max|g|        rms|g|  SCF it    t (s)"
+      !! Same text as app/trc_dlfind_bridge.F90's own (never actually
+      !! printed here: trc_dlfind_optimize above always fails before any
+      !! step runs) -- kept so app/main.F90's opt_summary links against
+      !! either backend without an #ifdef.
+   character(len=len(TRC_OPT_STEP_HEADER)), parameter :: TRC_OPT_STEP_RULE = &
+      "   -----------------------------------------------------------------------------------------"
 
    integer, parameter :: TRC_OPT_COORDS_CARTESIAN = 0, TRC_OPT_COORDS_HDLC = 1, TRC_OPT_COORDS_HDLC_TC = 2, &
                          TRC_OPT_COORDS_DLC = 3, TRC_OPT_COORDS_DLC_TC = 4
