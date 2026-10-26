@@ -15,6 +15,8 @@ module terco_app
    use pic_types, only: dp, default_int
    use pic_error, only: error_t, ERROR_IO, ERROR_PARSE, ERROR_VALIDATION
    use pic_ascii, only: to_lower
+   use pic_logger, only: global_logger, debug_level, verbose_level, large_info_level, info_level, &
+                         performance_level, warning_level, error_level, knowledge_level
    use pic_strings, only: to_string, ends_with
    use trc_constants, only: ANGSTROM_TO_BOHR
    use json_module, only: json_core, json_value
@@ -23,6 +25,7 @@ module terco_app
 
    public :: read_xyz, resolve_basis, element_symbol, terco_app_atomic_number, c_string, f_string, set_env
    public :: BOHR_PER_ANGSTROM
+   public :: terco_app_help_for_topic, terco_app_set_log_level
    public :: write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
@@ -337,5 +340,92 @@ contains
       call json%print(root, path)
       call json%destroy(root)
    end subroutine write_opt_failure_json
+
+   function terco_app_help_for_topic(text, topic) result(out)
+      !! `pic_cli`'s help text cut down to one topic. Without a topic the
+      !! `--opt-*` tuning options (about fifty lines) are dropped, except
+      !! `--opt-freq`, which is a headline switch; with `--help opt` only the
+      !! options named `opt` or `opt-*` are kept. `pic_cli` has no notion of
+      !! option groups, so this filters its rendered lines on the long name.
+      character(len=*), intent(in) :: text, topic
+      character(len=:), allocatable :: out
+      character(len=:), allocatable :: line, name, t
+      integer :: pos, nl, eq
+      logical :: is_option, in_group
+
+      t = to_lower_alloc_app(trim(adjustl(topic)))
+      out = ""
+      pos = 1
+      do while (pos <= len(text))
+         nl = index(text(pos:), new_line("a"))
+         if (nl == 0) then
+            line = text(pos:)
+            pos = len(text) + 1
+         else
+            line = text(pos:pos + nl - 2)
+            pos = pos + nl
+         end if
+         eq = index(line, "--")
+         is_option = eq > 0 .and. eq <= 8 .and. index(line(:eq - 1), "[") == 0 .and. line(1:2) == "  "
+         if (is_option) then
+            name = line(eq + 2:)
+            name = name(:index(name//" ", " ") - 1)
+            if (len(t) > 0) then
+               in_group = name == t .or. (len(name) > len(t) .and. name(:len(t) + 1) == t//"-")
+               if (.not. in_group) cycle
+            else
+               if (len(name) > 4 .and. name(:4) == "opt-" .and. name /= "opt-freq") cycle
+            end if
+         else if (len(t) > 0 .and. (index(line, "Usage:") == 1 .or. index(line, "Options:") == 1 &
+                                    .or. index(line, "Arguments:") == 1 .or. len_trim(line) == 0)) then
+            if (index(line, "Usage:") /= 1 .and. index(line, "Options:") /= 1) cycle
+         end if
+         out = out//line//new_line("a")
+      end do
+      if (len(t) == 0) then
+         out = out//new_line("a")//"Run 'terco --help opt' for the geometry-optimisation (--opt-*) options."// &
+               new_line("a")
+      end if
+   end function terco_app_help_for_topic
+
+   subroutine terco_app_set_log_level(name, ok)
+      !! Apply `--logger <name>` to the global logger. Names are pic_logger's
+      !! own levels, quietest first: knowledge, error, warning, performance,
+      !! info, large_info, verbose, debug.
+      character(len=*), intent(in) :: name
+      logical, intent(out) :: ok
+
+      ok = .true.
+      select case (to_lower_alloc_app(trim(adjustl(name))))
+      case ("knowledge")
+      call global_logger%configure(knowledge_level)
+      case ("error")
+      call global_logger%configure(error_level)
+      case ("warning")
+      call global_logger%configure(warning_level)
+      case ("performance")
+      call global_logger%configure(performance_level)
+      case ("info")
+      call global_logger%configure(info_level)
+      case ("large_info")
+      call global_logger%configure(large_info_level)
+      case ("verbose")
+      call global_logger%configure(verbose_level)
+      case ("debug")
+      call global_logger%configure(debug_level)
+      case default
+      ok = .false.
+      end select
+   end subroutine terco_app_set_log_level
+
+   function to_lower_alloc_app(s) result(lower_s)
+      character(len=*), intent(in) :: s
+      character(len=:), allocatable :: lower_s
+      integer :: i
+      lower_s = s
+      do i = 1, len(s)
+         lower_s(i:i) = to_lower(s(i:i))
+      end do
+   end function to_lower_alloc_app
 
 end module terco_app

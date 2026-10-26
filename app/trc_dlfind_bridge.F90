@@ -221,6 +221,7 @@ module trc_dlfind_bridge
    public :: trc_opt_constraint_t
    public :: trc_opt_options_t, trc_opt_result_t
    public :: trc_dlfind_optimize
+   public :: TRC_OPT_STEP_HEADER, TRC_OPT_STEP_RULE
 
    ! --opt-coords: terco's own enum (main.F90), equal by construction to
    ! DL-FIND's own icoord base (0-4) so cb_get_params needs no translation
@@ -578,8 +579,23 @@ module trc_dlfind_bridge
       !! ENERGY (carried through dlf_parallel_opt.f90's own arrays bit
       !! for bit, never recomputed) recovers the RIGHT gradient --
       !! push_global_eval/lookup_global_eval below.
+   character(len=*), parameter :: TRC_OPT_STEP_HEADER = &
+      "      step              E(total)             dE        max|g|        rms|g|  SCF it    t (s)"
+      !! consider_step's own step-table header (printed once, mqc's own
+      !! style: a label row, then bare aligned columns, never a label
+      !! repeated on every data row) -- column widths match consider_
+      !! step's own write format exactly. Public so app/main.F90's
+      !! opt_summary can close the table with a rule of the same width
+      !! once trc_dlfind_optimize returns (consider_step itself has no
+      !! way to know which call is the last one).
+   character(len=len(TRC_OPT_STEP_HEADER)), parameter :: TRC_OPT_STEP_RULE = &
+      "   -----------------------------------------------------------------------------------------"
    type(timer_type), save :: step_clock
-   logical, save :: step_clock_running = .false.
+      !! consider_step's own "t (s)" column -- (re)started at the top of
+      !! every trc_dlfind_optimize call (below), so step 1's own line
+      !! times the FIRST evaluation too, not just the gap between later
+      !! steps (the previous %start() sat at the BOTTOM of consider_step,
+      !! so step 1 always read 0.0 s -- never started before it ran).
    integer, save :: traj_cap = 0, traj_n = 0
    real(dp), allocatable, save :: traj_e(:)
    real(dp), allocatable, save :: traj_xyz(:, :, :)
@@ -706,7 +722,7 @@ contains
       global_eval_count = 0
       global_eval_next = 1
       neb_prev_image = 0
-      step_clock_running = .false.
+      call step_clock%start()
       if (allocated(last_scf_xyz)) deallocate (last_scf_xyz)
       have_ts = .false.
       have_min_plus = .false.
@@ -2065,7 +2081,7 @@ contains
       !! trajectory) only updates when it is.
       real(c_double), intent(in) :: coords(3*natm)
       real(c_double), intent(in), value :: energy
-      real(dp) :: wall, e
+      real(dp) :: wall, e, de
       logical :: accepted
 
       total_scf_iters = total_scf_iters + last_niter
@@ -2081,6 +2097,11 @@ contains
                                     " Eh (last accepted "//to_string(last_accepted_energy)//" Eh)")
          return
       end if
+      ! consider_step's own dE column: the PREVIOUS accepted step's energy
+      ! -- exactly what have_accepted_energy/last_accepted_energy already
+      ! track, read here before this step overwrites them.
+      de = 0.0_dp
+      if (have_accepted_energy) de = e - last_accepted_energy
       have_accepted_energy = .true.
       last_accepted_energy = e
 
@@ -2097,20 +2118,29 @@ contains
       have_result = .true.
       n_steps = n_steps + 1
 
-      wall = 0.0_dp
-      if (step_clock_running) then
-         call step_clock%stop()
-         wall = step_clock%get_elapsed_time()
+      call step_clock%stop()
+      wall = step_clock%get_elapsed_time()
+      ! Header (and its underline) once, right before the first accepted
+      ! step's own row -- not up front in trc_dlfind_optimize, since
+      ! --opt-neb never calls this routine at all (cb_put_coords's own
+      ! NEB branch) and would otherwise get a table header for a table
+      ! that never appears. mqc's own style (read read-only from
+      ! metalquicha): a label row, bare aligned columns under it, never
+      ! a label repeated on every data row -- app/main.F90's own
+      ! opt_summary prints the matching closing rule once the whole run
+      ! (trc_dlfind_optimize) returns, since this routine has no way to
+      ! know which call is the last one.
+      if (n_steps == 1) then
+         call global_logger%info(TRC_OPT_STEP_HEADER)
+         call global_logger%info(TRC_OPT_STEP_RULE)
       end if
       block
          character(len=1024) :: line
-         write (line, "(a,i5,a,f20.12,a,es11.4,a,es11.4,a,i5,a,f10.2,a)") &
-            "   opt step ", n_steps, "   E = ", latest_energy, "   max|g| = ", accepted_gmax, &
-            "   rms|g| = ", accepted_grms, "   SCF iters ", last_niter, "   t = ", wall, " s"
-         call global_logger%info(trim(line))
+         write (line, "(i7,f22.12,es15.4,es14.4,es14.4,i8,f9.2)") &
+            n_steps, latest_energy, de, accepted_gmax, accepted_grms, last_niter, wall
+         call global_logger%info("   "//trim(line))
       end block
       call step_clock%start()
-      step_clock_running = .true.
 
       if (traj_n >= traj_cap) call grow_traj()
       traj_n = traj_n + 1

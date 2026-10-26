@@ -523,6 +523,16 @@ if(TERCO_BUILD_APP)
     unset(_cli_opt_probe)
     unset(_cli_opt_workdir)
 
+    # --logger's effect on --opt/--opt-freq's own output -- the step
+    # table at info, the SCF driver's full per-iteration table only at
+    # verbose/debug, never a per-displacement SCF table under --opt-freq's
+    # FD Hessian -- see check_cli_opt_logging.F90's own header.
+    set(_cli_opt_logging_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_logging_work)
+    terco_add_check(check_cli_opt_logging check_cli_opt_logging.F90
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_logging_workdir})
+    target_link_libraries(check_cli_opt_logging PRIVATE test-drive::test-drive)
+    unset(_cli_opt_logging_workdir)
+
     # The loose sanity check against metalquicha's own quoted water/HCN
     # optimisations (mqc's basis differs from terco's by ~2e-8 Eh) --
     # see check_opt_vs_mqc.F90's own header. A scratch work dir, same
