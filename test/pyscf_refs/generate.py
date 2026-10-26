@@ -1791,8 +1791,9 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=Fal
 
 
 def gen_rks():
-    """scf_rks.F90's 12 cases (water RHF/SVWN/PBE/BLYP/B3LYP/wB97X-V/
-    wB97X/wB97 restricted; OH radical UHF/PBE/wB97X-V/wB97X unrestricted),
+    """scf_rks.F90's 14 cases (water RHF/SVWN/PBE/BLYP/B3LYP/wB97X-V/
+    wB97X/wB97/wB97M-V restricted; OH radical UHF/PBE/wB97X-V/wB97X/
+    wB97M-V unrestricted),
     6-31G uncontracted to primitives. Commits pyscf's own converged energy
     AND its own converged density (in terco's AO order) -- the at-density
     control is then: terco evaluates ITS energy at that committed density
@@ -1805,7 +1806,7 @@ def gen_rks():
     SYMBOL = {1: 'H', 6: 'C', 7: 'N', 8: 'O'}
     PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'blyp': 'BLYP', 'b3lyp': 'HYB_GGA_XC_B3LYP',
              'b3lyp5': 'HYB_GGA_XC_B3LYP5', 'lda_x': 'LDA_X', 'pbe0': 'PBE0',
-             'wb97x-v': 'wb97x-v', 'wb97x': 'wb97x', 'wb97': 'wb97'}
+             'wb97x-v': 'wb97x-v', 'wb97x': 'wb97x', 'wb97': 'wb97', 'wb97m-v': 'wb97m-v'}
 
     run_bin("scf_rks", [])
     dump = TEST / "rks_probe.bin"
@@ -3137,6 +3138,11 @@ def gen_xc_kernels():
         "rscan_x": ("MGGA_X_RSCAN", "mgga"), "scan_c": ("MGGA_C_SCAN", "mgga"),
         "scan_x": ("MGGA_X_SCAN", "mgga"), "tpss_c": ("MGGA_C_TPSS", "mgga"),
         "tpss_x": ("MGGA_X_TPSS", "mgga"),
+        # Hand-written (trc_xc_wb97m_v_xc.F90's own header), not translated:
+        # ExchCXX has no wB97M-V at all. "WB97M_V" is libxc's own id 531
+        # (HYB_MGGA_XC_WB97M_V); eval_xc on it returns the semilocal part
+        # only, same convention as every "_xc" GGA kernel above.
+        "wb97m_v_xc": ("WB97M_V", "mgga"),
     }
 
     RHO = np.logspace(-9, 1, 11)

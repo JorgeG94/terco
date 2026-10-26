@@ -217,6 +217,8 @@ program check_xc
    use trc_xc_wb97x_xc, only: wb97x_xc_exc_unpolar, wb97x_xc_exc_vxc_unpolar, &
       wb97x_xc_fxc_unpolar, wb97x_xc_vxc_fxc_unpolar, wb97x_xc_exc_polar, &
       wb97x_xc_exc_vxc_polar, wb97x_xc_fxc_polar, wb97x_xc_vxc_fxc_polar
+   use trc_xc_wb97m_v_xc, only: wb97m_v_xc_exc_unpolar, wb97m_v_xc_exc_vxc_unpolar, &
+      wb97m_v_xc_exc_polar, wb97m_v_xc_exc_vxc_polar
    implicit none
 
    ! Two independent Maple derivations agree to this on energies and first
@@ -1518,6 +1520,18 @@ contains
             call wb97x_xc_vxc_fxc_unpolar(x(1), x(2), v2(1), v2(2), f2(1), f2(2), f2(3))
             nv = 2; nf = 3
          end if
+      case ("wb97m_v_xc")
+         if (polar) then
+            call wb97m_v_xc_exc_vxc_polar(x(1), x(2), x(3), x(4), x(5), x(6), x(7), out(1), &
+               v(1), v(2), v(3), v(4), v(5), v(6), v(7))
+            call wb97m_v_xc_exc_polar(x(1), x(2), x(3), x(4), x(5), x(6), x(7), e)
+            nv = 7; nf = 0
+         else
+            call wb97m_v_xc_exc_vxc_unpolar(x(1), x(2), x(3), out(1), v(1), v(2), v(3))
+            call wb97m_v_xc_exc_unpolar(x(1), x(2), x(3), e)
+            nv = 3; nf = 0
+         end if
+         v2(1:nv) = v(1:nv)
       case default
          print '(a)', "check_xc: no kernel named "//name
          stop 1
