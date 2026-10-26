@@ -109,6 +109,12 @@ HEAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     #
     (re.compile(r"!\$acc\s+atomic\b", re.IGNORECASE),
      None, "atomic"),
+    # The closing line of the block form (`atomic capture` ... `end atomic`).
+    # OpenMP needs the matching `!$omp end atomic` once the opening line has
+    # been translated; left as `!$acc end atomic` it is an inert comment and
+    # the block no longer ends.
+    (re.compile(r"!\$acc\s+end\s+atomic\b", re.IGNORECASE),
+     None, "end_atomic"),
     (re.compile(r"!\$acc\s+routine\s+seq\b", re.IGNORECASE),
      "!$omp declare target", "routine_seq"),
     (re.compile(r"!\$acc\s+declare\s+create\s*\(", re.IGNORECASE),
@@ -512,6 +518,11 @@ def transform_block(block: list[str], stats: Counter, warnings: list[str],
                                     joined, count=1, flags=re.IGNORECASE)
                     stats["atomic"] += 1
                     return joined.splitlines(keepends=True)
+                if name == "end_atomic" and TRANSLATE_ATOMICS:
+                    joined = re.sub(r"!\$acc\s+end\s+atomic\b", "!$omp end atomic",
+                                    joined, count=1, flags=re.IGNORECASE)
+                    stats["end_atomic"] += 1
+                    return joined.splitlines(keepends=True)
                 stats[name + "_left_as_is"] += 1
                 return block
             joined = pat.sub(repl, joined, count=1)
@@ -821,7 +832,7 @@ def main() -> int:
 
     print()
     print("=== conversion counts ===")
-    order = ("atomic", "atomic_left_as_is",
+    order = ("atomic", "atomic_left_as_is", "end_atomic", "end_atomic_left_as_is",
              "define_atomic", "define_atomic_left_as_is",
              "enter_data", "exit_data", "data", "end_data", "update",
              "parallel_loop", "end_parallel_loop", "host_data", "end_host_data",
