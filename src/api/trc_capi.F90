@@ -215,11 +215,16 @@ module trc_capi
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
    use trc_cpks, only: trc_scf_polarizability_rks
    use trc_xc_batch, only: trc_xc_grid_t
+   use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    implicit none
    private
 
    public :: trc_basis_create, trc_basis_destroy, trc_basis_nao
    public :: trc_basis_create_libcint, trc_basis_maxl
+   public :: trc_basis_shell_count, trc_basis_shell_max_primitives
+   public :: trc_basis_shell_info, trc_basis_shell_primitives
+   public :: trc_basis_is_spherical
+   public :: trc_physical_constant
    public :: trc_pairs_create, trc_pairs_destroy, trc_pairs_count
    public :: trc_compute_1e, trc_compute_df2c, trc_compute_df3c
    public :: trc_compute_multipoles, trc_multipole_count
@@ -301,7 +306,17 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 5
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 6
+
+   ! trc_physical_constant's own selector: which of trc_constants' values
+   ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
+   ! caller built against an older header keeps working.
+   integer(c_int), parameter, public :: TRC_CONST_BOHR_TO_ANGSTROM = 0
+   integer(c_int), parameter, public :: TRC_CONST_HARTREE_TO_EV = 1
+   integer(c_int), parameter, public :: TRC_CONST_HARTREE_TO_KCALMOL = 2
+   integer(c_int), parameter, public :: TRC_CONST_AMU_TO_ME = 3
+   integer(c_int), parameter, public :: TRC_CONST_KB_SI = 4
+   integer(c_int), parameter, public :: TRC_CONST_NA_SI = 5
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -730,6 +745,182 @@ contains
       maxl = int(maxval(box%b%sh_l), c_int)
       status = TRC_OK
    end function trc_basis_maxl
+
+   !
+   ! Shell-data accessors.
+   !
+   ! A caller that already has its own basis-construction path (cyclone's
+   ! GAMESS-to-terco converter is the motivating one) can otherwise check
+   ! only the AO count and the final energy against its own input; these
+   ! four let it read back the shells THIS handle actually holds, so a
+   ! conversion bug shows up as a wrong exponent or coefficient instead of
+   ! only a wrong energy several steps later. They work on ANY basis
+   ! handle -- one built directly through trc_basis_create*/
+   ! trc_basis_create_libcint, or borrowed from a context through
+   ! trc_context_basis -- since both are the same `basis_box`.
+   !
+   ! Caller-provided buffers with a size query first, as trc_hessian/
+   ! trc_multipole_count already do: trc_basis_shell_count for NSHELL,
+   ! then trc_basis_shell_info's three NSHELL-long buffers, and
+   ! trc_basis_shell_max_primitives for MAXNP to size
+   ! trc_basis_shell_primitives' two MAXNP*NSHELL buffers.
+   !
+   function trc_basis_shell_count(handle, nshell) result(status) &
+      bind(c, name="trc_basis_shell_count")
+      !! Number of shells, so a caller can size trc_basis_shell_info's
+      !! buffers. NOT split by decontraction (src/basis/trc_decontract.F90):
+      !! that split lives inside trc_eri_t, built from a copy of this
+      !! basis, and never touches the trc_basis_t this handle itself
+      !! holds -- this is always the basis as the caller (or
+      !! trc_basis_from_json) built it.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nshell
+      integer(c_int) :: status
+      type(basis_box), pointer :: box
+      nshell = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, box)
+      nshell = int(box%b%nshell, c_int)
+      status = TRC_OK
+   end function trc_basis_shell_count
+
+   function trc_basis_shell_max_primitives(handle, maxnp) result(status) &
+      bind(c, name="trc_basis_shell_max_primitives")
+      !! The second dimension trc_basis_shell_primitives' exps/coefs
+      !! buffers need (MAXNP*NSHELL each): the widest shell's own
+      !! primitive count, box%b%maxnp -- the same bound
+      !! trc_basis_create's own `maxnp` argument sets on the way in.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: maxnp
+      integer(c_int) :: status
+      type(basis_box), pointer :: box
+      maxnp = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, box)
+      maxnp = int(box%b%maxnp, c_int)
+      status = TRC_OK
+   end function trc_basis_shell_max_primitives
+
+   function trc_basis_shell_info(handle, atom, l, nprim) result(status) &
+      bind(c, name="trc_basis_shell_info")
+      !! Per shell, into three caller buffers of trc_basis_shell_count's
+      !! own NSHELL: ATOM is the 1-based index into trc_set_molecule's own
+      !! atom order (0 for a shell on no atom -- a ghost/probe function;
+      !! trc_api.F90's `sh_at`, matched by an exact coordinate hit against
+      !! the atom list, same convention as every other 1-based index this
+      !! library's own Fortran side uses, e.g. trc_pairlist_t's `p_i`/
+      !! `p_j`). L is the angular momentum. NPRIM is the number of
+      !! primitives actually retained: `basis_build` drops a primitive
+      !! whose coefficient is exactly zero (a dead column of a general-
+      !! contraction table) once, when the basis is built, so this is the
+      !! count trc_basis_shell_primitives below actually fills, which can
+      !! be smaller than whatever the caller's own input table listed for
+      !! that shell.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: atom(*), l(*), nprim(*)
+      integer(c_int) :: status
+      type(basis_box), pointer :: box
+      integer :: i, n
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, box)
+      n = box%b%nshell
+      do i = 1, n
+         atom(i) = int(box%b%sh_at(i), c_int)
+         l(i) = int(box%b%sh_l(i), c_int)
+         nprim(i) = int(box%b%sh_np(i), c_int)
+      end do
+      status = TRC_OK
+   end function trc_basis_shell_info
+
+   function trc_basis_shell_primitives(handle, exps, coefs) result(status) &
+      bind(c, name="trc_basis_shell_primitives")
+      !! Per-shell exponents and contraction coefficients, each
+      !! (MAXNP, NSHELL) in Fortran column-major order -- the SAME layout
+      !! trc_basis_create's own `exps`/`coefs` arguments take -- sized
+      !! from trc_basis_shell_max_primitives and trc_basis_shell_count. A
+      !! primitive past a shell's own NPRIM (trc_basis_shell_info) is
+      !! zero, exactly as a caller building a basis would pad a shorter
+      !! shell in the same buffer.
+      !!
+      !! COEFFICIENTS: `basis_build` folds libcint's common_fac_sp into the
+      !! STORED coefficient exactly once, on the way in
+      !! (0.282094791773878143 for an s shell, 0.488602511902919921 for a
+      !! p shell, 1 for l >= 2 -- AGENTS.md's "libcint's common_fac_sp
+      !! normalisation is applied exactly once, in basis construction");
+      !! this entry divides that one factor back out before handing the
+      !! coefficient back, the same exact inverse
+      !! test/trc_test_basis.F90's `unpack_basis` already relies on.
+      !!
+      !! WHAT THAT RECOVERS DEPENDS ON HOW THIS BASIS WAS BUILT.
+      !! trc_basis_create/trc_basis_create_libcint call `build` directly
+      !! on the caller's own coefficients with NOTHING else done to them,
+      !! so for a handle built either way this is EXACTLY the caller's own
+      !! input, unchanged -- the case cyclone's GAMESS-to-terco conversion
+      !! check (the motivating one) is in: it builds its own arrays and
+      !! can compare them here bit for bit.
+      !!
+      !! trc_set_basis_json/trc_basis_from_json is NOT that case:
+      !! trc_basis_json.F90's own `read_element` renormalises every
+      !! shell's coefficients to unit primitive AND unit contraction
+      !! self-overlap (its own `normalise`, BSE's/pyscf's own convention)
+      !! BEFORE handing them to `build`, which folds common_fac_sp in on
+      !! top of THAT. Undoing only the common_fac_sp fold then does not
+      !! reach the JSON file's own literal number -- a caller on that path
+      !! sees terco's fully renormalised coefficient instead (exponents
+      !! are untouched either way, since `normalise` only rescales `c`).
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: exps(*), coefs(*)
+      integer(c_int) :: status
+      type(basis_box), pointer :: box
+      integer :: i, k, n, mnp, off
+      real(dp) :: unfold
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, box)
+      n = box%b%nshell
+      mnp = box%b%maxnp
+      do i = 1, n
+         select case (box%b%sh_l(i))
+         case (0)
+            unfold = 1.0_dp/0.282094791773878143_dp
+         case (1)
+            unfold = 1.0_dp/0.488602511902919921_dp
+         case default
+            unfold = 1.0_dp
+         end select
+         off = (i - 1)*mnp
+         do k = 1, mnp
+            exps(off + k) = real(box%b%sh_e(k, i), c_double)
+            coefs(off + k) = real(box%b%sh_c(k, i)*unfold, c_double)
+         end do
+      end do
+      status = TRC_OK
+   end function trc_basis_shell_primitives
+
+   function trc_basis_is_spherical(handle, spherical) result(status) &
+      bind(c, name="trc_basis_is_spherical")
+      !! Non-zero if this basis handle's shells are spherical rather than
+      !! Cartesian -- box%b%spherical, set by trc_basis_from_json from a
+      !! JSON basis's own function_type, the same field trc_is_spherical
+      !! reads off a context's current basis (see that entry's own
+      !! comment for what it changes downstream). This is the basis-
+      !! handle-level answer, for a caller that holds the handle directly
+      !! rather than the context it came from -- trc_context_basis hands
+      !! out exactly that handle.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: spherical
+      integer(c_int) :: status
+      type(basis_box), pointer :: box
+      spherical = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, box)
+      spherical = merge(1_c_int, 0_c_int, box%b%spherical)
+      status = TRC_OK
+   end function trc_basis_is_spherical
 
    function trc_max_angular_momentum(eri_lmax, df_lmax, df_lmax_aux) result(status) &
       bind(c, name="trc_max_angular_momentum")
@@ -4160,6 +4351,46 @@ contains
       dev = int(trc_bind_device_env(), c_int)
       status = TRC_OK
    end function trc_select_device_env
+
+   function trc_physical_constant(id, value) result(status) bind(c, name="trc_physical_constant")
+      !! One of trc_constants' own CODATA 2018 values, by the TRC_CONST_*
+      !! selector above, so a host that keeps its own copy of these (a
+      !! GAMESS-input front end converting Angstrom to Bohr, say) can read
+      !! terco's instead of carrying a second literal that can drift from
+      !! this library's. Process-wide; no handle; TRC_ERR_BADARG and
+      !! `value` left at 0 for an `id` this build does not know (an older
+      !! caller asking for a selector a newer header added, or a typo).
+      !!
+      !!   TRC_CONST_BOHR_TO_ANGSTROM    Bohr radius, Angstrom
+      !!   TRC_CONST_HARTREE_TO_EV       Hartree energy, eV
+      !!   TRC_CONST_HARTREE_TO_KCALMOL  Hartree energy, kcal/mol (the
+      !!                                 thermochemical calorie)
+      !!   TRC_CONST_AMU_TO_ME           atomic mass unit, electron masses
+      !!   TRC_CONST_KB_SI               Boltzmann constant, J/K
+      !!   TRC_CONST_NA_SI               Avogadro constant, mol^-1
+      integer(c_int), value :: id
+      real(c_double), intent(out) :: value
+      integer(c_int) :: status
+      value = 0.0_c_double
+      status = TRC_ERR_BADARG
+      select case (id)
+      case (TRC_CONST_BOHR_TO_ANGSTROM)
+         value = real(BOHR_TO_ANGSTROM, c_double)
+      case (TRC_CONST_HARTREE_TO_EV)
+         value = real(HARTREE_TO_EV, c_double)
+      case (TRC_CONST_HARTREE_TO_KCALMOL)
+         value = real(HARTREE_TO_KCALMOL, c_double)
+      case (TRC_CONST_AMU_TO_ME)
+         value = real(AMU_TO_ME, c_double)
+      case (TRC_CONST_KB_SI)
+         value = real(KB_SI, c_double)
+      case (TRC_CONST_NA_SI)
+         value = real(NA_SI, c_double)
+      case default
+         return
+      end select
+      status = TRC_OK
+   end function trc_physical_constant
 
    function trc_functional_info(name, flags, exx, c_os, c_ss) result(status) bind(c, name="trc_functional_info")
       !! Look up a functional by name (case-insensitive, trc_xc_functional's
