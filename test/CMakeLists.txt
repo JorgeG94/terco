@@ -184,6 +184,12 @@ add_test(NAME terco/check_binfock_split COMMAND check_binfock)
 set_tests_properties(terco/check_binfock_split PROPERTIES
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=3")
+# Rotated-axis MD (TRC_ROTAXIS=1, opt-in, see trc_binkernel.F90) against
+# HGP, the same Fock build through fock_bins with the knob forced each way
+# in one process: SiH4/cc-pVDZ (light Si contraction, and a mixed s/p/d
+# basis to check the fallback) and Si8O12H8/cc-pVTZ (the deep general
+# contraction the generator was revived to measure).
+terco_add_check(check_rotaxis check_rotaxis.F90 NEEDS_BASIS)
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)

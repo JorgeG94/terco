@@ -527,6 +527,20 @@ if(_regen)
     terco_gen("gen_perclass.py" ${Python3_EXECUTABLE} ${_scripts}/gen_perclass.py
               --lmax ${_hgp_lmax} ${_order_flag} --split ${_gen_out})
 
+    # Rotated-axis MD, one module per ordered s/p class plus its dispatcher
+    # (trc_ra_kernels.F90). Opt-in only (TRC_ROTAXIS=1 at run time, see
+    # trc_binkernel.F90); HGP stays the default path. Fixed at s/p
+    # regardless of TERCO_LMAX -- the class set does not grow with the
+    # ceiling (scripts/rotaxis/FRAME.md section 5) -- and
+    # trc_ra_kernels.F90 imports CLASS_RADIX from trc_pc_kernels, so it
+    # must run after gen_perclass.py has written that module into the same
+    # directory. `--order` is accepted for symmetry with the other
+    # generators, though s/p is where lexicographic and gamess coincide, so
+    # it never changes a byte of what comes out (gen_rotaxis.py's own
+    # docstring on --order).
+    terco_gen("gen_rotaxis.py" ${Python3_EXECUTABLE} ${_scripts}/gen_rotaxis.py
+              ${_order_flag} --split ${_gen_out})
+
     # One-electron, multipoles and density fitting carry angular momentum on two
     # or three centres rather than four, so they grow as L^2 or L^3 and can
     # afford the same ceiling as the four-centre kernels for far less compile.
@@ -633,7 +647,9 @@ if(_regen)
     "${_gen_out}" "${_gen_dir}" ${_prune} ${_stampable}
     ${_scripts}/gen_perclass.py ${_scripts}/gen_vrr.py ${_scripts}/gen_hrr.py
     ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/gen_df_grad.py ${_scripts}/rys_inline.py
-    ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/cartorder.py)
+    ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/cartorder.py
+    ${_scripts}/gen_rotaxis.py ${_scripts}/rotaxis/derive.py ${_scripts}/rotaxis/factor.py
+    ${_scripts}/rotaxis/poly.py ${_scripts}/rotaxis/emit_docon.py)
 endif()
 
 # Always on the include path, not just when regenerating for LMAX<=1: the

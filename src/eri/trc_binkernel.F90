@@ -28,6 +28,7 @@ module trc_binkernel
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
    use trc_rys_select, only: rys_select_init, rys_route
    use trc_rys_kernels, only: rys_dispatch
+   use trc_ra_kernels, only: ra_dispatch, ra_has_class
    implicit none
    private
 
@@ -105,6 +106,21 @@ contains
       call get_environment_variable("TRC_BIN_SORT", v)
       res = (trim(v) == "1")
    end function bin_sort_on
+
+   !> TRC_ROTAXIS=1 sends every class the rotated-axis dispatcher supports
+   !> (the 16 ordered s/p classes, scripts/rotaxis/FRAME.md) through
+   !> `ra_dispatch` instead of HGP/Rys; a class it does not support (any
+   !> with a d or f shell) still goes through pc_dispatch/rys_dispatch,
+   !> whatever the knob says -- `ra_has_class` asks the dispatcher's own
+   !> case list, not an angular-momentum bound. Default off, so nothing
+   !> changes for existing users. Read once per Fock build in `fock_bins`,
+   !> not once per launch -- see seg_stats_on's own comment on the syscall
+   !> cost of reading it per launch on a large molecule.
+   logical function rotaxis_on()
+      character(len=8) :: v
+      call get_environment_variable("TRC_ROTAXIS", v)
+      rotaxis_on = (trim(v) == "1")
+   end function rotaxis_on
 
    subroutine trc_set_prim_margin(f)
       real(dp), intent(in) :: f
@@ -379,7 +395,7 @@ contains
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, nl, key2
          integer(int64) :: lcap
-         logical :: l2
+         logical :: l2, use_ra
          integer(int64) :: o2
          ! The trivial primitive-shell view used to be built here -- eight
          ! arrays, allocated, filled, and pushed to the device on every Fock
@@ -416,6 +432,9 @@ contains
          c0 = 1
 
          lcap = launch_cap()
+         ! Read once per Fock build (see rotaxis_on's own comment), not once
+         ! per class run below.
+         use_ra = rotaxis_on()
          do while (c0 <= nseg)
             c1 = c0
             do while (c1 < nseg)
@@ -429,11 +448,25 @@ contains
             nl = nl + 1
             key2 = ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
                     + sLC(c0))*CLASS_RADIX + sLD(c0)
+            ! TRC_ROTAXIS races the rotated-axis dispatcher against
+            ! HGP/Rys: a class it supports (the 16 ordered s/p classes)
+            ! goes through it instead when the knob is on; every other
+            ! class -- any with a d or f shell -- always goes through
+            ! rys_route/pc_dispatch below, whatever the knob says, because
+            ! `ra_has_class` asks the dispatcher's own case list rather
+            ! than an angular-momentum bound.
+            if (use_ra .and. ra_has_class(key2)) then
+               call ra_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
+                                omega, dsh, nbas, nao, sh_l, ao_off, &
+                                nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                                ndens, dmat, jmat, rank, nranks)
             ! TRC_RYS_CLASSES routes this launch's whole class run to the
             ! Rys kernel instead of HGP's, for classes that have one --
             ! `rys_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
-            if (rys_route(key2)) then
+            else if (rys_route(key2)) then
                call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                  b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
                                  omega, dsh, nbas, nao, sh_l, ao_off, &
