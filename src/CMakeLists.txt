@@ -21,6 +21,7 @@ target_sources(
           api/trc_api.F90        # basis, pair list, 1e, multipoles, DF
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_eri.F90       # the four-centre Fock builds
+          core/trc_hip.F90        # hipBLAS/hipSOLVER C interfaces (empty unless TERCO_HIP)
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           core/trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX
@@ -406,6 +407,34 @@ function(terco_gen_uptodate out stamp_file stamp dest)
   set(${out} TRUE PARENT_SCOPE)
 endfunction()
 
+# The AMD GPU build compiles OpenMP-converted source (tools/dc_to_omp.py then
+# tools/acc_to_omp.py, --target gpu). src/generated is committed converted on
+# the OpenMP branch, but a generator run writes the ORIGINAL form: `do
+# concurrent` and `!$acc` directives. amdflang ignores `!$acc` and runs `do
+# concurrent` on the host, so an unconverted kernel does not fail to build --
+# it runs on the CPU over host arrays and the device's copy of the result
+# overwrites it: a Fock matrix with no two-electron part, and a SCF that
+# converges to a wrong energy. So with TERCO_ENABLE_HIP the staging directory
+# is converted before it is synced, and the stamp covers both converters.
+function(terco_omp_convert stage)
+  # Fixed order: acc_to_omp.py's --translate-atomics is only legal after
+  # dc_to_omp.py has stripped `pure` from the procedures holding atomics.
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/dc_to_omp.py"
+            --target gpu --write "${stage}"
+    RESULT_VARIABLE _tc_rc1 OUTPUT_VARIABLE _tc_out1 ERROR_VARIABLE _tc_err1)
+  if(NOT _tc_rc1 EQUAL 0)
+    message(FATAL_ERROR "terco: dc_to_omp.py failed on ${stage} (${_tc_rc1}):\n${_tc_out1}${_tc_err1}")
+  endif()
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/acc_to_omp.py"
+            --target gpu --translate-atomics --write "${stage}"
+    RESULT_VARIABLE _tc_rc2 OUTPUT_VARIABLE _tc_out2 ERROR_VARIABLE _tc_err2)
+  if(NOT _tc_rc2 EQUAL 0)
+    message(FATAL_ERROR "terco: acc_to_omp.py failed on ${stage} (${_tc_rc2}):\n${_tc_out2}${_tc_err2}")
+  endif()
+endfunction()
+
 # Plan, stamp, then run `gen_macro` (a macro of terco_gen calls) and sync
 # `stage` into `dest` -- or skip both. `stampable` OFF always runs (the
 # in-place src/generated refresh). The stamp is kept beside the stage, as
@@ -427,6 +456,13 @@ function(terco_generate name gen_macro stage dest prune stampable)
   foreach(_tg_c ${_tg_plan})
     string(APPEND _tg_sig "run ${_tg_c}\n")
   endforeach()
+  if(TERCO_ENABLE_HIP)
+    string(APPEND _tg_sig "omp-convert gpu\n")
+    foreach(_tg_s dc_to_omp.py acc_to_omp.py)
+      file(SHA256 "${PROJECT_SOURCE_DIR}/tools/${_tg_s}" _tg_h)
+      string(APPEND _tg_sig "script ${_tg_s} ${_tg_h}\n")
+    endforeach()
+  endif()
   string(SHA256 _tg_stamp "${_tg_sig}")
   string(SUBSTRING "${_tg_stamp}" 0 12 _tg_short)
   set(_tg_stamp_file "${stage}.stamp")
@@ -445,6 +481,9 @@ function(terco_generate name gen_macro stage dest prune stampable)
   file(MAKE_DIRECTORY "${stage}")
   set_property(GLOBAL PROPERTY TERCO_GEN_MODE "run")
   cmake_language(CALL ${gen_macro})
+  if(TERCO_ENABLE_HIP)
+    terco_omp_convert("${stage}")
+  endif()
   terco_sync_generated("${stage}" "${dest}" ${prune})
   if(stampable)
     terco_gen_write_stamp("${_tg_stamp_file}" "${_tg_stamp}" "${dest}")

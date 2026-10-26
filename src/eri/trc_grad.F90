@@ -168,7 +168,6 @@ contains
       block
          integer, allocatable :: ord(:), ckey(:)
          integer :: a2, b2, t2, c0, c1, key2, ga, gc, gs
-         real(dp) :: gsum
          real(dp), allocatable :: gp(:, :, :)
          !! The compact pass's lane-private gradient copies (GRAD_NPRIV).
          !! A local, not a component of trc_eri_t or an argument of
@@ -222,12 +221,10 @@ contains
          end do
          ! Sum the copies into grad, on the device (grad is already there:
          ! eri_gradient's enter data).
-         do concurrent(ga=1:natm, gc=1:3) local(gsum, gs)
-            gsum = 0.0_dp
-            do gs = 1, GRAD_NPRIV
-               gsum = gsum + gp(gc, ga, gs)
-            end do
-            grad(gc, ga) = grad(gc, ga) + gsum
+         ! sum() instead of a local accumulator: flang (ROCm) rejects a
+         ! scalar in local() here as "not definable".
+         do concurrent(ga=1:natm, gc=1:3)
+            grad(gc, ga) = grad(gc, ga) + sum(gp(gc, ga, :))
          end do
          !$acc exit data delete(gp)
          deallocate (gp)

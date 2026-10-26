@@ -294,6 +294,11 @@ add_subdirectory(cmake)
 # configuration a host code built with another compiler needs.
 #
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# CMake 3.28 defines no PIC flag for the LLVMFlang compiler id (amdflang), so
+# the property above silently adds nothing and libterco.so fails to link.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "LLVMFlang" AND NOT CMAKE_Fortran_COMPILE_OPTIONS_PIC)
+  set(CMAKE_Fortran_COMPILE_OPTIONS_PIC -fPIC)
+endif()
 
 #
 # PIC, for one thing: `sort_index` on 64-bit Morton codes, to order the shell
@@ -408,6 +413,40 @@ if(TERCO_ENABLE_GPU)
   else()
     target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
   endif()
+endif()
+
+#
+# The AMD GPU build: the OpenMP-offload port of the source (tools/dc_to_omp.py
+# then tools/acc_to_omp.py, `--target gpu`) compiled by amdflang, with hipBLAS
+# and hipSOLVER in place of cuBLAS and cuSOLVER (src/core/trc_hip.F90 declares
+# them as C interfaces, so hipfort is not needed). Exclusive with
+# TERCO_ENABLE_GPU. The flags are PUBLIC so terco's tests and the CLI, which
+# carry converted directives too, get them; pic and the other fetched
+# dependencies do not link terco and are left alone.
+#
+option(TERCO_ENABLE_HIP "AMD GPU build: OpenMP offload plus hipBLAS/hipSOLVER" OFF)
+set(TERCO_HIP_ARCH "gfx90a" CACHE STRING "AMD GPU architecture for --offload-arch (gfx90a: MI250X)")
+if(TERCO_ENABLE_HIP)
+  if(TERCO_ENABLE_GPU)
+    message(FATAL_ERROR "TERCO_ENABLE_HIP and TERCO_ENABLE_GPU are exclusive: "
+                        "the first is the AMD build, the second the NVHPC one.")
+  endif()
+  find_library(TERCO_HIPBLAS_LIBRARY hipblas
+               HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
+  find_library(TERCO_HIPSOLVER_LIBRARY hipsolver
+               HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
+  # hipDeviceSynchronize (trc_linalg's sync) lives in the HIP runtime, which
+  # neither hipBLAS nor -fopenmp pulls in for a static libterco.
+  find_library(TERCO_HIPRT_LIBRARY amdhip64
+               HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
+  target_compile_definitions(${main_lib} PUBLIC TERCO_HIP)
+  target_compile_options(
+    ${main_lib}
+    PUBLIC $<$<COMPILE_LANGUAGE:Fortran>:-fopenmp --offload-arch=${TERCO_HIP_ARCH}>)
+  target_link_options(${main_lib} PUBLIC -fopenmp --offload-arch=${TERCO_HIP_ARCH})
+  target_link_libraries(${main_lib} PUBLIC ${TERCO_HIPBLAS_LIBRARY}
+                                           ${TERCO_HIPSOLVER_LIBRARY}
+                                           ${TERCO_HIPRT_LIBRARY})
 endif()
 
 #

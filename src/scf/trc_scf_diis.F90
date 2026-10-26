@@ -97,12 +97,15 @@ contains
 
    subroutine cdiis_to_device(this)
       class(cdiis_t), intent(inout) :: this
+      ! The object first, then its members: see eri_build.
+      !$acc enter data copyin(this)
       !$acc enter data copyin(this%fstore, this%estore)
    end subroutine cdiis_to_device
 
    subroutine cdiis_release_device(this)
       class(cdiis_t), intent(inout) :: this
       !$acc exit data delete(this%fstore, this%estore)
+      !$acc exit data delete(this)
    end subroutine cdiis_release_device
 
    subroutine cdiis_push(this, lp, nao, nspin, fock, errv)
@@ -183,12 +186,15 @@ contains
 
    subroutine adiis_to_device(this)
       class(adiis_t), intent(inout) :: this
+      ! The object first, then its members: see eri_build.
+      !$acc enter data copyin(this)
       !$acc enter data copyin(this%fstore_a, this%dstore_a)
    end subroutine adiis_to_device
 
    subroutine adiis_release_device(this)
       class(adiis_t), intent(inout) :: this
       !$acc exit data delete(this%fstore_a, this%dstore_a)
+      !$acc exit data delete(this)
    end subroutine adiis_release_device
 
    subroutine adiis_push(this, lp, nao, nspin, fock, dold)

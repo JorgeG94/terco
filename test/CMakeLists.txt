@@ -100,6 +100,11 @@ terco_add_check(check_selftest check_selftest.F90)
 #
 terco_add_check(check_linalg_mat check_linalg_mat.F90)
 
+# The raw wrappers against matmul and residual identities, so a wrong backend
+# (host BLAS, cuBLAS, hipBLAS) cannot pass by agreeing with itself.
+terco_add_check(check_linalg_ref check_linalg_ref.F90)
+target_link_libraries(check_linalg_ref PRIVATE test-drive::test-drive)
+
 # A signalling-NaN SCF guess density -- what a density read past the end
 # of an undersized buffer (app/trc_dlfind_bridge.F90's own --opt-neb
 # per-image density) can hand back -- comes back through trc_run_scf's

@@ -169,7 +169,7 @@ def scan_procedures(path):
                                      container=True))
                 unit, outer = None, []
                 continue
-        if modmap.RE_IFACE.match(st):
+        if modmap.RE_IFACE.match(st) or modmap.RE_IFACE_BARE.match(st):
             iface += 1
             continue
         if re.match(r"^\s*end\s+interface\b", st, re.I):

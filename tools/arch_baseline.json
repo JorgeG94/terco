@@ -2,7 +2,6 @@
 "version": 1,
 "violations": {
 "arg-count|app/terco_app.F90|write_opt_failure_json|": 11,
-"arg-count|app/trc_dlfind_bridge.F90|api_dl_find|": 11,
 "arg-count|app/trc_dlfind_bridge.F90|cb_get_params|": 82,
 "arg-count|src/api/trc_api.F90|basis_build|": 11,
 "arg-count|src/api/trc_capi.F90|basis_arrays|": 9,
@@ -16,9 +15,6 @@
 "arg-count|src/api/trc_capi.F90|trc_fock_many|": 9,
 "arg-count|src/basis/trc_decontract.F90|emit_whole|": 13,
 "arg-count|src/basis/trc_decontract.F90|split_group|": 16,
-"arg-count|src/core/trc_linalg.F90|dgemv|": 11,
-"arg-count|src/core/trc_linalg.F90|dgetrs|": 9,
-"arg-count|src/core/trc_linalg.F90|dtrsm|": 11,
 "arg-count|src/core/trc_linalg.F90|linalg_gemm_raw|": 14,
 "arg-count|src/core/trc_linalg.F90|linalg_gemm_strided|": 18,
 "arg-count|src/core/trc_linalg.F90|linalg_gemv|": 10,
