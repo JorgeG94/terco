@@ -544,6 +544,26 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
 
+   logical function mdj_requested() result(res)
+      !! TRC_MDJ=1 routes the Coulomb part of a resident Fock build through
+      !! the McMurchie-Davidson J engine.
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_MDJ", e)
+      res = trim(e) == "1"
+   end function mdj_requested
+
+   subroutine add_scaled_device(n, f, x, y)
+      !! y = y + f x on the device.
+      integer,  intent(in)    :: n
+      real(dp), intent(in)    :: f, x(n)
+      real(dp), intent(inout) :: y(n)
+      integer :: i
+      do concurrent(i = 1:n)
+         y(i) = y(i) + f*x(i)
+      end do
+   end subroutine add_scaled_device
+
    subroutine eri_coulomb(this, b, dmat, jmat)
       !! J for a density by the McMurchie-Davidson J engine, which never forms
       !! an integral quartet (trc_mdj). Same conventions as `fock` at
@@ -839,9 +859,10 @@ contains
       !! A full extra pass over the work list, so it is opt-in.
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
+      real(dp), allocatable :: dp_w(:, :), gp_w(:, :), jw(:, :)
       integer :: n, nw, i, j
-      real(dp) :: jfac, kfac, ow
+      real(dp) :: jfac, kfac, ow, jbins
+      logical :: md_j
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -852,6 +873,12 @@ contains
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
       n = this%nao
       nw = this%nao_w
+      ! TRC_MDJ=1: the Coulomb part from the McMurchie-Davidson J engine, and
+      ! the bins only for exchange (or not at all without it). Ordinary
+      ! Coulomb operator only; an erf pass keeps the bins.
+      md_j = mdj_requested() .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      jbins = jfac
+      if (md_j) jbins = 0.0_dp
 
       allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
       allocate (dp_w(nw, nw), gp_w(nw, nw))
@@ -928,16 +955,18 @@ contains
             end if
          end if
       end block
-      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                     this%ao_off, this%thresh, .false., &
-                     jfac, kfac, ow, .false., this%dsh, &
-                     this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                     this%hp_ra, this%hp_rb, this%hp_c, &
-                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                     this%sq_ax, this%sq_ay, this%sq_az, &
-                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      if (.not. (md_j .and. kfac == 0.0_dp)) then
+         call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+                        this%ao_off, this%thresh, .false., &
+                        jbins, kfac, ow, .false., this%dsh, &
+                        this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                        this%hp_ra, this%hp_rb, this%hp_c, &
+                        this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                        this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                        this%sq_ax, this%sq_ay, this%sq_az, &
+                        this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
+                        1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      end if
       !$acc wait
 
       ! Fold on the device, straight into the caller's resident result.
@@ -950,6 +979,23 @@ contains
       do concurrent(j=1:nw, i=1:nw)
          gp_w(i, j) = 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
       end do
+      if (md_j) then
+         if (.not. this%md%built) then
+            if (this%dec%active) then
+               call this%md%build(this%pb, this%bins, this%thresh)
+            else
+               call this%md%build(b, this%bins, this%thresh)
+            end if
+         end if
+         allocate (jw(nw, nw))
+         !$acc enter data create(jw)
+         call this%md%coulomb(nw, dp_w, jw)
+         ! Every rank forms the whole of J; only rank 0 adds it to what
+         ! sum_ranks then totals.
+         if (this%rank == 0) call add_scaled_device(nw*nw, jfac, jw, gp_w)
+         !$acc exit data delete(jw)
+         deallocate (jw)
+      end if
       if (this%dec%active) then
          call decon_fold(this%dec, gp_w, gmat)
       else

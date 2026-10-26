@@ -24,7 +24,8 @@ program bench_mdj
    integer :: nat, nao, i, j, k, nrep, si, sj
    integer, allocatable :: at_z(:), aosh(:)
    real(dp), allocatable :: r(:, :), d(:, :), jref(:, :), jmd(:, :)
-   real(dp) :: thresh, t_fock, t_md, t_build, r2
+   real(dp) :: thresh, t_fock, t_md, t_build, r2, t_jk, t_k
+   real(dp), allocatable :: g(:, :)
 
    call get_command_argument(1, xyz)
    call get_command_argument(2, basis)
@@ -85,6 +86,20 @@ program bench_mdj
    end do
    print '(a,f9.4,a,f9.4,a,f7.2)', "best of reps: fock J ", t_fock, " s   md J ", t_md, &
       " s   fock/md ", t_fock/t_md
+   ! What the K engine has to beat: the whole HGP/Rys Fock build, and its
+   ! exchange alone (j_scale = 0).
+   allocate (g(nao, nao))
+   t_jk = huge(1.0_dp)
+   t_k = huge(1.0_dp)
+   do k = 1, nrep
+      call tm%start()
+      call eri%fock(bas, d, g)
+      t_jk = min(t_jk, tm%get_elapsed_time())
+      call tm%start()
+      call eri%fock(bas, d, g, j_scale=0.0_dp, k_scale=1.0_dp)
+      t_k = min(t_k, tm%get_elapsed_time())
+   end do
+   print '(a,f9.4,a,f9.4,a)', "best of reps: fock J+K ", t_jk, " s   fock K only ", t_k, " s"
    print '(a,es10.3,a,es10.3)', "max|J_md - J_fock| ", maxval(abs(jmd - jref)), &
       "   max|J| ", maxval(abs(jref))
    print '(a,i0,a,i0)', "md primitive pairs ", eri%md%nhp, "   shell pairs ", eri%md%nsp
