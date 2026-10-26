@@ -3,9 +3,11 @@
 # Daresbury), fetched with FetchContent the way pic/json-fortran are
 # (cmake/modules/sample_utils.cmake's my_fetch_package) -- but NOT through
 # that macro directly, and NOT linked into libterco. See TERCO_ENABLE_DLFIND's
-# comment in the root CMakeLists.txt for the licensing reason; app/CMakeLists.txt
-# is the only place this module is find_package()'d from, and it links the
-# result only into terco_cli.
+# comment in the root CMakeLists.txt for the licensing reason; src/opt/
+# CMakeLists.txt is the only place this module is find_package()'d from,
+# and it links the result only into terco_opt (that library's own PRIVATE
+# dependency -- never libterco, never re-exposed to terco_opt's own
+# callers, terco_cli among them).
 #
 # my_fetch_package assumes the fetched project's own CMake target is named
 # the same as the package argument ("pic" ships target `pic`, "jsonfortran"

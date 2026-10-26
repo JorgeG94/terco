@@ -27,6 +27,7 @@ Fortran API, a `bind(c)` ABI and a `terco` CLI. See `README.md`.
 | `src/scf/` | SCF driver, settings, state, DIIS, guesses, DF-JK, gradients, CPHF |
 | `src/xc/`, `src/post_hf/`, `src/solvation/` | XC integration and functionals, VV10; RI-MP2; PCM |
 | `src/api/` | `trc_api` (Fortran) and `trc_capi` (C ABI); `include/` holds the C interfaces |
+| `src/opt/` | the geometry optimiser (DL-FIND via libdlfind), built as `libterco_opt` only with `-DTERCO_ENABLE_DLFIND=ON`; its own C ABI is `include/terco_opt.h` |
 | `src/generated/` | **generator output: never edit by hand** |
 | `scripts/` | the kernel generators (`gen_*.py`), see `docs/GENERATORS.md` |
 | `tools/` | OpenMP converters, `pic_api.py`, XC registry and translators, lint helpers |
