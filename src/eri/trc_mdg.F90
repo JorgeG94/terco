@@ -77,6 +77,12 @@ contains
       res = .false.
       sz = mdg_sizes(key)
       if (sz(1) == 0) return
+      ! A shell above f has no other kernel: always here.
+      if (max(key/(CLASS_RADIX**3), mod(key/(CLASS_RADIX**2), CLASS_RADIX), &
+              mod(key/CLASS_RADIX, CLASS_RADIX), mod(key, CLASS_RADIX)) > 3) then
+         res = .true.
+         return
+      end if
       e = " "
       call get_environment_variable("TRC_MDG_CLASSES", e)
       if (len_trim(e) == 0) return

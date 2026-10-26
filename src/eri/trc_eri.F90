@@ -89,6 +89,9 @@ module trc_eri
       type(trc_mdj_t) :: md
       type(trc_mdg_t) :: mg
       !! The MD GEMM pass over the same pairs, for TRC_MDG_CLASSES.
+      logical :: needs_md = .false.
+      !! A shell above f: HGP and Rys have no kernel for its classes, so J
+      !! comes from trc_mdj and K from trc_mdg whatever the environment says.
       !! The McMurchie-Davidson J engine over the same bins, built on the
       !! first `coulomb` call: an HGP/Rys-only run never pays for it.
       logical :: on_device = .false.
@@ -132,7 +135,7 @@ contains
       type(trc_basis_t), intent(in) :: b
       character(len=:), allocatable :: msg
       character(len=*), parameter :: LNAME = "spdfghik"
-      integer, parameter :: LMAX_BUILDABLE = 3
+      integer, parameter :: LMAX_BUILDABLE = 4
       !! The highest TERCO_LMAX the generators support.
       integer :: lb
       msg = ""
@@ -144,7 +147,7 @@ contains
       if (lb <= LMAX_BUILDABLE) then
          msg = msg//"rebuild with -DTERCO_LMAX="//to_string(lb)
       else
-         msg = msg//"terco's integrals go up to f (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
+         msg = msg//"terco's integrals go up to g (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
       end if
    end function eri_lmax_refusal
 
@@ -196,6 +199,7 @@ contains
       call this%release()
       this%thresh = thresh
       this%nao = b%nao
+      this%needs_md = maxval(b%sh_l) > 3
 
       !
       ! SPLIT A GENERAL CONTRACTION BEFORE ANYTHING IS BUILT.
@@ -487,12 +491,15 @@ contains
       else
          this%dsh = 1.0_dp
       end if
+      if (this%needs_md .and. ow /= 0.0_dp) error stop &
+         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
+      ! A g basis: J from the MD engine below, the bins for exchange only.
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     jfac, kfac, ow, .false., this%dsh, &
+                     merge(0.0_dp, jfac, this%needs_md), kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -500,7 +507,8 @@ contains
                      this%sq_ax, this%sq_ay, this%sq_az, &
                      this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
-      call mdg_pass(this, b, dwork, jmat, jfac, kfac)
+      call mdg_pass(this, b, dwork, jmat, merge(0.0_dp, jfac, this%needs_md), kfac)
+      if (this%needs_md .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -571,7 +579,7 @@ contains
       type(trc_mdg_scales_t) :: sc
       e = " "
       call get_environment_variable("TRC_MDG_CLASSES", e)
-      if (len_trim(e) == 0) return
+      if (len_trim(e) == 0 .and. .not. this%needs_md) return
       if (.not. this%md%built) then
          if (this%dec%active) then
             call this%md%build(this%pb, this%bins, this%thresh)
@@ -586,6 +594,44 @@ contains
       sc%kfac = kfac
       call this%mg%fock(this%md, this%dsh, dwork, jmat, sc)
    end subroutine mdg_pass
+
+   subroutine add_md_j(this, b, dp_w, jmat, jfac)
+      !! jmat(1, :, :) += jfac J[dp_w] from the MD engine; dp_w is a host
+      !! array (eri_fock's), jmat is on the device. Rank 0 only, as in
+      !! eri_fock_resident.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)    :: dp_w(:, :)
+      real(dp), intent(inout) :: jmat(:, :, :)
+      real(dp), intent(in)    :: jfac
+      real(dp), allocatable :: jw(:, :)
+      integer :: nw, i, j
+      if (.not. this%md%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh)
+         else
+            call this%md%build(b, this%bins, this%thresh)
+         end if
+      end if
+      nw = size(dp_w, 1)
+      allocate (jw(nw, nw))
+      !$acc enter data copyin(dp_w) create(jw)
+      call this%md%coulomb(nw, dp_w, jw)
+      !$acc update self(jw)
+      !$acc exit data delete(dp_w, jw)
+      ! jmat on the device; the fold symmetrises (jmat + jmat^T)/2, and J is
+      ! symmetric, so adding it once is adding it once.
+      !$acc update self(jmat)
+      if (this%rank == 0) then
+         do j = 1, nw
+            do i = 1, nw
+               jmat(1, i, j) = jmat(1, i, j) + jfac*jw(i, j)
+            end do
+         end do
+      end if
+      !$acc update device(jmat)
+      deallocate (jw)
+   end subroutine add_md_j
 
    subroutine add_scaled_device(n, f, x, y)
       !! y = y + f x on the device.
@@ -674,6 +720,7 @@ contains
       real(dp), allocatable :: dwork(:, :, :)
       integer :: ndens, nw, id
       real(dp) :: jfac, kfac, ow
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       ow = 0.0_dp
       if (present(omega)) ow = omega
@@ -787,6 +834,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -910,7 +958,9 @@ contains
       ! TRC_MDJ=1: the Coulomb part from the McMurchie-Davidson J engine, and
       ! the bins only for exchange (or not at all without it). Ordinary
       ! Coulomb operator only; an erf pass keeps the bins.
-      md_j = mdj_requested() .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      md_j = (mdj_requested() .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      if (this%needs_md .and. ow /= 0.0_dp) error stop &
+         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
       jbins = jfac
       if (md_j) jbins = 0.0_dp
 
@@ -1171,6 +1221,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j, d
       real(dp) :: jfac, kfac, ow
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       jfac = 1.0_dp
       kfac = 1.0_dp

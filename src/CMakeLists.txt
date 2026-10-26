@@ -711,11 +711,17 @@ set(_rys_stage "${CMAKE_BINARY_DIR}/stage/generated_rys")
 # comments, and that is correct because the Rys dispatchers are only ever
 # called from the sequential class loops in trc_binkernel.F90 and
 # trc_grad.F90, never from inside a converted parallel region.
+# Rys (and the HGP template it is spliced from) stops at f: a class with a g
+# shell is the McMurchie-Davidson engine's (trc_mdj for J, trc_mdg for K).
+set(_rys_lmax ${TERCO_LMAX})
+if(_rys_lmax GREATER 3)
+  set(_rys_lmax 3)
+endif()
 set(_all_classes "")
-foreach(la RANGE 0 ${TERCO_LMAX})
-  foreach(lb RANGE 0 ${TERCO_LMAX})
-    foreach(lc RANGE 0 ${TERCO_LMAX})
-      foreach(ld RANGE 0 ${TERCO_LMAX})
+foreach(la RANGE 0 ${_rys_lmax})
+  foreach(lb RANGE 0 ${_rys_lmax})
+    foreach(lc RANGE 0 ${_rys_lmax})
+      foreach(ld RANGE 0 ${_rys_lmax})
         list(APPEND _all_classes "${la}${lb}${lc}${ld}")
       endforeach()
     endforeach()
@@ -836,13 +842,32 @@ if(NOT "${TERCO_MDJ_BATCHES}" STREQUAL "")
 endif()
 set(TERCO_MDG_CLASSES "2121,1010" CACHE STRING "classes with an MD GEMM Fock prototype (TRC_MDG_CLASSES routes them)")
 set(TERCO_MDK_CLASSES "2121,1010" CACHE STRING "classes with an MD Fock prototype kernel (TRC_MDK_CLASSES routes them)")
+# Every class with a shell above f goes to the MD GEMM pass, whatever
+# TERCO_MDG_CLASSES says: nothing else in terco forms it.
+set(_mdg_classes "${TERCO_MDG_CLASSES}")
+if(TERCO_LMAX GREATER 3)
+  foreach(la RANGE 0 ${TERCO_LMAX})
+    foreach(lb RANGE 0 ${la})
+      foreach(lc RANGE 0 ${la})
+        foreach(ld RANGE 0 ${lc})
+          if(lc EQUAL la AND ld GREATER lb)
+            continue()
+          endif()
+          if(la GREATER 3 OR lc GREATER 3)
+            string(APPEND _mdg_classes ",${la}${lb}${lc}${ld}")
+          endif()
+        endforeach()
+      endforeach()
+    endforeach()
+  endforeach()
+endif()
 macro(_terco_gen_mdj)
   terco_gen("gen_md_j.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_j.py
             --lmax ${TERCO_LMAX} ${_order_flag} ${_mdj_batch_flag} -o ${_mdj_stage})
   terco_gen("gen_md_k.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_k.py
             --lmax ${TERCO_LMAX} --classes ${TERCO_MDK_CLASSES} ${_order_flag} -o ${_mdj_stage})
   terco_gen("gen_md_kgemm.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_kgemm.py
-            --lmax ${TERCO_LMAX} --classes ${TERCO_MDG_CLASSES} ${_order_flag} -o ${_mdj_stage})
+            --lmax ${TERCO_LMAX} --classes ${_mdg_classes} ${_order_flag} -o ${_mdj_stage})
 endmacro()
 terco_generate(
   "MD J kernels" _terco_gen_mdj "${_mdj_stage}" "${_mdj_dir}" ON ON
