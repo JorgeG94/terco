@@ -29,6 +29,7 @@ module trc_binkernel
    use trc_rys_select, only: rys_select_init, rys_route
    use trc_rys_kernels, only: rys_dispatch
    use trc_mdk_kernels, only: mdk_has_class, mdk_class_run
+   use trc_mdg_kernels, only: mdg_has_class, mdg_class_run
    implicit none
    private
 
@@ -434,7 +435,17 @@ contains
             ! Rys kernel instead of HGP's, for classes that have one --
             ! `rys_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
-            if (mdk_route(key2)) then
+            if (class_listed(key2, "TRC_MDG_CLASSES") .and. mdg_has_class(key2)) then
+               ! TRC_MDG_CLASSES: the McMurchie-Davidson GEMM prototype
+               ! (scripts/gen_md_kgemm.py), on the same segments and screens.
+               if (nranks > 1) error stop "terco: TRC_MDG_CLASSES does not split over ranks yet"
+               call mdg_class_run(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+                                  b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
+                                  jfac, kfac, dsh, nbas, nao, ao_off, &
+                                  nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                                  ndens, dmat, jmat)
+            else if (mdk_route(key2)) then
                ! TRC_MDK_CLASSES: the McMurchie-Davidson prototype, on the
                ! same segments, screens and digestion (scripts/gen_md_k.py).
                if (nranks > 1) error stop "terco: TRC_MDK_CLASSES does not split over ranks yet"
@@ -467,6 +478,22 @@ contains
       end block
       deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
    end subroutine fock_bins
+
+   logical function class_listed(key, var) result(res)
+      !! Whether the environment variable `var` (comma list of la lb lc ld
+      !! digits, e.g. "2121,2120") names this class.
+      integer, intent(in) :: key
+      character(len=*), intent(in) :: var
+      character(len=256) :: e
+      character(len=4) :: tag
+      res = .false.
+      e = " "
+      call get_environment_variable(var, e)
+      if (len_trim(e) == 0) return
+      write (tag, "(4i1)") key/(CLASS_RADIX**3), mod(key/(CLASS_RADIX**2), CLASS_RADIX), &
+         mod(key/CLASS_RADIX, CLASS_RADIX), mod(key, CLASS_RADIX)
+      res = index(","//trim(e)//",", ","//tag//",") > 0
+   end function class_listed
 
    logical function mdk_route(key) result(res)
       !! Whether TRC_MDK_CLASSES (comma list of la lb lc ld digits, e.g.
