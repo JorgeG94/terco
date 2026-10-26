@@ -39,6 +39,7 @@
 !
 module trc_api
    use pic_types, only: dp
+   use trc_constants, only: PI
    use trc_boys, only: boys_init
    use trc_tables, only: LMAX
    use trc_1e_kernels, only: one_e_driver, ONE_E_LMAX
@@ -112,7 +113,6 @@ module trc_api
    ! the four *_driver.inc files under src/inc, included into the kernel modules they dispatch
    ! into: called from here they crossed a module boundary, and stdpar only
    ! inlines within a translation unit.
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    !
    ! Structure of arrays, not array of structures: the kernels read one field
@@ -237,13 +237,13 @@ contains
    ! device chosen, -1 on a host build.
    !
    function trc_bind_device(rank) result(dev)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       use openacc, only: acc_set_device_num, acc_get_num_devices, acc_device_nvidia
 #endif
       integer, intent(in) :: rank
       integer :: dev
       dev = -1
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       block
          integer :: ndev
          ndev = acc_get_num_devices(acc_device_nvidia)

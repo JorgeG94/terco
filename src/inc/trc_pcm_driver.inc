@@ -76,7 +76,7 @@
                                       pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, npts, pts, zk, &
                                       dmat, vpart)
       !$acc routine seq
-      integer,  intent(in)    :: k, c, nshell, nao, npair, npp, npts
+      integer,  value         :: k, c, nshell, nao, npair, npp, npts
       integer,  intent(in)    :: sh_l(nshell), sh_ao(nshell)
       real(dp), intent(in)    :: sh_r(3, nshell)
       integer,  intent(in)    :: p_i(npair), p_j(npair), pp_off(npair), pp_n(npair)
@@ -159,7 +159,7 @@
    pure subroutine pcm_fock_item(ij, c, nch, nshell, nao, sh_l, sh_ao, sh_r, npair, npp, p_i, p_j, &
                                  pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, npts, pts, zk, q, vmat)
       !$acc routine seq
-      integer,  intent(in)    :: ij, c, nch, nshell, nao, npair, npp, npts
+      integer,  value         :: ij, c, nch, nshell, nao, npair, npp, npts
       integer,  intent(in)    :: sh_l(nshell), sh_ao(nshell)
       real(dp), intent(in)    :: sh_r(3, nshell)
       integer,  intent(in)    :: p_i(npair), p_j(npair), pp_off(npair), pp_n(npair)

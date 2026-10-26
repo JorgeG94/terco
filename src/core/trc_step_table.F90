@@ -25,6 +25,7 @@
 module trc_step_table
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
+   use pic_timer, only: timer_type
    use trc_linalg, only: trc_linalg_t
    use pic_flop_recorder, only: flop_recorder_type
    use pic_profiler, only: profiler_start, profiler_stop
@@ -121,42 +122,33 @@ contains
    end subroutine step_table_reset
 
    !
-   ! The clock after everything queued on the device has finished -- cuBLAS/
-   ! cuSOLVER return to the host before their kernels finish, so a host timer
-   ! around them measures the launch, not the work, unless it syncs first.
-   !
-   function tick(lp) result(t)
-      type(trc_linalg_t), intent(in) :: lp
-      real(dp) :: t
-      integer(int64) :: cc, rate
-      call lp%sync()
-      call system_clock(cc, rate)
-      t = real(cc, dp)/real(rate, dp)
-   end function tick
-
-   !
-   ! Open step `k`: its start time in `tc`, and its NVTX range
-   ! ("<prefix>: <name>", a no-op unless built with TERCO_NVTX).
+   ! Open step `k`: `tc` starts once everything queued on the device has
+   ! finished -- cuBLAS/cuSOLVER return to the host before their kernels
+   ! finish, so a host timer around them measures the launch, not the work,
+   ! unless it syncs first -- and its NVTX range ("<prefix>: <name>", a no-op
+   ! unless built with TERCO_NVTX) opens.
    !
    subroutine step_table_on(this, lp, k, tc)
       class(step_table_t), intent(in) :: this
       type(trc_linalg_t), intent(in) :: lp
       integer, intent(in) :: k
-      real(dp), intent(out) :: tc
-      tc = tick(lp)
+      type(timer_type), intent(out) :: tc
+      call lp%sync()
+      call tc%start()
       call profiler_start(this%prefix//": "//trim(this%names(k)), nvtx_only=.true.)
    end subroutine step_table_on
 
    !
-   ! Close step `k`: the time since `tc` added to its running total, its
-   ! NVTX range closed.
+   ! Close step `k`: after the same device sync, the time `tc` has run is
+   ! added to the step's total, and its NVTX range closes.
    !
    subroutine step_table_off(this, lp, k, tc)
       class(step_table_t), intent(inout) :: this
       type(trc_linalg_t), intent(in) :: lp
       integer, intent(in) :: k
-      real(dp), intent(in) :: tc
-      this%t(k) = this%t(k) + (tick(lp) - tc)
+      type(timer_type), intent(in) :: tc
+      call lp%sync()
+      this%t(k) = this%t(k) + tc%get_elapsed_time()
       call profiler_stop(this%prefix//": "//trim(this%names(k)))
    end subroutine step_table_off
 

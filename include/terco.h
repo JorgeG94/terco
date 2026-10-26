@@ -33,10 +33,11 @@ typedef void* trc_handle_t;
 #define TRC_GUESS_GIVEN 3
 #define TRC_GUESS_SADQ 4
 #define TRC_GUESS_SAP 5
+#define TRC_GUESS_PROJECTED 6
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 2
+#define TRC_ABI_MINOR 5
 
 int trc_basis_create(int nshell, int maxnp, const int* l, const int* nprim, const double* exps, const double* coefs, const double* centres, int natm, const double* zatm, const double* ratm, trc_handle_t* handle);
 
@@ -378,6 +379,35 @@ int trc_set_rimp2(trc_handle_t handle, int nfrozen, int aux_block);
 int trc_run_scf(trc_handle_t handle);
 
 /**
+ * Move every atom to a NEW geometry, same molecule and atom order
+ * `trc_set_molecule` built (same count, same nuclear charges, same
+ * charge/multiplicity) -- the one call a geometry optimiser's step
+ * loop needs between gradients. Built on `hessian_set_geometry`
+ * (trc_run_hessian's own displacement primitive, PRIVATE until now):
+ * moves the orbital basis's centres in place, and the auxiliary/
+ * jkfit bases' if present, then invalidates exactly as that routine
+ * does -- the last SCF/gradient/polarizability/Hessian result, the
+ * DFT grid cache and the --df fit, all geometry-dependent.
+ *
+ * `trc_set_molecule` is NOT a substitute for this: it replaces
+ * `cx%at_z`/`cx%at_r` and invalidates the same things, but it never
+ * touches a basis already built (`cx%bb`/`cx%ab`/`cx%jb`) -- the
+ * shells stay at their OLD centres, which is correct for setting up
+ * a NEW molecule before any basis exists, and wrong for moving the
+ * atoms of one that already has one. A caller wanting the latter
+ * (an optimiser, or trc_run_hessian's own displacements) uses this.
+ *
+ * `xyz` is atom-major Bohr (x1 y1 z1 x2 ...), the same convention
+ * `trc_set_molecule` takes and `trc_gradient` returns, length
+ * 3*natm. A guess density/orbitals carried across the move (SAD
+ * stays SAD; TRC_GUESS_GIVEN's density and TRC_GUESS_PROJECTED's
+ * "this context's last converged orbitals" are both still valid at
+ * the new geometry -- that overlap-reprojection is exactly what
+ * TRC_GUESS_PROJECTED is for) is a caller choice, not this call's.
+ */
+int trc_set_geometry(trc_handle_t handle, const double* xyz);
+
+/**
  * The full analytic RHF/UHF nuclear gradient at the converged SCF
  * this context already holds (trc_scf_grad%trc_scf_gradient: the
  * one-electron terms, eri%gradient's two-electron part, and nuclear
@@ -464,6 +494,99 @@ int trc_run_gradient(trc_handle_t handle);
  * plays no role here.
  */
 int trc_gradient(trc_handle_t handle, double* grad);
+
+/**
+ * The Cartesian displacement trc_run_hessian's central differences
+ * use, in Bohr; must be positive. Default 0.005: its truncation
+ * error, about 1e-5 Eh/Bohr^2 on water/STO-3G, sits well above the
+ * SCF noise trc_run_hessian's tightened convergence leaves.
+ * Unchanged until this is called. Invalidates the last
+ * trc_run_hessian result (a Hessian at the OLD step is not a
+ * Hessian at the new one), not the SCF/gradient it is built from.
+ */
+int trc_set_hessian_step(trc_handle_t handle, double step);
+
+/**
+ * The displacement trc_run_hessian would use (or last used) --
+ * trc_set_hessian_step's own default or override.
+ */
+int trc_hessian_step(trc_handle_t handle, double* step);
+
+/**
+ * A finite-difference Cartesian Hessian from this context's own
+ * analytic gradient, central differences at trc_set_hessian_step's
+ * own h (default 0.005 Bohr) around the converged SCF this context
+ * already holds (trc_run_scf; trc_gradient's reference "run the
+ * SCF first" state requirement, same as trc_run_gradient):
+ *
+ *   H[k,j] = (g_j(x + h e_k) - g_j(x - h e_k)) / (2h)     Eh/Bohr^2
+ *
+ * k = 3*(atom-1)+{x,y,z}, 1-based, row = the displaced coordinate,
+ * then symmetrised, H <- (H + H^T)/2. 6N displaced SCF+gradient
+ * pairs plus one more to restore the reference state (below).
+ *
+ * REFUSED UP FRONT, before any displacement spends SCF time:
+ *   - no SCF yet, or one that did not converge (TRC_ERR_STATE);
+ *   - more than one rank (trc_set_comm): the loop below is already
+ *     written so a later split is "rank r takes k = r, r+P, ..."
+ *     plus a reduction over the gradients, but nothing here runs
+ *     that split yet (TRC_ERR_UNSUPPORTED);
+ *   - anything trc_run_gradient itself would refuse (meta-GGA,
+ *     RI-MP2/double-hybrid, PCM, --df outside its own scope --
+ *     gradient_capability_check, the SAME check trc_run_gradient
+ *     makes, so the two can never disagree about what runs);
+ *   - a non-positive step (trc_set_hessian_step already refuses
+ *     one, so this is the backstop, not the primary gate).
+ *
+ * SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
+ * (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
+ * the displaced SCFs need tighter convergence than a single point
+ * (water/STO-3G: HESSIAN_MAX_CONV_ENERGY/HESSIAN_MAX_CONV_DIIS
+ * below say how much). This context's OWN conv_energy/conv_diis (trc_set_
+ * convergence) are tightened to at least those floors for every
+ * displaced SCF -- never loosened, so a caller who already asked
+ * for tighter still gets it -- and restored to the caller's own
+ * values before this returns, success or failure.
+ *
+ * WARM START. Every displaced SCF starts from THIS run's own
+ * converged density (TRC_GUESS_GIVEN), not the previous
+ * displacement's -- no guess drift accumulates across 6N points.
+ * The reference density, this context's guess kind/density and
+ * conv_energy/conv_diis are all restored before returning.
+ *
+ * A displaced SCF that fails to converge, or a gradient that
+ * fails, stops the loop (TRC_ERR_NOCONV or whatever status that
+ * call returned) rather than filling the Hessian with whatever
+ * that point produced; the context is still restored to the
+ * reference geometry/density before returning, as on success.
+ *
+ * RESTORING THE REFERENCE STATE. After the loop (success or
+ * failure), the geometry goes back to the one this context held
+ * when trc_run_hessian was called, and the reference SCF is RE-RUN
+ * (warm-started from its own converged density, so it reconverges
+ * in very few iterations) rather than merely remembered -- cheap
+ * next to 6N displaced solves, and it leaves cx%res/cx%grad in
+ * whatever state an ordinary trc_run_scf leaves them (grad_ok
+ * false; call trc_run_gradient again for the reference gradient).
+ * This context's guess kind/density, as set before this call, are
+ * restored afterwards too, for the same reason the convergence
+ * settings are: trc_run_hessian's own internal warm start must not
+ * leak into what a caller sees after it returns.
+ *
+ * trc_hessian reads the result out; cx%hess is deallocated and
+ * hess_ok left false on any failure, so a caller cannot read a
+ * partial Hessian by mistake.
+ */
+int trc_run_hessian(trc_handle_t handle);
+
+/**
+ * (3*natm, 3*natm), Eh/Bohr^2, column-major, row/column k =
+ * 3*(atom-1)+{x,y,z} (trc_set_molecule's own atom order) -- after a
+ * successful trc_run_hessian. NOT AO-indexed data, same as
+ * trc_gradient: a Hessian is a second derivative of the SCF
+ * energy, independent of any AO normalisation convention.
+ */
+int trc_hessian(trc_handle_t handle, double* hess);
 
 /**
  * The static dipole polarizability at the converged SCF this

@@ -21,14 +21,12 @@ module trc_dft_radial
    !! comparable. `radial_volume_weights` does the r^2 and 4*pi for callers that
    !! want a ready-made spherical quadrature.
    use pic_types, only: dp
+   use trc_constants, only: PI
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_dft_radial_data, only: TREUTLER_XI_TABLE, BRAGG_RADII_TABLE, &
                                   MAX_XI_Z, MAX_BRAGG_Z
    implicit none
    private
-
-   ! PI was mqc_physical_constants; terco carries no constants module.
-   real(dp), parameter :: PI = 3.14159265358979323846264338327950288_dp
 
    public :: treutler_xi              !! Element radius parameter of the M4 mapping
    public :: bragg_radius             !! Bragg-Slater radius, Bohr

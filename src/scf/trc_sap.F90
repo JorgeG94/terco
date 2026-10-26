@@ -26,6 +26,8 @@ module trc_sap
    !! short-ranged screening potential is integrated.
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
+   use pic_timer, only: timer_type
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
@@ -50,8 +52,6 @@ module trc_sap
    !! Angular order for the spherical average of the atomic density. The
    !! free-atom density is already spherical; averaging is free and makes a
    !! non-spherical atom degrade the guess rather than silently tilt it.
-
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
 
    character(len=*), parameter :: SAP_BASIS_DEFAULT = "basis_sets/sap_helfem_large.json"
    !! The fitted potential set, unless a caller names another: Lehtola's fully
@@ -424,13 +424,13 @@ contains
       real(dp), allocatable :: vpt(:)
       real(dp) :: rr
       integer :: ia, ib, k, a0, a1, nz, ntab, ip, lv
-      integer :: c0, c1, crate
+      type(timer_type) :: tm
       logical :: talk
 
       talk = .false.
       if (present(verbose)) talk = verbose
       hsap = 0.0_dp
-      call system_clock(c0, crate)
+      call tm%start()
 
       ! --- the free atoms, and their ranges -------------------------------
       if (present(nelec)) then
@@ -539,16 +539,15 @@ contains
          character(len=8) :: e
          e = " "
          call get_environment_variable("TRC_BUILD_TIMING", e)
-         call system_clock(c1)
          if (len_trim(e) > 0) then
             block
                character(len=1024) :: logline
                write (logline, "(a,a,f9.3,a)") "  [sap] ", what, &
-                  real(c1 - c0, dp)/real(crate, dp), " s"
+                  tm%get_elapsed_time(), " s"
                call global_logger%info(trim(logline))
             end block
          end if
-         c0 = c1
+         call tm%start()
       end subroutine stage
    end subroutine trc_sap_grid
 

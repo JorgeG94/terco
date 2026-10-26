@@ -1,0 +1,216 @@
+{
+  "molssi_bse_schema": {
+    "schema_type": "complete",
+    "schema_version": "0.1"
+  },
+  "name": "STO-3G",
+  "description": "STO-3G minimal basis (raw, un-normalised contraction coefficients, as read from pyscf 2.14 gto.basis.load: the BSE STO-3G values with exponents and coefficients rounded to 8 significant digits, and SP shells split into s and p)",
+  "elements": {
+    "1": {
+      "electron_shells": [
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            0
+          ],
+          "exponents": [
+            "3.42525091",
+            "0.62391373",
+            "0.1688554"
+          ],
+          "coefficients": [
+            [
+              "0.15432897",
+              "0.53532814",
+              "0.44463454"
+            ]
+          ]
+        }
+      ]
+    },
+    "6": {
+      "electron_shells": [
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            0
+          ],
+          "exponents": [
+            "71.616837",
+            "13.045096",
+            "3.5305122"
+          ],
+          "coefficients": [
+            [
+              "0.15432897",
+              "0.53532814",
+              "0.44463454"
+            ]
+          ]
+        },
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            0
+          ],
+          "exponents": [
+            "2.9412494",
+            "0.6834831",
+            "0.2222899"
+          ],
+          "coefficients": [
+            [
+              "-0.09996723",
+              "0.39951283",
+              "0.70011547"
+            ]
+          ]
+        },
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            1
+          ],
+          "exponents": [
+            "2.9412494",
+            "0.6834831",
+            "0.2222899"
+          ],
+          "coefficients": [
+            [
+              "0.15591627",
+              "0.60768372",
+              "0.39195739"
+            ]
+          ]
+        }
+      ]
+    },
+    "7": {
+      "electron_shells": [
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            0
+          ],
+          "exponents": [
+            "99.106169",
+            "18.052312",
+            "4.8856602"
+          ],
+          "coefficients": [
+            [
+              "0.15432897",
+              "0.53532814",
+              "0.44463454"
+            ]
+          ]
+        },
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            0
+          ],
+          "exponents": [
+            "3.7804559",
+            "0.8784966",
+            "0.2857144"
+          ],
+          "coefficients": [
+            [
+              "-0.09996723",
+              "0.39951283",
+              "0.70011547"
+            ]
+          ]
+        },
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            1
+          ],
+          "exponents": [
+            "3.7804559",
+            "0.8784966",
+            "0.2857144"
+          ],
+          "coefficients": [
+            [
+              "0.15591627",
+              "0.60768372",
+              "0.39195739"
+            ]
+          ]
+        }
+      ]
+    },
+    "8": {
+      "electron_shells": [
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            0
+          ],
+          "exponents": [
+            "130.70932",
+            "23.808861",
+            "6.4436083"
+          ],
+          "coefficients": [
+            [
+              "0.15432897",
+              "0.53532814",
+              "0.44463454"
+            ]
+          ]
+        },
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            0
+          ],
+          "exponents": [
+            "5.0331513",
+            "1.1695961",
+            "0.380389"
+          ],
+          "coefficients": [
+            [
+              "-0.09996723",
+              "0.39951283",
+              "0.70011547"
+            ]
+          ]
+        },
+        {
+          "function_type": "gto",
+          "region": "valence",
+          "angular_momentum": [
+            1
+          ],
+          "exponents": [
+            "5.0331513",
+            "1.1695961",
+            "0.380389"
+          ],
+          "coefficients": [
+            [
+              "0.15591627",
+              "0.60768372",
+              "0.39195739"
+            ]
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -96,13 +96,15 @@
 ! GPU. Measured correct and consistent with CPU to ~1e-11/1e-12 (the
 ! fixed-density FD check, check_vv10_grad_fixedd_fd.F90, three repeated
 ! GPU runs) -- built from the same idioms (`do concurrent`/`routine seq`,
-! the `_OPENACC` CPU/GPU pass-2 split trc_vv10.F90's own header explains)
+! the `TRC_DEVICE` CPU/GPU pass-2 split trc_vv10.F90's own header explains)
 ! as the two modules it reuses. Not yet measured for its OWN cost next to
 ! the rest of the gradient at more than one case; see the branch report
 ! that added this module for the one case it does measure.
 !
 module trc_vv10_grad
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_grad, only: xc_grad_drive, xc_grad_step_names, ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
@@ -118,7 +120,6 @@ module trc_vv10_grad
 
    public :: vv10_gradient_add
 
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
    integer(int64), parameter :: VV10_GRAD_TILE_CAP = 8388608_int64
    !! The chunk-size budget (padded rows x padded columns) handed to
    !! `vv10_density_tile`'s own batching loop -- trc_vv10.F90's `vv10_drive`
@@ -185,7 +186,7 @@ contains
       integer, allocatable :: bact(:)
       integer :: kid0(XC_MAX_KERNELS)
       real(dp) :: coef0(XC_MAX_KERNELS)
-      real(dp) :: tc
+      type(timer_type) :: tc
       real(dp), allocatable :: fxc0(:), pcoef(:)
       type(error_t) :: err
       integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc, g, own
@@ -401,7 +402,7 @@ contains
    ! that body has no `dedw`/`fexp` outputs (see this module's header,
    ! ENERGY-SIDE REUSE).
    !
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    subroutine vv10_grad_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                vrho, vsigma, dedw, fexp)
       integer, intent(in) :: npts, npass

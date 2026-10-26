@@ -16,13 +16,19 @@ module terco_app
    use pic_error, only: error_t, ERROR_IO, ERROR_PARSE, ERROR_VALIDATION
    use pic_ascii, only: to_lower
    use pic_strings, only: to_string, ends_with
+   use trc_constants, only: ANGSTROM_TO_BOHR
+   use json_module, only: json_core, json_value
    implicit none
    private
 
-   public :: read_xyz, resolve_basis, element_symbol, c_string, f_string, set_env
+   public :: read_xyz, resolve_basis, element_symbol, terco_app_atomic_number, c_string, f_string, set_env
+   public :: BOHR_PER_ANGSTROM
+   public :: write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
 
-   real(dp), parameter, public :: BOHR_PER_ANGSTROM = 1.0_dp/0.529177210903_dp
-      !! CODATA 2018, the constant every reference terco is checked against uses.
+   real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
+      !! CODATA 2018 (trc_constants' ANGSTROM_TO_BOHR), the constant every
+      !! reference terco is checked against uses. Kept under this name
+      !! rather than renamed at the use site.
 
    integer, parameter :: NELEM = 118
    character(len=2), parameter :: SYMBOLS(NELEM) = [character(len=2) :: &
@@ -65,7 +71,7 @@ contains
       if (z >= 1 .and. z <= NELEM) sym = SYMBOLS(z)
    end function element_symbol
 
-   pure integer function atomic_number(tok) result(z)
+   pure integer function terco_app_atomic_number(tok) result(z)
       !! Nuclear charge from an element symbol in any case, or from an
       !! integer (some xyz writers use Z). Zero if it is neither.
       character(len=*), intent(in) :: tok
@@ -85,7 +91,7 @@ contains
             return
          end if
       end do
-   end function atomic_number
+   end function terco_app_atomic_number
 
    subroutine read_xyz(path, natm, z, xyz, title, err)
       !! A standard xyz file: atom count, a title line, then one
@@ -134,7 +140,7 @@ contains
             close (u)
             return
          end if
-         z(i) = atomic_number(tok)
+         z(i) = terco_app_atomic_number(tok)
          if (z(i) == 0) then
             call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//to_string(i)// &
                          ": unknown element '"//trim(tok)//"'")
@@ -245,5 +251,91 @@ contains
       integer(c_int) :: rc
       rc = c_setenv(c_string(name), c_string(value), 1_c_int)
    end subroutine set_env
+
+   subroutine write_opt_xyz_frame(path, natm, z, energy, xyz_bohr, label)
+      !! `<geometry base>_opt.xyz`: one geometry in Angstrom, atom order
+      !! unchanged, comment line carrying `label` and the energy. Shared by
+      !! an ordinary --opt finish (app/main.F90's own write_opt_xyz) and
+      !! trc_dlfind_bridge's unrecoverable-failure path, which has no other
+      !! chance to write this file: DL-FIND's own api.f90 calls `error stop`
+      !! right after a gradient evaluation reports status=1, so nothing runs
+      !! after api_dl_find returns on that path.
+      character(len=*), intent(in) :: path
+      integer, intent(in) :: natm
+      integer, intent(in) :: z(natm)
+      real(dp), intent(in) :: energy
+      real(dp), intent(in) :: xyz_bohr(3, natm)
+      character(len=*), intent(in) :: label
+      integer :: u, ia
+      open (newunit=u, file=path, status="replace", action="write")
+      write (u, "(i0)") natm
+      write (u, "(a,a,f0.12)") trim(label), "   E = ", energy
+      do ia = 1, natm
+         write (u, "(a2,3f20.12)") element_symbol(z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
+      end do
+      close (u)
+   end subroutine write_opt_xyz_frame
+
+   subroutine write_traj_xyz_frames(path, natm, z, n_traj, traj_xyz_bohr, traj_energy)
+      !! `<geometry base>_traj.xyz`: one frame per geometry handed in, in
+      !! Angstrom, comment line carrying the step index and energy. The
+      !! caller decides what belongs in `traj_xyz_bohr` -- app/main.F90
+      !! passes the ACCEPTED trajectory a finished run collected;
+      !! trc_dlfind_bridge passes the same trajectory so far when DL-FIND
+      !! is about to `error stop` on a failed evaluation.
+      character(len=*), intent(in) :: path
+      integer, intent(in) :: natm, n_traj
+      integer, intent(in) :: z(natm)
+      real(dp), intent(in) :: traj_xyz_bohr(3, natm, n_traj)
+      real(dp), intent(in) :: traj_energy(n_traj)
+      integer :: u, ia, k
+      open (newunit=u, file=path, status="replace", action="write")
+      do k = 1, n_traj
+         write (u, "(i0)") natm
+         write (u, "(a,i0,a,f0.12)") "step ", k, "   E = ", traj_energy(k)
+         do ia = 1, natm
+            write (u, "(a2,3f20.12)") element_symbol(z(ia)), traj_xyz_bohr(:, ia, k)/BOHR_PER_ANGSTROM
+         end do
+      end do
+      close (u)
+   end subroutine write_traj_xyz_frames
+
+   subroutine write_opt_failure_json(path, geometry, reason, steps, energy_evaluations, &
+                                     final_energy, final_gradient_max, final_gradient_rms, &
+                                     coords_name, guess_name, traj_energy)
+      !! A minimal "optimization" JSON block for the one outcome
+      !! app/main.F90's own add_optimization never gets a chance to write:
+      !! DL-FIND's `error stop` right after a failed evaluation
+      !! (trc_dlfind_bridge%cb_get_gradient never returns to anything that
+      !! could call add_optimization). Smaller than add_optimization's own
+      !! block on purpose -- no gradient_tolerance, no final geometry array
+      !! -- but carries the two fields a caller checking a failed run needs:
+      !! "failed" and "failure_reason".
+      character(len=*), intent(in) :: path, geometry, reason, coords_name, guess_name
+      integer, intent(in) :: steps, energy_evaluations
+      real(dp), intent(in) :: final_energy, final_gradient_max, final_gradient_rms
+      real(dp), intent(in) :: traj_energy(:)
+      type(json_core) :: json
+      type(json_value), pointer :: root, oobj
+      call json%initialize()
+      call json%create_object(root, "")
+      call json%add(root, "program", "terco")
+      call json%add(root, "geometry", geometry)
+      call json%create_object(oobj, "optimization")
+      call json%add(oobj, "converged", .false.)
+      call json%add(oobj, "failed", .true.)
+      call json%add(oobj, "failure_reason", reason)
+      call json%add(oobj, "steps", steps)
+      call json%add(oobj, "energy_evaluations", energy_evaluations)
+      call json%add(oobj, "final_energy", final_energy)
+      call json%add(oobj, "final_gradient_max", final_gradient_max)
+      call json%add(oobj, "final_gradient_rms", final_gradient_rms)
+      call json%add(oobj, "coordinates", coords_name)
+      call json%add(oobj, "guess", guess_name)
+      if (size(traj_energy) > 0) call json%add(oobj, "trajectory_energies", traj_energy)
+      call json%add(root, oobj)
+      call json%print(root, path)
+      call json%destroy(root)
+   end subroutine write_opt_failure_json
 
 end module terco_app

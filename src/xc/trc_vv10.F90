@@ -77,7 +77,7 @@
 ! batch's local basis or lie in different batches whose local lists
 ! overlap -- exactly trc_xc's kernel-4 situation, and the same fix: the
 ! outer loop over points is `do concurrent` with an OpenACC atomic update
-! only under `_OPENACC`; a plain sequential `do` otherwise, because `do
+! only under `TRC_DEVICE`; a plain sequential `do` otherwise, because `do
 ! concurrent`'s concurrency promise is not one every host compiler honours
 ! under a shared, non-atomic update (ifx reorders it and gets the matrix
 ! wrong while the energy, summed independently, stays exact). Passes 1 and
@@ -118,6 +118,7 @@
 !
 module trc_vv10
    use pic_types, only: dp, int64
+   use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: shell_collocate, NCART_MAX
@@ -139,7 +140,6 @@ module trc_vv10
    real(dp), parameter :: VV10_RHO_TOL = 1.0e-8_dp
    !! pyscf's `_vv10nlc` threshold, outer and inner grid alike: a density
    !! below this contributes nothing, neither evaluated nor summed over.
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
    real(dp), parameter :: PI43 = 4.0_dp*PI/3.0_dp
    integer, parameter :: VV10_NP_PAD = 128  !! tile rows padded to a multiple of this
    integer, parameter :: VV10_NL_PAD = 32   !! tile columns padded to a multiple of this
@@ -738,7 +738,7 @@ contains
    ! and nvfortran both compute pass 2 correctly through `do concurrent`
    ! already, which is why only the CPU form changes here.
    !
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                           i0, i1, vrho, vsigma, eg)
       integer, intent(in) :: npts, npass, i0, i1
@@ -846,7 +846,7 @@ contains
    ! vrho/vsigma/grad rho (one thread per point, looping its batch's local
    ! functions), GEMM V_b = chi_b^T Z_b, then scatter V_b + V_b^T into
    ! `vmat` exactly as trc_xc's kernel 4 does (its own header: the atomic
-   ! form only under `_OPENACC`, a plain loop otherwise, because `do
+   ! form only under `TRC_DEVICE`, a plain loop otherwise, because `do
    ! concurrent` promises a host compiler nothing about the shared,
    ! non-atomic update two batches' overlapping local lists create here).
    !
@@ -1014,7 +1014,7 @@ contains
    ! Scatter: V_uv += V_b(u,v) + V_b(v,u) -- one thread per stored (b, u, v);
    ! a padding element has nothing to add and says so with au = 0. Trc_xc's
    ! kernel 4 exactly, nspin dropped: see this module's header (PASS 3's
-   ! RACE) for why the `do concurrent` form only runs under `_OPENACC`.
+   ! RACE) for why the `do concurrent` form only runs under `TRC_DEVICE`.
    !
    subroutine vv10_tile_scatter(npairs, nb, ord, pb_off, nao, vmat, b_aooff, nbao, b_ao, nlp, nbatch, vloc)
       integer, intent(in) :: npairs, nb, nao, nbao, nbatch
@@ -1025,7 +1025,7 @@ contains
       integer :: t, au, av
       real(dp) :: acc
 
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       do concurrent(t=1:npairs) local(au, av, acc)
          call vv10_tile_scatter_body(t, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, au, av, acc)
          if (au > 0) then

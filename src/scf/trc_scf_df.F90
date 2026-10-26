@@ -73,6 +73,7 @@
 !
 module trc_scf_df
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
@@ -81,7 +82,7 @@ module trc_scf_df
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use, intrinsic :: iso_fortran_env, only: output_unit
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                       acc_property_free_memory
 #endif
@@ -184,7 +185,7 @@ contains
       real(dp), allocatable :: jmc(:, :), tens(:, :, :), tsph(:, :, :)
       integer :: n, naux, naux_c, npack, ablk, omax0
       integer :: s0, s1, ish, p0, p0s, np, nps, mu, nu, q
-      real(dp) :: tc
+      type(timer_type) :: tc
 
       call err%clear()
       if (this%ready) return
@@ -402,7 +403,8 @@ contains
       !! -- 0.5625 at 8) but a smaller N per GEMM; 8 keeps every panel's
       !! N >= 125 at w40 (n=1000) while buying back most of the savings a
       !! much larger panel count would.
-      real(dp) :: tc, eval_cut
+      real(dp) :: eval_cut
+      type(timer_type) :: tc
 
       n = this%n
       n8 = int(n, int64)
@@ -685,11 +687,11 @@ contains
       integer, parameter :: QB_DEFAULT = 64
       integer, parameter :: K_TARGET = 4096
       integer :: qb_target
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer(int64) :: free, per_q, fixed
 #endif
       qb_target = max(QB_DEFAULT, (K_TARGET + max(omax, 1) - 1)/max(omax, 1))
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)
       per_q = 8_int64*(int(n, int64)*int(n, int64) + 2_int64*int(n, int64)*int(max(omax, 1), int64))
@@ -731,7 +733,7 @@ contains
       integer(int64) :: free
       call get_environment_variable("TERCO_DF_MEM_DEBUG", v)
       if (trim(v) /= "1") return
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)
 #else
@@ -767,7 +769,7 @@ contains
 
    integer function choose_setup_block(n, naux) result(ablk)
       integer, intent(in) :: n, naux
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer(int64) :: free, per_q, fixed
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)

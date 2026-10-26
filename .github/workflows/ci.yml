@@ -260,6 +260,63 @@ jobs:
         if: always()
         run: python3 test/goldens/compare_goldens.py --report build/test/golden_out
 
+  host-dlfind:
+    name: host gcc-15 (TERCO_ENABLE_DLFIND=ON)
+    runs-on: ubuntu-latest
+    # Mirrors host-build's gcc-15 entry, with --opt's geometry optimiser
+    # (app/trc_dlfind_bridge.F90) turned on -- OFF by default (the root
+    # CMakeLists.txt's TERCO_ENABLE_DLFIND option), so none of the --opt
+    # checks (check_cli_opt, check_opt_vs_mqc, check_opt_vs_pyscf_water/
+    # hcn, check_opt_algorithms, check_opt_refusals, check_opt_ts,
+    # check_opt_connect, terco/install_dlfind) run in any OTHER job. Needs
+    # network:
+    # cmake/modules/Findlibdlfind.cmake fetches libdlfind from GitHub at
+    # its pinned commit, which GitHub-hosted runners have.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1.9.0
+        id: setup-fortran
+        with:
+          compiler: gcc
+          version: 15
+
+      - name: Install LAPACK
+        run: sudo apt-get update && sudo apt-get install -y liblapack-dev libblas-dev
+
+      - name: Configure
+        run: >-
+          cmake -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_ENABLE_DLFIND=ON
+          -S . -B build
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Show the failure verbosely
+        if: failure()
+        run: cmake --build build --verbose --parallel 1
+
+      - name: Validate
+        run: >-
+          ctest --test-dir build --output-on-failure --parallel 2
+          --no-tests=error ${{ env.CTEST_LONG }}
+
+      # How far this compiler's numbers sit from the committed goldens,
+      # quantity by quantity (test/goldens/compare_goldens.py --report).
+      # Passing tests print nothing, so without this the spread the golden
+      # tolerances are set from would only show when something fails.
+      - name: Golden spread
+        if: always()
+        run: python3 test/goldens/compare_goldens.py --report build/test/golden_out
+
   fpm-build:
     name: fpm (gcc 15)
     runs-on: ubuntu-latest
@@ -477,3 +534,23 @@ jobs:
 
       - name: fortitude check
         run: fortitude check --output-format github
+
+      # Architecture rules from docs/CODE_STRUCTURE.md. Fails only on
+      # violations that are not in tools/arch_baseline.json, or whose
+      # measure (length, argument count) grew.
+      - name: Architecture check
+        run: |
+          pip install pytest
+          python3 -m pytest -q tools/test_archcheck.py
+          python3 tools/archcheck.py
+
+  no-system-clock:
+    name: no system_clock (time with pic_timer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: check_system_clock
+        run: python3 tools/check_system_clock.py src app test

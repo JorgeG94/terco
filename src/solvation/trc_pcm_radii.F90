@@ -27,6 +27,7 @@
 !
 module trc_pcm_radii
    use pic_types, only: dp
+   use trc_constants, only: BOHR_TO_ANGSTROM_CODATA2010
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
@@ -38,8 +39,6 @@ module trc_pcm_radii
       !! Highest atomic number with a radius here
    real(dp), parameter :: PCM_DEFAULT_RADII_SCALE = 1.2_dp
       !! van der Waals radius to cavity radius; pyscf's and Q-Chem's default
-   real(dp), parameter :: BOHR_ANGSTROM = 0.52917721092_dp
-      !! pyscf's `radii.BOHR`, deliberately; see the header
    real(dp), parameter :: VDW_ANGSTROM(PCM_MAX_ELEMENT) = [ &
                           1.10_dp, 1.40_dp, &                                              ! H  He
                           1.82_dp, 1.53_dp, 1.92_dp, 1.70_dp, 1.55_dp, 1.52_dp, 1.47_dp, 1.54_dp, &  ! Li..Ne
@@ -70,7 +69,7 @@ contains
          call error%set(ERROR_VALIDATION, "PCM: the cavity radius scale must be positive")
          return
       end if
-      radius = scale*VDW_ANGSTROM(atomic_number)/BOHR_ANGSTROM
+      radius = scale*VDW_ANGSTROM(atomic_number)/BOHR_TO_ANGSTROM_CODATA2010
    end subroutine pcm_cavity_radius
 
 end module trc_pcm_radii

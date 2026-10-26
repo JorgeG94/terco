@@ -187,7 +187,7 @@ module trc_capi
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
-   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
    use trc_scf_df, only: df_jk_t
@@ -201,6 +201,8 @@ module trc_capi
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use pic_mpi_lib, only: comm_t, comm_from_handle, bcast
    use pic_logger, only: global_logger
+   use pic_strings, only: to_string
+   use pic_timer, only: timer_type
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
    use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
    use trc_scf_file, only: trc_scf_save, trc_scf_load
@@ -241,6 +243,8 @@ module trc_capi
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
+   public :: trc_set_geometry
+   public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian
    public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_set_pcm_radii, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
@@ -263,7 +267,22 @@ module trc_capi
    ! Guess kinds for trc_set_guess.
    integer(c_int), parameter, public :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
                                         TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
-                                        TRC_GUESS_SAP = 5
+                                        TRC_GUESS_SAP = 5, TRC_GUESS_PROJECTED = 6
+   !! TRC_GUESS_PROJECTED: the density from THIS context's own last
+   !! orbitals (cx%bb%cmo, stored by any run with at least one iteration,
+   !! not only a converged one), re-orthonormalised in the CURRENT
+   !! geometry's overlap (trc_scf_context's `project_density`) -- a warm
+   !! start for a SEQUENCE of nearby geometries at the SAME molecule and
+   !! basis (a geometry optimiser's steps, or a finite-difference Hessian's
+   !! displacements) that is exact when the geometry has not moved at all
+   !! and degrades gracefully as it does, unlike reusing the raw density
+   !! unprojected. Refused (TRC_ERR_STATE) if no previous SCF at this nao
+   !! has run yet, if it was run with fractional occupation (`project_density`
+   !! only builds integer occupations), or at a size/spin mismatch. See
+   !! trc_run_scf's own dispatch; test/bench_warmstart.F90 measured it
+   !! against the plain density warm start at water/def2-SVP, steps
+   !! 0.005-1.0 Bohr: the two warm starts needed the same iteration count
+   !! at every step (HF 10/13/15, B3LYP 8/10/12).
    !! Appended, not inserted: 0-3 are what they have always been, so a
    !! caller built against the old header keeps working.
    ! AO normalisation kinds for trc_set_ao_norm -- re-exported from
@@ -282,7 +301,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 2
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 5
 
    ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
@@ -396,6 +415,27 @@ module trc_capi
       type(trc_grid_cache_t) :: kgrid
       integer :: kgrid_level = -1, kgrid_max_pts = -1, kgrid_nlc_level = -1
       real(dp) :: kgrid_rho_tol = -1.0_dp
+      ! `trc_run_scf`'s own pair list and (outside `--df`) four-centre
+      ! engine, kept alive the same way and for the same reason as
+      ! `kgrid` right above -- see trc_scf_context.F90's
+      ! `trc_pair_eri_cache_t`. No settings snapshot of its own: its
+      ! `thresh_built` IS the setting to check (trc_scf_gradient's own
+      ! `pair_eri_cache` header), compared bit for bit against whatever
+      ! threshold the gradient call resolves at the time. Released (and
+      ! reset) wherever `kgrid` is.
+      type(trc_pair_eri_cache_t) :: peri
+      ! trc_run_hessian's own result: the Cartesian Hessian (3*natm,
+      ! 3*natm), row/column k = 3*(atom-1)+{x,y,z}, Eh/Bohr^2, at the
+      ! geometry/density this context held converged when it was called
+      ! (the context is restored to that same, reconverged state before
+      ! trc_run_hessian returns -- see that function's own header).
+      ! `hess_step` is the displacement h, Bohr, trc_set_hessian_step's
+      ! own default 0.005. `hess_ok` is cleared by invalidate_runs, same
+      ! as `grad_ok`: a Hessian at a geometry/density this context no
+      ! longer holds is not a Hessian of anything.
+      real(dp) :: hess_step = 0.005_dp
+      real(dp), allocatable :: hess(:, :)
+      logical :: hess_ok = .false.
       character(len=256) :: message = ""
    end type context_box
 
@@ -1386,6 +1426,7 @@ contains
       if (cx%df_fit_ok) call cx%dfjk%release()
       call cx%la%release()
       call cx%kgrid%release()
+      call cx%peri%release()
       if (cx%have_basis) call cx%bb%b%release()
       if (cx%have_aux) call cx%ab%b%release()
       if (cx%have_jkfit) call cx%jb%b%release()
@@ -1423,7 +1464,9 @@ contains
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
       cx%polar_ok = .false.
+      cx%hess_ok = .false.
       call cx%kgrid%release()
+      call cx%peri%release()
       cx%kgrid_level = -1
       cx%kgrid_max_pts = -1
       cx%kgrid_nlc_level = -1
@@ -2381,9 +2424,9 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_SAP) then
+      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_PROJECTED) then
          call refuse(cx, "trc_set_guess: kind "//trim(itoa(int(kind))) &
-                     //" -- 0 core, 1 GWH, 2 SAD, 3 given, 4 SADQ, 5 SAP")
+                     //" -- 0 core, 1 GWH, 2 SAD, 3 given, 4 SADQ, 5 SAP, 6 projected")
          return
       end if
       if (allocated(cx%dguess)) deallocate (cx%dguess)
@@ -2615,7 +2658,7 @@ contains
       real(dp), allocatable :: dsad(:, :), dg(:, :, :), hsap(:, :)
       integer :: nelec, nunp, nalpha, nbeta, nspin, n, nc
       integer :: nocc(2)
-      logical :: collective, talk
+      logical :: collective, talk, use_projected
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2672,6 +2715,19 @@ contains
       if (collective) talk = talk .and. comm%rank() == 0
       ! Once per context; a later run only grows the workspace to n.
       call cx%la%init(n)
+      ! The sizes first, before any guess runs: a SAD guess on a large
+      ! system takes long enough that a wrong basis file should show now,
+      ! not after it.
+      if (talk) then
+         call global_logger%info("   basis functions  : "//to_string(scf_space_nao(cx%bb))// &
+                                 merge(" (spherical)", " (Cartesian)", cx%bb%b%spherical))
+         if (cx%have_jkfit .and. cx%opts%df) then
+            call global_logger%info("   auxiliary (JK)   : "//to_string(scf_space_nao(cx%jb))//" functions")
+         end if
+         if (cx%have_aux) then
+            call global_logger%info("   auxiliary (MP2)  : "//to_string(scf_space_nao(cx%ab))//" functions")
+         end if
+      end if
       ! --- the guess, BEFORE the --df fit below -----------------------------
       ! SAD/SADQ's atomic sub-SCFs (trc_sad_build/trc_sadq_build) run the
       ! ordinary four-centre `eri%fock_resident` path regardless of
@@ -2699,6 +2755,7 @@ contains
       ! the other's, so swapping their order changes nothing but the order
       ! memory gets claimed in.
       opts = cx%opts
+      use_projected = .false.
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
          opts%guess = "core"
@@ -2789,6 +2846,38 @@ contains
             return
          end if
          dg = cx%dguess
+      case (TRC_GUESS_PROJECTED)
+         ! `dg` stays unallocated here -- the new overlap this guess needs
+         ! to project into only exists once `trc_scf_run`'s own
+         ! `scf_context%setup` has built it, so the projection itself runs
+         ! INSIDE that call (its own `cmo_project` argument), not here.
+         ! This dispatch only validates that there IS a previous orbital
+         ! set, at THIS run's own size, to project: `cx%bb%cmo` is stored
+         ! by any run with at least one iteration (right after the
+         ! trc_scf_run call below, gated on `iterations == 0`, not on
+         ! `converged`), so "converged" below would overstate what is
+         ! actually required.
+         if (.not. allocated(cx%bb%cmo)) then
+            cx%message = "trc_run_scf: guess projected but no previous SCF has run yet"
+            status = TRC_ERR_STATE
+            if (collective) call comm%finalize()
+            return
+         end if
+         if (cx%opts%frac_occ) then
+            cx%message = "trc_run_scf: guess projected does not support fractional occupation "// &
+                         "(project_density's occupations are integer)"
+            status = TRC_ERR_STATE
+            if (collective) call comm%finalize()
+            return
+         end if
+         if (size(cx%bb%cmo, 1) /= n .or. size(cx%bb%cmo, 3) /= nspin) then
+            cx%message = "trc_run_scf: guess projected needs a previous SCF at the SAME size "// &
+                         "and spin as this one (basis/molecule/unrestricted must not have changed)"
+            status = TRC_ERR_STATE
+            if (collective) call comm%finalize()
+            return
+         end if
+         use_projected = .true.
       case default
          cx%message = "trc_run_scf: unknown guess kind"
          if (collective) call comm%finalize()
@@ -2827,28 +2916,37 @@ contains
          end block
          cx%df_fit_ok = .true.
       end if
-      if (allocated(dg)) then
+      if (use_projected) then
+         if (collective) then
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo)
+         else
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, &
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo)
+         end if
+      else if (allocated(dg)) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          end if
       else if (allocated(hsap)) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          end if
       else
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          else
-            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, grid_cache=cx%kgrid)
+            call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, grid_cache=cx%kgrid, &
+                             pair_eri_cache=cx%peri)
          end if
       end if
       if (collective) call comm%finalize()
@@ -2876,6 +2974,201 @@ contains
       cx%kgrid_nlc_level = opts%nlc_grid_level
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
+
+   !
+   ! What trc_run_gradient refuses, factored out so trc_run_hessian can
+   ! make the SAME check up front -- before spending any SCF time on a
+   ! displacement loop that would fail at the first gradient anyway. Also
+   ! resolves cx%opts%functional into `func`/`have_func`, since
+   ! trc_run_gradient's own grid-reuse logic (its header) needs them too
+   ! and must not look the name up twice under two different outcomes.
+   ! `refusal` comes back zero-length when nothing here objects.
+   !
+   subroutine gradient_capability_check(cx, have_func, func, refusal, refusal_status)
+      type(context_box), intent(in) :: cx
+      logical, intent(out) :: have_func
+      type(trc_xc_functional_t), intent(out) :: func
+      character(len=:), allocatable, intent(out) :: refusal
+      integer(c_int), intent(out) :: refusal_status
+      !! TRC_ERR_UNSUPPORTED for everything below, EXCEPT the missing
+      !! --df fit: that one is TRC_ERR_STATE (a setting the caller can
+      !! still fix, by calling trc_run_scf again), matching
+      !! trc_run_gradient's own status before this check was factored
+      !! out -- test/check_grad_df_refusals.F90 checks that distinction.
+      refusal = ""
+      refusal_status = TRC_ERR_UNSUPPORTED
+      have_func = len_trim(cx%opts%functional) > 0
+      if (have_func) then
+         ! `cx%opts%functional` only ever holds a name trc_set_method/
+         ! scf_entry already validated (xc_functional_by_name succeeded,
+         ! func%missing empty), so this lookup cannot fail -- it is
+         ! re-done here only to read the fields below, not to re-validate.
+         if (.not. xc_functional_by_name(cx%opts%functional, func)) then
+            refusal = "functional '"//trim(cx%opts%functional)//"' failed to re-resolve -- this should be unreachable"
+            return
+         end if
+      end if
+      if (cx%rimp2_ok) then
+         refusal = "RI-MP2/double-hybrid correlation gradient not implemented yet"
+         return
+      end if
+      if (have_func) then
+         if (func%family == XC_FAMILY_MGGA) then
+            ! The energy runs; its tau term has no nuclear gradient in
+            ! trc_xc_grad yet, which only does LDA and GGA.
+            refusal = "meta-GGA ('"//trim(cx%opts%functional)//"') exchange-correlation gradient not implemented yet"
+            return
+         end if
+      end if
+      if (cx%opts%df) then
+         ! The fitted gradient differentiates the SAME fit the SCF converged
+         ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
+         ! fit still in place, and inherits the DF-SCF's own scope:
+         ! restricted, Cartesian, no range separation. trc_scf_settings
+         ! and trc_scf_df already refuse the SCF outside it; checked again
+         ! here so the message names the gradient -- and BEFORE the fit
+         ! check, because a result taken from a file (trc_load_scf) reaches
+         ! this point without ever having met the DF-SCF's own refusals.
+         if (cx%res%nspin /= 1) then
+            refusal = "--df gradient is restricted (closed-shell) only, as --df is"
+            return
+         end if
+         if (cx%bb%b%spherical) then
+            refusal = "--df gradient needs a Cartesian basis -- the DF derivative kernels are Cartesian only"
+            return
+         end if
+         if (have_func) then
+            if (func%exx_lr /= 0.0_dp) then
+               refusal = "--df with a range-separated functional is refused (the DF-SCF fits no erf exchange)"
+               return
+            end if
+         end if
+         if (.not. cx%df_fit_ok) then
+            refusal = "--df gradient needs the density fit the SCF ran with"
+            refusal_status = TRC_ERR_STATE
+            return
+         end if
+      end if
+      if (len_trim(cx%opts%pcm_model) > 0) then
+         refusal = "PCM gradient not implemented yet (no cavity/charge derivative)"
+         return
+      end if
+   end subroutine gradient_capability_check
+
+   !
+   ! Move one atom's basis centre to `r` in a basis already built --
+   ! EVERY shell whose sh_at (trc_api.F90's own exact-match shell->atom
+   ! map, set by basis_build/basis_from_libcint regardless of which
+   ! trc_set_basis_*/trc_set_aux_*/trc_set_jkfit_* path built it) equals
+   ! `atom_idx`, plus the basis's own at_r(:,atom_idx) -- rather than
+   ! rebuilding the basis from its JSON/libcint/array source. This is the
+   ! cheap, source-independent route trc_run_hessian's displacement loop
+   ! needs 6N times per Hessian: exponents and contraction coefficients
+   ! never depend on an atom's position, only the centre each shell is
+   ! built on does, so moving it is exact, not an approximation of a
+   ! rebuild. A shell with sh_at == 0 (a ghost/probe function, sapcmp's
+   ! far-field check -- trc_api.F90's own comment) is left alone: it is
+   ! not ON any molecule atom, so no displacement of one moves it.
+   !
+   ! `!$acc update device` when this basis is device-resident, which on a
+   ! GPU build it always is (take_basis calls to_device): the kernels must
+   ! not read a device copy that still holds the OLD centre under -acc's
+   ! separate memory.
+   !
+   subroutine move_basis_centre(b, atom_idx, r)
+      type(trc_basis_t), intent(inout) :: b
+      integer, intent(in) :: atom_idx
+      real(dp), intent(in) :: r(3)
+      integer :: i
+      if (atom_idx < 1 .or. atom_idx > b%natm) return
+      b%at_r(:, atom_idx) = r
+      do i = 1, b%nshell
+         if (b%sh_at(i) == atom_idx) b%sh_r(:, i) = r
+      end do
+      if (b%on_device) then
+         !$acc update device(b%sh_r, b%at_r)
+      end if
+   end subroutine move_basis_centre
+
+   !
+   ! Move every atom of this context to `at_r` (3, natm) -- the orbital
+   ! basis, and the auxiliary/jkfit bases if present, all follow -- then
+   ! invalidate exactly as trc_set_molecule does for a geometry change:
+   ! the last SCF/gradient/polarizability/Hessian result, the DFT grid
+   ! cache (a NEW geometry's grid, not the old one, is what the next
+   ! trc_run_scf must build), and the --df fit (its metric and
+   ! three-centre tensor are geometry-dependent, same as
+   ! trc_set_molecule's own comment on `df_fit_ok`). Used only by
+   ! trc_run_hessian's displacement loop today; `cx%natm`/`cx%have_mol`
+   ! are unchanged (same molecule, same atom count and order), so unlike
+   ! trc_set_molecule this never touches `cx%at_z` or the PCM radii
+   ! override.
+   !
+   subroutine hessian_set_geometry(cx, at_r)
+      type(context_box), intent(inout) :: cx
+      real(dp), intent(in) :: at_r(:, :)
+      integer :: a
+      cx%at_r = at_r
+      do a = 1, cx%natm
+         call move_basis_centre(cx%bb%b, a, at_r(:, a))
+         if (cx%have_aux) call move_basis_centre(cx%ab%b, a, at_r(:, a))
+         if (cx%have_jkfit) call move_basis_centre(cx%jb%b, a, at_r(:, a))
+      end do
+      call invalidate_runs(cx)
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
+   end subroutine hessian_set_geometry
+
+   function trc_set_geometry(handle, xyz) result(status) bind(c, name="trc_set_geometry")
+      !! Move every atom to a NEW geometry, same molecule and atom order
+      !! `trc_set_molecule` built (same count, same nuclear charges, same
+      !! charge/multiplicity) -- the one call a geometry optimiser's step
+      !! loop needs between gradients. Built on `hessian_set_geometry`
+      !! (trc_run_hessian's own displacement primitive, PRIVATE until now):
+      !! moves the orbital basis's centres in place, and the auxiliary/
+      !! jkfit bases' if present, then invalidates exactly as that routine
+      !! does -- the last SCF/gradient/polarizability/Hessian result, the
+      !! DFT grid cache and the --df fit, all geometry-dependent.
+      !!
+      !! `trc_set_molecule` is NOT a substitute for this: it replaces
+      !! `cx%at_z`/`cx%at_r` and invalidates the same things, but it never
+      !! touches a basis already built (`cx%bb`/`cx%ab`/`cx%jb`) -- the
+      !! shells stay at their OLD centres, which is correct for setting up
+      !! a NEW molecule before any basis exists, and wrong for moving the
+      !! atoms of one that already has one. A caller wanting the latter
+      !! (an optimiser, or trc_run_hessian's own displacements) uses this.
+      !!
+      !! `xyz` is atom-major Bohr (x1 y1 z1 x2 ...), the same convention
+      !! `trc_set_molecule` takes and `trc_gradient` returns, length
+      !! 3*natm. A guess density/orbitals carried across the move (SAD
+      !! stays SAD; TRC_GUESS_GIVEN's density and TRC_GUESS_PROJECTED's
+      !! "this context's last converged orbitals" are both still valid at
+      !! the new geometry -- that overlap-reprojection is exactly what
+      !! TRC_GUESS_PROJECTED is for) is a caller choice, not this call's.
+      type(c_ptr), value :: handle
+      real(c_double), intent(in) :: xyz(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      real(dp), allocatable :: new_r(:, :)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_geometry: set the molecule first")
+         return
+      end if
+      if (.not. cx%have_basis) then
+         call refuse(cx, "trc_set_geometry: set the basis first -- this moves an existing "// &
+                     "basis's centres, it does not build one")
+         return
+      end if
+      allocate (new_r(3, cx%natm))
+      new_r = reshape(real(xyz(1:3*cx%natm), dp), [3, cx%natm])
+      call hessian_set_geometry(cx, new_r)
+      deallocate (new_r)
+      status = TRC_OK
+   end function trc_set_geometry
 
    function trc_run_gradient(handle) result(status) bind(c, name="trc_run_gradient")
       !! The full analytic RHF/UHF nuclear gradient at the converged SCF
@@ -2957,6 +3250,7 @@ contains
       type(trc_xc_functional_t) :: func
       logical :: reuse_grid, reuse_nlc
       logical :: have_func
+      character(len=:), allocatable :: refusal
       type(comm_t) :: comm
       logical :: collective, root
       real(dp), allocatable :: gbuf(:)
@@ -2969,18 +3263,10 @@ contains
          cx%message = "trc_run_gradient: run the SCF first"
          return
       end if
-      status = TRC_ERR_UNSUPPORTED
-      have_func = len_trim(cx%opts%functional) > 0
-      if (have_func) then
-         ! `cx%opts%functional` only ever holds a name trc_set_method/
-         ! scf_entry already validated (xc_functional_by_name succeeded,
-         ! func%missing empty), so this lookup cannot fail -- it is
-         ! re-done here only to read the fields below, not to re-validate.
-         if (.not. xc_functional_by_name(cx%opts%functional, func)) then
-            cx%message = "trc_run_gradient: functional '"//trim(cx%opts%functional)// &
-                         "' failed to re-resolve -- this should be unreachable"
-            return
-         end if
+      call gradient_capability_check(cx, have_func, func, refusal, status)
+      if (len(refusal) > 0) then
+         cx%message = "trc_run_gradient: "//refusal
+         return
       end if
       ! GRID REUSE -- see this function's own header.
       reuse_grid = have_func .and. cx%kgrid%grid_built .and. &
@@ -2988,53 +3274,6 @@ contains
                    cx%kgrid_rho_tol == cx%opts%rho_tol
       reuse_nlc = reuse_grid .and. cx%kgrid%nlc_built .and. (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) .and. &
                   cx%kgrid_nlc_level == cx%opts%nlc_grid_level
-      if (cx%rimp2_ok) then
-         cx%message = "trc_run_gradient: RI-MP2/double-hybrid correlation gradient not implemented yet"
-         return
-      end if
-      if (have_func) then
-         if (func%family == XC_FAMILY_MGGA) then
-            ! The energy runs; its tau term has no nuclear gradient in
-            ! trc_xc_grad yet, which only does LDA and GGA.
-            cx%message = "trc_run_gradient: meta-GGA ('"//trim(cx%opts%functional)// &
-                         "') exchange-correlation gradient not implemented yet"
-            return
-         end if
-      end if
-      if (cx%opts%df) then
-         ! The fitted gradient differentiates the SAME fit the SCF converged
-         ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
-         ! fit still in place, and inherits the DF-SCF's own scope:
-         ! restricted, Cartesian, no range separation. trc_scf_settings
-         ! and trc_scf_df already refuse the SCF outside it; checked again
-         ! here so the message names the gradient -- and BEFORE the fit
-         ! check, because a result taken from a file (trc_load_scf) reaches
-         ! this point without ever having met the DF-SCF's own refusals.
-         if (cx%res%nspin /= 1) then
-            cx%message = "trc_run_gradient: --df gradient is restricted (closed-shell) only, as --df is"
-            return
-         end if
-         if (cx%bb%b%spherical) then
-            cx%message = "trc_run_gradient: --df gradient needs a Cartesian basis -- the DF derivative kernels are Cartesian only"
-            return
-         end if
-         if (have_func) then
-            if (func%exx_lr /= 0.0_dp) then
-               cx%message = "trc_run_gradient: --df with a range-separated functional is refused "// &
-                            "(the DF-SCF fits no erf exchange)"
-               return
-            end if
-         end if
-         if (.not. cx%df_fit_ok) then
-            status = TRC_ERR_STATE
-            cx%message = "trc_run_gradient: --df gradient needs the density fit the SCF ran with"
-            return
-         end if
-      end if
-      if (len_trim(cx%opts%pcm_model) > 0) then
-         cx%message = "trc_run_gradient: PCM gradient not implemented yet (no cavity/charge derivative)"
-         return
-      end if
       ! More than one rank: the SCF ran split, but the gradient is not split
       ! yet, so rank 0 computes it alone on its own device and broadcasts
       ! it, and every rank's trc_gradient returns the same numbers. That is
@@ -3068,26 +3307,27 @@ contains
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                         nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
+                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri)
                else if (reuse_grid) then
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                         nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
-                                        verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg)
+                                        verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
+                                        pair_eri_cache=cx%peri)
                else
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                         nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
-                                        verbose=cx%opts%verbose)
+                                        verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
                end if
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose)
+                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
             end if
          else if (have_func) then
             if (reuse_nlc) then
@@ -3097,25 +3337,26 @@ contains
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
                                      grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc)
+                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri)
             else if (reuse_grid) then
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
-                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg)
+                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri)
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose)
+                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                     pair_eri_cache=cx%peri)
             end if
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                                  verbose=cx%opts%verbose)
+                                  verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
          end if
       end if
       if (collective) then
@@ -3150,6 +3391,316 @@ contains
       grad(1:3*cx%natm) = real(reshape(cx%grad, [3*cx%natm]), c_double)
       status = TRC_OK
    end function trc_gradient
+
+   function trc_set_hessian_step(handle, step) result(status) bind(c, name="trc_set_hessian_step")
+      !! The Cartesian displacement trc_run_hessian's central differences
+      !! use, in Bohr; must be positive. Default 0.005: its truncation
+      !! error, about 1e-5 Eh/Bohr^2 on water/STO-3G, sits well above the
+      !! SCF noise trc_run_hessian's tightened convergence leaves.
+      !! Unchanged until this is called. Invalidates the last
+      !! trc_run_hessian result (a Hessian at the OLD step is not a
+      !! Hessian at the new one), not the SCF/gradient it is built from.
+      type(c_ptr), value :: handle
+      real(c_double), value :: step
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (step <= 0.0_c_double) then
+         call refuse(cx, "trc_set_hessian_step: step must be positive, got "//trim(to_string(real(step, dp))))
+         return
+      end if
+      cx%hess_step = real(step, dp)
+      cx%hess_ok = .false.
+      status = TRC_OK
+   end function trc_set_hessian_step
+
+   function trc_hessian_step(handle, step) result(status) bind(c, name="trc_hessian_step")
+      !! The displacement trc_run_hessian would use (or last used) --
+      !! trc_set_hessian_step's own default or override.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: step
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      step = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      step = real(cx%hess_step, c_double)
+      status = TRC_OK
+   end function trc_hessian_step
+
+   function trc_run_hessian(handle) result(status) bind(c, name="trc_run_hessian")
+      !! A finite-difference Cartesian Hessian from this context's own
+      !! analytic gradient, central differences at trc_set_hessian_step's
+      !! own h (default 0.005 Bohr) around the converged SCF this context
+      !! already holds (trc_run_scf; trc_gradient's reference "run the
+      !! SCF first" state requirement, same as trc_run_gradient):
+      !!
+      !!   H[k,j] = (g_j(x + h e_k) - g_j(x - h e_k)) / (2h)     Eh/Bohr^2
+      !!
+      !! k = 3*(atom-1)+{x,y,z}, 1-based, row = the displaced coordinate,
+      !! then symmetrised, H <- (H + H^T)/2. 6N displaced SCF+gradient
+      !! pairs plus one more to restore the reference state (below).
+      !!
+      !! REFUSED UP FRONT, before any displacement spends SCF time:
+      !!   - no SCF yet, or one that did not converge (TRC_ERR_STATE);
+      !!   - more than one rank (trc_set_comm): the loop below is already
+      !!     written so a later split is "rank r takes k = r, r+P, ..."
+      !!     plus a reduction over the gradients, but nothing here runs
+      !!     that split yet (TRC_ERR_UNSUPPORTED);
+      !!   - anything trc_run_gradient itself would refuse (meta-GGA,
+      !!     RI-MP2/double-hybrid, PCM, --df outside its own scope --
+      !!     gradient_capability_check, the SAME check trc_run_gradient
+      !!     makes, so the two can never disagree about what runs);
+      !!   - a non-positive step (trc_set_hessian_step already refuses
+      !!     one, so this is the backstop, not the primary gate).
+      !!
+      !! SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
+      !! (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
+      !! the displaced SCFs need tighter convergence than a single point
+      !! (water/STO-3G: HESSIAN_MAX_CONV_ENERGY/HESSIAN_MAX_CONV_DIIS
+      !! below say how much). This context's OWN conv_energy/conv_diis (trc_set_
+      !! convergence) are tightened to at least those floors for every
+      !! displaced SCF -- never loosened, so a caller who already asked
+      !! for tighter still gets it -- and restored to the caller's own
+      !! values before this returns, success or failure.
+      !!
+      !! WARM START. Every displaced SCF starts from THIS run's own
+      !! converged density (TRC_GUESS_GIVEN), not the previous
+      !! displacement's -- no guess drift accumulates across 6N points.
+      !! The reference density, this context's guess kind/density and
+      !! conv_energy/conv_diis are all restored before returning.
+      !!
+      !! A displaced SCF that fails to converge, or a gradient that
+      !! fails, stops the loop (TRC_ERR_NOCONV or whatever status that
+      !! call returned) rather than filling the Hessian with whatever
+      !! that point produced; the context is still restored to the
+      !! reference geometry/density before returning, as on success.
+      !!
+      !! RESTORING THE REFERENCE STATE. After the loop (success or
+      !! failure), the geometry goes back to the one this context held
+      !! when trc_run_hessian was called, and the reference SCF is RE-RUN
+      !! (warm-started from its own converged density, so it reconverges
+      !! in very few iterations) rather than merely remembered -- cheap
+      !! next to 6N displaced solves, and it leaves cx%res/cx%grad in
+      !! whatever state an ordinary trc_run_scf leaves them (grad_ok
+      !! false; call trc_run_gradient again for the reference gradient).
+      !! This context's guess kind/density, as set before this call, are
+      !! restored afterwards too, for the same reason the convergence
+      !! settings are: trc_run_hessian's own internal warm start must not
+      !! leak into what a caller sees after it returns.
+      !!
+      !! trc_hessian reads the result out; cx%hess is deallocated and
+      !! hess_ok left false on any failure, so a caller cannot read a
+      !! partial Hessian by mistake.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
+      logical :: have_func
+      character(len=:), allocatable :: refusal
+      real(dp), parameter :: HESSIAN_MAX_CONV_ENERGY = 1.0e-12_dp
+      real(dp), parameter :: HESSIAN_MAX_CONV_DIIS = 1.0e-9_dp
+      !! Measured on water/STO-3G against pyscf's analytic Hessian: at
+      !! the CLI's own defaults (econv 1e-10, gconv/conv_diis 1e-5) the
+      !! FD Hessian disagreed with pyscf's analytic one by far more than
+      !! the h=0.005 truncation error alone predicts; tightening conv_diis
+      !! (the DIIS commutator gate, trc_scf_options_t%conv_diis's own
+      !! comment) to 1e-9 and conv_energy to 1e-12 brought the worst
+      !! element back down to the truncation-error floor (~1e-5
+      !! Eh/Bohr^2 at this h). conv_diis is the tighter requirement here:
+      !! it gates the orthogonalised commutator |FDS-SDF|, which is what
+      !! actually bounds the gradient's own residual error, not the
+      !! energy (quadratic in the density error, and so a much blunter
+      !! instrument for a quantity -- the gradient -- linear in it).
+      integer :: natm, ndof, k, atom, comp, isign
+      real(dp) :: h, sgn
+      real(dp), allocatable :: ref_at_r(:, :), disp_r(:, :), d0(:, :, :)
+      real(dp), allocatable :: gplus(:), gminus(:)
+      real(dp) :: ref_conv_energy, ref_conv_diis, new_conv_energy, new_conv_diis
+      integer :: ref_guess_kind
+      real(dp), allocatable :: ref_dguess(:, :, :)
+      logical :: failed
+      character(len=256) :: fail_message
+      integer(c_int) :: fail_status, st
+      type(timer_type) :: wall_timer, k_timer
+      integer :: niter_plus, niter_minus
+      character(len=256) :: logline
+
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok .or. .not. cx%res%converged) then
+         cx%message = "trc_run_hessian: run a converged SCF first"
+         return
+      end if
+
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%fcomm /= -1) then
+         cx%message = "trc_run_hessian: more than one rank (trc_set_comm) is not supported yet -- "// &
+                      "run this context single-rank; the displacement loop is already indexed so a "// &
+                      "later split needs only a reduction over the gradients, not a redesign"
+         return
+      end if
+
+      call gradient_capability_check(cx, have_func, func, refusal, status)
+      if (len(refusal) > 0) then
+         cx%message = "trc_run_hessian: "//refusal
+         return
+      end if
+
+      status = TRC_ERR_BADARG
+      h = cx%hess_step
+      if (h <= 0.0_dp) then
+         cx%message = "trc_run_hessian: the displacement step must be positive (trc_set_hessian_step)"
+         return
+      end if
+
+      natm = cx%natm
+      ndof = 3*natm
+      allocate (ref_at_r(3, natm), disp_r(3, natm))
+      ref_at_r = cx%at_r
+      allocate (d0, source=cx%res%dmat)
+      ref_guess_kind = cx%guess_kind
+      if (ref_guess_kind == TRC_GUESS_GIVEN .and. allocated(cx%dguess)) allocate (ref_dguess, source=cx%dguess)
+
+      ref_conv_energy = cx%opts%conv_energy
+      ref_conv_diis = cx%opts%conv_diis
+      new_conv_energy = min(cx%opts%conv_energy, HESSIAN_MAX_CONV_ENERGY)
+      new_conv_diis = min(cx%opts%conv_diis, HESSIAN_MAX_CONV_DIIS)
+      if (new_conv_energy < ref_conv_energy .or. new_conv_diis < ref_conv_diis) then
+         write (logline, "(a,es9.2,a,es9.2,a)") "trc_run_hessian: tightening the displaced SCFs' convergence to "// &
+            "dE ", new_conv_energy, ", |FDS-SDF| ", new_conv_diis, &
+            " (FD noise is of order 100x the gradient error at h=0.005 Bohr)"
+         call global_logger%info(trim(logline))
+      end if
+      cx%opts%conv_energy = new_conv_energy
+      cx%opts%conv_diis = new_conv_diis
+
+      if (allocated(cx%hess)) deallocate (cx%hess)
+      allocate (cx%hess(ndof, ndof))
+      cx%hess = 0.0_dp
+      allocate (gplus(ndof), gminus(ndof))
+
+      failed = .false.
+      fail_status = TRC_OK
+      fail_message = ""
+      call wall_timer%start()
+
+      k_loop: do k = 1, ndof
+         atom = (k - 1)/3 + 1
+         comp = mod(k - 1, 3) + 1
+         call k_timer%start()
+         do isign = 1, 2
+            sgn = merge(1.0_dp, -1.0_dp, isign == 1)
+            disp_r = ref_at_r
+            disp_r(comp, atom) = ref_at_r(comp, atom) + sgn*h
+            call hessian_set_geometry(cx, disp_r)
+            cx%guess_kind = TRC_GUESS_GIVEN
+            cx%dguess = d0
+            st = trc_run_scf(handle)
+            if (st /= TRC_OK) then
+               failed = .true.
+               fail_status = st
+               fail_message = "trc_run_hessian: the SCF at displacement "//trim(to_string(k))//"/"// &
+                              trim(to_string(ndof))//merge(" (+h)", " (-h)", isign == 1)// &
+                              " did not converge: "//trim(cx%message)
+               exit k_loop
+            end if
+            st = trc_run_gradient(handle)
+            if (st /= TRC_OK) then
+               failed = .true.
+               fail_status = st
+               fail_message = "trc_run_hessian: the gradient at displacement "//trim(to_string(k))//"/"// &
+                              trim(to_string(ndof))//merge(" (+h)", " (-h)", isign == 1)// &
+                              " failed: "//trim(cx%message)
+               exit k_loop
+            end if
+            if (isign == 1) then
+               niter_plus = cx%res%iterations
+               gplus = reshape(cx%grad, [ndof])
+            else
+               niter_minus = cx%res%iterations
+               gminus = reshape(cx%grad, [ndof])
+            end if
+         end do
+         cx%hess(k, :) = (gplus - gminus)/(2.0_dp*h)
+         ! One line per coordinate, not per SCF -- 6N of these at the
+         ! INFO level is already as much as a Hessian run should print.
+         write (logline, "(a,i0,a,i0,a,i0,a,i0,a,i0,a,f0.3,a)") "trc_run_hessian: displacement ", k, "/", &
+            ndof, " (atom ", atom, ", xyz "//merge("x", merge("y", "z", comp == 2), comp == 1)// &
+            "): SCF iterations +h/-h ", niter_plus, "/", niter_minus, &
+            ", ", k_timer%get_elapsed_time(), " s"
+         call global_logger%info(trim(logline))
+      end do k_loop
+
+      ! Restore the reference geometry and a consistent converged state
+      ! regardless of success or failure -- see this function's own
+      ! header.
+      call hessian_set_geometry(cx, ref_at_r)
+      cx%guess_kind = TRC_GUESS_GIVEN
+      cx%dguess = d0
+      st = trc_run_scf(handle)
+      cx%opts%conv_energy = ref_conv_energy
+      cx%opts%conv_diis = ref_conv_diis
+      cx%guess_kind = ref_guess_kind
+      if (ref_guess_kind == TRC_GUESS_GIVEN .and. allocated(ref_dguess)) then
+         cx%dguess = ref_dguess
+      else if (allocated(cx%dguess)) then
+         deallocate (cx%dguess)
+      end if
+
+      if (failed) then
+         cx%message = fail_message
+         ! The caller must also learn that the context no longer holds a
+         ! converged SCF, not only why the loop stopped.
+         if (st /= TRC_OK) cx%message = trim(fail_message)//"; restoring the reference SCF then failed too"
+         cx%hess_ok = .false.
+         if (allocated(cx%hess)) deallocate (cx%hess)
+         status = fail_status
+         return
+      end if
+      if (st /= TRC_OK) then
+         cx%message = "trc_run_hessian: every displacement succeeded, but restoring the reference SCF "// &
+                      "did not reconverge: "//trim(cx%message)
+         cx%hess_ok = .false.
+         if (allocated(cx%hess)) deallocate (cx%hess)
+         status = st
+         return
+      end if
+
+      cx%hess = 0.5_dp*(cx%hess + transpose(cx%hess))
+      cx%hess_ok = .true.
+      write (logline, "(a,f0.3,a)") "trc_run_hessian: total time ", wall_timer%get_elapsed_time(), " s"
+      call global_logger%info(trim(logline))
+      status = TRC_OK
+   end function trc_run_hessian
+
+   function trc_hessian(handle, hess) result(status) bind(c, name="trc_hessian")
+      !! (3*natm, 3*natm), Eh/Bohr^2, column-major, row/column k =
+      !! 3*(atom-1)+{x,y,z} (trc_set_molecule's own atom order) -- after a
+      !! successful trc_run_hessian. NOT AO-indexed data, same as
+      !! trc_gradient: a Hessian is a second derivative of the SCF
+      !! energy, independent of any AO normalisation convention.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: hess(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: ndof
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%hess_ok) return
+      ndof = 3*cx%natm
+      hess(1:ndof*ndof) = real(reshape(cx%hess, [ndof*ndof]), c_double)
+      status = TRC_OK
+   end function trc_hessian
 
    function trc_run_polarizability(handle) result(status) bind(c, name="trc_run_polarizability")
       !! The static dipole polarizability at the converged SCF this
@@ -3223,6 +3774,16 @@ contains
          cx%message = "trc_run_polarizability: CPKS (a functional is set) is restricted only"
          return
       end if
+      ! `trc_cphf`/`trc_cpks` take a pair list and an ERI engine directly,
+      ! not `cx%peri` (there is no response-side cache to hand them), so
+      ! the build right below would otherwise sit ALONGSIDE the SCF's own
+      ! engine, still resident in `cx%peri` since `trc_run_scf` -- doubling
+      ! peak ERI device memory for no reason, since nothing reads the old
+      ! one once the response starts. Released here instead of reused: a
+      ! `trc_run_gradient` call after this one simply rebuilds its own,
+      ! same cost as before `cx%peri` existed, which is cheap next to not
+      ! fitting in device memory at all.
+      call cx%peri%release()
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
       call eri%build(cx%bb%b, cx%opts%eri_thresh)
@@ -3485,6 +4046,7 @@ contains
       ! so `trc_run_gradient` must rebuild (this function's own header,
       ! and trc_capi.F90's REUSE note on `context_box%kgrid`).
       call cx%kgrid%release()
+      call cx%peri%release()
       cx%kgrid_level = -1
       cx%kgrid_max_pts = -1
       cx%kgrid_nlc_level = -1
