@@ -7,7 +7,7 @@ module check_linalg_ref_suite
    !! device builds see the same data. Device builds map every array first:
    !! trc_linalg hands the library a device address, and a host array there
    !! is a segfault.
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_linalg, only: trc_linalg_t
    implicit none
@@ -75,7 +75,7 @@ contains
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: MM = 7, NN = 5, KK = 6
       character, parameter :: OPS(2) = ["N", "T"]
-      real(dp), allocatable :: a(:, :), b(:, :), c(:, :), ref(:, :)
+      real(dp), allocatable :: a(:, :), b(:, :), c(:, :), ref(:, :), op_a(:, :), op_b(:, :)
       real(dp) :: alpha, beta
       type(trc_linalg_t) :: lp
       integer :: ia, ib
@@ -87,10 +87,24 @@ contains
          do ib = 1, 2
             ta = ia == 2
             tb = ib == 2
-            a = merge(matrix(0, KK, MM), matrix(0, MM, KK), ta)
-            b = merge(matrix(100, NN, KK), matrix(100, KK, NN), tb)
+            ! if/else, not merge(): the two shapes differ, which merge() does
+            ! not allow (nvfortran segfaults in its transpose).
+            if (ta) then
+               a = matrix(0, KK, MM)
+               op_a = transpose(a)
+            else
+               a = matrix(0, MM, KK)
+               op_a = a
+            end if
+            if (tb) then
+               b = matrix(100, NN, KK)
+               op_b = transpose(b)
+            else
+               b = matrix(100, KK, NN)
+               op_b = b
+            end if
             c = matrix(200, MM, NN)
-            ref = alpha*matmul(merge(transpose(a), a, ta), merge(transpose(b), b, tb)) + beta*c
+            ref = alpha*matmul(op_a, op_b) + beta*c
             !$acc enter data copyin(a, b, c)
             call lp%gemm(OPS(ia), OPS(ib), MM, NN, KK, alpha, a, size(a, 1), b, size(b, 1), beta, c, MM)
             !$acc update self(c)
@@ -121,8 +135,8 @@ contains
       end do
       call lp%init(8)
       !$acc enter data copyin(a, b, c)
-      call lp%gemm_strided("N", "N", MM, NN, KK, 1.0_dp, a, MM, int(MM*KK, 8), b, KK, int(KK*NN, 8), &
-                           0.0_dp, c, MM, int(MM*NN, 8), NB)
+      call lp%gemm_strided("N", "N", MM, NN, KK, 1.0_dp, a, MM, int(MM*KK, int64), b, KK, int(KK*NN, int64), &
+                           0.0_dp, c, MM, int(MM*NN, int64), NB)
       !$acc update self(c)
       !$acc exit data delete(a, b, c)
       call lp%release()
