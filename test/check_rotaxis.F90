@@ -14,22 +14,20 @@
 ! ENVIRONMENT dance, and no risk of comparing two different builds by
 ! accident.
 !
-! Two systems, chosen for contraction degree rather than geometry (FRAME.md's
+! One system, chosen for contraction degree rather than geometry (FRAME.md's
 ! degenerate-frame cases are exercised plenty by check_binfock's own
 ! systems):
 !
-!   SiH4 / cc-pVDZ   -- light contraction (Si s/p K ~ 4-6); cc-pVDZ's d
-!                       shells on Si stay on HGP regardless of the knob
-!                       (`ra_has_class` has no case above p), so this ALSO
-!                       checks that a mixed s/p/d run routes correctly.
-!   SiH4 / cc-pVTZ (H/O/Si only, cc-pvtz_sioh.json) -- the deep general
-!                       contraction this generator was revived to measure
-!                       (Si s K=13, p K=7); d/f shells on Si likewise stay
-!                       on HGP/Rys. Kept to 5 atoms (not Si8O12H8) because
-!                       this check turns off every screen (see dsh below),
-!                       which an f-containing basis on a bigger system
-!                       makes expensive fast; the deep contraction itself
-!                       only needs one Si, not a slab of them.
+!   SiH4 / cc-pVDZ -- the committed basis_sets/cc-pvdz.json already carries
+!                     a real general contraction on Si (s: 12 primitives
+!                     over 4 columns; p: 8 over 3 -- see
+!                     test/check_decontract's own comment on this same
+!                     file), so it needs no separate basis file for the
+!                     deep-contraction case this generator was revived to
+!                     measure. cc-pVDZ's d shell on Si stays on HGP
+!                     regardless of the knob (`ra_has_class` has no case
+!                     above p), so this ALSO checks that a mixed s/p/d run
+!                     routes correctly.
 !
 program check_rotaxis
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
@@ -71,7 +69,6 @@ program check_rotaxis
    end if
 
    call run_case('sih4.xyz', 'basis_sets/cc-pvdz.json')
-   call run_case('sih4.xyz', 'basis_sets/cc-pvtz_sioh.json')
 
    if (nbad_total > 0) then
       print '(a,i0)', '  AO pairs disagreeing beyond tolerance: ', nbad_total
