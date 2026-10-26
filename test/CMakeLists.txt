@@ -1307,6 +1307,18 @@ add_test(NAME terco/check_capi_libcint_sph COMMAND check_capi_libcint_sph)
 set_tests_properties(terco/check_capi_libcint_sph PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# trc_basis_shell_count/trc_basis_shell_max_primitives/trc_basis_shell_info/
+# trc_basis_shell_primitives/trc_basis_is_spherical and
+# trc_physical_constant: cyclone's own two gaps (reading a context's basis
+# shells back, and terco's own CODATA 2018 instead of a second copy).
+add_executable(check_capi_shells check_capi_shells.F90)
+target_compile_definitions(check_capi_shells PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_shells PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                 test-drive::test-drive)
+add_test(NAME terco/check_capi_shells COMMAND check_capi_shells)
+set_tests_properties(terco/check_capi_shells PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 #
 # trc_run_polarizability/trc_polarizability (CPHF/CPKS) and trc_nmo/
 # trc_mo_occupations, through the context API, against the SAME pyscf
