@@ -100,6 +100,8 @@ program bench_mdj
       t_k = min(t_k, tm%get_elapsed_time())
    end do
    print '(a,f9.4,a,f9.4,a)', "best of reps: fock J+K ", t_jk, " s   fock K only ", t_k, " s"
+   ! Checksums of the last (K-only) build, to compare runs that route classes differently.
+   print '(a,es24.16,a,es24.16)', "K-only checksum sum(G) ", sum(g), "  sum(G*D) ", sum(g*d)
    print '(a,es10.3,a,es10.3)', "max|J_md - J_fock| ", maxval(abs(jmd - jref)), &
       "   max|J| ", maxval(abs(jref))
    print '(a,i0,a,i0)', "md primitive pairs ", eri%md%nhp, "   shell pairs ", eri%md%nsp

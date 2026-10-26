@@ -105,7 +105,7 @@ def decode_lines(ind):
 {ind}end if""".split("\n")
 
 
-def gen_class(la, lb, lc, ld, order, header):
+def gen_class(la, lb, lc, ld, order, header, mode="fused"):
     tag = f"{la}{lb}{lc}{ld}"
     lp, lq = la + lb, lc + ld
     L = lp + lq
@@ -122,7 +122,9 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("   implicit none")
     o.append("   private")
     o.append(f"   public :: mdk_k{tag}, MDK_NR_{tag}, MDK_NAB_{tag}")
-    o.append(f"   integer, parameter :: MDK_NR_{tag} = {nr}")
+    o.append(f"   integer, parameter :: MDK_NR_{tag} = {nr if mode == 'buffer' else 0}")
+    o.append("   !! Hermite integrals buffered per primitive quartet; 0 when kernel 2")
+    o.append("   !! recomputes R in registers (the fused mode).")
     o.append(f"   integer, parameter :: MDK_NAB_{tag} = {nab}")
     o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
     o.append("")
@@ -140,20 +142,32 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("      do concurrent(i = 1:nw)")
     o.extend(wrap_args(f"call mdk_r_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
     o.append("      end do")
-    o.append(f"      do concurrent(i = 1:nw*{nab})")
-    o.extend(wrap_args(f"call mdk_d_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
+    if mode == "buffer":
+        o.append(f"      do concurrent(i = 1:nw*{nab})")
+        o.extend(wrap_args(f"call mdk_d_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
+    elif mode == "row":
+        o.append(f"      do concurrent(i = 1:nw*{nab})")
+        o.extend(wrap_args(f"call mdk_w_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
+    else:
+        o.append(f"      do concurrent(i = 1:nw*{len(ca)})")
+        o.extend(wrap_args(f"call mdk_f_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
     o.append("      end do")
     o.append(f"   end subroutine mdk_k{tag}")
     o.append("")
-    o.extend(r_item(tag, L, nr, il))
+    o.extend(r_item(tag, L, nr, il, write_r=(mode == "buffer")))
     o.append("")
-    o.extend(d_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, il, nr))
+    if mode == "buffer":
+        o.extend(d_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, il, nr))
+    elif mode == "row":
+        o.extend(w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L))
+    else:
+        o.extend(f_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L))
     o.append("")
     o.append(f"end module trc_mdk_k{tag}")
     return "\n".join(o) + "\n"
 
 
-def r_item(tag, L, nr, il):
+def r_item(tag, L, nr, il, write_r=True):
     g = rtree.RDag(herm(L))
     g.sieve()
     stmts = g.statements()
@@ -191,6 +205,9 @@ def r_item(tag, L, nr, il):
     o.append("      if (sk == sl) w = 0.5_dp*w")
     o.append("      if (sD(seg) .and. iab == icd) w = 0.5_dp*w")
     o.append("      wq(i) = w")
+    if not write_r:
+        o.append(f"   end subroutine mdk_r_item_{tag}")
+        return o
     o.append("      kq0 = sPB(seg) + icd")
     o.append("      do k1 = 1, nab")
     o.append("         kp = sPA(seg) + (k1 - 1)*sA(seg) + iab")
@@ -410,6 +427,377 @@ def branch(la, lb, lc, ld, a, b, xa, xb, cc, cd, hp, hq, il, k_lines):
     return o
 
 
+def f_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
+    """One thread per (quartet, component a of the first shell), R in registers."""
+    g = rtree.RDag(herm(L))
+    g.sieve()
+    stmts = g.statements()
+    leaves = g.leaves()
+    need_k = e_names_for(lc, ld, cc, cd)
+    k_lines, k_names = e_stmts(lc, ld, need_k, " " * 12, "k")
+    need_b = e_names_for(la, lb, ca, cb)
+    _, b_names = e_stmts(la, lb, need_b, "", "b")
+    nb, nc, nd = len(cb), len(cc), len(cd)
+    xs = [f"x{b + 1}_{c + 1}_{d + 1}" for b in range(nb) for c in range(nc) for d in range(nd)]
+    o = []
+    o.extend(wrap_args(f"pure subroutine mdk_f_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
+    o.append(f"      !! One component a of shell a against every b, c, d: {nb*nc*nd} accumulators,")
+    o.append(f"      !! R ({len(herm(L))} targets) rebuilt in registers per primitive quartet.")
+    o.append("      !$acc routine seq")
+    o.append("      integer, intent(in) :: i")
+    o.append(SEG_DECL)
+    o.append(WIN_DECL)
+    o.append("      integer :: w, ia, seg, slotab, slotcd, si, sj, sk, sl, mui, nuj, lamk, sigl")
+    o.append("      integer :: k1, k2, kp, kq, nab, ncd, idens")
+    o.append("      real(dp) :: wqq, zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd")
+    o.append("      real(dp) :: px, py, pz, pqx, pqy, pqz, s")
+    o.append("      real(dp) :: bpxa, bpya, bpza, bpxb, bpyb, bpzb, boo2p")
+    o.append("      real(dp) :: kpxa, kpya, kpza, kpxb, kpyb, kpzb, koo2p")
+    o.append("      real(dp) :: f(0:BOYS_MMAX)")
+    o.append(decl("real(dp)", [rtree.leaf_name(m) for m in leaves]))
+    o.append(decl("real(dp)", [st.lhs for st in stmts]))
+    o.append(decl("real(dp)", k_names))
+    o.append(decl("real(dp)", b_names))
+    o.append(decl("real(dp)", [f"v{j + 1}" for j in range(len(hq))]))
+    o.append(decl("real(dp)", xs))
+    o.append(f_digest_decl(nb, nc, nd))
+    o.append("")
+    o.append("      ! Quartet fastest: a warp shares one component a, so the select below")
+    o.append("      ! does not diverge.")
+    o.append("      w = mod(i - 1, nw) + 1")
+    o.append("      ia = (i - 1)/nw + 1")
+    o.append("      wqq = wq(w)")
+    o.append("      if (wqq == 0.0_dp) return")
+    o.append("      seg = wseg(w); slotab = wab(w); slotcd = wcd(w)")
+    o.append("      si = sp_i(slotab); sj = sp_j(slotab); sk = sp_i(slotcd); sl = sp_j(slotcd)")
+    o.append("      mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)")
+    o.append("      nab = sq_n(slotab); ncd = sq_n(slotcd)")
+    o.append("      select case (ia)")
+    ind = " " * 9
+    for xa, a in enumerate(ca):
+        o.append(f"      case ({xa + 1})")
+        need_a = [set(), set(), set()]
+        for b in cb:
+            for d in range(3):
+                for t in range(a[d] + b[d] + 1):
+                    need_a[d].add((a[d], b[d], t))
+        b_lines, _ = e_stmts(la, lb, need_a, ind + "   ", "b")
+        for x in xs:
+            o.append(f"{ind}{x} = 0.0_dp")
+        o.append(f"{ind}do k1 = 1, nab")
+        o.append(f"{ind}   kp = sPA(seg) + (k1 - 1)*sA(seg) + (slotab - sOA(seg))")
+        o.append(f"{ind}   zeta = qp_z(kp)")
+        o.append(f"{ind}   px = qp_px(kp); py = qp_py(kp); pz = qp_pz(kp)")
+        o.append(f"{ind}   bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))")
+        o.append(f"{ind}   boo2p = 0.5_dp/zeta")
+        o.append(f"{ind}   bpxa = px - sq_ax(slotab); bpya = py - sq_ay(slotab); bpza = pz - sq_az(slotab)")
+        o.append(f"{ind}   bpxb = bpxa + sq_abx(slotab); bpyb = bpya + sq_aby(slotab); bpzb = bpza + sq_abz(slotab)")
+        o.extend(b_lines)
+        o.append(f"{ind}   do k2 = 1, ncd")
+        o.append(f"{ind}      kq = sPB(seg) + (k2 - 1)*sNB(seg) + (slotcd - sOB(seg))")
+        o.append(f"{ind}      eta = qp_z(kq)")
+        o.append(f"{ind}      zpe = zeta + eta")
+        o.append(f"{ind}      pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)")
+        o.append(f"{ind}      ! The HGP kernels' primitive-quartet prescreen.")
+        o.append(f"{ind}      if (bnd*abs(qp_c(kq))/eta <= pcut .or. abs(pref) <= pcut) cycle")
+        o.append(f"{ind}      alpha = zeta*eta/zpe")
+        o.append(f"{ind}      pqx = px - qp_px(kq); pqy = py - qp_py(kq); pqz = pz - qp_pz(kq)")
+        o.append(f"{ind}      tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
+        o.append(f"{ind}      call boys_eval({max(leaves)}, tval, f)")
+        o.append(f"{ind}      m2a = -2.0_dp*alpha")
+        o.append(f"{ind}      ww = pref")
+        for m in range(max(leaves) + 1):
+            if m > 0:
+                o.append(f"{ind}      ww = ww*m2a")
+            if m in leaves:
+                o.append(f"{ind}      {rtree.leaf_name(m)} = ww*f({m})")
+        for st in stmts:
+            o.extend(emit_sum(st.lhs, expr_of(st.terms), ind + "      "))
+        o.append(f"{ind}      koo2p = 0.5_dp/eta")
+        o.append(f"{ind}      kpxa = qp_px(kq) - sq_ax(slotcd); kpya = qp_py(kq) - sq_ay(slotcd)")
+        o.append(f"{ind}      kpza = qp_pz(kq) - sq_az(slotcd)")
+        o.append(f"{ind}      kpxb = kpxa + sq_abx(slotcd); kpyb = kpya + sq_aby(slotcd); kpzb = kpza + sq_abz(slotcd)")
+        o.extend(["   " + ln for ln in k_lines])
+
+        def rv(r):
+            return rtree.leaf_name(0) if r == (0, 0, 0) else rtree.r_name(r, 0)
+        for xb, b in enumerate(cb):
+            box = [h for h in hp if all(h[d] <= a[d] + b[d] for d in range(3))]
+            for j, q in enumerate(hq):
+                parts = []
+                for h in box:
+                    fac = e3("b", a, b, h)
+                    r = tuple(h[d] + q[d] for d in range(3))
+                    parts.append("*".join(fac + [rv(r)]))
+                o.extend(emit_sum(f"v{j + 1}", parts, ind + "      "))
+            for xc, c in enumerate(cc):
+                for xd, d in enumerate(cd):
+                    parts = []
+                    for j, q in enumerate(hq):
+                        fac = e3("k", c, d, q)
+                        if fac is None:
+                            continue
+                        term = "*".join(fac + [f"v{j + 1}"])
+                        parts.append(f"(-{term})" if sum(q) % 2 else term)
+                    o.extend(emit_sum(f"x{xb + 1}_{xc + 1}_{xd + 1}", parts, ind + "      ", accumulate=True))
+        o.append(f"{ind}   end do")
+        o.append(f"{ind}end do")
+        o.extend(f_digest(xa, nb, nc, nd, ind))
+    o.append("      end select")
+    o.append(f"   end subroutine mdk_f_item_{tag}")
+    return o
+
+
+def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
+    """One thread per (quartet, a, b): its row of (ab|cd), R pruned and consumed on the fly.
+
+    The fused mode held R, 54 rows, v and the E tables in one thread and
+    spilled 101 GB per (dp|dp) launch (ncu, w20 cc-pVTZ). Here each branch
+    builds only the R targets {p + q : p in box(a, b)} it reads, and scatters
+    each into v_q as it is produced, so R never needs to be live at once.
+    """
+    need_k = e_names_for(lc, ld, cc, cd)
+    k_lines, k_names = e_stmts(lc, ld, need_k, " " * 12, "k")
+    need_b = e_names_for(la, lb, ca, cb)
+    _, b_names = e_stmts(la, lb, need_b, "", "b")
+    nc, nd = len(cc), len(cd)
+    xs = [f"x{c + 1}_{d + 1}" for c in range(nc) for d in range(nd)]
+    iq = herm_index(lc + ld)
+    branches = []
+    allnames = set()
+    leaves_all = set()
+    for xa, a in enumerate(ca):
+        for xb, b in enumerate(cb):
+            box = [h for h in hp if all(h[d] <= a[d] + b[d] for d in range(3))]
+            tg = sorted({tuple(p[d] + q[d] for d in range(3)) for p in box for q in hq})
+            g = rtree.RDag(tg)
+            g.sieve()
+            branches.append((xa, a, xb, b, box, g))
+            allnames.update(st.lhs for st in g.statements())
+            leaves_all.update(g.leaves())
+    o = []
+    o.extend(wrap_args(f"pure subroutine mdk_w_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer, intent(in) :: i")
+    o.append(SEG_DECL)
+    o.append(WIN_DECL)
+    o.append("      integer :: w, iab, seg, slotab, slotcd, si, sj, sk, sl, mui, nuj, lamk, sigl")
+    o.append("      integer :: k1, k2, kp, kq, nab, ncd, idens")
+    o.append("      real(dp) :: wqq, zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd")
+    o.append("      real(dp) :: px, py, pz, pqx, pqy, pqz, s, dab")
+    o.append("      real(dp) :: bpxa, bpya, bpza, bpxb, bpyb, bpzb, boo2p")
+    o.append("      real(dp) :: kpxa, kpya, kpza, kpxb, kpyb, kpzb, koo2p")
+    o.append("      real(dp) :: f(0:BOYS_MMAX)")
+    o.append(decl("real(dp)", [rtree.leaf_name(m) for m in sorted(leaves_all)]))
+    o.append(decl("real(dp)", sorted(allnames)))
+    o.append(decl("real(dp)", k_names))
+    o.append(decl("real(dp)", b_names))
+    o.append(decl("real(dp)", [f"v{j + 1}" for j in range(len(hq))]))
+    o.append(decl("real(dp)", xs))
+    o.append("")
+    o.append("      ! Quartet fastest: a warp shares one (a, b), so the select does not diverge.")
+    o.append("      w = mod(i - 1, nw) + 1")
+    o.append("      iab = (i - 1)/nw + 1")
+    o.append("      wqq = wq(w)")
+    o.append("      if (wqq == 0.0_dp) return")
+    o.append("      seg = wseg(w); slotab = wab(w); slotcd = wcd(w)")
+    o.append("      si = sp_i(slotab); sj = sp_j(slotab); sk = sp_i(slotcd); sl = sp_j(slotcd)")
+    o.append("      mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)")
+    o.append("      nab = sq_n(slotab); ncd = sq_n(slotcd)")
+    o.append("      select case (iab)")
+    ind = " " * 9
+    for k, (xa, a, xb, b, box, g) in enumerate(branches):
+        o.append(f"      case ({k + 1})")
+        need_a = [set(), set(), set()]
+        for d in range(3):
+            for t in range(a[d] + b[d] + 1):
+                need_a[d].add((a[d], b[d], t))
+        b_lines, _ = e_stmts(la, lb, need_a, ind + "   ", "b")
+        # scatter list per target r: (q index, E^ab_p factors)
+        scat = {}
+        for p in box:
+            fac = e3("b", a, b, p)
+            for j, q in enumerate(hq):
+                r = tuple(p[d] + q[d] for d in range(3))
+                scat.setdefault(r, []).append((j, fac))
+        leaves = g.leaves()
+        for x in xs:
+            o.append(f"{ind}{x} = 0.0_dp")
+        o.append(f"{ind}do k1 = 1, nab")
+        o.append(f"{ind}   kp = sPA(seg) + (k1 - 1)*sA(seg) + (slotab - sOA(seg))")
+        o.append(f"{ind}   zeta = qp_z(kp)")
+        o.append(f"{ind}   px = qp_px(kp); py = qp_py(kp); pz = qp_pz(kp)")
+        o.append(f"{ind}   bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))")
+        o.append(f"{ind}   boo2p = 0.5_dp/zeta")
+        o.append(f"{ind}   bpxa = px - sq_ax(slotab); bpya = py - sq_ay(slotab); bpza = pz - sq_az(slotab)")
+        o.append(f"{ind}   bpxb = bpxa + sq_abx(slotab); bpyb = bpya + sq_aby(slotab); bpzb = bpza + sq_abz(slotab)")
+        o.extend(b_lines)
+        o.append(f"{ind}   do k2 = 1, ncd")
+        o.append(f"{ind}      kq = sPB(seg) + (k2 - 1)*sNB(seg) + (slotcd - sOB(seg))")
+        o.append(f"{ind}      eta = qp_z(kq)")
+        o.append(f"{ind}      zpe = zeta + eta")
+        o.append(f"{ind}      pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)")
+        o.append(f"{ind}      if (bnd*abs(qp_c(kq))/eta <= pcut .or. abs(pref) <= pcut) cycle")
+        o.append(f"{ind}      alpha = zeta*eta/zpe")
+        o.append(f"{ind}      pqx = px - qp_px(kq); pqy = py - qp_py(kq); pqz = pz - qp_pz(kq)")
+        o.append(f"{ind}      tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
+        o.append(f"{ind}      call boys_eval({max(leaves)}, tval, f)")
+        o.append(f"{ind}      m2a = -2.0_dp*alpha")
+        o.append(f"{ind}      ww = pref")
+        for m in range(max(leaves) + 1):
+            if m > 0:
+                o.append(f"{ind}      ww = ww*m2a")
+            if m in leaves:
+                o.append(f"{ind}      {rtree.leaf_name(m)} = ww*f({m})")
+        for j in range(len(hq)):
+            o.append(f"{ind}      v{j + 1} = 0.0_dp")
+
+        def scatter(r):
+            val = rtree.leaf_name(0) if r == (0, 0, 0) else rtree.r_name(r, 0)
+            for j, fac in scat.get(r, []):
+                o.append(f"{ind}      v{j + 1} = v{j + 1} + " + "*".join(fac + [val]))
+        if ((0, 0, 0), 0) in g.tset:
+            scatter((0, 0, 0))
+        for st in g.statements():
+            o.extend(emit_sum(st.lhs, expr_of(st.terms), ind + "      "))
+            fl = st.lhs[1:].split("_")
+            if fl[3] == "0":
+                r = tuple(int(x) for x in fl[:3])
+                if (r, 0) in g.tset:
+                    scatter(r)
+        o.append(f"{ind}      koo2p = 0.5_dp/eta")
+        o.append(f"{ind}      kpxa = qp_px(kq) - sq_ax(slotcd); kpya = qp_py(kq) - sq_ay(slotcd)")
+        o.append(f"{ind}      kpza = qp_pz(kq) - sq_az(slotcd)")
+        o.append(f"{ind}      kpxb = kpxa + sq_abx(slotcd); kpyb = kpya + sq_aby(slotcd); kpzb = kpza + sq_abz(slotcd)")
+        o.extend(["   " + ln for ln in k_lines])
+        for xc, c in enumerate(cc):
+            for xd, d in enumerate(cd):
+                parts = []
+                for j, q in enumerate(hq):
+                    fac = e3("k", c, d, q)
+                    if fac is None:
+                        continue
+                    term = "*".join(fac + [f"v{j + 1}"])
+                    parts.append(f"(-{term})" if sum(q) % 2 else term)
+                o.extend(emit_sum(f"x{xc + 1}_{xd + 1}", parts, ind + "      ", accumulate=True))
+        o.append(f"{ind}   end do")
+        o.append(f"{ind}end do")
+        o.extend(w_digest(xa, xb, nc, nd, ind))
+    o.append("      end select")
+    o.append(f"   end subroutine mdk_w_item_{tag}")
+    return o
+
+
+def w_digest(xa, xb, nc, nd, ind):
+    """Row (a, b) of the quartet into K (and J when jfac /= 0)."""
+    o = [f"{ind}do idens = 1, ndens"]
+    for c in range(nc):
+        t = [f"x{c + 1}_{d + 1}*dmat(idens, nuj + {xb}, sigl + {d})" for d in range(nd)]
+        o.extend(emit_sum("s", t, ind + "   "))
+        o.append(f"{ind}   !$acc atomic update")
+        o.append(f"{ind}   jmat(idens, mui + {xa}, lamk + {c}) = jmat(idens, mui + {xa}, lamk + {c}) - kfac*wqq*s")
+        t = [f"x{c + 1}_{d + 1}*dmat(idens, mui + {xa}, sigl + {d})" for d in range(nd)]
+        o.extend(emit_sum("s", t, ind + "   "))
+        o.append(f"{ind}   !$acc atomic update")
+        o.append(f"{ind}   jmat(idens, nuj + {xb}, lamk + {c}) = jmat(idens, nuj + {xb}, lamk + {c}) - kfac*wqq*s")
+    for d in range(nd):
+        t = [f"x{c + 1}_{d + 1}*dmat(idens, nuj + {xb}, lamk + {c})" for c in range(nc)]
+        o.extend(emit_sum("s", t, ind + "   "))
+        o.append(f"{ind}   !$acc atomic update")
+        o.append(f"{ind}   jmat(idens, mui + {xa}, sigl + {d}) = jmat(idens, mui + {xa}, sigl + {d}) - kfac*wqq*s")
+        t = [f"x{c + 1}_{d + 1}*dmat(idens, mui + {xa}, lamk + {c})" for c in range(nc)]
+        o.extend(emit_sum("s", t, ind + "   "))
+        o.append(f"{ind}   !$acc atomic update")
+        o.append(f"{ind}   jmat(idens, nuj + {xb}, sigl + {d}) = jmat(idens, nuj + {xb}, sigl + {d}) - kfac*wqq*s")
+    o.append(f"{ind}   if (jfac /= 0.0_dp) then")
+    t = [f"x{c + 1}_{d + 1}*dmat(idens, lamk + {c}, sigl + {d})" for c in range(nc) for d in range(nd)]
+    o.extend(emit_sum("s", t, ind + "      "))
+    o.append(f"{ind}      !$acc atomic update")
+    o.append(f"{ind}      jmat(idens, mui + {xa}, nuj + {xb}) = jmat(idens, mui + {xa}, nuj + {xb}) + 4.0_dp*jfac*wqq*s")
+    o.append(f"{ind}      dab = 4.0_dp*jfac*wqq*dmat(idens, mui + {xa}, nuj + {xb})")
+    for c in range(nc):
+        for d in range(nd):
+            o.append(f"{ind}      !$acc atomic update")
+            o.append(f"{ind}      jmat(idens, lamk + {c}, sigl + {d}) = jmat(idens, lamk + {c}, sigl + {d}) "
+                     f"+ dab*x{c + 1}_{d + 1}")
+    o.append(f"{ind}   end if")
+    o.append(f"{ind}end do")
+    return o
+
+
+def f_digest(xa, nb, nc, nd, ind):
+    """Thread a's share of the four exchange blocks, and of J when jfac /= 0.
+
+    The density elements are loaded into scalars once: emitted inline in
+    each sum, the compiler reloaded them past every atomic, ~1300 scattered
+    loads per (dp|dp) quartet against HGP's 81, and the kernel ran at 71%
+    memory throughput and IPC 0.15 (ncu, V100).
+    """
+    x = lambda b, c, d: f"x{b + 1}_{c + 1}_{d + 1}"
+    o = [f"{ind}do idens = 1, ndens"]
+    for b in range(nb):
+        for d in range(nd):
+            o.append(f"{ind}   dbd{b + 1}_{d + 1} = dmat(idens, nuj + {b}, sigl + {d})")
+        for c in range(nc):
+            o.append(f"{ind}   dbc{b + 1}_{c + 1} = dmat(idens, nuj + {b}, lamk + {c})")
+    for d in range(nd):
+        o.append(f"{ind}   dad{d + 1} = dmat(idens, mui + {xa}, sigl + {d})")
+    for c in range(nc):
+        o.append(f"{ind}   dac{c + 1} = dmat(idens, mui + {xa}, lamk + {c})")
+    for c in range(nc):
+        t = [f"{x(b, c, d)}*dbd{b + 1}_{d + 1}" for b in range(nb) for d in range(nd)]
+        o.extend(emit_sum("s", t, ind + "   "))
+        o.append(f"{ind}   !$acc atomic update")
+        o.append(f"{ind}   jmat(idens, mui + {xa}, lamk + {c}) = jmat(idens, mui + {xa}, lamk + {c}) - kfac*wqq*s")
+    for d in range(nd):
+        t = [f"{x(b, c, d)}*dbc{b + 1}_{c + 1}" for b in range(nb) for c in range(nc)]
+        o.extend(emit_sum("s", t, ind + "   "))
+        o.append(f"{ind}   !$acc atomic update")
+        o.append(f"{ind}   jmat(idens, mui + {xa}, sigl + {d}) = jmat(idens, mui + {xa}, sigl + {d}) - kfac*wqq*s")
+    for b in range(nb):
+        for c in range(nc):
+            t = [f"{x(b, c, d)}*dad{d + 1}" for d in range(nd)]
+            o.extend(emit_sum("s", t, ind + "   "))
+            o.append(f"{ind}   !$acc atomic update")
+            o.append(f"{ind}   jmat(idens, nuj + {b}, lamk + {c}) = jmat(idens, nuj + {b}, lamk + {c}) - kfac*wqq*s")
+        for d in range(nd):
+            t = [f"{x(b, c, d)}*dac{c + 1}" for c in range(nc)]
+            o.extend(emit_sum("s", t, ind + "   "))
+            o.append(f"{ind}   !$acc atomic update")
+            o.append(f"{ind}   jmat(idens, nuj + {b}, sigl + {d}) = jmat(idens, nuj + {b}, sigl + {d}) - kfac*wqq*s")
+    o.append(f"{ind}   if (jfac /= 0.0_dp) then")
+    for c in range(nc):
+        for d in range(nd):
+            o.append(f"{ind}      dcd{c + 1}_{d + 1} = dmat(idens, lamk + {c}, sigl + {d})")
+    for b in range(nb):
+        o.append(f"{ind}      dab{b + 1} = dmat(idens, mui + {xa}, nuj + {b})")
+    for b in range(nb):
+        t = [f"{x(b, c, d)}*dcd{c + 1}_{d + 1}" for c in range(nc) for d in range(nd)]
+        o.extend(emit_sum("s", t, ind + "      "))
+        o.append(f"{ind}      !$acc atomic update")
+        o.append(f"{ind}      jmat(idens, mui + {xa}, nuj + {b}) = jmat(idens, mui + {xa}, nuj + {b}) "
+                 "+ 4.0_dp*jfac*wqq*s")
+    for c in range(nc):
+        for d in range(nd):
+            t = [f"{x(b, c, d)}*dab{b + 1}" for b in range(nb)]
+            o.extend(emit_sum("s", t, ind + "      "))
+            o.append(f"{ind}      !$acc atomic update")
+            o.append(f"{ind}      jmat(idens, lamk + {c}, sigl + {d}) = jmat(idens, lamk + {c}, sigl + {d}) "
+                     "+ 4.0_dp*jfac*wqq*s")
+    o.append(f"{ind}   end if")
+    o.append(f"{ind}end do")
+    return o
+
+
+def f_digest_decl(nb, nc, nd):
+    names = ([f"dbd{b + 1}_{d + 1}" for b in range(nb) for d in range(nd)]
+             + [f"dbc{b + 1}_{c + 1}" for b in range(nb) for c in range(nc)]
+             + [f"dad{d + 1}" for d in range(nd)] + [f"dac{c + 1}" for c in range(nc)]
+             + [f"dcd{c + 1}_{d + 1}" for c in range(nc) for d in range(nd)]
+             + [f"dab{b + 1}" for b in range(nb)])
+    return decl("real(dp)", names)
+
+
 def gen_dispatch(classes, header):
     o = [header.format(what="Host dispatch of the MD Fock prototype kernels")]
     o.append("module trc_mdk_kernels")
@@ -478,7 +866,14 @@ def gen_dispatch(classes, header):
     o.append("         kk = max(kk, ka*kb)")
     o.append("      end do")
     o.append("      nr = mdk_class_nr(key)")
-    o.append("      n64 = max(1_int64, MDK_RBUF/int(nr*kk, int64))")
+    o.append("      if (nr == 0) then")
+    o.append("         ! Fused: R lives in registers, the buffer is a placeholder.")
+    o.append("         nr = 1")
+    o.append("         kk = 1")
+    o.append("         n64 = 2_int64**22")
+    o.append("      else")
+    o.append("         n64 = max(1_int64, MDK_RBUF/int(nr*kk, int64))")
+    o.append("      end if")
     o.append("      nw = int(min(n64, sOff(hi + 1) - sOff(lo)))")
     o.append("      allocate (rbuf(int(nw, int64)*nr*kk), wseg(nw), wab(nw), wcd(nw), wq(nw))")
     o.append("      !$acc enter data create(rbuf, wseg, wab, wcd, wq)")
@@ -502,6 +897,9 @@ def main():
     ap.add_argument("--classes", required=True, help="comma list like 2121,2120")
     ap.add_argument("--lmax", type=int, required=True)
     ap.add_argument("--order", default="lexicographic", choices=sorted(ORDER_CODE))
+    ap.add_argument("--mode", default="row", choices=["row", "fused", "buffer"],
+                    help="fused: R in registers, one thread per (quartet, a); "
+                         "buffer: R through global memory, one thread per (quartet, ab)")
     ap.add_argument("-o", "--outdir", required=True)
     a = ap.parse_args()
     classes = [tuple(int(ch) for ch in c) for c in filter(None, a.classes.split(","))]
@@ -509,7 +907,7 @@ def main():
     for c in classes:
         if c[0] < c[1] or c[2] < c[3]:
             raise SystemExit(f"class {c}: la >= lb and lc >= ld, as the bins store them")
-    cmd = f"scripts/gen_md_k.py --lmax {a.lmax} --classes {a.classes}"
+    cmd = f"scripts/gen_md_k.py --lmax {a.lmax} --classes {a.classes} --mode {a.mode}"
     if a.order not in ("lexicographic", "libcint"):
         cmd += f" --order {a.order}"
     code = ORDER_CODE[a.order]
@@ -521,7 +919,7 @@ def main():
     os.makedirs(a.outdir, exist_ok=True)
     for c in classes:
         with open(os.path.join(a.outdir, f"trc_mdk_k{''.join(map(str, c))}.F90"), "w") as fh:
-            fh.write(gen_class(*c, a.order, header))
+            fh.write(gen_class(*c, a.order, header, mode=a.mode))
     with open(os.path.join(a.outdir, "trc_mdk_kernels.F90"), "w") as fh:
         fh.write(gen_dispatch(classes, header))
     return 0
