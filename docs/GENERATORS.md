@@ -219,6 +219,20 @@ python3 tools/acc_to_omp.py --target cpu --translate-atomics --write src
 Reversing the two produces source that does not compile. CI runs both, builds
 the result, and validates it **on four threads**.
 
+**There is no second source tree.** The OpenMP tree for the AMD build is
+generated, never edited:
+
+```sh
+tools/port_to_omp.sh /path/to/terco-omp      # DEST must not exist
+cmake --preset frontier-gpu -S /path/to/terco-omp -B /path/to/terco-omp/build-frontier-gpu
+```
+
+Anything the OpenMP runtime needs that OpenACC does not (the parent-first
+`enter data` of a derived type, `eri_sync_scalars`, `type` rather than `class`
+dummies on routines that map members) is written in the OpenACC source, where it
+is harmless, and translated like any other directive. Change the base, not the
+output. `src/xc/vendor` is copied back as upstream.
+
 **The AMD build converts generated kernels itself.** `src/generated` is
 committed in whichever form its branch carries, but any other `TERCO_LMAX`,
 `TERCO_DF_LMAX` or `TERCO_CART_ORDER` regenerates the kernels in the ORIGINAL
