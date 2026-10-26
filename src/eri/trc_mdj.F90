@@ -35,6 +35,14 @@ module trc_mdj
    private
    public :: trc_mdj_t
 
+   integer, parameter :: MDJ_THREADS_TARGET = 262144
+   !! Threads a Hermite launch aims for: past a V100's 80 SMs x 2048 resident
+   !! threads, and an A100's 108 x 2048. One thread per bra primitive pair
+   !! gave a heavy class 128 threads, each walking every ket pair: 27 ms
+   !! for (dd|ss) on w20 cc-pVDZ, against 2 ms for all of L = 6 in HGP.
+   integer, parameter :: MDJ_QLEN_MIN = 32
+   !! Fewest kets per chunk: each chunk ends in one atomic per Hermite slot.
+
    real(dp), parameter :: MDJ_MARGIN_DEFAULT = 1.0e-3_dp
    !! The (P, Q) cut sits this far below the screening threshold: a
    !! contracted quartet is a sum over primitive quartets, and the same
@@ -124,8 +132,9 @@ contains
       real(dp), intent(in)  :: dmat(nao, nao)
       real(dp), intent(inout) :: jmat(nao, nao)
 
-      integer :: t, lp, lq, lpt
+      integer :: t, lp, lq, lpt, qfix
 
+      qfix = qlen_override()
       call zero_device(this%ndt, this%jt)
       call zero_device(nao*nao, jmat)
       do t = 1, this%ntype
@@ -142,7 +151,8 @@ contains
          do lq = 0, MDJ_LPMAX
             if (this%cl_nk(lq) == 0) cycle
             call mdj_hermite(lp, lq, this%cl_nk(lp), this%cl_k0(lp), this%cl_hb(lp), &
-                             this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), this%nhp, &
+                             this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
+                             chunk_length(this%cl_nk(lp), this%cl_nk(lq), qfix), this%nhp, &
                              this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
                              this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
          end do
@@ -318,6 +328,33 @@ contains
          keep = abs(ca*cb)*exp(-(a*bb/pp)*r2)*SQRT2_PI54/(pp*sqrt(sqrt(2.0_dp*pp))) > c
       end function keep
    end subroutine fill_prims
+
+   pure integer function chunk_length(np, nq, qfix) result(qlen)
+      !! Kets per thread for an np x nq Hermite launch: enough chunks to reach
+      !! MDJ_THREADS_TARGET threads, never under MDJ_QLEN_MIN kets each.
+      integer, intent(in) :: np, nq, qfix
+      integer :: nchunk
+      if (qfix > 0) then
+         qlen = qfix
+         return
+      end if
+      nchunk = max(1, (MDJ_THREADS_TARGET + np - 1)/np)
+      qlen = max(MDJ_QLEN_MIN, (nq + nchunk - 1)/nchunk)
+   end function chunk_length
+
+   integer function qlen_override() result(res)
+      !! TRC_MDJ_QLEN fixes the kets per chunk for every launch, for sweeping
+      !! it; unset or not positive leaves chunk_length to choose.
+      character(len=32) :: e
+      integer :: ios
+      e = " "
+      res = 0
+      call get_environment_variable("TRC_MDJ_QLEN", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) res
+         if (ios /= 0) res = 0
+      end if
+   end function qlen_override
 
    pure integer function type_of(this, la, lb) result(t)
       type(trc_mdj_t), intent(in) :: this

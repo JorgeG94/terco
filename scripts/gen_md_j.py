@@ -477,21 +477,24 @@ def gen_r_module(lp, lq, nbatch, header, sieve=True):
     out.append("")
     out.append('#include "inc/trc_boys_eval.inc"')
     out.append("")
-    args = ("np, kp0, hbp, nq, kq0, hbq, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, "
+    args = ("np, kp0, hbp, nq, kq0, hbq, qlen, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, "
             "ndt, dt, jt, cut")
-    out.append(f"   subroutine mdj_r_{tag}(np, kp0, hbp, nq, kq0, hbq, nhp, mp_z, mp_px, mp_py, mp_pz, &")
+    out.append(f"   subroutine mdj_r_{tag}(np, kp0, hbp, nq, kq0, hbq, qlen, nhp, mp_z, mp_px, mp_py, mp_pz, &")
     out.append("                        mp_ip, mp_nq, ndt, dt, jt, cut)")
     out.append(f"      !! Jt[P] += [P|Q] Dt[Q] for the lp = {lp} pairs kp0+1..kp0+np against the")
     out.append(f"      !! lq = {lq} pairs kq0+1..kq0+nq, one launch per R batch. hbp and hbq are")
     out.append("      !! the two blocks' first Hermite slot, less one; each row has the block's")
-    out.append("      !! own pair count as stride.")
-    out.append("      integer,  intent(in) :: np, kp0, hbp, nq, kq0, hbq, nhp, ndt")
+    out.append("      !! own pair count as stride. One thread per (P, chunk of `qlen` kets):")
+    out.append("      !! one per P alone left a heavy class with a few hundred threads, each")
+    out.append("      !! walking the whole ket list (measured: 128 threads, 27 ms, on w20).")
+    out.append("      integer,  intent(in) :: np, kp0, hbp, nq, kq0, hbq, qlen, nhp, ndt")
     out.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
     out.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
     out.append("      real(dp), intent(inout) :: jt(ndt)")
-    out.append("      integer :: i")
+    out.append("      integer :: i, nchunk")
+    out.append("      nchunk = (nq + qlen - 1)/qlen")
     for b in range(len(dags)):
-        out.append("      do concurrent(i = 1:np)")
+        out.append("      do concurrent(i = 1:np*nchunk)")
         out.extend(wrap_args(f"call mdj_r_item_{tag}_b{b + 1}", "i, " + args, " " * 9))
         out.append("      end do")
     out.append(f"   end subroutine mdj_r_{tag}")
@@ -528,11 +531,11 @@ def r_item(lp, lq, b, g, hp, hq, iq, args):
     o.append(f"      !! Batch {b}: {len(g.targets)} targets, {inter} intermediates, "
              f"{flops} R flops per primitive quartet.")
     o.append("      !$acc routine seq")
-    o.append("      integer,  intent(in) :: i, np, kp0, hbp, nq, kq0, hbq, nhp, ndt")
+    o.append("      integer,  intent(in) :: i, np, kp0, hbp, nq, kq0, hbq, qlen, nhp, ndt")
     o.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
     o.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
     o.append("      real(dp), intent(inout) :: jt(ndt)")
-    o.append("      integer  :: kp, kq, k")
+    o.append("      integer  :: kp, kq, k, ip1, k1, k2")
     o.append("      real(dp) :: p, px, py, pz, ip, q, zpe, alpha, pref, tval, m2a, w")
     o.append("      real(dp) :: pqx, pqy, pqz")
     o.append(f"      real(dp) :: f(0:BOYS_MMAX)")
@@ -541,13 +544,17 @@ def r_item(lp, lq, b, g, hp, hq, iq, args):
     o.append(decl("real(dp)", [f"j{i + 1}" for i in jused]))
     o.append(decl("real(dp)", [f"d{j + 1}" for j in dused]))
     o.append("")
-    o.append("      kp = kp0 + i")
+    o.append("      ! P fastest, so the threads of a warp share one ket chunk.")
+    o.append("      ip1 = mod(i - 1, np) + 1")
+    o.append("      k1 = ((i - 1)/np)*qlen + 1")
+    o.append("      k2 = min(nq, k1 + qlen - 1)")
+    o.append("      kp = kp0 + ip1")
     o.append("      p = mp_z(kp)")
     o.append("      px = mp_px(kp); py = mp_py(kp); pz = mp_pz(kp)")
     o.append("      ip = mp_ip(kp)")
     for i in jused:
         o.append(f"      j{i + 1} = 0.0_dp")
-    o.append("      do k = 1, nq")
+    o.append("      do k = k1, k2")
     o.append("         kq = kq0 + k")
     o.append("         ! I_P ||rho_Q|| bounds this pair's share of any J element.")
     o.append("         if (ip*mp_nq(kq) <= cut) cycle")
@@ -585,8 +592,10 @@ def r_item(lp, lq, b, g, hp, hq, iq, args):
             if (r, 0) in g.tset:
                 contract(r)
     o.append("      end do")
+    o.append("      ! Several chunks share one P: atomics, once per Hermite slot per thread.")
     for i in jused:
-        o.append(f"      jt(hbp + {i}*np + i) = jt(hbp + {i}*np + i) + j{i + 1}")
+        o.append("      !$acc atomic update")
+        o.append(f"      jt(hbp + {i}*np + ip1) = jt(hbp + {i}*np + ip1) + j{i + 1}")
     o.append(f"   end subroutine mdj_r_item_{tag}_b{b}")
     return o
 
@@ -619,7 +628,7 @@ def gen_dispatch(lmax, header):
                 "nsp, sp_ao1, sp_ao2, nao, dmat, ndt, dt, mp_nq")
     bra_args = ("n, s0, kl0, nkc, hb, nhp, mp_z, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, mp_c, "
                 "nsp, sp_ao1, sp_ao2, sp_k0, sp_nk, ndt, jt, nao, jmat")
-    r_args = "np, kp0, hbp, nq, kq0, hbq, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, ndt, dt, jt, cut"
+    r_args = "np, kp0, hbp, nq, kq0, hbq, qlen, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, ndt, dt, jt, cut"
 
     def wrap(call, width=100, ind="         "):
         words = call.split(", ")
@@ -685,9 +694,9 @@ def gen_dispatch(lmax, header):
     o.append("      end select")
     o.append("   end subroutine mdj_bound")
     o.append("")
-    o.append("   subroutine mdj_hermite(lp, lq, np, kp0, hbp, nq, kq0, hbq, nhp, mp_z, mp_px, mp_py, mp_pz, &")
+    o.append("   subroutine mdj_hermite(lp, lq, np, kp0, hbp, nq, kq0, hbq, qlen, nhp, mp_z, mp_px, mp_py, mp_pz, &")
     o.append("                          mp_ip, mp_nq, ndt, dt, jt, cut)")
-    o.append("      integer,  intent(in) :: lp, lq, np, kp0, hbp, nq, kq0, hbq, nhp, ndt")
+    o.append("      integer,  intent(in) :: lp, lq, np, kp0, hbp, nq, kq0, hbq, qlen, nhp, ndt")
     o.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
     o.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
     o.append("      real(dp), intent(inout) :: jt(ndt)")
