@@ -34,6 +34,16 @@ find_package(libdlfind REQUIRED)
 add_library(terco_opt SHARED trc_opt_io.F90 trc_dlfind_bridge.F90 trc_opt_capi.F90)
 add_library(terco::terco_opt ALIAS terco_opt)
 
+# libterco_opt.so, not terco_cli, now carries the DT_NEEDED on
+# libdlfind.so, and an executable's RUNPATH does not cover its libraries'
+# own dependencies, so this library needs its own: libdlfind.so is
+# installed next to it in lib/.
+if(APPLE)
+  set_target_properties(terco_opt PROPERTIES INSTALL_RPATH "@loader_path")
+else()
+  set_target_properties(terco_opt PROPERTIES INSTALL_RPATH "$ORIGIN")
+endif()
+
 set_target_properties(terco_opt PROPERTIES Fortran_MODULE_DIRECTORY
                                            ${CMAKE_BINARY_DIR}/modules)
 target_include_directories(
