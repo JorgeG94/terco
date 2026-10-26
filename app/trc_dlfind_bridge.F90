@@ -2065,7 +2065,7 @@ contains
       !! trajectory) only updates when it is.
       real(c_double), intent(in) :: coords(3*natm)
       real(c_double), intent(in), value :: energy
-      real(dp) :: wall, e
+      real(dp) :: wall, e, de
       logical :: accepted
 
       total_scf_iters = total_scf_iters + last_niter
@@ -2081,6 +2081,11 @@ contains
                                     " Eh (last accepted "//to_string(last_accepted_energy)//" Eh)")
          return
       end if
+      ! consider_step's own dE column: the PREVIOUS accepted step's energy
+      ! -- exactly what have_accepted_energy/last_accepted_energy already
+      ! track, read here before this step overwrites them.
+      de = 0.0_dp
+      if (have_accepted_energy) de = e - last_accepted_energy
       have_accepted_energy = .true.
       last_accepted_energy = e
 
@@ -2102,10 +2107,18 @@ contains
          call step_clock%stop()
          wall = step_clock%get_elapsed_time()
       end if
+      ! Header once, right before the first accepted step's own line --
+      ! not up front in trc_dlfind_optimize, since --opt-neb never calls
+      ! this routine at all (cb_put_coords's own NEB branch) and would
+      ! otherwise get a table header for a table that never appears.
+      if (n_steps == 1) then
+         call global_logger%info("   step      E(total)                dE          max|g|       rms|g|"// &
+                                 "   SCF it      t (s)")
+      end if
       block
          character(len=1024) :: line
-         write (line, "(a,i5,a,f20.12,a,es11.4,a,es11.4,a,i5,a,f10.2,a)") &
-            "   opt step ", n_steps, "   E = ", latest_energy, "   max|g| = ", accepted_gmax, &
+         write (line, "(a,i5,a,f20.12,a,es11.4,a,es11.4,a,es11.4,a,i5,a,f10.2,a)") &
+            "   opt step ", n_steps, "   E = ", latest_energy, "   dE = ", de, "   max|g| = ", accepted_gmax, &
             "   rms|g| = ", accepted_grms, "   SCF iters ", last_niter, "   t = ", wall, " s"
          call global_logger%info(trim(line))
       end block

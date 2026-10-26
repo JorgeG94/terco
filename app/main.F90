@@ -1784,7 +1784,7 @@ program terco_main
    use trc_thermo, only: trc_thermochemistry
    use trc_constants, only: ATM_TO_PA
    use trc_error, only: hess_err_t => error_t
-   use pic_logger, only: global_logger
+   use pic_logger, only: global_logger, verbose_level
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env, terco_app_help_for_topic, terco_app_set_log_level
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
@@ -2635,7 +2635,13 @@ program terco_main
    ! -- trc_set_comm's own contract. One rank keeps today's path exactly:
    ! the context's fcomm defaults to -1 and is never touched.
    if (r%nranks > 1) call api(r, trc_set_comm(r%h, int(r%wcomm%fortran_handle(), c_int)))
-   call api(r, trc_set_verbose(r%h, merge(0_c_int, 1_c_int, r%cli%is_set("silent"))))
+   ! The SCF driver's own per-iteration table, basis/lindep/pcm lines and
+   ! timing report (trc_scf_settings%verbose, "talk" in src/scf) are all
+   ! gated by this one flag -- on only at --logger verbose/debug, same as
+   ! --opt's per-step table switches from the terse step line to the full
+   ! per-evaluation SCF output. --silent always wins over --logger.
+   call api(r, trc_set_verbose(r%h, merge(0_c_int, 1_c_int, &
+                                          r%cli%is_set("silent") .or. global_logger%log_level < verbose_level)))
    call api(r, trc_set_molecule(r%h, int(r%natm, c_int), real(r%z, c_double), xyz, int(r%chrg, c_int), &
                                 int(r%mult, c_int)))
    call api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
