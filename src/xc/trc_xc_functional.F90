@@ -125,6 +125,7 @@ module trc_xc_functional
    use trc_xc_scan_x, only: scan_x_exc_vxc_unpolar, scan_x_exc_vxc_polar
    use trc_xc_tpss_c, only: tpss_c_exc_vxc_unpolar, tpss_c_exc_vxc_polar
    use trc_xc_tpss_x, only: tpss_x_exc_vxc_unpolar, tpss_x_exc_vxc_polar
+   use trc_xc_wb97m_v_xc, only: wb97m_v_xc_exc_vxc_unpolar, wb97m_v_xc_exc_vxc_polar
    implicit none
    private
 
@@ -217,11 +218,12 @@ module trc_xc_functional
    integer, parameter :: XC_K_SCAN_X = 77
    integer, parameter :: XC_K_TPSS_C = 78
    integer, parameter :: XC_K_TPSS_X = 79
+   integer, parameter :: XC_K_WB97M_V_XC = 80
 
    !! Every selectable name, available or `missing`: the CLI's --func
    !! help and trc_capi's unknown-functional message are built from this
    !! rather than keeping their own copy of the list.
-   integer, parameter :: XC_FUNCTIONAL_COUNT = 97
+   integer, parameter :: XC_FUNCTIONAL_COUNT = 100
    character(len=13), parameter :: XC_FUNCTIONAL_NAMES(XC_FUNCTIONAL_COUNT) = [ &
       "b2gp-plyp    ", "b2gpplyp     ", "b2plyp       ", "b3lyp        ", "b3lyp5       ", "b3pw91       ", &
       "b88          ", "b97d         ", "b97d3zero    ", "bhandh       ", "bhandhlyp    ", "bhhlyp       ", &
@@ -237,10 +239,10 @@ module trc_xc_functional
       "revm06l      ", "revpbe       ", "revpbe0      ", "revtpss      ", "revtpssh     ", "rpbe         ", &
       "rscan        ", "scan         ", "scan0        ", "slater       ", "sogga11x     ", "spw92        ", &
       "svwn         ", "svwn3        ", "svwn5        ", "svwn_rpa     ", "tpss         ", "tpss0        ", &
-      "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", "wb97x        ", &
-      "wb97x-v      ", "wb97x_v      ", "wb97xd       ", "wb97xd3      ", "wb97xv       ", "x3lyp        ", &
-      "xlyp         "]
-   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b2gp-plyp, b2gpplyp, b2plyp, b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bmk, bp86, bp86vwn, cf22d, hf-lyp, hf_lyp, hflyp, lda, lda_x, m05, m052x, m06, m062x, m06hf, m06l, m06sx, m08hx, m08so, m11, mbeef, mn12l, mn12sx, mn15, mn15l, mpw1k, mpw2-plyp, mpw2plyp, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pkzb, pw86b95, pw86pbe, pw91, r2scan, r2scan0, r2scan50, r2scanh, revb3lyp, revm06l, revpbe, revpbe0, revtpss, revtpssh, rpbe, rscan, scan, scan0, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, tpss, tpss0, tpssh, vwn5, wb97, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
+      "tpssh        ", "tunedcamb3lyp", "vwn3         ", "vwn5         ", "wb97         ", "wb97m-v      ", &
+      "wb97m_v      ", "wb97mv       ", "wb97x        ", "wb97x-v      ", "wb97x_v      ", "wb97xd       ", &
+      "wb97xd3      ", "wb97xv       ", "x3lyp        ", "xlyp         "]
+   character(len=*), parameter :: XC_AVAILABLE_FUNCTIONALS = "b2gp-plyp, b2gpplyp, b2plyp, b3lyp, b3lyp5, b3pw91, b88, bhandh, bhandhlyp, bhhlyp, blyp, bmk, bp86, bp86vwn, cf22d, hf-lyp, hf_lyp, hflyp, lda, lda_x, m05, m052x, m06, m062x, m06hf, m06l, m06sx, m08hx, m08so, m11, mbeef, mn12l, mn12sx, mn15, mn15l, mpw1k, mpw2-plyp, mpw2plyp, mpw91, o3lyp, olyp, opbe, pbe, pbe0, pkzb, pw86b95, pw86pbe, pw91, r2scan, r2scan0, r2scan50, r2scanh, revb3lyp, revm06l, revpbe, revpbe0, revtpss, revtpssh, rpbe, rscan, scan, scan0, slater, sogga11x, spw92, svwn, svwn5, svwn_rpa, tpss, tpss0, tpssh, vwn5, wb97, wb97m-v, wb97m_v, wb97mv, wb97x, wb97x-v, wb97x_v, wb97xv, x3lyp, xlyp"
 
    type :: trc_xc_functional_t
       character(len=24) :: name = ""
@@ -742,6 +744,8 @@ contains
          call tpss_c_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
          case (XC_K_TPSS_X)
          call tpss_x_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
+         case (XC_K_WB97M_V_XC)
+         call wb97m_v_xc_exc_vxc_unpolar(rho, sigma, tau, e, vr, vs, vt)
          case default
          e = 0.0_dp
          vr = 0.0_dp
@@ -933,6 +937,9 @@ contains
          case (XC_K_TPSS_X)
          call tpss_x_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, tau_a, &
             tau_b, e, va, vb, saa, sab, sbb, ta, tb)
+         case (XC_K_WB97M_V_XC)
+         call wb97m_v_xc_exc_vxc_polar(rho_a, rho_b, s_aa, s_ab, s_bb, &
+            tau_a, tau_b, e, va, vb, saa, sab, sbb, ta, tb)
          case default
          e = 0.0_dp
          va = 0.0_dp
@@ -1050,6 +1057,22 @@ contains
          call set(f, XC_FAMILY_GGA, [XC_K_WB97_XC], [1.0_dp])
          f%exx_lr = 1.0_dp
          f%omega = 0.4_dp
+      case ("wb97m-v", "wb97mv", "wb97m_v")
+         ! libxc HYB_MGGA_XC_WB97M_V (id 531). rsh_coeff (omega, alpha,
+         ! beta) = (0.3, 1.0, -0.85): hyb = alpha + beta = 0.15 = exx,
+         ! exx_lr = alpha - hyb = 0.85, same reading as wb97x-v above.
+         ! VV10 (nlc_b, nlc_c) = (6.0, 0.01), wb97x-v's own values, left
+         ! untouched by this functional's fit (Mardirossian and
+         ! Head-Gordon, J. Chem. Phys. 144, 214110 (2016), Section 5).
+         ! The kernel itself is HAND-WRITTEN (trc_xc_wb97m_v_xc.F90's own
+         ! header): ExchCXX has no wB97M-V, so there is nothing to
+         ! translate here, unlike every other entry in this table.
+         call set(f, XC_FAMILY_MGGA, [XC_K_WB97M_V_XC], [1.0_dp])
+         f%exx = 0.15_dp
+         f%exx_lr = 0.85_dp
+         f%omega = 0.3_dp
+         f%nlc_b = 6.0_dp
+         f%nlc_c = 0.01_dp
       case ("svwn3")
          f%missing = "needs VWN3: translated kernel disagrees with libxc on the GPU (polarised eps off by 1.41e-11 at rho ~ 1e-8, zeta ~ 1; agrees on the CPU), and its UKS potential missed pyscf on terco's grid -- under investigation"
       case ("scan")

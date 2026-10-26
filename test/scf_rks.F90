@@ -12,8 +12,12 @@
 ! energy and the final density.
 !
 !   water, closed shell:  RHF, then SVWN, PBE, BLYP, B3LYP, wB97X-V, wB97X,
-!                         wB97 restricted
-!   OH radical, doublet:  UHF, then PBE, wB97X-V, wB97X unrestricted
+!                         wB97, wB97M-V restricted
+!   OH radical, doublet:  UHF, then PBE, wB97X-V, wB97X, wB97M-V unrestricted
+!
+! wB97M-V is the meta-GGA case: same RSH/VV10 machinery as wB97X-V plus
+! tau, so it exercises res%grid_w_nlc (VV10's own, coarser grid) and the
+! meta-GGA dispatch together, the one combination nothing else here covers.
 !
 ! So the restricted and unrestricted paths, Hartree-Fock and Kohn-Sham,
 ! LDA, GGA, global and range-separated hybrid, with and without VV10's
@@ -35,15 +39,15 @@ program scf_rks
    use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
 
-   integer, parameter :: NCASE = 12
+   integer, parameter :: NCASE = 14
    character(len=8), parameter :: mol(NCASE) = [character(len=8) :: &
                                                 "water", "water", "water", "water", "water", "water", "water", &
-                                                "water", "oh", "oh", "oh", "oh"]
+                                                "water", "water", "oh", "oh", "oh", "oh", "oh"]
    character(len=8), parameter :: fn(NCASE) = [character(len=8) :: &
                                                "", "svwn", "pbe", "blyp", "b3lyp", "wb97x-v", "wb97x", "wb97", &
-                                               "", "pbe", "wb97x-v", "wb97x"]
-   integer, parameter :: nalpha(NCASE) = [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
-   integer, parameter :: nbeta(NCASE) = [5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4]
+                                               "wb97m-v", "", "pbe", "wb97x-v", "wb97x", "wb97m-v"]
+   integer, parameter :: nalpha(NCASE) = [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+   integer, parameter :: nbeta(NCASE) = [5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4]
    integer :: ic, unit, natm, nsh, maxnp, ish
    integer, allocatable :: sh_l(:), sh_np(:), zint(:)
    real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), at_z(:), at_r(:, :)

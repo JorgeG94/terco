@@ -177,6 +177,7 @@ target_sources(
           xc/functionals/trc_xc_scan_x.F90
           xc/functionals/trc_xc_tpss_c.F90
           xc/functionals/trc_xc_tpss_x.F90
+          xc/functionals/trc_xc_wb97m_v_xc.F90  # hand-written, not translated: see its own header
           xc/trc_xc_functional.F90  # compositions, and the per-point dispatch
           xc/trc_collocation.F90    # basis functions and gradients at a point
           xc/trc_xc_batch.F90       # the grid, batched and screened
