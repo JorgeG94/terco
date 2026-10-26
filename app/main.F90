@@ -1785,7 +1785,7 @@ program terco_main
    use trc_constants, only: ATM_TO_PA
    use trc_error, only: hess_err_t => error_t
    use pic_logger, only: global_logger
-   use terco_app, only: read_xyz, resolve_basis, c_string, set_env
+   use terco_app, only: read_xyz, resolve_basis, c_string, set_env, help_for_topic, set_log_level
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary, hessian_summary, build_masses, &
@@ -1824,6 +1824,7 @@ program terco_main
    ! --opt
    character(len=:), allocatable :: opt_base, opt_refusal
    integer :: opt_base_slash
+   logical :: log_ok
    logical :: opt_hessian_relevant, opt_zero_soft_relevant
    integer, allocatable :: opt_residues(:)
    type(trc_opt_options_t) :: opt_opts
@@ -1908,6 +1909,8 @@ program terco_main
    call r%cli%add_option("masses", "isotope (trc_atomic_mass, the most-abundant isotope) or average "// &
                          "(trc_atomic_mass_average, the isotope-averaged standard atomic weight), for "// &
                          "--hessian's vibrational analysis (isotope)", default="isotope")
+   call r%cli%add_flag("opt-freq", "--opt followed by --hessian at the optimised geometry (Gaussian's "// &
+                       "Opt Freq); shorthand for giving both, and --opt-*/--hessian options still apply")
    call r%cli%add_flag("opt", "optimise the geometry with DL-FIND (needs a TERCO_ENABLE_DLFIND=ON build; "// &
                        "refused otherwise). Warm-starts the SCF between steps; writes <geometry>_opt.xyz "// &
                        "and <geometry>_traj.xyz into the CURRENT WORKING DIRECTORY (named from the input "// &
@@ -2033,19 +2036,30 @@ program terco_main
                          "genetic only (DL-FIND's own default, 0.5)")
    call r%cli%add_option("opt-global-scalefac", "step scale factor, stochastic only (DL-FIND's own "// &
                          "default, 10.0)")
+   call r%cli%add_option("logger", "log verbosity: knowledge, error, warning, performance, info, "// &
+                         "large_info, verbose or debug (info); also sets DL-FIND's own printl", default="info")
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
    call r%cli%parse(r%err)
    if (r%err%has_error()) call die(r, r%err%get_message()//new_line("a")//"try 'terco --help'")
    if (r%cli%help_requested()) then
-      if (r%rank0) call global_logger%info(r%cli%help_text())
+      ! pic_cli's --help takes no value, so `--help opt` leaves "opt" in the
+      ! geometry positional; read it back as the help topic.
+      call r%cli%get("geometry", sval, r%err)
+      if (.not. allocated(sval) .or. r%err%has_error()) sval = ""
+      if (r%rank0) call global_logger%info(help_for_topic(r%cli%help_text(), sval))
       call quit(r, 0)
    end if
    if (r%cli%is_set("version")) then
       if (r%rank0) call global_logger%info("terco version "//VERSION)
       call quit(r, 0)
    end if
+   call r%cli%get("logger", sval, r%err)
+   call check(r, "--logger")
+   call set_log_level(sval, log_ok)
+   if (.not. log_ok) call die(r, "--logger must be knowledge, error, warning, performance, info, large_info, "// &
+                              "verbose or debug, got '"//trim(sval)//"'")
    call r%cli%get("geometry", r%geom, r%err)
    if (r%err%has_error() .or. len_trim(r%geom) == 0) then
      call die(r, "no geometry given: terco molecule.xyz [options]"//new_line("a")//"try 'terco --help'")
@@ -2129,7 +2143,7 @@ program terco_main
    r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
    r%df = r%cli%is_set("df")
    r%grad = r%cli%is_set("grad")
-   r%hessian = r%cli%is_set("hessian")
+   r%hessian = r%cli%is_set("hessian") .or. r%cli%is_set("opt-freq")
    cart = r%cli%is_set("cart")
    if (r%hessian) then
       call r%cli%get("step", r%hess_step, r%err)
@@ -2155,7 +2169,7 @@ program terco_main
          call die(r, "--masses must be isotope or average, got '"//r%masses_kind//"'")
       end if
    end if
-   r%opt = r%cli%is_set("opt")
+   r%opt = r%cli%is_set("opt") .or. r%cli%is_set("opt-freq")
    r%pcm = ""
    r%eps = 0.0_dp
    if (r%cli%is_set("pcm")) then
