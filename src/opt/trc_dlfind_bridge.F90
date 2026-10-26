@@ -8,12 +8,20 @@
 ! dlf_task.f90 directly; each one is explained inline where it applies
 ! rather than pointed at elsewhere.
 !
-! THIS MODULE IS NEVER COMPILED INTO libterco. It lives in app/ and is
-! linked only into the terco_cli executable (app/CMakeLists.txt), which is
-! what keeps DL-FIND's LGPL-3.0-or-later licence and its `error stop` on a
-! failure (dlf_error, below) out of the library -- see
-! cmake/modules/Findlibdlfind.cmake and the root CMakeLists.txt's
-! TERCO_ENABLE_DLFIND option.
+! THIS MODULE IS NEVER COMPILED INTO libterco. It lives in src/opt/ and is
+! built into its OWN shared library, libterco_opt (src/opt/CMakeLists.txt,
+! TERCO_ENABLE_DLFIND=ON only), which is what keeps DL-FIND's
+! LGPL-3.0-or-later licence and its `error stop` on a failure (dlf_error,
+! below) out of libterco itself -- see cmake/modules/Findlibdlfind.cmake and
+! the root CMakeLists.txt's TERCO_ENABLE_DLFIND option. libterco_opt links
+! libterco (for trc_capi, below) and libdlfind; terco's own CLI (app/
+! main.F90) and any other caller of trc_opt_capi.F90's C ABI (include/
+! terco_opt.h) share this exact module -- ONE optimiser driver, not a copy
+! each. With TERCO_ENABLE_DLFIND=OFF this file is not built at all;
+! app/trc_dlfind_stub.F90 (still in app/, compiled directly into terco_cli)
+! is the ONLY implementation of this module's public interface in that
+! build, and it is what lets terco_cli refuse --opt with a message instead
+! of failing to link.
 !
 ! ONE OPTIMIZATION AT A TIME. DL-FIND's callbacks are plain function
 ! pointers with no user-data argument (api_dl_find takes them as
@@ -200,7 +208,15 @@ module trc_dlfind_bridge
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
-   use terco_app, only: f_string, set_env, write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
+   ! trc_opt_io, not terco_app (app/terco_app.F90): this module is built into
+   ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
+   ! "entry points are leaves" rule, and the only way a caller outside
+   ! terco's own build (cyclone) could ever link this at all. trc_opt_io
+   ! carries its OWN small copies of these (see that file's own header for
+   ! why duplicating three file-writers was preferred over moving them and
+   ! leaving app/main.F90's non-opt CLI code without f_string/set_env in a
+   ! TERCO_ENABLE_DLFIND=OFF build).
+   use trc_opt_io, only: f_string, set_env, write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
    implicit none
    private
 

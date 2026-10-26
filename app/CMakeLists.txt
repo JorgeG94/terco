@@ -13,18 +13,20 @@ set(TERCO_BASIS_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/terco/basis_sets")
 #
 # --opt (DL-FIND), behind TERCO_ENABLE_DLFIND -- see that option's own
 # comment in the root CMakeLists.txt for the licensing reason it defaults
-# OFF. Either way terco_cli gets exactly one of the two bridge sources,
-# both module `trc_dlfind_bridge` with the same public interface
-# (trc_dlfind_optimize), so main.F90 never branches on which build this is:
-# with the option OFF, the stub refuses --opt with a message instead of
-# failing to link. libdlfind itself (fetched by cmake/modules/
-# Findlibdlfind.cmake) is linked ONLY here, into the executable, never into
-# ${main_lib} -- that is what keeps the LGPL relink obligation and
-# DL-FIND's `error stop` out of the library.
+# OFF, and src/opt/CMakeLists.txt for libterco_opt itself, which is where
+# libdlfind is now fetched and linked (never into ${main_lib}, which is
+# what keeps the LGPL relink obligation and DL-FIND's `error stop` out of
+# the library).
+#
+# With the option ON, terco_cli gets module `trc_dlfind_bridge` from
+# libterco_opt (linked below); with it OFF, from trc_dlfind_stub.F90,
+# compiled straight into terco_cli, same public interface
+# (trc_dlfind_optimize) either way, so main.F90 never branches on which
+# build this is: the stub refuses --opt with a message instead of failing
+# to link.
 #
 if(TERCO_ENABLE_DLFIND)
-  find_package(libdlfind REQUIRED)
-  set(_dlfind_bridge_src trc_dlfind_bridge.F90)
+  set(_dlfind_bridge_src)
 else()
   set(_dlfind_bridge_src trc_dlfind_stub.F90)
 endif()
@@ -43,28 +45,11 @@ target_compile_definitions(
 target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi)
 if(TERCO_ENABLE_DLFIND)
   target_compile_definitions(terco_cli PRIVATE TERCO_ENABLE_DLFIND)
-  target_link_libraries(terco_cli PRIVATE libdlfind::libdlfind)
-  # Findlibdlfind.cmake's EXCLUDE_FROM_ALL keeps libdlfind's OWN
-  # install() rules (its own CMakeLists.txt, not this one) from firing --
-  # it is a dependency built for terco_cli to link, not libterco's to
-  # ship. That does not exempt terco_cli's own RPATH ($ORIGIN/../lib,
-  # below) from needing it there too: an installed DLFIND=ON terco could
-  # not start at all without this, since libdlfind.so was never copied
-  # anywhere under the install prefix. Installed here, from THIS
-  # directory's scope (install() on an EXCLUDE_FROM_ALL target still
-  # works when a target outside that subdirectory asks for it), into the
-  # SAME lib/ libterco installs to (the root CMakeLists.txt) -- still a
-  # separate file from libterco.so, still never linked into it.
-  # libdlfind's own CMakeLists.txt also sets a PUBLIC_HEADER property on
-  # this target (include/libdlfind.h, relative to ITS source directory).
-  # Naming a PUBLIC_HEADER DESTINATION here would make CMake resolve that
-  # relative path against THIS directory instead and fail to find it --
-  # cross-directory install() has no way to ask for the original
-  # directory back. Harmless to skip: terco_cli never reads that header
-  # (trc_dlfind_bridge.F90 declares api_dl_find's interface itself), so
-  # the resulting "no PUBLIC_HEADER DESTINATION" dev warning is the
-  # correct outcome here, not a bug to silence.
-  install(TARGETS dlfind LIBRARY DESTINATION lib RUNTIME DESTINATION lib)
+  # terco::terco_opt (src/opt/CMakeLists.txt, added by the root
+  # CMakeLists.txt before this directory) carries trc_dlfind_bridge's own
+  # .mod, libdlfind's link requirement and libdlfind's own install() rule
+  # -- terco_cli needs none of that spelled out again here.
+  target_link_libraries(terco_cli PRIVATE terco::terco_opt)
 endif()
 unset(_dlfind_bridge_src)
 # Find libterco next to the install's bin/, wherever the prefix is moved to.
