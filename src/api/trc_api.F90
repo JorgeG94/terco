@@ -237,13 +237,13 @@ contains
    ! device chosen, -1 on a host build.
    !
    function trc_bind_device(rank) result(dev)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       use openacc, only: acc_set_device_num, acc_get_num_devices, acc_device_nvidia
 #endif
       integer, intent(in) :: rank
       integer :: dev
       dev = -1
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       block
          integer :: ndev
          ndev = acc_get_num_devices(acc_device_nvidia)

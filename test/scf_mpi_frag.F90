@@ -63,7 +63,7 @@ program scf_mpi_frag
    ! comm%fortran_handle(): the same integer MPI_Comm_c2f or the legacy
    ! `mpi` module would give, and the only way to build on every backend --
    ! some MPIs (Cray MPICH under nvfortran) offer no mpi_f08 module at all.
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    use openacc, only: acc_get_device_num, acc_device_nvidia
 #endif
    implicit none
@@ -178,7 +178,7 @@ program scf_mpi_frag
                              e_a, e_xc, dmat_w, eps_w, niter)
             if (rc /= TRC_OK) ok = .false.
             if (abs(e_a - e_ref) > 1.0e-10_dp) ok = .false.
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
             dev_a = acc_get_device_num(acc_device_nvidia)
 #endif
             ! (c) OWNERSHIP: the compute communicator terco just duplicated
@@ -236,7 +236,7 @@ program scf_mpi_frag
          end if
          if (rc /= TRC_OK) ok = .false.
          if (abs(e_b - e_ref) > 1.0e-10_dp) ok = .false.
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
          dev_b = acc_get_device_num(acc_device_nvidia)
 #endif
 
@@ -268,7 +268,7 @@ program scf_mpi_frag
                      all_dev_a(i), "  device(b) ", all_dev_b(i)
                end do
             end block
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
             if (all_dev_a(1) == all_dev_a(2)) ok = .false.  ! (a)'s compute pair, one node
             if (all_dev_b(1) == all_dev_b(2)) ok = .false.  ! (b)'s water fragment, one node
             if (all_dev_b(3) == all_dev_b(4)) ok = .false.  ! (b)'s OH fragment, one node

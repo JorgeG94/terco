@@ -69,7 +69,7 @@ module trc_scf_grad_df
    use pic_timer, only: timer_type
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
                                   DFG_LMAX_AUX, DFG_NPCLS
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                       acc_property_free_memory
 #endif
@@ -436,7 +436,7 @@ contains
       integer(int64) :: per_q, per_i
       character(len=16) :: v
       integer :: st, cap
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       integer, parameter :: MIN_BLOCK = 256
       integer(int64) :: free, avail, xall
       character(len=160) :: msg
@@ -448,7 +448,7 @@ contains
       per_i = 8_int64*int(max(nocc, 1), int64)*int(naux, int64)
       ablk = max(naux/4, 1)
       nci = max(nocc, 1)
-#ifdef _OPENACC
+#ifdef TRC_DEVICE
       xall = 8_int64*int(naux, int64)*(int(nocc, int64)*int(nocc + 1, int64)/2)
       if (xall + int(min(MIN_BLOCK, naux), int64)*per_q <= avail) then
          ablk = int(min(int(ablk, int64), (avail - xall)/per_q))

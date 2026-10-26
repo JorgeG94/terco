@@ -523,6 +523,16 @@ if(TERCO_BUILD_APP)
     unset(_cli_opt_probe)
     unset(_cli_opt_workdir)
 
+    # --logger's effect on --opt/--opt-freq's own output -- the step
+    # table at info, the SCF driver's full per-iteration table only at
+    # verbose/debug, never a per-displacement SCF table under --opt-freq's
+    # FD Hessian -- see check_cli_opt_logging.F90's own header.
+    set(_cli_opt_logging_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_logging_work)
+    terco_add_check(check_cli_opt_logging check_cli_opt_logging.F90
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_logging_workdir})
+    target_link_libraries(check_cli_opt_logging PRIVATE test-drive::test-drive)
+    unset(_cli_opt_logging_workdir)
+
     # The loose sanity check against metalquicha's own quoted water/HCN
     # optimisations (mqc's basis differs from terco's by ~2e-8 Eh) --
     # see check_opt_vs_mqc.F90's own header. A scratch work dir, same
@@ -1346,6 +1356,14 @@ add_executable(link_c link_c.c)
 add_dependencies(link_c ${main_lib})
 target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+# With nvc as the C compiler, a C main has to be linked with the OpenACC
+# multicore runtime itself: without -acc=multicore the energy comes back as
+# the nuclear repulsion alone (9.19 for water). Any other C compiler gets the
+# runtime through libterco.so's own NEEDED entries (libacchost, libnvomp, ...)
+# and would reject the flag; gcc 13 links and passes without it.
+if(TERCO_ENABLE_MULTICORE AND CMAKE_C_COMPILER_ID STREQUAL "NVHPC")
+  target_link_options(link_c PRIVATE -acc=multicore)
+endif()
 set_target_properties(link_c PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:${main_lib}>")
 add_test(NAME terco/link_c COMMAND link_c)
 set_tests_properties(terco/link_c PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
