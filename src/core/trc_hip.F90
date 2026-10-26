@@ -48,36 +48,41 @@ module trc_hip
    interface
       function hipblasCreate(handle) result(st) bind(c, name="hipblasCreate")
          import :: c_ptr, c_int
+         implicit none
          type(c_ptr), intent(out) :: handle
          integer(c_int) :: st
       end function hipblasCreate
 
       function hipblasDestroy(handle) result(st) bind(c, name="hipblasDestroy")
          import :: c_ptr, c_int
-         type(c_ptr), value :: handle
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
          integer(c_int) :: st
       end function hipblasDestroy
 
       function hipsolverCreate(handle) result(st) bind(c, name="hipsolverCreate")
          import :: c_ptr, c_int
+         implicit none
          type(c_ptr), intent(out) :: handle
          integer(c_int) :: st
       end function hipsolverCreate
 
       function hipsolverDestroy(handle) result(st) bind(c, name="hipsolverDestroy")
          import :: c_ptr, c_int
-         type(c_ptr), value :: handle
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
          integer(c_int) :: st
       end function hipsolverDestroy
 
       function hipblasDgemm(handle, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc) &
          result(st) bind(c, name="hipblasDgemm")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: ta, tb, m, n, k, lda, ldb, ldc
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: ta, tb, m, n, k, lda, ldb, ldc
          real(c_double), intent(in) :: alpha, beta
-         real(c_double) :: a(*), b(*)
-         real(c_double) :: c(*)
+         real(c_double), intent(in) :: a(*), b(*)
+         real(c_double), intent(inout) :: c(*)
          integer(c_int) :: st
       end function hipblasDgemm
 
@@ -85,53 +90,58 @@ module trc_hip
                                           beta, c, ldc, sc, count) &
          result(st) bind(c, name="hipblasDgemmStridedBatched")
          import :: c_ptr, c_int, c_int64_t, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: ta, tb, m, n, k, lda, ldb, ldc, count
-         integer(c_int64_t), value :: sa, sb, sc
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: ta, tb, m, n, k, lda, ldb, ldc, count
+         integer(c_int64_t), value, intent(in) :: sa, sb, sc
          real(c_double), intent(in) :: alpha, beta
-         real(c_double) :: a(*), b(*)
-         real(c_double) :: c(*)
+         real(c_double), intent(in) :: a(*), b(*)
+         real(c_double), intent(inout) :: c(*)
          integer(c_int) :: st
       end function hipblasDgemmStridedBatched
 
       function hipblasDgeam(handle, ta, tb, m, n, alpha, a, lda, beta, b, ldb, c, ldc) &
          result(st) bind(c, name="hipblasDgeam")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: ta, tb, m, n, lda, ldb, ldc
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: ta, tb, m, n, lda, ldb, ldc
          real(c_double), intent(in) :: alpha, beta
-         real(c_double) :: a(*), b(*)
-         real(c_double) :: c(*)
+         real(c_double), intent(in) :: a(*), b(*)
+         real(c_double), intent(inout) :: c(*)
          integer(c_int) :: st
       end function hipblasDgeam
 
       function hipblasDgemv(handle, trans, m, n, alpha, a, lda, x, incx, beta, y, incy) &
          result(st) bind(c, name="hipblasDgemv")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: trans, m, n, lda, incx, incy
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: trans, m, n, lda, incx, incy
          real(c_double), intent(in) :: alpha, beta
-         real(c_double) :: a(*), x(*)
-         real(c_double) :: y(*)
+         real(c_double), intent(in) :: a(*), x(*)
+         real(c_double), intent(inout) :: y(*)
          integer(c_int) :: st
       end function hipblasDgemv
 
       function hipblasDtrsm(handle, side, uplo, trans, diag, m, n, alpha, a, lda, b, ldb) &
          result(st) bind(c, name="hipblasDtrsm")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: side, uplo, trans, diag, m, n, lda, ldb
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: side, uplo, trans, diag, m, n, lda, ldb
          real(c_double), intent(in) :: alpha
-         real(c_double) :: a(*)
-         real(c_double) :: b(*)
+         real(c_double), intent(in) :: a(*)
+         real(c_double), intent(inout) :: b(*)
          integer(c_int) :: st
       end function hipblasDtrsm
 
       function hipblasDdot(handle, n, x, incx, y, incy, r) result(st) bind(c, name="hipblasDdot")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: n, incx, incy
-         real(c_double) :: x(*), y(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: n, incx, incy
+         real(c_double), intent(in) :: x(*), y(*)
          real(c_double), intent(out) :: r
          integer(c_int) :: st
       end function hipblasDdot
@@ -139,9 +149,10 @@ module trc_hip
       function hipsolverDsyevd_bufferSize(handle, jobz, uplo, n, a, lda, w, lwork) &
          result(st) bind(c, name="hipsolverDsyevd_bufferSize")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: jobz, uplo, n, lda
-         real(c_double) :: a(*), w(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: jobz, uplo, n, lda
+         real(c_double), intent(in) :: a(*), w(*)
          integer(c_int), intent(out) :: lwork
          integer(c_int) :: st
       end function hipsolverDsyevd_bufferSize
@@ -149,9 +160,10 @@ module trc_hip
       function hipsolverDsyevd(handle, jobz, uplo, n, a, lda, w, work, lwork, info) &
          result(st) bind(c, name="hipsolverDsyevd")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: jobz, uplo, n, lda, lwork
-         real(c_double) :: a(*), w(*), work(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: jobz, uplo, n, lda, lwork
+         real(c_double), intent(inout) :: a(*), w(*), work(*)
          integer(c_int), intent(inout) :: info
          integer(c_int) :: st
       end function hipsolverDsyevd
@@ -159,9 +171,10 @@ module trc_hip
       function hipsolverDpotrf_bufferSize(handle, uplo, n, a, lda, lwork) &
          result(st) bind(c, name="hipsolverDpotrf_bufferSize")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: uplo, n, lda
-         real(c_double) :: a(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: uplo, n, lda
+         real(c_double), intent(in) :: a(*)
          integer(c_int), intent(out) :: lwork
          integer(c_int) :: st
       end function hipsolverDpotrf_bufferSize
@@ -169,9 +182,10 @@ module trc_hip
       function hipsolverDpotrf(handle, uplo, n, a, lda, work, lwork, info) &
          result(st) bind(c, name="hipsolverDpotrf")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: uplo, n, lda, lwork
-         real(c_double) :: a(*), work(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: uplo, n, lda, lwork
+         real(c_double), intent(inout) :: a(*), work(*)
          integer(c_int), intent(inout) :: info
          integer(c_int) :: st
       end function hipsolverDpotrf
@@ -179,9 +193,10 @@ module trc_hip
       function hipsolverDgetrf_bufferSize(handle, m, n, a, lda, lwork) &
          result(st) bind(c, name="hipsolverDgetrf_bufferSize")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: m, n, lda
-         real(c_double) :: a(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: m, n, lda
+         real(c_double), intent(in) :: a(*)
          integer(c_int), intent(out) :: lwork
          integer(c_int) :: st
       end function hipsolverDgetrf_bufferSize
@@ -189,10 +204,11 @@ module trc_hip
       function hipsolverDgetrf(handle, m, n, a, lda, work, lwork, ipiv, info) &
          result(st) bind(c, name="hipsolverDgetrf")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: m, n, lda, lwork
-         real(c_double) :: a(*), work(*)
-         integer(c_int) :: ipiv(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: m, n, lda, lwork
+         real(c_double), intent(inout) :: a(*), work(*)
+         integer(c_int), intent(inout) :: ipiv(*)
          integer(c_int), intent(inout) :: info
          integer(c_int) :: st
       end function hipsolverDgetrf
@@ -200,10 +216,11 @@ module trc_hip
       function hipsolverDgetrs_bufferSize(handle, trans, n, nrhs, a, lda, ipiv, b, ldb, lwork) &
          result(st) bind(c, name="hipsolverDgetrs_bufferSize")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: trans, n, nrhs, lda, ldb
-         real(c_double) :: a(*), b(*)
-         integer(c_int) :: ipiv(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: trans, n, nrhs, lda, ldb
+         real(c_double), intent(in) :: a(*), b(*)
+         integer(c_int), intent(in) :: ipiv(*)
          integer(c_int), intent(out) :: lwork
          integer(c_int) :: st
       end function hipsolverDgetrs_bufferSize
@@ -211,16 +228,19 @@ module trc_hip
       function hipsolverDgetrs(handle, trans, n, nrhs, a, lda, ipiv, b, ldb, work, lwork, info) &
          result(st) bind(c, name="hipsolverDgetrs")
          import :: c_ptr, c_int, c_double
-         type(c_ptr), value :: handle
-         integer(c_int), value :: trans, n, nrhs, lda, ldb, lwork
-         real(c_double) :: a(*), b(*), work(*)
-         integer(c_int) :: ipiv(*)
+         implicit none
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: trans, n, nrhs, lda, ldb, lwork
+         real(c_double), intent(in) :: a(*)
+         real(c_double), intent(inout) :: b(*), work(*)
+         integer(c_int), intent(in) :: ipiv(*)
          integer(c_int), intent(inout) :: info
          integer(c_int) :: st
       end function hipsolverDgetrs
 
       function hipDeviceSynchronize() result(st) bind(c, name="hipDeviceSynchronize")
          import :: c_int
+         implicit none
          integer(c_int) :: st
       end function hipDeviceSynchronize
    end interface

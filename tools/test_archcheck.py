@@ -52,3 +52,28 @@ def test_scan_procedures(tmp_path):
     assert ("ctx", 8) in run["names"]
     assert procs["demo_twice"]["device"]
     assert ("tmp_global", 3) in procs["trc_demo"]["names"]
+
+
+def test_scan_skips_plain_interface_bodies(tmp_path):
+    # A plain interface block declares external procedures (C bindings,
+    # LAPACK): their names and argument counts are not the module's to set.
+    src = tmp_path / "m.F90"
+    src.write_text(textwrap.dedent("""\
+        module trc_demo
+           implicit none
+           interface
+              function cDgemm(h, ta, tb, m, n, k, al, a, lda, b, ldb, be, c, ldc) &
+                 result(st) bind(c, name="cDgemm")
+                 integer :: h, ta, tb, m, n, k, lda, ldb, ldc, st
+                 real :: al, a, b, be, c
+              end function cDgemm
+           end interface
+        contains
+           subroutine demo_run(a)
+              integer, intent(in) :: a
+           end subroutine demo_run
+        end module trc_demo
+    """))
+    names = {p["name"] for p in archcheck.scan_procedures(src)}
+    assert "cdgemm" not in names
+    assert "demo_run" in names
