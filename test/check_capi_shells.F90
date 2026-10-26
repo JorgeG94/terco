@@ -274,7 +274,9 @@ program check_capi_shells
    integer :: stat, dev
    stat = 0
    dev = trc_bind_device(0)
-   call run_testsuite(collect_capi_shells, error_unit, stat)
+   ! Serial: each case builds its own context through the C ABI, which is
+   ! not thread-safe, and an -fopenmp build runs test-drive cases at once.
+   call run_testsuite(collect_capi_shells, error_unit, stat, parallel=.false.)
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1
