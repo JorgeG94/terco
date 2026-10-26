@@ -98,7 +98,12 @@ program check_xc
    ! a tighter sample records it.
    real(dp), parameter :: tol_f = 1.0e-10_dp
    ! The kernel's own routines against each other: same expressions
-   ! reassembled, so only rounding.
+   ! reassembled, so only rounding. Measured on the same scale as the libxc
+   ! comparison (group maximum, and a meta-GGA's natural size), not against
+   ! each output itself: ifx rounds the two routines differently, and against
+   ! an output that is itself a small cancellation residue that rounding is
+   ! a large relative error (the scale is what makes such an output
+   ! meaningless to compare on its own, as above).
    real(dp), parameter :: tol_self = 1.0e-12_dp
    real(dp), parameter :: floor = 1.0e-14_dp
    ! A meta-GGA's outputs are also measured against at least their
@@ -116,7 +121,8 @@ program check_xc
    character(len=32) :: kernel, family
    character(len=256) :: line
    integer :: polar, npts, nin, nout, ios, ip, io, unit, nblocks, nfail
-   real(dp) :: xin(maxin), ref(maxout), got(maxout), self_err, worst(maxout), worst_self
+   real(dp) :: xin(maxin), ref(maxout), got(maxout), got2(maxout), worst(maxout), worst_self
+   integer :: worst_self_io, worst_self_at
    real(dp) :: err, worst_got(maxout), worst_ref(maxout), worst_x(maxin, maxout)
    integer :: worst_at(maxout), grp(maxout), order(maxout), ig
    real(dp) :: scale(maxout), tol(maxout), worst_order(0:2), rho_t, e0, natural(4)
@@ -140,14 +146,15 @@ program check_xc
       tol(1:nout) = merge(tol_f, kernel_tol_v(trim(kernel)), order(1:nout) == 2)
       worst = 0.0_dp
       worst_self = 0.0_dp
+      worst_self_io = 0
+      worst_self_at = 0
       worst_at = 0
       worst_got = 0.0_dp
       worst_ref = 0.0_dp
       worst_x = 0.0_dp
       do ip = 1, npts
          read (unit, *) xin(1:nin), ref(1:nout)
-         call evaluate(trim(kernel), polar == 1, xin, got, self_err)
-         worst_self = max(worst_self, self_err)
+         call evaluate(trim(kernel), polar == 1, xin, got, got2)
          do ig = 1, maxval(grp(1:nout))
             scale(ig) = max(floor, maxval(abs(ref(1:nout)), mask=grp(1:nout) == ig))
          end do
@@ -159,6 +166,12 @@ program check_xc
             scale(1:4) = max(scale(1:4), natural)
          end if
          do io = 1, nout
+            err = abs(got2(io) - got(io))/scale(grp(io))
+            if (err > worst_self) then
+               worst_self = err
+               worst_self_io = io
+               worst_self_at = ip
+            end if
             err = abs(got(io) - ref(io))/scale(grp(io))
             if (err > worst(io)) then
                worst(io) = err
@@ -178,6 +191,10 @@ program check_xc
       print '(a,1x,a16,1x,a5,1x,l1,1x,a,3es9.2,a,es9.2)', &
          merge("ok  ", "FAIL", ok), kernel, family, polar == 1, &
          "vs libxc: eps, vxc, fxc ", worst_order, "  self ", worst_self
+      if (worst_self > tol_self) then
+         print '(a,i3,a,es10.3,a,i4)', "     self: output ", worst_self_io, " off by ", worst_self, &
+            " at point ", worst_self_at
+      end if
       if (.not. ok) then
          do io = 1, nout
             if (worst(io) > tol(io)) then
@@ -238,17 +255,19 @@ contains
    !
    ! Fill `out` in the reference file's column order -- eps, vrho..., vsigma...,
    ! v2rho2..., v2rhosigma..., v2sigma2... -- from `exc_vxc` and `fxc`, and
-   ! return in `self` the worst disagreement of `exc` and `vxc_fxc` with them.
+   ! `out2`, in the same order, from the kernel's other routines, `exc` and
+   ! `vxc_fxc`, for the caller to compare on the libxc comparison's scale.
    !
-   subroutine evaluate(name, polar, x, out, self)
+   subroutine evaluate(name, polar, x, out, out2)
       character(len=*), intent(in) :: name
       logical, intent(in) :: polar
       real(dp), intent(in) :: x(:)
-      real(dp), intent(out) :: out(:), self
+      real(dp), intent(out) :: out(:), out2(:)
       real(dp) :: e, v(7), f(15), v2(7), f2(15)
       integer :: nv, nf
 
       out = 0.0_dp
+      out2 = 0.0_dp
       v = 0.0_dp; f = 0.0_dp; v2 = 0.0_dp; f2 = 0.0_dp
       select case (name)
 {cases}
@@ -259,9 +278,9 @@ contains
 
       out(2:1 + nv) = v(1:nv)
       out(2 + nv:1 + nv + nf) = f(1:nf)
-      self = abs(e - out(1))/max(abs(out(1)), floor)
-      self = max(self, maxval(abs(v2(1:nv) - v(1:nv))/max(abs(v(1:nv)), floor)))
-      self = max(self, maxval(abs(f2(1:nf) - f(1:nf))/max(abs(f(1:nf)), floor)))
+      out2(1) = e
+      out2(2:1 + nv) = v2(1:nv)
+      out2(2 + nv:1 + nv + nf) = f2(1:nf)
    end subroutine evaluate
 
    !
