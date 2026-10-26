@@ -108,6 +108,10 @@ terco_add_check(check_linalg_mat check_linalg_mat.F90)
 terco_add_check(check_scf_diag_failure check_scf_diag_failure.F90 NEEDS_BASIS)
 target_link_libraries(check_scf_diag_failure PRIVATE test-drive::test-drive)
 
+# The McMurchie-Davidson J engine against the Fock build's own J.
+terco_add_check(check_mdj check_mdj.F90 NEEDS_BASIS)
+target_link_libraries(check_mdj PRIVATE test-drive::test-drive)
+
 # The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)

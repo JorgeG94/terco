@@ -20,6 +20,7 @@ target_sources(
           eri/trc_grad.F90       # two-electron gradient launch plan, Rys only
           api/trc_api.F90        # basis, pair list, 1e, multipoles, DF
           basis/trc_decontract.F90 # splitting a general contraction into primitives
+          eri/trc_mdj.F90       # the McMurchie-Davidson J engine (no quartets)
           eri/trc_eri.F90       # the four-centre Fock builds
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
@@ -815,6 +816,34 @@ terco_generate(
   ${_s}/gen_perclass.py ${_s}/gen_vrr.py ${_s}/gen_hrr.py ${_s}/gen_rys.py
   ${_s}/gen_rys_grad.py ${_s}/rys_inline.py ${_s}/gen_rys_dispatch.py
   ${_s}/gen_rys_grad_dispatch.py ${_s}/cartorder.py)
+
+# --- McMurchie-Davidson J engine ----------------------------------------------
+#
+# Generated into the build tree at every TERCO_LMAX, like the Rys kernels:
+# the ket and bra stages per (la, lb), the Hermite stage per
+# (la + lb, lc + ld) with its R batches, and the host dispatcher
+# (scripts/gen_md_j.py). Nothing is spliced from another generator, and the
+# whole set at LMAX=3 is about 110k lines, a small fraction of the HGP and
+# Rys sets, because the engine never forms a Cartesian quartet.
+# TERCO_MDJ_BATCHES overrides the R batch count per total L ("7:6,8:9").
+set(TERCO_MDJ_BATCHES "" CACHE STRING "R batches per total L for the MD J engine, L:n,...")
+set(_mdj_dir "${CMAKE_BINARY_DIR}/generated_mdj")
+set(_mdj_stage "${CMAKE_BINARY_DIR}/stage/generated_mdj")
+set(_mdj_batch_flag "")
+if(NOT "${TERCO_MDJ_BATCHES}" STREQUAL "")
+  set(_mdj_batch_flag "--batches" "${TERCO_MDJ_BATCHES}")
+endif()
+macro(_terco_gen_mdj)
+  terco_gen("gen_md_j.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_j.py
+            --lmax ${TERCO_LMAX} ${_order_flag} ${_mdj_batch_flag} -o ${_mdj_stage})
+endmacro()
+terco_generate(
+  "MD J kernels" _terco_gen_mdj "${_mdj_stage}" "${_mdj_dir}" ON ON
+  ${_s}/gen_md_j.py ${_s}/md/__init__.py ${_s}/md/hermite.py ${_s}/md/rtree.py ${_s}/cartorder.py)
+file(GLOB _mdj_sources "${_mdj_dir}/*.F90")
+list(LENGTH _mdj_sources _nmdj)
+message(STATUS "terco: ${_nmdj} MD J engine modules in ${_mdj_dir}")
+target_sources(${main_lib} PRIVATE ${_mdj_sources})
 
 # TERCO_FORCE_REGENERATE is one-shot: having ignored the stamps for this
 # configure, it turns itself off so the next one trusts them again.

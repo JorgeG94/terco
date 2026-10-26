@@ -34,6 +34,7 @@ module trc_eri
    use pic_timer, only: timer_type
    use trc_binkernel, only: fock_bins
    use trc_grad, only: grad_bins
+   use trc_mdj, only: trc_mdj_t
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
@@ -83,6 +84,9 @@ module trc_eri
       !! basis nothing here is allocated and `nao_w == nao`.
       type(decon_t) :: dec
       integer :: nao_w = 0
+      type(trc_mdj_t) :: md
+      !! The McMurchie-Davidson J engine over the same bins, built on the
+      !! first `coulomb` call: an HGP/Rys-only run never pays for it.
       logical :: on_device = .false.
       integer :: nlaunch = 0
       integer(int64) :: nkept = 0
@@ -112,6 +116,7 @@ module trc_eri
       procedure :: fock_nosym => eri_fock_nosym
       procedure :: fock_resident => eri_fock_resident
       procedure :: gradient => eri_gradient
+      procedure :: coulomb => eri_coulomb
       procedure :: release => eri_release
    end type trc_eri_t
 
@@ -538,6 +543,47 @@ contains
 
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
+
+   subroutine eri_coulomb(this, b, dmat, jmat)
+      !! J for a density by the McMurchie-Davidson J engine, which never forms
+      !! an integral quartet (trc_mdj). Same conventions as `fock` at
+      !! k_scale = 0: host arrays, the caller's basis, J of the total density.
+      !!
+      !! Every rank computes the whole of J; the engine does not split work
+      !! over ranks yet, so there is nothing to sum.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)  :: dmat(this%nao, this%nao)
+      real(dp), intent(out) :: jmat(this%nao, this%nao)
+
+      real(dp), allocatable :: dp_w(:, :), jp_w(:, :)
+      integer :: nw
+
+      if (.not. this%md%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh)
+         else
+            call this%md%build(b, this%bins, this%thresh)
+         end if
+      end if
+      nw = this%nao_w
+      allocate (dp_w(nw, nw), jp_w(nw, nw))
+      if (this%dec%active) then
+         call decon_expand_host(this%dec, dmat, dp_w)
+      else
+         dp_w = dmat
+      end if
+      !$acc enter data copyin(dp_w) create(jp_w)
+      call this%md%coulomb(nw, dp_w, jp_w)
+      !$acc update self(jp_w)
+      !$acc exit data delete(dp_w, jp_w)
+      if (this%dec%active) then
+         call decon_fold_host(this%dec, jp_w, jmat)
+      else
+         jmat = jp_w
+      end if
+      deallocate (dp_w, jp_w)
+   end subroutine eri_coulomb
 
    !
    ! The two-electron part of the nuclear gradient, Rys only: there is no
@@ -1116,6 +1162,7 @@ contains
 
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this
+      call this%md%release()
       if (this%on_device) then
          !$acc exit data delete(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
          !$acc                  this%bins%sp_i, this%bins%sp_j, &
