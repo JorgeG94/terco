@@ -219,6 +219,15 @@ python3 tools/acc_to_omp.py --target cpu --translate-atomics --write src
 Reversing the two produces source that does not compile. CI runs both, builds
 the result, and validates it **on four threads**.
 
+**The AMD build converts generated kernels itself.** `src/generated` is
+committed in whichever form its branch carries, but any other `TERCO_LMAX`,
+`TERCO_DF_LMAX` or `TERCO_CART_ORDER` regenerates the kernels in the ORIGINAL
+form, with `do concurrent` and `!$acc`. With `TERCO_ENABLE_HIP` the configure
+runs both scripts (`--target gpu`) on the staging directory before it is synced,
+and the generation stamp covers the scripts. Without that step amdflang does not
+fail: it ignores `!$acc` and runs `do concurrent` on the host, so the Fock build
+loses its two-electron part and the SCF converges to a wrong energy.
+
 ### Three traps this port walked into, all of them silent
 
 **A `do concurrent` that does not name what it assigns becomes a race.** The
