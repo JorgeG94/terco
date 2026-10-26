@@ -33,6 +33,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import xc_kernel_discovery  # noqa: E402
 
+# Hand-written kernels nothing upstream defines, joined to the discovered
+# list the same way tools/gen_xc_registry.py's LOCAL_KERNELS is -- see
+# trc_xc_wb97m_v_xc.F90's own header for why this one exists.
+LOCAL_KERNELS: list[tuple[str, str]] = [
+    ("wb97m_v_xc", "mgga"),
+]
+
 USE_MARKER_BEGIN = "   ! BEGIN GENERATED USE -- tools/gen_check_xc.py"
 USE_MARKER_END = "   ! END GENERATED USE"
 CASE_MARKER_BEGIN = "      ! BEGIN GENERATED CASES -- tools/gen_check_xc.py"
@@ -381,6 +388,7 @@ def main(argv=None) -> int:
         # agree (see xc_kernel_discovery.DISAGREES_WITH_LIBXC) is left out
         # rather than built in as a permanent failure.
         entries = [(s, f) for s, f in discovered if s not in xc_kernel_discovery.DISAGREES_WITH_LIBXC]
+        entries += LOCAL_KERNELS
 
     uses = "\n".join(use_block(stem, family) for stem, family in entries)
     cases = "\n".join(case_block(stem, family) for stem, family in entries)

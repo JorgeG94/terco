@@ -428,8 +428,10 @@ int trc_set_geometry(trc_handle_t handle, const double* xyz);
  * (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
  * term on top of the semilocal one, on VV10's own grid
  * (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
- * it on). wB97M-V is not in terco's table, and a meta-GGA is refused
- * below, so it is not a case this routine has to decide about.
+ * it on). wB97M-V is in terco's table too now (a meta-GGA with VV10
+ * and its own range-separated exchange), but the meta-GGA refusal
+ * below catches it before VV10 ever comes up: its energy runs, its
+ * gradient does not, same tau reason as every other meta-GGA.
  *
  * REFUSED, clearly, rather than attempted:
  *   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so

@@ -14,14 +14,18 @@ Inputs, all read from source rather than retyped:
     a `Kernel::FOO` reference in the functional table into the terco stem
     (`foo`) its translated module uses.
 
-Plus two small local tables, kept here rather than derived because nothing
-upstream states them: LOCAL (terco-only entries -- svwn_rpa, b3lyp/b3lyp5's
-libxc-not-ExchCXX split, wb97x-v's VV10 coefficients -- carried over from
-the hand-written registry this replaces, unchanged) and OVERRIDES (one
-entry: ExchCXX's own revB3LYP composition names Kernel::VWN5, which its own
-builtin_interface.cxx says is the VWN_RPA formula, but matches libxc's
-actual revB3LYP/revB3LYP5 only through the plain VWN formula -- checked
-numerically against pyscf; see the commit that added this generator).
+Plus three small local tables, kept here rather than derived because
+nothing upstream states them: LOCAL (terco-only entries -- svwn_rpa,
+b3lyp/b3lyp5's libxc-not-ExchCXX split, wb97x-v's VV10 coefficients --
+carried over from the hand-written registry this replaces, unchanged),
+OVERRIDES (one entry: ExchCXX's own revB3LYP composition names
+Kernel::VWN5, which its own builtin_interface.cxx says is the VWN_RPA
+formula, but matches libxc's actual revB3LYP/revB3LYP5 only through the
+plain VWN formula -- checked numerically against pyscf; see the commit
+that added this generator), and LOCAL_KERNELS (hand-written kernel
+modules ExchCXX does not define at all, e.g. wb97m_v_xc -- a LOCAL entry
+may list one exactly like a translated stem; see the module's own header
+for why it exists and where its coefficients come from).
 
 HybCoeffs -> terco's (exx, exx_lr, omega): ExchCXX's alpha is the fraction
 of LONG-range (erf(omega r)/r) exact exchange, beta the amount by which the
@@ -173,6 +177,30 @@ LOCAL: list[Entry] = [
             "VV10. The kernel's own translated `beta` is -1.0 exactly.",
         ],
     ),
+    Entry(
+        "wb97m-v", ("wb97mv", "wb97m_v"), "mgga", [(1.0, "wb97m_v_xc")],
+        exx=0.15, exx_lr=0.85, omega=0.3, nlc_b=6.0, nlc_c=0.01,
+        comment=[
+            "libxc HYB_MGGA_XC_WB97M_V (id 531). rsh_coeff (omega, alpha,",
+            "beta) = (0.3, 1.0, -0.85): hyb = alpha + beta = 0.15 = exx,",
+            "exx_lr = alpha - hyb = 0.85, same reading as wb97x-v above.",
+            "VV10 (nlc_b, nlc_c) = (6.0, 0.01), wb97x-v's own values, left",
+            "untouched by this functional's fit (Mardirossian and",
+            "Head-Gordon, J. Chem. Phys. 144, 214110 (2016), Section 5).",
+            "The kernel itself is HAND-WRITTEN (trc_xc_wb97m_v_xc.F90's own",
+            "header): ExchCXX has no wB97M-V, so there is nothing to",
+            "translate here, unlike every other entry in this table.",
+        ],
+    ),
+]
+
+# Kernels nothing upstream defines: hand-written, not translated (see each
+# module's own header for why and its source). `available_kernels` treats
+# these exactly like an ExchCXX-discovered stem -- same family cache, same
+# kernel-id numbering, same `use trc_xc_<stem>` line -- so a LOCAL Entry
+# above can list one in its `kernels` just like a translated stem.
+LOCAL_KERNELS: list[tuple[str, str]] = [
+    ("wb97m_v_xc", "mgga"),
 ]
 
 # ExchCXX names its own revB3LYP kernel Kernel::VWN5 -- which its own
@@ -896,9 +924,14 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     translated, refused = xc_kernel_discovery.discover(args.exchcxx)
-    for stem, fam in translated:
+    # LOCAL_KERNELS joins the same family cache and id numbering as a
+    # translated stem (see its own comment above `LOCAL`), but is kept out
+    # of `translated` itself: emit_docs' "N translated by
+    # exchcxx_to_fortran.py" count must stay exactly what came from ExchCXX.
+    for stem, fam in translated + LOCAL_KERNELS:
         _FAMILY_CACHE[stem] = fam
     available_kernels = [s for s, _ in translated if s not in xc_kernel_discovery.DISAGREES_WITH_LIBXC]
+    available_kernels += [s for s, _ in LOCAL_KERNELS]
 
     # LDA/GGA ids first, meta-GGA after: adding the meta-GGA family must not
     # renumber the LDA/GGA dispatch.
