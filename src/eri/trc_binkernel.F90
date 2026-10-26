@@ -34,6 +34,13 @@ module trc_binkernel
    private
 
    real(dp), protected, public :: TRC_PRIM_MARGIN = 1.0e-3_dp
+
+   integer, parameter :: LNOSYM = min(LMAX, 3)
+   !! The enumerated non-symmetric kernel stops at f: a basis with g refuses
+   !! eri%fock_nosym before reaching it (trc_eri). Sized by LMAX at LMAX = 4
+   !! its per-thread scratch was 654 KB, past the 512 KB GPU stack limit.
+   integer, parameter :: NCUM_NOSYM = (2*LNOSYM + 1)*(2*LNOSYM + 2)*(2*LNOSYM + 3)/6
+   !! trc_cart's NCUM at the capped ceiling.
    !! Fraction of the integral threshold at which a PRIMITIVE quartet is
    !! abandoned before the Boys function. The prefactor bounds the (ss|ss)
    !! primitive integral exactly and the higher classes only up to the
@@ -770,7 +777,7 @@ contains
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
       real(dp) :: oo2z, oo2e, oo2ze, rz, re
       real(dp) :: f(0:BOYS_MMAX)
-      real(dp) :: v(NCUM*NCUM, 0:1), g(NCUM*NCUM)
+      real(dp) :: v(NCUM_NOSYM*NCUM_NOSYM, 0:1), g(NCUM_NOSYM*NCUM_NOSYM)
       integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
@@ -779,7 +786,7 @@ contains
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
       integer  :: mui, nuj, lamk, sigl
       ! largest Cartesian block this LMAX allows: ((L+1)(L+2)/2)^4
-      real(dp) :: vbuf((((LMAX + 1)*(LMAX + 2)/2)**4))
+      real(dp) :: vbuf((((LNOSYM + 1)*(LNOSYM + 2)/2)**4))
       integer  :: pij, pkl
       logical  :: dij, dkl, dpq
 

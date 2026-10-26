@@ -29,7 +29,8 @@ module trc_mdg
    use pic_sorting, only: sort_index
    use trc_linalg, only: trc_linalg_t
    use trc_mdj, only: trc_mdj_t
-   use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_bra, mdg_ket
+   use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket
+   use trc_mdg_h, only: mdg_h
    implicit none
    private
    public :: trc_mdg_t, trc_mdg_scales_t, mdg_routes
@@ -59,6 +60,12 @@ module trc_mdg
       !! shell-pair indices, group by group, each group by Schwarz bound descending
       real(dp), allocatable :: gq(:)
       !! their bounds, host only
+      integer(int64), allocatable :: gh_off(:)
+      !! per group: first element of its E matrices in gh, less one (-1: not formed)
+      real(dp), allocatable :: gh(:)
+      !! E matrices of every group a routed class reads, h(nab, np*k, pair), in
+      !! each group's sorted order: geometry only, formed once. Per window they
+      !! were 960 of 2010 ms per Fock build on w5 cc-pVQZ (V100).
       type(trc_linalg_t) :: lp
    contains
       procedure :: build => mdg_build
@@ -142,9 +149,60 @@ contains
       end do
       deallocate (key, idx, tmp)
       !$acc enter data copyin(this%gl)
+      call form_e_matrices(this, md)
       call this%lp%init(1)
       this%built = .true.
    end subroutine mdg_build
+
+   subroutine form_e_matrices(this, md)
+      !! E matrices of the groups whose type a generated, routed class reads.
+      type(trc_mdg_t), intent(inout) :: this
+      type(trc_mdj_t), intent(in) :: md
+      integer :: g, c, key, t1, t2, la, lb
+      integer(int64) :: total
+      logical, allocatable :: need(:)
+
+      allocate (need(md%ntype), this%gh_off(this%ngrp))
+      need = .false.
+      do c = 1, mdg_class_count()
+         key = mdg_class_key(c)
+         if (.not. mdg_routes(key)) cycle
+         call class_types(md, key, t1, t2)
+         if (t1 > 0) need(t1) = .true.
+         if (t2 > 0) need(t2) = .true.
+      end do
+      total = 0
+      do g = 1, this%ngrp
+         this%gh_off(g) = -1
+         if (.not. need(this%gr_ty(g))) cycle
+         la = md%ty_la(this%gr_ty(g))
+         lb = md%ty_lb(this%gr_ty(g))
+         this%gh_off(g) = total
+         total = total + int(ncart(la)*ncart(lb), int64)*nherm(la + lb)*this%gr_k(g)*this%gr_n(g)
+      end do
+      allocate (this%gh(max(total, 1_int64)))
+      !$acc enter data create(this%gh)
+      do g = 1, this%ngrp
+         if (this%gh_off(g) < 0) cycle
+         la = md%ty_la(this%gr_ty(g))
+         lb = md%ty_lb(this%gr_ty(g))
+         call mdg_h(la, lb, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, md%mp_az, &
+                    md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, md%sp_k0, &
+                    md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
+                    this%gr_off(g), this%gr_n(g), this%gr_k(g), this%gh(this%gh_off(g) + 1))
+      end do
+      deallocate (need)
+   end subroutine form_e_matrices
+
+   pure integer function ncart(l) result(n)
+      integer, intent(in) :: l
+      n = (l + 1)*(l + 2)/2
+   end function ncart
+
+   pure integer function nherm(l) result(n)
+      integer, intent(in) :: l
+      n = (l + 1)*(l + 2)*(l + 3)/6
+   end function nherm
 
    subroutine mdg_fock(this, md, dsh, dmat, jmat, sc)
       !! Every routed class's contribution into jmat (fock_bins' folded
@@ -192,7 +250,8 @@ contains
       integer :: sz(6), ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
       integer(int64) :: per
       real(dp) :: wdiag
-      real(dp), allocatable :: hb(:), hk(:), rb(:), pq(:), sm(:), eri(:)
+      real(dp), allocatable :: rb(:), pq(:), sm(:), eri(:)
+      integer(int64) :: hb0, hk0, perb, perk
 
       key = job(1)
       g1 = job(2)
@@ -205,23 +264,22 @@ contains
       nimax = min(MDG_BLOCK, this%gr_n(g1))
       ! Per ket pair of a window: its E matrix, and its share of R, PQ, S and
       ! the integrals for a full bra block.
-      per = int(sz(5), int64)*sz(2)*kb + int(nimax, int64)*ka*kb*sz(3) &
+      per = int(nimax, int64)*ka*kb*sz(3) &
             + int(nimax, int64)*sz(1)*ka*sz(2)*kb + int(nimax, int64)*sz(1)*ka*sz(5) &
             + int(sz(4), int64)*nimax*sz(5)
       njmax = int(max(1_int64, min(int(this%gr_n(g2), int64), MDG_BUDGET/per)))
-      allocate (hb(int(sz(4), int64)*sz(1)*ka*nimax), hk(int(sz(5), int64)*sz(2)*kb*njmax), &
-                rb(int(sz(3), int64)*nimax*ka*njmax*kb), pq(int(sz(1), int64)*ka*nimax*sz(2)*kb*njmax), &
+      allocate (rb(int(sz(3), int64)*nimax*ka*njmax*kb), pq(int(sz(1), int64)*ka*nimax*sz(2)*kb*njmax), &
                 sm(int(sz(1), int64)*ka*nimax*sz(5)*njmax), eri(int(sz(4), int64)*nimax*sz(5)*njmax))
-      !$acc enter data create(hb, hk, rb, pq, sm, eri)
+      !$acc enter data create(rb, pq, sm, eri)
+      hb0 = this%gh_off(g1)
+      hk0 = this%gh_off(g2)
+      perb = int(sz(4), int64)*sz(1)*ka
+      perk = int(sz(5), int64)*sz(2)*kb
       do ib = 0, this%gr_n(g1) - 1, nimax
          ni = min(nimax, this%gr_n(g1) - ib)
          jmax = ket_prefix(this, g2, 4.0_dp*this%gq(this%gr_off(g1) + ib + 1)*sc%dmax, sc%thresh)
          ! Sorted: no later bra block can do better than this one.
          if (jmax == 0) exit
-         call mdg_bra(key, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, md%mp_az, &
-                      md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, md%sp_k0, &
-                      md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
-                      this%gr_off(g1) + ib, ni, ka, hb)
          do j0 = 0, jmax - 1, njmax
             nj = min(njmax, jmax - j0)
             call mdg_ket(key, this%lp, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
@@ -229,11 +287,12 @@ contains
                          md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
                          this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb, &
                          sc%thresh, sc%pcut, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
-                         size(dmat, 2), size(dmat, 1), dmat, jmat, hb, hk, rb, pq, sm, eri)
+                         size(dmat, 2), size(dmat, 1), dmat, jmat, this%gh(hb0 + ib*perb + 1), &
+                         this%gh(hk0 + j0*perk + 1), rb, pq, sm, eri)
          end do
       end do
-      !$acc exit data delete(hb, hk, rb, pq, sm, eri)
-      deallocate (hb, hk, rb, pq, sm, eri)
+      !$acc exit data delete(rb, pq, sm, eri)
+      deallocate (rb, pq, sm, eri)
    end subroutine group_pair
 
    integer function ket_prefix(this, g, qd, thresh) result(n)
@@ -276,11 +335,12 @@ contains
    subroutine mdg_release(this)
       class(trc_mdg_t), intent(inout) :: this
       if (this%built) then
-         !$acc exit data delete(this%gl)
+         !$acc exit data delete(this%gl, this%gh)
          call this%lp%release()
       end if
       if (allocated(this%gr_ty)) deallocate (this%gr_ty, this%gr_k, this%gr_off, this%gr_n)
       if (allocated(this%gl)) deallocate (this%gl, this%gq)
+      if (allocated(this%gh)) deallocate (this%gh, this%gh_off)
       this%ngrp = 0
       this%built = .false.
    end subroutine mdg_release

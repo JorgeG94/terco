@@ -355,19 +355,12 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("   use trc_linalg, only: trc_linalg_t")
     o.append("   implicit none")
     o.append("   private")
-    o.append(f"   public :: mdg_bra_{tag}, mdg_ket_{tag}, MDG_SIZES_{tag}")
+    o.append(f"   public :: mdg_ket_{tag}, MDG_SIZES_{tag}")
     o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
     o.append(f"   integer, parameter :: MDG_SIZES_{tag}(6) = [{np_}, {nq_}, {nr}, {nab}, {ncd}, {L}]")
     o.append("   !! np, nq, n_r, bra and ket component pairs, total L: the host sizes buffers from these.")
     o.append("   ! Literal tables the loops index: Hermite decode, component exponents, and")
     o.append("   ! the (p, q) -> p + q map and (-1)^|q| sign of the expansion.")
-    for lab, hs in sorted({len(hp): hp, len(hq): hq}.items()):
-        o.extend(int_table(f"HT{lab}", [h[0] for h in hs]))
-        o.extend(int_table(f"HU{lab}", [h[1] for h in hs]))
-        o.extend(int_table(f"HV{lab}", [h[2] for h in hs]))
-    for nm, cs in (("CB1", ca), ("CB2", cb), ("CK1", cc), ("CK2", cd)):
-        for d, ax in enumerate("XYZ"):
-            o.extend(int_table(f"{nm}{ax}", [c[d] for c in cs]))
     o.extend(int_table(f"RM{tag}", [il[tuple(p[d] + q[d] for d in range(3))] + 1 for q in hq for p in hp]))
     o.extend(real_table(f"SQ{tag}", [(-1) ** sum(q) for q in hq]))
     o.append("")
@@ -375,33 +368,20 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("")
     o.append('#include "inc/trc_boys_down.inc"')
     o.append("")
-    # host: bra block
-    o.extend(wrap_args(f"subroutine mdg_bra_{tag}", f"{DATA}, ib0, ni, ka, hb", "   "))
-    o.append("      !! The bra block's E matrices, once per block of the staircase.")
-    o.append(DATA_DECL)
-    o.append("      integer,  intent(in) :: ib0, ni, ka")
-    o.append(f"      real(dp), intent(inout) :: hb({nab}, {np_}*ka, ni)")
-    o.append("      integer :: t")
-    o.append("      do concurrent(t = 1:ni*ka)")
-    o.extend(wrap_args(f"call mdg_hb_item_{tag}", f"t, {DATA}, ib0, ni, ka, hb", " " * 9))
-    o.append("      end do")
-    o.append(f"   end subroutine mdg_bra_{tag}")
-    o.append("")
     o.extend(wrap_args(f"subroutine mdg_ket_{tag}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
-    o.append("      !! One window: ket E matrices, R, PQ, the two GEMMs and the digestion.")
+    o.append("      !! One window: R, PQ, the two GEMMs and the digestion. hb and hk are the")
+    o.append("      !! window's slices of the E matrices trc_mdg formed once per geometry.")
     o.append("      type(trc_linalg_t), intent(inout) :: lp")
     o.append(DATA_DECL)
     o.append(WIN_DECL)
     o.append(f"      real(dp), intent(in)    :: hb({nab}, {np_}*ka, ni)")
-    o.append(f"      real(dp), intent(inout) :: hk({ncd}, {nq_}*kb, nj), rb({nr}, ni*ka*nj*kb)")
+    o.append(f"      real(dp), intent(in)    :: hk({ncd}, {nq_}*kb, nj)")
+    o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb)")
     o.append(f"      real(dp), intent(inout) :: pq({np_}*ka*ni, {nq_}*kb, nj), sm({np_}*ka*ni, {ncd}, nj)")
     o.append(f"      real(dp), intent(inout) :: eri({nab}, ni, {ncd}, nj)")
     o.append("      integer :: t, npb, nqb")
     o.append(f"      npb = {np_}*ka")
     o.append(f"      nqb = {nq_}*kb")
-    o.append("      do concurrent(t = 1:nj*kb)")
-    o.extend(wrap_args(f"call mdg_hk_item_{tag}", f"t, {DATA}, jb0, nj, kb, hk", " " * 9))
-    o.append("      end do")
     o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
     o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
     o.append("      end do")
@@ -420,10 +400,6 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("      end do")
     o.append(f"   end subroutine mdg_ket_{tag}")
     o.append("")
-    o.extend(h_item(tag, "b", la, lb))
-    o.append("")
-    o.extend(h_item(tag, "k", lc, ld))
-    o.append("")
     o.extend(r_item(tag, L))
     o.append("")
     o.extend(x_item(tag, lp, lq, L))
@@ -434,6 +410,94 @@ def gen_class(la, lb, lc, ld, order, header):
     return "\n".join(o) + "\n"
 
 
+def gen_h_module(lmax, order, header):
+    """Per (la, lb) type: the E matrices of a run of a group's pairs, h(nab, np*k, n).
+
+    Geometry only, so trc_mdg forms them once per build for every group a
+    routed class touches and the windows read them in place. Formed per
+    window, inside the class kernels, they were 960 of 2010 ms per Fock build
+    on w5 cc-pVQZ (V100).
+    """
+    o = [header.format(what="E matrices of the MD GEMM pass, per shell-pair type")]
+    o.append("module trc_mdg_h")
+    o.append("   use pic_types, only: dp")
+    o.append("   implicit none")
+    o.append("   private")
+    o.append("   public :: mdg_h")
+    types = [(la, lb) for la in range(lmax + 1) for lb in range(la + 1)]
+    for la, lb in types:
+        t = f"{la}{lb}"
+        hp = herm(la + lb)
+        ca, cb = cartorder.components(la, order), cartorder.components(lb, order)
+        o.extend(int_table(f"HT_{t}", [h[0] for h in hp]))
+        o.extend(int_table(f"HU_{t}", [h[1] for h in hp]))
+        o.extend(int_table(f"HV_{t}", [h[2] for h in hp]))
+        for nm, cs in (("A", ca), ("B", cb)):
+            for d, ax in enumerate("XYZ"):
+                o.extend(int_table(f"C{nm}{ax}_{t}", [c[d] for c in cs]))
+    o.append("")
+    o.append("contains")
+    o.append("")
+    o.extend(wrap_args("subroutine mdg_h", f"la, lb, {DATA}, gb0, n, k, h", "   "))
+    o.append("      integer, intent(in) :: la, lb, gb0, n, k")
+    o.append(DATA_DECL)
+    o.append("      real(dp), intent(inout) :: h(*)")
+    o.append("      integer :: t")
+    o.append("      select case (la*16 + lb)")
+    for la, lb in types:
+        t = f"{la}{lb}"
+        o.append(f"      case ({la * 16 + lb})")
+        o.append("         do concurrent(t = 1:n*k)")
+        o.extend(wrap_args(f"call mdg_h_item_{t}", f"t, {DATA}, gb0, n, k, h", " " * 12))
+        o.append("         end do")
+    o.append("      case default")
+    o.append('         error stop "trc_mdg_h: no E-matrix kernel for this type"')
+    o.append("      end select")
+    o.append("   end subroutine mdg_h")
+    for la, lb in types:
+        t = f"{la}{lb}"
+        np_ = len(herm(la + lb))
+        n1, n2 = (la + 1) * (la + 2) // 2, (lb + 1) * (lb + 2) // 2
+        o.append("")
+        o.extend(wrap_args(f"pure subroutine mdg_h_item_{t}", f"t, {DATA}, gb0, n, k, h", "   "))
+        o.append("      !$acc routine seq")
+        o.append("      integer, intent(in) :: t, gb0, n, k")
+        o.append(DATA_DECL)
+        o.append(f"      real(dp), intent(inout) :: h({n1 * n2}, {np_}*k, n)")
+        o.append("      integer :: i, kk, sp, kp, col, x1, x2, ab, hh, d, ii, jj, tt")
+        o.append("      real(dp) :: oo2p, cf, v, xa(3), xb(3)")
+        o.append(f"      real(dp) :: e(0:{la}, 0:{lb}, 0:{la + lb}, 3)")
+        o.append("      i = mod(t - 1, n) + 1")
+        o.append("      kk = (t - 1)/n + 1")
+        o.append("      sp = gl(gb0 + i)")
+        o.append(f"      col = (kk - 1)*{np_}")
+        o.append("      kp = sp_k0(sp) + kk")
+        o.append("      oo2p = 0.5_dp/mp_z(kp)")
+        o.append("      cf = mp_c(kp)")
+        o.append("      xa(1) = mp_ax(kp); xa(2) = mp_ay(kp); xa(3) = mp_az(kp)")
+        o.append("      xb(1) = mp_bx(kp); xb(2) = mp_by(kp); xb(3) = mp_bz(kp)")
+        o.extend(e1d_loop(la, lb, "      "))
+        o.append(f"      do x2 = 1, {n2}")
+        o.append(f"         do x1 = 1, {n1}")
+        o.append(f"            ab = x1 + {n1}*(x2 - 1)")
+        o.append(f"            do hh = 1, {np_}")
+        o.append(f"               if (HT_{t}(hh) > CAX_{t}(x1) + CBX_{t}(x2) .or. HU_{t}(hh) > CAY_{t}(x1) + CBY_{t}(x2) &")
+        o.append(f"                   .or. HV_{t}(hh) > CAZ_{t}(x1) + CBZ_{t}(x2)) then")
+        o.append("                  h(ab, col + hh, i) = 0.0_dp")
+        o.append("               else")
+        o.append(f"                  h(ab, col + hh, i) = cf*e(CAX_{t}(x1), CBX_{t}(x2), HT_{t}(hh), 1) &")
+        o.append(f"                                     *e(CAY_{t}(x1), CBY_{t}(x2), HU_{t}(hh), 2) &")
+        o.append(f"                                     *e(CAZ_{t}(x1), CBZ_{t}(x2), HV_{t}(hh), 3)")
+        o.append("               end if")
+        o.append("            end do")
+        o.append("         end do")
+        o.append("      end do")
+        o.append(f"   end subroutine mdg_h_item_{t}")
+    o.append("")
+    o.append("end module trc_mdg_h")
+    return "\n".join(o) + "\n"
+
+
 def gen_dispatch(classes, header):
     o = [header.format(what="Host dispatch of the MD GEMM Fock kernels")]
     o.append("module trc_mdg_kernels")
@@ -441,10 +505,10 @@ def gen_dispatch(classes, header):
     o.append("   use trc_linalg, only: trc_linalg_t")
     for c in classes:
         tag = "".join(map(str, c))
-        o.append(f"   use trc_mdg_k{tag}, only: mdg_bra_{tag}, mdg_ket_{tag}, MDG_SIZES_{tag}")
+        o.append(f"   use trc_mdg_k{tag}, only: mdg_ket_{tag}, MDG_SIZES_{tag}")
     o.append("   implicit none")
     o.append("   private")
-    o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_bra, mdg_ket")
+    o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket")
     o.append("")
     o.append(f"   integer, parameter :: NCLASS = {len(classes)}")
     if classes:
@@ -473,28 +537,13 @@ def gen_dispatch(classes, header):
         o.append(f"      if (key == {class_key(*c)}) sz = MDG_SIZES_{tag}")
     o.append("   end function mdg_sizes")
     o.append("")
-    o.extend(wrap_args("subroutine mdg_bra", f"key, {DATA}, ib0, ni, ka, hb", "   "))
-    o.append("      integer, intent(in) :: key")
-    o.append(DATA_DECL)
-    o.append("      integer,  intent(in) :: ib0, ni, ka")
-    o.append("      real(dp), intent(inout) :: hb(*)")
-    o.append("      select case (key)")
-    for c in classes:
-        tag = "".join(map(str, c))
-        o.append(f"      case ({class_key(*c)})")
-        o.extend(wrap_args(f"call mdg_bra_{tag}", f"{DATA}, ib0, ni, ka, hb", " " * 9))
-    o.append("      case default")
-    o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
-    o.append("      end select")
-    o.append("   end subroutine mdg_bra")
-    o.append("")
     o.extend(wrap_args("subroutine mdg_ket", f"key, lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
     o.append("      integer, intent(in) :: key")
     o.append("      type(trc_linalg_t), intent(inout) :: lp")
     o.append(DATA_DECL)
     o.append(WIN_DECL)
-    o.append("      real(dp), intent(in)    :: hb(*)")
-    o.append("      real(dp), intent(inout) :: hk(*), rb(*), pq(*), sm(*), eri(*)")
+    o.append("      real(dp), intent(in)    :: hb(*), hk(*)")
+    o.append("      real(dp), intent(inout) :: rb(*), pq(*), sm(*), eri(*)")
     o.append("      select case (key)")
     for c in classes:
         tag = "".join(map(str, c))
@@ -535,6 +584,8 @@ def main():
             fh.write(gen_class(*c, a.order, header))
     with open(os.path.join(a.outdir, "trc_mdg_kernels.F90"), "w") as fh:
         fh.write(gen_dispatch(classes, header))
+    with open(os.path.join(a.outdir, "trc_mdg_h.F90"), "w") as fh:
+        fh.write(gen_h_module(a.lmax, a.order, header))
     return 0
 
 
