@@ -223,6 +223,41 @@ FOCK_CHUNK_PLAN = {
     "3331": ((0, 1), "thread"),
     "3332": ((0, 1), "thread"),
     "3333": ((0, 1), "thread"),
+    # g classes up to la+lb+lc+ld = 9 (TERCO_RYS_G_LTOT). w20 cc-pVQZ, 1e-12,
+    # V100, ms per Fock build (4th iteration), all nine shapes raced: best,
+    # runner-up, and the MD exchange kernel it replaces. Sum 2.62 s against
+    # 6.90 s in MD and 8.92 s in the array form (GPU4PySCF: 2.34 s).
+    "4000": ((3,), "thread"),  # (gs|ss) 18; next (1, 3) thread 18; MD 130
+    "4010": ((1,), "thread"),  # (gs|ps) 33; next (1, 3) thread 33; MD 282
+    "4011": ((3,), "thread"),  # (gs|pp) 35; next (1, 3) thread 35; MD 173
+    "4020": ((1,), "thread"),  # (gs|ds) 56; next (1, 3) thread 56; MD 258
+    "4021": ((1, 3), "thread"),  # (gs|dp) 103; next (3,) thread 103; MD 322
+    "4022": ((1, 3), "thread"),  # (gs|dd) 71; next (3,) thread 71; MD 225
+    "4030": ((2, 3), "loop"),  # (gs|fs) 58; next (1, 2, 3) thread 67; MD 239
+    "4031": ((1, 2, 3), "thread"),  # (gs|fp) 125; next (2, 3) thread 125; MD 327
+    "4032": ((1, 2, 3), "thread"),  # (gs|fd) 137; next (2, 3) thread 137; MD 318
+    "4040": ((2, 3), "loop"),  # (gs|gs) 13; next (1, 2, 3) thread 13; MD 80
+    "4100": ((3,), "thread"),  # (gp|ss) 21; next () loop 21; MD 181
+    "4110": ((2, 3), "loop"),  # (gp|ps) 76; next (1,) thread 77; MD 320
+    "4111": ((2, 3), "loop"),  # (gp|pp) 75; next (2, 3) thread 76; MD 194
+    "4120": ((2, 3), "loop"),  # (gp|ds) 91; next (2, 3) thread 94; MD 298
+    "4121": ((2, 3), "thread"),  # (gp|dp) 184; next (2, 3) loop 189; MD 330
+    "4122": ((2, 3), "thread"),  # (gp|dd) 114; next (2, 3) loop 115; MD 150
+    "4130": ((2, 3), "thread"),  # (gp|fs) 93; next (2, 3) loop 94; MD 255
+    "4131": ((2, 3), "thread"),  # (gp|fp) 172; next (2, 3) loop 184; MD 260
+    "4140": ((2, 3), "loop"),  # (gp|gs) 35; next (2, 3) thread 35; MD 81
+    "4200": ((3,), "thread"),  # (gd|ss) 26; next () loop 26; MD 192
+    "4210": ((1,), "thread"),  # (gd|ps) 86; next (1, 3) thread 86; MD 350
+    "4211": ((1, 3), "thread"),  # (gd|pp) 92; next (2, 3) loop 108; MD 187
+    "4220": ((2, 3), "loop"),  # (gd|ds) 121; next (2, 3) thread 127; MD 295
+    "4221": ((2, 3), "loop"),  # (gd|dp) 260; next (2, 3) thread 276; MD 271
+    "4230": ((2, 3), "loop"),  # (gd|fs) 132; next (2, 3) thread 141; MD 209
+    "4300": ((1, 3), "thread"),  # (gf|ss) 38; next (1,) thread 38; MD 192
+    "4310": ((1, 3), "thread"),  # (gf|ps) 90; next (1,) thread 91; MD 307
+    "4311": ((1, 3), "thread"),  # (gf|pp) 84; next (1, 2, 3) thread 138; MD 141
+    "4320": ((1, 3), "thread"),  # (gf|ds) 134; next (1,) thread 135; MD 219
+    "4400": ((1, 3), "thread"),  # (gg|ss) 12; next (1,) thread 12; MD 48
+    "4410": ((1,), "thread"),  # (gg|ps) 32; next (1, 3) thread 32; MD 70
 }
 
 #: The classes up to d whose Fock build goes to the chunked Rys kernel
@@ -255,6 +290,20 @@ FOCK_CHUNK_PLAN = {
 #: some systems and lose or tie on others, so they stay on HGP too.
 FOCK_RYS_DEFAULT = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
 
+#: Canonical classes above d that keep the array form because no chunk shape
+#: beat it (measured, see the FOCK_CHUNK_PLAN comment): (fs|ss), (fs|ps),
+#: (fp|ss), (fd|ss).
+FOCK_ARRAY_MEASURED = ("3000", "3010", "3100", "3200")
+
+#: CHUNKING IS REQUIRED above d. A canonical class with an f or g shell must
+#: be in FOCK_CHUNK_PLAN or FOCK_ARRAY_MEASURED, or main() refuses to
+#: generate it: the array form holds the whole Cartesian block per thread,
+#: which spills to local memory at these sizes. The g classes below
+#: TERCO_RYS_G_LTOT ran 8.92 s array vs 3.17 s chunked ((2,3) thread) on w20
+#: cc-pVQZ, V100 -- 2.2x slower than MD in array form, 2.2x faster chunked.
+#: A new class gets its shape by racing the shapes (--chunk-classes,
+#: --chunk-outer, --chunk-form), not by default.
+#:
 #: Live-set ceiling, in doubles, for chunk_plan_fock: only the fallback for
 #: a class forced with --chunk-classes and not in FOCK_CHUNK_PLAN.
 CHUNK_LIVE_MAX = 160
@@ -726,6 +775,11 @@ def main():
         chunked = False
     else:
         chunked = tag in args.chunk_classes.split(",")
+    canonical = la >= lb and lc >= ld and (la, lb) >= (lc, ld)
+    if (args.chunk_classes == "auto" and canonical and max(la, lb, lc, ld) > 2
+            and tag not in FOCK_CHUNK_PLAN and tag not in FOCK_ARRAY_MEASURED):
+        raise SystemExit(f"gen_rys.py: ({tag}) has a shell above d and no measured chunk plan; "
+                         "race the shapes and add it to FOCK_CHUNK_PLAN (see CHUNKING IS REQUIRED)")
     chunk_outer, chunk_form = None, None
     if chunked:
         chunk_outer, chunk_form = FOCK_CHUNK_PLAN.get(tag, (None, "loop"))

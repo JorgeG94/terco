@@ -714,17 +714,32 @@ set(_rys_stage "${CMAKE_BINARY_DIR}/stage/generated_rys")
 # comments, and that is correct because the Rys dispatchers are only ever
 # called from the sequential class loops in trc_binkernel.F90 and
 # trc_grad.F90, never from inside a converted parallel region.
-# Rys (and the HGP template it is spliced from) stops at f: a class with a g
-# shell is the McMurchie-Davidson engine's (trc_mdj for J, trc_mdg for K).
+# Rys covers every class up to f. A class with a g shell is the
+# McMurchie-Davidson engine's (trc_mdj for J, trc_mdg for K) unless its total
+# angular momentum is at most TERCO_RYS_G_LTOT: there Rys has few roots and
+# MD's Hermite expansion buys nothing (w20 cc-pVQZ, V100: the g classes up to
+# L = 9 ran 2.8-3.8x behind GPU4PySCF's Rys in MD, those from L = 13 ahead).
+set(TERCO_RYS_G_LTOT 9 CACHE STRING
+    "g classes with la+lb+lc+ld up to this take a Rys exchange kernel (TERCO_LMAX=4)")
 set(_rys_lmax ${TERCO_LMAX})
 if(_rys_lmax GREATER 3)
   set(_rys_lmax 3)
 endif()
 set(_all_classes "")
-foreach(la RANGE 0 ${_rys_lmax})
-  foreach(lb RANGE 0 ${_rys_lmax})
-    foreach(lc RANGE 0 ${_rys_lmax})
-      foreach(ld RANGE 0 ${_rys_lmax})
+foreach(la RANGE 0 ${TERCO_LMAX})
+  foreach(lb RANGE 0 ${TERCO_LMAX})
+    foreach(lc RANGE 0 ${TERCO_LMAX})
+      foreach(ld RANGE 0 ${TERCO_LMAX})
+        math(EXPR _ltot "${la} + ${lb} + ${lc} + ${ld}")
+        if(la GREATER _rys_lmax OR lb GREATER _rys_lmax OR lc GREATER _rys_lmax
+           OR ld GREATER _rys_lmax)
+          # g: only the angular-momentum-canonical orderings the bins form
+          # (trc_bins: la >= lb, lc >= ld, bra >= ket), as for trc_mdg below.
+          if(_ltot GREATER TERCO_RYS_G_LTOT OR lb GREATER la OR ld GREATER lc
+             OR lc GREATER la OR (lc EQUAL la AND ld GREATER lb))
+            continue()
+          endif()
+        endif()
         list(APPEND _all_classes "${la}${lb}${lc}${ld}")
       endforeach()
     endforeach()

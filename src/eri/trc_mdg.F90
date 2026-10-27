@@ -35,6 +35,7 @@ module trc_mdg
    use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket, mdg_fused
    use trc_mdg_h, only: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart
    use trc_api, only: trc_basis_t
+   use trc_rys_kernels, only: rys_has_class
    implicit none
    private
    public :: trc_mdg_t, trc_mdg_scales_t, mdg_routes
@@ -108,19 +109,17 @@ contains
       res = .false.
       sz = mdg_sizes(key)
       if (sz(1) == 0) return
-      ! A shell above f has no other kernel: always here.
-      if (max(key/(CLASS_RADIX**3), mod(key/(CLASS_RADIX**2), CLASS_RADIX), &
-              mod(key/CLASS_RADIX, CLASS_RADIX), mod(key, CLASS_RADIX)) > 3) then
-         res = .true.
-         return
-      end if
       e = " "
       call get_environment_variable("TRC_MDG_CLASSES", e)
-      if (len_trim(e) == 0) return
       s = key
       write (tag, "(4i1)") s/(CLASS_RADIX**3), mod(s/(CLASS_RADIX**2), CLASS_RADIX), &
          mod(s/CLASS_RADIX, CLASS_RADIX), mod(s, CLASS_RADIX)
       res = index(","//trim(e)//",", ","//tag//",") > 0
+      ! A shell above f comes here unless the build has a Rys kernel for the
+      ! class (low total L, TERCO_RYS_G_LTOT); TRC_MDG_CLASSES still forces it.
+      if (max(key/(CLASS_RADIX**3), mod(key/(CLASS_RADIX**2), CLASS_RADIX), &
+              mod(key/CLASS_RADIX, CLASS_RADIX), mod(key, CLASS_RADIX)) > 3) &
+         res = res .or. .not. rys_has_class(key)
    end function mdg_routes
 
    subroutine mdg_build(this, md, wb, sph)
