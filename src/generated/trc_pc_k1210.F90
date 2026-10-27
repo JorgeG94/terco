@@ -861,6 +861,14 @@ contains
          !
          do idens = 1, ndens
 
+         !
+         ! jfac = 0 whenever the MD J engine forms J (always for a g basis):
+         ! the Coulomb blocks are then zero-filled rather than gathered and
+         ! their atomics skipped below. The component loop is left alone (a
+         ! test inside it costs more than it saves, see the J-only note).
+         ! jfac is uniform over the launch, so no warp diverges.
+         !
+         if (jfac /= 0.0_dp) then
          do ib = 0, 5
             do ia = 0, 2
                dab(1 + ia + 3*ib) = dmat(idens, mui + ia, nuj + ib)
@@ -873,6 +881,20 @@ contains
                jcd(1 + ic + 3*id) = 0.0_dp
             end do
          end do
+         else
+         do ib = 0, 5
+            do ia = 0, 2
+               dab(1 + ia + 3*ib) = 0.0_dp
+               jab(1 + ia + 3*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, 0
+            do ic = 0, 2
+               dcd(1 + ic + 3*id) = 0.0_dp
+               jcd(1 + ic + 3*id) = 0.0_dp
+            end do
+         end do
+         end if
          do ic = 0, 2
             do ia = 0, 2
                dac(1 + ia + 3*ic) = dmat(idens, mui + ia, lamk + ic)
@@ -922,6 +944,7 @@ contains
          end do
          end do
 
+         if (jfac /= 0.0_dp) then
          do ib = 0, 5
             do ia = 0, 2
                !$acc atomic update
@@ -936,6 +959,7 @@ contains
                                             + jcd(1 + ic + 3*id)
             end do
          end do
+         end if
          do ic = 0, 2
             do ia = 0, 2
                !$acc atomic update

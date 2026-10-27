@@ -613,6 +613,14 @@ def emit_digestion(na, nb, nc, nd):
          !
          do idens = 1, ndens
 
+         !
+         ! jfac = 0 whenever the MD J engine forms J (always for a g basis):
+         ! the Coulomb blocks are then zero-filled rather than gathered and
+         ! their atomics skipped below. The component loop is left alone (a
+         ! test inside it costs more than it saves, see the J-only note).
+         ! jfac is uniform over the launch, so no warp diverges.
+         !
+         if (jfac /= 0.0_dp) then
          do ib = 0, {nb - 1}
             do ia = 0, {na - 1}
                dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)
@@ -625,6 +633,20 @@ def emit_digestion(na, nb, nc, nd):
                jcd(1 + ic + {nc}*id) = 0.0_dp
             end do
          end do
+         else
+         do ib = 0, {nb - 1}
+            do ia = 0, {na - 1}
+               dab(1 + ia + {na}*ib) = 0.0_dp
+               jab(1 + ia + {na}*ib) = 0.0_dp
+            end do
+         end do
+         do id = 0, {nd - 1}
+            do ic = 0, {nc - 1}
+               dcd(1 + ic + {nc}*id) = 0.0_dp
+               jcd(1 + ic + {nc}*id) = 0.0_dp
+            end do
+         end do
+         end if
          do ic = 0, {nc - 1}
             do ia = 0, {na - 1}
                dac(1 + ia + {na}*ic) = dmat(idens, mui + ia, lamk + ic)
@@ -674,6 +696,7 @@ def emit_digestion(na, nb, nc, nd):
          end do
          end do
 
+         if (jfac /= 0.0_dp) then
          do ib = 0, {nb - 1}
             do ia = 0, {na - 1}
                !$acc atomic update
@@ -688,6 +711,7 @@ def emit_digestion(na, nb, nc, nd):
                                             + jcd(1 + ic + {nc}*id)
             end do
          end do
+         end if
          do ic = 0, {nc - 1}
             do ia = 0, {na - 1}
                !$acc atomic update
@@ -1522,7 +1546,9 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
             stride *= n
         dg = dg.replace(jl_old, "(wq*vbuf(" + " + ".join(terms) + "))")
         n_loops = dg.count(f"do {ivar} = 0, {nX - 1}")
-        assert n_loops == 10, (tag, shell, n_loops)
+        # 10, plus one: the jfac = 0 zero-fill of the Coulomb blocks repeats
+        # the gather loop of whichever of dab/dcd holds the split shell.
+        assert n_loops == 11, (tag, shell, n_loops)
         dg = re.sub(r"^([ \t]*)do " + ivar + f" = 0, {nX - 1}\n",
                     lambda m: f"{m.group(1)}do gi = 1, {len(role['comps'])}\n"
                               f"{m.group(1)}   {ivar} = rc{r}(gi)\n", dg, flags=re.M)
