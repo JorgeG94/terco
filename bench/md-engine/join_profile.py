@@ -1,6 +1,8 @@
 """Join terco's per-class times (nsys sqlite) with GPU4PySCF's (g4p_jk.py log).
 
-    python join_profile.py terco.sqlite g4p.log [out.json]
+    python join_profile.py terco.sqlite [g4p.log|-] [out.json]
+
+With no GPU4PySCF log (or "-"), terco's per-class times alone.
 
 terco: the LAST "eri: bins (hgp/rys)" NVTX range (kernels grouped by the
 four-digit class in their names) plus the last "mdg: (xx|xx)" range of
@@ -13,9 +15,10 @@ def canon(a, b, c, d):
     p = tuple(sorted((a, b), reverse=True)); q = tuple(sorted((c, d), reverse=True))
     if q > p: p, q = q, p
     return '(%s%s|%s%s)' % (L[p[0]], L[p[1]], L[q[0]], L[q[1]])
-sq, glog = sys.argv[1], sys.argv[2]
+sq = sys.argv[1]
+glog = sys.argv[2] if len(sys.argv) > 2 else '-'
 g = collections.Counter()
-for l in open(glog):
+for l in (open(glog) if glog != '-' else []):
     m = re.match(r'\((\w)(\w)\|(\w)(\w)\) wall time ([\d.]+)', l)
     if m: g[canon(*[L.index(x) for x in m.groups()[:4]])] += float(m[5])/1e6
 c = sqlite3.connect(sq)
