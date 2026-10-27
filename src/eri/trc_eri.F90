@@ -615,8 +615,8 @@ contains
 
    subroutine add_md_j(this, b, dp_w, jmat, jfac)
       !! jmat(1, :, :) += jfac J[dp_w] from the MD engine; dp_w is a host
-      !! array (eri_fock's), jmat is on the device. Rank 0 only, as in
-      !! eri_fock_resident.
+      !! array (eri_fock's), jmat is on the device. This rank's share of it,
+      !! as in eri_fock_resident: the caller sums the ranks.
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)    :: dp_w(:, :)
@@ -634,19 +634,17 @@ contains
       nw = size(dp_w, 1)
       allocate (jw(nw, nw))
       !$acc enter data copyin(dp_w) create(jw)
-      call this%md%coulomb(nw, dp_w, jw)
+      call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks)
       !$acc update self(jw)
       !$acc exit data delete(dp_w, jw)
       ! jmat on the device; the fold symmetrises (jmat + jmat^T)/2, and J is
       ! symmetric, so adding it once is adding it once.
       !$acc update self(jmat)
-      if (this%rank == 0) then
-         do j = 1, nw
-            do i = 1, nw
-               jmat(1, i, j) = jmat(1, i, j) + jfac*jw(i, j)
-            end do
+      do j = 1, nw
+         do i = 1, nw
+            jmat(1, i, j) = jmat(1, i, j) + jfac*jw(i, j)
          end do
-      end if
+      end do
       !$acc update device(jmat)
       deallocate (jw)
    end subroutine add_md_j
@@ -1099,11 +1097,11 @@ contains
          allocate (jw(nw, nw))
          !$acc enter data create(jw)
          call profiler_start("eri: md J", nvtx_only=.true.)
-         call this%md%coulomb(nw, dp_w, jw)
+         call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks)
          call profiler_stop("eri: md J")
-         ! Every rank forms the whole of J; only rank 0 adds it to what
-         ! sum_ranks then totals.
-         if (this%rank == 0) call add_scaled_device(nw*nw, jfac, jw, gp_w)
+         ! Each rank forms its share of J (trc_mdj splits the Hermite stage's
+         ! ket chunks); sum_ranks totals them with the rest of the matrix.
+         call add_scaled_device(nw*nw, jfac, jw, gp_w)
          !$acc exit data delete(jw)
          deallocate (jw)
       end if

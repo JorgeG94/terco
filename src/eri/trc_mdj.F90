@@ -141,17 +141,29 @@ contains
       this%built = .true.
    end subroutine mdj_build
 
-   subroutine mdj_coulomb(this, nao, dmat, jmat)
+   subroutine mdj_coulomb(this, nao, dmat, jmat, rank, nranks)
       !! jmat = J[dmat], both (nao, nao), Cartesian, already on the device.
       !! Every element outside the kept shell pairs is set to zero.
+      !!
+      !! With rank and nranks, this rank's share only: every nranks-th ket
+      !! chunk of each Hermite launch. The bra stage is linear in Jt, so the
+      !! shares' jmat sum over ranks to J. The ket stage is replicated (it is
+      !! linear in pairs, the Hermite stage quadratic).
       class(trc_mdj_t), intent(inout) :: this
       integer,  intent(in)  :: nao
       real(dp), intent(in)  :: dmat(nao, nao)
       real(dp), intent(inout) :: jmat(nao, nao)
+      integer,  intent(in), optional :: rank, nranks
 
-      integer :: t, lp, lq, lpt, qfix
+      integer :: t, lp, lq, lpt, qfix, c0, cstep
 
       qfix = qlen_override()
+      c0 = 0
+      cstep = 1
+      if (present(rank) .and. present(nranks)) then
+         c0 = rank
+         cstep = max(1, nranks)
+      end if
       ! NVTX ranges (TERCO_NVTX builds; no-ops otherwise), each closed after a
       ! device sync so its length is the stage's GPU time.
       call profiler_start("mdj: ket", nvtx_only=.true.)
@@ -175,7 +187,8 @@ contains
             if (this%cl_nk(lq) == 0) cycle
             call mdj_hermite(lp, lq, this%cl_nk(lp), this%cl_k0(lp), this%cl_hb(lp), &
                              this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
-                             chunk_length(this%cl_nk(lp), this%cl_nk(lq), qfix), this%nhp, &
+                             chunk_length(this%cl_nk(lp), this%cl_nk(lq), qfix, cstep), c0, cstep, &
+                             this%nhp, &
                              this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
                              this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
          end do
@@ -365,16 +378,17 @@ contains
       end function keep
    end subroutine fill_prims
 
-   pure integer function chunk_length(np, nq, qfix) result(qlen)
+   pure integer function chunk_length(np, nq, qfix, nshare) result(qlen)
       !! Kets per thread for an np x nq Hermite launch: enough chunks to reach
-      !! MDJ_THREADS_TARGET threads, never under MDJ_QLEN_MIN kets each.
-      integer, intent(in) :: np, nq, qfix
+      !! MDJ_THREADS_TARGET threads on each of nshare ranks, never under
+      !! MDJ_QLEN_MIN kets each.
+      integer, intent(in) :: np, nq, qfix, nshare
       integer :: nchunk
       if (qfix > 0) then
          qlen = qfix
          return
       end if
-      nchunk = max(1, (MDJ_THREADS_TARGET + np - 1)/np)
+      nchunk = max(1, (MDJ_THREADS_TARGET*nshare + np - 1)/np)
       qlen = max(MDJ_QLEN_MIN, (nq + nchunk - 1)/nchunk)
    end function chunk_length
 
