@@ -542,8 +542,11 @@ if(_regen)
     # CMakeLists.txt), and its entry points stop on a basis above it.
     terco_gen("gen_1e.py" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX}
               ${_order_flag} -o ${_gen_out}/trc_1e_kernels.F90)
-    terco_gen("gen_1e.py --multipole" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
-              --lmax ${TERCO_LMAX} --multipole ${_gen_out}/trc_mult_kernels.F90 ${_order_flag})
+    # One module per class (gen_1e.py's split emitters): as one file the
+    # multipoles took 1165 s to compile at LMAX=3 and the gradient kernels
+    # over 90 minutes at LMAX=4, single-threaded.
+    terco_gen("gen_1e.py --multipole-dir" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --multipole-dir ${_gen_out} ${_order_flag})
     # The PCM smeared-charge surface integrals follow TERCO_LMAX for the
     # same reason the 1e kernels do: a continuum that stops below the
     # four-centre ceiling would have no operator for the basis it is given.
@@ -552,8 +555,8 @@ if(_regen)
     # The one-electron GRADIENT kernels follow TERCO_LMAX for the same
     # reason trc_1e's own do: a ceiling below the orbital basis is not a
     # limitation, it is a wrong force.
-    terco_gen("gen_1e.py --deriv" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
-              --lmax ${TERCO_LMAX} --deriv ${_gen_out}/trc_1e_grad_kernels.F90 ${_order_flag})
+    terco_gen("gen_1e.py --deriv-dir" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --deriv-dir ${_gen_out} ${_order_flag})
 
     # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
     # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
