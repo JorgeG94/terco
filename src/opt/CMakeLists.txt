@@ -1,7 +1,8 @@
 #
 # libterco_opt: terco's geometry optimiser (DL-FIND, via libdlfind), as its
-# own shared library -- see the root CMakeLists.txt's TERCO_ENABLE_DLFIND
-# option for the licensing reason it is not part of ${main_lib}.
+# own library, shared or static like ${main_lib} (TERCO_BUILD_SHARED) --
+# see the root CMakeLists.txt's TERCO_ENABLE_DLFIND option for the
+# licensing reason it is not part of ${main_lib}.
 #
 # This directory is only added (root CMakeLists.txt) when
 # TERCO_ENABLE_DLFIND is ON. With it OFF, none of this runs: no libdlfind
@@ -11,8 +12,9 @@
 # WHY A SEPARATE LIBRARY AND NOT PART OF ${main_lib}. Two reasons, same as
 # before this was split out of app/trc_dlfind_bridge.F90:
 #   - libdlfind is LGPL-3.0-or-later; libterco is not. Keeping DL-FIND
-#     out of libterco.so is what keeps libterco's own licence clean and
-#     the LGPL relink obligation scoped to this one library.
+#     out of libterco is what keeps libterco's own licence clean; libdlfind
+#     itself is always a shared library, which scopes the LGPL relink
+#     obligation to it.
 #   - DL-FIND's own `error stop` (api.f90's dlf_error) can end the WHOLE
 #     PROCESS, never just report a status code back -- a library that
 #     might do that must be something a caller opts into explicitly
@@ -30,6 +32,11 @@
 # caller.
 #
 find_package(libdlfind REQUIRED)
+
+# Where libterco_opt and libdlfind.so are installed. A static
+# terco::terco_opt names libdlfind.so by this path in its exported link
+# interface, so the install() rules below and that path must agree.
+set(TERCO_OPT_INSTALL_LIBDIR lib)
 
 # Same linkage as ${main_lib} (TERCO_BUILD_SHARED). A shared libterco_opt
 # beside a static libterco would absorb its own copy of terco and pic-mpi
@@ -87,14 +94,14 @@ target_link_libraries(
   terco_opt
   PUBLIC ${main_lib}
   PRIVATE $<BUILD_INTERFACE:libdlfind::libdlfind>
-          $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${CMAKE_SHARED_LIBRARY_PREFIX}dlfind${CMAKE_SHARED_LIBRARY_SUFFIX}>
+          $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${TERCO_OPT_INSTALL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}dlfind${CMAKE_SHARED_LIBRARY_SUFFIX}>
           $<BUILD_INTERFACE:pic::pic>)
 
 install(
   TARGETS terco_opt
   EXPORT tercoTargets
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION ${TERCO_OPT_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${TERCO_OPT_INSTALL_LIBDIR}
   INCLUDES
   DESTINATION include/terco)
 
@@ -104,7 +111,8 @@ install(
 # install() rules, upstream, from firing on its own). terco_cli's RPATH
 # ($ORIGIN/../lib, app/CMakeLists.txt) already covers this lib/, same as
 # libterco_opt.so's own.
-install(TARGETS dlfind LIBRARY DESTINATION lib RUNTIME DESTINATION lib)
+install(TARGETS dlfind LIBRARY DESTINATION ${TERCO_OPT_INSTALL_LIBDIR} RUNTIME DESTINATION
+                       ${TERCO_OPT_INSTALL_LIBDIR})
 
 # terco_opt's own modules, same convention as the root CMakeLists.txt's
 # install of terco's.

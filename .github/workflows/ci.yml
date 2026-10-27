@@ -317,6 +317,62 @@ jobs:
         if: always()
         run: python3 test/goldens/compare_goldens.py --report build/test/golden_out
 
+  host-mpi-static:
+    name: host gcc-15 (MPI, static, DL-FIND)
+    runs-on: ubuntu-latest
+    # The configuration multi-rank GPU runs use (TERCO_ENABLE_MPI=ON,
+    # TERCO_BUILD_SHARED=OFF, TERCO_ENABLE_DLFIND=ON), on the host. No other
+    # job builds with MPI, so scf_mpi_np{1,2,4}, check_step_table_mpi_np* and
+    # cli_mpi run nowhere else, and none builds static, so
+    # terco/static_terco_opt (no libterco_opt.so beside a static libterco)
+    # runs only here. Both gaps let multi-rank hangs reach Perlmutter.
+    #
+    # gfortran and OpenMPI come from conda-forge together: legacy `use mpi`
+    # reads OpenMPI's mpi.mod, which must come from a compatible gfortran,
+    # and Ubuntu's OpenMPI is built with its older system gfortran.
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      # OpenMPI 5 refuses more ranks than cores by default; np 4 must run
+      # on a runner of any size.
+      OMPI_MCA_rmaps_base_oversubscribe: 1
+      PRTE_MCA_rmaps_default_mapping_policy: ':oversubscribe'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup gfortran 15 and OpenMPI
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: terco-mpi
+          create-args: >-
+            -c conda-forge
+            gfortran=15 gcc=15 openmpi=5 cmake ninja python libblas liblapack
+
+      - name: Configure
+        run: >-
+          cmake -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_ENABLE_MPI=ON
+          -DTERCO_BUILD_SHARED=OFF
+          -DTERCO_ENABLE_DLFIND=ON
+          -DCMAKE_Fortran_COMPILER=mpif90
+          -DCMAKE_C_COMPILER=mpicc
+          -S . -B build
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Show the failure verbosely
+        if: failure()
+        run: cmake --build build --verbose --parallel 1
+
+      - name: Validate
+        run: >-
+          ctest --test-dir build --output-on-failure --parallel 2
+          --no-tests=error ${{ env.CTEST_LONG }}
+
   fpm-build:
     name: fpm (gcc 15)
     runs-on: ubuntu-latest

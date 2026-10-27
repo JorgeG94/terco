@@ -685,6 +685,19 @@ if(TERCO_BUILD_APP)
         ${CMAKE_COMMAND} -DCMAKE_COMMAND=${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
         -DPREFIX=${CMAKE_CURRENT_BINARY_DIR}/install_dlfind_check_prefix -P
         ${CMAKE_CURRENT_SOURCE_DIR}/../app/install_dlfind_check.cmake)
+
+    # A static libterco needs a static libterco_opt: see
+    # check_static_terco_opt.cmake's own header (the multi-rank MPI_IN_PLACE
+    # hang). Linux ELF only, where objdump reads the NEEDED entries.
+    if(NOT TERCO_BUILD_SHARED
+       AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+       AND CMAKE_OBJDUMP)
+      add_test(
+        NAME terco/static_terco_opt
+        COMMAND
+          ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:terco_cli> -DOPT=$<TARGET_FILE:terco_opt>
+          -DOBJDUMP=${CMAKE_OBJDUMP} -P ${CMAKE_CURRENT_SOURCE_DIR}/check_static_terco_opt.cmake)
+    endif()
   endif()
 endif()
 
@@ -1391,8 +1404,23 @@ add_executable(link_c link_c.c)
 # with link_c.c's own `main` -- worse, not better. The file path sidesteps
 # both: the shared library already carries cuBLAS/cuSOLVER as its own
 # linked dependencies, so nothing here needs to ask for them again.
-add_dependencies(link_c ${main_lib})
-target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
+#
+# A STATIC libterco.a carries none of its dependencies (pic, json-fortran,
+# BLAS, the Fortran runtime), so the file alone cannot link. There it goes
+# through the target, with the Fortran compiler as the link driver (which
+# also understands -cudalib), told not to add its own `main`.
+if(TERCO_BUILD_SHARED)
+  add_dependencies(link_c ${main_lib})
+  target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
+else()
+  target_link_libraries(link_c PRIVATE ${main_lib})
+  set_target_properties(link_c PROPERTIES LINKER_LANGUAGE Fortran)
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+    target_link_options(link_c PRIVATE -Mnomain)
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
+    target_link_options(link_c PRIVATE -nofor-main)
+  endif()
+endif()
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 # With nvc as the C compiler, a C main has to be linked with the OpenACC
 # multicore runtime itself: without -acc=multicore the energy comes back as
