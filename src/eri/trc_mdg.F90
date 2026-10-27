@@ -26,10 +26,12 @@
 !
 module trc_mdg
    use pic_types, only: dp, int64, int_index
+   use pic_logger, only: global_logger
+   use pic_timer, only: timer_type
    use pic_sorting, only: sort_index
    use trc_linalg, only: trc_linalg_t
    use trc_mdj, only: trc_mdj_t
-   use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket
+   use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket, mdg_fused
    use trc_mdg_h, only: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart
    use trc_api, only: trc_basis_t
    implicit none
@@ -77,6 +79,13 @@ module trc_mdg
       integer, allocatable :: sh_l(:), sh_ao(:), sh_ao_sph(:)
       !! the working basis's shells, for the block transforms
       type(trc_linalg_t) :: lp
+      logical :: stats = .false.
+      !! TRC_MDG_STATS=1: count windows, launched and surviving quartets and
+      !! GEMM flops per build, and log them. The survivor count is a host loop.
+      integer(int64) :: st_win = 0, st_quart = 0, st_pass = 0
+      real(dp) :: st_flop = 0.0_dp
+      real(dp) :: st_cflop = 0.0_dp, st_cpass = 0.0_dp, st_cquart = 0.0_dp
+      !! the current class's share, for the per-class line
    contains
       procedure :: build => mdg_build
       procedure :: fock => mdg_fock
@@ -262,13 +271,20 @@ contains
       real(dp), intent(inout) :: jmat(:, :, :)
       type(trc_mdg_scales_t), intent(in) :: sc
       type(trc_mdg_scales_t) :: scd
+      type(timer_type) :: tm
       integer :: c, key, t1, t2, g1, g2
 
       !$acc update self(dsh)
       scd = sc
       scd%dmax = maxval(dsh)
+      this%stats = stats_on()
+      this%st_win = 0
+      this%st_quart = 0
+      this%st_pass = 0
+      this%st_flop = 0.0_dp
       if (this%sph) then
          call fock_spherical(this, md, dsh, dmat, jmat, scd)
+         call report_stats(this)
          return
       end if
       do c = 1, mdg_class_count()
@@ -276,6 +292,13 @@ contains
          if (.not. mdg_routes(key)) cycle
          call class_types(md, key, t1, t2)
          if (t1 == 0 .or. t2 == 0) cycle
+         if (this%stats) then
+            !$acc wait
+            call tm%start()
+            this%st_cflop = this%st_flop
+            this%st_cpass = real(this%st_pass, dp)
+            this%st_cquart = real(this%st_quart, dp)
+         end if
          do g1 = 1, this%ngrp
             if (this%gr_ty(g1) /= t1) cycle
             do g2 = 1, this%ngrp
@@ -286,8 +309,55 @@ contains
                call group_pair(this, md, [key, g1, g2], dsh, dmat, jmat, scd)
             end do
          end do
+         if (this%stats) call class_line(this, key, tm)
       end do
+      call report_stats(this)
    end subroutine mdg_fock
+
+   logical function fused_mode() result(res)
+      !! TRC_MDG_MODE=fused: contract in do concurrent kernels (no cuBLAS, no
+      !! PQ or integral block in memory) instead of the two batched GEMMs.
+      character(len=16) :: e
+      e = " "
+      call get_environment_variable("TRC_MDG_MODE", e)
+      res = trim(e) == "fused"
+   end function fused_mode
+
+   logical function stats_on() result(res)
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_MDG_STATS", e)
+      res = trim(e) == "1"
+   end function stats_on
+
+   subroutine class_line(this, key, tm)
+      !! Stats: one class's wall time (device synchronised), flops, and screen pass rate.
+      type(trc_mdg_t), intent(in) :: this
+      integer, intent(in) :: key
+      type(timer_type), intent(inout) :: tm
+      character(len=256) :: line
+      real(dp) :: t, f, q, p
+      !$acc wait
+      t = tm%get_elapsed_time()
+      f = this%st_flop - this%st_cflop
+      q = real(this%st_quart, dp) - this%st_cquart
+      p = real(this%st_pass, dp) - this%st_cpass
+      write (line, '(a,4i1,a,f8.3,a,es9.2,a,f7.2,a,es9.2,a,f6.1,a)') "  [mdg] class ", key/(CLASS_RADIX**3), &
+         mod(key/(CLASS_RADIX**2), CLASS_RADIX), mod(key/CLASS_RADIX, CLASS_RADIX), mod(key, CLASS_RADIX), &
+         " s ", t, "  flop ", f, "  TF/s ", f/max(t, 1.0e-9_dp)/1.0e12_dp, "  quartets ", q, "  pass ", &
+         100.0_dp*p/max(q, 1.0_dp), "%"
+      call global_logger%info(trim(line))
+   end subroutine class_line
+
+   subroutine report_stats(this)
+      type(trc_mdg_t), intent(in) :: this
+      character(len=256) :: line
+      if (.not. this%stats) return
+      write (line, '(a,i0,a,i0,a,i0,a,f6.2,a,es10.3)') "  [mdg] windows ", this%st_win, "  quartets ", &
+         this%st_quart, "  pass screen ", this%st_pass, "  (", &
+         100.0_dp*real(this%st_pass, dp)/max(real(this%st_quart, dp), 1.0_dp), "%)  GEMM flop ", this%st_flop
+      call global_logger%info(trim(line))
+   end subroutine report_stats
 
    subroutine fock_spherical(this, md, dsh, dmat, jmat, sc)
       !! The classes in spherical components: D_sph = S^T D S in, the windows on
@@ -299,6 +369,7 @@ contains
       real(dp), intent(inout) :: jmat(:, :, :)
       type(trc_mdg_scales_t), intent(in) :: sc
       real(dp), allocatable :: ds(:, :, :), ks(:, :, :)
+      type(timer_type) :: tm
       integer :: nd, c, key, t1, t2, g1, g2
       nd = size(dmat, 1)
       allocate (ds(nd, this%naos, this%naos), ks(nd, this%naos, this%naos))
@@ -310,6 +381,13 @@ contains
          if (.not. mdg_routes(key)) cycle
          call class_types(md, key, t1, t2)
          if (t1 == 0 .or. t2 == 0) cycle
+         if (this%stats) then
+            !$acc wait
+            call tm%start()
+            this%st_cflop = this%st_flop
+            this%st_cpass = real(this%st_pass, dp)
+            this%st_cquart = real(this%st_quart, dp)
+         end if
          do g1 = 1, this%ngrp
             if (this%gr_ty(g1) /= t1) cycle
             do g2 = 1, this%ngrp
@@ -318,6 +396,7 @@ contains
                call group_pair(this, md, [key, g1, g2], dsh, ds, ks, sc)
             end do
          end do
+         if (this%stats) call class_line(this, key, tm)
       end do
       call mdg_kcart(this%nsh, this%sh_l, this%sh_ao, this%sh_ao_sph, nd, size(jmat, 2), this%naos, ks, jmat)
       !$acc exit data delete(ds, ks)
@@ -349,6 +428,7 @@ contains
       real(dp), intent(inout) :: jmat(:, :, :)
       type(trc_mdg_scales_t), intent(in) :: sc
       integer :: sz(8), ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
+      logical :: fused
       integer(int64) :: per
       real(dp) :: wdiag
       real(dp), allocatable :: rb(:), pq(:), sm(:), eri(:)
@@ -367,15 +447,25 @@ contains
       kb = this%gr_k(g2)
       wdiag = 1.0_dp
       if (g1 == g2) wdiag = 0.5_dp
+      fused = fused_mode()
       nimax = min(MDG_BLOCK, this%gr_n(g1))
-      ! Per ket pair of a window: its E matrix, and its share of R, PQ, S and
-      ! the integrals for a full bra block.
-      per = int(nimax, int64)*ka*kb*sz(3) &
-            + int(nimax, int64)*sz(1)*ka*sz(2)*kb + int(nimax, int64)*sz(1)*ka*sz(5) &
-            + int(sz(4), int64)*nimax*sz(5)
+      ! Per ket pair of a window: its share of R, PQ, S and the integrals for a
+      ! full bra block. The fused path stores R and S only.
+      if (fused) then
+         per = int(nimax, int64)*ka*kb*sz(3) + int(nimax, int64)*sz(1)*ka*sz(5)
+      else
+         per = int(nimax, int64)*ka*kb*sz(3) &
+               + int(nimax, int64)*sz(1)*ka*sz(2)*kb + int(nimax, int64)*sz(1)*ka*sz(5) &
+               + int(sz(4), int64)*nimax*sz(5)
+      end if
       njmax = int(max(1_int64, min(int(this%gr_n(g2), int64), MDG_BUDGET/per)))
-      allocate (rb(int(sz(3), int64)*nimax*ka*njmax*kb), pq(int(sz(1), int64)*ka*nimax*sz(2)*kb*njmax), &
-                sm(int(sz(1), int64)*ka*nimax*sz(5)*njmax), eri(int(sz(4), int64)*nimax*sz(5)*njmax))
+      if (fused) then
+         allocate (rb(int(sz(3), int64)*nimax*ka*njmax*kb), pq(1), &
+                   sm(int(sz(1), int64)*ka*nimax*sz(5)*njmax), eri(1))
+      else
+         allocate (rb(int(sz(3), int64)*nimax*ka*njmax*kb), pq(int(sz(1), int64)*ka*nimax*sz(2)*kb*njmax), &
+                   sm(int(sz(1), int64)*ka*nimax*sz(5)*njmax), eri(int(sz(4), int64)*nimax*sz(5)*njmax))
+      end if
       !$acc enter data create(rb, pq, sm, eri)
       hb0 = this%gh_off(g1)
       hk0 = this%gh_off(g2)
@@ -388,6 +478,18 @@ contains
          if (jmax == 0) exit
          do j0 = 0, jmax - 1, njmax
             nj = min(njmax, jmax - j0)
+            if (this%stats) call count_window(this, md, [this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb], &
+                                              sz, dsh, sc%thresh)
+            if (fused) then
+               call mdg_fused(key, this%sph, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
+                              md%mp_az, md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, &
+                              md%sp_as1, md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, &
+                              size(this%gl), this%gl, this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb, &
+                              sc%thresh, sc%pcut, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
+                              size(dmat, 2), size(dmat, 1), dmat, jmat, this%gh(hb0 + ib*perb + 1), &
+                              this%gh(hk0 + j0*perk + 1), rb, sm)
+               cycle
+            end if
             call mdg_ket(key, this%sph, this%lp, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
                          md%mp_az, md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, &
                          md%sp_as1, md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
@@ -400,6 +502,36 @@ contains
       !$acc exit data delete(rb, pq, sm, eri)
       deallocate (rb, pq, sm, eri)
    end subroutine group_pair
+
+   subroutine count_window(this, md, w, sz, dsh, thresh)
+      !! Stats: a window's quartets, how many pass the per-quartet screen
+      !! (same test as the R kernel), and its two GEMMs' flops.
+      type(trc_mdg_t), intent(inout) :: this
+      type(trc_mdj_t), intent(in) :: md
+      integer, intent(in) :: w(6), sz(8)
+      !! ib0, ni, ka, jb0, nj, kb
+      real(dp), intent(in) :: dsh(:, :), thresh
+      integer :: i, j, sa, sc2, si, sj, sk, sl
+      real(dp) :: q
+      this%st_win = this%st_win + 1
+      this%st_quart = this%st_quart + int(w(2), int64)*w(5)
+      do j = 1, w(5)
+         sc2 = this%gl(w(4) + j)
+         sk = md%sp_sh1(sc2); sl = md%sp_sh2(sc2)
+         do i = 1, w(2)
+            sa = this%gl(w(1) + i)
+            si = md%sp_sh1(sa); sj = md%sp_sh2(sa)
+            q = md%sp_q(sa)*md%sp_q(sc2)
+            if (q <= thresh) cycle
+            if (q*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &
+                      dsh(sj, sk), dsh(sj, sl)) <= thresh) cycle
+            this%st_pass = this%st_pass + 1
+         end do
+      end do
+      ! GEMM 1 2 npb ni nqb ncd nj, GEMM 2 2 nab npb ncd nj ni
+      this%st_flop = this%st_flop + 2.0_dp*sz(1)*w(3)*w(2)*sz(2)*w(6)*sz(5)*w(5) &
+                     + 2.0_dp*sz(4)*sz(1)*w(3)*sz(5)*w(5)*w(2)
+   end subroutine count_window
 
    integer function ket_prefix(this, g, qd, thresh) result(n)
       !! How many of group g's sorted pairs have qd * Q_cd > thresh: bisection.

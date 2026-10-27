@@ -279,6 +279,108 @@ def ket_driver(tag, suf, np_, nq_, nr, nab, ncd):
     return o
 
 
+def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2):
+    """The cuBLAS-free contraction: S = PQ Hk^T and the integral rows, fused.
+
+    B: one thread per (pbar, quartet), pbar fastest, so a warp works on one
+       quartet's R (L1) and one ket E matrix (broadcast):
+           S[pbar, cd, w] = sum_qbar (-1)^|q| R[p+q] Hk[cd, qbar]
+       PQ is never stored; (p, q) -> p + q is the literal RM table.
+    C: one thread per (ab, quartet): the integral row from Hb[ab, :] S[:, :, w],
+       digested at once, so the integral block is never stored either.
+    A quartet that fails the HGP screen returns at once in both (its R is zero),
+    instead of being multiplied as a zero block: 45% of the quartets the GEMM
+    path multiplied on w20 cc-pVQZ (TRC_MDG_STATS).
+    """
+    nab, ncd = na * nb, nc * nd
+    o = []
+    # ---- B ----
+    o.extend(wrap_args(f"pure subroutine mdg_fb_item_{tag}{suf}", f"t, {DATA}, {WIN}, hk, rb, sm", "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer, intent(in) :: t")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append(f"      real(dp), intent(in)    :: hk({ncd}, {nq_}*kb, nj), rb({nr}, ni, ka, nj, kb)")
+    o.append(f"      real(dp), intent(inout) :: sm({np_}*ka, {ncd}, ni*nj)")
+    o.append("      integer :: u, pb, w, i, j, k1, k2, x, y, c, spa, spc, si, sj, sk, sl")
+    o.append("      real(dp) :: v, qcut")
+    o.append(f"      real(dp) :: acc({ncd})")
+    o.append(f"      pb = mod(t - 1, {np_}*ka) + 1")
+    o.append(f"      w = (t - 1)/({np_}*ka) + 1")
+    o.append("      i = mod(w - 1, ni) + 1")
+    o.append("      j = (w - 1)/ni + 1")
+    o.append(f"      x = mod(pb - 1, {np_}) + 1")
+    o.append(f"      k1 = (pb - 1)/{np_} + 1")
+    o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
+    o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
+    o.append("      qcut = sp_q(spa)*sp_q(spc)")
+    o.append("      if (qcut <= thresh) return")
+    o.append("      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &")
+    o.append("                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return")
+    o.append(f"      do c = 1, {ncd}")
+    o.append("         acc(c) = 0.0_dp")
+    o.append("      end do")
+    o.append("      do k2 = 1, kb")
+    o.append(f"         do y = 1, {nq_}")
+    o.append(f"            v = SQ{tag}(y)*rb(RM{tag}(x + {np_}*(y - 1)), i, k1, j, k2)")
+    o.append(f"            do c = 1, {ncd}")
+    o.append(f"               acc(c) = acc(c) + v*hk(c, y + {nq_}*(k2 - 1), j)")
+    o.append("            end do")
+    o.append("         end do")
+    o.append("      end do")
+    o.append(f"      do c = 1, {ncd}")
+    o.append("         sm(pb, c, w) = acc(c)")
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_fb_item_{tag}{suf}")
+    o.append("")
+    # ---- C: reuse the row digestion with the row formed from Hb S ----
+    d = d_item(tag, na, nb, nc, nd, suf, o1, o2)
+    d = "\n".join(d)
+    d = d.replace(f"pure subroutine mdg_d_item_{tag}{suf}(", f"pure subroutine mdg_fc_item_{tag}{suf}(")
+    d = d.replace(f"end subroutine mdg_d_item_{tag}{suf}", f"end subroutine mdg_fc_item_{tag}{suf}")
+    d = d.replace(", eri)", ", hb, sbuf)")
+    d = d.replace(f"      real(dp), intent(in) :: eri({nab}, ni, {ncd}, nj)",
+                  f"      real(dp), intent(in) :: hb({nab}, {np_}*ka, ni), sbuf({np_}*ka, {ncd}, ni*nj)")
+    d = d.replace("      integer :: u, i, j, ab,", "      integer :: u, i, j, ab, pb, iw,")
+    d = d.replace(f"""      do ic = 1, {ncd}
+         row(ic) = eri(ab, i, ic, j)
+      end do""", f"""      iw = i + ni*(j - 1)
+      do ic = 1, {ncd}
+         row(ic) = 0.0_dp
+      end do
+      do pb = 1, {np_}*ka
+         x = hb(ab, pb, i)
+         do ic = 1, {ncd}
+            row(ic) = row(ic) + x*sbuf(pb, ic, iw)
+         end do
+      end do""")
+    o.extend(d.split("\n"))
+    # wrap long header lines produced by the replace
+    return o
+
+
+def fused_driver(tag, suf, np_, nq_, nr, nab, ncd):
+    o = []
+    o.extend(wrap_args(f"subroutine mdg_fused_{tag}{suf}", f"{DATA}, {WIN}, hb, hk, rb, sm", "   "))
+    o.append("      !! One window without cuBLAS: R, then S (kernel B), then rows and digestion (C).")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append(f"      real(dp), intent(in)    :: hb({nab}, {np_}*ka, ni), hk({ncd}, {nq_}*kb, nj)")
+    o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb), sm({np_}*ka, {ncd}, ni*nj)")
+    o.append("      integer :: t")
+    o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
+    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
+    o.append("      end do")
+    o.append(f"      do concurrent(t = 1:{np_}*ka*ni*nj)")
+    o.extend(wrap_args(f"call mdg_fb_item_{tag}{suf}", f"t, {DATA}, {WIN}, hk, rb, sm", " " * 9))
+    o.append("      end do")
+    o.append(f"      do concurrent(t = 1:{nab}*ni*nj)")
+    o.extend(wrap_args(f"call mdg_fc_item_{tag}{suf}", f"t, {DATA}, {WIN}, hb, sm", " " * 9))
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_fused_{tag}{suf}")
+    return o
+
+
 def x_item(tag, lp, lq, L):
     np_, nq_, nr = len(herm(lp)), len(herm(lq)), len(herm(L))
     o = []
@@ -396,7 +498,7 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("   use trc_linalg, only: trc_linalg_t")
     o.append("   implicit none")
     o.append("   private")
-    o.append(f"   public :: mdg_ket_{tag}, mdg_ket_{tag}_s, MDG_SIZES_{tag}")
+    o.append(f"   public :: mdg_ket_{tag}, mdg_ket_{tag}_s, mdg_fused_{tag}, mdg_fused_{tag}_s, MDG_SIZES_{tag}")
     o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
     o.append(f"   integer, parameter :: MDG_SIZES_{tag}(8) = [{np_}, {nq_}, {nr}, {nab}, {ncd}, {L}, {nabs}, {ncds}]")
     o.append("   !! np, nq, n_r, bra and ket Cartesian component pairs, total L, bra and ket")
@@ -413,6 +515,8 @@ def gen_class(la, lb, lc, ld, order, header):
     for suf, ab_, cd_ in (("", nab, ncd), ("_s", nabs, ncds)):
         o.extend(ket_driver(tag, suf, np_, nq_, nr, ab_, cd_))
         o.append("")
+        o.extend(fused_driver(tag, suf, np_, nq_, nr, ab_, cd_))
+        o.append("")
     o.extend(r_item(tag, L))
     o.append("")
     o.extend(x_item(tag, lp, lq, L))
@@ -420,6 +524,10 @@ def gen_class(la, lb, lc, ld, order, header):
     o.extend(d_item(tag, na, nb, nc, nd))
     o.append("")
     o.extend(d_item(tag, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "_s", "sp_as1", "sp_as2"))
+    o.append("")
+    o.extend(fused_items(tag, "", np_, nq_, nr, na, nb, nc, nd, "sp_ao1", "sp_ao2"))
+    o.append("")
+    o.extend(fused_items(tag, "_s", np_, nq_, nr, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "sp_as1", "sp_as2"))
     o.append("")
     o.append(f"end module trc_mdg_k{tag}")
     return "\n".join(o) + "\n"
@@ -667,10 +775,11 @@ def gen_dispatch(classes, header):
     o.append("   use trc_linalg, only: trc_linalg_t")
     for c in classes:
         tag = "".join(map(str, c))
-        o.append(f"   use trc_mdg_k{tag}, only: mdg_ket_{tag}, mdg_ket_{tag}_s, MDG_SIZES_{tag}")
+        o.append(f"   use trc_mdg_k{tag}, only: mdg_ket_{tag}, mdg_ket_{tag}_s, mdg_fused_{tag}, mdg_fused_{tag}_s, &")
+        o.append(f"                         MDG_SIZES_{tag}")
     o.append("   implicit none")
     o.append("   private")
-    o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket")
+    o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket, mdg_fused")
     o.append("")
     o.append(f"   integer, parameter :: NCLASS = {len(classes)}")
     if classes:
@@ -720,6 +829,27 @@ def gen_dispatch(classes, header):
     o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
     o.append("      end select")
     o.append("   end subroutine mdg_ket")
+    o.append("")
+    o.extend(wrap_args("subroutine mdg_fused", f"key, sph, {DATA}, {WIN}, hb, hk, rb, sm", "   "))
+    o.append("      integer, intent(in) :: key")
+    o.append("      logical, intent(in) :: sph")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append("      real(dp), intent(in)    :: hb(*), hk(*)")
+    o.append("      real(dp), intent(inout) :: rb(*), sm(*)")
+    o.append("      select case (key)")
+    for c in classes:
+        tag = "".join(map(str, c))
+        o.append(f"      case ({class_key(*c)})")
+        o.append("         if (sph) then")
+        o.extend(wrap_args(f"call mdg_fused_{tag}_s", f"{DATA}, {WIN}, hb, hk, rb, sm", " " * 12))
+        o.append("         else")
+        o.extend(wrap_args(f"call mdg_fused_{tag}", f"{DATA}, {WIN}, hb, hk, rb, sm", " " * 12))
+        o.append("         end if")
+    o.append("      case default")
+    o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
+    o.append("      end select")
+    o.append("   end subroutine mdg_fused")
     o.append("")
     o.append("end module trc_mdg_kernels")
     return "\n".join(o) + "\n"
