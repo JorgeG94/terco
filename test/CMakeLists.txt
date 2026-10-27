@@ -101,7 +101,7 @@ terco_add_check(check_selftest check_selftest.F90)
 terco_add_check(check_linalg_mat check_linalg_mat.F90)
 
 # A signalling-NaN SCF guess density -- what a density read past the end
-# of an undersized buffer (app/trc_dlfind_bridge.F90's own --opt-neb
+# of an undersized buffer (src/opt/trc_dlfind_bridge.F90's own --opt-neb
 # per-image density) can hand back -- comes back through trc_run_scf's
 # own status/message, not `error stop` inside the eigensolver. See
 # check_scf_diag_failure.F90's own header.
@@ -583,6 +583,19 @@ if(TERCO_BUILD_APP)
       unset(_cli_opt_pyscf_workdir)
     endforeach()
 
+    # The SAME water/hcn vs pyscf+scipy comparison as check_opt_vs_pyscf_*
+    # above, but through terco_opt.h ONLY -- terco.h for the context
+    # (molecule, basis, method) and trc_opt_capi.F90's own handles for the
+    # optimiser, never trc_dlfind_bridge's Fortran types directly, and no
+    # terco_cli subprocess at all. See check_capi_opt.F90's own header.
+    # Needs terco_c_interfaces (defined below, in this same directory --
+    # a forward reference, same as check_lmax_refusal's own above) and
+    # terco::terco_opt (src/opt/CMakeLists.txt, added by the root
+    # CMakeLists.txt before this directory).
+    terco_add_check(check_capi_opt check_capi_opt.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+    target_link_libraries(check_capi_opt PRIVATE test-drive::test-drive terco_c_interfaces
+                                                 terco_opt_c_interfaces terco::terco_opt)
+
     # Every --opt-algorithm/--opt-coords combination terco exposes
     # converges water/STO-3G to the existing opt_water anchor -- see
     # check_opt_algorithms.F90's own header. One shared work dir: the
@@ -681,6 +694,19 @@ if(TERCO_BUILD_APP)
         ${CMAKE_COMMAND} -DCMAKE_COMMAND=${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
         -DPREFIX=${CMAKE_CURRENT_BINARY_DIR}/install_dlfind_check_prefix -P
         ${CMAKE_CURRENT_SOURCE_DIR}/../app/install_dlfind_check.cmake)
+
+    # A static libterco needs a static libterco_opt: see
+    # check_static_terco_opt.cmake's own header (the multi-rank MPI_IN_PLACE
+    # hang). Linux ELF only, where objdump reads the NEEDED entries.
+    if(NOT TERCO_BUILD_SHARED
+       AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+       AND CMAKE_OBJDUMP)
+      add_test(
+        NAME terco/static_terco_opt
+        COMMAND
+          ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:terco_cli> -DOPT=$<TARGET_FILE:terco_opt>
+          -DOBJDUMP=${CMAKE_OBJDUMP} -P ${CMAKE_CURRENT_SOURCE_DIR}/check_static_terco_opt.cmake)
+    endif()
   endif()
 endif()
 
@@ -1268,6 +1294,19 @@ set_target_properties(terco_c_interfaces PROPERTIES Fortran_MODULE_DIRECTORY
                                                     ${CMAKE_CURRENT_BINARY_DIR}/c_interfaces)
 target_include_directories(terco_c_interfaces INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/c_interfaces)
 
+# libterco_opt's own shipped C-interface declarations (include/
+# trc_opt_c_interfaces.f90), same reason as terco_c_interfaces above --
+# check_capi_opt.F90's only consumer. TERCO_ENABLE_DLFIND only: the file
+# still exists either way (tools/gen_capi_headers.py has no reason to
+# skip it), but nothing needs it compiled when the library it declares is
+# not built.
+if(TERCO_ENABLE_DLFIND)
+  add_library(terco_opt_c_interfaces STATIC ${PROJECT_SOURCE_DIR}/include/trc_opt_c_interfaces.f90)
+  set_target_properties(terco_opt_c_interfaces PROPERTIES Fortran_MODULE_DIRECTORY
+                                                          ${CMAKE_CURRENT_BINARY_DIR}/opt_c_interfaces)
+  target_include_directories(terco_opt_c_interfaces INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/opt_c_interfaces)
+endif()
+
 add_executable(scf_rimp2 scf_rimp2.F90)
 target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces terco_pyscf_ref_io LAPACK::LAPACK)
@@ -1288,6 +1327,18 @@ target_compile_definitions(check_capi_libcint_sph PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(check_capi_libcint_sph PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
 add_test(NAME terco/check_capi_libcint_sph COMMAND check_capi_libcint_sph)
 set_tests_properties(terco/check_capi_libcint_sph PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# trc_basis_shell_count/trc_basis_shell_max_primitives/trc_basis_shell_info/
+# trc_basis_shell_primitives/trc_basis_is_spherical and
+# trc_physical_constant: cyclone's own two gaps (reading a context's basis
+# shells back, and terco's own CODATA 2018 instead of a second copy).
+add_executable(check_capi_shells check_capi_shells.F90)
+target_compile_definitions(check_capi_shells PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_shells PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                 test-drive::test-drive)
+add_test(NAME terco/check_capi_shells COMMAND check_capi_shells)
+set_tests_properties(terco/check_capi_shells PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
@@ -1362,8 +1413,23 @@ add_executable(link_c link_c.c)
 # with link_c.c's own `main` -- worse, not better. The file path sidesteps
 # both: the shared library already carries cuBLAS/cuSOLVER as its own
 # linked dependencies, so nothing here needs to ask for them again.
-add_dependencies(link_c ${main_lib})
-target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
+#
+# A STATIC libterco.a carries none of its dependencies (pic, json-fortran,
+# BLAS, the Fortran runtime), so the file alone cannot link. There it goes
+# through the target, with the Fortran compiler as the link driver (which
+# also understands -cudalib), told not to add its own `main`.
+if(TERCO_BUILD_SHARED)
+  add_dependencies(link_c ${main_lib})
+  target_link_libraries(link_c PRIVATE $<TARGET_FILE:${main_lib}>)
+else()
+  target_link_libraries(link_c PRIVATE ${main_lib})
+  set_target_properties(link_c PROPERTIES LINKER_LANGUAGE Fortran)
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+    target_link_options(link_c PRIVATE -Mnomain)
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
+    target_link_options(link_c PRIVATE -nofor-main)
+  endif()
+endif()
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 # With nvc as the C compiler, a C main has to be linked with the OpenACC
 # multicore runtime itself: without -acc=multicore the energy comes back as
@@ -1606,35 +1672,25 @@ endforeach()
 
 # --opt's own warm-start measurement (bench_opt_warmstart.F90's own
 # header): SCF iterations per step, mqc's own baseline vs the density and
-# projected warm starts. Needs trc_dlfind_bridge (app/, not a reusable
-# library target -- app/terco_app.F90 is its one non-trc_capi dependency,
-# so both are added as extra sources here rather than restructuring
-# app/CMakeLists.txt for one informational benchmark). TERCO_ENABLE_DLFIND
-# only: the stub build has no optimiser to measure.
+# projected warm starts. Both benches link terco::terco_opt (src/opt/
+# CMakeLists.txt) for module `trc_dlfind_bridge` now, rather than
+# recompiling its source here -- that library is exactly what terco_cli
+# itself links. TERCO_ENABLE_DLFIND only: the stub build has no optimiser
+# to measure (and the library target does not exist).
 if(TERCO_ENABLE_DLFIND)
-  # Not yet found: app/CMakeLists.txt's own find_package(libdlfind) runs
-  # AFTER this directory (root CMakeLists.txt adds app/ after test/), and
-  # this target needs libdlfind::libdlfind NOW to link against. Calling
-  # it again there is harmless -- Findlibdlfind.cmake's own `if(NOT
-  # TARGET ...)` guards make a second call a no-op.
-  find_package(libdlfind REQUIRED)
-  add_executable(bench_opt_warmstart bench_opt_warmstart.F90 ${PROJECT_SOURCE_DIR}/app/terco_app.F90
-                                      ${PROJECT_SOURCE_DIR}/app/trc_dlfind_bridge.F90)
+  add_executable(bench_opt_warmstart bench_opt_warmstart.F90)
   target_compile_definitions(bench_opt_warmstart PRIVATE ${TERCO_TEST_DEFS})
-  target_link_libraries(bench_opt_warmstart PRIVATE ${main_lib} terco_test_basis libdlfind::libdlfind)
+  target_link_libraries(bench_opt_warmstart PRIVATE ${main_lib} terco_test_basis terco::terco_opt)
   target_include_directories(bench_opt_warmstart PRIVATE ${CMAKE_BINARY_DIR}/modules)
   set_target_properties(bench_opt_warmstart PROPERTIES Fortran_MODULE_DIRECTORY
                                                         ${CMAKE_CURRENT_BINARY_DIR}/modules_opt_bench)
 
   # The per-image-vs-shared-density NEB warm start measurement
   # (bench_opt_neb_warmstart.F90's own header) -- the --opt-neb analogue
-  # of bench_opt_warmstart above. A SEPARATE module directory: two targets
-  # compiling the same trc_dlfind_bridge.F90 source into the SAME
-  # Fortran_MODULE_DIRECTORY under -j>1 is a write race on the .mod file.
-  add_executable(bench_opt_neb_warmstart bench_opt_neb_warmstart.F90 ${PROJECT_SOURCE_DIR}/app/terco_app.F90
-                                          ${PROJECT_SOURCE_DIR}/app/trc_dlfind_bridge.F90)
+  # of bench_opt_warmstart above.
+  add_executable(bench_opt_neb_warmstart bench_opt_neb_warmstart.F90)
   target_compile_definitions(bench_opt_neb_warmstart PRIVATE ${TERCO_TEST_DEFS})
-  target_link_libraries(bench_opt_neb_warmstart PRIVATE ${main_lib} terco_test_basis libdlfind::libdlfind)
+  target_link_libraries(bench_opt_neb_warmstart PRIVATE ${main_lib} terco_test_basis terco::terco_opt)
   target_include_directories(bench_opt_neb_warmstart PRIVATE ${CMAKE_BINARY_DIR}/modules)
   set_target_properties(bench_opt_neb_warmstart PROPERTIES Fortran_MODULE_DIRECTORY
                                                             ${CMAKE_CURRENT_BINARY_DIR}/modules_opt_neb_bench)

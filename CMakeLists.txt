@@ -152,16 +152,19 @@ option(TERCO_BUILD_APP "Build and install the terco command line program" ON)
 #
 option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" OFF)
 #
-# Geometry optimisation (terco_cli's --opt), driven by DL-FIND through
-# libdlfind (Kjell Jorner's C-API wrapper around J. Kaestner's DL-FIND).
-# OFF by default for a licensing reason, not a size one: DL-FIND and
-# libdlfind are LGPL-3.0-or-later, and this library is not, so pulling that
-# code in is the builder's choice. app/CMakeLists.txt fetches libdlfind
-# (cmake/modules/Findlibdlfind.cmake) and builds it as its OWN shared
-# library, linked ONLY into the terco_cli executable -- never into
-# libterco -- so the LGPL relink obligation and DL-FIND's `error stop`
-# never reach the library. With this OFF, `--opt` is refused with a clear
-# message (app/trc_dlfind_stub.F90) and every other build is unaffected.
+# Geometry optimisation, driven by DL-FIND through libdlfind (Kjell
+# Jorner's C-API wrapper around J. Kaestner's DL-FIND). OFF by default for
+# a licensing reason, not a size one: DL-FIND and libdlfind are
+# LGPL-3.0-or-later, and this library is not, so pulling that code in is
+# the builder's choice. With this ON, src/opt/CMakeLists.txt fetches
+# libdlfind (cmake/modules/Findlibdlfind.cmake) and builds a SEPARATE
+# shared library, libterco_opt (its own C ABI, include/terco_opt.h),
+# linked by terco_cli (app/CMakeLists.txt) and installed/exported
+# alongside libterco for any other caller (terco::terco_opt) -- never
+# linked into libterco itself, so the LGPL relink obligation and
+# DL-FIND's `error stop` never reach the library. With this OFF, neither
+# libterco_opt nor its header is built at all, and terco_cli's --opt is
+# refused with a clear message (app/trc_dlfind_stub.F90).
 #
 option(TERCO_ENABLE_DLFIND "Build the --opt geometry optimiser against libdlfind (LGPL-3.0-or-later)" OFF)
 #
@@ -391,6 +394,14 @@ if(TERCO_LMAX LESS_EQUAL 1)
 endif()
 
 add_subdirectory(src)
+
+# libterco_opt: the geometry optimiser, its own shared library (TERCO_
+# ENABLE_DLFIND's own comment above, and src/opt/CMakeLists.txt for why
+# it is separate from ${main_lib}). Added here, right after ${main_lib}
+# itself exists and before test/ and app/, which both link it.
+if(TERCO_ENABLE_DLFIND)
+  add_subdirectory(src/opt)
+endif()
 
 #
 # cuSOLVER and cuBLAS, for the SCF's eigenproblem and products

@@ -78,6 +78,102 @@ CAPI_SOURCE = os.path.join(REPO_ROOT, "src", "api", "trc_capi.F90")
 HEADER_OUT = os.path.join(REPO_ROOT, "include", "terco.h")
 INTERFACE_OUT = os.path.join(REPO_ROOT, "include", "trc_c_interfaces.f90")
 
+# One generation pass per ABI. terco_opt's is a SEPARATE C ABI (its own
+# header, its own Fortran interface module) that reuses terco's status
+# codes and handle typedef rather than restating them -- its header
+# `#include`s terco.h instead of emitting its own `trc_handle_t` typedef,
+# and its params dict never contains TRC_OK/TRC_ERR_* (trc_opt_capi.F90
+# declares none of those, only its own TRC_OPT_* enums), so the two
+# generated headers can be included together with nothing redefined.
+#
+# Add a tuple here for a new bind(c) module; nothing else in this script
+# is specific to trc_capi.F90 once SPECS is a list.
+class Spec:
+    def __init__(self, source, header_out, interface_out, module_name, guard,
+                 banner, fortran_module_banner, handle_typedef=True, includes=()):
+        self.source = source
+        self.header_out = header_out
+        self.interface_out = interface_out
+        self.module_name = module_name
+        self.guard = guard
+        self.banner = banner
+        self.fortran_module_banner = fortran_module_banner
+        self.handle_typedef = handle_typedef
+        self.includes = includes
+
+
+SPECS = [
+    Spec(
+        source=CAPI_SOURCE,
+        header_out=HEADER_OUT,
+        interface_out=INTERFACE_OUT,
+        module_name="trc_c_interfaces",
+        guard="TERCO_H",
+        banner=[
+            " * terco's C ABI -- GENERATED, do not edit by hand.",
+            " *",
+            " * tools/gen_capi_headers.py parses src/api/trc_capi.F90's own",
+            " * `bind(c, name=...)` procedures and public TRC_* parameters and",
+            " * writes this file and include/trc_c_interfaces.f90 from the same",
+            " * pass, so the two cannot drift from each other or from the",
+            " * library. Regenerate with that script; do not edit the output.",
+        ],
+        fortran_module_banner=[
+            "! The authoritative Fortran declaration of terco's C ABI -- GENERATED,",
+            "! do not edit by hand.",
+            "!",
+            "! terco is nvfortran and its callers usually are not, so they reach it",
+            "! through `bind(c)`. tools/gen_capi_headers.py parses src/api/trc_capi.F90's",
+            "! own `bind(c, name=...)` procedures and public TRC_* parameters and",
+            "! writes this file and include/terco.h from the same pass, so a Fortran",
+            "! caller, a C caller and the library itself cannot drift from each other.",
+            "! Regenerate with that script; do not edit the output.",
+            "!",
+            "! `test/link_gfortran.F90` compiles this file with gfortran and asserts an",
+            "! SCF energy, so a drift anywhere in the chain is a wrong number in terco's",
+            "! own test suite before any host code sees it.",
+        ],
+    ),
+    Spec(
+        source=os.path.join(REPO_ROOT, "src", "opt", "trc_opt_capi.F90"),
+        header_out=os.path.join(REPO_ROOT, "include", "terco_opt.h"),
+        interface_out=os.path.join(REPO_ROOT, "include", "trc_opt_c_interfaces.f90"),
+        module_name="trc_opt_c_interfaces",
+        guard="TERCO_OPT_H",
+        handle_typedef=False,
+        includes=["terco.h"],
+        banner=[
+            " * libterco_opt's C ABI -- GENERATED, do not edit by hand.",
+            " *",
+            " * tools/gen_capi_headers.py parses src/opt/trc_opt_capi.F90's own",
+            " * `bind(c, name=...)` procedures and public TRC_OPT_* parameters and",
+            " * writes this file and include/trc_opt_c_interfaces.f90 from the same",
+            " * pass, exactly as it does terco.h/trc_c_interfaces.f90 from",
+            " * src/api/trc_capi.F90 -- see that pair for the full rationale.",
+            " * Regenerate with that script; do not edit the output.",
+            " *",
+            " * Needs terco.h for `trc_handle_t` and the TRC_OK/TRC_ERR_* status",
+            " * codes: this ABI defines neither again, it reuses terco's own (the",
+            " * handle trc_opt_run below takes is the SAME context handle",
+            " * trc_create returned). Only built/installed with",
+            " * -DTERCO_ENABLE_DLFIND=ON (libterco_opt links libdlfind,",
+            " * LGPL-3.0-or-later -- see the root CMakeLists.txt's option).",
+        ],
+        fortran_module_banner=[
+            "! The authoritative Fortran declaration of libterco_opt's C ABI --",
+            "! GENERATED, do not edit by hand.",
+            "!",
+            "! tools/gen_capi_headers.py parses src/opt/trc_opt_capi.F90's own",
+            "! `bind(c, name=...)` procedures and public TRC_OPT_* parameters and",
+            "! writes this file and include/terco_opt.h from the same pass -- see",
+            "! that pair's own header for the full rationale. Regenerate with that",
+            "! script; do not edit the output.",
+            "!",
+            "! Only built/installed with -DTERCO_ENABLE_DLFIND=ON.",
+        ],
+    ),
+]
+
 
 class GeneratorError(RuntimeError):
     pass
@@ -382,9 +478,10 @@ def check_shape(arg, proc_name):
         raise GeneratorError(f"{proc_name}: dummy {arg.name} is optional, not supported at the C boundary")
 
 
-HANDLE_NAMES = {"handle", "basis", "pairs", "aux", "eri"}
+HANDLE_NAMES = {"handle", "basis", "pairs", "aux", "eri", "options", "result_handle"}
 """by-value type(c_ptr) dummies that are terco handles; every other by-value
-c_ptr is a nullable data pointer (const void* in terco.h)."""
+c_ptr is a nullable data pointer (const void* in terco.h). "options" and
+"result_handle" are trc_opt_capi.F90's own opaque handles (trc_opt_run)."""
 
 
 def c_type_for(arg, proc_name):
@@ -438,34 +535,35 @@ def wrap_doc_c(doc):
     return "\n".join(lines) + "\n"
 
 
-def render_header(procs, params):
+def render_header(procs, params, spec):
     out = []
     out.append("/*")
-    out.append(" * terco's C ABI -- GENERATED, do not edit by hand.")
-    out.append(" *")
-    out.append(" * tools/gen_capi_headers.py parses src/api/trc_capi.F90's own")
-    out.append(" * `bind(c, name=...)` procedures and public TRC_* parameters and")
-    out.append(" * writes this file and include/trc_c_interfaces.f90 from the same")
-    out.append(" * pass, so the two cannot drift from each other or from the")
-    out.append(" * library. Regenerate with that script; do not edit the output.")
+    out.extend(spec.banner)
     out.append(" */")
-    out.append("#ifndef TERCO_H")
-    out.append("#define TERCO_H")
+    out.append(f"#ifndef {spec.guard}")
+    out.append(f"#define {spec.guard}")
     out.append("")
+    for inc in spec.includes:
+        out.append(f'#include "{inc}"')
+    if spec.includes:
+        out.append("")
     out.append("#ifdef __cplusplus")
     out.append('extern "C" {')
     out.append("#endif")
     out.append("")
-    out.append("/* An opaque handle to any object this API hands back -- a basis, a")
-    out.append(" * shell-pair list, an ERI context, or a whole calculation context.")
-    out.append(" * The Fortran side owns the memory; a caller only ever holds this")
-    out.append(" * and passes it back. */")
-    out.append("typedef void* trc_handle_t;")
-    out.append("")
-    out.append("/* Status codes. Zero is success; everything else is a reason. */")
-    for name, value in params.items():
-        out.append(f"#define {name} {value}")
-    out.append("")
+    if spec.handle_typedef:
+        out.append("/* An opaque handle to any object this API hands back -- a basis, a")
+        out.append(" * shell-pair list, an ERI context, or a whole calculation context.")
+        out.append(" * The Fortran side owns the memory; a caller only ever holds this")
+        out.append(" * and passes it back. */")
+        out.append("typedef void* trc_handle_t;")
+        out.append("")
+    if params:
+        out.append("/* Status codes. Zero is success; everything else is a reason. */"
+                    if spec.handle_typedef else "/* Enum values (see each function's own doc for which one). */")
+        for name, value in params.items():
+            out.append(f"#define {name} {value}")
+        out.append("")
     for proc in procs:
         doc = wrap_doc_c(proc.doc)
         if doc:
@@ -477,7 +575,7 @@ def render_header(procs, params):
     out.append("}")
     out.append("#endif")
     out.append("")
-    out.append("#endif /* TERCO_H */")
+    out.append(f"#endif /* {spec.guard} */")
     return "\n".join(out) + "\n"
 
 
@@ -569,24 +667,12 @@ def wrap_fortran_line(line, maxlen):
     return lines
 
 
-def render_interface(procs, params):
+def render_interface(procs, params, spec):
     out = []
     out.append("!")
-    out.append("! The authoritative Fortran declaration of terco's C ABI -- GENERATED,")
-    out.append("! do not edit by hand.")
+    out.extend(spec.fortran_module_banner)
     out.append("!")
-    out.append("! terco is nvfortran and its callers usually are not, so they reach it")
-    out.append("! through `bind(c)`. tools/gen_capi_headers.py parses src/api/trc_capi.F90's")
-    out.append("! own `bind(c, name=...)` procedures and public TRC_* parameters and")
-    out.append("! writes this file and include/terco.h from the same pass, so a Fortran")
-    out.append("! caller, a C caller and the library itself cannot drift from each other.")
-    out.append("! Regenerate with that script; do not edit the output.")
-    out.append("!")
-    out.append("! `test/link_gfortran.F90` compiles this file with gfortran and asserts an")
-    out.append("! SCF energy, so a drift anywhere in the chain is a wrong number in terco's")
-    out.append("! own test suite before any host code sees it.")
-    out.append("!")
-    out.append("module trc_c_interfaces")
+    out.append(f"module {spec.module_name}")
     out.append("   use, intrinsic :: iso_c_binding")
     out.append("   implicit none")
     out.append("   public")
@@ -618,7 +704,7 @@ def render_interface(procs, params):
         out.append("")
     out.append("   end interface")
     out.append("")
-    out.append("end module trc_c_interfaces")
+    out.append(f"end module {spec.module_name}")
     return "\n".join(out) + "\n"
 
 
@@ -628,33 +714,35 @@ def main():
                      help="diff against the committed files instead of writing them")
     args = ap.parse_args()
 
-    procs, params = parse_capi(CAPI_SOURCE)
-    header_text = render_header(procs, params)
-    interface_text = render_interface(procs, params)
+    ok = True
+    for spec in SPECS:
+        procs, params = parse_capi(spec.source)
+        header_text = render_header(procs, params, spec)
+        interface_text = render_interface(procs, params, spec)
 
-    if args.check:
-        ok = True
-        for path, text in ((HEADER_OUT, header_text), (INTERFACE_OUT, interface_text)):
-            with open(path, "r") as f:
-                current = f.read()
-            if current != text:
-                ok = False
-                sys.stderr.write(f"{path} is out of date with {CAPI_SOURCE}:\n")
-                diff = difflib.unified_diff(
-                    current.splitlines(keepends=True), text.splitlines(keepends=True),
-                    fromfile=path, tofile=path + " (regenerated)",
-                )
-                sys.stderr.writelines(diff)
-        if not ok:
-            sys.exit(1)
-        return
+        if args.check:
+            for path, text in ((spec.header_out, header_text), (spec.interface_out, interface_text)):
+                with open(path, "r") as f:
+                    current = f.read()
+                if current != text:
+                    ok = False
+                    sys.stderr.write(f"{path} is out of date with {spec.source}:\n")
+                    diff = difflib.unified_diff(
+                        current.splitlines(keepends=True), text.splitlines(keepends=True),
+                        fromfile=path, tofile=path + " (regenerated)",
+                    )
+                    sys.stderr.writelines(diff)
+            continue
 
-    with open(HEADER_OUT, "w") as f:
-        f.write(header_text)
-    with open(INTERFACE_OUT, "w") as f:
-        f.write(interface_text)
-    print(f"wrote {HEADER_OUT}")
-    print(f"wrote {INTERFACE_OUT}")
+        with open(spec.header_out, "w") as f:
+            f.write(header_text)
+        with open(spec.interface_out, "w") as f:
+            f.write(interface_text)
+        print(f"wrote {spec.header_out}")
+        print(f"wrote {spec.interface_out}")
+
+    if args.check and not ok:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

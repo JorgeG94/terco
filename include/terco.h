@@ -37,7 +37,13 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 5
+#define TRC_ABI_MINOR 6
+#define TRC_CONST_BOHR_TO_ANGSTROM 0
+#define TRC_CONST_HARTREE_TO_EV 1
+#define TRC_CONST_HARTREE_TO_KCALMOL 2
+#define TRC_CONST_AMU_TO_ME 3
+#define TRC_CONST_KB_SI 4
+#define TRC_CONST_NA_SI 5
 
 int trc_basis_create(int nshell, int maxnp, const int* l, const int* nprim, const double* exps, const double* coefs, const double* centres, int natm, const double* zatm, const double* ratm, trc_handle_t* handle);
 
@@ -76,6 +82,91 @@ int trc_basis_create_libcint(const int* atm, int natm, const int* bas, int nshel
  * get a wrong answer.
  */
 int trc_basis_maxl(trc_handle_t handle, int* maxl);
+
+/**
+ * Number of shells, so a caller can size trc_basis_shell_info's
+ * buffers. NOT split by decontraction (src/basis/trc_decontract.F90):
+ * that split lives inside trc_eri_t, built from a copy of this
+ * basis, and never touches the trc_basis_t this handle itself
+ * holds -- this is always the basis as the caller (or
+ * trc_basis_from_json) built it.
+ */
+int trc_basis_shell_count(trc_handle_t handle, int* nshell);
+
+/**
+ * The second dimension trc_basis_shell_primitives' exps/coefs
+ * buffers need (MAXNP*NSHELL each): the widest shell's own
+ * primitive count, box%b%maxnp -- the same bound
+ * trc_basis_create's own `maxnp` argument sets on the way in.
+ */
+int trc_basis_shell_max_primitives(trc_handle_t handle, int* maxnp);
+
+/**
+ * Per shell, into three caller buffers of trc_basis_shell_count's
+ * own NSHELL: ATOM is the 1-based index into trc_set_molecule's own
+ * atom order (0 for a shell on no atom -- a ghost/probe function;
+ * trc_api.F90's `sh_at`, matched by an exact coordinate hit against
+ * the atom list, same convention as every other 1-based index this
+ * library's own Fortran side uses, e.g. trc_pairlist_t's `p_i`/
+ * `p_j`). L is the angular momentum. NPRIM is the number of
+ * primitives actually retained: `basis_build` drops a primitive
+ * whose coefficient is exactly zero (a dead column of a general-
+ * contraction table) once, when the basis is built, so this is the
+ * count trc_basis_shell_primitives below actually fills, which can
+ * be smaller than whatever the caller's own input table listed for
+ * that shell.
+ */
+int trc_basis_shell_info(trc_handle_t handle, int* atom, int* l, int* nprim);
+
+/**
+ * Per-shell exponents and contraction coefficients, each
+ * (MAXNP, NSHELL) in Fortran column-major order -- the SAME layout
+ * trc_basis_create's own `exps`/`coefs` arguments take -- sized
+ * from trc_basis_shell_max_primitives and trc_basis_shell_count. A
+ * primitive past a shell's own NPRIM (trc_basis_shell_info) is
+ * zero, exactly as a caller building a basis would pad a shorter
+ * shell in the same buffer.
+ *
+ * COEFFICIENTS: `basis_build` folds libcint's common_fac_sp into the
+ * STORED coefficient exactly once, on the way in
+ * (0.282094791773878143 for an s shell, 0.488602511902919921 for a
+ * p shell, 1 for l >= 2 -- AGENTS.md's "libcint's common_fac_sp
+ * normalisation is applied exactly once, in basis construction");
+ * this entry divides that one factor back out before handing the
+ * coefficient back, the same exact inverse
+ * test/trc_test_basis.F90's `unpack_basis` already relies on.
+ *
+ * WHAT THAT RECOVERS DEPENDS ON HOW THIS BASIS WAS BUILT.
+ * trc_basis_create/trc_basis_create_libcint call `build` directly
+ * on the caller's own coefficients with NOTHING else done to them,
+ * so for a handle built either way this is EXACTLY the caller's own
+ * input, unchanged -- the case cyclone's GAMESS-to-terco conversion
+ * check (the motivating one) is in: it builds its own arrays and
+ * can compare them here bit for bit.
+ *
+ * trc_set_basis_json/trc_basis_from_json is NOT that case:
+ * trc_basis_json.F90's own `read_element` renormalises every
+ * shell's coefficients to unit primitive AND unit contraction
+ * self-overlap (its own `normalise`, BSE's/pyscf's own convention)
+ * BEFORE handing them to `build`, which folds common_fac_sp in on
+ * top of THAT. Undoing only the common_fac_sp fold then does not
+ * reach the JSON file's own literal number -- a caller on that path
+ * sees terco's fully renormalised coefficient instead (exponents
+ * are untouched either way, since `normalise` only rescales `c`).
+ */
+int trc_basis_shell_primitives(trc_handle_t handle, double* exps, double* coefs);
+
+/**
+ * Non-zero if this basis handle's shells are spherical rather than
+ * Cartesian -- box%b%spherical, set by trc_basis_from_json from a
+ * JSON basis's own function_type, the same field trc_is_spherical
+ * reads off a context's current basis (see that entry's own
+ * comment for what it changes downstream). This is the basis-
+ * handle-level answer, for a caller that holds the handle directly
+ * rather than the context it came from -- trc_context_basis hands
+ * out exactly that handle.
+ */
+int trc_basis_is_spherical(trc_handle_t handle, int* spherical);
 
 /**
  * The angular-momentum ceilings THIS build was compiled for, so a host
@@ -428,8 +519,10 @@ int trc_set_geometry(trc_handle_t handle, const double* xyz);
  * (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
  * term on top of the semilocal one, on VV10's own grid
  * (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
- * it on). wB97M-V is not in terco's table, and a meta-GGA is refused
- * below, so it is not a case this routine has to decide about.
+ * it on). wB97M-V is in terco's table too now (a meta-GGA with VV10
+ * and its own range-separated exchange), but the meta-GGA refusal
+ * below catches it before VV10 ever comes up: its energy runs, its
+ * gradient does not, same tau reason as every other meta-GGA.
  *
  * REFUSED, clearly, rather than attempted:
  *   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
@@ -694,6 +787,25 @@ int trc_select_device(int rank, int* dev);
  * handle; always succeeds.
  */
 int trc_select_device_env(int* dev);
+
+/**
+ * One of trc_constants' own CODATA 2018 values, by the TRC_CONST_*
+ * selector above, so a host that keeps its own copy of these (a
+ * GAMESS-input front end converting Angstrom to Bohr, say) can read
+ * terco's instead of carrying a second literal that can drift from
+ * this library's. Process-wide; no handle; TRC_ERR_BADARG and
+ * `value` left at 0 for an `id` this build does not know (an older
+ * caller asking for a selector a newer header added, or a typo).
+ *
+ *   TRC_CONST_BOHR_TO_ANGSTROM    Bohr radius, Angstrom
+ *   TRC_CONST_HARTREE_TO_EV       Hartree energy, eV
+ *   TRC_CONST_HARTREE_TO_KCALMOL  Hartree energy, kcal/mol (the
+ *                                 thermochemical calorie)
+ *   TRC_CONST_AMU_TO_ME           atomic mass unit, electron masses
+ *   TRC_CONST_KB_SI               Boltzmann constant, J/K
+ *   TRC_CONST_NA_SI               Avogadro constant, mol^-1
+ */
+int trc_physical_constant(int id, double* value);
 
 /**
  * Look up a functional by name (case-insensitive, trc_xc_functional's

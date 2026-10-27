@@ -24,6 +24,7 @@ A module may use modules in its own layer or any layer above it in this table
 | `post_hf` | `src/post_hf/` | RI-MP2 |
 | `scf` | `src/scf/` | SCF driver, DIIS, guesses, DF-JK, gradients, CPHF/CPKS |
 | `api` | `src/api/` | Fortran API and C ABI |
+| `opt` | `src/opt/` | The geometry optimiser (DL-FIND via libdlfind), built as `libterco_opt` with `trc_opt_capi.F90`'s own C ABI (`include/terco_opt.h`) -- only with `-DTERCO_ENABLE_DLFIND=ON`, see that option's own comment in the root `CMakeLists.txt` |
 | `app` | `app/` | The `terco` CLI |
 
 `src/generated/` is output, not a layer: it belongs to the layer of the
@@ -32,7 +33,11 @@ generator that wrote it (`eri`, `xc`).
 Two things follow from the direction of the arrows:
 
 - **Entry points are leaves.** Nothing uses `app/`. `trc_api` and `trc_capi`
-  are used only by `app/` and by tests.
+  are used only by `app/`, `opt` and tests; `opt` is used only by `app/` and
+  by an out-of-tree caller linking `terco::terco_opt` directly (never by
+  anything else in `src/`) -- it is built as its OWN shared library
+  (`libterco_opt`, never part of `libterco`) for a licensing reason, not a
+  layering one: see `src/opt/CMakeLists.txt`.
 - **`scf` orchestrates.** It may use everything below it. Nothing below it
   may call back into it.
 
