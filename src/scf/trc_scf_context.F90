@@ -290,14 +290,11 @@ contains
             ! is a backstop, not the gate. `.and.` is not guaranteed to
             ! short-circuit, hence the nested `if` rather than one
             ! expression that would call `comm%size()` even when absent.
-            ! The rank-partitioned engine is released right here too, not
-            ! merely marked unusable: nothing downstream ever reads it
-            ! (has_eri is false), so leaving it resident would hold its
-            ! device memory for the rest of the run for no reason.
-            if (comm%size() > 1) then
-               this%pec%has_eri = .false.
-               call this%pec%eri%release()
-            end if
+            ! Marked unusable for a reuser, NOT released: this SCF's own
+            ! Fock builds (build_g -> fock_resident) read `pec%eri` every
+            ! iteration, and on deallocated bins they segfault on the host,
+            ! which nvfortran's handler turns into a silent spin.
+            if (comm%size() > 1) this%pec%has_eri = .false.
          else
             call this%pec%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
          end if
