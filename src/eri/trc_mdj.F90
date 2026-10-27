@@ -26,6 +26,14 @@
 ! at a time, each Hermite row of a block contiguous over the block's pairs.
 ! Everything lives on the device from `build` to `release`.
 !
+! REFERENCES (inspiration; the formulation and code here are terco's own)
+!   L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
+!   E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
+!   I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+!     5, 1004 (2009).
+!   A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
+!     J. Chem. Phys. 160, 244109 (2024).
+!
 module trc_mdj
    use pic_types, only: dp
    use trc_api, only: trc_basis_t

@@ -608,6 +608,8 @@ contains
       sc%pcut = this%thresh*TRC_PRIM_MARGIN
       sc%jfac = jfac
       sc%kfac = kfac
+      sc%rank = this%rank
+      sc%nranks = this%nranks
       call this%mg%fock(this%md, this%dsh, dwork, jmat, sc)
    end subroutine mdg_pass
 

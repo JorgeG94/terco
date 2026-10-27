@@ -24,6 +24,16 @@
 ! 1462 cuBLAS calls per Fock build on w20 cc-pVTZ, the nn GEMM averaging 68
 ! threads (nsys, V100).
 !
+! REFERENCES (inspiration; the formulation and code here are terco's own)
+!   L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
+!   I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+!     5, 1004 (2009).
+!   E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
+!   E. Palethorpe, R. Stocks, G. M. J. Barca, ChemRxiv (2026),
+!     doi:10.26434/chemrxiv.15004739/v2.
+!   A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
+!     J. Chem. Phys. 160, 244109 (2024).
+!
 module trc_mdg
    use pic_types, only: dp, int64, int_index
    use pic_logger, only: global_logger
@@ -54,6 +64,10 @@ module trc_mdg
       real(dp) :: pcut = 0.0_dp
       real(dp) :: jfac = 0.0_dp
       real(dp) :: kfac = 0.0_dp
+      integer :: rank = 0
+      integer :: nranks = 1
+      !! MPI ranks: each takes every nranks-th window, and the caller sums
+      !! the ranks' matrices, as for the bins
    end type trc_mdg_scales_t
 
    type :: trc_mdg_t
@@ -89,6 +103,8 @@ module trc_mdg
       !! TRC_MDG_STATS=1: count windows, launched and surviving quartets and
       !! GEMM flops per build, and log them. The survivor count is a host loop.
       integer(int64) :: st_win = 0, st_quart = 0, st_pass = 0
+      integer(int64) :: nwin = 0
+      !! windows met so far this build, on every rank alike: the rank split
       real(dp) :: st_flop = 0.0_dp
       real(dp) :: st_cflop = 0.0_dp, st_cpass = 0.0_dp, st_cquart = 0.0_dp
       !! the current class's share, for the per-class line
@@ -288,6 +304,7 @@ contains
       scd%dmax = maxval(dsh)
       this%stats = stats_on()
       this%st_win = 0
+      this%nwin = 0
       this%st_quart = 0
       this%st_pass = 0
       this%st_flop = 0.0_dp
@@ -534,6 +551,10 @@ contains
          if (jmax == 0) exit
          do j0 = 0, jmax - 1, njmax
             nj = min(njmax, jmax - j0)
+            ! Every rank walks the same windows in the same order (same
+            ! density, same sorted groups), so the count picks a disjoint share.
+            this%nwin = this%nwin + 1
+            if (mod(this%nwin - 1, int(sc%nranks, int64)) /= sc%rank) cycle
             if (this%stats) call count_window(this, md, [this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb], &
                                               sz, dsh, sc%thresh)
             if (fused) then
