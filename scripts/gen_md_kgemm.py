@@ -40,12 +40,13 @@ from gen_md_j import ORDER_CODE, TWO_PI_2_5, decl, emit_sum, expr_of, wrap_args 
 from gen_md_k import class_key  # noqa: E402
 
 DATA = ("nhp, mp_z, mp_px, mp_py, mp_pz, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, mp_c, "
-        "nsp, sp_ao1, sp_ao2, sp_k0, sp_nk, sp_sh1, sp_sh2, sp_q, ngl, gl")
+        "nsp, sp_ao1, sp_ao2, sp_as1, sp_as2, sp_k0, sp_nk, sp_sh1, sp_sh2, sp_q, ngl, gl")
 DATA_DECL = """      integer,  intent(in) :: nhp, nsp, ngl
       real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)
       real(dp), intent(in) :: mp_ax(nhp), mp_ay(nhp), mp_az(nhp), mp_bx(nhp), mp_by(nhp), mp_bz(nhp)
       real(dp), intent(in) :: mp_c(nhp), sp_q(nsp)
       integer,  intent(in) :: sp_ao1(nsp), sp_ao2(nsp), sp_k0(nsp), sp_nk(nsp), sp_sh1(nsp), sp_sh2(nsp)
+      integer,  intent(in) :: sp_as1(nsp), sp_as2(nsp)
       integer,  intent(in) :: gl(ngl)"""
 WIN = "ib0, ni, ka, jb0, nj, kb, thresh, pcut, jfac, kfac, wdiag, nbas, dsh, nao, ndens, dmat, jmat"
 WIN_DECL = """      integer,  intent(in) :: ib0, ni, ka, jb0, nj, kb, nbas, nao, ndens
@@ -241,6 +242,43 @@ def r_item(tag, L):
     return o
 
 
+def ket_driver(tag, suf, np_, nq_, nr, nab, ncd):
+    o = []
+    o.extend(wrap_args(f"subroutine mdg_ket_{tag}{suf}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
+    o.append("      !! One window: R, PQ, the two GEMMs and the digestion. hb and hk are the")
+    o.append("      !! window's slices of the E matrices trc_mdg formed once per geometry"
+             + (", spherical." if suf else "."))
+    o.append("      type(trc_linalg_t), intent(inout) :: lp")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append(f"      real(dp), intent(in)    :: hb({nab}, {np_}*ka, ni)")
+    o.append(f"      real(dp), intent(in)    :: hk({ncd}, {nq_}*kb, nj)")
+    o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb)")
+    o.append(f"      real(dp), intent(inout) :: pq({np_}*ka*ni, {nq_}*kb, nj), sm({np_}*ka*ni, {ncd}, nj)")
+    o.append(f"      real(dp), intent(inout) :: eri({nab}, ni, {ncd}, nj)")
+    o.append("      integer :: t, npb, nqb")
+    o.append(f"      npb = {np_}*ka")
+    o.append(f"      nqb = {nq_}*kb")
+    o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
+    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
+    o.append("      end do")
+    o.append(f"      do concurrent(t = 1:{np_}*ka*ni*kb*nj)")
+    o.append(f"         call mdg_x_item_{tag}(t, ni, ka, nj, kb, rb, pq)")
+    o.append("      end do")
+    o.append("      ! S_j = PQ_j Hk_j^T, then Eri_i = Hb_i S(i, :) with S read in place.")
+    o.append(f"      call lp%gemm_strided(\"N\", \"T\", npb*ni, {ncd}, nqb, 1.0_dp, pq, npb*ni, &")
+    o.append(f"                           int(npb, int64)*ni*nqb, hk, {ncd}, int({ncd}*nqb, int64), 0.0_dp, &")
+    o.append(f"                           sm, npb*ni, int(npb, int64)*ni*{ncd}, nj)")
+    o.append(f"      call lp%gemm_strided(\"N\", \"N\", {nab}, {ncd}*nj, npb, 1.0_dp, hb, {nab}, &")
+    o.append(f"                           int({nab}*npb, int64), sm, npb*ni, int(npb, int64), 0.0_dp, eri, &")
+    o.append(f"                           {nab}*ni, int({nab}, int64), ni)")
+    o.append(f"      do concurrent(t = 1:{nab}*ni*nj)")
+    o.extend(wrap_args(f"call mdg_d_item_{tag}{suf}", f"t, {DATA}, {WIN}, eri", " " * 9))
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_ket_{tag}{suf}")
+    return o
+
+
 def x_item(tag, lp, lq, L):
     np_, nq_, nr = len(herm(lp)), len(herm(lq)), len(herm(L))
     o = []
@@ -264,10 +302,12 @@ def x_item(tag, lp, lq, L):
     return o
 
 
-def d_item(tag, na, nb, nc, nd):
+def d_item(tag, na, nb, nc, nd, suf="", o1="sp_ao1", o2="sp_ao2"):
+    """Row digestion. The spherical variant (suf "_s") digests spherical rows into
+    the spherical D and K trc_mdg forms around it, at the pairs' spherical offsets."""
     nab, ncd = na * nb, nc * nd
     o = []
-    o.extend(wrap_args(f"pure subroutine mdg_d_item_{tag}", f"t, {DATA}, {WIN}, eri", "   "))
+    o.extend(wrap_args(f"pure subroutine mdg_d_item_{tag}{suf}", f"t, {DATA}, {WIN}, eri", "   "))
     o.append("      !$acc routine seq")
     o.append("      integer, intent(in) :: t")
     o.append(DATA_DECL)
@@ -292,7 +332,7 @@ def d_item(tag, na, nb, nc, nd):
     o.append("      w = wdiag")
     o.append("      if (si == sj) w = 0.5_dp*w")
     o.append("      if (sk == sl) w = 0.5_dp*w")
-    o.append("      mui = sp_ao1(spa); nuj = sp_ao2(spa); lamk = sp_ao1(spc); sigl = sp_ao2(spc)")
+    o.append(f"      mui = {o1}(spa); nuj = {o2}(spa); lamk = {o1}(spc); sigl = {o2}(spc)")
     o.append(f"      ia = mod(ab - 1, {na})")
     o.append(f"      ib = (ab - 1)/{na}")
     o.append(f"      do ic = 1, {ncd}")
@@ -333,7 +373,7 @@ def d_item(tag, na, nb, nc, nd):
     o.append("            end do")
     o.append("         end if")
     o.append("      end do")
-    o.append(f"   end subroutine mdg_d_item_{tag}")
+    o.append(f"   end subroutine mdg_d_item_{tag}{suf}")
     return o
 
 
@@ -347,6 +387,7 @@ def gen_class(la, lb, lc, ld, order, header):
     cc, cd = cartorder.components(lc, order), cartorder.components(ld, order)
     na, nb, nc, nd = len(ca), len(cb), len(cc), len(cd)
     nab, ncd = na * nb, nc * nd
+    nabs, ncds = (2 * la + 1) * (2 * lb + 1), (2 * lc + 1) * (2 * ld + 1)
     il = herm_index(L)
     o = [header.format(what=f"Class ({la}{lb}|{lc}{ld}) MD Fock kernels through batched GEMMs")]
     o.append(f"module trc_mdg_k{tag}")
@@ -355,10 +396,11 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("   use trc_linalg, only: trc_linalg_t")
     o.append("   implicit none")
     o.append("   private")
-    o.append(f"   public :: mdg_ket_{tag}, MDG_SIZES_{tag}")
+    o.append(f"   public :: mdg_ket_{tag}, mdg_ket_{tag}_s, MDG_SIZES_{tag}")
     o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
-    o.append(f"   integer, parameter :: MDG_SIZES_{tag}(6) = [{np_}, {nq_}, {nr}, {nab}, {ncd}, {L}]")
-    o.append("   !! np, nq, n_r, bra and ket component pairs, total L: the host sizes buffers from these.")
+    o.append(f"   integer, parameter :: MDG_SIZES_{tag}(8) = [{np_}, {nq_}, {nr}, {nab}, {ncd}, {L}, {nabs}, {ncds}]")
+    o.append("   !! np, nq, n_r, bra and ket Cartesian component pairs, total L, bra and ket")
+    o.append("   !! spherical component pairs: the host sizes buffers from these.")
     o.append("   ! Literal tables the loops index: Hermite decode, component exponents, and")
     o.append("   ! the (p, q) -> p + q map and (-1)^|q| sign of the expansion.")
     o.extend(int_table(f"RM{tag}", [il[tuple(p[d] + q[d] for d in range(3))] + 1 for q in hq for p in hp]))
@@ -368,46 +410,142 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("")
     o.append('#include "inc/trc_boys_down.inc"')
     o.append("")
-    o.extend(wrap_args(f"subroutine mdg_ket_{tag}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
-    o.append("      !! One window: R, PQ, the two GEMMs and the digestion. hb and hk are the")
-    o.append("      !! window's slices of the E matrices trc_mdg formed once per geometry.")
-    o.append("      type(trc_linalg_t), intent(inout) :: lp")
-    o.append(DATA_DECL)
-    o.append(WIN_DECL)
-    o.append(f"      real(dp), intent(in)    :: hb({nab}, {np_}*ka, ni)")
-    o.append(f"      real(dp), intent(in)    :: hk({ncd}, {nq_}*kb, nj)")
-    o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb)")
-    o.append(f"      real(dp), intent(inout) :: pq({np_}*ka*ni, {nq_}*kb, nj), sm({np_}*ka*ni, {ncd}, nj)")
-    o.append(f"      real(dp), intent(inout) :: eri({nab}, ni, {ncd}, nj)")
-    o.append("      integer :: t, npb, nqb")
-    o.append(f"      npb = {np_}*ka")
-    o.append(f"      nqb = {nq_}*kb")
-    o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
-    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
-    o.append("      end do")
-    o.append(f"      do concurrent(t = 1:{np_}*ka*ni*kb*nj)")
-    o.append(f"         call mdg_x_item_{tag}(t, ni, ka, nj, kb, rb, pq)")
-    o.append("      end do")
-    o.append("      ! S_j = PQ_j Hk_j^T, then Eri_i = Hb_i S(i, :) with S read in place.")
-    o.append(f"      call lp%gemm_strided(\"N\", \"T\", npb*ni, {ncd}, nqb, 1.0_dp, pq, npb*ni, &")
-    o.append(f"                           int(npb, int64)*ni*nqb, hk, {ncd}, int({ncd}*nqb, int64), 0.0_dp, &")
-    o.append(f"                           sm, npb*ni, int(npb, int64)*ni*{ncd}, nj)")
-    o.append(f"      call lp%gemm_strided(\"N\", \"N\", {nab}, {ncd}*nj, npb, 1.0_dp, hb, {nab}, &")
-    o.append(f"                           int({nab}*npb, int64), sm, npb*ni, int(npb, int64), 0.0_dp, eri, &")
-    o.append(f"                           {nab}*ni, int({nab}, int64), ni)")
-    o.append(f"      do concurrent(t = 1:{nab}*ni*nj)")
-    o.extend(wrap_args(f"call mdg_d_item_{tag}", f"t, {DATA}, {WIN}, eri", " " * 9))
-    o.append("      end do")
-    o.append(f"   end subroutine mdg_ket_{tag}")
-    o.append("")
+    for suf, ab_, cd_ in (("", nab, ncd), ("_s", nabs, ncds)):
+        o.extend(ket_driver(tag, suf, np_, nq_, nr, ab_, cd_))
+        o.append("")
     o.extend(r_item(tag, L))
     o.append("")
     o.extend(x_item(tag, lp, lq, L))
     o.append("")
     o.extend(d_item(tag, na, nb, nc, nd))
     o.append("")
+    o.extend(d_item(tag, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "_s", "sp_as1", "sp_as2"))
+    o.append("")
     o.append(f"end module trc_mdg_k{tag}")
     return "\n".join(o) + "\n"
+
+
+SPH_TRANSFORMS = """   subroutine mdg_hsph(la, lb, ncol, hc, hs)
+      !! E matrices to spherical rows: hs(a' + (2la+1)(b'-1), col) =
+      !! sum_ab T(a, a', la) T(b, b', lb) hc(a + nca (b-1), col). Once per geometry.
+      integer,  intent(in)    :: la, lb, ncol
+      real(dp), intent(in)    :: hc((la + 1)*(la + 2)/2*(lb + 1)*(lb + 2)/2, ncol)
+      real(dp), intent(inout) :: hs((2*la + 1)*(2*lb + 1), ncol)
+      integer :: t
+      do concurrent(t = 1:(2*la + 1)*(2*lb + 1)*ncol)
+         call hsph_item(t, la, lb, ncol, hc, hs)
+      end do
+   end subroutine mdg_hsph
+
+   pure subroutine hsph_item(t, la, lb, ncol, hc, hs)
+      !$acc routine seq
+      integer,  intent(in)    :: t, la, lb, ncol
+      real(dp), intent(in)    :: hc((la + 1)*(la + 2)/2*(lb + 1)*(lb + 2)/2, ncol)
+      real(dp), intent(inout) :: hs((2*la + 1)*(2*lb + 1), ncol)
+      integer :: nsa, nsb, nca, ncb, ab, col, ap, bp, a, b
+      real(dp) :: acc
+      nsa = 2*la + 1
+      nsb = 2*lb + 1
+      nca = (la + 1)*(la + 2)/2
+      ncb = (lb + 1)*(lb + 2)/2
+      ab = mod(t - 1, nsa*nsb) + 1
+      col = (t - 1)/(nsa*nsb) + 1
+      ap = mod(ab - 1, nsa) + 1
+      bp = (ab - 1)/nsa + 1
+      acc = 0.0_dp
+      do b = 1, ncb
+         do a = 1, nca
+            acc = acc + SPH_T(a, ap, la)*SPH_T(b, bp, lb)*hc(a + nca*(b - 1), col)
+         end do
+      end do
+      hs(ab, col) = acc
+   end subroutine hsph_item
+
+   subroutine mdg_dsph(nshell, sh_l, sh_ao, sh_ao_sph, ndens, nao, naos, d, ds)
+      !! ds(:, block) = S^T d(:, block) S for every shell pair: the spherical
+      !! density a Cartesian D_cart = T D_sph T^T came from.
+      integer,  intent(in)  :: nshell, ndens, nao, naos
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: d(ndens, nao, nao)
+      real(dp), intent(inout) :: ds(ndens, naos, naos)
+      integer :: ij, ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k
+      real(dp) :: acc, inner
+      do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k, &
+                                                  acc, inner)
+         jsh = ij/nshell + 1
+         ish = ij - (jsh - 1)*nshell + 1
+         li = sh_l(ish); lj = sh_l(jsh)
+         nci = (li + 1)*(li + 2)/2; ncj = (lj + 1)*(lj + 2)/2
+         nsi = 2*li + 1; nsj = 2*lj + 1
+         ai = sh_ao(ish); aj = sh_ao(jsh); bi = sh_ao_sph(ish); bj = sh_ao_sph(jsh)
+         do k = 1, ndens
+            do c = 1, nsj
+               do r = 1, nsi
+                  acc = 0.0_dp
+                  do q = 1, ncj
+                     inner = 0.0_dp
+                     do p = 1, nci
+                        inner = inner + SPH_S(p, r, li)*d(k, ai + p - 1, aj + q - 1)
+                     end do
+                     acc = acc + inner*SPH_S(q, c, lj)
+                  end do
+                  ds(k, bi + r - 1, bj + c - 1) = acc
+               end do
+            end do
+         end do
+      end do
+   end subroutine mdg_dsph
+
+   subroutine mdg_kcart(nshell, sh_l, sh_ao, sh_ao_sph, ndens, nao, naos, ks, g)
+      !! g(:, block) += S ks(:, block) S^T: a spherical result into the Cartesian
+      !! matrix so that the fold T^T g T returns exactly ks.
+      integer,  intent(in)  :: nshell, ndens, nao, naos
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: ks(ndens, naos, naos)
+      real(dp), intent(inout) :: g(ndens, nao, nao)
+      integer :: ij, ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k
+      real(dp) :: acc, inner
+      do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k, &
+                                                  acc, inner)
+         jsh = ij/nshell + 1
+         ish = ij - (jsh - 1)*nshell + 1
+         li = sh_l(ish); lj = sh_l(jsh)
+         nci = (li + 1)*(li + 2)/2; ncj = (lj + 1)*(lj + 2)/2
+         nsi = 2*li + 1; nsj = 2*lj + 1
+         ai = sh_ao(ish); aj = sh_ao(jsh); bi = sh_ao_sph(ish); bj = sh_ao_sph(jsh)
+         do k = 1, ndens
+            do q = 1, ncj
+               do p = 1, nci
+                  acc = 0.0_dp
+                  do c = 1, nsj
+                     inner = 0.0_dp
+                     do r = 1, nsi
+                        inner = inner + SPH_S(p, r, li)*ks(k, bi + r - 1, bj + c - 1)
+                     end do
+                     acc = acc + inner*SPH_S(q, c, lj)
+                  end do
+                  g(k, ai + p - 1, aj + q - 1) = g(k, ai + p - 1, aj + q - 1) + acc
+               end do
+            end do
+         end do
+      end do
+   end subroutine mdg_kcart"""
+
+
+def _inverse(m):
+    """Inverse of a small symmetric positive definite matrix, Gauss-Jordan with pivoting."""
+    n = len(m)
+    a = [list(map(float, row)) + [1.0 if i == j else 0.0 for j in range(n)] for i, row in enumerate(m)]
+    for c in range(n):
+        piv = max(range(c, n), key=lambda r: abs(a[r][c]))
+        a[c], a[piv] = a[piv], a[c]
+        f = a[c][c]
+        a[c] = [x / f for x in a[c]]
+        for r in range(n):
+            if r != c and a[r][c] != 0.0:
+                g = a[r][c]
+                a[r] = [x - g * y for x, y in zip(a[r], a[c])]
+    return [row[n:] for row in a]
 
 
 def gen_h_module(lmax, order, header):
@@ -418,12 +556,34 @@ def gen_h_module(lmax, order, header):
     window, inside the class kernels, they were 960 of 2010 ms per Fock build
     on w5 cc-pVQZ (V100).
     """
+    import gen_sph  # noqa: E402 (T per l, this build's Cartesian order)
     o = [header.format(what="E matrices of the MD GEMM pass, per shell-pair type")]
     o.append("module trc_mdg_h")
     o.append("   use pic_types, only: dp")
+    o.append("   use trc_sph_tables, only: SPH_T, SPH_NCART_MAX, SPH_NSPH_MAX")
     o.append("   implicit none")
     o.append("   private")
-    o.append("   public :: mdg_h")
+    o.append("   public :: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart")
+    # S = T (T^T T)^-1 per l: the right inverse with T^T S = I, so a density
+    # D_cart = T D_sph T^T gives D_sph = S^T D_cart S back, and adding S K S^T
+    # to the Cartesian result folds out (T^T . T) to exactly K.
+    svals = []
+    for l in range(5):
+        cs = cartorder.components(l, order)
+        T = gen_sph.sph_block(l, cs)
+        nc, ns = len(cs), 2 * l + 1
+        M = [[sum(T[k][i] * T[k][j] for k in range(nc)) for j in range(ns)] for i in range(ns)]
+        Mi = _inverse(M)
+        S = [[sum(T[a][k] * Mi[k][j] for k in range(ns)) for j in range(ns)] for a in range(nc)]
+        for j in range(9):
+            for a in range(15):
+                svals.append(S[a][j] if (a < nc and j < ns) else 0.0)
+    o.append("   real(dp), parameter :: SPH_S(SPH_NCART_MAX, SPH_NSPH_MAX, 0:4) = reshape([ &")
+    toks = [repr(v) + "_dp" for v in svals]
+    for k in range(0, len(toks), 4):
+        o.append("      " + ", ".join(toks[k:k + 4]) + (", &" if k + 4 < len(toks) else "], &"))
+    o.append("      [SPH_NCART_MAX, SPH_NSPH_MAX, 5])")
+    o.append("   !! S(:, :, l) = T (T^T T)^-1, the right inverse of SPH_T's block.")
     types = [(la, lb) for la in range(lmax + 1) for lb in range(la + 1)]
     for la, lb in types:
         t = f"{la}{lb}"
@@ -494,6 +654,8 @@ def gen_h_module(lmax, order, header):
         o.append("      end do")
         o.append(f"   end subroutine mdg_h_item_{t}")
     o.append("")
+    o.extend(SPH_TRANSFORMS.splitlines())
+    o.append("")
     o.append("end module trc_mdg_h")
     return "\n".join(o) + "\n"
 
@@ -505,7 +667,7 @@ def gen_dispatch(classes, header):
     o.append("   use trc_linalg, only: trc_linalg_t")
     for c in classes:
         tag = "".join(map(str, c))
-        o.append(f"   use trc_mdg_k{tag}, only: mdg_ket_{tag}, MDG_SIZES_{tag}")
+        o.append(f"   use trc_mdg_k{tag}, only: mdg_ket_{tag}, mdg_ket_{tag}_s, MDG_SIZES_{tag}")
     o.append("   implicit none")
     o.append("   private")
     o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket")
@@ -528,17 +690,18 @@ def gen_dispatch(classes, header):
     o.append("   end function mdg_class_key")
     o.append("")
     o.append("   pure function mdg_sizes(key) result(sz)")
-    o.append("      !! np, nq, n_r, nab, ncd, L of a generated class; zeros if none.")
+    o.append("      !! np, nq, n_r, nab, ncd, L, nab_sph, ncd_sph of a generated class; zeros if none.")
     o.append("      integer, intent(in) :: key")
-    o.append("      integer :: sz(6)")
+    o.append("      integer :: sz(8)")
     o.append("      sz = 0")
     for c in classes:
         tag = "".join(map(str, c))
         o.append(f"      if (key == {class_key(*c)}) sz = MDG_SIZES_{tag}")
     o.append("   end function mdg_sizes")
     o.append("")
-    o.extend(wrap_args("subroutine mdg_ket", f"key, lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
+    o.extend(wrap_args("subroutine mdg_ket", f"key, sph, lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
     o.append("      integer, intent(in) :: key")
+    o.append("      logical, intent(in) :: sph")
     o.append("      type(trc_linalg_t), intent(inout) :: lp")
     o.append(DATA_DECL)
     o.append(WIN_DECL)
@@ -548,7 +711,11 @@ def gen_dispatch(classes, header):
     for c in classes:
         tag = "".join(map(str, c))
         o.append(f"      case ({class_key(*c)})")
-        o.extend(wrap_args(f"call mdg_ket_{tag}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", " " * 9))
+        o.append("         if (sph) then")
+        o.extend(wrap_args(f"call mdg_ket_{tag}_s", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", " " * 12))
+        o.append("         else")
+        o.extend(wrap_args(f"call mdg_ket_{tag}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", " " * 12))
+        o.append("         end if")
     o.append("      case default")
     o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
     o.append("      end select")

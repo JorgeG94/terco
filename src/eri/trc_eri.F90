@@ -587,7 +587,22 @@ contains
             call this%md%build(b, this%bins, this%thresh)
          end if
       end if
-      if (.not. this%mg%built) call this%mg%build(this%md)
+      if (.not. this%mg%built) then
+         ! Exchange in spherical components when the caller's basis is
+         ! spherical; TRC_MDG_CART=1 keeps it Cartesian, for comparing.
+         block
+            character(len=8) :: ec
+            logical :: sph
+            ec = " "
+            call get_environment_variable("TRC_MDG_CART", ec)
+            sph = b%spherical .and. trim(ec) /= "1"
+            if (this%dec%active) then
+               call this%mg%build(this%md, this%pb, sph)
+            else
+               call this%mg%build(this%md, b, sph)
+            end if
+         end block
+      end if
       sc%thresh = this%thresh
       sc%pcut = this%thresh*TRC_PRIM_MARGIN
       sc%jfac = jfac

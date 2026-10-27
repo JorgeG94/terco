@@ -30,7 +30,8 @@ module trc_mdg
    use trc_linalg, only: trc_linalg_t
    use trc_mdj, only: trc_mdj_t
    use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket
-   use trc_mdg_h, only: mdg_h
+   use trc_mdg_h, only: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart
+   use trc_api, only: trc_basis_t
    implicit none
    private
    public :: trc_mdg_t, trc_mdg_scales_t, mdg_routes
@@ -66,6 +67,15 @@ module trc_mdg
       !! E matrices of every group a routed class reads, h(nab, np*k, pair), in
       !! each group's sorted order: geometry only, formed once. Per window they
       !! were 960 of 2010 ms per Fock build on w5 cc-pVQZ (V100).
+      logical :: sph = .false.
+      !! Exchange in spherical components: the caller's basis is spherical.
+      !! The density goes in as D_sph = S^T D_cart S per shell block and the
+      !! result comes back as S K_sph S^T, which the caller's fold T^T . T
+      !! returns to exactly K_sph (S = T (T^T T)^-1). At (gg) that is 81
+      !! component pairs where Cartesian is 225, in both GEMMs and the digestion.
+      integer :: nsh = 0, naos = 0
+      integer, allocatable :: sh_l(:), sh_ao(:), sh_ao_sph(:)
+      !! the working basis's shells, for the block transforms
       type(trc_linalg_t) :: lp
    contains
       procedure :: build => mdg_build
@@ -80,7 +90,7 @@ contains
       integer, intent(in) :: key
       character(len=256) :: e
       character(len=4) :: tag
-      integer :: s, sz(6)
+      integer :: s, sz(8)
       res = .false.
       sz = mdg_sizes(key)
       if (sz(1) == 0) return
@@ -99,10 +109,15 @@ contains
       res = index(","//trim(e)//",", ","//tag//",") > 0
    end function mdg_routes
 
-   subroutine mdg_build(this, md)
-      !! Groups of the MD J object's shell pairs, sorted, on the device.
+   subroutine mdg_build(this, md, wb, sph)
+      !! Groups of the MD J object's shell pairs, sorted, on the device, and
+      !! their E matrices.
       class(trc_mdg_t), intent(inout) :: this
       type(trc_mdj_t), intent(in) :: md
+      type(trc_basis_t), intent(in) :: wb
+      !! the basis md was built over (the split one on a general contraction)
+      logical, intent(in) :: sph
+      !! the CALLER's basis is spherical
       integer :: t, s, n, k, g, m, kmax
       integer(int64), allocatable :: key(:)
       integer(int_index), allocatable :: idx(:)
@@ -148,7 +163,14 @@ contains
          end do
       end do
       deallocate (key, idx, tmp)
-      !$acc enter data copyin(this%gl)
+      this%sph = sph
+      this%nsh = wb%nshell
+      this%naos = wb%nao_sph
+      allocate (this%sh_l(this%nsh), this%sh_ao(this%nsh), this%sh_ao_sph(this%nsh))
+      this%sh_l = wb%sh_l
+      this%sh_ao = wb%sh_ao
+      this%sh_ao_sph = wb%sh_ao_sph
+      !$acc enter data copyin(this%gl, this%sh_l, this%sh_ao, this%sh_ao_sph)
       call form_e_matrices(this, md)
       call this%lp%init(1)
       this%built = .true.
@@ -158,9 +180,10 @@ contains
       !! E matrices of the groups whose type a generated, routed class reads.
       type(trc_mdg_t), intent(inout) :: this
       type(trc_mdj_t), intent(in) :: md
-      integer :: g, c, key, t1, t2, la, lb
+      integer :: g, c, key, t1, t2, la, lb, ncol
       integer(int64) :: total
       logical, allocatable :: need(:)
+      real(dp), allocatable :: hc(:)
 
       allocate (need(md%ntype), this%gh_off(this%ngrp))
       need = .false.
@@ -178,7 +201,7 @@ contains
          la = md%ty_la(this%gr_ty(g))
          lb = md%ty_lb(this%gr_ty(g))
          this%gh_off(g) = total
-         total = total + int(ncart(la)*ncart(lb), int64)*nherm(la + lb)*this%gr_k(g)*this%gr_n(g)
+         total = total + int(ncomp(this, la)*ncomp(this, lb), int64)*nherm(la + lb)*this%gr_k(g)*this%gr_n(g)
       end do
       allocate (this%gh(max(total, 1_int64)))
       !$acc enter data create(this%gh)
@@ -186,10 +209,24 @@ contains
          if (this%gh_off(g) < 0) cycle
          la = md%ty_la(this%gr_ty(g))
          lb = md%ty_lb(this%gr_ty(g))
-         call mdg_h(la, lb, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, md%mp_az, &
-                    md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, md%sp_k0, &
-                    md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
-                    this%gr_off(g), this%gr_n(g), this%gr_k(g), this%gh(this%gh_off(g) + 1))
+         ncol = nherm(la + lb)*this%gr_k(g)*this%gr_n(g)
+         if (this%sph) then
+            ! Cartesian first, into scratch, then the rows to spherical.
+            allocate (hc(int(ncart(la)*ncart(lb), int64)*ncol))
+            !$acc enter data create(hc)
+            call mdg_h(la, lb, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, md%mp_az, &
+                       md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, md%sp_as1, &
+                       md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
+                       this%gr_off(g), this%gr_n(g), this%gr_k(g), hc)
+            call mdg_hsph(la, lb, ncol, hc, this%gh(this%gh_off(g) + 1))
+            !$acc exit data delete(hc)
+            deallocate (hc)
+         else
+            call mdg_h(la, lb, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, md%mp_az, &
+                       md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, md%sp_as1, &
+                       md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
+                       this%gr_off(g), this%gr_n(g), this%gr_k(g), this%gh(this%gh_off(g) + 1))
+         end if
       end do
       deallocate (need)
    end subroutine form_e_matrices
@@ -198,6 +235,17 @@ contains
       integer, intent(in) :: l
       n = (l + 1)*(l + 2)/2
    end function ncart
+
+   pure integer function ncomp(this, l) result(n)
+      !! Components of a shell in the representation the exchange runs in.
+      type(trc_mdg_t), intent(in) :: this
+      integer, intent(in) :: l
+      if (this%sph) then
+         n = 2*l + 1
+      else
+         n = ncart(l)
+      end if
+   end function ncomp
 
    pure integer function nherm(l) result(n)
       integer, intent(in) :: l
@@ -219,6 +267,10 @@ contains
       !$acc update self(dsh)
       scd = sc
       scd%dmax = maxval(dsh)
+      if (this%sph) then
+         call fock_spherical(this, md, dsh, dmat, jmat, scd)
+         return
+      end if
       do c = 1, mdg_class_count()
          key = mdg_class_key(c)
          if (.not. mdg_routes(key)) cycle
@@ -237,6 +289,55 @@ contains
       end do
    end subroutine mdg_fock
 
+   subroutine fock_spherical(this, md, dsh, dmat, jmat, sc)
+      !! The classes in spherical components: D_sph = S^T D S in, the windows on
+      !! (ndens, nao_sph, nao_sph) arrays, S K_sph S^T added back to jmat.
+      type(trc_mdg_t), intent(inout) :: this
+      type(trc_mdj_t), intent(in) :: md
+      real(dp), intent(inout) :: dsh(:, :)
+      real(dp), intent(in)    :: dmat(:, :, :)
+      real(dp), intent(inout) :: jmat(:, :, :)
+      type(trc_mdg_scales_t), intent(in) :: sc
+      real(dp), allocatable :: ds(:, :, :), ks(:, :, :)
+      integer :: nd, c, key, t1, t2, g1, g2
+      nd = size(dmat, 1)
+      allocate (ds(nd, this%naos, this%naos), ks(nd, this%naos, this%naos))
+      !$acc enter data create(ds, ks)
+      call mdg_dsph(this%nsh, this%sh_l, this%sh_ao, this%sh_ao_sph, nd, size(dmat, 2), this%naos, dmat, ds)
+      call zero3(ks)
+      do c = 1, mdg_class_count()
+         key = mdg_class_key(c)
+         if (.not. mdg_routes(key)) cycle
+         call class_types(md, key, t1, t2)
+         if (t1 == 0 .or. t2 == 0) cycle
+         do g1 = 1, this%ngrp
+            if (this%gr_ty(g1) /= t1) cycle
+            do g2 = 1, this%ngrp
+               if (this%gr_ty(g2) /= t2) cycle
+               if (t1 == t2 .and. g2 > g1) cycle
+               call group_pair(this, md, [key, g1, g2], dsh, ds, ks, sc)
+            end do
+         end do
+      end do
+      call mdg_kcart(this%nsh, this%sh_l, this%sh_ao, this%sh_ao_sph, nd, size(jmat, 2), this%naos, ks, jmat)
+      !$acc exit data delete(ds, ks)
+      deallocate (ds, ks)
+   end subroutine fock_spherical
+
+   subroutine zero3(a)
+      real(dp), intent(inout) :: a(:, :, :)
+      call zero_flat(size(a), a)
+   end subroutine zero3
+
+   subroutine zero_flat(n, a)
+      integer,  intent(in)    :: n
+      real(dp), intent(inout) :: a(n)
+      integer :: i
+      do concurrent(i = 1:n)
+         a(i) = 0.0_dp
+      end do
+   end subroutine zero_flat
+
    subroutine group_pair(this, md, job, dsh, dmat, jmat, sc)
       !! The staircase over one bra group and one ket group.
       type(trc_mdg_t), intent(inout) :: this
@@ -247,7 +348,7 @@ contains
       real(dp), intent(in)    :: dmat(:, :, :)
       real(dp), intent(inout) :: jmat(:, :, :)
       type(trc_mdg_scales_t), intent(in) :: sc
-      integer :: sz(6), ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
+      integer :: sz(8), ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
       integer(int64) :: per
       real(dp) :: wdiag
       real(dp), allocatable :: rb(:), pq(:), sm(:), eri(:)
@@ -257,6 +358,11 @@ contains
       g1 = job(2)
       g2 = job(3)
       sz = mdg_sizes(key)
+      ! Component-pair counts in the representation the windows run in.
+      if (this%sph) then
+         sz(4) = sz(7)
+         sz(5) = sz(8)
+      end if
       ka = this%gr_k(g1)
       kb = this%gr_k(g2)
       wdiag = 1.0_dp
@@ -282,9 +388,9 @@ contains
          if (jmax == 0) exit
          do j0 = 0, jmax - 1, njmax
             nj = min(njmax, jmax - j0)
-            call mdg_ket(key, this%lp, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
+            call mdg_ket(key, this%sph, this%lp, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
                          md%mp_az, md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, &
-                         md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
+                         md%sp_as1, md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, size(this%gl), this%gl, &
                          this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb, &
                          sc%thresh, sc%pcut, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
                          size(dmat, 2), size(dmat, 1), dmat, jmat, this%gh(hb0 + ib*perb + 1), &
@@ -335,12 +441,13 @@ contains
    subroutine mdg_release(this)
       class(trc_mdg_t), intent(inout) :: this
       if (this%built) then
-         !$acc exit data delete(this%gl, this%gh)
+         !$acc exit data delete(this%gl, this%gh, this%sh_l, this%sh_ao, this%sh_ao_sph)
          call this%lp%release()
       end if
       if (allocated(this%gr_ty)) deallocate (this%gr_ty, this%gr_k, this%gr_off, this%gr_n)
       if (allocated(this%gl)) deallocate (this%gl, this%gq)
       if (allocated(this%gh)) deallocate (this%gh, this%gh_off)
+      if (allocated(this%sh_l)) deallocate (this%sh_l, this%sh_ao, this%sh_ao_sph)
       this%ngrp = 0
       this%built = .false.
    end subroutine mdg_release

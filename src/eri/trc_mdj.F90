@@ -73,6 +73,9 @@ module trc_mdj
       !! first AO of each shell, first primitive pair less one, count
       integer,  allocatable :: sp_sh1(:), sp_sh2(:)
       !! the two shells, for the density bound of an exchange quartet
+      integer,  allocatable :: sp_as1(:), sp_as2(:)
+      !! first spherical AO of each shell (trc_mdg's spherical exchange)
+      integer :: nao_sph = 0
       real(dp), allocatable :: sp_q(:)
       !! the bins' Schwarz bound of the pair
       integer,  allocatable :: ty_la(:), ty_lb(:), ty_s0(:), ty_ns(:), ty_k0(:), ty_nk(:)
@@ -116,7 +119,7 @@ contains
       !$acc                   this%mp_ax, this%mp_ay, this%mp_az, &
       !$acc                   this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
       !$acc                   this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
-      !$acc                   this%sp_sh1, this%sp_sh2, this%sp_q) &
+      !$acc                   this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2) &
       !$acc            create(this%mp_ip, this%mp_nq, this%dt, this%jt)
       this%on_device = .true.
 
@@ -264,7 +267,9 @@ contains
       this%nsp = count(nk > 0)
       allocate (this%sp_ao1(max(this%nsp, 1)), this%sp_ao2(max(this%nsp, 1)), &
                 this%sp_k0(max(this%nsp, 1)), this%sp_nk(max(this%nsp, 1)), &
-                this%sp_sh1(max(this%nsp, 1)), this%sp_sh2(max(this%nsp, 1)), this%sp_q(max(this%nsp, 1)))
+                this%sp_sh1(max(this%nsp, 1)), this%sp_sh2(max(this%nsp, 1)), this%sp_q(max(this%nsp, 1)), &
+                this%sp_as1(max(this%nsp, 1)), this%sp_as2(max(this%nsp, 1)))
+      this%nao_sph = b%nao_sph
       allocate (this%mp_z(max(this%nhp, 1)), this%mp_px(max(this%nhp, 1)), &
                 this%mp_py(max(this%nhp, 1)), this%mp_pz(max(this%nhp, 1)), &
                 this%mp_ax(max(this%nhp, 1)), this%mp_ay(max(this%nhp, 1)), &
@@ -288,6 +293,8 @@ contains
             this%sp_nk(ia) = nk(n)
             this%sp_sh1(ia) = i
             this%sp_sh2(ia) = j
+            this%sp_as1(ia) = b%sh_ao_sph(i)
+            this%sp_as2(ia) = b%sh_ao_sph(j)
             this%sp_q(ia) = bins%sp_q(s)
             ab2 = sum((b%sh_r(:, i) - b%sh_r(:, j))**2)
             do ki = 1, b%sh_np(i)
@@ -409,7 +416,7 @@ contains
          !$acc                  this%mp_ax, this%mp_ay, this%mp_az, &
          !$acc                  this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
          !$acc                  this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
-         !$acc                  this%sp_sh1, this%sp_sh2, this%sp_q, &
+         !$acc                  this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2, &
          !$acc                  this%mp_ip, this%mp_nq, this%dt, this%jt)
          this%on_device = .false.
       end if
@@ -417,7 +424,7 @@ contains
                                             this%mp_ax, this%mp_ay, this%mp_az, &
                                             this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp)
       if (allocated(this%sp_ao1)) deallocate (this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
-                                              this%sp_sh1, this%sp_sh2, this%sp_q)
+                                              this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2)
       if (allocated(this%mp_ip)) deallocate (this%mp_ip, this%mp_nq)
       if (allocated(this%dt)) deallocate (this%dt, this%jt)
       if (allocated(this%ty_la)) deallocate (this%ty_la, this%ty_lb, this%ty_s0, this%ty_ns, &
