@@ -31,13 +31,27 @@
 #
 find_package(libdlfind REQUIRED)
 
-add_library(terco_opt SHARED trc_opt_io.F90 trc_dlfind_bridge.F90 trc_opt_capi.F90)
+# Same linkage as ${main_lib} (TERCO_BUILD_SHARED). A shared libterco_opt
+# beside a static libterco would absorb its own copy of terco and pic-mpi
+# (and their module state) and export it to the executable, which then
+# calls the .so's pic_mpi with the .so's copy of the legacy `use mpi`
+# common blocks. Where MPI_IN_PLACE lives in such a block (Cray MPICH's
+# mpifcmb5_), libmpifort compares against the executable's copy, takes
+# MPI_IN_PLACE for a real buffer, and the first Fock allreduce segfaults
+# inside MPI, which nvfortran's handler turns into a silent 0% GPU spin.
+# libdlfind.so stays shared either way: it is the LGPL part.
+if(TERCO_BUILD_SHARED)
+  add_library(terco_opt SHARED trc_opt_io.F90 trc_dlfind_bridge.F90 trc_opt_capi.F90)
+else()
+  add_library(terco_opt STATIC trc_opt_io.F90 trc_dlfind_bridge.F90 trc_opt_capi.F90)
+endif()
 add_library(terco::terco_opt ALIAS terco_opt)
 
-# libterco_opt.so, not terco_cli, now carries the DT_NEEDED on
+# A shared libterco_opt.so, not terco_cli, carries the DT_NEEDED on
 # libdlfind.so, and an executable's RUNPATH does not cover its libraries'
 # own dependencies, so this library needs its own: libdlfind.so is
-# installed next to it in lib/.
+# installed next to it in lib/. A static one leaves the DT_NEEDED on the
+# executable, whose own RUNPATH covers lib/; the property is ignored then.
 if(APPLE)
   set_target_properties(terco_opt PROPERTIES INSTALL_RPATH "@loader_path")
 else()
@@ -64,7 +78,17 @@ target_include_directories(
 # entry on libterco_opt.so (the symbols ARE used, just not re-exposed), so
 # a consumer still needs libdlfind.so found at RUNTIME -- never at
 # configure/link time, which is the whole point of not exposing it.
-target_link_libraries(terco_opt PUBLIC ${main_lib} PRIVATE libdlfind::libdlfind pic::pic)
+#
+# A STATIC libterco_opt exports its PRIVATE requirements as link-only
+# entries, so they must not name targets a consumer of the install does not
+# have: pic::pic is build-tree only (as on ${main_lib}), and libdlfind is
+# the installed lib/libdlfind.so by path.
+target_link_libraries(
+  terco_opt
+  PUBLIC ${main_lib}
+  PRIVATE $<BUILD_INTERFACE:libdlfind::libdlfind>
+          $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${CMAKE_SHARED_LIBRARY_PREFIX}dlfind${CMAKE_SHARED_LIBRARY_SUFFIX}>
+          $<BUILD_INTERFACE:pic::pic>)
 
 install(
   TARGETS terco_opt
