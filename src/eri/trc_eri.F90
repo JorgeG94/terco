@@ -32,6 +32,7 @@ module trc_eri
    use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
+   use pic_profiler, only: profiler_start, profiler_stop
    use trc_binkernel, only: fock_bins
    use trc_grad, only: grad_bins
    use trc_mdj, only: trc_mdj_t
@@ -1055,6 +1056,7 @@ contains
          end if
       end block
       if (.not. (md_j .and. kfac == 0.0_dp)) then
+         call profiler_start("eri: bins (hgp/rys)", nvtx_only=.true.)
          call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                         this%ao_off, this%thresh, .false., &
                         jbins, kfac, ow, .false., this%dsh, &
@@ -1065,7 +1067,12 @@ contains
                         this%sq_ax, this%sq_ay, this%sq_az, &
                         this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                         1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+         !$acc wait
+         call profiler_stop("eri: bins (hgp/rys)")
+         call profiler_start("eri: md exchange", nvtx_only=.true.)
          call mdg_pass(this, b, dwork, jmat, jbins, kfac)
+         !$acc wait
+         call profiler_stop("eri: md exchange")
       end if
       !$acc wait
 
@@ -1089,7 +1096,9 @@ contains
          end if
          allocate (jw(nw, nw))
          !$acc enter data create(jw)
+         call profiler_start("eri: md J", nvtx_only=.true.)
          call this%md%coulomb(nw, dp_w, jw)
+         call profiler_stop("eri: md J")
          ! Every rank forms the whole of J; only rank 0 adds it to what
          ! sum_ranks then totals.
          if (this%rank == 0) call add_scaled_device(nw*nw, jfac, jw, gp_w)

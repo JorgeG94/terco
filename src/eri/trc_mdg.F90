@@ -28,6 +28,7 @@ module trc_mdg
    use pic_types, only: dp, int64, int_index
    use pic_logger, only: global_logger
    use pic_timer, only: timer_type
+   use pic_profiler, only: profiler_start, profiler_stop
    use pic_sorting, only: sort_index
    use trc_linalg, only: trc_linalg_t
    use trc_mdj, only: trc_mdj_t
@@ -79,6 +80,10 @@ module trc_mdg
       integer, allocatable :: sh_l(:), sh_ao(:), sh_ao_sph(:)
       !! the working basis's shells, for the block transforms
       type(trc_linalg_t) :: lp
+      real(dp), allocatable :: wrb(:), wpq(:), wsm(:), weri(:)
+      !! Window buffers, kept on the device across windows and builds and grown
+      !! only when a group pair needs more: made per group pair, the device
+      !! allocations were ~5 of 20.5 s per Fock build on w20 cc-pVQZ.
       logical :: stats = .false.
       !! TRC_MDG_STATS=1: count windows, launched and surviving quartets and
       !! GEMM flops per build, and log them. The survivor count is a host loop.
@@ -135,11 +140,16 @@ contains
       call this%release()
       kmax = 0
       if (md%nsp > 0) kmax = maxval(md%sp_nk(1:md%nsp))
-      ! Count the groups: one per (type, primitive count) that has pairs.
+      ! Count the groups: one per (type, primitive-count bucket) that has pairs.
+      ! Buckets 1, 2, 3-4, 5-8, ...: a group pads its pairs to its largest
+      ! count (at most 2x), and gets far fewer group pairs, each one window or
+      ! more and three launches a window. Split by exact count, w20 cc-pVQZ
+      ! had ~2000 windows per build whatever the block size, ~5 s of launches.
       this%ngrp = 0
       do t = 1, md%ntype
-         do k = 1, kmax
-            if (any(md%sp_nk(md%ty_s0(t) + 1:md%ty_s0(t) + md%ty_ns(t)) == k)) this%ngrp = this%ngrp + 1
+         do k = 1, kbucket(kmax)
+            if (any(kbucket_v(md%sp_nk(md%ty_s0(t) + 1:md%ty_s0(t) + md%ty_ns(t))) == k)) &
+               this%ngrp = this%ngrp + 1
          end do
       end do
       allocate (this%gr_ty(this%ngrp), this%gr_k(this%ngrp), this%gr_off(this%ngrp), this%gr_n(this%ngrp))
@@ -148,10 +158,10 @@ contains
       g = 0
       m = 0
       do t = 1, md%ntype
-         do k = 1, kmax
+         do k = 1, kbucket(kmax)
             n = 0
             do s = md%ty_s0(t) + 1, md%ty_s0(t) + md%ty_ns(t)
-               if (md%sp_nk(s) /= k) cycle
+               if (kbucket(md%sp_nk(s)) /= k) cycle
                n = n + 1
                tmp(n) = s
                ! Ascending integer key on -log10(Q): the largest bound first.
@@ -161,7 +171,7 @@ contains
             call sort_index(key(1:n), idx(1:n))
             g = g + 1
             this%gr_ty(g) = t
-            this%gr_k(g) = k
+            this%gr_k(g) = maxval(md%sp_nk(tmp(1:n)))
             this%gr_off(g) = m
             this%gr_n(g) = n
             do s = 1, n
@@ -292,6 +302,7 @@ contains
          if (.not. mdg_routes(key)) cycle
          call class_types(md, key, t1, t2)
          if (t1 == 0 .or. t2 == 0) cycle
+         call profiler_start("mdg: "//class_label(key), nvtx_only=.true.)
          if (this%stats) then
             !$acc wait
             call tm%start()
@@ -310,9 +321,52 @@ contains
             end do
          end do
          if (this%stats) call class_line(this, key, tm)
+         !$acc wait
+         call profiler_stop("mdg: "//class_label(key))
       end do
       call report_stats(this)
    end subroutine mdg_fock
+
+   function class_label(key) result(lab)
+      !! "(gs|ps)" for a class key.
+      integer, intent(in) :: key
+      character(len=7) :: lab
+      character(len=*), parameter :: L = "spdfghi"
+      lab = "(" // L(key/(CLASS_RADIX**3) + 1:key/(CLASS_RADIX**3) + 1) &
+            // L(mod(key/(CLASS_RADIX**2), CLASS_RADIX) + 1:mod(key/(CLASS_RADIX**2), CLASS_RADIX) + 1) // "|" &
+            // L(mod(key/CLASS_RADIX, CLASS_RADIX) + 1:mod(key/CLASS_RADIX, CLASS_RADIX) + 1) &
+            // L(mod(key, CLASS_RADIX) + 1:mod(key, CLASS_RADIX) + 1) // ")"
+   end function class_label
+
+   pure integer function kbucket(k) result(b)
+      !! 1 -> 1, 2 -> 2, 3-4 -> 3, 5-8 -> 4, ...
+      integer, intent(in) :: k
+      b = 1
+      do while (2**(b - 1) < k)
+         b = b + 1
+      end do
+   end function kbucket
+
+   pure function kbucket_v(k) result(b)
+      integer, intent(in) :: k(:)
+      integer :: b(size(k)), i
+      do i = 1, size(k)
+         b(i) = kbucket(k(i))
+      end do
+   end function kbucket_v
+
+   integer function block_size() result(res)
+      !! Bra pairs per staircase block: MDG_BLOCK unless TRC_MDG_BLOCK says.
+      character(len=16) :: e
+      integer :: ios
+      e = " "
+      res = MDG_BLOCK
+      call get_environment_variable("TRC_MDG_BLOCK", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) res
+         if (ios /= 0 .or. res < 1) res = MDG_BLOCK
+      end if
+   end function block_size
 
    logical function fused_mode() result(res)
       !! TRC_MDG_MODE=fused: contract in do concurrent kernels (no cuBLAS, no
@@ -381,6 +435,7 @@ contains
          if (.not. mdg_routes(key)) cycle
          call class_types(md, key, t1, t2)
          if (t1 == 0 .or. t2 == 0) cycle
+         call profiler_start("mdg: "//class_label(key), nvtx_only=.true.)
          if (this%stats) then
             !$acc wait
             call tm%start()
@@ -397,6 +452,8 @@ contains
             end do
          end do
          if (this%stats) call class_line(this, key, tm)
+         !$acc wait
+         call profiler_stop("mdg: "//class_label(key))
       end do
       call mdg_kcart(this%nsh, this%sh_l, this%sh_ao, this%sh_ao_sph, nd, size(jmat, 2), this%naos, ks, jmat)
       !$acc exit data delete(ds, ks)
@@ -431,7 +488,6 @@ contains
       logical :: fused
       integer(int64) :: per
       real(dp) :: wdiag
-      real(dp), allocatable :: rb(:), pq(:), sm(:), eri(:)
       integer(int64) :: hb0, hk0, perb, perk
 
       key = job(1)
@@ -448,7 +504,7 @@ contains
       wdiag = 1.0_dp
       if (g1 == g2) wdiag = 0.5_dp
       fused = fused_mode()
-      nimax = min(MDG_BLOCK, this%gr_n(g1))
+      nimax = min(block_size(), this%gr_n(g1))
       ! Per ket pair of a window: its share of R, PQ, S and the integrals for a
       ! full bra block. The fused path stores R and S only.
       if (fused) then
@@ -459,14 +515,15 @@ contains
                + int(sz(4), int64)*nimax*sz(5)
       end if
       njmax = int(max(1_int64, min(int(this%gr_n(g2), int64), MDG_BUDGET/per)))
+      call grow(this%wrb, int(sz(3), int64)*nimax*ka*njmax*kb)
+      call grow(this%wsm, int(sz(1), int64)*ka*nimax*sz(5)*njmax)
       if (fused) then
-         allocate (rb(int(sz(3), int64)*nimax*ka*njmax*kb), pq(1), &
-                   sm(int(sz(1), int64)*ka*nimax*sz(5)*njmax), eri(1))
+         call grow(this%wpq, 1_int64)
+         call grow(this%weri, 1_int64)
       else
-         allocate (rb(int(sz(3), int64)*nimax*ka*njmax*kb), pq(int(sz(1), int64)*ka*nimax*sz(2)*kb*njmax), &
-                   sm(int(sz(1), int64)*ka*nimax*sz(5)*njmax), eri(int(sz(4), int64)*nimax*sz(5)*njmax))
+         call grow(this%wpq, int(sz(1), int64)*ka*nimax*sz(2)*kb*njmax)
+         call grow(this%weri, int(sz(4), int64)*nimax*sz(5)*njmax)
       end if
-      !$acc enter data create(rb, pq, sm, eri)
       hb0 = this%gh_off(g1)
       hk0 = this%gh_off(g2)
       perb = int(sz(4), int64)*sz(1)*ka
@@ -487,7 +544,7 @@ contains
                               size(this%gl), this%gl, this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb, &
                               sc%thresh, sc%pcut, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
                               size(dmat, 2), size(dmat, 1), dmat, jmat, this%gh(hb0 + ib*perb + 1), &
-                              this%gh(hk0 + j0*perk + 1), rb, sm)
+                              this%gh(hk0 + j0*perk + 1), this%wrb, this%wsm)
                cycle
             end if
             call mdg_ket(key, this%sph, this%lp, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
@@ -496,12 +553,23 @@ contains
                          this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb, &
                          sc%thresh, sc%pcut, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
                          size(dmat, 2), size(dmat, 1), dmat, jmat, this%gh(hb0 + ib*perb + 1), &
-                         this%gh(hk0 + j0*perk + 1), rb, pq, sm, eri)
+                         this%gh(hk0 + j0*perk + 1), this%wrb, this%wpq, this%wsm, this%weri)
          end do
       end do
-      !$acc exit data delete(rb, pq, sm, eri)
-      deallocate (rb, pq, sm, eri)
    end subroutine group_pair
+
+   subroutine grow(a, n)
+      !! a, on the device, holds at least n elements; contents not kept.
+      real(dp), allocatable, intent(inout) :: a(:)
+      integer(int64), intent(in) :: n
+      if (allocated(a)) then
+         if (size(a, kind=int64) >= n) return
+         !$acc exit data delete(a)
+         deallocate (a)
+      end if
+      allocate (a(max(n, 1_int64)))
+      !$acc enter data create(a)
+   end subroutine grow
 
    subroutine count_window(this, md, w, sz, dsh, thresh)
       !! Stats: a window's quartets, how many pass the per-quartet screen
@@ -580,6 +648,10 @@ contains
       if (allocated(this%gl)) deallocate (this%gl, this%gq)
       if (allocated(this%gh)) deallocate (this%gh, this%gh_off)
       if (allocated(this%sh_l)) deallocate (this%sh_l, this%sh_ao, this%sh_ao_sph)
+      if (allocated(this%wrb)) then
+         !$acc exit data delete(this%wrb, this%wpq, this%wsm, this%weri)
+         deallocate (this%wrb, this%wpq, this%wsm, this%weri)
+      end if
       this%ngrp = 0
       this%built = .false.
    end subroutine mdg_release

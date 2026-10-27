@@ -31,6 +31,7 @@ module trc_mdj
    use trc_api, only: trc_basis_t
    use trc_bins, only: pair_bins_t
    use trc_mdj_kernels, only: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, MDJ_LPMAX
+   use pic_profiler, only: profiler_start, profiler_stop
    implicit none
    private
    public :: trc_mdj_t
@@ -143,6 +144,9 @@ contains
       integer :: t, lp, lq, lpt, qfix
 
       qfix = qlen_override()
+      ! NVTX ranges (TERCO_NVTX builds; no-ops otherwise), each closed after a
+      ! device sync so its length is the stage's GPU time.
+      call profiler_start("mdj: ket", nvtx_only=.true.)
       call zero_device(this%ndt, this%jt)
       call zero_device(nao*nao, jmat)
       do t = 1, this%ntype
@@ -154,6 +158,9 @@ contains
                       this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
                       this%nsp, this%sp_ao1, this%sp_ao2, nao, dmat, this%ndt, this%dt, this%mp_nq)
       end do
+      !$acc wait
+      call profiler_stop("mdj: ket")
+      call profiler_start("mdj: hermite", nvtx_only=.true.)
       do lp = 0, MDJ_LPMAX
          if (this%cl_nk(lp) == 0) cycle
          do lq = 0, MDJ_LPMAX
@@ -165,6 +172,9 @@ contains
                              this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
          end do
       end do
+      !$acc wait
+      call profiler_stop("mdj: hermite")
+      call profiler_start("mdj: bra", nvtx_only=.true.)
       do t = 1, this%ntype
          if (this%ty_ns(t) == 0) cycle
          lpt = this%ty_la(t) + this%ty_lb(t)
@@ -175,6 +185,8 @@ contains
                       this%nsp, this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
                       this%ndt, this%jt, nao, jmat)
       end do
+      !$acc wait
+      call profiler_stop("mdj: bra")
    end subroutine mdj_coulomb
 
    subroutine order_pairs(this, b, bins)
