@@ -75,6 +75,17 @@ the same history. This file adds the debugging side.
   even an unused sibling deterministically corrupted later GPU work, and in
   one case made every `MPI_Allreduce` return 0 or NaN. This applies to test
   programs too: put helpers in a module.
+- Never link static terco or pic into a shared library that is loaded next
+  to an executable that also has them (for example a SHARED libterco_opt
+  beside a static libterco). The `.so` gets its own copy of pic-mpi and of
+  the legacy `use mpi` common blocks, and the executable calls the `.so`'s
+  pic_mpi. With Cray MPICH, MPI_IN_PLACE lives in `mpifcmb5_`, and libmpifort
+  compares against the executable's copy, so MPI_IN_PLACE is taken for a
+  real buffer. Symptom: a multi-rank run hangs at the first Fock allreduce
+  with the GPUs at 0% (a SIGSEGV in MPI's local copy, retried forever by
+  nvfortran's handler). Check `ldd app/terco` and `nm` for pic_mpi symbols
+  in more than one object. Other MPIs keep MPI_IN_PLACE in their shared
+  Fortran library, so the duplicate goes unnoticed there.
 - Make sure FindMPI picks the MPI that matches the Fortran compiler (NVHPC's
   bundled OpenMPI for nvfortran). A stray `MPI_ROOT` or similar in the
   environment can make it link a gfortran-built MPI.
