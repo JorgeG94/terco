@@ -641,8 +641,13 @@ def chunked_fock_middle(tag, comps, outer, nroots, pre_loop, prim_hdr, thread=Fa
             do idens = 1, ndens
 """)
     pad = " "*15
-    body.append(_chunk_digest(inner, vn, pad, dnames, (0, 1)))
-    body.append(f"{pad}! kfac is uniform over the launch: no warp diverges here.\n"
+    # jfac and kfac are uniform over the launch: no warp diverges on either.
+    # jfac = 0 whenever the MD J engine forms J (always for a g basis), and
+    # the Coulomb half is then 61 of the 93 atomics of an (fd|fp) chunk and
+    # as many density loads, all adding zero.
+    body.append(f"{pad}if (jfac /= 0.0_dp) then\n")
+    body.append(_chunk_digest(inner, vn, pad + "   ", dnames, (0, 1)))
+    body.append(f"{pad}end if\n"
                 f"{pad}if (kfac /= 0.0_dp) then\n")
     body.append(_chunk_digest(inner, vn, pad + "   ", dnames, (2, 3, 4, 5)))
     body.append(f"{pad}end if\n            end do\n")
