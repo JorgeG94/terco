@@ -25,6 +25,18 @@ Nothing here is a quartet of Cartesian integrals held by one thread: a
 thread holds one row, v and the E tables.
 
 Usage: gen_md_k.py --classes 2121[,...] [--order lexicographic] -o DIR
+
+REFERENCES
+----------
+Inspiration only; the formulation and the code are terco's own.
+
+  L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
+  I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+    5, 1004 (2009).
+  E. Palethorpe, R. Stocks, G. M. J. Barca, ChemRxiv (2026),
+    doi:10.26434/chemrxiv.15004739/v2.
+  A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
+    J. Chem. Phys. 160, 244109 (2024).
 """
 
 import argparse

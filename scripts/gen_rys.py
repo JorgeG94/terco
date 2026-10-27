@@ -70,6 +70,19 @@ HEAD but replaces the integral AND the digestion: it is cut into chunks of
 output components, each its own primitive/root loop and digestion, so one
 thread never holds the whole Cartesian block. See the section comment
 above FOCK_CHUNK_PLAN for the design and the measurements.
+
+REFERENCES
+----------
+Inspiration only; the formulation and the code are terco's own.
+
+  M. Dupuis, J. Rys, H. F. King, J. Chem. Phys. 65, 111 (1976).
+  M. Head-Gordon, J. A. Pople, J. Chem. Phys. 89, 5777 (1988).
+  I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+    5, 1004 (2009).
+  Y. Wang, D. Hait, K. G. Johnson, O. J. Fajen, J. H. Zhang, R. D. Guerrero,
+    T. J. Martinez, J. Chem. Phys. 161, 174118 (2024).
+  E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
+  R. Li, Q. Sun, X. Zhang, G. K.-L. Chan, J. Phys. Chem. A 129, 1459 (2025).
 """
 import argparse
 import importlib.util

@@ -24,6 +24,18 @@ digestion are loops over literal tables: unrolled, they were 98% of an
 (ff|ff) module's 26k lines and 751 s of its compile, for memory-bound work.
 
 Usage: gen_md_kgemm.py --lmax 3 --classes 2121,3333 [--order ...] -o DIR
+
+REFERENCES
+----------
+Inspiration only; the formulation and the code are terco's own.
+
+  L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
+  I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+    5, 1004 (2009).
+  E. Palethorpe, R. Stocks, G. M. J. Barca, ChemRxiv (2026),
+    doi:10.26434/chemrxiv.15004739/v2.
+  A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
+    J. Chem. Phys. 160, 244109 (2024).
 """
 
 import argparse

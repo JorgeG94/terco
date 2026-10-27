@@ -32,6 +32,17 @@ Writes trc_mdj_e<la><lb>.F90, trc_mdj_r<lp><lq>.F90 and the host
 dispatcher trc_mdj_kernels.F90. Every kernel is checked first by
 md/reference.py, which runs the same statement lists in numpy against
 pyscf.
+
+REFERENCES
+----------
+Inspiration only; the formulation and the code are terco's own.
+
+  L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
+  E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
+  I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+    5, 1004 (2009).
+  A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
+    J. Chem. Phys. 160, 244109 (2024).
 """
 
 import argparse
