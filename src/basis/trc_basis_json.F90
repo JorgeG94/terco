@@ -39,7 +39,7 @@ contains
    ! The basis comes back built (host side; the caller moves it to the
    ! device).
    !
-   subroutine trc_basis_from_json(path, natm, elements, at_r, b, error, force_cart, charges)
+   subroutine trc_basis_from_json(path, natm, elements, at_r, b, error, force_cart, charges, prune)
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
       integer, intent(in) :: elements(natm)
@@ -53,16 +53,26 @@ contains
       real(dp), intent(in), optional :: charges(natm)
       !! Nuclear charge per atom; defaults to real(elements, dp). A ghost
       !! (trc_set_elements) passes 0 here for an element >= 1.
+      logical, intent(in), optional :: prune
+      !! Override `TRC_PRUNE_PRIMITIVES` (prune_enabled()) for this one
+      !! build. A caller that compares AO-level quantities (not just an
+      !! energy or a gradient) against a pyscf reference built straight
+      !! from this file's own literal columns -- bse_json_basis in
+      !! test/pyscf_refs/generate.py, which does not remove the
+      !! redundancy prune_block does -- passes `prune=.false.` to keep
+      !! matching it; see that argument's own call sites for which ones.
 
       type(json_file) :: json
       type(element_t), allocatable :: el(:)
       integer :: nel, ia, ie, is, nsh, maxnp, k
       integer, allocatable :: sh_l(:), sh_np(:), which(:)
       real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), z(:)
-      logical :: ok, any_sph, force
+      logical :: ok, any_sph, force, do_prune
 
       force = .false.
       if (present(force_cart)) force = force_cart
+      do_prune = prune_enabled()
+      if (present(prune)) do_prune = prune
 
       call json%initialize()
       call json%load(filename=path)
@@ -87,7 +97,7 @@ contains
          if (ok) cycle
          nel = nel + 1
          which(ia) = nel
-         call read_element(json, path, elements(ia), el(nel), error)
+         call read_element(json, path, elements(ia), el(nel), error, prune=do_prune)
          if (error%has_error()) then
             call json%destroy()
             return
@@ -187,7 +197,7 @@ contains
       end if
    end subroutine trc_fitted_shell_from_json
 
-   subroutine read_element(json, path, z, el, error, raw)
+   subroutine read_element(json, path, z, el, error, raw, prune)
       type(json_file), intent(inout) :: json
       character(len=*), intent(in) :: path
       integer, intent(in) :: z
@@ -198,15 +208,23 @@ contains
       !! are not wavefunction coefficients -- a fitted potential lists
       !! CHARGES, and normalising those to unit overlap would be a category
       !! error that still produces plausible numbers.
+      logical, intent(in), optional :: prune
+      !! Eliminate primitives a general contraction's column shares with a
+      !! single-primitive column of the same block and angular momentum,
+      !! then drop every coefficient that comes out exactly zero. Default
+      !! .false. (the caller decides; `trc_basis_from_json` passes
+      !! `prune_enabled()`). Never applied with `raw` -- see PRUNING, below.
 
       character(len=:), allocatable :: key, sp, text, ftype
       integer, allocatable :: lam(:)
-      integer :: nsh_json, ish, ncol, icol, ip, np, k, ios, nsh
+      integer :: nsh_json, ish, ncol, icol, ip, np, k, ios, nsh, k0, ks
       real(dp) :: v
-      logical :: found, skip_norm, found_ft, sph_ish
+      logical :: found, skip_norm, found_ft, sph_ish, do_prune
 
       skip_norm = .false.
       if (present(raw)) skip_norm = raw
+      do_prune = .false.
+      if (present(prune)) do_prune = prune .and. .not. skip_norm
       el%z = z
       key = "elements."//itoa(z)
       call json%info(key//".electron_shells", found=found, n_children=nsh_json)
@@ -245,6 +263,7 @@ contains
          sph_ish = found_ft
          if (sph_ish) sph_ish = (trim(ftype) == "gto_spherical")
          ncol = columns(json, key, ish, size(lam))
+         k0 = k + 1
          do icol = 1, ncol
             k = k + 1
             ! One l per column when the file lists one per column (SP); one
@@ -282,10 +301,107 @@ contains
                end if
                el%sh(k)%c(ip) = v
             end do
-            if (.not. skip_norm) call normalise(el%sh(k)%l, el%sh(k)%np, el%sh(k)%e, el%sh(k)%c)
+         end do
+         ! PRUNING, within this one JSON block (its columns all share the
+         ! same raw exponent list, which is what makes the elimination exact
+         ! rather than an approximation -- see prune_block's own header).
+         ! Done before `normalise` so the normalisation that follows sees
+         ! each column's REAL primitive count, not the padded one.
+         if (do_prune) call prune_block(el%sh(k0:k))
+         do ks = k0, k
+            if (.not. skip_norm) call normalise(el%sh(ks)%l, el%sh(ks)%np, el%sh(ks)%e, el%sh(ks)%c)
          end do
       end do
    end subroutine read_element
+
+   !
+   ! PRUNING a general contraction's redundant primitives.
+   !
+   ! cc-pVXZ (and other correlation-consistent sets) share one exponent list
+   ! across a block's columns, and some of those columns are a single
+   ! primitive (coefficient 1 at one exponent, 0 at the rest) that is ALSO
+   ! used, with a small nonzero coefficient, inside the block's other
+   ! (contracted) columns. That primitive is not independent information:
+   ! the function it is part of is already in the basis set as the
+   ! single-primitive column's own AO, so the contracted column's component
+   ! along it can be transformed away without touching the SPAN of the
+   ! block's functions -- replace contracted column A by
+   ! A' = A - c_A(p)*B, B the single-primitive column with a 1 at p. B is
+   ! zero everywhere else, so A' is A UNCHANGED at every other primitive and
+   ! EXACTLY zero at p; no arithmetic is needed, p is just set to zero.
+   !
+   ! This is pyscf 2.14's own "optimized general contraction" cc-pVXZ data,
+   ! reverse-engineered against the BSE files metalquicha ships: per-element
+   ! per-l primitive counts after this routine match pyscf's
+   ! `gto.basis.load` exactly (O/cc-pVQZ's 12-primitive s columns go to 9,
+   ! matching pyscf's shipped 9; the module header this feeds,
+   ! trc_decontract.F90, inherits the same win on the s/p sets of every
+   ! first-row atom). w20/cc-pVQZ: 1440 primitives at <=12/shell before this
+   ! routine, 1140 at <=9/shell after -- the same counts pyscf's bundled set
+   ! gives for the same molecule, same energy to round-off.
+   !
+   ! Scoped to one JSON block (one shared exponent list) and one angular
+   ! momentum within it, so an SP block's S and P columns -- which share
+   ! exponents but are different operators -- never prune each other.
+   !
+   subroutine prune_block(sh)
+      type(shell_t), intent(inout) :: sh(:)
+      integer :: i, j, piv, nnz, keep
+      do i = 1, size(sh)
+         ! A pivot: exactly one nonzero coefficient over the block's shared
+         ! exponent list.
+         nnz = count(sh(i)%c /= 0.0_dp)
+         if (nnz /= 1) cycle
+         piv = findloc(sh(i)%c /= 0.0_dp, .true., dim=1)
+         do j = 1, size(sh)
+            if (j == i) cycle
+            if (sh(j)%l /= sh(i)%l) cycle
+            ! Exact zero, not a subtraction: B's only nonzero is at piv with
+            ! coefficient 1 there (BSE's own convention for these columns),
+            ! so A - c_A(piv)*B is A with position piv set to 0 and every
+            ! other position untouched by construction.
+            sh(j)%c(piv) = 0.0_dp
+         end do
+      end do
+      ! Compact every column of the block to its surviving primitives. A
+      ! pivot column itself shrinks from the block's full exponent count
+      ! down to the 1 it always was; a pruned contracted column shrinks by
+      ! however many pivots it shared.
+      do i = 1, size(sh)
+         keep = count(sh(i)%c /= 0.0_dp)
+         if (keep == sh(i)%np) cycle   ! nothing padded away
+         if (keep == 0) cycle   ! pathological: a column of all zeros is not
+         ! a basis function; leave it exactly as read rather than hand
+         ! `build` an empty shell.
+         block
+            real(dp), allocatable :: e2(:), c2(:)
+            integer :: ip, kk
+            allocate (e2(keep), c2(keep))
+            kk = 0
+            do ip = 1, sh(i)%np
+               if (sh(i)%c(ip) == 0.0_dp) cycle
+               kk = kk + 1
+               e2(kk) = sh(i)%e(ip)
+               c2(kk) = sh(i)%c(ip)
+            end do
+            call move_alloc(e2, sh(i)%e)
+            call move_alloc(c2, sh(i)%c)
+            sh(i)%np = keep
+         end block
+      end do
+   end subroutine prune_block
+
+   !
+   ! TRC_PRUNE_PRIMITIVES, read once per basis build. On by default; "0"
+   ! turns the elimination above off, for an A/B comparison against the
+   ! unpruned (BSE-literal) basis without rebuilding.
+   !
+   logical function prune_enabled() result(res)
+      character(len=8) :: value
+      value = " "
+      call get_environment_variable("TRC_PRUNE_PRIMITIVES", value)
+      res = (trim(value) /= "0")
+   end function prune_enabled
 
    ! Coefficient columns of a JSON shell, or one per l when none are listed.
    integer function columns(json, key, ish, nl) result(n)
