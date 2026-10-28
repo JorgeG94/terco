@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
-"""Generate McMurchie-Davidson Fock (J and K) kernels for chosen classes.
+"""Generate McMurchie-Davidson Fock kernels that contract through batched GEMMs.
 
-A PROTOTYPE, one class at a time, raced against HGP/Rys on the same
-segments: fock_bins hands a class run to `mdk_dispatch` instead of
-pc_dispatch/rys_dispatch when TRC_MDK_CLASSES names it, with the same
-segment descriptors, screens and folded digestion, so the Fock matrix is
-directly comparable and so is the time.
+The host driver (src/eri/trc_mdg.F90) walks, per class (la lb|lc ld), the
+shell pairs of each (type, primitive count) group sorted by Schwarz bound,
+in staircase windows: a block of ni bra pairs against the prefix of the
+ket list that can still pass the screen. For each window it calls the
+routines generated here:
 
-Per window of quartets of one class (la lb|lc ld):
+  mdg_bra_<tag>   Hb[ab, pbar, i] = c_P E^ab_p, pbar = (p, k_ab)
+  mdg_ket_<tag>   Hk likewise, then
+                  R kernel      one thread per primitive quartet; stores the
+                                n_r values R^(0)_r only (zero when screened)
+                  expansion     PQ[pbar, i, qbar, j] = (-1)^|q| R_{p+q}, from
+                                a literal (p, q) -> r table
+                  GEMM 1        batched over j: S_j = PQ_j Hk_j^T
+                  GEMM 2        batched over i: Eri_i = Hb_i S(i, :), S read in
+                                place with leading dimension npb*ni
+                  digestion     one thread per (quartet, ab row): K, and J when
+                                jfac /= 0, with the HGP kernels' weights
 
-  kernel 1, one thread per quartet: the HGP kernels' own decode, Schwarz,
-     density and primitive screens; then for every primitive quartet
-     R^(0)_r, |r| <= L, with c_P c_Q 2 pi^2.5/(pq sqrt(p+q)) folded in, into
-     a buffer whose fastest index is the quartet, so warps coalesce.
-  kernel 2, one thread per (bra component pair ab, quartet), quartet
-     fastest: a warp shares ab, so the select case on it is warp-uniform and
-     every E and R index is a literal. Per primitive quartet
-         v_q    = sum_p E^ab_p R_{p+q}                 (q <= lc + ld)
-         eri_cd += sum_q (-1)^|q| E^cd_q v_q
-     then the thread digests its row of (ab|cd): K always, J when jfac /= 0,
-     with the HGP kernels' degeneracy weights and atomics.
+Only the R recurrence is written out. The E matrices, the expansion and the
+digestion are loops over literal tables: unrolled, they were 98% of an
+(ff|ff) module's 26k lines and 751 s of its compile, for memory-bound work.
 
-Nothing here is a quartet of Cartesian integrals held by one thread: a
-thread holds one row, v and the E tables.
-
-Usage: gen_md_k.py --classes 2121[,...] [--order lexicographic] -o DIR
+Usage: gen_md_kgemm.py --lmax 3 --classes 2121,3333 [--order ...] -o DIR
 
 REFERENCES
 ----------
@@ -47,914 +46,864 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cartorder  # noqa: E402
 from md import rtree  # noqa: E402
+from md.hermite import herm, herm_index  # noqa: E402
 from md.schedule import dfs_order  # noqa: E402
-from md.hermite import DIRS, herm, herm_index, e1d_statements, e_operand  # noqa: E402
-from gen_md_j import (ORDER_CODE, TWO_PI_2_5, decl, emit_sum, expr_of, lit,  # noqa: E402
-                      wrap_args, nbatch_for)
+from gen_md_j import ORDER_CODE, TWO_PI_2_5, decl, emit_sum, expr_of, wrap_args  # noqa: E402
+from gen_md_k import class_key  # noqa: E402
 
-CLASS_RADIX = 11  # trc_binkernel's CLASS_RADIX
-
-
-def class_key(la, lb, lc, ld):
-    return ((la * CLASS_RADIX + lb) * CLASS_RADIX + lc) * CLASS_RADIX + ld
-
-
-# Arguments every launch takes, the HGP dispatch interface plus the window.
-SEG_ARGS = ("lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, "
-            "npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, dsh, nbas, nao, ao_off, "
-            "nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, "
-            "ndens, dmat, jmat")
-
-SEG_DECL = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao, nqp, ndens
-      integer(int64), intent(in) :: sOff(nseg + 1)
-      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg), sPA(nseg), sPB(nseg)
-      logical,  intent(in)    :: sD(nseg)
-      integer,  intent(in)    :: sp_i(npair), sp_j(npair), ao_off(nbas), sq_n(npair)
-      real(dp), intent(in)    :: sp_q(npair), thresh, pcut, jfac, kfac, dsh(nbas, nbas)
-      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_px(nqp), qp_py(nqp), qp_pz(nqp)
-      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
-      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
-      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+DATA = ("nhp, mp_z, mp_px, mp_py, mp_pz, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, mp_c, "
+        "nsp, sp_ao1, sp_ao2, sp_as1, sp_as2, sp_k0, sp_nk, sp_sh1, sp_sh2, sp_q, ngl, gl")
+DATA_DECL = """      integer,  intent(in) :: nhp, nsp, ngl
+      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)
+      real(dp), intent(in) :: mp_ax(nhp), mp_ay(nhp), mp_az(nhp), mp_bx(nhp), mp_by(nhp), mp_bz(nhp)
+      real(dp), intent(in) :: mp_c(nhp), sp_q(nsp)
+      integer,  intent(in) :: sp_ao1(nsp), sp_ao2(nsp), sp_k0(nsp), sp_nk(nsp), sp_sh1(nsp), sp_sh2(nsp)
+      integer,  intent(in) :: sp_as1(nsp), sp_as2(nsp)
+      integer,  intent(in) :: gl(ngl)"""
+WIN = "ib0, ni, ka, jb0, nj, kb, thresh, pcut, jfac, kfac, wdiag, nbas, dsh, nao, ndens, dmat, jmat"
+WIN_DECL = """      integer,  intent(in) :: ib0, ni, ka, jb0, nj, kb, nbas, nao, ndens
+      real(dp), intent(in) :: thresh, pcut, jfac, kfac, wdiag, dsh(nbas, nbas)
+      real(dp), intent(in) :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)"""
 
-WIN_ARGS = "g0, nw, kk, nr, rbuf, wseg, wab, wcd, wq"
-WIN_DECL = """      integer(int64), intent(in) :: g0
-      integer,  intent(in)    :: nw, kk, nr
-      real(dp), intent(inout) :: rbuf(nw, nr, kk)
-      integer,  intent(inout) :: wseg(nw), wab(nw), wcd(nw)
-      real(dp), intent(inout) :: wq(nw)"""
+
+def int_table(name, vals):
+    body = ", ".join(str(v) for v in vals)
+    lines, cur = [], f"   integer, parameter :: {name}({len(vals)}) = ["
+    for tok in body.split(", "):
+        if len(cur) + len(tok) > 100:
+            lines.append(cur + " &")
+            cur = "      "
+        cur += tok + ", "
+    lines.append(cur.rstrip(", ") + "]")
+    return lines
 
 
-def decode_lines(ind):
-    """The HGP kernels' segment search and triangle inversion, verbatim logic."""
-    return f"""{ind}p = lo; q = hi
-{ind}do while (p < q)
-{ind}   mid = (p + q + 1)/2
-{ind}   if (sOff(mid) < gt) then
-{ind}      p = mid
-{ind}   else
-{ind}      q = mid - 1
-{ind}   end if
-{ind}end do
-{ind}seg = p
-{ind}t = int(gt - sOff(seg))
-{ind}if (sD(seg)) then
-{ind}   nsa = int(sA(seg), int64)
-{ind}   u = int(t - 1, int64)
-{ind}   kx = int((real(2*nsa + 1, dp) - sqrt(real(2*nsa + 1, dp)**2 - 8.0_dp*real(u, dp)))/2.0_dp, int64)
-{ind}   if (kx < 0) kx = 0
-{ind}   do while (kx > 0)
-{ind}      if ((kx*(2*nsa + 1) - kx*kx)/2 <= u) exit
-{ind}      kx = kx - 1
-{ind}   end do
-{ind}   do while (((kx + 1)*(2*nsa + 1) - (kx + 1)*(kx + 1))/2 <= u)
-{ind}      kx = kx + 1
-{ind}   end do
-{ind}   icd = int(kx) + 1
-{ind}   iab = icd + int(u - (kx*(2*nsa + 1) - kx*kx)/2)
-{ind}else
-{ind}   icd = (t - 1)/sA(seg) + 1
-{ind}   iab = t - (icd - 1)*sA(seg)
-{ind}end if""".split("\n")
+def real_table(name, vals):
+    toks = [("-1.0_dp" if v < 0 else "1.0_dp") for v in vals]
+    lines, cur = [], f"   real(dp), parameter :: {name}({len(vals)}) = ["
+    for tok in toks:
+        if len(cur) + len(tok) > 100:
+            lines.append(cur + " &")
+            cur = "      "
+        cur += tok + ", "
+    lines.append(cur.rstrip(", ") + "]")
+    return lines
 
 
-def gen_class(la, lb, lc, ld, order, header, mode="fused"):
-    tag = f"{la}{lb}{lc}{ld}"
-    lp, lq = la + lb, lc + ld
-    L = lp + lq
-    hp, hq, hl = herm(lp), herm(lq), herm(L)
-    il = herm_index(L)
-    nr = len(hl)
-    ca, cb = cartorder.components(la, order), cartorder.components(lb, order)
-    cc, cd = cartorder.components(lc, order), cartorder.components(ld, order)
-    nab = len(ca) * len(cb)
-    o = [header.format(what=f"Class ({la}{lb}|{lc}{ld}) MD Fock kernels, prototype")]
-    o.append(f"module trc_mdk_k{tag}")
-    o.append("   use pic_types, only: dp, int64")
-    o.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
-    o.append("   implicit none")
-    o.append("   private")
-    o.append(f"   public :: mdk_k{tag}, MDK_NR_{tag}, MDK_NAB_{tag}")
-    o.append(f"   integer, parameter :: MDK_NR_{tag} = {nr if mode == 'buffer' else 0}")
-    o.append("   !! Hermite integrals buffered per primitive quartet; 0 when kernel 2")
-    o.append("   !! recomputes R in registers (the fused mode).")
-    o.append(f"   integer, parameter :: MDK_NAB_{tag} = {nab}")
-    o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
-    o.append("")
-    o.append("contains")
-    o.append("")
-    o.append('#include "inc/trc_boys_eval.inc"')
-    o.append('#include "inc/trc_boys_down.inc"')
-    o.append("")
-    # ---- window driver ----
-    o.extend(wrap_args(f"subroutine mdk_k{tag}", SEG_ARGS + ", " + WIN_ARGS, "   "))
-    o.append(f"      !! One window of quartets g0+1..g0+nw of class ({la}{lb}|{lc}{ld}); kk is the")
-    o.append("      !! largest primitive-quartet count in it, rbuf is (nw, nr, kk) on the device.")
-    o.append(SEG_DECL)
-    o.append(WIN_DECL)
-    o.append("      integer :: i")
-    o.append("      do concurrent(i = 1:nw)")
-    o.extend(wrap_args(f"call mdk_r_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
-    o.append("      end do")
-    if mode == "buffer":
-        o.append(f"      do concurrent(i = 1:nw*{nab})")
-        o.extend(wrap_args(f"call mdk_d_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
-    elif mode == "row":
-        # One launch per bra component pair: each item routine gets its own
-        # register budget. As one launch with a select over the 18 pairs of
-        # (dp|dp), ptxas sized every thread for the worst branch (254).
-        for k in range(nab):
-            o.append("      do concurrent(i = 1:nw)")
-            o.extend(wrap_args(f"call mdk_w_item_{tag}_{k + 1}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
-            if k < nab - 1:
-                o.append("      end do")
-    else:
-        o.append(f"      do concurrent(i = 1:nw*{len(ca)})")
-        o.extend(wrap_args(f"call mdk_f_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, " " * 9))
-    o.append("      end do")
-    o.append(f"   end subroutine mdk_k{tag}")
-    o.append("")
-    o.extend(r_item(tag, L, nr, il, write_r=(mode == "buffer")))
-    o.append("")
-    if mode == "buffer":
-        o.extend(d_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, il, nr))
-    elif mode == "row":
-        o.extend(w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L))
-    else:
-        o.extend(f_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L))
-    o.append("")
-    o.append(f"end module trc_mdk_k{tag}")
-    return "\n".join(o) + "\n"
+def e1d_loop(l1, l2, ind):
+    """E^{ij}_t, i <= l1, j <= l2, all three directions, into e(0:l1, 0:l2, 0:l1+l2, 3).
+
+    The recursion of md/hermite.py without K_AB (the pair coefficient has it):
+    i up first at j = 0, then j up at every i. `tt`, not `t`: the item
+    routines' thread index is t, and ii, jj because i is the pair.
+    """
+    L = l1 + l2
+    return [f"{ind}do d = 1, 3",
+            f"{ind}   do tt = 0, {L}",
+            f"{ind}      do jj = 0, {l2}",
+            f"{ind}         do ii = 0, {l1}",
+            f"{ind}            e(ii, jj, tt, d) = 0.0_dp",
+            f"{ind}         end do",
+            f"{ind}      end do",
+            f"{ind}   end do",
+            f"{ind}   e(0, 0, 0, d) = 1.0_dp",
+            f"{ind}   do ii = 0, {l1 - 1}",
+            f"{ind}      do tt = 0, ii + 1",
+            f"{ind}         v = xa(d)*e(ii, 0, tt, d)",
+            f"{ind}         if (tt > 0) v = v + oo2p*e(ii, 0, tt - 1, d)",
+            f"{ind}         if (tt < {L}) v = v + real(tt + 1, dp)*e(ii, 0, tt + 1, d)",
+            f"{ind}         e(ii + 1, 0, tt, d) = v",
+            f"{ind}      end do",
+            f"{ind}   end do",
+            f"{ind}   do ii = 0, {l1}",
+            f"{ind}      do jj = 0, {l2 - 1}",
+            f"{ind}         do tt = 0, ii + jj + 1",
+            f"{ind}            v = xb(d)*e(ii, jj, tt, d)",
+            f"{ind}            if (tt > 0) v = v + oo2p*e(ii, jj, tt - 1, d)",
+            f"{ind}            if (tt < {L}) v = v + real(tt + 1, dp)*e(ii, jj, tt + 1, d)",
+            f"{ind}            e(ii, jj + 1, tt, d) = v",
+            f"{ind}         end do",
+            f"{ind}      end do",
+            f"{ind}   end do",
+            f"{ind}end do"]
 
 
-def r_item(tag, L, nr, il, write_r=True):
-    g = rtree.RDag(herm(L))
-    g.sieve()
-    stmts = g.statements()
-    leaves = g.leaves()
+def h_item(tag, side, l1, l2):
+    """One primitive pair's E-matrix column block: h(ab, (k-1)*np + p, i)."""
+    np_ = len(herm(l1 + l2))
+    n1, n2 = (l1 + 1) * (l1 + 2) // 2, (l2 + 1) * (l2 + 2) // 2
+    s = side.upper()
+    nn, kk, b0 = ("ni", "ka", "ib0") if side == "b" else ("nj", "kb", "jb0")
     o = []
-    o.extend(wrap_args(f"pure subroutine mdk_r_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
+    o.extend(wrap_args(f"pure subroutine mdg_h{side}_item_{tag}", f"t, {DATA}, {b0}, {nn}, {kk}, h", "   "))
     o.append("      !$acc routine seq")
-    o.append("      integer, intent(in) :: i")
-    o.append(SEG_DECL)
-    o.append(WIN_DECL)
-    o.append("      integer(int64) :: gt, nsa, u, kx")
-    o.append("      integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl, slotab, slotcd")
-    o.append("      integer :: k1, k2, kp, kq, kq0, nab, ncd, idx, r")
-    o.append("      real(dp) :: qcut, w, zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd")
-    o.append("      real(dp) :: pqx, pqy, pqz, px, py, pz")
-    o.append("      real(dp) :: f(0:BOYS_MMAX)")
-    o.append(decl("real(dp)", [rtree.leaf_name(m) for m in leaves]))
-    o.append(decl("real(dp)", [s.lhs for s in stmts]))
+    o.append("      integer, intent(in) :: t")
+    o.append(DATA_DECL)
+    o.append(f"      integer,  intent(in) :: {b0}, {nn}, {kk}")
+    o.append(f"      real(dp), intent(inout) :: h({n1 * n2}, {np_}*{kk}, {nn})")
+    o.append("      integer :: i, k, sp, kp, col, x1, x2, ab, hh, d, ii, jj, tt")
+    o.append("      real(dp) :: oo2p, cf, v, xa(3), xb(3)")
+    o.append(f"      real(dp) :: e(0:{l1}, 0:{l2}, 0:{l1 + l2}, 3)")
     o.append("")
-    o.append("      gt = g0 + i")
-    o.extend(decode_lines("      "))
-    o.append("      wseg(i) = seg")
-    o.append("      slotab = sOA(seg) + iab; slotcd = sOB(seg) + icd")
-    o.append("      wab(i) = slotab; wcd(i) = slotcd")
-    o.append("      wq(i) = 0.0_dp")
-    o.append("      nab = sq_n(slotab); ncd = sq_n(slotcd)")
-    o.append("      qcut = sp_q(slotab)*sp_q(slotcd)")
-    o.append("      si = sp_i(slotab); sj = sp_j(slotab); sk = sp_i(slotcd); sl = sp_j(slotcd)")
-    o.append("      ! The HGP kernels' screens, so both engines drop the same quartets.")
-    o.append("      if (qcut <= thresh) return")
-    o.append("      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &")
-    o.append("                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return")
-    o.append("      w = 1.0_dp")
-    o.append("      if (si == sj) w = 0.5_dp*w")
-    o.append("      if (sk == sl) w = 0.5_dp*w")
-    o.append("      if (sD(seg) .and. iab == icd) w = 0.5_dp*w")
-    o.append("      wq(i) = w")
-    if not write_r:
-        o.append(f"   end subroutine mdk_r_item_{tag}")
-        return o
-    o.append("      kq0 = sPB(seg) + icd")
-    o.append("      do k1 = 1, nab")
-    o.append("         kp = sPA(seg) + (k1 - 1)*sA(seg) + iab")
-    o.append("         zeta = qp_z(kp)")
-    o.append("         px = qp_px(kp); py = qp_py(kp); pz = qp_pz(kp)")
-    o.append("         bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))")
-    o.append("         do k2 = 1, ncd")
-    o.append("            idx = (k1 - 1)*ncd + k2")
-    o.append("            kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd")
-    o.append("            eta = qp_z(kq)")
-    o.append("            zpe = zeta + eta")
-    o.append("            pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)")
-    o.append("            ! The HGP kernels' primitive-quartet prescreen; a skipped one is zero.")
-    o.append("            if (bnd*abs(qp_c(kq))/eta <= pcut .or. abs(pref) <= pcut) then")
-    o.append("               do r = 1, nr")
-    o.append("                  rbuf(i, r, idx) = 0.0_dp")
-    o.append("               end do")
-    o.append("               cycle")
-    o.append("            end if")
-    o.append("            alpha = zeta*eta/zpe")
-    o.append("            pqx = px - qp_px(kq); pqy = py - qp_py(kq); pqz = pz - qp_pz(kq)")
-    o.append("            tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
-    o.append(f"            call boys_eval({max(leaves)}, tval, f)")
-    o.append("            m2a = -2.0_dp*alpha")
-    o.append("            ww = pref")
-    for m in range(max(leaves) + 1):
-        if m > 0:
-            o.append("            ww = ww*m2a")
-        if m in leaves:
-            o.append(f"            {rtree.leaf_name(m)} = ww*f({m})")
-    for s in stmts:
-        o.extend(emit_sum(s.lhs, expr_of(s.terms), " " * 12))
-    for r in herm(L):
-        val = rtree.leaf_name(0) if r == (0, 0, 0) else rtree.r_name(r, 0)
-        o.append(f"            rbuf(i, {il[r] + 1}, idx) = {val}")
+    o.append(f"      i = mod(t - 1, {nn}) + 1")
+    o.append(f"      k = (t - 1)/{nn} + 1")
+    o.append(f"      sp = gl({b0} + i)")
+    o.append(f"      col = (k - 1)*{np_}")
+    o.append("      if (k > sp_nk(sp)) then")
+    o.append(f"         do hh = 1, {np_}")
+    o.append(f"            do ab = 1, {n1 * n2}")
+    o.append("               h(ab, col + hh, i) = 0.0_dp")
+    o.append("            end do")
+    o.append("         end do")
+    o.append("         return")
+    o.append("      end if")
+    o.append("      kp = sp_k0(sp) + k")
+    o.append("      oo2p = 0.5_dp/mp_z(kp)")
+    o.append("      cf = mp_c(kp)")
+    o.append("      xa(1) = mp_ax(kp); xa(2) = mp_ay(kp); xa(3) = mp_az(kp)")
+    o.append("      xb(1) = mp_bx(kp); xb(2) = mp_by(kp); xb(3) = mp_bz(kp)")
+    o.extend(e1d_loop(l1, l2, "      "))
+    o.append(f"      do x2 = 1, {n2}")
+    o.append(f"         do x1 = 1, {n1}")
+    o.append(f"            ab = x1 + {n1}*(x2 - 1)")
+    o.append(f"            do hh = 1, {np_}")
+    o.append(f"               if (HT{np_}(hh) > C{s}1X(x1) + C{s}2X(x2) .or. HU{np_}(hh) > C{s}1Y(x1) + C{s}2Y(x2) .or. &")
+    o.append(f"                   HV{np_}(hh) > C{s}1Z(x1) + C{s}2Z(x2)) then")
+    o.append("                  h(ab, col + hh, i) = 0.0_dp")
+    o.append("               else")
+    o.append(f"                  h(ab, col + hh, i) = cf*e(C{s}1X(x1), C{s}2X(x2), HT{np_}(hh), 1) &")
+    o.append(f"                                     *e(C{s}1Y(x1), C{s}2Y(x2), HU{np_}(hh), 2) &")
+    o.append(f"                                     *e(C{s}1Z(x1), C{s}2Z(x2), HV{np_}(hh), 3)")
+    o.append("               end if")
+    o.append("            end do")
     o.append("         end do")
     o.append("      end do")
-    o.append(f"   end subroutine mdk_r_item_{tag}")
+    o.append(f"   end subroutine mdg_h{side}_item_{tag}")
     return o
 
 
-def e_names_for(la, lb, comps_a, comps_b):
-    need = [set(), set(), set()]
-    for a in comps_a:
-        for b in comps_b:
-            for d in range(3):
-                for t in range(a[d] + b[d] + 1):
-                    need[d].add((a[d], b[d], t))
-    return need
-
-
-def e_stmts(la, lb, need, ind, side):
-    """1D E statements, renamed per side ('b' bra, 'k' ket)."""
-    lines, names = [], []
-    for d in range(3):
-        for s in e1d_statements(la, lb, d, needed=need[d]):
-            parts = []
-            for tm in s.terms:
-                f = []
-                if tm.const != 1.0 or (tm.factor is None and tm.operand is None):
-                    f.append(lit(tm.const))
-                if tm.factor is not None:
-                    f.append(side + tm.factor)
-                if tm.operand is not None:
-                    f.append(side + tm.operand)
-                parts.append("*".join(f))
-            lines.extend(emit_sum(side + s.lhs, parts, ind))
-            names.append(side + s.lhs)
-    return lines, names
-
-
-def e3(side, a, b, h):
-    f = []
-    for d in range(3):
-        if h[d] > a[d] + b[d]:
-            return None
-        n = e_operand(d, a[d], b[d], h[d])
-        if n is not None:
-            f.append(side + n)
-    return f
-
-
-def d_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, il, nr):
-    nab = len(ca) * len(cb)
-    ncd = len(cc) * len(cd)
-    need_k = e_names_for(lc, ld, cc, cd)
-    k_lines, k_names = e_stmts(lc, ld, need_k, " " * 12, "k")
-    o = []
-    o.extend(wrap_args(f"pure subroutine mdk_d_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
-    o.append("      !$acc routine seq")
-    o.append("      integer, intent(in) :: i")
-    o.append(SEG_DECL)
-    o.append(WIN_DECL)
-    o.append("      integer :: w, ab, seg, slotab, slotcd, si, sj, sk, sl, mui, nuj, lamk, sigl")
-    o.append("      integer :: k1, k2, kp, kq, nab, ncd, idx, idens")
-    o.append("      real(dp) :: wqq, zeta, eta, rp, rq")
-    o.append("      real(dp) :: bpxa, bpya, bpza, bpxb, bpyb, bpzb, boo2p")
-    o.append("      real(dp) :: kpxa, kpya, kpza, kpxb, kpyb, kpzb, koo2p")
-    o.append("      real(dp) :: s, dab")
-    o.append(decl("real(dp)", k_names))
-    # bra E names are per branch but declare the union
-    need_b = e_names_for(la, lb, ca, cb)
-    _, b_names = e_stmts(la, lb, need_b, "", "b")
-    o.append(decl("real(dp)", b_names))
-    o.append(decl("real(dp)", [f"v{j + 1}" for j in range(len(hq))]))
-    o.append(decl("real(dp)", [f"x{c + 1}_{d + 1}" for c in range(len(cc)) for d in range(len(cd))]))
-    o.append("")
-    o.append("      ! Quartet fastest: a warp shares one bra component pair, so the select")
-    o.append("      ! case below does not diverge.")
-    o.append("      w = mod(i - 1, nw) + 1")
-    o.append("      ab = (i - 1)/nw + 1")
-    o.append("      wqq = wq(w)")
-    o.append("      if (wqq == 0.0_dp) return")
-    o.append("      seg = wseg(w); slotab = wab(w); slotcd = wcd(w)")
-    o.append("      si = sp_i(slotab); sj = sp_j(slotab); sk = sp_i(slotcd); sl = sp_j(slotcd)")
-    o.append("      mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)")
-    o.append("      nab = sq_n(slotab); ncd = sq_n(slotcd)")
-    o.append("      select case (ab)")
-    k = 0
-    for xa, a in enumerate(ca):
-        for xb, b in enumerate(cb):
-            k += 1
-            o.append(f"      case ({k})")
-            o.extend(branch(la, lb, lc, ld, a, b, xa, xb, cc, cd, hp, hq, il, k_lines))
-    o.append("      end select")
-    o.append(f"   end subroutine mdk_d_item_{tag}")
-    return o
-
-
-def branch(la, lb, lc, ld, a, b, xa, xb, cc, cd, hp, hq, il, k_lines):
-    ind = " " * 9
-    need_b = [set(), set(), set()]
-    for d in range(3):
-        for t in range(a[d] + b[d] + 1):
-            need_b[d].add((a[d], b[d], t))
-    b_lines, _ = e_stmts(la, lb, need_b, " " * 9, "b")
-    box = [h for h in hp if all(h[d] <= a[d] + b[d] for d in range(3))]
-    xs = [f"x{c + 1}_{d + 1}" for c in range(len(cc)) for d in range(len(cd))]
-    o = []
-    for x in xs:
-        o.append(f"{ind}{x} = 0.0_dp")
-    o.append(f"{ind}do k1 = 1, nab")
-    o.append(f"{ind}   kp = sPA(seg) + (k1 - 1)*sA(seg) + (slotab - sOA(seg))")
-    o.append(f"{ind}   zeta = qp_z(kp)")
-    o.append(f"{ind}   rp = 1.0_dp/zeta")
-    o.append(f"{ind}   boo2p = 0.5_dp*rp")
-    o.append(f"{ind}   bpxa = qp_px(kp) - sq_ax(slotab); bpya = qp_py(kp) - sq_ay(slotab)")
-    o.append(f"{ind}   bpza = qp_pz(kp) - sq_az(slotab)")
-    o.append(f"{ind}   bpxb = bpxa + sq_abx(slotab); bpyb = bpya + sq_aby(slotab); bpzb = bpza + sq_abz(slotab)")
-    o.extend(["   " + ln for ln in b_lines])
-    o.append(f"{ind}   do k2 = 1, ncd")
-    o.append(f"{ind}      idx = (k1 - 1)*ncd + k2")
-    o.append(f"{ind}      kq = sPB(seg) + (k2 - 1)*sNB(seg) + (slotcd - sOB(seg))")
-    o.append(f"{ind}      eta = qp_z(kq)")
-    o.append(f"{ind}      rq = 1.0_dp/eta")
-    o.append(f"{ind}      koo2p = 0.5_dp*rq")
-    o.append(f"{ind}      kpxa = qp_px(kq) - sq_ax(slotcd); kpya = qp_py(kq) - sq_ay(slotcd)")
-    o.append(f"{ind}      kpza = qp_pz(kq) - sq_az(slotcd)")
-    o.append(f"{ind}      kpxb = kpxa + sq_abx(slotcd); kpyb = kpya + sq_aby(slotcd); kpzb = kpza + sq_abz(slotcd)")
-    o.extend(k_lines)
-    # v_q = sum_p E^ab_p R_{p+q}
-    for j, q in enumerate(hq):
-        parts = []
-        for h in box:
-            f = e3("b", a, b, h)
-            r = tuple(h[d] + q[d] for d in range(3))
-            parts.append("*".join(f + [f"rbuf(w, {il[r] + 1}, idx)"]))
-        o.extend(emit_sum(f"v{j + 1}", parts, ind + "      "))
-    for xc, c in enumerate(cc):
-        for xd, d in enumerate(cd):
-            parts = []
-            for j, q in enumerate(hq):
-                f = e3("k", c, d, q)
-                if f is None:
-                    continue
-                sg = "-" if sum(q) % 2 else ""
-                term = "*".join(f + [f"v{j + 1}"])
-                parts.append(term if not sg else f"(-{term})")
-            o.extend(emit_sum(f"x{xc + 1}_{xd + 1}", parts, ind + "      ", accumulate=True))
-    o.append(f"{ind}   end do")
-    o.append(f"{ind}end do")
-    # digestion: this thread's row (a, b) of (ab|cd)
-    o.append(f"{ind}do idens = 1, ndens")
-    for xc in range(len(cc)):
-        terms = [f"x{xc + 1}_{xd + 1}*dmat(idens, nuj + {xb}, sigl + {xd})" for xd in range(len(cd))]
-        o.extend(emit_sum("s", terms, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, mui + {xa}, lamk + {xc}) = jmat(idens, mui + {xa}, lamk + {xc}) - kfac*wqq*s")
-        terms = [f"x{xc + 1}_{xd + 1}*dmat(idens, mui + {xa}, sigl + {xd})" for xd in range(len(cd))]
-        o.extend(emit_sum("s", terms, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, nuj + {xb}, lamk + {xc}) = jmat(idens, nuj + {xb}, lamk + {xc}) - kfac*wqq*s")
-    for xd in range(len(cd)):
-        terms = [f"x{xc + 1}_{xd + 1}*dmat(idens, nuj + {xb}, lamk + {xc})" for xc in range(len(cc))]
-        o.extend(emit_sum("s", terms, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, mui + {xa}, sigl + {xd}) = jmat(idens, mui + {xa}, sigl + {xd}) - kfac*wqq*s")
-        terms = [f"x{xc + 1}_{xd + 1}*dmat(idens, mui + {xa}, lamk + {xc})" for xc in range(len(cc))]
-        o.extend(emit_sum("s", terms, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, nuj + {xb}, sigl + {xd}) = jmat(idens, nuj + {xb}, sigl + {xd}) - kfac*wqq*s")
-    o.append(f"{ind}   if (jfac /= 0.0_dp) then")
-    terms = [f"x{xc + 1}_{xd + 1}*dmat(idens, lamk + {xc}, sigl + {xd})"
-             for xc in range(len(cc)) for xd in range(len(cd))]
-    o.extend(emit_sum("s", terms, ind + "      "))
-    o.append(f"{ind}      !$acc atomic update")
-    o.append(f"{ind}      jmat(idens, mui + {xa}, nuj + {xb}) = jmat(idens, mui + {xa}, nuj + {xb}) "
-             "+ 4.0_dp*jfac*wqq*s")
-    o.append(f"{ind}      dab = 4.0_dp*jfac*wqq*dmat(idens, mui + {xa}, nuj + {xb})")
-    for xc in range(len(cc)):
-        for xd in range(len(cd)):
-            o.append(f"{ind}      !$acc atomic update")
-            o.append(f"{ind}      jmat(idens, lamk + {xc}, sigl + {xd}) = jmat(idens, lamk + {xc}, sigl + {xd}) "
-                     f"+ dab*x{xc + 1}_{xd + 1}")
-    o.append(f"{ind}   end if")
-    o.append(f"{ind}end do")
-    return o
-
-
-def f_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
-    """One thread per (quartet, component a of the first shell), R in registers."""
+def r_item(tag, L):
     g = rtree.RDag(herm(L))
     g.sieve()
-    stmts = g.statements()
     leaves = g.leaves()
-    need_k = e_names_for(lc, ld, cc, cd)
-    k_lines, k_names = e_stmts(lc, ld, need_k, " " * 12, "k")
-    need_b = e_names_for(la, lb, ca, cb)
-    _, b_names = e_stmts(la, lb, need_b, "", "b")
-    nb, nc, nd = len(cb), len(cc), len(cd)
-    xs = [f"x{b + 1}_{c + 1}_{d + 1}" for b in range(nb) for c in range(nc) for d in range(nd)]
+    il = herm_index(L)
     o = []
-    o.extend(wrap_args(f"pure subroutine mdk_f_item_{tag}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
-    o.append(f"      !! One component a of shell a against every b, c, d: {nb*nc*nd} accumulators,")
-    o.append(f"      !! R ({len(herm(L))} targets) rebuilt in registers per primitive quartet.")
+    o.extend(wrap_args(f"pure subroutine mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", "   "))
     o.append("      !$acc routine seq")
-    o.append("      integer, intent(in) :: i")
-    o.append(SEG_DECL)
+    o.append("      integer, intent(in) :: t")
+    o.append(DATA_DECL)
     o.append(WIN_DECL)
-    o.append("      integer :: w, ia, seg, slotab, slotcd, si, sj, sk, sl, mui, nuj, lamk, sigl")
-    o.append("      integer :: k1, k2, kp, kq, nab, ncd, idens")
-    o.append("      real(dp) :: wqq, zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd")
-    o.append("      real(dp) :: px, py, pz, pqx, pqy, pqz, s")
-    o.append("      real(dp) :: bpxa, bpya, bpza, bpxb, bpyb, bpzb, boo2p")
-    o.append("      real(dp) :: kpxa, kpya, kpza, kpxb, kpyb, kpzb, koo2p")
-    o.append("      real(dp) :: f(0:BOYS_MMAX)")
-    o.append(decl("real(dp)", [rtree.leaf_name(m) for m in leaves]))
-    o.append(decl("real(dp)", [st.lhs for st in stmts]))
-    o.append(decl("real(dp)", k_names))
-    o.append(decl("real(dp)", b_names))
-    o.append(decl("real(dp)", [f"v{j + 1}" for j in range(len(hq))]))
-    o.append(decl("real(dp)", xs))
-    o.append(f_digest_decl(nb, nc, nd))
-    o.append("")
-    o.append("      ! Quartet fastest: a warp shares one component a, so the select below")
-    o.append("      ! does not diverge.")
-    o.append("      w = mod(i - 1, nw) + 1")
-    o.append("      ia = (i - 1)/nw + 1")
-    o.append("      wqq = wq(w)")
-    o.append("      if (wqq == 0.0_dp) return")
-    o.append("      seg = wseg(w); slotab = wab(w); slotcd = wcd(w)")
-    o.append("      si = sp_i(slotab); sj = sp_j(slotab); sk = sp_i(slotcd); sl = sp_j(slotcd)")
-    o.append("      mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)")
-    o.append("      nab = sq_n(slotab); ncd = sq_n(slotcd)")
-    o.append("      select case (ia)")
-    ind = " " * 9
-    for xa, a in enumerate(ca):
-        o.append(f"      case ({xa + 1})")
-        need_a = [set(), set(), set()]
-        for b in cb:
-            for d in range(3):
-                for t in range(a[d] + b[d] + 1):
-                    need_a[d].add((a[d], b[d], t))
-        b_lines, _ = e_stmts(la, lb, need_a, ind + "   ", "b")
-        for x in xs:
-            o.append(f"{ind}{x} = 0.0_dp")
-        o.append(f"{ind}do k1 = 1, nab")
-        o.append(f"{ind}   kp = sPA(seg) + (k1 - 1)*sA(seg) + (slotab - sOA(seg))")
-        o.append(f"{ind}   zeta = qp_z(kp)")
-        o.append(f"{ind}   px = qp_px(kp); py = qp_py(kp); pz = qp_pz(kp)")
-        o.append(f"{ind}   bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))")
-        o.append(f"{ind}   boo2p = 0.5_dp/zeta")
-        o.append(f"{ind}   bpxa = px - sq_ax(slotab); bpya = py - sq_ay(slotab); bpza = pz - sq_az(slotab)")
-        o.append(f"{ind}   bpxb = bpxa + sq_abx(slotab); bpyb = bpya + sq_aby(slotab); bpzb = bpza + sq_abz(slotab)")
-        o.extend(b_lines)
-        o.append(f"{ind}   do k2 = 1, ncd")
-        o.append(f"{ind}      kq = sPB(seg) + (k2 - 1)*sNB(seg) + (slotcd - sOB(seg))")
-        o.append(f"{ind}      eta = qp_z(kq)")
-        o.append(f"{ind}      zpe = zeta + eta")
-        o.append(f"{ind}      pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)")
-        o.append(f"{ind}      ! The HGP kernels' primitive-quartet prescreen.")
-        o.append(f"{ind}      if (bnd*abs(qp_c(kq))/eta <= pcut .or. abs(pref) <= pcut) cycle")
-        o.append(f"{ind}      alpha = zeta*eta/zpe")
-        o.append(f"{ind}      pqx = px - qp_px(kq); pqy = py - qp_py(kq); pqz = pz - qp_pz(kq)")
-        o.append(f"{ind}      tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
-        o.append(f"{ind}      call boys_eval({max(leaves)}, tval, f)")
-        o.append(f"{ind}      m2a = -2.0_dp*alpha")
-        o.append(f"{ind}      ww = pref")
-        for m in range(max(leaves) + 1):
-            if m > 0:
-                o.append(f"{ind}      ww = ww*m2a")
-            if m in leaves:
-                o.append(f"{ind}      {rtree.leaf_name(m)} = ww*f({m})")
-        for st in stmts:
-            o.extend(emit_sum(st.lhs, expr_of(st.terms), ind + "      "))
-        o.append(f"{ind}      koo2p = 0.5_dp/eta")
-        o.append(f"{ind}      kpxa = qp_px(kq) - sq_ax(slotcd); kpya = qp_py(kq) - sq_ay(slotcd)")
-        o.append(f"{ind}      kpza = qp_pz(kq) - sq_az(slotcd)")
-        o.append(f"{ind}      kpxb = kpxa + sq_abx(slotcd); kpyb = kpya + sq_aby(slotcd); kpzb = kpza + sq_abz(slotcd)")
-        o.extend(["   " + ln for ln in k_lines])
-
-        def rv(r):
-            return rtree.leaf_name(0) if r == (0, 0, 0) else rtree.r_name(r, 0)
-        for xb, b in enumerate(cb):
-            box = [h for h in hp if all(h[d] <= a[d] + b[d] for d in range(3))]
-            for j, q in enumerate(hq):
-                parts = []
-                for h in box:
-                    fac = e3("b", a, b, h)
-                    r = tuple(h[d] + q[d] for d in range(3))
-                    parts.append("*".join(fac + [rv(r)]))
-                o.extend(emit_sum(f"v{j + 1}", parts, ind + "      "))
-            for xc, c in enumerate(cc):
-                for xd, d in enumerate(cd):
-                    parts = []
-                    for j, q in enumerate(hq):
-                        fac = e3("k", c, d, q)
-                        if fac is None:
-                            continue
-                        term = "*".join(fac + [f"v{j + 1}"])
-                        parts.append(f"(-{term})" if sum(q) % 2 else term)
-                    o.extend(emit_sum(f"x{xb + 1}_{xc + 1}_{xd + 1}", parts, ind + "      ", accumulate=True))
-        o.append(f"{ind}   end do")
-        o.append(f"{ind}end do")
-        o.extend(f_digest(xa, nb, nc, nd, ind))
-    o.append("      end select")
-    o.append(f"   end subroutine mdk_f_item_{tag}")
-    return o
-
-
-def w_item(tag, la, lb, lc, ld, ca, cb, cc, cd, hp, hq, L):
-    """One thread per (quartet, a, b): its row of (ab|cd), R pruned and consumed on the fly.
-
-    The fused mode held R, 54 rows, v and the E tables in one thread and
-    spilled 101 GB per (dp|dp) launch (ncu, w20 cc-pVTZ). Here each branch
-    builds only the R targets {p + q : p in box(a, b)} it reads, and scatters
-    each into v_q as it is produced, so R never needs to be live at once.
-    """
-    need_k = e_names_for(lc, ld, cc, cd)
-    k_lines, k_names = e_stmts(lc, ld, need_k, " " * 12, "k")
-    need_b = e_names_for(la, lb, ca, cb)
-    _, b_names = e_stmts(la, lb, need_b, "", "b")
-    nc, nd = len(cc), len(cd)
-    xs = [f"x{c + 1}_{d + 1}" for c in range(nc) for d in range(nd)]
-    iq = herm_index(lc + ld)
-    branches = []
-    allnames = set()
-    leaves_all = set()
-    for xa, a in enumerate(ca):
-        for xb, b in enumerate(cb):
-            box = [h for h in hp if all(h[d] <= a[d] + b[d] for d in range(3))]
-            tg = sorted({tuple(p[d] + q[d] for d in range(3)) for p in box for q in hq})
-            g = rtree.RDag(tg)
-            g.sieve()
-            branches.append((xa, a, xb, b, box, g))
-            allnames.update(st.lhs for st in g.statements())
-            leaves_all.update(g.leaves())
-    o = []
-    for k, (xa, a, xb, b, box, g) in enumerate(branches):
-        o.extend(w_branch(tag, k + 1, la, lb, xa, a, xb, b, box, g, cc, cd, hq, k_lines, k_names, b_names, xs))
-        o.append("")
-    return o
-
-
-def w_branch(tag, kb, la, lb, xa, a, xb, b, box, g, cc, cd, hq, k_lines, k_names, b_names, xs):
-    nc, nd = len(cc), len(cd)
-    leaves = g.leaves()
-    o = []
-    o.extend(wrap_args(f"pure subroutine mdk_w_item_{tag}_{kb}", "i, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
-    o.append(f"      !! Row a = {a}, b = {b} of every quartet in the window.")
-    o.append("      !$acc routine seq")
-    o.append("      integer, intent(in) :: i")
-    o.append(SEG_DECL)
-    o.append(WIN_DECL)
-    o.append("      integer :: w, seg, slotab, slotcd, si, sj, sk, sl, mui, nuj, lamk, sigl")
-    o.append("      integer :: k1, k2, kp, kq, nab, ncd, idens")
-    o.append("      real(dp) :: wqq, zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd")
-    o.append("      real(dp) :: px, py, pz, pqx, pqy, pqz, s, dab")
-    o.append("      real(dp) :: bpxa, bpya, bpza, bpxb, bpyb, bpzb, boo2p")
-    o.append("      real(dp) :: kpxa, kpya, kpza, kpxb, kpyb, kpzb, koo2p")
-    o.append("      real(dp) :: cax, cay, caz, cabx, caby, cabz")
+    o.append(f"      real(dp), intent(inout) :: rb({len(herm(L))}, ni*ka*nj*kb)")
+    o.append("      integer :: u, i, j, k1, k2, spa, spc, si, sj, sk, sl, kp, kq, r")
+    o.append("      real(dp) :: zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd, pqx, pqy, pqz, qcut")
     o.append("      real(dp) :: f(0:BOYS_MMAX)")
     o.append(decl("real(dp)", [rtree.leaf_name(m) for m in leaves]))
     o.append(decl("real(dp)", [st.lhs for st in g.statements()]))
-    o.append(decl("real(dp)", k_names))
-    o.append(decl("real(dp)", b_names))
-    o.append(decl("real(dp)", [f"v{j + 1}" for j in range(len(hq))]))
-    o.append(decl("real(dp)", xs))
     o.append("")
-    o.append("      w = i")
-    o.append("      wqq = wq(w)")
-    o.append("      if (wqq == 0.0_dp) return")
-    o.append("      seg = wseg(w); slotab = wab(w); slotcd = wcd(w)")
-    o.append("      si = sp_i(slotab); sj = sp_j(slotab); sk = sp_i(slotcd); sl = sp_j(slotcd)")
-    o.append("      mui = ao_off(si); nuj = ao_off(sj); lamk = ao_off(sk); sigl = ao_off(sl)")
-    o.append("      nab = sq_n(slotab); ncd = sq_n(slotcd)")
-    o.append("      ! The ket pair's centre and separation, once: per ket primitive they were")
-    o.append("      ! six of the loads the load/store queue was full of (ncu).")
-    o.append("      cax = sq_ax(slotcd); cay = sq_ay(slotcd); caz = sq_az(slotcd)")
-    o.append("      cabx = sq_abx(slotcd); caby = sq_aby(slotcd); cabz = sq_abz(slotcd)")
-    ind = " " * 6
-    if True:
-        need_a = [set(), set(), set()]
-        for d in range(3):
-            for t in range(a[d] + b[d] + 1):
-                need_a[d].add((a[d], b[d], t))
-        b_lines, _ = e_stmts(la, lb, need_a, ind + "   ", "b")
-        # scatter list per target r: (q index, E^ab_p factors)
-        scat = {}
-        for p in box:
-            fac = e3("b", a, b, p)
-            for j, q in enumerate(hq):
-                r = tuple(p[d] + q[d] for d in range(3))
-                scat.setdefault(r, []).append((j, fac))
-        for x in xs:
-            o.append(f"{ind}{x} = 0.0_dp")
-        o.append(f"{ind}do k1 = 1, nab")
-        o.append(f"{ind}   kp = sPA(seg) + (k1 - 1)*sA(seg) + (slotab - sOA(seg))")
-        o.append(f"{ind}   zeta = qp_z(kp)")
-        o.append(f"{ind}   px = qp_px(kp); py = qp_py(kp); pz = qp_pz(kp)")
-        o.append(f"{ind}   bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))")
-        o.append(f"{ind}   boo2p = 0.5_dp/zeta")
-        o.append(f"{ind}   bpxa = px - sq_ax(slotab); bpya = py - sq_ay(slotab); bpza = pz - sq_az(slotab)")
-        o.append(f"{ind}   bpxb = bpxa + sq_abx(slotab); bpyb = bpya + sq_aby(slotab); bpzb = bpza + sq_abz(slotab)")
-        o.extend(b_lines)
-        o.append(f"{ind}   do k2 = 1, ncd")
-        o.append(f"{ind}      kq = sPB(seg) + (k2 - 1)*sNB(seg) + (slotcd - sOB(seg))")
-        o.append(f"{ind}      eta = qp_z(kq)")
-        o.append(f"{ind}      zpe = zeta + eta")
-        o.append(f"{ind}      pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*qp_c(kp)*qp_c(kq)")
-        o.append(f"{ind}      if (bnd*abs(qp_c(kq))/eta <= pcut .or. abs(pref) <= pcut) cycle")
-        o.append(f"{ind}      alpha = zeta*eta/zpe")
-        o.append(f"{ind}      pqx = px - qp_px(kq); pqy = py - qp_py(kq); pqz = pz - qp_pz(kq)")
-        o.append(f"{ind}      tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
-        o.append(f"{ind}      call boys_down({max(leaves)}, tval, f)")
-        o.append(f"{ind}      m2a = -2.0_dp*alpha")
-        o.append(f"{ind}      ww = pref")
-        for m in range(max(leaves) + 1):
-            if m > 0:
-                o.append(f"{ind}      ww = ww*m2a")
-            if m in leaves:
-                o.append(f"{ind}      {rtree.leaf_name(m)} = ww*f({m})")
-        for j in range(len(hq)):
-            o.append(f"{ind}      v{j + 1} = 0.0_dp")
-
-        def scatter(r):
-            val = rtree.leaf_name(0) if r == (0, 0, 0) else rtree.r_name(r, 0)
-            for j, fac in scat.get(r, []):
-                o.append(f"{ind}      v{j + 1} = v{j + 1} + " + "*".join(fac + [val]))
-        if ((0, 0, 0), 0) in g.tset:
-            scatter((0, 0, 0))
-        # Depth-first from the targets, each scattered into v as it is formed:
-        # half the live R values of the level-by-level order (md/schedule.py).
-        order = dfs_order(g, sorted(g.targets, key=lambda n: (sum(n[0]), n[0])))
-        for st in order:
-            o.extend(emit_sum(st.lhs, expr_of(st.terms), ind + "      "))
-            fl = st.lhs[1:].split("_")
-            if fl[3] == "0":
-                r = tuple(int(x) for x in fl[:3])
-                if (r, 0) in g.tset:
-                    scatter(r)
-        o.append(f"{ind}      koo2p = 0.5_dp/eta")
-        o.append(f"{ind}      kpxa = qp_px(kq) - cax; kpya = qp_py(kq) - cay; kpza = qp_pz(kq) - caz")
-        o.append(f"{ind}      kpxb = kpxa + cabx; kpyb = kpya + caby; kpzb = kpza + cabz")
-        o.extend(["   " + ln for ln in k_lines])
-        for xc, c in enumerate(cc):
-            for xd, d in enumerate(cd):
-                parts = []
-                for j, q in enumerate(hq):
-                    fac = e3("k", c, d, q)
-                    if fac is None:
-                        continue
-                    term = "*".join(fac + [f"v{j + 1}"])
-                    parts.append(f"(-{term})" if sum(q) % 2 else term)
-                o.extend(emit_sum(f"x{xc + 1}_{xd + 1}", parts, ind + "      ", accumulate=True))
-        o.append(f"{ind}   end do")
-        o.append(f"{ind}end do")
-        o.extend(w_digest(xa, xb, nc, nd, ind))
-    o.append(f"   end subroutine mdk_w_item_{tag}_{kb}")
+    o.append("      ! Primitive quartet t = (i, k1, j, k2), bra pair fastest.")
+    o.append("      u = t - 1")
+    o.append("      i = mod(u, ni) + 1; u = u/ni")
+    o.append("      k1 = mod(u, ka) + 1; u = u/ka")
+    o.append("      j = mod(u, nj) + 1")
+    o.append("      k2 = u/nj + 1")
+    o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
+    o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
+    o.append("      qcut = sp_q(spa)*sp_q(spc)")
+    o.append("      ! The HGP kernels' quartet and primitive screens; what fails is a zero block.")
+    o.append("      if (k1 > sp_nk(spa) .or. k2 > sp_nk(spc)) then")
+    o.append(f"         do r = 1, {len(herm(L))}")
+    o.append("            rb(r, t) = 0.0_dp")
+    o.append("         end do")
+    o.append("         return")
+    o.append("      end if")
+    o.append("      kp = sp_k0(spa) + k1")
+    o.append("      kq = sp_k0(spc) + k2")
+    o.append("      zeta = mp_z(kp); eta = mp_z(kq); zpe = zeta + eta")
+    o.append("      pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))")
+    o.append("      bnd = TWO_PI_2_5*abs(mp_c(kp))/(zeta*sqrt(zeta))")
+    o.append("      if (qcut <= thresh .or. qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), &")
+    o.append("          dsh(si, sl), dsh(sj, sk), dsh(sj, sl)) <= thresh .or. &")
+    o.append("          bnd*abs(mp_c(kq))/eta <= pcut .or. abs(pref*mp_c(kp)*mp_c(kq)) <= pcut) then")
+    o.append(f"         do r = 1, {len(herm(L))}")
+    o.append("            rb(r, t) = 0.0_dp")
+    o.append("         end do")
+    o.append("         return")
+    o.append("      end if")
+    o.append("      alpha = zeta*eta/zpe")
+    o.append("      pqx = mp_px(kp) - mp_px(kq); pqy = mp_py(kp) - mp_py(kq); pqz = mp_pz(kp) - mp_pz(kq)")
+    o.append("      tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
+    o.append(f"      call boys_down({max(leaves)}, tval, f)")
+    o.append("      m2a = -2.0_dp*alpha")
+    o.append("      ww = pref")
+    for m in range(max(leaves) + 1):
+        if m > 0:
+            o.append("      ww = ww*m2a")
+        if m in leaves:
+            o.append(f"      {rtree.leaf_name(m)} = ww*f({m})")
+    if ((0, 0, 0), 0) in g.tset:
+        o.append(f"      rb(1, t) = {rtree.leaf_name(0)}")
+    # Depth-first, each target stored as soon as it is formed.
+    for st in dfs_order(g, sorted(g.targets, key=lambda n: (sum(n[0]), n[0]))):
+        o.extend(emit_sum(st.lhs, expr_of(st.terms), " " * 6))
+        fl = st.lhs[1:].split("_")
+        if fl[3] == "0":
+            r = tuple(int(x) for x in fl[:3])
+            o.append(f"      rb({il[r] + 1}, t) = {st.lhs}")
+    o.append(f"   end subroutine mdg_r_item_{tag}")
     return o
 
 
-def w_digest(xa, xb, nc, nd, ind):
-    """Row (a, b) of the quartet into K when kfac /= 0, and J when jfac /= 0."""
-    o = [f"{ind}do idens = 1, ndens", f"{ind}   if (kfac /= 0.0_dp) then"]
-    for c in range(nc):
-        t = [f"x{c + 1}_{d + 1}*dmat(idens, nuj + {xb}, sigl + {d})" for d in range(nd)]
-        o.extend(emit_sum("s", t, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, mui + {xa}, lamk + {c}) = jmat(idens, mui + {xa}, lamk + {c}) - kfac*wqq*s")
-        t = [f"x{c + 1}_{d + 1}*dmat(idens, mui + {xa}, sigl + {d})" for d in range(nd)]
-        o.extend(emit_sum("s", t, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, nuj + {xb}, lamk + {c}) = jmat(idens, nuj + {xb}, lamk + {c}) - kfac*wqq*s")
-    for d in range(nd):
-        t = [f"x{c + 1}_{d + 1}*dmat(idens, nuj + {xb}, lamk + {c})" for c in range(nc)]
-        o.extend(emit_sum("s", t, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, mui + {xa}, sigl + {d}) = jmat(idens, mui + {xa}, sigl + {d}) - kfac*wqq*s")
-        t = [f"x{c + 1}_{d + 1}*dmat(idens, mui + {xa}, lamk + {c})" for c in range(nc)]
-        o.extend(emit_sum("s", t, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, nuj + {xb}, sigl + {d}) = jmat(idens, nuj + {xb}, sigl + {d}) - kfac*wqq*s")
-    o.append(f"{ind}   end if")
-    o.append(f"{ind}   if (jfac /= 0.0_dp) then")
-    t = [f"x{c + 1}_{d + 1}*dmat(idens, lamk + {c}, sigl + {d})" for c in range(nc) for d in range(nd)]
-    o.extend(emit_sum("s", t, ind + "      "))
-    o.append(f"{ind}      !$acc atomic update")
-    o.append(f"{ind}      jmat(idens, mui + {xa}, nuj + {xb}) = jmat(idens, mui + {xa}, nuj + {xb}) + 4.0_dp*jfac*wqq*s")
-    o.append(f"{ind}      dab = 4.0_dp*jfac*wqq*dmat(idens, mui + {xa}, nuj + {xb})")
-    for c in range(nc):
-        for d in range(nd):
-            o.append(f"{ind}      !$acc atomic update")
-            o.append(f"{ind}      jmat(idens, lamk + {c}, sigl + {d}) = jmat(idens, lamk + {c}, sigl + {d}) "
-                     f"+ dab*x{c + 1}_{d + 1}")
-    o.append(f"{ind}   end if")
-    o.append(f"{ind}end do")
+def ket_driver(tag, suf, np_, nq_, nr, nab, ncd):
+    o = []
+    o.extend(wrap_args(f"subroutine mdg_ket_{tag}{suf}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
+    o.append("      !! One window: R, PQ, the two GEMMs and the digestion. hb and hk are the")
+    o.append("      !! window's slices of the E matrices trc_mdg formed once per geometry"
+             + (", spherical." if suf else "."))
+    o.append("      type(trc_linalg_t), intent(inout) :: lp")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append(f"      real(dp), intent(in)    :: hb({nab}, {np_}*ka, ni)")
+    o.append(f"      real(dp), intent(in)    :: hk({ncd}, {nq_}*kb, nj)")
+    o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb)")
+    o.append(f"      real(dp), intent(inout) :: pq({np_}*ka*ni, {nq_}*kb, nj), sm({np_}*ka*ni, {ncd}, nj)")
+    o.append(f"      real(dp), intent(inout) :: eri({nab}, ni, {ncd}, nj)")
+    o.append("      integer :: t, npb, nqb")
+    o.append(f"      npb = {np_}*ka")
+    o.append(f"      nqb = {nq_}*kb")
+    o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
+    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
+    o.append("      end do")
+    o.append(f"      do concurrent(t = 1:{np_}*ka*ni*kb*nj)")
+    o.append(f"         call mdg_x_item_{tag}(t, ni, ka, nj, kb, rb, pq)")
+    o.append("      end do")
+    o.append("      ! S_j = PQ_j Hk_j^T, then Eri_i = Hb_i S(i, :) with S read in place.")
+    o.append(f"      call lp%gemm_strided(\"N\", \"T\", npb*ni, {ncd}, nqb, 1.0_dp, pq, npb*ni, &")
+    o.append(f"                           int(npb, int64)*ni*nqb, hk, {ncd}, int({ncd}*nqb, int64), 0.0_dp, &")
+    o.append(f"                           sm, npb*ni, int(npb, int64)*ni*{ncd}, nj)")
+    o.append(f"      call lp%gemm_strided(\"N\", \"N\", {nab}, {ncd}*nj, npb, 1.0_dp, hb, {nab}, &")
+    o.append(f"                           int({nab}*npb, int64), sm, npb*ni, int(npb, int64), 0.0_dp, eri, &")
+    o.append(f"                           {nab}*ni, int({nab}, int64), ni)")
+    o.append(f"      do concurrent(t = 1:{nab}*ni*nj)")
+    o.extend(wrap_args(f"call mdg_d_item_{tag}{suf}", f"t, {DATA}, {WIN}, eri", " " * 9))
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_ket_{tag}{suf}")
     return o
 
 
-def f_digest(xa, nb, nc, nd, ind):
-    """Thread a's share of the four exchange blocks, and of J when jfac /= 0.
+def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2):
+    """The cuBLAS-free contraction: S = PQ Hk^T and the integral rows, fused.
 
-    The density elements are loaded into scalars once: emitted inline in
-    each sum, the compiler reloaded them past every atomic, ~1300 scattered
-    loads per (dp|dp) quartet against HGP's 81, and the kernel ran at 71%
-    memory throughput and IPC 0.15 (ncu, V100).
+    B: one thread per (pbar, quartet), pbar fastest, so a warp works on one
+       quartet's R (L1) and one ket E matrix (broadcast):
+           S[pbar, cd, w] = sum_qbar (-1)^|q| R[p+q] Hk[cd, qbar]
+       PQ is never stored; (p, q) -> p + q is the literal RM table.
+    C: one thread per (ab, quartet): the integral row from Hb[ab, :] S[:, :, w],
+       digested at once, so the integral block is never stored either.
+    A quartet that fails the HGP screen returns at once in both (its R is zero),
+    instead of being multiplied as a zero block: 45% of the quartets the GEMM
+    path multiplied on w20 cc-pVQZ (TRC_MDG_STATS).
     """
-    x = lambda b, c, d: f"x{b + 1}_{c + 1}_{d + 1}"
-    o = [f"{ind}do idens = 1, ndens"]
-    for b in range(nb):
-        for d in range(nd):
-            o.append(f"{ind}   dbd{b + 1}_{d + 1} = dmat(idens, nuj + {b}, sigl + {d})")
-        for c in range(nc):
-            o.append(f"{ind}   dbc{b + 1}_{c + 1} = dmat(idens, nuj + {b}, lamk + {c})")
-    for d in range(nd):
-        o.append(f"{ind}   dad{d + 1} = dmat(idens, mui + {xa}, sigl + {d})")
-    for c in range(nc):
-        o.append(f"{ind}   dac{c + 1} = dmat(idens, mui + {xa}, lamk + {c})")
-    for c in range(nc):
-        t = [f"{x(b, c, d)}*dbd{b + 1}_{d + 1}" for b in range(nb) for d in range(nd)]
-        o.extend(emit_sum("s", t, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, mui + {xa}, lamk + {c}) = jmat(idens, mui + {xa}, lamk + {c}) - kfac*wqq*s")
-    for d in range(nd):
-        t = [f"{x(b, c, d)}*dbc{b + 1}_{c + 1}" for b in range(nb) for c in range(nc)]
-        o.extend(emit_sum("s", t, ind + "   "))
-        o.append(f"{ind}   !$acc atomic update")
-        o.append(f"{ind}   jmat(idens, mui + {xa}, sigl + {d}) = jmat(idens, mui + {xa}, sigl + {d}) - kfac*wqq*s")
-    for b in range(nb):
-        for c in range(nc):
-            t = [f"{x(b, c, d)}*dad{d + 1}" for d in range(nd)]
-            o.extend(emit_sum("s", t, ind + "   "))
-            o.append(f"{ind}   !$acc atomic update")
-            o.append(f"{ind}   jmat(idens, nuj + {b}, lamk + {c}) = jmat(idens, nuj + {b}, lamk + {c}) - kfac*wqq*s")
-        for d in range(nd):
-            t = [f"{x(b, c, d)}*dac{c + 1}" for c in range(nc)]
-            o.extend(emit_sum("s", t, ind + "   "))
-            o.append(f"{ind}   !$acc atomic update")
-            o.append(f"{ind}   jmat(idens, nuj + {b}, sigl + {d}) = jmat(idens, nuj + {b}, sigl + {d}) - kfac*wqq*s")
-    o.append(f"{ind}   if (jfac /= 0.0_dp) then")
-    for c in range(nc):
-        for d in range(nd):
-            o.append(f"{ind}      dcd{c + 1}_{d + 1} = dmat(idens, lamk + {c}, sigl + {d})")
-    for b in range(nb):
-        o.append(f"{ind}      dab{b + 1} = dmat(idens, mui + {xa}, nuj + {b})")
-    for b in range(nb):
-        t = [f"{x(b, c, d)}*dcd{c + 1}_{d + 1}" for c in range(nc) for d in range(nd)]
-        o.extend(emit_sum("s", t, ind + "      "))
-        o.append(f"{ind}      !$acc atomic update")
-        o.append(f"{ind}      jmat(idens, mui + {xa}, nuj + {b}) = jmat(idens, mui + {xa}, nuj + {b}) "
-                 "+ 4.0_dp*jfac*wqq*s")
-    for c in range(nc):
-        for d in range(nd):
-            t = [f"{x(b, c, d)}*dab{b + 1}" for b in range(nb)]
-            o.extend(emit_sum("s", t, ind + "      "))
-            o.append(f"{ind}      !$acc atomic update")
-            o.append(f"{ind}      jmat(idens, lamk + {c}, sigl + {d}) = jmat(idens, lamk + {c}, sigl + {d}) "
-                     "+ 4.0_dp*jfac*wqq*s")
-    o.append(f"{ind}   end if")
-    o.append(f"{ind}end do")
+    nab, ncd = na * nb, nc * nd
+    o = []
+    # ---- B ----
+    o.extend(wrap_args(f"pure subroutine mdg_fb_item_{tag}{suf}", f"t, {DATA}, {WIN}, hk, rb, sm", "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer, intent(in) :: t")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append(f"      real(dp), intent(in)    :: hk({ncd}, {nq_}*kb, nj), rb({nr}, ni, ka, nj, kb)")
+    o.append(f"      real(dp), intent(inout) :: sm({np_}*ka, {ncd}, ni*nj)")
+    o.append("      integer :: u, pb, w, i, j, k1, k2, x, y, c, spa, spc, si, sj, sk, sl")
+    o.append("      real(dp) :: v, qcut")
+    o.append(f"      real(dp) :: acc({ncd})")
+    o.append(f"      pb = mod(t - 1, {np_}*ka) + 1")
+    o.append(f"      w = (t - 1)/({np_}*ka) + 1")
+    o.append("      i = mod(w - 1, ni) + 1")
+    o.append("      j = (w - 1)/ni + 1")
+    o.append(f"      x = mod(pb - 1, {np_}) + 1")
+    o.append(f"      k1 = (pb - 1)/{np_} + 1")
+    o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
+    o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
+    o.append("      qcut = sp_q(spa)*sp_q(spc)")
+    o.append("      if (qcut <= thresh) return")
+    o.append("      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &")
+    o.append("                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return")
+    o.append(f"      do c = 1, {ncd}")
+    o.append("         acc(c) = 0.0_dp")
+    o.append("      end do")
+    o.append("      do k2 = 1, kb")
+    o.append(f"         do y = 1, {nq_}")
+    o.append(f"            v = SQ{tag}(y)*rb(RM{tag}(x + {np_}*(y - 1)), i, k1, j, k2)")
+    o.append(f"            do c = 1, {ncd}")
+    o.append(f"               acc(c) = acc(c) + v*hk(c, y + {nq_}*(k2 - 1), j)")
+    o.append("            end do")
+    o.append("         end do")
+    o.append("      end do")
+    o.append(f"      do c = 1, {ncd}")
+    o.append("         sm(pb, c, w) = acc(c)")
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_fb_item_{tag}{suf}")
+    o.append("")
+    # ---- C: reuse the row digestion with the row formed from Hb S ----
+    d = d_item(tag, na, nb, nc, nd, suf, o1, o2)
+    d = "\n".join(d)
+    d = d.replace(f"pure subroutine mdg_d_item_{tag}{suf}(", f"pure subroutine mdg_fc_item_{tag}{suf}(")
+    d = d.replace(f"end subroutine mdg_d_item_{tag}{suf}", f"end subroutine mdg_fc_item_{tag}{suf}")
+    d = d.replace(", eri)", ", hb, sbuf)")
+    d = d.replace(f"      real(dp), intent(in) :: eri({nab}, ni, {ncd}, nj)",
+                  f"      real(dp), intent(in) :: hb({nab}, {np_}*ka, ni), sbuf({np_}*ka, {ncd}, ni*nj)")
+    d = d.replace("      integer :: u, i, j, ab,", "      integer :: u, i, j, ab, pb, iw,")
+    d = d.replace(f"""      do ic = 1, {ncd}
+         row(ic) = eri(ab, i, ic, j)
+      end do""", f"""      iw = i + ni*(j - 1)
+      do ic = 1, {ncd}
+         row(ic) = 0.0_dp
+      end do
+      do pb = 1, {np_}*ka
+         x = hb(ab, pb, i)
+         do ic = 1, {ncd}
+            row(ic) = row(ic) + x*sbuf(pb, ic, iw)
+         end do
+      end do""")
+    o.extend(d.split("\n"))
+    # wrap long header lines produced by the replace
     return o
 
 
-def f_digest_decl(nb, nc, nd):
-    names = ([f"dbd{b + 1}_{d + 1}" for b in range(nb) for d in range(nd)]
-             + [f"dbc{b + 1}_{c + 1}" for b in range(nb) for c in range(nc)]
-             + [f"dad{d + 1}" for d in range(nd)] + [f"dac{c + 1}" for c in range(nc)]
-             + [f"dcd{c + 1}_{d + 1}" for c in range(nc) for d in range(nd)]
-             + [f"dab{b + 1}" for b in range(nb)])
-    return decl("real(dp)", names)
+def fused_driver(tag, suf, np_, nq_, nr, nab, ncd):
+    o = []
+    o.extend(wrap_args(f"subroutine mdg_fused_{tag}{suf}", f"{DATA}, {WIN}, hb, hk, rb, sm", "   "))
+    o.append("      !! One window without cuBLAS: R, then S (kernel B), then rows and digestion (C).")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append(f"      real(dp), intent(in)    :: hb({nab}, {np_}*ka, ni), hk({ncd}, {nq_}*kb, nj)")
+    o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb), sm({np_}*ka, {ncd}, ni*nj)")
+    o.append("      integer :: t")
+    o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
+    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
+    o.append("      end do")
+    o.append(f"      do concurrent(t = 1:{np_}*ka*ni*nj)")
+    o.extend(wrap_args(f"call mdg_fb_item_{tag}{suf}", f"t, {DATA}, {WIN}, hk, rb, sm", " " * 9))
+    o.append("      end do")
+    o.append(f"      do concurrent(t = 1:{nab}*ni*nj)")
+    o.extend(wrap_args(f"call mdg_fc_item_{tag}{suf}", f"t, {DATA}, {WIN}, hb, sm", " " * 9))
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_fused_{tag}{suf}")
+    return o
 
 
-def gen_dispatch(classes, header):
-    o = [header.format(what="Host dispatch of the MD Fock prototype kernels")]
-    o.append("module trc_mdk_kernels")
+def x_item(tag, lp, lq, L):
+    np_, nq_, nr = len(herm(lp)), len(herm(lq)), len(herm(L))
+    o = []
+    o.extend(wrap_args(f"pure subroutine mdg_x_item_{tag}", "t, ni, ka, nj, kb, rb, pq", "   "))
+    o.append("      !! PQ[pbar, i, qbar, j] = (-1)^|q| R_{p+q}: one thread per (pbar, i, k2, j).")
+    o.append("      !$acc routine seq")
+    o.append("      integer,  intent(in) :: t, ni, ka, nj, kb")
+    o.append(f"      real(dp), intent(in) :: rb({nr}, ni, ka, nj, kb)")
+    o.append(f"      real(dp), intent(inout) :: pq({np_}, ka, ni, {nq_}, kb, nj)")
+    o.append("      integer :: u, x, k1, i, k2, j, y")
+    o.append("      u = t - 1")
+    o.append(f"      x = mod(u, {np_}) + 1; u = u/{np_}")
+    o.append("      k1 = mod(u, ka) + 1; u = u/ka")
+    o.append("      i = mod(u, ni) + 1; u = u/ni")
+    o.append("      k2 = mod(u, kb) + 1")
+    o.append("      j = u/kb + 1")
+    o.append(f"      do y = 1, {nq_}")
+    o.append(f"         pq(x, k1, i, y, k2, j) = SQ{tag}(y)*rb(RM{tag}(x + {np_}*(y - 1)), i, k1, j, k2)")
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_x_item_{tag}")
+    return o
+
+
+def d_item(tag, na, nb, nc, nd, suf="", o1="sp_ao1", o2="sp_ao2"):
+    """Row digestion. The spherical variant (suf "_s") digests spherical rows into
+    the spherical D and K trc_mdg forms around it, at the pairs' spherical offsets."""
+    nab, ncd = na * nb, nc * nd
+    o = []
+    o.extend(wrap_args(f"pure subroutine mdg_d_item_{tag}{suf}", f"t, {DATA}, {WIN}, eri", "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer, intent(in) :: t")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append(f"      real(dp), intent(in) :: eri({nab}, ni, {ncd}, nj)")
+    o.append("      integer :: u, i, j, ab, ia, ib, ic, id, spa, spc, si, sj, sk, sl, mui, nuj, lamk, sigl, idens")
+    o.append("      real(dp) :: qcut, w, sm, x")
+    o.append(f"      real(dp) :: row({ncd})")
+    o.append("")
+    o.append("      ! Row ab of quartet (i, j); ab fastest, so a warp reads contiguous rows.")
+    o.append(f"      ab = mod(t - 1, {nab}) + 1")
+    o.append(f"      u = (t - 1)/{nab}")
+    o.append("      i = mod(u, ni) + 1")
+    o.append("      j = u/ni + 1")
+    o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
+    o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
+    o.append("      qcut = sp_q(spa)*sp_q(spc)")
+    o.append("      if (qcut <= thresh) return")
+    o.append("      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &")
+    o.append("                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return")
+    o.append("      ! wdiag is 1/2 on a group against itself, done as a full square.")
+    o.append("      w = wdiag")
+    o.append("      if (si == sj) w = 0.5_dp*w")
+    o.append("      if (sk == sl) w = 0.5_dp*w")
+    o.append(f"      mui = {o1}(spa); nuj = {o2}(spa); lamk = {o1}(spc); sigl = {o2}(spc)")
+    o.append(f"      ia = mod(ab - 1, {na})")
+    o.append(f"      ib = (ab - 1)/{na}")
+    o.append(f"      do ic = 1, {ncd}")
+    o.append("         row(ic) = eri(ab, i, ic, j)")
+    o.append("      end do")
+    o.append("      do idens = 1, ndens")
+    o.append("         if (kfac /= 0.0_dp) then")
+    for (outer, ol, inner, il, lhs_a, lhs_b, dm) in [
+            ("ic", nc, "id", nd, "mui + ia", "lamk + ic", "nuj + ib, sigl + id"),
+            ("ic", nc, "id", nd, "nuj + ib", "lamk + ic", "mui + ia, sigl + id"),
+            ("id", nd, "ic", nc, "mui + ia", "sigl + id", "nuj + ib, lamk + ic"),
+            ("id", nd, "ic", nc, "nuj + ib", "sigl + id", "mui + ia, lamk + ic")]:
+        o.append(f"            do {outer} = 0, {ol - 1}")
+        o.append("               sm = 0.0_dp")
+        o.append(f"               do {inner} = 0, {il - 1}")
+        o.append(f"                  sm = sm + row(1 + ic + {nc}*id)*dmat(idens, {dm})")
+        o.append("               end do")
+        o.append("               !$acc atomic update")
+        o.append(f"               jmat(idens, {lhs_a}, {lhs_b}) = jmat(idens, {lhs_a}, {lhs_b}) - kfac*w*sm")
+        o.append("            end do")
+    o.append("         end if")
+    o.append("         if (jfac /= 0.0_dp) then")
+    o.append("            sm = 0.0_dp")
+    o.append(f"            do id = 0, {nd - 1}")
+    o.append(f"               do ic = 0, {nc - 1}")
+    o.append(f"                  sm = sm + row(1 + ic + {nc}*id)*dmat(idens, lamk + ic, sigl + id)")
+    o.append("               end do")
+    o.append("            end do")
+    o.append("            !$acc atomic update")
+    o.append("            jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) + 4.0_dp*jfac*w*sm")
+    o.append("            x = 4.0_dp*jfac*w*dmat(idens, mui + ia, nuj + ib)")
+    o.append(f"            do id = 0, {nd - 1}")
+    o.append(f"               do ic = 0, {nc - 1}")
+    o.append("                  !$acc atomic update")
+    o.append("                  jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &")
+    o.append(f"                                                    + x*row(1 + ic + {nc}*id)")
+    o.append("               end do")
+    o.append("            end do")
+    o.append("         end if")
+    o.append("      end do")
+    o.append(f"   end subroutine mdg_d_item_{tag}{suf}")
+    return o
+
+
+def gen_class(la, lb, lc, ld, order, header):
+    tag = f"{la}{lb}{lc}{ld}"
+    lp, lq = la + lb, lc + ld
+    L = lp + lq
+    hp, hq = herm(lp), herm(lq)
+    np_, nq_, nr = len(hp), len(hq), len(herm(L))
+    ca, cb = cartorder.components(la, order), cartorder.components(lb, order)
+    cc, cd = cartorder.components(lc, order), cartorder.components(ld, order)
+    na, nb, nc, nd = len(ca), len(cb), len(cc), len(cd)
+    nab, ncd = na * nb, nc * nd
+    nabs, ncds = (2 * la + 1) * (2 * lb + 1), (2 * lc + 1) * (2 * ld + 1)
+    il = herm_index(L)
+    o = [header.format(what=f"Class ({la}{lb}|{lc}{ld}) MD Fock kernels through batched GEMMs")]
+    o.append(f"module trc_mdg_k{tag}")
     o.append("   use pic_types, only: dp, int64")
-    for (la, lb, lc, ld) in classes:
-        tag = f"{la}{lb}{lc}{ld}"
-        o.append(f"   use trc_mdk_k{tag}, only: mdk_k{tag}, MDK_NR_{tag}, MDK_NAB_{tag}")
+    o.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
+    o.append("   use trc_linalg, only: trc_linalg_t")
     o.append("   implicit none")
     o.append("   private")
-    o.append("   public :: mdk_has_class, mdk_class_nr, mdk_window, mdk_class_run")
-    o.append("")
-    o.append("   integer(int64), parameter :: MDK_RBUF = 2_int64**25")
-    o.append("   !! Doubles in the Hermite buffer of one window (256 MB).")
+    o.append(f"   public :: mdg_ket_{tag}, mdg_ket_{tag}_s, mdg_fused_{tag}, mdg_fused_{tag}_s, MDG_SIZES_{tag}")
+    o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
+    o.append(f"   integer, parameter :: MDG_SIZES_{tag}(8) = [{np_}, {nq_}, {nr}, {nab}, {ncd}, {L}, {nabs}, {ncds}]")
+    o.append("   !! np, nq, n_r, bra and ket Cartesian component pairs, total L, bra and ket")
+    o.append("   !! spherical component pairs: the host sizes buffers from these.")
+    o.append("   ! Literal tables the loops index: Hermite decode, component exponents, and")
+    o.append("   ! the (p, q) -> p + q map and (-1)^|q| sign of the expansion.")
+    o.extend(int_table(f"RM{tag}", [il[tuple(p[d] + q[d] for d in range(3))] + 1 for q in hq for p in hp]))
+    o.extend(real_table(f"SQ{tag}", [(-1) ** sum(q) for q in hq]))
     o.append("")
     o.append("contains")
     o.append("")
-    o.append("   pure logical function mdk_has_class(key) result(res)")
-    o.append("      integer, intent(in) :: key")
-    o.append("      res = .false.")
-    for c in classes:
-        o.append(f"      if (key == {class_key(*c)}) res = .true.")
-    o.append("   end function mdk_has_class")
+    o.append('#include "inc/trc_boys_down.inc"')
     o.append("")
-    o.append("   pure integer function mdk_class_nr(key) result(nr)")
-    o.append("      !! Hermite integrals per primitive quartet of the class.")
-    o.append("      integer, intent(in) :: key")
-    o.append("      nr = 0")
-    for c in classes:
-        o.append(f"      if (key == {class_key(*c)}) nr = MDK_NR_{''.join(map(str, c))}")
-    o.append("   end function mdk_class_nr")
+    for suf, ab_, cd_ in (("", nab, ncd), ("_s", nabs, ncds)):
+        o.extend(ket_driver(tag, suf, np_, nq_, nr, ab_, cd_))
+        o.append("")
+        o.extend(fused_driver(tag, suf, np_, nq_, nr, ab_, cd_))
+        o.append("")
+    o.extend(r_item(tag, L))
     o.append("")
-    o.extend(wrap_args("subroutine mdk_window", "key, " + SEG_ARGS + ", " + WIN_ARGS, "   "))
+    o.extend(x_item(tag, lp, lq, L))
+    o.append("")
+    o.extend(d_item(tag, na, nb, nc, nd))
+    o.append("")
+    o.extend(d_item(tag, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "_s", "sp_as1", "sp_as2"))
+    o.append("")
+    o.extend(fused_items(tag, "", np_, nq_, nr, na, nb, nc, nd, "sp_ao1", "sp_ao2"))
+    o.append("")
+    o.extend(fused_items(tag, "_s", np_, nq_, nr, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "sp_as1", "sp_as2"))
+    o.append("")
+    o.append(f"end module trc_mdg_k{tag}")
+    return "\n".join(o) + "\n"
+
+
+SPH_TRANSFORMS = """   subroutine mdg_hsph(la, lb, ncol, hc, hs)
+      !! E matrices to spherical rows: hs(a' + (2la+1)(b'-1), col) =
+      !! sum_ab T(a, a', la) T(b, b', lb) hc(a + nca (b-1), col). Once per geometry.
+      integer,  intent(in)    :: la, lb, ncol
+      real(dp), intent(in)    :: hc((la + 1)*(la + 2)/2*(lb + 1)*(lb + 2)/2, ncol)
+      real(dp), intent(inout) :: hs((2*la + 1)*(2*lb + 1), ncol)
+      integer :: t
+      do concurrent(t = 1:(2*la + 1)*(2*lb + 1)*ncol)
+         call hsph_item(t, la, lb, ncol, hc, hs)
+      end do
+   end subroutine mdg_hsph
+
+   pure subroutine hsph_item(t, la, lb, ncol, hc, hs)
+      !$acc routine seq
+      integer,  intent(in)    :: t, la, lb, ncol
+      real(dp), intent(in)    :: hc((la + 1)*(la + 2)/2*(lb + 1)*(lb + 2)/2, ncol)
+      real(dp), intent(inout) :: hs((2*la + 1)*(2*lb + 1), ncol)
+      integer :: nsa, nsb, nca, ncb, ab, col, ap, bp, a, b
+      real(dp) :: acc
+      nsa = 2*la + 1
+      nsb = 2*lb + 1
+      nca = (la + 1)*(la + 2)/2
+      ncb = (lb + 1)*(lb + 2)/2
+      ab = mod(t - 1, nsa*nsb) + 1
+      col = (t - 1)/(nsa*nsb) + 1
+      ap = mod(ab - 1, nsa) + 1
+      bp = (ab - 1)/nsa + 1
+      acc = 0.0_dp
+      do b = 1, ncb
+         do a = 1, nca
+            acc = acc + SPH_T(a, ap, la)*SPH_T(b, bp, lb)*hc(a + nca*(b - 1), col)
+         end do
+      end do
+      hs(ab, col) = acc
+   end subroutine hsph_item
+
+   subroutine mdg_dsph(nshell, sh_l, sh_ao, sh_ao_sph, ndens, nao, naos, d, ds)
+      !! ds(:, block) = S^T d(:, block) S for every shell pair: the spherical
+      !! density a Cartesian D_cart = T D_sph T^T came from.
+      integer,  intent(in)  :: nshell, ndens, nao, naos
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: d(ndens, nao, nao)
+      real(dp), intent(inout) :: ds(ndens, naos, naos)
+      integer :: ij, ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k
+      real(dp) :: acc, inner
+      do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k, &
+                                                  acc, inner)
+         jsh = ij/nshell + 1
+         ish = ij - (jsh - 1)*nshell + 1
+         li = sh_l(ish); lj = sh_l(jsh)
+         nci = (li + 1)*(li + 2)/2; ncj = (lj + 1)*(lj + 2)/2
+         nsi = 2*li + 1; nsj = 2*lj + 1
+         ai = sh_ao(ish); aj = sh_ao(jsh); bi = sh_ao_sph(ish); bj = sh_ao_sph(jsh)
+         do k = 1, ndens
+            do c = 1, nsj
+               do r = 1, nsi
+                  acc = 0.0_dp
+                  do q = 1, ncj
+                     inner = 0.0_dp
+                     do p = 1, nci
+                        inner = inner + SPH_S(p, r, li)*d(k, ai + p - 1, aj + q - 1)
+                     end do
+                     acc = acc + inner*SPH_S(q, c, lj)
+                  end do
+                  ds(k, bi + r - 1, bj + c - 1) = acc
+               end do
+            end do
+         end do
+      end do
+   end subroutine mdg_dsph
+
+   subroutine mdg_kcart(nshell, sh_l, sh_ao, sh_ao_sph, ndens, nao, naos, ks, g)
+      !! g(:, block) += S ks(:, block) S^T: a spherical result into the Cartesian
+      !! matrix so that the fold T^T g T returns exactly ks.
+      integer,  intent(in)  :: nshell, ndens, nao, naos
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: ks(ndens, naos, naos)
+      real(dp), intent(inout) :: g(ndens, nao, nao)
+      integer :: ij, ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k
+      real(dp) :: acc, inner
+      do concurrent(ij=0:nshell*nshell - 1) local(ish, jsh, li, lj, nci, ncj, nsi, nsj, ai, aj, bi, bj, p, q, r, c, k, &
+                                                  acc, inner)
+         jsh = ij/nshell + 1
+         ish = ij - (jsh - 1)*nshell + 1
+         li = sh_l(ish); lj = sh_l(jsh)
+         nci = (li + 1)*(li + 2)/2; ncj = (lj + 1)*(lj + 2)/2
+         nsi = 2*li + 1; nsj = 2*lj + 1
+         ai = sh_ao(ish); aj = sh_ao(jsh); bi = sh_ao_sph(ish); bj = sh_ao_sph(jsh)
+         do k = 1, ndens
+            do q = 1, ncj
+               do p = 1, nci
+                  acc = 0.0_dp
+                  do c = 1, nsj
+                     inner = 0.0_dp
+                     do r = 1, nsi
+                        inner = inner + SPH_S(p, r, li)*ks(k, bi + r - 1, bj + c - 1)
+                     end do
+                     acc = acc + inner*SPH_S(q, c, lj)
+                  end do
+                  g(k, ai + p - 1, aj + q - 1) = g(k, ai + p - 1, aj + q - 1) + acc
+               end do
+            end do
+         end do
+      end do
+   end subroutine mdg_kcart"""
+
+
+def _inverse(m):
+    """Inverse of a small symmetric positive definite matrix, Gauss-Jordan with pivoting."""
+    n = len(m)
+    a = [list(map(float, row)) + [1.0 if i == j else 0.0 for j in range(n)] for i, row in enumerate(m)]
+    for c in range(n):
+        piv = max(range(c, n), key=lambda r: abs(a[r][c]))
+        a[c], a[piv] = a[piv], a[c]
+        f = a[c][c]
+        a[c] = [x / f for x in a[c]]
+        for r in range(n):
+            if r != c and a[r][c] != 0.0:
+                g = a[r][c]
+                a[r] = [x - g * y for x, y in zip(a[r], a[c])]
+    return [row[n:] for row in a]
+
+
+def gen_h_module(lmax, order, header):
+    """Per (la, lb) type: the E matrices of a run of a group's pairs, h(nab, np*k, n).
+
+    Geometry only, so trc_mdg forms them once per build for every group a
+    routed class touches and the windows read them in place. Formed per
+    window, inside the class kernels, they were 960 of 2010 ms per Fock build
+    on w5 cc-pVQZ (V100).
+    """
+    import gen_sph  # noqa: E402 (T per l, this build's Cartesian order)
+    o = [header.format(what="E matrices of the MD GEMM pass, per shell-pair type")]
+    o.append("module trc_mdg_h")
+    o.append("   use pic_types, only: dp")
+    o.append("   use trc_sph_tables, only: SPH_T, SPH_NCART_MAX, SPH_NSPH_MAX")
+    o.append("   implicit none")
+    o.append("   private")
+    o.append("   public :: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart")
+    # S = T (T^T T)^-1 per l: the right inverse with T^T S = I, so a density
+    # D_cart = T D_sph T^T gives D_sph = S^T D_cart S back, and adding S K S^T
+    # to the Cartesian result folds out (T^T . T) to exactly K.
+    svals = []
+    for l in range(5):
+        cs = cartorder.components(l, order)
+        T = gen_sph.sph_block(l, cs)
+        nc, ns = len(cs), 2 * l + 1
+        M = [[sum(T[k][i] * T[k][j] for k in range(nc)) for j in range(ns)] for i in range(ns)]
+        Mi = _inverse(M)
+        S = [[sum(T[a][k] * Mi[k][j] for k in range(ns)) for j in range(ns)] for a in range(nc)]
+        for j in range(9):
+            for a in range(15):
+                svals.append(S[a][j] if (a < nc and j < ns) else 0.0)
+    o.append("   real(dp), parameter :: SPH_S(SPH_NCART_MAX, SPH_NSPH_MAX, 0:4) = reshape([ &")
+    toks = [repr(v) + "_dp" for v in svals]
+    for k in range(0, len(toks), 4):
+        o.append("      " + ", ".join(toks[k:k + 4]) + (", &" if k + 4 < len(toks) else "], &"))
+    o.append("      [SPH_NCART_MAX, SPH_NSPH_MAX, 5])")
+    o.append("   !! S(:, :, l) = T (T^T T)^-1, the right inverse of SPH_T's block.")
+    types = [(la, lb) for la in range(lmax + 1) for lb in range(la + 1)]
+    for la, lb in types:
+        t = f"{la}{lb}"
+        hp = herm(la + lb)
+        ca, cb = cartorder.components(la, order), cartorder.components(lb, order)
+        o.extend(int_table(f"HT_{t}", [h[0] for h in hp]))
+        o.extend(int_table(f"HU_{t}", [h[1] for h in hp]))
+        o.extend(int_table(f"HV_{t}", [h[2] for h in hp]))
+        for nm, cs in (("A", ca), ("B", cb)):
+            for d, ax in enumerate("XYZ"):
+                o.extend(int_table(f"C{nm}{ax}_{t}", [c[d] for c in cs]))
+    o.append("")
+    o.append("contains")
+    o.append("")
+    o.extend(wrap_args("subroutine mdg_h", f"la, lb, {DATA}, gb0, n, k, h", "   "))
+    o.append("      integer, intent(in) :: la, lb, gb0, n, k")
+    o.append(DATA_DECL)
+    o.append("      real(dp), intent(inout) :: h(*)")
+    o.append("      integer :: t")
+    o.append("      select case (la*16 + lb)")
+    for la, lb in types:
+        t = f"{la}{lb}"
+        o.append(f"      case ({la * 16 + lb})")
+        o.append("         do concurrent(t = 1:n*k)")
+        o.extend(wrap_args(f"call mdg_h_item_{t}", f"t, {DATA}, gb0, n, k, h", " " * 12))
+        o.append("         end do")
+    o.append("      case default")
+    o.append('         error stop "trc_mdg_h: no E-matrix kernel for this type"')
+    o.append("      end select")
+    o.append("   end subroutine mdg_h")
+    for la, lb in types:
+        t = f"{la}{lb}"
+        np_ = len(herm(la + lb))
+        n1, n2 = (la + 1) * (la + 2) // 2, (lb + 1) * (lb + 2) // 2
+        o.append("")
+        o.extend(wrap_args(f"pure subroutine mdg_h_item_{t}", f"t, {DATA}, gb0, n, k, h", "   "))
+        o.append("      !$acc routine seq")
+        o.append("      integer, intent(in) :: t, gb0, n, k")
+        o.append(DATA_DECL)
+        o.append(f"      real(dp), intent(inout) :: h({n1 * n2}, {np_}*k, n)")
+        o.append("      integer :: i, kk, sp, kp, col, x1, x2, ab, hh, d, ii, jj, tt")
+        o.append("      real(dp) :: oo2p, cf, v, xa(3), xb(3)")
+        o.append(f"      real(dp) :: e(0:{la}, 0:{lb}, 0:{la + lb}, 3)")
+        o.append("      i = mod(t - 1, n) + 1")
+        o.append("      kk = (t - 1)/n + 1")
+        o.append("      sp = gl(gb0 + i)")
+        o.append(f"      col = (kk - 1)*{np_}")
+        o.append("      ! Groups bucket the primitive count; a pair's padding primitives are zero.")
+        o.append("      if (kk > sp_nk(sp)) then")
+        o.append(f"         do hh = 1, {np_}")
+        o.append(f"            do ab = 1, {n1 * n2}")
+        o.append("               h(ab, col + hh, i) = 0.0_dp")
+        o.append("            end do")
+        o.append("         end do")
+        o.append("         return")
+        o.append("      end if")
+        o.append("      kp = sp_k0(sp) + kk")
+        o.append("      oo2p = 0.5_dp/mp_z(kp)")
+        o.append("      cf = mp_c(kp)")
+        o.append("      xa(1) = mp_ax(kp); xa(2) = mp_ay(kp); xa(3) = mp_az(kp)")
+        o.append("      xb(1) = mp_bx(kp); xb(2) = mp_by(kp); xb(3) = mp_bz(kp)")
+        o.extend(e1d_loop(la, lb, "      "))
+        o.append(f"      do x2 = 1, {n2}")
+        o.append(f"         do x1 = 1, {n1}")
+        o.append(f"            ab = x1 + {n1}*(x2 - 1)")
+        o.append(f"            do hh = 1, {np_}")
+        o.append(f"               if (HT_{t}(hh) > CAX_{t}(x1) + CBX_{t}(x2) .or. HU_{t}(hh) > CAY_{t}(x1) + CBY_{t}(x2) &")
+        o.append(f"                   .or. HV_{t}(hh) > CAZ_{t}(x1) + CBZ_{t}(x2)) then")
+        o.append("                  h(ab, col + hh, i) = 0.0_dp")
+        o.append("               else")
+        o.append(f"                  h(ab, col + hh, i) = cf*e(CAX_{t}(x1), CBX_{t}(x2), HT_{t}(hh), 1) &")
+        o.append(f"                                     *e(CAY_{t}(x1), CBY_{t}(x2), HU_{t}(hh), 2) &")
+        o.append(f"                                     *e(CAZ_{t}(x1), CBZ_{t}(x2), HV_{t}(hh), 3)")
+        o.append("               end if")
+        o.append("            end do")
+        o.append("         end do")
+        o.append("      end do")
+        o.append(f"   end subroutine mdg_h_item_{t}")
+    o.append("")
+    o.extend(SPH_TRANSFORMS.splitlines())
+    o.append("")
+    o.append("end module trc_mdg_h")
+    return "\n".join(o) + "\n"
+
+
+def gen_dispatch(classes, header):
+    o = [header.format(what="Host dispatch of the MD GEMM Fock kernels")]
+    o.append("module trc_mdg_kernels")
+    o.append("   use pic_types, only: dp")
+    o.append("   use trc_linalg, only: trc_linalg_t")
+    for c in classes:
+        tag = "".join(map(str, c))
+        o.append(f"   use trc_mdg_k{tag}, only: mdg_ket_{tag}, mdg_ket_{tag}_s, mdg_fused_{tag}, mdg_fused_{tag}_s, &")
+        o.append(f"                         MDG_SIZES_{tag}")
+    o.append("   implicit none")
+    o.append("   private")
+    o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket, mdg_fused")
+    o.append("")
+    o.append(f"   integer, parameter :: NCLASS = {len(classes)}")
+    if classes:
+        o.append(f"   integer, parameter :: KEYS(NCLASS) = [{', '.join(str(class_key(*c)) for c in classes)}]")
+    else:
+        o.append("   integer, parameter :: KEYS(1) = [-1]")
+    o.append("")
+    o.append("contains")
+    o.append("")
+    o.append("   pure integer function mdg_class_count() result(n)")
+    o.append("      n = NCLASS")
+    o.append("   end function mdg_class_count")
+    o.append("")
+    o.append("   pure integer function mdg_class_key(k) result(key)")
+    o.append("      integer, intent(in) :: k")
+    o.append("      key = KEYS(k)")
+    o.append("   end function mdg_class_key")
+    o.append("")
+    o.append("   pure function mdg_sizes(key) result(sz)")
+    o.append("      !! np, nq, n_r, nab, ncd, L, nab_sph, ncd_sph of a generated class; zeros if none.")
     o.append("      integer, intent(in) :: key")
-    o.append(SEG_DECL)
+    o.append("      integer :: sz(8)")
+    o.append("      sz = 0")
+    for c in classes:
+        tag = "".join(map(str, c))
+        o.append(f"      if (key == {class_key(*c)}) sz = MDG_SIZES_{tag}")
+    o.append("   end function mdg_sizes")
+    o.append("")
+    o.extend(wrap_args("subroutine mdg_ket", f"key, sph, lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
+    o.append("      integer, intent(in) :: key")
+    o.append("      logical, intent(in) :: sph")
+    o.append("      type(trc_linalg_t), intent(inout) :: lp")
+    o.append(DATA_DECL)
     o.append(WIN_DECL)
+    o.append("      real(dp), intent(in)    :: hb(*), hk(*)")
+    o.append("      real(dp), intent(inout) :: rb(*), pq(*), sm(*), eri(*)")
     o.append("      select case (key)")
     for c in classes:
         tag = "".join(map(str, c))
         o.append(f"      case ({class_key(*c)})")
-        o.extend(wrap_args(f"call mdk_k{tag}", SEG_ARGS + ", " + WIN_ARGS, " " * 9))
+        o.append("         if (sph) then")
+        o.extend(wrap_args(f"call mdg_ket_{tag}_s", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", " " * 12))
+        o.append("         else")
+        o.extend(wrap_args(f"call mdg_ket_{tag}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", " " * 12))
+        o.append("         end if")
     o.append("      case default")
-    o.append('         error stop "trc_mdk_kernels: no MD kernel for this class"')
+    o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
     o.append("      end select")
-    o.append("   end subroutine mdk_window")
+    o.append("   end subroutine mdg_ket")
     o.append("")
-    o.extend(wrap_args("subroutine mdk_class_run", "key, " + SEG_ARGS, "   "))
-    o.append("      !! Every quartet of segments lo..hi, one buffer-sized window at a time.")
+    o.extend(wrap_args("subroutine mdg_fused", f"key, sph, {DATA}, {WIN}, hb, hk, rb, sm", "   "))
     o.append("      integer, intent(in) :: key")
-    o.append(SEG_DECL)
-    o.append("      integer(int64) :: g, glast, n64")
-    o.append("      integer :: s, kk, nr, nw, n, ka, kb, j")
-    o.append("      real(dp), allocatable :: rbuf(:)")
-    o.append("      integer,  allocatable :: wseg(:), wab(:), wcd(:)")
-    o.append("      real(dp), allocatable :: wq(:)")
-    o.append("      if (sOff(hi + 1) <= sOff(lo)) return")
-    o.append("      kk = 1")
-    o.append("      do s = lo, hi")
-    o.append("         ka = 1")
-    o.append("         kb = 1")
-    o.append("         do j = sOA(s) + 1, sOA(s) + sA(s)")
-    o.append("            ka = max(ka, sq_n(j))")
-    o.append("         end do")
-    o.append("         do j = sOB(s) + 1, sOB(s) + sNB(s)")
-    o.append("            kb = max(kb, sq_n(j))")
-    o.append("         end do")
-    o.append("         kk = max(kk, ka*kb)")
-    o.append("      end do")
-    o.append("      nr = mdk_class_nr(key)")
-    o.append("      if (nr == 0) then")
-    o.append("         ! Fused: R lives in registers, the buffer is a placeholder.")
-    o.append("         nr = 1")
-    o.append("         kk = 1")
-    o.append("         n64 = 2_int64**22")
-    o.append("      else")
-    o.append("         n64 = max(1_int64, MDK_RBUF/int(nr*kk, int64))")
-    o.append("      end if")
-    o.append("      nw = int(min(n64, sOff(hi + 1) - sOff(lo)))")
-    o.append("      allocate (rbuf(int(nw, int64)*nr*kk), wseg(nw), wab(nw), wcd(nw), wq(nw))")
-    o.append("      !$acc enter data create(rbuf, wseg, wab, wcd, wq)")
-    o.append("      g = sOff(lo)")
-    o.append("      glast = sOff(hi + 1)")
-    o.append("      do while (g < glast)")
-    o.append("         n = int(min(int(nw, int64), glast - g))")
-    o.extend(wrap_args("call mdk_window", "key, " + SEG_ARGS + ", g, n, kk, nr, rbuf, wseg, wab, wcd, wq", " " * 9))
-    o.append("         g = g + n")
-    o.append("      end do")
-    o.append("      !$acc exit data delete(rbuf, wseg, wab, wcd, wq)")
-    o.append("      deallocate (rbuf, wseg, wab, wcd, wq)")
-    o.append("   end subroutine mdk_class_run")
+    o.append("      logical, intent(in) :: sph")
+    o.append(DATA_DECL)
+    o.append(WIN_DECL)
+    o.append("      real(dp), intent(in)    :: hb(*), hk(*)")
+    o.append("      real(dp), intent(inout) :: rb(*), sm(*)")
+    o.append("      select case (key)")
+    for c in classes:
+        tag = "".join(map(str, c))
+        o.append(f"      case ({class_key(*c)})")
+        o.append("         if (sph) then")
+        o.extend(wrap_args(f"call mdg_fused_{tag}_s", f"{DATA}, {WIN}, hb, hk, rb, sm", " " * 12))
+        o.append("         else")
+        o.extend(wrap_args(f"call mdg_fused_{tag}", f"{DATA}, {WIN}, hb, hk, rb, sm", " " * 12))
+        o.append("         end if")
+    o.append("      case default")
+    o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
+    o.append("      end select")
+    o.append("   end subroutine mdg_fused")
     o.append("")
-    o.append("end module trc_mdk_kernels")
+    o.append("end module trc_mdg_kernels")
     return "\n".join(o) + "\n"
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--classes", required=True, help="comma list like 2121,2120")
+    ap.add_argument("--classes", required=True)
     ap.add_argument("--lmax", type=int, required=True)
     ap.add_argument("--order", default="lexicographic", choices=sorted(ORDER_CODE))
-    ap.add_argument("--mode", default="row", choices=["row", "fused", "buffer"],
-                    help="fused: R in registers, one thread per (quartet, a); "
-                         "buffer: R through global memory, one thread per (quartet, ab)")
     ap.add_argument("-o", "--outdir", required=True)
     a = ap.parse_args()
     classes = [tuple(int(ch) for ch in c) for c in filter(None, a.classes.split(","))]
     classes = [c for c in classes if max(c) <= a.lmax]
     for c in classes:
-        if c[0] < c[1] or c[2] < c[3]:
-            raise SystemExit(f"class {c}: la >= lb and lc >= ld, as the bins store them")
-    cmd = f"scripts/gen_md_k.py --lmax {a.lmax} --classes {a.classes} --mode {a.mode}"
+        if c[0] < c[1] or c[2] < c[3] or (c[0], c[1]) < (c[2], c[3]):
+            raise SystemExit(f"class {c}: la >= lb, lc >= ld and (la, lb) >= (lc, ld), as fock_bins forms them")
+    cmd = f"scripts/gen_md_kgemm.py --lmax {a.lmax} --classes {a.classes}"
     if a.order not in ("lexicographic", "libcint"):
         cmd += f" --order {a.order}"
-    code = ORDER_CODE[a.order]
     header = ("!\n! {what}.\n!\n"
               f"! GENERATED by {cmd} -- do not edit.\n!\n"
-              f"#if TRC_CART_ORDER != {code}\n"
+              f"#if TRC_CART_ORDER != {ORDER_CODE[a.order]}\n"
               '#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."\n'
               "#endif\n")
     os.makedirs(a.outdir, exist_ok=True)
     for c in classes:
-        with open(os.path.join(a.outdir, f"trc_mdk_k{''.join(map(str, c))}.F90"), "w") as fh:
-            fh.write(gen_class(*c, a.order, header, mode=a.mode))
-    with open(os.path.join(a.outdir, "trc_mdk_kernels.F90"), "w") as fh:
+        with open(os.path.join(a.outdir, f"trc_mdg_k{''.join(map(str, c))}.F90"), "w") as fh:
+            fh.write(gen_class(*c, a.order, header))
+    with open(os.path.join(a.outdir, "trc_mdg_kernels.F90"), "w") as fh:
         fh.write(gen_dispatch(classes, header))
+    with open(os.path.join(a.outdir, "trc_mdg_h.F90"), "w") as fh:
+        fh.write(gen_h_module(a.lmax, a.order, header))
     return 0
 
 

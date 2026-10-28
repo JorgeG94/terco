@@ -40,7 +40,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 
 | | |
 |---|---|
-| **Four-centre ERIs and Fock builds** | Head-Gordon–Pople through **d**, Rys through **f** (`TERCO_LMAX=3`) |
+| **Four-centre ERIs and Fock builds** | Head-Gordon–Pople through **d**, chunked Rys through **f** (`TERCO_LMAX=3`) and the low-L **g** classes, McMurchie–Davidson exchange for the rest of **g** and a McMurchie–Davidson J engine (`TERCO_LMAX=4`) |
 | | single density, **batched over N densities in one integral pass**, non-symmetric density, and a device-resident entry point |
 | | `j_scale` / `k_scale`, so a hybrid functional or a response solve needs no second routine |
 | **Screening** | Schwarz bounds and optional density weighting, over a binned shell-pair container |
@@ -63,9 +63,9 @@ Terco will read the qcshema basis set format so if you have those, you can use t
 
 **The code has not been tested on AMD or Intel GPUs**. This is future work, if anyone is happy to try.
 
-- **Angular momentum above f, on four centres.** `TERCO_LMAX=3` builds f: any
-  class with a shell above d runs on a Rys kernel. g needs `TERCO_LMAX=4`,
-  which the build does not offer yet.
+- **g functions** need `TERCO_LMAX=4` and are for energies: the non-symmetric
+  Fock build, gradients and range-separated exchange refuse a g basis, and the
+  multipole integrals stop at d. An LMAX=4 build compiles for about 50 minutes.
 
 Spherical harmonics and range separation are supported:
 

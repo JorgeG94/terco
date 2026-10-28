@@ -23,7 +23,7 @@ Fortran API, a `bind(c)` ABI and a `terco` CLI. See `README.md`.
 |---|---|
 | `src/core/` | kinds glue, Boys, Cartesian/spherical tables, linalg, errors, MPI device binding |
 | `src/basis/`, `src/grid/` | basis JSON reader, decontraction; DFT grids and Becke/Stratmann partitions |
-| `src/eri/` | screening, shell-pair bins, HGP/Rys drivers, Fock and gradient launchers |
+| `src/eri/` | screening, shell-pair bins, HGP/Rys drivers, the McMurchie–Davidson J and exchange engines (`trc_mdj`, `trc_mdg`), Fock and gradient launchers |
 | `src/scf/` | SCF driver, settings, state, DIIS, guesses, DF-JK, gradients, CPHF |
 | `src/xc/`, `src/post_hf/`, `src/solvation/` | XC integration and functionals, VV10; RI-MP2; PCM |
 | `src/api/` | `trc_api` (Fortran) and `trc_capi` (C ABI); `include/` holds the C interfaces |
@@ -104,6 +104,10 @@ before any non-trivial change. The rules that most often break builds:
   and `tools/acc_to_omp.py`) breaks the OpenMP job. Check any new file type.
 - State the compile-time cost of a generator change that grows the heavy
   classes; the per-class kernels already take 15–20 minutes to build.
+- A Rys class above d needs a measured chunk plan (`FOCK_CHUNK_PLAN` in
+  `scripts/gen_rys.py`); the generator refuses one without. Race the shapes,
+  don't guess. Read register spills from the linked `libterco.so`
+  (`cuobjdump -res-usage`), never the `.o`: `-rdc` reports 0 there.
 
 **Fortran conventions**
 - Kinds come from `pic_types` (`dp`, `int32`, `int64`, ...). No

@@ -33,13 +33,16 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 
 ---
 
-## The five generators
+## The generators
 
 | Script | Emits | Used by |
 |---|---|---|
 | `gen_vrr.py` | Obara–Saika vertical recurrence | `gen_perclass`, and `--mode include` for the non-symmetric kernel |
 | `gen_hrr.py` | horizontal transfer plus the digestion, as `case` blocks | the non-symmetric kernel (`one_bin_item_nosym`) |
-| `gen_perclass.py` | one four-centre Fock kernel per class, `--split` one module each | the four-centre path |
+| `gen_perclass.py` | one four-centre HGP Fock kernel per class, `--split` one module each | the four-centre path, s/p/d |
+| `gen_rys.py` | one Rys-quadrature Fock kernel per class, spliced from `gen_perclass`'s prologue, CHUNKED per a measured plan (below) | f classes, seven heavy d classes, g classes up to total L `TERCO_RYS_G_LTOT` |
+| `gen_md_j.py` | the McMurchie–Davidson J engine: ket, Hermite (per (la+lb, lc+ld), R batched and sieved, `md/rtree.py`) and bra stages | `trc_mdj`, J for every class when MD J is on (always for a g basis) |
+| `gen_md_k.py` | McMurchie–Davidson exchange per class: R per primitive quartet, then S = PQ Hk^T and the integral rows fused, PQ never stored; E matrices per shell-pair type | `trc_mdg`, the g classes above `TERCO_RYS_G_LTOT` |
 | `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock` |
 | `gen_df.py` | two- and three-centre Coulomb, one module per class (`--split`, the only mode) | `trc_df_2c`, `trc_df_3c` |
 | `gen_df_grad.py` | the two- and three-centre Coulomb nuclear derivatives, contracted with a coefficient block, Rys for every class, one module per class | the `--df` gradient (`trc_scf_grad_df`) |
@@ -76,6 +79,43 @@ terco's `basis%build` additionally folds in libcint's per-shell
 
 ---
 
+## Which four-centre engine runs which class
+
+Measured, not modelled (V100, w20 water cluster in cc-pVQZ unless noted):
+
+| classes | engine | the measurement behind it |
+|---|---|---|
+| s, p, most d | HGP, warp-role split for the d classes that spill (`ROLE_SPLITS`) | HGP beats Rys below d; the split is 1.1–4.5x where the scalar working set spills |
+| seven heavy d (`FOCK_RYS_DEFAULT`), every f | chunked Rys | beat HGP on all six test systems |
+| g, la+lb+lc+ld <= 9 | chunked Rys | MD lost 2.8–3.8x to GPU4PySCF's Rys there; best chunk shape per class 2.62 s against 6.90 s in MD |
+| g, total L >= 10 | MD exchange (`trc_mdg`) | MD won 19 of the 25 classes at L 10–12 against every Rys shape |
+| J, all classes, when MD J is on | MD J (`trc_mdj`) | 2.5x over HGP/Rys J at cc-pVTZ |
+
+The crossover at total L 9 matches Palethorpe, Stocks and Barca's (H200,
+HGP below 6 and MD above 9) on different hardware and with Rys rather than
+HGP at low L. When MD J forms J the bin kernels run with `jfac = 0` and skip
+their Coulomb half on a launch-uniform branch (w20 16.4 -> 13.2 s).
+
+### Chunk plans are required above d
+
+The array form of a Rys kernel holds a quartet's whole Cartesian block per
+thread, which spills to local memory from f up. A chunk is every component
+of the INSIDE shells for one component of each OUTER shell; each runs its own
+primitive and root loops and digests on its own (`gen_rys.py`'s CHUNKED FOCK
+PASS). The best shape per class is not predictable from a register model, so
+every class is RACED over the nine outer sets in both forms (`--chunk-classes`,
+`--chunk-outer`, `--chunk-form`) and the winner recorded in
+`FOCK_CHUNK_PLAN` with its time. `gen_rys.py` refuses a canonical class
+above d that has neither a plan nor a `FOCK_ARRAY_MEASURED` entry: adding a
+class means racing it. Editing `gen_rys.py` reconfigures, which regenerates
+from the plan, so add an entry before racing a shape through the build tree.
+
+The chunked kernels still sit at 255 registers with 56–1256 B of spill per
+thread; read that from the LINKED library (`cuobjdump -res-usage
+libterco.so`): with `-rdc` the objects and CUPTI report 0.
+
+---
+
 ## Adding a new integral type
 
 Work outward from something that already exists rather than from the algebra.
@@ -99,12 +139,16 @@ Work outward from something that already exists rather than from the algebra.
 ### Raising the angular momentum ceiling
 
 For the **four-centre** kernels, `TERCO_LMAX` is the switch, and the cost is
-`L⁴`. `BOYS_MMAX` in `trc_boys.F90` caps `la+lb+lc+ld` at 16, which already
+`L⁴`. `TERCO_LMAX=4` builds g: HGP stops at d, Rys at f and the g classes up
+to total L 9, MD exchange takes the rest and MD J forms J. `BOYS_MMAX` in `trc_boys.F90` caps `la+lb+lc+ld` at 16, which already
 covers g (`(gg|gg)` needs 16), so the table is not what stops `TERCO_LMAX`
 past 2. The generated volume is the real obstacle, not the mathematics.
 
 For **one-electron, multipole and density-fitting** kernels, momentum sits on
 two or three centres, so they grow as `L²` or `L³` and f or g is affordable.
+The multipoles are the exception: they stop at d whatever `TERCO_LMAX` is
+(only the response code reads them, and their f and g classes were 20 and
+41 minutes of nvfortran), and `trc_multipoles` stops on a basis above that.
 They are generated at `--lmax 2` only because that is what the shipped set was
 built with. The two ceilings are deliberately independent — a fitting basis
 normally outranks the orbital basis, which is why `gen_df.py` defaults the
