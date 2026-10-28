@@ -24,6 +24,7 @@ module trc_eri
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
    use trc_boys, only: boys_init
+   use trc_rys_select, only: rys_tables_init
    use trc_tables, only: tables_init, LMAX
    use pic_strings, only: to_string
    use trc_cart, only: cart_init
@@ -298,6 +299,7 @@ contains
       ! happened the first time this ran.
       call boys_init()
       call tables_init()
+      call rys_tables_init()
       call cart_init()
       this%nbas = b%nshell
       this%nao_w = b%nao

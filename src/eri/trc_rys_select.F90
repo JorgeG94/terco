@@ -24,9 +24,18 @@
 module trc_rys_select
    use pic_types, only: dp
    use trc_rys_kernels, only: rys_has_class, rys_default_class
+   use trc_rys_table1, only: rys_table_init1
+   use trc_rys_table2, only: rys_table_init2
+   use trc_rys_table3, only: rys_table_init3
+   use trc_rys_table4, only: rys_table_init4
+   use trc_rys_table5, only: rys_table_init5
+   use trc_rys_table6, only: rys_table_init6
+   use trc_rys_table7, only: rys_table_init7
+   use trc_rys_table8, only: rys_table_init8
+   use trc_rys_table9, only: rys_table_init9
    implicit none
    private
-   public :: rys_select_init, rys_route
+   public :: rys_select_init, rys_route, rys_tables_init
 
    integer, parameter :: RYS_CLASS_RADIX = 11
    !! gen_perclass.py's CLASS_RADIX, fixed at 11 so a dispatch key means the
@@ -50,6 +59,24 @@ module trc_rys_select
    logical, save :: rys_table(0:RYS_KEY_MAX) = .false.
 
 contains
+
+   subroutine rys_tables_init()
+      !! Push the Rys root tables (1..9 roots) to the device, as boys_init does
+      !! the Boys table. Their `declare create` allocates device storage; the
+      !! tables' own comment says it does not carry the host initialiser, and
+      !! nothing called these until now. nvfortran evidently initialises the
+      !! device copy anyway (GPU Rys energies have matched the host build to
+      !! 1e-12), but that is undocumented compiler behaviour, not a contract.
+      call rys_table_init1()
+      call rys_table_init2()
+      call rys_table_init3()
+      call rys_table_init4()
+      call rys_table_init5()
+      call rys_table_init6()
+      call rys_table_init7()
+      call rys_table_init8()
+      call rys_table_init9()
+   end subroutine rys_tables_init
 
    subroutine rys_select_init()
       !! Unset, empty or "default" keeps the measured per-class default
