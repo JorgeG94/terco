@@ -34,7 +34,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 6
+   integer(c_int), parameter :: TRC_ABI_MINOR = 7
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -434,6 +434,43 @@ module trc_c_interfaces
          integer(c_int), value :: multiplicity
       end function trc_set_molecule
 
+      integer(c_int) function trc_set_elements(handle, natm, elements) bind(c) result(res)
+         !! Place a GHOST atom: one with basis functions but no nucleus and no
+         !! electrons. `elements(i)` (1..118) names the element whose basis
+         !! trc_set_basis_json looks up and whose shape every atom-driven piece
+         !! (the DFT/NLC grid, SAD/SADQ/SAP) follows for atom `i`; `trc_set_molecule`'s
+         !! own `z(i)` stays what drives the physics (nuclear repulsion and
+         !! attraction, the electron count, PCM's nuclear potential, the
+         !! Hellmann-Feynman gradient terms). A ghost is `z(i) == 0` with
+         !! `elements(i) >= 1`: a monomer run in its dimer's basis, say,
+         !! z(i) = 0 but elements(i) names the atom whose shells still sit
+         !! there. A normal atom needs no call here -- trc_set_molecule
+         !! already defaults `elements` to nint(z).
+         !!
+         !! Call this AFTER trc_set_molecule and BEFORE trc_set_basis_json/
+         !! trc_set_aux_json/trc_set_jkfit_json: those look the basis up by
+         !! element, so changing it after they ran would leave the loaded
+         !! shells on the wrong atoms. Refused once any of the three has run;
+         !! call trc_set_molecule again (which also resets `elements`) to
+         !! start over.
+         !!
+         !! `natm` must equal trc_set_molecule's own count, in the same atom
+         !! order; terco copies `elements`, the caller's array need not
+         !! outlive this call. Invalidates the last SCF/gradient/
+         !! polarizability result exactly as trc_set_molecule does, resets a
+         !! TRC_GUESS_GIVEN guess to SAD (the old density's shape no longer
+         !! has to match) and releases any --df fit.
+         !!
+         !! trc_set_charge and trc_set_geometry keep whatever `elements` this
+         !! call (or trc_set_molecule's own default) last set -- neither
+         !! changes the atom count or which element sits where.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: natm
+         integer(c_int), intent(in) :: elements(*)
+      end function trc_set_elements
+
       integer(c_int) function trc_set_charge(handle, charge, multiplicity) bind(c) result(res)
          !! Change the electron count on the SAME molecule, basis, auxiliary
          !! and jkfit bases -- unlike trc_set_molecule, which always
@@ -604,6 +641,10 @@ module trc_c_interfaces
          !! cavity's atoms, are unchanged); cleared by trc_set_molecule,
          !! which can change the atom count and order the override was
          !! given in.
+         !!
+         !! A GHOST atom (trc_set_elements) gets no PCM sphere at all, so an
+         !! entry here for one is IGNORED, not refused: the override is only
+         !! ever read for an atom that still has a sphere to place.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

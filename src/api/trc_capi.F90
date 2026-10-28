@@ -306,7 +306,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 6
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 7
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -356,6 +356,11 @@ module trc_capi
       ! molecule
       integer :: natm = 0, charge = 0, multiplicity = 1
       real(dp), allocatable :: at_z(:), at_r(:, :)
+      integer, allocatable :: elements(:)
+      !! Element per atom (1..118), trc_set_elements's own array -- defaults
+      !! to nint(at_z) (trc_set_molecule resets it there). Drives JSON basis
+      !! lookup, DFT/NLC grid sizes and guess shape; `at_z` (0 for a ghost)
+      !! stays what drives the physics. See trc_set_elements.
       logical :: have_mol = .false.
       ! bases; `bb` also keeps the last SCF's orbitals, as the old entries do
       type(basis_box) :: bb, ab
@@ -1648,6 +1653,33 @@ contains
       write (t, "(i0)") i
    end function itoa
 
+   pure function elements_refusal(cx) result(why)
+      !! What trc_run_scf refuses about `cx%elements`/`cx%at_z` together,
+      !! or an empty string if there is nothing to refuse. Element 0 at
+      !! any atom builds an element-0 grid/guess that silently does the
+      !! wrong thing rather than erroring (the bug ghost atoms would have
+      !! reopened had this not been here); every atom a ghost leaves
+      !! nothing to compute.
+      type(context_box), intent(in) :: cx
+      character(len=:), allocatable :: why
+      integer :: i
+      logical :: any_real
+      why = ""
+      any_real = .false.
+      do i = 1, cx%natm
+         if (cx%elements(i) < 1) then
+            why = "atom "//trim(itoa(i))//" has element "//trim(itoa(cx%elements(i)))// &
+                  ", which is not a periodic table entry (trc_set_elements takes 1..118)"
+            return
+         end if
+         if (cx%at_z(i) /= 0.0_dp) any_real = .true.
+      end do
+      if (.not. any_real) then
+         why = "every atom is a ghost (charge 0) -- there is no nucleus and no electron "// &
+               "left to run an SCF on"
+      end if
+   end function elements_refusal
+
    subroutine invalidate_runs(cx)
       !! A setting the results depended on changed.
       type(context_box), intent(inout) :: cx
@@ -1688,11 +1720,15 @@ contains
          return
       end if
       if (allocated(cx%at_z)) deallocate (cx%at_z, cx%at_r)
-      allocate (cx%at_z(natm), cx%at_r(3, natm))
+      if (allocated(cx%elements)) deallocate (cx%elements)
+      allocate (cx%at_z(natm), cx%at_r(3, natm), cx%elements(natm))
       do i = 1, natm
          cx%at_z(i) = real(z(i), dp)
          cx%at_r(:, i) = real(xyz(3*i - 2:3*i), dp)
       end do
+      ! Back-compatible default: every atom is its own element, i.e. no
+      ! ghosts. A caller wanting one calls trc_set_elements next.
+      cx%elements = nint(cx%at_z)
       cx%natm = int(natm)
       cx%charge = int(charge)
       cx%multiplicity = int(multiplicity)
@@ -1706,6 +1742,79 @@ contains
       if (allocated(cx%opts%pcm_radii_override)) deallocate (cx%opts%pcm_radii_override)
       status = TRC_OK
    end function trc_set_molecule
+
+   function trc_set_elements(handle, natm, elements) result(status) bind(c, name="trc_set_elements")
+      !! Place a GHOST atom: one with basis functions but no nucleus and no
+      !! electrons. `elements(i)` (1..118) names the element whose basis
+      !! trc_set_basis_json looks up and whose shape every atom-driven piece
+      !! (the DFT/NLC grid, SAD/SADQ/SAP) follows for atom `i`; `trc_set_molecule`'s
+      !! own `z(i)` stays what drives the physics (nuclear repulsion and
+      !! attraction, the electron count, PCM's nuclear potential, the
+      !! Hellmann-Feynman gradient terms). A ghost is `z(i) == 0` with
+      !! `elements(i) >= 1`: a monomer run in its dimer's basis, say,
+      !! z(i) = 0 but elements(i) names the atom whose shells still sit
+      !! there. A normal atom needs no call here -- trc_set_molecule
+      !! already defaults `elements` to nint(z).
+      !!
+      !! Call this AFTER trc_set_molecule and BEFORE trc_set_basis_json/
+      !! trc_set_aux_json/trc_set_jkfit_json: those look the basis up by
+      !! element, so changing it after they ran would leave the loaded
+      !! shells on the wrong atoms. Refused once any of the three has run;
+      !! call trc_set_molecule again (which also resets `elements`) to
+      !! start over.
+      !!
+      !! `natm` must equal trc_set_molecule's own count, in the same atom
+      !! order; terco copies `elements`, the caller's array need not
+      !! outlive this call. Invalidates the last SCF/gradient/
+      !! polarizability result exactly as trc_set_molecule does, resets a
+      !! TRC_GUESS_GIVEN guess to SAD (the old density's shape no longer
+      !! has to match) and releases any --df fit.
+      !!
+      !! trc_set_charge and trc_set_geometry keep whatever `elements` this
+      !! call (or trc_set_molecule's own default) last set -- neither
+      !! changes the atom count or which element sits where.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: natm
+      integer(c_int), intent(in) :: elements(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_elements: set the molecule first")
+         return
+      end if
+      if (cx%have_basis .or. cx%have_aux .or. cx%have_jkfit) then
+         call refuse(cx, "trc_set_elements: a JSON basis is already loaded -- call this "// &
+                     "before trc_set_basis_json/trc_set_aux_json/trc_set_jkfit_json, not after")
+         return
+      end if
+      status = TRC_ERR_BADARG
+      if (int(natm) /= cx%natm) then
+         call refuse(cx, "trc_set_elements: natm "//trim(itoa(int(natm)))// &
+                     " does not match the molecule's "//trim(itoa(cx%natm))//" atoms")
+         return
+      end if
+      do i = 1, cx%natm
+         if (elements(i) < 1 .or. elements(i) > 118) then
+            call refuse(cx, "trc_set_elements: element "//trim(itoa(int(elements(i))))// &
+                        " at atom "//trim(itoa(i))//" is not 1..118")
+            return
+         end if
+      end do
+      cx%elements = int(elements(1:cx%natm))
+      if (cx%guess_kind == TRC_GUESS_GIVEN) then
+         cx%guess_kind = TRC_GUESS_SAD
+         if (allocated(cx%dguess)) deallocate (cx%dguess)
+      end if
+      call invalidate_runs(cx)
+      if (cx%df_fit_ok) call cx%dfjk%release()
+      cx%df_fit_ok = .false.
+      status = TRC_OK
+   end function trc_set_elements
 
    function trc_set_charge(handle, charge, multiplicity) result(status) bind(c, name="trc_set_charge")
       !! Change the electron count on the SAME molecule, basis, auxiliary
@@ -1942,7 +2051,7 @@ contains
                    real(reshape(exps(1:maxnp*nshell), [int(maxnp), int(nshell)]), dp), &
                    real(reshape(coefs(1:maxnp*nshell), [int(maxnp), int(nshell)]), dp), &
                    real(reshape(centres(1:3*nshell), [3, int(nshell)]), dp), &
-                   cx%natm, cx%at_z, cx%at_r, int(maxnp))
+                   cx%natm, cx%at_z, cx%at_r, int(maxnp), at_elem=cx%elements)
       call take_basis(cx, aux, b)
       status = TRC_OK
    end function basis_arrays
@@ -2005,8 +2114,8 @@ contains
       ! falls back to `force_cartesian` alone, same as the orbital path.
       force_cart_this = cx%opts%force_cartesian
       if (aux .and. cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
-      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, &
-                               force_cart=force_cart_this)
+      call trc_basis_from_json(trim(fpath), cx%natm, cx%elements, cx%at_r, b, err, &
+                               force_cart=force_cart_this, charges=cx%at_z)
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -2251,6 +2360,10 @@ contains
       !! cavity's atoms, are unchanged); cleared by trc_set_molecule,
       !! which can change the atom count and order the override was
       !! given in.
+      !!
+      !! A GHOST atom (trc_set_elements) gets no PCM sphere at all, so an
+      !! entry here for one is IGNORED, not refused: the override is only
+      !! ever read for an atom that still has a sphere to place.
       type(c_ptr), value :: handle
       integer(c_int), value :: natm
       type(c_ptr), value :: radii
@@ -2471,7 +2584,8 @@ contains
       end do
       force_cart_this = cx%opts%force_cartesian
       if (cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
-      call trc_basis_from_json(trim(fpath), cx%natm, nint(cx%at_z), cx%at_r, b, err, force_cart=force_cart_this)
+      call trc_basis_from_json(trim(fpath), cx%natm, cx%elements, cx%at_r, b, err, &
+                               force_cart=force_cart_this, charges=cx%at_z)
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -2861,6 +2975,11 @@ contains
          cx%message = "trc_run_scf: set the molecule and the basis first"
          return
       end if
+      status = TRC_ERR_BADARG
+      if (len(elements_refusal(cx)) > 0) then
+         cx%message = "trc_run_scf: "//elements_refusal(cx)
+         return
+      end if
       ! `n` is the SCF's own space (nao_sph if spherical); `nc` is always
       ! the Cartesian count, for the one place below (SAP) that still
       ! builds something in Cartesian space before handing it to the SCF.
@@ -2869,8 +2988,9 @@ contains
       nelec = nint(sum(cx%at_z)) - cx%charge
       nunp = cx%multiplicity - 1
       status = TRC_ERR_BADARG
-      if (nelec < 0 .or. nunp > nelec .or. mod(nelec - nunp, 2) /= 0) then
-         cx%message = "trc_run_scf: charge and multiplicity do not fit the electron count"
+      if (nelec <= 0 .or. nunp > nelec .or. mod(nelec - nunp, 2) /= 0) then
+         cx%message = "trc_run_scf: charge and multiplicity do not fit the electron count "// &
+                      "(must be a positive number of electrons)"
          return
       end if
       nalpha = (nelec + nunp)/2
