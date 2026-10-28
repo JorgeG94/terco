@@ -27,13 +27,16 @@ module check_schwarz_rys_vs_hgp_suite
    private
    public :: collect_schwarz_rys_vs_hgp
 
-   ! Measured worst relative difference on water/cc-pVDZ, formamide/cc-pVDZ
-   ! and water/cc-pVQZ (g on O): see this change's own report. Loose enough
-   ! to survive a legitimate difference in primitive-pair summation order
-   ! between the two schemes, tight enough that a wrong formula -- not a
-   ! rounding difference -- still fails it by many orders of magnitude.
-   real(dp), parameter :: TOL_REL = 1.0e-9_dp
-   real(dp), parameter :: TOL_ABS = 1.0e-12_dp
+   ! Per pair, |Q_rys - Q_hgp| <= TOL_REL*Q_hgp + TOL_FLOOR. Measured worst
+   ! relative difference: water/cc-pVDZ 1.1e-14, formamide/cc-pVDZ 1.0e-12,
+   ! water/cc-pVQZ (g on O) 1.3e-11 -- HGP's recurrences against Rys
+   ! quadrature on (gg|gg), round-off. Relative, not a fixed absolute gate:
+   ! the tight QZ s/p pairs have Q of order 1-10, where a fixed 1e-12 is
+   ! tighter than two methods can agree in double precision. A wrong formula
+   ! still fails by many orders of magnitude; the floor only matters for a
+   ! Q screened to ~0 by both.
+   real(dp), parameter :: TOL_REL = 1.0e-10_dp
+   real(dp), parameter :: TOL_FLOOR = 1.0e-15_dp
 
 contains
 
@@ -91,6 +94,7 @@ contains
       real(dp), allocatable :: q_hgp(:), q_rys(:)
       integer :: natm, nhpp, npair, n
       real(dp) :: worst_abs, worst_rel, qmax, d
+      logical :: within
       character(len=256) :: msg
 
       call tables_init(); call cart_init(); call boys_init()
@@ -115,14 +119,13 @@ contains
 
       qmax = maxval(q_hgp)
       worst_abs = 0.0_dp; worst_rel = 0.0_dp
+      within = .true.
       do n = 1, npair
          d = abs(q_rys(n) - q_hgp(n))
          worst_abs = max(worst_abs, d)
-         ! Relative difference only means something above the noise floor
-         ! of the largest Q in the molecule -- a pair screened to near zero
-         ! by both routines can differ in its own tiny last digit without
-         ! the Cauchy-Schwarz bound this change exists to speed up being
-         ! wrong by any measurable amount.
+         if (d > TOL_REL*abs(q_hgp(n)) + TOL_FLOOR) within = .false.
+         ! Reported relative difference: only above the noise floor of the
+         ! largest Q, where it means something.
          if (q_hgp(n) > qmax*1.0e-10_dp) then
             worst_rel = max(worst_rel, d/q_hgp(n))
          end if
@@ -132,7 +135,7 @@ contains
          '  worst |dQ| ', worst_abs, '   worst |dQ|/|Q| ', worst_rel, '   (', npair, ' pairs)'
       print '(a)', trim(msg)
 
-      call check(error, worst_rel <= TOL_REL .and. worst_abs <= TOL_ABS, &
+      call check(error, within, &
                  message="schwarz_bounds_rys disagrees with schwarz_bounds_hgp past round-off "// &
                  "for "//xyzfile//" / "//basfile)
    end subroutine compare_q
