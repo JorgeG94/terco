@@ -37,7 +37,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 6
+#define TRC_ABI_MINOR 7
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -242,6 +242,39 @@ int trc_destroy(trc_handle_t handle);
 int trc_set_molecule(trc_handle_t handle, int natm, const double* z, const double* xyz, int charge, int multiplicity);
 
 /**
+ * Place a GHOST atom: one with basis functions but no nucleus and no
+ * electrons. `elements(i)` (1..118) names the element whose basis
+ * trc_set_basis_json looks up and whose shape every atom-driven piece
+ * (the DFT/NLC grid, SAD/SADQ/SAP) follows for atom `i`; `trc_set_molecule`'s
+ * own `z(i)` stays what drives the physics (nuclear repulsion and
+ * attraction, the electron count, PCM's nuclear potential, the
+ * Hellmann-Feynman gradient terms). A ghost is `z(i) == 0` with
+ * `elements(i) >= 1`: a monomer run in its dimer's basis, say,
+ * z(i) = 0 but elements(i) names the atom whose shells still sit
+ * there. A normal atom needs no call here -- trc_set_molecule
+ * already defaults `elements` to nint(z).
+ *
+ * Call this AFTER trc_set_molecule and BEFORE trc_set_basis_json/
+ * trc_set_aux_json/trc_set_jkfit_json: those look the basis up by
+ * element, so changing it after they ran would leave the loaded
+ * shells on the wrong atoms. Refused once any of the three has run;
+ * call trc_set_molecule again (which also resets `elements`) to
+ * start over.
+ *
+ * `natm` must equal trc_set_molecule's own count, in the same atom
+ * order; terco copies `elements`, the caller's array need not
+ * outlive this call. Invalidates the last SCF/gradient/
+ * polarizability result exactly as trc_set_molecule does, resets a
+ * TRC_GUESS_GIVEN guess to SAD (the old density's shape no longer
+ * has to match) and releases any --df fit.
+ *
+ * trc_set_charge and trc_set_geometry keep whatever `elements` this
+ * call (or trc_set_molecule's own default) last set -- neither
+ * changes the atom count or which element sits where.
+ */
+int trc_set_elements(trc_handle_t handle, int natm, const int* elements);
+
+/**
  * Change the electron count on the SAME molecule, basis, auxiliary
  * and jkfit bases -- unlike trc_set_molecule, which always
  * releases any --df fit, this keeps `cx%dfjk`/`cx%df_fit_ok`: a
@@ -339,6 +372,11 @@ int trc_set_pcm(trc_handle_t handle, const char* model, double eps, int lebedev,
  * cavity's atoms, are unchanged); cleared by trc_set_molecule,
  * which can change the atom count and order the override was
  * given in.
+ *
+ * A GHOST atom (trc_set_elements) would get no PCM sphere, so an
+ * entry here for one is IGNORED, not refused: the override is only
+ * ever read for an atom that still has a sphere to place. (PCM with
+ * ghosts is refused at trc_run_scf for now; see elements_refusal.)
  */
 int trc_set_pcm_radii(trc_handle_t handle, int natm, const void* radii);
 
