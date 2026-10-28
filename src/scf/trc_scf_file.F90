@@ -14,7 +14,8 @@
 !   functional (16 chars), pcm_model (8)        the method that made it
 !   pcm_eps, energy, e_nuc, e_one, e_two,       the scalars of the result
 !   e_xc, e_pcm, pcm_qtotal, nelec_grid
-!   at_z(natm), at_r(3, natm)                   the molecule
+!   at_z(natm), at_r(3, natm), at_elem(natm)    the molecule (version 2: at_elem
+!                                               added for ghost atoms, b%at_elem)
 !   sh_l, sh_np, sh_e, sh_c, sh_r               the basis, exactly as built
 !   eps(n, nspin), cmo(n, n, nspin),            the orbitals and the density
 !   dmat(n, n, nspin)
@@ -49,7 +50,9 @@ module trc_scf_file
    public :: trc_scf_save, trc_scf_load
 
    character(len=8), parameter :: MAGIC = "TERCOSCF"
-   integer(int32), parameter :: VERSION = 1
+   integer(int32), parameter :: VERSION = 2
+   !! 2: added at_elem(natm) (ghost atoms -- trc_set_elements) and an
+   !! element-mismatch refusal on load, alongside the existing charge one.
    integer, parameter :: N_SCALARS = 8   !! energy, e_nuc, e_one, e_two, e_xc, e_pcm, pcm_qtotal, nelec_grid
 
    ! The molecule is read from the same xyz the original run read, through
@@ -102,7 +105,7 @@ contains
          real(pcm_eps, real64), real(res%energy, real64), real(res%e_nuc, real64), &
          real(res%e_one, real64), real(res%e_two, real64), real(res%e_xc, real64), &
          real(res%e_pcm, real64), real(res%pcm_qtotal, real64), real(res%nelec_grid, real64)
-      if (ios == 0) write (u, iostat=ios) real(at_z, real64), real(at_r, real64)
+      if (ios == 0) write (u, iostat=ios) real(at_z, real64), real(at_r, real64), int(b%at_elem, int32)
       if (ios == 0) write (u, iostat=ios) int(b%sh_l, int32), int(b%sh_np, int32), &
          real(b%sh_e, real64), real(b%sh_c, real64), real(b%sh_r, real64)
       if (ios == 0) write (u, iostat=ios) real(res%eps, real64)
@@ -136,7 +139,7 @@ contains
       real(real64) :: f_pcm_eps
       real(real64) :: sc(N_SCALARS)
       real(real64), allocatable :: f_z(:), f_r(:, :), f_e(:, :), f_c(:, :), f_sr(:, :)
-      integer(int32), allocatable :: f_l(:), f_np(:)
+      integer(int32), allocatable :: f_l(:), f_np(:), f_elem(:)
       real(dp), allocatable :: eps(:, :), cmo(:, :, :), dmat(:, :, :)
       integer :: u, ios, n, natm
       logical :: there
@@ -213,14 +216,19 @@ contains
          return
       end if
 
-      allocate (f_z(natm), f_r(3, natm))
-      read (u, iostat=ios) f_z, f_r
+      allocate (f_z(natm), f_r(3, natm), f_elem(natm))
+      read (u, iostat=ios) f_z, f_r, f_elem
       if (ios /= 0) then
          call refuse(u, path, msg, trim(path)//" is truncated")
          return
       end if
       if (any(abs(f_z - at_z) > 0.0_dp)) then
-         call refuse(u, path, msg, "its atoms are different elements, or in a different order")
+         call refuse(u, path, msg, "its atoms are different charges, or in a different order")
+         return
+      end if
+      if (any(int(f_elem) /= b%at_elem)) then
+         call refuse(u, path, msg, "its atoms are different elements (a different ghost "// &
+                     "placement, trc_set_elements), or in a different order")
          return
       end if
       if (any(abs(f_r - at_r) > TOL_POS)) then
