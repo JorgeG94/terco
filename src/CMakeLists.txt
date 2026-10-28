@@ -668,6 +668,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 target_sources(
   ${main_lib}
   PRIVATE eri/trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
+          generated/schwarz/trc_schwarz_rys.F90 # Rys diagonal Schwarz kernel (scripts/gen_schwarz.py); no LMAX dependence, own subdir like the root tables below so the GLOB never picks it up twice
           generated/rys/trc_rys_table1.F90
           generated/rys/trc_rys_table2.F90
           generated/rys/trc_rys_table3.F90

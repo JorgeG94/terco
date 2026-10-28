@@ -454,6 +454,9 @@ jobs:
           # TERCO_DFG_UNROLL_MAX, with the root loop never unrolled.
           python3 scripts/gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 135 --unroll-roots-max-comp 0 \
             --split src/generated
+          # The Rys diagonal Schwarz kernel: no TERCO_LMAX dependence, but
+          # still generated and diffed like everything else here.
+          python3 scripts/gen_schwarz.py -o src/generated/schwarz/trc_schwarz_rys.F90
 
       - name: Require no diff
         run: |

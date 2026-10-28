@@ -184,6 +184,14 @@ add_test(NAME terco/check_binfock_split COMMAND check_binfock)
 set_tests_properties(terco/check_binfock_split PROPERTIES
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=3")
+# The Rys-quadrature diagonal Schwarz bound (trc_schwarz_rys.F90,
+# schwarz_bounds_rys) against the HGP whole-block one it replaces
+# (schwarz_bounds_hgp): same hp_* primitive-pair data, same Q, agreement
+# checked to round-off. Water/formamide in cc-pVDZ on every build; water in
+# cc-pVQZ (g on O) only when the build's own LMAX reaches 4.
+terco_add_check(check_schwarz_rys_vs_hgp check_schwarz_rys_vs_hgp.F90 NEEDS_BASIS)
+target_link_libraries(check_schwarz_rys_vs_hgp PRIVATE test-drive::test-drive)
+
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
