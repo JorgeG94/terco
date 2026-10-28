@@ -385,12 +385,15 @@ contains
    end function block_size
 
    logical function fused_mode() result(res)
-      !! TRC_MDG_MODE=fused: contract in do concurrent kernels (no cuBLAS, no
-      !! PQ or integral block in memory) instead of the two batched GEMMs.
+      !! Contract in do concurrent kernels (no cuBLAS, no PQ or integral block
+      !! in memory) unless TRC_MDG_MODE=gemm asks for the two batched GEMMs.
+      !! Fused is faster on every GPU measured, w20 cc-pVQZ per Fock build:
+      !! V100 20.5 vs 26.4 s, A100 7.76 vs 8.23 s and GH200 4.07 vs 4.30 s
+      !! (the last two with FP64 tensor cores, which only the GEMMs use).
       character(len=16) :: e
       e = " "
       call get_environment_variable("TRC_MDG_MODE", e)
-      res = trim(e) == "fused"
+      res = trim(e) /= "gemm"
    end function fused_mode
 
    logical function stats_on() result(res)
