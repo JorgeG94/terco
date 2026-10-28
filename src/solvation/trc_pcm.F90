@@ -169,7 +169,8 @@ contains
       end select
    end function pcm_model_from_name
 
-   subroutine build_pcm_surface(atomic_numbers, coords, angular_points, radii_scale, surface, error, radii_override)
+   subroutine build_pcm_surface(atomic_numbers, coords, angular_points, radii_scale, surface, error, &
+                                radii_override, is_ghost)
       !! Tessellate the cavity: Lebedev points per atom, switched and pruned
       integer, intent(in) :: atomic_numbers(:)
       real(dp), intent(in) :: coords(:, :)        !! (3, natm), bohr
@@ -180,7 +181,12 @@ contains
       real(dp), intent(in), optional :: radii_override(:)
       !! Final, already-scaled per-atom radii, bohr -- read straight in,
       !! bypassing pcm_cavity_radius/radii_scale entirely, when present.
-      !! trc_capi.F90's trc_set_pcm_radii is the route in.
+      !! trc_capi.F90's trc_set_pcm_radii is the route in. A `radii_override`
+      !! entry for a GHOST atom is ignored, same as everything else about it.
+      logical, intent(in), optional :: is_ghost(:)
+      !! A ghost (no nucleus) gets no sphere at all: it contributes no
+      !! points of its own and switches none of anyone else's, since it has
+      !! no cavity volume to carve out. Absent, every atom is real.
 
       real(dp), allocatable :: unit_points(:, :), unit_weights(:)
       real(dp), allocatable :: radii(:), r_switch(:), r_inner(:)
@@ -226,7 +232,13 @@ contains
       ! paper: a shell of width R_sw just inside the cavity radius, sized so
       ! that the region a point sweeps as it fades matches the point spacing.
       allocate (radii(natm), r_switch(natm), r_inner(natm))
+      radii = 0.0_dp
+      r_switch = 1.0_dp   ! never divided into for a ghost: it has no sphere at all
+      r_inner = 0.0_dp
       do iatom = 1, natm
+         if (present(is_ghost)) then
+            if (is_ghost(iatom)) cycle   ! leave the zero/placeholder values above
+         end if
          if (present(radii_override)) then
             radii(iatom) = radii_override(iatom)
          else
@@ -245,6 +257,9 @@ contains
 
       n_kept = 0
       do iatom = 1, natm
+         if (present(is_ghost)) then
+            if (is_ghost(iatom)) cycle   ! no sphere: a ghost has no cavity surface
+         end if
          do ipt = 1, angular_points
             point = radii(iatom)*unit_points(:, ipt) + coords(:, iatom)
             w = 4.0_dp*PI*unit_weights(ipt)
@@ -254,6 +269,9 @@ contains
             f = 1.0_dp
             do jatom = 1, natm
                if (jatom == iatom) cycle
+               if (present(is_ghost)) then
+                  if (is_ghost(jatom)) cycle   ! a ghost has no volume to switch against
+               end if
                d = (norm2(point - coords(:, jatom)) - r_inner(jatom))/r_switch(jatom)
                if (d < SWITCH_FLOOR) d = 0.0_dp
                f = f*pcm_switch_h(d)
@@ -451,8 +469,12 @@ contains
                         "build's PCM surface-integral kernels (gen_1e.py --pcm --lmax)")
          return
       end if
-      call build_pcm_surface(nint(b%at_z), b%at_r, angular_points, radii_scale, this%surface, error, &
-                             radii_override=radii_override)
+      ! Radius lookup goes by ELEMENT (b%at_elem, same as b%at_z for a real
+      ! atom); whether a sphere is built at all goes by CHARGE -- a ghost
+      ! (at_z == 0) gets no sphere and no v_nuc (below), only its basis
+      ! functions remain in the operators `build_operators` makes.
+      call build_pcm_surface(b%at_elem, b%at_r, angular_points, radii_scale, this%surface, error, &
+                             radii_override=radii_override, is_ghost=(b%at_z == 0.0_dp))
       if (error%has_error()) return
       call this%build_operators(error)
       if (error%has_error()) return

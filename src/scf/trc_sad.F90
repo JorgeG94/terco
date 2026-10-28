@@ -152,8 +152,8 @@ contains
       opts%verbose = .false.
 
       do ia = 1, b%natm
-         z = nint(b%at_z(ia))
-         if (first(ia) == 0) cycle   ! a ghost, or an atom with no functions
+         z = b%at_elem(ia)   ! element: the basis shape, and which free atom this SCF runs
+         if (first(ia) == 0) cycle   ! an atom with no functions on it
          if (sph) then
             a0 = b%sh_ao_sph(first(ia))
             a1 = b%sh_ao_sph(last(ia)) + (2*b%sh_l(last(ia)) + 1) - 1
@@ -162,8 +162,12 @@ contains
             a1 = b%sh_ao(last(ia)) + ncart(b%sh_l(last(ia))) - 1
          end if
          nz = a1 - a0 + 1
-         want = real(z, dp)
+         want = b%at_z(ia)   ! SAD: the neutral free atom's own electron count
          if (sadq) want = nel(ia)
+         ! A ghost (b%at_z(ia) == 0, element still >= 1) or any atom asked
+         ! for zero electrons contributes no guess density: dguess's block
+         ! for it stays the zero it was initialised to above.
+         if (want <= 0.0_dp) cycle
          ! The electron count joins the cache key: two atoms of one element
          ! share an SCF only if they are asked for the same charge, which
          ! under the proportional split they always are.
