@@ -323,7 +323,7 @@ contains
       ! They stay resident for the Fock kernels regardless of what Schwarz
       ! does with them, so entering them before computing the bound (instead
       ! of after, alongside everything else below) costs nothing extra and
-      ! is what lets schwarz_bounds_hgp read them without a transfer of its
+      ! is what lets schwarz_bounds_rys read them without a transfer of its
       ! own. The exit pairing these before `eri_release` is unchanged.
       !
       !$acc enter data copyin(this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -350,7 +350,7 @@ contains
       ! that turns one into the other; see build_maps in trc_decontract
       ! for the measurement that says it is worth 1.04e-05 Ha on water.
       !
-      ! Scaled here rather than inside schwarz_bounds_hgp so that routine
+      ! Scaled here rather than inside schwarz_bounds_rys so that routine
       ! stays a statement about integrals, and because both consumers --
       ! the pair prune in build_binned_pairs and the exact per-quartet
       ! test in the kernel, which reads sp_q -- then get it for free.
@@ -386,7 +386,7 @@ contains
       deallocate (qs, one)
 
       ! this%hp_* are already device-resident -- entered above, before
-      ! schwarz_bounds_hgp ran.
+      ! schwarz_bounds_rys ran.
       !$acc enter data copyin(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
