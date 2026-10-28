@@ -35,7 +35,7 @@ module trc_rys_select
    use trc_rys_table9, only: rys_table_init9
    implicit none
    private
-   public :: rys_select_init, rys_route, rys_tables_init
+   public :: rys_select_init, rys_route, rys_select_tables_init
 
    integer, parameter :: RYS_CLASS_RADIX = 11
    !! gen_perclass.py's CLASS_RADIX, fixed at 11 so a dispatch key means the
@@ -60,7 +60,7 @@ module trc_rys_select
 
 contains
 
-   subroutine rys_tables_init()
+   subroutine rys_select_tables_init()
       !! Push the Rys root tables (1..9 roots) to the device, as boys_init does
       !! the Boys table. Their `declare create` allocates device storage; the
       !! tables' own comment says it does not carry the host initialiser, and
@@ -76,7 +76,7 @@ contains
       call rys_table_init7()
       call rys_table_init8()
       call rys_table_init9()
-   end subroutine rys_tables_init
+   end subroutine rys_select_tables_init
 
    subroutine rys_select_init()
       !! Unset, empty or "default" keeps the measured per-class default
