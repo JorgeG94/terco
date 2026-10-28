@@ -354,11 +354,11 @@ contains
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
-            call build_dft_grid_block(b%at_r, nint(b%at_z), this%gc%grid, err, comm%rank(), comm%size(), &
+            call build_dft_grid_block(b%at_r, b%at_elem, this%gc%grid, err, comm%rank(), comm%size(), &
                                       level=opts%grid_level, &
                                       t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          else
-            call build_dft_grid(b%at_r, nint(b%at_z), this%gc%grid, err, level=opts%grid_level, &
+            call build_dft_grid(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level, &
                                 t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          end if
          if (err%has_error()) then
@@ -378,7 +378,7 @@ contains
          this%t_grid_sub(4) = tm%get_elapsed_time()
          this%gc%grid_built = .true.
          if (cfg%nlc) then
-            call build_dft_grid(b%at_r, nint(b%at_z), this%gc%grid_nlc, err, level=opts%nlc_grid_level)
+            call build_dft_grid(b%at_r, b%at_elem, this%gc%grid_nlc, err, level=opts%nlc_grid_level)
             if (err%has_error()) then
                call profiler_stop("scf: grid")
                call this%release()

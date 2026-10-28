@@ -131,8 +131,12 @@ module trc_api
                                             !! centre, for the gradient's shell ->
                                             !! atom map; built in `build` by an
                                             !! exact match of sh_r against at_r
-      real(dp), allocatable :: at_z(:)      !! (natm) charges
+      real(dp), allocatable :: at_z(:)      !! (natm) charges -- 0 for a ghost
       real(dp), allocatable :: at_r(:, :)   !! (3, natm) positions
+      integer,  allocatable :: at_elem(:)   !! (natm) element (1..118), for basis
+                                            !! lookup, grid sizes and guess shape;
+                                            !! equal to nint(at_z) unless a caller
+                                            !! placed a ghost (trc_set_elements)
       !
       ! THE SPHERICAL AO SPACE. Computed unconditionally -- it is a cheap
       ! by-product of the same loop that sets `sh_ao`, and a caller that
@@ -327,13 +331,17 @@ contains
    ! this repository already.
    !
    subroutine basis_build(this, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                          natm, at_z, at_r, maxnp)
+                          natm, at_z, at_r, maxnp, at_elem)
       class(trc_basis_t), intent(inout) :: this
       integer,  intent(in) :: nshell, natm, maxnp
       integer,  intent(in) :: sh_l(nshell), sh_np(nshell)
       real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
       real(dp), intent(in) :: sh_r(3, nshell)
       real(dp), intent(in) :: at_z(natm), at_r(3, natm)
+      integer,  intent(in), optional :: at_elem(natm)
+      !! Element per atom, for a ghost (at_z == 0, this build's own element
+      !! still >= 1) -- absent, every caller before ghosts existed, this
+      !! defaults to nint(at_z), which IS the element for a real atom.
 
       integer :: i, k, n, ia
 
@@ -348,12 +356,17 @@ contains
       allocate (this%sh_ao_sph(nshell))
       allocate (this%sh_e(maxnp, nshell), this%sh_c(maxnp, nshell))
       allocate (this%sh_r(3, nshell), this%sh_at(nshell))
-      allocate (this%at_z(natm), this%at_r(3, natm))
+      allocate (this%at_z(natm), this%at_r(3, natm), this%at_elem(natm))
       this%sh_e = 0.0_dp
       this%sh_c = 0.0_dp
 
       this%at_z = at_z
       this%at_r = at_r
+      if (present(at_elem)) then
+         this%at_elem = at_elem
+      else
+         this%at_elem = nint(at_z)
+      end if
 
       this%nao = 0
       this%nao_sph = 0
@@ -431,7 +444,7 @@ contains
       allocate (out%sh_l(n), out%sh_np(n), out%sh_ao(n), out%sh_ao_sph(n))
       allocate (out%sh_e(this%maxnp, n), out%sh_c(this%maxnp, n), out%sh_r(3, n))
       allocate (out%sh_at(n))
-      allocate (out%at_z(this%natm), out%at_r(3, this%natm))
+      allocate (out%at_z(this%natm), out%at_r(3, this%natm), out%at_elem(this%natm))
       out%sh_l = this%sh_l(s0:s1)
       out%sh_np = this%sh_np(s0:s1)
       out%sh_e = this%sh_e(:, s0:s1)
@@ -440,6 +453,7 @@ contains
       out%sh_at = this%sh_at(s0:s1)
       out%at_z = this%at_z
       out%at_r = this%at_r
+      out%at_elem = this%at_elem
       ! Same convention as the parent -- an atomic SAD/SADQ subbasis stays
       ! spherical when the molecule it was cut from is, so its own atomic
       ! SCF (trc_sad.F90) runs in the same AO space and the density it
@@ -535,6 +549,7 @@ contains
       if (allocated(this%sh_at)) deallocate (this%sh_at)
       if (allocated(this%at_z))  deallocate (this%at_z)
       if (allocated(this%at_r))  deallocate (this%at_r)
+      if (allocated(this%at_elem)) deallocate (this%at_elem)
       this%nshell = 0
       this%nao = 0
       this%natm = 0

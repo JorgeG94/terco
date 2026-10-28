@@ -338,6 +338,13 @@ jobs:
       # on a runner of any size.
       OMPI_MCA_rmaps_base_oversubscribe: 1
       PRTE_MCA_rmaps_default_mapping_policy: ':oversubscribe'
+      # Shared memory only. conda-forge's OpenMPI prefers UCX, and UCX on
+      # runners with an Azure MANA NIC fails to open it ("Failed to create
+      # UCP worker"), aborting every multi-rank test in MPI_Comm_dup. All
+      # ranks share one runner, so ob1 over sm needs no network.
+      OMPI_MCA_pml: ob1
+      OMPI_MCA_btl: self,sm
+      OMPI_MCA_osc: ^ucx
     steps:
       - uses: actions/checkout@v4
 

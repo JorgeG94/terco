@@ -311,7 +311,7 @@ contains
       logical :: is_gga, gresp
       integer :: glevel, gmaxpts, ish, i
       real(dp) :: rtol
-      integer, allocatable :: ao_atom(:), at_z(:)
+      integer, allocatable :: ao_atom(:), at_elem(:)
       real(dp), allocatable :: grad_extra(:, :), fxc(:), pcoef(:)
 
       ! --- refuse what this module cannot do, with a reason -------------
@@ -368,14 +368,14 @@ contains
 
       reuse_grid = present(grid) .and. present(xg)
       call tbl%step_on(lp, ST_GRID, tc)
-      allocate (at_z(b%natm), source=nint(b%at_z))
+      allocate (at_elem(b%natm), source=b%at_elem)
       if (reuse_grid) then
          ! The SCF's own grid, already batched and on the device -- no
          ! rebuild, no re-upload. See this subroutine's own header, REUSE.
          gp => grid
          xgp => xg
       else
-         call build_dft_grid(b%at_r, at_z, grid_own, err, level=glevel)
+         call build_dft_grid(b%at_r, at_elem, grid_own, err, level=glevel)
          if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
          ! `atom`/`qw` are only ever read by the grid-response term below
          ! (xg%build leaves both unallocated, and every other caller of
@@ -424,7 +424,7 @@ contains
             allocate (pcoef(xgp%npts), source=xgp%qw)
             !$acc enter data copyin(pcoef)
             call xc_grad_weight_coef(xgp%npts, fxc, pcoef)
-            call becke_partition_grad_contract(xgp%npts, xgp%r, b%at_r, at_z, xgp%atom, pcoef, &
+            call becke_partition_grad_contract(xgp%npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
                                                gp%scheme, gp%adjust, grad_extra, err)
             if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
             !$acc exit data delete(pcoef)
@@ -447,7 +447,7 @@ contains
          call xg_own%release()
          call grid_own%destroy()
       end if
-      deallocate (at_z)
+      deallocate (at_elem)
    end subroutine xc_gradient_add
 
    !

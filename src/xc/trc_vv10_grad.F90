@@ -191,7 +191,7 @@ contains
       type(error_t) :: err
       integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc, g, own
       real(dp) :: kvv, beta
-      integer, allocatable :: ao_atom(:), at_z(:)
+      integer, allocatable :: ao_atom(:), at_elem(:)
       real(dp), allocatable :: dtot(:, :, :)
       real(dp), allocatable :: rho(:), grho(:, :), sigma(:)
       real(dp), allocatable :: vrho(:), vsigma(:), dedw(:), fexp(:, :)
@@ -217,14 +217,14 @@ contains
 
       reuse_grid = present(grid) .and. present(xg)
       call tbl%step_on(lp, ST_GRID, tc)
-      allocate (at_z(b%natm), source=nint(b%at_z))
+      allocate (at_elem(b%natm), source=b%at_elem)
       if (reuse_grid) then
          ! The SCF's own nlc grid, already batched and on the device -- no
          ! rebuild, no re-upload. See this subroutine's own header, GRID.
          gp => grid
          xgp => xg
       else
-         call build_dft_grid(b%at_r, at_z, grid_own, err, level=glevel)
+         call build_dft_grid(b%at_r, at_elem, grid_own, err, level=glevel)
          if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
          call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=gmaxpts, &
                            atom=grid_own%atom, qw=grid_own%quad_weights)
@@ -350,7 +350,7 @@ contains
                   pcoef(g) = xgp%qw(g)*dedw(g)
                end do
             end do
-            call becke_partition_grad_contract(npts, xgp%r, b%at_r, at_z, xgp%atom, pcoef, &
+            call becke_partition_grad_contract(npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
                                                gp%scheme, gp%adjust, grad_extra, err)
             if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
             deallocate (pcoef)
@@ -371,7 +371,7 @@ contains
          call xg_own%release()
          call grid_own%destroy()
       end if
-      deallocate (at_z)
+      deallocate (at_elem)
    end subroutine vv10_gradient_add
 
    !

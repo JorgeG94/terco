@@ -30,13 +30,19 @@ module trc_basis_json
 contains
 
    !
-   ! `at_z` atomic numbers, `at_r` (3, natm) in Bohr; the basis comes back
-   ! built (host side; the caller moves it to the device).
+   ! `elements` (1..118) picks the basis for each atom; `at_r` (3, natm) is
+   ! in Bohr. `charges` is the nuclear charge the built basis carries as
+   ! `at_z`, defaulting to `elements` itself (every caller before ghost
+   ! atoms existed): a ghost passes an element with charge 0, so its shells
+   ! are looked up and placed exactly as a real atom of that element's, but
+   ! it contributes no nuclear charge and (through `at_z`) no electron.
+   ! The basis comes back built (host side; the caller moves it to the
+   ! device).
    !
-   subroutine trc_basis_from_json(path, natm, at_z, at_r, b, error, force_cart)
+   subroutine trc_basis_from_json(path, natm, elements, at_r, b, error, force_cart, charges)
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
-      integer, intent(in) :: at_z(natm)
+      integer, intent(in) :: elements(natm)
       real(dp), intent(in) :: at_r(3, natm)
       type(trc_basis_t), intent(out) :: b
       type(error_t), intent(inout) :: error
@@ -44,6 +50,9 @@ contains
       !! Force the Cartesian AO space regardless of what the file says --
       !! trc_scf_options_t%force_cartesian's route in. Default .false.:
       !! follow the basis, which is what every existing caller gets.
+      real(dp), intent(in), optional :: charges(natm)
+      !! Nuclear charge per atom; defaults to real(elements, dp). A ghost
+      !! (trc_set_elements) passes 0 here for an element >= 1.
 
       type(json_file) :: json
       type(element_t), allocatable :: el(:)
@@ -69,7 +78,7 @@ contains
       do ia = 1, natm
          ok = .false.
          do ie = 1, nel
-            if (el(ie)%z == at_z(ia)) then
+            if (el(ie)%z == elements(ia)) then
                which(ia) = ie
                ok = .true.
                exit
@@ -78,7 +87,7 @@ contains
          if (ok) cycle
          nel = nel + 1
          which(ia) = nel
-         call read_element(json, path, at_z(ia), el(nel), error)
+         call read_element(json, path, elements(ia), el(nel), error)
          if (error%has_error()) then
             call json%destroy()
             return
@@ -109,8 +118,12 @@ contains
             sh_r(:, k) = at_r(:, ia)
          end do
       end do
-      z = real(at_z, dp)
-      call b%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, z, at_r, maxnp)
+      if (present(charges)) then
+         z = charges
+      else
+         z = real(elements, dp)
+      end if
+      call b%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, z, at_r, maxnp, at_elem=elements)
 
       ! Any shell of any element tagged "gto_spherical" is enough: a real
       ! basis set is one family or the other throughout its l>=2 shells

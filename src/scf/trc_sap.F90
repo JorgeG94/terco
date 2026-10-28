@@ -296,8 +296,11 @@ contains
       !$acc enter data copyin(hsap)
 
       ! Widest fit in the molecule, so one rectangular block holds any chunk.
+      ! A ghost (b%at_z(ia) == 0) has no nucleus and so no fitted potential
+      ! to look up -- it is given a zero-coefficient stand-in below instead.
       nmax = 0
       do ia = 1, b%natm
+         if (b%at_z(ia) == 0.0_dp) cycle
          call trc_fitted_shell_from_json(bpath, nint(b%at_z(ia)), e, c, error)
          if (error%has_error()) return
          nmax = max(nmax, size(e))
@@ -358,6 +361,17 @@ contains
          a_c = 0.0_dp
          do ish = 1, nch
             ia = n0 + ish - 1
+            a_r(:, ish) = b%at_r(:, ia)
+            if (b%at_z(ia) == 0.0_dp) then
+               ! A ghost: no nucleus, so no screening potential -- a single
+               ! zero-coefficient primitive contributes exactly nothing to
+               ! `tens` below, which is what "SAP must skip ghost
+               ! potentials" means here.
+               a_np(ish) = 1
+               a_e(1, ish) = 1.0_dp
+               a_c(1, ish) = 0.0_dp
+               cycle
+            end if
             call trc_fitted_shell_from_json(bpath, nint(b%at_z(ia)), e, c, error)
             if (error%has_error()) then
                deallocate (a_l, a_np, a_e, a_c, a_r)
@@ -365,7 +379,6 @@ contains
             end if
             np = size(e)
             a_np(ish) = np
-            a_r(:, ish) = b%at_r(:, ia)
             do k = 1, np
                a_e(k, ish) = e(k)
                a_c(k, ish) = -c(k)*(e(k)/PI)**1.5_dp/cfac
@@ -449,6 +462,7 @@ contains
       ntab = 0
       do ia = 1, b%natm
          if (first(ia) == 0) cycle
+         if (b%at_z(ia) == 0.0_dp) cycle   ! a ghost: no nucleus, no screening potential
          zint(ia) = nint(b%at_z(ia))
          a0 = b%sh_ao(first(ia))
          a1 = b%sh_ao(last(ia)) + ncart(b%sh_l(last(ia))) - 1
@@ -493,7 +507,10 @@ contains
             if (ios == 0) lv = lv_env
          end if
       end block
-      call build_dft_grid(b%at_r(:, 1:b%natm), zint, g, error, level=lv)
+      ! Grid SIZE follows the element (ghosts keep their quadrature points);
+      ! `zint` above, the real nuclear charge, is only the screening table's
+      ! own key and stays 0/unset for a ghost.
+      call build_dft_grid(b%at_r(:, 1:b%natm), b%at_elem(1:b%natm), g, error, level=lv)
       if (error%has_error()) return
       if (talk) then
          block
