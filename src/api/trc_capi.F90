@@ -1659,13 +1659,18 @@ contains
       !! any atom builds an element-0 grid/guess that silently does the
       !! wrong thing rather than erroring (the bug ghost atoms would have
       !! reopened had this not been here); every atom a ghost leaves
-      !! nothing to compute.
+      !! nothing to compute. Ghosts with PCM are refused until a cavity
+      !! model is chosen: pyscf (and mqc's CPU backend) give a ghost a full
+      !! sphere, the ghost-free cavity below gives it none, and the two
+      !! differ. trc_pcm keeps the no-sphere mask, so lifting this is one
+      !! test.
       type(context_box), intent(in) :: cx
       character(len=:), allocatable :: why
       integer :: i
-      logical :: any_real
+      logical :: any_real, any_ghost
       why = ""
       any_real = .false.
+      any_ghost = .false.
       do i = 1, cx%natm
          if (cx%elements(i) < 1) then
             why = "atom "//trim(itoa(i))//" has element "//trim(itoa(cx%elements(i)))// &
@@ -1673,10 +1678,14 @@ contains
             return
          end if
          if (cx%at_z(i) /= 0.0_dp) any_real = .true.
+         if (cx%at_z(i) == 0.0_dp) any_ghost = .true.
       end do
       if (.not. any_real) then
          why = "every atom is a ghost (charge 0) -- there is no nucleus and no electron "// &
                "left to run an SCF on"
+      else if (any_ghost .and. len_trim(cx%opts%pcm_model) > 0) then
+         why = "PCM with ghost atoms is not supported yet: whether a ghost gets a cavity "// &
+               "sphere is undecided (pyscf gives it one, terco's ghost-free cavity would not)"
       end if
    end function elements_refusal
 
@@ -2361,9 +2370,10 @@ contains
       !! which can change the atom count and order the override was
       !! given in.
       !!
-      !! A GHOST atom (trc_set_elements) gets no PCM sphere at all, so an
+      !! A GHOST atom (trc_set_elements) would get no PCM sphere, so an
       !! entry here for one is IGNORED, not refused: the override is only
-      !! ever read for an atom that still has a sphere to place.
+      !! ever read for an atom that still has a sphere to place. (PCM with
+      !! ghosts is refused at trc_run_scf for now; see elements_refusal.)
       type(c_ptr), value :: handle
       integer(c_int), value :: natm
       type(c_ptr), value :: radii

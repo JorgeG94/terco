@@ -19,7 +19,7 @@ module check_capi_ghost_suite
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_matrix, ref_read_int
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_elements, &
                                trc_set_basis_json, trc_set_basis_arrays, trc_set_method, &
-                               trc_set_convergence, trc_set_pcm, trc_pcm_energy, &
+                               trc_set_convergence, trc_set_pcm, &
                                trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, TRC_OK, TRC_ERR_BADARG, TRC_ERR_STATE
    implicit none
@@ -49,8 +49,8 @@ contains
                   new_unittest("trc_set_elements natm mismatch is refused", test_natm_mismatch), &
                   new_unittest("RHF energy and gradient match pyscf's ghost atoms", test_rhf_vs_pyscf), &
                   new_unittest("B3LYP energy (grids on the ghosts) is close to pyscf", test_b3lyp_vs_pyscf), &
-                  new_unittest("PCM gives a ghost no sphere: same cavity as the bare monomer", &
-                               test_pcm_ghost_no_sphere) &
+                  new_unittest("PCM with ghost atoms is refused (cavity model undecided)", &
+                               test_pcm_ghost_refused) &
                   ]
    end subroutine collect_capi_ghost
 
@@ -267,94 +267,33 @@ contains
 
       print '(a,f20.14,a,f20.14,a,es9.2)', "check_capi_ghost: E_B3LYP terco ", real(e_terco, dp), &
          "  pyscf ", e_ref, "  diff ", real(e_terco, dp) - e_ref
-      ! Independent grids, same tables: measured 3.95e-11 -- see the
-      ! header above.
-      call check(error, abs(real(e_terco, dp) - e_ref) < 1.0e-8_dp, &
+      ! Independent grids, same tables: measured 3.95e-11 on gfortran (CPU)
+      ! and 3.96e-11 on nvfortran (V100) -- see the header above.
+      call check(error, abs(real(e_terco, dp) - e_ref) < 1.0e-10_dp, &
                  "B3LYP energy (grids on the ghosts, independent quadratures) close to pyscf")
       rc = trc_destroy(h)
    end subroutine test_b3lyp_vs_pyscf
 
    !
-   ! PCM with ghosts. pyscf's own PCM (pyscf.solvent.pcm) does NOT give a
-   ! ghost atom an empty cavity: checked separately (not here -- no
-   ! pyscf import on this side of the boundary), a ghost gets the SAME
-   ! sphere a real atom of its element would, built from its own
-   ! radius -- confirmed by building the dimer-with-ghost cavity in
-   ! pyscf directly and finding non-zero Lebedev points on the ghost's
-   ! three atoms, with the real monomer's OWN points and weights
-   ! unchanged by the ghost's presence only because the two monomers
-   ! are far enough apart (4 Angstrom, this geometry) that neither
-   ! sphere's switching function reaches the other -- not because
-   ! pyscf excludes the ghost. That is a DIFFERENT model from the one
-   ! this feature's design agreed on ("no sphere and no v_nuc for
-   ! ghosts"), so pyscf's PCM energy is not a reference for terco's
-   ! here.
+   ! PCM with ghosts is refused until a cavity model is chosen. pyscf's own
+   ! PCM (pyscf.solvent.pcm), and mqc's CPU backend after it, give a ghost
+   ! the same sphere a real atom of its element gets; trc_pcm's ghost mask
+   ! would give it none (measured on this geometry before the refusal: 556
+   ! cavity points for monomer A in the dimer basis, 556 bare, 1112 for the
+   ! real dimer). The two models differ, so neither is offered yet.
    !
-   ! What IS tested: terco's own monomer-in-the-dimer's-basis cavity
-   ! has exactly as many points as the bare monomer's -- the ghost
-   ! atoms (4-6) contribute none, and the real atoms' (1-3) spheres are
-   ! built the same both times (same geometry, same radii) -- against a
-   ! REAL (non-ghost) dimer, which must have MORE points than either,
-   ! as a sanity check that this is not merely "PCM always returns the
-   ! same count regardless of what is handed to it."
-   !
-   subroutine test_pcm_ghost_no_sphere(error)
+   subroutine test_pcm_ghost_refused(error)
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
-      integer(c_int) :: rc, npts_bare, npts_ghost, npts_real
-      real(c_double) :: ediel, qtot
+      integer(c_int) :: rc
 
-      ! (a) the bare monomer: atoms 1-3 only, real.
-      rc = trc_create(h)
-      rc = trc_set_molecule(h, 3_c_int, real(Z6(1:3), c_double), reshape(XYZ6(:, 1:3), [9]), &
-                            0_c_int, 1_c_int)
-      rc = trc_set_basis_json(h, 'basis_sets/cc-pvdz.json'//c_null_char)
-      rc = trc_set_pcm(h, 'cpcm'//c_null_char, 78.3553_c_double, 0_c_int, 0.0_c_double)
-      rc = trc_run_scf(h)
-      call check(error, rc, TRC_OK, "run_scf (bare monomer, PCM)")
-      if (allocated(error)) then
-         rc = trc_destroy(h); return
-      end if
-      rc = trc_pcm_energy(h, ediel, qtot, npts_bare)
-      rc = trc_destroy(h)
-
-      ! (b) monomer A real, monomer B ghost: this feature's own case.
       call make_molecule(h, with_elements=.true.)
       rc = trc_set_basis_json(h, 'basis_sets/cc-pvdz.json'//c_null_char)
       rc = trc_set_pcm(h, 'cpcm'//c_null_char, 78.3553_c_double, 0_c_int, 0.0_c_double)
       rc = trc_run_scf(h)
-      call check(error, rc, TRC_OK, "run_scf (monomer-in-dimer-basis, PCM)")
-      if (allocated(error)) then
-         rc = trc_destroy(h); return
-      end if
-      rc = trc_pcm_energy(h, ediel, qtot, npts_ghost)
+      call check(error, rc /= TRC_OK, "run_scf refuses PCM with ghost atoms")
       rc = trc_destroy(h)
-
-      ! (c) the REAL dimer: both monomers real, no ghosts -- more points
-      ! than (a)/(b), the sanity check that this is testing the cavity
-      ! and not a constant.
-      rc = trc_create(h)
-      rc = trc_set_molecule(h, int(NATM, c_int), &
-                            [8.0_c_double, 1.0_c_double, 1.0_c_double, 8.0_c_double, 1.0_c_double, 1.0_c_double], &
-                            reshape(XYZ6, [3*NATM]), 0_c_int, 1_c_int)
-      rc = trc_set_basis_json(h, 'basis_sets/cc-pvdz.json'//c_null_char)
-      rc = trc_set_pcm(h, 'cpcm'//c_null_char, 78.3553_c_double, 0_c_int, 0.0_c_double)
-      rc = trc_run_scf(h)
-      call check(error, rc, TRC_OK, "run_scf (real dimer, PCM)")
-      if (allocated(error)) then
-         rc = trc_destroy(h); return
-      end if
-      rc = trc_pcm_energy(h, ediel, qtot, npts_real)
-      rc = trc_destroy(h)
-
-      print '(a,i0,a,i0,a,i0)', "check_capi_ghost: PCM points bare monomer ", npts_bare, &
-         "  monomer-in-dimer-basis(ghost) ", npts_ghost, "  real dimer ", npts_real
-      call check(error, npts_ghost, npts_bare, &
-                 "a ghost gets no sphere: same cavity point count as the bare monomer")
-      if (allocated(error)) return
-      call check(error, npts_real > npts_bare, &
-                 "a REAL dimer has more cavity points than the bare monomer (sanity)")
-   end subroutine test_pcm_ghost_no_sphere
+   end subroutine test_pcm_ghost_refused
 
 end module check_capi_ghost_suite
 

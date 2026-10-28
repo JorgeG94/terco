@@ -373,9 +373,10 @@ int trc_set_pcm(trc_handle_t handle, const char* model, double eps, int lebedev,
  * which can change the atom count and order the override was
  * given in.
  *
- * A GHOST atom (trc_set_elements) gets no PCM sphere at all, so an
+ * A GHOST atom (trc_set_elements) would get no PCM sphere, so an
  * entry here for one is IGNORED, not refused: the override is only
- * ever read for an atom that still has a sphere to place.
+ * ever read for an atom that still has a sphere to place. (PCM with
+ * ghosts is refused at trc_run_scf for now; see elements_refusal.)
  */
 int trc_set_pcm_radii(trc_handle_t handle, int natm, const void* radii);
 
