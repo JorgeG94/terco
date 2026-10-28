@@ -7,7 +7,7 @@ measured on a V100 (2026-10-27/28) and to be repeated on GH200.
 |---|---|
 | `w5.xyz`, `w20.xyz` | water clusters (15 / 60 atoms) |
 | `cc-pvqz-pyscf17.json` | pyscf 2.14's cc-pVQZ for H through Cl at 17 digits, so both codes see the same basis |
-| `run_terco.sh` | terco iteration-4 energy and Fock time, MD exchange `fused` vs `gemm`; `nsys` to profile |
+| `run_terco.sh` | terco iteration-4 energy and Fock time; `nsys` to profile |
 | `g4p_jk.py` | GPU4PySCF `get_jk` at the converged density plus its per-class timer |
 | `join_profile.py` | per-class terco vs GPU4PySCF table from the two |
 
@@ -33,20 +33,21 @@ Compare codes on this file; time terco's defaults on the BSE ones.
 Energies (terco iteration 4, `--iterations 4`): w5 -380.228026426339,
 w20 -1520.929072580745. Converged w5 RHF: -380.228710965728.
 
-## GH200 plan
+## On another GPU
 
-The V100 has no FP64 tensor cores, so the fused (`do concurrent`) MD
-exchange beat the cuBLAS GEMM path (w20: 20.5 vs 26.4 s) and Rys beat MD
-for g classes up to total L 9. GH200 runs DGEMM on FP64 tensor cores
-(~67 vs ~34 TF/s vector), so both choices need re-measuring.
+The cuBLAS GEMM path for MD exchange was measured on three GPUs and lost on
+all of them (w20 cc-pVQZ per Fock build: V100 26.4 vs 20.5 s, A100 8.23 vs
+7.76 s, GH200 4.30 vs 4.07 s, FP64 tensor cores notwithstanding), so it was
+removed; MD exchange is the fused `do concurrent` path only.
 
-1. Build: `-DTERCO_GPU_ARCH=cc90 -DTERCO_LMAX=4 -DTERCO_NVTX=ON`, plus
-   `-DTERCO_MDG_CLASSES=<d/f tags>` to also generate GEMM kernels for d/f
-   classes (route them at run time with `TRC_MDG_CLASSES=...`).
-2. `B=<build> GPU=0 ./run_terco.sh` (fused vs gemm), then with `nsys`.
+1. Build: `-DTERCO_GPU_ARCH=<ccXX> -DTERCO_LMAX=4 -DTERCO_NVTX=ON` (compile
+   for the GPU you run on: a cc70 build on a Hopper runs, slowly).
+2. `B=<build> GPU=0 ./run_terco.sh`, then `./run_terco.sh nsys`.
 3. `python g4p_jk.py w20.xyz cc-pvqz 1e-12 > g4p_w20.log`, then
-   `python join_profile.py fused_w20.sqlite g4p_w20.log`.
-4. If GEMM wins: re-race `TERCO_RYS_G_LTOT` (9 on V100) and the chunk
-   plans (`scripts/gen_rys.py` FOCK_CHUNK_PLAN, `--chunk-*` flags).
-5. Multi-GPU: `mpirun -np N` on the same inputs (every engine splits
-   over ranks; energies must not change with N).
+   `python join_profile.py w20.sqlite g4p_w20.log` (or with no log for
+   terco's per-class times alone).
+4. The Rys/MD crossover (`TERCO_RYS_G_LTOT`, 9 on V100) and the chunk plans
+   (`scripts/gen_rys.py` FOCK_CHUNK_PLAN, `--chunk-*` flags) were raced on
+   a V100 and held on cc-pVQZ; re-race them before tuning for a new GPU.
+5. Multi-GPU: `mpirun -np N` on the same inputs (every engine splits over
+   ranks; energies must not change with N).

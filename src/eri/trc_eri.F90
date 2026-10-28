@@ -89,7 +89,7 @@ module trc_eri
       integer :: nao_w = 0
       type(trc_mdj_t) :: md
       type(trc_mdg_t) :: mg
-      !! The MD GEMM pass over the same pairs, for TRC_MDG_CLASSES.
+      !! The MD exchange pass over the same pairs, for the g classes above TERCO_RYS_G_LTOT.
       logical :: needs_md = .false.
       !! A shell above f: HGP and Rys have no kernel for its classes, so J
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
@@ -568,19 +568,16 @@ contains
    end function mdj_requested
 
    subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac)
-      !! The classes TRC_MDG_CLASSES routes away from fock_bins, into the same
-      !! folded matrix (both on the device). Builds the MD pair list and its
-      !! sorted groups on first use.
+      !! The g classes fock_bins leaves to MD exchange (those above
+      !! TERCO_RYS_G_LTOT), into the same folded matrix (both on the device).
+      !! Builds the MD pair list and its sorted groups on first use.
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)    :: dwork(:, :, :)
       real(dp), intent(inout) :: jmat(:, :, :)
       real(dp), intent(in)    :: jfac, kfac
-      character(len=8) :: e
       type(trc_mdg_scales_t) :: sc
-      e = " "
-      call get_environment_variable("TRC_MDG_CLASSES", e)
-      if (len_trim(e) == 0 .and. .not. this%needs_md) return
+      if (.not. this%needs_md) return
       if (.not. this%md%built) then
          if (this%dec%active) then
             call this%md%build(this%pb, this%bins, this%thresh)

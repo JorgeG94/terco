@@ -192,7 +192,7 @@ def gen_e_module_loops(la, lb, order, header):
     compile: the (gg) module took 753 s and 2 GB with every component pair and
     every Hermite product unrolled. Here only the tables are generated.
     """
-    from gen_md_kgemm import e1d_loop, int_table  # noqa: E402 (shared emitters)
+    from gen_md_k import e1d_loop, int_table  # noqa: E402 (shared emitters)
     lp = la + lb
     tag = f"{la}{lb}"
     hs = herm(lp)

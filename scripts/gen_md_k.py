@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
-"""Generate McMurchie-Davidson Fock kernels that contract through batched GEMMs.
+"""Generate the McMurchie-Davidson exchange (and Coulomb) kernels, per class.
 
 The host driver (src/eri/trc_mdg.F90) walks, per class (la lb|lc ld), the
 shell pairs of each (type, primitive count) group sorted by Schwarz bound,
 in staircase windows: a block of ni bra pairs against the prefix of the
 ket list that can still pass the screen. For each window it calls the
-routines generated here:
+routines generated here, all `do concurrent`:
 
-  mdg_bra_<tag>   Hb[ab, pbar, i] = c_P E^ab_p, pbar = (p, k_ab)
-  mdg_ket_<tag>   Hk likewise, then
-                  R kernel      one thread per primitive quartet; stores the
-                                n_r values R^(0)_r only (zero when screened)
-                  expansion     PQ[pbar, i, qbar, j] = (-1)^|q| R_{p+q}, from
-                                a literal (p, q) -> r table
-                  GEMM 1        batched over j: S_j = PQ_j Hk_j^T
-                  GEMM 2        batched over i: Eri_i = Hb_i S(i, :), S read in
-                                place with leading dimension npb*ni
-                  digestion     one thread per (quartet, ab row): K, and J when
-                                jfac /= 0, with the HGP kernels' weights
+  R kernel     one thread per primitive quartet; stores the n_r values
+               R^(0)_r only (zero when screened)
+  kernel B     one thread per (pbar, quartet), pbar = (p, k_ab):
+               S[pbar, cd] = sum_qbar (-1)^|q| R[p+q] Hk[cd, qbar], from a
+               literal (p, q) -> r table; PQ is never stored
+  kernel C     one thread per (quartet, ab row): Eri = Hb S, then the
+               digestion -- K, and J when jfac /= 0, with the HGP kernels'
+               weights
 
-Only the R recurrence is written out. The E matrices, the expansion and the
-digestion are loops over literal tables: unrolled, they were 98% of an
+Hb and Hk are the E matrices trc_mdg forms once per geometry (Cartesian, or
+spherical rows when the basis is spherical; gen_h_module below).
+
+A cuBLAS path (PQ materialised, two strided-batched GEMMs) was removed: it
+lost to these kernels on every GPU measured, w20 cc-pVQZ RHF per Fock
+build, V100 26.4 vs 20.5 s, A100 8.23 vs 7.76 s, GH200 4.30 vs 4.07 s --
+on the last two even with FP64 tensor cores under the GEMMs.
+
+Only the R recurrence is written out. The E matrices, kernel B's table and
+the digestion are loops over literal tables: unrolled, they were 98% of an
 (ff|ff) module's 26k lines and 751 s of its compile, for memory-bound work.
 
-Usage: gen_md_kgemm.py --lmax 3 --classes 2121,3333 [--order ...] -o DIR
+Usage: gen_md_k.py --lmax 4 --classes 4433,4444 [--order ...] -o DIR
 
 REFERENCES
 ----------
@@ -49,7 +54,14 @@ from md import rtree  # noqa: E402
 from md.hermite import herm, herm_index  # noqa: E402
 from md.schedule import dfs_order  # noqa: E402
 from gen_md_j import ORDER_CODE, TWO_PI_2_5, decl, emit_sum, expr_of, wrap_args  # noqa: E402
-from gen_md_k import class_key  # noqa: E402
+
+#: trc_binkernel's class key radix.
+CLASS_RADIX = 11
+
+
+def class_key(la, lb, lc, ld):
+    return ((la * CLASS_RADIX + lb) * CLASS_RADIX + lc) * CLASS_RADIX + ld
+
 
 DATA = ("nhp, mp_z, mp_px, mp_py, mp_pz, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, mp_c, "
         "nsp, sp_ao1, sp_ao2, sp_as1, sp_as2, sp_k0, sp_nk, sp_sh1, sp_sh2, sp_q, ngl, gl")
@@ -254,40 +266,79 @@ def r_item(tag, L):
     return o
 
 
-def ket_driver(tag, suf, np_, nq_, nr, nab, ncd):
+
+def d_item(tag, na, nb, nc, nd, suf="", o1="sp_ao1", o2="sp_ao2"):
+    """Row digestion. The spherical variant (suf "_s") digests spherical rows into
+    the spherical D and K trc_mdg forms around it, at the pairs' spherical offsets."""
+    nab, ncd = na * nb, nc * nd
     o = []
-    o.extend(wrap_args(f"subroutine mdg_ket_{tag}{suf}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
-    o.append("      !! One window: R, PQ, the two GEMMs and the digestion. hb and hk are the")
-    o.append("      !! window's slices of the E matrices trc_mdg formed once per geometry"
-             + (", spherical." if suf else "."))
-    o.append("      type(trc_linalg_t), intent(inout) :: lp")
+    o.extend(wrap_args(f"pure subroutine mdg_d_item_{tag}{suf}", f"t, {DATA}, {WIN}, eri", "   "))
+    o.append("      !$acc routine seq")
+    o.append("      integer, intent(in) :: t")
     o.append(DATA_DECL)
     o.append(WIN_DECL)
-    o.append(f"      real(dp), intent(in)    :: hb({nab}, {np_}*ka, ni)")
-    o.append(f"      real(dp), intent(in)    :: hk({ncd}, {nq_}*kb, nj)")
-    o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb)")
-    o.append(f"      real(dp), intent(inout) :: pq({np_}*ka*ni, {nq_}*kb, nj), sm({np_}*ka*ni, {ncd}, nj)")
-    o.append(f"      real(dp), intent(inout) :: eri({nab}, ni, {ncd}, nj)")
-    o.append("      integer :: t, npb, nqb")
-    o.append(f"      npb = {np_}*ka")
-    o.append(f"      nqb = {nq_}*kb")
-    o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
-    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
+    o.append(f"      real(dp), intent(in) :: eri({nab}, ni, {ncd}, nj)")
+    o.append("      integer :: u, i, j, ab, ia, ib, ic, id, spa, spc, si, sj, sk, sl, mui, nuj, lamk, sigl, idens")
+    o.append("      real(dp) :: qcut, w, sm, x")
+    o.append(f"      real(dp) :: row({ncd})")
+    o.append("")
+    o.append("      ! Row ab of quartet (i, j); ab fastest, so a warp reads contiguous rows.")
+    o.append(f"      ab = mod(t - 1, {nab}) + 1")
+    o.append(f"      u = (t - 1)/{nab}")
+    o.append("      i = mod(u, ni) + 1")
+    o.append("      j = u/ni + 1")
+    o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
+    o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
+    o.append("      qcut = sp_q(spa)*sp_q(spc)")
+    o.append("      if (qcut <= thresh) return")
+    o.append("      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &")
+    o.append("                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return")
+    o.append("      ! wdiag is 1/2 on a group against itself, done as a full square.")
+    o.append("      w = wdiag")
+    o.append("      if (si == sj) w = 0.5_dp*w")
+    o.append("      if (sk == sl) w = 0.5_dp*w")
+    o.append(f"      mui = {o1}(spa); nuj = {o2}(spa); lamk = {o1}(spc); sigl = {o2}(spc)")
+    o.append(f"      ia = mod(ab - 1, {na})")
+    o.append(f"      ib = (ab - 1)/{na}")
+    o.append(f"      do ic = 1, {ncd}")
+    o.append("         row(ic) = eri(ab, i, ic, j)")
     o.append("      end do")
-    o.append(f"      do concurrent(t = 1:{np_}*ka*ni*kb*nj)")
-    o.append(f"         call mdg_x_item_{tag}(t, ni, ka, nj, kb, rb, pq)")
+    o.append("      do idens = 1, ndens")
+    o.append("         if (kfac /= 0.0_dp) then")
+    for (outer, ol, inner, il, lhs_a, lhs_b, dm) in [
+            ("ic", nc, "id", nd, "mui + ia", "lamk + ic", "nuj + ib, sigl + id"),
+            ("ic", nc, "id", nd, "nuj + ib", "lamk + ic", "mui + ia, sigl + id"),
+            ("id", nd, "ic", nc, "mui + ia", "sigl + id", "nuj + ib, lamk + ic"),
+            ("id", nd, "ic", nc, "nuj + ib", "sigl + id", "mui + ia, lamk + ic")]:
+        o.append(f"            do {outer} = 0, {ol - 1}")
+        o.append("               sm = 0.0_dp")
+        o.append(f"               do {inner} = 0, {il - 1}")
+        o.append(f"                  sm = sm + row(1 + ic + {nc}*id)*dmat(idens, {dm})")
+        o.append("               end do")
+        o.append("               !$acc atomic update")
+        o.append(f"               jmat(idens, {lhs_a}, {lhs_b}) = jmat(idens, {lhs_a}, {lhs_b}) - kfac*w*sm")
+        o.append("            end do")
+    o.append("         end if")
+    o.append("         if (jfac /= 0.0_dp) then")
+    o.append("            sm = 0.0_dp")
+    o.append(f"            do id = 0, {nd - 1}")
+    o.append(f"               do ic = 0, {nc - 1}")
+    o.append(f"                  sm = sm + row(1 + ic + {nc}*id)*dmat(idens, lamk + ic, sigl + id)")
+    o.append("               end do")
+    o.append("            end do")
+    o.append("            !$acc atomic update")
+    o.append("            jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) + 4.0_dp*jfac*w*sm")
+    o.append("            x = 4.0_dp*jfac*w*dmat(idens, mui + ia, nuj + ib)")
+    o.append(f"            do id = 0, {nd - 1}")
+    o.append(f"               do ic = 0, {nc - 1}")
+    o.append("                  !$acc atomic update")
+    o.append("                  jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &")
+    o.append(f"                                                    + x*row(1 + ic + {nc}*id)")
+    o.append("               end do")
+    o.append("            end do")
+    o.append("         end if")
     o.append("      end do")
-    o.append("      ! S_j = PQ_j Hk_j^T, then Eri_i = Hb_i S(i, :) with S read in place.")
-    o.append(f"      call lp%gemm_strided(\"N\", \"T\", npb*ni, {ncd}, nqb, 1.0_dp, pq, npb*ni, &")
-    o.append(f"                           int(npb, int64)*ni*nqb, hk, {ncd}, int({ncd}*nqb, int64), 0.0_dp, &")
-    o.append(f"                           sm, npb*ni, int(npb, int64)*ni*{ncd}, nj)")
-    o.append(f"      call lp%gemm_strided(\"N\", \"N\", {nab}, {ncd}*nj, npb, 1.0_dp, hb, {nab}, &")
-    o.append(f"                           int({nab}*npb, int64), sm, npb*ni, int(npb, int64), 0.0_dp, eri, &")
-    o.append(f"                           {nab}*ni, int({nab}, int64), ni)")
-    o.append(f"      do concurrent(t = 1:{nab}*ni*nj)")
-    o.extend(wrap_args(f"call mdg_d_item_{tag}{suf}", f"t, {DATA}, {WIN}, eri", " " * 9))
-    o.append("      end do")
-    o.append(f"   end subroutine mdg_ket_{tag}{suf}")
+    o.append(f"   end subroutine mdg_d_item_{tag}{suf}")
     return o
 
 
@@ -393,102 +444,6 @@ def fused_driver(tag, suf, np_, nq_, nr, nab, ncd):
     return o
 
 
-def x_item(tag, lp, lq, L):
-    np_, nq_, nr = len(herm(lp)), len(herm(lq)), len(herm(L))
-    o = []
-    o.extend(wrap_args(f"pure subroutine mdg_x_item_{tag}", "t, ni, ka, nj, kb, rb, pq", "   "))
-    o.append("      !! PQ[pbar, i, qbar, j] = (-1)^|q| R_{p+q}: one thread per (pbar, i, k2, j).")
-    o.append("      !$acc routine seq")
-    o.append("      integer,  intent(in) :: t, ni, ka, nj, kb")
-    o.append(f"      real(dp), intent(in) :: rb({nr}, ni, ka, nj, kb)")
-    o.append(f"      real(dp), intent(inout) :: pq({np_}, ka, ni, {nq_}, kb, nj)")
-    o.append("      integer :: u, x, k1, i, k2, j, y")
-    o.append("      u = t - 1")
-    o.append(f"      x = mod(u, {np_}) + 1; u = u/{np_}")
-    o.append("      k1 = mod(u, ka) + 1; u = u/ka")
-    o.append("      i = mod(u, ni) + 1; u = u/ni")
-    o.append("      k2 = mod(u, kb) + 1")
-    o.append("      j = u/kb + 1")
-    o.append(f"      do y = 1, {nq_}")
-    o.append(f"         pq(x, k1, i, y, k2, j) = SQ{tag}(y)*rb(RM{tag}(x + {np_}*(y - 1)), i, k1, j, k2)")
-    o.append("      end do")
-    o.append(f"   end subroutine mdg_x_item_{tag}")
-    return o
-
-
-def d_item(tag, na, nb, nc, nd, suf="", o1="sp_ao1", o2="sp_ao2"):
-    """Row digestion. The spherical variant (suf "_s") digests spherical rows into
-    the spherical D and K trc_mdg forms around it, at the pairs' spherical offsets."""
-    nab, ncd = na * nb, nc * nd
-    o = []
-    o.extend(wrap_args(f"pure subroutine mdg_d_item_{tag}{suf}", f"t, {DATA}, {WIN}, eri", "   "))
-    o.append("      !$acc routine seq")
-    o.append("      integer, intent(in) :: t")
-    o.append(DATA_DECL)
-    o.append(WIN_DECL)
-    o.append(f"      real(dp), intent(in) :: eri({nab}, ni, {ncd}, nj)")
-    o.append("      integer :: u, i, j, ab, ia, ib, ic, id, spa, spc, si, sj, sk, sl, mui, nuj, lamk, sigl, idens")
-    o.append("      real(dp) :: qcut, w, sm, x")
-    o.append(f"      real(dp) :: row({ncd})")
-    o.append("")
-    o.append("      ! Row ab of quartet (i, j); ab fastest, so a warp reads contiguous rows.")
-    o.append(f"      ab = mod(t - 1, {nab}) + 1")
-    o.append(f"      u = (t - 1)/{nab}")
-    o.append("      i = mod(u, ni) + 1")
-    o.append("      j = u/ni + 1")
-    o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
-    o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
-    o.append("      qcut = sp_q(spa)*sp_q(spc)")
-    o.append("      if (qcut <= thresh) return")
-    o.append("      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &")
-    o.append("                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return")
-    o.append("      ! wdiag is 1/2 on a group against itself, done as a full square.")
-    o.append("      w = wdiag")
-    o.append("      if (si == sj) w = 0.5_dp*w")
-    o.append("      if (sk == sl) w = 0.5_dp*w")
-    o.append(f"      mui = {o1}(spa); nuj = {o2}(spa); lamk = {o1}(spc); sigl = {o2}(spc)")
-    o.append(f"      ia = mod(ab - 1, {na})")
-    o.append(f"      ib = (ab - 1)/{na}")
-    o.append(f"      do ic = 1, {ncd}")
-    o.append("         row(ic) = eri(ab, i, ic, j)")
-    o.append("      end do")
-    o.append("      do idens = 1, ndens")
-    o.append("         if (kfac /= 0.0_dp) then")
-    for (outer, ol, inner, il, lhs_a, lhs_b, dm) in [
-            ("ic", nc, "id", nd, "mui + ia", "lamk + ic", "nuj + ib, sigl + id"),
-            ("ic", nc, "id", nd, "nuj + ib", "lamk + ic", "mui + ia, sigl + id"),
-            ("id", nd, "ic", nc, "mui + ia", "sigl + id", "nuj + ib, lamk + ic"),
-            ("id", nd, "ic", nc, "nuj + ib", "sigl + id", "mui + ia, lamk + ic")]:
-        o.append(f"            do {outer} = 0, {ol - 1}")
-        o.append("               sm = 0.0_dp")
-        o.append(f"               do {inner} = 0, {il - 1}")
-        o.append(f"                  sm = sm + row(1 + ic + {nc}*id)*dmat(idens, {dm})")
-        o.append("               end do")
-        o.append("               !$acc atomic update")
-        o.append(f"               jmat(idens, {lhs_a}, {lhs_b}) = jmat(idens, {lhs_a}, {lhs_b}) - kfac*w*sm")
-        o.append("            end do")
-    o.append("         end if")
-    o.append("         if (jfac /= 0.0_dp) then")
-    o.append("            sm = 0.0_dp")
-    o.append(f"            do id = 0, {nd - 1}")
-    o.append(f"               do ic = 0, {nc - 1}")
-    o.append(f"                  sm = sm + row(1 + ic + {nc}*id)*dmat(idens, lamk + ic, sigl + id)")
-    o.append("               end do")
-    o.append("            end do")
-    o.append("            !$acc atomic update")
-    o.append("            jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) + 4.0_dp*jfac*w*sm")
-    o.append("            x = 4.0_dp*jfac*w*dmat(idens, mui + ia, nuj + ib)")
-    o.append(f"            do id = 0, {nd - 1}")
-    o.append(f"               do ic = 0, {nc - 1}")
-    o.append("                  !$acc atomic update")
-    o.append("                  jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &")
-    o.append(f"                                                    + x*row(1 + ic + {nc}*id)")
-    o.append("               end do")
-    o.append("            end do")
-    o.append("         end if")
-    o.append("      end do")
-    o.append(f"   end subroutine mdg_d_item_{tag}{suf}")
-    return o
 
 
 def gen_class(la, lb, lc, ld, order, header):
@@ -503,14 +458,13 @@ def gen_class(la, lb, lc, ld, order, header):
     nab, ncd = na * nb, nc * nd
     nabs, ncds = (2 * la + 1) * (2 * lb + 1), (2 * lc + 1) * (2 * ld + 1)
     il = herm_index(L)
-    o = [header.format(what=f"Class ({la}{lb}|{lc}{ld}) MD Fock kernels through batched GEMMs")]
+    o = [header.format(what=f"Class ({la}{lb}|{lc}{ld}) MD exchange kernels")]
     o.append(f"module trc_mdg_k{tag}")
     o.append("   use pic_types, only: dp, int64")
     o.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
-    o.append("   use trc_linalg, only: trc_linalg_t")
     o.append("   implicit none")
     o.append("   private")
-    o.append(f"   public :: mdg_ket_{tag}, mdg_ket_{tag}_s, mdg_fused_{tag}, mdg_fused_{tag}_s, MDG_SIZES_{tag}")
+    o.append(f"   public :: mdg_fused_{tag}, mdg_fused_{tag}_s, MDG_SIZES_{tag}")
     o.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
     o.append(f"   integer, parameter :: MDG_SIZES_{tag}(8) = [{np_}, {nq_}, {nr}, {nab}, {ncd}, {L}, {nabs}, {ncds}]")
     o.append("   !! np, nq, n_r, bra and ket Cartesian component pairs, total L, bra and ket")
@@ -525,17 +479,9 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append('#include "inc/trc_boys_down.inc"')
     o.append("")
     for suf, ab_, cd_ in (("", nab, ncd), ("_s", nabs, ncds)):
-        o.extend(ket_driver(tag, suf, np_, nq_, nr, ab_, cd_))
-        o.append("")
         o.extend(fused_driver(tag, suf, np_, nq_, nr, ab_, cd_))
         o.append("")
     o.extend(r_item(tag, L))
-    o.append("")
-    o.extend(x_item(tag, lp, lq, L))
-    o.append("")
-    o.extend(d_item(tag, na, nb, nc, nd))
-    o.append("")
-    o.extend(d_item(tag, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "_s", "sp_as1", "sp_as2"))
     o.append("")
     o.extend(fused_items(tag, "", np_, nq_, nr, na, nb, nc, nd, "sp_ao1", "sp_ao2"))
     o.append("")
@@ -677,7 +623,7 @@ def gen_h_module(lmax, order, header):
     on w5 cc-pVQZ (V100).
     """
     import gen_sph  # noqa: E402 (T per l, this build's Cartesian order)
-    o = [header.format(what="E matrices of the MD GEMM pass, per shell-pair type")]
+    o = [header.format(what="E matrices of the MD exchange pass, per shell-pair type")]
     o.append("module trc_mdg_h")
     o.append("   use pic_types, only: dp")
     o.append("   use trc_sph_tables, only: SPH_T, SPH_NCART_MAX, SPH_NSPH_MAX")
@@ -790,17 +736,16 @@ def gen_h_module(lmax, order, header):
 
 
 def gen_dispatch(classes, header):
-    o = [header.format(what="Host dispatch of the MD GEMM Fock kernels")]
+    o = [header.format(what="Host dispatch of the MD exchange kernels")]
     o.append("module trc_mdg_kernels")
     o.append("   use pic_types, only: dp")
-    o.append("   use trc_linalg, only: trc_linalg_t")
     for c in classes:
         tag = "".join(map(str, c))
-        o.append(f"   use trc_mdg_k{tag}, only: mdg_ket_{tag}, mdg_ket_{tag}_s, mdg_fused_{tag}, mdg_fused_{tag}_s, &")
+        o.append(f"   use trc_mdg_k{tag}, only: mdg_fused_{tag}, mdg_fused_{tag}_s, &")
         o.append(f"                         MDG_SIZES_{tag}")
     o.append("   implicit none")
     o.append("   private")
-    o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_ket, mdg_fused")
+    o.append("   public :: mdg_class_count, mdg_class_key, mdg_sizes, mdg_fused")
     o.append("")
     o.append(f"   integer, parameter :: NCLASS = {len(classes)}")
     if classes:
@@ -829,28 +774,6 @@ def gen_dispatch(classes, header):
         o.append(f"      if (key == {class_key(*c)}) sz = MDG_SIZES_{tag}")
     o.append("   end function mdg_sizes")
     o.append("")
-    o.extend(wrap_args("subroutine mdg_ket", f"key, sph, lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", "   "))
-    o.append("      integer, intent(in) :: key")
-    o.append("      logical, intent(in) :: sph")
-    o.append("      type(trc_linalg_t), intent(inout) :: lp")
-    o.append(DATA_DECL)
-    o.append(WIN_DECL)
-    o.append("      real(dp), intent(in)    :: hb(*), hk(*)")
-    o.append("      real(dp), intent(inout) :: rb(*), pq(*), sm(*), eri(*)")
-    o.append("      select case (key)")
-    for c in classes:
-        tag = "".join(map(str, c))
-        o.append(f"      case ({class_key(*c)})")
-        o.append("         if (sph) then")
-        o.extend(wrap_args(f"call mdg_ket_{tag}_s", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", " " * 12))
-        o.append("         else")
-        o.extend(wrap_args(f"call mdg_ket_{tag}", f"lp, {DATA}, {WIN}, hb, hk, rb, pq, sm, eri", " " * 12))
-        o.append("         end if")
-    o.append("      case default")
-    o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
-    o.append("      end select")
-    o.append("   end subroutine mdg_ket")
-    o.append("")
     o.extend(wrap_args("subroutine mdg_fused", f"key, sph, {DATA}, {WIN}, hb, hk, rb, sm", "   "))
     o.append("      integer, intent(in) :: key")
     o.append("      logical, intent(in) :: sph")
@@ -868,7 +791,7 @@ def gen_dispatch(classes, header):
         o.extend(wrap_args(f"call mdg_fused_{tag}", f"{DATA}, {WIN}, hb, hk, rb, sm", " " * 12))
         o.append("         end if")
     o.append("      case default")
-    o.append('         error stop "trc_mdg_kernels: no MD GEMM kernel for this class"')
+    o.append('         error stop "trc_mdg_kernels: no MD exchange kernel for this class"')
     o.append("      end select")
     o.append("   end subroutine mdg_fused")
     o.append("")
@@ -888,7 +811,7 @@ def main():
     for c in classes:
         if c[0] < c[1] or c[2] < c[3] or (c[0], c[1]) < (c[2], c[3]):
             raise SystemExit(f"class {c}: la >= lb, lc >= ld and (la, lb) >= (lc, ld), as fock_bins forms them")
-    cmd = f"scripts/gen_md_kgemm.py --lmax {a.lmax} --classes {a.classes}"
+    cmd = f"scripts/gen_md_k.py --lmax {a.lmax} --classes {a.classes}"
     if a.order not in ("lexicographic", "libcint"):
         cmd += f" --order {a.order}"
     header = ("!\n! {what}.\n!\n"

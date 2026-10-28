@@ -21,7 +21,7 @@ target_sources(
           api/trc_api.F90        # basis, pair list, 1e, multipoles, DF
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_mdj.F90       # the McMurchie-Davidson J engine (no quartets)
-          eri/trc_mdg.F90       # MD exchange through batched GEMMs, for the classes TRC_MDG_CLASSES names
+          eri/trc_mdg.F90       # MD exchange for the g classes above TERCO_RYS_G_LTOT
           eri/trc_eri.F90       # the four-centre Fock builds
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
@@ -867,11 +867,13 @@ set(_mdj_batch_flag "")
 if(NOT "${TERCO_MDJ_BATCHES}" STREQUAL "")
   set(_mdj_batch_flag "--batches" "${TERCO_MDJ_BATCHES}")
 endif()
-set(TERCO_MDG_CLASSES "2121,1010" CACHE STRING "classes with an MD GEMM Fock prototype (TRC_MDG_CLASSES routes them)")
-set(TERCO_MDK_CLASSES "2121,1010" CACHE STRING "classes with an MD Fock prototype kernel (TRC_MDK_CLASSES routes them)")
-# Every class with a shell above f goes to the MD GEMM pass, whatever
-# TERCO_MDG_CLASSES says: nothing else in terco forms it.
-set(_mdg_classes "${TERCO_MDG_CLASSES}")
+# MD exchange (trc_mdg, scripts/gen_md_k.py) takes the g classes Rys does not:
+# total L above TERCO_RYS_G_LTOT (V100, w20 cc-pVQZ: MD won 19 of the 25 g
+# classes at L 10-12 against the best Rys chunk shape, and every class above).
+# Only the angular-momentum-canonical orderings the bins form are generated.
+# Routing d and f classes here was measured and dropped: it won only four
+# (ff|xx) classes on one system and none on a contracted one.
+set(_mdg_classes "")
 if(TERCO_LMAX GREATER 3)
   foreach(la RANGE 0 ${TERCO_LMAX})
     foreach(lb RANGE 0 ${la})
@@ -880,25 +882,25 @@ if(TERCO_LMAX GREATER 3)
           if(lc EQUAL la AND ld GREATER lb)
             continue()
           endif()
-          if(la GREATER 3 OR lc GREATER 3)
-            string(APPEND _mdg_classes ",${la}${lb}${lc}${ld}")
+          math(EXPR _ltot "${la} + ${lb} + ${lc} + ${ld}")
+          if((la GREATER 3 OR lc GREATER 3) AND _ltot GREATER TERCO_RYS_G_LTOT)
+            list(APPEND _mdg_classes "${la}${lb}${lc}${ld}")
           endif()
         endforeach()
       endforeach()
     endforeach()
   endforeach()
 endif()
+list(JOIN _mdg_classes "," _mdg_classes)
 macro(_terco_gen_mdj)
   terco_gen("gen_md_j.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_j.py
             --lmax ${TERCO_LMAX} ${_order_flag} ${_mdj_batch_flag} -o ${_mdj_stage})
   terco_gen("gen_md_k.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_k.py
-            --lmax ${TERCO_LMAX} --classes ${TERCO_MDK_CLASSES} ${_order_flag} -o ${_mdj_stage})
-  terco_gen("gen_md_kgemm.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_kgemm.py
-            --lmax ${TERCO_LMAX} --classes ${_mdg_classes} ${_order_flag} -o ${_mdj_stage})
+            --lmax ${TERCO_LMAX} --classes=${_mdg_classes} ${_order_flag} -o ${_mdj_stage})
 endmacro()
 terco_generate(
   "MD J kernels" _terco_gen_mdj "${_mdj_stage}" "${_mdj_dir}" ON ON
-  ${_s}/gen_md_j.py ${_s}/gen_md_k.py ${_s}/gen_md_kgemm.py ${_s}/md/__init__.py ${_s}/md/hermite.py ${_s}/md/rtree.py ${_s}/cartorder.py)
+  ${_s}/gen_md_j.py ${_s}/gen_md_k.py ${_s}/md/__init__.py ${_s}/md/hermite.py ${_s}/md/rtree.py ${_s}/cartorder.py)
 file(GLOB _mdj_sources "${_mdj_dir}/*.F90")
 list(LENGTH _mdj_sources _nmdj)
 message(STATUS "terco: ${_nmdj} MD J engine modules in ${_mdj_dir}")
