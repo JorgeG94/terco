@@ -546,8 +546,16 @@ if(_regen)
     # One module per class (gen_1e.py's split emitters): as one file the
     # multipoles took 1165 s to compile at LMAX=3 and the gradient kernels
     # over 90 minutes at LMAX=4, single-threaded.
+    # The multipoles stop at d whatever TERCO_LMAX is: only the response
+    # code reads them (dipole perturbations), the f and g classes cost
+    # 20 and 41 minutes of nvfortran, and trc_multipoles stops on a basis
+    # above MULT_LMAX rather than returning a wrong matrix.
+    set(_mult_lmax ${TERCO_LMAX})
+    if(_mult_lmax GREATER 2)
+      set(_mult_lmax 2)
+    endif()
     terco_gen("gen_1e.py --multipole-dir" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
-              --lmax ${TERCO_LMAX} --multipole-dir ${_gen_out} ${_order_flag})
+              --lmax ${_mult_lmax} --multipole-dir ${_gen_out} ${_order_flag})
     # The PCM smeared-charge surface integrals follow TERCO_LMAX for the
     # same reason the 1e kernels do: a continuum that stops below the
     # four-centre ceiling would have no operator for the basis it is given.
