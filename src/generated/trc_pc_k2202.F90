@@ -4104,10 +4104,9 @@ contains
             end do
          end do
          do id = 0, 5
-            do ic = 0, 0
+            ic = 0
                dcd(1 + ic + 1*id) = dmat(idens, lamk + ic, sigl + id)
                jcd(1 + ic + 1*id) = 0.0_dp
-            end do
          end do
          else
          do ib = 0, 5
@@ -4117,10 +4116,9 @@ contains
             end do
          end do
          do id = 0, 5
-            do ic = 0, 0
+            ic = 0
                dcd(1 + ic + 1*id) = 0.0_dp
                jcd(1 + ic + 1*id) = 0.0_dp
-            end do
          end do
          end if
          do ic = 0, 0
@@ -4181,11 +4179,10 @@ contains
             end do
          end do
          do id = 0, 5
-            do ic = 0, 0
+            ic = 0
                !$acc atomic update
                jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
                                             + jcd(1 + ic + 1*id)
-            end do
          end do
          end if
          do ic = 0, 0

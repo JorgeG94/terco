@@ -484,6 +484,53 @@ def _end(n, ind):
     return f"{ind}end do\n" if n > 1 else ""
 
 
+def _jblocks_load(na, nb, nc, nd):
+    """The general branch's Coulomb gathers under `jfac /= 0`, zero-filled
+    otherwise. Emitted without single-trip loops, as `_jonly_digestion` is:
+    with them nvfortran 26.5's fort2 segfaulted on classes with two s shells
+    at some build-path lengths (Gadi, trc_pc_rys0201/0210/1021)."""
+    i9, i12, i15 = " " * 9, " " * 12, " " * 15
+    o = f"{i9}if (jfac /= 0.0_dp) then\n"
+    o += _do("ib", nb, i9) + _do("ia", na, i12)
+    o += (f"{i15}dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)\n"
+          f"{i15}jab(1 + ia + {na}*ib) = 0.0_dp\n")
+    o += _end(na, i12) + _end(nb, i9)
+    o += _do("id", nd, i9) + _do("ic", nc, i12)
+    o += (f"{i15}dcd(1 + ic + {nc}*id) = dmat(idens, lamk + ic, sigl + id)\n"
+          f"{i15}jcd(1 + ic + {nc}*id) = 0.0_dp\n")
+    o += _end(nc, i12) + _end(nd, i9)
+    o += f"{i9}else\n"
+    o += _do("ib", nb, i9) + _do("ia", na, i12)
+    o += (f"{i15}dab(1 + ia + {na}*ib) = 0.0_dp\n"
+          f"{i15}jab(1 + ia + {na}*ib) = 0.0_dp\n")
+    o += _end(na, i12) + _end(nb, i9)
+    o += _do("id", nd, i9) + _do("ic", nc, i12)
+    o += (f"{i15}dcd(1 + ic + {nc}*id) = 0.0_dp\n"
+          f"{i15}jcd(1 + ic + {nc}*id) = 0.0_dp\n")
+    o += _end(nc, i12) + _end(nd, i9)
+    o += f"{i9}end if\n"
+    return o
+
+
+def _jblocks_store(na, nb, nc, nd):
+    """The general branch's Coulomb atomics, skipped when jfac = 0; no
+    single-trip loops (see _jblocks_load)."""
+    i9, i12, i15 = " " * 9, " " * 12, " " * 15
+    o = f"{i9}if (jfac /= 0.0_dp) then\n"
+    o += _do("ib", nb, i9) + _do("ia", na, i12)
+    o += (f"{i15}!$acc atomic update\n"
+          f"{i15}jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &\n"
+          f"{' ' * 42}+ jab(1 + ia + {na}*ib)\n")
+    o += _end(na, i12) + _end(nb, i9)
+    o += _do("id", nd, i9) + _do("ic", nc, i12)
+    o += (f"{i15}!$acc atomic update\n"
+          f"{i15}jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &\n"
+          f"{' ' * 44}+ jcd(1 + ic + {nc}*id)\n")
+    o += _end(nc, i12) + _end(nd, i9)
+    o += f"{i9}end if\n"
+    return o
+
+
 def _jonly_digestion(na, nb, nc, nd):
     """The kfac = 0 branch of emit_digestion, from its density loop through
     the J scatters. Its statements are the general branch's J statements,
@@ -620,34 +667,7 @@ def emit_digestion(na, nb, nc, nd):
          ! test inside it costs more than it saves, see the J-only note).
          ! jfac is uniform over the launch, so no warp diverges.
          !
-         if (jfac /= 0.0_dp) then
-         do ib = 0, {nb - 1}
-            do ia = 0, {na - 1}
-               dab(1 + ia + {na}*ib) = dmat(idens, mui + ia, nuj + ib)
-               jab(1 + ia + {na}*ib) = 0.0_dp
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ic = 0, {nc - 1}
-               dcd(1 + ic + {nc}*id) = dmat(idens, lamk + ic, sigl + id)
-               jcd(1 + ic + {nc}*id) = 0.0_dp
-            end do
-         end do
-         else
-         do ib = 0, {nb - 1}
-            do ia = 0, {na - 1}
-               dab(1 + ia + {na}*ib) = 0.0_dp
-               jab(1 + ia + {na}*ib) = 0.0_dp
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ic = 0, {nc - 1}
-               dcd(1 + ic + {nc}*id) = 0.0_dp
-               jcd(1 + ic + {nc}*id) = 0.0_dp
-            end do
-         end do
-         end if
-         do ic = 0, {nc - 1}
+{_jblocks_load(na, nb, nc, nd)}         do ic = 0, {nc - 1}
             do ia = 0, {na - 1}
                dac(1 + ia + {na}*ic) = dmat(idens, mui + ia, lamk + ic)
                kac(1 + ia + {na}*ic) = 0.0_dp
@@ -696,23 +716,7 @@ def emit_digestion(na, nb, nc, nd):
          end do
          end do
 
-         if (jfac /= 0.0_dp) then
-         do ib = 0, {nb - 1}
-            do ia = 0, {na - 1}
-               !$acc atomic update
-               jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
-                                          + jab(1 + ia + {na}*ib)
-            end do
-         end do
-         do id = 0, {nd - 1}
-            do ic = 0, {nc - 1}
-               !$acc atomic update
-               jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
-                                            + jcd(1 + ic + {nc}*id)
-            end do
-         end do
-         end if
-         do ic = 0, {nc - 1}
+{_jblocks_store(na, nb, nc, nd)}         do ic = 0, {nc - 1}
             do ia = 0, {na - 1}
                !$acc atomic update
                jmat(idens, mui + ia, lamk + ic) = jmat(idens, mui + ia, lamk + ic) &

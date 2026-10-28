@@ -553,12 +553,10 @@ contains
          ! jfac is uniform over the launch, so no warp diverges.
          !
          if (jfac /= 0.0_dp) then
-         do ib = 0, 0
-            do ia = 0, 0
+         ib = 0
+            ia = 0
                dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
                jab(1 + ia + 1*ib) = 0.0_dp
-            end do
-         end do
          do id = 0, 2
             do ic = 0, 2
                dcd(1 + ic + 3*id) = dmat(idens, lamk + ic, sigl + id)
@@ -566,12 +564,10 @@ contains
             end do
          end do
          else
-         do ib = 0, 0
-            do ia = 0, 0
+         ib = 0
+            ia = 0
                dab(1 + ia + 1*ib) = 0.0_dp
                jab(1 + ia + 1*ib) = 0.0_dp
-            end do
-         end do
          do id = 0, 2
             do ic = 0, 2
                dcd(1 + ic + 3*id) = 0.0_dp
@@ -629,13 +625,11 @@ contains
          end do
 
          if (jfac /= 0.0_dp) then
-         do ib = 0, 0
-            do ia = 0, 0
+         ib = 0
+            ia = 0
                !$acc atomic update
                jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
                                           + jab(1 + ia + 1*ib)
-            end do
-         end do
          do id = 0, 2
             do ic = 0, 2
                !$acc atomic update

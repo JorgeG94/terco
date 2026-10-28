@@ -4075,10 +4075,9 @@ contains
          !
          if (jfac /= 0.0_dp) then
          do ib = 0, 5
-            do ia = 0, 0
+            ia = 0
                dab(1 + ia + 1*ib) = dmat(idens, mui + ia, nuj + ib)
                jab(1 + ia + 1*ib) = 0.0_dp
-            end do
          end do
          do id = 0, 5
             do ic = 0, 5
@@ -4088,10 +4087,9 @@ contains
          end do
          else
          do ib = 0, 5
-            do ia = 0, 0
+            ia = 0
                dab(1 + ia + 1*ib) = 0.0_dp
                jab(1 + ia + 1*ib) = 0.0_dp
-            end do
          end do
          do id = 0, 5
             do ic = 0, 5
@@ -4151,11 +4149,10 @@ contains
 
          if (jfac /= 0.0_dp) then
          do ib = 0, 5
-            do ia = 0, 0
+            ia = 0
                !$acc atomic update
                jmat(idens, mui + ia, nuj + ib) = jmat(idens, mui + ia, nuj + ib) &
                                           + jab(1 + ia + 1*ib)
-            end do
          end do
          do id = 0, 5
             do ic = 0, 5

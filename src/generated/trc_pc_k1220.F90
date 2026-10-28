@@ -1356,12 +1356,11 @@ contains
                jab(1 + ia + 3*ib) = 0.0_dp
             end do
          end do
-         do id = 0, 0
+         id = 0
             do ic = 0, 5
                dcd(1 + ic + 6*id) = dmat(idens, lamk + ic, sigl + id)
                jcd(1 + ic + 6*id) = 0.0_dp
             end do
-         end do
          else
          do ib = 0, 5
             do ia = 0, 2
@@ -1369,12 +1368,11 @@ contains
                jab(1 + ia + 3*ib) = 0.0_dp
             end do
          end do
-         do id = 0, 0
+         id = 0
             do ic = 0, 5
                dcd(1 + ic + 6*id) = 0.0_dp
                jcd(1 + ic + 6*id) = 0.0_dp
             end do
-         end do
          end if
          do ic = 0, 5
             do ia = 0, 2
@@ -1433,13 +1431,12 @@ contains
                                           + jab(1 + ia + 3*ib)
             end do
          end do
-         do id = 0, 0
+         id = 0
             do ic = 0, 5
                !$acc atomic update
                jmat(idens, lamk + ic, sigl + id) = jmat(idens, lamk + ic, sigl + id) &
                                             + jcd(1 + ic + 6*id)
             end do
-         end do
          end if
          do ic = 0, 5
             do ia = 0, 2
