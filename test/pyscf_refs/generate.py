@@ -4229,6 +4229,75 @@ def gen_vib_thermo(case, atoms_ang, mass_z, sigma, mult=1, temperature=298.15, p
           f"ZPE={th['ZPE']:.10f} G_tot={th['G_tot']:.10f} (gnorm {gnorm:.2e})")
 
 
+def gen_ghost_water_dimer():
+    """Water dimer, cc-pVDZ: monomer A real, monomer B placed as GHOST
+    atoms (basis functions, zero nuclear charge, zero electrons) -- mqc's
+    counterpoise use of trc_set_elements (ghost := z == 0, element >= 1).
+
+    Geometry is literal BOHR coordinates, duplicated by hand into
+    check_capi_ghost.F90 (same convention as gen_opt/gen_vib_thermo):
+    computed from the Angstrom geometry with terco's OWN CODATA 2018
+    Bohr constant (0.529177210903), not pyscf's CODATA 2010 one
+    (0.52917721092) -- unit='Bohr' here is a direct pass of the same
+    bits trc_set_molecule gets, so there is no Angstrom-conversion
+    constant to disagree about at all, on either side.
+
+    RHF (analytic, matches to ~1e-10) and B3LYP (both sides build their
+    OWN quadrature grid independently -- same tables, not the same
+    points -- so this one is a quadrature-limited few-1e-7 match, not
+    1e-10) energies, and the RHF gradient over all 6 rows: the ghost
+    rows carry only basis-function (Pulay) terms, no nuclear ones, since
+    pyscf's own nuc_grad_method treats a zero-charge atom the same way."""
+    coords_bohr = [
+        (0.0, 0.0, 0.221664874418603),
+        (0.0, 1.430900621566633, -0.886659497674411),
+        (0.0, -1.430900621566633, -0.886659497674411),
+        (7.558904498503081, 0.0, 0.221664874418603),
+        (7.558904498503081, 1.430900621566633, -0.886659497674411),
+        (7.558904498503081, -1.430900621566633, -0.886659497674411),
+    ]
+    labels = ["O1", "H2", "H3", "ghost-O4", "ghost-H5", "ghost-H6"]
+    elements = {"O1": 8, "H2": 1, "H3": 1, "ghost-O4": 8, "ghost-H5": 1, "ghost-H6": 1}
+    atoms = list(zip(labels, coords_bohr))
+    basis_arg = bse_json_basis(TEST / "basis_sets" / "cc-pvdz.json", elements)
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', charge=0, spin=0, verbose=0)
+    if mol.nelectron != 10:
+        raise RuntimeError(f"gen_ghost_water_dimer: expected 10 electrons (monomer A only), "
+                           f"got {mol.nelectron}")
+    if not np.array_equal(mol.atom_charges(), np.array([8, 1, 1, 0, 0, 0])):
+        raise RuntimeError(f"gen_ghost_water_dimer: expected charges [8,1,1,0,0,0], "
+                           f"got {mol.atom_charges()}")
+
+    mf = scf.RHF(mol)
+    mf.conv_tol = 1e-13
+    mf.conv_tol_grad = 1e-11
+    mf.max_cycle = 200
+    e_rhf = mf.kernel()
+    require_converged(mf, "ghost_water_dimer RHF")
+    grad_rhf = mf.nuc_grad_method().kernel()   # (natm, 3), Eh/Bohr
+
+    mf_b3 = dft.RKS(mol)
+    mf_b3.xc = 'HYB_GGA_XC_B3LYP'
+    mf_b3.grids.level = 6
+    mf_b3.conv_tol = 1e-12
+    mf_b3.conv_tol_grad = 1e-9
+    mf_b3.max_cycle = 200
+    e_b3lyp = mf_b3.kernel()
+    require_converged(mf_b3, "ghost_water_dimer B3LYP")
+
+    w = RefWriter("ghost_water_dimer.ref")
+    w.header("ghost_water_dimer", [ROOT / "test" / "check_capi_ghost.F90",
+                                    TEST / "basis_sets" / "cc-pvdz.json"])
+    w.int_("NATM", 6)
+    w.real("E_RHF", e_rhf)
+    w.matrix("GRAD_RHF", grad_rhf.T)   # (3, natm)
+    w.int_("B3LYP_GRID_LEVEL", 6)
+    w.real("E_B3LYP", e_b3lyp)
+    w.end()
+    w.write()
+    print(f"  ghost_water_dimer: E_RHF={e_rhf:.12f} E_B3LYP={e_b3lyp:.12f}")
+
+
 CASES = {
     "mult": gen_mult,
     "ao": gen_ao,
@@ -4331,6 +4400,7 @@ CASES = {
     "sph_corr": gen_sph_corr,
     "xc_kernels": gen_xc_kernels,
     "pcm_cavity": gen_pcm_cavity,
+    "ghost_water_dimer": gen_ghost_water_dimer,
     "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "pcm_scf_main": lambda: gen_pcm_scf("main"),
