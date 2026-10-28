@@ -190,11 +190,13 @@ program check_df_grad_ints
    call get_command_argument(5, case_name)
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, force_cart=.true.)
+   ! prune=.false. on both: the pyscf reference is built from these files'
+   ! literal columns, same reasoning as check_rys_fock_vs_pyscf.F90.
+   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, force_cart=.true., prune=.false.)
    if (err%has_error()) then
       print '(a)', 'check_df_grad_ints: '//err%get_message(); stop 1
    end if
-   call trc_basis_from_json(trim(aux_json), nat, at_z, r, aux, err, force_cart=.true.)
+   call trc_basis_from_json(trim(aux_json), nat, at_z, r, aux, err, force_cart=.true., prune=.false.)
    if (err%has_error()) then
       print '(a)', 'check_df_grad_ints: '//err%get_message(); stop 1
    end if

@@ -75,7 +75,12 @@ program check_rys_fock_vs_pyscf
    call golden_begin('rys_fock_'//trim(case_name))
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+   ! prune=.false.: the pyscf reference this compares against
+   ! (test/pyscf_refs/generate.py's bse_json_basis) reads this file's own
+   ! columns literally, without trc_basis_json's prune_block reduction --
+   ! an AO-level S/G comparison, unlike an energy or a gradient, is not
+   ! invariant to that reduction's basis rotation.
+   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, prune=.false.)
    if (err%has_error()) then
       print '(a)', 'check_rys_fock_vs_pyscf: '//err%get_message(); stop 1
    end if

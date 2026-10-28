@@ -102,7 +102,10 @@ contains
       real(dp) :: seed
 
       call read_xyz(xyzfile, nat, at_z, at_r)
-      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true.)
+      ! prune=.false.: the per-AO rescaling below is an identity against
+      ! pyscf's own (literal-column) overlap, so the AO basis has to be
+      ! the same one, not a span-equivalent rotation of it.
+      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true., prune=.false.)
       if (err%has_error()) then
          print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
       end if
@@ -204,7 +207,10 @@ contains
       real(dp) :: seed
 
       call read_xyz(xyzfile, nat, at_z, at_r)
-      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true.)
+      ! prune=.false.: the per-AO rescaling below is an identity against
+      ! pyscf's own (literal-column) overlap, so the AO basis has to be
+      ! the same one, not a span-equivalent rotation of it.
+      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true., prune=.false.)
       if (err%has_error()) then
          print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
       end if

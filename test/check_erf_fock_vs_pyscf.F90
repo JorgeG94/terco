@@ -67,7 +67,9 @@ program check_erf_fock_vs_pyscf
    end block
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+   ! prune=.false., same reasoning as check_rys_fock_vs_pyscf.F90: the pyscf
+   ! reference is built straight from this file's literal columns.
+   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, prune=.false.)
    if (err%has_error()) then
       print '(a)', 'check_erf_fock_vs_pyscf: '//err%get_message(); stop 1
    end if

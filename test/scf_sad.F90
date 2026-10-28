@@ -39,8 +39,12 @@ program scf_sad
    opts%conv_density = 1.0e-7_dp
    ok = .true.
    do ib = 1, 2
+      ! prune=.false.: sad_cc-pvdz.json is an mqc-written AO-basis density
+      ! fixture (this module's own header) in terco's LITERAL cc-pVDZ AO
+      ! definition; pruning rotates that definition, which would make
+      ! `dguess` a density in the wrong basis.
       call trc_basis_from_json('basis_sets/'//trim(bases(ib))//'.json', natm, zint, at_r, bas, err, &
-                               force_cart=.true.)
+                               force_cart=.true., prune=.false.)
       if (.not. err%has_error()) call trc_guess_from_json('sad_'//trim(bases(ib))//'.json', bas, zint, dguess, err)
       if (err%has_error()) then
          print '(a)', "scf_sad: "//err%get_message()

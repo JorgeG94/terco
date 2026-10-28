@@ -61,7 +61,9 @@ program check_1e_grad_vs_pyscf
    if (command_argument_count() >= 4) call get_command_argument(4, case_name)
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+   ! prune=.false.: the pyscf reference is built from this file's literal
+   ! columns, same reasoning as check_rys_fock_vs_pyscf.F90.
+   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, prune=.false.)
    if (err%has_error()) then
       print '(a)', 'check_1e_grad_vs_pyscf: '//err%get_message(); stop 1
    end if

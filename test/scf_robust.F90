@@ -123,8 +123,17 @@ program scf_robust
       end if
       ! Cartesian, to match scf_robust_ref.py's cart=True and the lindep
       ! threshold measured on it: d-aug-cc-pVDZ tags shells gto_spherical.
+      ! prune=.false.: w5/d-aug-cc-pVDZ's lindep_thresh (1e-5, this
+      ! module's own header) drops near-linearly-dependent diffuse
+      ! combinations off the overlap matrix's eigenvalues, and
+      ! prune_block's basis rotation moves those eigenvalues enough to
+      ! change WHICH combinations get dropped -- a real difference, not
+      ! round-off (measured 9.66e-07 against the golden, four orders of
+      ! magnitude over its 2e-10 gate), because this basis is deliberately
+      ! near-redundant and lindep thresholding is not invariant to a
+      ! rotation the way a well-conditioned SCF energy is.
       call trc_basis_from_json('basis_sets/'//trim(basf(ic))//'.json', natm, zint, at_r, bas, err, &
-                               force_cart=.true.)
+                               force_cart=.true., prune=.false.)
       if (err%has_error()) then
          print '(a,a)', 'scf_robust: '//trim(xyzf(ic))//': ', err%get_message(); stop 1
       end if
