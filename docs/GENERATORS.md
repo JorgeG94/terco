@@ -46,6 +46,7 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 | `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock` |
 | `gen_df.py` | two- and three-centre Coulomb, one module per class (`--split`, the only mode) | `trc_df_2c`, `trc_df_3c` |
 | `gen_df_grad.py` | the two- and three-centre Coulomb nuclear derivatives, contracted with a coefficient block, Rys for every class, one module per class | the `--df` gradient (`trc_scf_grad_df`) |
+| `gen_schwarz.py` | the Rys-quadrature diagonal Schwarz kernel, one module, no `TERCO_LMAX` dependence (`select case` over the 9 inlined Rys root counts, runtime loops otherwise) | `trc_screen`'s `schwarz_bounds_rys` |
 
 `gen_df.py` reuses `gen_vrr.py`'s four-centre recurrence with `eta = gamma`,
 `Q = C` and `K_cd = 1` — a three-centre integral is a four-centre one with a

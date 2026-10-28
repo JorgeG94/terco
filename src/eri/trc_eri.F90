@@ -28,7 +28,7 @@ module trc_eri
    use pic_strings, only: to_string
    use trc_cart, only: cart_init
    use trc_hgp, only: build_pairs_hgp
-   use trc_screen, only: schwarz_bounds_hgp, pair_index
+   use trc_screen, only: schwarz_bounds_rys, pair_index
    use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
@@ -344,7 +344,12 @@ contains
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
-      call schwarz_bounds_hgp(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
+      ! schwarz_bounds_rys: the Rys-quadrature diagonal kernel (one thread
+      ! per (pair, component pair), trc_schwarz_rys.F90), which replaces
+      ! schwarz_bounds_hgp's one-thread-per-pair whole-block scan. Same Q,
+      ! see trc_screen.F90's own header; schwarz_bounds_hgp stays for
+      ! check_schwarz_rys_vs_hgp's comparison.
+      call schwarz_bounds_rys(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
                               this%hp_p, this%hp_r, this%hp_ra, this%hp_rb, this%hp_c, qs)
       this%t_build(2) = tm%get_elapsed_time()
       call tm%start()
