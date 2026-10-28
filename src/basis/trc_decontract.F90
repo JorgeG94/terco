@@ -117,7 +117,7 @@ contains
       end do
       call pb%build(nsh_p, p_l(1:nsh_p), p_np(1:nsh_p), p_e(1:maxnp_p, 1:nsh_p), &
                     p_c(1:maxnp_p, 1:nsh_p), p_r(:, 1:nsh_p), &
-                    b%natm, b%at_z, b%at_r, maxnp_p)
+                    b%natm, b%at_z, b%at_r, maxnp_p, at_elem=b%at_elem)
 
       !
       ! BUILD IT TWICE, TO CANCEL THE CONSTRUCTOR'S OWN SCALING.
@@ -144,7 +144,7 @@ contains
       end do
       call pb%build(nsh_p, p_l(1:nsh_p), p_np(1:nsh_p), p_e(1:maxnp_p, 1:nsh_p), &
                     p_c(1:maxnp_p, 1:nsh_p), p_r(:, 1:nsh_p), &
-                    b%natm, b%at_z, b%at_r, maxnp_p)
+                    b%natm, b%at_z, b%at_r, maxnp_p, at_elem=b%at_elem)
 
       ! The coefficient a split shell ENDS UP with is not the one handed to
       ! the constructor: `basis_build` folds common_fac_sp into it. Deriving
