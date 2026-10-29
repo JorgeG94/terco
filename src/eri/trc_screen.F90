@@ -34,10 +34,12 @@ module trc_screen
    use trc_batch, only: eri_batch, ncart
    use pic_types, only: int64
    use trc_hgp, only: hgp_batch, hgp_scratch_size
+   use trc_schwarz_rys, only: schwarz_rys_batch
    implicit none
    private
 
-   public :: schwarz_bounds, schwarz_bounds_hgp, pair_index, build_worklist, density_blockmax
+   public :: schwarz_bounds, schwarz_bounds_hgp, schwarz_bounds_rys, &
+             pair_index, build_worklist, density_blockmax
 
 contains
 
@@ -318,6 +320,162 @@ contains
 
       deallocate (d_i, d_j, d_k, d_l, d_off, d_q, cst, w_off, out, qc, work)
    end subroutine schwarz_bounds_hgp
+
+   !
+   ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, exactly as
+   ! schwarz_bounds_hgp above computes it, but from `trc_schwarz_rys.F90`'s
+   ! Rys-quadrature DIAGONAL kernel instead of `hgp_quartet`'s whole (ab|ab)
+   ! Cartesian block.
+   !
+   ! WHY. `hgp_quartet` is one thread per shell pair, computing every one of
+   ! the pair's na*na = (ncart(li)*ncart(lj))^2 Cartesian elements to keep
+   ! the largest; for a (gg) pair na = 15, so na*na = 225 and the thread
+   ! also carries a VRR scratch sized per quartet. Cauchy-Schwarz only ever
+   ! needs the DIAGONAL of that block (see this module's header: M is a
+   ! Gram matrix, so its largest |element| sits on the diagonal), so this
+   ! routine launches one thread per (pair, component pair) instead -- na
+   ! threads for a (gg) pair, not one -- and each thread computes a single
+   ! (ab|ab) with no quartet-sized VRR scratch at all (schwarz_rys_item's
+   ! own per-thread scratch is a handful of scalars and three <=9x9 2D Rys
+   ! tables; see trc_schwarz_rys.F90's module header).
+   !
+   ! THE THREAD LIST IS FLATTENED ON THE HOST, NOT NESTED ON THE DEVICE. A
+   ! `do concurrent` nested over (pair, component), where the component
+   ! extent varies per pair and is small, risks nvfortran dropping the last
+   ! slice of a small varying outer extent (this project's own measured
+   ! trap); t_i/t_j/t_c below enumerate the flat (pair, component) list on
+   ! the host instead, and `schwarz_rys_batch` launches one `do concurrent`
+   ! over it.
+   !
+   ! Chunked on total THREAD count (sum of na over the chunk's pairs), not
+   ! pair count: the old WBUDGET chunking above exists because hgp_quartet's
+   ! VRR scratch is na*na-ish and could overrun a work buffer; this kernel's
+   ! per-thread scratch is O(1) regardless of class, so the only thing that
+   ! needs bounding is how many threads' worth of `t_i`/`t_j`/`t_c`/`outc`
+   ! this routine allocates at once.
+   !
+   subroutine schwarz_bounds_rys(nbas, nhpp, sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
+      integer,  intent(in)  :: nbas, nhpp
+      integer,  intent(in)  :: sh_l(nbas)
+      integer,  intent(in)  :: hp_off(nbas*nbas), hp_n(nbas*nbas)
+      real(dp), intent(in)  :: hp_p(nhpp), hp_r(nhpp, 3), hp_ra(nhpp, 3), hp_rb(nhpp, 3), hp_c(nhpp)
+      real(dp), intent(out) :: q(nbas*(nbas + 1)/2)
+
+      integer, allocatable :: d_i(:), d_j(:), d_k(:), d_l(:), d_q(:)
+      integer, allocatable :: cst(:), p_na(:), p_base(:)
+      integer, allocatable :: t_i(:), t_j(:), t_c(:)
+      real(dp), allocatable :: outc(:), qc(:)
+      integer :: npair, i, j, n, nlive, key, na, nchunk, ic, c0, c1, nc, m, t, ii, nt
+      integer(int64) :: nthread_tot, nth, need
+      real(dp) :: vmax
+      integer, parameter :: CHUNK = 65536
+      integer(int64), parameter :: THREAD_BUDGET = 8_int64*1024*1024
+
+      npair = nbas*(nbas + 1)/2
+      q = 0.0_dp
+      allocate (d_i(npair), d_j(npair), d_k(npair), d_l(npair), d_q(npair))
+      nlive = 0
+      do i = 1, nbas
+         do j = 1, i
+            key = (i - 1)*nbas + j
+            if (hp_n(key) == 0) cycle
+            nlive = nlive + 1
+            d_i(nlive) = i
+            d_j(nlive) = j
+            d_k(nlive) = i
+            d_l(nlive) = j
+            d_q(nlive) = pair_index(i, j)
+         end do
+      end do
+      ! Longest first, same reason as schwarz_bounds_hgp.
+      call order_by_work(nlive, nbas, hp_n, d_i, d_j, d_k, d_l, d_q)
+      if (nlive == 0) then
+         deallocate (d_i, d_j, d_k, d_l, d_q)
+         return
+      end if
+
+      allocate (p_na(nlive), p_base(nlive))
+      do n = 1, nlive
+         p_na(n) = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+      end do
+
+      ! Chunk starts in cst(1:nchunk), cst(nchunk + 1) = nlive + 1 -- same
+      ! shape as schwarz_bounds_hgp's, bounding THREAD_BUDGET threads
+      ! (sum of p_na) per chunk instead of VRR scratch doubles.
+      allocate (cst(nlive + 1))
+      nchunk = 0
+      nthread_tot = 0
+      c0 = 1
+      do while (c0 <= nlive)
+         nchunk = nchunk + 1
+         cst(nchunk) = c0
+         nth = 0
+         c1 = c0 - 1
+         do n = c0, min(c0 + CHUNK - 1, nlive)
+            need = int(p_na(n), int64)
+            if (n > c0 .and. nth + need > THREAD_BUDGET) exit
+            nth = nth + need
+            c1 = n
+         end do
+         nthread_tot = max(nthread_tot, nth)
+         c0 = c1 + 1
+      end do
+      cst(nchunk + 1) = nlive + 1
+
+      allocate (t_i(nthread_tot), t_j(nthread_tot), t_c(nthread_tot), &
+               outc(nthread_tot), qc(min(nlive, CHUNK)))
+
+      ! sh_l is NOT resident yet at this point in trc_eri.F90's
+      ! build_structures (its own enter data runs after the Schwarz bound),
+      ! same reason schwarz_bounds_hgp copies it in locally; p_na/p_base/qc
+      ! are this routine's own scratch, read and written by the reduction
+      ! do-concurrent below.
+      !$acc enter data copyin(sh_l, p_na) create(p_base, t_i, t_j, t_c, outc, qc)
+      do ic = 1, nchunk
+         c0 = cst(ic)
+         c1 = cst(ic + 1) - 1
+         nc = c1 - c0 + 1
+
+         ! The flat (pair, component) list for this chunk, built on the
+         ! host: p_base(n) is this chunk-local pair's base offset into
+         ! t_i/t_j/t_c/outc.
+         m = 0
+         do n = c0, c1
+            p_base(n) = m
+            na = p_na(n)
+            do t = 1, na
+               t_i(m + t) = d_i(n)
+               t_j(m + t) = d_j(n)
+               t_c(m + t) = t
+            end do
+            m = m + na
+         end do
+         nt = m
+         !$acc update device(t_i(1:nt), t_j(1:nt), t_c(1:nt), p_base(c0:c1))
+
+         call schwarz_rys_batch(1, nt, nt, nbas, nhpp, t_i, t_j, t_c, sh_l, &
+                                hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, outc)
+
+         ! Reduce each pair's slice of outc to its Q, exactly as
+         ! schwarz_bounds_hgp does over its na*na block -- here over na
+         ! diagonal elements instead.
+         do concurrent(n = 1:nc) local(na, ii, vmax)
+            na = p_na(c0 + n - 1)
+            vmax = 0.0_dp
+            do ii = 1, na
+               vmax = max(vmax, outc(p_base(c0 + n - 1) + ii))
+            end do
+            qc(n) = sqrt(vmax)
+         end do
+         !$acc update self(qc(1:nc))
+         do n = 1, nc
+            q(d_q(c0 + n - 1)) = qc(n)
+         end do
+      end do
+      !$acc exit data delete(sh_l, p_na, p_base, t_i, t_j, t_c, outc, qc)
+
+      deallocate (d_i, d_j, d_k, d_l, d_q, p_na, p_base, cst, t_i, t_j, t_c, outc, qc)
+   end subroutine schwarz_bounds_rys
 
    !
    ! Reorder the live diagonal pairs so the expensive ones come first.

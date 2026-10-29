@@ -41,6 +41,7 @@ module trc_api
    use pic_types, only: dp
    use trc_constants, only: PI
    use trc_boys, only: boys_init
+   use trc_rys_select, only: rys_select_tables_init
    use trc_tables, only: LMAX
    use trc_1e_kernels, only: one_e_driver, ONE_E_LMAX
    use trc_1e_grad_kernels, only: one_e_grad_driver, ONE_E_GRAD_LMAX
@@ -347,6 +348,7 @@ contains
 
       call this%release()
       call boys_init()
+      call rys_select_tables_init()
 
       this%nshell = nshell
       this%natm   = natm

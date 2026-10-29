@@ -24,11 +24,12 @@ module trc_eri
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
    use trc_boys, only: boys_init
+   use trc_rys_select, only: rys_select_tables_init
    use trc_tables, only: tables_init, LMAX
    use pic_strings, only: to_string
    use trc_cart, only: cart_init
    use trc_hgp, only: build_pairs_hgp
-   use trc_screen, only: schwarz_bounds_hgp, pair_index
+   use trc_screen, only: schwarz_bounds_rys, pair_index
    use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
@@ -284,6 +285,7 @@ contains
       ! happened the first time this ran.
       call boys_init()
       call tables_init()
+      call rys_select_tables_init()
       call cart_init()
       this%nbas = b%nshell
       this%nao_w = b%nao
@@ -323,14 +325,19 @@ contains
       ! They stay resident for the Fock kernels regardless of what Schwarz
       ! does with them, so entering them before computing the bound (instead
       ! of after, alongside everything else below) costs nothing extra and
-      ! is what lets schwarz_bounds_hgp read them without a transfer of its
+      ! is what lets schwarz_bounds_rys read them without a transfer of its
       ! own. The exit pairing these before `eri_release` is unchanged.
       !
       !$acc enter data copyin(this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
-      call schwarz_bounds_hgp(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
+      ! schwarz_bounds_rys: the Rys-quadrature diagonal kernel (one thread
+      ! per (pair, component pair), trc_schwarz_rys.F90), which replaces
+      ! schwarz_bounds_hgp's one-thread-per-pair whole-block scan. Same Q,
+      ! see trc_screen.F90's own header; schwarz_bounds_hgp stays for
+      ! check_schwarz_rys_vs_hgp's comparison.
+      call schwarz_bounds_rys(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
                               this%hp_p, this%hp_r, this%hp_ra, this%hp_rb, this%hp_c, qs)
       this%t_build(2) = tm%get_elapsed_time()
       call tm%start()
@@ -345,7 +352,7 @@ contains
       ! that turns one into the other; see build_maps in trc_decontract
       ! for the measurement that says it is worth 1.04e-05 Ha on water.
       !
-      ! Scaled here rather than inside schwarz_bounds_hgp so that routine
+      ! Scaled here rather than inside schwarz_bounds_rys so that routine
       ! stays a statement about integrals, and because both consumers --
       ! the pair prune in build_binned_pairs and the exact per-quartet
       ! test in the kernel, which reads sp_q -- then get it for free.
@@ -381,7 +388,7 @@ contains
       deallocate (qs, one)
 
       ! this%hp_* are already device-resident -- entered above, before
-      ! schwarz_bounds_hgp ran.
+      ! schwarz_bounds_rys ran.
       !$acc enter data copyin(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
