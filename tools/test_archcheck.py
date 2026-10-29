@@ -52,3 +52,45 @@ def test_scan_procedures(tmp_path):
     assert ("ctx", 8) in run["names"]
     assert procs["demo_twice"]["device"]
     assert ("tmp_global", 3) in procs["trc_demo"]["names"]
+
+
+def test_kernel_driver(tmp_path):
+    # A thin launch is a kernel driver; one with real host logic (more than
+    # KERNEL_HOST_STMTS statements outside its do concurrent) is not, and a
+    # procedure with no do concurrent never is.
+    host = "\n".join(f"      n = n + {k}" for k in range(archcheck.KERNEL_HOST_STMTS + 1))
+    src = tmp_path / "k.F90"
+    src.write_text(textwrap.dedent("""\
+        module trc_k
+           implicit none
+        contains
+           subroutine thin(n, a)
+              integer, intent(in) :: n
+              real, intent(inout) :: a(n)
+              integer :: i
+              !$acc enter data copyin(a)
+              do concurrent(i=1:n)
+                 a(i) = 2*a(i)
+              end do
+              !$acc exit data copyout(a)
+           end subroutine thin
+           subroutine busy(n, a)
+              integer, intent(inout) :: n
+              real, intent(inout) :: a(n)
+              integer :: i
+        """) + host + "\n" + textwrap.dedent("""\
+              do concurrent(i=1:n)
+                 a(i) = 2*a(i)
+              end do
+           end subroutine busy
+           subroutine plain(n)
+              integer, intent(inout) :: n
+              n = n + 1
+           end subroutine plain
+        end module trc_k
+    """))
+    procs = {p["name"]: p for p in archcheck.scan_procedures(src)}
+    assert archcheck.is_kernel_driver(procs["thin"])
+    assert procs["thin"]["host_exec"] == 0
+    assert not archcheck.is_kernel_driver(procs["busy"])
+    assert not archcheck.is_kernel_driver(procs["plain"])
