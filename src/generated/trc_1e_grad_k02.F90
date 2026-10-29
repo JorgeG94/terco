@@ -67,11 +67,28 @@ contains
       call one_e_grad_02(sh_np(ii), sh_np(jj), sh_e(:, ii), sh_c(:, ii), sh_e(:, jj), sh_c(:, jj), &
                             sh_r(:, ii), sh_r(:, jj), natm, at_z, at_r, wt, wblk, dblk, ga, gb, &
                             gp(1:3, 1:natm, lane))
+      ! ATOMIC, same reason as the gc write inside one_e_grad_02: two
+      ! shell pairs sharing BOTH a lane and an atom (sh_at(ii) == sh_at
+      ! (jj) of some OTHER pair) run this read-modify-write concurrently.
+      ! Measured on the GPU: water/6-31G* (few shell pairs, so few same-lane,
+      ! same-atom collisions) passed with this non-atomic; water/cc-pVDZ
+      ! and formamide/cc-pVDZ (more shells, more collisions) did not --
+      ! wrong by 0.1 to 11 Eh/Bohr, the same race signature (small, not
+      ! huge, because most pairs still land cleanly) as the gc case before
+      ! ITS atomic fix. The OpenMP port at 4 threads shows it on water/6-31G*
+      ! too. Scalar statements because OpenACC atomic update does not take a
+      ! vector/array-section target.
+      !$acc atomic update
       gp(1, sh_at(ii), lane) = gp(1, sh_at(ii), lane) + ga(1)
+      !$acc atomic update
       gp(2, sh_at(ii), lane) = gp(2, sh_at(ii), lane) + ga(2)
+      !$acc atomic update
       gp(3, sh_at(ii), lane) = gp(3, sh_at(ii), lane) + ga(3)
+      !$acc atomic update
       gp(1, sh_at(jj), lane) = gp(1, sh_at(jj), lane) + gb(1)
+      !$acc atomic update
       gp(2, sh_at(jj), lane) = gp(2, sh_at(jj), lane) + gb(2)
+      !$acc atomic update
       gp(3, sh_at(jj), lane) = gp(3, sh_at(jj), lane) + gb(3)
    end subroutine one_e_grad_item_02
 
