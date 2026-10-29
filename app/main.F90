@@ -1878,7 +1878,8 @@ program terco_main
                          "or 1 by electron count)", short="u")
    call r%cli%add_option("func", "hf (the default), or a functional: "//XC_AVAILABLE_FUNCTIONALS, &
                          short="f", default="hf")
-   call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion)", short="g")
+   call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion). "// &
+                         "minao always starts from neutral atoms, also for an ion", short="g")
    call r%cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call r%cli%add_option("grid", "DFT integration grid level (3)", default="3")
    call r%cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")

@@ -275,11 +275,18 @@ module trc_capi
                                         TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
                                         TRC_GUESS_SAP = 5, TRC_GUESS_PROJECTED = 6, &
                                         TRC_GUESS_MINAO = 7
-   !! TRC_GUESS_MINAO: the minimal-ANO density (trc_minao's own
+   !! One declaration, so one FORD block; each kind that needs more than
+   !! its name has its own paragraph below.
+   !!
+   !! **TRC_GUESS_MINAO**: the minimal-ANO density (trc_minao's own
    !! trc_minao_build) projected into this run's basis -- no free-atom
    !! SCF, so nothing cached; refused for an element above Kr or a
-   !! Cartesian basis with occupied d (trc_minao's own checks).
-   !! TRC_GUESS_PROJECTED: the density from THIS context's own last
+   !! Cartesian basis with occupied d (trc_minao's own checks). Always
+   !! NEUTRAL atoms, as PySCF's init_guess_by_minao: for an ion the guess
+   !! carries the neutral electron count, unlike TRC_GUESS_SADQ, and the
+   !! first Roothaan step fixes the count.
+   !!
+   !! **TRC_GUESS_PROJECTED**: the density from THIS context's own last
    !! orbitals (cx%bb%cmo, stored by any run with at least one iteration,
    !! not only a converged one), re-orthonormalised in the CURRENT
    !! geometry's overlap (trc_scf_context's `project_density`) -- a warm

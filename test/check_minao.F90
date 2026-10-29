@@ -25,7 +25,7 @@ module check_minao_suite
       !! here: worst |dD| 1.1e-10 on water/cc-pVDZ). terco's cross overlap
       !! goes through one extra Cartesian->spherical fold (sph_cart_to_sph
       !! on the merged basis) that mqc's libcint-native spherical
-      !! integrals never pay, and the orthogonaliser is `sym_orthog`'s
+      !! integrals never pay, and the orthogonaliser is `scf_context_orthogonalize`'s
       !! eigendecomposition rather than mqc's own, so the two pick up
       !! round-off differently. Far tighter than a guess needs to be
       !! useful.
