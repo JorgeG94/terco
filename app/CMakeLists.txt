@@ -38,7 +38,8 @@ set_target_properties(
 target_compile_definitions(
   terco_cli
   PRIVATE TERCO_VERSION="${PROJECT_VERSION}"
-          TERCO_BASIS_DIR="${CMAKE_INSTALL_PREFIX}/${TERCO_BASIS_INSTALL_DIR}")
+          TERCO_BASIS_DIR="${CMAKE_INSTALL_PREFIX}/${TERCO_BASIS_INSTALL_DIR}"
+          TERCO_SOURCE_BASIS_DIR="${PROJECT_SOURCE_DIR}/test/basis_sets")
 # pic-mpi: the CLI initialises and finalises MPI, and asks for the world
 # communicator's Fortran handle, itself (app/main.F90) -- the library only
 # ever sees the handle trc_set_comm hands it.
