@@ -47,6 +47,7 @@ target_sources(
           scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
           scf/trc_sad.F90 # the SAD guess built here, one atomic SCF per element
           scf/trc_sap.F90 # SAP: free-atom potentials, superposed on a quadrature
+          scf/trc_minao.F90 # the minao guess: a minimal-ANO density projected into the target basis
           api/trc_capi.F90       # the bind(c) skin
           core/trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention

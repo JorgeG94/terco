@@ -31,10 +31,11 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_GUESS_SADQ = 4
    integer(c_int), parameter :: TRC_GUESS_SAP = 5
    integer(c_int), parameter :: TRC_GUESS_PROJECTED = 6
+   integer(c_int), parameter :: TRC_GUESS_MINAO = 7
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 7
+   integer(c_int), parameter :: TRC_ABI_MINOR = 8
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2

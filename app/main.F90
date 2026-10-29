@@ -1783,7 +1783,7 @@ program terco_main
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
                        trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
-                       TRC_GUESS_SADQ, TRC_GUESS_SAP
+                       TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
    use trc_xc_functional, only: XC_AVAILABLE_FUNCTIONALS, trc_xc_functional_t, xc_functional_by_name, &
                                 xc_is_double_hybrid
@@ -1878,7 +1878,8 @@ program terco_main
                          "or 1 by electron count)", short="u")
    call r%cli%add_option("func", "hf (the default), or a functional: "//XC_AVAILABLE_FUNCTIONALS, &
                          short="f", default="hf")
-   call r%cli%add_option("guess", "sad, sadq, sap, gwh or core (default: sad; sadq for an ion)", short="g")
+   call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion). "// &
+                         "minao always starts from neutral atoms, also for an ion", short="g")
    call r%cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call r%cli%add_option("grid", "DFT integration grid level (3)", default="3")
    call r%cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")
@@ -2137,8 +2138,10 @@ program terco_main
    guess_kind = TRC_GUESS_GWH
    case ("core", "hcore")
    guess_kind = TRC_GUESS_CORE
+   case ("minao")
+   guess_kind = TRC_GUESS_MINAO
    case default
-      call die(r, "unknown guess '"//r%guess//"': use sad, sadq, sap, gwh or core")
+      call die(r, "unknown guess '"//r%guess//"': use sad, sadq, sap, minao, gwh or core")
    end select
 
    call r%cli%get("grid", r%grid, r%err)
@@ -2620,6 +2623,22 @@ program terco_main
             call resolve_basis("sap_helfem_large", sval, r%err)
             if (r%err%has_error()) call die(r, "--guess sap needs its fitted potentials: "//r%err%get_message())
             call set_env("TRC_SAP_BASIS", sval)
+         end if
+      end block
+   end if
+
+   ! minao's own minimal-ANO basis ships the same way SAP's fitted
+   ! potentials do: found like a basis unless the caller has already set
+   ! TRC_MINAO_BASIS.
+   if (guess_kind == TRC_GUESS_MINAO) then
+      block
+         character(len=1024) :: e
+         integer :: n, s
+         call get_environment_variable("TRC_MINAO_BASIS", e, n, s)
+         if (s /= 0 .or. n == 0) then
+            call resolve_basis("minao", sval, r%err)
+            if (r%err%has_error()) call die(r, "--guess minao needs its basis: "//r%err%get_message())
+            call set_env("TRC_MINAO_BASIS", sval)
          end if
       end block
    end if

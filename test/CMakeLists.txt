@@ -757,6 +757,12 @@ terco_add_check(check_xc_energy check_xc_energy.F90 NEEDS_PYSCF_REF)
 # radical/cc-pVDZ (UKS).
 terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 
+# The minao initial guess (trc_minao's trc_minao_build / TRC_GUESS_MINAO):
+# the occupation table, self-projection in its own basis, the two refusals,
+# and water/cc-pVDZ + silane/def2-SVP against test/pyscf_refs/minao.ref.
+terco_add_check(check_minao check_minao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_minao PRIVATE test-drive::test-drive)
+
 # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
 # own Gradients class assumes a converged SCF density; this is a fixed,
 # non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,

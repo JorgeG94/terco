@@ -194,6 +194,7 @@ module trc_capi
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
+   use trc_minao, only: trc_minao_build
    use trc_error, only: error_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
                                 XC_AVAILABLE_FUNCTIONALS, XC_FAMILY_MGGA
@@ -272,8 +273,20 @@ module trc_capi
    ! Guess kinds for trc_set_guess.
    integer(c_int), parameter, public :: TRC_GUESS_CORE = 0, TRC_GUESS_GWH = 1, TRC_GUESS_SAD = 2, &
                                         TRC_GUESS_GIVEN = 3, TRC_GUESS_SADQ = 4, &
-                                        TRC_GUESS_SAP = 5, TRC_GUESS_PROJECTED = 6
-   !! TRC_GUESS_PROJECTED: the density from THIS context's own last
+                                        TRC_GUESS_SAP = 5, TRC_GUESS_PROJECTED = 6, &
+                                        TRC_GUESS_MINAO = 7
+   !! One declaration, so one FORD block; each kind that needs more than
+   !! its name has its own paragraph below.
+   !!
+   !! **TRC_GUESS_MINAO**: the minimal-ANO density (trc_minao's own
+   !! trc_minao_build) projected into this run's basis -- no free-atom
+   !! SCF, so nothing cached; refused for an element above Kr or a
+   !! Cartesian basis with occupied d (trc_minao's own checks). Always
+   !! NEUTRAL atoms, as PySCF's init_guess_by_minao: for an ion the guess
+   !! carries the neutral electron count, unlike TRC_GUESS_SADQ, and the
+   !! first Roothaan step fixes the count.
+   !!
+   !! **TRC_GUESS_PROJECTED**: the density from THIS context's own last
    !! orbitals (cx%bb%cmo, stored by any run with at least one iteration,
    !! not only a converged one), re-orthonormalised in the CURRENT
    !! geometry's overlap (trc_scf_context's `project_density`) -- a warm
@@ -306,7 +319,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 7
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 8
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -2762,9 +2775,9 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_PROJECTED) then
+      if (kind < TRC_GUESS_CORE .or. kind > TRC_GUESS_MINAO) then
          call refuse(cx, "trc_set_guess: kind "//trim(itoa(int(kind))) &
-                     //" -- 0 core, 1 GWH, 2 SAD, 3 given, 4 SADQ, 5 SAP, 6 projected")
+                     //" -- 0 core, 1 GWH, 2 SAD, 3 given, 4 SADQ, 5 SAP, 6 projected, 7 minao")
          return
       end if
       if (allocated(cx%dguess)) deallocate (cx%dguess)
@@ -3177,6 +3190,17 @@ contains
             if (collective) call comm%finalize()
             return
          end if
+      case (TRC_GUESS_MINAO)
+         ! No free-atom SCF and nothing cached (unlike SAD/SADQ above): this
+         ! is a single cross-basis projection -- minao_guess_build, below,
+         ! split out of this dispatch to keep it off trc_run_scf's own line
+         ! count.
+         call minao_guess_build(cx%bb%b, n, nspin, opts%lindep_thresh, opts%eri_thresh, dg, err)
+         if (err%has_error()) then
+            cx%message = err%get_message()
+            if (collective) call comm%finalize()
+            return
+         end if
       case (TRC_GUESS_GIVEN)
          if (.not. allocated(cx%dguess)) then
             cx%message = "trc_run_scf: guess GIVEN but no density was given"
@@ -3318,6 +3342,29 @@ contains
       cx%kgrid_nlc_level = opts%nlc_grid_level
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
+
+   !
+   ! TRC_GUESS_MINAO's density, both spins -- split out of trc_run_scf's own
+   ! dispatch purely to keep that procedure's own line count down; every
+   ! other guess kind's block stays inline there.
+   !
+   subroutine minao_guess_build(b, n, nspin, lindep_thresh, eri_thresh, dg, err)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: n, nspin
+      real(dp), intent(in) :: lindep_thresh, eri_thresh
+      real(dp), allocatable, intent(out) :: dg(:, :, :)
+      type(error_t), intent(inout) :: err
+      real(dp), allocatable :: dminao(:, :)
+      call trc_minao_build(b, dminao, err, threshold=lindep_thresh, eri_thresh=eri_thresh)
+      if (err%has_error()) return
+      allocate (dg(n, n, nspin))
+      if (nspin == 1) then
+         dg(:, :, 1) = dminao
+      else
+         dg(:, :, 1) = 0.5_dp*dminao
+         dg(:, :, 2) = 0.5_dp*dminao
+      end if
+   end subroutine minao_guess_build
 
    !
    ! What trc_run_gradient refuses, factored out so trc_run_hessian can

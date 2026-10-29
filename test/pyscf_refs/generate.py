@@ -3079,6 +3079,72 @@ def gen_sph_corr():
     w.write()
 
 
+def gen_minao():
+    """test/check_minao.F90's two cases against PySCF's own
+    `init_guess_by_minao`: water/cc-pVDZ and silane/def2-SVP (Si, Z=14, a
+    third-row atom, the first case anywhere in this generator to touch
+    terco's own basis_sets/minao.json for an element past Ne). Both target
+    bases are SPHERICAL and put d on the heavy atom, which needs the SAME
+    per-AO rescale gen_sph_corr's group B applies going pyscf -> terco:
+    terco's own spherical S diagonal for an l>=2 shell is not 1 (see
+    terco_to_pyscf_perm_sph's own docstring), so `to_terco` below divides
+    by it the same way group B's does, checked (not assumed) against
+    check_minao.F90's own dumped S ("minao_probe.bin", written
+    unconditionally -- see that program's own comment). `minao` needs no
+    SCF: the comparison is on PySCF's init_guess_by_minao(mol) directly,
+    which reads PySCF's own internal 'ano'-derived minao data -- exactly
+    what basis_sets/minao.json was written from
+    (tools/minao/gen_minao_basis.py in metalquicha), so no override is
+    passed."""
+    ELEMENTS = {'H': 1, 'O': 8, 'Si': 14}
+    cases = [("water", "cc-pvdz"), ("sih4", "def2-svp")]
+
+    run_bin("check_minao", [])
+    probe = TEST / "minao_probe.bin"
+    r = BinReader(probe)
+
+    w = RefWriter("minao.ref")
+    w.header("minao", [TEST / "check_minao.F90", TEST / "basis_sets" / "cc-pvdz.json",
+                        TEST / "basis_sets" / "def2-svp.json", TEST / "basis_sets" / "minao.json",
+                        TEST / "water.xyz", TEST / "sih4.xyz"])
+    w.int_("NCASE", len(cases))
+    for ic, (molname, basname) in enumerate(cases):
+        nao_terco = r.i8()
+        s_terco = r.mat(nao_terco)
+
+        atoms = _xyz_atoms(molname)
+        elements = {sym: ELEMENTS[sym] for sym, _ in atoms}
+        bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+        mol = gto.M(atom=atoms, basis=bas, cart=False, unit='Angstrom', verbose=0)
+        if mol.nao_nr() != nao_terco:
+            raise RuntimeError(f"gen_minao {molname}/{basname}: nao mismatch terco {nao_terco} "
+                                f"pyscf {mol.nao_nr()}")
+
+        dm = scf.hf.init_guess_by_minao(mol)
+        s_pyscf = mol.intor('int1e_ovlp')
+        nelec = float(np.einsum('ij,ji->', dm, s_pyscf))
+
+        perm = terco_to_pyscf_perm_sph(atoms, bas)
+        inv_perm = np.argsort(perm)
+        s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+        n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+        if s_err >= 1.0e-8:
+            raise RuntimeError(f"gen_minao {molname}/{basname}: overlap check failed, {s_err:.3e}")
+        dm_terco_p = dm/(n[:, None]*n[None, :])
+        dm_terco = dm_terco_p[np.ix_(perm, perm)]
+
+        name = f"{molname}_{basname}"
+        w.str_(f"NAME_{ic}", name)
+        w.int_(f"NAO_{ic}", mol.nao_nr())
+        w.real(f"NELEC_{ic}", nelec)
+        w.matrix(f"DM_{ic}", dm_terco)
+        print(f"  minao {name:18s} nao {mol.nao_nr():3d}  tr(DS) {nelec:.6f}  "
+              f"AO norm max|1-n| {np.max(np.abs(1.0 - np.abs(n))):.2e}")
+    w.end()
+    w.write()
+    probe.unlink()
+
+
 # =========================================================================
 # The translated XC kernels against libxc (folded in from the old
 # test/xc_ref.py, unchanged logic, writing test/reference_xc.dat exactly
@@ -4398,6 +4464,7 @@ CASES = {
     "scf_df": gen_scf_df,
     "dh": gen_dh,
     "sph_corr": gen_sph_corr,
+    "minao": gen_minao,
     "xc_kernels": gen_xc_kernels,
     "pcm_cavity": gen_pcm_cavity,
     "ghost_water_dimer": gen_ghost_water_dimer,

@@ -121,7 +121,7 @@ if(TERCO_ENABLE_TESTING)
 
   # The same through every other guess, so each one stays reachable from the
   # command line and converges to the same state.
-  foreach(g sap gwh core)
+  foreach(g sap gwh core minao)
     add_test(NAME terco/cli_guess_${g} COMMAND terco_cli ${_xyz}/water.xyz -b
                                                 6-31g --guess ${g})
     set_tests_properties(
