@@ -5015,10 +5015,12 @@ contains
       !! what they should be is a caller decision this entry point does
       !! not make.
       !!
-      !! Each ion runs UNSEEDED, at TRC_GUESS_GWH -- mqc's own default
-      !! when no neutral orbitals are offered to seed from
-      !! (fukui_indices's own guess_kind default, the path its own test,
-      !! water/cc-pVDZ, actually exercises). A caller wanting the
+      !! Each ion runs UNSEEDED, from the handle's own guess kind (so
+      !! `--guess minao` reaches the ions: a SAD guess stalls an NA-040-type
+      !! nitrosamine anion that minao converges). A guess that is a stored
+      !! density (TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED) belongs to the
+      !! neutral, so the ions fall back to TRC_GUESS_GWH, mqc's own default
+      !! when no neutral orbitals are offered. A caller wanting the
       !! neutral's orbitals to seed the ions instead (mqc's "neutral"
       !! mode) drives the three states by hand: trc_set_charge,
       !! trc_set_guess(TRC_GUESS_GIVEN, ...) and trc_run_scf, exactly what
@@ -5048,7 +5050,7 @@ contains
       real(dp), allocatable :: q_neutral(:), q_anion(:), q_cation(:)
       real(dp), allocatable :: fp(:), fm(:), fz(:)
       real(dp), allocatable :: d0(:, :, :), ref_dguess(:, :, :)
-      integer :: ref_charge, ref_multiplicity, ref_guess_kind, nelec
+      integer :: ref_charge, ref_multiplicity, ref_guess_kind, nelec, ion_guess_kind
       integer(c_int) :: st, fail_status
       logical :: failed
       character(len=256) :: fail_message
@@ -5099,15 +5101,19 @@ contains
       if (ref_guess_kind == TRC_GUESS_GIVEN .and. allocated(cx%dguess)) then
          allocate (ref_dguess, source=cx%dguess)
       end if
+      ion_guess_kind = ref_guess_kind
+      if (ion_guess_kind == TRC_GUESS_GIVEN .or. ion_guess_kind == TRC_GUESS_PROJECTED) then
+         ion_guess_kind = TRC_GUESS_GWH
+      end if
 
       failed = .false.
       fail_status = TRC_OK
       fail_message = ""
 
-      ! The anion, N+1 electrons, a doublet, unseeded (mqc's own default).
+      ! The anion, N+1 electrons, a doublet, unseeded.
       st = trc_set_charge(handle, int(ref_charge - 1, c_int), 2_c_int)
       if (st == TRC_OK) then
-         cx%guess_kind = TRC_GUESS_GWH
+         cx%guess_kind = ion_guess_kind
          st = trc_run_scf(handle)
       end if
       if (st /= TRC_OK .or. .not. cx%res%converged) then
@@ -5127,7 +5133,7 @@ contains
       if (.not. failed) then
          st = trc_set_charge(handle, int(ref_charge + 1, c_int), 2_c_int)
          if (st == TRC_OK) then
-            cx%guess_kind = TRC_GUESS_GWH
+            cx%guess_kind = ion_guess_kind
             st = trc_run_scf(handle)
          end if
          if (st /= TRC_OK .or. .not. cx%res%converged) then
