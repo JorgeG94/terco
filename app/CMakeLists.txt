@@ -130,6 +130,15 @@ if(TERCO_ENABLE_TESTING)
                                       "TOTAL ENERGY +-75\\.98397446")
   endforeach()
 
+  # --lindep reaches the orthogonalisation: at 0.3 water/6-31G loses two
+  # functions and its energy rises (terco's own number for that basis).
+  add_test(NAME terco/cli_lindep COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g
+                                         --lindep 0.3)
+  set_tests_properties(
+    terco/cli_lindep
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "2 function\\(s\\) dropped.*TOTAL ENERGY +-75\\.96606683")
+
   # Hirshfeld charges from outside the source tree: the free-atom table has
   # to be found the way a basis is, not relative to the working directory.
   # The O charge is terco's own (check_hirshfeld validates the method).

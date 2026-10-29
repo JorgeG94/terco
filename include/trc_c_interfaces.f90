@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 10
+   integer(c_int), parameter :: TRC_ABI_MINOR = 11
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -675,6 +675,21 @@ module trc_c_interfaces
          integer(c_int), value :: max_iter
          integer(c_int), value :: ndiis
       end function trc_set_convergence
+
+      integer(c_int) function trc_set_lindep(handle, threshold) bind(c) result(res)
+         !! Canonical orthogonalisation threshold: an eigenvalue of S below
+         !! `threshold` is linear dependence and its direction is dropped from
+         !! the SCF (and from the minao guess's projection). Default 1e-8. A
+         !! diffuse basis on a large molecule can need more: GPU4PySCF
+         !! converges a def2-TZVPD nitrosamine anion only at 5e-6 (40 functions
+         !! dropped). 0 means plain symmetric orthogonalisation, which stops
+         !! when S is not numerically positive definite. Takes effect at the
+         !! next trc_run_scf.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), value :: threshold
+      end function trc_set_lindep
 
       integer(c_int) function trc_set_screening(handle, thresh) bind(c) result(res)
          import :: c_double, c_int, c_ptr

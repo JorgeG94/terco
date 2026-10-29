@@ -244,7 +244,7 @@ module trc_capi
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_charge, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
              trc_set_unrestricted, trc_set_level_shift, &
-             trc_set_convergence, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
+             trc_set_convergence, trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
@@ -316,7 +316,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 10
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 11
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -2497,6 +2497,32 @@ contains
       cx%opts%ndiis = int(ndiis)
       status = TRC_OK
    end function trc_set_convergence
+
+   function trc_set_lindep(handle, threshold) result(status) bind(c, name="trc_set_lindep")
+      !! Canonical orthogonalisation threshold: an eigenvalue of S below
+      !! `threshold` is linear dependence and its direction is dropped from
+      !! the SCF (and from the minao guess's projection). Default 1e-8. A
+      !! diffuse basis on a large molecule can need more: GPU4PySCF
+      !! converges a def2-TZVPD nitrosamine anion only at 5e-6 (40 functions
+      !! dropped). 0 means plain symmetric orthogonalisation, which stops
+      !! when S is not numerically positive definite. Takes effect at the
+      !! next trc_run_scf.
+      type(c_ptr), value :: handle
+      real(c_double), value :: threshold
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (threshold < 0.0_c_double .or. threshold >= 1.0_c_double) then
+         call refuse(cx, "trc_set_lindep: threshold must be in [0, 1)")
+         return
+      end if
+      cx%opts%lindep_thresh = real(threshold, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_lindep
 
    function trc_set_screening(handle, thresh) result(status) bind(c, name="trc_set_screening")
       type(c_ptr), value :: handle

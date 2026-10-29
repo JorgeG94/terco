@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 10
+#define TRC_ABI_MINOR 11
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -389,6 +389,18 @@ int trc_set_pcm_radii(trc_handle_t handle, int natm, const void* radii);
 int trc_pcm_energy(trc_handle_t handle, double* e_diel, double* q_total, int* npoints);
 
 int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_diis, int max_iter, int ndiis);
+
+/**
+ * Canonical orthogonalisation threshold: an eigenvalue of S below
+ * `threshold` is linear dependence and its direction is dropped from
+ * the SCF (and from the minao guess's projection). Default 1e-8. A
+ * diffuse basis on a large molecule can need more: GPU4PySCF
+ * converges a def2-TZVPD nitrosamine anion only at 5e-6 (40 functions
+ * dropped). 0 means plain symmetric orthogonalisation, which stops
+ * when S is not numerically positive definite. Takes effect at the
+ * next trc_run_scf.
+ */
+int trc_set_lindep(trc_handle_t handle, double threshold);
 
 int trc_set_screening(trc_handle_t handle, double thresh);
 

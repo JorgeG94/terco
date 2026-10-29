@@ -71,6 +71,7 @@ module terco_run
       integer :: natm, chrg, uhf, nelec, mult, grid, nlc_grid
       integer(c_int) :: nao, conv, niter, sph, npcm
       real(dp) :: econv, gconv, thresh, eps
+      real(dp) :: lindep = -1.0_dp  !! --lindep, negative = the library's default
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
@@ -1877,7 +1878,7 @@ program terco_main
    use pic_profiler, only: profiler_init
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
-                       trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_screening, &
+                       trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_lindep, trc_set_screening, &
                        trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
@@ -1994,6 +1995,8 @@ program terco_main
    call r%cli%add_option("econv", "energy convergence, Eh (1e-10)", default="1e-10")
    call r%cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
+   call r%cli%add_option("lindep", "linear-dependence threshold: S eigenvalues below it are dropped "// &
+                         "(canonical orthogonalisation; 1e-8). Diffuse bases on large molecules may need ~5e-6")
    call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (closed shell)")
    call r%cli%add_flag("df", "density-fitted J and K instead of the four-centre engine (restricted, "// &
                        "Cartesian only; fits both, never DF-J with 4-centre K)")
@@ -2277,6 +2280,11 @@ program terco_main
    call check(r, "--gconv")
    call r%cli%get("thresh", r%thresh, r%err)
    call check(r, "--thresh")
+   if (r%cli%is_set("lindep")) then
+      call r%cli%get("lindep", r%lindep, r%err)
+      call check(r, "--lindep")
+      if (r%lindep < 0.0_dp .or. r%lindep >= 1.0_dp) call die(r, "--lindep must be in [0, 1)")
+   end if
    call r%cli%get("frozen", nfrozen, r%err)
    call check(r, "--frozen")
    r%rimp2 = r%cli%is_set("rimp2") .or. r%dh
@@ -2835,6 +2843,7 @@ program terco_main
    call api(r, trc_set_convergence(r%h, real(r%econv, c_double), real(r%gconv, c_double), int(maxiter, c_int), &
                                    10_c_int))
    call api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
+   if (r%lindep >= 0.0_dp) call api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
    ! On unless asked otherwise: the library's default is off, so a host
    ! code keeps the build it had, but a command-line run gets the speed.
    call api(r, trc_set_incremental(r%h, merge(1_c_int, 0_c_int, r%cli%is_set("incremental"))))
