@@ -44,7 +44,8 @@ module terco_run
    implicit none
    private
    public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
-             gradient_summary, hessian_summary, build_masses, terco_run_charges_summary
+             gradient_summary, hessian_summary, build_masses, terco_run_charges_summary, &
+             terco_run_fukui_summary
    public :: opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
    public :: terco_run_parse_opt_global_options
    public :: opt_geometry_is_linear, write_labelled_xyz, to_lower_alloc
@@ -83,6 +84,12 @@ module terco_run
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
       character(len=:), allocatable :: charges  !! "" (none) or "hirshfeld", --charges
       real(dp), allocatable :: hirshfeld_charges(:)  !! (natm), e, after --charges hirshfeld
+      character(len=:), allocatable :: fukui  !! "" (none) or "hirshfeld", --fukui
+      ! (natm) each, after --fukui hirshfeld: f+/f-/f0 and the three
+      ! states' own Hirshfeld charges (N, N+1, N-1) trc_fukui_hirshfeld
+      ! condensed them from.
+      real(dp), allocatable :: fukui_f_plus(:), fukui_f_minus(:), fukui_f_zero(:)
+      real(dp), allocatable :: fukui_q_n(:), fukui_q_np1(:), fukui_q_nm1(:)
       ! --hessian: the FD Hessian (trc_run_hessian/trc_hessian) and the
       ! vibrational analysis/thermochemistry built on it (trc_vib/
       ! trc_thermo).
@@ -554,6 +561,38 @@ contains
          call global_logger%info(trim(logline))
       end block
    end subroutine terco_run_charges_summary
+
+   subroutine terco_run_fukui_summary(r)
+      !! Per-atom Hirshfeld-condensed Fukui indices (f+, f-, f0) and their
+      !! sums, each of which should be one electron to round-off --
+      !! `r%fukui_f_plus`/`fukui_f_minus`/`fukui_f_zero` are already
+      !! filled by the time this is called (terco_main's own job, right
+      !! after `trc_fukui_hirshfeld`).
+      type(run_t), intent(in) :: r
+      integer :: ia
+      call global_logger%info("")
+      call global_logger%info("   Hirshfeld-condensed Fukui indices")
+      call global_logger%info("   ----------------------------------------------------------")
+      call global_logger%info("     atom            f+          f-          f0")
+      do ia = 1, r%natm
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i4,2x,a2,3f12.6)") "   ", ia, element_symbol(r%z(ia)), &
+               r%fukui_f_plus(ia), r%fukui_f_minus(ia), r%fukui_f_zero(ia)
+            call global_logger%info(trim(logline))
+         end block
+      end do
+      call global_logger%info("   ----------------------------------------------------------")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,3f12.6)") "   sum             ", sum(r%fukui_f_plus), &
+            sum(r%fukui_f_minus), sum(r%fukui_f_zero)
+         call global_logger%info(trim(logline))
+      end block
+      call global_logger%info("")
+      call global_logger%info("   f+ is where the molecule accepts charge, f- where it gives "// &
+                              "it up; f0 is their average.")
+   end subroutine terco_run_fukui_summary
 
    !
    ! Per-atom masses for --hessian's vibrational analysis: "isotope"
@@ -1556,6 +1595,7 @@ contains
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
       if (r%charges == "hirshfeld" .and. allocated(r%hirshfeld_charges)) call add_charges(json, root, r)
+      if (r%fukui == "hirshfeld" .and. allocated(r%fukui_f_plus)) call add_fukui(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
          call json%destroy(root)
@@ -1593,6 +1633,28 @@ contains
       call json%add(root, "hirshfeld charges", r%hirshfeld_charges)
       call json%add(root, "hirshfeld charges sum", sum(r%hirshfeld_charges))
    end subroutine add_charges
+
+   subroutine add_fukui(json, root, r)
+      !! Hirshfeld-condensed Fukui indices, one array per index in
+      !! `r%fukui_f_plus`'s own (and `trc_set_molecule`'s) atom order, plus
+      !! each array's sum and the three states' own Hirshfeld charges
+      !! (N, N+1, N-1) they were differenced from.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      type(json_value), pointer :: section
+      call json%create_object(section, "fukui")
+      call json%add(root, section)
+      call json%add(section, "population scheme", r%fukui)
+      call json%add(section, "f+", r%fukui_f_plus)
+      call json%add(section, "f-", r%fukui_f_minus)
+      call json%add(section, "f0", r%fukui_f_zero)
+      call json%add(section, "f+ sum", sum(r%fukui_f_plus))
+      call json%add(section, "f- sum", sum(r%fukui_f_minus))
+      call json%add(section, "charges neutral (N)", r%fukui_q_n)
+      call json%add(section, "charges anion (N+1)", r%fukui_q_np1)
+      call json%add(section, "charges cation (N-1)", r%fukui_q_nm1)
+   end subroutine add_fukui
 
    !
    ! --hessian's JSON: three blocks, as asked for -- "hessian" (the
@@ -1822,7 +1884,7 @@ program terco_main
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
-                       trc_hessian, trc_hirshfeld_charges, &
+                       trc_hessian, trc_hirshfeld_charges, trc_fukui_hirshfeld, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
@@ -1837,6 +1899,7 @@ program terco_main
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
                        gradient_summary, hessian_summary, build_masses, terco_run_charges_summary, &
+                       terco_run_fukui_summary, &
                        opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz, &
                        opt_geometry_is_linear, write_labelled_xyz, terco_run_parse_opt_global_options, &
                        terco_run_parse_frozen_list, terco_run_parse_constraints, terco_run_check_opt_constrain_residues, &
@@ -1864,6 +1927,7 @@ program terco_main
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
    real(c_double), allocatable :: gradbuf(:), hessbuf(:), chargebuf(:)
+   real(c_double), allocatable :: fplusbuf(:), fminusbuf(:), fzerobuf(:), qnbuf(:), qnp1buf(:), qnm1buf(:)
    real(dp), allocatable :: mass(:), displacement(:, :, :)
    type(hess_err_t) :: herr
    integer :: maxiter, nfrozen, guess_kind, dev, aux_block, ndof
@@ -1921,6 +1985,8 @@ program terco_main
                          short="f", default="hf")
    call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion)", short="g")
    call r%cli%add_option("charges", "atomic charge analysis: hirshfeld (none by default)")
+   call r%cli%add_option("fukui", "Hirshfeld-condensed Fukui indices, by finite difference in the "// &
+                         "electron count: hirshfeld (none by default; needs a closed-shell neutral)")
    call r%cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call r%cli%add_option("grid", "DFT integration grid level (3)", default="3")
    call r%cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")
@@ -2190,6 +2256,13 @@ program terco_main
       call r%cli%get("charges", sval, r%err)
       r%charges = to_lower_alloc(trim(sval))
       if (r%charges /= "hirshfeld") call die(r, "unknown --charges '"//r%charges//"': use hirshfeld")
+   end if
+
+   r%fukui = ""
+   if (r%cli%is_set("fukui")) then
+      call r%cli%get("fukui", sval, r%err)
+      r%fukui = to_lower_alloc(trim(sval))
+      if (r%fukui /= "hirshfeld") call die(r, "unknown --fukui '"//r%fukui//"': use hirshfeld")
    end if
 
    call r%cli%get("grid", r%grid, r%err)
@@ -3047,9 +3120,28 @@ program terco_main
       deallocate (chargebuf)
    end if
 
+   if (r%fukui == "hirshfeld" .and. r%conv /= 0) then
+      ! trc_fukui_hirshfeld's own refusals (a non-singlet neutral, an
+      ! unconverged ion, an element outside H-Kr) come back through
+      ! `api`, same as --charges's/--grad's/--hessian's. It runs two more
+      ! SCFs on r%h (N+1, N-1) and restores the handle's charge,
+      ! multiplicity and converged state before returning -- its own
+      ! header -- so nothing here needs to save or restore anything.
+      allocate (fplusbuf(r%natm), fminusbuf(r%natm), fzerobuf(r%natm))
+      allocate (qnbuf(r%natm), qnp1buf(r%natm), qnm1buf(r%natm))
+      allocate (r%fukui_f_plus(r%natm), r%fukui_f_minus(r%natm), r%fukui_f_zero(r%natm))
+      allocate (r%fukui_q_n(r%natm), r%fukui_q_np1(r%natm), r%fukui_q_nm1(r%natm))
+      call api(r, trc_fukui_hirshfeld(r%h, fplusbuf, fminusbuf, fzerobuf, qnbuf, qnp1buf, qnm1buf))
+      r%fukui_f_plus = real(fplusbuf, dp); r%fukui_f_minus = real(fminusbuf, dp)
+      r%fukui_f_zero = real(fzerobuf, dp)
+      r%fukui_q_n = real(qnbuf, dp); r%fukui_q_np1 = real(qnp1buf, dp); r%fukui_q_nm1 = real(qnm1buf, dp)
+      deallocate (fplusbuf, fminusbuf, fzerobuf, qnbuf, qnp1buf, qnm1buf)
+   end if
+
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
    if (r%rank0 .and. r%charges == "hirshfeld" .and. r%conv /= 0) call terco_run_charges_summary(r)
+   if (r%rank0 .and. r%fukui == "hirshfeld" .and. r%conv /= 0) call terco_run_fukui_summary(r)
    if (r%rank0 .and. r%opt) call opt_summary(r)
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)
