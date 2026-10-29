@@ -15,10 +15,15 @@ module check_capi_ghost_suite
    !! about at the last bit.
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use pic_types, only: dp
+   use trc_api, only: trc_basis_t
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
+   use trc_test_basis, only: pack_libcint
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_matrix, ref_read_int
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_elements, &
-                               trc_set_basis_json, trc_set_basis_arrays, trc_set_method, &
+                               trc_set_basis_json, trc_set_basis_arrays, trc_set_basis_libcint, &
+                               trc_set_method, &
                                trc_set_convergence, trc_set_pcm, &
                                trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, TRC_OK, TRC_ERR_BADARG, TRC_ERR_STATE
@@ -49,6 +54,8 @@ contains
                   new_unittest("trc_set_elements natm mismatch is refused", test_natm_mismatch), &
                   new_unittest("RHF energy and gradient match pyscf's ghost atoms", test_rhf_vs_pyscf), &
                   new_unittest("B3LYP energy (grids on the ghosts) is close to pyscf", test_b3lyp_vs_pyscf), &
+                  new_unittest("B3LYP through trc_set_basis_libcint keeps the ghosts' elements", &
+                               test_b3lyp_libcint), &
                   new_unittest("PCM with ghost atoms is refused (cavity model undecided)", &
                                test_pcm_ghost_refused) &
                   ]
@@ -273,6 +280,66 @@ contains
                  "B3LYP energy (grids on the ghosts, independent quadratures) close to pyscf")
       rc = trc_destroy(h)
    end subroutine test_b3lyp_vs_pyscf
+
+   !
+   ! The same ghosted B3LYP, loaded the way mqc loads it: trc_set_molecule
+   ! (ghosts at charge 0), trc_set_elements, then trc_set_basis_libcint,
+   ! whose atm carries only the charge. That path built the basis without the
+   ! elements, so every ghost was element 0 -- an element-0 DFT grid and Becke
+   ! partition at a ghost oxygen, 1e-5 to 1e-4 Eh off in mqc's VMFC rows while
+   ! RHF agreed. Same pyscf reference and gate as test_b3lyp_vs_pyscf.
+   !
+   subroutine test_b3lyp_libcint(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      type(trc_basis_t) :: b
+      type(error_t) :: berr
+      integer(c_int), allocatable :: atm(:, :), bas(:, :)
+      real(c_double), allocatable :: env(:)
+      integer(c_int) :: rc
+      integer :: u, lvl, natm_ref
+      real(c_double) :: e_terco
+      real(dp) :: e_ref
+      real(dp) :: grad_ref(3, NATM)
+
+      ! The dimer basis from the JSON file, then packed into libcint's arrays
+      ! with the ghosts' CHARGE_OF at 0 (Z6), as a libcint host passes it.
+      call trc_basis_from_json('basis_sets/cc-pvdz.json', NATM, ELEM6, XYZ6, b, berr, charges=Z6)
+      call check(error, .not. berr%has_error(), "dimer basis from JSON")
+      if (allocated(error)) return
+      call pack_libcint(b, atm, bas, env)
+
+      call make_molecule(h, with_elements=.true.)
+      rc = trc_set_basis_libcint(h, atm, int(NATM, c_int), bas, int(size(bas, 2), c_int), env, &
+                                 int(size(env), c_int), merge(0_c_int, 1_c_int, b%spherical))
+      call check(error, rc, TRC_OK, "set_basis_libcint (ghosts at charge 0)")
+      call b%release()
+      if (allocated(error)) then
+         rc = trc_destroy(h); return
+      end if
+      rc = trc_set_method(h, 'b3lyp'//c_null_char, 6_c_int)
+      rc = trc_set_convergence(h, 1.0e-11_c_double, 1.0e-8_c_double, 150_c_int, 10_c_int)
+      rc = trc_run_scf(h)
+      call check(error, rc, TRC_OK, "run_scf (B3LYP, ghost dimer, libcint basis)")
+      if (allocated(error)) then
+         rc = trc_destroy(h); return
+      end if
+      rc = trc_energy(h, e_terco)
+
+      call ref_require('ghost_water_dimer.ref', u)
+      call ref_read_int(u, 'NATM', natm_ref)
+      call ref_read_real(u, 'E_RHF', e_ref)
+      call ref_read_matrix(u, 'GRAD_RHF', 3, NATM, grad_ref)
+      call ref_read_int(u, 'B3LYP_GRID_LEVEL', lvl)
+      call ref_read_real(u, 'E_B3LYP', e_ref)
+      call ref_close(u)
+
+      print '(a,f20.14,a,f20.14,a,es9.2)', "check_capi_ghost: E_B3LYP libcint terco ", real(e_terco, dp), &
+         "  pyscf ", e_ref, "  diff ", real(e_terco, dp) - e_ref
+      call check(error, abs(real(e_terco, dp) - e_ref) < 1.0e-10_dp, &
+                 "B3LYP through trc_set_basis_libcint matches pyscf's ghost atoms")
+      rc = trc_destroy(h)
+   end subroutine test_b3lyp_libcint
 
    !
    ! PCM with ghosts is refused until a cavity model is chosen. pyscf's own
