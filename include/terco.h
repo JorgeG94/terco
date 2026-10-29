@@ -1022,8 +1022,10 @@ int trc_hirshfeld_charges(trc_handle_t handle, double* charges);
  * is not 1, fewer than two electrons, an element outside
  * Hirshfeld's H-Kr recipe, or the condensed indices failing their
  * one-electron sum rule. TRC_ERR_NOCONV: an ion did not converge.
- * TRC_ERR_UNSUPPORTED: more than one rank (trc_set_comm) -- not
- * implemented yet, trc_run_hessian's own same refusal.
+ * With more than one rank (trc_set_comm) every rank must make this
+ * call, as for trc_run_scf: the three SCFs are collective, and the
+ * Hirshfeld analysis is replicated (every rank holds the same density
+ * and returns the same indices).
  */
 int trc_fukui_hirshfeld(trc_handle_t handle, double* f_plus, double* f_minus, double* f_zero, double* q_n, double* q_np1, double* q_nm1);
 

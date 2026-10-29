@@ -27,16 +27,23 @@
 # b1 orbital (see test/nh2.xyz's own comment), and is bit-identical run-
 # to-run and across np 1/2/3 at the same 1e-8 TOL every RKS case uses.
 #
+# Hirshfeld-condensed Fukui indices (three SCFs on one handle, each rank
+# running them collectively, the Hirshfeld analysis replicated) must match
+# between np 1, np 2 and np 3 to 1e-8, read from --json, and the table must
+# be printed once.
+#
 # RI-MP2's correlation energy must match between np 1 and np 2 to 1e-10,
 # with (mu nu|P) split by auxiliary shell and B distributed over the ranks
 # and passed round them, both with the build's default transport and
 # staged through the host (TERCO_MPI_DEVICE=0), and between np 1 and np 3
 # with uneven occupied blocks and several auxiliary blocks per rank.
 #
+import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 TOL = 1.0e-8
 ENERGY_RE = re.compile(r"TOTAL ENERGY\s+(-?\d+\.\d+)")
@@ -140,6 +147,35 @@ def main():
             print(f"cli_mpi_check: {label} np3  total diff = {diff3:.2e}  "
                   f"exchange-correlation diff = {xdiff3:.2e}")
             if diff3 > TOL or xdiff3 > TOL:
+                ok = False
+
+    # Fukui over ranks: wB97X-V (VV10's rank split runs in all three SCFs)
+    # from the minao guess, which the ions inherit.
+    fukui = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for np in (1, 2, 3):
+            js = os.path.join(tmp, f"fukui{np}.json")
+            pf = run(mpiexec, npflag, np, terco_cli, xyz, basis_dir, "-f", "wb97x-v",
+                     "--guess", "minao", "--fukui", "hirshfeld", "--json", js)
+            if pf.returncode != 0 or not os.path.exists(js):
+                print(f"cli_mpi_check: Fukui np{np} did not run cleanly (rc={pf.returncode})")
+                print(pf.stdout, pf.stderr)
+                ok = False
+                continue
+            if pf.stdout.count("f+ is where the molecule accepts charge") != 1:
+                print(f"cli_mpi_check: Fukui np{np} printed its table "
+                      f"{pf.stdout.count('f+ is where the molecule accepts charge')} times, not once")
+                ok = False
+            with open(js) as fh:
+                fukui[np] = json.load(fh)["fukui"]
+    if 1 in fukui:
+        for np in (2, 3):
+            if np not in fukui:
+                continue
+            worst = max(abs(a - b) for key in ("f+", "f-")
+                        for a, b in zip(fukui[1][key], fukui[np][key]))
+            print(f"cli_mpi_check: Fukui (wB97X-V, minao)  np1 vs np{np}  worst |df| = {worst:.2e}")
+            if worst > TOL:
                 ok = False
 
     # RI-MP2 with (mu nu|P) split by auxiliary shell and B by occupied

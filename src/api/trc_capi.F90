@@ -5064,8 +5064,10 @@ contains
       !! is not 1, fewer than two electrons, an element outside
       !! Hirshfeld's H-Kr recipe, or the condensed indices failing their
       !! one-electron sum rule. TRC_ERR_NOCONV: an ion did not converge.
-      !! TRC_ERR_UNSUPPORTED: more than one rank (trc_set_comm) -- not
-      !! implemented yet, trc_run_hessian's own same refusal.
+      !! With more than one rank (trc_set_comm) every rank must make this
+      !! call, as for trc_run_scf: the three SCFs are collective, and the
+      !! Hirshfeld analysis is replicated (every rank holds the same density
+      !! and returns the same indices).
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: f_plus(*), f_minus(*), f_zero(*)
       real(c_double), intent(out) :: q_n(*), q_np1(*), q_nm1(*)
@@ -5088,13 +5090,6 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok .or. .not. cx%res%converged) then
          cx%message = "trc_fukui_hirshfeld: run a converged SCF first"
-         return
-      end if
-
-      status = TRC_ERR_UNSUPPORTED
-      if (cx%fcomm /= -1) then
-         cx%message = "trc_fukui_hirshfeld: more than one rank (trc_set_comm) is not "// &
-                      "supported yet"
          return
       end if
 
