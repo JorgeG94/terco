@@ -141,6 +141,17 @@ if(TERCO_ENABLE_TESTING)
                ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
                "1  O +-0\\.342803")
 
+  # Fukui from the minao guess, which the ions must inherit (the NA-040
+  # anion needs it): f+ and f- each sum to one electron.
+  add_test(NAME terco/cli_fukui_hirshfeld
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --guess minao --fukui
+                   hirshfeld)
+  set_tests_properties(
+    terco/cli_fukui_hirshfeld
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "sum +1\\.000000 +1\\.000000 +1\\.000000")
+
   # A missing geometry is an error with a message, not a crash.
   # A double hybrid whose SCF stops unconverged never runs RI-MP2, so its
   # TOTAL ENERGY is the SCF energy, never the unset double-hybrid total (0).

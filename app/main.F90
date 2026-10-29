@@ -2767,7 +2767,7 @@ program terco_main
    ! The Hirshfeld free atoms ship next to the basis sets too: without this
    ! the library falls back to a path relative to the working directory,
    ! which only exists inside the test tree.
-   if (r%charges == "hirshfeld") then
+   if (r%charges == "hirshfeld" .or. r%fukui == "hirshfeld") then
       block
          character(len=1024) :: e
          integer :: n, s

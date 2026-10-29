@@ -1438,10 +1438,12 @@ module trc_c_interfaces
          !! what they should be is a caller decision this entry point does
          !! not make.
          !!
-         !! Each ion runs UNSEEDED, at TRC_GUESS_GWH -- mqc's own default
-         !! when no neutral orbitals are offered to seed from
-         !! (fukui_indices's own guess_kind default, the path its own test,
-         !! water/cc-pVDZ, actually exercises). A caller wanting the
+         !! Each ion runs UNSEEDED, from the handle's own guess kind (so
+         !! `--guess minao` reaches the ions: a SAD guess stalls an NA-040-type
+         !! nitrosamine anion that minao converges). A guess that is a stored
+         !! density (TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED) belongs to the
+         !! neutral, so the ions fall back to TRC_GUESS_GWH, mqc's own default
+         !! when no neutral orbitals are offered. A caller wanting the
          !! neutral's orbitals to seed the ions instead (mqc's "neutral"
          !! mode) drives the three states by hand: trc_set_charge,
          !! trc_set_guess(TRC_GUESS_GIVEN, ...) and trc_run_scf, exactly what
