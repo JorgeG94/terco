@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["rys_fock_formamide_def2tzvp"] -> gen_rys_fock
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: d318e4fb246608227d01408bc4819ed6388b00086537ebddbef2fd10ca36ba67
+# hash: 5636419a0607ec18369b6430725947797f9629d845aa42ba3baa02ff430d4378
 # files: test/check_rys_fock_vs_pyscf.F90 test/basis_sets/def2-tzvp.json test/formamide.xyz
 NAT 6
 NAO 126
