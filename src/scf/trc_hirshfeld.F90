@@ -42,7 +42,8 @@ module trc_hirshfeld
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
-   use trc_collocation, only: shell_collocate, NCART_MAX
+   use trc_xc_batch, only: trc_xc_grid_t
+   use trc_xc, only: trc_xc_rho
    use trc_hirshfeld_data, only: trc_hirshfeld_table_t, trc_hirshfeld_ensure_loaded, HIRSHFELD_Z_MAX
    implicit none
    private
@@ -56,6 +57,10 @@ module trc_hirshfeld
       !! none -- mqc's own default (mqc_czt_hirshfeld.f90's
       !! HIRSHFELD_GRID_LEVEL), independent of whatever grid level the SCF
       !! used for its own XC integration.
+   integer, parameter :: HIRSHFELD_BATCH = 256
+      !! Points per spatial batch of the density evaluation.
+   integer, parameter :: HIRSHFELD_CHUNK = 65536
+      !! Points per stockholder-share pass: bounds share(natm, :) at natm*0.5 MB.
 
    real(dp), parameter :: GRID_DEFICIT_WARNING = 1.0e-4_dp
       !! How far the grid's raw electron count may miss the exact one
@@ -90,9 +95,13 @@ contains
          !! Overrides the proatom table's default path
 
       type(dft_grid_t) :: grid
+      type(trc_xc_grid_t) :: xg
+      type(trc_basis_t) :: b_dev
       type(trc_pairlist_t) :: pl
       real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
       real(dp), allocatable :: rho(:), spin_rho(:), share(:, :)
+      real(dp) :: wr
+      integer :: p0, np_chunk, g
       real(dp), allocatable :: electrons(:), spins(:)
       real(dp), allocatable :: r_cut_list(:), log_rho_list(:, :), slope_list(:, :)
       logical, allocatable :: real_atom(:)
@@ -144,28 +153,57 @@ contains
       call build_dft_grid(b%at_r, b%at_elem, grid, error, level=level)
       if (error%has_error()) return
 
-      allocate (rho(grid%n_points), share(b%natm, grid%n_points))
-      call hirshfeld_density_kernel(grid%n_points, grid%coords, b%nshell, b%sh_l, b%sh_np, &
-                                    b%maxnp, b%sh_e, b%sh_c, b%sh_r, b%sh_ao, b%nao, density, rho)
-      call hirshfeld_share_kernel(grid%n_points, grid%coords, b%natm, b%at_r, real_atom, &
-                                  g_table%n_radial, g_table%log_r0, g_table%step, r_cut_list, &
-                                  log_rho_list, slope_list, share)
-
-      allocate (electrons(b%natm), spins(b%natm))
-      do ia = 1, b%natm
-         electrons(ia) = sum(grid%weights*rho*share(ia, :))
-      end do
-      spins = 0.0_dp
-      if (want_spin) then
-         allocate (spin_rho(grid%n_points))
-         call hirshfeld_density_kernel(grid%n_points, grid%coords, b%nshell, b%sh_l, b%sh_np, &
-                                       b%maxnp, b%sh_e, b%sh_c, b%sh_r, b%sh_ao, b%nao, &
-                                       spin_density, spin_rho)
-         do ia = 1, b%natm
-            spins(ia) = sum(grid%weights*spin_rho*share(ia, :))
-         end do
-      end if
+      ! rho through the XC integrator's batched path (screened per batch,
+      ! one GEMM per batch shape), not a per-point nao^2 loop: on an
+      ! 89-atom def2-TZVPD molecule that is ~1e11 operations instead of
+      ! ~1e13, and no per-thread scratch the size of the basis. Every
+      ! point is kept (w_tol 0) and functions are cut at 1e-14, far below
+      ! what a charge can see. The grid comes back permuted; the weights
+      ! and coordinates used below are xg's, in the same order as rho.
+      call xg%build(grid%n_points, grid%coords, grid%weights, b, HIRSHFELD_BATCH, 1.0e-14_dp, 0.0_dp)
       call grid%destroy()
+      call xg%to_device()
+      if (b%on_device) then
+         call density_on_grid(b, xg, density, rho)
+         if (want_spin) call density_on_grid(b, xg, spin_density, spin_rho)
+      else
+         ! A caller outside an SCF context may hand over a host-only basis;
+         ! the integrator reads it on the device.
+         b_dev = b
+         b_dev%on_device = .false.
+         call b_dev%to_device()
+         call density_on_grid(b_dev, xg, density, rho)
+         if (want_spin) call density_on_grid(b_dev, xg, spin_density, spin_rho)
+         call b_dev%release()
+      end if
+
+      ! The stockholder shares in chunks of points, so their (natm, points)
+      ! storage stays bounded however large the grid.
+      allocate (electrons(b%natm), spins(b%natm))
+      electrons = 0.0_dp
+      spins = 0.0_dp
+      allocate (share(b%natm, HIRSHFELD_CHUNK))
+      do p0 = 1, xg%npts, HIRSHFELD_CHUNK
+         np_chunk = min(HIRSHFELD_CHUNK, xg%npts - p0 + 1)
+         call hirshfeld_share_kernel(np_chunk, xg%r(:, p0:p0 + np_chunk - 1), b%natm, b%at_r, real_atom, &
+                                     g_table%n_radial, g_table%log_r0, g_table%step, r_cut_list, &
+                                     log_rho_list, slope_list, share)
+         do g = 1, np_chunk
+            wr = xg%w(p0 + g - 1)*rho(p0 + g - 1)
+            do ia = 1, b%natm
+               electrons(ia) = electrons(ia) + wr*share(ia, g)
+            end do
+         end do
+         if (want_spin) then
+            do g = 1, np_chunk
+               wr = xg%w(p0 + g - 1)*spin_rho(p0 + g - 1)
+               do ia = 1, b%natm
+                  spins(ia) = spins(ia) + wr*share(ia, g)
+               end do
+            end do
+         end if
+      end do
+      call xg%release()
 
       ! Sum to the density's own electron count, Tr(D S), not to what the
       ! grid integrates -- a diffuse density's tail is short by a little,
@@ -267,68 +305,15 @@ contains
    ! sizes Hirshfeld charges are asked for, not a per-iteration SCF kernel.
    !
 
-   subroutine hirshfeld_density_kernel(n_points, coords, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, &
-                                       sh_r, sh_ao, nao, density, rho)
-      !! rho(r) at every grid point, from a density matrix in the Cartesian
-      !! AO space -- called once for the total density and, with
-      !! `spin_density`, a second time for the spin density.
-      integer, intent(in) :: n_points, nshell, maxnp, nao
-      real(dp), intent(in) :: coords(3, n_points)
-      integer, intent(in) :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
-      real(dp), intent(in) :: density(nao, nao)
-      real(dp), intent(out) :: rho(n_points)
-      integer :: g
-
-      !$acc enter data copyin(coords, sh_l, sh_np, sh_ao, sh_e, sh_c, sh_r, density) create(rho)
-      do concurrent(g=1:n_points)
-         rho(g) = hirshfeld_density_point(g, n_points, coords, nshell, sh_l, sh_np, maxnp, &
-                                          sh_e, sh_c, sh_r, sh_ao, nao, density)
-      end do
-      !$acc update self(rho)
-      !$acc exit data delete(coords, sh_l, sh_np, sh_ao, sh_e, sh_c, sh_r, density, rho)
-   end subroutine hirshfeld_density_kernel
-
-   pure function hirshfeld_density_point(g, n_points, coords, nshell, sh_l, sh_np, maxnp, sh_e, &
-                                         sh_c, sh_r, sh_ao, nao, density) result(rho)
-      !$acc routine seq
-      integer, intent(in) :: g, n_points, nshell, maxnp, nao
-      real(dp), intent(in) :: coords(3, n_points)
-      integer, intent(in) :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
-      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
-      real(dp), intent(in) :: density(nao, nao)
-      real(dp) :: rho
-
-      real(dp) :: chi(nao)
-      real(dp) :: d(3)
-      real(dp) :: cs(NCART_MAX), gs(3, NCART_MAX)
-      real(dp) :: x
-      integer :: ish, l, nc, m, iao, i, j
-
-      chi = 0.0_dp
-      do ish = 1, nshell
-         l = sh_l(ish)
-         d(1) = coords(1, g) - sh_r(1, ish)
-         d(2) = coords(2, g) - sh_r(2, ish)
-         d(3) = coords(3, g) - sh_r(3, ish)
-         call shell_collocate(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
-         nc = (l + 1)*(l + 2)/2
-         iao = sh_ao(ish)
-         do m = 1, nc
-            chi(iao + m - 1) = cs(m)
-         end do
-      end do
-
-      rho = 0.0_dp
-      do j = 1, nao
-         if (chi(j) == 0.0_dp) cycle
-         x = 0.0_dp
-         do i = 1, nao
-            x = x + density(i, j)*chi(i)
-         end do
-         rho = rho + x*chi(j)
-      end do
-   end function hirshfeld_density_point
+   subroutine density_on_grid(b, xg, density, rho)
+      !! rho at every point of `xg`, in its order; `b` and `xg` on the device.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      real(dp), intent(in) :: density(b%nao, b%nao)
+      real(dp), allocatable, intent(out) :: rho(:)
+      allocate (rho(xg%npts))
+      call trc_xc_rho(b, xg, density, rho)
+   end subroutine density_on_grid
 
    subroutine hirshfeld_share_kernel(n_points, coords, natm, at_r, real_atom, n_radial, log_r0, &
                                      step, r_cut, log_rho, slope, share)
@@ -363,28 +348,29 @@ contains
       real(dp), intent(in) :: log_rho(n_radial, natm), slope(n_radial, natm)
       real(dp), intent(out) :: share_col(natm)
 
-      real(dp) :: free(natm)
       real(dp) :: total
       real(dp) :: d(3)
       real(dp) :: r
       integer :: ia
 
+      ! The free-atom densities go straight into share_col, then are
+      ! divided: no per-thread scratch of length natm on the device.
       total = 0.0_dp
       do ia = 1, natm
-         free(ia) = 0.0_dp
+         share_col(ia) = 0.0_dp
          if (.not. real_atom(ia)) cycle
          d(1) = coords(1, g) - at_r(1, ia)
          d(2) = coords(2, g) - at_r(2, ia)
          d(3) = coords(3, g) - at_r(3, ia)
          r = sqrt(d(1)*d(1) + d(2)*d(2) + d(3)*d(3))
-         free(ia) = hirshfeld_table_density(n_radial, log_r0, step, r_cut(ia), &
-                                            log_rho(:, ia), slope(:, ia), r)
-         total = total + free(ia)
+         share_col(ia) = hirshfeld_table_density(n_radial, log_r0, step, r_cut(ia), &
+                                                 log_rho(:, ia), slope(:, ia), r)
+         total = total + share_col(ia)
       end do
       if (total > 0.0_dp) then
-         share_col = free/total
-      else
-         share_col = 0.0_dp
+         do ia = 1, natm
+            share_col(ia) = share_col(ia)/total
+         end do
       end if
    end subroutine hirshfeld_share_point
 
