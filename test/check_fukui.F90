@@ -5,20 +5,25 @@
 ! mqc's test/test_mqc_hirshfeld.f90 (test_fukui) runs RHF/cc-pVDZ water at
 ! the Bohr geometry below, calls fukui_indices("hirshfeld", ...) with no
 ! neutral orbitals offered to seed the ions, and pins its own F_PLUS/F_MINUS
-! there. "No neutral orbitals offered" is mqc's own fukui_indices's
-! unseeded path, whose guess_kind default is SCF_GUESS_GWH -- exactly
-! trc_fukui_hirshfeld's own default for each ion, so this check exercises
-! terco's actual default rather than a seeded path mqc's test does not take.
+! there. "No neutral orbitals offered" is mqc's unseeded path, which starts
+! each ion from GWH; trc_fukui_hirshfeld instead starts the ions from the
+! handle's own guess (SAD here, so SADQ for the ions -- see its header). Both
+! are unseeded and converge to the same doublet states, which is what
+! F_PLUS/F_MINUS pin, so this is terco's actual default against mqc's.
+!
+! Also: the sum rule, the handle's state after the call (on success and when
+! an ion fails to converge), and the refusal of an open-shell neutral.
 !
 module check_fukui_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
+   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_bind_device
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                                trc_set_method, trc_set_convergence, trc_run_scf, trc_energy, &
-                               trc_nspin, trc_fukui_hirshfeld, &
-                               TRC_OK, TRC_ERR_BADARG
+                               trc_nspin, trc_fukui_hirshfeld, trc_set_lindep, &
+                               TRC_OK, TRC_ERR_BADARG, TRC_ERR_NOCONV
    implicit none
    private
    public :: collect_fukui_tests
@@ -71,7 +76,10 @@ contains
                   new_unittest("water matches mqc's F_PLUS/F_MINUS", test_water_fukui), &
                   new_unittest("f+ and f- each sum to one electron", test_sum_rule), &
                   new_unittest("the handle's charge and multiplicity are restored", test_restore), &
-                  new_unittest("a non-singlet neutral is refused", test_radical_refused) &
+                  new_unittest("an ion that does not converge is reported and the handle restored", &
+                               test_ion_noconv), &
+                  new_unittest("a non-singlet neutral is refused", test_radical_refused), &
+                  new_unittest("trc_set_lindep refuses NaN and out-of-range", test_lindep_refused) &
                   ]
    end subroutine collect_fukui_tests
 
@@ -200,6 +208,43 @@ contains
       rc = trc_destroy(h)
    end subroutine test_restore
 
+   subroutine test_ion_noconv(error)
+      !! An ion SCF that runs out of iterations must come back as
+      !! TRC_ERR_NOCONV, and the handle must still be the closed-shell
+      !! neutral afterwards: with the iteration limit lifted, an ordinary
+      !! SCF reconverges to the neutral's own energy with nspin 1. Two
+      !! iterations cannot converge an ion from an atomic guess at 1e-12.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc, nspin_after
+      real(c_double) :: e_before, e_after
+      real(c_double) :: fplus_c(3), fminus_c(3), fzero_c(3), qn_c(3), qnp1_c(3), qnm1_c(3)
+
+      call run_water(h, 0, 1, error)
+      if (allocated(error)) return
+      rc = trc_energy(h, e_before)
+
+      rc = trc_set_convergence(h, 1.0e-12_c_double, 1.0e-9_c_double, 2_c_int, 10_c_int)
+      rc = trc_fukui_hirshfeld(h, fplus_c, fminus_c, fzero_c, qn_c, qnp1_c, qnm1_c)
+      call check(error, rc == TRC_ERR_NOCONV, "an ion out of iterations was not reported as "// &
+                 "TRC_ERR_NOCONV")
+      if (.not. allocated(error)) then
+         rc = trc_set_convergence(h, 1.0e-12_c_double, 1.0e-9_c_double, 200_c_int, 10_c_int)
+         rc = trc_run_scf(h)
+         call check(error, rc == TRC_OK, "the handle could not reconverge the neutral")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_nspin(h, nspin_after)
+         call check(error, nspin_after == 1, "the handle was left open-shell (an ion's state)")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_energy(h, e_after)
+         call check(error, abs(real(e_after, dp) - real(e_before, dp)), 0.0_dp, thr=1.0e-9_dp, &
+                    message="the handle was left at another charge: its SCF reconverged elsewhere")
+      end if
+      rc = trc_destroy(h)
+   end subroutine test_ion_noconv
+
    subroutine test_radical_refused(error)
       !! fukui_indices's own rule, copied verbatim: a neutral that is not a
       !! closed-shell singlet is refused outright, because its ions are
@@ -222,6 +267,34 @@ contains
       character(len=32) :: s
       write (s, "(es12.4)") x
    end function to_text
+
+   subroutine test_lindep_refused(error)
+      !! The linear-dependence threshold Fiona's anion needs (--lindep 5e-6)
+      !! goes through trc_set_lindep, which must refuse anything outside
+      !! [0, 1) -- NaN included, which a plain `< 0 .or. >= 1` test lets by.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc
+      real(c_double) :: nan
+
+      nan = ieee_value(nan, ieee_quiet_nan)
+      rc = trc_create(h)
+      rc = trc_set_lindep(h, nan)
+      call check(error, rc == TRC_ERR_BADARG, "trc_set_lindep accepted NaN")
+      if (.not. allocated(error)) then
+         rc = trc_set_lindep(h, -1.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_lindep accepted -1")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_lindep(h, 1.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_lindep accepted 1")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_lindep(h, 5.0e-6_c_double)
+         call check(error, rc == TRC_OK, "trc_set_lindep refused 5e-6")
+      end if
+      rc = trc_destroy(h)
+   end subroutine test_lindep_refused
 
 end module check_fukui_suite
 

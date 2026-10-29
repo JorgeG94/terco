@@ -393,12 +393,15 @@ int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_dii
 /**
  * Canonical orthogonalisation threshold: an eigenvalue of S below
  * `threshold` is linear dependence and its direction is dropped from
- * the SCF (and from the minao guess's projection). Default 1e-8. A
+ * the SCF (and, for a positive threshold, from the minao guess's
+ * projection). Default 1e-8. A
  * diffuse basis on a large molecule can need more: GPU4PySCF
  * converges a def2-TZVPD nitrosamine anion only at 5e-6 (40 functions
- * dropped). 0 means plain symmetric orthogonalisation, which stops
- * when S is not numerically positive definite. Takes effect at the
- * next trc_run_scf.
+ * dropped). 0 means plain symmetric orthogonalisation in the SCF,
+ * which stops when S is not numerically positive definite; the minao
+ * guess's projection always keeps a floor, so at 0 it uses its own
+ * default (1e-8) rather than none. Takes effect at the next
+ * trc_run_scf.
  */
 int trc_set_lindep(trc_handle_t handle, double threshold);
 
@@ -972,8 +975,10 @@ int trc_density(trc_handle_t handle, double* dmat);
  * (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
  * Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
  * analysis never touches the solvent operator, only the converged
- * density). TRC_ERR_BADARG for an element outside H-Kr; terco has
- * no effective-core-potential support to refuse separately.
+ * density). TRC_ERR_BADARG for an element outside H-Kr (terco has
+ * no effective-core-potential support to refuse separately);
+ * TRC_ERR_STATE when the free-atom data file cannot be read (set
+ * TRC_HIRSHFELD_DATA).
  */
 int trc_hirshfeld_charges(trc_handle_t handle, double* charges);
 
@@ -1001,10 +1006,11 @@ int trc_hirshfeld_charges(trc_handle_t handle, double* charges);
  *
  * Each ion runs UNSEEDED, from the handle's own guess kind (so
  * `--guess minao` reaches the ions: a SAD guess stalls an NA-040-type
- * nitrosamine anion that minao converges). A guess that is a stored
- * density (TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED) belongs to the
- * neutral, so the ions fall back to TRC_GUESS_GWH, mqc's own default
- * when no neutral orbitals are offered. A caller wanting the
+ * nitrosamine anion that minao converges), except that SAD becomes
+ * SADQ, the charged-atom guess the CLI picks for any ion, and a guess
+ * that is a stored density (TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED)
+ * belongs to the neutral, so the ions fall back to TRC_GUESS_GWH,
+ * mqc's own default when no neutral orbitals are offered. A caller wanting the
  * neutral's orbitals to seed the ions instead (mqc's "neutral"
  * mode) drives the three states by hand: trc_set_charge,
  * trc_set_guess(TRC_GUESS_GIVEN, ...) and trc_run_scf, exactly what

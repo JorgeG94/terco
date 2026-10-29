@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["minao"] -> gen_minao
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 1ad3f214908c6a1785a7bc67b74fdfe65508ad417652159b03bfb23326964d64
+# hash: f5612f585e5b2d4d186d676e1b6d6454f4c3a5e188a1a5baaf319062fd52b00a
 # files: test/check_minao.F90 test/basis_sets/cc-pvdz.json test/basis_sets/def2-svp.json test/basis_sets/minao.json test/water.xyz test/sih4.xyz
 NCASE 2
 NAME_0 water_cc-pvdz

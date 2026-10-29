@@ -763,7 +763,7 @@ terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS NEEDS_PY
 terco_add_check(check_minao check_minao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_minao PRIVATE test-drive::test-drive)
 
-terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS)
+terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_hirshfeld PRIVATE test-drive::test-drive)
 
 # Hirshfeld-condensed Fukui indices (trc_capi's trc_fukui_hirshfeld) against

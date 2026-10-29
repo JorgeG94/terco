@@ -1984,10 +1984,12 @@ program terco_main
                          "or 1 by electron count)", short="u")
    call r%cli%add_option("func", "hf (the default), or a functional: "//XC_AVAILABLE_FUNCTIONALS, &
                          short="f", default="hf")
-   call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion)", short="g")
+   call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion). "// &
+                         "minao always starts from neutral atoms, also for an ion; it is the default with --fukui", short="g")
    call r%cli%add_option("charges", "atomic charge analysis: hirshfeld (none by default)")
    call r%cli%add_option("fukui", "Hirshfeld-condensed Fukui indices, by finite difference in the "// &
-                         "electron count: hirshfeld (none by default; needs a closed-shell neutral)")
+                         "electron count: hirshfeld (none by default; needs a closed-shell neutral; "// &
+                         "the guess defaults to minao for all three states)")
    call r%cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call r%cli%add_option("grid", "DFT integration grid level (3)", default="3")
    call r%cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")
@@ -1996,7 +1998,8 @@ program terco_main
    call r%cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: S eigenvalues below it are dropped "// &
-                         "(canonical orthogonalisation; 1e-8). Diffuse bases on large molecules may need ~5e-6")
+                         "(canonical orthogonalisation; 1e-8; 0 drops none, though the minao guess keeps its own 1e-8). "// &
+                         "Diffuse bases on large molecules may need ~5e-6")
    call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (closed shell)")
    call r%cli%add_flag("df", "density-fitted J and K instead of the four-centre engine (restricted, "// &
                        "Cartesian only; fits both, never DF-J with 4-centre K)")
@@ -2233,6 +2236,10 @@ program terco_main
 
    r%guess = "sad"
    if (r%chrg /= 0) r%guess = "sadq"
+   ! --fukui runs an anion and a cation too; minao is what converges the
+   ! hard ones (an NA-040-type nitrosamine anion stalls from SAD), and the
+   ! ions inherit the neutral's guess kind.
+   if (r%cli%is_set("fukui")) r%guess = "minao"
    if (r%cli%is_set("guess")) then
       call r%cli%get("guess", sval, r%err)
       r%guess = to_lower_alloc(trim(sval))
@@ -2283,7 +2290,8 @@ program terco_main
    if (r%cli%is_set("lindep")) then
       call r%cli%get("lindep", r%lindep, r%err)
       call check(r, "--lindep")
-      if (r%lindep < 0.0_dp .or. r%lindep >= 1.0_dp) call die(r, "--lindep must be in [0, 1)")
+      ! Written so a NaN fails it too.
+      if (.not. (r%lindep >= 0.0_dp .and. r%lindep < 1.0_dp)) call die(r, "--lindep must be in [0, 1)")
    end if
    call r%cli%get("frozen", nfrozen, r%err)
    call check(r, "--frozen")
