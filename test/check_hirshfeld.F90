@@ -1,58 +1,39 @@
 !
-! Hirshfeld atomic charges (trc_hirshfeld.F90) against metalquicha's own
-! recipe, run directly in pyscf.
+! Hirshfeld atomic charges (trc_hirshfeld.F90) against two references:
 !
-! mqc solves its free atoms at run time and caches them in memory -- it has
-! no stored reference numbers for water/6-31G or O2/cc-pVDZ (its own
-! test/test_mqc_hirshfeld.f90 pins water/cc-pVDZ instead, a different
-! basis). The numbers below come from running mqc's OWN cross-check
-! directly: tools/hirshfeld/gen_test_references.py (this repository),
-! which calls mqc's tools/spherical_atom/spherical_atom_reference.py (free
-! atoms: spherically averaged, spin-polarised wB97X/def2-TZVP) for exactly
-! these two cases, basis read from mqc's own basis_sets/*.json so the AO
-! contraction matches terco's.
+!  * metalquicha's OWN stored test numbers (its test/test_mqc_hirshfeld.f90:
+!    water/cc-pVDZ, the neutral and the cation with spins), hardcoded below;
+!  * metalquicha's recipe run in pyscf, for water RHF/6-31G and O2 triplet
+!    UHF/cc-pVDZ: test/pyscf_refs/hirshfeld.ref, written offline by
+!    `generate.py hirshfeld` (free atoms from mqc's
+!    tools/spherical_atom/spherical_atom_reference.py, its commit recorded in
+!    the .ref) and covered by the staleness hash like every other anchor.
 !
-!     python3 tools/hirshfeld/gen_test_references.py --mqc-root /path/to/metalquicha
+! The pyscf integral runs on a (150, 974) atom grid and evaluates every free
+! atom from its own orbitals; terco's grid (HIRSHFELD_GRID_LEVEL=5) and its
+! cubic-Hermite proatom table are coarser, so agreement is bounded by the
+! quadrature, not by the partition formula (CHARGE_TOL below).
 !
-! Output (2026-10-29, mqc commit 66efbeed9699a8c4ef194c862f44e722b4cecc84):
-!
-!   water_6-31g RHF  E=-75.984779843967  nelec_grid=10.0000000001
-!     charges     -0.345978190135    0.172989094994    0.172989095039
-!     sum        -1.009e-10
-!   o2_cc-pvdz UHF triplet  E=-149.627757503688  nelec_grid=15.9999999966
-!     charges      0.000000001692    0.000000001692
-!     spins        1.000000000048    1.000000000048
-!     sum        3.384e-09
-!     spin_sum   2.000000
-!
-! The molecular integral there runs on pyscf's own (150, 974) atom_grid and
-! evaluates every free atom exactly from its own orbitals; terco's own
-! grid (HIRSHFELD_GRID_LEVEL=5, trc_dft_grid's own radial/angular tables)
-! and its cubic-Hermite-interpolated proatom table are both coarser, so
-! agreement is bounded by the QUADRATURE, not by the partition formula --
-! the same situation mqc's own CHARGE_TOL=1e-7 (test_mqc_hirshfeld.f90)
-! is in against the identical pyscf script. Measured here (this file):
-! water's worst atom differs by WATER_DIFF, O2's (which should be exactly
-! zero by symmetry, and is in pyscf only to ~1.7e-9) by O2_DIFF -- both
-! reported in the test's own message so a regression shows the number
-! that moved, not just a pass/fail.
+! Also: the free-atom table integrates to Z, an element past Kr is refused,
+! and the table loader recovers from a bad path and never silently keeps a
+! different file than the one asked for.
 !
 module check_hirshfeld_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
-   use trc_error, only: error_t
+   use trc_error, only: error_t, ERROR_IO
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sph, only: sph_sph_to_cart
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_hirshfeld, only: trc_hirshfeld_populations, trc_hirshfeld_free_atom_density
    use trc_test_basis, only: read_xyz
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_str, ref_read_vector
    implicit none
    private
    public :: collect_hirshfeld_tests
 
-   real(dp), parameter :: Q_WATER(3) = [-0.345978190135_dp, 0.172989094994_dp, 0.172989095039_dp]
-   real(dp), parameter :: Q_O2(2) = [0.000000001692_dp, 0.000000001692_dp]
 
    ! mqc's OWN stored numbers (test/test_mqc_hirshfeld.f90, WATER/WATER_Z/
    ! Q_NEUTRAL/Q_CATION/S_CATION), not a pyscf cross-check: this is mqc's
@@ -99,8 +80,8 @@ module check_hirshfeld_suite
       !! failure message to print the actual gap): water's worst atom
       !! differs by 1.30e-9, O2's (which should be exactly zero by
       !! symmetry) by 1.69e-9 -- both close to the 1.7e-9 pyscf itself
-      !! could not do better than for O2 (molref.py's own printed "sum",
-      !! the residual its own, unrenormalised, 150x974 grid left). So the
+      !! could not do better than for O2 (the residual its own,
+      !! unrenormalised, 150x974 grid leaves; hirshfeld.ref's Q_2). So the
       !! two quadratures and the two free-atom representations already
       !! agree far inside mqc's own CHARGE_TOL=1e-7 (test_mqc_hirshfeld.f90,
       !! a looser comparison of the SAME two things on a different
@@ -121,7 +102,8 @@ contains
                   new_unittest("o2 triplet matches mqc's recipe in pyscf", test_o2), &
                   new_unittest("water matches mqc's OWN stored Q_NEUTRAL", test_mqc_water_neutral), &
                   new_unittest("cation matches mqc's OWN stored Q_CATION/S_CATION", test_mqc_water_cation), &
-                  new_unittest("heavy element is refused", test_refused) &
+                  new_unittest("heavy element is refused", test_refused), &
+                  new_unittest("table loader recovers and never keeps a stale file", test_loader) &
                   ]
    end subroutine collect_hirshfeld_tests
 
@@ -168,14 +150,16 @@ contains
       integer :: ia, nat
       integer, allocatable :: z(:)
       real(dp), allocatable :: r(:, :)
+      real(dp) :: q_ref(3), s_ref(3)
 
+      call read_pyscf_case(1, 3, q_ref, s_ref)
       call read_xyz("hirshfeld_water.xyz", nat, z, r)
       call run_and_charge(z, r, "basis_sets/6-31g.json", 0, 0, q, error)
       if (allocated(error)) return
 
       worst = 0.0_dp
       do ia = 1, 3
-         worst = max(worst, abs(q(ia) - Q_WATER(ia)))
+         worst = max(worst, abs(q(ia) - q_ref(ia)))
       end do
       call check(error, worst < CHARGE_TOL, "water: worst |q_terco - q_pyscf| = "//to_text(worst)// &
                 " exceeds CHARGE_TOL = "//to_text(CHARGE_TOL))
@@ -192,16 +176,19 @@ contains
       integer :: ia, nat
       integer, allocatable :: z(:)
       real(dp), allocatable :: r(:, :)
+      real(dp), allocatable :: sp(:)
+      real(dp) :: q_ref(2), s_ref(2)
 
+      call read_pyscf_case(2, 2, q_ref, s_ref)
       call read_xyz("o2.xyz", nat, z, r)
-      call run_and_charge(z, r, "basis_sets/cc-pvdz.json", 0, 2, q, error)
+      call run_and_charge(z, r, "basis_sets/cc-pvdz.json", 0, 2, q, error, spin_q=sp)
       if (allocated(error)) return
 
       worst = 0.0_dp
       do ia = 1, 2
-         worst = max(worst, abs(q(ia) - Q_O2(ia)))
+         worst = max(worst, abs(q(ia) - q_ref(ia)), abs(sp(ia) - s_ref(ia)))
       end do
-      call check(error, worst < CHARGE_TOL, "o2: worst |q_terco - q_pyscf| = "//to_text(worst)// &
+      call check(error, worst < CHARGE_TOL, "o2: worst |q or spin, terco - pyscf| = "//to_text(worst)// &
                 " exceeds CHARGE_TOL = "//to_text(CHARGE_TOL))
       if (allocated(error)) return
       call check(error, abs(sum(q)), 0.0_dp, thr=SUM_TOL, &
@@ -363,6 +350,76 @@ contains
       character(len=32) :: s
       write (s, "(es12.4)") x
    end function to_text
+
+   subroutine test_loader(error)
+      !! The proatom table loader, through the real module cache: a path
+      !! that does not exist is ERROR_IO and leaves nothing half-loaded, so
+      !! the default file still loads afterwards; and once a file IS
+      !! loaded, asking for a different one reloads (here: fails) instead
+      !! of silently answering from the old one. One H atom in STO-3G with
+      !! D = 1/S_11 = 1 is enough -- its charge is 0 by construction.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: b
+      type(error_t) :: err
+      real(dp), allocatable :: q(:), d(:, :)
+      integer :: z(1)
+      real(dp) :: r(3, 1)
+
+      z = [1]
+      r = 0.0_dp
+      call trc_basis_from_json("basis_sets/sto-3g.json", 1, z, r, b, err)
+      call check(error,.not. err%has_error(), "basis: "//err%get_message())
+      if (allocated(error)) return
+      allocate (d(b%nao, b%nao))
+      d = 1.0_dp
+
+      call trc_hirshfeld_populations(b, d, q, err, data_path="no/such/proatoms.json")
+      call check(error, err%has_error() .and. err%get_code() == ERROR_IO, &
+                 "a missing table must be ERROR_IO")
+      if (allocated(error)) return
+      call err%clear()
+
+      call trc_hirshfeld_populations(b, d, q, err)
+      call check(error,.not. err%has_error(), "the default table must load after a failed one: "// &
+                 err%get_message())
+      if (allocated(error)) return
+      call check(error, abs(q(1)), 0.0_dp, thr=SUM_TOL, message="a lone H atom must carry no charge")
+      if (allocated(error)) return
+
+      call trc_hirshfeld_populations(b, d, q, err, data_path="no/such/other.json")
+      call check(error, err%has_error(), "a different, missing table was answered from the cached one")
+      if (allocated(error)) return
+      call err%clear()
+
+      call trc_hirshfeld_populations(b, d, q, err)
+      call check(error,.not. err%has_error(), "the default table must reload: "//err%get_message())
+   end subroutine test_loader
+
+   subroutine read_pyscf_case(ic, natm, q_ref, s_ref)
+      ! Case `ic` of hirshfeld.ref (generate.py hirshfeld): its charges and
+      ! spin populations (zero for a closed shell). The file is read in
+      ! order, so every case before `ic` is read and dropped.
+      integer, intent(in) :: ic, natm
+      real(dp), intent(out) :: q_ref(natm), s_ref(natm)
+      character(len=64) :: name
+      real(dp), allocatable :: v(:)
+      integer :: u, ncase, k, nat
+
+      s_ref = 0.0_dp
+      call ref_require("hirshfeld.ref", u)
+      call ref_read_int(u, "NCASE", ncase)
+      do k = 1, min(ic, ncase)
+         call ref_read_str(u, "NAME_"//to_string(k), name)
+         call ref_read_int(u, "NATM_"//to_string(k), nat)
+         allocate (v(nat))
+         call ref_read_vector(u, "Q_"//to_string(k), nat, v)
+         if (k == ic) q_ref = v
+         call ref_read_vector(u, "S_"//to_string(k), nat, v)
+         if (k == ic) s_ref = v
+         deallocate (v)
+      end do
+      call ref_close(u)
+   end subroutine read_pyscf_case
 
 end module check_hirshfeld_suite
 

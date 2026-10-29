@@ -14,7 +14,7 @@
 module trc_hirshfeld_data
    use pic_types, only: dp
    use pic_strings, only: to_string
-   use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_error, only: error_t, ERROR_IO
    use json_module, only: json_file
    implicit none
    private
@@ -35,6 +35,7 @@ module trc_hirshfeld_data
       !! interpolation itself lives (it has to be in the same module as the
       !! `do concurrent` kernel that calls it).
       logical :: loaded = .false.
+      character(len=:), allocatable :: path   !! the file this table was read from
       integer :: n_radial = 0
       real(dp) :: log_r0 = 0.0_dp
       real(dp) :: step = 0.0_dp
@@ -47,25 +48,32 @@ module trc_hirshfeld_data
 contains
 
    subroutine trc_hirshfeld_ensure_loaded(table, error, path)
-      !! Loads the proatom data file into `table` unless it is already
-      !! loaded. Every element present in the file is read at once: the
-      !! file is one unit (2.7 MB for H-Kr), not a per-element fetch, so
+      !! Loads the proatom data file into `table` unless that same file is
+      !! already loaded. Every element present in the file is read at once:
+      !! the file is one unit (2.7 MB for H-Kr), not a per-element fetch, so
       !! there is nothing to cache incrementally.
+      !!
+      !! The file is read into a fresh table that replaces `table` only once
+      !! it has loaded in full: a failed load leaves `table` as it was (so a
+      !! retry, with the file fixed or another path, starts clean), and a
+      !! request for a different file than the one loaded reloads rather
+      !! than silently keeping the old one. A missing, unreadable or
+      !! malformed file is ERROR_IO.
       type(trc_hirshfeld_table_t), intent(inout) :: table
       type(error_t), intent(inout) :: error
       character(len=*), intent(in), optional :: path
       !! Overrides TRC_HIRSHFELD_DATA/PROATOMS_DEFAULT, for a caller (a
       !! test) that wants a specific file regardless of environment.
 
+      type(trc_hirshfeld_table_t) :: fresh
       type(json_file) :: json
       character(len=:), allocatable :: data_path
-      character(len=512) :: env
+      character(len=4096) :: env
       integer :: z
       logical :: found
       real(dp) :: r_min, r_max
 
       if (error%has_error()) return
-      if (table%loaded) return
 
       data_path = PROATOMS_DEFAULT
       env = " "
@@ -73,41 +81,49 @@ contains
       if (len_trim(env) > 0) data_path = trim(env)
       if (present(path)) data_path = path
 
+      if (table%loaded) then
+         if (allocated(table%path)) then
+            if (table%path == data_path) return
+         end if
+      end if
+
       call json%initialize()
       call json%load(filename=data_path)
       if (json%failed()) then
-         call error%set(ERROR_VALIDATION, "Hirshfeld charges: cannot read "//data_path// &
+         call error%set(ERROR_IO, "Hirshfeld charges: cannot read "//data_path// &
                         " (set TRC_HIRSHFELD_DATA, or regenerate with "// &
                         "scripts/gen_hirshfeld_proatoms.py)")
          call json%destroy()
          return
       end if
 
-      call json%get("n_radial", table%n_radial, found)
+      call json%get("n_radial", fresh%n_radial, found)
       call json%get("r_min", r_min, found)
       call json%get("r_max", r_max, found)
-      if (table%n_radial <= 1 .or. r_min <= 0.0_dp .or. r_max <= r_min) then
-         call error%set(ERROR_VALIDATION, "Hirshfeld charges: "//data_path//" has a "// &
+      if (fresh%n_radial <= 1 .or. r_min <= 0.0_dp .or. r_max <= r_min) then
+         call error%set(ERROR_IO, "Hirshfeld charges: "//data_path//" has a "// &
                         "malformed radial grid")
          call json%destroy()
          return
       end if
-      table%log_r0 = log(r_min)
-      table%step = (log(r_max) - log(r_min))/real(table%n_radial - 1, dp)
+      fresh%log_r0 = log(r_min)
+      fresh%step = (log(r_max) - log(r_min))/real(fresh%n_radial - 1, dp)
 
-      allocate (table%log_rho(table%n_radial, HIRSHFELD_Z_MAX))
-      allocate (table%slope(table%n_radial, HIRSHFELD_Z_MAX))
-      table%log_rho = 0.0_dp
-      table%slope = 0.0_dp
+      allocate (fresh%log_rho(fresh%n_radial, HIRSHFELD_Z_MAX))
+      allocate (fresh%slope(fresh%n_radial, HIRSHFELD_Z_MAX))
+      fresh%log_rho = 0.0_dp
+      fresh%slope = 0.0_dp
       do z = 1, HIRSHFELD_Z_MAX
-         call read_element(json, data_path, z, table, error)
+         call read_element(json, data_path, z, fresh, error)
          if (error%has_error()) then
             call json%destroy()
             return
          end if
       end do
       call json%destroy()
-      table%loaded = .true.
+      fresh%path = data_path
+      fresh%loaded = .true.
+      table = fresh
    end subroutine trc_hirshfeld_ensure_loaded
 
    subroutine read_element(json, data_path, z, table, error)
@@ -129,7 +145,7 @@ contains
       call json%info(key//".log_rho", found=found, n_children=n_children)
       if (.not. found) return
       if (n_children /= table%n_radial) then
-         call error%set(ERROR_VALIDATION, "Hirshfeld charges: "//data_path//" element "// &
+         call error%set(ERROR_IO, "Hirshfeld charges: "//data_path//" element "// &
                         to_string(z)//" has "//to_string(n_children)//" radial points, "// &
                         "not "//to_string(table%n_radial))
          return
@@ -139,7 +155,7 @@ contains
       call json%get(key//".log_rho", log_rho, found)
       call json%get(key//".slope", slope, found)
       if (.not. found .or. size(log_rho) /= table%n_radial .or. size(slope) /= table%n_radial) then
-         call error%set(ERROR_VALIDATION, "Hirshfeld charges: "//data_path//" element "// &
+         call error%set(ERROR_IO, "Hirshfeld charges: "//data_path//" element "// &
                         to_string(z)//" is missing r_cut/log_rho/slope")
          return
       end if

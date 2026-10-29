@@ -17,11 +17,12 @@ module trc_error
    private
 
    public :: error_t
-   public :: SUCCESS, ERROR_GENERIC, ERROR_VALIDATION
+   public :: SUCCESS, ERROR_GENERIC, ERROR_VALIDATION, ERROR_IO
 
    integer, parameter :: SUCCESS = 0
    integer, parameter :: ERROR_GENERIC = 1
    integer, parameter :: ERROR_VALIDATION = 4  ! metalquicha's value, kept
+   integer, parameter :: ERROR_IO = 5          ! a data file terco ships is missing or unreadable
 
    type :: error_t
       integer :: code = SUCCESS

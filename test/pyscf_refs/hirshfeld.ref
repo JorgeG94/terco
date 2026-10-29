@@ -1,0 +1,22 @@
+# terco pyscf reference v1
+# case: hirshfeld
+# generator: test/pyscf_refs/generate.py CASES["hirshfeld"] -> gen_hirshfeld
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: b3249cef28daed6cdaad9e8e56105d036fc8948eb7630ea5680a181e83118ad3
+# files: test/basis_sets/6-31g.json test/basis_sets/cc-pvdz.json test/hirshfeld_water.xyz test/o2.xyz
+# free atoms: metalquicha 66efbeed9699a8c4ef194c862f44e722b4cecc84 tools/spherical_atom/spherical_atom_reference.py, wB97X/def2-TZVP
+NCASE 2
+NAME_1 water_6-31g
+NATM_1 3
+Q_1 3
+-3.45978190135026509e-01 1.72989094994468240e-01 1.72989095039613128e-01
+S_1 3
+0.00000000000000000e+00 0.00000000000000000e+00 0.00000000000000000e+00
+NAME_2 o2_cc-pvdz
+NATM_2 2
+Q_2 2
+1.69155089935202341e-09 1.69206160194335098e-09
+S_2 2
+1.00000000004849499e+00 1.00000000004766698e+00
+END

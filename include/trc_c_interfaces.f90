@@ -1408,8 +1408,10 @@ module trc_c_interfaces
          !! (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
          !! Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
          !! analysis never touches the solvent operator, only the converged
-         !! density). TRC_ERR_BADARG for an element outside H-Kr; terco has
-         !! no effective-core-potential support to refuse separately.
+         !! density). TRC_ERR_BADARG for an element outside H-Kr (terco has
+         !! no effective-core-potential support to refuse separately);
+         !! TRC_ERR_STATE when the free-atom data file cannot be read (set
+         !! TRC_HIRSHFELD_DATA).
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

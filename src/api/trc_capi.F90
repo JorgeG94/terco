@@ -195,7 +195,7 @@ module trc_capi
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_minao, only: trc_minao_build
-   use trc_error, only: error_t
+   use trc_error, only: error_t, ERROR_IO
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
                                 XC_AVAILABLE_FUNCTIONALS, XC_FAMILY_MGGA
    use trc_tables, only: TRC_ERI_LMAX => LMAX
@@ -4939,8 +4939,10 @@ contains
       !! (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
       !! Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
       !! analysis never touches the solvent operator, only the converged
-      !! density). TRC_ERR_BADARG for an element outside H-Kr; terco has
-      !! no effective-core-potential support to refuse separately.
+      !! density). TRC_ERR_BADARG for an element outside H-Kr (terco has
+      !! no effective-core-potential support to refuse separately);
+      !! TRC_ERR_STATE when the free-atom data file cannot be read (set
+      !! TRC_HIRSHFELD_DATA).
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: charges(*)
       integer(c_int) :: status
@@ -4979,12 +4981,24 @@ contains
       call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, err)
       if (err%has_error()) then
          cx%message = err%get_message()
-         status = TRC_ERR_BADARG
+         status = hirshfeld_status(err)
          return
       end if
       charges(1:cx%bb%b%natm) = real(q, c_double)
       status = TRC_OK
    end function trc_hirshfeld_charges
+
+   pure integer(c_int) function hirshfeld_status(err) result(status)
+      !! The C status for a failed Hirshfeld analysis: the data file is the
+      !! environment's to fix (TRC_ERR_STATE), anything else is the
+      !! molecule (an element outside H-Kr, TRC_ERR_BADARG).
+      type(error_t), intent(in) :: err
+      if (err%code == ERROR_IO) then
+         status = TRC_ERR_STATE
+      else
+         status = TRC_ERR_BADARG
+      end if
+   end function hirshfeld_status
 
    function trc_mo_coefficients(handle, cmo) result(status) bind(c, name="trc_mo_coefficients")
       !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:
