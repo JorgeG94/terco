@@ -50,23 +50,13 @@ contains
    ! when the basis is Cartesian throughout (nao_sph == nao then).
    !
    function electrons(b, d) result(n)
-      type(trc_basis_t), intent(inout) :: b
+      ! Tr(D S) in the basis's own space.
+      type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: d(:, :)
       real(dp) :: n
-      type(trc_pairlist_t) :: pl
-      real(dp), allocatable :: s(:, :), t(:, :), v(:, :), s_sph(:, :)
-      allocate (s(b%nao, b%nao), t(b%nao, b%nao), v(b%nao, b%nao))
-      call pl%build(b, 1.0e-12_dp)
-      call b%to_device(); call pl%to_device()
-      call trc_1e(b, pl, s, t, v)
-      call pl%release()
-      if (b%spherical) then
-         allocate (s_sph(b%nao_sph, b%nao_sph))
-         call sph_cart_to_sph(b, s, s_sph)
-         n = sum(d*s_sph)
-      else
-         n = sum(d*s)
-      end if
+      real(dp), allocatable :: s_sph(:, :)
+      call basis_spherical_overlap(b, s_sph)
+      n = sum(d*s_sph)
    end function electrons
 
    subroutine test_occupations(error)
@@ -288,17 +278,31 @@ contains
    ! builds every geometry.
    !
    subroutine basis_spherical_overlap(b, s_sph)
-      type(trc_basis_t), intent(inout) :: b
+      ! On a private copy of the basis, mapped and released here: a basis
+      ! left on the device after its host arrays are freed (a test's local
+      ! going out of scope, or the next case rebuilding it) leaves stale
+      ! device data that the next allocation at the same host address picks
+      ! up as "present" -- wrong S on the GPU build only.
+      type(trc_basis_t), intent(in) :: b
       real(dp), allocatable, intent(out) :: s_sph(:, :)
+      type(trc_basis_t) :: bd
       type(trc_pairlist_t) :: pl
       real(dp), allocatable :: s(:, :), t(:, :), v(:, :)
-      allocate (s(b%nao, b%nao), t(b%nao, b%nao), v(b%nao, b%nao))
-      call pl%build(b, 1.0e-12_dp)
-      call b%to_device(); call pl%to_device()
-      call trc_1e(b, pl, s, t, v)
+      bd = b
+      bd%on_device = .false.
+      allocate (s(bd%nao, bd%nao), t(bd%nao, bd%nao), v(bd%nao, bd%nao))
+      call pl%build(bd, 1.0e-12_dp)
+      call bd%to_device()
+      call pl%to_device()
+      call trc_1e(bd, pl, s, t, v)
       call pl%release()
-      allocate (s_sph(b%nao_sph, b%nao_sph))
-      call sph_cart_to_sph(b, s, s_sph)
+      if (bd%spherical) then
+         allocate (s_sph(bd%nao_sph, bd%nao_sph))
+         call sph_cart_to_sph(bd, s, s_sph)
+      else
+         s_sph = s
+      end if
+      call bd%release()
    end subroutine basis_spherical_overlap
 
 end module check_minao_suite
