@@ -763,6 +763,9 @@ terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS NEEDS_PY
 terco_add_check(check_minao check_minao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_minao PRIVATE test-drive::test-drive)
 
+terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_hirshfeld PRIVATE test-drive::test-drive)
+
 # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
 # own Gradients class assumes a converged SCF density; this is a fixed,
 # non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,

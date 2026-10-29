@@ -3079,6 +3079,107 @@ def gen_sph_corr():
     w.write()
 
 
+def gen_hirshfeld():
+    """test/check_hirshfeld.F90's pyscf-side cases: Hirshfeld charges by
+    metalquicha's own recipe, run here in pyscf. Water RHF/6-31G at
+    hirshfeld_water.xyz (mqc's validation w1.xyz, not terco's water.xyz)
+    and O2 triplet UHF/cc-pVDZ at o2.xyz, both read with terco's own basis
+    JSON. The free atoms are mqc's: spherically averaged, spin-polarised
+    wB97X/def2-TZVP from tools/spherical_atom/spherical_atom_reference.py
+    in a metalquicha checkout ($MQC_ROOT, default ~/dev/metalquicha; its
+    commit is recorded below). The molecular integral runs on pyscf's
+    (150, 974) atom grid and evaluates each free atom from its own
+    orbitals, so agreement with terco checks terco's interpolated table
+    and its coarser grid, not only the partition formula. Charges do not
+    depend on the AO normalisation, so no terco rescale is needed."""
+    import json as _json
+    import subprocess as _sp
+    mqc_root = Path(os.environ.get("MQC_ROOT", str(Path.home() / "dev" / "metalquicha")))
+    sys.path.insert(0, str(mqc_root / "tools" / "spherical_atom"))
+    import spherical_atom_reference as sar  # noqa: E402
+
+    def bse_any_order(name, z):
+        # mqc's bse_to_pyscf asserts l-sorted shells, which only matters for
+        # its own AO-order comparisons; the free-atom basis is read as is.
+        data = _json.loads((sar.ROOT / "basis_sets" / (name + ".json")).read_text())
+        shells = []
+        for sh in data["elements"][str(z)]["electron_shells"]:
+            exps = [float(e) for e in sh["exponents"]]
+            cols = [[float(c) for c in col] for col in sh["coefficients"]]
+            moms = sh["angular_momentum"]
+            if len(moms) == 1:
+                shells.append([moms[0]] + [[e] + [c[k] for c in cols] for k, e in enumerate(exps)])
+            else:
+                for l, col in zip(moms, cols):
+                    shells.append([l] + [[e, col[k]] for k, e in enumerate(exps)])
+        return shells
+    sar.bse_to_pyscf = bse_any_order
+    mqc_commit = _sp.run(["git", "-C", str(mqc_root), "rev-parse", "HEAD"],
+                         capture_output=True, text=True).stdout.strip() or "unknown"
+
+    free_atoms = {}
+
+    def free_atom(symbol):
+        if symbol not in free_atoms:
+            amol, _, adm, _ = sar.solve(symbol, "def2-tzvp", "wb97x", True)
+            free_atoms[symbol] = (amol, adm[0] + adm[1])
+        return free_atoms[symbol]
+
+    bohr = 0.529177210903  # CODATA 2018, as terco
+
+    def atoms_bohr(xyz):
+        lines = (TEST / xyz).read_text().splitlines()
+        n = int(lines[0])
+        return [(ln.split()[0], tuple(float(v) / bohr for v in ln.split()[1:4]))
+                for ln in lines[2:2 + n]]
+
+    cases = [("water_6-31g", "hirshfeld_water.xyz", "6-31g", 0),
+             ("o2_cc-pvdz", "o2.xyz", "cc-pvdz", 2)]
+    files = [TEST / "basis_sets" / "6-31g.json", TEST / "basis_sets" / "cc-pvdz.json",
+             TEST / "hirshfeld_water.xyz", TEST / "o2.xyz"]
+    w = RefWriter("hirshfeld.ref")
+    w.header("hirshfeld", files)
+    w.comment("free atoms: metalquicha " + mqc_commit +
+              " tools/spherical_atom/spherical_atom_reference.py, wB97X/def2-TZVP")
+    w.int_("NCASE", len(cases))
+    for ic, (name, xyz, basname, spin) in enumerate(cases, start=1):
+        atoms = atoms_bohr(xyz)
+        elements = {sym: gto.charge(sym) for sym, _ in atoms}
+        bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+        mol = gto.M(atom=atoms, unit="Bohr", basis=bas, spin=spin, cart=False, verbose=0)
+        mf = scf.RHF(mol) if spin == 0 else scf.UHF(mol)
+        mf.conv_tol = 1e-12
+        mf.conv_tol_grad = 1e-9
+        mf.run()
+        if not mf.converged:
+            raise RuntimeError(f"gen_hirshfeld {name}: SCF did not converge")
+        dm = np.asarray(mf.make_rdm1())
+        total, sdm = (dm, None) if dm.ndim == 2 else (dm[0] + dm[1], dm[0] - dm[1])
+
+        grids = dft.Grids(mol)
+        grids.atom_grid = (150, 974)
+        grids.build()
+        ni = dft.numint.NumInt()
+        ao = ni.eval_ao(mol, grids.coords)
+        rho = ni.eval_rho(mol, ao, total)
+        free = np.empty((mol.natm, len(grids.weights)))
+        for a in range(mol.natm):
+            amol, adm = free_atom(mol.atom_symbol(a))
+            free[a] = ni.eval_rho(amol, ni.eval_ao(amol, grids.coords - mol.atom_coord(a)), adm)
+        tot = free.sum(axis=0)
+        share = np.divide(free, tot, out=np.zeros_like(free), where=tot > 0)
+        q = mol.atom_charges() - share @ (grids.weights * rho)
+        print(f"  hirshfeld {name:12s} E {mf.e_tot:.10f}  q " + " ".join(f"{v:.9f}" for v in q))
+        w.str_(f"NAME_{ic}", name)
+        w.int_(f"NATM_{ic}", mol.natm)
+        w.vector(f"Q_{ic}", q)
+        spins = (np.zeros(mol.natm) if sdm is None
+                 else share @ (grids.weights * ni.eval_rho(mol, ao, sdm)))
+        w.vector(f"S_{ic}", spins)
+    w.end()
+    w.write()
+
+
 def gen_minao():
     """test/check_minao.F90's two cases against PySCF's own
     `init_guess_by_minao`: water/cc-pVDZ and silane/def2-SVP (Si, Z=14, a
@@ -4365,6 +4466,7 @@ def gen_ghost_water_dimer():
 
 
 CASES = {
+    "hirshfeld": gen_hirshfeld,
     "mult": gen_mult,
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,

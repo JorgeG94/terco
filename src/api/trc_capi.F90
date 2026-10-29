@@ -195,7 +195,7 @@ module trc_capi
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_minao, only: trc_minao_build
-   use trc_error, only: error_t
+   use trc_error, only: error_t, ERROR_IO
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
                                 XC_AVAILABLE_FUNCTIONALS, XC_FAMILY_MGGA
    use trc_tables, only: TRC_ERI_LMAX => LMAX
@@ -210,7 +210,8 @@ module trc_capi
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
                           ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
-   use trc_sph, only: sph_cart_to_sph
+   use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
+   use trc_hirshfeld, only: trc_hirshfeld_populations
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
@@ -262,6 +263,7 @@ module trc_capi
    public :: trc_abi_version
    public :: trc_run_polarizability, trc_polarizability
    public :: trc_nmo, trc_mo_occupations
+   public :: trc_hirshfeld_charges
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -319,7 +321,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 8
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 9
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -4929,6 +4931,74 @@ contains
       dmat(1:n*n*ns) = real(reshape(d, [n*n*ns]), c_double)
       status = TRC_OK
    end function trc_density
+
+   function trc_hirshfeld_charges(handle, charges) result(status) bind(c, name="trc_hirshfeld_charges")
+      !! Hirshfeld atomic charges from the converged density, one per atom
+      !! in `trc_set_molecule`'s own order -- `trc_hirshfeld.F90`'s
+      !! stockholder partition (Hirshfeld, Theor. Chim. Acta 44, 129
+      !! (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
+      !! Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
+      !! analysis never touches the solvent operator, only the converged
+      !! density). TRC_ERR_BADARG for an element outside H-Kr (terco has
+      !! no effective-core-potential support to refuse separately);
+      !! TRC_ERR_STATE when the free-atom data file cannot be read (set
+      !! TRC_HIRSHFELD_DATA).
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: charges(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(error_t) :: err
+      real(dp), allocatable :: d_scf(:, :, :), d_total_sph(:, :), d_total_cart(:, :)
+      real(dp), allocatable :: q(:)
+      integer :: n, ns
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+
+      ! The total density in the SCF's own space, then into the Cartesian
+      ! AO space `trc_hirshfeld_populations` reads -- the same transform
+      ! `trc_scf_fock`'s own XC call goes through (sph_to_cart's `d_c`),
+      ! because the collocation it shares with the XC kernel is Cartesian
+      ! throughout (see trc_sph.F90's own header).
+      n = scf_space_nao(cx%bb)
+      ns = cx%res%nspin
+      d_scf = cx%res%dmat
+      allocate (d_total_sph(n, n))
+      if (ns == 1) then
+         d_total_sph = d_scf(:, :, 1)
+      else
+         d_total_sph = d_scf(:, :, 1) + d_scf(:, :, 2)
+      end if
+      if (cx%bb%b%spherical) then
+         allocate (d_total_cart(cx%bb%b%nao, cx%bb%b%nao))
+         call sph_sph_to_cart(cx%bb%b, d_total_sph, d_total_cart)
+      else
+         d_total_cart = d_total_sph
+      end if
+
+      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, err)
+      if (err%has_error()) then
+         cx%message = err%get_message()
+         status = hirshfeld_status(err)
+         return
+      end if
+      charges(1:cx%bb%b%natm) = real(q, c_double)
+      status = TRC_OK
+   end function trc_hirshfeld_charges
+
+   pure integer(c_int) function hirshfeld_status(err) result(status)
+      !! The C status for a failed Hirshfeld analysis: the data file is the
+      !! environment's to fix (TRC_ERR_STATE), anything else is the
+      !! molecule (an element outside H-Kr, TRC_ERR_BADARG).
+      type(error_t), intent(in) :: err
+      if (err%code == ERROR_IO) then
+         status = TRC_ERR_STATE
+      else
+         status = TRC_ERR_BADARG
+      end if
+   end function hirshfeld_status
 
    function trc_mo_coefficients(handle, cmo) result(status) bind(c, name="trc_mo_coefficients")
       !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:

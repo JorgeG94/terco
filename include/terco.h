@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 8
+#define TRC_ABI_MINOR 9
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -952,6 +952,20 @@ int trc_iterations(trc_handle_t handle, int* niter);
  * second trc_run_scf both read it as such internally.
  */
 int trc_density(trc_handle_t handle, double* dmat);
+
+/**
+ * Hirshfeld atomic charges from the converged density, one per atom
+ * in `trc_set_molecule`'s own order -- `trc_hirshfeld.F90`'s
+ * stockholder partition (Hirshfeld, Theor. Chim. Acta 44, 129
+ * (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
+ * Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
+ * analysis never touches the solvent operator, only the converged
+ * density). TRC_ERR_BADARG for an element outside H-Kr (terco has
+ * no effective-core-potential support to refuse separately);
+ * TRC_ERR_STATE when the free-atom data file cannot be read (set
+ * TRC_HIRSHFELD_DATA).
+ */
+int trc_hirshfeld_charges(trc_handle_t handle, double* charges);
 
 /**
  * CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:

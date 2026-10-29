@@ -140,7 +140,7 @@ module trc_xc
    implicit none
    private
 
-   public :: trc_xc_rks, trc_xc_uks, trc_xc_fxc_rks, XC_RHO_TOL
+   public :: trc_xc_rks, trc_xc_uks, trc_xc_fxc_rks, trc_xc_rho, XC_RHO_TOL
    public :: XC_NP_PAD, XC_NL_PAD, sort_by_shape
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
@@ -221,6 +221,162 @@ contains
       if (present(t_pairs)) t_pairs = tq
       if (present(n_skipped)) n_skipped = nsk
    end subroutine trc_xc_uks
+
+   !
+   ! rho at every point of `xg`, in xg's own (permuted) order, for a density
+   ! analysis that wants the values rather than a functional of them (the
+   ! Hirshfeld partition). xc_drive's first half -- collocate, gather, X_b =
+   ! chi_b D_b by batched GEMM -- then a point kernel that keeps rho = sum_u
+   ! X_u chi_u. No density screening and no rank split: every point is
+   ! asked for. `dmat` need not be symmetric-positive (a spin density is
+   ! fine). `b` and `xg` must already be on the device, as for trc_xc_rks.
+   !
+   subroutine trc_xc_rho(b, xg, dmat, rho, budget, la)
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      real(dp), intent(in) :: dmat(b%nao, b%nao)
+      real(dp), intent(out) :: rho(xg%npts)
+      integer(int64), intent(in), optional :: budget   !! as trc_xc_rks
+      type(trc_linalg_t), intent(inout), optional, target :: la
+
+      integer(int64) :: cap, need, nchi, sa, sb
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, k, nb, k0, k1, cnt, mp, ml, nwork
+      integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
+      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :)
+      type(trc_linalg_t), target :: la_own
+      type(trc_linalg_t), pointer :: lp
+
+      rho = 0.0_dp
+      if (xg%npts == 0) return
+      cap = 8388608_int64
+      if (present(budget)) cap = max(budget, 1_int64)
+
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
+      allocate (npp(xg%nbatch), nlp(xg%nbatch))
+      do ib = 1, xg%nbatch
+         nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         npb = xg%b_off(ib + 1) - xg%b_off(ib)
+         npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((nloc + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+      end do
+      if (present(la)) then
+         lp => la
+      else
+         call la_own%init(1)
+         lp => la_own
+      end if
+      !$acc enter data copyin(dmat, npp, nlp) create(rho)
+
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > cap .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            b1 = ib
+         end do
+         nchi = max(need, 1_int64)
+         p0 = xg%b_off(b0)
+         np = xg%b_off(b1 + 1) - p0
+         nb = b1 - b0 + 1
+         allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
+         do k = 1, nb
+            ord(k) = b0 + k - 1
+         end do
+         call sort_by_shape(nb, npp, nlp, ord)
+         need = 0
+         npairs = 0
+         nwork = 0
+         pb_off(1) = 0
+         wk_off(1) = 0
+         do k = 1, nb
+            ib = ord(k)
+            c_off(ib) = int(need)
+            pr_off(ib) = npairs
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            pb_off(k + 1) = npairs
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))
+            wk_off(k + 1) = nwork
+         end do
+
+         allocate (chi(nchi), gchi(nchi, 3), xt(nchi, 1), zt(nchi, 1), dloc(max(npairs, 1), 1))
+         !$acc enter data create(chi, gchi, xt, zt, dloc) copyin(c_off, pr_off, ord, pb_off, wk_off)
+         ! Padding must be zero, as in xc_drive: it feeds the GEMM.
+         call xc_zero(nchi, 1, chi, zt)
+         call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                           c_off, npp, xg%nbatch, nchi, chi, gchi)
+         call xc_gather(npairs, nb, ord, pb_off, 1, b%nao, dmat, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                        nlp, xg%nbatch, dloc)
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               sa = int(mp, int64)*int(ml, int64)
+               sb = int(ml, int64)*int(ml, int64)
+               call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
+                                    dloc(pr_off(ib) + 1, 1), ml, sb, 0.0_dp, xt(c_off(ib) + 1, 1), mp, sa, cnt)
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_rho_points(np, p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, xg%nbatch, &
+                            nchi, chi, xt, rho)
+
+         !$acc exit data delete(chi, gchi, xt, zt, dloc, c_off, pr_off, ord, pb_off, wk_off)
+         deallocate (chi, gchi, xt, zt, dloc, ord, pb_off, wk_off)
+         b0 = b1 + 1
+      end do
+      !$acc update self(rho)
+      !$acc exit data delete(dmat, npp, nlp, rho)
+      if (.not. present(la)) call la_own%release()
+   end subroutine trc_xc_rho
+
+   subroutine xc_rho_points(np, p0, npts, batch_of, b_off, b_aooff, c_off, npp, nbatch, nchi, chi, xt, rho)
+      integer, intent(in) :: np, p0, npts, nbatch
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), xt(nchi, 1)
+      real(dp), intent(inout) :: rho(npts)
+      integer :: g
+
+      do concurrent(g=1:np)
+         rho(p0 + g - 1) = xc_rho_point_body(p0 + g - 1, npts, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                             nchi, chi, xt)
+      end do
+   end subroutine xc_rho_points
+
+   pure function xc_rho_point_body(gg, npts, batch_of, b_off, b_aooff, c_off, npp, nbatch, nchi, chi, xt) &
+      result(rho)
+      !$acc routine seq
+      integer, intent(in) :: gg, npts, nbatch
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), xt(nchi, 1)
+      real(dp) :: rho
+      integer :: ib, nloc, ld, off, u, i
+
+      ib = batch_of(gg)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      rho = 0.0_dp
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         rho = rho + xt(i, 1)*chi(i)
+      end do
+   end function xc_rho_point_body
 
    subroutine xc_drive(b, xg, func, nspin, dmat, vxc, exc, nelec, cap, rho_tol, t_points, t_pairs, n_skipped, comm, la)
       type(trc_basis_t), intent(in) :: b
