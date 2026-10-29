@@ -94,6 +94,8 @@ module trc_eri
       logical :: needs_md = .false.
       !! A shell above f: HGP and Rys have no kernel for its classes, so J
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
+      logical :: has_f = .false.
+      !! A shell of f or higher: MD J beats the bins' J there (see mdj_requested).
       !! The McMurchie-Davidson J engine over the same bins, built on the
       !! first `coulomb` call: an HGP/Rys-only run never pays for it.
       logical :: on_device = .false.
@@ -202,6 +204,7 @@ contains
       this%thresh = thresh
       this%nao = b%nao
       this%needs_md = maxval(b%sh_l) > 3
+      this%has_f = maxval(b%sh_l) >= 3
 
       !
       ! SPLIT A GENERAL CONTRACTION BEFORE ANYTHING IS BUILT.
@@ -565,13 +568,37 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
 
-   logical function mdj_requested() result(res)
-      !! TRC_MDJ=1 routes the Coulomb part of a resident Fock build through
-      !! the McMurchie-Davidson J engine.
+   logical function mdj_requested(has_f, pure_functional) result(res)
+      !! Whether the Coulomb part of a resident Fock build comes from the
+      !! McMurchie-Davidson J engine instead of the bins. TRC_MDJ=1 forces it
+      !! on and TRC_MDJ=0 off, so both stay measurable; unset, it follows the
+      !! rule: on for a basis with an f or higher shell, or when the
+      !! functional is pure (no exact exchange, so the bins are skipped
+      !! altogether), off otherwise.
+      !!
+      !! Fock s/iteration at --iterations 4, thresh 1e-12, Tesla V100-PCIE-32GB,
+      !! RHF unless noted, TRC_MDJ=0 / TRC_MDJ=1 (energies agree to 2e-11):
+      !!   w20 cc-pVDZ           0.106 / 0.147   (d at most: bins win)
+      !!   gly10 6-31G*          0.181 / 0.278
+      !!   w20 def2-SVP          0.039 / 0.059
+      !!   gly10 def2-SVP        0.252 / 0.316
+      !!   w20 def2-TZVP         0.361 / 0.411   (hybrid, has f: the rule picks MD J and loses)
+      !!   w20 cc-pVTZ           1.064 / 0.966   (f: MD J wins)
+      !!   w20 cc-pVTZ PBE       0.647 / 0.207   (pure: no bins at all)
+      !! def2-TZVP is the one case the rule gets wrong (14% slower with MD J);
+      !! cc-pVTZ, also hybrid with f, wins 9%.
+      logical, intent(in) :: has_f, pure_functional
       character(len=8) :: e
       e = " "
       call get_environment_variable("TRC_MDJ", e)
-      res = trim(e) == "1"
+      select case (trim(e))
+      case ("1")
+         res = .true.
+      case ("0")
+         res = .false.
+      case default
+         res = has_f .or. pure_functional
+      end select
    end function mdj_requested
 
    subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac)
@@ -976,10 +1003,10 @@ contains
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
       n = this%nao
       nw = this%nao_w
-      ! TRC_MDJ=1: the Coulomb part from the McMurchie-Davidson J engine, and
+      ! See mdj_requested: the Coulomb part from the McMurchie-Davidson J engine, and
       ! the bins only for exchange (or not at all without it). Ordinary
       ! Coulomb operator only; an erf pass keeps the bins.
-      md_j = (mdj_requested() .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      md_j = (mdj_requested(this%has_f, kfac == 0.0_dp) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
       if (this%needs_md .and. ow /= 0.0_dp) error stop &
          "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
       jbins = jfac
