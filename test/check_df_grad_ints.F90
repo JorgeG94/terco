@@ -155,7 +155,7 @@ program check_df_grad_ints
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c
    use trc_df_grad_kernels, only: df_grad_3c_plan, df_grad_3c_driver, df_grad_2c_driver, DFG_LMAX, DFG_LMAX_AUX, &
                                   DFG_NPCLS
-   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
@@ -193,12 +193,12 @@ program check_df_grad_ints
    ! overrides%prune = .false. on both: the pyscf reference is built from these files'
    ! literal columns, same reasoning as check_rys_fock_vs_pyscf.F90.
    call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, force_cart=.true., &
-                               overrides=trc_basis_overrides_t(prune=.false.))
+                               overrides=trc_basis_json_overrides(prune=.false.))
    if (err%has_error()) then
       print '(a)', 'check_df_grad_ints: '//err%get_message(); stop 1
    end if
    call trc_basis_from_json(trim(aux_json), nat, at_z, r, aux, err, force_cart=.true., &
-                               overrides=trc_basis_overrides_t(prune=.false.))
+                               overrides=trc_basis_json_overrides(prune=.false.))
    if (err%has_error()) then
       print '(a)', 'check_df_grad_ints: '//err%get_message(); stop 1
    end if

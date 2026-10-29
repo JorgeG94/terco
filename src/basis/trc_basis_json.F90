@@ -14,22 +14,29 @@ module trc_basis_json
    implicit none
    private
 
-   public :: trc_basis_from_json, trc_fitted_shell_from_json, trc_basis_overrides_t
+   public :: trc_basis_from_json, trc_fitted_shell_from_json, trc_basis_overrides_t, trc_basis_json_overrides
 
    !
    ! The rarely-set, never-combined-with-each-other knobs of
    ! trc_basis_from_json, bundled so the call keeps one optional dummy
    ! instead of one per knob (docs/CODE_STRUCTURE.md's arg-count limit --
    ! `force_cart` stays its own dummy since nearly every caller sets it).
-   ! An unset component is simply left unallocated by the structure
-   ! constructor, which a caller setting only one of the two relies on
-   ! (trc_basis_overrides_t(prune=.false.), trc_basis_overrides_t(charges=z)).
+   ! Build one with trc_basis_json_overrides(charges=..., prune=...), never
+   ! with the structure constructor: nvfortran 26.5 leaves an omitted
+   ! allocatable scalar component ALLOCATED (and .false.) when another
+   ! component comes from an allocatable component of a pointer target --
+   ! trc_capi's `trc_basis_overrides_t(charges=cx%at_z)` silently turned
+   ! pruning off -- and aborts with an internal compiler error on a
+   ! constructor mixing an allocatable and a default-initialised component.
+   ! Plain assignment inside the builder is correct under both compilers.
    !
    type :: trc_basis_overrides_t
       real(dp), allocatable :: charges(:)
       !! Nuclear charge per atom; trc_basis_from_json's own `charges`.
-      logical, allocatable :: prune
-      !! Override `TRC_PRUNE_PRIMITIVES`; trc_basis_from_json's own `prune`.
+      logical :: prune_set = .false.
+      !! Whether `prune` overrides `TRC_PRUNE_PRIMITIVES`.
+      logical :: prune = .true.
+      !! The override, when `prune_set`.
    end type trc_basis_overrides_t
 
    type :: shell_t
@@ -55,6 +62,19 @@ contains
    ! The basis comes back built (host side; the caller moves it to the
    ! device).
    !
+   function trc_basis_json_overrides(charges, prune) result(overrides)
+      !! A trc_basis_overrides_t with just the knobs given (see the type's
+      !! comment for why this, not the structure constructor).
+      real(dp), intent(in), optional :: charges(:)
+      logical, intent(in), optional :: prune
+      type(trc_basis_overrides_t) :: overrides
+      if (present(charges)) overrides%charges = charges
+      if (present(prune)) then
+         overrides%prune_set = .true.
+         overrides%prune = prune
+      end if
+   end function trc_basis_json_overrides
+
    subroutine trc_basis_from_json(path, natm, elements, at_r, b, error, force_cart, overrides)
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
@@ -90,7 +110,7 @@ contains
       if (present(force_cart)) force = force_cart
       do_prune = prune_enabled()
       if (present(overrides)) then
-         if (allocated(overrides%prune)) do_prune = overrides%prune
+         if (overrides%prune_set) do_prune = overrides%prune
       end if
 
       call json%initialize()

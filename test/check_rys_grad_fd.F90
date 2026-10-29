@@ -33,7 +33,7 @@ program check_rys_grad_fd
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
-   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
@@ -117,7 +117,7 @@ contains
       ! the arithmetic path it was tuned against rather than
       ! trc_basis_json's prune_block reduction.
       call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, &
-                               overrides=trc_basis_overrides_t(prune=.false.))
+                               overrides=trc_basis_json_overrides(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_rys_grad_fd: '//err%get_message(); stop 1
       end if
@@ -169,7 +169,7 @@ contains
       ! overrides%prune = .false.: same reasoning as e2_at above, and it must agree
       ! with it -- e2_at rebuilds the basis at each displaced geometry.
       call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, &
-                               overrides=trc_basis_overrides_t(prune=.false.))
+                               overrides=trc_basis_json_overrides(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_rys_grad_fd: '//err%get_message(); stop 1
       end if

@@ -10,7 +10,7 @@ module check_minao_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_sph, only: sph_cart_to_sph
    use trc_minao, only: trc_minao_build, minao_occupation
    use trc_test_basis, only: read_xyz
@@ -203,7 +203,7 @@ contains
          ! docstring), not pyscf's internal optimized-general-contraction
          ! cc-pVDZ -- same reasoning as check_rys_fock_vs_pyscf.F90.
          call trc_basis_from_json('basis_sets/'//trim(BASNAME(ic)), natm_, z, r, b, err, &
-                                  overrides=trc_basis_overrides_t(prune=.false.))
+                                  overrides=trc_basis_json_overrides(prune=.false.))
          call check(error,.not. err%has_error(), trim(MOLNAME(ic))//" must build: "//err%get_message())
          if (allocated(error)) then
             close (pu)
@@ -233,7 +233,7 @@ contains
          ! this `b` must be the same AO definition minao_probe.bin's S was
          ! taken from.
          call trc_basis_from_json('basis_sets/'//trim(BASNAME(ic + 1)), natm_, z, r, b, err, &
-                                  overrides=trc_basis_overrides_t(prune=.false.))
+                                  overrides=trc_basis_json_overrides(prune=.false.))
          call check(error,.not. err%has_error(), trim(name)//" must build: "//err%get_message())
          if (allocated(error)) then
             deallocate (dm_ref)

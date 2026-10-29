@@ -27,7 +27,7 @@ program check_lr_exchange_grad_vs_pyscf
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
-   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
@@ -60,7 +60,7 @@ program check_lr_exchange_grad_vs_pyscf
    ! overrides%prune = .false.: the pyscf reference is built from this file's literal
    ! columns, same reasoning as check_rys_fock_vs_pyscf.F90.
    call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, &
-                               overrides=trc_basis_overrides_t(prune=.false.))
+                               overrides=trc_basis_json_overrides(prune=.false.))
    if (err%has_error()) then
       print '(a)', 'check_lr_exchange_grad_vs_pyscf: '//err%get_message(); stop 1
    end if

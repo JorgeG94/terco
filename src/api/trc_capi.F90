@@ -191,7 +191,7 @@ module trc_capi
    use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
    use trc_scf_df, only: df_jk_t
-   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_minao, only: trc_minao_build
@@ -2164,7 +2164,7 @@ contains
       force_cart_this = cx%opts%force_cartesian
       if (aux .and. cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
       call trc_basis_from_json(trim(fpath), cx%natm, cx%elements, cx%at_r, b, err, &
-                               force_cart=force_cart_this, overrides=trc_basis_overrides_t(charges=cx%at_z))
+                               force_cart=force_cart_this, overrides=trc_basis_json_overrides(charges=cx%at_z))
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -2665,7 +2665,7 @@ contains
       force_cart_this = cx%opts%force_cartesian
       if (cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
       call trc_basis_from_json(trim(fpath), cx%natm, cx%elements, cx%at_r, b, err, &
-                               force_cart=force_cart_this, overrides=trc_basis_overrides_t(charges=cx%at_z))
+                               force_cart=force_cart_this, overrides=trc_basis_json_overrides(charges=cx%at_z))
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
