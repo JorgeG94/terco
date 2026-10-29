@@ -860,6 +860,129 @@ def gen_erf_fock(case, xyz, json_rel):
     dump.unlink()
 
 
+def gen_erf_fock_g(case, xyz, json_rel):
+    """gen_erf_fock for a basis with g functions: the same omega=0.3 J/K
+    on the same fixed density, from check_erf_fock_vs_pyscf_<case>_md, the
+    one path such a basis has (eri%fock; the bins and Rys below
+    TERCO_RYS_G_LTOT, McMurchie-Davidson exchange above). That binary runs
+    with TRC_MDG_CART=1 under ctest, so it is set here too: the dump's
+    density and overlap do not depend on it, but the run should be the one
+    the test makes."""
+    OMEGA = 0.3
+    dump = TEST / f"erf_fock_probe_{case}_md.bin"
+    run_bin(f"check_erf_fock_vs_pyscf_{case}_md", [xyz, json_rel, dump.name, "0", case],
+            env_extra={"TRC_MDG_CART": "1"})
+    if not dump.exists():
+        print(f"  erf_fock {case}: binary self-skipped (LMAX too low for this build); not regenerating")
+        return
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    d_terco = r.mat(nao)
+    j_now = r.mat(nao)
+    k_now = r.mat(nao)
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_erf_fock_g {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    d_terco_p = d_terco[np.ix_(inv_perm, inv_perm)]
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_erf_fock_g {case}: overlap check failed, {s_err:.3e}")
+    d_pyscf = n[:, None] * d_terco_p * n[None, :]
+
+    with mol.with_range_coulomb(OMEGA):
+        vj_ref, vk_ref = scf.hf.get_jk(mol, d_pyscf)
+    j_terco = (vj_ref * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+    k_terco = (vk_ref * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+
+    w = RefWriter(f"erf_fock_{case}.ref")
+    w.header(f"check_erf_fock_vs_pyscf_{case}_md",
+             [ROOT / "test" / "check_erf_fock_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("S", s_terco)
+    w.matrix("J", j_terco)
+    w.matrix("K", k_terco)
+    w.end()
+    w.write()
+    print(f"  erf_fock {case}: max|J_terco - J_pyscf| {np.abs(j_now - j_terco).max():.3e}  "
+          f"max|K_terco - K_pyscf| {np.abs(k_now - k_terco).max():.3e}  (max|K| {np.abs(k_terco).max():.3e})")
+    dump.unlink()
+
+
+def gen_rsh_g(case, xyz):
+    """check_rsh_g_vs_pyscf.F90's cases: a range-separated hybrid SCF on
+    cc-pVQZ (g on the heavy atom), spherical as pyscf runs it, converged by
+    converge_tight on terco's own DFT grid (and VV10 grid) from the probe the
+    binary writes. pyscf starts from its own guess: water is closed shell
+    and NH2's 2B1 ground state is not degenerate."""
+    PYSCF_XC = {'wb97x': 'wb97x', 'wb97x-v': 'wb97x-v'}
+    json_rel = "basis_sets/cc-pvqz-pyscf17.json"
+    run_bin("check_rsh_g_vs_pyscf", [case])
+    dump = TEST / f"rsh_g_probe_{case}.bin"
+    if not dump.exists():
+        print(f"  rsh_g {case}: binary self-skipped (LMAX too low for this build); not regenerating")
+        return
+    r = BinReader(dump)
+    natm, nspin, na, nb = r.i8(), r.i8(), r.i8(), r.i8()
+    zint = np.atleast_1d(r.i8(natm))
+    rr = r.f8(3 * natm).reshape(3, natm, order='F').T
+    fn = r.str_(8)
+    npts = r.i8()
+    pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+    wts = r.f8(npts)
+    npts_nlc = r.i8()
+    if npts_nlc:
+        pts_nlc = r.f8(3 * npts_nlc).reshape(3, npts_nlc, order='F').T
+        wts_nlc = r.f8(npts_nlc)
+    e_t = r.f8(1)[0]
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in zint}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rr[i])) for i, z in enumerate(zint)]
+    charge = int(sum(zint)) - (na + nb)
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=False, charge=charge,
+                spin=na - nb, verbose=0)
+
+    def make_mf():
+        m = dft.RKS(mol) if nspin == 1 else dft.UKS(mol)
+        m.xc = PYSCF_XC[fn]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        if npts_nlc:
+            m.nlcgrids.coords = np.ascontiguousarray(pts_nlc)
+            m.nlcgrids.weights = wts_nlc
+            m.nlcgrids.non0tab = None
+        return m
+
+    mf, grad_norm = converge_tight(make_mf, None, f"rsh_g {case}")
+    w = RefWriter(f"rsh_g_{case}.ref")
+    w.header(f"check_rsh_g_vs_pyscf {case}",
+             [ROOT / "test" / "check_rsh_g_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.comment(f"{fn} {'UKS' if nspin == 2 else 'RKS'}, {npts} grid points, {npts_nlc} VV10 points, "
+              f"GRAD_NORM {grad_norm:.3e}")
+    w.real("E", mf.e_tot)
+    w.end()
+    w.write()
+    print(f"  rsh_g {case}: E(pyscf) {mf.e_tot:20.12f}  E(terco) {e_t:20.12f}  |dE| {abs(e_t - mf.e_tot):.2e}  "
+          f"|g| {grad_norm:.2e}")
+    dump.unlink()
+
+
 def gen_df_vs_pyscf():
     """trc_df_2c/trc_df_3c (water/cc-pVTZ orbital, cc-pVTZ-RI auxiliary --
     the first comparison with a g shell) against pyscf's
@@ -4539,6 +4662,11 @@ CASES = {
     "erf_fock_water_631gs": lambda: gen_erf_fock("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "erf_fock_water_ccpvdz": lambda: gen_erf_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
     "erf_fock_formamide_ccpvdz": lambda: gen_erf_fock("formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
+    "erf_fock_water_ccpvqz": lambda: gen_erf_fock_g("water_ccpvqz", "water.xyz",
+                                                    "basis_sets/cc-pvqz-pyscf17.json"),
+    "rsh_g_water_wb97x": lambda: gen_rsh_g("water_wb97x", "water.xyz"),
+    "rsh_g_nh2_wb97x": lambda: gen_rsh_g("nh2_wb97x", "nh2.xyz"),
+    "rsh_g_water_wb97xv": lambda: gen_rsh_g("water_wb97xv", "water.xyz"),
     "df_vs_pyscf": gen_df_vs_pyscf,
     "dfg_ints_water_631gs": lambda: gen_df_grad_ints(
         "water_631gs", "water.xyz", "basis_sets/6-31gs.json", "basis_sets/def2-universal-jkfit.json"),

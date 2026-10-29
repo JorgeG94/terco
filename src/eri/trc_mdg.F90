@@ -64,6 +64,9 @@ module trc_mdg
       !! largest shell-block density element, set by mdg_fock
       real(dp) :: thresh = 0.0_dp
       real(dp) :: pcut = 0.0_dp
+      real(dp) :: omega = 0.0_dp
+      !! erf(omega r12)/r12 when > 0 (a range-separated hybrid's long-range
+      !! exchange); 0 is the plain Coulomb operator
       real(dp) :: jfac = 0.0_dp
       real(dp) :: kfac = 0.0_dp
       integer :: rank = 0
@@ -520,7 +523,7 @@ contains
                         md%mp_az, md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, &
                         md%sp_as1, md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, &
                         size(this%gl), this%gl, this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb, &
-                        sc%thresh, sc%pcut, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
+                        sc%thresh, sc%pcut, sc%omega, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
                         size(dmat, 2), size(dmat, 1), dmat, jmat, this%gh(hb0 + ib*perb + 1), &
                         this%gh(hk0 + j0*perk + 1), this%wrb, this%wsm)
          end do

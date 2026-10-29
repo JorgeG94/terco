@@ -72,9 +72,9 @@ DATA_DECL = """      integer,  intent(in) :: nhp, nsp, ngl
       integer,  intent(in) :: sp_ao1(nsp), sp_ao2(nsp), sp_k0(nsp), sp_nk(nsp), sp_sh1(nsp), sp_sh2(nsp)
       integer,  intent(in) :: sp_as1(nsp), sp_as2(nsp)
       integer,  intent(in) :: gl(ngl)"""
-WIN = "ib0, ni, ka, jb0, nj, kb, thresh, pcut, jfac, kfac, wdiag, nbas, dsh, nao, ndens, dmat, jmat"
+WIN = "ib0, ni, ka, jb0, nj, kb, thresh, pcut, omega, jfac, kfac, wdiag, nbas, dsh, nao, ndens, dmat, jmat"
 WIN_DECL = """      integer,  intent(in) :: ib0, ni, ka, jb0, nj, kb, nbas, nao, ndens
-      real(dp), intent(in) :: thresh, pcut, jfac, kfac, wdiag, dsh(nbas, nbas)
+      real(dp), intent(in) :: thresh, pcut, omega, jfac, kfac, wdiag, dsh(nbas, nbas)
       real(dp), intent(in) :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)"""
 
@@ -208,7 +208,7 @@ def r_item(tag, L):
     o.append(WIN_DECL)
     o.append(f"      real(dp), intent(inout) :: rb({len(herm(L))}, ni*ka*nj*kb)")
     o.append("      integer :: u, i, j, k1, k2, spa, spc, si, sj, sk, sl, kp, kq, r")
-    o.append("      real(dp) :: zeta, eta, zpe, alpha, pref, tval, m2a, ww, bnd, pqx, pqy, pqz, qcut")
+    o.append("      real(dp) :: zeta, eta, zpe, alpha, theta, pref, tval, m2a, ww, bnd, pqx, pqy, pqz, qcut")
     o.append("      real(dp) :: f(0:BOYS_MMAX)")
     o.append(decl("real(dp)", [rtree.leaf_name(m) for m in leaves]))
     o.append(decl("real(dp)", [st.lhs for st in g.statements()]))
@@ -243,11 +243,24 @@ def r_item(tag, L):
     o.append("         return")
     o.append("      end if")
     o.append("      alpha = zeta*eta/zpe")
+    o.append("      ! erf(omega r12)/r12: alpha -> theta alpha in the Boys argument and the")
+    o.append("      ! (-2 alpha)^m powers, and sqrt(theta) on the prefactor, with")
+    o.append("      ! theta = omega^2/(omega^2 + alpha). The X_PQ recursion is unchanged.")
+    o.append("      ! This is the HGP substitution (rho -> theta rho), valid here because")
+    o.append("      ! R^(m)_000 is a function of alpha and |PQ| only; Rys's u2 is the one")
+    o.append("      ! place it is not (scripts/gen_rys.py). The screens above keep the")
+    o.append("      ! full-Coulomb bounds, which bound the attenuated integral too. omega = 0")
+    o.append("      ! skips the branch: every product below is the unattenuated one.")
+    o.append("      ww = pref")
+    o.append("      if (omega > 0.0_dp) then")
+    o.append("         theta = omega*omega/(omega*omega + alpha)")
+    o.append("         alpha = theta*alpha")
+    o.append("         ww = pref*sqrt(theta)")
+    o.append("      end if")
     o.append("      pqx = mp_px(kp) - mp_px(kq); pqy = mp_py(kp) - mp_py(kq); pqz = mp_pz(kp) - mp_pz(kq)")
     o.append("      tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
     o.append(f"      call boys_down({max(leaves)}, tval, f)")
     o.append("      m2a = -2.0_dp*alpha")
-    o.append("      ww = pref")
     for m in range(max(leaves) + 1):
         if m > 0:
             o.append("      ww = ww*m2a")

@@ -126,6 +126,7 @@ module trc_eri
       procedure :: fock_many  => eri_fock_many
       procedure :: fock_nosym => eri_fock_nosym
       procedure :: fock_resident => eri_fock_resident
+      procedure :: fock_resident_many => eri_fock_resident_many
       procedure :: gradient => eri_gradient
       procedure :: coulomb => eri_coulomb
       procedure :: release => eri_release
@@ -471,7 +472,8 @@ contains
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
-      real(dp) :: jfac, kfac, ow
+      real(dp) :: jfac, kfac, ow, jbins
+      logical :: md_j
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -502,15 +504,18 @@ contains
       else
          this%dsh = 1.0_dp
       end if
-      if (this%needs_md .and. ow /= 0.0_dp) error stop &
-         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
+      ! A g basis: J from the MD J engine below, the bins and MD exchange for
+      ! exchange only. MD J has no erf operator, so with omega > 0 the bins and
+      ! MD exchange form J as well (an RSH's long-range pass has j_scale = 0).
+      md_j = this%needs_md .and. ow == 0.0_dp
+      jbins = jfac
+      if (md_j) jbins = 0.0_dp
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      ! A g basis: J from the MD engine below, the bins for exchange only.
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     merge(0.0_dp, jfac, this%needs_md), kfac, ow, .false., this%dsh, &
+                     jbins, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -518,8 +523,8 @@ contains
                      this%sq_ax, this%sq_ay, this%sq_az, &
                      this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
-      call mdg_pass(this, b, dwork, jmat, merge(0.0_dp, jfac, this%needs_md), kfac)
-      if (this%needs_md .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
+      call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
+      if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -601,7 +606,7 @@ contains
       end select
    end function mdj_requested
 
-   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac)
+   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega)
       !! The g classes fock_bins leaves to MD exchange (those above
       !! TERCO_RYS_G_LTOT), into the same folded matrix (both on the device).
       !! Builds the MD pair list and its sorted groups on first use.
@@ -610,6 +615,8 @@ contains
       real(dp), intent(in)    :: dwork(:, :, :)
       real(dp), intent(inout) :: jmat(:, :, :)
       real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: omega
+      !! the operator's erf range parameter, as fock_bins takes it (0: Coulomb)
       type(trc_mdg_scales_t) :: sc
       if (.not. this%needs_md) return
       if (.not. this%md%built) then
@@ -637,6 +644,7 @@ contains
       end if
       sc%thresh = this%thresh
       sc%pcut = this%thresh*TRC_PRIM_MARGIN
+      sc%omega = omega
       sc%jfac = jfac
       sc%kfac = kfac
       sc%rank = this%rank
@@ -1007,8 +1015,6 @@ contains
       ! the bins only for exchange (or not at all without it). Ordinary
       ! Coulomb operator only; an erf pass keeps the bins.
       md_j = (mdj_requested(this%has_f, kfac == 0.0_dp) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
-      if (this%needs_md .and. ow /= 0.0_dp) error stop &
-         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
       jbins = jfac
       if (md_j) jbins = 0.0_dp
 
@@ -1102,7 +1108,7 @@ contains
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
-         call mdg_pass(this, b, dwork, jmat, jbins, kfac)
+         call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
          !$acc wait
          call profiler_stop("eri: md exchange")
       end if
@@ -1155,6 +1161,114 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock_resident
 
+
+   subroutine eri_fock_resident_many(this, b, ndens, dmats, gmats, k_scale, j_scale, omega)
+      !! eri_fock_resident for `ndens` densities in ONE pass over the
+      !! integrals: gmats(:, :, d) = j_scale J[D_d] - k_scale K[D_d]/2, every
+      !! quartet evaluated once and digested into each density's own G (the
+      !! bin kernels' `ndens`). An unrestricted SCF's two exchange builds
+      !! (trc_scf_fock's g_uks) are the case it is for: the integrals are most
+      !! of a K build, the per-density digestion the rest.
+      !!
+      !! The MD paths (MD J; MD exchange for the g classes) take one density
+      !! at a time, so when either would run -- a basis with classes routed to
+      !! MD exchange, or a Coulomb part mdj_requested would give to MD J --
+      !! this is eri_fock_resident once per density instead: the same
+      !! numbers, without the shared pass.
+      !!
+      !! Always density-screened, the bound being the maximum over the
+      !! densities per shell pair (each sees at least the quartets it would
+      !! alone). A coupled-perturbed solve, which must not screen on its
+      !! trial densities, uses eri_fock_resident.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
+      !! Both must already be present on the device.
+      real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
+      real(dp), intent(in), optional :: k_scale, j_scale
+      real(dp), intent(in), optional :: omega
+
+      real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
+      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
+      integer :: n, nw, d
+      real(dp) :: jfac, kfac, ow
+
+      jfac = 1.0_dp
+      kfac = 1.0_dp
+      ow = 0.0_dp
+      if (present(j_scale)) jfac = j_scale
+      if (present(k_scale)) kfac = k_scale
+      if (present(omega)) ow = omega
+      if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
+
+      if (ndens == 1 .or. this%needs_md .or. &
+          (jfac /= 0.0_dp .and. ow == 0.0_dp .and. mdj_requested(this%has_f, kfac == 0.0_dp))) then
+         do d = 1, ndens
+            call this%fock_resident(b, dmats(:, :, d), gmats(:, :, d), k_scale=kfac, j_scale=jfac, omega=ow)
+         end do
+         return
+      end if
+
+      n = this%nao
+      nw = this%nao_w
+      allocate (jmat(ndens, nw, nw), kmat(ndens, nw, nw), dwork(ndens, nw, nw))
+      allocate (dp_w(nw, nw), gp_w(nw, nw))
+      !$acc enter data create(jmat, kmat, dwork, dp_w, gp_w)
+
+      ! Each density into the integrals' basis and into the kernel's
+      ! (ndens, nao, nao) layout -- density index fastest, so one (mu,nu)'s
+      ! ndens updates coalesce -- all on the device, with the screening bound
+      ! the maximum over the densities.
+      do d = 1, ndens
+         if (this%dec%active) then
+            call decon_expand(this%dec, dmats(:, :, d), dp_w)
+         else
+            call copy_square_device(n, dmats(:, :, d), dp_w)
+         end if
+         call pack_density_device(nw, ndens, d, dp_w, dwork, jmat, kmat)
+         if (d == 1) then
+            call density_blocks_device(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
+         else
+            call density_blocks_device_max(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
+         end if
+      end do
+
+      call profiler_start("eri: bins (hgp/rys), several densities", nvtx_only=.true.)
+      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+                     this%ao_off, this%thresh, .false., &
+                     jfac, kfac, ow, .false., this%dsh, &
+                     this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                     this%hp_ra, this%hp_rb, this%hp_c, &
+                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                     this%sq_ax, this%sq_ay, this%sq_az, &
+                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
+                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      !$acc wait
+      call profiler_stop("eri: bins (hgp/rys), several densities")
+
+      ! Symmetrise each in the integrals' basis, THEN fold back (the other
+      ! order is a different matrix: the decontraction C is not square).
+      do d = 1, ndens
+         call unpack_symmetrise_device(nw, ndens, d, jmat, gp_w)
+         if (this%dec%active) then
+            call decon_fold(this%dec, gp_w, gmats(:, :, d))
+         else
+            call copy_square_device(n, gp_w, gmats(:, :, d))
+         end if
+      end do
+
+      !$acc exit data delete(jmat, kmat, dwork, dp_w, gp_w)
+      ! Resident on every rank; the sum goes through the host for now.
+      if (this%distributed) then
+         !$acc update self(gmats)
+         call sum_ranks(this, gmats, n*n*ndens)
+         !$acc update device(gmats)
+      end if
+      deallocate (jmat, kmat, dwork, dp_w, gp_w)
+   end subroutine eri_fock_resident_many
+
    !
    ! Shell-block density bound, computed on the device.
    !
@@ -1175,6 +1289,42 @@ contains
       res = .true.
       if (present(flag)) res = flag
    end function screen_on
+
+   subroutine copy_square_device(n, a, c)
+      !! c := a for two resident (n, n) matrices.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: a(n, n)
+      real(dp), intent(out) :: c(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         c(i, j) = a(i, j)
+      end do
+   end subroutine copy_square_device
+
+   subroutine pack_density_device(nw, ndens, d, dp_w, dwork, jmat, kmat)
+      !! Density `d` into slot d of the kernel's (ndens, nw, nw) layout, and
+      !! that slot's accumulators zeroed. Device to device.
+      integer, intent(in) :: nw, ndens, d
+      real(dp), intent(in) :: dp_w(nw, nw)
+      real(dp), intent(inout) :: dwork(ndens, nw, nw), jmat(ndens, nw, nw), kmat(ndens, nw, nw)
+      integer :: i, j
+      do concurrent(j=1:nw, i=1:nw)
+         dwork(d, i, j) = dp_w(i, j)
+         jmat(d, i, j) = 0.0_dp
+         kmat(d, i, j) = 0.0_dp
+      end do
+   end subroutine pack_density_device
+
+   subroutine unpack_symmetrise_device(nw, ndens, d, jmat, gp_w)
+      !! Slot d of the kernel's result, symmetrised.
+      integer, intent(in) :: nw, ndens, d
+      real(dp), intent(in) :: jmat(ndens, nw, nw)
+      real(dp), intent(out) :: gp_w(nw, nw)
+      integer :: i, j
+      do concurrent(j=1:nw, i=1:nw)
+         gp_w(i, j) = 0.5_dp*(jmat(d, i, j) + jmat(d, j, i))
+      end do
+   end subroutine unpack_symmetrise_device
 
    subroutine fill_ones_device(nshell, dsh)
       !! `dsh := 1`, as an explicit-shape dummy `do concurrent` (no derived-
@@ -1212,6 +1362,30 @@ contains
          dsh(i, j) = m
       end do
    end subroutine density_blocks_device
+
+   subroutine density_blocks_device_max(nshell, nao, sh_l, sh_ao, dmat, dsh)
+      !! density_blocks_device for a further density: dsh becomes the larger
+      !! of what it holds and this density's own bound, per shell pair.
+      integer,  intent(in)    :: nshell, nao
+      integer,  intent(in)    :: sh_l(nshell), sh_ao(nshell)
+      real(dp), intent(in)    :: dmat(nao, nao)
+      real(dp), intent(inout) :: dsh(nshell, nshell)
+
+      integer :: i, j, a, c, ni, nj
+      real(dp) :: m
+
+      do concurrent(j=1:nshell, i=1:nshell) local(ni, nj, m, a, c)
+         ni = (sh_l(i) + 1)*(sh_l(i) + 2)/2
+         nj = (sh_l(j) + 1)*(sh_l(j) + 2)/2
+         m = dsh(i, j)
+         do c = 0, nj - 1
+            do a = 0, ni - 1
+               m = max(m, abs(dmat(sh_ao(i) + a, sh_ao(j) + c)))
+            end do
+         end do
+         dsh(i, j) = m
+      end do
+   end subroutine density_blocks_device_max
 
    !
    ! Shell-block density bound, over the basis the integrals are built in.

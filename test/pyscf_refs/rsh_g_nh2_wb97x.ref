@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_rsh_g_vs_pyscf nh2_wb97x
+# generator: test/pyscf_refs/generate.py CASES["rsh_g_nh2_wb97x"] -> gen_rsh_g
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 31b0cddd94881334abc7c8c721781c7a1599958e966bd50275d038305225f676
+# files: test/check_rsh_g_vs_pyscf.F90 test/basis_sets/cc-pvqz-pyscf17.json test/nh2.xyz
+# wb97x UKS, 33518 grid points, 0 VV10 points, GRAD_NORM 3.022e-09
+E -5.58870443950985418e+01
+END
