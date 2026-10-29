@@ -1034,6 +1034,40 @@ foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
 endforeach()
 
 #
+# The same omega = 0.3 J/K on water/cc-pVQZ, whose g shell on O sends the
+# exchange classes above TERCO_RYS_G_LTOT to McMurchie-Davidson exchange
+# (trc_mdg) and the lower g classes to Rys: the matrix-level check of the
+# erf operator in both. eri%fock only (the enumerated path has no g), and
+# TRC_MDG_CART=1: the basis is spherical, and MD's spherical path is only
+# exact after the caller's fold, which this Cartesian comparison never
+# applies (check_rsh_g_vs_pyscf runs the spherical path in a full SCF).
+# Self-skips below TERCO_LMAX=4.
+#
+set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_water_ccpvqz_md.bin)
+terco_add_check(check_erf_fock_vs_pyscf_water_ccpvqz_md check_erf_fock_vs_pyscf.F90
+                NEEDS_BASIS NEEDS_PYSCF_REF
+                ARGS water.xyz basis_sets/cc-pvqz-pyscf17.json ${dump} 0 water_ccpvqz)
+set_tests_properties(terco/check_erf_fock_vs_pyscf_water_ccpvqz_md PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_MDG_CART=1"
+  SKIP_REGULAR_EXPRESSION "SKIP")
+
+# Range-separated hybrids (wB97X RKS and UKS, wB97X-V) on cc-pVQZ: full SCF
+# energies against pyscf on terco's own grid (test/pyscf_refs/rsh_g_*.ref).
+# One ctest entry per case. Self-skips below TERCO_LMAX=4.
+add_executable(check_rsh_g_vs_pyscf check_rsh_g_vs_pyscf.F90)
+target_compile_definitions(check_rsh_g_vs_pyscf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_rsh_g_vs_pyscf PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io
+                                                   test-drive::test-drive)
+target_include_directories(check_rsh_g_vs_pyscf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+foreach(case water_wb97x nh2_wb97x water_wb97xv)
+  add_test(NAME terco/check_rsh_g_vs_pyscf_${case} COMMAND check_rsh_g_vs_pyscf ${case})
+  set_tests_properties(terco/check_rsh_g_vs_pyscf_${case} PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+    SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+
+#
 # trc_df_2c ((P|Q)) and trc_df_3c ((mu nu|P)) against a committed pyscf
 # int2c2e/aux_e2(int3c2e) reference (test/pyscf_refs/df_vs_pyscf.ref) -- the
 # density-fitting analogue of the eri%fock comparison above, and the first

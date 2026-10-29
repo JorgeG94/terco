@@ -471,7 +471,8 @@ contains
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
-      real(dp) :: jfac, kfac, ow
+      real(dp) :: jfac, kfac, ow, jbins
+      logical :: md_j
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -502,15 +503,18 @@ contains
       else
          this%dsh = 1.0_dp
       end if
-      if (this%needs_md .and. ow /= 0.0_dp) error stop &
-         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
+      ! A g basis: J from the MD J engine below, the bins and MD exchange for
+      ! exchange only. MD J has no erf operator, so with omega > 0 the bins and
+      ! MD exchange form J as well (an RSH's long-range pass has j_scale = 0).
+      md_j = this%needs_md .and. ow == 0.0_dp
+      jbins = jfac
+      if (md_j) jbins = 0.0_dp
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      ! A g basis: J from the MD engine below, the bins for exchange only.
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     merge(0.0_dp, jfac, this%needs_md), kfac, ow, .false., this%dsh, &
+                     jbins, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -518,8 +522,8 @@ contains
                      this%sq_ax, this%sq_ay, this%sq_az, &
                      this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
-      call mdg_pass(this, b, dwork, jmat, merge(0.0_dp, jfac, this%needs_md), kfac)
-      if (this%needs_md .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
+      call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
+      if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -601,7 +605,7 @@ contains
       end select
    end function mdj_requested
 
-   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac)
+   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega)
       !! The g classes fock_bins leaves to MD exchange (those above
       !! TERCO_RYS_G_LTOT), into the same folded matrix (both on the device).
       !! Builds the MD pair list and its sorted groups on first use.
@@ -610,6 +614,8 @@ contains
       real(dp), intent(in)    :: dwork(:, :, :)
       real(dp), intent(inout) :: jmat(:, :, :)
       real(dp), intent(in)    :: jfac, kfac
+      real(dp), intent(in)    :: omega
+      !! the operator's erf range parameter, as fock_bins takes it (0: Coulomb)
       type(trc_mdg_scales_t) :: sc
       if (.not. this%needs_md) return
       if (.not. this%md%built) then
@@ -637,6 +643,7 @@ contains
       end if
       sc%thresh = this%thresh
       sc%pcut = this%thresh*TRC_PRIM_MARGIN
+      sc%omega = omega
       sc%jfac = jfac
       sc%kfac = kfac
       sc%rank = this%rank
@@ -1007,8 +1014,6 @@ contains
       ! the bins only for exchange (or not at all without it). Ordinary
       ! Coulomb operator only; an erf pass keeps the bins.
       md_j = (mdj_requested(this%has_f, kfac == 0.0_dp) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
-      if (this%needs_md .and. ow /= 0.0_dp) error stop &
-         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
       jbins = jfac
       if (md_j) jbins = 0.0_dp
 
@@ -1102,7 +1107,7 @@ contains
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
-         call mdg_pass(this, b, dwork, jmat, jbins, kfac)
+         call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
          !$acc wait
          call profiler_stop("eri: md exchange")
       end if

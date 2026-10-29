@@ -63,9 +63,9 @@ Terco will read the qcshema basis set format so if you have those, you can use t
 
 **The code has not been tested on AMD or Intel GPUs**. This is future work, if anyone is happy to try.
 
-- **g functions** need `TERCO_LMAX=4` and are for energies: the non-symmetric
-  Fock build, gradients and range-separated exchange refuse a g basis, and the
-  multipole integrals stop at d. An LMAX=4 build compiles for about 50 minutes.
+- **g functions** need `TERCO_LMAX=4` and are for energies (range-separated
+  hybrids included): the non-symmetric Fock build and gradients refuse a g
+  basis, and the multipole integrals stop at d. An LMAX=4 build compiles for about 50 minutes.
 
 Spherical harmonics and range separation are supported:
 
