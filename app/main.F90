@@ -2764,6 +2764,22 @@ program terco_main
       end block
    end if
 
+   ! The Hirshfeld free atoms ship next to the basis sets too: without this
+   ! the library falls back to a path relative to the working directory,
+   ! which only exists inside the test tree.
+   if (r%charges == "hirshfeld") then
+      block
+         character(len=1024) :: e
+         integer :: n, s
+         call get_environment_variable("TRC_HIRSHFELD_DATA", e, n, s)
+         if (s /= 0 .or. n == 0) then
+            call resolve_basis("hirshfeld_proatoms", sval, r%err)
+            if (r%err%has_error()) call die(r, "Hirshfeld charges need the free-atom table: "//r%err%get_message())
+            call set_env("TRC_HIRSHFELD_DATA", sval)
+         end if
+      end block
+   end if
+
    if (r%rank0) call banner(r)
 
    ! ---- the calculation -------------------------------------------------
