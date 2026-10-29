@@ -470,11 +470,15 @@ contains
       end do
    end subroutine basis_subset
 
-   subroutine basis_from_libcint(this, atm, natm, bas, nshell, env)
+   subroutine basis_from_libcint(this, atm, natm, bas, nshell, env, at_elem)
       class(trc_basis_t), intent(inout) :: this
       integer,  intent(in) :: natm, nshell
       integer,  intent(in) :: atm(0:), bas(0:)
       real(dp), intent(in) :: env(0:)
+      integer,  intent(in), optional :: at_elem(natm)
+      !! Element per atom. libcint's atm carries only the CHARGE (0 on a ghost),
+      !! so without this every ghost's element is nint(0) = 0: an element-0
+      !! DFT grid and Becke partition at a ghost oxygen. Absent, as before.
 
       integer :: i, k, ia, np, pe, pc, maxnp
       integer,  allocatable :: l(:), nprim(:)
@@ -511,7 +515,7 @@ contains
          end do
       end do
 
-      call this%build(nshell, l, nprim, e, c, r, natm, z, rat, maxnp)
+      call this%build(nshell, l, nprim, e, c, r, natm, z, rat, maxnp, at_elem=at_elem)
       deallocate (l, nprim, e, c, r, z, rat)
    end subroutine basis_from_libcint
 

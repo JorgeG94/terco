@@ -1379,7 +1379,7 @@ set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${C
 # check_capi_ghost.F90's own header.
 add_executable(check_capi_ghost check_capi_ghost.F90)
 target_compile_definitions(check_capi_ghost PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(check_capi_ghost PRIVATE ${main_lib} terco_c_interfaces terco_pyscf_ref_io
+target_link_libraries(check_capi_ghost PRIVATE ${main_lib} terco_test_basis terco_c_interfaces terco_pyscf_ref_io
                                                 test-drive::test-drive)
 add_test(NAME terco/check_capi_ghost COMMAND check_capi_ghost)
 set_tests_properties(terco/check_capi_ghost PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

@@ -301,7 +301,7 @@ contains
       nmax = 0
       do ia = 1, b%natm
          if (b%at_z(ia) == 0.0_dp) cycle
-         call trc_fitted_shell_from_json(bpath, nint(b%at_z(ia)), e, c, error)
+         call trc_fitted_shell_from_json(bpath, b%at_elem(ia), e, c, error)
          if (error%has_error()) return
          nmax = max(nmax, size(e))
       end do
@@ -372,7 +372,7 @@ contains
                a_c(1, ish) = 0.0_dp
                cycle
             end if
-            call trc_fitted_shell_from_json(bpath, nint(b%at_z(ia)), e, c, error)
+            call trc_fitted_shell_from_json(bpath, b%at_elem(ia), e, c, error)
             if (error%has_error()) then
                deallocate (a_l, a_np, a_e, a_c, a_r)
                return
@@ -463,7 +463,7 @@ contains
       do ia = 1, b%natm
          if (first(ia) == 0) cycle
          if (b%at_z(ia) == 0.0_dp) cycle   ! a ghost: no nucleus, no screening potential
-         zint(ia) = nint(b%at_z(ia))
+         zint(ia) = b%at_elem(ia)
          a0 = b%sh_ao(first(ia))
          a1 = b%sh_ao(last(ia)) + ncart(b%sh_l(last(ia))) - 1
          nz = a1 - a0 + 1

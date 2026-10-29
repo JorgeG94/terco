@@ -16,12 +16,16 @@
 ! precisely because none of it is part of the library.
 !
 module trc_test_basis
+   use, intrinsic :: iso_c_binding, only: c_int, c_double
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
    implicit none
    public
 
    real(dp), parameter :: ANG = 1.8897261254578281_dp
+
+   integer, parameter :: PTR_ENV_START = 20
+   !! libcint's first free env slot, where pack_libcint starts writing.
 
 contains
 
@@ -293,5 +297,68 @@ contains
          fact = fact*real(i, dp)
       end do
    end function fact
+
+   !
+   ! `b`'s shells into libcint's packed atm (6, natm)/bas (8, nshell)/env
+   ! layout, 1-based Fortran indices onto libcint's own 0-based slots --
+   ! the same packing link_gfortran.F90's build_libcint_arrays uses,
+   ! generalised to any basis rather than one hardcoded 6-31G.
+   !
+   subroutine pack_libcint(b, atm, bas, env)
+      type(trc_basis_t), intent(in) :: b
+      integer(c_int), allocatable, intent(out) :: atm(:, :), bas(:, :)
+      real(c_double), allocatable, intent(out) :: env(:)
+      integer :: nsh2, maxnp2
+      integer, allocatable :: l2(:), np2(:)
+      real(dp), allocatable :: e2(:, :), c2(:, :), r2(:, :)
+      integer :: off, ia, is, k
+
+      call unpack_basis(b, nsh2, l2, np2, e2, c2, r2, maxnp2)
+
+      allocate (atm(6, b%natm), bas(8, nsh2))
+      allocate (env(PTR_ENV_START + 3*b%natm + 2*sum(np2)))
+      env = 0.0_c_double
+      atm = 0_c_int; bas = 0_c_int
+
+      off = PTR_ENV_START
+      do ia = 1, b%natm
+         atm(1, ia) = int(b%at_z(ia), c_int)      ! CHARGE_OF
+         atm(2, ia) = int(off, c_int)             ! PTR_COORD
+         env(off + 1:off + 3) = real(b%at_r(:, ia), c_double)
+         off = off + 3
+      end do
+
+      do is = 1, nsh2
+         bas(1, is) = int(shell_atom(b, is) - 1, c_int)  ! ATOM_OF, 0-based
+         bas(2, is) = int(l2(is), c_int)                 ! ANG_OF
+         bas(3, is) = int(np2(is), c_int)                ! NPRIM_OF
+         bas(4, is) = 1_c_int                            ! NCTR_OF
+         bas(5, is) = 0_c_int                            ! KAPPA_OF
+         bas(6, is) = int(off, c_int)                    ! PTR_EXP
+         do k = 1, np2(is)
+            env(off + k) = real(e2(k, is), c_double)
+         end do
+         off = off + np2(is)
+         bas(7, is) = int(off, c_int)                    ! PTR_COEFF
+         do k = 1, np2(is)
+            env(off + k) = real(c2(k, is), c_double)
+         end do
+         off = off + np2(is)
+      end do
+   end subroutine pack_libcint
+
+   integer function shell_atom(b, is) result(ia)
+      !! Which atom shell `is` sits on, by matching its centre -- `b%sh_at`
+      !! itself is the same map, but it is `build`'s own output and this
+      !! test wants an independent check that the packed arrays describe
+      !! the geometry `read_xyz` gave, not merely a copy of that field.
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: is
+      integer :: k
+      ia = 1
+      do k = 1, b%natm
+         if (maxval(abs(b%sh_r(:, is) - b%at_r(:, k))) < 1.0e-12_dp) ia = k
+      end do
+   end function shell_atom
 
 end module trc_test_basis

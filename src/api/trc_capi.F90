@@ -1797,8 +1797,8 @@ contains
          return
       end if
       if (cx%have_basis .or. cx%have_aux .or. cx%have_jkfit) then
-         call refuse(cx, "trc_set_elements: a JSON basis is already loaded -- call this "// &
-                     "before trc_set_basis_json/trc_set_aux_json/trc_set_jkfit_json, not after")
+         call refuse(cx, "trc_set_elements: a basis is already loaded -- call this before "// &
+                     "trc_set_basis_*/trc_set_aux_*/trc_set_jkfit_* (JSON, libcint or arrays), not after")
          return
       end if
       status = TRC_ERR_BADARG
@@ -1913,6 +1913,29 @@ contains
       cx%df_fit_ok = .false.
    end subroutine take_basis
 
+   subroutine context_from_libcint(cx, b, atm, natm, bas, nshell, env, nenv)
+      !! A context's orbital/auxiliary/jkfit basis from libcint's arrays, with
+      !! the elements trc_set_elements (or trc_set_molecule's nint(z) default)
+      !! recorded. libcint's atm carries only charges, 0 on a ghost, and a ghost
+      !! must keep its element for the DFT grid and Becke partition, SAD/SAP
+      !! and PCM radii -- without it every ghost was element 0, an error of
+      !! 1e-5 to 1e-4 Eh in a ghosted B3LYP energy (water dimer, cc-pVDZ). The
+      !! JSON and arrays paths already pass them. Only when the atom lists
+      !! agree in length; another atom list keeps nint(charge).
+      type(context_box), intent(in) :: cx
+      type(trc_basis_t), intent(inout) :: b
+      integer(c_int), intent(in) :: natm, nshell, nenv
+      integer(c_int), intent(in) :: atm(*), bas(*)
+      real(c_double), intent(in) :: env(*)
+      if (allocated(cx%elements) .and. int(natm) == cx%natm) then
+         call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), &
+                             real(env(1:nenv), dp), at_elem=cx%elements)
+      else
+         call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), &
+                             real(env(1:nenv), dp))
+      end if
+   end subroutine context_from_libcint
+
    function basis_libcint(handle, aux, atm, natm, bas, nshell, env, nenv, cartesian) result(status)
       !! `cartesian` nonzero builds the basis in terco's own Cartesian AO
       !! space, as before. Zero tags it spherical instead: the SHELLS
@@ -1947,7 +1970,7 @@ contains
          call refuse(cx, trim(whoer)//": natm, nshell and nenv must all be positive")
          return
       end if
-      call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
+      call context_from_libcint(cx, b, atm, natm, bas, nshell, env, nenv)
       b%spherical = (cartesian == 0)
       ! TRC_AO_NORM_UNIT and a spherical basis do not combine -- same
       ! refusal basis_json makes for the JSON path (see its own comment).
@@ -2641,7 +2664,7 @@ contains
          call refuse(cx, "trc_set_jkfit_libcint: natm, nshell and nenv must all be positive")
          return
       end if
-      call b%from_libcint(int(atm(1:6*natm)), int(natm), int(bas(1:8*nshell)), int(nshell), real(env(1:nenv), dp))
+      call context_from_libcint(cx, b, atm, natm, bas, nshell, env, nenv)
       b%spherical = (cartesian == 0)
       if (cx%have_basis .and. b%spherical .neqv. cx%bb%b%spherical) then
          call refuse(cx, "trc_set_jkfit_libcint: jkfit basis is "// &
