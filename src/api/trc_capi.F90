@@ -212,6 +212,7 @@ module trc_capi
                           ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_hirshfeld, only: trc_hirshfeld_populations
+   use trc_fukui, only: trc_fukui_indices
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
@@ -264,6 +265,7 @@ module trc_capi
    public :: trc_run_polarizability, trc_polarizability
    public :: trc_nmo, trc_mo_occupations
    public :: trc_hirshfeld_charges
+   public :: trc_fukui_hirshfeld
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -314,7 +316,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 9
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 10
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -4939,37 +4941,14 @@ contains
       integer(c_int) :: status
       type(context_box), pointer :: cx
       type(error_t) :: err
-      real(dp), allocatable :: d_scf(:, :, :), d_total_sph(:, :), d_total_cart(:, :)
       real(dp), allocatable :: q(:)
-      integer :: n, ns
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
 
-      ! The total density in the SCF's own space, then into the Cartesian
-      ! AO space `trc_hirshfeld_populations` reads -- the same transform
-      ! `trc_scf_fock`'s own XC call goes through (sph_to_cart's `d_c`),
-      ! because the collocation it shares with the XC kernel is Cartesian
-      ! throughout (see trc_sph.F90's own header).
-      n = scf_space_nao(cx%bb)
-      ns = cx%res%nspin
-      d_scf = cx%res%dmat
-      allocate (d_total_sph(n, n))
-      if (ns == 1) then
-         d_total_sph = d_scf(:, :, 1)
-      else
-         d_total_sph = d_scf(:, :, 1) + d_scf(:, :, 2)
-      end if
-      if (cx%bb%b%spherical) then
-         allocate (d_total_cart(cx%bb%b%nao, cx%bb%b%nao))
-         call sph_sph_to_cart(cx%bb%b, d_total_sph, d_total_cart)
-      else
-         d_total_cart = d_total_sph
-      end if
-
-      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, err)
+      call state_hirshfeld_charges(cx, q, err)
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -4978,6 +4957,239 @@ contains
       charges(1:cx%bb%b%natm) = real(q, c_double)
       status = TRC_OK
    end function trc_hirshfeld_charges
+
+   subroutine state_hirshfeld_charges(cx, q, error)
+      !! The converged density THIS context currently holds, Hirshfeld-
+      !! condensed -- trc_hirshfeld_charges' own conversion (the total
+      !! density in the SCF's own space, then into the Cartesian AO space
+      !! `trc_hirshfeld_populations` reads, the same transform
+      !! `trc_scf_fock`'s own XC call goes through, sph_to_cart's `d_c` --
+      !! see trc_sph.F90's own header), factored out here so
+      !! trc_fukui_hirshfeld can call it at N, N+1 and N-1 without three
+      !! copies of the same transform.
+      type(context_box), intent(in) :: cx
+      real(dp), allocatable, intent(out) :: q(:)
+      type(error_t), intent(inout) :: error
+
+      real(dp), allocatable :: d_total_sph(:, :), d_total_cart(:, :)
+      integer :: n, ns
+
+      n = scf_space_nao(cx%bb)
+      ns = cx%res%nspin
+      allocate (d_total_sph(n, n))
+      if (ns == 1) then
+         d_total_sph = cx%res%dmat(:, :, 1)
+      else
+         d_total_sph = cx%res%dmat(:, :, 1) + cx%res%dmat(:, :, 2)
+      end if
+      if (cx%bb%b%spherical) then
+         allocate (d_total_cart(cx%bb%b%nao, cx%bb%b%nao))
+         call sph_sph_to_cart(cx%bb%b, d_total_sph, d_total_cart)
+      else
+         d_total_cart = d_total_sph
+      end if
+
+      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
+   end subroutine state_hirshfeld_charges
+
+   function trc_fukui_hirshfeld(handle, f_plus, f_minus, f_zero, q_n, q_np1, q_nm1) &
+      result(status) bind(c, name="trc_fukui_hirshfeld")
+      !! Hirshfeld-condensed Fukui indices by finite difference in the
+      !! electron count, ported from metalquicha's mqc_czt_fukui
+      !! (fukui_indices/fukui_from_states, "hirshfeld" scheme only): three
+      !! SCFs on THIS handle -- the converged neutral already here, plus
+      !! N+1 and N-1, both doublets --
+      !!
+      !!   f_A+ = q_A(N) - q_A(N+1)      f_A- = q_A(N-1) - q_A(N)
+      !!
+      !! condensed by trc_hirshfeld_populations, the SAME partition for all
+      !! three states (mqc_czt_fukui.f90's own header: "the three
+      !! calculations share one czt_molecule_t, so they see the same
+      !! geometry and the same basis functions by construction" -- here,
+      !! the same context_box, and trc_set_charge keeps the SAME basis and
+      !! --df fit across all three, its own header).
+      !!
+      !! ONLY for a closed-shell neutral (multiplicity 1, at least two
+      !! electrons): mqc's own fukui_indices refuses anything else,
+      !! verbatim -- a radical's ions are not both doublets, and guessing
+      !! what they should be is a caller decision this entry point does
+      !! not make.
+      !!
+      !! Each ion runs UNSEEDED, at TRC_GUESS_GWH -- mqc's own default
+      !! when no neutral orbitals are offered to seed from
+      !! (fukui_indices's own guess_kind default, the path its own test,
+      !! water/cc-pVDZ, actually exercises). A caller wanting the
+      !! neutral's orbitals to seed the ions instead (mqc's "neutral"
+      !! mode) drives the three states by hand: trc_set_charge,
+      !! trc_set_guess(TRC_GUESS_GIVEN, ...) and trc_run_scf, exactly what
+      !! this function does internally but with its own density.
+      !!
+      !! Leaves the handle's charge and multiplicity as it found them:
+      !! restored after the two ion SCFs, and the neutral SCF is RE-RUN
+      !! (warm-started from its own converged density) before this
+      !! returns, success or failure -- trc_run_hessian's own restore
+      !! pattern (same file, below), because cx%res has to match
+      !! cx%charge/cx%multiplicity again, not merely the two scalar
+      !! fields.
+      !!
+      !! TRC_ERR_STATE: no converged SCF yet. TRC_ERR_BADARG: multiplicity
+      !! is not 1, fewer than two electrons, an element outside
+      !! Hirshfeld's H-Kr recipe, or the condensed indices failing their
+      !! one-electron sum rule. TRC_ERR_NOCONV: an ion did not converge.
+      !! TRC_ERR_UNSUPPORTED: more than one rank (trc_set_comm) -- not
+      !! implemented yet, trc_run_hessian's own same refusal.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: f_plus(*), f_minus(*), f_zero(*)
+      real(c_double), intent(out) :: q_n(*), q_np1(*), q_nm1(*)
+      integer(c_int) :: status
+
+      type(context_box), pointer :: cx
+      type(error_t) :: err
+      real(dp), allocatable :: q_neutral(:), q_anion(:), q_cation(:)
+      real(dp), allocatable :: fp(:), fm(:), fz(:)
+      real(dp), allocatable :: d0(:, :, :), ref_dguess(:, :, :)
+      integer :: ref_charge, ref_multiplicity, ref_guess_kind, nelec
+      integer(c_int) :: st, fail_status
+      logical :: failed
+      character(len=256) :: fail_message
+
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok .or. .not. cx%res%converged) then
+         cx%message = "trc_fukui_hirshfeld: run a converged SCF first"
+         return
+      end if
+
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%fcomm /= -1) then
+         cx%message = "trc_fukui_hirshfeld: more than one rank (trc_set_comm) is not "// &
+                      "supported yet"
+         return
+      end if
+
+      status = TRC_ERR_BADARG
+      if (cx%multiplicity /= 1) then
+         cx%message = "trc_fukui_hirshfeld: Fukui indices need a closed-shell neutral "// &
+                      "(multiplicity 1); this handle's multiplicity is "// &
+                      trim(itoa(cx%multiplicity))//", and its ions would not both be doublets"
+         return
+      end if
+      nelec = nint(sum(cx%at_z)) - cx%charge
+      if (nelec < 2) then
+         cx%message = "trc_fukui_hirshfeld: fewer than two electrons; no closed shell to "// &
+                      "remove one from"
+         return
+      end if
+
+      call state_hirshfeld_charges(cx, q_neutral, err)
+      if (err%has_error()) then
+         status = TRC_ERR_BADARG
+         cx%message = "trc_fukui_hirshfeld: the neutral's charges: "//err%get_message()
+         return
+      end if
+
+      ! Save the reference state -- trc_run_hessian's own pattern, below.
+      ref_charge = cx%charge
+      ref_multiplicity = cx%multiplicity
+      allocate (d0, source=cx%res%dmat)
+      ref_guess_kind = cx%guess_kind
+      if (ref_guess_kind == TRC_GUESS_GIVEN .and. allocated(cx%dguess)) then
+         allocate (ref_dguess, source=cx%dguess)
+      end if
+
+      failed = .false.
+      fail_status = TRC_OK
+      fail_message = ""
+
+      ! The anion, N+1 electrons, a doublet, unseeded (mqc's own default).
+      st = trc_set_charge(handle, int(ref_charge - 1, c_int), 2_c_int)
+      if (st == TRC_OK) then
+         cx%guess_kind = TRC_GUESS_GWH
+         st = trc_run_scf(handle)
+      end if
+      if (st /= TRC_OK .or. .not. cx%res%converged) then
+         failed = .true.
+         fail_status = merge(TRC_ERR_NOCONV, st, st == TRC_OK)
+         fail_message = "trc_fukui_hirshfeld: the anion (N+1): "//trim(cx%message)
+      else
+         call state_hirshfeld_charges(cx, q_anion, err)
+         if (err%has_error()) then
+            failed = .true.
+            fail_status = TRC_ERR_BADARG
+            fail_message = "trc_fukui_hirshfeld: the anion's charges: "//err%get_message()
+         end if
+      end if
+
+      ! The cation, N-1 electrons, a doublet.
+      if (.not. failed) then
+         st = trc_set_charge(handle, int(ref_charge + 1, c_int), 2_c_int)
+         if (st == TRC_OK) then
+            cx%guess_kind = TRC_GUESS_GWH
+            st = trc_run_scf(handle)
+         end if
+         if (st /= TRC_OK .or. .not. cx%res%converged) then
+            failed = .true.
+            fail_status = merge(TRC_ERR_NOCONV, st, st == TRC_OK)
+            fail_message = "trc_fukui_hirshfeld: the cation (N-1): "//trim(cx%message)
+         else
+            call state_hirshfeld_charges(cx, q_cation, err)
+            if (err%has_error()) then
+               failed = .true.
+               fail_status = TRC_ERR_BADARG
+               fail_message = "trc_fukui_hirshfeld: the cation's charges: "//err%get_message()
+            end if
+         end if
+      end if
+
+      if (.not. failed) then
+         call trc_fukui_indices(q_neutral, q_anion, q_cation, fp, fm, fz, err)
+         if (err%has_error()) then
+            failed = .true.
+            fail_status = TRC_ERR_BADARG
+            fail_message = "trc_fukui_hirshfeld: "//err%get_message()
+         end if
+      end if
+
+      ! Restore the reference state regardless of success or failure --
+      ! trc_run_hessian's own pattern (same file): cx%res has to match
+      ! cx%charge/cx%multiplicity again, not merely the two scalar fields.
+      st = trc_set_charge(handle, int(ref_charge, c_int), int(ref_multiplicity, c_int))
+      cx%guess_kind = TRC_GUESS_GIVEN
+      cx%dguess = d0
+      st = trc_run_scf(handle)
+      cx%guess_kind = ref_guess_kind
+      if (ref_guess_kind == TRC_GUESS_GIVEN .and. allocated(ref_dguess)) then
+         cx%dguess = ref_dguess
+      else if (allocated(cx%dguess)) then
+         deallocate (cx%dguess)
+      end if
+
+      if (failed) then
+         cx%message = fail_message
+         if (st /= TRC_OK) then
+            cx%message = trim(fail_message)//"; restoring the reference SCF then failed too"
+         end if
+         status = fail_status
+         return
+      end if
+      if (st /= TRC_OK) then
+         cx%message = "trc_fukui_hirshfeld: the ions converged, but restoring the reference "// &
+                      "SCF did not reconverge: "//trim(cx%message)
+         status = st
+         return
+      end if
+
+      f_plus(1:size(fp)) = real(fp, c_double)
+      f_minus(1:size(fm)) = real(fm, c_double)
+      f_zero(1:size(fz)) = real(fz, c_double)
+      q_n(1:size(q_neutral)) = real(q_neutral, c_double)
+      q_np1(1:size(q_anion)) = real(q_anion, c_double)
+      q_nm1(1:size(q_cation)) = real(q_cation, c_double)
+      status = TRC_OK
+   end function trc_fukui_hirshfeld
 
    function trc_mo_coefficients(handle, cmo) result(status) bind(c, name="trc_mo_coefficients")
       !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:

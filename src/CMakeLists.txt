@@ -50,6 +50,7 @@ target_sources(
           scf/trc_minao.F90 # the minao guess: a minimal-ANO density projected into the target basis
           scf/trc_hirshfeld_data.F90 # the Hirshfeld proatom radial tables, loaded from a data file
           scf/trc_hirshfeld.F90   # Hirshfeld atomic charges: stockholder partition of the molecular density
+          scf/trc_fukui.F90       # Hirshfeld-condensed Fukui indices: f+/f-/f0 from three states' charges
           api/trc_capi.F90       # the bind(c) skin
           core/trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
