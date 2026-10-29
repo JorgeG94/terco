@@ -711,6 +711,8 @@ contains
       type(trc_pairlist_t), intent(in) :: p
       real(dp), intent(in)  :: orig(3)
       real(dp), intent(out) :: mmat(b%nao, b%nao, TRC_NMULT)
+      if (maxval(b%sh_l) > MULT_LMAX) error stop &
+         "terco: multipole integrals stop at d (MULT_LMAX); this basis has a higher shell"
       call mult_driver(b%nshell, b%nao, b%maxnp, b%sh_l, b%sh_np, b%sh_ao, &
                        b%sh_e, b%sh_c, b%sh_r, p%npair, p%p_i, p%p_j, orig, mmat)
    end subroutine trc_multipoles

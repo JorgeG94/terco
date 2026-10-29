@@ -1,0 +1,52 @@
+name: nvfortran codegen
+
+# The main workflow builds for the host only (TERCO_ENABLE_GPU=OFF), so it
+# never runs nvfortran's device code generation -- where fort2 has crashed
+# on generated kernels at some build-path lengths and not others (see
+# tools/check_fort2_paths.sh). This compiles the at-risk kernels for the GPU
+# at a sweep of path lengths. No GPU needed; it is slow, so it runs only when
+# the generated kernels can have changed, nightly, and by hand.
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/gen_perclass.py'
+      - 'scripts/gen_rys*.py'
+      - 'scripts/rys_inline.py'
+      - 'scripts/gen_vrr.py'
+      - 'scripts/gen_hrr.py'
+      - 'src/generated/**'
+      - 'tools/check_fort2_paths.sh'
+      - '.github/workflows/nvfortran-codegen.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 14 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  fort2-paths:
+    name: fort2 path-length sweep (nvfortran ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        # 26.5 is the release that crashed (fort2 signal 11); keep it pinned
+        # while terco supports it, and watch the newest alongside.
+        version: ['26.5', 'latest']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Setup nvfortran
+        uses: fortran-lang/setup-fortran@v1.9.0
+        with:
+          compiler: nvidia-hpc
+          version: ${{ matrix.version }}
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build liblapack-dev libblas-dev
+      - name: Compile the at-risk kernels at each path length
+        run: JOBS=4 tools/check_fort2_paths.sh cc90 45 200 15

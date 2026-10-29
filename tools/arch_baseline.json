@@ -131,6 +131,8 @@
 "layer-up|src/core/trc_ao_norm.F90|trc_ao_norm|trc_batch": 1,
 "layer-up|src/core/trc_sph.F90|trc_sph|trc_api": 1,
 "layer-up|src/eri/trc_eri.F90|trc_eri|trc_api": 1,
+"layer-up|src/eri/trc_mdg.F90|trc_mdg|trc_api": 1,
+"layer-up|src/eri/trc_mdj.F90|trc_mdj|trc_api": 1,
 "layer-up|src/post_hf/rimp2/trc_rimp2_driver.F90|trc_rimp2_driver|trc_api": 1,
 "layer-up|src/post_hf/rimp2/trc_rimp2_driver.F90|trc_rimp2_driver|trc_scf_df": 1,
 "layer-up|src/scf/trc_cphf.F90|trc_cphf|trc_api": 1,

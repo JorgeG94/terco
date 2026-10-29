@@ -28,10 +28,18 @@ module trc_binkernel
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
    use trc_rys_select, only: rys_select_init, rys_route
    use trc_rys_kernels, only: rys_dispatch
+   use trc_mdg, only: mdg_routes
    implicit none
    private
 
    real(dp), protected, public :: TRC_PRIM_MARGIN = 1.0e-3_dp
+
+   integer, parameter :: LNOSYM = min(LMAX, 3)
+   !! The enumerated non-symmetric kernel stops at f: a basis with g refuses
+   !! eri%fock_nosym before reaching it (trc_eri). Sized by LMAX at LMAX = 4
+   !! its per-thread scratch was 654 KB, past the 512 KB GPU stack limit.
+   integer, parameter :: NCUM_NOSYM = (2*LNOSYM + 1)*(2*LNOSYM + 2)*(2*LNOSYM + 3)/6
+   !! trc_cart's NCUM at the capped ceiling.
    !! Fraction of the integral threshold at which a PRIMITIVE quartet is
    !! abandoned before the Boys function. The prefactor bounds the (ss|ss)
    !! primitive integral exactly and the higher classes only up to the
@@ -433,7 +441,11 @@ contains
             ! Rys kernel instead of HGP's, for classes that have one --
             ! `rys_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
-            if (rys_route(key2)) then
+            if (mdg_routes(key2)) then
+               ! A g class above TERCO_RYS_G_LTOT: done after the bins by the
+               ! MD exchange pass (trc_mdg), which orders the work its own way.
+               continue
+            else if (rys_route(key2)) then
                call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                  b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
                                  omega, dsh, nbas, nao, sh_l, ao_off, &
@@ -456,6 +468,7 @@ contains
       end block
       deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
    end subroutine fock_bins
+
 
    !
    ! Density screen at bin-pair granularity.
@@ -718,7 +731,7 @@ contains
       real(dp) :: wpx, wpy, wpz, wqx, wqy, wqz
       real(dp) :: oo2z, oo2e, oo2ze, rz, re
       real(dp) :: f(0:BOYS_MMAX)
-      real(dp) :: v(NCUM*NCUM, 0:1), g(NCUM*NCUM)
+      real(dp) :: v(NCUM_NOSYM*NCUM_NOSYM, 0:1), g(NCUM_NOSYM*NCUM_NOSYM)
       integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
@@ -727,7 +740,7 @@ contains
       real(dp) :: abx, aby, abz, cdx, cdy, cdz
       integer  :: mui, nuj, lamk, sigl
       ! largest Cartesian block this LMAX allows: ((L+1)(L+2)/2)^4
-      real(dp) :: vbuf((((LMAX + 1)*(LMAX + 2)/2)**4))
+      real(dp) :: vbuf((((LNOSYM + 1)*(LNOSYM + 2)/2)**4))
       integer  :: pij, pkl
       logical  :: dij, dkl, dpq
 

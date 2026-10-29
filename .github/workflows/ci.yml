@@ -444,9 +444,9 @@ jobs:
         run: |
           python3 scripts/gen_perclass.py --lmax 2 --split src/generated
           python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
-          python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
+          python3 scripts/gen_1e.py --lmax 2 --multipole-dir src/generated
           python3 scripts/gen_1e.py --lmax 2 --pcm src/generated/trc_pcm_kernels.F90
-          python3 scripts/gen_1e.py --lmax 2 --deriv src/generated/trc_1e_grad_kernels.F90
+          python3 scripts/gen_1e.py --lmax 2 --deriv-dir src/generated
           # The shipped DF set: d orbitals, g auxiliary (def2-universal-jkfit),
           # and the same unroll threshold as CMake's TERCO_RYS_UNROLL_MAX.
           python3 scripts/gen_df.py --lmax 2 --lmax-aux 4 --unroll-max-comp 81 --split src/generated
@@ -570,6 +570,12 @@ jobs:
           git diff --stat -- src | tail -1
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF \
                 -DCMAKE_Fortran_FLAGS=-fopenmp -S . -B build-omp
+          # The Rys and MD J/K kernels are generated into the BUILD tree at
+          # configure time, so the conversion of src/ above never saw them:
+          # without this they compile as plain `do concurrent` with the
+          # `!$acc` ignored, and the OpenMP form of the MD engine is untested.
+          python3 tools/dc_to_omp.py --target cpu --write build-omp/generated_*
+          python3 tools/acc_to_omp.py --target cpu --translate-atomics --write build-omp/generated_*
           cmake --build build-omp --parallel 2
           # THREADS ARE THE POINT. The conversion turns constructs whose
           # locality the standard guaranteed into ones where OpenMP's default

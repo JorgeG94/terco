@@ -33,8 +33,12 @@ module trc_eri
    use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
+   use pic_profiler, only: profiler_start, profiler_stop
    use trc_binkernel, only: fock_bins
    use trc_grad, only: grad_bins
+   use trc_mdj, only: trc_mdj_t
+   use trc_mdg, only: trc_mdg_t, trc_mdg_scales_t
+   use trc_binkernel, only: TRC_PRIM_MARGIN
    use trc_api, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
@@ -84,6 +88,16 @@ module trc_eri
       !! basis nothing here is allocated and `nao_w == nao`.
       type(decon_t) :: dec
       integer :: nao_w = 0
+      type(trc_mdj_t) :: md
+      type(trc_mdg_t) :: mg
+      !! The MD exchange pass over the same pairs, for the g classes above TERCO_RYS_G_LTOT.
+      logical :: needs_md = .false.
+      !! A shell above f: HGP and Rys have no kernel for its classes, so J
+      !! comes from trc_mdj and K from trc_mdg whatever the environment says.
+      logical :: has_f = .false.
+      !! A shell of f or higher: MD J beats the bins' J there (see mdj_requested).
+      !! The McMurchie-Davidson J engine over the same bins, built on the
+      !! first `coulomb` call: an HGP/Rys-only run never pays for it.
       logical :: on_device = .false.
       integer :: nlaunch = 0
       integer(int64) :: nkept = 0
@@ -113,6 +127,7 @@ module trc_eri
       procedure :: fock_nosym => eri_fock_nosym
       procedure :: fock_resident => eri_fock_resident
       procedure :: gradient => eri_gradient
+      procedure :: coulomb => eri_coulomb
       procedure :: release => eri_release
    end type trc_eri_t
 
@@ -124,7 +139,7 @@ contains
       type(trc_basis_t), intent(in) :: b
       character(len=:), allocatable :: msg
       character(len=*), parameter :: LNAME = "spdfghik"
-      integer, parameter :: LMAX_BUILDABLE = 3
+      integer, parameter :: LMAX_BUILDABLE = 4
       !! The highest TERCO_LMAX the generators support.
       integer :: lb
       msg = ""
@@ -136,7 +151,7 @@ contains
       if (lb <= LMAX_BUILDABLE) then
          msg = msg//"rebuild with -DTERCO_LMAX="//to_string(lb)
       else
-         msg = msg//"terco's integrals go up to f (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
+         msg = msg//"terco's integrals go up to g (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
       end if
    end function eri_lmax_refusal
 
@@ -188,6 +203,8 @@ contains
       call this%release()
       this%thresh = thresh
       this%nao = b%nao
+      this%needs_md = maxval(b%sh_l) > 3
+      this%has_f = maxval(b%sh_l) >= 3
 
       !
       ! SPLIT A GENERAL CONTRACTION BEFORE ANYTHING IS BUILT.
@@ -485,12 +502,15 @@ contains
       else
          this%dsh = 1.0_dp
       end if
+      if (this%needs_md .and. ow /= 0.0_dp) error stop &
+         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
+      ! A g basis: J from the MD engine below, the bins for exchange only.
       call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
-                     jfac, kfac, ow, .false., this%dsh, &
+                     merge(0.0_dp, jfac, this%needs_md), kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                      this%hp_ra, this%hp_rb, this%hp_c, &
                      this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -498,6 +518,8 @@ contains
                      this%sq_ax, this%sq_ay, this%sq_az, &
                      this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
                      1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      call mdg_pass(this, b, dwork, jmat, merge(0.0_dp, jfac, this%needs_md), kfac)
+      if (this%needs_md .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -546,6 +568,171 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
 
+   logical function mdj_requested(has_f, pure_functional) result(res)
+      !! Whether the Coulomb part of a resident Fock build comes from the
+      !! McMurchie-Davidson J engine instead of the bins. TRC_MDJ=1 forces it
+      !! on and TRC_MDJ=0 off, so both stay measurable; unset, it follows the
+      !! rule: on for a basis with an f or higher shell, or when the
+      !! functional is pure (no exact exchange, so the bins are skipped
+      !! altogether), off otherwise.
+      !!
+      !! Fock s/iteration at --iterations 4, thresh 1e-12, Tesla V100-PCIE-32GB,
+      !! RHF unless noted, TRC_MDJ=0 / TRC_MDJ=1 (energies agree to 2e-11):
+      !!   w20 cc-pVDZ           0.106 / 0.147   (d at most: bins win)
+      !!   gly10 6-31G*          0.181 / 0.278
+      !!   w20 def2-SVP          0.039 / 0.059
+      !!   gly10 def2-SVP        0.252 / 0.316
+      !!   w20 def2-TZVP         0.361 / 0.411   (hybrid, has f: the rule picks MD J and loses)
+      !!   w20 cc-pVTZ           1.064 / 0.966   (f: MD J wins)
+      !!   w20 cc-pVTZ PBE       0.647 / 0.207   (pure: no bins at all)
+      !! def2-TZVP is the one case the rule gets wrong (14% slower with MD J);
+      !! cc-pVTZ, also hybrid with f, wins 9%.
+      logical, intent(in) :: has_f, pure_functional
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_MDJ", e)
+      select case (trim(e))
+      case ("1")
+         res = .true.
+      case ("0")
+         res = .false.
+      case default
+         res = has_f .or. pure_functional
+      end select
+   end function mdj_requested
+
+   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac)
+      !! The g classes fock_bins leaves to MD exchange (those above
+      !! TERCO_RYS_G_LTOT), into the same folded matrix (both on the device).
+      !! Builds the MD pair list and its sorted groups on first use.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)    :: dwork(:, :, :)
+      real(dp), intent(inout) :: jmat(:, :, :)
+      real(dp), intent(in)    :: jfac, kfac
+      type(trc_mdg_scales_t) :: sc
+      if (.not. this%needs_md) return
+      if (.not. this%md%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh)
+         else
+            call this%md%build(b, this%bins, this%thresh)
+         end if
+      end if
+      if (.not. this%mg%built) then
+         ! Exchange in spherical components when the caller's basis is
+         ! spherical; TRC_MDG_CART=1 keeps it Cartesian, for comparing.
+         block
+            character(len=8) :: ec
+            logical :: sph
+            ec = " "
+            call get_environment_variable("TRC_MDG_CART", ec)
+            sph = b%spherical .and. trim(ec) /= "1"
+            if (this%dec%active) then
+               call this%mg%build(this%md, this%pb, sph)
+            else
+               call this%mg%build(this%md, b, sph)
+            end if
+         end block
+      end if
+      sc%thresh = this%thresh
+      sc%pcut = this%thresh*TRC_PRIM_MARGIN
+      sc%jfac = jfac
+      sc%kfac = kfac
+      sc%rank = this%rank
+      sc%nranks = this%nranks
+      call this%mg%fock(this%md, this%dsh, dwork, jmat, sc)
+   end subroutine mdg_pass
+
+   subroutine add_md_j(this, b, dp_w, jmat, jfac)
+      !! jmat(1, :, :) += jfac J[dp_w] from the MD engine; dp_w is a host
+      !! array (eri_fock's), jmat is on the device. This rank's share of it,
+      !! as in eri_fock_resident: the caller sums the ranks.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)    :: dp_w(:, :)
+      real(dp), intent(inout) :: jmat(:, :, :)
+      real(dp), intent(in)    :: jfac
+      real(dp), allocatable :: jw(:, :)
+      integer :: nw, i, j
+      if (.not. this%md%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh)
+         else
+            call this%md%build(b, this%bins, this%thresh)
+         end if
+      end if
+      nw = size(dp_w, 1)
+      allocate (jw(nw, nw))
+      !$acc enter data copyin(dp_w) create(jw)
+      call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks)
+      !$acc update self(jw)
+      !$acc exit data delete(dp_w, jw)
+      ! jmat on the device; the fold symmetrises (jmat + jmat^T)/2, and J is
+      ! symmetric, so adding it once is adding it once.
+      !$acc update self(jmat)
+      do j = 1, nw
+         do i = 1, nw
+            jmat(1, i, j) = jmat(1, i, j) + jfac*jw(i, j)
+         end do
+      end do
+      !$acc update device(jmat)
+      deallocate (jw)
+   end subroutine add_md_j
+
+   subroutine add_scaled_device(n, f, x, y)
+      !! y = y + f x on the device.
+      integer,  intent(in)    :: n
+      real(dp), intent(in)    :: f
+      real(dp), intent(in)    :: x(n)
+      real(dp), intent(inout) :: y(n)
+      integer :: i
+      do concurrent(i = 1:n)
+         y(i) = y(i) + f*x(i)
+      end do
+   end subroutine add_scaled_device
+
+   subroutine eri_coulomb(this, b, dmat, jmat)
+      !! J for a density by the McMurchie-Davidson J engine, which never forms
+      !! an integral quartet (trc_mdj). Same conventions as `fock` at
+      !! k_scale = 0: host arrays, the caller's basis, J of the total density.
+      !!
+      !! Every rank computes the whole of J; the engine does not split work
+      !! over ranks yet, so there is nothing to sum.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in)  :: dmat(this%nao, this%nao)
+      real(dp), intent(out) :: jmat(this%nao, this%nao)
+
+      real(dp), allocatable :: dp_w(:, :), jp_w(:, :)
+      integer :: nw
+
+      if (.not. this%md%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh)
+         else
+            call this%md%build(b, this%bins, this%thresh)
+         end if
+      end if
+      nw = this%nao_w
+      allocate (dp_w(nw, nw), jp_w(nw, nw))
+      if (this%dec%active) then
+         call decon_expand_host(this%dec, dmat, dp_w)
+      else
+         dp_w = dmat
+      end if
+      !$acc enter data copyin(dp_w) create(jp_w)
+      call this%md%coulomb(nw, dp_w, jp_w)
+      !$acc update self(jp_w)
+      !$acc exit data delete(dp_w, jp_w)
+      if (this%dec%active) then
+         call decon_fold_host(this%dec, jp_w, jmat)
+      else
+         jmat = jp_w
+      end if
+      deallocate (dp_w, jp_w)
+   end subroutine eri_coulomb
+
    !
    ! The two-electron part of the nuclear gradient, Rys only: there is no
    ! HGP gradient. `dens` is (nao, nao, ndens): ndens=1 is RHF with the
@@ -581,6 +768,7 @@ contains
       real(dp), allocatable :: dwork(:, :, :)
       integer :: ndens, nw, id
       real(dp) :: jfac, kfac, ow
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       ow = 0.0_dp
       if (present(omega)) ow = omega
@@ -694,6 +882,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -800,9 +989,10 @@ contains
       !! A full extra pass over the work list, so it is opt-in.
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
+      real(dp), allocatable :: dp_w(:, :), gp_w(:, :), jw(:, :)
       integer :: n, nw, i, j
-      real(dp) :: jfac, kfac, ow
+      real(dp) :: jfac, kfac, ow, jbins
+      logical :: md_j
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -813,6 +1003,14 @@ contains
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
       n = this%nao
       nw = this%nao_w
+      ! See mdj_requested: the Coulomb part from the McMurchie-Davidson J engine, and
+      ! the bins only for exchange (or not at all without it). Ordinary
+      ! Coulomb operator only; an erf pass keeps the bins.
+      md_j = (mdj_requested(this%has_f, kfac == 0.0_dp) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      if (this%needs_md .and. ow /= 0.0_dp) error stop &
+         "terco: range separation is not implemented for g functions (the MD engine has no erf operator yet)"
+      jbins = jfac
+      if (md_j) jbins = 0.0_dp
 
       allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
       allocate (dp_w(nw, nw), gp_w(nw, nw))
@@ -889,16 +1087,25 @@ contains
             end if
          end if
       end block
-      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                     this%ao_off, this%thresh, .false., &
-                     jfac, kfac, ow, .false., this%dsh, &
-                     this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                     this%hp_ra, this%hp_rb, this%hp_c, &
-                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                     this%sq_ax, this%sq_ay, this%sq_az, &
-                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      if (.not. (md_j .and. kfac == 0.0_dp)) then
+         call profiler_start("eri: bins (hgp/rys)", nvtx_only=.true.)
+         call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+                        this%ao_off, this%thresh, .false., &
+                        jbins, kfac, ow, .false., this%dsh, &
+                        this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
+                        this%hp_ra, this%hp_rb, this%hp_c, &
+                        this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
+                        this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
+                        this%sq_ax, this%sq_ay, this%sq_az, &
+                        this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
+                        1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+         !$acc wait
+         call profiler_stop("eri: bins (hgp/rys)")
+         call profiler_start("eri: md exchange", nvtx_only=.true.)
+         call mdg_pass(this, b, dwork, jmat, jbins, kfac)
+         !$acc wait
+         call profiler_stop("eri: md exchange")
+      end if
       !$acc wait
 
       ! Fold on the device, straight into the caller's resident result.
@@ -911,6 +1118,25 @@ contains
       do concurrent(j=1:nw, i=1:nw)
          gp_w(i, j) = 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
       end do
+      if (md_j) then
+         if (.not. this%md%built) then
+            if (this%dec%active) then
+               call this%md%build(this%pb, this%bins, this%thresh)
+            else
+               call this%md%build(b, this%bins, this%thresh)
+            end if
+         end if
+         allocate (jw(nw, nw))
+         !$acc enter data create(jw)
+         call profiler_start("eri: md J", nvtx_only=.true.)
+         call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks)
+         call profiler_stop("eri: md J")
+         ! Each rank forms its share of J (trc_mdj splits the Hermite stage's
+         ! ket chunks); sum_ranks totals them with the rest of the matrix.
+         call add_scaled_device(nw*nw, jfac, jw, gp_w)
+         !$acc exit data delete(jw)
+         deallocate (jw)
+      end if
       if (this%dec%active) then
          call decon_fold(this%dec, gp_w, gmat)
       else
@@ -1051,6 +1277,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j, d
       real(dp) :: jfac, kfac, ow
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -1123,6 +1350,8 @@ contains
 
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this
+      call this%mg%release()
+      call this%md%release()
       if (this%on_device) then
          !$acc exit data delete(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
          !$acc                  this%bins%sp_i, this%bins%sp_j, &

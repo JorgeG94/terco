@@ -45,8 +45,8 @@ include(terco_print_status)
 #
 set(TERCO_LMAX
     "2"
-    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d, 3=f)")
-set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3)
+    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d, 3=f, 4=g: g classes on the MD engine)")
+set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3 4)
 
 #
 # The density-fitting kernels' orbital ceiling (gen_df.py --lmax). Empty

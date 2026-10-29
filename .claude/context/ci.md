@@ -57,6 +57,10 @@ python3 tools/dc_to_omp.py  --target cpu --write src
 python3 tools/acc_to_omp.py --target cpu --translate-atomics --write src
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF \
       -DCMAKE_Fortran_FLAGS=-fopenmp -S . -B build-omp
+# The Rys and MD J/K kernels are generated into build-omp at configure time,
+# after the conversion of src/, so convert them too.
+python3 tools/dc_to_omp.py  --target cpu --write build-omp/generated_*
+python3 tools/acc_to_omp.py --target cpu --translate-atomics --write build-omp/generated_*
 cmake --build build-omp --parallel
 OMP_NUM_THREADS=4 ctest --test-dir build-omp --output-on-failure
 git checkout -- src        # undo the conversion
@@ -65,6 +69,11 @@ git checkout -- src        # undo the conversion
 The job uses the runner's stock gfortran, which may be older than the
 toolchain used elsewhere. Things that have failed only here:
 
+- Generated kernels in the build tree (`build-omp/generated_rys`,
+  `generated_mdj`): the converters only see the paths they are given.
+- A compiler with an nvptx offload plug-in (Gadi's gcc 15.1) fails at link
+  time under `-fopenmp` ("referenced in offloaded code"); add
+  `-foffload=disable`. The runner's stock gfortran does not need it.
 - Source the converters didn't scan. `walk()` in both tools lists the file
   extensions it converts. `*.inc` is added by the gradient work (#83). Any
   other new extension holding `do concurrent` or `!$acc` code must be added

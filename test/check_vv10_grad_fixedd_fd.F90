@@ -155,7 +155,7 @@ contains
 
       allocate (grad_an(3, nat))
       grad_an = 0.0_dp
-      !$acc enter data copyin(dens) create(grad_an)
+      !$acc enter data copyin(dens, grad_an)
       call vv10_gradient_add(bas, lp, nspin, dens, VV10_B, VV10_C, grad_an, grid_level=grid_level, &
                              grid_response=.true.)
       !$acc update self(grad_an)
