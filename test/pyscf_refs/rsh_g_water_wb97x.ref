@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_rsh_g_vs_pyscf water_wb97x
+# generator: test/pyscf_refs/generate.py CASES["rsh_g_water_wb97x"] -> gen_rsh_g
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: c02a8f3cf6ede428d7d6409a7d1653ae8691d39261b0ffdafe8bfa7ed093d9c8
+# files: test/check_rsh_g_vs_pyscf.F90 test/basis_sets/cc-pvqz-pyscf17.json test/water.xyz
+# wb97x RKS, 33698 grid points, 0 VV10 points, GRAD_NORM 3.157e-09
+E -7.64458014134136477e+01
+END
