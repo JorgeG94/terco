@@ -3132,9 +3132,12 @@ program terco_main
       allocate (r%fukui_f_plus(r%natm), r%fukui_f_minus(r%natm), r%fukui_f_zero(r%natm))
       allocate (r%fukui_q_n(r%natm), r%fukui_q_np1(r%natm), r%fukui_q_nm1(r%natm))
       call api(r, trc_fukui_hirshfeld(r%h, fplusbuf, fminusbuf, fzerobuf, qnbuf, qnp1buf, qnm1buf))
-      r%fukui_f_plus = real(fplusbuf, dp); r%fukui_f_minus = real(fminusbuf, dp)
+      r%fukui_f_plus = real(fplusbuf, dp)
+      r%fukui_f_minus = real(fminusbuf, dp)
       r%fukui_f_zero = real(fzerobuf, dp)
-      r%fukui_q_n = real(qnbuf, dp); r%fukui_q_np1 = real(qnp1buf, dp); r%fukui_q_nm1 = real(qnm1buf, dp)
+      r%fukui_q_n = real(qnbuf, dp)
+      r%fukui_q_np1 = real(qnp1buf, dp)
+      r%fukui_q_nm1 = real(qnm1buf, dp)
       deallocate (fplusbuf, fminusbuf, fzerobuf, qnbuf, qnp1buf, qnm1buf)
    end if
 
