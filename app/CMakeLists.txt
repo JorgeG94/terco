@@ -38,7 +38,8 @@ set_target_properties(
 target_compile_definitions(
   terco_cli
   PRIVATE TERCO_VERSION="${PROJECT_VERSION}"
-          TERCO_BASIS_DIR="${CMAKE_INSTALL_PREFIX}/${TERCO_BASIS_INSTALL_DIR}")
+          TERCO_BASIS_DIR="${CMAKE_INSTALL_PREFIX}/${TERCO_BASIS_INSTALL_DIR}"
+          TERCO_SOURCE_BASIS_DIR="${PROJECT_SOURCE_DIR}/test/basis_sets")
 # pic-mpi: the CLI initialises and finalises MPI, and asks for the world
 # communicator's Fortran handle, itself (app/main.F90) -- the library only
 # ever sees the handle trc_set_comm hands it.
@@ -130,6 +131,25 @@ if(TERCO_ENABLE_TESTING)
                                       "TOTAL ENERGY +-75\\.98397446")
   endforeach()
 
+  # --lindep reaches the orthogonalisation: at 0.3 water/6-31G loses two
+  # functions and its energy rises (terco's own number for that basis).
+  add_test(NAME terco/cli_lindep COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g
+                                         --lindep 0.3)
+  set_tests_properties(
+    terco/cli_lindep
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "2 function\\(s\\) dropped.*TOTAL ENERGY +-75\\.96606683")
+
+  # A NaN threshold is refused, not passed through as "no dependence" (the
+  # CLI's real parser already rejects it; trc_set_lindep refuses it too,
+  # check_fukui).
+  add_test(NAME terco/cli_lindep_nan COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g
+                                             --lindep nan)
+  set_tests_properties(
+    terco/cli_lindep_nan
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "lindep.*(not a real|must be in)")
+
   # Hirshfeld charges from outside the source tree: the free-atom table has
   # to be found the way a basis is, not relative to the working directory.
   # The O charge is terco's own (check_hirshfeld validates the method).
@@ -140,6 +160,17 @@ if(TERCO_ENABLE_TESTING)
     PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
                ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
                "1  O +-0\\.342803")
+
+  # --fukui without --guess runs from minao (the default it sets, which the
+  # ions inherit; the NA-040 anion needs it), and f+, f- and f0 each sum to
+  # one electron.
+  add_test(NAME terco/cli_fukui_hirshfeld
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --fukui hirshfeld)
+  set_tests_properties(
+    terco/cli_fukui_hirshfeld
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "guess +: minao.*sum +1\\.000000 +1\\.000000 +1\\.000000")
 
   # A missing geometry is an error with a message, not a crash.
   # A double hybrid whose SCF stops unconverged never runs RI-MP2, so its

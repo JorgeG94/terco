@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 9
+   integer(c_int), parameter :: TRC_ABI_MINOR = 11
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -675,6 +675,24 @@ module trc_c_interfaces
          integer(c_int), value :: max_iter
          integer(c_int), value :: ndiis
       end function trc_set_convergence
+
+      integer(c_int) function trc_set_lindep(handle, threshold) bind(c) result(res)
+         !! Canonical orthogonalisation threshold: an eigenvalue of S below
+         !! `threshold` is linear dependence and its direction is dropped from
+         !! the SCF (and, for a positive threshold, from the minao guess's
+         !! projection). Default 1e-8. A
+         !! diffuse basis on a large molecule can need more: GPU4PySCF
+         !! converges a def2-TZVPD nitrosamine anion only at 5e-6 (40 functions
+         !! dropped). 0 means plain symmetric orthogonalisation in the SCF,
+         !! which stops when S is not numerically positive definite; the minao
+         !! guess's projection always keeps a floor, so at 0 it uses its own
+         !! default (1e-8) rather than none. Takes effect at the next
+         !! trc_run_scf.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), value :: threshold
+      end function trc_set_lindep
 
       integer(c_int) function trc_set_screening(handle, thresh) bind(c) result(res)
          import :: c_double, c_int, c_ptr
@@ -1417,6 +1435,67 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: charges(*)
       end function trc_hirshfeld_charges
+
+      integer(c_int) function trc_fukui_hirshfeld(handle, f_plus, f_minus, f_zero, q_n, q_np1, q_nm1) bind(c) result(res)
+         !! Hirshfeld-condensed Fukui indices by finite difference in the
+         !! electron count, ported from metalquicha's mqc_czt_fukui
+         !! (fukui_indices/fukui_from_states, "hirshfeld" scheme only): three
+         !! SCFs on THIS handle -- the converged neutral already here, plus
+         !! N+1 and N-1, both doublets --
+         !!
+         !!   f_A+ = q_A(N) - q_A(N+1)      f_A- = q_A(N-1) - q_A(N)
+         !!
+         !! condensed by trc_hirshfeld_populations, the SAME partition for all
+         !! three states (mqc_czt_fukui.f90's own header: "the three
+         !! calculations share one czt_molecule_t, so they see the same
+         !! geometry and the same basis functions by construction" -- here,
+         !! the same context_box, and trc_set_charge keeps the SAME basis and
+         !! --df fit across all three, its own header).
+         !!
+         !! ONLY for a closed-shell neutral (multiplicity 1, at least two
+         !! electrons): mqc's own fukui_indices refuses anything else,
+         !! verbatim -- a radical's ions are not both doublets, and guessing
+         !! what they should be is a caller decision this entry point does
+         !! not make.
+         !!
+         !! Each ion runs UNSEEDED, from the handle's own guess kind (so
+         !! `--guess minao` reaches the ions: a SAD guess stalls an NA-040-type
+         !! nitrosamine anion that minao converges), except that SAD becomes
+         !! SADQ, the charged-atom guess the CLI picks for any ion, and a guess
+         !! that is a stored density (TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED)
+         !! belongs to the neutral, so the ions fall back to TRC_GUESS_GWH,
+         !! mqc's own default when no neutral orbitals are offered. A caller wanting the
+         !! neutral's orbitals to seed the ions instead (mqc's "neutral"
+         !! mode) drives the three states by hand: trc_set_charge,
+         !! trc_set_guess(TRC_GUESS_GIVEN, ...) and trc_run_scf, exactly what
+         !! this function does internally but with its own density.
+         !!
+         !! Leaves the handle's charge and multiplicity as it found them:
+         !! restored after the two ion SCFs, and the neutral SCF is RE-RUN
+         !! (warm-started from its own converged density) before this
+         !! returns, success or failure -- trc_run_hessian's own restore
+         !! pattern (same file, below), because cx%res has to match
+         !! cx%charge/cx%multiplicity again, not merely the two scalar
+         !! fields.
+         !!
+         !! TRC_ERR_STATE: no converged SCF yet. TRC_ERR_BADARG: multiplicity
+         !! is not 1, fewer than two electrons, an element outside
+         !! Hirshfeld's H-Kr recipe, or the condensed indices failing their
+         !! one-electron sum rule. TRC_ERR_NOCONV: an ion did not converge.
+         !! With more than one rank (trc_set_comm) every rank must make this
+         !! call, as for trc_run_scf: the three SCFs are collective, and the
+         !! Hirshfeld analysis is replicated (every rank holds the same density
+         !! and returns the same indices).
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: f_plus(*)
+         real(c_double), intent(out) :: f_minus(*)
+         real(c_double), intent(out) :: f_zero(*)
+         real(c_double), intent(out) :: q_n(*)
+         real(c_double), intent(out) :: q_np1(*)
+         real(c_double), intent(out) :: q_nm1(*)
+      end function trc_fukui_hirshfeld
 
       integer(c_int) function trc_mo_coefficients(handle, cmo) bind(c) result(res)
          !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:

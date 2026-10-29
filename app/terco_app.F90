@@ -63,6 +63,14 @@ module terco_app
 #endif
    character(len=*), parameter :: INSTALLED_BASIS_DIR = TERCO_BASIS_DIR
       !! Where `cmake --install` puts the basis sets; empty in an fpm build.
+#ifndef TERCO_SOURCE_BASIS_DIR
+#define TERCO_SOURCE_BASIS_DIR ""
+#endif
+   character(len=*), parameter :: SOURCE_BASIS_DIR = TERCO_SOURCE_BASIS_DIR
+      !! The source tree's test/basis_sets, searched last: a binary run from
+      !! its build tree, never installed, still finds the data files terco
+      !! ships there (minao.json, hirshfeld_proatoms.json, ...) when
+      !! $TERCO_BASIS_PATH names only someone else's basis directory.
 
 contains
 
@@ -161,7 +169,8 @@ contains
       !! Anything that names an existing file is used as is. Otherwise it is a
       !! name: lower-cased, with ".json" added unless it is already there, and
       !! looked up in each directory of $TERCO_BASIS_PATH (colon-separated) in
-      !! order, then in the installed basis directory. The files are Basis Set
+      !! order, then in the installed basis directory, then in the source
+      !! tree's test/basis_sets. The files are Basis Set
       !! Exchange JSON, as trc_basis_from_json reads them.
       character(len=*), intent(in) :: name
       character(len=:), allocatable, intent(out) :: path
@@ -186,6 +195,13 @@ contains
             dirs = dirs//":"//INSTALLED_BASIS_DIR
          else
             dirs = INSTALLED_BASIS_DIR
+         end if
+      end if
+      if (len_trim(SOURCE_BASIS_DIR) > 0) then
+         if (len(dirs) > 0) then
+            dirs = dirs//":"//SOURCE_BASIS_DIR
+         else
+            dirs = SOURCE_BASIS_DIR
          end if
       end if
 

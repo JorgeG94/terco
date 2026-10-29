@@ -775,6 +775,12 @@ target_link_libraries(check_minao PRIVATE test-drive::test-drive)
 terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_hirshfeld PRIVATE test-drive::test-drive)
 
+# Hirshfeld-condensed Fukui indices (trc_capi's trc_fukui_hirshfeld) against
+# metalquicha's own fukui_indices at its own test_fukui case -- see the
+# file's own header.
+terco_add_check(check_fukui check_fukui.F90)
+target_link_libraries(check_fukui PRIVATE test-drive::test-drive terco_c_interfaces)
+
 # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
 # own Gradients class assumes a converged SCF density; this is a fixed,
 # non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,
