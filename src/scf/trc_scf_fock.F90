@@ -95,6 +95,9 @@ contains
       !! Null and unused when `df_on` is false.
       type(trc_linalg_t), intent(inout) :: lp
       integer :: i, j, s
+      real(dp), allocatable :: w2_c(:, :, :), k2_c(:, :, :)
+      !! Unrestricted only: both spins' 2 D_s, and their exchange, for
+      !! fock_resident_many.
 
       if (df_on) then
          call dfj%build(lp, d_c(:, :, 1), gmat_c(:, :, 1), j_scale=1.0_dp, k_scale=exx)
@@ -166,28 +169,72 @@ contains
          end do
          call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
          do s = 1, 2
-            if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  w1_c(i, j) = 2.0_dp*d_c(i, j, s)
-               end do
-               call eri%fock_resident(b, w1_c, gmat_c(:, :, s), j_scale=0.0_dp, k_scale=exx)
-               if (exx_lr /= 0.0_dp) then
-                  call eri%fock_resident(b, w1_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gmat_c(i, j, s) = gmat_c(i, j, s) + klr_c(i, j)
-                  end do
-               end if
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gmat_c(i, j, s) = gmat_c(i, j, s) + jmat_c(i, j)
-               end do
-            else
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gmat_c(i, j, s) = jmat_c(i, j)
+            call copy_into_spin(nao_c, jmat_c, gmat_c(:, :, s))
+         end do
+         if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
+            ! Both spins' exchange in ONE pass over the integrals per operator
+            ! (fock_resident_many): every quartet evaluated once and digested
+            ! into K[D_alpha] and K[D_beta] together, not in two passes. J is
+            ! J[D_total] above (its own pass, or MD J); the spins' passes are
+            ! exchange only. A full-range pass only when the functional has a
+            ! full-range exact-exchange part at all.
+            allocate (w2_c(nao_c, nao_c, 2), k2_c(nao_c, nao_c, 2))
+            !$acc enter data create(w2_c, k2_c)
+            do s = 1, 2
+               call scale_into_spin(nao_c, 2.0_dp, d_c(:, :, s), w2_c(:, :, s))
+            end do
+            if (exx /= 0.0_dp) then
+               call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=exx)
+               do s = 1, 2
+                  call add_into_spin(nao_c, k2_c(:, :, s), gmat_c(:, :, s))
                end do
             end if
-         end do
+            if (exx_lr /= 0.0_dp) then
+               call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+               do s = 1, 2
+                  call add_into_spin(nao_c, k2_c(:, :, s), gmat_c(:, :, s))
+               end do
+            end if
+            !$acc exit data delete(w2_c, k2_c)
+            deallocate (w2_c, k2_c)
+         end if
       end if
    end subroutine build_g_arrays
+
+   subroutine copy_into_spin(n, a, c)
+      ! c := a, resident (n, n) matrices; explicit shape so a spin slice of
+      ! gmat_c can be the target.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: a(n, n)
+      real(dp), intent(out) :: c(n, n)
+      integer :: i, j
+      do concurrent(i=1:n, j=1:n)
+         c(i, j) = a(i, j)
+      end do
+   end subroutine copy_into_spin
+
+   subroutine scale_into_spin(n, f, a, c)
+      ! c := f a, resident.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: f
+      real(dp), intent(in) :: a(n, n)
+      real(dp), intent(out) :: c(n, n)
+      integer :: i, j
+      do concurrent(i=1:n, j=1:n)
+         c(i, j) = f*a(i, j)
+      end do
+   end subroutine scale_into_spin
+
+   subroutine add_into_spin(n, a, c)
+      ! c := c + a, resident.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: a(n, n)
+      real(dp), intent(inout) :: c(n, n)
+      integer :: i, j
+      do concurrent(i=1:n, j=1:n)
+         c(i, j) = c(i, j) + a(i, j)
+      end do
+   end subroutine add_into_spin
 
    !
    ! The exchange-correlation potential and energy, finding its (Cartesian)
