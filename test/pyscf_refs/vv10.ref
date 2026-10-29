@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["vv10"] -> gen_vv10
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 2a68c0ad70d81d67eec7f6a0deebc460b464c7c9106b8f6dddd270a3ad565ba0
+# hash: 4e4987fb5c548d2d1c172a8392a5136d27874027b654721d454685792c4dab27
 # files: test/check_vv10_vs_pyscf.F90 test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 NCASE 3
 KIND_0 0

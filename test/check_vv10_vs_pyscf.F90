@@ -29,7 +29,7 @@
 program check_vv10_vs_pyscf
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
    use trc_dft_grid, only: dft_grid_t, build_dft_grid
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
@@ -102,10 +102,11 @@ contains
       real(dp) :: seed
 
       call read_xyz(xyzfile, nat, at_z, at_r)
-      ! prune=.false.: the per-AO rescaling below is an identity against
+      ! overrides%prune = .false.: the per-AO rescaling below is an identity against
       ! pyscf's own (literal-column) overlap, so the AO basis has to be
       ! the same one, not a span-equivalent rotation of it.
-      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true., prune=.false.)
+      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true., &
+                               overrides=trc_basis_overrides_t(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
       end if
@@ -207,10 +208,11 @@ contains
       real(dp) :: seed
 
       call read_xyz(xyzfile, nat, at_z, at_r)
-      ! prune=.false.: the per-AO rescaling below is an identity against
+      ! overrides%prune = .false.: the per-AO rescaling below is an identity against
       ! pyscf's own (literal-column) overlap, so the AO basis has to be
       ! the same one, not a span-equivalent rotation of it.
-      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true., prune=.false.)
+      call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true., &
+                               overrides=trc_basis_overrides_t(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
       end if

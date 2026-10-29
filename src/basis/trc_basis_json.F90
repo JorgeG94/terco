@@ -14,7 +14,23 @@ module trc_basis_json
    implicit none
    private
 
-   public :: trc_basis_from_json, trc_fitted_shell_from_json
+   public :: trc_basis_from_json, trc_fitted_shell_from_json, trc_basis_overrides_t
+
+   !
+   ! The rarely-set, never-combined-with-each-other knobs of
+   ! trc_basis_from_json, bundled so the call keeps one optional dummy
+   ! instead of one per knob (docs/CODE_STRUCTURE.md's arg-count limit --
+   ! `force_cart` stays its own dummy since nearly every caller sets it).
+   ! An unset component is simply left unallocated by the structure
+   ! constructor, which a caller setting only one of the two relies on
+   ! (trc_basis_overrides_t(prune=.false.), trc_basis_overrides_t(charges=z)).
+   !
+   type :: trc_basis_overrides_t
+      real(dp), allocatable :: charges(:)
+      !! Nuclear charge per atom; trc_basis_from_json's own `charges`.
+      logical, allocatable :: prune
+      !! Override `TRC_PRUNE_PRIMITIVES`; trc_basis_from_json's own `prune`.
+   end type trc_basis_overrides_t
 
    type :: shell_t
       integer :: l = 0, np = 0
@@ -39,7 +55,7 @@ contains
    ! The basis comes back built (host side; the caller moves it to the
    ! device).
    !
-   subroutine trc_basis_from_json(path, natm, elements, at_r, b, error, force_cart, charges, prune)
+   subroutine trc_basis_from_json(path, natm, elements, at_r, b, error, force_cart, overrides)
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
       integer, intent(in) :: elements(natm)
@@ -50,17 +66,18 @@ contains
       !! Force the Cartesian AO space regardless of what the file says --
       !! trc_scf_options_t%force_cartesian's route in. Default .false.:
       !! follow the basis, which is what every existing caller gets.
-      real(dp), intent(in), optional :: charges(natm)
-      !! Nuclear charge per atom; defaults to real(elements, dp). A ghost
-      !! (trc_set_elements) passes 0 here for an element >= 1.
-      logical, intent(in), optional :: prune
-      !! Override `TRC_PRUNE_PRIMITIVES` (prune_enabled()) for this one
-      !! build. A caller that compares AO-level quantities (not just an
-      !! energy or a gradient) against a pyscf reference built straight
-      !! from this file's own literal columns -- bse_json_basis in
-      !! test/pyscf_refs/generate.py, which does not remove the
-      !! redundancy prune_block does -- passes `prune=.false.` to keep
-      !! matching it; see that argument's own call sites for which ones.
+      type(trc_basis_overrides_t), intent(in), optional :: overrides
+      !! The two knobs no caller sets together (trc_basis_overrides_t's own
+      !! header): `charges`, nuclear charge per atom, defaulting to
+      !! real(elements, dp) -- a ghost (trc_set_elements) passes 0 here for
+      !! an element >= 1; and `prune`, overriding `TRC_PRUNE_PRIMITIVES`
+      !! (prune_enabled()) for this one build. A caller that compares
+      !! AO-level quantities (not just an energy or a gradient) against a
+      !! pyscf reference built straight from this file's own literal
+      !! columns -- bse_json_basis in test/pyscf_refs/generate.py, which
+      !! does not remove the redundancy prune_block does -- sets
+      !! `overrides%prune = .false.` to keep matching it; see that
+      !! component's own call sites for which ones.
 
       type(json_file) :: json
       type(element_t), allocatable :: el(:)
@@ -72,7 +89,9 @@ contains
       force = .false.
       if (present(force_cart)) force = force_cart
       do_prune = prune_enabled()
-      if (present(prune)) do_prune = prune
+      if (present(overrides)) then
+         if (allocated(overrides%prune)) do_prune = overrides%prune
+      end if
 
       call json%initialize()
       call json%load(filename=path)
@@ -128,10 +147,9 @@ contains
             sh_r(:, k) = at_r(:, ia)
          end do
       end do
-      if (present(charges)) then
-         z = charges
-      else
-         z = real(elements, dp)
+      z = real(elements, dp)
+      if (present(overrides)) then
+         if (allocated(overrides%charges)) z = overrides%charges
       end if
       call b%build(nsh, sh_l, sh_np, sh_e, sh_c, sh_r, natm, z, at_r, maxnp, at_elem=elements)
 

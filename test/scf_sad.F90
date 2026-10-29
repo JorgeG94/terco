@@ -14,7 +14,7 @@ program scf_sad
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
    use trc_guess_json, only: trc_guess_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -39,12 +39,12 @@ program scf_sad
    opts%conv_density = 1.0e-7_dp
    ok = .true.
    do ib = 1, 2
-      ! prune=.false.: sad_cc-pvdz.json is an mqc-written AO-basis density
+      ! overrides%prune = .false.: sad_cc-pvdz.json is an mqc-written AO-basis density
       ! fixture (this module's own header) in terco's LITERAL cc-pVDZ AO
       ! definition; pruning rotates that definition, which would make
       ! `dguess` a density in the wrong basis.
       call trc_basis_from_json('basis_sets/'//trim(bases(ib))//'.json', natm, zint, at_r, bas, err, &
-                               force_cart=.true., prune=.false.)
+                               force_cart=.true., overrides=trc_basis_overrides_t(prune=.false.))
       if (.not. err%has_error()) call trc_guess_from_json('sad_'//trim(bases(ib))//'.json', bas, zint, dguess, err)
       if (err%has_error()) then
          print '(a)', "scf_sad: "//err%get_message()

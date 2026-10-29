@@ -33,7 +33,7 @@ program check_rys_grad_fd
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
@@ -109,14 +109,15 @@ contains
       type(error_t) :: err
       real(dp) :: vhf(nao, nao), dtot(nao, nao)
 
-      ! prune=.false.: this check compares the analytic gradient against a
+      ! overrides%prune = .false.: this check compares the analytic gradient against a
       ! finite difference of the SAME path's own energy, at a RELTOL margin
       ! tight enough that a near-zero gradient component (water's symmetry
       ! plane) is sensitive to which exact rounding the kernels take --
       ! unrelated to correctness, but a reason to keep this comparison on
       ! the arithmetic path it was tuned against rather than
       ! trc_basis_json's prune_block reduction.
-      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, prune=.false.)
+      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, &
+                               overrides=trc_basis_overrides_t(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_rys_grad_fd: '//err%get_message(); stop 1
       end if
@@ -165,9 +166,10 @@ contains
       integer :: nbad
 
       call read_xyz('water.xyz', nat, at_z, r)
-      ! prune=.false.: same reasoning as e2_at above, and it must agree
+      ! overrides%prune = .false.: same reasoning as e2_at above, and it must agree
       ! with it -- e2_at rebuilds the basis at each displaced geometry.
-      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, prune=.false.)
+      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, &
+                               overrides=trc_basis_overrides_t(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_rys_grad_fd: '//err%get_message(); stop 1
       end if

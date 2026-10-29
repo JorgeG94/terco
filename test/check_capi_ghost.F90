@@ -16,7 +16,7 @@ module check_capi_ghost_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_overrides_t
    use trc_error, only: error_t
    use trc_test_basis, only: pack_libcint
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -304,7 +304,8 @@ contains
 
       ! The dimer basis from the JSON file, then packed into libcint's arrays
       ! with the ghosts' CHARGE_OF at 0 (Z6), as a libcint host passes it.
-      call trc_basis_from_json('basis_sets/cc-pvdz.json', NATM, ELEM6, XYZ6, b, berr, charges=Z6)
+      call trc_basis_from_json('basis_sets/cc-pvdz.json', NATM, ELEM6, XYZ6, b, berr, &
+                               overrides=trc_basis_overrides_t(charges=Z6))
       call check(error, .not. berr%has_error(), "dimer basis from JSON")
       if (allocated(error)) return
       call pack_libcint(b, atm, bas, env)
