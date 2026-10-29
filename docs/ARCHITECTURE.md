@@ -282,6 +282,11 @@ and the DFT grid with its separate VV10 grid. The DFT grid can be kept
   charged systems.
 - **SAP** [3]: the superposition of fitted atomic potentials, added to the
   core Hamiltonian and diagonalised.
+- **MINAO** (`src/scf/trc_minao.F90`): PySCF's `init_guess_by_minao`. Each
+  atom's leading ANO-RCC contractions (`basis_sets/minao.json`, H-Kr) are
+  occupied with the spherically averaged ground state and projected into
+  the run's own basis -- no free-atom SCF, so nothing to converge or cache,
+  but refused for an element above Kr or a Cartesian run with occupied d.
 - **GWH** and the core Hamiltonian, or a density supplied by the caller.
 
 ### 6.3 One iteration

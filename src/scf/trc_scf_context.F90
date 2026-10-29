@@ -31,6 +31,7 @@ module trc_scf_context
    private
 
    public :: scf_ctx_t, bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, project_density
+   public :: scf_context_orthogonalize   !! the overlap pseudo-inverse builder, also trc_minao's own cross-basis projection
    integer, parameter, public :: NSETUP = 6
    !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
    !! linear-algebra handles, orthogonaliser -- `ts`'s six slots, printed
@@ -305,7 +306,7 @@ contains
       call this%lp%init(this%nao)
       this%ts(5) = tm%get_elapsed_time()
       call tm%start()
-      call sym_orthog(this%lp, this%nao, this%smat, this%x, err, opts%lindep_thresh, this%n_lindep)
+      call scf_context_orthogonalize(this%lp, this%nao, this%smat, this%x, err, opts%lindep_thresh, this%n_lindep)
       if (err%has_error()) then
          call this%release()
          return
@@ -494,7 +495,7 @@ contains
    ! whole process down. Structured so every path still reaches the
    ! matching `!$acc end data` -- `return`ing out of an OpenACC `data`
    ! region partway through is not something the directive allows.
-   subroutine sym_orthog(la, n, s, x, err, lindep_thresh, ndropped)
+   subroutine scf_context_orthogonalize(la, n, s, x, err, lindep_thresh, ndropped)
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n)
@@ -503,14 +504,14 @@ contains
       real(dp), intent(in), optional :: lindep_thresh
       integer, intent(out), optional :: ndropped
       real(dp), allocatable :: u(:, :), w(:)
-      real(dp) :: thr
+      real(dp) :: threshold
       integer :: i, k, ndrop, info
       logical :: bad_info, bad_pd
       allocate (u(n, n), w(n))
       u = s
       x = 0.0_dp
-      thr = 0.0_dp
-      if (present(lindep_thresh)) thr = lindep_thresh
+      threshold = 0.0_dp
+      if (present(lindep_thresh)) threshold = lindep_thresh
       info = 0
       bad_info = .false.
       bad_pd = .false.
@@ -525,9 +526,9 @@ contains
          ! modes -- the ones canonical orthogonalisation drops -- are the
          ! leading entries, the same ones the old unconditional check read
          ! as w(1).
-         if (thr > 0.0_dp) then
+         if (threshold > 0.0_dp) then
             do k = 1, n
-               if (w(k) < thr) ndrop = ndrop + 1
+               if (w(k) < threshold) ndrop = ndrop + 1
             end do
          else if (w(1) <= 0.0_dp) then
             bad_pd = .true.
@@ -559,7 +560,7 @@ contains
          return
       end if
       if (present(ndropped)) ndropped = ndrop
-   end subroutine sym_orthog
+   end subroutine scf_context_orthogonalize
 
    ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
    subroutine sum_flat(comm, g, n)
@@ -575,7 +576,7 @@ contains
       !! `nao` is unchanged) from a PREVIOUS geometry's converged occupied
       !! orbitals, re-orthonormalised in the new overlap `s_new`: for each
       !! spin's occupied block C (nao x nocc), M = C^T S' C is its overlap
-      !! under S'; `sym_orthog`'s own symmetric/canonical orthogonalisation
+      !! under S'; `scf_context_orthogonalize`'s own symmetric/canonical orthogonalisation
       !! works on ANY symmetric positive matrix handed to it, not only the
       !! AO overlap, so calling it on M gives X = M^(-1/2); C' = C X is
       !! once again orthonormal under S' (C'^T S' C' = X^T M X = X M X = I
@@ -588,7 +589,7 @@ contains
       !! B3LYP 8/10/12).
       !!
       !! A near-singular M (an occupied orbital that left the space, e.g a
-      !! very large step) is not refused here -- `sym_orthog`'s own
+      !! very large step) is not refused here -- `scf_context_orthogonalize`'s own
       !! `lindep_thresh=0` default only error-stops on a NON-positive-
       !! definite M, which this call never raises
       !! (`lindep_thresh` absent): nocc columns of a full-rank C projected
@@ -596,7 +597,7 @@ contains
       !! construction (it is a Gram matrix of independent vectors), so a
       !! near-null mode is never actually reached by this routine's own
       !! use. Host arrays in and out, the same residency the guess block
-      !! calling this already assumes; `sym_orthog`'s own `!$acc data`
+      !! calling this already assumes; `scf_context_orthogonalize`'s own `!$acc data`
       !! moves the (small, nocc x nocc) eigenproblem to the device and
       !! back.
       type(trc_linalg_t), intent(inout) :: lp
@@ -619,7 +620,7 @@ contains
          cocc = cmo_old(:, 1:n, s)
          m = matmul(transpose(cocc), matmul(s_new, cocc))
          m = 0.5_dp*(m + transpose(m))   ! host round-off symmetrisation
-         call sym_orthog(lp, n, m, x, err)
+         call scf_context_orthogonalize(lp, n, m, x, err)
          if (err%has_error()) then
             ! Argued unreachable by this routine's own header (M is a Gram
             ! matrix of independent vectors, positive definite by
