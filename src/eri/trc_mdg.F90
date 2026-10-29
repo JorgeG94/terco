@@ -51,6 +51,10 @@ module trc_mdg
    integer, parameter :: CLASS_RADIX = 11
    !! trc_binkernel's class key radix.
    integer, parameter :: MDG_BLOCK = 256
+   integer, parameter :: N_SIZES = 8
+   !! entries of mdg_sizes
+   integer, parameter :: N_WINDOW = 6
+   !! entries of a window descriptor
    !! bra pairs per staircase block
    integer(int64), parameter :: MDG_BUDGET = 2_int64**26
    !! doubles in one window's buffers together (512 MB)
@@ -116,7 +120,7 @@ contains
       !! Whether this class has an MD exchange kernel: the build generates them
       !! for exactly the g classes above TERCO_RYS_G_LTOT, which have no Rys one.
       integer, intent(in) :: key
-      integer :: sz(8)
+      integer :: sz(N_SIZES)
       sz = mdg_sizes(key)
       res = sz(1) /= 0
    end function mdg_routes
@@ -132,8 +136,8 @@ contains
       !! the CALLER's basis is spherical
       integer :: t, s, n, k, g, m, kmax
       integer(int64), allocatable :: key(:)
-      integer(int_index), allocatable :: idx(:)
-      integer, allocatable :: tmp(:)
+      integer(int_index), allocatable :: sort_order(:)
+      integer, allocatable :: bucket_pair(:)
 
       call this%release()
       kmax = 0
@@ -146,13 +150,14 @@ contains
       this%ngrp = 0
       do t = 1, md%ntype
          do k = 1, kbucket(kmax)
-            if (any(kbucket_v(md%sp_nk(md%ty_s0(t) + 1:md%ty_s0(t) + md%ty_ns(t))) == k)) &
-               this%ngrp = this%ngrp + 1
+            if (any(kbucket_v(md%sp_nk(md%ty_s0(t) + 1:md%ty_s0(t) + md%ty_ns(t))) == k)) then
+              this%ngrp = this%ngrp + 1
+            end if
          end do
       end do
       allocate (this%gr_ty(this%ngrp), this%gr_k(this%ngrp), this%gr_off(this%ngrp), this%gr_n(this%ngrp))
-      allocate (this%gl(max(md%nsp, 1)), this%gq(max(md%nsp, 1)), tmp(max(md%nsp, 1)))
-      allocate (key(max(md%nsp, 1)), idx(max(md%nsp, 1)))
+      allocate (this%gl(max(md%nsp, 1)), this%gq(max(md%nsp, 1)), bucket_pair(max(md%nsp, 1)))
+      allocate (key(max(md%nsp, 1)), sort_order(max(md%nsp, 1)))
       g = 0
       m = 0
       do t = 1, md%ntype
@@ -161,25 +166,25 @@ contains
             do s = md%ty_s0(t) + 1, md%ty_s0(t) + md%ty_ns(t)
                if (kbucket(md%sp_nk(s)) /= k) cycle
                n = n + 1
-               tmp(n) = s
+               bucket_pair(n) = s
                ! Ascending integer key on -log10(Q): the largest bound first.
                key(n) = int(1.0e6_dp*min(60.0_dp, -log10(max(md%sp_q(s), 1.0e-60_dp))), int64)
             end do
             if (n == 0) cycle
-            call sort_index(key(1:n), idx(1:n))
+            call sort_index(key(1:n), sort_order(1:n))
             g = g + 1
             this%gr_ty(g) = t
-            this%gr_k(g) = maxval(md%sp_nk(tmp(1:n)))
+            this%gr_k(g) = maxval(md%sp_nk(bucket_pair(1:n)))
             this%gr_off(g) = m
             this%gr_n(g) = n
             do s = 1, n
-               this%gl(m + s) = tmp(idx(s))
-               this%gq(m + s) = md%sp_q(tmp(idx(s)))
+               this%gl(m + s) = bucket_pair(sort_order(s))
+               this%gq(m + s) = md%sp_q(bucket_pair(sort_order(s)))
             end do
             m = m + n
          end do
       end do
-      deallocate (key, idx, tmp)
+      deallocate (key, sort_order, bucket_pair)
       this%sph = sph
       this%nsh = wb%nshell
       this%naos = wb%nao_sph
@@ -345,7 +350,8 @@ contains
 
    pure function kbucket_v(k) result(b)
       integer, intent(in) :: k(:)
-      integer :: b(size(k)), i
+      integer :: b(size(k))
+      integer :: i
       do i = 1, size(k)
          b(i) = kbucket(k(i))
       end do
@@ -382,7 +388,7 @@ contains
       t = tm%get_elapsed_time()
       q = real(this%st_quart, dp) - this%st_cquart
       p = real(this%st_pass, dp) - this%st_cpass
-      write (line, '(a,4i1,a,f8.3,a,es9.2,a,f6.1,a)') "  [mdg] class ", key/(CLASS_RADIX**3), &
+      write (line, "(a,4i1,a,f8.3,a,es9.2,a,f6.1,a)") "  [mdg] class ", key/(CLASS_RADIX**3), &
          mod(key/(CLASS_RADIX**2), CLASS_RADIX), mod(key/CLASS_RADIX, CLASS_RADIX), mod(key, CLASS_RADIX), &
          " s ", t, "  quartets ", q, "  pass ", 100.0_dp*p/max(q, 1.0_dp), "%"
       call global_logger%info(trim(line))
@@ -392,7 +398,7 @@ contains
       type(trc_mdg_t), intent(in) :: this
       character(len=256) :: line
       if (.not. this%stats) return
-      write (line, '(a,i0,a,i0,a,i0,a,f6.2,a)') "  [mdg] windows ", this%st_win, "  quartets ", &
+      write (line, "(a,i0,a,i0,a,i0,a,f6.2,a)") "  [mdg] windows ", this%st_win, "  quartets ", &
          this%st_quart, "  pass screen ", this%st_pass, "  (", &
          100.0_dp*real(this%st_pass, dp)/max(real(this%st_quart, dp), 1.0_dp), "%)"
       call global_logger%info(trim(line))
@@ -468,7 +474,8 @@ contains
       real(dp), intent(in)    :: dmat(:, :, :)
       real(dp), intent(inout) :: jmat(:, :, :)
       type(trc_mdg_scales_t), intent(in) :: sc
-      integer :: sz(8), ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
+      integer :: sz(N_SIZES)
+      integer :: ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
       integer(int64) :: per
       real(dp) :: wdiag
       integer(int64) :: hb0, hk0, perb, perk
@@ -538,19 +545,22 @@ contains
       !! (same test as the R kernel).
       type(trc_mdg_t), intent(inout) :: this
       type(trc_mdj_t), intent(in) :: md
-      integer, intent(in) :: w(6), sz(8)
+      integer, intent(in) :: w(N_WINDOW), sz(N_SIZES)
       !! ib0, ni, ka, jb0, nj, kb
-      real(dp), intent(in) :: dsh(:, :), thresh
+      real(dp), intent(in) :: dsh(:, :)
+      real(dp), intent(in) :: thresh
       integer :: i, j, sa, sc2, si, sj, sk, sl
       real(dp) :: q
       this%st_win = this%st_win + 1
       this%st_quart = this%st_quart + int(w(2), int64)*w(5)
       do j = 1, w(5)
          sc2 = this%gl(w(4) + j)
-         sk = md%sp_sh1(sc2); sl = md%sp_sh2(sc2)
+         sk = md%sp_sh1(sc2)
+         sl = md%sp_sh2(sc2)
          do i = 1, w(2)
             sa = this%gl(w(1) + i)
-            si = md%sp_sh1(sa); sj = md%sp_sh2(sa)
+            si = md%sp_sh1(sa)
+            sj = md%sp_sh2(sa)
             q = md%sp_q(sa)*md%sp_q(sc2)
             if (q <= thresh) cycle
             if (q*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &

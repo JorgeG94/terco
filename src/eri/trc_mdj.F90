@@ -268,7 +268,8 @@ contains
       real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp
       integer :: s, t, i, j, ki, kj, k, n, lp, ia, ib
       integer, allocatable :: pos(:), sord(:), nk(:)
-      real(dp) :: ea, eb, p, mu, ab2, pc(3), cut
+      real(dp) :: ea, eb, p, mu, ab2, cut
+      real(dp) :: pc(3)
 
       cut = thresh*1.0e-3_dp
       ! Type order of the bins' pairs, keeping the bins' order within a type.
@@ -289,8 +290,9 @@ contains
          nk(n) = 0
          do ki = 1, b%sh_np(i)
             do kj = 1, b%sh_np(j)
-               if (keep(b%sh_e(ki, i), b%sh_e(kj, j), b%sh_c(ki, i), b%sh_c(kj, j), ab2, cut)) &
-                  nk(n) = nk(n) + 1
+               if (keep(b%sh_e(ki, i), b%sh_e(kj, j), b%sh_c(ki, i), b%sh_c(kj, j), ab2, cut)) then
+                 nk(n) = nk(n) + 1
+               end if
             end do
          end do
          this%nhp = this%nhp + nk(n)
@@ -370,11 +372,11 @@ contains
 
    contains
 
-      pure logical function keep(a, bb, ca, cb, r2, c)
+      pure logical function keep(a, bb, ca, cb, r2, c) result(res)
          real(dp), intent(in) :: a, bb, ca, cb, r2, c
          real(dp) :: pp
          pp = a + bb
-         keep = abs(ca*cb)*exp(-(a*bb/pp)*r2)*SQRT2_PI54/(pp*sqrt(sqrt(2.0_dp*pp))) > c
+         res = abs(ca*cb)*exp(-(a*bb/pp)*r2)*SQRT2_PI54/(pp*sqrt(sqrt(2.0_dp*pp))) > c
       end function keep
    end subroutine fill_prims
 

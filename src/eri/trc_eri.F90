@@ -656,7 +656,8 @@ contains
    subroutine add_scaled_device(n, f, x, y)
       !! y = y + f x on the device.
       integer,  intent(in)    :: n
-      real(dp), intent(in)    :: f, x(n)
+      real(dp), intent(in)    :: f
+      real(dp), intent(in)    :: x(n)
       real(dp), intent(inout) :: y(n)
       integer :: i
       do concurrent(i = 1:n)
