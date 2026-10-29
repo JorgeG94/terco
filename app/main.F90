@@ -44,7 +44,7 @@ module terco_run
    implicit none
    private
    public :: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
-             gradient_summary, hessian_summary, build_masses
+             gradient_summary, hessian_summary, build_masses, terco_run_charges_summary
    public :: opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz
    public :: terco_run_parse_opt_global_options
    public :: opt_geometry_is_linear, write_labelled_xyz, to_lower_alloc
@@ -81,6 +81,8 @@ module terco_run
       logical :: rank0
       logical :: grad
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
+      character(len=:), allocatable :: charges  !! "" (none) or "hirshfeld", --charges
+      real(dp), allocatable :: hirshfeld_charges(:)  !! (natm), e, after --charges hirshfeld
       ! --hessian: the FD Hessian (trc_run_hessian/trc_hessian) and the
       ! vibrational analysis/thermochemistry built on it (trc_vib/
       ! trc_thermo).
@@ -525,6 +527,33 @@ contains
          call global_logger%info(trim(logline))
       end block
    end subroutine gradient_summary
+
+   subroutine terco_run_charges_summary(r)
+      !! Per-atom Hirshfeld charges (e) and their sum, which should match
+      !! the molecular charge to round-off (the charges are renormalised
+      !! to Tr(D S), trc_hirshfeld.F90's own job). `r%hirshfeld_charges`
+      !! is already filled by the time this is called (terco_main's own
+      !! job, right after `trc_hirshfeld_charges`).
+      type(run_t), intent(in) :: r
+      integer :: ia
+      call global_logger%info("")
+      call global_logger%info("   hirshfeld charges (e)")
+      call global_logger%info("   ----------------------------------------------------------")
+      do ia = 1, r%natm
+         block
+            character(len=1024) :: logline
+            write (logline, "(a,i4,2x,a2,f16.8)") "   ", ia, element_symbol(r%z(ia)), &
+               r%hirshfeld_charges(ia)
+            call global_logger%info(trim(logline))
+         end block
+      end do
+      call global_logger%info("   ----------------------------------------------------------")
+      block
+         character(len=1024) :: logline
+         write (logline, "(a,es12.4)") "   sum              : ", sum(r%hirshfeld_charges)
+         call global_logger%info(trim(logline))
+      end block
+   end subroutine terco_run_charges_summary
 
    !
    ! Per-atom masses for --hessian's vibrational analysis: "isotope"
@@ -1526,6 +1555,7 @@ contains
       end if
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
+      if (r%charges == "hirshfeld" .and. allocated(r%hirshfeld_charges)) call add_charges(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
          call json%destroy(root)
@@ -1552,6 +1582,17 @@ contains
       call json%add(root, "gradient rms", sqrt(sum(r%gradient**2)/real(3*r%natm, dp)))
       call json%add(root, "gradient max", sqrt(maxval(sum(r%gradient**2, dim=1))))
    end subroutine add_gradient
+
+   subroutine add_charges(json, root, r)
+      !! Hirshfeld charges as an array, one per atom in `r%hirshfeld_charges`'s
+      !! own (and `trc_set_molecule`'s) atom order, plus their sum.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      call json%add(root, "charges scheme", r%charges)
+      call json%add(root, "hirshfeld charges", r%hirshfeld_charges)
+      call json%add(root, "hirshfeld charges sum", sum(r%hirshfeld_charges))
+   end subroutine add_charges
 
    !
    ! --hessian's JSON: three blocks, as asked for -- "hessian" (the
@@ -1781,7 +1822,7 @@ program terco_main
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
-                       trc_hessian, &
+                       trc_hessian, trc_hirshfeld_charges, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
@@ -1795,7 +1836,7 @@ program terco_main
    use terco_app, only: read_xyz, resolve_basis, c_string, set_env, terco_app_help_for_topic, terco_app_set_log_level
    use pic_strings, only: to_string
    use terco_run, only: run_t, VERSION, die, quit, check, api, int_option, banner, summary, write_json, &
-                       gradient_summary, hessian_summary, build_masses, &
+                       gradient_summary, hessian_summary, build_masses, terco_run_charges_summary, &
                        opt_capability_check, build_opt_residues, opt_summary, write_opt_xyz, write_traj_xyz, &
                        opt_geometry_is_linear, write_labelled_xyz, terco_run_parse_opt_global_options, &
                        terco_run_parse_frozen_list, terco_run_parse_constraints, terco_run_check_opt_constrain_residues, &
@@ -1822,7 +1863,7 @@ program terco_main
    type(run_t) :: r
    character(len=:), allocatable :: sval
    real(dp), allocatable :: xyz(:, :)
-   real(c_double), allocatable :: gradbuf(:), hessbuf(:)
+   real(c_double), allocatable :: gradbuf(:), hessbuf(:), chargebuf(:)
    real(dp), allocatable :: mass(:), displacement(:, :, :)
    type(hess_err_t) :: herr
    integer :: maxiter, nfrozen, guess_kind, dev, aux_block, ndof
@@ -1879,6 +1920,7 @@ program terco_main
    call r%cli%add_option("func", "hf (the default), or a functional: "//XC_AVAILABLE_FUNCTIONALS, &
                          short="f", default="hf")
    call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion)", short="g")
+   call r%cli%add_option("charges", "atomic charge analysis: hirshfeld (none by default)")
    call r%cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call r%cli%add_option("grid", "DFT integration grid level (3)", default="3")
    call r%cli%add_option("nlc-grid", "grid level for VV10 nonlocal correlation, e.g. wb97x-v (1)", default="1")
@@ -2142,6 +2184,13 @@ program terco_main
    case default
       call die(r, "unknown guess '"//r%guess//"': use sad, sadq, sap, minao, gwh or core")
    end select
+
+   r%charges = ""
+   if (r%cli%is_set("charges")) then
+      call r%cli%get("charges", sval, r%err)
+      r%charges = to_lower_alloc(trim(sval))
+      if (r%charges /= "hirshfeld") call die(r, "unknown --charges '"//r%charges//"': use hirshfeld")
+   end if
 
    call r%cli%get("grid", r%grid, r%err)
    call check(r, "--grid")
@@ -2989,8 +3038,18 @@ program terco_main
       r%hess_ok = .true.
    end if
 
+   if (r%charges == "hirshfeld" .and. r%conv /= 0) then
+      ! trc_hirshfeld_charges's own refusals (an element outside H-Kr) come
+      ! back through `api`, same as --grad's/--hessian's.
+      allocate (chargebuf(r%natm), r%hirshfeld_charges(r%natm))
+      call api(r, trc_hirshfeld_charges(r%h, chargebuf))
+      r%hirshfeld_charges = real(chargebuf, dp)
+      deallocate (chargebuf)
+   end if
+
    if (r%rank0) call summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call gradient_summary(r)
+   if (r%rank0 .and. r%charges == "hirshfeld" .and. r%conv /= 0) call terco_run_charges_summary(r)
    if (r%rank0 .and. r%opt) call opt_summary(r)
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call write_json(r, r%json)

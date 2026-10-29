@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 8
+   integer(c_int), parameter :: TRC_ABI_MINOR = 9
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1400,6 +1400,21 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: dmat(*)
       end function trc_density
+
+      integer(c_int) function trc_hirshfeld_charges(handle, charges) bind(c) result(res)
+         !! Hirshfeld atomic charges from the converged density, one per atom
+         !! in `trc_set_molecule`'s own order -- `trc_hirshfeld.F90`'s
+         !! stockholder partition (Hirshfeld, Theor. Chim. Acta 44, 129
+         !! (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
+         !! Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
+         !! analysis never touches the solvent operator, only the converged
+         !! density). TRC_ERR_BADARG for an element outside H-Kr; terco has
+         !! no effective-core-potential support to refuse separately.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: charges(*)
+      end function trc_hirshfeld_charges
 
       integer(c_int) function trc_mo_coefficients(handle, cmo) bind(c) result(res)
          !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:
