@@ -285,8 +285,8 @@ contains
          ! columns are new here (grid build has no flop count to show
          ! them against), but the three totals are not new numbers, only
          ! a second, uniform place they land -- see trc_scf_state's own
-         ! header on `xcst`.
-         call scf_timers%xcst%init("scf", [character(len=8) :: "grid", "xc", "vv10"])
+         ! header on `xcst`. "dft", not "scf": its total is grid + XC only.
+         call scf_timers%xcst%init("dft", [character(len=8) :: "grid", "xc", "vv10"])
          call scf_timers%xcst%add_time(1, scf_context%t_grid)
       end if
 
@@ -608,12 +608,12 @@ contains
          scf_result%message = "trc_scf: not converged"
       end if
       if (scf_config%dft) then
-         ! The run's own totals, not a second measurement: grid build was
-         ! added in right after scf_context%setup, above; xc/vv10 are scf_fock_build_vxc's
-         ! running sums, read once here rather than per iteration, since
-         ! `add_time` has no way to know "only the increment since last
-         ! time" and the totals are already exactly what is wanted.
-         call scf_timers%xcst%add_time(2, scf_timers%tx_pts + scf_timers%tx_prs)
+         ! The run's own totals, read once here: grid build was added after
+         ! setup, above. xc is all of scf_fock_build_vxc but VV10 (t_xc includes it),
+         ! not trc_xc's points/pairs timers, which miss the functional and,
+         ! over ranks, the collectives on V (3.3 of 10.3 s on 16 ranks), so
+         ! the rows add up to the total. Points/pairs are in the summary.
+         call scf_timers%xcst%add_time(2, scf_timers%t_xc - scf_timers%t_vv10)
          call scf_timers%xcst%add_time(3, scf_timers%t_vv10)
       end if
       if (scf_config%talk) then
