@@ -94,3 +94,25 @@ def test_kernel_driver(tmp_path):
     assert procs["thin"]["host_exec"] == 0
     assert not archcheck.is_kernel_driver(procs["busy"])
     assert not archcheck.is_kernel_driver(procs["plain"])
+
+
+def test_bind_c_args_flagged_free(tmp_path):
+    # bind(c) dummy names are the C ABI's parameter names: scanned, but
+    # marked so short-name leaves them alone.
+    src = tmp_path / "c.F90"
+    src.write_text(textwrap.dedent("""\
+        module trc_c
+           use iso_c_binding
+           implicit none
+        contains
+           function trc_c_get(buf, max_iter) result(status) bind(c, name="trc_c_get")
+              character(kind=c_char), intent(out) :: buf(*)
+              integer(c_int), value :: max_iter
+              integer(c_int) :: status
+              status = max_iter
+           end function trc_c_get
+        end module trc_c
+    """))
+    procs = {p["name"]: p for p in archcheck.scan_procedures(src)}
+    assert procs["trc_c_get"]["bind_c"]
+    assert set(procs["trc_c_get"]["args"]) == {"buf", "max_iter"}

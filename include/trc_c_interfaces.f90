@@ -356,8 +356,8 @@ module trc_c_interfaces
          integer(c_int), value :: dscreen
       end function trc_fock_nosym
 
-      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, max_iteration, &
-                                      dguess, verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
+      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, max_iter, dguess, &
+                                      verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
          import :: c_char, c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: basis
@@ -367,7 +367,7 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
          real(c_double), value :: conv_energy
          real(c_double), value :: conv_density
-         integer(c_int), value :: max_iteration
+         integer(c_int), value :: max_iter
          type(c_ptr), value :: dguess
          integer(c_int), value :: verbose
          real(c_double), intent(out) :: energy
@@ -378,7 +378,7 @@ module trc_c_interfaces
       end function trc_scf
 
       integer(c_int) function trc_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
-                                          max_iteration, dguess, verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
+                                          max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
          import :: c_char, c_double, c_int, c_ptr
          implicit none
          integer(c_int), value :: fcomm
@@ -389,7 +389,7 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
          real(c_double), value :: conv_energy
          real(c_double), value :: conv_density
-         integer(c_int), value :: max_iteration
+         integer(c_int), value :: max_iter
          type(c_ptr), value :: dguess
          integer(c_int), value :: verbose
          real(c_double), intent(out) :: energy
@@ -666,13 +666,13 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: npoints
       end function trc_pcm_energy
 
-      integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iteration, ndiis) bind(c) result(res)
+      integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) bind(c) result(res)
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          real(c_double), value :: conv_energy
          real(c_double), value :: conv_diis
-         integer(c_int), value :: max_iteration
+         integer(c_int), value :: max_iter
          integer(c_int), value :: ndiis
       end function trc_set_convergence
 
@@ -1292,19 +1292,19 @@ module trc_c_interfaces
          real(c_double), intent(out) :: c_ss
       end function trc_functional_info
 
-      integer(c_int) function trc_functional_list(buffer, buflen, reqlen) bind(c) result(res)
+      integer(c_int) function trc_functional_list(buf, buflen, reqlen) bind(c) result(res)
          !! XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
          !! trc_functional_info can look up that terco can actually run today
-         !! -- space-separated and NUL-terminated into `buffer` (capacity
+         !! -- space-separated and NUL-terminated into `buf` (capacity
          !! `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
          !! number of bytes that call needed, NUL included, whether or not it
-         !! fit: a caller queries it with `buflen = 0` (`buffer` is never
+         !! fit: a caller queries it with `buflen = 0` (`buf` is never
          !! touched then) and allocates exactly `reqlen` bytes for a second,
-         !! filling call. Returns TRC_ERR_BADARG, leaving `buffer` untouched, if
+         !! filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
          !! `buflen` is positive but smaller than `reqlen`.
          import :: c_char, c_int
          implicit none
-         character(kind=c_char), intent(out) :: buffer(*)
+         character(kind=c_char), intent(out) :: buf(*)
          integer(c_int), value :: buflen
          integer(c_int), intent(out) :: reqlen
       end function trc_functional_list
@@ -1522,12 +1522,12 @@ module trc_c_interfaces
          real(c_double), intent(out) :: e_ss
       end function trc_rimp2_energy
 
-      integer(c_int) function trc_message(handle, buffer, buflen) bind(c) result(res)
-         !! The last message, NUL-terminated into `buffer` of `buflen` chars.
+      integer(c_int) function trc_message(handle, buf, buflen) bind(c) result(res)
+         !! The last message, NUL-terminated into `buf` of `buflen` chars.
          import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         character(kind=c_char), intent(out) :: buffer(*)
+         character(kind=c_char), intent(out) :: buf(*)
          integer(c_int), value :: buflen
       end function trc_message
 
