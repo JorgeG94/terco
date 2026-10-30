@@ -78,7 +78,7 @@ module trc_scf_df
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_sph, only: sph_metric_cart_to_sph, sph_aux3c_to_sph
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
@@ -406,6 +406,7 @@ contains
       !! much larger panel count would.
       real(dp) :: eval_cut
       type(timer_type) :: tc
+      type(trc_gemm_batch_t) :: gemm_shape
 
       n = this%n
       n8 = int(n, int64)
@@ -486,14 +487,13 @@ contains
 
          call this%tbl%step_on(lp, ST_KHLF, tc)
          if (npos > 0) then
-            call lp%gemm_strided("N", "N", n, npos, n, 1.0_dp, this%bblk, n, int(n, int64)*int(n, int64), &
-                                 this%ypos, n, 0_int64, 0.0_dp, this%zpos, n, &
-                                 int(n, int64)*int(npos, int64), qb_cur)
+            ! Z_q = B_q Y for every q of the block, Y shared (sb = 0).
+            gemm_shape = trc_gemm_batch(n, npos, n, qb_cur, sb=0_int64)
+            call lp%gemm_batched(gemm_shape, this%bblk, this%ypos, this%zpos)
          end if
          if (nneg > 0) then
-            call lp%gemm_strided("N", "N", n, nneg, n, 1.0_dp, this%bblk, n, int(n, int64)*int(n, int64), &
-                                 this%yneg, n, 0_int64, 0.0_dp, this%zneg, n, &
-                                 int(n, int64)*int(nneg, int64), qb_cur)
+            gemm_shape = trc_gemm_batch(n, nneg, n, qb_cur, sb=0_int64)
+            call lp%gemm_batched(gemm_shape, this%bblk, this%yneg, this%zneg)
          end if
          call this%tbl%step_off(lp, ST_KHLF, tc)
          call this%tbl%add_flop(ST_KHLF, 2_int64*int(n, int64)**2*int(npos + nneg, int64)*int(qb_cur, int64))

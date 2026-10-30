@@ -123,7 +123,7 @@ module trc_vv10
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t
    use trc_collocation, only: collocation_shell, NCART_MAX
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
@@ -398,7 +398,8 @@ contains
 
       integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml, nbatch
       integer, allocatable :: ord(:), npp(:), nlp(:), c_off(:), pr_off(:), pb_off(:), wk_off(:)
-      integer(int64) :: need, nchi, sa, sb, nlsq
+      integer(int64) :: need, nchi, nlsq
+      type(trc_gemm_batch_t) :: gemm_shape
       integer :: nwork
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:), dloc(:)
 
@@ -483,10 +484,8 @@ contains
             end do
             cnt = k1 - k0 + 1
             if (ml > 0) then
-               sa = int(mp, int64)*int(ml, int64)
-               sb = int(ml, int64)*int(ml, int64)
-               call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
-                                    dloc(pr_off(ib) + 1), ml, sb, 0.0_dp, xt(c_off(ib) + 1), mp, sa, cnt)
+               gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
+               call lp%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1), xt(c_off(ib) + 1))
             end if
             k0 = k1 + 1
          end do
@@ -842,7 +841,8 @@ contains
 
       integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml, nbatch
       integer, allocatable :: ord(:), npp(:), nlp(:), c_off(:), pr_off(:), pb_off(:), wk_off(:)
-      integer(int64) :: need, nchi, sa, sc, nlsq
+      integer(int64) :: need, nchi, nlsq
+      type(trc_gemm_batch_t) :: gemm_shape
       integer :: nwork
       real(dp), allocatable :: chi(:), gchi(:, :), zt(:), vloc(:)
 
@@ -923,10 +923,8 @@ contains
             end do
             cnt = k1 - k0 + 1
             if (ml > 0) then
-               sa = int(mp, int64)*int(ml, int64)
-               sc = int(ml, int64)*int(ml, int64)
-               call lp%gemm_strided("T", "N", ml, ml, mp, 1.0_dp, chi(c_off(ib) + 1), mp, sa, &
-                                    zt(c_off(ib) + 1), mp, sa, 0.0_dp, vloc(pr_off(ib) + 1), ml, sc, cnt)
+               gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
+               call lp%gemm_batched(gemm_shape, chi(c_off(ib) + 1), zt(c_off(ib) + 1), vloc(pr_off(ib) + 1))
             end if
             k0 = k1 + 1
          end do

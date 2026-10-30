@@ -33,17 +33,24 @@
 !   3. syev_mat vs the raw syev.
 !   4. density vs one raw gemm done by hand; density with k = 0 against
 !      zero.
-!   5. A conformance mismatch is NOT exercised here: gemm_mat's `error
+!   5. gemm_batched: trc_gemm_batch's tight defaults for each transpose,
+!      and the batch against a plain triple loop, for all four transposes,
+!      tight tiles and a shared, non-tight operand (the trc_sph pattern).
+!      The fills are small integers, so every summation order is exact
+!      and == holds for cuBLAS's batched kernels too. count = 0 must leave
+!      C alone.
+!   6. A conformance mismatch is NOT exercised here: gemm_mat's `error
 !      stop` on a shape mismatch would simply end this program, not report
 !      a FAIL, so there is nothing a test could usefully assert.
 !
 program check_linalg_mat
-   use pic_types, only: dp
-   use trc_linalg, only: trc_linalg_t
+   use pic_types, only: dp, int64
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    implicit none
 
-   integer :: nbad
+   integer :: nbad, ia, ib
    type(trc_linalg_t) :: lp
+   character, parameter :: OPS(2) = ["N", "T"]
 
    nbad = 0
    call lp%init(20)
@@ -53,6 +60,13 @@ program check_linalg_mat
    call test_syev_mat()
    call test_syev_failure()
    call test_density()
+   call test_gemm_batch_defaults()
+   do ia = 1, 2
+      do ib = 1, 2
+         call run_gemm_batched(OPS(ia), OPS(ib))
+      end do
+   end do
+   call test_gemm_batched_shared()
 
    call lp%release()
 
@@ -336,5 +350,140 @@ contains
       call report('density(k<=0) is zero', all(d_zero == 0.0_dp))
       deallocate (c, d_mat, d_raw, d_zero)
    end subroutine test_density
+
+   ! =======================================================================
+   ! 5. gemm_batched
+   ! =======================================================================
+
+   ! A small integer, so products and sums are exact in any order.
+   pure real(dp) function ifill(offset, i) result(v)
+      integer, intent(in) :: offset, i
+      v = real(mod(7*i + offset, 11) - 5, dp)
+   end function ifill
+
+   subroutine test_gemm_batch_defaults()
+      type(trc_gemm_batch_t) :: g
+      ! op(A) 6 x 4, op(B) 4 x 5, C 6 x 5.
+      g = trc_gemm_batch(6, 5, 4, 3)
+      call report('trc_gemm_batch NN defaults', g%lda == 6 .and. g%ldb == 4 .and. g%ldc == 6 .and. &
+                  g%sa == 24 .and. g%sb == 20 .and. g%sc == 30 .and. g%count == 3)
+      g = trc_gemm_batch(6, 5, 4, 3, transa="T")
+      call report('trc_gemm_batch TN defaults', g%lda == 4 .and. g%ldb == 4 .and. g%ldc == 6 .and. &
+                  g%sa == 24 .and. g%sb == 20 .and. g%sc == 30)
+      g = trc_gemm_batch(6, 5, 4, 3, transb="T")
+      call report('trc_gemm_batch NT defaults', g%lda == 6 .and. g%ldb == 5 .and. g%ldc == 6 .and. &
+                  g%sa == 24 .and. g%sb == 20 .and. g%sc == 30)
+      ! An explicit leading dimension sets the default stride with it.
+      g = trc_gemm_batch(6, 5, 4, 3, ldb=9, sa=0_int64, transa="T", transb="T")
+      call report('trc_gemm_batch TT with ldb, sa overrides', g%lda == 4 .and. g%ldb == 9 .and. &
+                  g%ldc == 6 .and. g%sa == 0 .and. g%sb == 36 .and. g%sc == 30)
+   end subroutine test_gemm_batch_defaults
+
+   ! C_i = alpha op(A_i) op(B_i) + beta C_i over flat, tightly packed tiles,
+   ! against a triple loop on the host copies.
+   subroutine run_gemm_batched(ta, tb)
+      character, intent(in) :: ta, tb
+      integer, parameter :: MM = 6, KK = 4, NN = 5, CNT = 3
+      real(dp), parameter :: ALPHA = 2.0_dp, BETA = 0.5_dp
+      real(dp), allocatable :: a(:), b(:), c(:), c_ref(:), c0(:)
+      type(trc_gemm_batch_t) :: g
+      integer :: i, j, l, it
+      integer(int64) :: off_a, off_b, off_c
+      real(dp) :: av, bv, acc
+      character(len=64) :: what
+
+      g = trc_gemm_batch(MM, NN, KK, CNT, transa=ta, transb=tb)
+      allocate (a(MM*KK*CNT), b(KK*NN*CNT), c(MM*NN*CNT), c_ref(MM*NN*CNT))
+      do i = 1, size(a)
+         a(i) = ifill(1, i)
+      end do
+      do i = 1, size(b)
+         b(i) = ifill(4, i)
+      end do
+      do i = 1, size(c)
+         c(i) = ifill(8, i)
+      end do
+      c0 = c
+      !$acc enter data copyin(a, b, c)
+      call lp%gemm_batched(g, a, b, c, alpha=ALPHA, beta=BETA)
+      !$acc update self(c)
+      !$acc exit data delete(a, b, c)
+
+      do it = 0, CNT - 1
+         off_a = it*g%sa; off_b = it*g%sb; off_c = it*g%sc
+         do j = 1, NN
+            do i = 1, MM
+               acc = 0.0_dp
+               do l = 1, KK
+                  if (ta == "T") then
+                     av = a(off_a + l + (i - 1)*g%lda)
+                  else
+                     av = a(off_a + i + (l - 1)*g%lda)
+                  end if
+                  if (tb == "T") then
+                     bv = b(off_b + j + (l - 1)*g%ldb)
+                  else
+                     bv = b(off_b + l + (j - 1)*g%ldb)
+                  end if
+                  acc = acc + av*bv
+               end do
+               c_ref(off_c + i + (j - 1)*g%ldc) = ALPHA*acc + BETA*c0(off_c + i + (j - 1)*g%ldc)
+            end do
+         end do
+      end do
+      write (what, '(a,a1,a1)') 'gemm_batched vs triple loop, ta/tb=', ta, tb
+      call report(trim(what), all(c == c_ref))
+      deallocate (a, b, c, c_ref, c0)
+   end subroutine run_gemm_batched
+
+   ! The trc_sph column fold: B is one block of a taller table shared by
+   ! every item (sb = 0, ldb > k), the A and C tiles start inside larger
+   ! arrays; then count = 0 must not touch C.
+   subroutine test_gemm_batched_shared()
+      integer, parameter :: NROW = 5, NCI = 3, NSI = 2, LDT = 7, CNT = 4, LEAD = 3
+      real(dp), allocatable :: m(:), t(:, :), s(:), s_ref(:), s_keep(:)
+      type(trc_gemm_batch_t) :: g
+      integer :: i, j, l, it
+      integer(int64) :: oa, oc
+      real(dp) :: acc
+
+      allocate (m(LEAD + NROW*NCI*CNT), t(LDT, NSI), s(LEAD + NROW*NSI*CNT))
+      do i = 1, size(m)
+         m(i) = ifill(2, i)
+      end do
+      do j = 1, NSI
+         do i = 1, LDT
+            t(i, j) = ifill(3, i + 13*j)
+         end do
+      end do
+      s = -99.0_dp
+      s_ref = s
+      g = trc_gemm_batch(NROW, NSI, NCI, CNT, ldb=LDT, sb=0_int64)
+      !$acc enter data copyin(m, t, s)
+      call lp%gemm_batched(g, m(LEAD + 1), t, s(LEAD + 1))
+      !$acc update self(s)
+      s_keep = s
+      g = trc_gemm_batch(NROW, NSI, NCI, 0, ldb=LDT, sb=0_int64)
+      call lp%gemm_batched(g, m(LEAD + 1), t, s(LEAD + 1), beta=2.0_dp)
+      !$acc update self(s)
+      !$acc exit data delete(m, t, s)
+
+      do it = 0, CNT - 1
+         oa = LEAD + it*int(NROW*NCI, int64)
+         oc = LEAD + it*int(NROW*NSI, int64)
+         do j = 1, NSI
+            do i = 1, NROW
+               acc = 0.0_dp
+               do l = 1, NCI
+                  acc = acc + m(oa + i + (l - 1)*NROW)*t(l, j)
+               end do
+               s_ref(oc + i + (j - 1)*NROW) = acc
+            end do
+         end do
+      end do
+      call report('gemm_batched, shared non-tight B, offset tiles', all(s_keep == s_ref))
+      call report('gemm_batched, count = 0 leaves C alone', all(s == s_keep))
+      deallocate (m, t, s, s_ref, s_keep)
+   end subroutine test_gemm_batched_shared
 
 end program check_linalg_mat
