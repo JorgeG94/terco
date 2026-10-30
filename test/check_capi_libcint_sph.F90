@@ -15,7 +15,7 @@ module check_capi_libcint_sph_suite
    !! p as x/y/z, matching pyscf/libcint position for position
    !! (scripts/gen_sph.py) -- the SAME MO coefficients, up to an orbital's
    !! overall sign. This suite is that check.
-   use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
+   use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -78,72 +78,92 @@ contains
       call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, bj, err)
       call check(error, .not. err%has_error(), "basis construction: "//err%get_message())
       if (allocated(error)) return
-      call check(error, bj%spherical, "cc-pVDZ loads spherical from its own JSON tag")
-      if (allocated(error)) then
-         call bj%release()
-         return
-      end if
 
-      rc = trc_create(hj)
-      rc = trc_set_molecule(hj, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
-      rc = trc_set_basis_json(hj, 'basis_sets/cc-pvdz.json'//c_null_char)
-      call check(error, rc == TRC_OK, "orbital: set_basis_json status")
-      if (allocated(error)) then
-         rc = trc_destroy(hj); call bj%release()
-         return
-      end if
-      rc = trc_set_method(hj, ''//c_null_char, 3_c_int)
-      rc = trc_set_convergence(hj, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
-      rc = trc_run_scf(hj)
-      call check(error, rc == TRC_OK, "orbital: run_scf (json) must converge")
-      if (allocated(error)) then
-         rc = trc_destroy(hj); call bj%release()
-         return
-      end if
-      rc = trc_energy(hj, e_json)
-      rc = trc_nao(hj, n_json)
+      hj = c_null_ptr
+      hl = c_null_ptr
+      ! Every C call's status is checked: a call that fails without writing
+      ! its output would otherwise leave both sides' arrays equal (often
+      ! both zero) and the comparisons below would pass.
+      steps: block
+         call check(error, bj%spherical, "cc-pVDZ loads spherical from its own JSON tag")
+         if (allocated(error)) exit steps
 
-      rc = trc_create(hl)
-      rc = trc_set_molecule(hl, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
-      call set_basis_libcint(hl, bj, aux=.false., cartesian=0_c_int, error=error)
-      if (allocated(error)) then
-         rc = trc_destroy(hj); rc = trc_destroy(hl); call bj%release()
-         return
-      end if
-      rc = trc_set_method(hl, ''//c_null_char, 3_c_int)
-      rc = trc_set_convergence(hl, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
-      rc = trc_run_scf(hl)
-      call check(error, rc == TRC_OK, "orbital: run_scf (libcint) must converge")
-      if (allocated(error)) then
-         rc = trc_destroy(hj); rc = trc_destroy(hl); call bj%release()
-         return
-      end if
-      rc = trc_energy(hl, e_lib)
-      rc = trc_nao(hl, n_lib)
+         rc = trc_create(hj)
+         call check(error, rc == TRC_OK, "orbital: create (json)")
+         if (allocated(error)) exit steps
+         rc = trc_set_molecule(hj, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+         call check(error, rc == TRC_OK, "orbital: set_molecule (json)")
+         if (allocated(error)) exit steps
+         rc = trc_set_basis_json(hj, 'basis_sets/cc-pvdz.json'//c_null_char)
+         call check(error, rc == TRC_OK, "orbital: set_basis_json")
+         if (allocated(error)) exit steps
+         rc = trc_set_method(hj, ''//c_null_char, 3_c_int)
+         call check(error, rc == TRC_OK, "orbital: set_method (json)")
+         if (allocated(error)) exit steps
+         rc = trc_set_convergence(hj, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
+         call check(error, rc == TRC_OK, "orbital: set_convergence (json)")
+         if (allocated(error)) exit steps
+         rc = trc_run_scf(hj)
+         call check(error, rc == TRC_OK, "orbital: run_scf (json)")
+         if (allocated(error)) exit steps
+         rc = trc_energy(hj, e_json)
+         call check(error, rc == TRC_OK, "orbital: energy (json)")
+         if (allocated(error)) exit steps
+         rc = trc_nao(hj, n_json)
+         call check(error, rc == TRC_OK, "orbital: nao (json)")
+         if (allocated(error)) exit steps
 
-      call check(error, n_lib == n_json, "orbital: nao (MO count) matches between json and libcint")
-      if (.not. allocated(error)) then
+         rc = trc_create(hl)
+         call check(error, rc == TRC_OK, "orbital: create (libcint)")
+         if (allocated(error)) exit steps
+         rc = trc_set_molecule(hl, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+         call check(error, rc == TRC_OK, "orbital: set_molecule (libcint)")
+         if (allocated(error)) exit steps
+         call set_basis_libcint(hl, bj, aux=.false., cartesian=0_c_int, error=error)
+         if (allocated(error)) exit steps
+         rc = trc_set_method(hl, ''//c_null_char, 3_c_int)
+         call check(error, rc == TRC_OK, "orbital: set_method (libcint)")
+         if (allocated(error)) exit steps
+         rc = trc_set_convergence(hl, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
+         call check(error, rc == TRC_OK, "orbital: set_convergence (libcint)")
+         if (allocated(error)) exit steps
+         rc = trc_run_scf(hl)
+         call check(error, rc == TRC_OK, "orbital: run_scf (libcint)")
+         if (allocated(error)) exit steps
+         rc = trc_energy(hl, e_lib)
+         call check(error, rc == TRC_OK, "orbital: energy (libcint)")
+         if (allocated(error)) exit steps
+         rc = trc_nao(hl, n_lib)
+         call check(error, rc == TRC_OK, "orbital: nao (libcint)")
+         if (allocated(error)) exit steps
+
+         call check(error, n_lib == n_json, "orbital: nao (MO count) matches between json and libcint")
+         if (allocated(error)) exit steps
          call check(error, abs(e_json - e_lib) < 1.0e-10_dp, &
                     "orbital: SCF energy matches between json and libcint, json "// &
                     to_string(real(e_json, dp), "f20.12")//"  libcint "// &
                     to_string(real(e_lib, dp), "f20.12")//"  diff "// &
                     to_string(real(e_json - e_lib, dp), "es9.2"))
-      end if
-      if (allocated(error)) then
-         rc = trc_destroy(hj); rc = trc_destroy(hl); call bj%release()
-         return
-      end if
+         if (allocated(error)) exit steps
 
-      allocate (d_json(n_json, n_json), d_lib(n_lib, n_lib))
-      allocate (c_json(n_json, n_json), c_lib(n_lib, n_lib))
-      rc = trc_density(hj, d_json)
-      rc = trc_density(hl, d_lib)
-      call check(error, maxval(abs(d_json - d_lib)) < 1.0e-9_dp, &
-                 "orbital: density matches between json and libcint")
+         allocate (d_json(n_json, n_json), d_lib(n_lib, n_lib))
+         allocate (c_json(n_json, n_json), c_lib(n_lib, n_lib))
+         rc = trc_density(hj, d_json)
+         call check(error, rc == TRC_OK, "orbital: density (json)")
+         if (allocated(error)) exit steps
+         rc = trc_density(hl, d_lib)
+         call check(error, rc == TRC_OK, "orbital: density (libcint)")
+         if (allocated(error)) exit steps
+         call check(error, maxval(abs(d_json - d_lib)) < 1.0e-9_dp, &
+                    "orbital: density matches between json and libcint")
+         if (allocated(error)) exit steps
 
-      if (.not. allocated(error)) then
          rc = trc_mo_coefficients(hj, c_json)
+         call check(error, rc == TRC_OK, "orbital: mo_coefficients (json)")
+         if (allocated(error)) exit steps
          rc = trc_mo_coefficients(hl, c_lib)
+         call check(error, rc == TRC_OK, "orbital: mo_coefficients (libcint)")
+         if (allocated(error)) exit steps
          ! Each orbital's overall sign is arbitrary (the eigensolver's own
          ! convention), so compare |C| column by column rather than C
          ! itself.
@@ -156,9 +176,10 @@ contains
          call check(error, worst < 1.0e-7_dp, &
                     "orbital: |MO coefficients| match between json and libcint, worst "// &
                     to_string(worst, "es10.2"))
-      end if
+      end block steps
 
-      rc = trc_destroy(hj); rc = trc_destroy(hl)
+      rc = trc_destroy(hj)
+      rc = trc_destroy(hl)
       call bj%release()
    end subroutine test_orbital_basis
 
@@ -187,53 +208,56 @@ contains
       call check(error, .not. err%has_error(), "basis construction: "//err%get_message())
       if (allocated(error)) return
 
-      rc = trc_create(hj)
-      rc = trc_set_molecule(hj, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
-      rc = trc_set_basis_json(hj, 'basis_sets/cc-pvdz.json'//c_null_char)
-      rc = trc_set_jkfit_json(hj, 'basis_sets/def2-universal-jkfit.json'//c_null_char)
-      call check(error, rc == TRC_OK, "jkfit: set_jkfit_json status")
-      if (allocated(error)) then
-         rc = trc_destroy(hj); call bj%release(); call bk%release()
-         return
-      end if
-      rc = trc_set_df(hj, 1_c_int)
-      rc = trc_set_method(hj, ''//c_null_char, 3_c_int)
-      rc = trc_set_convergence(hj, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
-      rc = trc_run_scf(hj)
-      call check(error, rc == TRC_OK, "jkfit: run_scf (json) must converge")
-      if (allocated(error)) then
-         rc = trc_destroy(hj); call bj%release(); call bk%release()
-         return
-      end if
-      rc = trc_energy(hj, e_json)
+      hj = c_null_ptr
+      hl = c_null_ptr
+      steps: block
+         rc = trc_create(hj)
+         call check(error, rc == TRC_OK, "jkfit: create (json)")
+         if (allocated(error)) exit steps
+         rc = trc_set_molecule(hj, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+         rc = trc_set_basis_json(hj, 'basis_sets/cc-pvdz.json'//c_null_char)
+         rc = trc_set_jkfit_json(hj, 'basis_sets/def2-universal-jkfit.json'//c_null_char)
+         call check(error, rc == TRC_OK, "jkfit: set_jkfit_json")
+         if (allocated(error)) exit steps
+         rc = trc_set_df(hj, 1_c_int)
+         rc = trc_set_method(hj, ''//c_null_char, 3_c_int)
+         rc = trc_set_convergence(hj, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
+         rc = trc_run_scf(hj)
+         call check(error, rc == TRC_OK, "jkfit: run_scf (json)")
+         if (allocated(error)) exit steps
+         rc = trc_energy(hj, e_json)
+         call check(error, rc == TRC_OK, "jkfit: energy (json)")
+         if (allocated(error)) exit steps
 
-      rc = trc_create(hl)
-      rc = trc_set_molecule(hl, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
-      call set_basis_libcint(hl, bj, aux=.false., cartesian=0_c_int, error=error)
-      if (.not. allocated(error)) call set_jkfit_libcint(hl, bk, cartesian=0_c_int, error=error)
-      if (allocated(error)) then
-         rc = trc_destroy(hj); rc = trc_destroy(hl); call bj%release(); call bk%release()
-         return
-      end if
-      rc = trc_set_df(hl, 1_c_int)
-      rc = trc_set_method(hl, ''//c_null_char, 3_c_int)
-      rc = trc_set_convergence(hl, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
-      rc = trc_run_scf(hl)
-      call check(error, rc == TRC_OK, "jkfit: run_scf (libcint) must converge")
-      if (allocated(error)) then
-         rc = trc_destroy(hj); rc = trc_destroy(hl); call bj%release(); call bk%release()
-         return
-      end if
-      rc = trc_energy(hl, e_lib)
+         rc = trc_create(hl)
+         call check(error, rc == TRC_OK, "jkfit: create (libcint)")
+         if (allocated(error)) exit steps
+         rc = trc_set_molecule(hl, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+         call set_basis_libcint(hl, bj, aux=.false., cartesian=0_c_int, error=error)
+         if (allocated(error)) exit steps
+         call set_jkfit_libcint(hl, bk, cartesian=0_c_int, error=error)
+         if (allocated(error)) exit steps
+         rc = trc_set_df(hl, 1_c_int)
+         rc = trc_set_method(hl, ''//c_null_char, 3_c_int)
+         rc = trc_set_convergence(hl, 1.0e-11_c_double, 1.0e-7_c_double, 100_c_int, 10_c_int)
+         rc = trc_run_scf(hl)
+         call check(error, rc == TRC_OK, "jkfit: run_scf (libcint)")
+         if (allocated(error)) exit steps
+         rc = trc_energy(hl, e_lib)
+         call check(error, rc == TRC_OK, "jkfit: energy (libcint)")
+         if (allocated(error)) exit steps
 
-      call check(error, abs(e_json - e_lib) < 1.0e-10_dp, &
-                 "jkfit: --df energy matches between json and libcint, json "// &
-                 to_string(real(e_json, dp), "f20.12")//"  libcint "// &
-                 to_string(real(e_lib, dp), "f20.12")//"  diff "// &
-                 to_string(real(e_json - e_lib, dp), "es9.2"))
+         call check(error, abs(e_json - e_lib) < 1.0e-10_dp, &
+                    "jkfit: --df energy matches between json and libcint, json "// &
+                    to_string(real(e_json, dp), "f20.12")//"  libcint "// &
+                    to_string(real(e_lib, dp), "f20.12")//"  diff "// &
+                    to_string(real(e_json - e_lib, dp), "es9.2"))
+      end block steps
 
-      rc = trc_destroy(hj); rc = trc_destroy(hl)
-      call bj%release(); call bk%release()
+      rc = trc_destroy(hj)
+      rc = trc_destroy(hl)
+      call bj%release()
+      call bk%release()
    end subroutine test_jkfit
 
    !
