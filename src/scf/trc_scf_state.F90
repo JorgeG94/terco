@@ -39,9 +39,9 @@ module trc_scf_state
       real(dp) :: tx_pts = 0.0_dp, tx_prs = 0.0_dp
       real(dp) :: t_vv10 = 0.0_dp
       !! Running total of the VV10 calls `build_vxc` wraps in their own
-      !! NVTX range -- see `xcst` below, and `trc_scf_fock`'s own header
-      !! on why VV10's time is not folded into `t_xc`/`tx_pts`/`tx_prs`
-      !! the way the semilocal functional's points/pairs split is.
+      !! NVTX range -- see `xcst` below, and `trc_scf_fock`'s own header.
+      !! It is part of `t_xc` (which times all of `build_vxc`) but not of
+      !! the semilocal functional's `tx_pts`/`tx_prs` split.
       type(step_table_t) :: xcst
       !! The DFT pipeline's steps (grid build, semilocal XC, VV10) in the
       !! same shared table RI-MP2/DF-JK report through -- NVTX ranges on
