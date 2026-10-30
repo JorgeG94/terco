@@ -19,54 +19,59 @@
 ! documents: dividing a 1e-16 difference by a 1e-12 reference manufactures
 ! failures out of exact results.
 !
-program check_1e
+! Checks are grouped one per (system, kind) -- kind is OVLP/KIN/NUC -- each
+! reporting that system's worst diff, rather than one check per matrix
+! element: the file carries every shell-pair block for three systems, which
+! would otherwise be thousands of individual check() calls.
+!
+module check_1e_suite
    use pic_types, only: dp
-   use trc_boys, only: boys_init
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_1e_kernels, only: one_e_dispatch, ONE_E_LMAX
    use trc_cart_perm, only: cart_perm_b2l
    implicit none
+   private
+   public :: collect_1e_tests
 
    integer, parameter :: ATM_SLOTS = 6, BAS_SLOTS = 8
    integer, parameter :: ATOM_OF = 0, ANG_OF = 1, NPRIM_OF = 2
    integer, parameter :: PTR_EXP = 5, PTR_COEFF = 6, PTR_COORD = 1
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
-
-   integer, allocatable :: atm(:), bas(:)
-   real(dp), allocatable :: env(:)
-   integer :: natm, nbas, nenv, u, isys, nbad
-   real(dp) :: worst(3)
-   character(len=64) :: t
-
-   call boys_init()
-   nbad = 0
-   worst = 0.0_dp
-
-   open (newunit=u, file='reference1e.dat', status='old', action='read')
-   do
-      read (u, '(a)', end=99) t
-      if (t(1:3) == 'END') exit
-      if (t(1:6) /= 'SYSTEM') cycle
-      read (t(8:), *) isys
-      call read_system(u, atm, bas, env, natm, nbas, nenv)
-      call check_system(u, isys, atm, bas, env, natm, nbas)
-      deallocate (atm, bas, env)
-   end do
-99 continue
-   close (u)
-
-   print '(a)', ''
-   print '(a,es10.2)', '  worst overlap diff : ', worst(1)
-   print '(a,es10.2)', '  worst kinetic diff : ', worst(2)
-   print '(a,es10.2)', '  worst nuclear diff : ', worst(3)
-   print '(a,i0)', '  outside tol        : ', nbad
-   if (nbad == 0) then
-      print '(a)', '  RESULT: PASS'
-   else
-      print '(a)', '  RESULT: FAIL'
-      stop 1
-   end if
 
 contains
+
+   subroutine collect_1e_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("overlap/kinetic/nuclear kernels match libfint, worst diff per system/kind", &
+                               test_vs_libfint) &
+                  ]
+   end subroutine collect_1e_tests
+
+   subroutine test_vs_libfint(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer, allocatable :: atm(:), bas(:)
+      real(dp), allocatable :: env(:)
+      integer :: natm, nbas, nenv, u, isys
+      character(len=64) :: t
+
+      open (newunit=u, file='reference1e.dat', status='old', action='read')
+      do
+         read (u, '(a)', end=99) t
+         if (t(1:3) == 'END') exit
+         if (t(1:6) /= 'SYSTEM') cycle
+         read (t(8:), *) isys
+         call read_system(u, atm, bas, env, natm, nbas, nenv)
+         call check_system(u, isys, atm, bas, env, natm, nbas, error)
+         deallocate (atm, bas, env)
+         if (allocated(error)) then
+            close (u)
+            return
+         end if
+      end do
+99    continue
+      close (u)
+   end subroutine test_vs_libfint
 
    subroutine read_system(u, atm, bas, env, natm, nbas, nenv)
       integer, intent(in) :: u
@@ -100,10 +105,11 @@ contains
       end select
    end function common_fac_sp
 
-   subroutine check_system(u, isys, atm, bas, env, natm, nbas)
+   subroutine check_system(u, isys, atm, bas, env, natm, nbas, error)
       integer, intent(in) :: u, isys, natm, nbas
       integer, intent(in) :: atm(0:), bas(0:)
       real(dp), intent(in) :: env(0:)
+      type(error_type), allocatable, intent(out) :: error
 
       character(len=80) :: line
       character(len=8)  :: kind
@@ -111,6 +117,8 @@ contains
       real(dp), allocatable :: ref(:), sout(:), tout(:), vout(:)
       real(dp), allocatable :: zatm(:), ratm(:, :)
       real(dp) :: ra(3), rb(3), d, tol, fac
+      real(dp) :: worst(3)
+      integer :: nbad(3)
       integer :: nblk
 
       allocate (zatm(natm), ratm(3, natm))
@@ -120,6 +128,8 @@ contains
                            atm(ATM_SLOTS*(ic - 1) + PTR_COORD) + 2)
       end do
 
+      worst = 0.0_dp
+      nbad = 0
       nblk = 0
       do
          read (u, '(a)', end=98) line
@@ -173,7 +183,7 @@ contains
             end select
             tol = 1.0e-12_dp + 1.0e-11_dp*abs(ref(ml))
             worst(k) = max(worst(k), d)
-            if (d > tol) nbad = nbad + 1
+            if (d > tol) nbad(k) = nbad(k) + 1
          end do
          nblk = nblk + 1
          deallocate (ref, sout, tout, vout)
@@ -181,6 +191,38 @@ contains
 98    continue
       print '(a,i0,a,i0,a)', '  system ', isys, ': ', nblk, ' blocks checked'
       deallocate (zatm, ratm)
+
+      call check(error, nbad(1) == 0, &
+                 "system "//to_string(isys)//" OVLP: worst diff "//to_string(worst(1), "es10.2")// &
+                 " exceeds mixed tol ("//to_string(nbad(1))//" entries)")
+      if (allocated(error)) return
+      call check(error, nbad(2) == 0, &
+                 "system "//to_string(isys)//" KIN: worst diff "//to_string(worst(2), "es10.2")// &
+                 " exceeds mixed tol ("//to_string(nbad(2))//" entries)")
+      if (allocated(error)) return
+      call check(error, nbad(3) == 0, &
+                 "system "//to_string(isys)//" NUC: worst diff "//to_string(worst(3), "es10.2")// &
+                 " exceeds mixed tol ("//to_string(nbad(3))//" entries)")
    end subroutine check_system
 
+end module check_1e_suite
+
+program check_1e
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use trc_boys, only: boys_init
+   use check_1e_suite, only: collect_1e_tests
+   implicit none
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   call boys_init()
+   stat = 0
+   testsuites = [new_testsuite("check_1e", collect_1e_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_1e

@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sph_corr"] -> gen_sph_corr
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 3024620950ec28a42d779b8fe225f3b1ce32e99d6e1fa48afb8358afe5bc73f3
+# hash: 41ebdfe8c5b25f549970850b14a51950240b42a0c8e51667e6313ce8ad07cafc
 # files: test/scf_sph_corr.F90 test/basis_sets/cc-pvdz.json test/basis_sets/cc-pvdz-rifit.json test/basis_sets/def2-universal-jkfit.json test/water.xyz test/formamide.xyz test/oh.xyz
 RMP2_NAME_0 water_ccpvdz_sph
 RMP2_ESCF_0 -7.60267720533944100e+01

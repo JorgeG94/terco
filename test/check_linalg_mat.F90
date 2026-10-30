@@ -43,54 +43,40 @@
 !      stop` on a shape mismatch would simply end this program, not report
 !      a FAIL, so there is nothing a test could usefully assert.
 !
-program check_linalg_mat
+module check_linalg_mat_suite
    use pic_types, only: dp, int64
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    implicit none
+   private
+   public :: collect_linalg_mat, lp
 
-   integer :: nbad, ia, ib
    type(trc_linalg_t) :: lp
-   character, parameter :: OPS(2) = ["N", "T"]
-
-   nbad = 0
-   call lp%init(20)
-
-   call test_gemm_mat()
-   call test_dot_mat()
-   call test_syev_mat()
-   call test_syev_failure()
-   call test_density()
-   call test_gemm_batch_defaults()
-   do ia = 1, 2
-      do ib = 1, 2
-         call run_gemm_batched(OPS(ia), OPS(ib))
-      end do
-   end do
-   call test_gemm_batched_shared()
-
-   call lp%release()
-
-   print '(a)', ''
-   if (nbad == 0) then
-      print '(a)', '  RESULT: PASS'
-   else
-      print '(a,i0,a)', '  RESULT: FAIL (', nbad, ' checks differ)'
-      stop 1
-   end if
+      !! Shared across every test below: initialised before run_testsuite
+      !! and released after (program check_linalg_mat), safe because this
+      !! suite always runs with parallel=.false.
 
 contains
 
-   subroutine report(what, ok)
-      character(len=*), intent(in) :: what
-      logical, intent(in) :: ok
-      character(len=4) :: verdict
-      verdict = 'ok  '
-      if (.not. ok) then
-         verdict = 'FAIL'
-         nbad = nbad + 1
-      end if
-      print '(a,a56,a,a)', '  ', what, '   ', verdict
-   end subroutine report
+   subroutine collect_linalg_mat(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("1. gemm_mat matches raw gemm: every transpose/alpha-beta combination "// &
+                               "and a 3D array section", test_gemm_mat), &
+                  new_unittest("2. dot_2d/dot_3d match raw dot, including a rank-4 section", test_dot_mat), &
+                  new_unittest("3. syev_mat matches raw syev", test_syev_mat), &
+                  new_unittest("3b. syev_mat reports a signalling-NaN matrix through info, not error stop", &
+                               test_syev_failure), &
+                  new_unittest("4. density matches a raw gemm; density(k<=0) is zero", test_density), &
+                  new_unittest("5a. trc_gemm_batch defaults for each transpose", test_gemm_batch_defaults), &
+                  new_unittest("5b. gemm_batched vs triple loop, ta/tb=NN", test_gemm_batched_nn), &
+                  new_unittest("5b. gemm_batched vs triple loop, ta/tb=NT", test_gemm_batched_nt), &
+                  new_unittest("5b. gemm_batched vs triple loop, ta/tb=TN", test_gemm_batched_tn), &
+                  new_unittest("5b. gemm_batched vs triple loop, ta/tb=TT", test_gemm_batched_tt), &
+                  new_unittest("5c. gemm_batched, shared non-tight B and offset tiles; count = 0 leaves C alone", &
+                               test_gemm_batched_shared) &
+                  ]
+   end subroutine collect_linalg_mat
 
    ! A closed-form fill: no two (offset, i, j) combinations collide, so
    ! A, B and C never accidentally share a value that would mask a bug.
@@ -102,78 +88,73 @@ contains
    ! =======================================================================
    ! 1. gemm_mat vs the raw gemm
    ! =======================================================================
-   subroutine run_gemm_combo(ta, tb, explicit)
-      character, intent(in) :: ta, tb
-      logical, intent(in) :: explicit
+   subroutine test_gemm_mat(error)
+      type(error_type), allocatable, intent(out) :: error
+      character, parameter :: OPS(2) = ["N", "T"]
       integer, parameter :: MM = 6, KK = 4, NN = 5
       real(dp), allocatable :: a_store(:, :), b_store(:, :), c_mat(:, :), c_raw(:, :)
+      real(dp), allocatable :: a3(:, :, :), b(:, :)
       real(dp) :: alpha, beta
-      integer :: i, j, lda, ldb
-      logical :: tra, trb
+      integer :: ia, ib, iv, i, j, lda, ldb
+      logical :: tra, trb, explicit
       character(len=64) :: what
-
-      tra = ta == "T"; trb = tb == "T"
-      if (explicit) then
-         alpha = 1.7_dp; beta = 0.3_dp
-      else
-         alpha = 1.0_dp; beta = 0.0_dp
-      end if
-
-      if (tra) then
-         allocate (a_store(KK, MM))
-      else
-         allocate (a_store(MM, KK))
-      end if
-      do j = 1, size(a_store, 2)
-         do i = 1, size(a_store, 1)
-            a_store(i, j) = fill(0, i, j)
-         end do
-      end do
-
-      if (trb) then
-         allocate (b_store(NN, KK))
-      else
-         allocate (b_store(KK, NN))
-      end if
-      do j = 1, size(b_store, 2)
-         do i = 1, size(b_store, 1)
-            b_store(i, j) = fill(100, i, j)
-         end do
-      end do
-
-      allocate (c_mat(MM, NN), c_raw(MM, NN))
-      do j = 1, NN
-         do i = 1, MM
-            ! Beta = 0 never reads C, but a non-trivial starting value still
-            ! has to be fed to both forms identically for the explicit-beta
-            ! case to mean anything.
-            c_mat(i, j) = fill(200, i, j)
-         end do
-      end do
-      c_raw = c_mat
-
-      lda = size(a_store, 1); ldb = size(b_store, 1)
-      !$acc enter data copyin(a_store, b_store, c_mat, c_raw)
-      call lp%gemm_mat(a_store, b_store, c_mat, transa=ta, transb=tb, alpha=alpha, beta=beta)
-      call lp%gemm(ta, tb, MM, NN, KK, alpha, a_store, lda, b_store, ldb, beta, c_raw, MM)
-      !$acc update self(c_mat, c_raw)
-      !$acc exit data delete(a_store, b_store, c_mat, c_raw)
-
-      write (what, '(a,a1,a1,a,l1)') 'gemm_mat vs raw, ta/tb=', ta, tb, ' explicit=', explicit
-      call report(trim(what), all(c_mat == c_raw))
-      deallocate (a_store, b_store, c_mat, c_raw)
-   end subroutine run_gemm_combo
-
-   subroutine test_gemm_mat()
-      character, parameter :: OPS(2) = ["N", "T"]
-      integer, parameter :: MM = 6, KK = 4
-      real(dp), allocatable :: a3(:, :, :), b(:, :), c_mat(:, :), c_raw(:, :)
-      integer :: ia, ib, iv, i, j
+      character :: ta, tb
 
       do ia = 1, 2
          do ib = 1, 2
             do iv = 1, 2
-               call run_gemm_combo(OPS(ia), OPS(ib), iv == 2)
+               ta = OPS(ia); tb = OPS(ib); explicit = (iv == 2)
+               tra = ta == "T"; trb = tb == "T"
+               if (explicit) then
+                  alpha = 1.7_dp; beta = 0.3_dp
+               else
+                  alpha = 1.0_dp; beta = 0.0_dp
+               end if
+
+               if (tra) then
+                  allocate (a_store(KK, MM))
+               else
+                  allocate (a_store(MM, KK))
+               end if
+               do j = 1, size(a_store, 2)
+                  do i = 1, size(a_store, 1)
+                     a_store(i, j) = fill(0, i, j)
+                  end do
+               end do
+
+               if (trb) then
+                  allocate (b_store(NN, KK))
+               else
+                  allocate (b_store(KK, NN))
+               end if
+               do j = 1, size(b_store, 2)
+                  do i = 1, size(b_store, 1)
+                     b_store(i, j) = fill(100, i, j)
+                  end do
+               end do
+
+               allocate (c_mat(MM, NN), c_raw(MM, NN))
+               do j = 1, NN
+                  do i = 1, MM
+                     ! Beta = 0 never reads C, but a non-trivial starting value still
+                     ! has to be fed to both forms identically for the explicit-beta
+                     ! case to mean anything.
+                     c_mat(i, j) = fill(200, i, j)
+                  end do
+               end do
+               c_raw = c_mat
+
+               lda = size(a_store, 1); ldb = size(b_store, 1)
+               !$acc enter data copyin(a_store, b_store, c_mat, c_raw)
+               call lp%gemm_mat(a_store, b_store, c_mat, transa=ta, transb=tb, alpha=alpha, beta=beta)
+               call lp%gemm(ta, tb, MM, NN, KK, alpha, a_store, lda, b_store, ldb, beta, c_raw, MM)
+               !$acc update self(c_mat, c_raw)
+               !$acc exit data delete(a_store, b_store, c_mat, c_raw)
+
+               write (what, '(a,a1,a1,a,l1)') 'gemm_mat vs raw, ta/tb=', ta, tb, ' explicit=', explicit
+               call check(error, all(c_mat == c_raw), trim(what))
+               deallocate (a_store, b_store, c_mat, c_raw)
+               if (allocated(error)) return
             end do
          end do
       end do
@@ -198,14 +179,15 @@ contains
       call lp%gemm("N", "N", MM, KK, KK, 1.0_dp, a3(:, :, 2), MM, b, KK, 0.0_dp, c_raw, MM)
       !$acc update self(c_mat, c_raw)
       !$acc exit data delete(a3, b, c_mat, c_raw)
-      call report('gemm_mat vs raw, A as a 3D section a(:,:,2)', all(c_mat == c_raw))
+      call check(error, all(c_mat == c_raw), 'gemm_mat vs raw, A as a 3D section a(:,:,2)')
       deallocate (a3, b, c_mat, c_raw)
    end subroutine test_gemm_mat
 
    ! =======================================================================
    ! 2. dot_2d / dot_3d vs the raw dot
    ! =======================================================================
-   subroutine test_dot_mat()
+   subroutine test_dot_mat(error)
+      type(error_type), allocatable, intent(out) :: error
       integer, parameter :: PP = 5, QQ = 3
       real(dp), allocatable :: x2(:, :), y2(:, :)
       real(dp), allocatable :: estore(:, :, :, :)
@@ -223,8 +205,9 @@ contains
       r_mat = lp%dot_2d(x2, y2)
       r_raw = lp%dot(size(x2), x2, y2)
       !$acc exit data delete(x2, y2)
-      call report('dot_2d vs raw dot', r_mat == r_raw)
+      call check(error, r_mat == r_raw, 'dot_2d vs raw dot')
       deallocate (x2, y2)
+      if (allocated(error)) return
 
       ! A rank-4 array's section estore(:,:,:,k) fed to dot_3d, exactly as
       ! trc_scf_driver's ADIIS feeds estore(:,:,:,i) to the raw dot today.
@@ -245,14 +228,15 @@ contains
       r_mat = lp%dot_3d(estore(:, :, :, 2), estore(:, :, :, 3))
       r_raw = lp%dot(size(estore(:, :, :, 2)), estore(:, :, :, 2), estore(:, :, :, 3))
       !$acc exit data delete(estore)
-      call report('dot_3d vs raw dot, sections estore(:,:,:,k)', r_mat == r_raw)
+      call check(error, r_mat == r_raw, 'dot_3d vs raw dot, sections estore(:,:,:,k)')
       deallocate (estore)
    end subroutine test_dot_mat
 
    ! =======================================================================
    ! 3. syev_mat vs the raw syev
    ! =======================================================================
-   subroutine test_syev_mat()
+   subroutine test_syev_mat(error)
+      type(error_type), allocatable, intent(out) :: error
       integer, parameter :: N = 6
       real(dp), allocatable :: a_mat(:, :), a_raw(:, :), w_mat(:), w_raw(:)
       integer :: i, j
@@ -272,8 +256,12 @@ contains
       !$acc update self(a_mat, a_raw, w_mat, w_raw)
       !$acc exit data delete(a_mat, a_raw, w_mat, w_raw)
 
-      call report('syev_mat eigenvectors vs raw syev', all(a_mat == a_raw))
-      call report('syev_mat eigenvalues vs raw syev', all(w_mat == w_raw))
+      call check(error, all(a_mat == a_raw), 'syev_mat eigenvectors vs raw syev')
+      if (allocated(error)) then
+         deallocate (a_mat, a_raw, w_mat, w_raw)
+         return
+      end if
+      call check(error, all(w_mat == w_raw), 'syev_mat eigenvalues vs raw syev')
       deallocate (a_mat, a_raw, w_mat, w_raw)
    end subroutine test_syev_mat
 
@@ -293,20 +281,18 @@ contains
    ! one level up, in trc_scf_driver.F90; this is the cheap,
    ! deterministic version of the same thing, at the trc_linalg level.
    ! =======================================================================
-   subroutine test_syev_failure()
+   subroutine test_syev_failure(error)
       use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_signaling_nan
+      type(error_type), allocatable, intent(out) :: error
       integer, parameter :: N = 6
       real(dp), allocatable :: a(:, :), w(:)
-      integer :: info
+      integer :: info, i
 
       allocate (a(N, N), w(N))
       a = 0.0_dp
-      block
-         integer :: i
-         do i = 1, N
-            a(i, i) = 1.0_dp
-         end do
-      end block
+      do i = 1, N
+         a(i, i) = 1.0_dp
+      end do
       a(2, 5) = ieee_value(a(2, 5), ieee_signaling_nan)
       a(5, 2) = a(2, 5)
 
@@ -314,14 +300,16 @@ contains
       call lp%syev(a, w, info)
       !$acc exit data delete(a, w)
 
-      call report('syev_mat reports a signalling-NaN matrix through info, not error stop', info /= 0)
+      call check(error, info /= 0, &
+                 'syev_mat reports a signalling-NaN matrix through info, not error stop')
       deallocate (a, w)
    end subroutine test_syev_failure
 
    ! =======================================================================
    ! 4. density vs one raw gemm; density(k<=0)
    ! =======================================================================
-   subroutine test_density()
+   subroutine test_density(error)
+      type(error_type), allocatable, intent(out) :: error
       integer, parameter :: N = 5, NC = 4, K = 3
       real(dp), allocatable :: c(:, :), d_mat(:, :), d_raw(:, :), d_zero(:, :)
       real(dp) :: occ
@@ -346,8 +334,12 @@ contains
       !$acc update self(d_mat, d_raw, d_zero)
       !$acc exit data delete(c, d_mat, d_raw, d_zero)
 
-      call report('density vs raw gemm', all(d_mat == d_raw))
-      call report('density(k<=0) is zero', all(d_zero == 0.0_dp))
+      call check(error, all(d_mat == d_raw), 'density vs raw gemm')
+      if (allocated(error)) then
+         deallocate (c, d_mat, d_raw, d_zero)
+         return
+      end if
+      call check(error, all(d_zero == 0.0_dp), 'density(k<=0) is zero')
       deallocate (c, d_mat, d_raw, d_zero)
    end subroutine test_density
 
@@ -361,27 +353,56 @@ contains
       v = real(mod(7*i + offset, 11) - 5, dp)
    end function ifill
 
-   subroutine test_gemm_batch_defaults()
+   subroutine test_gemm_batch_defaults(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_gemm_batch_t) :: g
       ! op(A) 6 x 4, op(B) 4 x 5, C 6 x 5.
       g = trc_gemm_batch(6, 5, 4, 3)
-      call report('trc_gemm_batch NN defaults', g%lda == 6 .and. g%ldb == 4 .and. g%ldc == 6 .and. &
-                  g%sa == 24 .and. g%sb == 20 .and. g%sc == 30 .and. g%count == 3)
+      call check(error, g%lda == 6 .and. g%ldb == 4 .and. g%ldc == 6 .and. &
+                 g%sa == 24 .and. g%sb == 20 .and. g%sc == 30 .and. g%count == 3, &
+                 'trc_gemm_batch NN defaults')
+      if (allocated(error)) return
       g = trc_gemm_batch(6, 5, 4, 3, transa="T")
-      call report('trc_gemm_batch TN defaults', g%lda == 4 .and. g%ldb == 4 .and. g%ldc == 6 .and. &
-                  g%sa == 24 .and. g%sb == 20 .and. g%sc == 30)
+      call check(error, g%lda == 4 .and. g%ldb == 4 .and. g%ldc == 6 .and. &
+                 g%sa == 24 .and. g%sb == 20 .and. g%sc == 30, &
+                 'trc_gemm_batch TN defaults')
+      if (allocated(error)) return
       g = trc_gemm_batch(6, 5, 4, 3, transb="T")
-      call report('trc_gemm_batch NT defaults', g%lda == 6 .and. g%ldb == 5 .and. g%ldc == 6 .and. &
-                  g%sa == 24 .and. g%sb == 20 .and. g%sc == 30)
+      call check(error, g%lda == 6 .and. g%ldb == 5 .and. g%ldc == 6 .and. &
+                 g%sa == 24 .and. g%sb == 20 .and. g%sc == 30, &
+                 'trc_gemm_batch NT defaults')
+      if (allocated(error)) return
       ! An explicit leading dimension sets the default stride with it.
       g = trc_gemm_batch(6, 5, 4, 3, ldb=9, sa=0_int64, transa="T", transb="T")
-      call report('trc_gemm_batch TT with ldb, sa overrides', g%lda == 4 .and. g%ldb == 9 .and. &
-                  g%ldc == 6 .and. g%sa == 0 .and. g%sb == 36 .and. g%sc == 30)
+      call check(error, g%lda == 4 .and. g%ldb == 9 .and. &
+                 g%ldc == 6 .and. g%sa == 0 .and. g%sb == 36 .and. g%sc == 30, &
+                 'trc_gemm_batch TT with ldb, sa overrides')
    end subroutine test_gemm_batch_defaults
+
+   subroutine test_gemm_batched_nn(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_gemm_batched(error, "N", "N")
+   end subroutine test_gemm_batched_nn
+
+   subroutine test_gemm_batched_nt(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_gemm_batched(error, "N", "T")
+   end subroutine test_gemm_batched_nt
+
+   subroutine test_gemm_batched_tn(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_gemm_batched(error, "T", "N")
+   end subroutine test_gemm_batched_tn
+
+   subroutine test_gemm_batched_tt(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_gemm_batched(error, "T", "T")
+   end subroutine test_gemm_batched_tt
 
    ! C_i = alpha op(A_i) op(B_i) + beta C_i over flat, tightly packed tiles,
    ! against a triple loop on the host copies.
-   subroutine run_gemm_batched(ta, tb)
+   subroutine run_gemm_batched(error, ta, tb)
+      type(error_type), allocatable, intent(out) :: error
       character, intent(in) :: ta, tb
       integer, parameter :: MM = 6, KK = 4, NN = 5, CNT = 3
       real(dp), parameter :: ALPHA = 2.0_dp, BETA = 0.5_dp
@@ -434,14 +455,15 @@ contains
          end do
       end do
       write (what, '(a,a1,a1)') 'gemm_batched vs triple loop, ta/tb=', ta, tb
-      call report(trim(what), all(c == c_ref))
+      call check(error, all(c == c_ref), trim(what))
       deallocate (a, b, c, c_ref, c0)
    end subroutine run_gemm_batched
 
    ! The trc_sph column fold: B is one block of a taller table shared by
    ! every item (sb = 0, ldb > k), the A and C tiles start inside larger
    ! arrays; then count = 0 must not touch C.
-   subroutine test_gemm_batched_shared()
+   subroutine test_gemm_batched_shared(error)
+      type(error_type), allocatable, intent(out) :: error
       integer, parameter :: NROW = 5, NCI = 3, NSI = 2, LDT = 7, CNT = 4, LEAD = 3
       real(dp), allocatable :: m(:), t(:, :), s(:), s_ref(:), s_keep(:)
       type(trc_gemm_batch_t) :: g
@@ -483,9 +505,33 @@ contains
             end do
          end do
       end do
-      call report('gemm_batched, shared non-tight B, offset tiles', all(s_keep == s_ref))
-      call report('gemm_batched, count = 0 leaves C alone', all(s == s_keep))
+      call check(error, all(s_keep == s_ref), 'gemm_batched, shared non-tight B, offset tiles')
+      if (allocated(error)) then
+         deallocate (m, t, s, s_ref, s_keep)
+         return
+      end if
+      call check(error, all(s == s_keep), 'gemm_batched, count = 0 leaves C alone')
       deallocate (m, t, s, s_ref, s_keep)
    end subroutine test_gemm_batched_shared
 
+end module check_linalg_mat_suite
+
+program check_linalg_mat
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_linalg_mat_suite, only: collect_linalg_mat, lp
+   implicit none
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   stat = 0
+   call lp%init(20)
+   testsuites = [new_testsuite("check_linalg_mat", collect_linalg_mat)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   call lp%release()
+
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_linalg_mat

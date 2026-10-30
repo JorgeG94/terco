@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["scf_robust"] -> gen_scf_robust
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 065bc17b743d9baa2ce391d741c83b97539956aa6aa41b514ae26bef4bc2ca62
+# hash: 5eac0cd6d97e3d139ecb6a2e02dcd0fee7405ced9a04dabca103454a1c14e297
 # files: test/scf_robust.F90
 NCASE 4
 XYZ_0 n2_stretched

@@ -54,7 +54,7 @@ HEADER = '''!
 ! A meta-GGA's points carry the kinetic-energy density tau as well, and
 ! its record stops at first order -- eps, vrho, vsigma, vtau -- because
 ! only `exc` and `exc_vxc` are translated for a meta-GGA.
-! This program evaluates terco's kernels -- ExchCXX's Maple arithmetic,
+! This suite evaluates terco's kernels -- ExchCXX's Maple arithmetic,
 ! translated by tools/exchcxx_to_fortran.py -- at the same points and
 ! reports the worst relative disagreement per output.
 !
@@ -74,10 +74,24 @@ HEADER = '''!
 ! tools/gen_check_xc.py from the same kernel list the registry is built
 ! from -- one block per kernel, mechanical, so neither is hand-maintained.
 !
-program check_xc
+! ONE test-drive CASE, not one per kernel: `reference_xc.dat`'s blocks are
+! discovered by reading the file sequentially until EOF (kernel, family,
+! npts, ... read off each block's own header line), so there is no
+! compile-time list of block names to build a testsuite array from the
+! way check_xc_energy.F90's fixed NFUNC does -- splitting this into
+! per-kernel cases would mean parsing the whole file first just to learn
+! its own shape. The single case below keeps every one of the original
+! per-kernel/per-point comparisons and prints the same per-block
+! ok/FAIL line; only the final stop-on-failure became one `check`.
+!
+module check_xc_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
 {uses}
    implicit none
+   private
+   public :: collect_check_xc
 
    ! Two independent Maple derivations agree to this on energies and first
    ! derivatives; measured 1.2e-12 at worst, so a factor of ten of slack.
@@ -118,99 +132,112 @@ program check_xc
    real(dp), parameter :: c_x0 = 0.7385587663820224_dp, c_tau = 2.871234000188191_dp
 
    integer, parameter :: maxout = 21, maxin = 7
-   character(len=32) :: kernel, family
-   character(len=256) :: line
-   integer :: polar, npts, nin, nout, ios, ip, io, unit, nblocks, nfail
-   real(dp) :: xin(maxin), ref(maxout), got(maxout), got2(maxout), worst(maxout), worst_self
-   integer :: worst_self_io, worst_self_at
-   real(dp) :: err, worst_got(maxout), worst_ref(maxout), worst_x(maxin, maxout)
-   integer :: worst_at(maxout), grp(maxout), order(maxout), ig
-   real(dp) :: scale(maxout), tol(maxout), worst_order(0:2), rho_t, e0, natural(4)
-   logical :: ok
-
-   open (newunit=unit, file="reference_xc.dat", status="old", action="read", iostat=ios)
-   if (ios /= 0) then
-      print '(a)', "check_xc: cannot open reference_xc.dat (run from test/)"
-      stop 1
-   end if
-
-   nblocks = 0
-   nfail = 0
-   do
-      read (unit, '(a)', iostat=ios) line
-      if (ios /= 0) exit
-      if (line(1:1) == "#") cycle
-      read (line, *) kernel, family, polar, npts, nin, nout
-      nblocks = nblocks + 1
-      call column_groups(trim(family), polar == 1, nout, grp, order)
-      tol(1:nout) = merge(tol_f, kernel_tol_v(trim(kernel)), order(1:nout) == 2)
-      worst = 0.0_dp
-      worst_self = 0.0_dp
-      worst_self_io = 0
-      worst_self_at = 0
-      worst_at = 0
-      worst_got = 0.0_dp
-      worst_ref = 0.0_dp
-      worst_x = 0.0_dp
-      do ip = 1, npts
-         read (unit, *) xin(1:nin), ref(1:nout)
-         call evaluate(trim(kernel), polar == 1, xin, got, got2)
-         do ig = 1, maxval(grp(1:nout))
-            scale(ig) = max(floor, maxval(abs(ref(1:nout)), mask=grp(1:nout) == ig))
-         end do
-         if (trim(family) == "mgga") then
-            rho_t = xin(1)
-            if (polar == 1) rho_t = xin(1) + xin(2)
-            e0 = c_x0*rho_t**(1.0_dp/3.0_dp)
-            natural = [e0, e0, e0*rho_t**(-5.0_dp/3.0_dp), e0/(c_tau*rho_t**(2.0_dp/3.0_dp))]
-            scale(1:4) = max(scale(1:4), natural)
-         end if
-         do io = 1, nout
-            err = abs(got2(io) - got(io))/scale(grp(io))
-            if (err > worst_self) then
-               worst_self = err
-               worst_self_io = io
-               worst_self_at = ip
-            end if
-            err = abs(got(io) - ref(io))/scale(grp(io))
-            if (err > worst(io)) then
-               worst(io) = err
-               worst_at(io) = ip
-               worst_got(io) = got(io)
-               worst_ref(io) = ref(io)
-               worst_x(:, io) = xin
-            end if
-         end do
-      end do
-      ok = all(worst(1:nout) <= tol(1:nout)) .and. worst_self <= tol_self
-      if (.not. ok) nfail = nfail + 1
-      do ig = 0, 2
-         worst_order(ig) = 0.0_dp
-         if (any(order(1:nout) == ig)) worst_order(ig) = maxval(worst(1:nout), mask=order(1:nout) == ig)
-      end do
-      print '(a,1x,a16,1x,a5,1x,l1,1x,a,3es9.2,a,es9.2)', &
-         merge("ok  ", "FAIL", ok), kernel, family, polar == 1, &
-         "vs libxc: eps, vxc, fxc ", worst_order, "  self ", worst_self
-      if (worst_self > tol_self) then
-         print '(a,i3,a,es10.3,a,i4)', "     self: output ", worst_self_io, " off by ", worst_self, &
-            " at point ", worst_self_at
-      end if
-      if (.not. ok) then
-         do io = 1, nout
-            if (worst(io) > tol(io)) then
-               print '(a,i3,a,es10.3,a,i4,a,2es24.16)', "     output ", io, " off by ", worst(io), &
-                  " at point ", worst_at(io), ": ours, libxc =", worst_got(io), worst_ref(io)
-               print '(a,7es14.6)', "        inputs ", worst_x(1:nin, io)
-            end if
-         end do
-      end if
-   end do
-   close (unit)
-
-   print '(a,i0,a,i0,a)', "check_xc: ", nblocks - nfail, " of ", nblocks, " blocks agree with libxc"
-   if (nfail > 0 .or. nblocks == 0) stop 1
 
 contains
+
+   subroutine collect_check_xc(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("every kernel block agrees with libxc", test_all_kernels) &
+                  ]
+   end subroutine collect_check_xc
+
+   subroutine test_all_kernels(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=32) :: kernel, family
+      character(len=256) :: line
+      integer :: polar, npts, nin, nout, ios, ip, io, unit, nblocks, nfail
+      real(dp) :: xin(maxin), ref(maxout), got(maxout), got2(maxout), worst(maxout), worst_self
+      integer :: worst_self_io, worst_self_at
+      real(dp) :: err, worst_got(maxout), worst_ref(maxout), worst_x(maxin, maxout)
+      integer :: worst_at(maxout), grp(maxout), order(maxout), ig
+      real(dp) :: scale(maxout), tol(maxout), worst_order(0:2), rho_t, e0, natural(4)
+      logical :: ok
+
+      open (newunit=unit, file="reference_xc.dat", status="old", action="read", iostat=ios)
+      if (ios /= 0) error stop "check_xc: cannot open reference_xc.dat (run from test/)"
+
+      nblocks = 0
+      nfail = 0
+      do
+         read (unit, '(a)', iostat=ios) line
+         if (ios /= 0) exit
+         if (line(1:1) == "#") cycle
+         read (line, *) kernel, family, polar, npts, nin, nout
+         nblocks = nblocks + 1
+         call column_groups(trim(family), polar == 1, nout, grp, order)
+         tol(1:nout) = merge(tol_f, kernel_tol_v(trim(kernel)), order(1:nout) == 2)
+         worst = 0.0_dp
+         worst_self = 0.0_dp
+         worst_self_io = 0
+         worst_self_at = 0
+         worst_at = 0
+         worst_got = 0.0_dp
+         worst_ref = 0.0_dp
+         worst_x = 0.0_dp
+         do ip = 1, npts
+            read (unit, *) xin(1:nin), ref(1:nout)
+            call evaluate(trim(kernel), polar == 1, xin, got, got2)
+            do ig = 1, maxval(grp(1:nout))
+               scale(ig) = max(floor, maxval(abs(ref(1:nout)), mask=grp(1:nout) == ig))
+            end do
+            if (trim(family) == "mgga") then
+               rho_t = xin(1)
+               if (polar == 1) rho_t = xin(1) + xin(2)
+               e0 = c_x0*rho_t**(1.0_dp/3.0_dp)
+               natural = [e0, e0, e0*rho_t**(-5.0_dp/3.0_dp), e0/(c_tau*rho_t**(2.0_dp/3.0_dp))]
+               scale(1:4) = max(scale(1:4), natural)
+            end if
+            do io = 1, nout
+               err = abs(got2(io) - got(io))/scale(grp(io))
+               if (err > worst_self) then
+                  worst_self = err
+                  worst_self_io = io
+                  worst_self_at = ip
+               end if
+               err = abs(got(io) - ref(io))/scale(grp(io))
+               if (err > worst(io)) then
+                  worst(io) = err
+                  worst_at(io) = ip
+                  worst_got(io) = got(io)
+                  worst_ref(io) = ref(io)
+                  worst_x(:, io) = xin
+               end if
+            end do
+         end do
+         ok = all(worst(1:nout) <= tol(1:nout)) .and. worst_self <= tol_self
+         if (.not. ok) nfail = nfail + 1
+         do ig = 0, 2
+            worst_order(ig) = 0.0_dp
+            if (any(order(1:nout) == ig)) worst_order(ig) = maxval(worst(1:nout), mask=order(1:nout) == ig)
+         end do
+         print '(a,1x,a16,1x,a5,1x,l1,1x,a,3es9.2,a,es9.2)', &
+            merge("ok  ", "FAIL", ok), kernel, family, polar == 1, &
+            "vs libxc: eps, vxc, fxc ", worst_order, "  self ", worst_self
+         if (worst_self > tol_self) then
+            print '(a,i3,a,es10.3,a,i4)', "     self: output ", worst_self_io, " off by ", worst_self, &
+               " at point ", worst_self_at
+         end if
+         if (.not. ok) then
+            do io = 1, nout
+               if (worst(io) > tol(io)) then
+                  print '(a,i3,a,es10.3,a,i4,a,2es24.16)', "     output ", io, " off by ", worst(io), &
+                     " at point ", worst_at(io), ": ours, libxc =", worst_got(io), worst_ref(io)
+                  print '(a,7es14.6)', "        inputs ", worst_x(1:nin, io)
+               end if
+            end do
+         end if
+      end do
+      close (unit)
+
+      print '(a,i0,a,i0,a)', "check_xc: ", nblocks - nfail, " of ", nblocks, " blocks agree with libxc"
+      if (nblocks == 0) then
+         call check(error, .false., "check_xc: no blocks read from reference_xc.dat")
+         return
+      end if
+      call check(error, nfail == 0, "check_xc: "//to_string(nfail)//" of "//to_string(nblocks)// &
+                 " kernel block(s) disagree with libxc")
+   end subroutine test_all_kernels
 
    !
    ! Which reference columns belong together -- eps; vrho; vsigma; v2rho2;
@@ -297,6 +324,20 @@ contains
       end select
    end function kernel_tol_v
 
+end module check_xc_suite
+
+program check_xc
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_xc_suite, only: collect_check_xc
+   implicit none
+   integer :: stat
+   stat = 0
+   call run_testsuite(collect_check_xc, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_xc
 '''
 

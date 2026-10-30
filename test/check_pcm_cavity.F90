@@ -23,17 +23,26 @@
 ! x and v are closed-form functions of the position, so they need no
 ! matching of their own.
 !
-program check_pcm_cavity
+! The reference is read once, sequentially (pyscf_ref_io.F90's own
+! convention), by load_reference below, into g_ref -- before run_testsuite
+! runs any case -- so each test-drive case here just builds its own
+! surface/operators and compares against the already-read arrays.
+!
+module check_pcm_cavity_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
-   use trc_linalg, only: trc_linalg_t
    use trc_pcm, only: trc_pcm_t, pcm_surface_t, pcm_build_surface, pcm_sd_matrices, &
                       pcm_switch_h, pcm_model_from_name, PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
    use trc_pcm_radii, only: pcm_radii_cavity_radius
+   use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, &
-                           ref_read_vector, ref_read_matrix, ref_report
+                           ref_read_vector, ref_read_matrix
    implicit none
+   private
+   public :: collect_pcm_cavity_tests, load_reference
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
    real(dp), parameter :: EPS_WATER = 78.3553_dp
@@ -44,61 +53,135 @@ program check_pcm_cavity
    !! codes) are 1e-8 absolute. So S, and S x which its diagonal dominates,
    !! are compared relative to max(1, |S|): the same 1e-12, scaled.
    real(dp), parameter :: ORIGIN(3, 1) = reshape([0.0_dp, 0.0_dp, 0.0_dp], [3, 1])
-   integer :: nfail, natm
-   integer, allocatable :: zat(:)
-   real(dp), allocatable :: rat(:, :)
 
-   nfail = 0
-   call physics()
-   call refusals()
-   call read_xyz('water.xyz', natm, zat, rat)
-   call against_pyscf()
-   if (nfail > 0) then
-      print '(a,i0,a)', 'check_pcm_cavity: ', nfail, ' check(s) FAILED'; stop 1
-   end if
-   print '(a)', 'check_pcm_cavity: RESULT: PASS'
+   type :: pcm_ref_t
+      integer :: npts = 0, npts110 = 0
+      real(dp), allocatable :: coords(:, :), weights(:), zeta(:), switch(:), area(:), normals(:, :)
+      real(dp), allocatable :: sx(:), dx(:)
+      real(dp), allocatable :: q_cpcm(:), q_iefpcm(:)
+      real(dp) :: e_cpcm = 0.0_dp, e_iefpcm = 0.0_dp
+      real(dp), allocatable :: coords110(:, :), s110(:, :), d110(:, :)
+   end type pcm_ref_t
+
+   type(pcm_ref_t) :: g_ref
+   integer :: g_natm
+   integer, allocatable :: g_zat(:)
+   real(dp), allocatable :: g_rat(:, :)
 
 contains
 
-   subroutine physics()
-      type(pcm_surface_t) :: surf
-      type(error_t) :: err
-      real(dp) :: radius, e, qt, f, h
+   subroutine load_reference()
+      integer :: u, n, n110
+      call read_xyz('water.xyz', g_natm, g_zat, g_rat)
+      call ref_require('pcm_cavity_water.ref', u)
+      call ref_read_int(u, 'NPTS', n)
+      g_ref%npts = n
+      allocate (g_ref%coords(3, n), g_ref%weights(n), g_ref%zeta(n), g_ref%switch(n), g_ref%area(n), &
+                g_ref%normals(3, n), g_ref%sx(n), g_ref%dx(n), g_ref%q_cpcm(n), g_ref%q_iefpcm(n))
+      call ref_read_matrix(u, 'COORDS', 3, n, g_ref%coords)
+      call ref_read_vector(u, 'WEIGHTS', n, g_ref%weights)
+      call ref_read_vector(u, 'ZETA', n, g_ref%zeta)
+      call ref_read_vector(u, 'SWITCH', n, g_ref%switch)
+      call ref_read_vector(u, 'AREA', n, g_ref%area)
+      call ref_read_matrix(u, 'NORMALS', 3, n, g_ref%normals)
+      call ref_read_vector(u, 'SX', n, g_ref%sx)
+      call ref_read_vector(u, 'DX', n, g_ref%dx)
+      call ref_read_vector(u, 'Q_CPCM', n, g_ref%q_cpcm)
+      call ref_read_real(u, 'E_CPCM', g_ref%e_cpcm)
+      call ref_read_vector(u, 'Q_IEFPCM', n, g_ref%q_iefpcm)
+      call ref_read_real(u, 'E_IEFPCM', g_ref%e_iefpcm)
+      call ref_read_int(u, 'NPTS110', n110)
+      g_ref%npts110 = n110
+      allocate (g_ref%coords110(3, n110), g_ref%s110(n110, n110), g_ref%d110(n110, n110))
+      call ref_read_matrix(u, 'COORDS110', 3, n110, g_ref%coords110)
+      call ref_read_matrix(u, 'S110', n110, n110, g_ref%s110)
+      call ref_read_matrix(u, 'D110', n110, n110, g_ref%d110)
+      call ref_close(u)
+   end subroutine load_reference
 
-      ! The switching function's own shape.
+   subroutine collect_pcm_cavity_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("switch_h: 0 and 1 at the ends, odd about 1/2", test_switch_h), &
+                  new_unittest("isolated sphere keeps every point, area = 4 pi R^2", test_isolated_sphere), &
+                  new_unittest("overlapping spheres bury points between them", test_overlapping_spheres), &
+                  new_unittest("Born ion, C-PCM: -f/(2R) and total charge -f", test_born_cpcm), &
+                  new_unittest("Born ion, IEF-PCM: the exact -(eps-1)/(2 R eps)", test_born_iefpcm), &
+                  new_unittest("refusals: model, eps=1, Lebedev order, missing radius", test_refusals), &
+                  new_unittest("water/302-per-sphere cavity vs pyscf", test_cavity_302), &
+                  new_unittest("S x and D x for a fixed x vs pyscf", test_sx_dx), &
+                  new_unittest("C-PCM/IEF-PCM charge solve for a fixed potential vs pyscf", test_charge_solve), &
+                  new_unittest("water/110-per-sphere S and D, element by element, vs pyscf", test_cavity_110) &
+                  ]
+   end subroutine collect_pcm_cavity_tests
+
+   subroutine test_switch_h(error)
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: h
       h = max(abs(pcm_switch_h(0.0_dp)), abs(pcm_switch_h(1.0_dp) - 1.0_dp), &
               abs(pcm_switch_h(0.5_dp) - 0.5_dp), abs(pcm_switch_h(0.3_dp) + pcm_switch_h(0.7_dp) - 1.0_dp), &
               abs(pcm_switch_h(-0.2_dp)), abs(pcm_switch_h(1.4_dp) - 1.0_dp))
-      call ref_report(nfail, h < 1.0e-15_dp, 'switch_h: 0 and 1 at the ends, odd about 1/2', h)
+      call check(error, h < 1.0e-15_dp, 'switch_h shape residual = '//to_string(h, "es10.2"))
+   end subroutine test_switch_h
 
-      ! An isolated sphere keeps every point; its weights sum to one and
-      ! nothing is switched, so the area is the sphere's to roundoff.
+   subroutine test_isolated_sphere(error)
+      !! An isolated sphere keeps every point; its weights sum to one and
+      !! nothing is switched, so the area is the sphere's to roundoff.
+      type(error_type), allocatable, intent(out) :: error
+      type(pcm_surface_t) :: surf
+      type(error_t) :: err
+      real(dp) :: radius, e
       call pcm_build_surface([8], ORIGIN, 110, 1.2_dp, surf, err)
       call pcm_radii_cavity_radius(8, 1.2_dp, radius, err)
-      call ref_report(nfail, .not. err%has_error() .and. surf%n_points == 110, &
-                      'isolated sphere keeps all 110 points', real(110 - surf%n_points, dp))
+      call check(error,.not. err%has_error() .and. surf%n_points == 110, &
+                 'isolated sphere must keep all 110 points, got '//to_string(surf%n_points))
+      if (allocated(error)) return
       e = abs(sum(surf%area) - 4.0_dp*PI*radius**2)
-      call ref_report(nfail, e < 1.0e-10_dp, 'isolated sphere area = 4 pi R^2', e)
+      call check(error, e < 1.0e-10_dp, 'isolated sphere area vs 4 pi R^2, |diff| = '//to_string(e, "es10.2"))
+   end subroutine test_isolated_sphere
 
-      ! Two oxygens a bond apart lose the points between them.
+   subroutine test_overlapping_spheres(error)
+      !! Two oxygens a bond apart lose the points between them.
+      type(error_type), allocatable, intent(out) :: error
+      type(pcm_surface_t) :: surf
+      type(error_t) :: err
+      real(dp) :: radius
       call pcm_build_surface([8, 8], reshape([0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 2.3_dp], [3, 2]), &
                              110, 1.2_dp, surf, err)
-      call ref_report(nfail, .not. err%has_error() .and. surf%n_points < 220 .and. &
-                      surf%n_points + surf%n_discarded == 220 .and. &
-                      sum(surf%area) < 8.0_dp*PI*radius**2, &
-                      'overlapping spheres bury points, kept + dropped = 220', real(surf%n_discarded, dp))
+      call pcm_radii_cavity_radius(8, 1.2_dp, radius, err)
+      call check(error,.not. err%has_error() .and. surf%n_points < 220 .and. &
+                 surf%n_points + surf%n_discarded == 220 .and. &
+                 sum(surf%area) < 8.0_dp*PI*radius**2, &
+                 'overlapping spheres must bury points, kept + dropped = 220, got kept='// &
+                 to_string(surf%n_points)//' dropped='//to_string(surf%n_discarded))
+   end subroutine test_overlapping_spheres
 
-      ! Born: a unit charge at the centre of one oxygen cavity.
+   subroutine test_born_cpcm(error)
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: e, qt, f, radius
+      type(error_t) :: err
+      call pcm_radii_cavity_radius(8, 1.2_dp, radius, err)
       f = (EPS_WATER - 1.0_dp)/EPS_WATER
       call born(PCM_MODEL_CPCM, e, qt)
-      call ref_report(nfail, abs(e + 0.5_dp*f/radius) < 1.0e-5_dp*0.5_dp*f/radius, &
-                      'Born ion, C-PCM: -f/(2R), relative', abs(e + 0.5_dp*f/radius)/(0.5_dp*f/radius))
-      call ref_report(nfail, abs(qt + f) < 1.0e-4_dp, 'Born ion, C-PCM: Gauss, total charge -f', abs(qt + f))
+      call check(error, abs(e + 0.5_dp*f/radius) < 1.0e-5_dp*0.5_dp*f/radius, &
+                 'Born ion, C-PCM: -f/(2R), relative residual = '// &
+                 to_string(abs(e + 0.5_dp*f/radius)/(0.5_dp*f/radius), "es10.2"))
+      if (allocated(error)) return
+      call check(error, abs(qt + f) < 1.0e-4_dp, &
+                 'Born ion, C-PCM: Gauss, total charge must be -f, |diff| = '//to_string(abs(qt + f), "es10.2"))
+   end subroutine test_born_cpcm
+
+   subroutine test_born_iefpcm(error)
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: e, qt, f, radius
+      type(error_t) :: err
+      call pcm_radii_cavity_radius(8, 1.2_dp, radius, err)
+      f = (EPS_WATER - 1.0_dp)/EPS_WATER
       call born(PCM_MODEL_IEFPCM, e, qt)
-      call ref_report(nfail, abs(e + 0.5_dp*f/radius) < 1.0e-4_dp*0.5_dp*f/radius, &
-                      'Born ion, IEF-PCM: the exact -(eps-1)/(2 R eps), relative', &
-                      abs(e + 0.5_dp*f/radius)/(0.5_dp*f/radius))
-   end subroutine physics
+      call check(error, abs(e + 0.5_dp*f/radius) < 1.0e-4_dp*0.5_dp*f/radius, &
+                 'Born ion, IEF-PCM: the exact -(eps-1)/(2 R eps), relative residual = '// &
+                 to_string(abs(e + 0.5_dp*f/radius)/(0.5_dp*f/radius), "es10.2"))
+   end subroutine test_born_iefpcm
 
    subroutine born(model, e, qt)
       integer, intent(in) :: model
@@ -130,7 +213,8 @@ contains
       call la%release()
    end subroutine born
 
-   subroutine refusals()
+   subroutine test_refusals(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_pcm_t) :: ctx
       type(pcm_surface_t) :: surf
       type(error_t) :: e1, e2, e3, e4, e5
@@ -139,14 +223,19 @@ contains
       call pcm_build_surface([8], ORIGIN, 74, 1.2_dp, surf, e3)
       call pcm_build_surface([26], ORIGIN, 302, 1.2_dp, surf, e4)
       call pcm_build_surface([8], ORIGIN, 303, 1.2_dp, surf, e5)
-      call ref_report(nfail, e1%has_error(), "refuses 'cosmo' (a model this does not solve)", 0.0_dp)
-      call ref_report(nfail, e2%has_error(), 'refuses eps = 1', 0.0_dp)
-      call ref_report(nfail, e3%has_error(), 'refuses Lebedev 74 (no fitted exponent)', 0.0_dp)
-      call ref_report(nfail, e4%has_error(), 'refuses iron (no cavity radius)', 0.0_dp)
-      call ref_report(nfail, e5%has_error(), 'refuses 303 points (no such order)', 0.0_dp)
-      call ref_report(nfail, pcm_model_from_name('IEF-PCM') == PCM_MODEL_IEFPCM .and. &
-                      pcm_model_from_name('cpcm') == PCM_MODEL_CPCM, 'model names', 0.0_dp)
-   end subroutine refusals
+      call check(error, e1%has_error(), "refuses 'cosmo' (a model this does not solve)")
+      if (allocated(error)) return
+      call check(error, e2%has_error(), 'refuses eps = 1')
+      if (allocated(error)) return
+      call check(error, e3%has_error(), 'refuses Lebedev 74 (no fitted exponent)')
+      if (allocated(error)) return
+      call check(error, e4%has_error(), 'refuses iron (no cavity radius)')
+      if (allocated(error)) return
+      call check(error, e5%has_error(), 'refuses 303 points (no such order)')
+      if (allocated(error)) return
+      call check(error, pcm_model_from_name('IEF-PCM') == PCM_MODEL_IEFPCM .and. &
+                 pcm_model_from_name('cpcm') == PCM_MODEL_CPCM, 'model names')
+   end subroutine test_refusals
 
    pure real(dp) function vfix(s)
       !! The fixed potential: two inverse distances, a closed form of position
@@ -186,51 +275,70 @@ contains
       end do
    end subroutine match
 
-   subroutine against_pyscf()
+   subroutine test_cavity_302(error)
+      type(error_type), allocatable, intent(out) :: error
       type(pcm_surface_t) :: surf
-      type(trc_pcm_t) :: ctx
-      type(trc_linalg_t) :: la
       type(error_t) :: err
-      integer :: u, n, n110, k, j, model
+      integer :: n
       integer, allocatable :: perm(:)
-      real(dp), allocatable :: rc(:, :), rv(:), smat(:, :), dmat(:, :), x(:), v(:), q(:), sx(:), dx(:)
-      real(dp), allocatable :: sref(:, :), dref(:, :)
-      real(dp) :: worst, eref, e
+      real(dp) :: worst
 
-      call ref_require('pcm_cavity_water.ref', u)
+      n = g_ref%npts
+      call pcm_build_surface(g_zat, g_rat, 302, 1.2_dp, surf, err)
+      call check(error,.not. err%has_error(), 'check_pcm_cavity: '//err%get_message())
+      if (allocated(error)) return
+      call check(error, n == surf%n_points, &
+                 'water, 302/sphere: point count vs pyscf, terco='//to_string(surf%n_points)// &
+                 ' pyscf='//to_string(n))
+      if (allocated(error)) return
 
-      ! --- 302 points per sphere: the cavity itself ---
-      call pcm_build_surface(zat, rat, 302, 1.2_dp, surf, err)
-      if (err%has_error()) then
-         print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
-      end if
-      call ref_read_int(u, 'NPTS', n)
-      call ref_report(nfail, n == surf%n_points, 'water, 302/sphere: point count vs pyscf', &
-                      real(n - surf%n_points, dp))
-      if (n /= surf%n_points) then
-         print '(a,i0,a,i0)', '  terco ', surf%n_points, ' pyscf ', n; stop 1
-      end if
-      allocate (rc(3, n), rv(n), perm(n))
-      call ref_read_matrix(u, 'COORDS', 3, n, rc)
-      call match(n, surf%coords, rc, perm, worst)
-      call ref_report(nfail, worst < TOL, 'every pyscf point is one of terco''s (bohr)', worst)
-      call ref_read_vector(u, 'WEIGHTS', n, rv)
-      call ref_report(nfail, maxval(abs(surf%weights(perm) - rv)) < TOL, 'weights', &
-                      maxval(abs(surf%weights(perm) - rv)))
-      call ref_read_vector(u, 'ZETA', n, rv)
-      call ref_report(nfail, maxval(abs(surf%zeta(perm) - rv)) < TOL, 'exponents zeta', &
-                      maxval(abs(surf%zeta(perm) - rv)))
-      call ref_read_vector(u, 'SWITCH', n, rv)
-      call ref_report(nfail, maxval(abs(surf%switch_f(perm) - rv)) < TOL, 'switching values', &
-                      maxval(abs(surf%switch_f(perm) - rv)))
-      call ref_read_vector(u, 'AREA', n, rv)
-      call ref_report(nfail, maxval(abs(surf%area(perm) - rv)) < TOL, 'areas', &
-                      maxval(abs(surf%area(perm) - rv)))
-      call ref_read_matrix(u, 'NORMALS', 3, n, rc)
-      call ref_report(nfail, maxval(abs(surf%normals(:, perm) - rc)) < TOL, 'normals', &
-                      maxval(abs(surf%normals(:, perm) - rc)))
+      allocate (perm(n))
+      call match(n, surf%coords, g_ref%coords, perm, worst)
+      call check(error, worst < TOL, "every pyscf point is one of terco's (bohr), worst = "// &
+                 to_string(worst, "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(surf%weights(perm) - g_ref%weights)) < TOL, &
+                 'weights, worst |diff| = '//to_string(maxval(abs(surf%weights(perm) - g_ref%weights)), "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(surf%zeta(perm) - g_ref%zeta)) < TOL, &
+                 'exponents zeta, worst |diff| = '//to_string(maxval(abs(surf%zeta(perm) - g_ref%zeta)), "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(surf%switch_f(perm) - g_ref%switch)) < TOL, &
+                 'switching values, worst |diff| = '// &
+                 to_string(maxval(abs(surf%switch_f(perm) - g_ref%switch)), "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(surf%area(perm) - g_ref%area)) < TOL, &
+                 'areas, worst |diff| = '//to_string(maxval(abs(surf%area(perm) - g_ref%area)), "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(surf%normals(:, perm) - g_ref%normals)) < TOL, &
+                 'normals, worst |diff| = '//to_string(maxval(abs(surf%normals(:, perm) - g_ref%normals)), "es10.2"))
+   end subroutine test_cavity_302
 
-      ! --- S x and D x, all n^2 elements in aggregate ---
+   subroutine test_sx_dx(error)
+      !! S x and D x, all n^2 elements in aggregate, at 302 points/sphere.
+      type(error_type), allocatable, intent(out) :: error
+      type(pcm_surface_t) :: surf
+      type(error_t) :: err
+      integer :: n, k
+      integer, allocatable :: perm(:)
+      real(dp), allocatable :: smat(:, :), dmat(:, :), x(:), sx(:), dx(:)
+      real(dp) :: worst
+
+      n = g_ref%npts
+      call pcm_build_surface(g_zat, g_rat, 302, 1.2_dp, surf, err)
+      ! Guard the count before indexing: match and pcm_sd_matrices take
+      ! surf%coords as (3, n) with pyscf's n.
+      call check(error, .not. err%has_error(), 'check_pcm_cavity: '//err%get_message())
+      if (allocated(error)) return
+      call check(error, n == surf%n_points, &
+                 'water, 302/sphere: point count vs pyscf, terco='//to_string(surf%n_points)// &
+                 ' pyscf='//to_string(n))
+      if (allocated(error)) return
+      allocate (perm(n))
+      call match(n, surf%coords, g_ref%coords, perm, worst)
+      call check(error, worst < TOL, "point matching (bohr), worst = "//to_string(worst, "es10.2"))
+      if (allocated(error)) return
+
       allocate (smat(n, n), dmat(n, n), x(n), sx(n), dx(n))
       call pcm_sd_matrices(n, surf%coords, surf%normals, surf%zeta, surf%switch_f, surf%r_parent, smat, dmat)
       do k = 1, n
@@ -238,19 +346,47 @@ contains
       end do
       sx = matmul(smat, x)
       dx = matmul(dmat, x)
-      call ref_read_vector(u, 'SX', n, rv)
-      call ref_report(nfail, maxval(abs(sx(perm) - rv)/max(1.0_dp, abs(rv))) < TOL, &
-                      'S x, relative to max(1, |S x|)', maxval(abs(sx(perm) - rv)/max(1.0_dp, abs(rv))))
-      call ref_read_vector(u, 'DX', n, rv)
-      call ref_report(nfail, maxval(abs(dx(perm) - rv)) < TOL, 'D x', maxval(abs(dx(perm) - rv)))
-      deallocate (smat, dmat)
+      call check(error, maxval(abs(sx(perm) - g_ref%sx)/max(1.0_dp, abs(g_ref%sx))) < TOL, &
+                 'S x, relative to max(1, |S x|), worst = '// &
+                 to_string(maxval(abs(sx(perm) - g_ref%sx)/max(1.0_dp, abs(g_ref%sx))), "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(dx(perm) - g_ref%dx)) < TOL, &
+                 'D x, worst |diff| = '//to_string(maxval(abs(dx(perm) - g_ref%dx)), "es10.2"))
+   end subroutine test_sx_dx
 
-      ! --- the charge solve of both models for a fixed potential ---
+   subroutine test_charge_solve(error)
+      !! The charge solve of both models for a fixed potential, at 302
+      !! points/sphere.
+      type(error_type), allocatable, intent(out) :: error
+      type(pcm_surface_t) :: surf
+      type(trc_pcm_t) :: ctx
+      type(trc_linalg_t) :: la
+      type(error_t) :: err
+      integer :: n, k, model
+      integer, allocatable :: perm(:)
+      real(dp), allocatable :: v(:), q(:)
+      real(dp) :: worst, e
+
+      n = g_ref%npts
+      call pcm_build_surface(g_zat, g_rat, 302, 1.2_dp, surf, err)
+      ! Guard the count before indexing: match and pcm_sd_matrices take
+      ! surf%coords as (3, n) with pyscf's n.
+      call check(error, .not. err%has_error(), 'check_pcm_cavity: '//err%get_message())
+      if (allocated(error)) return
+      call check(error, n == surf%n_points, &
+                 'water, 302/sphere: point count vs pyscf, terco='//to_string(surf%n_points)// &
+                 ' pyscf='//to_string(n))
+      if (allocated(error)) return
+      allocate (perm(n))
+      call match(n, surf%coords, g_ref%coords, perm, worst)
+      call check(error, worst < TOL, "point matching (bohr), worst = "//to_string(worst, "es10.2"))
+      if (allocated(error)) return
+
       allocate (v(n), q(n))
       call la%init(1)
       do model = PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
          call ctx%init(model, EPS_WATER, err)
-         call pcm_build_surface(zat, rat, 302, 1.2_dp, ctx%surface, err)
+         call pcm_build_surface(g_zat, g_rat, 302, 1.2_dp, ctx%surface, err)
          call ctx%build_operators(la, err)
          if (err%has_error()) then
             print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
@@ -264,55 +400,91 @@ contains
          !$acc exit data delete(v, q)
          e = 0.5_dp*dot_product(q, v)
          if (model == PCM_MODEL_CPCM) then
-            call ref_read_vector(u, 'Q_CPCM', n, rv)
-            call ref_read_real(u, 'E_CPCM', eref)
-            call ref_report(nfail, maxval(abs(q(perm) - rv)) < TOL, 'C-PCM charges for a fixed v', &
-                            maxval(abs(q(perm) - rv)))
-            call ref_report(nfail, abs(e - eref) < TOL, 'C-PCM q.v/2 for a fixed v', abs(e - eref))
+            call check(error, maxval(abs(q(perm) - g_ref%q_cpcm)) < TOL, &
+                       'C-PCM charges for a fixed v, worst |diff| = '// &
+                       to_string(maxval(abs(q(perm) - g_ref%q_cpcm)), "es10.2"))
+            if (.not. allocated(error)) &
+               call check(error, abs(e - g_ref%e_cpcm) < TOL, &
+                          'C-PCM q.v/2 for a fixed v, |diff| = '//to_string(abs(e - g_ref%e_cpcm), "es10.2"))
          else
-            call ref_read_vector(u, 'Q_IEFPCM', n, rv)
-            call ref_read_real(u, 'E_IEFPCM', eref)
-            call ref_report(nfail, maxval(abs(q(perm) - rv)) < TOL, 'IEF-PCM symmetrised charges for a fixed v', &
-                            maxval(abs(q(perm) - rv)))
-            call ref_report(nfail, abs(e - eref) < TOL, 'IEF-PCM q.v/2 for a fixed v', abs(e - eref))
+            call check(error, maxval(abs(q(perm) - g_ref%q_iefpcm)) < TOL, &
+                       'IEF-PCM symmetrised charges for a fixed v, worst |diff| = '// &
+                       to_string(maxval(abs(q(perm) - g_ref%q_iefpcm)), "es10.2"))
+            if (.not. allocated(error)) &
+               call check(error, abs(e - g_ref%e_iefpcm) < TOL, &
+                          'IEF-PCM q.v/2 for a fixed v, |diff| = '//to_string(abs(e - g_ref%e_iefpcm), "es10.2"))
          end if
          call ctx%release()
+         if (allocated(error)) exit
       end do
       call la%release()
-      deallocate (rc, rv, perm)
+   end subroutine test_charge_solve
 
-      ! --- 110 points per sphere: S and D element by element ---
-      call pcm_build_surface(zat, rat, 110, 1.2_dp, surf, err)
-      call ref_read_int(u, 'NPTS110', n110)
-      call ref_report(nfail, n110 == surf%n_points, 'water, 110/sphere: point count vs pyscf', &
-                      real(n110 - surf%n_points, dp))
-      if (n110 /= surf%n_points) stop 1
-      n = n110
-      allocate (rc(3, n), perm(n), smat(n, n), dmat(n, n), sref(n, n), dref(n, n))
-      call ref_read_matrix(u, 'COORDS110', 3, n, rc)
-      call match(n, surf%coords, rc, perm, worst)
-      call ref_report(nfail, worst < TOL, 'every pyscf point is one of terco''s (110)', worst)
+   subroutine test_cavity_110(error)
+      !! S and D element by element, at 110 points/sphere.
+      type(error_type), allocatable, intent(out) :: error
+      type(pcm_surface_t) :: surf
+      type(error_t) :: err
+      integer :: n, j, k
+      integer, allocatable :: perm(:)
+      real(dp), allocatable :: smat(:, :), dmat(:, :)
+      real(dp) :: worst
+
+      n = g_ref%npts110
+      call pcm_build_surface(g_zat, g_rat, 110, 1.2_dp, surf, err)
+      call check(error, n == surf%n_points, &
+                 'water, 110/sphere: point count vs pyscf, terco='//to_string(surf%n_points)// &
+                 ' pyscf='//to_string(n))
+      if (allocated(error)) return
+
+      allocate (perm(n), smat(n, n), dmat(n, n))
+      call match(n, surf%coords, g_ref%coords110, perm, worst)
+      call check(error, worst < TOL, "every pyscf point is one of terco's (110), worst = "// &
+                 to_string(worst, "es10.2"))
+      if (allocated(error)) return
+
       call pcm_sd_matrices(n, surf%coords, surf%normals, surf%zeta, surf%switch_f, surf%r_parent, smat, dmat)
-      call ref_read_matrix(u, 'S110', n, n, sref)
-      call ref_read_matrix(u, 'D110', n, n, dref)
       worst = 0.0_dp
       do j = 1, n
          do k = 1, n
-            worst = max(worst, abs(smat(perm(k), perm(j)) - sref(k, j))/max(1.0_dp, abs(sref(k, j))))
+            worst = max(worst, abs(smat(perm(k), perm(j)) - g_ref%s110(k, j))/max(1.0_dp, abs(g_ref%s110(k, j))))
          end do
       end do
-      call ref_report(nfail, worst < TOL, 'S, every element, relative to max(1, |S|)', worst)
+      call check(error, worst < TOL, 'S, every element, relative to max(1, |S|), worst = '// &
+                 to_string(worst, "es10.2"))
+      if (allocated(error)) return
 
       worst = 0.0_dp
       do j = 1, n
          do k = 1, n
-            worst = max(worst, abs(dmat(perm(k), perm(j)) - dref(k, j)))
+            worst = max(worst, abs(dmat(perm(k), perm(j)) - g_ref%d110(k, j)))
          end do
       end do
-      call ref_report(nfail, worst < TOL, 'D, every element', worst)
+      call check(error, worst < TOL, 'D, every element, worst |diff| = '//to_string(worst, "es10.2"))
+      if (allocated(error)) return
+
       worst = maxval(abs(smat - transpose(smat)))
-      call ref_report(nfail, worst == 0.0_dp, 'S is symmetric', worst)
-      call ref_close(u)
-   end subroutine against_pyscf
+      call check(error, worst == 0.0_dp, 'S must be exactly symmetric, worst |S - S^T| = '// &
+                 to_string(worst, "es10.2"))
+   end subroutine test_cavity_110
 
+end module check_pcm_cavity_suite
+
+program check_pcm_cavity
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_pcm_cavity_suite, only: collect_pcm_cavity_tests, load_reference
+   implicit none
+   type(testsuite_type), allocatable :: testsuites(:)
+   integer :: stat
+
+   call load_reference()
+
+   stat = 0
+   testsuites = [new_testsuite("check_pcm_cavity", collect_pcm_cavity_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_pcm_cavity

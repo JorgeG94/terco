@@ -1,30 +1,28 @@
-!
-! The molecular quadrature: closed forms and identities.
-!
-! The grid modules came from metalquicha with a test-drive suite of fifty
-! cases. terco did not carry test-drive when this was written, so this is
-! the subset of those cases that a wrong grid cannot pass, as one program
-! (still to be ported to test-drive):
-!
-!   * a Lebedev order integrates low polynomials over the sphere exactly,
-!     its weights sum to one, and every point has its antipode -- the
-!     quadrature property, which a point set that merely lies on a sphere
-!     would fail;
-!   * the Becke cell weights sum to one at every point, which fails for an
-!     asymmetric pair loop, a size adjustment with the wrong sign, or an
-!     atom dropped from a product;
-!   * the radial mesh integrates exp(-r^2) exactly, probing the Jacobian;
-!   * the assembled grid integrates a sum of normalised Gaussians and of
-!     normalised Slaters over water to the atom count, and refining the
-!     level reduces the error;
-!   * bad requests are refused rather than half-applied.
-!
-! Every tolerance is one the metalquicha suite measured, not one chosen to
-! pass: level 3 reaches 5.7e-9 on the Gaussian sum and the bound is 1e-8.
-!
-program check_grid
+module check_grid_suite
+   !! The molecular quadrature: closed forms and identities.
+   !!
+   !! The grid modules came from metalquicha with a test-drive suite of fifty
+   !! cases. This is the subset of those cases that a wrong grid cannot pass:
+   !!
+   !!   * a Lebedev order integrates low polynomials over the sphere exactly,
+   !!     its weights sum to one, and every point has its antipode -- the
+   !!     quadrature property, which a point set that merely lies on a sphere
+   !!     would fail;
+   !!   * the Becke cell weights sum to one at every point, which fails for an
+   !!     asymmetric pair loop, a size adjustment with the wrong sign, or an
+   !!     atom dropped from a product;
+   !!   * the radial mesh integrates exp(-r^2) exactly, probing the Jacobian;
+   !!   * the assembled grid integrates a sum of normalised Gaussians and of
+   !!     normalised Slaters over water to the atom count, and refining the
+   !!     level reduces the error;
+   !!   * bad requests are refused rather than half-applied.
+   !!
+   !! Every tolerance is one the metalquicha suite measured, not one chosen to
+   !! pass: level 3 reaches 5.7e-9 on the Gaussian sum and the bound is 1e-8.
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use pic_timer, only: timer_type
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
    use trc_lebedev, only: lebedev_grid, lebedev_available_orders, lebedev_has_negative_weights
    use trc_dft_radial, only: dft_radial_treutler_ahlrichs, dft_radial_volume_weights
@@ -35,37 +33,23 @@ program check_grid
                            dft_grid_level_angular
    use trc_test_basis, only: read_xyz
    implicit none
+   private
+   public :: collect_grid_tests
 
    real(dp), parameter :: PI = 3.14159265358979323846264338327950288_dp
-   integer :: nfail
-
-   nfail = 0
-   call lebedev_checks()
-   call radial_checks()
-   call partition_checks()
-   call grid_checks()
-   call screening_checks()
-
-   if (nfail == 0) then
-      print '(a)', "check_grid: all checks passed"
-   else
-      print '(a,i0,a)', "check_grid: ", nfail, " check(s) FAILED"
-      stop 1
-   end if
 
 contains
 
-   subroutine report(ok, what, value)
-      logical, intent(in) :: ok
-      character(len=*), intent(in) :: what
-      real(dp), intent(in), optional :: value
-      if (.not. ok) nfail = nfail + 1
-      if (present(value)) then
-         print '(a,1x,a,t56,es10.2)', merge("ok  ", "FAIL", ok), what, value
-      else
-         print '(a,1x,a)', merge("ok  ", "FAIL", ok), what
-      end if
-   end subroutine report
+   subroutine collect_grid_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("Lebedev orders: quadrature, sphere, antipode", test_lebedev), &
+                  new_unittest("radial mesh integrates exp(-r^2)", test_radial), &
+                  new_unittest("Becke/Stratmann cell weights", test_partition), &
+                  new_unittest("assembled grid integrates to the atom count", test_grid), &
+                  new_unittest("neighbour screening vs the unscreened partition (gly10)", test_screening) &
+                  ]
+   end subroutine collect_grid_tests
 
    subroutine water(coords, z)
       real(dp), allocatable, intent(out) :: coords(:, :)
@@ -79,7 +63,8 @@ contains
 
    ! ------------------------------------------------------------------------
 
-   subroutine lebedev_checks()
+   subroutine test_lebedev(error)
+      type(error_type), allocatable, intent(out) :: error
       integer, allocatable :: orders(:)
       real(dp), allocatable :: p(:, :), w(:)
       type(error_t) :: err
@@ -94,8 +79,8 @@ contains
          n = orders(io)
          call lebedev_grid(n, p, w, err)
          if (err%has_error()) then
-            call report(.false., "lebedev order builds: "//err%get_message())
-            cycle
+            call check(error, .false., "lebedev order builds: "//err%get_message())
+            return
          end if
          worst_sum = max(worst_sum, abs(sum(w) - 1.0_dp))
          do k = 1, n
@@ -118,48 +103,74 @@ contains
          ! Orders 74, 230 and 266 carry negative weights and are declared to.
          negative_ok = negative_ok .and. (any(w < 0.0_dp) .eqv. lebedev_has_negative_weights(n))
       end do
-      call report(size(orders) == 32, "lebedev: 32 published orders")
-      call report(worst_sum < 1.0e-13_dp, "lebedev: weights sum to one", worst_sum)
-      call report(worst_sphere < 1.0e-14_dp, "lebedev: points on the unit sphere", worst_sphere)
-      call report(worst_moment < 1.0e-13_dp, "lebedev: low moments integrate exactly", worst_moment)
-      call report(worst_antipode < 1.0e-13_dp, "lebedev: closed under inversion", worst_antipode)
-      call report(negative_ok, "lebedev: negative-weight orders declared as such")
+
+      call check(error, size(orders) == 32, "lebedev: 32 published orders, got "//to_string(size(orders)))
+      if (allocated(error)) return
+      call check(error, worst_sum < 1.0e-13_dp, "lebedev: weights sum to one, worst = "// &
+                 to_string(worst_sum, "es10.2"))
+      if (allocated(error)) return
+      call check(error, worst_sphere < 1.0e-14_dp, "lebedev: points on the unit sphere, worst = "// &
+                 to_string(worst_sphere, "es10.2"))
+      if (allocated(error)) return
+      call check(error, worst_moment < 1.0e-13_dp, "lebedev: low moments integrate exactly, worst = "// &
+                 to_string(worst_moment, "es10.2"))
+      if (allocated(error)) return
+      call check(error, worst_antipode < 1.0e-13_dp, "lebedev: closed under inversion, worst = "// &
+                 to_string(worst_antipode, "es10.2"))
+      if (allocated(error)) return
+      call check(error, negative_ok, "lebedev: negative-weight orders (74, 230, 266) declared as such")
+      if (allocated(error)) return
+
       call lebedev_grid(100, p, w, err)
-      call report(err%has_error(), "lebedev: an order that does not exist is refused")
-   end subroutine lebedev_checks
+      call check(error, err%has_error(), "lebedev: an order that does not exist is refused")
+   end subroutine test_lebedev
 
    ! ------------------------------------------------------------------------
 
-   subroutine radial_checks()
+   subroutine test_radial(error)
+      type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: r(:), dr(:), w(:)
       type(error_t) :: err
-      real(dp) :: total, reach_small, reach_big
+      real(dp) :: total, reach_small, reach_big, rel
       integer :: n
 
       ! exp(-r^2) over all space is pi^(3/2); at 75 points the mesh contains it.
       call dft_radial_treutler_ahlrichs(75, 8, r, dr, err)
-      call report(.not. err%has_error(), "radial: mesh builds")
-      call report(all(r > 0.0_dp) .and. all(r(2:) > r(:size(r) - 1)), "radial: nodes ascend and are positive")
-      call report(all(dr > 0.0_dp), "radial: weights are positive")
+      call check(error, .not. err%has_error(), "radial: mesh builds")
+      if (allocated(error)) return
+      call check(error, all(r > 0.0_dp) .and. all(r(2:) > r(:size(r) - 1)), &
+                 "radial: nodes ascend and are positive")
+      if (allocated(error)) return
+      call check(error, all(dr > 0.0_dp), "radial: weights are positive")
+      if (allocated(error)) return
+
       allocate (w(size(r)))
       call dft_radial_volume_weights(r, dr, w)
       total = sum(w*exp(-r*r))
-      call report(abs(total - PI**1.5_dp)/PI**1.5_dp < 1.0e-10_dp, &
-                  "radial: integrates exp(-r^2) to pi^(3/2)", abs(total - PI**1.5_dp)/PI**1.5_dp)
+      rel = abs(total - PI**1.5_dp)/PI**1.5_dp
+      call check(error, rel < 1.0e-10_dp, "radial: integrates exp(-r^2) to pi^(3/2), rel = "// &
+                 to_string(rel, "es10.2"))
+      if (allocated(error)) return
       ! 4*pi*r^2*dr and nothing else.
-      call report(all(abs(w - 4.0_dp*PI*r*r*dr) <= 1.0e-15_dp*w), "radial: volume weight is 4 pi r^2 dr")
+      call check(error, all(abs(w - 4.0_dp*PI*r*r*dr) <= 1.0e-15_dp*w), &
+                 "radial: volume weight is 4 pi r^2 dr")
+      if (allocated(error)) return
+
       reach_small = maxval(r)
       call dft_radial_treutler_ahlrichs(200, 8, r, dr, err)
       reach_big = maxval(r)
-      call report(reach_big > reach_small, "radial: more points reach further out")
+      call check(error, reach_big > reach_small, "radial: more points reach further out")
+      if (allocated(error)) return
+
       n = 0
       call dft_radial_treutler_ahlrichs(n, 8, r, dr, err)
-      call report(err%has_error(), "radial: an empty mesh is refused")
-   end subroutine radial_checks
+      call check(error, err%has_error(), "radial: an empty mesh is refused")
+   end subroutine test_radial
 
    ! ------------------------------------------------------------------------
 
-   subroutine partition_checks()
+   subroutine test_partition(error)
+      type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: coords(:, :), pts(:, :), w(:)
       integer, allocatable :: z(:), owner(:)
       type(error_t) :: err
@@ -191,31 +202,40 @@ contains
          end do
          worst = maxval(abs(total - 1.0_dp))
       end block
-      call report(.not. err%has_error() .and. worst < 1.0e-13_dp, "partition: cell weights sum to one", worst)
+      call check(error, .not. err%has_error() .and. worst < 1.0e-13_dp, &
+                 "partition: cell weights sum to one, worst = "//to_string(worst, "es10.2"))
+      if (allocated(error)) return
 
       ! Size adjustment: at the O-H midpoint oxygen takes more than half; without it, exactly half.
       mid = 0.5_dp*(coords(:, 1) + coords(:, 2))
       call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], becke_unadjusted, w1, err)
       w_o = w1(1)
-      call report(abs(w_o - 0.5_dp) < 1.0e-13_dp, "partition: unadjusted midpoint splits evenly", abs(w_o - 0.5_dp))
+      call check(error, abs(w_o - 0.5_dp) < 1.0e-13_dp, "partition: unadjusted midpoint splits evenly, |dw| = "// &
+                 to_string(abs(w_o - 0.5_dp), "es10.2"))
+      if (allocated(error)) return
+
       call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], becke, w1, err)
       w_o = w1(1)
       call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [2], becke, w1, err)
       w_h = w1(1)
-      call report(w_o > 0.5_dp .and. abs(w_o + w_h - 1.0_dp) < 1.0e-13_dp, "partition: size adjustment favours oxygen", w_o)
+      call check(error, w_o > 0.5_dp .and. abs(w_o + w_h - 1.0_dp) < 1.0e-13_dp, &
+                 "partition: size adjustment favours oxygen, w_o = "//to_string(w_o, "f10.6"))
+      if (allocated(error)) return
 
       ! Stratmann reaches exactly one beside a nucleus.
       call dft_partition_becke_weights(reshape(coords(:, 1) + [0.05_dp, 0.0_dp, 0.0_dp], [3, 1]), coords, z, [1], &
                                        stratmann_unadjusted, w1, err)
-      call report(w1(1) == 1.0_dp, "partition: stratmann saturates at exactly one")
+      call check(error, w1(1) == 1.0_dp, "partition: stratmann saturates at exactly one")
+      if (allocated(error)) return
 
       call dft_partition_becke_weights(pts, coords, z(1:2), owner, becke, w, err)
-      call report(err%has_error(), "partition: mismatched atom arrays are refused")
-   end subroutine partition_checks
+      call check(error, err%has_error(), "partition: mismatched atom arrays are refused")
+   end subroutine test_partition
 
    ! ------------------------------------------------------------------------
 
-   subroutine grid_checks()
+   subroutine test_grid(error)
+      type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: coords(:, :)
       integer, allocatable :: z(:)
       type(dft_grid_t) :: grid
@@ -238,17 +258,23 @@ contains
       do ia = 1, size(z)
          expected = expected + dft_grid_level_radial(z(ia), 1)*dft_grid_level_angular(z(ia), 1)
       end do
-      call report(.not. err%has_error() .and. grid%n_points == expected .and. &
-                  all(grid%atom >= 1 .and. grid%atom <= 3), "grid: unpruned count matches the tables")
+      call check(error, .not. err%has_error() .and. grid%n_points == expected .and. &
+                 all(grid%atom >= 1 .and. grid%atom <= 3), "grid: unpruned count matches the tables")
       call grid%destroy()
+      if (allocated(error)) return
 
       ! Level 3, the production default, on smooth and on cusped sums.
       call dft_grid_build(coords, z, grid, err, level=3)
       g = abs(integrate_gaussians(grid, coords, 1.3_dp) - 3.0_dp)/3.0_dp
       s = abs(integrate_slaters(grid, coords, 1.7_dp) - 3.0_dp)/3.0_dp
-      call report(g < 1.0e-8_dp, "grid: level 3 integrates a Gaussian sum to the atom count", g)
-      call report(s < 1.0e-8_dp, "grid: level 3 integrates a Slater sum to the atom count", s)
+      call check(error, g < 1.0e-8_dp, "grid: level 3 integrates a Gaussian sum to the atom count, rel = "// &
+                 to_string(g, "es10.2"))
+      if (.not. allocated(error)) then
+         call check(error, s < 1.0e-8_dp, "grid: level 3 integrates a Slater sum to the atom count, rel = "// &
+                    to_string(s, "es10.2"))
+      end if
       call grid%destroy()
+      if (allocated(error)) return
 
       ! Refining must improve it, unpruned.
       prev = huge(1.0_dp)
@@ -260,17 +286,23 @@ contains
          prev = now
          call grid%destroy()
       end do
-      call report(monotone, "grid: refining the level reduces the error", prev)
+      call check(error, monotone, "grid: refining the level reduces the error")
+      if (allocated(error)) return
 
       ! An explicit size applies to every atom; half of one is refused.
       call dft_grid_build(coords, z, grid, err, options=override)
-      call report(.not. err%has_error() .and. grid%n_points == 3*20*50, "grid: an override applies to every atom")
+      call check(error, .not. err%has_error() .and. grid%n_points == 3*20*50, &
+                 "grid: an override applies to every atom")
       call grid%destroy()
+      if (allocated(error)) return
+
       call dft_grid_build(coords, z, grid, err, options=half_override)
-      call report(err%has_error(), "grid: a half-given override is refused")
+      call check(error, err%has_error(), "grid: a half-given override is refused")
+      if (allocated(error)) return
+
       call dft_grid_build(coords(:, 1:2), [8], grid, err)
-      call report(err%has_error(), "grid: mismatched atom arrays are refused")
-   end subroutine grid_checks
+      call check(error, err%has_error(), "grid: mismatched atom arrays are refused")
+   end subroutine test_grid
 
    !
    ! The partition's neighbour screening against the unscreened loop, on a
@@ -279,7 +311,8 @@ contains
    ! O(n_atoms^2)-per-point loop this screening replaces, and the numbers
    ! here are what the default threshold costs.
    !
-   subroutine screening_checks()
+   subroutine test_screening(error)
+      type(error_type), allocatable, intent(out) :: error
       integer :: nat, k, n
       integer, allocatable :: z(:)
       real(dp), allocatable :: coords(:, :), w_full(:), p_full(:)
@@ -293,11 +326,10 @@ contains
       call tm%start()
       call dft_grid_build(coords, z, grid, err, level=3)
       t1 = tm%get_elapsed_time()
+      call check(error, .not. err%has_error(), "screening: gly10 grid builds")
+      if (allocated(error)) return
+
       call tm%start()
-      if (err%has_error()) then
-         call report(.false., "screening: gly10 grid builds")
-         return
-      end if
       n = grid%n_points
       allocate (w_full(n), p_full(n))
       unscreened = grid%partition
@@ -321,14 +353,24 @@ contains
       end block
       print '(a,i0,a,i0,a,f7.2,a,f7.2,a)', "screening: gly10, ", nat, " atoms, ", n, " points; grid build ", &
          t1, " s screened, partition alone ", t2, " s unscreened"
-      call report(dmax < 1.0e-8_dp*wscale, "screening: max |dw| / max w", dmax/wscale)
-      call report(rmax < 1.0e-6_dp, "screening: max relative dw on weights above 1e-10", rmax)
-      call report(abs(g_scr - g_full) < 1.0e-9_dp*real(nat, dp), "screening: Gaussian sum, screened vs full", &
-                  abs(g_scr - g_full))
-      call report(abs(g_scr - real(nat, dp))/real(nat, dp) < 1.0e-6_dp, "screening: Gaussian sum vs atom count", &
-                  abs(g_scr - real(nat, dp))/real(nat, dp))
+
+      call check(error, dmax < 1.0e-8_dp*wscale, "screening: max |dw| / max w = "// &
+                 to_string(dmax/wscale, "es10.2"))
+      if (.not. allocated(error)) then
+         call check(error, rmax < 1.0e-6_dp, "screening: max relative dw on weights above 1e-10 = "// &
+                    to_string(rmax, "es10.2"))
+      end if
+      if (.not. allocated(error)) then
+         call check(error, abs(g_scr - g_full) < 1.0e-9_dp*real(nat, dp), &
+                    "screening: Gaussian sum, screened vs full, |diff| = "//to_string(abs(g_scr - g_full), "es10.2"))
+      end if
+      if (.not. allocated(error)) then
+         call check(error, abs(g_scr - real(nat, dp))/real(nat, dp) < 1.0e-6_dp, &
+                    "screening: Gaussian sum vs atom count, rel = "// &
+                    to_string(abs(g_scr - real(nat, dp))/real(nat, dp), "es10.2"))
+      end if
       call grid%destroy()
-   end subroutine screening_checks
+   end subroutine test_screening
 
    function integrate_gaussians(grid, coords, alpha) result(total)
       type(dft_grid_t), intent(in) :: grid
@@ -364,4 +406,21 @@ contains
       end do
    end function integrate_slaters
 
+end module check_grid_suite
+
+program check_grid
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_grid_suite, only: collect_grid_tests
+   implicit none
+   type(testsuite_type), allocatable :: testsuites(:)
+   integer :: stat
+
+   stat = 0
+   testsuites = [new_testsuite("check_grid", collect_grid_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_grid

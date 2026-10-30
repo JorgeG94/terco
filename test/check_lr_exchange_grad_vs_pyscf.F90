@@ -23,8 +23,14 @@
 ! factor check_rys_grad_vs_pyscf.F90's grad2e_rhf uses, and the comparison
 ! is against that raw number on both sides.
 !
-program check_lr_exchange_grad_vs_pyscf
+! Basis (6-31G* or cc-pVDZ) and dump path come from the command line
+! (test/CMakeLists.txt's `foreach(b 631gs ccpvdz)`), so each run checks
+! exactly the one case it was invoked with.
+!
+module check_lr_exchange_grad_vs_pyscf_suite
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
@@ -32,109 +38,22 @@ program check_lr_exchange_grad_vs_pyscf
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
    implicit none
+   private
+   public :: collect_lr_exchange_grad_vs_pyscf_tests
 
    integer, parameter :: NOMEGA = 2
    real(dp), parameter :: OMEGA_LIST(NOMEGA) = [0.3_dp, 0.4_dp]
    real(dp), parameter :: THRESH = 1.0e-14_dp
-   character(len=256) :: basis_json, dump, case_name
-   type(trc_basis_t) :: bas
-   type(trc_eri_t)   :: eri
-   type(error_t) :: err
-   integer :: nat, nao, io
-   integer, allocatable :: at_z(:)
-   real(dp), allocatable :: r(:, :)
-   real(dp), allocatable :: drhf(:, :, :)
-   real(dp), allocatable :: grad_lr(:, :, :)
-   type(trc_pairlist_t) :: pl
-   real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
-
-   if (command_argument_count() < 2) then
-      print '(a)', 'usage: check_lr_exchange_grad_vs_pyscf <basis.json> <dump.bin>'; stop 1
-   end if
-   call get_command_argument(1, basis_json)
-   call get_command_argument(2, dump)
-   case_name = 'ccpvdz'
-   if (command_argument_count() >= 3) call get_command_argument(3, case_name)
-
-   call read_xyz('water.xyz', nat, at_z, r)
-   ! overrides%prune = .false.: the pyscf reference is built from this file's literal
-   ! columns, same reasoning as check_rys_fock_vs_pyscf.F90.
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, &
-                               overrides=trc_basis_json_overrides(prune=.false.))
-   if (err%has_error()) then
-      print '(a)', 'check_lr_exchange_grad_vs_pyscf: '//err%get_message(); stop 1
-   end if
-   nao = bas%nao
-
-   allocate (drhf(nao, nao, 1), grad_lr(3, nat, NOMEGA))
-   call synth_density(nao, drhf(:, :, 1))
-
-   call bas%to_device()
-   call eri%build(bas, THRESH)
-   do io = 1, NOMEGA
-      call eri%gradient(bas, drhf, grad_lr(:, :, io), &
-                        j_scale=0.0_dp, k_scale=1.0_dp, omega=OMEGA_LIST(io))
-   end do
-   call eri%release()
-
-   ! The overlap, for the reference generator's AO-normalisation check --
-   ! same reasoning as check_rys_grad_vs_pyscf.F90's own smat dump.
-   allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao))
-   call pl%build(bas, THRESH)
-   call pl%to_device()
-   !$acc enter data create(smat, tmat, vmat)
-   call trc_1e(bas, pl, smat, tmat, vmat)
-   !$acc update self(smat)
-   !$acc exit data delete(smat, tmat, vmat)
-   call pl%release()
-   call bas%release()
-
-   open (newunit=io, file=trim(dump), access='stream', &
-         form='unformatted', status='replace')
-   write (io) int(nat, int64), int(nao, int64)
-   write (io) int(at_z, int64)
-   write (io) r
-   write (io) drhf(:, :, 1)
-   write (io) grad_lr(:, :, 1)
-   write (io) grad_lr(:, :, 2)
-   write (io) smat
-   close (io)
-   print '(a,i0,a,i0,a)', 'check_lr_exchange_grad_vs_pyscf: wrote '//trim(dump)//' (', &
-      nat, ' atoms, ', nao, ' AOs) for the pyscf-reference comparison'
-
-   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
-   block
-      integer :: u, nat_ref, nao_ref, nfail
-      real(dp), allocatable :: s_ref(:, :), grad_ref(:, :, :)
-      real(dp) :: ds, worst
-      call ref_require('lr_exchange_grad_'//trim(case_name)//'.ref', u)
-      call ref_read_int(u, 'NAT', nat_ref)
-      call ref_read_int(u, 'NAO', nao_ref)
-      if (nat_ref /= nat .or. nao_ref /= nao) then
-         print '(a)', 'check_lr_exchange_grad_vs_pyscf: pyscf reference shape does not match this build'
-         stop 1
-      end if
-      allocate (s_ref(nao, nao), grad_ref(3, nat, NOMEGA))
-      call ref_read_matrix(u, 'S', nao, nao, s_ref)
-      call ref_read_matrix(u, 'GRAD_LR_OM1', 3, nat, grad_ref(:, :, 1))
-      call ref_read_matrix(u, 'GRAD_LR_OM2', 3, nat, grad_ref(:, :, 2))
-      call ref_close(u)
-      nfail = 0
-      ds = maxval(abs(smat - s_ref))
-      call ref_report(nfail, ds < 1.0e-9_dp, 'overlap check vs pyscf, max|diff|', ds)
-      do io = 1, NOMEGA
-         worst = maxval(abs(grad_lr(:, :, io) - grad_ref(:, :, io)))
-         call ref_report(nfail, worst < 1.0e-9_dp, 'LR exchange gradient vs pyscf, worst|diff|', worst)
-      end do
-      if (nfail > 0) then
-         print '(a)', 'check_lr_exchange_grad_vs_pyscf: FAILED against the pyscf reference'; stop 1
-      end if
-      print '(a)', 'check_lr_exchange_grad_vs_pyscf: RESULT: PASS'
-   end block
-
-   deallocate (at_z, r, drhf, grad_lr)
+   real(dp), parameter :: TOL = 1.0e-9_dp
 
 contains
+
+   subroutine collect_lr_exchange_grad_vs_pyscf_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("overlap and long-range exchange gradient vs pyscf", test_case) &
+                  ]
+   end subroutine collect_lr_exchange_grad_vs_pyscf_tests
 
    !
    ! Same deterministic, dense, symmetric construction as
@@ -152,4 +71,133 @@ contains
       d = 0.5_dp*(d + transpose(d))
    end subroutine synth_density
 
+   subroutine test_case(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=256) :: basis_json, dump, case_name
+      type(trc_basis_t) :: bas
+      type(trc_eri_t)   :: eri
+      type(error_t) :: err
+      integer :: nat, nao, io
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :)
+      real(dp), allocatable :: drhf(:, :, :)
+      real(dp), allocatable :: grad_lr(:, :, :)
+      type(trc_pairlist_t) :: pl
+      real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
+
+      call check(error, command_argument_count() >= 2, &
+                 "usage: check_lr_exchange_grad_vs_pyscf <basis.json> <dump.bin>")
+      if (allocated(error)) return
+      call get_command_argument(1, basis_json)
+      call get_command_argument(2, dump)
+      case_name = 'ccpvdz'
+      if (command_argument_count() >= 3) call get_command_argument(3, case_name)
+
+      call read_xyz('water.xyz', nat, at_z, r)
+      ! prune=.false.: the pyscf reference is built from this file's literal
+      ! (unpruned) columns, so the AO-level comparison stays on them.
+      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, &
+                               overrides=trc_basis_json_overrides(prune=.false.))
+      call check(error,.not. err%has_error(), "check_lr_exchange_grad_vs_pyscf: "//err%get_message())
+      if (allocated(error)) return
+      nao = bas%nao
+
+      allocate (drhf(nao, nao, 1), grad_lr(3, nat, NOMEGA))
+      call synth_density(nao, drhf(:, :, 1))
+
+      call bas%to_device()
+      call eri%build(bas, THRESH)
+      do io = 1, NOMEGA
+         call eri%gradient(bas, drhf, grad_lr(:, :, io), &
+                           j_scale=0.0_dp, k_scale=1.0_dp, omega=OMEGA_LIST(io))
+      end do
+      call eri%release()
+
+      ! The overlap, for the reference generator's AO-normalisation check --
+      ! same reasoning as check_rys_grad_vs_pyscf.F90's own smat dump.
+      allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao))
+      call pl%build(bas, THRESH)
+      call pl%to_device()
+      !$acc enter data create(smat, tmat, vmat)
+      call trc_1e(bas, pl, smat, tmat, vmat)
+      !$acc update self(smat)
+      !$acc exit data delete(smat, tmat, vmat)
+      call pl%release()
+      call bas%release()
+
+      open (newunit=io, file=trim(dump), access='stream', &
+            form='unformatted', status='replace')
+      write (io) int(nat, int64), int(nao, int64)
+      write (io) int(at_z, int64)
+      write (io) r
+      write (io) drhf(:, :, 1)
+      write (io) grad_lr(:, :, 1)
+      write (io) grad_lr(:, :, 2)
+      write (io) smat
+      close (io)
+
+      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+      block
+         integer :: u, nat_ref, nao_ref, nfail
+         real(dp), allocatable :: s_ref(:, :), grad_ref(:, :, :)
+         real(dp) :: ds, worst
+         call ref_require('lr_exchange_grad_'//trim(case_name)//'.ref', u)
+         call ref_read_int(u, 'NAT', nat_ref)
+         call ref_read_int(u, 'NAO', nao_ref)
+         call check(error, nat_ref == nat .and. nao_ref == nao, &
+                    "check_lr_exchange_grad_vs_pyscf: pyscf reference shape does not match this build")
+         if (allocated(error)) then
+            call ref_close(u)
+            return
+         end if
+         allocate (s_ref(nao, nao), grad_ref(3, nat, NOMEGA))
+         call ref_read_matrix(u, 'S', nao, nao, s_ref)
+         call ref_read_matrix(u, 'GRAD_LR_OM1', 3, nat, grad_ref(:, :, 1))
+         call ref_read_matrix(u, 'GRAD_LR_OM2', 3, nat, grad_ref(:, :, 2))
+         call ref_close(u)
+
+         nfail = 0
+         ds = maxval(abs(smat - s_ref))
+         call ref_report(nfail, ds < TOL, 'overlap check vs pyscf, max|diff|', ds)
+         call check(error, ds < TOL, &
+                    "overlap check vs pyscf, max|diff| = "//to_string(ds, "es12.4"))
+         if (allocated(error)) then
+            deallocate (s_ref, grad_ref)
+            return
+         end if
+
+         do io = 1, NOMEGA
+            worst = maxval(abs(grad_lr(:, :, io) - grad_ref(:, :, io)))
+            call ref_report(nfail, worst < TOL, 'LR exchange gradient vs pyscf, worst|diff|', worst)
+            call check(error, worst < TOL, &
+                       "omega "//to_string(OMEGA_LIST(io), "f4.2")// &
+                       " LR exchange gradient vs pyscf, worst|diff| = "//to_string(worst, "es12.4"))
+            if (allocated(error)) then
+               deallocate (s_ref, grad_ref)
+               return
+            end if
+         end do
+         deallocate (s_ref, grad_ref)
+      end block
+
+      deallocate (at_z, r, drhf, grad_lr, smat, tmat, vmat)
+   end subroutine test_case
+
+end module check_lr_exchange_grad_vs_pyscf_suite
+
+program check_lr_exchange_grad_vs_pyscf
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_lr_exchange_grad_vs_pyscf_suite, only: collect_lr_exchange_grad_vs_pyscf_tests
+   implicit none
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   stat = 0
+   testsuites = [new_testsuite("check_lr_exchange_grad_vs_pyscf", collect_lr_exchange_grad_vs_pyscf_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_lr_exchange_grad_vs_pyscf
