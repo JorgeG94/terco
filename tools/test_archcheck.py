@@ -16,6 +16,19 @@ def test_declared_names():
     assert f("call foo(a, b)") == []
 
 
+def test_pointer_names():
+    f = archcheck.pointer_names
+    assert f("type(trc_linalg_t), pointer :: lp") == ["lp"]
+    assert f("real(dp), pointer, contiguous :: fxc(:) => null()") == ["fxc"]
+    assert f("procedure(cb_t), pointer :: cb => null()") == ["cb"]
+    assert f("pointer :: a, b(:)") == ["a", "b"]
+    assert f("type(json_value), pointer :: root") == []
+    assert f("type(json_value), pointer, intent(in) :: root") == []
+    assert f("real(dp), allocatable :: pointer_free(:)") == []
+    assert f("logical :: has_pointer = .false.") == []
+    assert f("call c_f_pointer(handle, box)") == []
+
+
 def test_bad_words_matches_whole_words_only():
     assert archcheck.bad_words("dens_a") == ["dens"]
     assert archcheck.bad_words("density") == []
