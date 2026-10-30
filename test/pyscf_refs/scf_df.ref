@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["scf_df"] -> gen_scf_df
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: c51ca092427d7ec7863c9e046a339e685ffacac3d42dcefb5cb5e4712cc5f267
+# hash: 64a24e000ca064eea3861e0fcd564ef4cd6c54fea18f5f83b1c51f42043a52da
 # files: test/scf_df.F90 test/basis_sets/def2-universal-jkfit.json test/basis_sets/cc-pvdz.json test/basis_sets/6-31gs.json test/water.xyz test/formamide.xyz
 NCASE 12
 NAME_0 water_cc-pvdz_hf
