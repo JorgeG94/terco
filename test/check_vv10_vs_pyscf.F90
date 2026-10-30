@@ -30,7 +30,7 @@
 ! are sequential, so all three cases have to go through them in the SAME
 ! order generate.py wrote/expects); the three test-drive cases below each
 ! read back their OWN already-computed result -- see
-! check_xc_energy_suite's own `next_ifn` comment for why the shared pass
+! check_xc_energy_suite's own `computed` comment for why the shared pass
 ! runs exactly once and this suite stays `parallel=.false.`.
 !
 module check_vv10_vs_pyscf_suite

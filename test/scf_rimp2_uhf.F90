@@ -39,7 +39,7 @@
 ! Seven independent cases below (six radical/basis pairs plus the
 ! closed-shell-as-UHF self-check), each its own test-drive unittest; the
 ! probe write and the sequential pyscf-reference read run once -- see
-! check_xc_energy_suite's own `next_ifn` comment for why, and why this
+! check_xc_energy_suite's own `computed` comment for why, and why this
 ! suite stays `parallel=.false.`.
 !
 module scf_rimp2_uhf_suite
@@ -80,20 +80,70 @@ contains
 
    subroutine collect_scf_rimp2_uhf(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      integer :: ic
-      allocate (testsuite(NCASE_TOTAL))
-      do ic = 1, NCASE
-         testsuite(ic) = new_unittest(trim(mol(ic))//"/"//trim(basname(ic)), test_case)
-      end do
-      testsuite(NCASE_TOTAL) = new_unittest("closed-shell-as-UHF vs restricted", test_case)
+      testsuite = [ &
+                  new_unittest(case_name(1), case_01), &
+                  new_unittest(case_name(2), case_02), &
+                  new_unittest(case_name(3), case_03), &
+                  new_unittest(case_name(4), case_04), &
+                  new_unittest(case_name(5), case_05), &
+                  new_unittest(case_name(6), case_06), &
+                  new_unittest(case_name(7), case_07) &
+                ]
    end subroutine collect_scf_rimp2_uhf
 
-   subroutine test_case(error)
+   function case_name(ic) result(name)
+      integer, intent(in) :: ic
+      character(len=:), allocatable :: name
+      if (ic <= NCASE) then
+         name = trim(mol(ic))//"/"//trim(basname(ic))
+      else
+         name = "closed-shell-as-UHF vs restricted"
+      end if
+   end function case_name
+
+   ! One wrapper per case, each passing its own index: a unittest must not
+   ! depend on which unittests ran before it (a name-selected run, or a
+   ! reordered suite, would otherwise check the wrong case).
+   subroutine case_01(error)
       type(error_type), allocatable, intent(out) :: error
-      integer, save :: next_ic = 0
+      call test_case(error, 1)
+   end subroutine case_01
+
+   subroutine case_02(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 2)
+   end subroutine case_02
+
+   subroutine case_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 3)
+   end subroutine case_03
+
+   subroutine case_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 4)
+   end subroutine case_04
+
+   subroutine case_05(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 5)
+   end subroutine case_05
+
+   subroutine case_06(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 6)
+   end subroutine case_06
+
+   subroutine case_07(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 7)
+   end subroutine case_07
+
+   subroutine test_case(error, ic)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: ic
       call ensure_computed()
-      next_ic = next_ic + 1
-      call check(error, ok_case(next_ic), trim(msg_case(next_ic)))
+      call check(error, ok_case(ic), trim(msg_case(ic)))
    end subroutine test_case
 
    subroutine ensure_computed()

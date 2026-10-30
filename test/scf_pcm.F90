@@ -46,7 +46,7 @@
 ! One test-drive case per (molecule, functional, PCM model) in the chosen
 ! set; the shared setup -- the probe write and the sequential pyscf-
 ! reference read -- runs once -- see check_xc_energy_suite's own
-! `next_ifn` comment for why, and why this suite stays `parallel=.false.`.
+! `computed` comment for why, and why this suite stays `parallel=.false.`.
 !
 module scf_pcm_suite
    use pic_types, only: dp, int64
@@ -113,40 +113,152 @@ contains
 
    subroutine collect_scf_pcm(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      integer :: ic, ncase
-      character(len=16), allocatable :: cxyz(:)
-      character(len=32), allocatable :: cbas(:)
-      character(len=8), allocatable :: cfn(:), cpcm(:)
+      type(unittest_type), allocatable :: every(:)
+      ! NMAIN wrappers cover both sets (NF <= NMAIN); the set picks how many.
+      every = [ &
+                  new_unittest(case_name(1), case_01), &
+                  new_unittest(case_name(2), case_02), &
+                  new_unittest(case_name(3), case_03), &
+                  new_unittest(case_name(4), case_04), &
+                  new_unittest(case_name(5), case_05), &
+                  new_unittest(case_name(6), case_06), &
+                  new_unittest(case_name(7), case_07), &
+                  new_unittest(case_name(8), case_08), &
+                  new_unittest(case_name(9), case_09), &
+                  new_unittest(case_name(10), case_10), &
+                  new_unittest(case_name(11), case_11), &
+                  new_unittest(case_name(12), case_12), &
+                  new_unittest(case_name(13), case_13), &
+                  new_unittest(case_name(14), case_14), &
+                  new_unittest(case_name(15), case_15), &
+                  new_unittest(case_name(16), case_16), &
+                  new_unittest(case_name(17), case_17) &
+                ]
+      testsuite = every(1:set_size())
+   end subroutine collect_scf_pcm
 
+   integer function set_size()
       select case (trim(set_arg))
       case ("main")
-         ncase = NMAIN
-         cxyz = main_xyz; cbas = main_bas; cfn = main_fn; cpcm = main_pcm
+         set_size = NMAIN
       case ("f")
-         ncase = NF
-         cxyz = f_xyz; cbas = f_bas; cfn = f_fn; cpcm = f_pcm
+         set_size = NF
       case default
          error stop 'usage: scf_pcm [main|f]'
       end select
+   end function set_size
 
-      allocate (testsuite(ncase))
-      do ic = 1, ncase
-         testsuite(ic) = new_unittest(trim(cxyz(ic))//"/"//trim(cbas(ic))//"/"// &
-                                      trim(merge(cfn(ic), 'hf      ', len_trim(cfn(ic)) > 0))//"/"// &
-                                      trim(cpcm(ic)), test_case)
-      end do
-   end subroutine collect_scf_pcm
+   function case_name(ic) result(name)
+      integer, intent(in) :: ic
+      character(len=:), allocatable :: name
+      name = ""
+      if (ic > set_size()) return
+      if (trim(set_arg) == "main") then
+         name = trim(main_xyz(ic))//"/"//trim(main_bas(ic))//"/"// &
+                trim(merge(main_fn(ic), 'hf      ', len_trim(main_fn(ic)) > 0))//"/"//trim(main_pcm(ic))
+      else
+         name = trim(f_xyz(ic))//"/"//trim(f_bas(ic))//"/"// &
+                trim(merge(f_fn(ic), 'hf      ', len_trim(f_fn(ic)) > 0))//"/"//trim(f_pcm(ic))
+      end if
+   end function case_name
 
-   subroutine test_case(error)
+   ! One wrapper per case, each passing its own index: a unittest must not
+   ! depend on which unittests ran before it (a name-selected run, or a
+   ! reordered suite, would otherwise check the wrong case).
+   subroutine case_01(error)
       type(error_type), allocatable, intent(out) :: error
-      integer, save :: next_ic = 0
+      call test_case(error, 1)
+   end subroutine case_01
+
+   subroutine case_02(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 2)
+   end subroutine case_02
+
+   subroutine case_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 3)
+   end subroutine case_03
+
+   subroutine case_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 4)
+   end subroutine case_04
+
+   subroutine case_05(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 5)
+   end subroutine case_05
+
+   subroutine case_06(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 6)
+   end subroutine case_06
+
+   subroutine case_07(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 7)
+   end subroutine case_07
+
+   subroutine case_08(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 8)
+   end subroutine case_08
+
+   subroutine case_09(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 9)
+   end subroutine case_09
+
+   subroutine case_10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 10)
+   end subroutine case_10
+
+   subroutine case_11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 11)
+   end subroutine case_11
+
+   subroutine case_12(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 12)
+   end subroutine case_12
+
+   subroutine case_13(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 13)
+   end subroutine case_13
+
+   subroutine case_14(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 14)
+   end subroutine case_14
+
+   subroutine case_15(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 15)
+   end subroutine case_15
+
+   subroutine case_16(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 16)
+   end subroutine case_16
+
+   subroutine case_17(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 17)
+   end subroutine case_17
+
+   subroutine test_case(error, ic)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: ic
       call ensure_computed()
-      next_ic = next_ic + 1
       if (skip_all) then
          call skip_test(error, "the f set needs TERCO_LMAX >= 3")
          return
       end if
-      call check(error, ok_case(next_ic), trim(msg_case(next_ic)))
+      call check(error, ok_case(ic), trim(msg_case(ic)))
    end subroutine test_case
 
    subroutine ensure_computed()

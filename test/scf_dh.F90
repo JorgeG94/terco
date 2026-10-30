@@ -38,7 +38,7 @@
 ! Twenty-five independent cases below (24 closed-shell + OH), each its
 ! own test-drive unittest; the shared per-group setup, the probe writes
 ! and the sequential pyscf-reference read run once -- see
-! check_xc_energy_suite's own `next_ifn` comment for why, and why this
+! check_xc_energy_suite's own `computed` comment for why, and why this
 ! suite stays `parallel=.false.`.
 !
 module scf_dh_suite
@@ -86,26 +86,183 @@ contains
 
    subroutine collect_scf_dh(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      integer :: ig, im, ik, ic
-      allocate (testsuite(NCASE))
-      do ig = 1, NGROUP
-         do im = 1, NFUNC
-            do ik = 1, 2
-               ic = ((ig - 1)*NFUNC + (im - 1))*2 + ik
-               testsuite(ic) = new_unittest(trim(GMOL(ig))//"/"//trim(GBASIS(ig))//"/"// &
-                                            trim(FUNC(im))//"/"//trim(KIND(ik)), test_case)
-            end do
-         end do
-      end do
-      testsuite(NCASE) = new_unittest("oh/b2plyp UKS/6-31G* (fixed density)", test_case)
+      testsuite = [ &
+                  new_unittest(case_name(1), case_01), &
+                  new_unittest(case_name(2), case_02), &
+                  new_unittest(case_name(3), case_03), &
+                  new_unittest(case_name(4), case_04), &
+                  new_unittest(case_name(5), case_05), &
+                  new_unittest(case_name(6), case_06), &
+                  new_unittest(case_name(7), case_07), &
+                  new_unittest(case_name(8), case_08), &
+                  new_unittest(case_name(9), case_09), &
+                  new_unittest(case_name(10), case_10), &
+                  new_unittest(case_name(11), case_11), &
+                  new_unittest(case_name(12), case_12), &
+                  new_unittest(case_name(13), case_13), &
+                  new_unittest(case_name(14), case_14), &
+                  new_unittest(case_name(15), case_15), &
+                  new_unittest(case_name(16), case_16), &
+                  new_unittest(case_name(17), case_17), &
+                  new_unittest(case_name(18), case_18), &
+                  new_unittest(case_name(19), case_19), &
+                  new_unittest(case_name(20), case_20), &
+                  new_unittest(case_name(21), case_21), &
+                  new_unittest(case_name(22), case_22), &
+                  new_unittest(case_name(23), case_23), &
+                  new_unittest(case_name(24), case_24), &
+                  new_unittest(case_name(25), case_25) &
+                ]
    end subroutine collect_scf_dh
 
-   subroutine test_case(error)
+   function case_name(ic) result(name)
+      integer, intent(in) :: ic
+      character(len=:), allocatable :: name
+      integer :: ig, im, ik
+      if (ic == NCASE) then
+         name = "oh/b2plyp UKS/6-31G* (fixed density)"
+      else
+         ! ic = ((ig - 1)*NFUNC + (im - 1))*2 + ik, run_all's own order.
+         ig = (ic - 1)/(2*NFUNC) + 1
+         im = mod((ic - 1)/2, NFUNC) + 1
+         ik = mod(ic - 1, 2) + 1
+         name = trim(GMOL(ig))//"/"//trim(GBASIS(ig))//"/"//trim(FUNC(im))//"/"//trim(KIND(ik))
+      end if
+   end function case_name
+
+   ! One wrapper per case, each passing its own index: a unittest must not
+   ! depend on which unittests ran before it (a name-selected run, or a
+   ! reordered suite, would otherwise check the wrong case).
+   subroutine case_01(error)
       type(error_type), allocatable, intent(out) :: error
-      integer, save :: next_ic = 0
+      call test_case(error, 1)
+   end subroutine case_01
+
+   subroutine case_02(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 2)
+   end subroutine case_02
+
+   subroutine case_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 3)
+   end subroutine case_03
+
+   subroutine case_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 4)
+   end subroutine case_04
+
+   subroutine case_05(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 5)
+   end subroutine case_05
+
+   subroutine case_06(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 6)
+   end subroutine case_06
+
+   subroutine case_07(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 7)
+   end subroutine case_07
+
+   subroutine case_08(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 8)
+   end subroutine case_08
+
+   subroutine case_09(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 9)
+   end subroutine case_09
+
+   subroutine case_10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 10)
+   end subroutine case_10
+
+   subroutine case_11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 11)
+   end subroutine case_11
+
+   subroutine case_12(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 12)
+   end subroutine case_12
+
+   subroutine case_13(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 13)
+   end subroutine case_13
+
+   subroutine case_14(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 14)
+   end subroutine case_14
+
+   subroutine case_15(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 15)
+   end subroutine case_15
+
+   subroutine case_16(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 16)
+   end subroutine case_16
+
+   subroutine case_17(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 17)
+   end subroutine case_17
+
+   subroutine case_18(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 18)
+   end subroutine case_18
+
+   subroutine case_19(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 19)
+   end subroutine case_19
+
+   subroutine case_20(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 20)
+   end subroutine case_20
+
+   subroutine case_21(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 21)
+   end subroutine case_21
+
+   subroutine case_22(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 22)
+   end subroutine case_22
+
+   subroutine case_23(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 23)
+   end subroutine case_23
+
+   subroutine case_24(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 24)
+   end subroutine case_24
+
+   subroutine case_25(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 25)
+   end subroutine case_25
+
+   subroutine test_case(error, ic)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: ic
       call ensure_computed()
-      next_ic = next_ic + 1
-      call check(error, ok_case(next_ic), trim(msg_case(next_ic)))
+      call check(error, ok_case(ic), trim(msg_case(ic)))
    end subroutine test_case
 
    subroutine ensure_computed()
@@ -231,9 +388,13 @@ contains
                      ok4 = abs(e_dh_this - e_dh_ref) < CORR_TOL
                      worst = max(de, max(abs(mp%e_os - e_os_ref), max(abs(mp%e_ss - e_ss_ref), &
                                  abs(e_dh_this - e_dh_ref))))
-                     ok_case(ic) = ok1 .and. ok2 .and. ok3 .and. ok4
+                     ! A refused RI-MP2 (mp%message set) fails the case on its
+                     ! own, not only through the e_os = 0 it leaves behind.
+                     ok_case(ic) = ok1 .and. ok2 .and. ok3 .and. ok4 .and. len_trim(mp%message) == 0
                      write (msg_case(ic), "(a,es10.2)") trim(name_this)// &
                         ": E_SCF/E_os/E_ss/E_dh vs pyscf, worst = ", worst
+                     if (len_trim(mp%message) > 0) msg_case(ic) = "RI-MP2: "//trim(mp%message)//"; "// &
+                                                                  trim(msg_case(ic))
                   end block
                   ! Provenance only -- scf_rimp2.F90's own comment on the same tags.
                   call ref_read_real(refu, "CONV_TOL_"//trim(tag), pyscf_conv_tol)
@@ -344,8 +505,10 @@ contains
                            max(abs(wmp%e_ss - e_ss_ref), abs(e_dh_this - e_dh_ref))))
                ok_case(NCASE) = wh_converged .and. abs(wres%energy - e_scf_ref) < CORR_TOL .and. &
                                 abs(wmp%e_os - e_os_ref) < CORR_TOL .and. abs(wmp%e_ss - e_ss_ref) < CORR_TOL .and. &
-                                abs(e_dh_this - e_dh_ref) < CORR_TOL
+                                abs(e_dh_this - e_dh_ref) < CORR_TOL .and. len_trim(wmp%message) == 0
                write (msg_case(NCASE), "(a,es10.2)") "oh b2plyp: E_SCF/E_os/E_ss/E_dh vs pyscf, worst = ", worst
+               if (len_trim(wmp%message) > 0) msg_case(NCASE) = "RI-MP2: "//trim(wmp%message)//"; "// &
+                                                                trim(msg_case(NCASE))
             end block
          end if
 

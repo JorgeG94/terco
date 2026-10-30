@@ -40,7 +40,7 @@
 ! Nine independent cases below (A: 2, B: 1, C: 4, D: 2), each its own
 ! test-drive unittest; the ONE pyscf reference file is opened once and
 ! read sequentially, in the SAME A->B->C->D, within-group order the
-! original program used -- see check_xc_energy_suite's own `next_ifn`
+! original program used -- see check_xc_energy_suite's own `computed`
 ! comment for why, and why this suite stays `parallel=.false.`.
 !
 module scf_sph_corr_suite
@@ -73,33 +73,79 @@ module scf_sph_corr_suite
    character(len=256) :: msg_case(NCASE)
    integer :: next_slot = 0
    !! Which ok_case/msg_case slot run_all's inner ref_report-style calls
-   !! write to next, incremented by `record` -- a plain module cursor,
-   !! not the per-test `next_ic` counter (run_all fills every slot in one
-   !! pass; the test wrappers only read them back).
+   !! write to next, incremented by `record` -- run_all fills every slot
+   !! in one pass; each case_NN wrapper only reads its own slot back.
 
 contains
 
    subroutine collect_scf_sph_corr(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("A water/cc-pvdz(sph) RI-MP2 vs pyscf", test_case), &
-                  new_unittest("A formamide/cc-pvdz(sph) RI-MP2 vs pyscf", test_case), &
-                  new_unittest("B oh/cc-pvdz(sph) UHF RI-MP2 vs pyscf", test_case), &
-                  new_unittest("C water/cc-pvdz(sph) --df HF vs pyscf", test_case), &
-                  new_unittest("C water/cc-pvdz(sph) --df B3LYP vs pyscf", test_case), &
-                  new_unittest("C formamide/cc-pvdz(sph) --df HF vs pyscf", test_case), &
-                  new_unittest("C formamide/cc-pvdz(sph) --df B3LYP vs pyscf", test_case), &
-                  new_unittest("D b2plyp/cc-pvdz(sph) 4c vs pyscf", test_case), &
-                  new_unittest("D b2plyp/cc-pvdz(sph) df vs pyscf", test_case) &
+                  new_unittest("A water/cc-pvdz(sph) RI-MP2 vs pyscf", case_01), &
+                  new_unittest("A formamide/cc-pvdz(sph) RI-MP2 vs pyscf", case_02), &
+                  new_unittest("B oh/cc-pvdz(sph) UHF RI-MP2 vs pyscf", case_03), &
+                  new_unittest("C water/cc-pvdz(sph) --df HF vs pyscf", case_04), &
+                  new_unittest("C water/cc-pvdz(sph) --df B3LYP vs pyscf", case_05), &
+                  new_unittest("C formamide/cc-pvdz(sph) --df HF vs pyscf", case_06), &
+                  new_unittest("C formamide/cc-pvdz(sph) --df B3LYP vs pyscf", case_07), &
+                  new_unittest("D b2plyp/cc-pvdz(sph) 4c vs pyscf", case_08), &
+                  new_unittest("D b2plyp/cc-pvdz(sph) df vs pyscf", case_09) &
                   ]
    end subroutine collect_scf_sph_corr
 
-   subroutine test_case(error)
+   ! One wrapper per case, each passing its own index: a unittest must not
+   ! depend on which unittests ran before it (a name-selected run, or a
+   ! reordered suite, would otherwise check the wrong case).
+   subroutine case_01(error)
       type(error_type), allocatable, intent(out) :: error
-      integer, save :: next_ic = 0
+      call test_case(error, 1)
+   end subroutine case_01
+
+   subroutine case_02(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 2)
+   end subroutine case_02
+
+   subroutine case_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 3)
+   end subroutine case_03
+
+   subroutine case_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 4)
+   end subroutine case_04
+
+   subroutine case_05(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 5)
+   end subroutine case_05
+
+   subroutine case_06(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 6)
+   end subroutine case_06
+
+   subroutine case_07(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 7)
+   end subroutine case_07
+
+   subroutine case_08(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 8)
+   end subroutine case_08
+
+   subroutine case_09(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 9)
+   end subroutine case_09
+
+   subroutine test_case(error, ic)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: ic
       call ensure_computed()
-      next_ic = next_ic + 1
-      call check(error, ok_case(next_ic), trim(msg_case(next_ic)))
+      call check(error, ok_case(ic), trim(msg_case(ic)))
    end subroutine test_case
 
    subroutine ensure_computed()
@@ -159,15 +205,24 @@ contains
       integer :: ic, natm, nelec, nocc
       character(len=32) :: tag, name_ref, name_this
       real(dp) :: e_ref, e_os_ref, e_ss_ref, de, worst
+      logical :: gates_ok
+      character(len=:), allocatable :: gate_msg
 
       do ic = 1, NC
+         name_this = trim(gmol(ic))//"_ccpvdz_sph"
+         gates_ok = .true.
+         gate_msg = ""
          call read_xyz(trim(gmol(ic))//".xyz", natm, zint, at_r)
          nelec = sum(zint)
          nocc = nelec/2
 
          call trc_basis_from_json("basis_sets/cc-pvdz.json", natm, zint, at_r, bas, err)
          if (err%has_error()) error stop "scf_sph_corr/A: "//err%get_message()
-         if (.not. bas%spherical) print "(a)", "scf_sph_corr/A: cc-pVDZ did not come back spherical"
+         if (.not. bas%spherical) then
+            print "(a)", "scf_sph_corr/A: cc-pVDZ did not come back spherical"
+            gates_ok = .false.
+            gate_msg = gate_msg//"cc-pVDZ did not come back spherical; "
+         end if
          call trc_basis_from_json("basis_sets/cc-pvdz-rifit.json", natm, zint, at_r, aux, err)
          if (err%has_error()) error stop "scf_sph_corr/A: "//err%get_message()
          call bas%to_device()
@@ -184,7 +239,11 @@ contains
          allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
          call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_c, eps_c)
          call trc_rimp2_run(bas, aux, pl, nocc, cmo_c, eps_c, mp)
-         if (len_trim(mp%message) > 0) print "(a)", "scf_sph_corr/A: "//trim(mp%message)
+         if (len_trim(mp%message) > 0) then
+            print "(a)", "scf_sph_corr/A: "//trim(mp%message)
+            gates_ok = .false.
+            gate_msg = gate_msg//"RI-MP2: "//trim(mp%message)//"; "
+         end if
          deallocate (cmo_c, eps_c)
 
          print "(a,a10,a,i0,a,f20.12,a,f16.12,a,f16.12)", "  A ", trim(gmol(ic)), "  nao_sph ", bas%nao_sph, &
@@ -193,7 +252,6 @@ contains
          if (has_ref) then
             tag = to_string(ic - 1)
             call ref_read_str(refu, "RMP2_NAME_"//trim(tag), name_ref)
-            name_this = trim(gmol(ic))//"_ccpvdz_sph"
             if (trim(name_ref) /= trim(name_this)) error stop "scf_sph_corr/A: case order mismatch (" &
                //trim(name_ref)//" vs "//trim(name_this)//")"
             call ref_read_real(refu, "RMP2_ESCF_"//trim(tag), e_ref)
@@ -201,11 +259,11 @@ contains
             call ref_read_real(refu, "RMP2_ESS_"//trim(tag), e_ss_ref)
             de = abs(res%energy - e_ref)
             worst = max(de, max(abs(mp%e_os - e_os_ref), abs(mp%e_ss - e_ss_ref)))
-            call record(res%converged .and. de < TOL_SCF .and. abs(mp%e_os - e_os_ref) < TOL_CORR .and. &
-                        abs(mp%e_ss - e_ss_ref) < TOL_CORR, &
-                        trim(name_this)//": E_RHF/E_os/E_ss vs pyscf, worst = "//to_string(worst, "es10.2"))
+            call record(gates_ok .and. res%converged .and. de < TOL_SCF .and. abs(mp%e_os - e_os_ref) < TOL_CORR &
+                        .and. abs(mp%e_ss - e_ss_ref) < TOL_CORR, &
+                        gate_msg//trim(name_this)//": E_RHF/E_os/E_ss vs pyscf, worst = "//to_string(worst, "es10.2"))
          else
-            call record(.false., trim(name_this)//": pyscf reference missing")
+            call record(.false., gate_msg//trim(name_this)//": pyscf reference missing")
          end if
 
          call pl%release(); call aux%release(); call bas%release()
@@ -234,6 +292,7 @@ contains
       real(dp), allocatable :: cmo_ab(:, :, :), eps_ab(:, :)
       integer :: natm, probe_unit
       real(dp) :: e_scf_ref, e_os_ref, e_ss_ref, worst
+      character(len=:), allocatable :: gate_msg
 
       call read_xyz("oh.xyz", natm, zint, at_r)
       call trc_basis_from_json("basis_sets/cc-pvdz.json", natm, zint, at_r, bas, err)
@@ -290,7 +349,11 @@ contains
          rimp2_opts%nfrozen = NFZ
          call trc_urimp2_run(bas, aux, pl, NA, NB, cmo_ab, eps_ab, mp, opts=rimp2_opts)
       end block
-      if (len_trim(mp%message) > 0) print "(a)", "scf_sph_corr/B: "//trim(mp%message)
+      gate_msg = ""
+      if (len_trim(mp%message) > 0) then
+         print "(a)", "scf_sph_corr/B: "//trim(mp%message)
+         gate_msg = "RI-MP2: "//trim(mp%message)//"; "
+      end if
       deallocate (cmo_ab, eps_ab)
 
       print "(a,i0,a,f20.12,a,f16.12,a,f16.12)", "  B oh  nao_sph ", bas%nao_sph, "  E_UHF ", res%energy, &
@@ -302,10 +365,11 @@ contains
          call ref_read_real(refu, "OH_ESS", e_ss_ref)
          worst = max(abs(res%energy - e_scf_ref), max(abs(mp%e_os - e_os_ref), abs(mp%e_ss - e_ss_ref)))
          call record(res%converged .and. abs(res%energy - e_scf_ref) < TOL_SCF .and. &
-                     abs(mp%e_os - e_os_ref) < TOL_CORR .and. abs(mp%e_ss - e_ss_ref) < TOL_CORR, &
-                     "oh/cc-pvdz(sph): E_UHF/E_os/E_ss vs pyscf, worst = "//to_string(worst, "es10.2"))
+                     abs(mp%e_os - e_os_ref) < TOL_CORR .and. abs(mp%e_ss - e_ss_ref) < TOL_CORR .and. &
+                     len_trim(mp%message) == 0, &
+                     gate_msg//"oh/cc-pvdz(sph): E_UHF/E_os/E_ss vs pyscf, worst = "//to_string(worst, "es10.2"))
       else
-         call record(.false., "oh/cc-pvdz(sph): pyscf reference missing")
+         call record(.false., gate_msg//"oh/cc-pvdz(sph): pyscf reference missing")
       end if
 
       call pl%release(); call aux%release(); call bas%release()

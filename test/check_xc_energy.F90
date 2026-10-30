@@ -104,7 +104,12 @@ module check_xc_energy_suite
                                                   "rscan", "scan0", "tpss0"]
 
    logical :: computed = .false.
-   !! run_all() has run exactly once -- see ensure_computed.
+   !! run_all() has run exactly once -- see ensure_computed. The shared
+   !! pass is lazy and unsynchronised, which is why every suite built this
+   !! way runs with run_testsuite(parallel=.false.): two threads entering
+   !! ensure_computed together would both run it. Each case_NN wrapper
+   !! passes its OWN index, so which cases ran before it, and in what
+   !! order, never matters.
 
    ! Per-functional results, computed once by run_all and read back by
    ! check_functional(ifn, error) -- one array slot per functional, in the
@@ -116,30 +121,335 @@ module check_xc_energy_suite
    logical :: ok_rks_ref(NFUNC), ok_uks_ref(NFUNC)
    real(dp) :: val_rks_ref(NFUNC), val_uks_ref(NFUNC)
 
-   integer :: next_ifn = 0
-   !! The index test_functional_case checks next. Valid ONLY because
-   !! run_testsuite(parallel=.false.) runs the testsuite array strictly in
-   !! declared order (testdrive.F90's own `do it = 1, size(testsuite)`,
-   !! guarded `if (parallel_)` on the OpenMP loop that would otherwise
-   !! reorder it) -- the program below asserts parallel=.false. for exactly
-   !! this reason.
-
 contains
 
    subroutine collect_xc_energy(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      integer :: ifn
-      allocate (testsuite(NFUNC))
-      do ifn = 1, NFUNC
-         testsuite(ifn) = new_unittest(trim(names(ifn)), test_functional_case)
-      end do
+      testsuite = [ &
+                  new_unittest(trim(names(1)), case_01), &
+                  new_unittest(trim(names(2)), case_02), &
+                  new_unittest(trim(names(3)), case_03), &
+                  new_unittest(trim(names(4)), case_04), &
+                  new_unittest(trim(names(5)), case_05), &
+                  new_unittest(trim(names(6)), case_06), &
+                  new_unittest(trim(names(7)), case_07), &
+                  new_unittest(trim(names(8)), case_08), &
+                  new_unittest(trim(names(9)), case_09), &
+                  new_unittest(trim(names(10)), case_10), &
+                  new_unittest(trim(names(11)), case_11), &
+                  new_unittest(trim(names(12)), case_12), &
+                  new_unittest(trim(names(13)), case_13), &
+                  new_unittest(trim(names(14)), case_14), &
+                  new_unittest(trim(names(15)), case_15), &
+                  new_unittest(trim(names(16)), case_16), &
+                  new_unittest(trim(names(17)), case_17), &
+                  new_unittest(trim(names(18)), case_18), &
+                  new_unittest(trim(names(19)), case_19), &
+                  new_unittest(trim(names(20)), case_20), &
+                  new_unittest(trim(names(21)), case_21), &
+                  new_unittest(trim(names(22)), case_22), &
+                  new_unittest(trim(names(23)), case_23), &
+                  new_unittest(trim(names(24)), case_24), &
+                  new_unittest(trim(names(25)), case_25), &
+                  new_unittest(trim(names(26)), case_26), &
+                  new_unittest(trim(names(27)), case_27), &
+                  new_unittest(trim(names(28)), case_28), &
+                  new_unittest(trim(names(29)), case_29), &
+                  new_unittest(trim(names(30)), case_30), &
+                  new_unittest(trim(names(31)), case_31), &
+                  new_unittest(trim(names(32)), case_32), &
+                  new_unittest(trim(names(33)), case_33), &
+                  new_unittest(trim(names(34)), case_34), &
+                  new_unittest(trim(names(35)), case_35), &
+                  new_unittest(trim(names(36)), case_36), &
+                  new_unittest(trim(names(37)), case_37), &
+                  new_unittest(trim(names(38)), case_38), &
+                  new_unittest(trim(names(39)), case_39), &
+                  new_unittest(trim(names(40)), case_40), &
+                  new_unittest(trim(names(41)), case_41), &
+                  new_unittest(trim(names(42)), case_42), &
+                  new_unittest(trim(names(43)), case_43), &
+                  new_unittest(trim(names(44)), case_44), &
+                  new_unittest(trim(names(45)), case_45), &
+                  new_unittest(trim(names(46)), case_46), &
+                  new_unittest(trim(names(47)), case_47), &
+                  new_unittest(trim(names(48)), case_48), &
+                  new_unittest(trim(names(49)), case_49), &
+                  new_unittest(trim(names(50)), case_50), &
+                  new_unittest(trim(names(51)), case_51), &
+                  new_unittest(trim(names(52)), case_52) &
+                ]
    end subroutine collect_xc_energy
 
-   subroutine test_functional_case(error)
+   ! One wrapper per functional, each passing its own index into `names`:
+   ! a unittest must not depend on which unittests ran before it (a
+   ! name-selected run, or a reordered suite, would otherwise check the
+   ! wrong functional).
+   subroutine case_01(error)
       type(error_type), allocatable, intent(out) :: error
-      next_ifn = next_ifn + 1
+      call test_functional_case(error, 1)
+   end subroutine case_01
+
+   subroutine case_02(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 2)
+   end subroutine case_02
+
+   subroutine case_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 3)
+   end subroutine case_03
+
+   subroutine case_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 4)
+   end subroutine case_04
+
+   subroutine case_05(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 5)
+   end subroutine case_05
+
+   subroutine case_06(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 6)
+   end subroutine case_06
+
+   subroutine case_07(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 7)
+   end subroutine case_07
+
+   subroutine case_08(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 8)
+   end subroutine case_08
+
+   subroutine case_09(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 9)
+   end subroutine case_09
+
+   subroutine case_10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 10)
+   end subroutine case_10
+
+   subroutine case_11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 11)
+   end subroutine case_11
+
+   subroutine case_12(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 12)
+   end subroutine case_12
+
+   subroutine case_13(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 13)
+   end subroutine case_13
+
+   subroutine case_14(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 14)
+   end subroutine case_14
+
+   subroutine case_15(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 15)
+   end subroutine case_15
+
+   subroutine case_16(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 16)
+   end subroutine case_16
+
+   subroutine case_17(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 17)
+   end subroutine case_17
+
+   subroutine case_18(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 18)
+   end subroutine case_18
+
+   subroutine case_19(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 19)
+   end subroutine case_19
+
+   subroutine case_20(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 20)
+   end subroutine case_20
+
+   subroutine case_21(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 21)
+   end subroutine case_21
+
+   subroutine case_22(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 22)
+   end subroutine case_22
+
+   subroutine case_23(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 23)
+   end subroutine case_23
+
+   subroutine case_24(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 24)
+   end subroutine case_24
+
+   subroutine case_25(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 25)
+   end subroutine case_25
+
+   subroutine case_26(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 26)
+   end subroutine case_26
+
+   subroutine case_27(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 27)
+   end subroutine case_27
+
+   subroutine case_28(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 28)
+   end subroutine case_28
+
+   subroutine case_29(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 29)
+   end subroutine case_29
+
+   subroutine case_30(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 30)
+   end subroutine case_30
+
+   subroutine case_31(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 31)
+   end subroutine case_31
+
+   subroutine case_32(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 32)
+   end subroutine case_32
+
+   subroutine case_33(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 33)
+   end subroutine case_33
+
+   subroutine case_34(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 34)
+   end subroutine case_34
+
+   subroutine case_35(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 35)
+   end subroutine case_35
+
+   subroutine case_36(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 36)
+   end subroutine case_36
+
+   subroutine case_37(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 37)
+   end subroutine case_37
+
+   subroutine case_38(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 38)
+   end subroutine case_38
+
+   subroutine case_39(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 39)
+   end subroutine case_39
+
+   subroutine case_40(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 40)
+   end subroutine case_40
+
+   subroutine case_41(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 41)
+   end subroutine case_41
+
+   subroutine case_42(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 42)
+   end subroutine case_42
+
+   subroutine case_43(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 43)
+   end subroutine case_43
+
+   subroutine case_44(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 44)
+   end subroutine case_44
+
+   subroutine case_45(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 45)
+   end subroutine case_45
+
+   subroutine case_46(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 46)
+   end subroutine case_46
+
+   subroutine case_47(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 47)
+   end subroutine case_47
+
+   subroutine case_48(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 48)
+   end subroutine case_48
+
+   subroutine case_49(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 49)
+   end subroutine case_49
+
+   subroutine case_50(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 50)
+   end subroutine case_50
+
+   subroutine case_51(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 51)
+   end subroutine case_51
+
+   subroutine case_52(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_functional_case(error, 52)
+   end subroutine case_52
+
+   subroutine test_functional_case(error, ifn)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: ifn
       call ensure_computed()
-      call check_functional(next_ifn, error)
+      call check_functional(ifn, error)
    end subroutine test_functional_case
 
    subroutine ensure_computed()
@@ -290,10 +600,13 @@ contains
 
       print '(a,i0,a,i0,a,i0)', "check_xc_energy: ", grid%n_points, " points, ", xg%nbatch, &
          " batches, Tr(DS) = ", nint(trds)
-      ! The two calls below are separate module procedures, not for
-      ! structure: nvfortran 26.5's front end segfaults (fort1/fort2) on a
-      ! program unit with eight calls to trc_xc_rks/uks, and is fine with
-      ! seven. Split, each unit has fewer; the checks are unchanged.
+      ! rks_checks and uks_checks are separate procedures, not for
+      ! structure: when this test was one program, nvfortran 26.5's front
+      ! end segfaulted (fort1/fort2) on a procedure with eight calls to
+      ! trc_xc_rks/uks and was fine with seven, and splitting the calls
+      ! into two procedures (then internal, now module procedures, three
+      ! and four calls) fixed it. Keep each procedure's count of those
+      ! calls below eight.
       call rks_checks(b, xg, unit, dmat, s, trds, exc_all, n_all, vxc_all)
 
       ! --- spin-polarised: two independent PSD densities ---------------------
@@ -484,16 +797,24 @@ end module check_xc_energy_suite
 
 program check_xc_energy
    use, intrinsic :: iso_fortran_env, only: error_unit
-   use testdrive, only: run_testsuite
+   use testdrive, only: run_testsuite, run_selected
    use check_xc_energy_suite, only: collect_xc_energy
    implicit none
    integer :: stat
+   character(len=64) :: name
    stat = 0
    ! Serial, and must stay serial: see check_xc_energy_suite's own
-   ! next_ifn comment -- the shared setup/probe-write/reference-read runs
-   ! once, in declared order, and each case's index depends on that order.
-   call run_testsuite(collect_xc_energy, error_unit, stat, parallel=.false.)
-   if (stat > 0) then
+   ! `computed` comment -- the shared setup/probe-write/reference-read runs
+   ! once, lazily, and nothing guards it against two threads.
+   if (command_argument_count() >= 1) then
+      ! One functional by name (e.g. `check_xc_energy pbe`); an unknown name
+      ! lists the available ones and fails.
+      call get_command_argument(1, name)
+      call run_selected(collect_xc_energy, trim(name), error_unit, stat)
+   else
+      call run_testsuite(collect_xc_energy, error_unit, stat, parallel=.false.)
+   end if
+   if (stat /= 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1
    end if
