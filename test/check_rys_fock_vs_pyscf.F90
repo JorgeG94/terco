@@ -30,7 +30,7 @@ program check_rys_fock_vs_pyscf
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
    use trc_tables, only: LMAX
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
@@ -75,7 +75,13 @@ program check_rys_fock_vs_pyscf
    call golden_begin('rys_fock_'//trim(case_name))
 
    call read_xyz(trim(xyzfile), nat, at_z, r)
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+   ! overrides%prune = .false.: the pyscf reference this compares against
+   ! (test/pyscf_refs/generate.py's bse_json_basis) reads this file's own
+   ! columns literally, without trc_basis_json's prune_block reduction --
+   ! an AO-level S/G comparison, unlike an energy or a gradient, is not
+   ! invariant to that reduction's basis rotation.
+   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, &
+                               overrides=trc_basis_json_overrides(prune=.false.))
    if (err%has_error()) then
       print '(a)', 'check_rys_fock_vs_pyscf: '//err%get_message(); stop 1
    end if

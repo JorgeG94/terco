@@ -56,7 +56,7 @@ module scf_robust_suite
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_test_basis, only: read_xyz
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str
    use golden_io, only: golden_begin, golden_put, golden_end
@@ -150,8 +150,17 @@ contains
          end if
          ! Cartesian, to match scf_robust_ref.py's cart=True and the lindep
          ! threshold measured on it: d-aug-cc-pVDZ tags shells gto_spherical.
+         ! overrides%prune = .false.: w5/d-aug-cc-pVDZ's lindep_thresh (1e-5, this
+         ! module's own header) drops near-linearly-dependent diffuse
+         ! combinations off the overlap matrix's eigenvalues, and
+         ! prune_block's basis rotation moves those eigenvalues enough to
+         ! change WHICH combinations get dropped -- a real difference, not
+         ! round-off (measured 9.66e-07 against the golden, four orders of
+         ! magnitude over its 2e-10 gate), because this basis is deliberately
+         ! near-redundant and lindep thresholding is not invariant to a
+         ! rotation the way a well-conditioned SCF energy is.
          call trc_basis_from_json('basis_sets/'//trim(basf(ic))//'.json', natm, zint, at_r, bas, err, &
-                                  force_cart=.true.)
+                                  force_cart=.true., overrides=trc_basis_json_overrides(prune=.false.))
          if (err%has_error()) error stop 'scf_robust: '//trim(xyzf(ic))//': '//err%get_message()
          call bas%to_device()
 

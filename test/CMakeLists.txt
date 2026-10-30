@@ -211,6 +211,18 @@ terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+# Dropping a general contraction's redundant primitives (trc_basis_json's
+# prune_block) against pyscf's cc-pVDZ counts and against the energy the
+# unpruned (BSE-literal) basis gives.
+terco_add_check(check_prune_primitives check_prune_primitives.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_prune_primitives PRIVATE test-drive::test-drive)
+# trc_scf_file (restart) must refuse a saved SCF whose basis was pruned
+# differently from the one being loaded into -- cc-pVDZ's general
+# contraction changes shape under TRC_PRUNE_PRIMITIVES, so a save/load pair
+# that disagrees on it is exactly the "different basis file of the same
+# size" case trc_scf_file.F90's own header already promises to catch.
+terco_add_check(check_scf_file_prune check_scf_file_prune.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_file_prune PRIVATE test-drive::test-drive)
 # build_631g against trc_basis_from_json, on water through a five-water
 # cluster -- the one check allowed to call build_631g for its own basis
 # (see that subroutine's comment in trc_test_basis.F90). Water through
@@ -793,6 +805,10 @@ target_link_libraries(check_vv10_vs_pyscf PRIVATE test-drive::test-drive)
 # and water/cc-pVDZ + silane/def2-SVP against test/pyscf_refs/minao.ref.
 terco_add_check(check_minao check_minao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_minao PRIVATE test-drive::test-drive)
+# The gradient after a TRC_BIN_SORT resort reads rebuilt quartet tables
+# (quartets%a included) -- see the file's header.
+terco_add_check(check_bin_sort_grad check_bin_sort_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_bin_sort_grad PRIVATE test-drive::test-drive)
 
 terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_hirshfeld PRIVATE test-drive::test-drive)

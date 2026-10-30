@@ -51,7 +51,7 @@
 ! (cuBLAS on the device) instead: shells of the SAME angular momentum l
 ! share one (ncart(l), 2l+1) T block (SPH_T(:,:,l)) and a RUN of
 ! consecutive same-l shells (common within one atom's own shell list)
-! becomes ONE `gemm_strided` call with that many batch items -- a single
+! becomes ONE `gemm_batched` call with that many batch items -- a single
 ! shell is just a run of length one, so every shell is covered without a
 ! special case. The small SPH_T table is staged into a device-resident
 ! scratch ONCE per call (`!$acc update device`), not re-read as a
@@ -64,7 +64,7 @@ module trc_sph
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
    use trc_sph_tables, only: SPH_T, SPH_LMAX, SPH_NCART_MAX, SPH_NSPH_MAX
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    implicit none
    private
 
@@ -290,7 +290,7 @@ contains
    ! -- (n, n, naux) for a 3c block, (naux_c, naux_c) for the metric --
    ! never has to match this routine's flattened (nrow, naux) view of it.
    !
-   ! One `gemm_strided` call per RUN of consecutive shells sharing an
+   ! One `gemm_batched` call per RUN of consecutive shells sharing an
    ! angular momentum l (a single shell is a run of length one): every
    ! item of the run shares the SAME (ncart(l), 2l+1) block of `tl`
    ! (`sb = 0`), so strided-batched cuBLAS does every shell of the run in
@@ -306,7 +306,8 @@ contains
       real(dp), intent(out) :: msph(*)
       real(dp) :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
       integer :: ish0, ish, l0, nci, nsi, run, ac, bc
-      integer(int64) :: nrow8, sa, sc
+      integer(int64) :: nrow8
+      type(trc_gemm_batch_t) :: gemm_shape
 
       nrow8 = int(nrow, int64)
       !$acc enter data create(tl)
@@ -325,11 +326,11 @@ contains
          nsi = 2*l0 + 1
          ac = aux%sh_ao(ish0) - 1
          bc = aux%sh_ao_sph(ish0) - 1
-         sa = nrow8*int(nci, int64)
-         sc = nrow8*int(nsi, int64)
-         call lp%gemm_strided("N", "N", nrow, nsi, nci, 1.0_dp, mcart(1_int64 + int(ac, int64)*nrow8), nrow, &
-                              sa, tl(1, 1, l0), SPH_NCART_MAX, 0_int64, 0.0_dp, &
-                              msph(1_int64 + int(bc, int64)*nrow8), nrow, sc, run)
+         ! T is shared by every item (sb = 0) and read by its declared
+         ! leading dimension; the M tiles are tight.
+         gemm_shape = trc_gemm_batch(nrow, nsi, nci, run, ldb=SPH_NCART_MAX, sb=0_int64)
+         call lp%gemm_batched(gemm_shape, mcart(1_int64 + int(ac, int64)*nrow8), tl(1, 1, l0), &
+                              msph(1_int64 + int(bc, int64)*nrow8))
          ish0 = ish0 + run
       end do
       !$acc exit data delete(tl)
@@ -356,6 +357,7 @@ contains
       real(dp), intent(out) :: msph(*)
       real(dp) :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
       integer :: ish0, ish, l0, nci, nsi, run, ac, bc, naux_c, naux_s
+      type(trc_gemm_batch_t) :: gemm_shape
 
       naux_c = aux%nao
       naux_s = aux%nao_sph
@@ -375,9 +377,11 @@ contains
          nsi = 2*l0 + 1
          ac = aux%sh_ao(ish0) - 1
          bc = aux%sh_ao_sph(ish0) - 1
-         call lp%gemm_strided("T", "N", nsi, ncol, nci, 1.0_dp, tl(1, 1, l0), SPH_NCART_MAX, 0_int64, &
-                              mcart(1 + ac), naux_c, int(nci, int64), 0.0_dp, msph(1 + bc), naux_s, &
-                              int(nsi, int64), run)
+         ! Items step down the rows of M (nci / nsi elements), each a block
+         ! of the full-height M; T is shared.
+         gemm_shape = trc_gemm_batch(nsi, ncol, nci, run, lda=SPH_NCART_MAX, ldb=naux_c, ldc=naux_s, &
+                                     sa=0_int64, sb=int(nci, int64), sc=int(nsi, int64), transa="T")
+         call lp%gemm_batched(gemm_shape, tl(1, 1, l0), mcart(1 + ac), msph(1 + bc))
          ish0 = ish0 + run
       end do
       !$acc exit data delete(tl)

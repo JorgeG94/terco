@@ -100,6 +100,8 @@ module trc_dft_partition
       !! Scratch budget in doubles; zero (the default) is 2^26, 512 MB. Sets
       !! how many points a chunk holds, budget / (4 n_atoms).
       integer :: first = 1
+      !! First point to partition (dft_partition_becke_weights only); see
+      !! `last`.
       integer :: last = huge(1)
       !! dft_partition_becke_weights only: partition the points first..last
       !! and return every other weight as zero, so a caller holding one block

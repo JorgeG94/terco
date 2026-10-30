@@ -529,7 +529,7 @@ contains
             call s_fill(n, sf%coords, sf%zeta, sf%switch_f, smat)
             call da_fill(n, sf%coords, sf%normals, sf%zeta, sf%r_parent, sf%area, this%rmat)
             call copy_square(n, smat, this%kmat)
-            call this%la%gemm("N", "N", n, n, n, -f2pi, this%rmat, n, smat, n, 1.0_dp, this%kmat, n)
+            call this%la%gemm_mat(this%rmat, smat, this%kmat, alpha=-f2pi, beta=1.0_dp)
             !$acc exit data delete(smat)
             deallocate (smat)
             call scale_shift(n, this%rmat, f2pi, -f)

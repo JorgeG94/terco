@@ -17,7 +17,7 @@ module check_rys_grad_vs_pyscf_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
@@ -72,7 +72,10 @@ contains
       real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
 
       call read_xyz('water.xyz', nat, at_z, r)
-      call trc_basis_from_json(trim(basis_json_arg), nat, at_z, r, bas, err)
+      ! overrides%prune = .false.: the pyscf reference is built from this file's literal
+      ! columns (bse_json_basis), same reasoning as check_rys_fock_vs_pyscf.F90.
+      call trc_basis_from_json(trim(basis_json_arg), nat, at_z, r, bas, err, &
+                               overrides=trc_basis_json_overrides(prune=.false.))
       call check(error, .not. err%has_error(), "basis build: "//err%get_message())
       if (allocated(error)) return
       nao = bas%nao

@@ -19,7 +19,7 @@ module scf_sad_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_guess_json, only: trc_guess_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -67,8 +67,12 @@ contains
       opts%conv_energy = 1.0e-10_dp
       opts%conv_density = 1.0e-7_dp
 
+      ! overrides%prune = .false.: sad_cc-pvdz.json is an mqc-written AO-basis density
+      ! fixture (this module's own header) in terco's LITERAL cc-pVDZ AO
+      ! definition; pruning rotates that definition, which would make
+      ! `dguess` a density in the wrong basis.
       call trc_basis_from_json('basis_sets/'//basis//'.json', natm, zint, at_r, bas, err, &
-                               force_cart=.true.)
+                               force_cart=.true., overrides=trc_basis_json_overrides(prune=.false.))
       call check(error, .not. err%has_error(), "basis build: "//err%get_message())
       if (allocated(error)) return
       call trc_guess_from_json('sad_'//basis//'.json', bas, zint, dguess, err)
