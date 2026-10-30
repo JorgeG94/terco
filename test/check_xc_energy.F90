@@ -45,7 +45,7 @@ program check_xc_energy
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build
+   use trc_dft_grid, only: dft_grid_t, dft_grid_options_t, dft_grid_build
    use trc_dft_prune, only: PRUNE_NONE
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
@@ -106,6 +106,7 @@ program check_xc_energy
    type(trc_basis_t) :: b
    type(trc_pairlist_t) :: pl
    type(dft_grid_t) :: grid
+   type(dft_grid_options_t) :: unpruned
    type(trc_xc_grid_t) :: xg
    type(trc_xc_functional_t) :: func
    type(error_t) :: err
@@ -173,7 +174,8 @@ program check_xc_energy
       end do
    end do
 
-   call dft_grid_build(at_r, nint(at_z), grid, err, level=4, prune=PRUNE_NONE)
+   unpruned%prune = PRUNE_NONE
+   call dft_grid_build(at_r, nint(at_z), grid, err, level=4, options=unpruned)
    if (err%has_error()) then
       print '(a)', "check_xc_energy: grid failed: "//err%get_message()
       stop 1

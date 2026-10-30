@@ -424,8 +424,8 @@ contains
             allocate (pcoef(xgp%npts), source=xgp%qw)
             !$acc enter data copyin(pcoef)
             call xc_grad_weight_coef(xgp%npts, fxc, pcoef)
-            call dft_partition_becke_grad_contract(xgp%npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
-                                               gp%scheme, gp%adjust, grad_extra, err)
+            call dft_partition_becke_grad_contract(xgp%r, b%at_r, at_elem, xgp%atom, pcoef, gp%partition, &
+                                                   grad_extra, err)
             if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
             !$acc exit data delete(pcoef)
             deallocate (pcoef)

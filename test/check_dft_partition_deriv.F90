@@ -167,10 +167,11 @@ program check_dft_partition_deriv
    use pic_types, only: dp
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build
+   use trc_dft_grid, only: dft_grid_t, dft_grid_options_t, dft_grid_build
    use pic_types, only: int64
    use trc_dft_partition, only: dft_partition_becke_derivatives, dft_partition_becke_grad_contract, &
-                                PARTITION_BECKE, PARTITION_STRATMANN, ADJUST_TREUTLER, ADJUST_NONE
+                                dft_partition_options_t, PARTITION_BECKE, PARTITION_STRATMANN, &
+                                ADJUST_TREUTLER, ADJUST_NONE
    use check_dft_partition_deriv_ref, only: reference_derivatives
    implicit none
 
@@ -206,9 +207,13 @@ contains
       real(dp), allocatable :: dw_new(:, :, :), dw_ref(:, :, :)
       real(dp) :: worst
       integer :: i, j
+      type(dft_grid_options_t) :: gopts
+      type(dft_partition_options_t) :: unscreened
 
       call read_xyz(xyzfile, nat, at_z, r)
-      call dft_grid_build(r, at_z, grid, err, level=3, scheme=scheme, adjust=adjust)
+      gopts%partition%scheme = scheme
+      gopts%partition%adjust = adjust
+      call dft_grid_build(r, at_z, grid, err, level=3, options=gopts)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
       end if
@@ -221,8 +226,9 @@ contains
       ! that approximation, not re-measuring it). `reference_derivatives`
       ! below has no screening of its own at all, so this is the
       ! apples-to-apples comparison.
-      call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw_new, err, &
-                                       nu_max=2.0_dp)
+      unscreened = grid%partition
+      unscreened%nu_max = 2.0_dp
+      call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, unscreened, dw_new, err)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
       end if
@@ -263,9 +269,12 @@ contains
       real(dp), allocatable :: r(:, :)
       type(dft_grid_t) :: grid
       type(error_t) :: err
+      type(dft_grid_options_t) :: gopts
 
       call read_xyz(xyzfile, nat, at_z, r)
-      call dft_grid_build(r, at_z, grid, err, level=1, scheme=PARTITION_BECKE, adjust=ADJUST_TREUTLER)
+      gopts%partition%scheme = PARTITION_BECKE
+      gopts%partition%adjust = ADJUST_TREUTLER
+      call dft_grid_build(r, at_z, grid, err, level=1, options=gopts)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
       end if
@@ -284,17 +293,17 @@ contains
       type(error_t) :: err
       real(dp) :: worst, scale
       integer :: k, a, own
+      type(dft_partition_options_t) :: popts
 
       allocate (dw(3, nat, grid%n_points), coef(grid%n_points), g_ref(3, nat), g_new(3, nat))
       do k = 1, grid%n_points
          coef(k) = grid%quad_weights(k)*(1.0_dp + 0.3_dp*sin(real(k, dp)))
          if (mod(k, 7) == 0) coef(k) = 0.0_dp
       end do
-      if (numax > 0.0_dp) then
-         call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err, nu_max=numax)
-      else
-         call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err)
-      end if
+      popts%scheme = scheme
+      popts%adjust = adjust
+      if (numax > 0.0_dp) popts%nu_max = numax
+      call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, popts, dw, err)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
       end if
@@ -307,13 +316,8 @@ contains
          end do
       end do
       g_new = 1.0_dp   ! ADDED into: start from a non-zero gradient
-      if (numax > 0.0_dp) then
-         call dft_partition_becke_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
-                                            adjust, g_new, err, nu_max=numax, budget=int(4*nat*37, int64))
-      else
-         call dft_partition_becke_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
-                                            adjust, g_new, err, budget=int(4*nat*37, int64))
-      end if
+      popts%budget = int(4*nat*37, int64)
+      call dft_partition_becke_grad_contract(grid%coords, r, at_z, grid%atom, coef, popts, g_new, err)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
       end if

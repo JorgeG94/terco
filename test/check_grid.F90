@@ -28,10 +28,11 @@ program check_grid
    use trc_error, only: error_t
    use trc_lebedev, only: lebedev_grid, lebedev_available_orders, lebedev_has_negative_weights
    use trc_dft_radial, only: dft_radial_treutler_ahlrichs, dft_radial_volume_weights
-   use trc_dft_partition, only: dft_partition_becke_weights, PARTITION_BECKE, PARTITION_STRATMANN, &
-                                ADJUST_TREUTLER, ADJUST_NONE
+   use trc_dft_partition, only: dft_partition_becke_weights, dft_partition_options_t, PARTITION_STRATMANN, &
+                                ADJUST_NONE
    use trc_dft_prune, only: PRUNE_NONE
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_level_radial, dft_grid_level_angular
+   use trc_dft_grid, only: dft_grid_t, dft_grid_options_t, dft_grid_build, dft_grid_level_radial, &
+                           dft_grid_level_angular
    use trc_test_basis, only: read_xyz
    implicit none
 
@@ -164,7 +165,11 @@ contains
       type(error_t) :: err
       integer :: k, ia, np
       real(dp) :: worst, mid(3), w_o, w_h, x, w1(1)
+      type(dft_partition_options_t) :: becke, becke_unadjusted, stratmann_unadjusted
 
+      becke_unadjusted%adjust = ADJUST_NONE
+      stratmann_unadjusted%scheme = PARTITION_STRATMANN
+      stratmann_unadjusted%adjust = ADJUST_NONE
       call water(coords, z)
       ! A cloud of points around the molecule, each partitioned once per owner.
       np = 60
@@ -180,7 +185,7 @@ contains
          total = 0.0_dp
          do ia = 1, 3
             owner = ia
-            call dft_partition_becke_weights(pts, coords, z, owner, PARTITION_BECKE, ADJUST_TREUTLER, w, err)
+            call dft_partition_becke_weights(pts, coords, z, owner, becke, w, err)
             if (err%has_error()) exit
             total = total + w
          end do
@@ -190,21 +195,21 @@ contains
 
       ! Size adjustment: at the O-H midpoint oxygen takes more than half; without it, exactly half.
       mid = 0.5_dp*(coords(:, 1) + coords(:, 2))
-      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], PARTITION_BECKE, ADJUST_NONE, w1, err)
+      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], becke_unadjusted, w1, err)
       w_o = w1(1)
       call report(abs(w_o - 0.5_dp) < 1.0e-13_dp, "partition: unadjusted midpoint splits evenly", abs(w_o - 0.5_dp))
-      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], PARTITION_BECKE, ADJUST_TREUTLER, w1, err)
+      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], becke, w1, err)
       w_o = w1(1)
-      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [2], PARTITION_BECKE, ADJUST_TREUTLER, w1, err)
+      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [2], becke, w1, err)
       w_h = w1(1)
       call report(w_o > 0.5_dp .and. abs(w_o + w_h - 1.0_dp) < 1.0e-13_dp, "partition: size adjustment favours oxygen", w_o)
 
       ! Stratmann reaches exactly one beside a nucleus.
       call dft_partition_becke_weights(reshape(coords(:, 1) + [0.05_dp, 0.0_dp, 0.0_dp], [3, 1]), coords, z, [1], &
-                                   PARTITION_STRATMANN, ADJUST_NONE, w1, err)
+                                       stratmann_unadjusted, w1, err)
       call report(w1(1) == 1.0_dp, "partition: stratmann saturates at exactly one")
 
-      call dft_partition_becke_weights(pts, coords, z(1:2), owner, PARTITION_BECKE, ADJUST_TREUTLER, w, err)
+      call dft_partition_becke_weights(pts, coords, z(1:2), owner, becke, w, err)
       call report(err%has_error(), "partition: mismatched atom arrays are refused")
    end subroutine partition_checks
 
@@ -218,11 +223,17 @@ contains
       integer :: expected, ia, level
       real(dp) :: g, s, prev, now
       logical :: monotone
+      type(dft_grid_options_t) :: unpruned, override, half_override
 
+      unpruned%prune = PRUNE_NONE
+      override%prune = PRUNE_NONE
+      override%n_radial = 20
+      override%n_angular = 50
+      half_override%n_radial = 20
       call water(coords, z)
 
       ! Unpruned, the count is exactly sum over atoms of n_radial * n_angular.
-      call dft_grid_build(coords, z, grid, err, level=1, prune=PRUNE_NONE)
+      call dft_grid_build(coords, z, grid, err, level=1, options=unpruned)
       expected = 0
       do ia = 1, size(z)
          expected = expected + dft_grid_level_radial(z(ia), 1)*dft_grid_level_angular(z(ia), 1)
@@ -243,7 +254,7 @@ contains
       prev = huge(1.0_dp)
       monotone = .true.
       do level = 1, 4
-         call dft_grid_build(coords, z, grid, err, level=level, prune=PRUNE_NONE)
+         call dft_grid_build(coords, z, grid, err, level=level, options=unpruned)
          now = abs(integrate_gaussians(grid, coords, 1.3_dp) - 3.0_dp)
          monotone = monotone .and. now < prev
          prev = now
@@ -252,10 +263,10 @@ contains
       call report(monotone, "grid: refining the level reduces the error", prev)
 
       ! An explicit size applies to every atom; half of one is refused.
-      call dft_grid_build(coords, z, grid, err, n_radial=20, n_angular=50, prune=PRUNE_NONE)
+      call dft_grid_build(coords, z, grid, err, options=override)
       call report(.not. err%has_error() .and. grid%n_points == 3*20*50, "grid: an override applies to every atom")
       call grid%destroy()
-      call dft_grid_build(coords, z, grid, err, n_radial=20)
+      call dft_grid_build(coords, z, grid, err, options=half_override)
       call report(err%has_error(), "grid: a half-given override is refused")
       call dft_grid_build(coords(:, 1:2), [8], grid, err)
       call report(err%has_error(), "grid: mismatched atom arrays are refused")
@@ -276,6 +287,7 @@ contains
       type(error_t) :: err
       real(dp) :: dmax, rmax, t1, t2, g_scr, g_full, wscale
       type(timer_type) :: tm
+      type(dft_partition_options_t) :: unscreened
 
       call read_xyz('gly10.xyz', nat, z, coords)
       call tm%start()
@@ -288,8 +300,9 @@ contains
       end if
       n = grid%n_points
       allocate (w_full(n), p_full(n))
-      call dft_partition_becke_weights(grid%coords, coords, z, grid%atom, grid%scheme, grid%adjust, &
-                                   p_full, err, nu_max=2.0_dp)
+      unscreened = grid%partition
+      unscreened%nu_max = 2.0_dp
+      call dft_partition_becke_weights(grid%coords, coords, z, grid%atom, unscreened, p_full, err)
       t2 = tm%get_elapsed_time()
       w_full = grid%quad_weights*p_full
       dmax = maxval(abs(grid%weights - w_full))
