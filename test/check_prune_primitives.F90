@@ -141,6 +141,10 @@ contains
       opts%conv_diis = 1.0e-10_dp
       opts%max_iteration = 200
       call trc_scf_run(bas, nocc, nocc, opts, res)
+      ! Off the device before the next call builds another: a mapped basis
+      ! whose host arrays are freed leaves present-table entries the next
+      ! allocation can land on ("partially present" on the GPU).
+      call bas%release()
       if (.not. res%converged) error stop 'check_prune_primitives: RHF did not converge'
       energy = res%energy
    end subroutine run_rhf
