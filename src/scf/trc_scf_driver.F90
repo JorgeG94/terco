@@ -89,7 +89,8 @@ module trc_scf_driver
    use trc_basis_types, only: trc_basis_t
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
-   use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t
+   use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t, &
+                               scf_settings_homo_lumo_gap
    use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, scf_context_project_density
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, &
@@ -600,13 +601,12 @@ contains
       scf_result%dmat = scf_state%dold
       scf_energies%pcm_qtotal = scf_context%pcm%q_total
       call scf_result%update(scf_energies, scf_state%dold)
-      ! The diagonalisation-failure message set above (`diag_failed`) is
-      ! more specific than this generic one -- an ordinary "ran out of
-      ! max_iteration" non-convergence leaves scf_result%message empty up to
-      ! here, so only THAT case gets the generic text.
+      ! Only plain non-convergence gets this; `diag_failed` set a sharper message.
       if (.not. scf_result%converged .and. len_trim(scf_result%message) == 0) then
          scf_result%message = "trc_scf: not converged"
       end if
+      call scf_driver_gap_check(scf_config, scf_options%frac_occ .or. scf_result%iterations == 0, nao, &
+                                nao - scf_context%n_lindep, scf_result%eps)
       if (scf_config%dft) then
          ! The run's own totals, read once here: grid build was added after
          ! setup, above. xc is all of scf_fock_build_vxc but VV10 (t_xc includes it),
@@ -717,6 +717,7 @@ contains
          ! F' = X^T F X
          call linalg_provider%gemm_mat(f, scf_context%x, t)
          call linalg_provider%gemm_mat(scf_context%x, t, fp, transa="T")
+         call scf_driver_null_shift(linalg_provider, scf_context, nao, fp)
          call linalg_provider%syev(fp, eps_s, info)
          if (info /= 0) return
          call linalg_provider%gemm_mat(scf_context%x, fp, cmo_s)
@@ -785,5 +786,59 @@ contains
       end subroutine frac_occupations
 
    end subroutine trc_scf_run
+
+   subroutine scf_driver_null_shift(la, scf_context, n, fp)
+      !! With functions dropped by canonical orthogonalisation, F' = X^T F X
+      !! has a zero eigenvalue per dropped direction, a zero orbital that
+      !! aufbau occupied below a positive HOMO. Add shift*(I - X^T S X) to
+      !! lift them above every real level (2|F'|_F + 1 bounds the spectrum):
+      !! never occupied, always last, at eps(n - n_lindep + 1:n). A no-op
+      !! when nothing was dropped.
+      type(trc_linalg_t), intent(in) :: la
+      type(scf_ctx_t), intent(in) :: scf_context
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: fp(n, n)
+      if (scf_context%n_lindep == 0) return
+      call null_shift_add(n, 2.0_dp*sqrt(la%dot_2d(fp, fp)) + 1.0_dp, scf_context%pnull, fp)
+   end subroutine scf_driver_null_shift
+
+   subroutine null_shift_add(n, shift, p, a)
+      !! a = a + shift*p, on the device under the GPU build.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: shift
+      real(dp), intent(in) :: p(n, n)
+      real(dp), intent(inout) :: a(n, n)
+      integer :: i, j
+      do concurrent(i=1:n, j=1:n)
+         a(i, j) = a(i, j) + shift*p(i, j)
+      end do
+   end subroutine null_shift_add
+
+   subroutine scf_driver_gap_check(scf_config, skip, nao, nmo, eps)
+      !! A warning, never a refusal, when the final orbitals' HOMO-LUMO gap
+      !! is tiny. A closed-shell molecule run at the wrong charge stalled for
+      !! 60 iterations with |FDS - SDF| stuck near 1e-2 before anyone looked
+      !! at the charge; a gap this small says to look there first. Rank 0
+      !! only; `skip` for fractional occupations (no aufbau gap) or no
+      !! iteration run.
+      type(scf_settings_t), intent(in) :: scf_config
+      logical, intent(in) :: skip
+      integer, intent(in) :: nao, nmo
+      real(dp), intent(in) :: eps(nao, scf_config%nspin)
+      real(dp), parameter :: GAP_WARN = 1.0e-2_dp
+      !! 0.27 eV. Closed-shell organics sit well above it even with a pure
+      !! functional (singlet O2 at PBE/6-31G*, a degenerate pi* pair half
+      !! filled, is 0.039); only a genuinely degenerate or wrongly charged
+      !! system gets this close.
+      real(dp) :: gap
+      character(len=160) :: line
+      if (skip .or. .not. scf_config%root) return
+      gap = scf_settings_homo_lumo_gap(nao, scf_config%nspin, nmo, scf_config%nocc, eps)
+      if (gap < GAP_WARN) then
+         write (line, "(a,es10.3,a)") "trc_scf: HOMO-LUMO gap is only ", gap, &
+            " Eh; check the charge and multiplicity"
+         call global_logger%warning(trim(line))
+      end if
+   end subroutine scf_driver_gap_check
 
 end module trc_scf_driver

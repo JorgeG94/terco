@@ -221,6 +221,8 @@ target_link_libraries(check_prune_primitives PRIVATE test-drive::test-drive)
 # size" case trc_scf_file.F90's own header already promises to catch.
 terco_add_check(check_scf_file_prune check_scf_file_prune.F90 NEEDS_BASIS)
 target_link_libraries(check_scf_file_prune PRIVATE test-drive::test-drive)
+terco_add_check(check_scf_lindep_gap check_scf_lindep_gap.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_lindep_gap PRIVATE test-drive::test-drive)
 # build_631g against trc_basis_from_json, on water through a five-water
 # cluster -- the one check allowed to call build_631g for its own basis
 # (see that subroutine's comment in trc_test_basis.F90). Water through
