@@ -31,6 +31,7 @@ module trc_eri
    use trc_hgp, only: hgp_build_pairs
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
    use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
@@ -51,34 +52,19 @@ module trc_eri
 
    type :: trc_eri_t
       real(dp) :: thresh = 1.0e-10_dp
-      integer :: nbas = 0, nao = 0, nhpp = 0
+      integer :: nbas = 0, nao = 0
       type(pair_bins_t) :: bins
-      integer,  allocatable :: hp_off(:), hp_n(:)
-      !! HGP primitive-pair data: what the kernels actually read.
-      real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :)
-      real(dp), allocatable :: hp_c(:)
-      real(dp), allocatable :: hp_a(:)
-      !! The i-side primitive's own exponent, alongside hp_p (the pair sum).
-      !! Only the Rys gradient kernels read this; built unconditionally
-      !! anyway since it is a one-time O(npp) cost at geometry-build time,
-      !! not per Fock build.
-      integer :: nqp = 0
-      !! Bin-interleaved second copy of the above (trc_bins%bins_build_pair_quartets):
-      !! flat fields here, not components of `bins` -- see that routine's
-      !! own comment for why.
-      integer,  allocatable :: qp_bin_pbase(:), qp_bin_k(:)
-      real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
-      real(dp), allocatable :: qp_a(:)
-      !! Bin-interleaved form of hp_a, read by the Rys gradient kernels only.
-      real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
-      real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
-      integer,  allocatable :: sq_n(:)
+      type(trc_shell_pairs_t) :: pairs
+      !! The working basis's shells (l, AO offset, atom) and their HGP
+      !! primitive pairs: what the kernels actually read. The i-side
+      !! exponent `pairs%a` is read by the Rys gradient kernels only; it is
+      !! built anyway, a one-time O(npp) cost at geometry-build time.
+      type(trc_pair_quartets_t) :: quartets
+      !! The same pairs, bin-interleaved (bins_build_pair_quartets): a type
+      !! of their own, not components of `bins` -- see that routine's own
+      !! comment for why.
       real(dp), allocatable :: dsh(:, :)
       !! Shell-block density bound, refreshed per iteration from D.
-      integer,  allocatable :: sh_l(:), ao_off(:)
-      integer,  allocatable :: sh_at(:)
-      !! Shell -> atom map, copied from the basis's own, for the gradient's
-      !! digestion to route a shell's contribution to grad(3, natm).
       type(trc_basis_t) :: pb
       !! The basis the integrals are actually evaluated over, and the
       !! transform back to the one the caller speaks. On a generally
@@ -287,7 +273,6 @@ contains
 
       integer :: i, j
       real(dp), allocatable :: qs(:), one(:)
-      integer,  allocatable :: hp_ki(:), hp_kj(:)
       ! Stage timing, kept in this%t_build: `build` is five routines with
       ! very different costs and no way to tell from the outside which one
       ! is the slow one.
@@ -308,10 +293,12 @@ contains
       this%nbas = b%nshell
       this%nao_w = b%nao
 
-      allocate (this%sh_l(b%nshell), this%ao_off(b%nshell), this%sh_at(b%nshell))
-      this%sh_l   = b%sh_l
-      this%ao_off = b%sh_ao
-      this%sh_at  = b%sh_at
+      this%pairs%nbas = b%nshell
+      this%pairs%natm = b%natm
+      allocate (this%pairs%sh_l(b%nshell), this%pairs%ao_off(b%nshell), this%pairs%sh_at(b%nshell))
+      this%pairs%sh_l   = b%sh_l
+      this%pairs%ao_off = b%sh_ao
+      this%pairs%sh_at  = b%sh_at
 
       ! The basis already folded common_fac_sp into its coefficients, so the
       ! separate per-shell factor hgp_build_pairs expects is unity. Passing
@@ -324,17 +311,9 @@ contains
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
       ! the prune judges by. The cutoff sits three orders below the
       ! screening threshold.
-      call hgp_build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                           one, b%sh_c, thresh*1.0e-3_dp, &
-                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                           this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp, &
-                           pp_a=this%hp_a)
+      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
       this%t_build(1) = tm%get_elapsed_time()
       call tm%start()
-
-      ! The contracted kernels fold the coefficients into hp_c and never
-      ! ask which primitive a pair came from.
-      deallocate (hp_ki, hp_kj)
 
       !
       ! THE HGP PAIRS GO ON THE DEVICE ONCE, HERE -- NOT IMPLICITLY, PER
@@ -346,8 +325,8 @@ contains
       ! is what lets screen_schwarz_bounds_rys read them without a transfer of its
       ! own. The exit pairing these before `eri_release` is unchanged.
       !
-      !$acc enter data copyin(this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-      !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
+      !$acc enter data copyin(this%pairs%off, this%pairs%n, this%pairs%p, this%pairs%r, &
+      !$acc                   this%pairs%ra, this%pairs%rb, this%pairs%c)
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
       ! screen_schwarz_bounds_rys: the Rys-quadrature diagonal kernel (one thread
@@ -355,8 +334,7 @@ contains
       ! screen_schwarz_bounds_hgp's one-thread-per-pair whole-block scan. Same Q,
       ! see trc_screen.F90's own header; screen_schwarz_bounds_hgp stays for
       ! check_schwarz_rys_vs_hgp's comparison.
-      call screen_schwarz_bounds_rys(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
-                              this%hp_p, this%hp_r, this%hp_ra, this%hp_rb, this%hp_c, qs)
+      call screen_schwarz_bounds_rys(this%pairs, qs)
       this%t_build(2) = tm%get_elapsed_time()
       call tm%start()
 
@@ -384,19 +362,12 @@ contains
          end do
       end if
 
-      call bins_build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
-                              this%bins, pp_n=this%hp_n, res=bres)
+      call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                                   this%bins, pp_n=this%pairs%n, res=bres)
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
-      call bins_build_pair_quartets(this%bins, b%nshell, this%nhpp, &
-                               this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                               this%hp_ra, this%hp_rb, this%hp_c, &
-                               this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                               this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                               this%sq_ax, this%sq_ay, this%sq_az, &
-                               this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                               pp_a=this%hp_a, qp_a=this%qp_a)
+      call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
       this%t_build(4) = tm%get_elapsed_time()
       call tm%start()
 
@@ -405,16 +376,16 @@ contains
 
       deallocate (qs, one)
 
-      ! this%hp_* are already device-resident -- entered above, before
-      ! screen_schwarz_bounds_rys ran.
-      !$acc enter data copyin(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
+      ! The pair arrays are already device-resident -- entered above,
+      ! before screen_schwarz_bounds_rys ran.
+      !$acc enter data copyin(this%pairs%sh_l, this%pairs%ao_off, this%pairs%sh_at, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
-      !$acc                   this%qp_z, this%qp_c, this%qp_a, &
-      !$acc                   this%qp_px, this%qp_py, this%qp_pz, &
-      !$acc                   this%sq_ax, this%sq_ay, this%sq_az, &
-      !$acc                   this%sq_abx, this%sq_aby, this%sq_abz, &
-      !$acc                   this%sq_n)
+      !$acc                   this%quartets%z, this%quartets%c, this%quartets%a, &
+      !$acc                   this%quartets%px, this%quartets%py, this%quartets%pz, &
+      !$acc                   this%quartets%ax, this%quartets%ay, this%quartets%az, &
+      !$acc                   this%quartets%abx, this%quartets%aby, this%quartets%abz, &
+      !$acc                   this%quartets%n)
       this%on_device = .true.
       this%t_build(5) = tm%get_elapsed_time()
    end subroutine build_structures
@@ -473,6 +444,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow, jbins
+      type(trc_bin_launch_t) :: launch
       logical :: md_j
 
       jfac = 1.0_dp
@@ -513,16 +485,10 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                     this%ao_off, this%thresh, .false., &
-                     jbins, kfac, ow, .false., this%dsh, &
-                     this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                     this%hp_ra, this%hp_rb, this%hp_c, &
-                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                     this%sq_ax, this%sq_ay, this%sq_az, &
-                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      launch = bin_launch(this, 1, jbins, kfac, ow)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      this%nlaunch = launch%nlaunch
+      this%nwork = launch%nwork
       call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
       if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
       !$acc wait
@@ -572,6 +538,23 @@ contains
 
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
+
+   type(trc_bin_launch_t) function bin_launch(this, ndens, jfac, kfac, omega) result(launch)
+      !! One launch over this object's bins, for `ndens` densities in the
+      !! working basis: the threshold, the ranks and the operand shape are
+      !! the object's own; the operator is the caller's.
+      class(trc_eri_t), intent(in) :: this
+      integer,  intent(in) :: ndens
+      real(dp), intent(in) :: jfac, kfac, omega
+      launch%thresh = this%thresh
+      launch%jfac = jfac
+      launch%kfac = kfac
+      launch%omega = omega
+      launch%ndens = ndens
+      launch%nao = this%nao_w
+      launch%rank = this%rank
+      launch%nranks = this%nranks
+   end function bin_launch
 
    logical function mdj_requested(has_f, pure_functional) result(res)
       !! Whether the Coulomb part of a resident Fock build comes from the
@@ -776,6 +759,7 @@ contains
       real(dp), allocatable :: dwork(:, :, :)
       integer :: ndens, nw, id
       real(dp) :: jfac, kfac, ow
+      type(trc_bin_launch_t) :: launch
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       ow = 0.0_dp
@@ -788,7 +772,7 @@ contains
       ! sh_at = 0) has nowhere to put its force: grad_bins would drop or
       ! misindex its contributions. A ghost function is fine for an energy,
       ! not for a gradient; a recomputed centre is a caller bug either way.
-      if (any(this%sh_at == 0)) error stop &
+      if (any(this%pairs%sh_at == 0)) error stop &
          "terco: eri%gradient: a shell centre matches no atom coordinate exactly"
 
       jfac = 1.0_dp
@@ -816,13 +800,8 @@ contains
 
       !$acc enter data copyin(dwork) copyin(grad)
       !$acc update device(this%dsh)
-      call grad_bins(this%bins, this%nbas, nw, this%sh_l, this%ao_off, this%sh_at, b%natm, &
-                     this%thresh, jfac, kfac, ow, this%dsh, &
-                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                     this%qp_z, this%qp_c, this%qp_a, this%qp_px, this%qp_py, this%qp_pz, &
-                     this%sq_ax, this%sq_ay, this%sq_az, &
-                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                     ndens, dwork, grad, this%rank, this%nranks)
+      launch = bin_launch(this, ndens, jfac, kfac, ow)
+      call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad)
       !$acc wait
       !$acc update self(grad)
       !$acc exit data delete(dwork, grad)
@@ -890,6 +869,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow
+      type(trc_bin_launch_t) :: launch
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       jfac = 1.0_dp
@@ -920,16 +900,11 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                     this%ao_off, this%thresh, .false., &
-                     jfac, kfac, ow, .true., this%dsh, &
-                     this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                     this%hp_ra, this%hp_rb, this%hp_c, &
-                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                     this%sq_ax, this%sq_ay, this%sq_az, &
-                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                     1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      launch = bin_launch(this, 1, jfac, kfac, ow)
+      launch%nosym = .true.
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      this%nlaunch = launch%nlaunch
+      this%nwork = launch%nwork
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1000,6 +975,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :), jw(:, :)
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow, jbins
+      type(trc_bin_launch_t) :: launch
       logical :: md_j
 
       jfac = 1.0_dp
@@ -1047,7 +1023,7 @@ contains
       ! `fock` does, would mean pulling the whole density down and would undo
       ! the entire point of this routine.
       if (screen_on(density_screen)) then
-         call density_blocks_device(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
+         call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, dp_w, this%dsh)
       else
          ! density_screen=.false. (a coupled-perturbed solve): fill_ones_device,
          ! not a `do concurrent` reading `this%dsh`/`this%nbas` directly --
@@ -1071,17 +1047,12 @@ contains
          want = len_trim(ke) > 0
          if (present(count_survivors)) want = want .or. count_survivors
          if (want) then
-            call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                           this%ao_off, this%thresh, .false., &
-                           jfac, kfac, ow, .false., this%dsh, &
-                           this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                           this%hp_ra, this%hp_rb, this%hp_c, &
-                           this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                           this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                           this%sq_ax, this%sq_ay, this%sq_az, &
-                           this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                           1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork, &
-                           nkept=this%nkept)
+            launch = bin_launch(this, 1, jfac, kfac, ow)
+            launch%count_kept = .true.
+            call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+            this%nlaunch = launch%nlaunch
+            this%nwork = launch%nwork
+            this%nkept = launch%nkept
             if (len_trim(ke) > 0) then
                block
                   character(len=1024) :: logline
@@ -1095,16 +1066,10 @@ contains
       end block
       if (.not. (md_j .and. kfac == 0.0_dp)) then
          call profiler_start("eri: bins (hgp/rys)", nvtx_only=.true.)
-         call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                        this%ao_off, this%thresh, .false., &
-                        jbins, kfac, ow, .false., this%dsh, &
-                        this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                        this%hp_ra, this%hp_rb, this%hp_c, &
-                        this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                        this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                        this%sq_ax, this%sq_ay, this%sq_az, &
-                        this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                        1, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+         launch = bin_launch(this, 1, jbins, kfac, ow)
+         call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+         this%nlaunch = launch%nlaunch
+         this%nwork = launch%nwork
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
@@ -1193,6 +1158,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, d
       real(dp) :: jfac, kfac, ow
+      type(trc_bin_launch_t) :: launch
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -1228,23 +1194,17 @@ contains
          end if
          call pack_density_device(nw, ndens, d, dp_w, dwork, jmat, kmat)
          if (d == 1) then
-            call density_blocks_device(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
+            call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, dp_w, this%dsh)
          else
-            call density_blocks_device_max(this%nbas, nw, this%sh_l, this%ao_off, dp_w, this%dsh)
+            call density_blocks_device_max(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, dp_w, this%dsh)
          end if
       end do
 
       call profiler_start("eri: bins (hgp/rys), several densities", nvtx_only=.true.)
-      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                     this%ao_off, this%thresh, .false., &
-                     jfac, kfac, ow, .false., this%dsh, &
-                     this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                     this%hp_ra, this%hp_rb, this%hp_c, &
-                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                     this%sq_ax, this%sq_ay, this%sq_az, &
-                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      launch = bin_launch(this, ndens, jfac, kfac, ow)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      this%nlaunch = launch%nlaunch
+      this%nwork = launch%nwork
       !$acc wait
       call profiler_stop("eri: bins (hgp/rys), several densities")
 
@@ -1390,7 +1350,7 @@ contains
    !
    ! Shell-block density bound, over the basis the integrals are built in.
    !
-   ! That is `this%sh_l`/`this%ao_off`, not the caller's basis: on a split
+   ! That is `this%pairs%sh_l`/`this%pairs%ao_off`, not the caller's basis: on a split
    ! general contraction the two differ, and bounding the wrong one indexes
    ! past the end of the density it was handed.
    !
@@ -1402,12 +1362,12 @@ contains
       this%dsh = 0.0_dp
       do d = 1, ndens
          do j = 1, this%nbas
-            nj = (this%sh_l(j) + 1)*(this%sh_l(j) + 2)/2
+            nj = (this%pairs%sh_l(j) + 1)*(this%pairs%sh_l(j) + 2)/2
             do i = 1, this%nbas
-               ni = (this%sh_l(i) + 1)*(this%sh_l(i) + 2)/2
+               ni = (this%pairs%sh_l(i) + 1)*(this%pairs%sh_l(i) + 2)/2
                this%dsh(i, j) = max(this%dsh(i, j), maxval(abs( &
-                  dmat(d, this%ao_off(i):this%ao_off(i) + ni - 1, &
-                       this%ao_off(j):this%ao_off(j) + nj - 1))))
+                  dmat(d, this%pairs%ao_off(i):this%pairs%ao_off(i) + ni - 1, &
+                       this%pairs%ao_off(j):this%pairs%ao_off(j) + nj - 1))))
             end do
          end do
       end do
@@ -1451,6 +1411,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j, d
       real(dp) :: jfac, kfac, ow
+      type(trc_bin_launch_t) :: launch
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       jfac = 1.0_dp
@@ -1487,16 +1448,10 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
-                     this%ao_off, this%thresh, .false., &
-                     jfac, kfac, ow, .false., this%dsh, &
-                     this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-                     this%hp_ra, this%hp_rb, this%hp_c, &
-                     this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
-                     this%qp_z, this%qp_c, this%qp_px, this%qp_py, this%qp_pz, &
-                     this%sq_ax, this%sq_ay, this%sq_az, &
-                     this%sq_abx, this%sq_aby, this%sq_abz, this%sq_n, &
-                     ndens, dwork, jmat, kmat, this%rank, this%nranks, this%nlaunch, this%nwork)
+      launch = bin_launch(this, ndens, jfac, kfac, ow)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      this%nlaunch = launch%nlaunch
+      this%nwork = launch%nwork
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1527,51 +1482,27 @@ contains
       call this%mg%release()
       call this%md%release()
       if (this%on_device) then
-         !$acc exit data delete(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
+         !$acc exit data delete(this%pairs%sh_l, this%pairs%ao_off, this%pairs%sh_at, this%dsh, &
          !$acc                  this%bins%sp_i, this%bins%sp_j, &
          !$acc                  this%bins%sp_q, this%bins, &
-         !$acc                  this%qp_z, this%qp_c, this%qp_a, &
-         !$acc                  this%qp_px, this%qp_py, this%qp_pz, &
-         !$acc                  this%sq_ax, this%sq_ay, this%sq_az, &
-         !$acc                  this%sq_abx, this%sq_aby, this%sq_abz, &
-         !$acc                  this%sq_n, &
-         !$acc                  this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
-         !$acc                  this%hp_ra, this%hp_rb, this%hp_c)
+         !$acc                  this%quartets%z, this%quartets%c, this%quartets%a, &
+         !$acc                  this%quartets%px, this%quartets%py, this%quartets%pz, &
+         !$acc                  this%quartets%ax, this%quartets%ay, this%quartets%az, &
+         !$acc                  this%quartets%abx, this%quartets%aby, this%quartets%abz, &
+         !$acc                  this%quartets%n, &
+         !$acc                  this%pairs%off, this%pairs%n, this%pairs%p, this%pairs%r, &
+         !$acc                  this%pairs%ra, this%pairs%rb, this%pairs%c)
          this%on_device = .false.
       end if
-      if (allocated(this%hp_off)) deallocate (this%hp_off)
-      if (allocated(this%hp_n))   deallocate (this%hp_n)
-      if (allocated(this%hp_p))   deallocate (this%hp_p)
-      if (allocated(this%hp_r))   deallocate (this%hp_r)
-      if (allocated(this%hp_ra))  deallocate (this%hp_ra)
-      if (allocated(this%hp_rb))  deallocate (this%hp_rb)
-      if (allocated(this%hp_c))   deallocate (this%hp_c)
-      if (allocated(this%hp_a))   deallocate (this%hp_a)
-      if (allocated(this%qp_bin_pbase)) deallocate (this%qp_bin_pbase)
-      if (allocated(this%qp_bin_k))     deallocate (this%qp_bin_k)
-      if (allocated(this%qp_z))   deallocate (this%qp_z)
-      if (allocated(this%qp_c))   deallocate (this%qp_c)
-      if (allocated(this%qp_a))   deallocate (this%qp_a)
-      if (allocated(this%qp_px))  deallocate (this%qp_px)
-      if (allocated(this%qp_py))  deallocate (this%qp_py)
-      if (allocated(this%qp_pz))  deallocate (this%qp_pz)
-      if (allocated(this%sq_ax))  deallocate (this%sq_ax)
-      if (allocated(this%sq_ay))  deallocate (this%sq_ay)
-      if (allocated(this%sq_az))  deallocate (this%sq_az)
-      if (allocated(this%sq_abx)) deallocate (this%sq_abx)
-      if (allocated(this%sq_aby)) deallocate (this%sq_aby)
-      if (allocated(this%sq_abz)) deallocate (this%sq_abz)
-      if (allocated(this%sq_n))   deallocate (this%sq_n)
+      ! Default initialisation frees every allocatable component.
+      this%pairs = trc_shell_pairs_t()
+      this%quartets = trc_pair_quartets_t()
       if (allocated(this%dsh))    deallocate (this%dsh)
-      if (allocated(this%sh_l))   deallocate (this%sh_l)
-      if (allocated(this%ao_off)) deallocate (this%ao_off)
-      if (allocated(this%sh_at))  deallocate (this%sh_at)
       call decontract_release(this%dec)
       call this%pb%release()
       this%nbas = 0
       this%nao = 0
       this%nao_w = 0
-      this%nhpp = 0
    end subroutine eri_release
 
 end module trc_eri

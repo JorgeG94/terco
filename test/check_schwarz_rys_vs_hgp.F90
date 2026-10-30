@@ -21,6 +21,7 @@ module check_schwarz_rys_vs_hgp_suite
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_hgp, only: hgp_build_pairs
+   use trc_eri_data, only: trc_shell_pairs_t
    use trc_screen, only: screen_schwarz_bounds_hgp, screen_schwarz_bounds_rys
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -90,10 +91,9 @@ contains
       integer, allocatable :: zint(:)
       real(dp), allocatable :: at_r(:, :)
       real(dp), allocatable :: one(:)
-      integer, allocatable :: hp_off(:), hp_n(:), hp_ki(:), hp_kj(:)
-      real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :), hp_c(:)
+      type(trc_shell_pairs_t) :: pairs
       real(dp), allocatable :: q_hgp(:), q_rys(:)
-      integer :: natm, nhpp, npair, n
+      integer :: natm, npair, n
       real(dp) :: worst_abs, worst_rel, qmax, d
       logical :: within
       character(len=256) :: msg
@@ -108,15 +108,13 @@ contains
       end if
 
       allocate (one(b%nshell)); one = 1.0_dp
-      call hgp_build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                           one, b%sh_c, 1.0e-30_dp, &
-                           hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
-      deallocate (hp_ki, hp_kj)
+      pairs%sh_l = b%sh_l
+      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, 1.0e-30_dp, pairs)
 
       npair = b%nshell*(b%nshell + 1)/2
       allocate (q_hgp(npair), q_rys(npair))
-      call screen_schwarz_bounds_hgp(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q_hgp)
-      call screen_schwarz_bounds_rys(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q_rys)
+      call screen_schwarz_bounds_hgp(pairs, q_hgp)
+      call screen_schwarz_bounds_rys(pairs, q_rys)
 
       qmax = maxval(q_hgp)
       worst_abs = 0.0_dp; worst_rel = 0.0_dp
