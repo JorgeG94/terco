@@ -26,8 +26,17 @@
 ! in the two codes. `vv10_ref.py` handles both exactly as that script
 ! does: permute, then rescale by n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)).
 !
-program check_vv10_vs_pyscf
+! ONE shared pass writes vv10_probe.bin and reads vv10.ref (both files
+! are sequential, so all three cases have to go through them in the SAME
+! order generate.py wrote/expects); the three test-drive cases below each
+! read back their OWN already-computed result -- see
+! check_xc_energy_suite's own `next_ifn` comment for why the shared pass
+! runs exactly once and this suite stays `parallel=.false.`.
+!
+module check_vv10_vs_pyscf_suite
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_basis_json, only: trc_basis_from_json
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
@@ -36,8 +45,10 @@ program check_vv10_vs_pyscf
    use trc_xc_functional, only: trc_xc_functional_t
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
-   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_matrix, ref_report
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_matrix
    implicit none
+   private
+   public :: collect_vv10_vs_pyscf
 
    real(dp), parameter :: VV10_B = 6.0_dp, VV10_C = 0.01_dp
    !! wB97X-V's own NLC parameters (pyscf's dft.libxc.nlc_coeff('WB97X_V')).
@@ -46,49 +57,79 @@ program check_vv10_vs_pyscf
    integer, parameter :: GRID_LEVEL = 1
    !! Deliberately coarse: this test checks the KERNEL, not the quadrature,
    !! and pass 2 is O(npts^2) on a build with no GPU to run it on.
+   integer, parameter :: NCASE = 3
 
-   character(len=*), parameter :: xyz_water = 'water.xyz', xyz_oh = 'oh.xyz'
-   character(len=*), parameter :: bas_631gs = 'basis_sets/6-31gs.json', bas_ccpvdz = 'basis_sets/cc-pvdz.json'
-   integer :: unit, refu, nfail, ncase_ref
-   logical :: has_ref
-
-   open (newunit=unit, file='vv10_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(3, int64)   ! number of cases
-
-   ! Opened (not required) BEFORE the dump is written: a missing reference
-   ! must not stop this program before vv10_probe.bin exists, or
-   ! test/pyscf_refs/generate.py has nothing to bootstrap a fresh reference
-   ! from. The comparison below is what actually enforces ref_require's
-   ! contract -- FAIL, not silently skip, once the dump is safely written.
-   call ref_open('vv10.ref', refu, has_ref)
-   nfail = 0
-   if (has_ref) then
-      call ref_read_int(refu, 'NCASE', ncase_ref)
-      if (ncase_ref /= 3) then
-         print '(a)', 'check_vv10_vs_pyscf: pyscf reference case count does not match this build'; stop 1
-      end if
-   end if
-
-   call run_rks(unit, xyz_water, bas_631gs, 5, 0)
-   call run_rks(unit, xyz_water, bas_ccpvdz, 5, 1)
-   call run_uks(unit, xyz_oh, bas_ccpvdz, 5, 4, 2)
-
-   close (unit)
-   if (.not. has_ref) then
-      print '(a)', 'FAIL: missing reference pyscf_refs/vv10.ref -- run test/pyscf_refs/generate.py ' &
-         //'(see test/pyscf_refs/README.md)'
-      stop 1
-   end if
-   call ref_close(refu)
-   if (nfail > 0) then
-      print '(a,i0,a)', 'check_vv10_vs_pyscf: ', nfail, ' case(s) FAILED against the pyscf reference'; stop 1
-   end if
-   print '(a)', 'check_vv10_vs_pyscf: RESULT: PASS'
+   logical :: computed = .false.
+   logical :: ok_case(NCASE)
+   character(len=256) :: msg_case(NCASE)
 
 contains
 
-   subroutine run_rks(unit, xyzfile, basjson, nocc, ic)
-      integer, intent(in) :: unit
+   subroutine collect_vv10_vs_pyscf(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("water/6-31G* (RKS) vs pyscf", test_case_0), &
+                  new_unittest("water/cc-pVDZ (RKS) vs pyscf", test_case_1), &
+                  new_unittest("oh/cc-pVDZ (UKS) vs pyscf", test_case_2) &
+                  ]
+   end subroutine collect_vv10_vs_pyscf
+
+   subroutine test_case_0(error)
+      type(error_type), allocatable, intent(out) :: error
+      call ensure_computed()
+      call check(error, ok_case(1), trim(msg_case(1)))
+   end subroutine test_case_0
+
+   subroutine test_case_1(error)
+      type(error_type), allocatable, intent(out) :: error
+      call ensure_computed()
+      call check(error, ok_case(2), trim(msg_case(2)))
+   end subroutine test_case_1
+
+   subroutine test_case_2(error)
+      type(error_type), allocatable, intent(out) :: error
+      call ensure_computed()
+      call check(error, ok_case(3), trim(msg_case(3)))
+   end subroutine test_case_2
+
+   subroutine ensure_computed()
+      if (computed) return
+      call run_all()
+      computed = .true.
+   end subroutine ensure_computed
+
+   subroutine run_all()
+      integer :: unit, refu, ncase_ref
+      logical :: has_ref
+
+      ok_case = .false.
+      msg_case = "pyscf reference missing"
+
+      open (newunit=unit, file='vv10_probe.bin', access='stream', form='unformatted', status='replace')
+      write (unit) int(NCASE, int64)   ! number of cases
+
+      ! Opened (not required) BEFORE the dump is written: a missing reference
+      ! must not stop this suite before vv10_probe.bin exists, or
+      ! test/pyscf_refs/generate.py has nothing to bootstrap a fresh reference
+      ! from. The comparisons below are what actually enforce the contract --
+      ! FAIL, not silently skip, once the dump is safely written.
+      call ref_open('vv10.ref', refu, has_ref)
+      if (has_ref) then
+         call ref_read_int(refu, 'NCASE', ncase_ref)
+         if (ncase_ref /= NCASE) error stop "check_vv10_vs_pyscf: pyscf reference case count does not match this build"
+      end if
+
+      call run_rks(unit, refu, has_ref, 'water.xyz', 'basis_sets/6-31gs.json', 5, 0)
+      call run_rks(unit, refu, has_ref, 'water.xyz', 'basis_sets/cc-pvdz.json', 5, 1)
+      call run_uks(unit, refu, has_ref, 'oh.xyz', 'basis_sets/cc-pvdz.json', 5, 4, 2)
+
+      close (unit)
+      if (has_ref) call ref_close(refu)
+   end subroutine run_all
+
+   subroutine run_rks(unit, refu, has_ref, xyzfile, basjson, nocc, ic)
+      integer, intent(in) :: unit, refu
+      logical, intent(in) :: has_ref
       character(len=*), intent(in) :: xyzfile, basjson
       integer, intent(in) :: nocc, ic
       type(trc_basis_t) :: bas
@@ -106,9 +147,7 @@ contains
 
       call read_xyz(xyzfile, nat, at_z, at_r)
       call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true.)
-      if (err%has_error()) then
-         print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
-      end if
+      if (err%has_error()) error stop 'check_vv10_vs_pyscf: '//err%get_message()
       call bas%to_device()
       nao = bas%nao
 
@@ -124,9 +163,7 @@ contains
       call pl%release()
 
       call dft_grid_build(at_r, at_z, grid, err, level=GRID_LEVEL)
-      if (err%has_error()) then
-         print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
-      end if
+      if (err%has_error()) error stop 'check_vv10_vs_pyscf: '//err%get_message()
       call xg%build(grid%n_points, grid%coords, grid%weights, bas, max_pts=256)
       call xg%to_device()
 
@@ -178,9 +215,9 @@ contains
             allocate (vmat_ref(nao, nao))
             call ref_read_matrix(refu, 'VMAT_'//trim(tag), nao, nao, vmat_ref)
             dv = maxval(abs((vmat - vmat0) - vmat_ref))
-            call ref_report(nfail, kind_ref == 0 .and. abs(e_nlc - e_nlc_ref) < 1.0e-9_dp .and. dv < 1.0e-9_dp, &
-                            trim(xyzfile)//'/'//trim(basjson)//': E_nlc/V_nlc (RKS) vs pyscf', &
-                            max(abs(e_nlc - e_nlc_ref), dv))
+            ok_case(ic + 1) = kind_ref == 0 .and. abs(e_nlc - e_nlc_ref) < 1.0e-9_dp .and. dv < 1.0e-9_dp
+            write (msg_case(ic + 1), '(a,a,es10.2)') trim(xyzfile)//'/'//trim(basjson), &
+               ': E_nlc/V_nlc (RKS) vs pyscf, worst = ', max(abs(e_nlc - e_nlc_ref), dv)
          end block
       end if
 
@@ -188,8 +225,9 @@ contains
       deallocate (c, dmat, vmat0, vmat, smat, tmat, vnmat, at_z, at_r)
    end subroutine run_rks
 
-   subroutine run_uks(unit, xyzfile, basjson, nalpha, nbeta, ic)
-      integer, intent(in) :: unit
+   subroutine run_uks(unit, refu, has_ref, xyzfile, basjson, nalpha, nbeta, ic)
+      integer, intent(in) :: unit, refu
+      logical, intent(in) :: has_ref
       character(len=*), intent(in) :: xyzfile, basjson
       integer, intent(in) :: nalpha, nbeta, ic
       type(trc_basis_t) :: bas
@@ -209,9 +247,7 @@ contains
 
       call read_xyz(xyzfile, nat, at_z, at_r)
       call trc_basis_from_json(basjson, nat, at_z, at_r, bas, err, force_cart=.true.)
-      if (err%has_error()) then
-         print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
-      end if
+      if (err%has_error()) error stop 'check_vv10_vs_pyscf: '//err%get_message()
       call bas%to_device()
       nao = bas%nao
 
@@ -222,9 +258,7 @@ contains
       call pl%release()
 
       call dft_grid_build(at_r, at_z, grid, err, level=GRID_LEVEL)
-      if (err%has_error()) then
-         print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
-      end if
+      if (err%has_error()) error stop 'check_vv10_vs_pyscf: '//err%get_message()
       call xg%build(grid%n_points, grid%coords, grid%weights, bas, max_pts=256)
       call xg%to_device()
 
@@ -297,10 +331,10 @@ contains
             call ref_read_matrix(refu, 'VMAT_'//trim(tag), nao, nao, vmat_ref)
             dva = maxval(abs((vmat_a - vmat0_a) - vmat_ref))
             dvb = maxval(abs((vmat_b - vmat0_b) - vmat_ref))
-            call ref_report(nfail, kind_ref == 1 .and. abs(e_nlc - e_nlc_ref) < 1.0e-9_dp .and. &
-                            dva < 1.0e-9_dp .and. dvb < 1.0e-9_dp, &
-                            trim(xyzfile)//'/'//trim(basjson)//': E_nlc/V_nlc (UKS) vs pyscf', &
-                            max(abs(e_nlc - e_nlc_ref), max(dva, dvb)))
+            ok_case(ic + 1) = kind_ref == 1 .and. abs(e_nlc - e_nlc_ref) < 1.0e-9_dp .and. &
+                              dva < 1.0e-9_dp .and. dvb < 1.0e-9_dp
+            write (msg_case(ic + 1), '(a,a,es10.2)') trim(xyzfile)//'/'//trim(basjson), &
+               ': E_nlc/V_nlc (UKS) vs pyscf, worst = ', max(abs(e_nlc - e_nlc_ref), max(dva, dvb))
          end block
       end if
 
@@ -308,4 +342,20 @@ contains
       deallocate (ca, cb, dmat_a, dmat_b, vmat0_a, vmat0_b, vmat_a, vmat_b, smat, tmat, vnmat, at_z, at_r)
    end subroutine run_uks
 
+end module check_vv10_vs_pyscf_suite
+
+program check_vv10_vs_pyscf
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_vv10_vs_pyscf_suite, only: collect_vv10_vs_pyscf
+   implicit none
+   integer :: stat
+   stat = 0
+   ! Serial: the shared setup (probe write, reference read) must run once,
+   ! in declared order -- see check_vv10_vs_pyscf_suite's own header.
+   call run_testsuite(collect_vv10_vs_pyscf, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_vv10_vs_pyscf

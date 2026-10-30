@@ -23,10 +23,9 @@
 ! run): `pyscf.gto.M(atom=<xyz>, basis=<name>, unit='Angstrom', cart=False)`,
 ! `scf.RHF`/`scf.UHF` and `dft.RKS`/`dft.UKS` with `xc='PBE0'`, both at
 ! `conv_tol=1e-11`. The literals below are those numbers, to pyscf's own
-! precision; see the PASS/FAIL table this program prints for the measured
-! agreement, which is required to be within 1e-8 Eh -- tight enough that a
-! permutation, a sign, or a half-folded normalisation inside the transform
-! would fail it, not a conveniently loosened tolerance.
+! precision; the per-case checks require agreement within 1e-8 Eh -- tight
+! enough that a permutation, a sign, or a half-folded normalisation inside
+! the transform would fail it, not a conveniently loosened tolerance.
 !
 ! (f) FORCING CARTESIAN REPRODUCES THE OLD BEHAVIOUR. water/cc-pVDZ with
 ! force_cartesian has a d shell's six Cartesian components instead of five
@@ -38,14 +37,18 @@
 ! so none of them took a different code path); this program adds the
 ! spherical path's own validation rather than re-proving the Cartesian one.
 !
-program check_spherical
+module check_spherical_suite
    use pic_types, only: dp
-   use trc_api, only: trc_basis_t, trc_bind_device
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
+   private
+   public :: collect_spherical
 
    real(dp), parameter :: TOL_E = 1.0e-8_dp
    real(dp), parameter :: TOL_E_OPEN_DFT = 5.0e-7_dp
@@ -79,25 +82,29 @@ program check_spherical
       case_t("oh.xyz", "cc-pvdz", 0, 2, -75.393846033475_dp, -75.652681290252_dp) &
       ]
 
-   integer :: ic, dev
-   logical :: ok
-
-   dev = trc_bind_device(0)
-   ok = .true.
-
-   do ic = 1, size(cases)
-      call run_case(cases(ic), ok)
-   end do
-   call check_force_cartesian(ok)
-
-   print '(a)', merge("check_spherical: PASS", "check_spherical: FAIL", ok)
-   if (.not. ok) stop 1
-
 contains
 
-   subroutine run_case(c, ok)
+   subroutine collect_spherical(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("water/def2-svp", test_case_1), &
+                  new_unittest("water/cc-pvdz", test_case_2), &
+                  new_unittest("w3/def2-svp", test_case_3), &
+                  new_unittest("sih4/cc-pvdz", test_case_4), &
+                  new_unittest("oh/cc-pvdz (open shell)", test_case_5), &
+                  new_unittest("force_cart reproduces the old Cartesian count", test_force_cartesian) &
+                  ]
+   end subroutine collect_spherical
+
+   subroutine test_case_1(error); type(error_type), allocatable, intent(out) :: error; call run_case(cases(1), error); end subroutine
+   subroutine test_case_2(error); type(error_type), allocatable, intent(out) :: error; call run_case(cases(2), error); end subroutine
+   subroutine test_case_3(error); type(error_type), allocatable, intent(out) :: error; call run_case(cases(3), error); end subroutine
+   subroutine test_case_4(error); type(error_type), allocatable, intent(out) :: error; call run_case(cases(4), error); end subroutine
+   subroutine test_case_5(error); type(error_type), allocatable, intent(out) :: error; call run_case(cases(5), error); end subroutine
+
+   subroutine run_case(c, error)
       type(case_t), intent(in) :: c
-      logical, intent(inout) :: ok
+      type(error_type), allocatable, intent(out) :: error
 
       type(trc_basis_t) :: b
       type(error_t) :: err
@@ -106,7 +113,7 @@ contains
       integer, allocatable :: zint(:)
       real(dp), allocatable :: at_r(:, :)
       integer :: natm, nelec, nunp, nalpha, nbeta
-      real(dp) :: de
+      real(dp) :: de, tol
 
       call read_xyz(trim(c%xyz), natm, zint, at_r)
       nelec = sum(zint) - c%charge
@@ -115,14 +122,14 @@ contains
       nbeta = nelec - nalpha
 
       call trc_basis_from_json('basis_sets/'//trim(c%basis)//'.json', natm, zint, at_r, b, err)
-      if (err%has_error()) then
-         print '(a)', "check_spherical: "//err%get_message()
-         ok = .false.; return
-      end if
-      if (.not. b%spherical) then
-         print '(a)', "check_spherical: "//trim(c%xyz)//"/"//trim(c%basis)// &
-            " did not come back spherical -- its JSON no longer tags a shell 'gto_spherical'?"
-         ok = .false.
+      call check(error, .not. err%has_error(), trim(c%xyz)//"/"//trim(c%basis)// &
+                 " must build: "//err%get_message())
+      if (allocated(error)) return
+
+      call check(error, b%spherical, trim(c%xyz)//"/"//trim(c%basis)// &
+                 " did not come back spherical -- its JSON no longer tags a shell 'gto_spherical'?")
+      if (allocated(error)) then
+         call b%release(); return
       end if
       call b%to_device()
 
@@ -136,7 +143,12 @@ contains
       print '(a,a10,a,a9,a,i0,a,f20.12,a,f20.12,a,es10.2,a,l1)', "check_spherical: ", trim(c%xyz), "/", &
          trim(c%basis), "  nao_sph ", b%nao_sph, "  RHF terco ", res%energy, "  pyscf ", c%e_rhf, &
          "  |dE| ", de, "  conv ", res%converged
-      if (.not. (res%converged .and. de < TOL_E)) ok = .false.
+      call check(error, res%converged .and. de < TOL_E, &
+                 trim(c%xyz)//"/"//trim(c%basis)//": RHF |dE| = "//to_string(de, "es10.2")// &
+                 ", converged = "//merge("T", "F", res%converged))
+      if (allocated(error)) then
+         call b%release(); return
+      end if
 
       ! PBE0
       opts%functional = "pbe0"
@@ -146,7 +158,10 @@ contains
          trim(c%basis), " PBE0 terco ", res%energy, "  pyscf ", c%e_pbe0, "  |dE| ", de, "  conv ", res%converged
       ! TOL_E_OPEN_DFT only for the open-shell (UKS) case -- see its own
       ! comment for the measured pyscf-against-itself spread that justifies it.
-      if (.not. (res%converged .and. de < merge(TOL_E_OPEN_DFT, TOL_E, c%mult > 1))) ok = .false.
+      tol = merge(TOL_E_OPEN_DFT, TOL_E, c%mult > 1)
+      call check(error, res%converged .and. de < tol, &
+                 trim(c%xyz)//"/"//trim(c%basis)//": PBE0 |dE| = "//to_string(de, "es10.2")// &
+                 ", converged = "//merge("T", "F", res%converged))
 
       call b%release()
    end subroutine run_case
@@ -154,8 +169,8 @@ contains
    ! (f) above: forcing Cartesian on water/cc-pVDZ must give back the
    ! Cartesian function count (25: a d shell's six components, not five),
    ! and must NOT come back `spherical`.
-   subroutine check_force_cartesian(ok)
-      logical, intent(inout) :: ok
+   subroutine test_force_cartesian(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b_sph, b_cart
       type(error_t) :: err
       integer, allocatable :: zint(:)
@@ -164,19 +179,43 @@ contains
 
       call read_xyz('water.xyz', natm, zint, at_r)
       call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, b_sph, err)
-      if (err%has_error()) then
-         print '(a)', "check_spherical: "//err%get_message(); ok = .false.; return
-      end if
+      call check(error, .not. err%has_error(), "default build: "//err%get_message())
+      if (allocated(error)) return
       call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, b_cart, err, force_cart=.true.)
-      if (err%has_error()) then
-         print '(a)', "check_spherical: "//err%get_message(); ok = .false.; return
+      call check(error, .not. err%has_error(), "force_cart build: "//err%get_message())
+      if (allocated(error)) then
+         call b_sph%release(); return
       end if
       print '(a,i0,a,i0,a,l1,a,l1)', "check_spherical: force_cartesian  nao_sph ", b_sph%nao_sph, &
          "  nao_cart ", b_cart%nao, "  spherical(default) ", b_sph%spherical, "  spherical(forced) ", b_cart%spherical
-      if (b_cart%spherical) ok = .false.
-      if (b_cart%nao /= b_sph%nao) ok = .false.         ! both report the SAME Cartesian count
-      if (b_sph%nao_sph >= b_cart%nao) ok = .false.      ! water/cc-pVDZ: 24 spherical < 25 Cartesian
-      call b_sph%release(); call b_cart%release()
-   end subroutine check_force_cartesian
 
+      call check(error, .not. b_cart%spherical, "force_cart=.true. still came back spherical")
+      if (allocated(error)) then
+         call b_sph%release(); call b_cart%release(); return
+      end if
+      call check(error, b_cart%nao == b_sph%nao, "the two builds must report the SAME Cartesian count")
+      if (allocated(error)) then
+         call b_sph%release(); call b_cart%release(); return
+      end if
+      ! water/cc-pVDZ: 24 spherical < 25 Cartesian
+      call check(error, b_sph%nao_sph < b_cart%nao, "nao_sph must be strictly smaller than the Cartesian count")
+      call b_sph%release(); call b_cart%release()
+   end subroutine test_force_cartesian
+
+end module check_spherical_suite
+
+program check_spherical
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use trc_api, only: trc_bind_device
+   use check_spherical_suite, only: collect_spherical
+   implicit none
+   integer :: stat, dev
+   dev = trc_bind_device(0)
+   stat = 0
+   call run_testsuite(collect_spherical, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_spherical

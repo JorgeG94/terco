@@ -47,13 +47,13 @@
 !     identically to the semilocal term's, but through a different
 !     point set -- VV10's own, coarser grid).
 !
-! NO INTERNAL PROCEDURES under the program, same reason check_xc_grad_fd.F90
-! gives (a `contains`-ed procedure corrupted a later collective Fock build
-! on this exact NVHPC/OpenMPI toolchain, measured elsewhere in this tree):
-! everything here is a module procedure instead.
+! Four independent cases (RKS/UKS x two VV10 grid levels), each its own
+! test-drive unittest so a failure in one does not hide the others.
 !
-module check_vv10_grad_fixedd_fd_cases
+module check_vv10_grad_fixedd_fd_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -68,33 +68,67 @@ module check_vv10_grad_fixedd_fd_cases
    use trc_error, only: error_t
    implicit none
    private
-   public :: run_case
+   public :: collect_vv10_grad_fixedd_fd
 
-   real(dp), parameter, public :: VV10_B = 6.0_dp   !! wB97X-V's own b, C
-   real(dp), parameter, public :: VV10_C = 0.01_dp
+   real(dp), parameter :: VV10_B = 6.0_dp   !! wB97X-V's own b, C
+   real(dp), parameter :: VV10_C = 0.01_dp
    type(trc_xc_functional_t), parameter :: VV10_FUNC = trc_xc_functional_t(nlc_b=VV10_B, nlc_c=VV10_C)
    !! Only its VV10 b and C are read.
-   real(dp), parameter, public :: ABSTOL = 1.0e-10_dp
+   real(dp), parameter :: ABSTOL = 1.0e-10_dp
    !! Richardson gate -- see run_case's own header comment on why this is
    !! allowed to be far tighter than check_xc_grad_fd.F90's reconverged-SCF
    !! case: there is no SCF noise left to absorb here. MEASURED (CPU,
    !! gfortran): worst abs 5.50e-13 (L1), 5.08e-12 (L2) -- ~20x headroom
    !! over the looser (L2) of the two, not a loosened gate (this case did
    !! not exist before this branch).
-   real(dp), parameter, public :: INVTOL = 1.0e-14_dp
+   real(dp), parameter :: INVTOL = 1.0e-14_dp
    !! MEASURED: ~4e-17 at both levels -- ~250x headroom.
 
 contains
 
-   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, nspin, grid_level, label, any_fail)
-      character(*), intent(in) :: xyzfile, basis_json, label
+   subroutine collect_vv10_grad_fixedd_fd(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("RKS wB97X-V water/6-31G*, VV10 only, fixed D, L1", test_rks_l1), &
+                  new_unittest("RKS wB97X-V water/6-31G*, VV10 only, fixed D, L2", test_rks_l2), &
+                  new_unittest("UKS wB97X-V NH2/6-31G*, VV10 only, fixed D, L1", test_uks_l1), &
+                  new_unittest("UKS wB97X-V NH2/6-31G*, VV10 only, fixed D, L2", test_uks_l2) &
+                  ]
+   end subroutine collect_vv10_grad_fixedd_fd
+
+   subroutine test_rks_l1(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 1, 1)
+   end subroutine test_rks_l1
+
+   subroutine test_rks_l2(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 1, 2)
+   end subroutine test_rks_l2
+
+   subroutine test_uks_l1(error)
+      !! UKS: NH2, alpha and beta densities held fixed SEPARATELY (not their
+      !! sum) -- the only case in this suite that exercises
+      !! vv10_grad_add's nspin=2 `dtot` branch and e_nlc_at's
+      !! `trc_vv10_uks` path, neither reached by the RKS cases above.
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 2, 1)
+   end subroutine test_uks_l1
+
+   subroutine test_uks_l2(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 2, 2)
+   end subroutine test_uks_l2
+
+   subroutine run_case(error, xyzfile, basis_json, nalpha, nbeta, nspin, grid_level)
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: xyzfile, basis_json
       integer, intent(in) :: nalpha, nbeta, nspin, grid_level
       !! `nspin` = 1 (RKS, `dens(:,:,1)` the total density) or 2 (UKS,
       !! `dens(:,:,1)`/`dens(:,:,2)` the FIXED alpha/beta densities
       !! separately -- the nspin = 2 branch of `vv10_grad_add`'s own
       !! `dtot` sum, and `e_nlc_at`'s own `trc_vv10_uks` path, are
-      !! otherwise never exercised by this program's RKS-only cases).
-      logical, intent(inout) :: any_fail
+      !! otherwise never exercised by this suite's RKS-only cases).
 
       integer :: nat, dev, a, d, nao
       integer, allocatable :: at_z(:)
@@ -130,9 +164,8 @@ contains
       dev = trc_bind_device(0)
       call read_xyz(xyzfile, nat, at_z, r0)
       call trc_basis_from_json(basis_json, nat, at_z, r0, bas, err, force_cart=.true.)
-      if (err%has_error()) then
-         print '(a)', 'check_vv10_grad_fixedd_fd: '//err%get_message(); stop 1
-      end if
+      call check(error, .not. err%has_error(), "basis build: "//err%get_message())
+      if (allocated(error)) return
       call bas%to_device()
       nao = bas%nao
 
@@ -148,9 +181,10 @@ contains
       opts%nlc_grid_level = grid_level
       opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-10_dp; opts%max_iteration = 200
       call trc_scf_run(bas, nalpha, nbeta, opts, res)
-      if (.not. res%converged) then
-         print '(a)', 'check_vv10_grad_fixedd_fd: '//label//': reference SCF did not converge'
-         any_fail = .true.; return
+      call check(error, res%converged, "reference SCF did not converge")
+      if (allocated(error)) then
+         call bas%release()
+         return
       end if
 
       allocate (dens(nao, nao, nspin))
@@ -199,13 +233,19 @@ contains
          end do
       end do
 
-      print '(a,a)', '  ', label
       print '(a,es10.2,a,es10.2)', '    plain H=5e-4:      worst abs ', worst_abs_h, '  worst rel ', worst_rel_h
       print '(a,es10.2,a,es10.2)', '    Richardson(H,H/2): worst abs ', worst_abs_rich, '  worst rel ', worst_rel_rich
       print '(a,3es10.2)', '    translational-invariance residual: ', inv
-      if (worst_abs_rich > ABSTOL) any_fail = .true.
-      if (any(abs(inv) > INVTOL)) any_fail = .true.
 
+      call check(error, worst_abs_rich <= ABSTOL, &
+                 "Richardson worst abs "//to_string(worst_abs_rich, "es10.2")// &
+                 " exceeds "//to_string(ABSTOL, "es10.2"))
+      if (allocated(error)) then
+         deallocate (at_z, r0, rtmp, dens, grad_an)
+         return
+      end if
+      call check(error, all(abs(inv) <= INVTOL), &
+                 "translational-invariance residual exceeds "//to_string(INVTOL, "es10.2"))
       deallocate (at_z, r0, rtmp, dens, grad_an)
    end subroutine run_case
 
@@ -226,18 +266,12 @@ contains
       real(dp), allocatable :: vmat(:, :, :)
 
       call trc_basis_from_json(basis_json, nat, at_z, r, b2, err, force_cart=.true.)
-      if (err%has_error()) then
-         print '(a)', 'check_vv10_grad_fixedd_fd: '//err%get_message(); stop 1
-      end if
-      if (b2%nao /= nao) then
-         print '(a)', 'check_vv10_grad_fixedd_fd: nao changed across geometries'; stop 1
-      end if
+      if (err%has_error()) error stop 'check_vv10_grad_fixedd_fd: '//err%get_message()
+      if (b2%nao /= nao) error stop 'check_vv10_grad_fixedd_fd: nao changed across geometries'
       call b2%to_device()
 
       call dft_grid_build(r, at_z, grid, err, level=grid_level)
-      if (err%has_error()) then
-         print '(a)', 'check_vv10_grad_fixedd_fd: '//err%get_message(); stop 1
-      end if
+      if (err%has_error()) error stop 'check_vv10_grad_fixedd_fd: '//err%get_message()
       call xg%build(grid%n_points, grid%coords, grid%weights, b2, max_pts=512)
       call xg%to_device()
 
@@ -255,31 +289,19 @@ contains
       call b2%release()
    end function e_nlc_at
 
-end module check_vv10_grad_fixedd_fd_cases
+end module check_vv10_grad_fixedd_fd_suite
 
 program check_vv10_grad_fixedd_fd
-   use pic_types, only: dp
-   use check_vv10_grad_fixedd_fd_cases, only: run_case
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_vv10_grad_fixedd_fd_suite, only: collect_vv10_grad_fixedd_fd
    implicit none
-   logical :: any_fail
-   any_fail = .false.
-
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 1, 1, &
-                 'RKS wB97X-V water/6-31G*, VV10 only, fixed D, L1', any_fail)
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 1, 2, &
-                 'RKS wB97X-V water/6-31G*, VV10 only, fixed D, L2', any_fail)
-
-   ! UKS: NH2, alpha and beta densities held fixed SEPARATELY (not their
-   ! sum) -- the only case in this program that exercises
-   ! vv10_grad_add's nspin=2 `dtot` branch and e_nlc_at's
-   ! `trc_vv10_uks` path, neither reached by the RKS cases above.
-   call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 2, 1, &
-                 'UKS wB97X-V NH2/6-31G*, VV10 only, fixed D, L1', any_fail)
-   call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 2, 2, &
-                 'UKS wB97X-V NH2/6-31G*, VV10 only, fixed D, L2', any_fail)
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'; stop 1
+   integer :: stat
+   stat = 0
+   ! Serial: every case builds device-resident objects and binds the device.
+   call run_testsuite(collect_vv10_grad_fixedd_fd, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
    end if
-   print '(a)', '  RESULT: PASS'
 end program check_vv10_grad_fixedd_fd
