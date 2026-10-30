@@ -107,12 +107,13 @@ module trc_vv10_grad
    use trc_constants, only: PI
    use trc_basis_types, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc_grad, only: xc_grad_drive, xc_grad_step_names, ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
-   use trc_xc_functional, only: XC_MAX_KERNELS
+   use trc_xc_grad, only: xc_grad_drive, xc_grad_step_names, xc_grad_options_t, xc_grad_point_io_t, &
+                          ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
+   use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_GGA
    use trc_step_table, only: step_table_t
    use trc_vv10, only: vv10_density_tile, vv10_gather, VV10_RHO_TOL, PI43
    use trc_linalg, only: trc_linalg_t
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build, DEFAULT_GRID_LEVEL
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_dft_partition, only: dft_partition_becke_grad_contract
    use trc_error, only: error_t
    implicit none
@@ -125,57 +126,46 @@ module trc_vv10_grad
    !! `vv10_density_tile`'s own batching loop -- trc_vv10.F90's `vv10_drive`
    !! uses the identical literal for its own PASS 1 call, unnamed; named
    !! here rather than duplicated unnamed a second time.
-   integer, parameter :: VV10_GRAD_DEFAULT_MAX_PTS = 512
-   !! Default points-per-batch cap for this module's OWN grid build
-   !! (`xg%build`'s `max_pts`), when the caller's `grid_max_pts` is
-   !! absent -- the same default xc_grad_add and trc_scf_context use
-   !! for the semilocal grid.
 
 contains
 
    !
-   ! The one entry point. `dens(b%nao,b%nao,nspin)` -- the converged density,
-   ! per spin channel, same convention xc_grad_add uses. `bcoef`/`ccoef`
-   ! are VV10's own `b`/`C` (6.0, 0.01 for wB97X-V). ADDS into `grad`.
+   ! The one entry point. `density(b%nao,b%nao,nspin)` -- the converged
+   ! density, per spin channel, same convention xc_grad_add uses. VV10's
+   ! own `b`/`C` are `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V);
+   ! nothing else of `func` is read. ADDS into `grad`.
    !
-   subroutine vv10_grad_add(b, lp, nspin, density, bcoef, ccoef, grad, grid_level, grid_max_pts, &
-                                grid_response, &
-                                timing, grid, xg)
+   subroutine vv10_grad_add(b, lp, func, nspin, density, grad, options)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
+      type(trc_xc_functional_t), intent(in) :: func
       integer, intent(in) :: nspin
       real(dp), intent(in) :: density(b%nao, b%nao, nspin)
-      real(dp), intent(in) :: bcoef, ccoef
       real(dp), intent(inout) :: grad(3, b%natm)
-      integer, intent(in), optional :: grid_level, grid_max_pts
-      !! NO `rho_tol`: unlike xc_grad_add's semilocal term, this
+      type(xc_grad_options_t), intent(in), optional :: options
+      !! As xc_grad_add's: grid level and batch size of a grid built here,
+      !! grid response (ON by default; OFF recovers the Pulay-only term --
+      !! the piece check_dft_grad_vs_pyscf.F90 compares against pyscf,
+      !! whose own nlc gradient has no grid-response support to match
+      !! against), the timing table, and the SCF's own VV10 (nlc) grid,
+      !! already batched and device-resident, to reuse (see
+      !! trc_scf_context.F90's `trc_grid_cache_t`).
+      !!
+      !! `rho_tol` is NOT read: unlike xc_grad_add's semilocal term, this
       !! module always screens at `VV10_RHO_TOL` (trc_vv10's own
       !! constant), everywhere -- the gather, the batch screen below, AND
       !! `vv10_grad_kernel_body`'s own `ri < VV10_RHO_TOL` cutoff, which
       !! has no caller-supplied tolerance threaded into it (it is a
       !! `routine seq` body called from a `do concurrent`/GPU kernel, not
       !! worth a plumbed-through argument for a value every OTHER screen
-      !! in this module already hard-codes). A `rho_tol` argument that
-      !! moved three of the four screens and not the fourth was strictly
-      !! worse than none at all. Matches the energy path exactly:
+      !! in this module already hard-codes). A `rho_tol` that moved three
+      !! of the four screens and not the fourth would be strictly worse
+      !! than none at all. Matches the energy path exactly:
       !! `trc_vv10_rks`/`trc_vv10_uks` take no `rho_tol` either.
-      logical, intent(in), optional :: grid_response
-      !! ON by default, same meaning and default as xc_grad_add's own
-      !! argument (that module's header, GRID RESPONSE). OFF recovers the
-      !! Pulay-only term -- the piece check_dft_grad_vs_pyscf.F90 compares
-      !! against pyscf, whose own nlc gradient has no grid-response support
-      !! to match against (this module's own header, GRID RESPONSE caveat
-      !! in trc_scf_grad.F90's docs).
-      type(step_table_t), intent(inout), optional, target :: timing
-      !! As xc_grad_add's: device-synced time per step, added into,
-      !! initialised by the caller with `xc_grad_step_names()`.
-      type(dft_grid_t), intent(in), optional, target :: grid
-      type(trc_xc_grid_t), intent(in), optional, target :: xg
-      !! The SCF's own VV10 (nlc) grid, already batched and device-
-      !! resident -- present TOGETHER, same convention and same reuse
-      !! this module's header (GRID) and xc_grad_add's own `grid`/`xg`
-      !! document; see trc_scf_context.F90's `trc_grid_cache_t`.
 
+      type(xc_grad_options_t) :: opts
+      type(trc_xc_functional_t) :: potential_only
+      type(xc_grad_point_io_t) :: pio
       type(dft_grid_t), target :: grid_own
       type(trc_xc_grid_t), target :: xg_own
       type(dft_grid_t), pointer :: gp
@@ -183,50 +173,44 @@ contains
       logical :: reuse_grid
       type(step_table_t), target :: tbl_own
       type(step_table_t), pointer :: tbl
-      integer, allocatable :: bact(:)
-      integer :: kid0(XC_MAX_KERNELS)
-      real(dp) :: coef0(XC_MAX_KERNELS)
+      integer, allocatable, target :: bact(:)
       type(timer_type) :: tc
-      real(dp), allocatable :: fxc0(:), pcoef(:)
+      real(dp), allocatable :: pcoef(:)
       type(error_t) :: err
-      integer :: glevel, gmaxpts, ish, i, j, ib, npb, nloc, g, own
-      real(dp) :: kvv, beta
-      integer, allocatable :: ao_atom(:), at_elem(:)
+      integer :: i, j, ib, npb, nloc, g, own
+      real(dp) :: kvv, beta, bcoef, ccoef
+      integer, allocatable :: at_elem(:)
       real(dp), allocatable :: dtot(:, :, :)
-      real(dp), allocatable :: rho(:), grho(:, :), sigma(:)
-      real(dp), allocatable :: vrho(:), vsigma(:), dedw(:), fexp(:, :)
+      real(dp), allocatable :: rho(:), sigma(:), dedw(:), fexp(:, :)
+      real(dp), allocatable, target :: grho(:, :), vrho(:), vsigma(:)
       real(dp), allocatable :: gx(:), gy(:), gz(:), gkp(:), gw0p(:), grpw(:)
       integer, allocatable :: gidx(:)
       integer :: npass, npts
       real(dp), allocatable :: grad_extra(:, :)
-      logical :: gresp
 
-      glevel = DEFAULT_GRID_LEVEL
-      if (present(grid_level)) glevel = grid_level
-      gmaxpts = VV10_GRAD_DEFAULT_MAX_PTS
-      if (present(grid_max_pts)) gmaxpts = grid_max_pts
-      gresp = .true.
-      if (present(grid_response)) gresp = grid_response
-
-      if (present(timing)) then
-         tbl => timing
+      bcoef = func%nlc_b
+      ccoef = func%nlc_c
+      if (present(options)) opts = options
+      if (associated(opts%timing)) then
+         tbl => opts%timing
       else
          call tbl_own%init("vv10 grad", xc_grad_step_names())
          tbl => tbl_own
+         opts%timing => tbl_own
       end if
 
-      reuse_grid = present(grid) .and. present(xg)
+      reuse_grid = associated(opts%grid) .and. associated(opts%xg)
       call tbl%step_on(lp, ST_GRID, tc)
       allocate (at_elem(b%natm), source=b%at_elem)
       if (reuse_grid) then
          ! The SCF's own nlc grid, already batched and on the device -- no
          ! rebuild, no re-upload. See this subroutine's own header, GRID.
-         gp => grid
-         xgp => xg
+         gp => opts%grid
+         xgp => opts%xg
       else
-         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=glevel)
+         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
          if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
-         call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=gmaxpts, &
+         call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=opts%grid_max_pts, &
                            atom=grid_own%atom, qw=grid_own%quad_weights)
          call xg_own%to_device()
          gp => grid_own
@@ -236,14 +220,6 @@ contains
       call tbl%step_off(lp, ST_GRID, tc)
 
       if (npts > 0) then
-         allocate (ao_atom(b%nao))
-         do ish = 1, b%nshell
-            do i = 0, (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2 - 1
-               ao_atom(b%sh_ao(ish) + i) = b%sh_at(ish)
-            end do
-         end do
-         !$acc enter data copyin(ao_atom)
-
          ! VV10 sees the TOTAL density only (this module's own header) --
          ! built once, at nspin = 1, so the semilocal gradient's pipeline it
          ! reuses (xc_grad_drive, written for a spin-indexed
@@ -273,10 +249,7 @@ contains
          call tbl%step_on(lp, ST_POINTS, tc)
          ! PASS 1: rho/grad-rho/sigma at every outer point -- trc_vv10's own
          ! tiled driver, reused bit-identically (this module's header).
-         call vv10_density_tile(b%nao, b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                                xgp%npts, xgp%nbatch, xgp%r, xgp%batch_of, xgp%b_off, xgp%b_shoff, &
-                                size(xgp%b_sh), xgp%b_sh, xgp%b_shao, xgp%b_aooff, size(xgp%b_ao), xgp%b_ao, &
-                                dtot(:, :, 1), VV10_GRAD_TILE_CAP, lp, rho, grho, sigma)
+         call vv10_density_tile(b, xgp, dtot(:, :, 1), VV10_GRAD_TILE_CAP, lp, rho, grho, sigma)
 
          ! The inner-grid survivor gather (host-side compaction, then an
          ! O(N) device gather) -- trc_vv10's own `vv10_gather`, see
@@ -318,8 +291,7 @@ contains
          ! chunked pipeline (trc_xc_grad's xc_grad_drive), restricted GGA,
          ! with this module's PASS 2 potential in place of a functional and
          ! its own batch screen (any point at or above VV10_RHO_TOL).
-         allocate (bact(xgp%nbatch), fxc0(npts))
-         fxc0 = 0.0_dp
+         allocate (bact(xgp%nbatch))
          do ib = 1, xgp%nbatch
             npb = xgp%b_off(ib + 1) - xgp%b_off(ib)
             nloc = xgp%b_aooff(ib + 1) - xgp%b_aooff(ib)
@@ -327,13 +299,17 @@ contains
             if (npb == 0 .or. nloc == 0) cycle
             if (vv10_grad_batch_active(xgp%b_off(ib), npb, rho, npts)) bact(ib) = 1
          end do
-         kid0 = 0
-         coef0 = 0.0_dp
-         call xc_grad_drive(b, lp, .true., 1, 0, kid0, coef0, dtot, xgp, 0.0_dp, ao_atom, grad, gresp, &
-                            fxc0, tbl, act_in=bact, ext_grho=grho, ext_vrho=vrho, ext_vsigma=vsigma)
+         ! A restricted GGA with no kernels of its own: the drive takes
+         ! the potential from `pio` instead.
+         potential_only%family = XC_FAMILY_GGA
+         pio%active => bact
+         pio%grho => grho
+         pio%vrho => vrho
+         pio%vsigma => vsigma
+         call xc_grad_drive(b, lp, potential_only, dtot, xgp, grad, opts, pio)
 
          !$acc end data
-         if (gresp) then
+         if (opts%grid_response) then
             ! GRID RESPONSE, the weight-derivative and the point's-own-force
             ! pieces (this module's header, THE NONLOCAL EXTRAS), over the
             ! batches the screen kept: the point's own explicit force at its
@@ -361,10 +337,10 @@ contains
             !$acc update device(grad)
             call tbl%step_off(lp, ST_RESP, tc)
          end if
-         deallocate (grad_extra, bact, fxc0)
+         deallocate (grad_extra, bact)
 
-         !$acc exit data delete(ao_atom, dtot)
-         deallocate (ao_atom, dtot, rho, grho, sigma, vrho, vsigma, dedw, fexp)
+         !$acc exit data delete(dtot)
+         deallocate (dtot, rho, grho, sigma, vrho, vsigma, dedw, fexp)
       end if
 
       if (.not. reuse_grid) then
@@ -402,7 +378,6 @@ contains
    ! that body has no `dedw`/`fexp` outputs (see this module's header,
    ! ENERGY-SIDE REUSE).
    !
-#ifdef TRC_DEVICE
    subroutine vv10_grad_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                vrho, vsigma, dedw, fexp)
       integer, intent(in) :: npts, npass
@@ -411,31 +386,24 @@ contains
       real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
       real(dp), intent(out) :: vrho(npts), vsigma(npts), dedw(npts), fexp(3, npts)
       integer :: i
+
+      ! On the host a plain sequential `do`, not `do concurrent` -- the same
+      ! ifx mis-optimisation trc_vv10.F90's own PASS 2 header documents (its
+      ! `vv10_kernel`), for the identical pattern: an output built from this
+      ! body's own `do j` reduction, inside a `do concurrent`. Found there by
+      ! bisection; applied here pre-emptively rather than re-discovered.
+#ifdef TRC_DEVICE
       do concurrent(i=1:npts)
          call vv10_grad_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                     vrho(i), vsigma(i), dedw(i), fexp(1, i), fexp(2, i), fexp(3, i))
       end do
-   end subroutine vv10_grad_kernel
 #else
-   subroutine vv10_grad_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                               vrho, vsigma, dedw, fexp)
-      integer, intent(in) :: npts, npass
-      real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
-      real(dp), intent(in) :: c, kvv, beta
-      real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
-      real(dp), intent(out) :: vrho(npts), vsigma(npts), dedw(npts), fexp(3, npts)
-      integer :: i
-      ! Plain sequential `do`, not `do concurrent` -- the same ifx
-      ! mis-optimisation trc_vv10.F90's own PASS 2 header documents (its
-      ! `vv10_kernel`), for the identical pattern: an output built from this
-      ! body's own `do j` reduction, inside a `do concurrent`. Found there by
-      ! bisection; applied here pre-emptively rather than re-discovered.
       do i = 1, npts
          call vv10_grad_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                     vrho(i), vsigma(i), dedw(i), fexp(1, i), fexp(2, i), fexp(3, i))
       end do
-   end subroutine vv10_grad_kernel
 #endif
+   end subroutine vv10_grad_kernel
 
    !
    ! `i`'s own pair sum, matched term for term against pyscf's `_vv10nlc`.

@@ -36,8 +36,8 @@ program check_xc_grad_fixedgrid_fd
    use trc_basis_json, only: trc_basis_from_json
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc, only: trc_xc_rks, trc_xc_uks
-   use trc_xc_grad, only: xc_grad_add
+   use trc_xc, only: trc_xc_rks, trc_xc_uks, trc_xc_options, trc_xc_result_t
+   use trc_xc_grad, only: xc_grad_add, xc_grad_options
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t
@@ -142,15 +142,16 @@ contains
       real(dp), intent(inout) :: grad0(3, n)
       real(dp) :: w
       real(dp), allocatable :: vv(:, :)
-      real(dp) :: rt(3, n), ep, em, df, nelec0
+      real(dp) :: rt(3, n), ep, em, df
+      type(trc_xc_result_t) :: xr
       type(error_t) :: e
       integer :: ia, id
 
       allocate (vv(bas0%nao, bas0%nao))
       grad0 = 0.0_dp
       !$acc enter data copyin(d, grad0)
-      call xc_grad_add(bas0, lp0, func0, nspin, d, grad0, grid_level=3, rho_tol=0.0_dp, &
-                           grid_response=.false.)
+      call xc_grad_add(bas0, lp0, func0, nspin, d, grad0, &
+                       xc_grad_options(grid_level=3, rho_tol=0.0_dp, grid_response=.false.))
       !$acc update self(grad0)
       !$acc exit data delete(d, grad0)
 
@@ -160,12 +161,14 @@ contains
             rt = r00; rt(id, ia) = r00(id, ia) + hh
             call trc_basis_from_json('basis_sets/6-31gs.json', n, z, rt, basp0, e)
             call basp0%to_device()
-            call trc_xc_rks(basp0, xg, func0, d, vv, ep, nelec0, rho_tol=0.0_dp)
+            call trc_xc_rks(basp0, xg, func0, d, vv, xr, trc_xc_options(rho_tol=0.0_dp))
+            ep = xr%exc
             call basp0%release()
             rt = r00; rt(id, ia) = r00(id, ia) - hh
             call trc_basis_from_json('basis_sets/6-31gs.json', n, z, rt, basp0, e)
             call basp0%to_device()
-            call trc_xc_rks(basp0, xg, func0, d, vv, em, nelec0, rho_tol=0.0_dp)
+            call trc_xc_rks(basp0, xg, func0, d, vv, xr, trc_xc_options(rho_tol=0.0_dp))
+            em = xr%exc
             call basp0%release()
             df = (ep - em)/(2.0_dp*hh)
             w = max(w, abs(grad0(id, ia) - df))
@@ -188,15 +191,16 @@ contains
       real(dp), intent(inout) :: grad0(3, n)
       real(dp) :: w
       real(dp), allocatable :: vv(:, :, :)
-      real(dp) :: rt(3, n), ep, em, df, nelec0
+      real(dp) :: rt(3, n), ep, em, df
+      type(trc_xc_result_t) :: xr
       type(error_t) :: e
       integer :: ia, id
 
       allocate (vv(bas0%nao, bas0%nao, 2))
       grad0 = 0.0_dp
       !$acc enter data copyin(d, grad0)
-      call xc_grad_add(bas0, lp0, func0, 2, d, grad0, grid_level=3, rho_tol=0.0_dp, &
-                           grid_response=.false.)
+      call xc_grad_add(bas0, lp0, func0, 2, d, grad0, &
+                       xc_grad_options(grid_level=3, rho_tol=0.0_dp, grid_response=.false.))
       !$acc update self(grad0)
       !$acc exit data delete(d, grad0)
 
@@ -206,12 +210,14 @@ contains
             rt = r00; rt(id, ia) = r00(id, ia) + hh
             call trc_basis_from_json('basis_sets/6-31gs.json', n, z, rt, basp0, e)
             call basp0%to_device()
-            call trc_xc_uks(basp0, xg, func0, d, vv, ep, nelec0, rho_tol=0.0_dp)
+            call trc_xc_uks(basp0, xg, func0, d, vv, xr, trc_xc_options(rho_tol=0.0_dp))
+            ep = xr%exc
             call basp0%release()
             rt = r00; rt(id, ia) = r00(id, ia) - hh
             call trc_basis_from_json('basis_sets/6-31gs.json', n, z, rt, basp0, e)
             call basp0%to_device()
-            call trc_xc_uks(basp0, xg, func0, d, vv, em, nelec0, rho_tol=0.0_dp)
+            call trc_xc_uks(basp0, xg, func0, d, vv, xr, trc_xc_options(rho_tol=0.0_dp))
+            em = xr%exc
             call basp0%release()
             df = (ep - em)/(2.0_dp*hh)
             w = max(w, abs(grad0(id, ia) - df))

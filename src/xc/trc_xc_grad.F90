@@ -206,6 +206,7 @@ module trc_xc_grad
    private
 
    public :: xc_grad_add, XC_GRAD_RHO_TOL, xc_grad_drive
+   public :: xc_grad_options_t, xc_grad_options, xc_grad_point_io_t
    public :: XC_GRAD_NSTEP, xc_grad_step_names
    public :: ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
    integer, parameter :: XC_GRAD_NSTEP = 10
@@ -241,8 +242,84 @@ module trc_xc_grad
    !! Same role and value as trc_xc.F90's XC_RHO_TOL: a batch whose bound on
    !! rho is below this contributes nothing and is skipped before any
    !! device work for it.
+   integer, parameter :: XC_GRAD_DEFAULT_MAX_PTS = 512
+   !! Points per batch of a grid this module builds itself; trc_scf_context
+   !! uses the same for the SCF's grid.
+
+   type :: xc_grad_options_t
+      !! The settings of one gradient term (xc_grad_add, and vv10_grad_add,
+      !! which reads all but `rho_tol`). Build it with `xc_grad_options`,
+      !! whose absent arguments leave these defaults.
+      integer :: grid_level = DEFAULT_GRID_LEVEL
+      !! Level of the DFT grid built here when `grid`/`xg` are not given.
+      integer :: grid_max_pts = XC_GRAD_DEFAULT_MAX_PTS
+      !! Points per batch of that grid.
+      real(dp) :: rho_tol = XC_GRAD_RHO_TOL
+      !! Batch screen on the density bound. VV10 always screens at its own
+      !! VV10_RHO_TOL (trc_vv10_grad's header) and ignores this.
+      logical :: grid_response = .true.
+      !! See this module's header, GRID RESPONSE. OFF recovers the
+      !! Pulay-only gradient (what check_xc_grad_fixedgrid_fd isolates, and
+      !! what pyscf's own `grid_response=False` default compares against).
+      type(step_table_t), pointer :: timing => null()
+      !! Device-synced time per step, ADDED into; initialised by the caller
+      !! with `xc_grad_step_names()`. Unassociated, a private table is kept
+      !! and dropped.
+      type(dft_grid_t), pointer :: grid => null()
+      type(trc_xc_grid_t), pointer :: xg => null()
+      !! The SCF's own grid, already batched and device-resident (`xg`).
+      !! Used only when both are associated; see xc_grad_add's header.
+   end type xc_grad_options_t
+
+   type :: xc_grad_point_io_t
+      !! What xc_grad_drive's point kernel exchanges with its caller, per
+      !! point (per batch for `active`). Either `fxc` is associated, and the
+      !! functional is evaluated and its rho*eps (no weight) written there
+      !! for the partition response, left zero on a batch the screen skips;
+      !! or `vrho` is, and a potential already in hand (VV10's, restricted
+      !! GGA) is read from `grho`/`vrho`/`vsigma` on the device instead of
+      !! evaluating the functional. All are the caller's arrays, mapped by
+      !! the caller.
+      real(dp), pointer, contiguous :: fxc(:) => null()
+      !! (npts)
+      integer, pointer, contiguous :: active(:) => null()
+      !! (nbatch): the caller's own batch screen (1 = keep) in place of
+      !! the density bound; optional with either form.
+      real(dp), pointer, contiguous :: grho(:, :) => null()
+      !! (3, npts)
+      real(dp), pointer, contiguous :: vrho(:) => null()
+      !! (npts)
+      real(dp), pointer, contiguous :: vsigma(:) => null()
+      !! (npts)
+   end type xc_grad_point_io_t
 
 contains
+
+   !
+   ! An xc_grad_options_t from the caller's own optional settings, passed
+   ! straight through: an absent one keeps its default. `timing`, `grid`
+   ! and `xg` are pointed at, so the caller's actuals need TARGET and must
+   ! outlive the options. `grid` and `xg` are taken only together.
+   !
+   function xc_grad_options(grid_level, grid_max_pts, rho_tol, grid_response, timing, grid, xg) result(options)
+      integer, intent(in), optional :: grid_level, grid_max_pts
+      real(dp), intent(in), optional :: rho_tol
+      logical, intent(in), optional :: grid_response
+      type(step_table_t), intent(inout), optional, target :: timing
+      type(dft_grid_t), intent(in), optional, target :: grid
+      type(trc_xc_grid_t), intent(in), optional, target :: xg
+      type(xc_grad_options_t) :: options
+
+      if (present(grid_level)) options%grid_level = grid_level
+      if (present(grid_max_pts)) options%grid_max_pts = grid_max_pts
+      if (present(rho_tol)) options%rho_tol = rho_tol
+      if (present(grid_response)) options%grid_response = grid_response
+      if (present(timing)) options%timing => timing
+      if (present(grid) .and. present(xg)) then
+         options%grid => grid
+         options%xg => xg
+      end if
+   end function xc_grad_options
 
    pure function xc_grad_step_names() result(names)
       !! The step names of `xc_grad_add`'s timing table, in order.
@@ -265,8 +342,7 @@ contains
    ! existing caller), behaviour is unchanged: refuses what it cannot do,
    ! and ADDS the result into `grad`.
    !
-   subroutine xc_grad_add(b, lp, func, nspin, density, grad, grid_level, grid_max_pts, rho_tol, &
-                              grid_response, timing, grid, xg)
+   subroutine xc_grad_add(b, lp, func, nspin, density, grad, options)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -280,25 +356,11 @@ contains
       !! ADDED into; device-resident for the whole call, exactly as
       !! trc_1e_gradient and scf_grad_nuclear_repulsion require of their
       !! own `grad` argument.
-      integer, intent(in), optional :: grid_level, grid_max_pts
-      real(dp), intent(in), optional :: rho_tol
-      logical, intent(in), optional :: grid_response
-      !! ON by default. See this module's header, GRID RESPONSE. OFF
-      !! recovers the Pulay-only gradient the base of this branch shipped
-      !! (what check_xc_grad_fixedgrid_fd's fixed-grid finite difference
-      !! isolates, and what pyscf's own `grid_response=False` default
-      !! compares against in check_xc_grad_vs_pyscf).
-      type(step_table_t), intent(inout), optional, target :: timing
-      !! Device-synced time per step, ADDED into; initialised by the caller
-      !! with `xc_grad_step_names()`. Absent, a private table is kept and
-      !! dropped.
-      type(dft_grid_t), intent(in), optional, target :: grid
-      type(trc_xc_grid_t), intent(in), optional, target :: xg
-      !! The SCF's own grid, already batched and device-resident (`xg`) --
-      !! present TOGETHER, never one without the other, same convention
-      !! `xcgrid_build`'s own `atom`/`qw` pair uses. See this subroutine's
-      !! own header, REUSE.
+      type(xc_grad_options_t), intent(in), optional :: options
+      !! Grid, screen, grid response, timing and a grid to reuse (REUSE in
+      !! this subroutine's header); absent, every default.
 
+      type(xc_grad_options_t) :: opts
       type(dft_grid_t), target :: grid_own
       type(trc_xc_grid_t), target :: xg_own
       type(dft_grid_t), pointer :: gp
@@ -306,13 +368,12 @@ contains
       logical :: reuse_grid
       type(step_table_t), target :: tbl_own
       type(step_table_t), pointer :: tbl
+      type(xc_grad_point_io_t) :: pio
       type(timer_type) :: tc
       type(error_t) :: err
-      logical :: is_gga, gresp
-      integer :: glevel, gmaxpts, ish, i
-      real(dp) :: rtol
-      integer, allocatable :: ao_atom(:), at_elem(:)
-      real(dp), allocatable :: grad_extra(:, :), fxc(:), pcoef(:)
+      integer, allocatable :: at_elem(:)
+      real(dp), allocatable :: grad_extra(:, :), pcoef(:)
+      real(dp), allocatable, target :: fxc(:)
 
       ! --- refuse what this module cannot do, with a reason -------------
       !
@@ -348,42 +409,34 @@ contains
             "are implemented (meta-GGA is not representable in trc_xc_functional_t "// &
             "on this branch, so this should be unreachable)"
       end if
-      is_gga = func%family == XC_FAMILY_GGA
 
-      glevel = DEFAULT_GRID_LEVEL
-      if (present(grid_level)) glevel = grid_level
-      gmaxpts = 512
-      if (present(grid_max_pts)) gmaxpts = grid_max_pts
-      rtol = XC_GRAD_RHO_TOL
-      if (present(rho_tol)) rtol = rho_tol
-      gresp = .true.
-      if (present(grid_response)) gresp = grid_response
-
-      if (present(timing)) then
-         tbl => timing
+      if (present(options)) opts = options
+      if (associated(opts%timing)) then
+         tbl => opts%timing
       else
          call tbl_own%init("xc grad", xc_grad_step_names())
          tbl => tbl_own
+         opts%timing => tbl_own
       end if
 
-      reuse_grid = present(grid) .and. present(xg)
+      reuse_grid = associated(opts%grid) .and. associated(opts%xg)
       call tbl%step_on(lp, ST_GRID, tc)
       allocate (at_elem(b%natm), source=b%at_elem)
       if (reuse_grid) then
          ! The SCF's own grid, already batched and on the device -- no
          ! rebuild, no re-upload. See this subroutine's own header, REUSE.
-         gp => grid
-         xgp => xg
+         gp => opts%grid
+         xgp => opts%xg
       else
-         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=glevel)
+         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
          if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
          ! `atom`/`qw` are only ever read by the grid-response term below
          ! (xg%build leaves both unallocated, and every other caller of
          ! xcgrid_build never asks for them); built unconditionally anyway --
          ! they cost one more integer and one more real(dp) per point, next to
          ! the GEMMs a surviving batch pays for.
-         call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=gmaxpts, &
-                           atom=grid_own%atom, qw=grid_own%quad_weights)
+         call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, &
+                           max_pts=opts%grid_max_pts, atom=grid_own%atom, qw=grid_own%quad_weights)
          call xg_own%to_device()
          gp => grid_own
          xgp => xg_own
@@ -391,17 +444,6 @@ contains
       call tbl%step_off(lp, ST_GRID, tc)
 
       if (xgp%npts > 0) then
-         ! AO -> atom, built once from the shell -> atom map `basis_build`
-         ! already produced (sh_at), the same map the two-electron and
-         ! one-electron gradients use.
-         allocate (ao_atom(b%nao))
-         do ish = 1, b%nshell
-            do i = 0, (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2 - 1
-               ao_atom(b%sh_ao(ish) + i) = b%sh_at(ish)
-            end do
-         end do
-         !$acc enter data copyin(ao_atom)
-
          ! The weight-response and point-motion-of-the-weight terms (this
          ! module's header, GRID RESPONSE, B and C) go into their own
          ! array, merged into the device-resident `grad` once at the end.
@@ -412,10 +454,10 @@ contains
          fxc = 0.0_dp
          !$acc enter data copyin(fxc)
 
-         call xc_grad_drive(b, lp, is_gga, nspin, func%nk, func%kid, func%coef, density, xgp, rtol, &
-                            ao_atom, grad, gresp, fxc, tbl)
+         pio%fxc => fxc
+         call xc_grad_drive(b, lp, func, density, xgp, grad, opts, pio)
 
-         if (gresp) then
+         if (opts%grid_response) then
             ! The partition's own response, both pieces at once and with
             ! no (3, natm, npts) array: dft_partition_becke_grad_contract takes
             ! the per-point factor qw*rho*eps (the quadrature weight alone,
@@ -438,9 +480,6 @@ contains
          end if
          !$acc exit data delete(fxc)
          deallocate (grad_extra, fxc)
-
-         !$acc exit data delete(ao_atom)
-         deallocate (ao_atom)
       end if
 
       if (.not. reuse_grid) then
@@ -473,40 +512,52 @@ contains
    ! over the functions instead, landing on the point's owner with the
    ! opposite sign -- this module's header, GRID RESPONSE, piece A.
    !
-   subroutine xc_grad_drive(b, lp, is_gga, nspin, nk, kid, coef, density, xg, rtol, ao_atom, grad, &
-                            gresp, fxc, tbl, act_in, ext_grho, ext_vrho, ext_vsigma)
+   subroutine xc_grad_drive(b, lp, func, density, xg, grad, options, points)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
-      logical, intent(in) :: is_gga
-      integer, intent(in) :: nspin, nk
-      integer, intent(in) :: kid(XC_MAX_KERNELS)
-      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      real(dp), intent(in) :: density(b%nao, b%nao, nspin)
+      type(trc_xc_functional_t), intent(in) :: func
+      !! LDA or GGA; its kernels are evaluated unless `points` brings a
+      !! potential (then only its family is read).
+      real(dp), intent(in), contiguous :: density(:, :, :)
+      !! (b%nao, b%nao, nspin), on host and device.
       type(trc_xc_grid_t), intent(in) :: xg
-      real(dp), intent(in) :: rtol
-      integer, intent(in) :: ao_atom(b%nao)
       real(dp), intent(inout) :: grad(3, b%natm)
-      logical, intent(in) :: gresp
-      real(dp), intent(inout) :: fxc(xg%npts)
-      !! Per point, rho*eps (no weight), for the partition's response term;
-      !! left zero on a batch the screen skips.
-      type(step_table_t), intent(inout) :: tbl
-      integer, intent(in), optional :: act_in(xg%nbatch)
-      !! The caller's own batch screen (1 = keep) in place of the density
-      !! bound on `density`.
-      real(dp), intent(in), optional :: ext_grho(3, xg%npts), ext_vrho(xg%npts), ext_vsigma(xg%npts)
-      !! A potential already in hand (VV10's, restricted GGA): the point
-      !! kernel takes w, v_rho, v_sigma and grad rho from these, on the
-      !! device, instead of evaluating `kid`/`coef`; `fxc` is not written.
+      type(xc_grad_options_t), intent(in) :: options
+      !! `rho_tol` and `grid_response` are read, and `timing`, which must be
+      !! associated; the grid settings are the caller's business.
+      type(xc_grad_point_io_t), intent(in) :: points
 
       integer, allocatable :: active(:), npp(:), nlp(:), c_off(:), pr_off(:)
-      integer, allocatable :: ord(:), pb_off(:), wk_off(:), mw_off(:), ch_lo(:), ch_hi(:)
+      integer, allocatable :: ord(:), pb_off(:), wk_off(:), mw_off(:), ch_lo(:), ch_hi(:), ao_atom(:)
       real(dp), allocatable :: chi(:), gchi(:, :), hchi(:, :), xt(:, :), rt(:, :), rd(:, :), rdx(:, :)
       real(dp), allocatable :: dloc(:, :), pc(:, :), fp(:, :), qp(:, :), eb(:, :)
       integer(int64) :: need, nchi, nchi_max, sa, sb, ldt, ldh, ldr, ldx
       integer :: ib, npb, nloc, nch, ic, b0, b1, nb, k, k0, k1, cnt, mp, ml, s, p0, np
       integer :: npairs, nwork, nmu, npairs_max, np_max, nb_max, npc, nhs, nmu_c, nmu_max, ldf, nq
+      integer :: nspin, ish, i
+      integer :: kid(XC_MAX_KERNELS)
+      real(dp) :: coef(XC_MAX_KERNELS)
+      logical :: is_gga, gresp
+      type(step_table_t), pointer :: tbl
       type(timer_type) :: tc
+
+      nspin = size(density, 3)
+      is_gga = func%family == XC_FAMILY_GGA
+      kid = func%kid
+      coef = func%coef
+      gresp = options%grid_response
+      tbl => options%timing
+
+      ! AO -> atom, built once from the shell -> atom map `basis_build`
+      ! already produced (sh_at), the same map the two-electron and
+      ! one-electron gradients use.
+      allocate (ao_atom(b%nao))
+      do ish = 1, b%nshell
+         do i = 0, (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2 - 1
+            ao_atom(b%sh_ao(ish) + i) = b%sh_at(ish)
+         end do
+      end do
+      !$acc enter data copyin(ao_atom)
 
       ! --- screen: which batches carry density at all -------------------
       call tbl%step_on(lp, ST_SCREEN, tc)
@@ -517,9 +568,9 @@ contains
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          active(ib) = 0
          if (npb > 0 .and. nloc > 0) then
-            if (present(act_in)) then
-               active(ib) = act_in(ib)
-            else if (xc_grad_batch_active(ib, xg, b%nao, nspin, density, rtol)) then
+            if (associated(points%active)) then
+               active(ib) = points%active(ib)
+            else if (xc_grad_batch_active(ib, xg, b%nao, nspin, density, options%rho_tol)) then
                active(ib) = 1
             end if
          end if
@@ -660,14 +711,14 @@ contains
          call tbl%step_off(lp, ST_GEMM, tc)
 
          call tbl%step_on(lp, ST_POINTS, tc)
-         if (present(ext_vrho)) then
+         if (associated(points%vrho)) then
             call xc_grad_points_ext(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, &
-                                    active, xg%nbatch, ldt, ldr, np_max, npc, gchi, ext_grho, ext_vrho, &
-                                    ext_vsigma, rt, pc)
+                                    active, xg%nbatch, ldt, ldr, np_max, npc, gchi, points%grho, points%vrho, &
+                                    points%vsigma, rt, pc)
          else
             call xc_grad_points(np, p0, nspin, is_gga, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, &
-                                c_off, npp, active, xg%nbatch, nk, kid, coef, ldt, ldr, np_max, npc, &
-                                chi, gchi, xt, rt, pc, fxc)
+                                c_off, npp, active, xg%nbatch, func%nk, kid, coef, ldt, ldr, np_max, npc, &
+                                chi, gchi, xt, rt, pc, points%fxc)
          end if
          call tbl%step_off(lp, ST_POINTS, tc)
 
@@ -714,6 +765,8 @@ contains
       deallocate (active, npp, nlp, c_off, pr_off, ord, pb_off, wk_off, mw_off, ch_lo, ch_hi)
       deallocate (chi, gchi, hchi, xt, rt, rd, rdx, dloc, pc, fp, qp, eb)
       call tbl%step_off(lp, ST_ALLOC, tc)
+      !$acc exit data delete(ao_atom)
+      deallocate (ao_atom)
    end subroutine xc_grad_drive
 
    !

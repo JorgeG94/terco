@@ -33,6 +33,7 @@ program check_vv10_vs_pyscf
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
+   use trc_xc_functional, only: trc_xc_functional_t
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_matrix, ref_report
@@ -40,6 +41,8 @@ program check_vv10_vs_pyscf
 
    real(dp), parameter :: VV10_B = 6.0_dp, VV10_C = 0.01_dp
    !! wB97X-V's own NLC parameters (pyscf's dft.libxc.nlc_coeff('WB97X_V')).
+   type(trc_xc_functional_t), parameter :: VV10_FUNC = trc_xc_functional_t(nlc_b=VV10_B, nlc_c=VV10_C)
+   !! Only its VV10 b and C are read.
    integer, parameter :: GRID_LEVEL = 1
    !! Deliberately coarse: this test checks the KERNEL, not the quadrature,
    !! and pass 2 is O(npts^2) on a build with no GPU to run it on.
@@ -144,7 +147,7 @@ contains
       end do
       vmat = vmat0
       !$acc enter data copyin(dmat, vmat)
-      call trc_vv10_rks(bas, xg, dmat, VV10_B, VV10_C, e_nlc, vmat)
+      call trc_vv10_rks(bas, xg, VV10_FUNC, dmat, e_nlc, vmat)
       !$acc update self(vmat)
       !$acc exit data delete(dmat, vmat)
 
@@ -198,6 +201,7 @@ contains
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: at_r(:, :), ca(:, :), cb(:, :)
       real(dp), allocatable :: dmat_a(:, :), dmat_b(:, :), vmat0_a(:, :), vmat0_b(:, :), vmat_a(:, :), vmat_b(:, :)
+      real(dp), allocatable :: dmat2(:, :, :), vmat2(:, :, :)
       real(dp), allocatable :: smat(:, :), tmat(:, :), vnmat(:, :)
       real(dp) :: e_nlc
       integer(int64) :: lcg
@@ -251,10 +255,16 @@ contains
          end do
       end do
       vmat_a = vmat0_a; vmat_b = vmat0_b
-      !$acc enter data copyin(dmat_a, dmat_b, vmat_a, vmat_b)
-      call trc_vv10_uks(bas, xg, dmat_a, dmat_b, VV10_B, VV10_C, e_nlc, vmat_a, vmat_b)
-      !$acc update self(vmat_a, vmat_b)
-      !$acc exit data delete(dmat_a, dmat_b, vmat_a, vmat_b)
+      ! trc_vv10_uks takes both spins in one (nao, nao, 2) array, as trc_xc_uks.
+      allocate (dmat2(nao, nao, 2), vmat2(nao, nao, 2))
+      dmat2(:, :, 1) = dmat_a; dmat2(:, :, 2) = dmat_b
+      vmat2(:, :, 1) = vmat_a; vmat2(:, :, 2) = vmat_b
+      !$acc enter data copyin(dmat2, vmat2)
+      call trc_vv10_uks(bas, xg, VV10_FUNC, dmat2, e_nlc, vmat2)
+      !$acc update self(vmat2)
+      !$acc exit data delete(dmat2, vmat2)
+      vmat_a = vmat2(:, :, 1); vmat_b = vmat2(:, :, 2)
+      deallocate (dmat2, vmat2)
 
       print '(a,a,a,a,a,i0,a,i0,a,f20.14)', '  ', trim(xyzfile), ' / ', trim(basjson), &
          ': nao ', nao, ' points ', grid%n_points, '  E_nlc(terco, UKS) = ', e_nlc

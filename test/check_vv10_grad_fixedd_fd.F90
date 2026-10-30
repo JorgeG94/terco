@@ -59,6 +59,8 @@ module check_vv10_grad_fixedd_fd_cases
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_vv10_grad, only: vv10_grad_add
+   use trc_xc_grad, only: xc_grad_options
+   use trc_xc_functional, only: trc_xc_functional_t
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_linalg, only: trc_linalg_t
@@ -70,6 +72,8 @@ module check_vv10_grad_fixedd_fd_cases
 
    real(dp), parameter, public :: VV10_B = 6.0_dp   !! wB97X-V's own b, C
    real(dp), parameter, public :: VV10_C = 0.01_dp
+   type(trc_xc_functional_t), parameter :: VV10_FUNC = trc_xc_functional_t(nlc_b=VV10_B, nlc_c=VV10_C)
+   !! Only its VV10 b and C are read.
    real(dp), parameter, public :: ABSTOL = 1.0e-10_dp
    !! Richardson gate -- see run_case's own header comment on why this is
    !! allowed to be far tighter than check_xc_grad_fd.F90's reconverged-SCF
@@ -156,8 +160,8 @@ contains
       allocate (grad_an(3, nat))
       grad_an = 0.0_dp
       !$acc enter data copyin(dens, grad_an)
-      call vv10_grad_add(bas, lp, nspin, dens, VV10_B, VV10_C, grad_an, grid_level=grid_level, &
-                             grid_response=.true.)
+      call vv10_grad_add(bas, lp, VV10_FUNC, nspin, dens, grad_an, &
+                         xc_grad_options(grid_level=grid_level, grid_response=.true.))
       !$acc update self(grad_an)
       !$acc exit data delete(dens, grad_an)
       call lp%release()
@@ -219,7 +223,7 @@ contains
       type(dft_grid_t) :: grid
       type(trc_xc_grid_t) :: xg
       type(error_t) :: err
-      real(dp), allocatable :: vmat(:, :), vmat_b(:, :)
+      real(dp), allocatable :: vmat(:, :, :)
 
       call trc_basis_from_json(basis_json, nat, at_z, r, b2, err, force_cart=.true.)
       if (err%has_error()) then
@@ -237,15 +241,12 @@ contains
       call xg%build(grid%n_points, grid%coords, grid%weights, b2, max_pts=512)
       call xg%to_device()
 
-      allocate (vmat(nao, nao))
+      allocate (vmat(nao, nao, nspin))
       vmat = 0.0_dp
       if (nspin == 1) then
-         call trc_vv10_rks(b2, xg, dens(:, :, 1), VV10_B, VV10_C, e, vmat)
+         call trc_vv10_rks(b2, xg, VV10_FUNC, dens(:, :, 1), e, vmat(:, :, 1))
       else
-         allocate (vmat_b(nao, nao))
-         vmat_b = 0.0_dp
-         call trc_vv10_uks(b2, xg, dens(:, :, 1), dens(:, :, 2), VV10_B, VV10_C, e, vmat, vmat_b)
-         deallocate (vmat_b)
+         call trc_vv10_uks(b2, xg, VV10_FUNC, dens, e, vmat)
       end if
       deallocate (vmat)
 

@@ -21,7 +21,7 @@ program bench_xc
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
-   use trc_xc, only: trc_xc_rks
+   use trc_xc, only: trc_xc_rks, trc_xc_result_t
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    implicit none
@@ -42,6 +42,7 @@ program bench_xc
    real(dp) :: exc, nelec, seed, t1, tp, tq, sp, sq, tmin
    type(timer_type) :: tm
    integer :: nsk
+   type(trc_xc_result_t) :: xr
    integer(int64) :: lcg
    logical :: ok
 
@@ -119,7 +120,12 @@ program bench_xc
    sp = 0.0_dp; sq = 0.0_dp; tmin = huge(1.0_dp)
    do r = 1, reps + 1
       call tm%start()
-      call trc_xc_rks(bas, xg, func, dmat, vxc, exc, nelec, t_points=tp, t_pairs=tq, n_skipped=nsk)
+      call trc_xc_rks(bas, xg, func, dmat, vxc, xr)
+      exc = xr%exc
+      nelec = xr%nelec
+      tp = xr%t_points
+      tq = xr%t_pairs
+      nsk = xr%n_skipped
       t1 = tm%get_elapsed_time()
       if (r == 1) cycle   ! warm-up: first launches, allocations
       sp = sp + tp; sq = sq + tq; tmin = min(tmin, t1)

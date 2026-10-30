@@ -43,7 +43,7 @@ module trc_scf_grad
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_sph_to_cart
    use trc_xc_functional, only: trc_xc_functional_t
-   use trc_xc_grad, only: xc_grad_add, xc_grad_step_names
+   use trc_xc_grad, only: xc_grad_add, xc_grad_step_names, xc_grad_options
    use trc_step_table, only: step_table_t
    use trc_scf_context, only: trc_pair_eri_cache_t
    use trc_scf_df, only: df_jk_t
@@ -268,7 +268,8 @@ contains
 
       type(trc_pairlist_t), target :: pl_own
       type(trc_pairlist_t), pointer :: plp
-      type(step_table_t) :: gst, xst, vst
+      type(step_table_t) :: gst
+      type(step_table_t), target :: xst, vst
       type(timer_type) :: tc
       logical :: talk, reuse_pl, reuse_eri
       integer :: nlc_level
@@ -403,16 +404,10 @@ contains
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) then
          call gst%step_on(lp, 4, tc)
-         if (present(grid) .and. present(xg)) then
-            call xc_grad_add(b, lp, func, nspin, density, grad, &
-                                 grid_level=grid_level, grid_max_pts=grid_max_pts, &
-                                 grid_response=grid_response, rho_tol=rho_tol, timing=xst, &
-                                 grid=grid, xg=xg)
-         else
-            call xc_grad_add(b, lp, func, nspin, density, grad, &
-                                 grid_level=grid_level, grid_max_pts=grid_max_pts, &
-                                 grid_response=grid_response, rho_tol=rho_tol, timing=xst)
-         end if
+         call xc_grad_add(b, lp, func, nspin, density, grad, &
+                          xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, &
+                                          grid_response=grid_response, rho_tol=rho_tol, timing=xst, &
+                                          grid=grid, xg=xg))
          call gst%step_off(lp, 4, tc)
          ! --- VV10 nonlocal correlation, added on top. Its own grid, its
          ! own screen -- see trc_vv10_grad's own header. `density` is still
@@ -426,16 +421,10 @@ contains
             ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
             ! see that module's own header.
             call gst%step_on(lp, 5, tc)
-            if (present(grid_nlc) .and. present(xg_nlc)) then
-               call vv10_grad_add(b, lp, nspin, density, func%nlc_b, func%nlc_c, grad, &
-                                      grid_level=nlc_level, grid_max_pts=grid_max_pts, &
-                                      grid_response=grid_response, timing=vst, &
-                                      grid=grid_nlc, xg=xg_nlc)
-            else
-               call vv10_grad_add(b, lp, nspin, density, func%nlc_b, func%nlc_c, grad, &
-                                      grid_level=nlc_level, grid_max_pts=grid_max_pts, &
-                                      grid_response=grid_response, timing=vst)
-            end if
+            call vv10_grad_add(b, lp, func, nspin, density, grad, &
+                               xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, &
+                                               grid_response=grid_response, timing=vst, &
+                                               grid=grid_nlc, xg=xg_nlc))
             call gst%step_off(lp, 5, tc)
          end if
       end if
