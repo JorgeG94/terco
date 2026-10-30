@@ -39,7 +39,7 @@ program scf_dh
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, trc_1e
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_df, only: df_jk_t
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, trc_rimp2_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
@@ -144,13 +144,22 @@ program scf_dh
             if (ik == 1) then
                opts%df = .false.
                call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la)
-               call trc_rimp2_run(bas, aux, pl, nalpha, res%cmo(:, :, 1), res%eps(:, 1), mp, &
-                                  nfrozen=GFROZEN(ig), la=la)
+               block
+                  type(trc_rimp2_options_t) :: rimp2_opts
+                  rimp2_opts%nfrozen = GFROZEN(ig)
+                  call trc_rimp2_run(bas, aux, pl, nalpha, res%cmo(:, :, 1), res%eps(:, 1), mp, &
+                                     opts=rimp2_opts, la=la)
+               end block
             else
                opts%df = .true.
                call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, scf_dfjk=dfjk)
-               call trc_rimp2_run(bas, aux, pl, nalpha, res%cmo(:, :, 1), res%eps(:, 1), mp, &
-                                  nfrozen=GFROZEN(ig), la=la, packed_b=dfjk%packed_b())
+               block
+                  type(trc_rimp2_options_t) :: rimp2_opts
+                  rimp2_opts%nfrozen = GFROZEN(ig)
+                  rimp2_opts%packed_b => dfjk%packed_b()
+                  call trc_rimp2_run(bas, aux, pl, nalpha, res%cmo(:, :, 1), res%eps(:, 1), mp, &
+                                     opts=rimp2_opts, la=la)
+               end block
             end if
             if (.not. res%converged) then
                print "(a,a)", "  NOT CONVERGED: ", trim(res%message)
@@ -286,8 +295,11 @@ program scf_dh
          print "(a,a)", "  NOT CONVERGED (OH): ", trim(wres%message)
          all_ok = .false.
       end if
-      call trc_urimp2_run(wbas, waux, wpl, NA_OH, NB_OH, wres%cmo(:, :, 1), wres%cmo(:, :, 2), &
-                          wres%eps(:, 1), wres%eps(:, 2), wmp, nfrozen=NFZ_OH)
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = NFZ_OH
+         call trc_urimp2_run(wbas, waux, wpl, NA_OH, NB_OH, wres%cmo, wres%eps, wmp, opts=rimp2_opts)
+      end block
       if (len_trim(wmp%message) > 0) then
          print "(a)", "scf_dh: "//trim(wmp%message)
          all_ok = .false.

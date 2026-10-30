@@ -217,7 +217,7 @@ module trc_dlfind_bridge
    ! leaving app/main.F90's non-opt CLI code without opt_io_f_string/opt_io_set_env in a
    ! TERCO_ENABLE_DLFIND=OFF build).
    use trc_opt_io, only: opt_io_f_string, opt_io_set_env, opt_io_write_opt_xyz_frame, &
-                         opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json
+                         opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json, trc_opt_failure_t
    implicit none
    private
 
@@ -706,69 +706,7 @@ contains
          return
       end if
       active = .true.
-
-      context = handle
-      natm = n
-      if (allocated(znuc)) deallocate (znuc)
-      if (allocated(residues)) deallocate (residues)
-      if (allocated(start_coords)) deallocate (start_coords)
-      allocate (znuc(n), source=z)
-      allocate (residues(n), source=residues_in)
-      allocate (start_coords(3, n), source=coords)
-      cur_opts = opts
-      have_prev_scf = .false.
-      cached_nspin = 1
-      eval_failed = .false.
-      eval_fail_msg = ""
-      n_evals = 0
-      n_steps = 0
-      n_hess_evals = 0
-      total_scf_iters = 0
-      have_result = .false.
-      latest_energy = 0.0_dp
-      if (allocated(latest_coords)) deallocate (latest_coords)
-      allocate (latest_coords(3, n), source=coords)
-      last_gmax = 0.0_dp
-      last_grms = 0.0_dp
-      last_niter = 0
-      have_accepted_energy = .false.
-      last_accepted_energy = 0.0_dp
-      accepted_gmax = 0.0_dp
-      accepted_grms = 0.0_dp
-      accept_rule = ACCEPT_ALWAYS
-      global_eval_count = 0
-      global_eval_next = 1
-      neb_prev_image = 0
-      call step_clock%start()
-      if (allocated(last_scf_xyz)) deallocate (last_scf_xyz)
-      have_ts = .false.
-      have_min_plus = .false.
-      have_min_minus = .false.
-      ts_energy = 0.0_dp
-      min_plus_energy = 0.0_dp
-      min_minus_energy = 0.0_dp
-      ts_gmax = 0.0_dp
-      ts_grms = 0.0_dp
-      min_plus_gmax = 0.0_dp
-      min_plus_grms = 0.0_dp
-      min_minus_gmax = 0.0_dp
-      min_minus_grms = 0.0_dp
-      if (allocated(ts_coords)) deallocate (ts_coords)
-      if (allocated(min_plus_coords)) deallocate (min_plus_coords)
-      if (allocated(min_minus_coords)) deallocate (min_minus_coords)
-
-      ! A STARTING capacity, not a hard upper bound: HDLC/DLC's own
-      ! `trerun_energy` evaluations (dl-find.f90's own COORDS TRANSFORM
-      ! section) don't advance `stat%ccycle`, so more than maxiter
-      ! ACCEPTED steps per sub-optimisation is possible even though
-      ! DL-FIND enforces maxcycle on cycles, not accepted steps as such --
-      ! grow_traj (consider_step) doubles these with move_alloc rather than
-      ! drop a frame past this.
-      traj_cap = max(opts%maxiter*merge(3, 1, opts%connect) + 8, 8)
-      if (allocated(traj_e)) deallocate (traj_e)
-      if (allocated(traj_xyz)) deallocate (traj_xyz)
-      allocate (traj_e(traj_cap), traj_xyz(3, n, traj_cap))
-      traj_n = 0
+      call reset_optimize_state(handle, n, z, residues_in, coords, opts)
 
       ! --- --opt-constrain: expand into DL-FIND's own icons block ----------
       ! (type, atom1..atom4), a CARTESIAN entry expanded into three (one per
@@ -967,14 +905,118 @@ contains
          end if
       end if
 
-      if (opt_is_neb .and. .not. res%failed) then
-         ! The converged path, BOTH endpoints included, the scratch
-         ! climbing-image slot (DL-FIND's own image n_images_dlf) excluded
-         ! -- dlf_neb.f90's own real chain is indices 1..nimage-1.
-         block
-            integer :: ni, k
-            logical :: have_cimg
-            ni = n_images_dlf - 1
+      if (opt_is_neb .and. .not. res%failed) call neb_finalize_result(n, opts, res)
+
+      active = .false.
+      context = c_null_ptr
+      if (allocated(znuc)) deallocate (znuc)
+      if (allocated(residues)) deallocate (residues)
+      if (allocated(start_coords)) deallocate (start_coords)
+      if (allocated(latest_coords)) deallocate (latest_coords)
+      if (allocated(traj_e)) deallocate (traj_e)
+      if (allocated(traj_xyz)) deallocate (traj_xyz)
+      if (allocated(ts_coords)) deallocate (ts_coords)
+      if (allocated(min_plus_coords)) deallocate (min_plus_coords)
+      if (allocated(min_minus_coords)) deallocate (min_minus_coords)
+      if (allocated(last_scf_xyz)) deallocate (last_scf_xyz)
+      call reset_image_state(0, 0, 1)
+      opt_is_neb = .false.
+      natm = 0
+   end subroutine trc_dlfind_optimize
+
+   subroutine reset_optimize_state(handle, n, z, residues_in, coords, opts)
+      !! `trc_dlfind_optimize`'s own per-run reset of this module's `save`
+      !! state, split out to keep that procedure under the length
+      !! archcheck's `proc-length` flags. Every name assigned here but not
+      !! a dummy argument is this module's own `save` state -- see that
+      !! state's own declarations just above the `api_dl_find` interface.
+      type(c_ptr), intent(in) :: handle
+      integer, intent(in) :: n
+      integer, intent(in) :: z(n)
+      integer, intent(in) :: residues_in(n)
+      real(dp), intent(in) :: coords(3, n)
+      type(trc_opt_options_t), intent(in) :: opts
+
+      context = handle
+      natm = n
+      if (allocated(znuc)) deallocate (znuc)
+      if (allocated(residues)) deallocate (residues)
+      if (allocated(start_coords)) deallocate (start_coords)
+      allocate (znuc(n), source=z)
+      allocate (residues(n), source=residues_in)
+      allocate (start_coords(3, n), source=coords)
+      cur_opts = opts
+      have_prev_scf = .false.
+      cached_nspin = 1
+      eval_failed = .false.
+      eval_fail_msg = ""
+      n_evals = 0
+      n_steps = 0
+      n_hess_evals = 0
+      total_scf_iters = 0
+      have_result = .false.
+      latest_energy = 0.0_dp
+      if (allocated(latest_coords)) deallocate (latest_coords)
+      allocate (latest_coords(3, n), source=coords)
+      last_gmax = 0.0_dp
+      last_grms = 0.0_dp
+      last_niter = 0
+      have_accepted_energy = .false.
+      last_accepted_energy = 0.0_dp
+      accepted_gmax = 0.0_dp
+      accepted_grms = 0.0_dp
+      accept_rule = ACCEPT_ALWAYS
+      global_eval_count = 0
+      global_eval_next = 1
+      neb_prev_image = 0
+      call step_clock%start()
+      if (allocated(last_scf_xyz)) deallocate (last_scf_xyz)
+      have_ts = .false.
+      have_min_plus = .false.
+      have_min_minus = .false.
+      ts_energy = 0.0_dp
+      min_plus_energy = 0.0_dp
+      min_minus_energy = 0.0_dp
+      ts_gmax = 0.0_dp
+      ts_grms = 0.0_dp
+      min_plus_gmax = 0.0_dp
+      min_plus_grms = 0.0_dp
+      min_minus_gmax = 0.0_dp
+      min_minus_grms = 0.0_dp
+      if (allocated(ts_coords)) deallocate (ts_coords)
+      if (allocated(min_plus_coords)) deallocate (min_plus_coords)
+      if (allocated(min_minus_coords)) deallocate (min_minus_coords)
+
+      ! A STARTING capacity, not a hard upper bound: HDLC/DLC's own
+      ! `trerun_energy` evaluations (dl-find.f90's own COORDS TRANSFORM
+      ! section) don't advance `stat%ccycle`, so more than maxiter
+      ! ACCEPTED steps per sub-optimisation is possible even though
+      ! DL-FIND enforces maxcycle on cycles, not accepted steps as such --
+      ! grow_traj (consider_step) doubles these with move_alloc rather than
+      ! drop a frame past this.
+      traj_cap = max(opts%maxiter*merge(3, 1, opts%connect) + 8, 8)
+      if (allocated(traj_e)) deallocate (traj_e)
+      if (allocated(traj_xyz)) deallocate (traj_xyz)
+      allocate (traj_e(traj_cap), traj_xyz(3, n, traj_cap))
+      traj_n = 0
+   end subroutine reset_optimize_state
+
+   subroutine neb_finalize_result(n, opts, res)
+      !! `trc_dlfind_optimize`'s own --opt-neb result block, split out to
+      !! keep that procedure under the length archcheck's `proc-length`
+      !! flags. Reads the same module `save` state (neb_last_*,
+      !! n_images_dlf, cur_opts) that block always did; `n`/`opts`/`res`
+      !! are the only values it needs that are not already module state.
+      integer, intent(in) :: n
+      type(trc_opt_options_t), intent(in) :: opts
+      type(trc_opt_result_t), intent(inout) :: res
+      ! The converged path, BOTH endpoints included, the scratch
+      ! climbing-image slot (DL-FIND's own image n_images_dlf) excluded
+      ! -- dlf_neb.f90's own real chain is indices 1..nimage-1.
+      block
+         integer :: ni, k
+         logical :: have_cimg
+         ni = n_images_dlf - 1
             res%have_neb = .true.
             res%neb_n_images = ni
             allocate (res%neb_image_energy(ni), res%neb_image_coords(3, n, ni), &
@@ -1122,24 +1164,7 @@ contains
                res%converged = res%final_gmax <= opts%gtol
             end block
          end block
-      end if
-
-      active = .false.
-      context = c_null_ptr
-      if (allocated(znuc)) deallocate (znuc)
-      if (allocated(residues)) deallocate (residues)
-      if (allocated(start_coords)) deallocate (start_coords)
-      if (allocated(latest_coords)) deallocate (latest_coords)
-      if (allocated(traj_e)) deallocate (traj_e)
-      if (allocated(traj_xyz)) deallocate (traj_xyz)
-      if (allocated(ts_coords)) deallocate (ts_coords)
-      if (allocated(min_plus_coords)) deallocate (min_plus_coords)
-      if (allocated(min_minus_coords)) deallocate (min_minus_coords)
-      if (allocated(last_scf_xyz)) deallocate (last_scf_xyz)
-      call reset_image_state(0, 0, 1)
-      opt_is_neb = .false.
-      natm = 0
-   end subroutine trc_dlfind_optimize
+   end subroutine neb_finalize_result
 
    subroutine reset_image_state(n, nimg, density_size)
       !! (Re)allocate the per-image warm-start/path bookkeeping for `nimg`
@@ -1954,10 +1979,19 @@ contains
                                     traj_e(1:traj_n))
       end if
       if (opt_str_set(cur_opts%json_path)) then
-         call opt_io_write_opt_failure_json(cur_opts%json_path, opt_str_or_blank(cur_opts%geometry_path), reason, &
-                                     n_steps, n_evals, latest_energy, accepted_gmax, accepted_grms, &
-                                     opt_str_or_blank(cur_opts%coords_name), opt_str_or_blank(cur_opts%guess_name), &
-                                     traj_e(1:traj_n))
+         block
+            type(trc_opt_failure_t) :: info
+            info%geometry = opt_str_or_blank(cur_opts%geometry_path)
+            info%reason = reason
+            info%steps = n_steps
+            info%energy_evaluations = n_evals
+            info%final_energy = latest_energy
+            info%final_gradient_max = accepted_gmax
+            info%final_gradient_rms = accepted_grms
+            info%coords_name = opt_str_or_blank(cur_opts%coords_name)
+            info%guess_name = opt_str_or_blank(cur_opts%guess_name)
+            call opt_io_write_opt_failure_json(cur_opts%json_path, info, traj_e(1:traj_n))
+         end block
       end if
    end subroutine write_failure_outputs
 

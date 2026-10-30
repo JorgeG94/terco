@@ -11,7 +11,7 @@ program scf_rimp2
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t, trc_rimp2_options_t
    use trc_test_basis, only: read_xyz, build_aux, uncontract_basis
    use trc_basis_json, only: trc_basis_from_json
    use trc_guess_json, only: trc_guess_from_json
@@ -109,8 +109,14 @@ program scf_rimp2
    else
       call trc_scf_run(bas, nocc, nocc, opts, res)
    end if
-   call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, verbose=opts%verbose)
-   call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, aux_block=20)
+   block
+      type(trc_rimp2_options_t) :: rimp2_opts
+      rimp2_opts%verbose = opts%verbose
+      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp, opts=rimp2_opts)
+      rimp2_opts%verbose = .false.
+      rimp2_opts%aux_block = 20
+      call trc_rimp2_run(bas, aux, pl, nocc, res%cmo(:, :, 1), res%eps(:, 1), mp2, opts=rimp2_opts)
+   end block
    ok = res%converged .and. len_trim(mp%message) == 0
    if (len_trim(mp%message) > 0) print '(a)', "scf_rimp2: "//trim(mp%message)
    if (abs(mp%e_corr - mp2%e_corr) > 1.0e-13_dp .or. abs(mp%e_os - mp2%e_os) > 1.0e-13_dp) ok = .false.
