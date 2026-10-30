@@ -43,14 +43,14 @@ Two things follow from the direction of the arrows:
 
 ### Known exceptions
 
-The current tree has upward edges (see the "Upward dependencies" list in the
-module map). They are tolerated, not endorsed, and each has a target:
-
-| Edge | Why it exists | Target |
-|---|---|---|
-| Most modules in `basis`, `eri`, `xc`, `scf`, `solvation` use `trc_api` | `trc_basis_t` and friends are defined there | Move the shared types (`trc_basis_t`, `trc_pairlist_t`) to a `core`-level module so `trc_api` becomes a thin facade |
-| `core/trc_ao_norm` uses `eri/trc_batch` | shared shell-count helpers | Move the helper to `core` |
-| `post_hf/trc_rimp2_driver` uses `scf/trc_scf_df` | RI-MP2 reuses the DF factors | Move the DF factor build below `scf`, or pass the factors in |
+None. The last upward edges were removed by moving `trc_basis_t` and
+`trc_pairlist_t` to `core/trc_basis_types`, the device binding to
+`core/trc_device_binding`, the 1e/multipole/PCM/DF drivers to
+`eri/trc_integrals` (`trc_api` re-exports all of them and is now a thin
+facade), the Cartesian-power helper `trc_ao_norm` needed to
+`core/trc_cart_perm`, and by passing RI-MP2 the fitted DF factors as an array
+instead of the `scf` object that owns them. `python3 tools/archcheck.py --rule
+layer-up` reports none.
 
 New code must not add an upward edge. Removing one is always welcome.
 

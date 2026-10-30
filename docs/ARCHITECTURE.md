@@ -41,8 +41,8 @@ Numbers in brackets refer to the references at the end.
 | Layer | Directory | Main objects |
 |---|---|---|
 | Core | `src/core/` | Boys function, Cartesian and spherical tables, `trc_linalg_t`, `error_t`, MPI device policy |
-| Basis | `src/basis/`, `src/api/trc_api.F90` | `trc_basis_t`, `trc_pairlist_t`, JSON reader, decontraction |
-| Integrals | `src/eri/`, `src/generated/` | `trc_eri_t`, `pair_bins_t`, per-class kernels |
+| Basis | `src/basis/`, `src/core/trc_basis_types.F90` | `trc_basis_t`, `trc_pairlist_t`, JSON reader, decontraction |
+| Integrals | `src/eri/`, `src/generated/` | `trc_eri_t`, `pair_bins_t`, the 1e/PCM/DF drivers (`trc_integrals`), per-class kernels |
 | Grids | `src/grid/` | `dft_grid_t` |
 | SCF | `src/scf/` | `trc_scf_run`, `scf_ctx_t`, `scf_state_t`, `df_jk_t`, DIIS |
 | XC | `src/xc/` | `trc_xc_grid_t`, functional registry, translated kernels, VV10 |
@@ -52,7 +52,7 @@ Numbers in brackets refer to the references at the end.
 
 ## 3. Basis and AO spaces
 
-`trc_basis_t` (`src/api/trc_api.F90`) is a structure of arrays: per shell the
+`trc_basis_t` (`src/core/trc_basis_types.F90`) is a structure of arrays: per shell the
 angular momentum, primitive count, first AO, centre and owning atom, and per
 primitive the exponent and coefficient. A basis is read from MolSSI Basis Set
 Exchange JSON (`src/basis/trc_basis_json.F90`) or built from libcint's
@@ -499,7 +499,8 @@ regenerate at configure time.
 ## 14. Interfaces
 
 - **Fortran API** (`src/api/trc_api.F90`): the basis, the pair list and the
-  integral entry points; `trc_eri_t` for Fock builds; `trc_scf_run`.
+  integral entry points, re-exported from `trc_basis_types`,
+  `trc_device_binding` and `trc_integrals`; `trc_eri_t` for Fock builds; `trc_scf_run`.
 - **C ABI** (`src/api/trc_capi.F90`, generated `include/terco.h`): an opaque
   context created with `trc_create`, configured with `trc_set_*`, run with
   `trc_run_scf` (then optionally `trc_run_rimp2`, `trc_run_gradient`,
