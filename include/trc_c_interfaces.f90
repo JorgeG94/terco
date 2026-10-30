@@ -344,7 +344,7 @@ module trc_c_interfaces
 
       integer(c_int) function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) bind(c) result(res)
          !! CONTRAVARIANT in, COVARIANT out, exactly as capi_fock -- the
-         !! diagonal congruence ao_scale_cov/fock_scale_in apply does not
+         !! diagonal congruence ao_norm_scale_cov/fock_scale_in apply does not
          !! care whether `dmat` is symmetric, so nothing here differs from
          !! the symmetric entry beyond which shared routines it reuses.
          import :: c_double, c_int, c_ptr
@@ -356,8 +356,8 @@ module trc_c_interfaces
          integer(c_int), value :: dscreen
       end function trc_fock_nosym
 
-      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, max_iter, dguess, &
-                                      verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
+      integer(c_int) function trc_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, max_iteration, &
+                                      dguess, verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
          import :: c_char, c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: basis
@@ -367,7 +367,7 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
          real(c_double), value :: conv_energy
          real(c_double), value :: conv_density
-         integer(c_int), value :: max_iter
+         integer(c_int), value :: max_iteration
          type(c_ptr), value :: dguess
          integer(c_int), value :: verbose
          real(c_double), intent(out) :: energy
@@ -378,7 +378,7 @@ module trc_c_interfaces
       end function trc_scf
 
       integer(c_int) function trc_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
-                                          max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
+                                          max_iteration, dguess, verbose, energy, e_xc, dmat, eps, niter) bind(c) result(res)
          import :: c_char, c_double, c_int, c_ptr
          implicit none
          integer(c_int), value :: fcomm
@@ -389,7 +389,7 @@ module trc_c_interfaces
          integer(c_int), value :: grid_level
          real(c_double), value :: conv_energy
          real(c_double), value :: conv_density
-         integer(c_int), value :: max_iter
+         integer(c_int), value :: max_iteration
          type(c_ptr), value :: dguess
          integer(c_int), value :: verbose
          real(c_double), intent(out) :: energy
@@ -666,13 +666,13 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: npoints
       end function trc_pcm_energy
 
-      integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) bind(c) result(res)
+      integer(c_int) function trc_set_convergence(handle, conv_energy, conv_diis, max_iteration, ndiis) bind(c) result(res)
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          real(c_double), value :: conv_energy
          real(c_double), value :: conv_diis
-         integer(c_int), value :: max_iter
+         integer(c_int), value :: max_iteration
          integer(c_int), value :: ndiis
       end function trc_set_convergence
 
@@ -927,7 +927,7 @@ module trc_c_interfaces
          !! sized for.
          !!
          !! NOT refused any more: a functional with VV10 nonlocal correlation
-         !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
+         !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_grad_add's
          !! term on top of the semilocal one, on VV10's own grid
          !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
          !! it on). wB97M-V is in terco's table too now (a meta-GGA with VV10
@@ -967,7 +967,7 @@ module trc_c_interfaces
          !! or the two are not derivatives of the same energy.
          !! `trc_scf_gradient` itself builds the erf(omega r)/r long-range
          !! exchange term (a second eri%gradient pass, its own header) and
-         !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
+         !! trc_xc_grad%xc_grad_add computes the functional's semilocal
          !! GGA part exactly as for any other GGA -- see that module's own
          !! header on why `omega`/`exx_lr` do not affect it.
          !!
@@ -1150,7 +1150,7 @@ module trc_c_interfaces
          !! clean generalisation here). The orbital basis may be spherical:
          !! `cx%res%cmo`/`eps` (at whatever space the SCF ran in) are folded
          !! into the Cartesian, zero-padded space `trc_rimp2_run`/
-         !! `trc_urimp2_run` themselves run in by `rimp2_mo_to_cart`
+         !! `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
          !! (trc_rimp2_driver.F90's own header says why the pad is exact).
          import :: c_int, c_ptr
          implicit none
@@ -1292,19 +1292,19 @@ module trc_c_interfaces
          real(c_double), intent(out) :: c_ss
       end function trc_functional_info
 
-      integer(c_int) function trc_functional_list(buf, buflen, reqlen) bind(c) result(res)
+      integer(c_int) function trc_functional_list(buffer, buflen, reqlen) bind(c) result(res)
          !! XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
          !! trc_functional_info can look up that terco can actually run today
-         !! -- space-separated and NUL-terminated into `buf` (capacity
+         !! -- space-separated and NUL-terminated into `buffer` (capacity
          !! `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
          !! number of bytes that call needed, NUL included, whether or not it
-         !! fit: a caller queries it with `buflen = 0` (`buf` is never
+         !! fit: a caller queries it with `buflen = 0` (`buffer` is never
          !! touched then) and allocates exactly `reqlen` bytes for a second,
-         !! filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
+         !! filling call. Returns TRC_ERR_BADARG, leaving `buffer` untouched, if
          !! `buflen` is positive but smaller than `reqlen`.
          import :: c_char, c_int
          implicit none
-         character(kind=c_char), intent(out) :: buf(*)
+         character(kind=c_char), intent(out) :: buffer(*)
          integer(c_int), value :: buflen
          integer(c_int), intent(out) :: reqlen
       end function trc_functional_list
@@ -1522,12 +1522,12 @@ module trc_c_interfaces
          real(c_double), intent(out) :: e_ss
       end function trc_rimp2_energy
 
-      integer(c_int) function trc_message(handle, buf, buflen) bind(c) result(res)
-         !! The last message, NUL-terminated into `buf` of `buflen` chars.
+      integer(c_int) function trc_message(handle, buffer, buflen) bind(c) result(res)
+         !! The last message, NUL-terminated into `buffer` of `buflen` chars.
          import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         character(kind=c_char), intent(out) :: buf(*)
+         character(kind=c_char), intent(out) :: buffer(*)
          integer(c_int), value :: buflen
       end function trc_message
 

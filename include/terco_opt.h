@@ -182,10 +182,10 @@ int trc_opt_result_trajectory(trc_handle_t handle, int natm, int n_traj, double*
 
 /**
  * The run's own message (why it failed, or "" for an ordinary
- * finish), NUL-terminated into `buf` of `buflen` chars -- same
+ * finish), NUL-terminated into `buffer` of `buflen` chars -- same
  * contract as terco.h's trc_message.
  */
-int trc_opt_result_message(trc_handle_t handle, char* buf, int buflen);
+int trc_opt_result_message(trc_handle_t handle, char* buffer, int buflen);
 
 /**
  * Optimise (or find a saddle on) the molecule already set up on

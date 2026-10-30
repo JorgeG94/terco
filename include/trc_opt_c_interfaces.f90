@@ -264,14 +264,14 @@ module trc_opt_c_interfaces
          real(c_double), intent(out) :: energy(*)
       end function trc_opt_result_trajectory
 
-      integer(c_int) function trc_opt_result_message(handle, buf, buflen) bind(c) result(res)
+      integer(c_int) function trc_opt_result_message(handle, buffer, buflen) bind(c) result(res)
          !! The run's own message (why it failed, or "" for an ordinary
-         !! finish), NUL-terminated into `buf` of `buflen` chars -- same
+         !! finish), NUL-terminated into `buffer` of `buflen` chars -- same
          !! contract as terco.h's trc_message.
          import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
-         character(kind=c_char), intent(out) :: buf(*)
+         character(kind=c_char), intent(out) :: buffer(*)
          integer(c_int), value :: buflen
       end function trc_opt_result_message
 
