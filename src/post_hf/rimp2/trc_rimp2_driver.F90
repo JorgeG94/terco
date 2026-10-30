@@ -476,16 +476,12 @@ contains
          do q = 0, nranks - 1
             if (bn(q) == 0) cycle
             if (q == rank) then
-               ! half's rows lo.. of each no x nao slab; C_vir shared.
-               gemm_shape = trc_gemm_batch(nv, nb, nao, np, ldb=no, sa=0_int64, sc=novr8, &
-                                           transa="T", transb="T")
+               gemm_shape = trc_gemm_batch(nv, nb, nao, np, ldb=no, sa=0_int64, sc=novr8, transa="T", transb="T")
                call lp%gemm_batched(gemm_shape, cvir, half(lo, 1, 1), xr(1 + int(p0 - 1, int64)*novr8))
             else
                nq8 = int(bn(q), int64)*nv8
-               gemm_shape = trc_gemm_batch(nv, bn(q), nao, np, ldb=no, sa=0_int64, sc=nq8, &
-                                           transa="T", transb="T")
-               call lp%gemm_batched(gemm_shape, cvir, half(blo(q), 1, 1), &
-                                    ysend(1 + soff(q) + int(p0 - plo(rank), int64)*nq8))
+               gemm_shape = trc_gemm_batch(nv, bn(q), nao, np, ldb=no, sa=0_int64, sc=nq8, transa="T", transb="T")
+               call lp%gemm_batched(gemm_shape, cvir, half(blo(q), 1, 1), ysend(1 + soff(q) + int(p0 - plo(rank), int64)*nq8))
             end if
          end do
          call stab%step_off(lp, ST_TRANS, tc)
