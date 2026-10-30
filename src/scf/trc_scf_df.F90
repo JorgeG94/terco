@@ -75,7 +75,8 @@ module trc_scf_df
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_metric_cart_to_sph, sph_aux3c_to_sph

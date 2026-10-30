@@ -39,7 +39,7 @@ module trc_eri
    use trc_mdj, only: trc_mdj_t
    use trc_mdg, only: trc_mdg_t, trc_mdg_scales_t
    use trc_binkernel, only: TRC_PRIM_MARGIN
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
                              decontract_expand_host, decontract_fold_host

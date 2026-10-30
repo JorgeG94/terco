@@ -62,11 +62,12 @@
 !
 module trc_scf_grad_df
    use pic_types, only: dp, int64
-   use trc_api, only: trc_basis_t, trc_pairlist_t
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_scf_df, only: df_jk_t
    use trc_linalg, only: trc_linalg_t
    use trc_step_table, only: step_table_t
    use pic_timer, only: timer_type
+   use trc_rys_select, only: rys_select_tables_init
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
                                   DFG_LMAX_AUX, DFG_NPCLS
 #ifdef TRC_DEVICE
@@ -139,6 +140,9 @@ contains
       call dfjk%dims(n, naux, npack)
       if (n /= b%nao .or. naux /= aux%nao) error stop "trc_scf_grad_df: the fit does not match these bases"
       if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
+      ! The derivative kernels read the Rys root tables; push them here
+      ! rather than trust that the fit's trc_df_3c did, on this device.
+      call rys_select_tables_init()
       call tbl%init("dfgrad", NAMES, bytes_steps=[ST_JGAM, ST_UNPK, ST_XPACK])
       call lp%sync()
       call tall%start()

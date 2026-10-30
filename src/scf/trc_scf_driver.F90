@@ -86,7 +86,7 @@
 !
 module trc_scf_driver
    use pic_types, only: dp, int64
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t

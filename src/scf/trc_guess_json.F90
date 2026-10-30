@@ -37,7 +37,7 @@
 module trc_guess_json
    use pic_types, only: dp
    use trc_constants, only: PI
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_cart_perm, only: cart_perm_build_ao
    use json_module, only: json_file

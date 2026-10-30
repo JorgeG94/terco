@@ -43,7 +43,7 @@ module trc_mdg
    use trc_mdj, only: trc_mdj_t
    use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_fused
    use trc_mdg_h, only: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    implicit none
    private
    public :: trc_mdg_t, trc_mdg_scales_t, mdg_routes

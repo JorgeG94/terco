@@ -73,7 +73,8 @@
 module trc_cphf
    use pic_types, only: dp
    use pic_logger, only: global_logger
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_multipoles, TRC_NMULT
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_integrals, only: trc_multipoles, TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_result_t

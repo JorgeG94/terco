@@ -25,7 +25,7 @@ module trc_scf_fock
    use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t
    use pic_profiler, only: profiler_start, profiler_stop
-   use trc_api, only: trc_basis_t, trc_pairlist_t
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_eri, only: trc_eri_t
    use trc_pcm, only: trc_pcm_t

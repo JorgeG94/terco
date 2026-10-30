@@ -105,7 +105,7 @@ module trc_vv10_grad
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_constants, only: PI
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_grad, only: xc_grad_drive, xc_grad_step_names, ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
    use trc_xc_functional, only: XC_MAX_KERNELS

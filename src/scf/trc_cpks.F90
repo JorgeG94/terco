@@ -61,7 +61,8 @@
 module trc_cpks
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_multipoles, TRC_NMULT
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_integrals, only: trc_multipoles, TRC_NMULT
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t

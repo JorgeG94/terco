@@ -191,7 +191,7 @@
 module trc_xc_grad
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
                                  XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS

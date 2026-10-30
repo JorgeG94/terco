@@ -36,7 +36,7 @@
 !
 module trc_mdj
    use pic_types, only: dp
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_bins, only: pair_bins_t
    use trc_mdj_kernels, only: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, MDJ_LPMAX
    use pic_profiler, only: profiler_start, profiler_stop

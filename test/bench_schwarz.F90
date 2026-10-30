@@ -12,6 +12,7 @@ program bench_schwarz
    use trc_tables, only: tables_init, LMAX
    use trc_cart, only: cart_init
    use trc_boys, only: boys_init
+   use trc_rys_select, only: rys_select_tables_init
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_hgp, only: hgp_build_pairs
@@ -38,7 +39,7 @@ program bench_schwarz
    if (command_argument_count() >= 1) call get_command_argument(1, xyzfile)
    if (command_argument_count() >= 2) call get_command_argument(2, basfile)
 
-   call tables_init(); call cart_init(); call boys_init()
+   call tables_init(); call cart_init(); call boys_init(); call rys_select_tables_init()
    call read_xyz(trim(xyzfile), natm, zint, at_r)
    call trc_basis_from_json(trim(basfile), natm, zint, at_r, b, err)
    if (err%has_error()) error stop 'bench_schwarz: basis'

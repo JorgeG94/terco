@@ -44,7 +44,8 @@ module trc_minao
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_integrals, only: trc_1e
    use trc_basis_json, only: trc_basis_from_json
    use trc_sph, only: sph_cart_to_sph
    use trc_linalg, only: trc_linalg_t

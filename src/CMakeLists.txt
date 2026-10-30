@@ -18,7 +18,10 @@ target_sources(
           eri/trc_bins.F90       # the binned shell-pair container
           eri/trc_binkernel.F90  # the shared quartet kernel and the digestion
           eri/trc_grad.F90       # two-electron gradient launch plan, Rys only
-          api/trc_api.F90        # basis, pair list, 1e, multipoles, DF
+          core/trc_basis_types.F90 # trc_basis_t and trc_pairlist_t: the basis and the screened pair list
+          core/trc_device_binding.F90 # one GPU per rank: trc_bind_device and friends
+          eri/trc_integrals.F90  # the 1e, multipole, PCM and DF integral drivers
+          api/trc_api.F90        # the Fortran API: re-exports the three above
           basis/trc_decontract.F90 # splitting a general contraction into primitives
           eri/trc_mdj.F90       # the McMurchie-Davidson J engine (no quartets)
           eri/trc_mdg.F90       # MD exchange for the g classes above TERCO_RYS_G_LTOT

@@ -45,7 +45,8 @@ module trc_pcm
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid, lebedev_is_available
    use trc_pcm_radii, only: pcm_radii_cavity_radius
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_pcm_potential, trc_pcm_fock, PCM_LMAX
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_integrals, only: trc_pcm_potential, trc_pcm_fock, PCM_LMAX
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private

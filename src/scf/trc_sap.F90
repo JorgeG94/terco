@@ -28,7 +28,7 @@ module trc_sap
    use pic_logger, only: global_logger
    use pic_timer, only: timer_type
    use trc_constants, only: PI
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
    use trc_dft_radial, only: dft_radial_treutler_ahlrichs
@@ -37,7 +37,8 @@ module trc_sap
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_collocation, only: collocation_shell, NCART_MAX
    use pic_blas_interfaces, only: pic_gemm
-   use trc_api, only: trc_pairlist_t, trc_df_3c
+   use trc_basis_types, only: trc_pairlist_t
+   use trc_integrals, only: trc_df_3c
    use trc_basis_json, only: trc_fitted_shell_from_json
    implicit none
    private
