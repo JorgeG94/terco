@@ -217,7 +217,7 @@ module trc_dlfind_bridge
    ! leaving app/main.F90's non-opt CLI code without opt_io_f_string/opt_io_set_env in a
    ! TERCO_ENABLE_DLFIND=OFF build).
    use trc_opt_io, only: opt_io_f_string, opt_io_set_env, opt_io_write_opt_xyz_frame, &
-                         opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json
+                         opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json, trc_opt_failure_t
    implicit none
    private
 
@@ -706,69 +706,7 @@ contains
          return
       end if
       active = .true.
-
-      context = handle
-      natm = n
-      if (allocated(znuc)) deallocate (znuc)
-      if (allocated(residues)) deallocate (residues)
-      if (allocated(start_coords)) deallocate (start_coords)
-      allocate (znuc(n), source=z)
-      allocate (residues(n), source=residues_in)
-      allocate (start_coords(3, n), source=coords)
-      cur_opts = opts
-      have_prev_scf = .false.
-      cached_nspin = 1
-      eval_failed = .false.
-      eval_fail_msg = ""
-      n_evals = 0
-      n_steps = 0
-      n_hess_evals = 0
-      total_scf_iters = 0
-      have_result = .false.
-      latest_energy = 0.0_dp
-      if (allocated(latest_coords)) deallocate (latest_coords)
-      allocate (latest_coords(3, n), source=coords)
-      last_gmax = 0.0_dp
-      last_grms = 0.0_dp
-      last_niter = 0
-      have_accepted_energy = .false.
-      last_accepted_energy = 0.0_dp
-      accepted_gmax = 0.0_dp
-      accepted_grms = 0.0_dp
-      accept_rule = ACCEPT_ALWAYS
-      global_eval_count = 0
-      global_eval_next = 1
-      neb_prev_image = 0
-      call step_clock%start()
-      if (allocated(last_scf_xyz)) deallocate (last_scf_xyz)
-      have_ts = .false.
-      have_min_plus = .false.
-      have_min_minus = .false.
-      ts_energy = 0.0_dp
-      min_plus_energy = 0.0_dp
-      min_minus_energy = 0.0_dp
-      ts_gmax = 0.0_dp
-      ts_grms = 0.0_dp
-      min_plus_gmax = 0.0_dp
-      min_plus_grms = 0.0_dp
-      min_minus_gmax = 0.0_dp
-      min_minus_grms = 0.0_dp
-      if (allocated(ts_coords)) deallocate (ts_coords)
-      if (allocated(min_plus_coords)) deallocate (min_plus_coords)
-      if (allocated(min_minus_coords)) deallocate (min_minus_coords)
-
-      ! A STARTING capacity, not a hard upper bound: HDLC/DLC's own
-      ! `trerun_energy` evaluations (dl-find.f90's own COORDS TRANSFORM
-      ! section) don't advance `stat%ccycle`, so more than maxiter
-      ! ACCEPTED steps per sub-optimisation is possible even though
-      ! DL-FIND enforces maxcycle on cycles, not accepted steps as such --
-      ! grow_traj (consider_step) doubles these with move_alloc rather than
-      ! drop a frame past this.
-      traj_cap = max(opts%maxiter*merge(3, 1, opts%connect) + 8, 8)
-      if (allocated(traj_e)) deallocate (traj_e)
-      if (allocated(traj_xyz)) deallocate (traj_xyz)
-      allocate (traj_e(traj_cap), traj_xyz(3, n, traj_cap))
-      traj_n = 0
+      call reset_optimize_state(handle, n, z, residues_in, coords, opts)
 
       ! --- --opt-constrain: expand into DL-FIND's own icons block ----------
       ! (type, atom1..atom4), a CARTESIAN entry expanded into three (one per
@@ -967,162 +905,7 @@ contains
          end if
       end if
 
-      if (opt_is_neb .and. .not. res%failed) then
-         ! The converged path, BOTH endpoints included, the scratch
-         ! climbing-image slot (DL-FIND's own image n_images_dlf) excluded
-         ! -- dlf_neb.f90's own real chain is indices 1..nimage-1.
-         block
-            integer :: ni, k
-            logical :: have_cimg
-            ni = n_images_dlf - 1
-            res%have_neb = .true.
-            res%neb_n_images = ni
-            allocate (res%neb_image_energy(ni), res%neb_image_coords(3, n, ni), &
-                     res%neb_scf_iterations_per_image(ni))
-            do k = 1, ni
-               res%neb_image_energy(k) = neb_last_energy(k)
-               res%neb_image_coords(:, :, k) = neb_last_coords(:, :, k)
-               res%neb_scf_iterations_per_image(k) = neb_scf_iters(k)
-            end do
-            res%neb_climb_image = maxloc(res%neb_image_energy, dim=1)
-            ! Once climbing actually spawns, DL-FIND freezes the regular
-            ! image nearest it (its own cb_get_gradient's iimage argument
-            ! stops being called for that index) and instead keeps
-            ! refining a SEPARATE point at the scratch slot n_images_dlf
-            ! (cb_get_gradient's own docstring: "plus once more at image
-            ! n_images_dlf ... once climbing starts") -- excluded from
-            ! the loop above on purpose, since it is not part of the
-            ! nimage-1 chain. Report THAT refined point as the climbing
-            ! image once it has been evaluated at all: the frozen
-            ! regular snapshot is measured (--opt-neb-via smoke test,
-            ! HCN->HNC) to sit ~5e-7 Eh / several mBohr short of the
-            ! saddle that the scratch slot actually converges to.
-            have_cimg = cur_opts%neb_climb .and. neb_scf_iters(n_images_dlf) > 0
-            if (have_cimg) then
-               res%neb_image_energy(res%neb_climb_image) = neb_last_energy(n_images_dlf)
-               res%neb_image_coords(:, :, res%neb_climb_image) = neb_last_coords(:, :, n_images_dlf)
-               ! Carry the scratch slot's own (small, converged) gradient
-               ! into the regular slot too, so the final_gmax/converged
-               ! block below judges the climbing image on the point it is
-               ! actually reporting, not the frozen snapshot's stale,
-               ! pre-climb raw QC gradient.
-               neb_last_gmax(res%neb_climb_image) = neb_last_gmax(n_images_dlf)
-               neb_last_grms(res%neb_climb_image) = neb_last_grms(n_images_dlf)
-               neb_last_grad(:, :, res%neb_climb_image) = neb_last_grad(:, :, n_images_dlf)
-            end if
-            ! A connect-style override does not apply to NEB (mutually
-            ! exclusive at the CLI, app/main.F90): report the climbing
-            ! image as the primary final_energy/final_coords, the same way
-            ! --opt-connect reports its own TS instead of the last
-            ! sub-optimisation's geometry.
-            res%final_energy = res%neb_image_energy(res%neb_climb_image)
-            res%final_coords = res%neb_image_coords(:, :, res%neb_climb_image)
-            block
-               ! A chain image's RAW gradient never goes to zero even once
-               ! converged: every interior image keeps a component ALONG
-               ! the path (the spring force balances it, not the QC
-               ! gradient), so judging convergence on neb_last_gmax
-               ! directly reports "NOT converged" by construction, every
-               ! time, independent of how well the path has actually
-               ! settled (measured: check_opt_neb.F90's own climbing run,
-               ! raw max|g| ~4.8e-2 at a chain DL-FIND itself had already
-               ! frozen). This mirrors dlf_neb_improved_tangent_neb's own
-               ! fper (dlf_neb.f90): project out the along-path component
-               ! before taking the max, using a central-difference tangent
-               ! over the FINAL converged chain (res%neb_image_coords,
-               ! climbing override already applied above) -- not a plain
-               ! central difference (measured too crude: residual
-               ! perpendicular components 2-5e-3 on images a plain
-               ! difference called "frozen", against DL-FIND's own
-               ! fper ~1e-4 there), but dlf_neb_improved_tangent_neb's
-               ! OWN energy-ordered Tau+/Tau-/blend rule (dlf_neb.f90,
-               ! read directly): path(k2)=coords(k2+1)-coords(k2) (ONE-
-               ! SIDED, forward difference); an image strictly between
-               ! its neighbours in energy takes the one-sided tangent
-               ! pointing the way energy increases (Tau+ going uphill,
-               ! Tau- going downhill); a local extremum (image energy
-               ! higher OR lower than both neighbours) blends path(k2)
-               ! and path(k2-1), weighted by the SMALLER/LARGER of the
-               ! two neighbouring energy gaps (emin/emax), matching the
-               ! higher-energy neighbour's own path more. Not DL-FIND's
-               ! own climbing-image tangent specifically (a distance-
-               ! weighted blend of its two nearest REGULAR images' own
-               ! tau, which this reuses via the regular k2==climb_image
-               ! case instead -- close enough once the path has settled,
-               ! not chased further here).
-               !
-               ! Frozen endpoints never move at all, so they are excluded
-               ! outright (as before). Free endpoints (TRC_OPT_NEB_FREE)
-               ! move by the FULL, unprojected gradient in DL-FIND's own
-               ! dlf_neb.f90 (icoord's own "0: free" mode), so their raw
-               ! gmax/grms, not a perpendicular one, is the right
-               ! criterion for them.
-               integer :: lo, hi, k2
-               real(dp) :: tnorm, emin, emax
-               real(dp) :: tvec(3, n), gperp(3, n)
-               real(dp) :: path_fwd(3, n, ni)
-               real(dp) :: perp_gmax(ni), perp_grms(ni)
-               logical :: endpoints_free
-               lo = 1
-               hi = ni
-               if (cur_opts%neb_endpoints == TRC_OPT_NEB_FROZEN .and. ni >= 3) then
-                  lo = 2
-                  hi = ni - 1
-               end if
-               endpoints_free = (cur_opts%neb_endpoints == TRC_OPT_NEB_FREE)
-               do k2 = 1, ni - 1
-                  path_fwd(:, :, k2) = res%neb_image_coords(:, :, k2 + 1) - res%neb_image_coords(:, :, k2)
-               end do
-               do k2 = lo, hi
-                  if (endpoints_free .and. (k2 == 1 .or. k2 == ni)) then
-                     perp_gmax(k2) = neb_last_gmax(k2)
-                     perp_grms(k2) = neb_last_grms(k2)
-                     cycle
-                  end if
-                  if (k2 == 1) then
-                     tvec = path_fwd(:, :, 1)
-                  else if (k2 == ni) then
-                     tvec = path_fwd(:, :, ni - 1)
-                  else if (res%neb_image_energy(k2 + 1) > res%neb_image_energy(k2) .and. &
-                          res%neb_image_energy(k2) > res%neb_image_energy(k2 - 1)) then
-                     tvec = path_fwd(:, :, k2)
-                  else if (res%neb_image_energy(k2 + 1) < res%neb_image_energy(k2) .and. &
-                          res%neb_image_energy(k2) < res%neb_image_energy(k2 - 1)) then
-                     tvec = path_fwd(:, :, k2 - 1)
-                  else
-                     emin = min(abs(res%neb_image_energy(k2 + 1) - res%neb_image_energy(k2)), &
-                                abs(res%neb_image_energy(k2 - 1) - res%neb_image_energy(k2)))
-                     emax = max(abs(res%neb_image_energy(k2 + 1) - res%neb_image_energy(k2)), &
-                                abs(res%neb_image_energy(k2 - 1) - res%neb_image_energy(k2)))
-                     if (res%neb_image_energy(k2 + 1) < res%neb_image_energy(k2 - 1)) then
-                        ! interchange them (dlf_neb.f90's own order: swap
-                        ! BEFORE the emin=emax=0 catch below)
-                        tnorm = emin
-                        emin = emax
-                        emax = tnorm
-                     end if
-                     if (emin == emax .and. emin == 0.0_dp) then
-                        emin = 1.0_dp
-                        emax = 1.0_dp
-                     end if
-                     tvec = emax*path_fwd(:, :, k2) + emin*path_fwd(:, :, k2 - 1)
-                  end if
-                  tnorm = sqrt(sum(tvec**2))
-                  if (tnorm > 0.0_dp) then
-                     tvec = tvec/tnorm
-                     gperp = neb_last_grad(:, :, k2) - sum(neb_last_grad(:, :, k2)*tvec)*tvec
-                  else
-                     gperp = neb_last_grad(:, :, k2)
-                  end if
-                  perp_gmax(k2) = maxval(abs(gperp))
-                  perp_grms(k2) = sqrt(sum(gperp**2)/real(3*n, dp))
-               end do
-               res%final_gmax = maxval(perp_gmax(lo:hi))
-               res%final_grms = sqrt(sum(perp_grms(lo:hi)**2)/real(hi - lo + 1, dp))
-               res%converged = res%final_gmax <= opts%gtol
-            end block
-         end block
-      end if
+      if (opt_is_neb .and. .not. res%failed) call neb_finalize_result(n, opts, res)
 
       active = .false.
       context = c_null_ptr
@@ -1140,6 +923,248 @@ contains
       opt_is_neb = .false.
       natm = 0
    end subroutine trc_dlfind_optimize
+
+   subroutine reset_optimize_state(handle, n, z, residues_in, coords, opts)
+      !! `trc_dlfind_optimize`'s own per-run reset of this module's `save`
+      !! state, split out to keep that procedure under the length
+      !! archcheck's `proc-length` flags. Every name assigned here but not
+      !! a dummy argument is this module's own `save` state -- see that
+      !! state's own declarations just above the `api_dl_find` interface.
+      type(c_ptr), intent(in) :: handle
+      integer, intent(in) :: n
+      integer, intent(in) :: z(n)
+      integer, intent(in) :: residues_in(n)
+      real(dp), intent(in) :: coords(3, n)
+      type(trc_opt_options_t), intent(in) :: opts
+
+      context = handle
+      natm = n
+      if (allocated(znuc)) deallocate (znuc)
+      if (allocated(residues)) deallocate (residues)
+      if (allocated(start_coords)) deallocate (start_coords)
+      allocate (znuc(n), source=z)
+      allocate (residues(n), source=residues_in)
+      allocate (start_coords(3, n), source=coords)
+      cur_opts = opts
+      have_prev_scf = .false.
+      cached_nspin = 1
+      eval_failed = .false.
+      eval_fail_msg = ""
+      n_evals = 0
+      n_steps = 0
+      n_hess_evals = 0
+      total_scf_iters = 0
+      have_result = .false.
+      latest_energy = 0.0_dp
+      if (allocated(latest_coords)) deallocate (latest_coords)
+      allocate (latest_coords(3, n), source=coords)
+      last_gmax = 0.0_dp
+      last_grms = 0.0_dp
+      last_niter = 0
+      have_accepted_energy = .false.
+      last_accepted_energy = 0.0_dp
+      accepted_gmax = 0.0_dp
+      accepted_grms = 0.0_dp
+      accept_rule = ACCEPT_ALWAYS
+      global_eval_count = 0
+      global_eval_next = 1
+      neb_prev_image = 0
+      call step_clock%start()
+      if (allocated(last_scf_xyz)) deallocate (last_scf_xyz)
+      have_ts = .false.
+      have_min_plus = .false.
+      have_min_minus = .false.
+      ts_energy = 0.0_dp
+      min_plus_energy = 0.0_dp
+      min_minus_energy = 0.0_dp
+      ts_gmax = 0.0_dp
+      ts_grms = 0.0_dp
+      min_plus_gmax = 0.0_dp
+      min_plus_grms = 0.0_dp
+      min_minus_gmax = 0.0_dp
+      min_minus_grms = 0.0_dp
+      if (allocated(ts_coords)) deallocate (ts_coords)
+      if (allocated(min_plus_coords)) deallocate (min_plus_coords)
+      if (allocated(min_minus_coords)) deallocate (min_minus_coords)
+
+      ! A STARTING capacity, not a hard upper bound: HDLC/DLC's own
+      ! `trerun_energy` evaluations (dl-find.f90's own COORDS TRANSFORM
+      ! section) don't advance `stat%ccycle`, so more than maxiter
+      ! ACCEPTED steps per sub-optimisation is possible even though
+      ! DL-FIND enforces maxcycle on cycles, not accepted steps as such --
+      ! grow_traj (consider_step) doubles these with move_alloc rather than
+      ! drop a frame past this.
+      traj_cap = max(opts%maxiter*merge(3, 1, opts%connect) + 8, 8)
+      if (allocated(traj_e)) deallocate (traj_e)
+      if (allocated(traj_xyz)) deallocate (traj_xyz)
+      allocate (traj_e(traj_cap), traj_xyz(3, n, traj_cap))
+      traj_n = 0
+   end subroutine reset_optimize_state
+
+   subroutine neb_finalize_result(n, opts, res)
+      !! `trc_dlfind_optimize`'s own --opt-neb result block, split out to
+      !! keep that procedure under the length archcheck's `proc-length`
+      !! flags. Reads the same module `save` state (neb_last_*,
+      !! n_images_dlf, cur_opts) that block always did; `n`/`opts`/`res`
+      !! are the only values it needs that are not already module state.
+      integer, intent(in) :: n
+      type(trc_opt_options_t), intent(in) :: opts
+      type(trc_opt_result_t), intent(inout) :: res
+      ! The converged path, BOTH endpoints included, the scratch
+      ! climbing-image slot (DL-FIND's own image n_images_dlf) excluded
+      ! -- dlf_neb.f90's own real chain is indices 1..nimage-1.
+      block
+         integer :: ni, k
+         logical :: have_cimg
+         ni = n_images_dlf - 1
+         res%have_neb = .true.
+         res%neb_n_images = ni
+         allocate (res%neb_image_energy(ni), res%neb_image_coords(3, n, ni), &
+                  res%neb_scf_iterations_per_image(ni))
+         do k = 1, ni
+            res%neb_image_energy(k) = neb_last_energy(k)
+            res%neb_image_coords(:, :, k) = neb_last_coords(:, :, k)
+            res%neb_scf_iterations_per_image(k) = neb_scf_iters(k)
+         end do
+         res%neb_climb_image = maxloc(res%neb_image_energy, dim=1)
+         ! Once climbing actually spawns, DL-FIND freezes the regular
+         ! image nearest it (its own cb_get_gradient's iimage argument
+         ! stops being called for that index) and instead keeps
+         ! refining a SEPARATE point at the scratch slot n_images_dlf
+         ! (cb_get_gradient's own docstring: "plus once more at image
+         ! n_images_dlf ... once climbing starts") -- excluded from
+         ! the loop above on purpose, since it is not part of the
+         ! nimage-1 chain. Report THAT refined point as the climbing
+         ! image once it has been evaluated at all: the frozen
+         ! regular snapshot is measured (--opt-neb-via smoke test,
+         ! HCN->HNC) to sit ~5e-7 Eh / several mBohr short of the
+         ! saddle that the scratch slot actually converges to.
+         have_cimg = cur_opts%neb_climb .and. neb_scf_iters(n_images_dlf) > 0
+         if (have_cimg) then
+            res%neb_image_energy(res%neb_climb_image) = neb_last_energy(n_images_dlf)
+            res%neb_image_coords(:, :, res%neb_climb_image) = neb_last_coords(:, :, n_images_dlf)
+            ! Carry the scratch slot's own (small, converged) gradient
+            ! into the regular slot too, so the final_gmax/converged
+            ! block below judges the climbing image on the point it is
+            ! actually reporting, not the frozen snapshot's stale,
+            ! pre-climb raw QC gradient.
+            neb_last_gmax(res%neb_climb_image) = neb_last_gmax(n_images_dlf)
+            neb_last_grms(res%neb_climb_image) = neb_last_grms(n_images_dlf)
+            neb_last_grad(:, :, res%neb_climb_image) = neb_last_grad(:, :, n_images_dlf)
+         end if
+         ! A connect-style override does not apply to NEB (mutually
+         ! exclusive at the CLI, app/main.F90): report the climbing
+         ! image as the primary final_energy/final_coords, the same way
+         ! --opt-connect reports its own TS instead of the last
+         ! sub-optimisation's geometry.
+         res%final_energy = res%neb_image_energy(res%neb_climb_image)
+         res%final_coords = res%neb_image_coords(:, :, res%neb_climb_image)
+         block
+            ! A chain image's RAW gradient never goes to zero even once
+            ! converged: every interior image keeps a component ALONG
+            ! the path (the spring force balances it, not the QC
+            ! gradient), so judging convergence on neb_last_gmax
+            ! directly reports "NOT converged" by construction, every
+            ! time, independent of how well the path has actually
+            ! settled (measured: check_opt_neb.F90's own climbing run,
+            ! raw max|g| ~4.8e-2 at a chain DL-FIND itself had already
+            ! frozen). This mirrors dlf_neb_improved_tangent_neb's own
+            ! fper (dlf_neb.f90): project out the along-path component
+            ! before taking the max, using a central-difference tangent
+            ! over the FINAL converged chain (res%neb_image_coords,
+            ! climbing override already applied above) -- not a plain
+            ! central difference (measured too crude: residual
+            ! perpendicular components 2-5e-3 on images a plain
+            ! difference called "frozen", against DL-FIND's own
+            ! fper ~1e-4 there), but dlf_neb_improved_tangent_neb's
+            ! OWN energy-ordered Tau+/Tau-/blend rule (dlf_neb.f90,
+            ! read directly): path(k2)=coords(k2+1)-coords(k2) (ONE-
+            ! SIDED, forward difference); an image strictly between
+            ! its neighbours in energy takes the one-sided tangent
+            ! pointing the way energy increases (Tau+ going uphill,
+            ! Tau- going downhill); a local extremum (image energy
+            ! higher OR lower than both neighbours) blends path(k2)
+            ! and path(k2-1), weighted by the SMALLER/LARGER of the
+            ! two neighbouring energy gaps (emin/emax), matching the
+            ! higher-energy neighbour's own path more. Not DL-FIND's
+            ! own climbing-image tangent specifically (a distance-
+            ! weighted blend of its two nearest REGULAR images' own
+            ! tau, which this reuses via the regular k2==climb_image
+            ! case instead -- close enough once the path has settled,
+            ! not chased further here).
+            !
+            ! Frozen endpoints never move at all, so they are excluded
+            ! outright (as before). Free endpoints (TRC_OPT_NEB_FREE)
+            ! move by the FULL, unprojected gradient in DL-FIND's own
+            ! dlf_neb.f90 (icoord's own "0: free" mode), so their raw
+            ! gmax/grms, not a perpendicular one, is the right
+            ! criterion for them.
+            integer :: lo, hi, k2
+            real(dp) :: tnorm, emin, emax
+            real(dp) :: tvec(3, n), gperp(3, n)
+            real(dp) :: path_fwd(3, n, ni)
+            real(dp) :: perp_gmax(ni), perp_grms(ni)
+            logical :: endpoints_free
+            lo = 1
+            hi = ni
+            if (cur_opts%neb_endpoints == TRC_OPT_NEB_FROZEN .and. ni >= 3) then
+               lo = 2
+               hi = ni - 1
+            end if
+            endpoints_free = (cur_opts%neb_endpoints == TRC_OPT_NEB_FREE)
+            do k2 = 1, ni - 1
+               path_fwd(:, :, k2) = res%neb_image_coords(:, :, k2 + 1) - res%neb_image_coords(:, :, k2)
+            end do
+            do k2 = lo, hi
+               if (endpoints_free .and. (k2 == 1 .or. k2 == ni)) then
+                  perp_gmax(k2) = neb_last_gmax(k2)
+                  perp_grms(k2) = neb_last_grms(k2)
+                  cycle
+               end if
+               if (k2 == 1) then
+                  tvec = path_fwd(:, :, 1)
+               else if (k2 == ni) then
+                  tvec = path_fwd(:, :, ni - 1)
+               else if (res%neb_image_energy(k2 + 1) > res%neb_image_energy(k2) .and. &
+                       res%neb_image_energy(k2) > res%neb_image_energy(k2 - 1)) then
+                  tvec = path_fwd(:, :, k2)
+               else if (res%neb_image_energy(k2 + 1) < res%neb_image_energy(k2) .and. &
+                       res%neb_image_energy(k2) < res%neb_image_energy(k2 - 1)) then
+                  tvec = path_fwd(:, :, k2 - 1)
+               else
+                  emin = min(abs(res%neb_image_energy(k2 + 1) - res%neb_image_energy(k2)), &
+                             abs(res%neb_image_energy(k2 - 1) - res%neb_image_energy(k2)))
+                  emax = max(abs(res%neb_image_energy(k2 + 1) - res%neb_image_energy(k2)), &
+                             abs(res%neb_image_energy(k2 - 1) - res%neb_image_energy(k2)))
+                  if (res%neb_image_energy(k2 + 1) < res%neb_image_energy(k2 - 1)) then
+                     ! interchange them (dlf_neb.f90's own order: swap
+                     ! BEFORE the emin=emax=0 catch below)
+                     tnorm = emin
+                     emin = emax
+                     emax = tnorm
+                  end if
+                  if (emin == emax .and. emin == 0.0_dp) then
+                     emin = 1.0_dp
+                     emax = 1.0_dp
+                  end if
+                  tvec = emax*path_fwd(:, :, k2) + emin*path_fwd(:, :, k2 - 1)
+               end if
+               tnorm = sqrt(sum(tvec**2))
+               if (tnorm > 0.0_dp) then
+                  tvec = tvec/tnorm
+                  gperp = neb_last_grad(:, :, k2) - sum(neb_last_grad(:, :, k2)*tvec)*tvec
+               else
+                  gperp = neb_last_grad(:, :, k2)
+               end if
+               perp_gmax(k2) = maxval(abs(gperp))
+               perp_grms(k2) = sqrt(sum(gperp**2)/real(3*n, dp))
+            end do
+            res%final_gmax = maxval(perp_gmax(lo:hi))
+            res%final_grms = sqrt(sum(perp_grms(lo:hi)**2)/real(hi - lo + 1, dp))
+            res%converged = res%final_gmax <= opts%gtol
+         end block
+      end block
+   end subroutine neb_finalize_result
 
    subroutine reset_image_state(n, nimg, density_size)
       !! (Re)allocate the per-image warm-start/path bookkeeping for `nimg`
@@ -1954,10 +1979,19 @@ contains
                                     traj_e(1:traj_n))
       end if
       if (opt_str_set(cur_opts%json_path)) then
-         call opt_io_write_opt_failure_json(cur_opts%json_path, opt_str_or_blank(cur_opts%geometry_path), reason, &
-                                     n_steps, n_evals, latest_energy, accepted_gmax, accepted_grms, &
-                                     opt_str_or_blank(cur_opts%coords_name), opt_str_or_blank(cur_opts%guess_name), &
-                                     traj_e(1:traj_n))
+         block
+            type(trc_opt_failure_t) :: info
+            info%geometry = opt_str_or_blank(cur_opts%geometry_path)
+            info%reason = reason
+            info%steps = n_steps
+            info%energy_evaluations = n_evals
+            info%final_energy = latest_energy
+            info%final_gradient_max = accepted_gmax
+            info%final_gradient_rms = accepted_grms
+            info%coords_name = opt_str_or_blank(cur_opts%coords_name)
+            info%guess_name = opt_str_or_blank(cur_opts%guess_name)
+            call opt_io_write_opt_failure_json(cur_opts%json_path, info, traj_e(1:traj_n))
+         end block
       end if
    end subroutine write_failure_outputs
 

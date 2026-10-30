@@ -24,12 +24,12 @@ module trc_dft_grid
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid
    use trc_dft_radial, only: dft_radial_treutler_ahlrichs
-   use trc_dft_partition, only: dft_partition_becke_weights, PARTITION_BECKE, ADJUST_TREUTLER
+   use trc_dft_partition, only: dft_partition_becke_weights, dft_partition_options_t
    use trc_dft_prune, only: dft_prune_angular_orders, PRUNE_NONE, PRUNE_NWCHEM
    implicit none
    private
 
-   public :: dft_grid_t
+   public :: dft_grid_t, dft_grid_options_t
    public :: dft_grid_build, dft_grid_build_block
    public :: dft_grid_level_radial, dft_grid_level_angular
    public :: MIN_GRID_LEVEL, MAX_GRID_LEVEL, DEFAULT_GRID_LEVEL
@@ -81,6 +81,20 @@ module trc_dft_grid
    !! PySCF's table stores Lebedev degrees and maps them to point counts; these
    !! are the point counts directly, since that is what `lebedev_grid` takes.
 
+   type :: dft_grid_options_t
+      !! How the grid is built, beyond its `level`. The defaults are the
+      !! production grid.
+      integer :: prune = DEFAULT_PRUNE
+      !! PRUNE_NONE or PRUNE_NWCHEM.
+      integer :: n_radial = 0, n_angular = 0
+      !! Overrides for every atom, which is what a convergence study wants;
+      !! zero leaves the level's tables in charge. Supplying one without the
+      !! other is refused rather than silently half-applied.
+      type(dft_partition_options_t) :: partition
+      !! The partition's cutoff and size adjustment (and screening, scratch
+      !! budget); its point block is set by dft_grid_build_block.
+   end type dft_grid_options_t
+
    type :: dft_grid_t
       !! A molecular quadrature: points, weights, and which atom made each point
       integer :: n_points = 0
@@ -99,9 +113,14 @@ module trc_dft_grid
       ! differentiate the same partition the energy integrated over, and a
       ! caller reconstructing these from defaults would silently differentiate
       ! a different one the moment the defaults changed.
-      integer :: scheme = PARTITION_BECKE
-      integer :: adjust = ADJUST_TREUTLER
+      type(dft_partition_options_t) :: partition
+      !! Cutoff, size adjustment and screening; the point block is reset to
+      !! every point, since a gradient walks all of them.
       integer, allocatable :: numbers(:)     !! (n_atoms), Z, for the partition radii
+      real(dp) :: t_points = 0.0_dp, t_partition = 0.0_dp
+      !! Wall time of the point-generation loop (radial x Lebedev x pruning)
+      !! and of `apply_partition` (the Becke/Stratmann weights), for the
+      !! caller's own "grid (s)" sub-table -- trc_scf_context.F90's `setup`.
    contains
       procedure :: destroy => dft_grid_destroy
    end type dft_grid_t
@@ -143,8 +162,7 @@ contains
       clamped = max(MIN_GRID_LEVEL, min(MAX_GRID_LEVEL, level))
    end function clamp_level
 
-   subroutine dft_grid_build(atom_coords, atomic_numbers, grid, error, &
-                             level, scheme, adjust, n_radial, n_angular, prune, t_points, t_partition)
+   subroutine dft_grid_build(atom_coords, atomic_numbers, grid, error, level, options)
       !! Build the molecular grid: see `build_grid` for the arguments.
       !!
       !! A separate entry from `dft_grid_build_block`, with this interface
@@ -155,17 +173,12 @@ contains
       integer, intent(in) :: atomic_numbers(:)
       type(dft_grid_t), intent(out) :: grid
       type(error_t), intent(inout) :: error
-      integer, intent(in), optional :: level, scheme, adjust, n_radial, n_angular, prune
-      real(dp), intent(out), optional :: t_points, t_partition
-      !! Wall time of the point-generation loop (radial x Lebedev x pruning)
-      !! and of `apply_partition` (the Becke/Stratmann weights), for the
-      !! caller's own "grid (s)" sub-table -- trc_scf_context.F90's `setup`.
-      call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune, &
-                      t_points=t_points, t_partition=t_partition)
+      integer, intent(in), optional :: level
+      type(dft_grid_options_t), intent(in), optional :: options
+      call build_grid(atom_coords, atomic_numbers, grid, error, level, options)
    end subroutine dft_grid_build
 
-   subroutine dft_grid_build_block(atom_coords, atomic_numbers, grid, error, my_rank, n_ranks, &
-                                   level, scheme, adjust, n_radial, n_angular, prune, t_points, t_partition)
+   subroutine dft_grid_build_block(atom_coords, atomic_numbers, grid, error, my_rank, n_ranks, level, options)
       !! Build the molecular grid with this rank partitioning only its block
       !! of the points: the partition is the expensive part of the build,
       !! and the same on every rank. The returned `weights` are zero outside
@@ -176,38 +189,31 @@ contains
       type(dft_grid_t), intent(out) :: grid
       type(error_t), intent(inout) :: error
       integer, intent(in) :: my_rank, n_ranks
-      integer, intent(in), optional :: level, scheme, adjust, n_radial, n_angular, prune
-      real(dp), intent(out), optional :: t_points, t_partition
-      call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune, &
-                      my_rank, n_ranks, t_points, t_partition)
+      integer, intent(in), optional :: level
+      type(dft_grid_options_t), intent(in), optional :: options
+      call build_grid(atom_coords, atomic_numbers, grid, error, level, options, my_rank, n_ranks)
    end subroutine dft_grid_build_block
 
-   subroutine build_grid(atom_coords, atomic_numbers, grid, error, &
-                         level, scheme, adjust, n_radial, n_angular, prune, my_rank, n_ranks, t_points, t_partition)
+   subroutine build_grid(atom_coords, atomic_numbers, grid, error, level, options, my_rank, n_ranks)
       !! Build the molecular grid
       !!
-      !! `level` picks per-element sizes from the standard tables. `n_radial`
-      !! and `n_angular` override it for every atom, which is what a convergence
-      !! study wants; supplying one without the other is refused rather than
-      !! silently half-applied.
+      !! `level` picks per-element sizes from the standard tables;
+      !! `options` overrides the pruning, the per-atom sizes and the
+      !! partition.
       real(dp), intent(in) :: atom_coords(:, :)   !! (3, n_atoms), Bohr
       integer, intent(in) :: atomic_numbers(:)    !! Z per atom
       type(dft_grid_t), intent(out) :: grid
       type(error_t), intent(inout) :: error
       integer, intent(in), optional :: level      !! 0 to 9, default 3
-      integer, intent(in), optional :: scheme     !! Partition cutoff
-      integer, intent(in), optional :: adjust     !! Size adjustment
-      integer, intent(in), optional :: n_radial   !! Override, all atoms
-      integer, intent(in), optional :: n_angular  !! Override, all atoms
-      integer, intent(in), optional :: prune      !! PRUNE_NONE or PRUNE_NWCHEM
+      type(dft_grid_options_t), intent(in), optional :: options
+      !! Default: the production grid (see dft_grid_options_t).
       integer, intent(in), optional :: my_rank, n_ranks
       !! With both given, only this rank's block of the points is partitioned.
-      real(dp), intent(out), optional :: t_points, t_partition
-      !! See `dft_grid_build`'s own declaration.
 
       real(dp), allocatable :: r(:), dr(:), sphere(:, :), w_ang(:)
       integer, allocatable :: shell_order(:)
-      integer :: n_atoms, used_level, used_scheme, used_adjust, used_prune
+      type(dft_grid_options_t) :: opts
+      integer :: n_atoms, used_level
       integer :: ia, i, j, k, nr, na, total, offset, cached_order
       type(timer_type) :: tm_gen
 
@@ -223,14 +229,9 @@ contains
 
       used_level = DEFAULT_GRID_LEVEL
       if (present(level)) used_level = level
-      used_scheme = PARTITION_BECKE
-      if (present(scheme)) used_scheme = scheme
-      used_adjust = ADJUST_TREUTLER
-      if (present(adjust)) used_adjust = adjust
-      used_prune = DEFAULT_PRUNE
-      if (present(prune)) used_prune = prune
+      if (present(options)) opts = options
 
-      if (present(n_radial) .neqv. present(n_angular)) then
+      if ((opts%n_radial > 0) .neqv. (opts%n_angular > 0)) then
          call error%set(ERROR_VALIDATION, &
                         "grid: n_radial and n_angular must be given together")
          return
@@ -242,11 +243,11 @@ contains
       ! depend on the radii, so the radial mesh has to be built here as well.
       total = 0
       do ia = 1, n_atoms
-         call atom_sizes(atomic_numbers(ia), used_level, n_radial, n_angular, nr, na)
+         call atom_sizes(atomic_numbers(ia), used_level, opts, nr, na)
          call dft_radial_treutler_ahlrichs(nr, atomic_numbers(ia), r, dr, error)
          if (error%has_error()) return
          allocate (shell_order(nr))
-         call dft_prune_angular_orders(used_prune, atomic_numbers(ia), r, na, shell_order, error)
+         call dft_prune_angular_orders(opts%prune, atomic_numbers(ia), r, na, shell_order, error)
          if (error%has_error()) return
          total = total + sum(shell_order)
          deallocate (r, dr, shell_order)
@@ -259,13 +260,13 @@ contains
 
       offset = 0
       do ia = 1, n_atoms
-         call atom_sizes(atomic_numbers(ia), used_level, n_radial, n_angular, nr, na)
+         call atom_sizes(atomic_numbers(ia), used_level, opts, nr, na)
 
          call dft_radial_treutler_ahlrichs(nr, atomic_numbers(ia), r, dr, error)
          if (error%has_error()) return
 
          allocate (shell_order(nr))
-         call dft_prune_angular_orders(used_prune, atomic_numbers(ia), r, na, shell_order, error)
+         call dft_prune_angular_orders(opts%prune, atomic_numbers(ia), r, na, shell_order, error)
          if (error%has_error()) return
 
          ! Shells sharing an order are not contiguous -- the outer zone repeats
@@ -295,54 +296,53 @@ contains
          if (allocated(sphere)) deallocate (sphere, w_ang)
       end do
 
-      grid%scheme = used_scheme
-      grid%adjust = used_adjust
+      grid%partition = opts%partition
+      grid%partition%first = 1
+      grid%partition%last = huge(1)
       allocate (grid%numbers(n_atoms), source=atomic_numbers)
-      if (present(t_points)) t_points = tm_gen%get_elapsed_time()
+      grid%t_points = tm_gen%get_elapsed_time()
 
       call tm_gen%start()
-      call apply_partition(grid, atom_coords, atomic_numbers, used_scheme, used_adjust, error, my_rank, n_ranks)
-      if (present(t_partition)) t_partition = tm_gen%get_elapsed_time()
+      call apply_partition(grid, atom_coords, atomic_numbers, error, my_rank, n_ranks)
+      grid%t_partition = tm_gen%get_elapsed_time()
    end subroutine build_grid
 
-   pure subroutine atom_sizes(atomic_number, level, n_radial, n_angular, nr, na)
+   pure subroutine atom_sizes(atomic_number, level, options, nr, na)
       !! Radial and angular counts for one atom, honouring any override
       integer, intent(in) :: atomic_number, level
-      integer, intent(in), optional :: n_radial, n_angular
+      type(dft_grid_options_t), intent(in) :: options
       integer, intent(out) :: nr, na
 
-      if (present(n_radial)) then
-         nr = n_radial
-         na = n_angular
+      if (options%n_radial > 0) then
+         nr = options%n_radial
+         na = options%n_angular
       else
          nr = dft_grid_level_radial(atomic_number, level)
          na = dft_grid_level_angular(atomic_number, level)
       end if
    end subroutine atom_sizes
 
-   subroutine apply_partition(grid, atom_coords, atomic_numbers, scheme, adjust, error, my_rank, n_ranks)
-      !! Multiply the product weights by the Becke cell weights
+   subroutine apply_partition(grid, atom_coords, atomic_numbers, error, my_rank, n_ranks)
+      !! Multiply the product weights by the Becke cell weights, built as
+      !! grid%partition says
       type(dft_grid_t), intent(inout) :: grid
       real(dp), intent(in) :: atom_coords(:, :)
       integer, intent(in) :: atomic_numbers(:)
-      integer, intent(in) :: scheme, adjust
       type(error_t), intent(inout) :: error
       integer, intent(in), optional :: my_rank, n_ranks
 
       real(dp), allocatable :: cell(:)
-      integer :: k_lo, k_hi
+      type(dft_partition_options_t) :: block_partition
 
       allocate (cell(grid%n_points))
+      block_partition = grid%partition
       if (present(my_rank) .and. present(n_ranks)) then
          ! Contiguous blocks: the chunks inside are contiguous too.
-         k_lo = int((int(grid%n_points, int64)*my_rank)/n_ranks) + 1
-         k_hi = int((int(grid%n_points, int64)*(my_rank + 1))/n_ranks)
-         call dft_partition_becke_weights(grid%coords, atom_coords, atomic_numbers, &
-                                      grid%atom, scheme, adjust, cell, error, first=k_lo, last=k_hi)
-      else
-         call dft_partition_becke_weights(grid%coords, atom_coords, atomic_numbers, &
-                                      grid%atom, scheme, adjust, cell, error)
+         block_partition%first = int((int(grid%n_points, int64)*my_rank)/n_ranks) + 1
+         block_partition%last = int((int(grid%n_points, int64)*(my_rank + 1))/n_ranks)
       end if
+      call dft_partition_becke_weights(grid%coords, atom_coords, atomic_numbers, &
+                                       grid%atom, block_partition, cell, error)
       if (error%has_error()) return
 
       ! Before, not after: this is the quadrature weight on its own.

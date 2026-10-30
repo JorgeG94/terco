@@ -25,6 +25,7 @@ module trc_bins
    use trc_tables, only: LMAX
    use pic_types, only: int64, int_index
    use pic_sorting, only: sort_index
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t
    implicit none
    private
 
@@ -72,6 +73,41 @@ module trc_bins
       real(dp), allocatable :: bin_dm(:)           !! largest |D| block over a bin's pairs
    end type pair_bins_t
 
+   !
+   ! The launch plan: which bin pairs survive the admission test, how their
+   ! quartets are numbered, and in what order the class-specialised kernels
+   ! cover them. One segment is one admitted bin pair; a thread finds its own
+   ! segment by searching the prefix sum `sOff`. binkernel_fock_bins and
+   ! grad_bins build the same plan, so it is built here once for both.
+   !
+   ! The arrays keep the names the generated kernels give their dummies
+   ! (sA, sNB, ...). Never mapped whole: a launcher enters the arrays it
+   ! hands to its kernels one by one.
+   !
+   type, public :: trc_bin_plan_t
+      integer :: nseg = 0
+      !! Segments: admitted bin pairs.
+      integer(int64) :: nwork = 0
+      !! Work items over all segments: sOff(nseg + 1).
+      integer, allocatable :: sA(:), sNB(:)
+      !! (nseg) pairs in the bra bin and in the ket bin.
+      integer, allocatable :: sOA(:), sOB(:)
+      !! (nseg) first pair - 1 of the bra and ket bins in pair_bins_t's lists.
+      integer, allocatable :: sPA(:), sPB(:)
+      !! (nseg) first slot - 1 of the two bins in the bin-interleaved tables.
+      integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
+      !! (nseg) the class (la, lb | lc, ld).
+      logical, allocatable :: sD(:)
+      !! (nseg) bra bin == ket bin: the segment is a triangle, not a rectangle.
+      integer(int64), allocatable :: sOff(:)
+      !! (nseg + 1) prefix sum of the work items; sOff(1) = 0.
+   contains
+      procedure :: build         => bins_plan_build
+      procedure :: sort_by_class => bins_plan_sort_by_class
+      procedure :: class_key     => bins_plan_class_key
+      procedure :: release       => bins_plan_release
+   end type trc_bin_plan_t
+
 contains
 
    !
@@ -101,14 +137,12 @@ contains
    ! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
    ! pairs, against the 586M quartets the old path enumerated.
    !
-   subroutine bins_build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g, pp_n, res)
-      integer,  intent(in)  :: nbas
-      integer,  intent(in)  :: sh_l(nbas), sh_np(nbas)
-      real(dp), intent(in)  :: sh_r(3, nbas)      !! shell centres, for the intra-bin sort
+   subroutine bins_build_binned_pairs(sh_l, sh_np, sh_r, q, thresh, b, pp_n, res)
+      integer,  intent(in)  :: sh_l(:), sh_np(:)  !! (nbas) per shell; their size is the shell count
+      real(dp), intent(in)  :: sh_r(:, :)         !! (3, nbas) shell centres, for the intra-bin sort
       real(dp), intent(in)  :: q(:)               !! Schwarz bound, canonical pair index
       real(dp), intent(in)  :: thresh
       type(pair_bins_t), intent(out) :: b
-      logical,  intent(in), optional :: sh_g(nbas)  !! shell has more than one column
       integer,  intent(in), optional :: pp_n(:)
       !! Primitive pairs actually kept per shell pair, rectangular key
       !! (i-1)*nbas+j. The contraction degree the bin key sorts on is
@@ -117,11 +151,12 @@ contains
       integer,  intent(in), optional :: res
       !! Buckets per decade of Schwarz bound; 1 (the default) is decades.
 
-      integer :: nb, i, j, s, k, p, n, key, gg, ia, ib, sres
+      integer :: nbas, nb, i, j, s, k, p, n, key, gg, ia, ib, sres
       integer, allocatable :: cnt(:), pos(:), keyv(:), ti(:), tj(:)
       real(dp), allocatable :: tq(:)
       real(dp) :: qq, qmax
 
+      nbas = size(sh_l)
       sres = 1
       if (present(res)) sres = max(1, min(SMAX_RES, res))
       b%sres = sres
@@ -166,9 +201,6 @@ contains
             call lorder(i, j, ia, ib)
             s = size_index(qq, sres)
             gg = 0
-            if (present(sh_g)) then
-               if (sh_g(i) .or. sh_g(j)) gg = 1
-            end if
             key = bin_key(sh_l(ia), sh_l(ib), kab_of(ia, ib), s, gg)
             cnt(key) = cnt(key) + 1
             n = n + 1
@@ -195,9 +227,6 @@ contains
             call lorder(i, j, ia, ib)
             s = size_index(qq, sres)
             gg = 0
-            if (present(sh_g)) then
-               if (sh_g(i) .or. sh_g(j)) gg = 1
-            end if
             key = bin_key(sh_l(ia), sh_l(ib), kab_of(ia, ib), s, gg)
             pos(key) = pos(key) + 1
             b%sp_i(pos(key)) = ia
@@ -342,8 +371,8 @@ contains
    end subroutine split_large_bins
 
    !
-   ! Build the bin-interleaved primitive-pair tables from the pp_* ("hp_*" at
-   ! the call site) data hgp_build_pairs already built. Called once after
+   ! Build the bin-interleaved primitive-pair tables from the primitive
+   ! pairs hgp_build_pairs already built. Called once after
    ! bins_build_binned_pairs, and again whenever the slot order inside bins
    ! changes (bins_sort_by_weight).
    !
@@ -363,34 +392,23 @@ contains
    ! copyin(this%bins, this%bins%sp_i, ...)` at the call site -- and growing
    ! that type's allocatable-component count that way made nvfortran 26.5
    ! miscompile an UNRELATED host loop two modules away (an internal
-   ! "bitcast with differing sizes" in code that never touches a bin). The
-   ! caller instead owns these as its own flat allocatables, exactly the
-   ! shape pp_off/pp_n/pp_p/... already have, and passes them back in on a
-   ! rebuild so the reuse-the-allocation logic below still applies.
+   ! "bitcast with differing sizes" in code that never touches a bin). They
+   ! live in their own trc_pair_quartets_t instead, which is never mapped
+   ! whole -- its arrays go to the device one by one -- and the caller
+   ! passes it back in on a rebuild so the reuse-the-allocation logic below
+   ! still applies.
    !
-   subroutine bins_build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                                  bin_pbase, bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, pp_a, qp_a)
+   subroutine bins_build_pair_quartets(b, pairs, quartets)
       type(pair_bins_t), intent(in) :: b
-      integer,  intent(in) :: nbas, npp
-      integer,  intent(in) :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in) :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
-      integer,  allocatable, intent(inout) :: bin_pbase(:), bin_k(:)
-      integer,  intent(out) :: nqp
-      real(dp), allocatable, intent(inout) :: qp_z(:), qp_c(:)
-      real(dp), allocatable, intent(inout) :: qp_px(:), qp_py(:), qp_pz(:)
-      real(dp), allocatable, intent(inout) :: sq_ax(:), sq_ay(:), sq_az(:)
-      real(dp), allocatable, intent(inout) :: sq_abx(:), sq_aby(:), sq_abz(:)
-      integer,  allocatable, intent(inout) :: sq_n(:)
-      real(dp), optional, intent(in) :: pp_a(npp)
-      !! The i-side primitive's own exponent, pp_a from hgp_build_pairs.
-      !! Optional, like there: only the gradient path threads it through.
-      real(dp), allocatable, optional, intent(inout) :: qp_a(:)
-      !! Bin-interleaved form of pp_a, same layout as qp_z. The padding
-      !! slot (k > a pair's own kept count) gets 0: never read, since the
-      !! kernel's loop bound is always the pair's real count (`sq_n`).
+      type(trc_shell_pairs_t), intent(in) :: pairs
+      !! The primitive pairs from hgp_build_pairs.
+      type(trc_pair_quartets_t), intent(inout) :: quartets
+      !! Filled in place: `intent(inout)` because a rebuild after a resort
+      !! reuses the allocation (see below). A padding slot (k past a pair's
+      !! own kept count) is never read, since the kernel's loop bound is
+      !! always the pair's real count (`n`); its `a` is 0.
 
-      integer :: ib, bb, s, p, key, k1, kreal, off, ix
+      integer :: nbas, nqp, ib, bb, s, p, key, k1, kreal, off, ix
 
       !
       ! REUSE THE ALLOCATION ON A REBUILD.
@@ -403,51 +421,50 @@ contains
       ! finds the same allocation, so this fills the existing arrays in
       ! place rather than deallocating and reallocating them.
       !
-      if (.not. allocated(bin_pbase)) allocate (bin_pbase(b%nbin), bin_k(b%nbin))
-      if (.not. allocated(sq_ax)) then
-         allocate (sq_ax(b%npair), sq_ay(b%npair), sq_az(b%npair))
-         allocate (sq_abx(b%npair), sq_aby(b%npair), sq_abz(b%npair))
-         allocate (sq_n(b%npair))
+      nbas = pairs%nbas
+      if (.not. allocated(quartets%bin_pbase)) allocate (quartets%bin_pbase(b%nbin), quartets%bin_k(b%nbin))
+      if (.not. allocated(quartets%ax)) then
+         allocate (quartets%ax(b%npair), quartets%ay(b%npair), quartets%az(b%npair))
+         allocate (quartets%abx(b%npair), quartets%aby(b%npair), quartets%abz(b%npair))
+         allocate (quartets%n(b%npair))
       end if
-      bin_pbase = 0
-      bin_k = 0
+      quartets%bin_pbase = 0
+      quartets%bin_k = 0
 
       ! Per pair slot: the A centre, A - B, and the real kept count -- what
-      ! pp_off(key)/pp_n(key) gave the kernel before, read here once rather
-      ! than once per quartet.
+      ! pairs%off(key)/pairs%n(key) would give the kernel, read here once
+      ! rather than once per quartet.
       do p = 1, b%npair
          key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
-         off = pp_off(key)
-         sq_ax(p) = pp_ra(off + 1, 1)
-         sq_ay(p) = pp_ra(off + 1, 2)
-         sq_az(p) = pp_ra(off + 1, 3)
-         sq_abx(p) = pp_ra(off + 1, 1) - pp_rb(off + 1, 1)
-         sq_aby(p) = pp_ra(off + 1, 2) - pp_rb(off + 1, 2)
-         sq_abz(p) = pp_ra(off + 1, 3) - pp_rb(off + 1, 3)
-         sq_n(p) = pp_n(key)
+         off = pairs%off(key)
+         quartets%ax(p) = pairs%ra(off + 1, 1)
+         quartets%ay(p) = pairs%ra(off + 1, 2)
+         quartets%az(p) = pairs%ra(off + 1, 3)
+         quartets%abx(p) = pairs%ra(off + 1, 1) - pairs%rb(off + 1, 1)
+         quartets%aby(p) = pairs%ra(off + 1, 2) - pairs%rb(off + 1, 2)
+         quartets%abz(p) = pairs%ra(off + 1, 3) - pairs%rb(off + 1, 3)
+         quartets%n(p) = pairs%n(key)
       end do
 
       ! Per bin: K_b, then the prefix sum that lays bins out one after
-      ! another in qp_*.
+      ! another in the slot arrays.
       do ib = 1, b%nlive
          bb = b%live(ib)
          do s = 1, b%bin_cnt(bb)
-            bin_k(bb) = max(bin_k(bb), sq_n(b%bin_off(bb) + s))
+            quartets%bin_k(bb) = max(quartets%bin_k(bb), quartets%n(b%bin_off(bb) + s))
          end do
       end do
       nqp = 0
       do bb = 1, b%nbin
-         bin_pbase(bb) = nqp
-         nqp = nqp + b%bin_cnt(bb)*bin_k(bb)
+         quartets%bin_pbase(bb) = nqp
+         nqp = nqp + b%bin_cnt(bb)*quartets%bin_k(bb)
       end do
 
-      if (.not. allocated(qp_z)) then
-         allocate (qp_z(nqp), qp_c(nqp))
-         allocate (qp_px(nqp), qp_py(nqp), qp_pz(nqp))
+      if (.not. allocated(quartets%z)) then
+         allocate (quartets%z(nqp), quartets%c(nqp), quartets%a(nqp))
+         allocate (quartets%px(nqp), quartets%py(nqp), quartets%pz(nqp))
       end if
-      if (present(qp_a)) then
-         if (.not. allocated(qp_a)) allocate (qp_a(nqp))
-      end if
+      quartets%nqp = nqp
 
       ! Interleaved by primitive index: ix(b, k, s) = bin_pbase(b) + (k-1)*n_b + s.
       ! The real primitives keep the order hgp_build_pairs already sorted them
@@ -458,24 +475,24 @@ contains
          do s = 1, b%bin_cnt(bb)
             p = b%bin_off(bb) + s
             key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
-            off = pp_off(key)
-            kreal = sq_n(p)
-            do k1 = 1, bin_k(bb)
-               ix = bin_pbase(bb) + (k1 - 1)*b%bin_cnt(bb) + s
+            off = pairs%off(key)
+            kreal = quartets%n(p)
+            do k1 = 1, quartets%bin_k(bb)
+               ix = quartets%bin_pbase(bb) + (k1 - 1)*b%bin_cnt(bb) + s
                if (k1 <= kreal) then
-                  qp_z(ix) = pp_p(off + k1)
-                  qp_c(ix) = pp_c(off + k1)
-                  qp_px(ix) = pp_r(off + k1, 1)
-                  qp_py(ix) = pp_r(off + k1, 2)
-                  qp_pz(ix) = pp_r(off + k1, 3)
-                  if (present(qp_a)) qp_a(ix) = pp_a(off + k1)
+                  quartets%z(ix) = pairs%p(off + k1)
+                  quartets%c(ix) = pairs%c(off + k1)
+                  quartets%px(ix) = pairs%r(off + k1, 1)
+                  quartets%py(ix) = pairs%r(off + k1, 2)
+                  quartets%pz(ix) = pairs%r(off + k1, 3)
+                  quartets%a(ix) = pairs%a(off + k1)
                else
-                  qp_z(ix) = 1.0_dp
-                  qp_c(ix) = 0.0_dp
-                  qp_px(ix) = sq_ax(p)
-                  qp_py(ix) = sq_ay(p)
-                  qp_pz(ix) = sq_az(p)
-                  if (present(qp_a)) qp_a(ix) = 0.0_dp
+                  quartets%z(ix) = 1.0_dp
+                  quartets%c(ix) = 0.0_dp
+                  quartets%px(ix) = quartets%ax(p)
+                  quartets%py(ix) = quartets%ay(p)
+                  quartets%pz(ix) = quartets%az(p)
+                  quartets%a(ix) = 0.0_dp
                end if
             end do
          end do
@@ -761,5 +778,219 @@ contains
          res_ = min(SDEC*res, int(ceiling(v)))
       end if
    end function size_index
+
+   !
+   ! Admit bin pairs and number their quartets.
+   !
+   ! ONE launch over every admitted bin pair, not one launch each. Binning at
+   ! (type, size) granularity fragments the work badly -- 484 launches
+   ! averaging 2200 items apiece measured 12x slower than a single large
+   ! launch. The screening granularity is worth keeping; the launch
+   ! granularity is not. A prefix sum lets a thread find its own segment.
+   !
+   subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density)
+      class(trc_bin_plan_t), intent(inout) :: this
+      type(pair_bins_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      integer,  intent(in) :: bin_pbase(:)
+      !! (nbin) first slot - 1 of each bin in the bin-interleaved tables
+      !! (trc_pair_quartets_t's bin_pbase).
+      logical,  intent(in) :: use_density
+      !! Also apply the bin-level density screen (density_reject).
+
+      integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
+      integer(int64) :: nt
+
+      call this%release()
+
+      ! In buckets, not decades: the bins carry the resolution they were
+      ! built at, and the admission test has to speak the same units.
+      smax_keep = int(-log10(thresh))*b%sres
+
+      ! pass 1: count admitted bin pairs
+      nseg = 0
+      do ia = 1, b%nlive
+         ka = b%live(ia)
+         do ib = 1, ia
+            kb = b%live(ib)
+            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
+            if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
+            if (use_density) then
+               if (density_reject(b, ka, kb, thresh)) cycle
+            end if
+            nseg = nseg + 1
+         end do
+      end do
+
+      allocate (this%sA(nseg), this%sNB(nseg), this%sOA(nseg), this%sOB(nseg))
+      allocate (this%sPA(nseg), this%sPB(nseg), this%sD(nseg))
+      allocate (this%sLA(nseg), this%sLB(nseg), this%sLC(nseg), this%sLD(nseg))
+      allocate (this%sOff(nseg + 1))
+
+      ! pass 2: fill the descriptors and prefix-sum the work
+      is = 0
+      this%sOff(1) = 0
+      do ia = 1, b%nlive
+         ka = b%live(ia)
+         nA = b%bin_cnt(ka)
+         do ib = 1, ia
+            kb = b%live(ib)
+            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
+            nB = b%bin_cnt(kb)
+            if (nA == 0 .or. nB == 0) cycle
+            if (use_density) then
+               if (density_reject(b, ka, kb, thresh)) cycle
+            end if
+            is = is + 1
+            this%sA(is) = nA
+            this%sNB(is) = nB
+            this%sOA(is) = b%bin_off(ka)
+            this%sOB(is) = b%bin_off(kb)
+            this%sPA(is) = bin_pbase(ka)
+            this%sPB(is) = bin_pbase(kb)
+            this%sD(is) = (ka == kb)
+            this%sLA(is) = b%bin_la(ka)
+            this%sLB(is) = b%bin_lb(ka)
+            this%sLC(is) = b%bin_la(kb)
+            this%sLD(is) = b%bin_lb(kb)
+            if (ka == kb) then
+               nt = int(nA, int64)*int(nA + 1, int64)/2
+            else
+               nt = int(nA, int64)*int(nB, int64)
+            end if
+            !
+            ! The kernels take their within-segment index as a default integer,
+            ! so a segment must fit in one. Widening it would cost registers
+            ! in the hot kernel, which are the binding constraint; instead
+            ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+            ! (split_large_bins), so no segment exceeds 2**30. This guard is
+            ! the backstop if that cap is ever raised.
+            !
+            if (nt > 2147483000_int64) error stop &
+               "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
+            this%sOff(is + 1) = this%sOff(is) + nt
+         end do
+      end do
+      this%nseg = nseg
+      this%nwork = this%sOff(nseg + 1)
+   end subroutine bins_plan_build
+
+   !
+   ! Sort the segments by class, so each class occupies a contiguous run and
+   ! one kernel per class covers it. Every thread in a launch then executes
+   ! code compiled for exactly its (la,lb,lc,ld) -- no select case, and
+   ! ptxas budgets registers per class instead of for the worst class.
+   !
+   ! Insertion sort on the class key, stable, so the segments of one class
+   ! keep their admission order; nseg is small (hundreds). The prefix sum is
+   ! rebuilt in the new order.
+   !
+   subroutine bins_plan_sort_by_class(this, radix)
+      class(trc_bin_plan_t), intent(inout) :: this
+      integer, intent(in) :: radix
+      !! The class key is ((la*radix + lb)*radix + lc)*radix + ld: the
+      !! radix of the dispatcher that will read the key.
+      integer, allocatable :: ord(:), ckey(:), t(:)
+      logical, allocatable :: tl(:)
+      integer :: a, b2, k, n
+
+      n = this%nseg
+      allocate (ord(n), ckey(n), t(n), tl(n))
+      do a = 1, n
+         ckey(a) = this%class_key(a, radix)
+         ord(a) = a
+      end do
+      do a = 2, n
+         k = ord(a)
+         b2 = a - 1
+         do while (b2 >= 1)
+            if (ckey(ord(b2)) <= ckey(k)) exit
+            ord(b2 + 1) = ord(b2)
+            b2 = b2 - 1
+         end do
+         ord(b2 + 1) = k
+      end do
+
+      t = this%sA(ord)
+      this%sA = t
+      t = this%sNB(ord)
+      this%sNB = t
+      t = this%sOA(ord)
+      this%sOA = t
+      t = this%sOB(ord)
+      this%sOB = t
+      t = this%sPA(ord)
+      this%sPA = t
+      t = this%sPB(ord)
+      this%sPB = t
+      t = this%sLA(ord)
+      this%sLA = t
+      t = this%sLB(ord)
+      this%sLB = t
+      t = this%sLC(ord)
+      this%sLC = t
+      t = this%sLD(ord)
+      this%sLD = t
+      tl = this%sD(ord)
+      this%sD = tl
+      this%sOff(1) = 0
+      do k = 1, n
+         if (this%sD(k)) then
+            this%sOff(k + 1) = this%sOff(k) + int(this%sA(k), int64)*int(this%sA(k) + 1, int64)/2
+         else
+            this%sOff(k + 1) = this%sOff(k) + int(this%sA(k), int64)*int(this%sNB(k), int64)
+         end if
+      end do
+   end subroutine bins_plan_sort_by_class
+
+   pure integer function bins_plan_class_key(this, seg, radix) result(res)
+      !! Segment `seg`'s class key at this radix (see sort_by_class).
+      class(trc_bin_plan_t), intent(in) :: this
+      integer, intent(in) :: seg, radix
+      res = ((this%sLA(seg)*radix + this%sLB(seg))*radix + this%sLC(seg))*radix + this%sLD(seg)
+   end function bins_plan_class_key
+
+   subroutine bins_plan_release(this)
+      class(trc_bin_plan_t), intent(inout) :: this
+      if (allocated(this%sA)) deallocate (this%sA, this%sNB, this%sOA, this%sOB, this%sPA, this%sPB, &
+                                          this%sD, this%sLA, this%sLB, this%sLC, this%sLD, this%sOff)
+      this%nseg = 0
+      this%nwork = 0
+   end subroutine bins_plan_release
+
+   !
+   ! Density screen at bin-pair granularity.
+   !
+   ! A quartet's Fock contribution is bounded by Q_ab Q_cd times the largest
+   ! density block it can reach.  Over a bin pair the reachable blocks are
+   ! (ab), (cd) and the four cross combinations, and only the first two are
+   ! known bin-locally -- the cross terms would need every (i,k) shell pair.
+   ! Using the two that are known keeps this a bin-level test; it is therefore
+   ! a partial screen, and deliberately conservative.
+   !
+   ! NOT ARMED, and it cannot be as written: bin_dm(k) bounds the density
+   ! blocks of pairs WITHIN bin k, which bounds the Coulomb terms D_ab and
+   ! D_cd but says nothing about D_ac, D_ad, D_bc, D_bd -- the exchange
+   ! blocks, between a shell of the bra pair and a shell of the ket pair.
+   ! Arming it on this bound drops real exchange contributions: measured on
+   ! the 123-atom silica slice in cc-pVDZ, the third SCF energy moved by
+   ! 0.5 Hartree. A sound bin-level test would need the largest density
+   ! block between the two bins' shell sets, which is not a per-bin
+   ! quantity. The per-quartet test in the kernel, which reads dsh for all
+   ! six blocks, is the one that screens on the density.
+   pure logical function density_reject(b, ka, kb, thresh) result(res)
+      type(pair_bins_t), intent(in) :: b
+      integer,  intent(in) :: ka, kb
+      real(dp), intent(in) :: thresh
+      real(dp) :: qq, dd
+      res = .false.
+      if (.not. allocated(b%bin_dm)) return
+      ! bound on Q_ab Q_cd from the two size buckets, back off one decade each
+      ! because the bucket is a ceiling
+      qq = 10.0_dp**(-real(max(0, b%bin_s(ka) - 1), dp)) &
+           *10.0_dp**(-real(max(0, b%bin_s(kb) - 1), dp))
+      dd = 4.0_dp*max(b%bin_dm(ka), b%bin_dm(kb))
+      res = (qq*dd <= thresh)
+   end function density_reject
 
 end module trc_bins

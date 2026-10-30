@@ -783,6 +783,10 @@ terco_add_check(check_vv10_vs_pyscf check_vv10_vs_pyscf.F90 NEEDS_BASIS NEEDS_PY
 # and water/cc-pVDZ + silane/def2-SVP against test/pyscf_refs/minao.ref.
 terco_add_check(check_minao check_minao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_minao PRIVATE test-drive::test-drive)
+# The gradient after a TRC_BIN_SORT resort reads rebuilt quartet tables
+# (quartets%a included) -- see the file's header.
+terco_add_check(check_bin_sort_grad check_bin_sort_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_bin_sort_grad PRIVATE test-drive::test-drive)
 
 terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_hirshfeld PRIVATE test-drive::test-drive)

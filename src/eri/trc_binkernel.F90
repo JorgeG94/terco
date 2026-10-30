@@ -24,7 +24,8 @@ module trc_binkernel
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, cart_ncart_of
-   use trc_bins, only: pair_bins_t, SMAX, bins_sort_by_weight, bins_build_pair_quartets
+   use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_sort_by_weight, bins_build_pair_quartets
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
    use trc_rys_select, only: rys_select_init, rys_select_route
    use trc_rys_kernels, only: rys_dispatch
@@ -51,35 +52,6 @@ module trc_binkernel
    public :: binkernel_fock_bins
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
-
-
-   !
-   ! The launch plan: which bin pairs survive, how their quartets are numbered,
-   ! and in what order the class-specialised kernels cover them.
-   !
-   ! This used to be rebuilt inside every `binkernel_fock_bins` call -- a double loop
-   ! over live bin pairs, ten allocations, a sort by class, a host-to-device
-   ! copy, and the matching frees -- once per SCF ITERATION, although it
-   ! depends only on the bins and the threshold. The density never enters it
-   ! unless bin-level density screening is on, and that is the one case where
-   ! a plan has to be rebuilt when D changes.
-   !
-   ! Promoting it to an object is the same move cuEST makes with
-   ! `cuestOEIntPlanCreate`: setup that depends on the basis and not on the
-   ! data is done once and handed back.
-   !
-   type, public :: trc_plan_t
-      integer :: nseg = 0, nlaunch = 0
-      integer(int64) :: nwork = 0
-      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
-      integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
-      logical, allocatable :: sD(:)
-      integer(int64), allocatable :: sOff(:)
-      logical :: on_device = .false.
-   contains
-      procedure :: build   => plan_build
-      procedure :: release => plan_release
-   end type trc_plan_t
 
 
 contains
@@ -175,59 +147,37 @@ contains
    ! each.  The host loop is over BINS -- tens of thousands of iterations at
    ! most -- not over quartets.
    !
-   subroutine binkernel_fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_density, &
-                        jfac, kfac, omega, nosym, dsh, &
-                        pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                        qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                        ndens, dmat, jmat, kmat, rank, nranks, nlaunch, nwork, nkept)
+   subroutine binkernel_fock_bins(b, pairs, quartets, launch, dsh, dmat, jmat, kmat)
       type(pair_bins_t), intent(inout) :: b
-      integer,  intent(in)    :: nbas, npp, nao
-      integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
-      real(dp), intent(in)    :: thresh
-      real(dp), intent(in)    :: jfac, kfac
-      !! Coulomb and exchange scalings; 1 and 1 is Hartree-Fock.
-      real(dp), intent(in)    :: omega
-      !! Range-separation parameter, bohr^-1; zero is the Coulomb operator.
-      !! See scripts/gen_perclass.py's primitive loop for the substitution,
-      !! shared verbatim with the enumerated kernels below.
-      logical,  intent(in)    :: nosym
-      !! Contract a density that is NOT symmetric, through the enumerated
-      !! kernel. Costs what folding bought; needed by the response Hessian.
-      real(dp), intent(in)    :: dsh(nbas, nbas)
+      !! `intent(inout)`: the optional one-time resort below reorders it.
+      type(trc_shell_pairs_t), intent(in) :: pairs
+      !! The shells and their primitive pairs, device-resident.
+      type(trc_pair_quartets_t), intent(inout) :: quartets
+      !! The bin-interleaved pairs, device-resident. `intent(inout)`, not
+      !! `in`: a resort rebuilds them in place.
+      type(trc_bin_launch_t), intent(inout) :: launch
+      !! What to build (thresh, jfac/kfac, omega, nosym, ranks, operand
+      !! shape); nlaunch, nwork and, if launch%count_kept, nkept come back.
+      !! jfac/kfac 1 and 1 is Hartree-Fock. omega is the range-separation
+      !! parameter, bohr^-1, zero the Coulomb operator: see
+      !! scripts/gen_perclass.py's primitive loop for the substitution,
+      !! shared verbatim with the enumerated kernel below. nosym contracts a
+      !! density that is NOT symmetric, through the enumerated kernel; it
+      !! costs what folding bought and is needed by the response Hessian.
+      !! The rank takes every nranks-th item of the sorted work list; the
+      !! caller reduces the result across ranks.
+      real(dp), intent(in)    :: dsh(pairs%nbas, pairs%nbas)
       !! max |D| over each shell-pair block; the per-quartet density screen.
       !! Pass it filled with huge() to disable density screening entirely.
-      logical,  intent(in)    :: use_density
-      integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
-      real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
-      integer,  allocatable, intent(inout) :: qp_bin_pbase(:), qp_bin_k(:)
-      !! Bin-interleaved second copy of the above (trc_eri_t's own flat
-      !! fields -- see bins_build_pair_quartets for why they are not part of `b`).
-      !! `intent(inout)`, not `in`: a resort rebuilds them in place.
-      integer,  intent(inout) :: nqp
-      real(dp), allocatable, intent(inout) :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
-      real(dp), allocatable, intent(inout) :: sq_ax(:), sq_ay(:), sq_az(:)
-      real(dp), allocatable, intent(inout) :: sq_abx(:), sq_aby(:), sq_abz(:)
-      integer,  allocatable, intent(inout) :: sq_n(:)
-      integer,  intent(in)    :: ndens
-      real(dp), intent(in)    :: dmat(ndens, nao, nao)
-      real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
-      integer,  intent(in)    :: rank, nranks
-      !! This rank's share of the sorted work list: every nranks-th item from
-      !! rank. The caller reduces the result across ranks.
-      integer,  intent(out)   :: nlaunch
-      integer(int64), intent(out) :: nwork
-      integer(int64), intent(out), optional :: nkept
-      !! Diagnostic: how many of `nwork` actually survive the in-kernel
-      !! Schwarz and density tests.  Costs a separate cheap pass, so it is
-      !! optional and off in the timed path.
-      integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(int64) :: nt
-      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:), sPA(:), sPB(:)
-      integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
-      logical, allocatable :: sD(:)
-      integer(int64), allocatable :: sOff(:)
+      real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
+      real(dp), intent(inout) :: jmat(launch%ndens, launch%nao, launch%nao)
+      real(dp), intent(inout) :: kmat(launch%ndens, launch%nao, launch%nao)
 
+      type(trc_bin_plan_t) :: plan
+      real(dp) :: thresh
+      integer :: nseg
+
+      thresh = launch%thresh
       ! Order the pairs inside each bin by how much they matter, once, so
       ! that neighbouring threads of a warp agree about screening. The
       ! device copy has to be refreshed with the new order.
@@ -244,266 +194,160 @@ contains
       ! bound alone.
       !
       if (.not. b%sorted .and. bin_sort_on()) then
-         call bins_sort_by_weight(b, nbas, dsh)
+         call bins_sort_by_weight(b, pairs%nbas, dsh)
          !$acc update device(b%sp_i, b%sp_j, b%sp_q)
          ! The slot order inside a bin just changed, and the bin-interleaved
-         ! tables are keyed on it -- rebuild them from the same pp_* data
+         ! tables are keyed on it -- rebuild them from the same pairs
          ! hgp_build_pairs filled, and refresh the device copy.
-         call bins_build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                                  qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
-         !$acc update device(qp_z, qp_c, qp_px, qp_py, qp_pz, &
-         !$acc                sq_ax, sq_ay, sq_az, &
-         !$acc                sq_abx, sq_aby, sq_abz, sq_n)
+         call bins_build_pair_quartets(b, pairs, quartets)
+         !$acc update device(quartets%z, quartets%c, quartets%a, &
+         !$acc                quartets%px, quartets%py, quartets%pz, &
+         !$acc                quartets%ax, quartets%ay, quartets%az, &
+         !$acc                quartets%abx, quartets%aby, quartets%abz, quartets%n)
       end if
 
-      ! In buckets, not decades: the bins carry the resolution they were
-      ! built at, and the admission test has to speak the same units.
-      smax_keep = int(-log10(thresh))*b%sres
+      call plan%build(b, thresh, quartets%bin_pbase, launch%use_density)
+      nseg = plan%nseg
+      launch%nwork = plan%nwork
+      launch%nlaunch = 1
+      if (seg_stats_on()) call log_segment_shape(plan)
+      if (plan%nwork == 0) return
 
-      ! --- pass 1: count admitted bin pairs ---
-      nseg = 0
-      do ia = 1, b%nlive
-         ka = b%live(ia)
-         do ib = 1, ia
-            kb = b%live(ib)
-            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
-            if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
-            if (use_density) then
-               if (density_reject(b, ka, kb, thresh)) cycle
-            end if
-            nseg = nseg + 1
-         end do
-      end do
-
-      allocate (sA(nseg), sB(nseg), sOA(nseg), sOB(nseg), sNB(nseg), sD(nseg))
-      allocate (sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg))
-      allocate (sPA(nseg), sPB(nseg))
-      allocate (sOff(nseg + 1))
-
-      ! --- pass 2: fill descriptors and prefix-sum the work ---
-      !
-      ! ONE launch over every admitted bin pair, not one launch each.  Binning
-      ! at (type, size) granularity fragments the work badly -- 484 launches
-      ! averaging 2200 items apiece measured 12x slower than a single large
-      ! launch.  The screening granularity is worth keeping; the launch
-      ! granularity is not.  A prefix sum lets a thread find its own segment.
-      !
-      is = 0; sOff(1) = 0
-      do ia = 1, b%nlive
-         ka = b%live(ia)
-         nA = b%bin_cnt(ka)
-         do ib = 1, ia
-            kb = b%live(ib)
-            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
-            nB = b%bin_cnt(kb)
-            if (nA == 0 .or. nB == 0) cycle
-            if (use_density) then
-               if (density_reject(b, ka, kb, thresh)) cycle
-            end if
-            is = is + 1
-            sA(is) = nA; sNB(is) = nB
-            sOA(is) = b%bin_off(ka); sOB(is) = b%bin_off(kb)
-            sPA(is) = qp_bin_pbase(ka); sPB(is) = qp_bin_pbase(kb)
-            sD(is) = (ka == kb)
-            sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
-            sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
-            if (ka == kb) then
-               nt = int(nA, int64)*int(nA + 1, int64)/2
-            else
-               nt = int(nA, int64)*int(nB, int64)
-            end if
-            !
-            ! The kernels take their within-segment index as a default integer,
-            ! so a segment must fit in one. Widening it would cost registers
-            ! in the hot kernel, which are the binding constraint; instead
-            ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
-            ! (split_large_bins, trc_bins.F90), so no segment exceeds 2**30.
-            ! This guard is the backstop if that cap is ever raised.
-            !
-            if (nt > 2147483000_int64) error stop &
-               "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
-            sOff(is + 1) = sOff(is) + nt
-         end do
-      end do
-
-      nwork = sOff(nseg + 1)
-      nlaunch = 1
-      ! Segment shape, for comparing this against a batching scheme that caps
-      ! its batches (gmshpc: 2560 shell pairs per bra batch). A segment here
-      ! is one admitted bin pair and is homogeneous by construction -- same
-      ! four angular momenta, same contraction degree, same magnitude bucket
-      ! -- so what matters is how big they are and how much of a warp
-      ! straddles a boundary.
-      if (seg_stats_on()) then
-         block
-            integer :: q, nsmall
-            integer(int64) :: mn, mx, sz
-            mn = huge(0_int64); mx = 0_int64; nsmall = 0
-            do q = 1, nseg
-               sz = sOff(q + 1) - sOff(q)
-               mn = min(mn, sz); mx = max(mx, sz)
-               if (sz < 32) nsmall = nsmall + 1
-            end do
-            block
-               character(len=1024) :: logline
-               write (logline, "(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)") &
-                  "  [seg] nseg ", nseg, "  work ", nwork, "  min ", mn, "  max ", mx, &
-                  "  mean ", real(nwork, dp)/max(nseg, 1), "  <32 ", nsmall, &
-                  "  boundary warps ", 100.0_dp*nseg*32.0_dp/max(real(nwork, dp), 1.0_dp), "% of threads"
-               call global_logger%info(trim(logline))
-            end block
-         end block
-      end if
-      if (nwork == 0) return
-
-      if (nosym) then
+      if (launch%nosym) then
          ! Every per-class kernel is folded, so a general density goes through
          ! the enumerated non-symmetric kernel, one_bin_item_nosym, instead.
-         !$acc enter data copyin(sA, sNB, sOA, sOB, sD, sOff)
-         call fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, jfac, kfac, omega, dsh, &
-                             nbas, npp, nao, sh_l, ao_off, &
-                             pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
-                             ndens, dmat, jmat, kmat, rank, nranks)
-         nlaunch = 1
-         !$acc exit data delete(sA, sNB, sOA, sOB, sD, sOff)
-         deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
+         !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sD, plan%sOff)
+         call fock_all_nosym(nseg, plan%nwork, plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sD, plan%sOff, &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, launch%jfac, launch%kfac, &
+                             launch%omega, dsh, pairs%nbas, pairs%npp, launch%nao, pairs%sh_l, pairs%ao_off, &
+                             pairs%off, pairs%n, pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, &
+                             launch%ndens, dmat, jmat, kmat, launch%rank, launch%nranks)
+         !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sD, plan%sOff)
+         call plan%release()
          return
       end if
 
-      !
-      ! Per-class launches.  The descriptors are sorted by class so each class
-      ! occupies a contiguous run of segments, then one kernel per class covers
-      ! its own run.  Every thread in a launch then executes code compiled for
-      ! exactly its (la,lb,lc,ld) -- no select case, and ptxas budgets registers
-      ! per class instead of for the worst class across all of them.
-      !
       ! TRC_RYS_CLASSES, read once per Fock build -- `binkernel_fock_bins` IS one Fock
       ! build, called once per SCF iteration (or once, standalone, by a
       ! correctness check) -- not once per launch below. See trc_rys_select.
       call rys_select_init()
-      block
-         integer, allocatable :: ord(:), ckey(:)
-         integer :: a2, b2, t2, c0, c1, nl, key2
-         integer(int64) :: lcap
-         logical :: l2
-         integer(int64) :: o2
-         ! The trivial primitive-shell view used to be built here -- eight
-         ! arrays, allocated, filled, and pushed to the device on every Fock
-         ! build -- purely to fill dummy arguments the scalar kernel never
-         ! read. They existed for the blocked kernel, which is gone with the
-         ! general contraction it was written for; `trc_decontract` splits
-         ! the basis instead. Two of them were once added to `enter data`
-         ! and not to `exit data`, which is a stale mapping and an illegal
-         ! address rather than a wrong number.
-         allocate (ord(nseg), ckey(nseg))
-         do a2 = 1, nseg
-            ckey(a2) = ((sLA(a2)*CLASS_RADIX + sLB(a2))*CLASS_RADIX &
-                        + sLC(a2))*CLASS_RADIX + sLD(a2)
-            ord(a2) = a2
-         end do
-         ! insertion sort on the class key; nseg is small (hundreds)
-         do a2 = 2, nseg
-            t2 = ord(a2)
-            b2 = a2 - 1
-            do while (b2 >= 1)
-               if (ckey(ord(b2)) <= ckey(t2)) exit
-               ord(b2 + 1) = ord(b2); b2 = b2 - 1
-            end do
-            ord(b2 + 1) = t2
-         end do
-         call permute_segments(nseg, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, &
-                               sLA, sLB, sLC, sLD)
+      ! The trivial primitive-shell view used to be built here -- eight
+      ! arrays, allocated, filled, and pushed to the device on every Fock
+      ! build -- purely to fill dummy arguments the scalar kernel never
+      ! read. They existed for the blocked kernel, which is gone with the
+      ! general contraction it was written for; `trc_decontract` splits
+      ! the basis instead. Two of them were once added to `enter data`
+      ! and not to `exit data`, which is a stale mapping and an illegal
+      ! address rather than a wrong number.
+      call plan%sort_by_class(CLASS_RADIX)
 
-         !$acc enter data copyin(sA, sNB, sOA, sOB, sPA, sPB, sD, sOff)
-         if (present(nkept)) call count_kept(nseg, nwork, sNB, sOA, sOB, sD, &
-                                             sOff, b%npair, b%sp_i, b%sp_j, &
-                                             b%sp_q, thresh, dsh, nbas, nkept)
-         nl = 0
-         c0 = 1
-
-         lcap = launch_cap()
-         do while (c0 <= nseg)
-            c1 = c0
-            do while (c1 < nseg)
-               if (((sLA(c1 + 1)*CLASS_RADIX + sLB(c1 + 1))*CLASS_RADIX &
-                    + sLC(c1 + 1))*CLASS_RADIX + sLD(c1 + 1) /= &
-                   ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
-                    + sLC(c0))*CLASS_RADIX + sLD(c0)) exit
-               if (lcap > 0 .and. sOff(c1 + 2) - sOff(c0) > lcap) exit
-               c1 = c1 + 1
-            end do
-            nl = nl + 1
-            key2 = ((sLA(c0)*CLASS_RADIX + sLB(c0))*CLASS_RADIX &
-                    + sLC(c0))*CLASS_RADIX + sLD(c0)
-            ! TRC_RYS_CLASSES routes this launch's whole class run to the
-            ! Rys kernel instead of HGP's, for classes that have one --
-            ! `rys_select_route` already checked that. Out of scope otherwise: Rys
-            ! never changes HGP's own dispatch, decode or launch geometry.
-            if (mdg_routes(key2)) then
-               ! A g class above TERCO_RYS_G_LTOT: done after the bins by the
-               ! MD exchange pass (trc_mdg), which orders the work its own way.
-               continue
-            else if (rys_select_route(key2)) then
-               call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                 b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
-                                 omega, dsh, nbas, nao, sh_l, ao_off, &
-                                 nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                                 sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                                 ndens, dmat, jmat, rank, nranks)
-            else
-               call pc_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                                b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
-                                omega, dsh, nbas, nao, sh_l, ao_off, &
-                                nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                                ndens, dmat, jmat, rank, nranks)
-            end if
-            c0 = c1 + 1
-         end do
-         nlaunch = nl
-         !$acc exit data delete(sA, sNB, sOA, sOB, sPA, sPB, sD, sOff)
-         deallocate (ord, ckey)
-      end block
-      deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
+      !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
+      if (launch%count_kept) call count_kept(nseg, plan%nwork, plan%sNB, plan%sOA, plan%sOB, plan%sD, &
+                                             plan%sOff, b%npair, b%sp_i, b%sp_j, &
+                                             b%sp_q, thresh, dsh, pairs%nbas, launch%nkept)
+      call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+      !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
+      call plan%release()
    end subroutine binkernel_fock_bins
 
+   !
+   ! One launch per contiguous class run of a class-sorted plan (or per
+   ! TRC_LAUNCH_CAP quartets of one), each through the class's own HGP or
+   ! Rys kernel. The plan's arrays are already on the device.
+   !
+   subroutine launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+      type(pair_bins_t), intent(in) :: b
+      type(trc_shell_pairs_t), intent(in) :: pairs
+      type(trc_pair_quartets_t), intent(in) :: quartets
+      type(trc_bin_launch_t), intent(inout) :: launch
+      !! launch%nlaunch comes back.
+      type(trc_bin_plan_t), intent(in) :: plan
+      real(dp), intent(in)    :: dsh(pairs%nbas, pairs%nbas)
+      real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
+      real(dp), intent(inout) :: jmat(launch%ndens, launch%nao, launch%nao)
+      !! The folded accumulator: the per-class kernels add J and K into it.
+
+      integer :: c0, c1, nl, key, nseg
+      integer(int64) :: lcap
+      real(dp) :: thresh
+
+      nseg = plan%nseg
+      thresh = launch%thresh
+      nl = 0
+      c0 = 1
+      lcap = launch_cap()
+      do while (c0 <= nseg)
+         key = plan%class_key(c0, CLASS_RADIX)
+         c1 = c0
+         do while (c1 < nseg)
+            if (plan%class_key(c1 + 1, CLASS_RADIX) /= key) exit
+            if (lcap > 0 .and. plan%sOff(c1 + 2) - plan%sOff(c0) > lcap) exit
+            c1 = c1 + 1
+         end do
+         nl = nl + 1
+         ! TRC_RYS_CLASSES routes this launch's whole class run to the
+         ! Rys kernel instead of HGP's, for classes that have one --
+         ! `rys_select_route` already checked that. Out of scope otherwise: Rys
+         ! never changes HGP's own dispatch, decode or launch geometry.
+         if (mdg_routes(key)) then
+            ! A g class above TERCO_RYS_G_LTOT: done after the bins by the
+            ! MD exchange pass (trc_mdg), which orders the work its own way.
+            continue
+         else if (rys_select_route(key)) then
+            call rys_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
+                              plan%sPA, plan%sPB, plan%sD, &
+                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
+                              launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
+                              pairs%sh_l, pairs%ao_off, &
+                              quartets%nqp, quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+                              quartets%ax, quartets%ay, quartets%az, &
+                              quartets%abx, quartets%aby, quartets%abz, quartets%n, &
+                              launch%ndens, dmat, jmat, launch%rank, launch%nranks)
+         else
+            call pc_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
+                             plan%sPA, plan%sPB, plan%sD, &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
+                             launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
+                             pairs%sh_l, pairs%ao_off, &
+                             quartets%nqp, quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+                             quartets%ax, quartets%ay, quartets%az, &
+                             quartets%abx, quartets%aby, quartets%abz, quartets%n, &
+                             launch%ndens, dmat, jmat, launch%rank, launch%nranks)
+         end if
+         c0 = c1 + 1
+      end do
+      launch%nlaunch = nl
+   end subroutine launch_classes
 
    !
-   ! Density screen at bin-pair granularity.
+   ! Segment shape, for comparing this against a batching scheme that caps
+   ! its batches (gmshpc: 2560 shell pairs per bra batch). A segment here is
+   ! one admitted bin pair and is homogeneous by construction -- same four
+   ! angular momenta, same contraction degree, same magnitude bucket -- so
+   ! what matters is how big they are and how much of a warp straddles a
+   ! boundary.
    !
-   ! A quartet's Fock contribution is bounded by Q_ab Q_cd times the largest
-   ! density block it can reach.  Over a bin pair the reachable blocks are
-   ! (ab), (cd) and the four cross combinations, and only the first two are
-   ! known bin-locally -- the cross terms would need every (i,k) shell pair.
-   ! Using the two that are known keeps this a bin-level test; it is therefore
-   ! a partial screen, and deliberately conservative.
-   !
-   ! NOT ARMED, and it cannot be as written: bin_dm(k) bounds the density
-   ! blocks of pairs WITHIN bin k, which bounds the Coulomb terms D_ab and
-   ! D_cd but says nothing about D_ac, D_ad, D_bc, D_bd -- the exchange
-   ! blocks, between a shell of the bra pair and a shell of the ket pair.
-   ! Arming it on this bound drops real exchange contributions: measured on
-   ! the 123-atom silica slice in cc-pVDZ, the third SCF energy moved by
-   ! 0.5 Hartree. A sound bin-level test would need the largest density
-   ! block between the two bins' shell sets, which is not a per-bin
-   ! quantity. The per-quartet test in the kernel, which reads dsh for all
-   ! six blocks, is the one that screens on the density.
-   pure logical function density_reject(b, ka, kb, thresh) result(res)
-      type(pair_bins_t), intent(in) :: b
-      integer,  intent(in) :: ka, kb
-      real(dp), intent(in) :: thresh
-      real(dp) :: qq, dd
-      res = .false.
-      if (.not. allocated(b%bin_dm)) return
-      ! bound on Q_ab Q_cd from the two size buckets, back off one decade each
-      ! because the bucket is a ceiling
-      qq = 10.0_dp**(-real(max(0, b%bin_s(ka) - 1), dp)) &
-           *10.0_dp**(-real(max(0, b%bin_s(kb) - 1), dp))
-      dd = 4.0_dp*max(b%bin_dm(ka), b%bin_dm(kb))
-      res = (qq*dd <= thresh)
-   end function density_reject
+   subroutine log_segment_shape(plan)
+      type(trc_bin_plan_t), intent(in) :: plan
+      integer :: q, nsmall
+      integer(int64) :: mn, mx, sz
+      character(len=1024) :: logline
+      mn = huge(0_int64)
+      mx = 0_int64
+      nsmall = 0
+      do q = 1, plan%nseg
+         sz = plan%sOff(q + 1) - plan%sOff(q)
+         mn = min(mn, sz)
+         mx = max(mx, sz)
+         if (sz < 32) nsmall = nsmall + 1
+      end do
+      write (logline, "(a,i0,a,i0,a,i0,a,i0,a,f8.1,a,i0,a,f5.2,a)") &
+         "  [seg] nseg ", plan%nseg, "  work ", plan%nwork, "  min ", mn, "  max ", mx, &
+         "  mean ", real(plan%nwork, dp)/max(plan%nseg, 1), "  <32 ", nsmall, &
+         "  boundary warps ", 100.0_dp*plan%nseg*32.0_dp/max(real(plan%nwork, dp), 1.0_dp), "% of threads"
+      call global_logger%info(trim(logline))
+   end subroutine log_segment_shape
+
 
    !
    ! Count the quartets that survive screening, using the same index
@@ -511,7 +355,15 @@ contains
    ! exists so the effect of density screening is a measured number rather
    ! than an inference from wall-clock.
    !
-
+   ! A REDUCTION WITHOUT A REDUCTION CLAUSE. `do concurrent` gained
+   ! `reduce()` in Fortran 2023, but gfortran does not take it, and this used
+   ! to be the one OpenACC compute construct in terco (a `parallel loop
+   ! reduction`). Instead each thread counts one chunk of KEPT_CHUNK work
+   ! items into its own slot and the host adds the slots up: the same count,
+   ! exactly, since it is an integer. 4096 items a thread keeps the partial
+   ! array to 3.9 MB (488k int64 slots) at 2e9 work items and the launch at half a million
+   ! threads, plenty to fill the GPU.
+   !
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
                          npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, nkept)
       integer,  intent(in) :: nseg, npair, nbas
@@ -524,28 +376,45 @@ contains
       real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
       integer(int64), intent(out) :: nkept
 
+      integer(int64), parameter :: KEPT_CHUNK = 4096
+      integer(int64), allocatable :: part(:)
+      integer(int64) :: nchunk, ic
+
+      nchunk = (nwork + KEPT_CHUNK - 1)/KEPT_CHUNK
+      allocate (part(nchunk))
+      !$acc enter data create(part)
+      do concurrent(ic=1:nchunk)
+         call kept_in_chunk(ic, KEPT_CHUNK, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
+                            npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, part)
+      end do
+      !$acc update self(part)
+      !$acc exit data delete(part)
+      nkept = sum(part)
+      deallocate (part)
+   end subroutine count_kept
+
+   pure subroutine kept_in_chunk(ic, chunk, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
+                                 npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, part)
+      !! Work items (ic-1)*chunk+1 .. ic*chunk of count_kept, into part(ic).
+      !$acc routine seq
+      integer(int64), intent(in) :: ic, chunk, nchunk, nwork
+      integer,  intent(in) :: nseg, npair, nbas
+      integer,  intent(in) :: sNB(nseg), sOA(nseg), sOB(nseg)
+      logical,  intent(in) :: sD(nseg)
+      integer(int64), intent(in) :: sOff(nseg + 1)
+      integer,  intent(in) :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
+      integer(int64), intent(inout) :: part(nchunk)
+
       integer(int64) :: gt, nk
       integer :: lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl
       real(dp) :: qcut
 
       nk = 0
-      !
-      ! THE ONE PLACE A DIRECTIVE CARRIES A LOOP.
-      !
-      ! `do concurrent` gained `reduce()` in Fortran 2023, which is exactly
-      ! what this wants -- but gfortran did not take locality specifiers until
-      ! 15 and `reduce` later still, and terco is meant to build on the host
-      ! with whatever a CI runner has. A reduction is the one thing the
-      ! portable subset of the language cannot say, so it is said here instead
-      ! and nowhere else.
-      !
-      ! Worth keeping in proportion: this counts kept quartets for a work
-      ! estimate. It is not on the path any integral takes.
-      !
-      !$acc parallel loop reduction(+:nk) default(present) &
-      !$acc   private(lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl, qcut)
-      do gt = 1, nwork
-         lo = 1; hi = nseg
+      do gt = (ic - 1)*chunk + 1, min(ic*chunk, nwork)
+         lo = 1
+         hi = nseg
          do while (lo < hi)
             mid = (lo + hi + 1)/2
             if (sOff(mid) < gt) then
@@ -567,52 +436,17 @@ contains
          end if
          qcut = sp_q(sOA(seg) + iab)*sp_q(sOB(seg) + icd)
          if (qcut > thresh) then
-            si = sp_i(sOA(seg) + iab); sj = sp_j(sOA(seg) + iab)
-            sk = sp_i(sOB(seg) + icd); sl = sp_j(sOB(seg) + icd)
+            si = sp_i(sOA(seg) + iab)
+            sj = sp_j(sOA(seg) + iab)
+            sk = sp_i(sOB(seg) + icd)
+            sl = sp_j(sOB(seg) + icd)
             if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
                          dsh(si, sk), dsh(si, sl), &
                          dsh(sj, sk), dsh(sj, sl)) > thresh) nk = nk + 1
          end if
       end do
-      nkept = nk
-   end subroutine count_kept
-
-   subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
-      !! Apply a permutation to the segment descriptor arrays, in place.
-      integer, intent(in) :: n
-      integer, intent(in) :: ord(n)
-      integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)
-      integer, intent(inout) :: sLA(n), sLB(n), sLC(n), sLD(n)
-      logical, intent(inout) :: sD(n)
-      integer(int64), intent(inout) :: sOff(n + 1)
-      integer :: k
-      integer, allocatable :: t(:)
-      logical, allocatable :: tl(:)
-      integer(int64), allocatable :: to(:)
-      allocate (t(n), tl(n), to(n + 1))
-      t = sA(ord);  sA = t
-      t = sNB(ord); sNB = t
-      t = sOA(ord); sOA = t
-      t = sOB(ord); sOB = t
-      t = sPA(ord); sPA = t
-      t = sPB(ord); sPB = t
-      t = sLA(ord); sLA = t
-      t = sLB(ord); sLB = t
-      t = sLC(ord); sLC = t
-      t = sLD(ord); sLD = t
-      tl = sD(ord); sD = tl
-      ! rebuild the prefix sum in the new order
-      to(1) = 0
-      do k = 1, n
-         if (sD(k)) then
-            to(k + 1) = to(k) + int(sA(k), int64)*int(sA(k) + 1, int64)/2
-         else
-            to(k + 1) = to(k) + int(sA(k), int64)*int(sNB(k), int64)
-         end if
-      end do
-      sOff = to
-      deallocate (t, tl, to)
-   end subroutine permute_segments
+      part(ic) = nk
+   end subroutine kept_in_chunk
 
    subroutine fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                              npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, &
@@ -941,52 +775,7 @@ contains
          index = index + 1
          vv = vbuf(index)
 
-         !$acc atomic update
-         jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
-         !$acc atomic update
-         kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
-         if (dij) then
-            !$acc atomic update
-            jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
-            !$acc atomic update
-            kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
-         end if
-         if (dkl) then
-            !$acc atomic update
-            jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
-            !$acc atomic update
-            kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
-         end if
-         if (dij .and. dkl) then
-            !$acc atomic update
-            jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
-            !$acc atomic update
-            kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
-         end if
-         if (dpq) then
-            !$acc atomic update
-            jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
-            !$acc atomic update
-            kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
-            if (dkl) then
-               !$acc atomic update
-               jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
-               !$acc atomic update
-               kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
-            end if
-            if (dij) then
-               !$acc atomic update
-               jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
-               !$acc atomic update
-               kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
-            end if
-            if (dij .and. dkl) then
-               !$acc atomic update
-               jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
-               !$acc atomic update
-               kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
-            end if
-         end if
+         call scatter_nosym(mu, nu, lam, sig, vv, dij, dkl, dpq, ndens, nao, dmat, jmat, kmat)
       end do
       end do
       end do
@@ -1032,54 +821,7 @@ contains
          end do
          end do
          vv = acc
-
-
-         !$acc atomic update
-         jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
-         !$acc atomic update
-         kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
-         if (dij) then
-            !$acc atomic update
-            jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
-            !$acc atomic update
-            kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
-         end if
-         if (dkl) then
-            !$acc atomic update
-            jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
-            !$acc atomic update
-            kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
-         end if
-         if (dij .and. dkl) then
-            !$acc atomic update
-            jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
-            !$acc atomic update
-            kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
-         end if
-         if (dpq) then
-            !$acc atomic update
-            jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
-            !$acc atomic update
-            kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
-            if (dkl) then
-               !$acc atomic update
-               jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
-               !$acc atomic update
-               kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
-            end if
-            if (dij) then
-               !$acc atomic update
-               jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
-               !$acc atomic update
-               kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
-            end if
-            if (dij .and. dkl) then
-               !$acc atomic update
-               jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
-               !$acc atomic update
-               kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
-            end if
-         end if
+         call scatter_nosym(mu, nu, lam, sig, vv, dij, dkl, dpq, ndens, nao, dmat, jmat, kmat)
       end do
       end do
       end do
@@ -1087,126 +829,68 @@ contains
 #endif
    end subroutine one_bin_item_nosym
 
+   !
+   ! One Cartesian integral (mu nu|lam sig) into J and K, every permutation
+   ! the bra/ket pair symmetry allows, with no assumption that D is
+   ! symmetric: D_mn and D_nm are read separately. `dij`, `dkl` and `dpq`
+   ! say which shells and pairs differ, so a permutation that maps the
+   ! quartet onto itself is not counted twice.
+   !
+   pure subroutine scatter_nosym(mu, nu, lam, sig, vv, dij, dkl, dpq, ndens, nao, dmat, jmat, kmat)
+      !$acc routine seq
+      integer,  intent(in)    :: mu, nu, lam, sig, ndens, nao
+      real(dp), intent(in)    :: vv
+      logical,  intent(in)    :: dij, dkl, dpq
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-
-   subroutine plan_build(this, b, thresh, use_density)
-      class(trc_plan_t), intent(inout) :: this
-      type(pair_bins_t), intent(in) :: b
-      real(dp), intent(in) :: thresh
-      logical, intent(in)  :: use_density
-
-      integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(int64) :: nt
-      integer, allocatable :: sA(:), sB(:), sOA(:), sOB(:), sNB(:)
-      integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
-      logical, allocatable :: sD(:)
-      integer(int64), allocatable :: sOff(:)
-
-      call this%release()
-
-      ! In buckets, not decades: the bins carry the resolution they were
-      ! built at, and the admission test has to speak the same units.
-      smax_keep = int(-log10(thresh))*b%sres
-
-      ! --- pass 1: count admitted bin pairs ---
-      nseg = 0
-      do ia = 1, b%nlive
-         ka = b%live(ia)
-         do ib = 1, ia
-            kb = b%live(ib)
-            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
-            if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
-            if (use_density) then
-               if (density_reject(b, ka, kb, thresh)) cycle
-            end if
-            nseg = nseg + 1
-         end do
-      end do
-
-      allocate (sA(nseg), sB(nseg), sOA(nseg), sOB(nseg), sNB(nseg), sD(nseg))
-      allocate (sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg))
-      allocate (sOff(nseg + 1))
-
-      ! --- pass 2: fill descriptors and prefix-sum the work ---
-      !
-      ! ONE launch over every admitted bin pair, not one launch each.  Binning
-      ! at (type, size) granularity fragments the work badly -- 484 launches
-      ! averaging 2200 items apiece measured 12x slower than a single large
-      ! launch.  The screening granularity is worth keeping; the launch
-      ! granularity is not.  A prefix sum lets a thread find its own segment.
-      !
-      is = 0; sOff(1) = 0
-      do ia = 1, b%nlive
-         ka = b%live(ia)
-         nA = b%bin_cnt(ka)
-         do ib = 1, ia
-            kb = b%live(ib)
-            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
-            nB = b%bin_cnt(kb)
-            if (nA == 0 .or. nB == 0) cycle
-            if (use_density) then
-               if (density_reject(b, ka, kb, thresh)) cycle
-            end if
-            is = is + 1
-            sA(is) = nA; sNB(is) = nB
-            sOA(is) = b%bin_off(ka); sOB(is) = b%bin_off(kb)
-            sD(is) = (ka == kb)
-            sLA(is) = b%bin_la(ka); sLB(is) = b%bin_lb(ka)
-            sLC(is) = b%bin_la(kb); sLD(is) = b%bin_lb(kb)
-            if (ka == kb) then
-               nt = int(nA, int64)*int(nA + 1, int64)/2
-            else
-               nt = int(nA, int64)*int(nB, int64)
-            end if
-            !
-            ! The kernels take their within-segment index as a default integer,
-            ! so a segment must fit in one. Widening it would cost registers
-            ! in the hot kernel, which are the binding constraint; instead
-            ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
-            ! (split_large_bins, trc_bins.F90), so no segment exceeds 2**30.
-            ! This guard is the backstop if that cap is ever raised.
-            !
-            if (nt > 2147483000_int64) error stop &
-               "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
-            sOff(is + 1) = sOff(is) + nt
-         end do
-      end do
-
-
-      this%nseg  = nseg
-      this%nwork = sOff(nseg + 1)
-      call move_alloc(sA,  this%sA)
-      call move_alloc(sB,  this%sB)
-      call move_alloc(sOA, this%sOA)
-      call move_alloc(sOB, this%sOB)
-      call move_alloc(sNB, this%sNB)
-      call move_alloc(sD,  this%sD)
-      call move_alloc(sOff, this%sOff)
-      call move_alloc(sLA, this%sLA)
-      call move_alloc(sLB, this%sLB)
-      call move_alloc(sLC, this%sLC)
-      call move_alloc(sLD, this%sLD)
-   end subroutine plan_build
-
-   subroutine plan_release(this)
-      class(trc_plan_t), intent(inout) :: this
-      if (this%on_device) then
-         !$acc exit data delete(this%sA, this%sNB, this%sOA, this%sOB, &
-         !$acc                  this%sD, this%sOff)
-         this%on_device = .false.
+      !$acc atomic update
+      jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
+      !$acc atomic update
+      kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
+      if (dij) then
+         !$acc atomic update
+         jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
+         !$acc atomic update
+         kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
       end if
-      if (allocated(this%sA))  deallocate (this%sA)
-      if (allocated(this%sB))  deallocate (this%sB)
-      if (allocated(this%sOA)) deallocate (this%sOA)
-      if (allocated(this%sOB)) deallocate (this%sOB)
-      if (allocated(this%sNB)) deallocate (this%sNB)
-      if (allocated(this%sD))  deallocate (this%sD)
-      if (allocated(this%sOff)) deallocate (this%sOff)
-      if (allocated(this%sLA)) deallocate (this%sLA)
-      if (allocated(this%sLB)) deallocate (this%sLB)
-      if (allocated(this%sLC)) deallocate (this%sLC)
-      if (allocated(this%sLD)) deallocate (this%sLD)
-      this%nseg = 0; this%nwork = 0; this%nlaunch = 0
-   end subroutine plan_release
+      if (dkl) then
+         !$acc atomic update
+         jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
+         !$acc atomic update
+         kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
+      end if
+      if (dij .and. dkl) then
+         !$acc atomic update
+         jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
+         !$acc atomic update
+         kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
+      end if
+      if (dpq) then
+         !$acc atomic update
+         jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
+         !$acc atomic update
+         kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
+         if (dkl) then
+            !$acc atomic update
+            jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
+            !$acc atomic update
+            kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
+         end if
+         if (dij) then
+            !$acc atomic update
+            jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
+            !$acc atomic update
+            kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
+         end if
+         if (dij .and. dkl) then
+            !$acc atomic update
+            jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
+            !$acc atomic update
+            kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
+         end if
+      end if
+   end subroutine scatter_nosym
+
 
 end module trc_binkernel

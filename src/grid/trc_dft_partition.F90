@@ -78,6 +78,48 @@ module trc_dft_partition
 
    integer, parameter :: N_DIM = 3
 
+   type, public :: dft_partition_options_t
+      !! How a partition is built and screened. The defaults are the
+      !! production partition: Becke's cutoff, Treutler's size adjustment, the
+      !! scheme's own screening threshold, the default scratch budget, every
+      !! point. A grid records the one it was built with (`dft_grid_t`'s
+      !! `partition`), so a gradient differentiates the same partition.
+      integer :: scheme = PARTITION_BECKE
+      !! Cutoff profile: PARTITION_BECKE or PARTITION_STRATMANN.
+      integer :: adjust = ADJUST_TREUTLER
+      !! Size adjustment: ADJUST_NONE, ADJUST_BECKE or ADJUST_TREUTLER.
+      real(dp) :: nu_max = -1.0_dp
+      !! Screening. An atom whose cutoff argument against the point's owner
+      !! is already at or beyond this value is left out of the pair loop for
+      !! that point: with Becke's cutoff its cell function is then below
+      !! 1e-9 relative, with Stratmann's it is exactly zero past 0.64. The
+      !! loop is O(active^2) per point instead of O(n_atoms^2). A value >= 1
+      !! screens nothing; check_grid measures the difference. Negative (the
+      !! default) is PARTITION_NU_MAX, or STRATMANN_A under that scheme.
+      integer(int64) :: budget = 0_int64
+      !! Scratch budget in doubles; zero (the default) is 2^26, 512 MB. Sets
+      !! how many points a chunk holds, budget / (4 n_atoms).
+      integer :: first = 1
+      !! First point to partition (dft_partition_becke_weights only); see
+      !! `last`.
+      integer :: last = huge(1)
+      !! dft_partition_becke_weights only: partition the points first..last
+      !! and return every other weight as zero, so a caller holding one block
+      !! per rank can sum the arrays and have the whole grid. The default is
+      !! all of them.
+   end type dft_partition_options_t
+
+   type :: pair_geometry_t
+      !! What pair_sij reads about the nuclei: fixed for a molecule, shared by
+      !! every point.
+      integer :: n_atoms = 0
+      integer :: scheme = PARTITION_BECKE
+      real(dp), allocatable :: atom_coords(:, :)
+      !! (3, n_atoms), Bohr.
+      real(dp), allocatable :: shift(:, :), inv_distance(:, :)
+      !! (n_atoms, n_atoms) the size-adjustment shift and 1/R_AB.
+   end type pair_geometry_t
+
 contains
 
    pure function dft_partition_scheme_name(scheme) result(name)
@@ -95,8 +137,7 @@ contains
       end select
    end function dft_partition_scheme_name
 
-   subroutine dft_partition_becke_weights(points, atom_coords, atomic_numbers, owner, &
-                                      scheme, adjust, weights, error, nu_max, budget, first, last)
+   subroutine dft_partition_becke_weights(points, atom_coords, atomic_numbers, owner, options, weights, error)
       !! Partition weight at each grid point, for the atom that owns it
       !!
       !! The returned weight is w_owner(r): the fraction of the integrand at
@@ -117,35 +158,23 @@ contains
       real(dp), intent(in) :: atom_coords(:, :)  !! (3, n_atoms), Bohr
       integer, intent(in) :: atomic_numbers(:)   !! Z per atom, for the radii
       integer, intent(in) :: owner(:)            !! Atom each point belongs to
-      integer, intent(in) :: scheme              !! PARTITION_BECKE or PARTITION_STRATMANN
-      integer, intent(in) :: adjust              !! ADJUST_NONE, _BECKE or _TREUTLER
+      type(dft_partition_options_t), intent(in) :: options
+      !! Cutoff, size adjustment, screening, scratch budget and the block of
+      !! points to partition.
       real(dp), intent(out) :: weights(:)        !! (n_points)
       type(error_t), intent(inout) :: error
-      real(dp), intent(in), optional :: nu_max
-      !! Screening. An atom whose cutoff argument against the point's owner
-      !! is already at or beyond this value is left out of the pair loop for
-      !! that point: with Becke's cutoff its cell function is then below
-      !! 1e-9 relative, with Stratmann's it is exactly zero past 0.64. The
-      !! loop is O(active^2) per point instead of O(n_atoms^2). Pass a value
-      !! >= 1 for no screening; check_grid measures the difference. Default
-      !! PARTITION_NU_MAX, or STRATMANN_A under that scheme.
-      integer(int64), intent(in), optional :: budget
-      !! Scratch budget in doubles, default 2^26 (512 MB): sets how many
-      !! points a chunk holds, 2^26 / (4 n_atoms).
-      integer, intent(in), optional :: first, last
-      !! Only the points first..last are partitioned; every other weight is
-      !! returned as zero, so a caller holding one block per rank can sum
-      !! the arrays and have the whole grid. Default all of them.
 
       real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
       real(dp), allocatable :: atom_r(:, :), ract(:, :), cell(:, :)
       integer, allocatable :: active(:, :), mark(:, :)
-      integer :: n_atoms, n_points, i, j, k0, n, chunk, g, k_lo, k_hi
-      integer(int64) :: cap
+      integer :: n_atoms, n_points, k0, n, chunk, g, k_lo, k_hi, scheme, adjust
       real(dp) :: numax
 
       n_atoms = size(atom_coords, 2)
       n_points = size(points, 2)
+      ! Scalars, not components: the `do concurrent` below reads them.
+      scheme = options%scheme
+      adjust = options%adjust
 
       if (size(atomic_numbers) /= n_atoms) then
          call error%set(ERROR_VALIDATION, "partition: atomic_numbers does not match atom_coords")
@@ -164,10 +193,8 @@ contains
          return
       end if
 
-      k_lo = 1
-      k_hi = n_points
-      if (present(first)) k_lo = max(first, 1)
-      if (present(last)) k_hi = min(last, n_points)
+      k_lo = max(options%first, 1)
+      k_hi = min(options%last, n_points)
       weights = 0.0_dp
 
       ! A single atom owns everything, and the pair loop below would leave the
@@ -177,37 +204,9 @@ contains
          return
       end if
 
-      numax = PARTITION_NU_MAX
-      ! Stratmann's cutoff is exactly zero from STRATMANN_A on, so there the
-      ! screening is exact and nothing tighter buys anything.
-      if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
-      if (present(nu_max)) numax = nu_max
-      cap = 67108864_int64
-      if (present(budget)) cap = max(budget, int(4*n_atoms, int64))
-      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(4*n_atoms, int64))))
-
-      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
-      call size_adjustment(atomic_numbers, adjust, shift)
-
-      ! 1/R_AB, precomputed: it is the same for every point.
-      inv_distance = 0.0_dp
-      do i = 1, n_atoms
-         do j = 1, n_atoms
-            if (i /= j) then
-               inv_distance(i, j) = 1.0_dp/norm2(atom_coords(:, i) - atom_coords(:, j))
-            end if
-         end do
-      end do
-
-      ! Nearest neighbour of each atom, for Stratmann's inner sphere: a point
-      ! closer to its owner than (1 - a)/2 of that distance has mu <= -a
-      ! against every other atom, and the weight is exactly one.
-      r_min = huge(1.0_dp)
-      do i = 1, n_atoms
-         do j = 1, n_atoms
-            if (i /= j) r_min(i) = min(r_min(i), 1.0_dp/inv_distance(i, j))
-         end do
-      end do
+      numax = screen_limit(options)
+      chunk = chunk_points(options, n_points, n_atoms)
+      call partition_tables(atom_coords, atomic_numbers, adjust, shift, inv_distance, r_min)
 
       ! Point index FIRST: consecutive threads are consecutive points, and
       ! this is what makes their reads of the same column adjacent. `atom_r`
@@ -353,8 +352,7 @@ contains
       end if
    end subroutine partition_point
 
-   subroutine dft_partition_becke_derivatives(points, atom_coords, atomic_numbers, owner, &
-                                          scheme, adjust, dweights, error, nu_max)
+   subroutine dft_partition_becke_derivatives(points, atom_coords, atomic_numbers, owner, options, dweights, error)
       !! dP_k/dR_A at fixed grid points, as (3, n_atoms, n_points)
       !!
       !! The partition weight depends on every nuclear position, so moving any
@@ -430,18 +428,18 @@ contains
       real(dp), intent(in) :: atom_coords(:, :)  !! (3, n_atoms), Bohr
       integer, intent(in) :: atomic_numbers(:)   !! Z per atom, for the radii
       integer, intent(in) :: owner(:)            !! Atom each point belongs to
-      integer, intent(in) :: scheme
-      integer, intent(in) :: adjust
+      type(dft_partition_options_t), intent(in) :: options
+      !! Cutoff, size adjustment and screening; first/last are ignored.
+      !! `nu_max` defaults as in `dft_partition_becke_weights` -- the SAME
+      !! default the energy's own `dft_partition_becke_weights` call
+      !! (`apply_partition`) uses. Pass >= 1 for no screening (what
+      !! check_dft_partition_deriv.F90 does to compare against the unscreened
+      !! reference).
       real(dp), intent(out) :: dweights(:, :, :)  !! (3, n_atoms, n_points)
       type(error_t), intent(inout) :: error
-      real(dp), intent(in), optional :: nu_max
-      !! As `dft_partition_becke_weights`'s own `nu_max`: default PARTITION_NU_MAX,
-      !! or STRATMANN_A under that scheme -- the SAME default the energy's own
-      !! unqualified `dft_partition_becke_weights` call (`apply_partition`) uses.
-      !! Pass >= 1 for no screening (what check_dft_partition_deriv.F90 does
-      !! to compare against the unscreened reference).
 
-      real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
+      type(pair_geometry_t) :: geom
+      real(dp), allocatable :: r_min(:)
       real(dp), allocatable :: atom_r(:), unit_vec(:, :)
       real(dp), allocatable :: f(:), prefix(:), suffix(:)
       real(dp), allocatable :: own_deriv(:, :), oth_deriv(:, :)
@@ -449,10 +447,12 @@ contains
       integer, allocatable :: index(:), active(:), mark(:)
       real(dp) :: cell_own, total, excl, numax, r_inner, mu, nu
       real(dp) :: d_ii(3), d_ia(3)
-      integer :: n_atoms, n_points, i, j, k, t, m, own, ia, ja, n_active, n1
+      integer :: n_atoms, n_points, i, j, k, t, m, own, ia, ja, n_active, n1, scheme, adjust
 
       n_atoms = size(atom_coords, 2)
       n_points = size(points, 2)
+      scheme = options%scheme
+      adjust = options%adjust
       dweights = 0.0_dp
 
       if (size(atomic_numbers) /= n_atoms) then
@@ -469,43 +469,26 @@ contains
       ! not change when the atom moves.
       if (n_atoms == 1) return
 
-      numax = PARTITION_NU_MAX
-      if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
-      if (present(nu_max)) numax = nu_max
+      numax = screen_limit(options)
 
-      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
-
-      call size_adjustment(atomic_numbers, adjust, shift)
-
-      inv_distance = 0.0_dp
-      do i = 1, n_atoms
-         do j = 1, n_atoms
-            if (i /= j) then
-               inv_distance(i, j) = 1.0_dp/norm2(atom_coords(:, i) - atom_coords(:, j))
-            end if
-         end do
-      end do
-
-      ! Nearest neighbour of each atom, for Stratmann's inner sphere -- the
-      ! same shortcut `partition_point` takes (a point closer to its owner
-      ! than that has weight exactly 1, so EVERY atom's derivative there is
-      ! exactly zero, not merely small: `dweights` stays at the zero this
-      ! routine already initialises it to, via the `cycle` below).
-      r_min = huge(1.0_dp)
-      do i = 1, n_atoms
-         do j = 1, n_atoms
-            if (i /= j) r_min(i) = min(r_min(i), 1.0_dp/inv_distance(i, j))
-         end do
-      end do
+      ! r_min is for Stratmann's inner sphere -- the same shortcut
+      ! `partition_point` takes (a point closer to its owner than that has
+      ! weight exactly 1, so EVERY atom's derivative there is exactly zero,
+      ! not merely small: `dweights` stays at the zero this routine already
+      ! initialises it to, via the `cycle` below).
+      geom%n_atoms = n_atoms
+      geom%scheme = scheme
+      geom%atom_coords = atom_coords
+      call partition_tables(atom_coords, atomic_numbers, adjust, geom%shift, geom%inv_distance, r_min)
 
       ! One thread per grid point, as before: every iteration reads the
       ! geometry and writes its own `dweights(:, :, k)`, so the points are
-      ! independent. `shift`/`inv_distance`/`r_min` depend only on the
-      ! nuclei and stay shared; everything else is O(n_atoms) scratch,
-      ! allocated once per thread.
+      ! independent. `geom` and `r_min` depend only on the nuclei and stay
+      ! shared; everything else is O(n_atoms) scratch, allocated once per
+      ! thread.
       !$omp parallel default(none) &
-      !$omp    shared(points, atom_coords, owner, scheme, dweights, shift, &
-      !$omp           inv_distance, r_min, numax, n_points, n_atoms, adjust) &
+      !$omp    shared(points, atom_coords, owner, scheme, dweights, geom, &
+      !$omp           r_min, numax, n_points, n_atoms, adjust) &
       !$omp    private(k, i, j, t, m, own, ia, ja, n_active, n1, cell_own, total, excl, &
       !$omp            r_inner, mu, nu, d_ii, d_ia, atom_r, unit_vec, f, prefix, suffix, &
       !$omp            own_deriv, oth_deriv, dtotal, d_own, index, active, mark)
@@ -546,8 +529,8 @@ contains
          mark(own) = 1
          do i = 1, n_atoms
             if (i == own) cycle
-            mu = (atom_r(i) - atom_r(own))*inv_distance(i, own)
-            nu = mu + shift(i, own)*(1.0_dp - mu*mu)
+            mu = (atom_r(i) - atom_r(own))*geom%inv_distance(i, own)
+            nu = mu + geom%shift(i, own)*(1.0_dp - mu*mu)
             if (nu < numax) then
                n_active = n_active + 1
                active(n_active) = i
@@ -559,8 +542,8 @@ contains
             if (mark(i) == 1) cycle
             do ja = 2, n1
                j = active(ja)
-               mu = (atom_r(i) - atom_r(j))*inv_distance(i, j)
-               nu = mu + shift(i, j)*(1.0_dp - mu*mu)
+               mu = (atom_r(i) - atom_r(j))*geom%inv_distance(i, j)
+               nu = mu + geom%shift(i, j)*(1.0_dp - mu*mu)
                if (nu < numax) then
                   n_active = n_active + 1
                   active(n_active) = i
@@ -587,8 +570,7 @@ contains
                if (j == i) cycle
                m = m + 1
                index(m) = j
-               call pair_sij(i, j, n_atoms, atom_coords, atom_r, unit_vec, shift, &
-                            inv_distance, scheme, f(m), own_deriv(:, m), oth_deriv(:, m))
+               call pair_sij(i, j, geom, atom_r, unit_vec, f(m), own_deriv(:, m), oth_deriv(:, m))
             end do
 
             prefix(0) = 1.0_dp
@@ -632,8 +614,8 @@ contains
       !$omp end parallel
    end subroutine dft_partition_becke_derivatives
 
-   subroutine dft_partition_becke_grad_contract(n_points, points, atom_coords, atomic_numbers, owner, &
-                                            coef, scheme, adjust, grad, error, nu_max, budget)
+   subroutine dft_partition_becke_grad_contract(points, atom_coords, atomic_numbers, owner, coef, options, &
+                                                grad, error)
       !! sum_k coef_k dP_k/dR_A, plus the point-motion term, straight into
       !! a (3, n_atoms) gradient
       !!
@@ -665,30 +647,32 @@ contains
       !!
       !! `points`, `owner` and `coef` may already be on the device (the
       !! XC gradient's are); `grad` is a host array, ADDED into.
-      integer, intent(in) :: n_points
-      real(dp), intent(in) :: points(3, n_points)   !! Bohr
+      real(dp), intent(in) :: coef(:)
+      !! (n_points) the per-point factor; a point with coef exactly 0 is
+      !! skipped. Its size is the point count: `points` and `owner` may be
+      !! longer (a padded batch) and only their first n_points are read.
+      real(dp), intent(in) :: points(3, size(coef))  !! Bohr
       real(dp), intent(in) :: atom_coords(:, :)     !! (3, n_atoms), Bohr
       integer, intent(in) :: atomic_numbers(:)      !! Z per atom, for the radii
-      integer, intent(in) :: owner(n_points)        !! Atom each point belongs to
-      real(dp), intent(in) :: coef(n_points)
-      !! The per-point factor; a point with coef exactly 0 is skipped.
-      integer, intent(in) :: scheme, adjust
+      integer, intent(in) :: owner(size(coef))      !! Atom each point belongs to
+      type(dft_partition_options_t), intent(in) :: options
+      !! Cutoff, size adjustment, screening and scratch budget, as
+      !! `dft_partition_becke_derivatives`'s; first/last are ignored. At the
+      !! default budget a chunk holds 93k points at 180 atoms.
       real(dp), intent(inout) :: grad(:, :)         !! (3, n_atoms), added into
       type(error_t), intent(inout) :: error
-      real(dp), intent(in), optional :: nu_max
-      !! As `dft_partition_becke_derivatives`'s.
-      integer(int64), intent(in), optional :: budget
-      !! Scratch budget in doubles, default 2^26 (512 MB): a chunk holds
-      !! 2^26 / (4 n_atoms) points, 93k at 180 atoms.
 
       real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
       real(dp), allocatable :: ract(:, :), cell(:, :)
       integer, allocatable :: active(:, :), sig(:, :), mark(:, :)
-      integer :: n_atoms, i, j, k0, n, chunk, g
-      integer(int64) :: cap
+      integer :: n_atoms, n_points, k0, n, chunk, g, scheme, adjust
       real(dp) :: numax
 
       n_atoms = size(atom_coords, 2)
+      n_points = size(coef)
+      ! Scalars, not components: the `do concurrent` below reads them.
+      scheme = options%scheme
+      adjust = options%adjust
       if (size(atomic_numbers) /= n_atoms .or. size(grad, 2) /= n_atoms .or. size(grad, 1) /= 3) then
          call error%set(ERROR_VALIDATION, "partition gradient: atomic_numbers/grad do not match atom_coords")
          return
@@ -700,27 +684,9 @@ contains
       ! One atom owns everything: its weight is identically one.
       if (n_atoms == 1 .or. n_points == 0) return
 
-      numax = PARTITION_NU_MAX
-      if (scheme == PARTITION_STRATMANN) numax = STRATMANN_A
-      if (present(nu_max)) numax = nu_max
-      cap = 67108864_int64
-      if (present(budget)) cap = max(budget, int(4*n_atoms, int64))
-      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(4*n_atoms, int64))))
-
-      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
-      call size_adjustment(atomic_numbers, adjust, shift)
-      inv_distance = 0.0_dp
-      do i = 1, n_atoms
-         do j = 1, n_atoms
-            if (i /= j) inv_distance(i, j) = 1.0_dp/norm2(atom_coords(:, i) - atom_coords(:, j))
-         end do
-      end do
-      r_min = huge(1.0_dp)
-      do i = 1, n_atoms
-         do j = 1, n_atoms
-            if (i /= j) r_min(i) = min(r_min(i), 1.0_dp/inv_distance(i, j))
-         end do
-      end do
+      numax = screen_limit(options)
+      chunk = chunk_points(options, n_points, n_atoms)
+      call partition_tables(atom_coords, atomic_numbers, adjust, shift, inv_distance, r_min)
 
       allocate (ract(chunk, n_atoms), cell(chunk, n_atoms))
       allocate (active(chunk, n_atoms), sig(chunk, n_atoms), mark(chunk, n_atoms))
@@ -1066,18 +1032,17 @@ contains
       end do
    end subroutine partition_grad_point
 
-   pure subroutine pair_sij(i, j, n_atoms, atom_coords, atom_r, unit_vec, shift, inv_distance, &
-                            scheme, sval, d_own, d_oth)
+   pure subroutine pair_sij(i, j, geom, atom_r, unit_vec, sval, d_own, d_oth)
       !! S(i,j): the fraction of the (i,j) pair's cutoff that atom i keeps,
       !! and its derivative with respect to R_i (`d_own`) and R_j (`d_oth`) --
       !! both one-sided, since S(i,j) depends on nothing else. Built from
       !! the SAME canonical pair (p, q) = (min(i,j), max(i,j)) regardless of
       !! which order (i,j) is asked in, so S(i,j) and S(j,i) = 1 - S(i,j)
       !! are bitwise consistent by construction.
-      integer, intent(in) :: i, j, n_atoms
-      real(dp), intent(in) :: atom_coords(3, n_atoms), atom_r(n_atoms), unit_vec(3, n_atoms)
-      real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms)
-      integer, intent(in) :: scheme
+      integer, intent(in) :: i, j
+      type(pair_geometry_t), intent(in) :: geom
+      real(dp), intent(in) :: atom_r(geom%n_atoms), unit_vec(3, geom%n_atoms)
+      !! The point's distance from, and unit vector away from, each nucleus.
       real(dp), intent(out) :: sval
       real(dp), intent(out) :: d_own(3), d_oth(3)
       real(dp) :: mu, nu, s, ds_dnu, dnu_dmu, invd
@@ -1086,13 +1051,13 @@ contains
 
       p = min(i, j)
       q = max(i, j)
-      invd = inv_distance(p, q)
-      rij = atom_coords(:, p) - atom_coords(:, q)
+      invd = geom%inv_distance(p, q)
+      rij = geom%atom_coords(:, p) - geom%atom_coords(:, q)
 
       mu = (atom_r(p) - atom_r(q))*invd
-      nu = mu + shift(p, q)*(1.0_dp - mu*mu)
+      nu = mu + geom%shift(p, q)*(1.0_dp - mu*mu)
 
-      if (scheme == PARTITION_BECKE) then
+      if (geom%scheme == PARTITION_BECKE) then
          s = becke_cutoff(nu)
          ds_dnu = becke_cutoff_derivative(nu)
       else
@@ -1100,7 +1065,7 @@ contains
          ds_dnu = stratmann_cutoff_derivative(nu)
       end if
 
-      dnu_dmu = 1.0_dp - 2.0_dp*shift(p, q)*mu
+      dnu_dmu = 1.0_dp - 2.0_dp*geom%shift(p, q)*mu
 
       ! mu depends on R_p and R_q only: through the distances from the
       ! point, and through the internuclear distance in the denominator.
@@ -1117,6 +1082,58 @@ contains
          d_oth = -ds_p
       end if
    end subroutine pair_sij
+
+   pure real(dp) function screen_limit(options) result(numax)
+      !! The screening threshold on nu: options%nu_max, or by default
+      !! PARTITION_NU_MAX -- STRATMANN_A under Stratmann's cutoff, which is
+      !! exactly zero from there on, so the screening is exact and nothing
+      !! tighter buys anything.
+      type(dft_partition_options_t), intent(in) :: options
+      numax = PARTITION_NU_MAX
+      if (options%scheme == PARTITION_STRATMANN) numax = STRATMANN_A
+      if (options%nu_max >= 0.0_dp) numax = options%nu_max
+   end function screen_limit
+
+   pure integer function chunk_points(options, n_points, n_atoms) result(chunk)
+      !! Points per chunk of the device partition: the scratch is four
+      !! (chunk, n_atoms) arrays, under options%budget doubles (2^26 by
+      !! default, and never less than one point's worth).
+      type(dft_partition_options_t), intent(in) :: options
+      integer, intent(in) :: n_points, n_atoms
+      integer(int64) :: cap
+      cap = 67108864_int64
+      if (options%budget > 0_int64) cap = max(options%budget, int(4*n_atoms, int64))
+      chunk = int(min(int(n_points, int64), max(1_int64, cap/int(4*n_atoms, int64))))
+   end function chunk_points
+
+   pure subroutine partition_tables(atom_coords, atomic_numbers, adjust, shift, inv_distance, r_min)
+      !! What every partition routine reads about the nuclei alone, the same
+      !! for every point: the pairwise size shift, 1/R_AB, and each atom's
+      !! nearest-neighbour distance, for Stratmann's inner sphere (a point
+      !! closer to its owner than (1 - a)/2 of it has mu <= -a against every
+      !! other atom, and the weight is exactly one).
+      real(dp), intent(in) :: atom_coords(:, :)
+      integer, intent(in) :: atomic_numbers(:)
+      integer, intent(in) :: adjust
+      real(dp), allocatable, intent(out) :: shift(:, :), inv_distance(:, :), r_min(:)
+      integer :: n_atoms, i, j
+
+      n_atoms = size(atom_coords, 2)
+      allocate (shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms))
+      call size_adjustment(atomic_numbers, adjust, shift)
+      inv_distance = 0.0_dp
+      do i = 1, n_atoms
+         do j = 1, n_atoms
+            if (i /= j) inv_distance(i, j) = 1.0_dp/norm2(atom_coords(:, i) - atom_coords(:, j))
+         end do
+      end do
+      r_min = huge(1.0_dp)
+      do i = 1, n_atoms
+         do j = 1, n_atoms
+            if (i /= j) r_min(i) = min(r_min(i), 1.0_dp/inv_distance(i, j))
+         end do
+      end do
+   end subroutine partition_tables
 
    pure subroutine size_adjustment(atomic_numbers, adjust, shift)
       !! Pairwise shift applied to mu so unequal atoms get unequal cells

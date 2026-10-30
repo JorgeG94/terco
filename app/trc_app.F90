@@ -19,14 +19,13 @@ module trc_app
                          performance_level, warning_level, error_level, knowledge_level
    use pic_strings, only: to_string, ends_with
    use trc_constants, only: ANGSTROM_TO_BOHR
-   use json_module, only: json_core, json_value
    implicit none
    private
 
    public :: app_read_xyz, app_resolve_basis, app_element_symbol, app_atomic_number, app_c_string, app_f_string, app_set_env
    public :: BOHR_PER_ANGSTROM
    public :: app_help_for_topic, app_set_log_level
-   public :: app_write_opt_xyz_frame, app_write_traj_xyz_frames, app_write_opt_failure_json
+   public :: app_write_opt_xyz_frame, app_write_traj_xyz_frames
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
       !! CODATA 2018 (trc_constants' ANGSTROM_TO_BOHR), the constant every
@@ -318,44 +317,6 @@ contains
       end do
       close (u)
    end subroutine app_write_traj_xyz_frames
-
-   subroutine app_write_opt_failure_json(path, geometry, reason, steps, energy_evaluations, &
-                                     final_energy, final_gradient_max, final_gradient_rms, &
-                                     coords_name, guess_name, traj_energy)
-      !! A minimal "optimization" JSON block for the one outcome
-      !! app/main.F90's own add_optimization never gets a chance to write:
-      !! DL-FIND's `error stop` right after a failed evaluation
-      !! (trc_dlfind_bridge%cb_get_gradient never returns to anything that
-      !! could call add_optimization). Smaller than add_optimization's own
-      !! block on purpose -- no gradient_tolerance, no final geometry array
-      !! -- but carries the two fields a caller checking a failed run needs:
-      !! "failed" and "failure_reason".
-      character(len=*), intent(in) :: path, geometry, reason, coords_name, guess_name
-      integer, intent(in) :: steps, energy_evaluations
-      real(dp), intent(in) :: final_energy, final_gradient_max, final_gradient_rms
-      real(dp), intent(in) :: traj_energy(:)
-      type(json_core) :: json
-      type(json_value), pointer :: root, oobj
-      call json%initialize()
-      call json%create_object(root, "")
-      call json%add(root, "program", "terco")
-      call json%add(root, "geometry", geometry)
-      call json%create_object(oobj, "optimization")
-      call json%add(oobj, "converged", .false.)
-      call json%add(oobj, "failed", .true.)
-      call json%add(oobj, "failure_reason", reason)
-      call json%add(oobj, "steps", steps)
-      call json%add(oobj, "energy_evaluations", energy_evaluations)
-      call json%add(oobj, "final_energy", final_energy)
-      call json%add(oobj, "final_gradient_max", final_gradient_max)
-      call json%add(oobj, "final_gradient_rms", final_gradient_rms)
-      call json%add(oobj, "coordinates", coords_name)
-      call json%add(oobj, "guess", guess_name)
-      if (size(traj_energy) > 0) call json%add(oobj, "trajectory_energies", traj_energy)
-      call json%add(root, oobj)
-      call json%print(root, path)
-      call json%destroy(root)
-   end subroutine app_write_opt_failure_json
 
    function app_help_for_topic(text, topic) result(out)
       !! `pic_cli`'s help text cut down to one topic. Without a topic the

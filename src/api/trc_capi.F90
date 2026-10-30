@@ -205,7 +205,8 @@ module trc_capi
    use pic_strings, only: to_string
    use pic_timer, only: timer_type
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart, &
+                               trc_rimp2_options_t
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -476,6 +477,36 @@ module trc_capi
       logical :: hess_ok = .false.
       character(len=256) :: message = ""
    end type context_box
+
+   type :: trc_fock_scale_t
+    !! The four Fock-build knobs `fock_shaped`/`fock_many_shaped` pass
+    !! straight through to `trc_eri_t%fock`/`%fock_many`, bundled so those
+    !! two internal helpers stay under the dummy-argument limit; `capi_fock`/
+    !! `trc_fock_many`'s own bind(c) signatures (the ABI) are unaffected.
+      real(dp) :: jfac = 1.0_dp, kfac = 1.0_dp
+      logical :: dscreen = .true.
+      real(dp) :: omega = 0.0_dp
+   end type trc_fock_scale_t
+
+   type :: trc_scf_entry_request_t
+    !! `scf_entry`'s own run request, built from C-kind scalars at each of
+    !! its three callers (`capi_scf`, `capi_scf_mpi`'s two branches) so that
+    !! `scf_entry` itself, one hop removed from the C boundary, stays in
+    !! `pic_types` kinds and under the dummy-argument limit. The bind(c)
+    !! signatures of `capi_scf`/`capi_scf_mpi` (the ABI) are unaffected.
+      integer :: nalpha = 0, nbeta = 0
+      integer :: grid_level = 0
+      real(dp) :: conv_energy = 0.0_dp, conv_density = 0.0_dp
+      integer :: max_iteration = 0
+      logical :: verbose = .false.
+   end type trc_scf_entry_request_t
+
+   type :: trc_scf_entry_result_t
+    !! The three scalar results `scf_entry` hands back, converted to
+    !! C-kind doubles/int at the same three call sites.
+      real(dp) :: energy = 0.0_dp, e_xc = 0.0_dp
+      integer :: niter = 0
+   end type trc_scf_entry_result_t
 
 contains
 
@@ -1092,6 +1123,7 @@ contains
       type(eri_box), pointer :: eb
       integer :: n
       real(dp), allocatable :: nrm(:), dscratch(:, :)
+      type(trc_fock_scale_t) :: scale
 
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
@@ -1109,10 +1141,13 @@ contains
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
+      scale%jfac = real(jfac, dp)
+      scale%kfac = real(kfac, dp)
+      scale%dscreen = dscreen /= 0
+      scale%omega = real(omega, dp)
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          call fock_scale_in(bb, n, dmat, nrm, dscratch)
-         call fock_shaped(bb%b, eb%e, n, dscratch, gmat, real(jfac, dp), &
-                          real(kfac, dp), dscreen /= 0, real(omega, dp))
+         call fock_shaped(bb%b, eb%e, n, dscratch, gmat, scale)
          call fock_scale_out(nrm, n, gmat)
       else
          ! The zero-copy path, untouched: `dmat` and `gmat` are sequence
@@ -1120,8 +1155,7 @@ contains
          ! comment on `fock_shaped` below), which is exactly why SHELL
          ! mode -- the default, so every existing caller -- pays nothing
          ! for this entry existing.
-         call fock_shaped(bb%b, eb%e, n, dmat, gmat, real(jfac, dp), &
-                          real(kfac, dp), dscreen /= 0, real(omega, dp))
+         call fock_shaped(bb%b, eb%e, n, dmat, gmat, scale)
       end if
       status = TRC_OK
    end function capi_fock
@@ -1170,17 +1204,15 @@ contains
    ! capi_fock and trc_fock_nosym before/after this): an O(n^2) price only a
    ! caller who opted into UNIT mode pays, against an O(n^4) build.
    !
-   subroutine fock_shaped(b, e, n, d, g, jfac, kfac, dscreen, omega)
+   subroutine fock_shaped(b, e, n, d, g, scale)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: e
       integer, intent(in) :: n
       real(dp), intent(in)  :: d(n, n)
       real(dp), intent(out) :: g(n, n)
-      real(dp), intent(in) :: jfac, kfac
-      logical, intent(in) :: dscreen
-      real(dp), intent(in) :: omega
-      call e%fock(b, d, g, k_scale=kfac, j_scale=jfac, density_screen=dscreen, &
-                 omega=omega)
+      type(trc_fock_scale_t), intent(in) :: scale
+      call e%fock(b, d, g, k_scale=scale%kfac, j_scale=scale%jfac, density_screen=scale%dscreen, &
+                 omega=scale%omega)
    end subroutine fock_shaped
 
    !
@@ -1212,6 +1244,7 @@ contains
       type(eri_box), pointer :: eb
       integer :: n
       real(dp), allocatable :: nrm(:), dscratch(:, :, :)
+      type(trc_fock_scale_t) :: scale
 
       status = TRC_ERR_NULL
       if (.not. c_associated(eri) .or. .not. c_associated(basis)) return
@@ -1227,19 +1260,21 @@ contains
       call c_f_pointer(basis, bb)
       call c_f_pointer(eri, eb)
       n = bb%b%nao
+      scale%jfac = real(jfac, dp)
+      scale%kfac = real(kfac, dp)
+      scale%dscreen = dscreen /= 0
+      scale%omega = real(omega, dp)
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          call fock_many_scale_in(bb, int(ndens), n, dmats, nrm, dscratch)
-         call fock_many_shaped(bb%b, eb%e, int(ndens), n, dscratch, gmats, &
-                               real(jfac, dp), real(kfac, dp), dscreen /= 0, real(omega, dp))
+         call fock_many_shaped(bb%b, eb%e, int(ndens), n, dscratch, gmats, scale)
          call fock_many_scale_out(nrm, int(ndens), n, gmats)
       else
-         call fock_many_shaped(bb%b, eb%e, int(ndens), n, dmats, gmats, &
-                               real(jfac, dp), real(kfac, dp), dscreen /= 0, real(omega, dp))
+         call fock_many_shaped(bb%b, eb%e, int(ndens), n, dmats, gmats, scale)
       end if
       status = TRC_OK
    end function trc_fock_many
 
-   subroutine fock_many_shaped(b, e, nd, n, d, g, jfac, kfac, dscreen, omega)
+   subroutine fock_many_shaped(b, e, nd, n, d, g, scale)
       !! As `fock_shaped`, and for the same reason -- the batch is the case where
       !! the copy would have hurt most, being N times the size (in SHELL mode;
       !! UNIT mode already pays for a copy every entry that wires it, so this
@@ -1249,11 +1284,9 @@ contains
       integer, intent(in) :: nd, n
       real(dp), intent(in)  :: d(nd, n, n)
       real(dp), intent(out) :: g(nd, n, n)
-      real(dp), intent(in) :: jfac, kfac
-      logical, intent(in) :: dscreen
-      real(dp), intent(in) :: omega
-      call e%fock_many(b, nd, d, g, k_scale=kfac, j_scale=jfac, &
-                       density_screen=dscreen, omega=omega)
+      type(trc_fock_scale_t), intent(in) :: scale
+      call e%fock_many(b, nd, d, g, k_scale=scale%kfac, j_scale=scale%jfac, &
+                       density_screen=scale%dscreen, omega=scale%omega)
    end subroutine fock_many_shaped
 
    subroutine fock_many_scale_in(bb, nd, n, dmats, nrm, dscratch)
@@ -1373,8 +1406,19 @@ contains
       real(c_double), intent(out) :: dmat(*), eps(*)
       integer(c_int), intent(out) :: niter
       integer(c_int) :: status
-      status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
-                         max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter)
+      type(trc_scf_entry_request_t) :: req
+      type(trc_scf_entry_result_t) :: res_out
+      req%nalpha = int(nalpha)
+      req%nbeta = int(nbeta)
+      req%grid_level = int(grid_level)
+      req%conv_energy = real(conv_energy, dp)
+      req%conv_density = real(conv_density, dp)
+      req%max_iteration = int(max_iter)
+      req%verbose = verbose /= 0
+      status = scf_entry(basis, functional, req, dguess, res_out, dmat, eps)
+      energy = real(res_out%energy, c_double)
+      e_xc = real(res_out%e_xc, c_double)
+      niter = int(res_out%niter, c_int)
    end function capi_scf
 
    !
@@ -1410,6 +1454,8 @@ contains
       integer(c_int) :: status
       type(comm_t) :: comm
       logical :: collective
+      type(trc_scf_entry_request_t) :: req
+      type(trc_scf_entry_result_t) :: res_out
       call trc_build_comm(fcomm, comm, collective, status)
       if (status /= TRC_OK) then
          energy = 0.0_c_double
@@ -1417,15 +1463,23 @@ contains
          niter = 0
          return
       end if
+      req%nalpha = int(nalpha)
+      req%nbeta = int(nbeta)
+      req%grid_level = int(grid_level)
+      req%conv_energy = real(conv_energy, dp)
+      req%conv_density = real(conv_density, dp)
+      req%max_iteration = int(max_iter)
+      req%verbose = verbose /= 0
       if (.not. collective) then
          ! fcomm was -1: one rank, no communicator: trc_scf.
-         status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
-                            max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter)
-         return
+         status = scf_entry(basis, functional, req, dguess, res_out, dmat, eps)
+      else
+         status = scf_entry(basis, functional, req, dguess, res_out, dmat, eps, comm)
+         call comm%finalize()
       end if
-      status = scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, conv_density, &
-                         max_iter, dguess, verbose, energy, e_xc, dmat, eps, niter, comm)
-      call comm%finalize()
+      energy = real(res_out%energy, c_double)
+      e_xc = real(res_out%e_xc, c_double)
+      niter = int(res_out%niter, c_int)
    end function capi_scf_mpi
 
    !
@@ -1470,14 +1524,19 @@ contains
       if (.not. ab%b%on_device) call ab%b%to_device()
       call pl%build(bb%b, 1.0e-12_dp)
       call pl%to_device()
-      if (collective) then
-         call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
-                            nfrozen=int(nfrozen), aux_block=nblk, comm=comm)
-         call comm%finalize()
-      else
-         call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
-                            nfrozen=int(nfrozen), aux_block=nblk)
-      end if
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = int(nfrozen)
+         rimp2_opts%aux_block = nblk
+         if (collective) then
+            call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
+                               opts=rimp2_opts, comm=comm)
+            call comm%finalize()
+         else
+            call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
+                               opts=rimp2_opts)
+         end if
+      end block
       call pl%release()
       if (len_trim(res%message) > 0) then
          status = TRC_ERR_UNSUPPORTED
@@ -1488,22 +1547,21 @@ contains
       status = TRC_OK
    end function capi_rimp2
 
-   function scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
-                      conv_density, max_iteration, dguess, verbose, energy, e_xc, dmat, eps, &
-                      niter, comm) result(status)
+   function scf_entry(basis, functional, req, dguess, res_out, dmat, eps, comm) result(status)
       !! `dguess` CONTRAVARIANT in, `dmat` CONTRAVARIANT out, `eps`
       !! invariant, under `basis`'s own ao_norm_kind -- wired for the same
       !! reason capi_fock is: this is the entry capi_scf/capi_scf_mpi both
       !! funnel through, and a UNIT-mode caller can reach it with a
       !! context-borrowed `basis` exactly as it can reach the Fock family.
+      !! `req`/`res_out` (trc_scf_entry_request_t/trc_scf_entry_result_t,
+      !! just above) carry the scalar knobs and results that used to be
+      !! separate arguments -- the caller converts to/from C kinds.
       type(c_ptr), value :: basis
-      integer(c_int), value :: nalpha, nbeta, grid_level, max_iteration, verbose
       character(kind=c_char), intent(in) :: functional(*)
-      real(c_double), value :: conv_energy, conv_density
+      type(trc_scf_entry_request_t), intent(in) :: req
       type(c_ptr), value :: dguess
-      real(c_double), intent(out) :: energy, e_xc
+      type(trc_scf_entry_result_t), intent(out) :: res_out
       real(c_double), intent(out) :: dmat(*), eps(*)
-      integer(c_int), intent(out) :: niter
       type(comm_t), intent(in), optional :: comm
       integer(c_int) :: status
       type(basis_box), pointer :: bb
@@ -1515,16 +1573,14 @@ contains
       logical :: unit_mode
 
       status = TRC_ERR_NULL
-      energy = 0.0_c_double
-      e_xc = 0.0_c_double
-      niter = 0
+      res_out = trc_scf_entry_result_t()
       if (.not. c_associated(basis)) return
       call c_f_pointer(basis, bb)
       n = bb%b%nao
       status = TRC_ERR_BADARG
-      if (nalpha < 0 .or. nbeta < 0 .or. nalpha + nbeta > 2*n) return
-      if (grid_level < 0 .or. max_iteration < 1) return
-      nspin = merge(2, 1, nalpha /= nbeta)
+      if (req%nalpha < 0 .or. req%nbeta < 0 .or. req%nalpha + req%nbeta > 2*n) return
+      if (req%grid_level < 0 .or. req%max_iteration < 1) return
+      nspin = merge(2, 1, req%nalpha /= req%nbeta)
       unit_mode = bb%ao_norm_kind == TRC_AO_NORM_UNIT
       if (unit_mode) then
          allocate (nrm(n))
@@ -1536,11 +1592,11 @@ contains
          if (functional(i) == c_null_char) exit
          opts%functional(i:i) = functional(i)
       end do
-      opts%grid_level = int(grid_level)
-      opts%conv_energy = real(conv_energy, dp)
-      opts%conv_density = real(conv_density, dp)
-      opts%max_iteration = int(max_iteration)
-      opts%verbose = verbose /= 0
+      opts%grid_level = req%grid_level
+      opts%conv_energy = req%conv_energy
+      opts%conv_density = req%conv_density
+      opts%max_iteration = req%max_iteration
+      opts%verbose = req%verbose
 
       if (c_associated(dguess)) then
          call c_f_pointer(dguess, dg, [n, n, nspin])
@@ -1552,22 +1608,22 @@ contains
             do s = 1, nspin
                call ao_norm_scale_cov(nrm, dgscratch(:, :, s))
             end do
-            call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=dgscratch, comm=comm)
+            call trc_scf_run(bb%b, req%nalpha, req%nbeta, opts, res, dguess=dgscratch, comm=comm)
             deallocate (dgscratch)
          else
-            call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=real(dg, dp), comm=comm)
+            call trc_scf_run(bb%b, req%nalpha, req%nbeta, opts, res, dguess=real(dg, dp), comm=comm)
          end if
       else
-         call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, comm=comm)
+         call trc_scf_run(bb%b, req%nalpha, req%nbeta, opts, res, comm=comm)
       end if
       if (len_trim(res%message) > 0 .and. res%iterations == 0) then
          status = TRC_ERR_UNSUPPORTED   ! an unknown functional, or a grid that would not build
          return
       end if
 
-      energy = real(res%energy, c_double)
-      e_xc = real(res%e_xc, c_double)
-      niter = int(res%iterations, c_int)
+      res_out%energy = res%energy
+      res_out%e_xc = res%e_xc
+      res_out%niter = res%iterations
       ! `res%dmat` is terco's own SCF result, in terco's own convention --
       ! scale a COPY (D_GAMESS = N^-1 D_terco N^-1) for the caller-facing
       ! `dmat` and keep `res%dmat` itself untouched for the orbitals kept
@@ -1610,8 +1666,8 @@ contains
       if (allocated(bb%cmo)) deallocate (bb%cmo, bb%eps)
       call move_alloc(res%cmo, bb%cmo)
       call move_alloc(res%eps, bb%eps)
-      bb%nalpha = int(nalpha)
-      bb%nbeta = int(nbeta)
+      bb%nalpha = req%nalpha
+      bb%nbeta = req%nbeta
       status = merge(TRC_OK, TRC_ERR_NOCONV, res%converged)
    end function scf_entry
 
@@ -3094,7 +3150,7 @@ contains
       type(trc_scf_options_t) :: opts
       type(comm_t) :: comm
       type(error_t) :: err
-      real(dp), allocatable :: dsad(:, :), dg(:, :, :), hsap(:, :)
+      real(dp), allocatable :: dg(:, :, :), hsap(:, :)
       integer :: nelec, nunp, nalpha, nbeta, nspin, n, nc
       integer :: nocc(2)
       logical :: collective, talk, use_projected
@@ -3210,69 +3266,22 @@ contains
          ! SADQ is SAD with the molecule's charge put on its atoms, so it
          ! needs the electron count this run was asked for -- which is the
          ! one thing SAD never looks at. On a neutral molecule the two are
-         ! the same density; see trc_sad.
-         if (cx%guess_kind == TRC_GUESS_SADQ) then
-            call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=talk, la=cx%la)
-         else
-            call trc_sad_build(cx%bb%b, dsad, err, verbose=talk, la=cx%la)
-         end if
+         ! the same density; see trc_sad. Split out, as minao_guess_build
+         ! is, to keep this dispatch off trc_run_scf's own line count.
+         call sad_guess_build(cx%bb%b, nelec, nspin, cx%guess_kind == TRC_GUESS_SADQ, talk, cx%la, dg, err)
          if (err%has_error()) then
             cx%message = err%get_message()
             if (collective) call comm%finalize()
             return
          end if
-         allocate (dg(n, n, nspin))
-         if (nspin == 1) then
-            dg(:, :, 1) = dsad
-         else
-            dg(:, :, 1) = 0.5_dp*dsad
-            dg(:, :, 2) = 0.5_dp*dsad
-         end if
       case (TRC_GUESS_SAP)
          ! SAP hands back a one-electron operator, not a density, so it goes
-         ! in through `hguess` below rather than `dg`. T and V_ne are what it
-         ! needs and the context does not keep them, so they are built here;
-         ! it is one pair list and one 1e pass against an SCF.
-         !
-         ! trc_sap_build itself stays entirely Cartesian (`hsap_c`, `nc`):
-         ! it is built from the analytic one-electron matrices and a
-         ! quadrature over free-atom potentials, neither of which this
-         ! feature touches. The one transform this guess needs is here, at
-         ! the boundary, the same as SAD's own (trc_sad.F90) -- except SAD
-         ! produces its density already in the matching space because its
-         ! atomic sub-SCFs run on a `subset` basis that carries `spherical`
-         ! itself, where SAP's grid/one-electron machinery has no such
-         ! basis-level hook to carry it through.
-         block
-            type(trc_pairlist_t) :: pl
-            real(dp), allocatable :: s1(:, :), t1(:, :), v1(:, :), hsap_c(:, :)
-            call pl%build(cx%bb%b, cx%opts%eri_thresh)
-            call pl%to_device()
-            allocate (s1(nc, nc), t1(nc, nc), v1(nc, nc), hsap_c(nc, nc))
-            !$acc enter data create(s1, t1, v1)
-            call trc_1e(cx%bb%b, pl, s1, t1, v1)
-            !$acc update self(s1, t1, v1)
-            !$acc exit data delete(s1, t1, v1)
-            call trc_sap_build(cx%bb%b, pl, t1, v1, hsap_c, err, verbose=talk)
-            call pl%release()
-            deallocate (s1, t1, v1)
-            if (.not. err%has_error()) then
-               allocate (hsap(n, n))
-               if (cx%bb%b%spherical) then
-                  ! trc_sap_build already copied `hsap_c` back to the host
-                  ! and dropped its own device copy, so it has to go back
-                  ! up for the transform -- which, like every other matrix
-                  ! this SCF touches, runs on the device.
-                  !$acc enter data copyin(hsap_c) create(hsap)
-                  call sph_cart_to_sph(cx%bb%b, hsap_c, hsap)
-                  !$acc update self(hsap)
-                  !$acc exit data delete(hsap_c, hsap)
-               else
-                  hsap = hsap_c
-               end if
-            end if
-            deallocate (hsap_c)
-         end block
+         ! in through `hguess` below rather than `dg`; sap_guess_build (below,
+         ! split out for the same reason as sad_guess_build) builds it from
+         ! the analytic one-electron matrices and a quadrature over free-atom
+         ! potentials, transformed to this SCF's own space exactly as SAD's
+         ! own density is.
+         call sap_guess_build(cx%bb%b, cx%opts%eri_thresh, n, nc, talk, hsap, err)
          if (err%has_error()) then
             cx%message = err%get_message()
             if (collective) call comm%finalize()
@@ -3453,6 +3462,87 @@ contains
          dg(:, :, 2) = 0.5_dp*dminao
       end if
    end subroutine minao_guess_build
+
+   !
+   ! TRC_GUESS_SAD/SADQ's density, both spins -- split out of trc_run_scf's
+   ! own dispatch for the same reason as minao_guess_build.
+   !
+   subroutine sad_guess_build(b, nelec, nspin, sadq, talk, la, dg, err)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nelec, nspin
+      logical, intent(in) :: sadq   !! TRC_GUESS_SADQ rather than plain SAD
+      logical, intent(in) :: talk
+      type(trc_linalg_t), intent(inout) :: la
+      real(dp), allocatable, intent(out) :: dg(:, :, :)
+      type(error_t), intent(inout) :: err
+      real(dp), allocatable :: dsad(:, :)
+      integer :: n
+      n = merge(b%nao_sph, b%nao, b%spherical)   ! this SCF's own space, scf_space_nao's rule
+      if (sadq) then
+         call trc_sadq_build(b, nelec, dsad, err, verbose=talk, la=la)
+      else
+         call trc_sad_build(b, dsad, err, verbose=talk, la=la)
+      end if
+      if (err%has_error()) return
+      allocate (dg(n, n, nspin))
+      if (nspin == 1) then
+         dg(:, :, 1) = dsad
+      else
+         dg(:, :, 1) = 0.5_dp*dsad
+         dg(:, :, 2) = 0.5_dp*dsad
+      end if
+   end subroutine sad_guess_build
+
+   !
+   ! TRC_GUESS_SAP's one-electron guess operator (not a density -- it goes
+   ! in through trc_run_scf's own `hguess`, not `dg`) -- split out of that
+   ! dispatch for the same reason as minao_guess_build/sad_guess_build.
+   !
+   ! `trc_sap_build` itself stays entirely Cartesian (`hsap_c`, `nc`): it is
+   ! built from the analytic one-electron matrices and a quadrature over
+   ! free-atom potentials, neither of which this feature touches. The one
+   ! transform this guess needs is here, at the boundary, the same as SAD's
+   ! own (trc_sad.F90) -- except SAD produces its density already in the
+   ! matching space because its atomic sub-SCFs run on a `subset` basis
+   ! that carries `spherical` itself, where SAP's grid/one-electron
+   ! machinery has no such basis-level hook to carry it through.
+   !
+   subroutine sap_guess_build(b, eri_thresh, n, nc, talk, hsap, err)
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in) :: eri_thresh
+      integer, intent(in) :: n, nc
+      logical, intent(in) :: talk
+      real(dp), allocatable, intent(out) :: hsap(:, :)
+      type(error_t), intent(inout) :: err
+      type(trc_pairlist_t) :: pl
+      real(dp), allocatable :: s1(:, :), t1(:, :), v1(:, :), hsap_c(:, :)
+      call pl%build(b, eri_thresh)
+      call pl%to_device()
+      allocate (s1(nc, nc), t1(nc, nc), v1(nc, nc), hsap_c(nc, nc))
+      !$acc enter data create(s1, t1, v1)
+      call trc_1e(b, pl, s1, t1, v1)
+      !$acc update self(s1, t1, v1)
+      !$acc exit data delete(s1, t1, v1)
+      call trc_sap_build(b, pl, t1, v1, hsap_c, err, verbose=talk)
+      call pl%release()
+      deallocate (s1, t1, v1)
+      if (.not. err%has_error()) then
+         allocate (hsap(n, n))
+         if (b%spherical) then
+            ! trc_sap_build already copied `hsap_c` back to the host and
+            ! dropped its own device copy, so it has to go back up for the
+            ! transform -- which, like every other matrix this SCF
+            ! touches, runs on the device.
+            !$acc enter data copyin(hsap_c) create(hsap)
+            call sph_cart_to_sph(b, hsap_c, hsap)
+            !$acc update self(hsap)
+            !$acc exit data delete(hsap_c, hsap)
+         else
+            hsap = hsap_c
+         end if
+      end if
+      deallocate (hsap_c)
+   end subroutine sap_guess_build
 
    !
    ! What trc_run_gradient refuses, factored out so trc_run_hessian can
@@ -4353,7 +4443,8 @@ contains
       real(dp), pointer :: fitted_b(:, :)
       integer :: nfrozen, nblk, i, nc
       logical :: collective
-      real(dp), allocatable :: cmo_a(:, :), cmo_b(:, :), eps_a(:), eps_b(:)
+      type(trc_rimp2_options_t) :: rimp2_opts
+      real(dp), allocatable :: cmo_a(:, :), eps_a(:), cmo_ab(:, :, :), eps_ab(:, :)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -4427,17 +4518,30 @@ contains
       ! A Cartesian basis copies straight through (nc == the SCF's own
       ! space already).
       nc = cx%bb%b%nao
-      allocate (cmo_a(nc, nc), eps_a(nc))
-      if (cx%res%nspin == 2) allocate (cmo_b(nc, nc), eps_b(nc))
-      if (cx%bb%b%spherical) then
-         call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
-         if (cx%res%nspin == 2) call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_b, eps_b)
+      rimp2_opts%nfrozen = nfrozen
+      rimp2_opts%aux_block = nblk
+      rimp2_opts%verbose = cx%opts%verbose
+      if (cx%res%nspin == 2) then
+         allocate (cmo_ab(nc, nc, 2), eps_ab(nc, 2))
       else
-         cmo_a = cx%res%cmo(:, :, 1)
-         eps_a = cx%res%eps(:, 1)
+         allocate (cmo_a(nc, nc), eps_a(nc))
+      end if
+      if (cx%bb%b%spherical) then
          if (cx%res%nspin == 2) then
-            cmo_b = cx%res%cmo(:, :, 2)
-            eps_b = cx%res%eps(:, 2)
+            call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_ab(:, :, 1), eps_ab(:, 1))
+            call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_ab(:, :, 2), eps_ab(:, 2))
+         else
+            call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
+         end if
+      else
+         if (cx%res%nspin == 2) then
+            cmo_ab(:, :, 1) = cx%res%cmo(:, :, 1)
+            cmo_ab(:, :, 2) = cx%res%cmo(:, :, 2)
+            eps_ab(:, 1) = cx%res%eps(:, 1)
+            eps_ab(:, 2) = cx%res%eps(:, 2)
+         else
+            cmo_a = cx%res%cmo(:, :, 1)
+            eps_a = cx%res%eps(:, 1)
          end if
       end if
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
@@ -4445,30 +4549,30 @@ contains
       if (cx%res%nspin == 2) then
          ! Unrestricted: no DF chaining (--df is closed-shell only), one
          ! rank only (checked above).
-         call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cmo_a, cmo_b, eps_a, eps_b, res, &
-                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
+         call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cmo_ab, eps_ab, res, &
+                             opts=rimp2_opts, la=cx%la)
       ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
       ! exactly the jkfit one (same JSON path), not merely the same shape:
       ! trc_rimp2_run checks dimensions, not that the basis is the same
       ! one, and a path match is this handle's own way to be sure of that.
       else if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
          fitted_b => cx%dfjk%packed_b()
+         rimp2_opts%packed_b => fitted_b
          if (collective) then
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                               nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
-                               packed_b=fitted_b)
+                               opts=rimp2_opts, comm=comm, la=cx%la)
             call comm%finalize()
          else
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                               nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, packed_b=fitted_b)
+                               opts=rimp2_opts, la=cx%la)
          end if
       else if (collective) then
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                            nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la)
+                            opts=rimp2_opts, comm=comm, la=cx%la)
          call comm%finalize()
       else
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                            nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
+                            opts=rimp2_opts, la=cx%la)
       end if
       call pl%release()
       cx%e_os = res%e_os

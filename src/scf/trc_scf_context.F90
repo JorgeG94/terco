@@ -357,12 +357,12 @@ contains
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
             call dft_grid_build_block(b%at_r, b%at_elem, this%gc%grid, err, comm%rank(), comm%size(), &
-                                      level=opts%grid_level, &
-                                      t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
+                                      level=opts%grid_level)
          else
-            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level, &
-                                t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
+            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level)
          end if
+         this%t_grid_sub(1) = this%gc%grid%t_points
+         this%t_grid_sub(2) = this%gc%grid%t_partition
          if (err%has_error()) then
             call profiler_stop("dft: grid")
             call this%release()
@@ -372,8 +372,7 @@ contains
             if (comm%size() > 1) call sum_flat(comm, this%gc%grid%weights, this%gc%grid%n_points)
          end if
          call tm%start()
-         call this%gc%xg%build(this%gc%grid%n_points, this%gc%grid%coords, this%gc%grid%weights, b, &
-                               max_pts=opts%grid_max_pts, atom=this%gc%grid%atom, qw=this%gc%grid%quad_weights)
+         call this%gc%xg%build_from_grid(this%gc%grid, b, max_pts=opts%grid_max_pts)
          this%t_grid_sub(3) = tm%get_elapsed_time()
          call tm%start()
          call this%gc%xg%to_device()
@@ -386,9 +385,7 @@ contains
                call this%release()
                return
             end if
-            call this%gc%xg_nlc%build(this%gc%grid_nlc%n_points, this%gc%grid_nlc%coords, this%gc%grid_nlc%weights, &
-                                      b, max_pts=opts%grid_max_pts, &
-                                      atom=this%gc%grid_nlc%atom, qw=this%gc%grid_nlc%quad_weights)
+            call this%gc%xg_nlc%build_from_grid(this%gc%grid_nlc, b, max_pts=opts%grid_max_pts)
             call this%gc%xg_nlc%to_device()
             this%gc%nlc_built = .true.
          end if

@@ -51,6 +51,20 @@ module trc_batch
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp   !! 2*pi^(5/2)
 
+   type, public :: trc_batch_pairs_t
+      !! batch_build_pairs' output: every primitive pair of every shell pair
+      !! that survives its prefilter, with its Hermite expansion. Keyed by the
+      !! rectangular pair key (i-1)*nbas + j.
+      integer :: nbas = 0
+      integer :: npp = 0
+      integer,  allocatable :: off(:), n(:)
+      !! (nbas*nbas) first primitive pair - 1 and how many.
+      real(dp), allocatable :: p(:), r(:, :), c(:)
+      !! (npp) zeta, (npp, 3) the product centre, (npp) the coefficient.
+      real(dp), allocatable :: e(:, :)
+      !! (npp, NE_PAIR) Hermite E coefficients, batch_e_off's layout.
+   end type trc_batch_pairs_t
+
 contains
 
 #include "inc/trc_boys_eval.inc"
@@ -95,20 +109,18 @@ contains
    ! pp_off/pp_n are indexed by the rectangular pair key (ish-1)*nbas + jsh,
    ! so the kernel finds a pair's primitives with two integer loads.
    !
-   subroutine batch_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, thresh, &
-                          pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
-      integer,  intent(in)  :: nbas
+   subroutine batch_build_pairs(sh_l, sh_np, sh_e, sh_c, sh_r, thresh, pairs)
       integer,  intent(in)  :: sh_l(:), sh_np(:)
+      !! (nbas) angular momentum and primitives per shell; their size is the
+      !! shell count.
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
       real(dp), intent(in)  :: thresh
       !! Screening threshold. A shell pair whose Gaussian product prefactor
       !! cannot reach it is skipped outright -- see the note on the counting
       !! pass below.
-      integer,  allocatable, intent(out) :: pp_off(:), pp_n(:)
-      real(dp), allocatable, intent(out) :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
-      integer,  intent(out) :: npp
+      type(trc_batch_pairs_t), intent(out) :: pairs
 
-      integer  :: i, j, ki, kj, key, k, d, li, lj, t
+      integer  :: nbas, npp, i, j, ki, kj, key, k, d, li, lj, t
       real(dp) :: a, b, p, mu, ci, cj
       real(dp) :: ra(3), rb(3), pc(3)
       real(dp) :: e1(0:LMAX, 0:LMAX, 0:2*LMAX)
@@ -117,7 +129,9 @@ contains
       logical :: bp_t
       character(len=8) :: bp_env
 
-      allocate (pp_off(nbas*nbas), pp_n(nbas*nbas))
+      nbas = size(sh_l)
+      pairs%nbas = nbas
+      allocate (pairs%off(nbas*nbas), pairs%n(nbas*nbas))
 
       !
       ! COUNT, AND SKIP THE PAIRS THAT CANNOT MATTER.
@@ -151,7 +165,7 @@ contains
       do i = 1, nbas
          do j = 1, nbas
             key = (i - 1)*nbas + j
-            pp_off(key) = npp
+            pairs%off(key) = npp
             rab2 = sum((sh_r(:, i) - sh_r(:, j))**2)
             amp = 0.0_dp
             do ki = 1, sh_np(i)
@@ -163,11 +177,11 @@ contains
                end do
             end do
             if (amp <= cut) then
-               pp_n(key) = 0
+               pairs%n(key) = 0
             else
-               pp_n(key) = sh_np(i)*sh_np(j)
+               pairs%n(key) = sh_np(i)*sh_np(j)
             end if
-            npp = npp + pp_n(key)
+            npp = npp + pairs%n(key)
          end do
       end do
 
@@ -180,7 +194,8 @@ contains
          end block
          call bp_tm%start()
       end if
-      allocate (pp_p(npp), pp_r(npp, 3), pp_c(npp), pp_e(npp, NE_PAIR))
+      pairs%npp = npp
+      allocate (pairs%p(npp), pairs%r(npp, 3), pairs%c(npp), pairs%e(npp, NE_PAIR))
       ! pp_e is deliberately NOT zeroed. It is npp x 135 doubles -- six
       ! gigabytes on the 123-atom silica slice in cc-pVDZ -- and zeroing it
       ! cost 3.6 s of a 5.9 s call. Nothing reads an entry the fill below
@@ -204,8 +219,8 @@ contains
             lj = sh_l(j)
             rb = sh_r(:, j)
             key = (i - 1)*nbas + j
-            if (pp_n(key) == 0) cycle    ! skipped by the prefilter above
-            k = pp_off(key)
+            if (pairs%n(key) == 0) cycle    ! skipped by the prefilter above
+            k = pairs%off(key)
             do ki = 1, sh_np(i)
                a = sh_e(ki, i)
                ci = sh_c(ki, i)*common_fac_sp(li)
@@ -216,9 +231,9 @@ contains
                   p = a + b
                   mu = a*b/p
                   pc = (a*ra + b*rb)/p
-                  pp_p(k) = p
-                  pp_r(k, :) = pc
-                  pp_c(k) = ci*cj
+                  pairs%p(k) = p
+                  pairs%r(k, :) = pc
+                  pairs%c(k) = ci*cj
                   do d = 1, 3
                      call hermite_e1d(li, lj, p, mu, ra(d) - rb(d), &
                                       pc(d) - ra(d), pc(d) - rb(d), e1)
@@ -230,7 +245,7 @@ contains
                         do ii = 0, li
                            do jj = 0, lj
                               do t = 0, ii + jj
-                                 pp_e(k, batch_e_off(ii, jj, t, d)) = e1(ii, jj, t)
+                                 pairs%e(k, batch_e_off(ii, jj, t, d)) = e1(ii, jj, t)
                               end do
                            end do
                         end do

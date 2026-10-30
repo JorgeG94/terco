@@ -16,6 +16,7 @@ program bench_schwarz
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_hgp, only: hgp_build_pairs
+   use trc_eri_data, only: trc_shell_pairs_t
    use trc_screen, only: screen_schwarz_bounds_hgp, screen_schwarz_bounds_rys
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -28,10 +29,9 @@ program bench_schwarz
    integer, allocatable :: zint(:)
    real(dp), allocatable :: at_r(:, :)
    real(dp), allocatable :: one(:)
-   integer, allocatable :: hp_off(:), hp_n(:), hp_ki(:), hp_kj(:)
-   real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :), hp_c(:)
+   type(trc_shell_pairs_t) :: pairs
    real(dp), allocatable :: q(:)
-   integer :: natm, nhpp, r
+   integer :: natm, r
    type(timer_type) :: tm
    real(dp) :: t_hgp, t_rys
 
@@ -45,24 +45,22 @@ program bench_schwarz
    if (err%has_error()) error stop 'bench_schwarz: basis'
 
    allocate (one(b%nshell)); one = 1.0_dp
-   call hgp_build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
-                        one, b%sh_c, 1.0e-30_dp, &
-                        hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
-   deallocate (hp_ki, hp_kj)
+   pairs%sh_l = b%sh_l
+   call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, 1.0e-30_dp, pairs)
 
    allocate (q(b%nshell*(b%nshell + 1)/2))
    print '(a,i0,a,i0,a,i0,a,i0)', '  shells ', b%nshell, '   bf ', b%nao, &
-      '   primitive pairs ', nhpp, '   LMAX ', LMAX
+      '   primitive pairs ', pairs%npp, '   LMAX ', LMAX
 
    call tm%start()
    do r = 1, NREP
-      call screen_schwarz_bounds_hgp(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
+      call screen_schwarz_bounds_hgp(pairs, q)
    end do
    t_hgp = tm%get_elapsed_time()/real(NREP, dp)
 
    call tm%start()
    do r = 1, NREP
-      call screen_schwarz_bounds_rys(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
+      call screen_schwarz_bounds_rys(pairs, q)
    end do
    t_rys = tm%get_elapsed_time()/real(NREP, dp)
 

@@ -40,7 +40,7 @@ program scf_rimp2_uhf
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, trc_1e
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, trc_rimp2_options_t
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -149,8 +149,11 @@ program scf_rimp2_uhf
          ok = .false.
       end if
 
-      call trc_urimp2_run(bas, aux, pl, nalpha_c(ic), nbeta_c(ic), res%cmo(:, :, 1), res%cmo(:, :, 2), &
-                          res%eps(:, 1), res%eps(:, 2), mp, nfrozen=nfroz_c(ic))
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = nfroz_c(ic)
+         call trc_urimp2_run(bas, aux, pl, nalpha_c(ic), nbeta_c(ic), res%cmo, res%eps, mp, opts=rimp2_opts)
+      end block
       if (len_trim(mp%message) > 0) then
          print "(a)", "scf_rimp2_uhf: "//trim(mp%message)
          ok = .false.
@@ -226,12 +229,15 @@ program scf_rimp2_uhf
       ! 1e-5 default left ~1e-9 between this check's two independently
       ! converged SCFs, past the 1e-10 gate below -- measured.
       call trc_scf_run(wbas, 5, 5, wopts, wres_r)
-      call trc_rimp2_run(wbas, waux, wpl, 5, wres_r%cmo(:, :, 1), wres_r%eps(:, 1), mp_r, nfrozen=1)
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = 1
+         call trc_rimp2_run(wbas, waux, wpl, 5, wres_r%cmo(:, :, 1), wres_r%eps(:, 1), mp_r, opts=rimp2_opts)
 
-      wopts%unrestricted = .true.
-      call trc_scf_run(wbas, 5, 5, wopts, wres_u)
-      call trc_urimp2_run(wbas, waux, wpl, 5, 5, wres_u%cmo(:, :, 1), wres_u%cmo(:, :, 2), &
-                          wres_u%eps(:, 1), wres_u%eps(:, 2), mp_u, nfrozen=1)
+         wopts%unrestricted = .true.
+         call trc_scf_run(wbas, 5, 5, wopts, wres_u)
+         call trc_urimp2_run(wbas, waux, wpl, 5, 5, wres_u%cmo, wres_u%eps, mp_u, opts=rimp2_opts)
+      end block
 
       de_scf = abs(wres_r%energy - wres_u%energy)
       de_corr = abs(mp_r%e_corr - mp_u%e_corr)

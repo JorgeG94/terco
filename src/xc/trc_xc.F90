@@ -141,6 +141,7 @@ module trc_xc
    private
 
    public :: trc_xc_rks, trc_xc_uks, trc_xc_fxc_rks, trc_xc_rho, XC_RHO_TOL
+   public :: trc_xc_options_t, trc_xc_options, trc_xc_result_t
    public :: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
@@ -149,77 +150,93 @@ module trc_xc
    !! what this value costs against an unscreened evaluation.
    integer, parameter :: XC_NP_PAD = 128   !! tile rows are padded to a multiple of this
    integer, parameter :: XC_NL_PAD = 32    !! and tile columns to a multiple of this
+   integer(int64), parameter :: XC_BUDGET = 8388608_int64
+   !! Default cap on the stored basis values per chunk, in doubles: 8M,
+   !! 256 MB with the gradients.
+
+   type :: trc_xc_options_t
+      !! How trc_xc_rks/trc_xc_uks run; build it with `trc_xc_options`,
+      !! whose absent arguments leave these defaults.
+      integer(int64) :: budget = XC_BUDGET
+      !! Caps the stored basis values per chunk, in doubles; the gradients
+      !! take three times as much again, and a meta-GGA three more tiles
+      !! per spin. At least 1.
+      real(dp) :: rho_tol = XC_RHO_TOL
+      !! Density screening threshold on the per-batch bound of rho; zero
+      !! screens nothing.
+      type(comm_t), pointer :: comm => null()
+      !! Split the batches over its ranks (RANKS in this module's header).
+      type(trc_linalg_t), pointer :: la => null()
+      !! GEMM handles; made and released per call if unassociated.
+   end type trc_xc_options_t
+
+   type :: trc_xc_result_t
+      !! What trc_xc_rks/trc_xc_uks return besides the potential.
+      real(dp) :: exc = 0.0_dp      !! E_xc
+      real(dp) :: nelec = 0.0_dp    !! the electron count integrated on the grid
+      real(dp) :: t_points = 0.0_dp
+      !! Wall time in the point kernel, for the benchmark. A `do
+      !! concurrent` under -stdpar returns when the device is done, so the
+      !! clock around it is the kernel's.
+      real(dp) :: t_pairs = 0.0_dp
+      !! Wall time in the pair kernel, measured the same way.
+      integer :: n_skipped = 0      !! batches the density screening removed
+   end type trc_xc_result_t
 
 contains
 
    !
+   ! A trc_xc_options_t from the caller's own optional settings, passed
+   ! straight through: an absent one keeps its default. `comm` and `la` are
+   ! pointed at, so the caller's actuals need TARGET (or are pointers) and
+   ! must outlive the options.
+   !
+   function trc_xc_options(budget, rho_tol, comm, la) result(options)
+      integer(int64), intent(in), optional :: budget
+      real(dp), intent(in), optional :: rho_tol
+      type(comm_t), intent(in), optional, target :: comm
+      type(trc_linalg_t), intent(in), optional, target :: la
+      type(trc_xc_options_t) :: options
+
+      if (present(budget)) options%budget = max(budget, 1_int64)
+      if (present(rho_tol)) options%rho_tol = rho_tol
+      if (present(comm)) options%comm => comm
+      if (present(la)) options%la => la
+   end function trc_xc_options
+
+   !
    ! E_xc, V_xc and the integrated electron count for a closed-shell density.
    !
-   ! `budget` caps the stored basis values per chunk, in doubles; the
-   ! gradients take three times as much again. The default is 8M doubles,
-   ! 256 MB with the gradients; a meta-GGA adds three more tiles per spin.
-   !
-   subroutine trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped, comm, la)
+   subroutine trc_xc_rks(b, xg, func, dmat, vxc, result, options)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(b%nao, b%nao)
       real(dp), intent(out) :: vxc(b%nao, b%nao)
-      real(dp), intent(out) :: exc, nelec
-      integer(int64), intent(in), optional :: budget
-      real(dp), intent(out), optional :: t_points, t_pairs
-      !! Wall time spent in the two kernels, for the benchmark. A `do
-      !! concurrent` under -stdpar returns when the device is done, so the
-      !! clock around it is the kernel's.
-      real(dp), intent(in), optional :: rho_tol
-      !! Density screening threshold on the per-batch bound of rho; zero
-      !! screens nothing. Default XC_RHO_TOL.
-      integer, intent(out), optional :: n_skipped   !! batches the screening removed
-      type(comm_t), intent(in), optional :: comm     !! split the batches over its ranks
-      type(trc_linalg_t), intent(inout), optional :: la  !! GEMM handles; made and released here if absent
-      real(dp) :: tp, tq, rtol
-      integer(int64) :: cap
-      integer :: nsk
+      type(trc_xc_result_t), intent(out) :: result
+      type(trc_xc_options_t), intent(in), optional :: options   !! absent, every default
+      type(trc_xc_options_t) :: opts
 
-      cap = 8388608_int64
-      if (present(budget)) cap = max(budget, 1_int64)
-      rtol = XC_RHO_TOL
-      if (present(rho_tol)) rtol = rho_tol
-      call xc_drive(b, xg, func, 1, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk, comm, la)
-      if (present(t_points)) t_points = tp
-      if (present(t_pairs)) t_pairs = tq
-      if (present(n_skipped)) n_skipped = nsk
+      if (present(options)) opts = options
+      call xc_drive(b, xg, func, 1, dmat, vxc, result, opts)
    end subroutine trc_xc_rks
 
    !
    ! The same for a spin-polarised density: D(:,:,1) is alpha, D(:,:,2)
    ! beta, and the potentials come back in the same slots.
    !
-   subroutine trc_xc_uks(b, xg, func, dmat, vxc, exc, nelec, budget, t_points, t_pairs, rho_tol, n_skipped, comm, la)
+   subroutine trc_xc_uks(b, xg, func, dmat, vxc, result, options)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(b%nao, b%nao, 2)
       real(dp), intent(out) :: vxc(b%nao, b%nao, 2)
-      real(dp), intent(out) :: exc, nelec
-      integer(int64), intent(in), optional :: budget
-      real(dp), intent(out), optional :: t_points, t_pairs
-      real(dp), intent(in), optional :: rho_tol
-      integer, intent(out), optional :: n_skipped
-      type(comm_t), intent(in), optional :: comm
-      type(trc_linalg_t), intent(inout), optional :: la
-      real(dp) :: tp, tq, rtol
-      integer(int64) :: cap
-      integer :: nsk
+      type(trc_xc_result_t), intent(out) :: result
+      type(trc_xc_options_t), intent(in), optional :: options
+      type(trc_xc_options_t) :: opts
 
-      cap = 8388608_int64
-      if (present(budget)) cap = max(budget, 1_int64)
-      rtol = XC_RHO_TOL
-      if (present(rho_tol)) rtol = rho_tol
-      call xc_drive(b, xg, func, 2, dmat, vxc, exc, nelec, cap, rtol, tp, tq, nsk, comm, la)
-      if (present(t_points)) t_points = tp
-      if (present(t_pairs)) t_pairs = tq
-      if (present(n_skipped)) n_skipped = nsk
+      if (present(options)) opts = options
+      call xc_drive(b, xg, func, 2, dmat, vxc, result, opts)
    end subroutine trc_xc_uks
 
    !
@@ -236,7 +253,7 @@ contains
       type(trc_xc_grid_t), intent(in) :: xg
       real(dp), intent(in) :: dmat(b%nao, b%nao)
       real(dp), intent(out) :: rho(xg%npts)
-      integer(int64), intent(in), optional :: budget   !! as trc_xc_rks
+      integer(int64), intent(in), optional :: budget   !! as trc_xc_options_t's
       type(trc_linalg_t), intent(inout), optional, target :: la
 
       integer(int64) :: cap, need, nchi, sa, sb
@@ -248,7 +265,7 @@ contains
 
       rho = 0.0_dp
       if (xg%npts == 0) return
-      cap = 8388608_int64
+      cap = XC_BUDGET
       if (present(budget)) cap = max(budget, 1_int64)
 
       allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
@@ -378,20 +395,18 @@ contains
       end do
    end function xc_rho_point_body
 
-   subroutine xc_drive(b, xg, func, nspin, dmat, vxc, exc, nelec, cap, rho_tol, t_points, t_pairs, n_skipped, comm, la)
+   subroutine xc_drive(b, xg, func, nspin, dmat, vxc, result, options)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       integer, intent(in) :: nspin
       real(dp), intent(in) :: dmat(b%nao, b%nao, nspin)
       real(dp), intent(out) :: vxc(b%nao, b%nao, nspin)
-      real(dp), intent(out) :: exc, nelec, t_points, t_pairs
-      integer(int64), intent(in) :: cap
-      real(dp), intent(in) :: rho_tol
-      integer, intent(out) :: n_skipped
-      type(comm_t), intent(in), optional :: comm
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_xc_result_t), intent(out) :: result
+      type(trc_xc_options_t), intent(in) :: options
 
+      integer(int64) :: cap
+      real(dp) :: exc, nelec, t_points, t_pairs, rho_tol
       integer(int64) :: need, nchi, sa, sb, sc
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, rank, nranks, k, s, nb, k0, k1, cnt, mp, ml
       integer, allocatable :: c_off(:), pr_off(:), active(:), order(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
@@ -414,6 +429,8 @@ contains
       mgga = func%family == XC_FAMILY_MGGA
       kid = func%kid
       coef = func%coef
+      cap = max(options%budget, 1_int64)
+      rho_tol = options%rho_tol
       vxc = 0.0_dp
       exc = 0.0_dp
       nelec = 0.0_dp
@@ -429,9 +446,9 @@ contains
       rank = 0
       nranks = 1
       split = .false.
-      if (present(comm)) then
-         rank = comm%rank()
-         nranks = comm%size()
+      if (associated(options%comm)) then
+         rank = options%comm%rank()
+         nranks = options%comm%size()
          split = nranks > 1
       end if
       active = 1
@@ -456,14 +473,14 @@ contains
                      rho_tol, active)
       !$acc update self(active)
       ! What the screen removed, not what the other ranks own.
-      n_skipped = count(active == 0) - (xg%nbatch - n_owned(xg%nbatch, rank, nranks))
+      result%n_skipped = count(active == 0) - (xg%nbatch - n_owned(xg%nbatch, rank, nranks))
 
       ! A caller that keeps vxc resident (the SCF) has its device copy
       ! untouched by the host zeroing above; the accumulation must start
       ! from zero there too. Inside the region vxc is present either way.
       !$acc update device(vxc)
-      if (present(la)) then
-         lp => la
+      if (associated(options%la)) then
+         lp => options%la
       else
          call la_own%init(1)
          lp => la_own
@@ -622,7 +639,7 @@ contains
          end if
          b0 = b1 + 1
       end do
-      if (.not. present(la)) call la_own%release()
+      if (.not. associated(options%la)) call la_own%release()
       !$acc end data
 
       ! Across ranks: sum, then rank 0's copy everywhere. A resident caller's
@@ -630,13 +647,17 @@ contains
       ! back, so fetch it, reduce on the host, and put the result back.
       if (split) then
          !$acc update self(vxc) if_present
-         call sum_ranks(comm, vxc, b%nao*b%nao*nspin)
+         call sum_ranks(options%comm, vxc, b%nao*b%nao*nspin)
          !$acc update device(vxc) if_present
          es = [exc, nelec]
-         call sum_ranks(comm, es, 2)
+         call sum_ranks(options%comm, es, 2)
          exc = es(1)
          nelec = es(2)
       end if
+      result%exc = exc
+      result%nelec = nelec
+      result%t_points = t_points
+      result%t_pairs = t_pairs
    end subroutine xc_drive
 
    !
@@ -693,7 +714,7 @@ contains
       coef = func%coef
       v_resp = 0.0_dp
       if (xg%npts == 0) return
-      cap = 8388608_int64
+      cap = XC_BUDGET
       if (present(budget)) cap = max(budget, 1_int64)
 
       allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))

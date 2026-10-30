@@ -12,6 +12,7 @@ target_sources(
   PRIVATE core/trc_boys.F90       # Boys function, tabulated and asymptotic
           core/trc_tables.F90     # Cartesian index tables
           core/trc_cart.F90
+          eri/trc_eri_data.F90   # the containers the four-centre launchers share
           eri/trc_batch.F90      # primitive-pair batching
           eri/trc_hgp.F90        # Head-Gordon-Pople driver
           eri/trc_screen.F90     # Schwarz bounds

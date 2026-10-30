@@ -43,7 +43,8 @@ program scf_sph_corr
    use trc_sph, only: sph_cart_to_sph
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_df, only: df_jk_t
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart, &
+                               trc_rimp2_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
@@ -192,7 +193,7 @@ contains
       integer, allocatable :: zint(:)
       real(dp), allocatable :: at_r(:, :)
       real(dp), allocatable :: s_c(:, :), t_c(:, :), v_c(:, :), s_sph(:, :)
-      real(dp), allocatable :: cmo_a(:, :), cmo_b(:, :), eps_a(:), eps_b(:)
+      real(dp), allocatable :: cmo_ab(:, :, :), eps_ab(:, :)
       integer :: natm, probe_unit
       real(dp) :: e_scf_ref, e_os_ref, e_ss_ref
 
@@ -250,14 +251,18 @@ contains
          print "(a,a)", "  NOT CONVERGED (OH): ", trim(res%message); ok = .false.
       end if
 
-      allocate (cmo_a(bas%nao, bas%nao), cmo_b(bas%nao, bas%nao), eps_a(bas%nao), eps_b(bas%nao))
-      call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_a, eps_a)
-      call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 2), res%eps(:, 2), cmo_b, eps_b)
-      call trc_urimp2_run(bas, aux, pl, NA, NB, cmo_a, cmo_b, eps_a, eps_b, mp, nfrozen=NFZ)
+      allocate (cmo_ab(bas%nao, bas%nao, 2), eps_ab(bas%nao, 2))
+      call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_ab(:, :, 1), eps_ab(:, 1))
+      call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 2), res%eps(:, 2), cmo_ab(:, :, 2), eps_ab(:, 2))
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = NFZ
+         call trc_urimp2_run(bas, aux, pl, NA, NB, cmo_ab, eps_ab, mp, opts=rimp2_opts)
+      end block
       if (len_trim(mp%message) > 0) then
          print "(a)", "scf_sph_corr/B: "//trim(mp%message); ok = .false.
       end if
-      deallocate (cmo_a, cmo_b, eps_a, eps_b)
+      deallocate (cmo_ab, eps_ab)
 
       print "(a,i0,a,f20.12,a,f16.12,a,f16.12)", "  B oh  nao_sph ", bas%nao_sph, "  E_UHF ", res%energy, &
          "  E_os ", mp%e_os, "  E_ss ", mp%e_ss
@@ -427,7 +432,11 @@ contains
       call trc_scf_run(bas, nalpha, nbeta, opts, res_4c, la=la)
       allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
       call rimp2_driver_mo_to_cart(bas, res_4c%cmo(:, :, 1), res_4c%eps(:, 1), cmo_c, eps_c)
-      call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_4c, nfrozen=NFZ, la=la)
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = NFZ
+         call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_4c, opts=rimp2_opts, la=la)
+      end block
       deallocate (cmo_c, eps_c)
       if (.not. res_4c%converged) then
          print "(a,a)", "  NOT CONVERGED (4c): ", trim(res_4c%message); ok = .false.
@@ -440,7 +449,12 @@ contains
       call trc_scf_run(bas, nalpha, nbeta, opts, res_df, la=la, scf_dfjk=dfjk)
       allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
       call rimp2_driver_mo_to_cart(bas, res_df%cmo(:, :, 1), res_df%eps(:, 1), cmo_c, eps_c)
-      call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, nfrozen=NFZ, la=la, packed_b=dfjk%packed_b())
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = NFZ
+         rimp2_opts%packed_b => dfjk%packed_b()
+         call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, opts=rimp2_opts, la=la)
+      end block
       deallocate (cmo_c, eps_c)
       if (.not. res_df%converged) then
          print "(a,a)", "  NOT CONVERGED (df): ", trim(res_df%message); ok = .false.

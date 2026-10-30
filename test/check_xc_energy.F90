@@ -45,11 +45,11 @@ program check_xc_energy
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build
+   use trc_dft_grid, only: dft_grid_t, dft_grid_options_t, dft_grid_build
    use trc_dft_prune, only: PRUNE_NONE
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
-   use trc_xc, only: trc_xc_rks, trc_xc_uks
+   use trc_xc, only: trc_xc_rks, trc_xc_uks, trc_xc_options, trc_xc_result_t
    use trc_cart_perm, only: cart_perm_build_ao
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_matrix, &
                            ref_read_matrix3, ref_report
@@ -103,9 +103,11 @@ program check_xc_energy
    integer, allocatable :: perm_l2b(:), perm_b2l(:)
    real(dp) :: exc3, nelec3, trds2
    integer :: nsk
+   type(trc_xc_result_t) :: xr
    type(trc_basis_t) :: b
    type(trc_pairlist_t) :: pl
    type(dft_grid_t) :: grid
+   type(dft_grid_options_t) :: unpruned
    type(trc_xc_grid_t) :: xg
    type(trc_xc_functional_t) :: func
    type(error_t) :: err
@@ -173,7 +175,8 @@ program check_xc_energy
       end do
    end do
 
-   call dft_grid_build(at_r, nint(at_z), grid, err, level=4, prune=PRUNE_NONE)
+   unpruned%prune = PRUNE_NONE
+   call dft_grid_build(at_r, nint(at_z), grid, err, level=4, options=unpruned)
    if (err%has_error()) then
       print '(a)', "check_xc_energy: grid failed: "//err%get_message()
       stop 1
@@ -275,15 +278,22 @@ contains
             print '(a)', "check_xc_energy: unknown functional "//trim(names(ifn))
             stop 1
          end if
-         call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec, n_skipped=nsk)
+         call trc_xc_rks(b, xg, func, dmat, vxc, xr)
+         exc = xr%exc
+         nelec = xr%nelec
+         nsk = xr%n_skipped
          ! Density screening off entirely: what the default threshold costs.
-         call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, rho_tol=0.0_dp)
+         call trc_xc_rks(b, xg, func, dmat, vxc2, xr, trc_xc_options(rho_tol=0.0_dp))
+         exc2 = xr%exc
+         nelec2 = xr%nelec
          call report(abs(exc - exc2) < 1.0e-10_dp*abs(exc) .and. maxval(abs(vxc - vxc2)) < 1.0e-10_dp*maxval(abs(vxc)), &
                      trim(names(ifn))//": density screening vs none", &
                      max(abs(exc - exc2)/abs(exc), maxval(abs(vxc - vxc2))/maxval(abs(vxc))))
          if (ifn == 1) print '(a,i0,a,i0,a)', "  density screening skips ", nsk, " of ", xg%nbatch, " batches"
          ! Chunk boundaries everywhere: one batch per chunk.
-         call trc_xc_rks(b, xg, func, dmat, vxc2, exc2, nelec2, budget=1_int64)
+         call trc_xc_rks(b, xg, func, dmat, vxc2, xr, trc_xc_options(budget=1_int64))
+         exc2 = xr%exc
+         nelec2 = xr%nelec
          write (unit) exc, nelec
          write (unit) vxc
          exc_all(ifn) = exc; n_all(ifn) = nelec; vxc_all(:, :, ifn) = vxc
@@ -304,16 +314,24 @@ contains
    subroutine uks_checks()
       do ifn = 1, NFUNC
          if (.not. xc_functional_by_name(names(ifn), func)) stop 1
-         call trc_xc_rks(b, xg, func, dmat, vxc, exc, nelec)
+         call trc_xc_rks(b, xg, func, dmat, vxc, xr)
+         exc = xr%exc
+         nelec = xr%nelec
          vx3(:, :, 1) = 0.5_dp*dmat; vx3(:, :, 2) = 0.5_dp*dmat
-         call trc_xc_uks(b, xg, func, vx3, vx2, exc2, nelec2)
+         call trc_xc_uks(b, xg, func, vx3, vx2, xr)
+         exc2 = xr%exc
+         nelec2 = xr%nelec
          call report(abs(exc - exc2) < 1.0e-12_dp*abs(exc) .and. &
                      maxval(abs(vx2(:, :, 1) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)) .and. &
                      maxval(abs(vx2(:, :, 2) - vxc)) < 1.0e-12_dp*maxval(abs(vxc)), &
                      trim(names(ifn))//": UKS at D/2, D/2 reproduces RKS", &
                      max(abs(exc - exc2)/abs(exc), maxval(abs(vx2(:, :, 1) - vxc))/maxval(abs(vxc))))
-         call trc_xc_uks(b, xg, func, dm2, vx2, exc3, nelec3)
-         call trc_xc_uks(b, xg, func, dm2, vx3, exc2, nelec2, budget=1_int64)
+         call trc_xc_uks(b, xg, func, dm2, vx2, xr)
+         exc3 = xr%exc
+         nelec3 = xr%nelec
+         call trc_xc_uks(b, xg, func, dm2, vx3, xr, trc_xc_options(budget=1_int64))
+         exc2 = xr%exc
+         nelec2 = xr%nelec
          write (unit) exc3, nelec3
          write (unit) vx2
          uexc_all(ifn) = exc3; un_all(ifn) = nelec3; uvxc_all(:, :, :, ifn) = vx2
