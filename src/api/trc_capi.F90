@@ -3477,7 +3477,7 @@ contains
       type(error_t), intent(inout) :: err
       real(dp), allocatable :: dsad(:, :)
       integer :: n
-      n = merge(b%nao_sph, b%nao, b%spherical)   !! this SCF's own space, scf_space_nao's rule
+      n = merge(b%nao_sph, b%nao, b%spherical)   ! this SCF's own space, scf_space_nao's rule
       if (sadq) then
          call trc_sadq_build(b, nelec, dsad, err, verbose=talk, la=la)
       else

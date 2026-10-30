@@ -246,7 +246,7 @@ contains
    !
    subroutine scf_fock_build_vxc(scf_basis, scf_context, scf_config, scf_state, rho_tol, scf_energies, scf_timers, comm)
       type(trc_basis_t), intent(in) :: scf_basis
-      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_ctx_t), intent(inout), target :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(inout) :: scf_state
       real(dp), intent(in) :: rho_tol
