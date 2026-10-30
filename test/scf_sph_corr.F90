@@ -452,8 +452,7 @@ contains
       block
          type(trc_rimp2_options_t) :: rimp2_opts
          rimp2_opts%nfrozen = NFZ
-         rimp2_opts%packed_b => dfjk%packed_b()
-         call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, opts=rimp2_opts, la=la)
+         call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, opts=rimp2_opts, la=la, packed_b=dfjk%bpk)
       end block
       deallocate (cmo_c, eps_c)
       if (.not. res_df%converged) then

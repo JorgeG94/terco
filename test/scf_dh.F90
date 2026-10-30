@@ -156,9 +156,8 @@ program scf_dh
                block
                   type(trc_rimp2_options_t) :: rimp2_opts
                   rimp2_opts%nfrozen = GFROZEN(ig)
-                  rimp2_opts%packed_b => dfjk%packed_b()
                   call trc_rimp2_run(bas, aux, pl, nalpha, res%cmo(:, :, 1), res%eps(:, 1), mp, &
-                                     opts=rimp2_opts, la=la)
+                                     opts=rimp2_opts, la=la, packed_b=dfjk%bpk)
                end block
             end if
             if (.not. res%converged) then

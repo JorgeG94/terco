@@ -401,7 +401,7 @@ module trc_capi
       ! trc_run_rimp2's only way to tell whether RI-MP2's own auxiliary
       ! basis is the SAME one `dfjk` was fitted on (same JSON path/
       ! contents), the condition the chained path (skip metric/Cholesky/
-      ! 3c/trsm, read `dfjk%packed_b()` straight) is restricted to.
+      ! 3c/trsm, read `dfjk%bpk` straight) is restricted to.
       character(len=1024) :: aux_path = "", jkfit_path = ""
       ! settings
       type(trc_scf_options_t) :: opts
@@ -1529,13 +1529,11 @@ contains
          rimp2_opts%nfrozen = int(nfrozen)
          rimp2_opts%aux_block = nblk
          if (collective) then
-            call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
-                               opts=rimp2_opts, comm=comm)
-            call comm%finalize()
-         else
-            call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
-                               opts=rimp2_opts)
+            rimp2_opts%comm = comm
+            rimp2_opts%has_comm = .true.
          end if
+         call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, opts=rimp2_opts)
+         if (collective) call comm%finalize()
       end block
       call pl%release()
       if (len_trim(res%message) > 0) then
@@ -4440,7 +4438,6 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
-      real(dp), pointer :: fitted_b(:, :)
       integer :: nfrozen, nblk, i, nc
       logical :: collective
       type(trc_rimp2_options_t) :: rimp2_opts
@@ -4551,28 +4548,24 @@ contains
          ! rank only (checked above).
          call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cmo_ab, eps_ab, res, &
                              opts=rimp2_opts, la=cx%la)
-      ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
-      ! exactly the jkfit one (same JSON path), not merely the same shape:
-      ! trc_rimp2_run checks dimensions, not that the basis is the same
-      ! one, and a path match is this handle's own way to be sure of that.
-      else if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
-         fitted_b => cx%dfjk%packed_b()
-         rimp2_opts%packed_b => fitted_b
+      else
          if (collective) then
+            rimp2_opts%comm = comm
+            rimp2_opts%has_comm = .true.
+         end if
+         ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
+         ! exactly the jkfit one (same JSON path), not merely the same shape:
+         ! trc_rimp2_run checks dimensions, not that the basis is the same
+         ! one, and a path match is this handle's own way to be sure of that.
+         if (cx%df_fit_ok .and. cx%dfjk%is_ready() .and. len_trim(cx%jkfit_path) > 0 .and. &
+             cx%jkfit_path == cx%aux_path) then
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                               opts=rimp2_opts, comm=comm, la=cx%la)
-            call comm%finalize()
+                               opts=rimp2_opts, la=cx%la, packed_b=cx%dfjk%bpk)
          else
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                opts=rimp2_opts, la=cx%la)
          end if
-      else if (collective) then
-         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                            opts=rimp2_opts, comm=comm, la=cx%la)
-         call comm%finalize()
-      else
-         call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                            opts=rimp2_opts, la=cx%la)
+         if (collective) call comm%finalize()
       end if
       call pl%release()
       cx%e_os = res%e_os
