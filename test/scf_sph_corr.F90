@@ -294,7 +294,7 @@ contains
       type(trc_basis_t) :: bas, auxb
       type(trc_pairlist_t) :: pl
       type(trc_linalg_t) :: la
-      type(df_jk_t) :: dfjk
+      type(df_jk_t), target :: dfjk
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: res
       type(error_t) :: err
@@ -384,7 +384,7 @@ contains
       type(trc_basis_t) :: bas, aux
       type(trc_pairlist_t) :: pl
       type(trc_linalg_t) :: la
-      type(df_jk_t) :: dfjk
+      type(df_jk_t), target :: dfjk
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: res_4c, res_df
       type(trc_rimp2_result_t) :: mp_4c, mp_df
@@ -440,7 +440,7 @@ contains
       call trc_scf_run(bas, nalpha, nbeta, opts, res_df, la=la, scf_dfjk=dfjk)
       allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
       call rimp2_driver_mo_to_cart(bas, res_df%cmo(:, :, 1), res_df%eps(:, 1), cmo_c, eps_c)
-      call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, nfrozen=NFZ, la=la, dfjk=dfjk)
+      call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, nfrozen=NFZ, la=la, packed_b=dfjk%packed_b())
       deallocate (cmo_c, eps_c)
       if (.not. res_df%converged) then
          print "(a,a)", "  NOT CONVERGED (df): ", trim(res_df%message); ok = .false.

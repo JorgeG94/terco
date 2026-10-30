@@ -92,7 +92,6 @@ module trc_rimp2_driver
    use trc_mpi_device, only: trc_mpi_device_direct
    use pic_flop_recorder, only: flop_recorder_type
    use trc_step_table, only: step_table_t
-   use trc_scf_df, only: df_jk_t
    use trc_sph, only: sph_metric_cart_to_sph, sph_mo_to_cart, sph_aux3c_to_sph
    implicit none
    private
@@ -151,13 +150,16 @@ contains
    ! `pl` is the orbital basis's pair list. `la` optional, made here if
    ! absent; `comm` optional, one rank without it.
    !
-   ! `dfjk`, optional: a density-fitted J/K object (trc_scf_df.F90) already
-   ! fitted on an auxiliary basis the CALLER has checked is the same one
-   ! as `aux` (same JSON path/contents -- trc_capi.F90's trc_run_rimp2 is
-   ! the one caller that does; this routine only checks the dimensions
-   ! agree, not that the basis itself is really the same one). When
-   ! present, steps 1 (metric, Cholesky), 2 (the (mu nu|P) build) and 4
-   ! (B = X L^-T) are skipped entirely: `dfjk%packed_b()` is already B
+   ! `packed_b`, optional: the fitted B of a density-fitted J/K object
+   ! (trc_scf_df.F90's `df_jk_t%packed_b()`, null until that object is set
+   ! up), fitted on an auxiliary basis the CALLER has checked is the same
+   ! one as `aux` (same JSON path/contents -- trc_capi.F90's trc_run_rimp2
+   ! is the one library caller that does; this routine only checks the
+   ! dimensions agree, not that the basis itself is really the same one).
+   ! Passed as the array rather than the object so that post_hf does not
+   ! depend on scf. When present and associated, steps 1 (metric,
+   ! Cholesky), 2 (the (mu nu|P) build) and 4 (B = X L^-T) are skipped
+   ! entirely: `packed_b` is already B, (npack, naux) device-resident
    ! (packed mu >= nu, L^-T applied), and the occupied/virtual half-
    ! transform of step 3 run on it directly IS RI-MP2's own B -- L^-T acts
    ! only on the auxiliary index, the half-transform only on (mu, nu), and
@@ -165,7 +167,7 @@ contains
    ! block loop below only needs auxiliary function COUNTS and offsets,
    ! identical either way).
    !
-   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm, verbose, dfjk)
+   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm, verbose, packed_b)
       !! run a restricted ri-mp2 calculation
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
@@ -176,7 +178,7 @@ contains
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(comm_t), intent(in), optional :: comm
       logical, intent(in), optional :: verbose   !! one line per step with its wall time, rank 0
-      type(df_jk_t), intent(in), optional, target :: dfjk
+      real(dp), pointer, intent(in), optional :: packed_b(:, :)
 
       type(timer_type) :: tw0, tw1
       logical :: talk, chained
@@ -188,7 +190,7 @@ contains
       integer :: i, rank, nranks, ng, ldk, i0, i1
       integer :: lo, nb, nmax, novr, step, nstep_ring, qv, cur, ncolmax, ldv
       integer :: ilo, ihi, jlo, jhi, jbase, jstart, ncol, roff, coff, jfirst, ncol_i
-      integer :: n_chk, naux_chk, npack_chk, mu, nu, q
+      integer :: npack_chk, mu, nu, q
       integer, allocatable :: blo(:), bn(:), shlo(:), shhi(:), plo(:)
       integer(int64), allocatable :: soff(:)
       logical :: diag, direct
@@ -225,7 +227,7 @@ contains
       ! CARTESIAN count, is every kernel call and block-walk below
       ! (always Cartesian); `naux`, folded when `aux%spherical`, is every
       ! other dimension -- the metric, its Cholesky factor, `xr`'s own
-      ! width, and (via `dfjk%dims`) what a chained call's own aux count
+      ! width, and (via `packed_b`'s column count) what a chained call's own aux count
       ! is checked against.
       naux_c = aux%nao
       naux = merge(aux%nao_sph, aux%nao, aux%spherical)
@@ -269,14 +271,14 @@ contains
       end if
       chained = .false.
       bchain => null()
-      if (present(dfjk)) then
-         if (dfjk%is_ready()) then
-            call dfjk%dims(n_chk, naux_chk, npack_chk)
-            if (n_chk /= nao .or. naux_chk /= naux) then
+      if (present(packed_b)) then
+         if (associated(packed_b)) then
+            npack_chk = nao*(nao + 1)/2
+            if (size(packed_b, 1) /= npack_chk .or. size(packed_b, 2) /= naux) then
                res%message = "trc_rimp2: the pre-fitted B does not match this orbital/auxiliary basis"
                return
             end if
-            bchain => dfjk%packed_b()
+            bchain => packed_b
             chained = .true.
          end if
       end if
@@ -487,7 +489,7 @@ contains
 
       ! --- 4. B = X L^-T: solve B L^T = X from the right, this rank's rows ---
       ! (skipped when chained: `xr` is already built from B, which has
-      ! L^-T applied already -- see this routine's own `dfjk` comment)
+      ! L^-T applied already -- see this routine's own `packed_b` comment)
       if (.not. chained) then
          call stab%step_on(lp, ST_TRSM, tc)
          if (nb > 0) call lp%trsm("R", "L", "T", novr, naux, 1.0_dp, jm, naux, xr, novr)
