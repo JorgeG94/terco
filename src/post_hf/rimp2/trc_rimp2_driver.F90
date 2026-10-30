@@ -86,7 +86,7 @@ module trc_rimp2_driver
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use pic_mpi_lib, only: comm_t, allreduce, bcast, isend, recv, request_t, waitall, MPI_SUM, &
                           comm_isend_real_dp_array_n, comm_recv_real_dp_array_n
    use trc_mpi_device, only: trc_mpi_device_direct
@@ -229,6 +229,7 @@ contains
       type(step_table_t) :: stab
       logical :: dense_mask(NSTEP)
       integer(int64) :: nv8, nao8, naux8
+      type(trc_gemm_batch_t) :: gemm_shape
 
       if (present(opts)) op = opts
       nao = b%nao
@@ -475,13 +476,12 @@ contains
          do q = 0, nranks - 1
             if (bn(q) == 0) cycle
             if (q == rank) then
-               call lp%gemm_strided("T", "T", nv, nb, nao, 1.0_dp, cvir, nao, 0_int64, half(lo, 1, 1), no, &
-                                    int(no, int64)*nao8, 0.0_dp, xr(1 + int(p0 - 1, int64)*novr8), nv, novr8, np)
+               gemm_shape = trc_gemm_batch(nv, nb, nao, np, ldb=no, sa=0_int64, sc=novr8, transa="T", transb="T")
+               call lp%gemm_batched(gemm_shape, cvir, half(lo, 1, 1), xr(1 + int(p0 - 1, int64)*novr8))
             else
                nq8 = int(bn(q), int64)*nv8
-               call lp%gemm_strided("T", "T", nv, bn(q), nao, 1.0_dp, cvir, nao, 0_int64, half(blo(q), 1, 1), no, &
-                                    int(no, int64)*nao8, 0.0_dp, ysend(1 + soff(q) + int(p0 - plo(rank), int64)*nq8), &
-                                    nv, nq8, np)
+               gemm_shape = trc_gemm_batch(nv, bn(q), nao, np, ldb=no, sa=0_int64, sc=nq8, transa="T", transb="T")
+               call lp%gemm_batched(gemm_shape, cvir, half(blo(q), 1, 1), ysend(1 + soff(q) + int(p0 - plo(rank), int64)*nq8))
             end if
          end do
          call stab%step_off(lp, ST_TRANS, tc)
@@ -807,6 +807,7 @@ contains
       type(step_table_t) :: stab
       logical :: dense_mask(NSTEP)
       integer(int64) :: nao8, naux8, nva8, nvb8, noa8, nob8, novr_a8, novr_b8
+      type(trc_gemm_batch_t) :: gemm_shape
 
       if (present(opts)) op = opts
       nao = b%nao
@@ -949,9 +950,8 @@ contains
          !$acc enter data create(half_a)
          call stab%step_on(lp, ST_TRANS, tc)
          call lp%gemm("T", "N", noa, nao*np, nao, 1.0_dp, cocc_a, nao, tens, nao, 0.0_dp, half_a, noa)
-         call lp%gemm_strided("T", "T", nva, noa, nao, 1.0_dp, cvir_a, nao, 0_int64, half_a, noa, &
-                              int(noa, int64)*nao8, 0.0_dp, xr_a(1 + int(p0 - 1, int64)*novr_a8), nva, &
-                              novr_a8, np)
+         gemm_shape = trc_gemm_batch(nva, noa, nao, np, sa=0_int64, sc=novr_a8, transa="T", transb="T")
+         call lp%gemm_batched(gemm_shape, cvir_a, half_a, xr_a(1 + int(p0 - 1, int64)*novr_a8))
          call stab%step_off(lp, ST_TRANS, tc)
          call stab%add_flop(ST_TRANS, int(np, int64)*(2*noa8*nao8*nao8 + 2*nva8*noa8*nao8))
          !$acc exit data delete(half_a)
@@ -961,9 +961,8 @@ contains
          !$acc enter data create(half_b)
          call stab%step_on(lp, ST_TRANS, tc)
          call lp%gemm("T", "N", nob, nao*np, nao, 1.0_dp, cocc_b, nao, tens, nao, 0.0_dp, half_b, nob)
-         call lp%gemm_strided("T", "T", nvb, nob, nao, 1.0_dp, cvir_b, nao, 0_int64, half_b, nob, &
-                              int(nob, int64)*nao8, 0.0_dp, xr_b(1 + int(p0 - 1, int64)*novr_b8), nvb, &
-                              novr_b8, np)
+         gemm_shape = trc_gemm_batch(nvb, nob, nao, np, sa=0_int64, sc=novr_b8, transa="T", transb="T")
+         call lp%gemm_batched(gemm_shape, cvir_b, half_b, xr_b(1 + int(p0 - 1, int64)*novr_b8))
          call stab%step_off(lp, ST_TRANS, tc)
          call stab%add_flop(ST_TRANS, int(np, int64)*(2*nob8*nao8*nao8 + 2*nvb8*nob8*nao8))
          !$acc exit data delete(half_b)

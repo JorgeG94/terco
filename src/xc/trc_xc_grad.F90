@@ -196,7 +196,7 @@ module trc_xc_grad
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
                                  XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
    use trc_collocation, only: collocation_shell, collocation_shell_hessian, NCART_MAX, NHESS
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_xc, only: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
    use trc_dft_grid, only: dft_grid_t, dft_grid_build, DEFAULT_GRID_LEVEL
    use trc_dft_partition, only: dft_partition_becke_grad_contract
@@ -810,7 +810,7 @@ contains
    subroutine xc_grad_gemm_x(lp, work)
       type(trc_linalg_t), intent(inout) :: lp
       type(xc_grad_work_t), intent(inout) :: work
-      integer(int64) :: sa, sb
+      type(trc_gemm_batch_t) :: gemm_shape
       integer :: k0, k1, ib, cnt, mp, ml, s
 
       k0 = 1
@@ -819,12 +819,10 @@ contains
          ib = work%ord(k0)
          cnt = k1 - k0 + 1
          if (ml > 0) then
-            sa = int(mp, int64)*int(ml, int64)
-            sb = int(ml, int64)*int(ml, int64)
+            gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
             do s = 1, work%nspin
-               call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, work%chi(work%c_off(ib) + 1), mp, sa, &
-                                    work%dloc(work%pr_off(ib) + 1, s), ml, sb, 0.0_dp, &
-                                    work%xt(work%c_off(ib) + 1, s), mp, sa, cnt)
+               call lp%gemm_batched(gemm_shape, work%chi(work%c_off(ib) + 1), work%dloc(work%pr_off(ib) + 1, s), &
+                                    work%xt(work%c_off(ib) + 1, s))
             end do
          end if
          k0 = k1 + 1
@@ -838,7 +836,7 @@ contains
    subroutine xc_grad_gemm_rd(lp, work)
       type(trc_linalg_t), intent(inout) :: lp
       type(xc_grad_work_t), intent(inout) :: work
-      integer(int64) :: sa, sb
+      type(trc_gemm_batch_t) :: gemm_shape
       integer :: k0, k1, ib, cnt, mp, ml, s, co, po
 
       k0 = 1
@@ -847,19 +845,15 @@ contains
          ib = work%ord(k0)
          cnt = k1 - k0 + 1
          if (ml > 0) then
-            sa = int(mp, int64)*int(ml, int64)
-            sb = int(ml, int64)*int(ml, int64)
+            gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
             co = work%c_off(ib) + 1
             po = work%pr_off(ib) + 1
             do s = 1, work%nspin
-               call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, work%rt(co, s), mp, sa, &
-                                    work%dloc(po, s), ml, sb, 0.0_dp, work%rd(co, s), mp, sa, cnt)
+               call lp%gemm_batched(gemm_shape, work%rt(co, s), work%dloc(po, s), work%rd(co, s))
             end do
             if (work%nspin == 2) then
-               call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, work%rt(co, 2), mp, sa, &
-                                    work%dloc(po, 1), ml, sb, 0.0_dp, work%rdx(co, 1), mp, sa, cnt)
-               call lp%gemm_strided("N", "N", mp, ml, ml, 1.0_dp, work%rt(co, 1), mp, sa, &
-                                    work%dloc(po, 2), ml, sb, 0.0_dp, work%rdx(co, 2), mp, sa, cnt)
+               call lp%gemm_batched(gemm_shape, work%rt(co, 2), work%dloc(po, 1), work%rdx(co, 1))
+               call lp%gemm_batched(gemm_shape, work%rt(co, 1), work%dloc(po, 2), work%rdx(co, 2))
             end if
          end if
          k0 = k1 + 1

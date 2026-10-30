@@ -172,13 +172,22 @@ if(TERCO_ENABLE_TESTING)
                ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
                "guess +: minao.*sum +1\\.000000 +1\\.000000 +1\\.000000")
 
-  # Every convergence aid reaches the SCF and converges to the same state.
+  # Every convergence aid reaches the SCF and converges to the same state --
+  # but NOT in the same number of iterations as the defaults, which is what
+  # this test actually has to show: an energy match alone would still pass
+  # if main.F90 silently dropped every one of these options on the floor,
+  # since DIIS converges this system to the same state either way. Measured
+  # with this binary: water/6-31G/SAD takes 9 iterations with no flags
+  # (terco/cli_rhf) and 11 with --diis 20 --adiis --damp 0.5 --damp-steps 2
+  # --diis-start 0.1 --level-shift 0.5, so pin the "SCF : N iterations" line
+  # to 11, not just the energy.
   add_test(NAME terco/cli_scf_accel
            COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --diis 20 --adiis --damp 0.5
                    --damp-steps 2 --diis-start 0.1 --level-shift 0.5)
   set_tests_properties(
-    terco/cli_scf_accel PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
-                                   "TOTAL ENERGY +-75\\.98397446")
+    terco/cli_scf_accel
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "SCF +: +11 iterations, converged.*TOTAL ENERGY +-75\\.98397446")
   # And a value outside its range is refused, not passed on.
   add_test(NAME terco/cli_scf_accel_refused
            COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --damp 0)
