@@ -1291,7 +1291,7 @@ target_include_directories(scf_rhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
 #
 add_executable(scf_rks scf_rks.F90)
 target_compile_definitions(scf_rks PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_rks PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_link_libraries(scf_rks PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK test-drive::test-drive)
 target_include_directories(scf_rks PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_rks COMMAND scf_rks)
 set_tests_properties(
@@ -1344,7 +1344,7 @@ set_tests_properties(
 #
 add_executable(scf_pcm scf_pcm.F90)
 target_compile_definitions(scf_pcm PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_pcm PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io)
+target_link_libraries(scf_pcm PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io test-drive::test-drive)
 target_include_directories(scf_pcm PRIVATE ${CMAKE_BINARY_DIR}/modules)
 foreach(set main f)
   add_test(NAME terco/scf_pcm_${set} COMMAND scf_pcm ${set})
@@ -1363,7 +1363,7 @@ endforeach()
 #
 add_executable(scf_robust scf_robust.F90)
 target_compile_definitions(scf_robust PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_robust PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_link_libraries(scf_robust PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK test-drive::test-drive)
 target_include_directories(scf_robust PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_robust COMMAND scf_robust)
 set_tests_properties(
@@ -1404,7 +1404,7 @@ endif()
 
 add_executable(scf_rimp2 scf_rimp2.F90)
 target_compile_definitions(scf_rimp2 PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces terco_pyscf_ref_io LAPACK::LAPACK)
+target_link_libraries(scf_rimp2 PRIVATE ${main_lib} terco_test_basis terco_c_interfaces terco_pyscf_ref_io LAPACK::LAPACK test-drive::test-drive)
 
 # The context surface against the Fortran drivers, through the compiled
 # interface declarations like scf_rimp2.
@@ -1588,7 +1588,7 @@ set_tests_properties(
 # closed-shell-as-UHF self-check against the restricted path.
 add_executable(scf_rimp2_uhf scf_rimp2_uhf.F90)
 target_compile_definitions(scf_rimp2_uhf PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_rimp2_uhf PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_link_libraries(scf_rimp2_uhf PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK test-drive::test-drive)
 target_include_directories(scf_rimp2_uhf PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_rimp2_uhf COMMAND scf_rimp2_uhf)
 set_tests_properties(
@@ -1603,7 +1603,7 @@ set_tests_properties(
 # plus DF-MP2/DF-UMP2 (test/pyscf_refs/dh.ref, generate.py's gen_dh).
 add_executable(scf_dh scf_dh.F90)
 target_compile_definitions(scf_dh PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_dh PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_link_libraries(scf_dh PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK test-drive::test-drive)
 target_include_directories(scf_dh PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_dh COMMAND scf_dh)
 set_tests_properties(
@@ -1643,7 +1643,16 @@ terco_add_check(scf_cphf_formamide scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
                  ARGS formamide.xyz basis_sets/6-31gs.json formamide 6-31gs cphf_formamide_probe.bin)
 terco_add_check(scf_cphf_formamide_ccpvdz scf_cphf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
                  ARGS formamide.xyz basis_sets/cc-pvdz.json formamide cc-pvdz cphf_formamide_ccpvdz_probe.bin)
+foreach(_t scf_cphf scf_cphf_ccpvdz scf_cphf_formamide scf_cphf_formamide_ccpvdz)
+  target_link_libraries(${_t} PRIVATE test-drive::test-drive)
+  # All four targets compile the SAME source, which now defines a module --
+  # each needs its own Fortran_MODULE_DIRECTORY or the .mod writes race
+  # (same fix as check_df_grad_ints_${case}'s own comment below).
+  set_target_properties(${_t} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_${_t})
+endforeach()
 terco_add_check(scf_cphf_uhf scf_cphf_uhf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(scf_cphf_uhf PRIVATE test-drive::test-drive)
 
 #
 # Coupled-perturbed KS (src/scf/trc_cpks.F90): the static dipole
@@ -1660,6 +1669,14 @@ terco_add_check(scf_cpks_b3lyp scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
                  ARGS water.xyz basis_sets/6-31gs.json water 6-31gs b3lyp cpks_b3lyp_probe.bin)
 terco_add_check(scf_cpks_formamide_pbe scf_cpks.F90 NEEDS_BASIS NEEDS_PYSCF_REF
                  ARGS formamide.xyz basis_sets/6-31gs.json formamide 6-31gs pbe cpks_formamide_pbe_probe.bin)
+foreach(_t scf_cpks scf_cpks_pbe scf_cpks_b3lyp scf_cpks_formamide_pbe)
+  target_link_libraries(${_t} PRIVATE test-drive::test-drive)
+  # All four targets compile the SAME source, which now defines a module --
+  # each needs its own Fortran_MODULE_DIRECTORY or the .mod writes race
+  # (same fix as check_df_grad_ints_${case}'s own comment below).
+  set_target_properties(${_t} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_${_t})
+endforeach()
 
 #
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial

@@ -36,15 +36,22 @@
 ! iterations hold pyscf's solution to 1e-8; NH2, whose singly occupied
 ! orbital is not degenerate, is converged from GWH like every other case.
 !   f     water/cc-pVTZ Cartesian, f on oxygen: HF C-PCM and B3LYP IEF-PCM;
-!         skips (SKIP, exit 0) below TERCO_LMAX=3
+!         skips (test-drive's skip_test) below TERCO_LMAX=3
 !
 ! Writes pcm_scf_probe_<set>.bin first -- the geometry, the basis file, the
 ! grids terco used, its converged density to start pyscf from (as scf_rks
 ! does) -- which is all generate.py needs to rebuild each case; a missing
 ! reference fails only after that is safely written.
 !
-program scf_pcm
+! One test-drive case per (molecule, functional, PCM model) in the chosen
+! set; the shared setup -- the probe write and the sequential pyscf-
+! reference read -- runs once -- see check_xc_energy_suite's own
+! `next_ifn` comment for why, and why this suite stays `parallel=.false.`.
+!
+module scf_pcm_suite
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_tables, only: LMAX
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -52,9 +59,11 @@ program scf_pcm
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, &
-                           ref_read_matrix3, ref_report
+                           ref_read_matrix3
    use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
+   private
+   public :: collect_scf_pcm, set_arg
 
    real(dp), parameter :: EPS_WATER = 78.3553_dp
    real(dp), parameter :: TOL_E = 1.0e-8_dp
@@ -92,196 +101,252 @@ program scf_pcm
    logical, parameter :: f_sph(NF) = [.false., .false.]
    logical, parameter :: f_seed(NF) = [.false., .false.]
 
-   character(len=16) :: set, tag
-   character(len=16), allocatable :: cxyz(:)
-   character(len=32), allocatable :: cbas(:)
-   character(len=8), allocatable :: cfn(:), cpcm(:)
-   integer, allocatable :: cna(:), cnb(:)
-   logical, allocatable :: csph(:), cseed(:)
-   integer :: ncase, ic, unit, natm, refu, nfail, ncase_ref, nspin, nao_scf
-   integer, allocatable :: zint(:)
-   real(dp), allocatable :: at_r(:, :)
-   type(trc_basis_t) :: bas
-   type(trc_scf_options_t) :: opts, opts2
-   type(trc_scf_result_t) :: res, res2
-   type(error_t) :: err
-   logical :: has_ref, all_ok
-   integer :: nspin_ref, nao_ref
-   real(dp) :: e_ref, ep_ref, e_dm, ep_dm, de, dat, dp_c, dp_at
-   real(dp), allocatable :: dm_ref(:, :, :)
-   character(len=48) :: what
-   character(len=64) :: gkey
+   character(len=16) :: set_arg = "main"
 
-   set = "main"
-   if (command_argument_count() >= 1) call get_command_argument(1, set)
-   select case (trim(set))
-   case ("main")
-      ncase = NMAIN
-      cxyz = main_xyz; cbas = main_bas; cfn = main_fn; cpcm = main_pcm
-      cna = main_na; cnb = main_nb; csph = main_sph; cseed = main_seed
-   case ("f")
-      ncase = NF
-      cxyz = f_xyz; cbas = f_bas; cfn = f_fn; cpcm = f_pcm
-      cna = f_na; cnb = f_nb; csph = f_sph; cseed = f_seed
-   case default
-      print '(a)', 'usage: scf_pcm [main|f]'; stop 1
-   end select
+   logical :: computed = .false.
+   logical :: skip_all = .false.
+   integer :: ncase_module = 0
+   logical, allocatable :: ok_case(:)
+   character(len=256), allocatable :: msg_case(:)
 
-   call golden_begin('scf_pcm_'//trim(set))
+contains
 
-   ! The f set needs f in the four-centre kernels; below that there is
-   ! nothing to run yet.
-   if (trim(set) == "f" .and. LMAX < 3) then
-      print '(a,i0,a)', '  SKIP: the f set needs TERCO_LMAX >= 3; this build has LMAX = ', LMAX, '.'
-      stop 0
-   end if
+   subroutine collect_scf_pcm(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      integer :: ic, ncase
+      character(len=16), allocatable :: cxyz(:)
+      character(len=32), allocatable :: cbas(:)
+      character(len=8), allocatable :: cfn(:), cpcm(:)
 
-   open (newunit=unit, file='pcm_scf_probe_'//trim(set)//'.bin', access='stream', &
-         form='unformatted', status='replace')
-   write (unit) int(ncase, int64)
-   call ref_open('pcm_scf_'//trim(set)//'.ref', refu, has_ref)
-   if (has_ref) then
-      call ref_read_int(refu, 'NCASE', ncase_ref)
-      if (ncase_ref /= ncase) then
-         print '(a)', 'scf_pcm: pyscf reference case count does not match this program'; stop 1
+      select case (trim(set_arg))
+      case ("main")
+         ncase = NMAIN
+         cxyz = main_xyz; cbas = main_bas; cfn = main_fn; cpcm = main_pcm
+      case ("f")
+         ncase = NF
+         cxyz = f_xyz; cbas = f_bas; cfn = f_fn; cpcm = f_pcm
+      case default
+         error stop 'usage: scf_pcm [main|f]'
+      end select
+
+      allocate (testsuite(ncase))
+      do ic = 1, ncase
+         testsuite(ic) = new_unittest(trim(cxyz(ic))//"/"//trim(cbas(ic))//"/"// &
+                                      trim(merge(cfn(ic), 'hf      ', len_trim(cfn(ic)) > 0))//"/"// &
+                                      trim(cpcm(ic)), test_case)
+      end do
+   end subroutine collect_scf_pcm
+
+   subroutine test_case(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer, save :: next_ic = 0
+      call ensure_computed()
+      next_ic = next_ic + 1
+      if (skip_all) then
+         call skip_test(error, "the f set needs TERCO_LMAX >= 3")
+         return
       end if
-   end if
-   nfail = 0
-   all_ok = .true.
+      call check(error, ok_case(next_ic), trim(msg_case(next_ic)))
+   end subroutine test_case
 
-   do ic = 1, ncase
-      call read_xyz(trim(cxyz(ic))//'.xyz', natm, zint, at_r)
-      call trc_basis_from_json('basis_sets/'//trim(cbas(ic))//'.json', natm, zint, at_r, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'scf_pcm: '//err%get_message(); stop 1
+   subroutine ensure_computed()
+      if (computed) return
+      call run_all()
+      computed = .true.
+   end subroutine ensure_computed
+
+   subroutine run_all()
+      character(len=16), allocatable :: cxyz(:)
+      character(len=32), allocatable :: cbas(:)
+      character(len=8), allocatable :: cfn(:), cpcm(:)
+      integer, allocatable :: cna(:), cnb(:)
+      logical, allocatable :: csph(:), cseed(:)
+      integer :: ncase, ic, unit, natm, refu, ncase_ref, nspin, nao_scf
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
+      type(trc_basis_t) :: bas
+      type(trc_scf_options_t) :: opts, opts2
+      type(trc_scf_result_t) :: res, res2
+      type(error_t) :: err
+      logical :: has_ref
+      integer :: nspin_ref, nao_ref
+      real(dp) :: e_ref, ep_ref, e_dm, ep_dm, de, dat, dp_c, dp_at
+      real(dp), allocatable :: dm_ref(:, :, :)
+      character(len=16) :: tag
+      character(len=48) :: what
+      character(len=64) :: gkey
+
+      select case (trim(set_arg))
+      case ("main")
+         ncase = NMAIN
+         cxyz = main_xyz; cbas = main_bas; cfn = main_fn; cpcm = main_pcm
+         cna = main_na; cnb = main_nb; csph = main_sph; cseed = main_seed
+      case ("f")
+         ncase = NF
+         cxyz = f_xyz; cbas = f_bas; cfn = f_fn; cpcm = f_pcm
+         cna = f_na; cnb = f_nb; csph = f_sph; cseed = f_seed
+      end select
+      ncase_module = ncase
+      allocate (ok_case(ncase), msg_case(ncase))
+      ok_case = .false.
+      msg_case = "pyscf reference missing"
+
+      call golden_begin('scf_pcm_'//trim(set_arg))
+
+      ! The f set needs f in the four-centre kernels; below that there is
+      ! nothing to run yet.
+      if (trim(set_arg) == "f" .and. LMAX < 3) then
+         print '(a,i0,a)', '  SKIP: the f set needs TERCO_LMAX >= 3; this build has LMAX = ', LMAX, '.'
+         skip_all = .true.
+         return
       end if
-      bas%spherical = csph(ic)
-      call bas%to_device()
-      nspin = merge(2, 1, cna(ic) /= cnb(ic))
-      nao_scf = merge(bas%nao_sph, bas%nao, csph(ic))
 
-      ! The reference first: a seeded case starts from its density.
+      open (newunit=unit, file='pcm_scf_probe_'//trim(set_arg)//'.bin', access='stream', &
+            form='unformatted', status='replace')
+      write (unit) int(ncase, int64)
+      call ref_open('pcm_scf_'//trim(set_arg)//'.ref', refu, has_ref)
       if (has_ref) then
-         write (tag, '(i0)') ic - 1
-         call ref_read_int(refu, 'NSPIN_'//trim(tag), nspin_ref)
-         call ref_read_int(refu, 'NAO_'//trim(tag), nao_ref)
-         call ref_read_real(refu, 'E_'//trim(tag), e_ref)
-         call ref_read_real(refu, 'EPCM_'//trim(tag), ep_ref)
-         if (nspin_ref /= nspin .or. nao_ref /= nao_scf) then
-            print '(a)', 'scf_pcm: pyscf reference shape does not match this build'; stop 1
-         end if
-         if (.not. csph(ic)) then
-            call ref_read_real(refu, 'EDM_'//trim(tag), e_dm)
-            call ref_read_real(refu, 'EPCMDM_'//trim(tag), ep_dm)
-            if (allocated(dm_ref)) deallocate (dm_ref)
-            allocate (dm_ref(bas%nao, bas%nao, nspin))
-            call ref_read_matrix3(refu, 'DM_'//trim(tag), bas%nao, bas%nao, nspin, dm_ref)
-         end if
+         call ref_read_int(refu, 'NCASE', ncase_ref)
+         if (ncase_ref /= ncase) error stop 'scf_pcm: pyscf reference case count does not match this build'
       end if
 
-      opts = trc_scf_options_t()
-      opts%functional = cfn(ic)
-      opts%grid_level = 3
-      ! VV10's grid at its coarsest: pyscf is handed the same points, so the
-      ! comparison is as exact on it as on any other, and VV10's host pass
-      ! is a double sum over this grid -- level 1 put sixteen seconds an
-      ! iteration on formamide, level 0 under two.
-      opts%nlc_grid_level = 0
-      opts%conv_energy = 1.0e-11_dp
-      opts%conv_diis = 1.0e-8_dp
-      opts%max_iteration = 200
-      opts%pcm_model = cpcm(ic)
-      opts%pcm_eps = EPS_WATER
-      if (cseed(ic) .and. has_ref) then
-         call trc_scf_run(bas, cna(ic), cnb(ic), opts, res, dguess=dm_ref)
-      else
-         call trc_scf_run(bas, cna(ic), cnb(ic), opts, res)
-      end if
-      if (.not. res%converged) then
-         print '(a,a)', "  NOT CONVERGED: ", trim(res%message)
-         all_ok = .false.
-      end if
-      print '(a,a10,a8,a8,a,i1,a,i3,a,f20.12,a,f16.12,a,i0)', "  ", trim(cxyz(ic)), trim(cfn(ic)), &
-         trim(cpcm(ic)), " nspin ", res%nspin, " iter ", res%iterations, "  E = ", res%energy, &
-         "  E_diel = ", res%e_pcm, "  points ", res%pcm_npoints
-      write (gkey, '(i0)') ic
-      gkey = trim(gkey)//'_'//trim(cxyz(ic))//'_'//trim(cbas(ic))//'_'// &
-             trim(merge(cfn(ic), 'hf      ', len_trim(cfn(ic)) > 0))//'_'//trim(cpcm(ic))
-      call golden_put('E_'//trim(gkey), res%energy)
-      call golden_put('E_DIEL_'//trim(gkey), res%e_pcm)
+      do ic = 1, ncase
+         call read_xyz(trim(cxyz(ic))//'.xyz', natm, zint, at_r)
+         call trc_basis_from_json('basis_sets/'//trim(cbas(ic))//'.json', natm, zint, at_r, bas, err)
+         if (err%has_error()) error stop 'scf_pcm: '//err%get_message()
+         bas%spherical = csph(ic)
+         call bas%to_device()
+         nspin = merge(2, 1, cna(ic) /= cnb(ic))
+         nao_scf = merge(bas%nao_sph, bas%nao, csph(ic))
 
-      write (unit) int(bas%nao, int64), int(merge(bas%nao_sph, bas%nao, csph(ic)), int64), &
-         int(natm, int64), int(res%nspin, int64), int(cna(ic), int64), int(cnb(ic), int64), &
-         int(merge(1, 0, csph(ic)), int64)
-      write (unit) cxyz(ic), cbas(ic), cfn(ic), cpcm(ic)
-      write (unit) EPS_WATER, int(opts%pcm_lebedev, int64), opts%pcm_radii_scale
-      write (unit) int(zint, int64), at_r
-      if (len_trim(cfn(ic)) > 0) then
-         write (unit) int(size(res%grid_w), int64)
-         write (unit) res%grid_r, res%grid_w
-      else
-         write (unit) 0_int64
-      end if
-      if (allocated(res%grid_w_nlc)) then
-         write (unit) int(size(res%grid_w_nlc), int64)
-         write (unit) res%grid_r_nlc, res%grid_w_nlc
-      else
-         write (unit) 0_int64
-      end if
-      ! The Cartesian overlap, for the per-AO normalisation the generator
-      ! carries pyscf's density across with.
-      block
-         type(trc_pairlist_t) :: pl
-         real(dp), allocatable :: s(:, :), t(:, :), v(:, :)
-         allocate (s(bas%nao, bas%nao), t(bas%nao, bas%nao), v(bas%nao, bas%nao))
-         call pl%build(bas, 1.0e-14_dp)
-         call pl%to_device()
-         !$acc enter data create(s, t, v)
-         call trc_1e(bas, pl, s, t, v)
-         !$acc update self(s)
-         !$acc exit data delete(s, t, v)
-         call pl%release()
-         write (unit) s
-      end block
-      write (unit) res%energy, res%e_pcm
-      ! The converged density, as scf_rks writes its own: generate.py starts
-      ! pyscf from it, so both codes settle in the same basin (see the
-      ! header on OH).
-      write (unit) res%dmat
-
-      if (has_ref) then
-         what = trim(cxyz(ic))//'/'//trim(cbas(ic))//' '//trim(merge(cfn(ic), 'hf      ', &
-                len_trim(cfn(ic)) > 0))//' '//trim(cpcm(ic))
-         if (cseed(ic)) what = trim(what)//' (from pyscf''s D)'
-         de = abs(res%energy - e_ref)
-         dp_c = abs(res%e_pcm - ep_ref)
-         call ref_report(nfail, de < TOL_E, trim(what)//': E converged', de)
-         call ref_report(nfail, dp_c < TOL_E, trim(what)//': E_diel converged', dp_c)
-         if (.not. csph(ic)) then
-            opts2 = opts
-            opts2%max_iteration = 1
-            call trc_scf_run(bas, cna(ic), cnb(ic), opts2, res2, dguess=dm_ref)
-            dat = abs(res2%energy - e_dm)
-            dp_at = abs(res2%e_pcm - ep_dm)
-            call golden_put('E_AT_PYSCF_D_'//trim(gkey), res2%energy)
-            call golden_put('E_DIEL_AT_PYSCF_D_'//trim(gkey), res2%e_pcm)
-            call ref_report(nfail, dat < TOL_E, trim(what)//': E at pyscf''s D', dat)
-            call ref_report(nfail, dp_at < 1.0e-9_dp, trim(what)//': E_diel at pyscf''s D', dp_at)
+         ! The reference first: a seeded case starts from its density.
+         if (has_ref) then
+            write (tag, '(i0)') ic - 1
+            call ref_read_int(refu, 'NSPIN_'//trim(tag), nspin_ref)
+            call ref_read_int(refu, 'NAO_'//trim(tag), nao_ref)
+            call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+            call ref_read_real(refu, 'EPCM_'//trim(tag), ep_ref)
+            if (nspin_ref /= nspin .or. nao_ref /= nao_scf) &
+               error stop 'scf_pcm: pyscf reference shape does not match this build'
+            if (.not. csph(ic)) then
+               call ref_read_real(refu, 'EDM_'//trim(tag), e_dm)
+               call ref_read_real(refu, 'EPCMDM_'//trim(tag), ep_dm)
+               if (allocated(dm_ref)) deallocate (dm_ref)
+               allocate (dm_ref(bas%nao, bas%nao, nspin))
+               call ref_read_matrix3(refu, 'DM_'//trim(tag), bas%nao, bas%nao, nspin, dm_ref)
+            end if
          end if
-      end if
-      call bas%release()
-   end do
-   call golden_end()
-   close (unit)
-   if (has_ref) call ref_close(refu)
-   if (.not. has_ref) then
-      print '(a)', 'FAIL: missing reference pyscf_refs/pcm_scf_'//trim(set)//'.ref -- run '// &
-         'test/pyscf_refs/generate.py (see test/pyscf_refs/README.md)'
-      stop 1
+
+         opts = trc_scf_options_t()
+         opts%functional = cfn(ic)
+         opts%grid_level = 3
+         ! VV10's grid at its coarsest: pyscf is handed the same points, so the
+         ! comparison is as exact on it as on any other, and VV10's host pass
+         ! is a double sum over this grid -- level 1 put sixteen seconds an
+         ! iteration on formamide, level 0 under two.
+         opts%nlc_grid_level = 0
+         opts%conv_energy = 1.0e-11_dp
+         opts%conv_diis = 1.0e-8_dp
+         opts%max_iteration = 200
+         opts%pcm_model = cpcm(ic)
+         opts%pcm_eps = EPS_WATER
+         if (cseed(ic) .and. has_ref) then
+            call trc_scf_run(bas, cna(ic), cnb(ic), opts, res, dguess=dm_ref)
+         else
+            call trc_scf_run(bas, cna(ic), cnb(ic), opts, res)
+         end if
+         if (.not. res%converged) print '(a,a)', "  NOT CONVERGED: ", trim(res%message)
+         print '(a,a10,a8,a8,a,i1,a,i3,a,f20.12,a,f16.12,a,i0)', "  ", trim(cxyz(ic)), trim(cfn(ic)), &
+            trim(cpcm(ic)), " nspin ", res%nspin, " iter ", res%iterations, "  E = ", res%energy, &
+            "  E_diel = ", res%e_pcm, "  points ", res%pcm_npoints
+         write (gkey, '(i0)') ic
+         gkey = trim(gkey)//'_'//trim(cxyz(ic))//'_'//trim(cbas(ic))//'_'// &
+                trim(merge(cfn(ic), 'hf      ', len_trim(cfn(ic)) > 0))//'_'//trim(cpcm(ic))
+         call golden_put('E_'//trim(gkey), res%energy)
+         call golden_put('E_DIEL_'//trim(gkey), res%e_pcm)
+
+         write (unit) int(bas%nao, int64), int(merge(bas%nao_sph, bas%nao, csph(ic)), int64), &
+            int(natm, int64), int(res%nspin, int64), int(cna(ic), int64), int(cnb(ic), int64), &
+            int(merge(1, 0, csph(ic)), int64)
+         write (unit) cxyz(ic), cbas(ic), cfn(ic), cpcm(ic)
+         write (unit) EPS_WATER, int(opts%pcm_lebedev, int64), opts%pcm_radii_scale
+         write (unit) int(zint, int64), at_r
+         if (len_trim(cfn(ic)) > 0) then
+            write (unit) int(size(res%grid_w), int64)
+            write (unit) res%grid_r, res%grid_w
+         else
+            write (unit) 0_int64
+         end if
+         if (allocated(res%grid_w_nlc)) then
+            write (unit) int(size(res%grid_w_nlc), int64)
+            write (unit) res%grid_r_nlc, res%grid_w_nlc
+         else
+            write (unit) 0_int64
+         end if
+         ! The Cartesian overlap, for the per-AO normalisation the generator
+         ! carries pyscf's density across with.
+         block
+            type(trc_pairlist_t) :: pl
+            real(dp), allocatable :: s(:, :), t(:, :), v(:, :)
+            allocate (s(bas%nao, bas%nao), t(bas%nao, bas%nao), v(bas%nao, bas%nao))
+            call pl%build(bas, 1.0e-14_dp)
+            call pl%to_device()
+            !$acc enter data create(s, t, v)
+            call trc_1e(bas, pl, s, t, v)
+            !$acc update self(s)
+            !$acc exit data delete(s, t, v)
+            call pl%release()
+            write (unit) s
+         end block
+         write (unit) res%energy, res%e_pcm
+         ! The converged density, as scf_rks writes its own: generate.py starts
+         ! pyscf from it, so both codes settle in the same basin (see the
+         ! header on OH).
+         write (unit) res%dmat
+
+         if (has_ref) then
+            what = trim(cxyz(ic))//'/'//trim(cbas(ic))//' '//trim(merge(cfn(ic), 'hf      ', &
+                   len_trim(cfn(ic)) > 0))//' '//trim(cpcm(ic))
+            if (cseed(ic)) what = trim(what)//' (from pyscf''s D)'
+            de = abs(res%energy - e_ref)
+            dp_c = abs(res%e_pcm - ep_ref)
+            ok_case(ic) = res%converged .and. de < TOL_E .and. dp_c < TOL_E
+            write (msg_case(ic), '(a,es10.2)') trim(what)//': E/E_diel converged vs pyscf, worst = ', max(de, dp_c)
+            if (.not. csph(ic)) then
+               opts2 = opts
+               opts2%max_iteration = 1
+               call trc_scf_run(bas, cna(ic), cnb(ic), opts2, res2, dguess=dm_ref)
+               dat = abs(res2%energy - e_dm)
+               dp_at = abs(res2%e_pcm - ep_dm)
+               call golden_put('E_AT_PYSCF_D_'//trim(gkey), res2%energy)
+               call golden_put('E_DIEL_AT_PYSCF_D_'//trim(gkey), res2%e_pcm)
+               ok_case(ic) = ok_case(ic) .and. dat < TOL_E .and. dp_at < 1.0e-9_dp
+               write (msg_case(ic), '(a,es10.2)') trim(what)// &
+                  ': E/E_diel converged and at-density vs pyscf, worst = ', max(max(de, dp_c), max(dat, dp_at))
+            end if
+         end if
+         call bas%release()
+      end do
+      call golden_end()
+      close (unit)
+      if (has_ref) call ref_close(refu)
+      if (.not. has_ref) error stop 'FAIL: missing reference pyscf_refs/pcm_scf_'//trim(set_arg)//'.ref -- run ' &
+         //'test/pyscf_refs/generate.py (see test/pyscf_refs/README.md)'
+   end subroutine run_all
+
+end module scf_pcm_suite
+
+program scf_pcm
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use scf_pcm_suite, only: collect_scf_pcm, set_arg
+   implicit none
+   integer :: stat
+   if (command_argument_count() >= 1) call get_command_argument(1, set_arg)
+   stat = 0
+   call run_testsuite(collect_scf_pcm, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
    end if
-   if (.not. all_ok .or. nfail > 0) then
-      print '(a,i0,a)', 'scf_pcm: ', nfail, ' comparison(s) FAILED'; stop 1
-   end if
-   print '(a)', "scf_pcm: every case converged and agrees with pyscf's PCM; RESULT: PASS"
-
 end program scf_pcm
