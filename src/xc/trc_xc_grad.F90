@@ -199,13 +199,13 @@ module trc_xc_grad
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_xc, only: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
    use trc_dft_grid, only: dft_grid_t, dft_grid_build, DEFAULT_GRID_LEVEL
-   use trc_dft_partition, only: dft_partition_becke_grad_contract
+   use trc_dft_partition, only: dft_partition_becke_grad_contract, dft_partition_options_t
    use trc_error, only: error_t
    use trc_step_table, only: step_table_t
    implicit none
    private
 
-   public :: xc_grad_add, XC_GRAD_RHO_TOL, xc_grad_drive
+   public :: xc_grad_add, xc_grad_add_on_grid, XC_GRAD_RHO_TOL, xc_grad_drive
    public :: xc_grad_options_t, xc_grad_options, xc_grad_point_io_t
    public :: XC_GRAD_NSTEP, xc_grad_step_names
    public :: ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
@@ -261,35 +261,35 @@ module trc_xc_grad
       !! See this module's header, GRID RESPONSE. OFF recovers the
       !! Pulay-only gradient (what check_xc_grad_fixedgrid_fd isolates, and
       !! what pyscf's own `grid_response=False` default compares against).
-      type(step_table_t), pointer :: timing => null()
-      !! Device-synced time per step, ADDED into; initialised by the caller
-      !! with `xc_grad_step_names()`. Unassociated, a private table is kept
-      !! and dropped.
-      type(dft_grid_t), pointer :: grid => null()
-      type(trc_xc_grid_t), pointer :: xg => null()
-      !! The SCF's own grid, already batched and device-resident (`xg`).
-      !! Used only when both are associated; see xc_grad_add's header.
+      type(dft_partition_options_t) :: partition
+      !! The partition the grid was built with (`dft_grid_t%partition`),
+      !! which the grid response differentiates. `xc_grad_add` sets it from
+      !! the grid it builds; a caller of `xc_grad_add_on_grid` from its own.
    end type xc_grad_options_t
 
    type :: xc_grad_point_io_t
       !! What xc_grad_drive's point kernel exchanges with its caller, per
-      !! point (per batch for `active`). Either `fxc` is associated, and the
-      !! functional is evaluated and its rho*eps (no weight) written there
-      !! for the partition response, left zero on a batch the screen skips;
-      !! or `vrho` is, and a potential already in hand (VV10's, restricted
-      !! GGA) is read from `grho`/`vrho`/`vsigma` on the device instead of
-      !! evaluating the functional. All are the caller's arrays, mapped by
-      !! the caller.
-      real(dp), pointer, contiguous :: fxc(:) => null()
+      !! point (per batch for `active`), and the screen settings it runs
+      !! with. Either `fxc` is allocated, and the functional is evaluated
+      !! and its rho*eps (no weight) written there for the partition
+      !! response, left zero on a batch the screen skips; or `vrho` is, and
+      !! a potential already in hand (VV10's, restricted GGA) is read from
+      !! `grho`/`vrho`/`vsigma` on the device instead of evaluating the
+      !! functional. The caller allocates the arrays here and maps each one
+      !! itself (never the type).
+      type(xc_grad_options_t) :: options
+      !! `rho_tol` and `grid_response` are read; the grid settings are the
+      !! caller's business.
+      real(dp), allocatable :: fxc(:)
       !! (npts)
-      integer, pointer, contiguous :: active(:) => null()
+      integer, allocatable :: active(:)
       !! (nbatch): the caller's own batch screen (1 = keep) in place of
       !! the density bound; optional with either form.
-      real(dp), pointer, contiguous :: grho(:, :) => null()
+      real(dp), allocatable :: grho(:, :)
       !! (3, npts)
-      real(dp), pointer, contiguous :: vrho(:) => null()
+      real(dp), allocatable :: vrho(:)
       !! (npts)
-      real(dp), pointer, contiguous :: vsigma(:) => null()
+      real(dp), allocatable :: vsigma(:)
       !! (npts)
    end type xc_grad_point_io_t
 
@@ -326,28 +326,20 @@ contains
 
    !
    ! An xc_grad_options_t from the caller's own optional settings, passed
-   ! straight through: an absent one keeps its default. `timing`, `grid`
-   ! and `xg` are pointed at, so the caller's actuals need TARGET and must
-   ! outlive the options. `grid` and `xg` are taken only together.
+   ! straight through: an absent one keeps its default.
    !
-   function xc_grad_options(grid_level, grid_max_pts, rho_tol, grid_response, timing, grid, xg) result(options)
+   function xc_grad_options(grid_level, grid_max_pts, rho_tol, grid_response, partition) result(options)
       integer, intent(in), optional :: grid_level, grid_max_pts
       real(dp), intent(in), optional :: rho_tol
       logical, intent(in), optional :: grid_response
-      type(step_table_t), intent(inout), optional, target :: timing
-      type(dft_grid_t), intent(in), optional, target :: grid
-      type(trc_xc_grid_t), intent(in), optional, target :: xg
+      type(dft_partition_options_t), intent(in), optional :: partition
       type(xc_grad_options_t) :: options
 
       if (present(grid_level)) options%grid_level = grid_level
       if (present(grid_max_pts)) options%grid_max_pts = grid_max_pts
       if (present(rho_tol)) options%rho_tol = rho_tol
       if (present(grid_response)) options%grid_response = grid_response
-      if (present(timing)) options%timing => timing
-      if (present(grid) .and. present(xg)) then
-         options%grid => grid
-         options%xg => xg
-      end if
+      if (present(partition)) options%partition = partition
    end function xc_grad_options
 
    pure function xc_grad_step_names() result(names)
@@ -358,51 +350,95 @@ contains
    end function xc_grad_step_names
 
    !
-   ! The one entry point. Builds its own DFT quadrature at `b`'s geometry
-   ! by default (trc_scf_run keeps neither its grid nor its functional
-   ! alive past convergence, the same reason trc_scf_gradient rebuilds the
-   ! pair list and the ERI engine) -- UNLESS the caller already has one at
-   ! this exact geometry and settings and hands it in through `grid`/`xg`
-   ! (trc_capi.F90's `trc_run_gradient`, reusing the SCF's own grid cache:
-   ! see trc_scf_context.F90's `trc_grid_cache_t`). Present, both together,
-   ! no rebuild and no upload happen at all, and neither is released here
-   ! -- the caller owns them, exactly as it owns `dfjk`/`aux` in
-   ! trc_scf_grad.F90's own `--df` branch. Absent (the default, and every
-   ! existing caller), behaviour is unchanged: refuses what it cannot do,
-   ! and ADDS the result into `grad`.
+   ! The entry point that builds its own DFT quadrature at `b`'s geometry
+   ! (trc_scf_run keeps neither its grid nor its functional alive past
+   ! convergence, the same reason trc_scf_gradient rebuilds the pair list
+   ! and the ERI engine), then runs `xc_grad_add_on_grid` on it. Refuses
+   ! what it cannot do, and ADDS the result into `grad`.
    !
-   subroutine xc_grad_add(b, lp, func, nspin, density, grad, options)
+   recursive subroutine xc_grad_add(b, lp, func, nspin, density, grad, options, timing)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
       integer, intent(in) :: nspin
       real(dp), intent(in) :: density(b%nao, b%nao, nspin)
-      !! The converged density, per spin channel. Present on both host and
-      !! device: the GEMM pipeline below reads the device copy, the
-      !! per-batch screen reads the host one (trc_scf_gradient's own
-      !! convention -- see its header -- keeps both valid at this point).
+      !! As `xc_grad_add_on_grid`'s.
+      real(dp), intent(inout) :: grad(3, b%natm)
+      !! ADDED into, device-resident, as `xc_grad_add_on_grid`'s.
+      type(xc_grad_options_t), intent(in), optional :: options
+      !! Grid, screen and grid response; absent, every default.
+      type(step_table_t), intent(inout), optional :: timing
+      !! Device-synced time per step, ADDED into; initialised by the caller
+      !! with `xc_grad_step_names()`. Absent, a private table is kept and
+      !! dropped (the recursive call below, with one).
+
+      type(xc_grad_options_t) :: opts
+      type(dft_grid_t) :: grid_own
+      type(trc_xc_grid_t) :: xg_own
+      type(timer_type) :: tc
+      type(error_t) :: err
+      integer, allocatable :: at_elem(:)
+
+      if (.not. present(timing)) then
+         block
+            type(step_table_t) :: timing_local
+            call timing_local%init("xc grad", xc_grad_step_names())
+            call xc_grad_add(b, lp, func, nspin, density, grad, options, timing_local)
+         end block
+         return
+      end if
+      if (present(options)) opts = options
+      call timing%step_on(lp, ST_GRID, tc)
+      allocate (at_elem(b%natm), source=b%at_elem)
+      call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
+      if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
+      ! `atom`/`qw` are only ever read by the grid-response term
+      ! (`build` leaves both unallocated; `build_from_grid` fills them);
+      ! built unconditionally anyway -- they cost one more integer and one
+      ! more real(dp) per point, next to the GEMMs a surviving batch pays for.
+      call xg_own%build_from_grid(grid_own, b, max_pts=opts%grid_max_pts)
+      call xg_own%to_device()
+      opts%partition = grid_own%partition
+      call timing%step_off(lp, ST_GRID, tc)
+      call xc_grad_add_on_grid(b, lp, func, density, grad, opts, timing, xg_own)
+      call xg_own%release()
+      call grid_own%destroy()
+      deallocate (at_elem)
+   end subroutine xc_grad_add
+
+   !
+   ! The XC gradient term on a grid the caller already has at this exact
+   ! geometry and settings, batched and device-resident (trc_capi.F90's
+   ! `trc_run_gradient`, reusing the SCF's own grid cache: see
+   ! trc_scf_context.F90's `trc_grid_cache_t`; or `xc_grad_add`'s own).
+   ! No rebuild and no upload; `xg` stays the caller's. `options%partition`
+   ! must be the partition `xg`'s grid was built with. ADDS into `grad`.
+   !
+   subroutine xc_grad_add_on_grid(b, lp, func, density, grad, options, timing, xg)
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: lp
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in), contiguous :: density(:, :, :)
+      !! (b%nao, b%nao, nspin): the converged density, per spin channel.
+      !! Present on both host and device: the GEMM pipeline below reads the
+      !! device copy, the per-batch screen reads the host one
+      !! (trc_scf_gradient's own convention -- see its own header -- keeps
+      !! both valid at this point).
       real(dp), intent(inout) :: grad(3, b%natm)
       !! ADDED into; device-resident for the whole call, exactly as
       !! trc_1e_gradient and scf_grad_nuclear_repulsion require of their
       !! own `grad` argument.
-      type(xc_grad_options_t), intent(in), optional :: options
-      !! Grid, screen, grid response, timing and a grid to reuse (REUSE in
-      !! this subroutine's header); absent, every default.
+      type(xc_grad_options_t), intent(in) :: options
+      !! Screen, grid response and the grid's partition.
+      type(step_table_t), intent(inout) :: timing
+      !! As `xc_grad_add`'s.
+      type(trc_xc_grid_t), intent(in) :: xg
 
-      type(xc_grad_options_t) :: opts
-      type(dft_grid_t), target :: grid_own
-      type(trc_xc_grid_t), target :: xg_own
-      type(dft_grid_t), pointer :: gp
-      type(trc_xc_grid_t), pointer :: xgp
-      logical :: reuse_grid
-      type(step_table_t), target :: tbl_own
-      type(step_table_t), pointer :: tbl
       type(xc_grad_point_io_t) :: pio
       type(timer_type) :: tc
       type(error_t) :: err
       integer, allocatable :: at_elem(:)
       real(dp), allocatable :: grad_extra(:, :), pcoef(:)
-      real(dp), allocatable, target :: fxc(:)
 
       ! --- refuse what this module cannot do, with a reason -------------
       !
@@ -439,83 +475,47 @@ contains
             "on this branch, so this should be unreachable)"
       end if
 
-      if (present(options)) opts = options
-      if (associated(opts%timing)) then
-         tbl => opts%timing
-      else
-         call tbl_own%init("xc grad", xc_grad_step_names())
-         tbl => tbl_own
-         opts%timing => tbl_own
-      end if
-
-      reuse_grid = associated(opts%grid) .and. associated(opts%xg)
-      call tbl%step_on(lp, ST_GRID, tc)
       allocate (at_elem(b%natm), source=b%at_elem)
-      if (reuse_grid) then
-         ! The SCF's own grid, already batched and on the device -- no
-         ! rebuild, no re-upload. See this subroutine's own header, REUSE.
-         gp => opts%grid
-         xgp => opts%xg
-      else
-         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
-         if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
-         ! `atom`/`qw` are only ever read by the grid-response term below
-         ! (`build` leaves both unallocated; `build_from_grid` fills
-         ! them); built unconditionally anyway --
-         ! they cost one more integer and one more real(dp) per point, next to
-         ! the GEMMs a surviving batch pays for.
-         call xg_own%build_from_grid(grid_own, b, max_pts=opts%grid_max_pts)
-         call xg_own%to_device()
-         gp => grid_own
-         xgp => xg_own
-      end if
-      call tbl%step_off(lp, ST_GRID, tc)
-
-      if (xgp%npts > 0) then
+      if (xg%npts > 0) then
          ! The weight-response and point-motion-of-the-weight terms (this
          ! module's header, GRID RESPONSE, B and C) go into their own
          ! array, merged into the device-resident `grad` once at the end.
          ! They need every point's rho*eps (`fxc`, filled by the drive's
          ! point kernel and left zero where the screen skips a batch).
-         allocate (grad_extra(3, b%natm), fxc(xgp%npts))
+         allocate (grad_extra(3, b%natm), pio%fxc(xg%npts))
          grad_extra = 0.0_dp
-         fxc = 0.0_dp
-         !$acc enter data copyin(fxc)
+         pio%fxc = 0.0_dp
+         !$acc enter data copyin(pio%fxc)
 
-         pio%fxc => fxc
-         call xc_grad_drive(b, lp, func, density, xgp, grad, opts, pio)
+         pio%options = options
+         call xc_grad_drive(b, lp, func, density, xg, grad, timing, pio)
 
-         if (opts%grid_response) then
+         if (options%grid_response) then
             ! The partition's own response, both pieces at once and with
             ! no (3, natm, npts) array: dft_partition_becke_grad_contract takes
             ! the per-point factor qw*rho*eps (the quadrature weight alone,
             ! not w: the partition's own factor is what is differentiated).
-            call tbl%step_on(lp, ST_PDERIV, tc)
-            allocate (pcoef(xgp%npts), source=xgp%qw)
+            call timing%step_on(lp, ST_PDERIV, tc)
+            allocate (pcoef(xg%npts), source=xg%qw)
             !$acc enter data copyin(pcoef)
-            call xc_grad_weight_coef(xgp%npts, fxc, pcoef)
-            call dft_partition_becke_grad_contract(xgp%r, b%at_r, at_elem, xgp%atom, pcoef, gp%partition, &
+            call xc_grad_weight_coef(xg%npts, pio%fxc, pcoef)
+            call dft_partition_becke_grad_contract(xg%r, b%at_r, at_elem, xg%atom, pcoef, options%partition, &
                                                    grad_extra, err)
             if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
             !$acc exit data delete(pcoef)
             deallocate (pcoef)
-            call tbl%step_off(lp, ST_PDERIV, tc)
-            call tbl%step_on(lp, ST_RESP, tc)
+            call timing%step_off(lp, ST_PDERIV, tc)
+            call timing%step_on(lp, ST_RESP, tc)
             !$acc update self(grad)
             grad = grad + grad_extra
             !$acc update device(grad)
-            call tbl%step_off(lp, ST_RESP, tc)
+            call timing%step_off(lp, ST_RESP, tc)
          end if
-         !$acc exit data delete(fxc)
-         deallocate (grad_extra, fxc)
-      end if
-
-      if (.not. reuse_grid) then
-         call xg_own%release()
-         call grid_own%destroy()
+         !$acc exit data delete(pio%fxc)
+         deallocate (grad_extra, pio%fxc)
       end if
       deallocate (at_elem)
-   end subroutine xc_grad_add
+   end subroutine xc_grad_add_on_grid
 
    !
    ! Every surviving batch, in chunks, the energy path's way (trc_xc.F90's
@@ -540,7 +540,7 @@ contains
    ! over the functions instead, landing on the point's owner with the
    ! opposite sign -- this module's header, GRID RESPONSE, piece A.
    !
-   subroutine xc_grad_drive(b, lp, func, density, xg, grad, options, points)
+   subroutine xc_grad_drive(b, lp, func, density, xg, grad, timing, points)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -550,10 +550,10 @@ contains
       !! (b%nao, b%nao, nspin), on host and device.
       type(trc_xc_grid_t), intent(in) :: xg
       real(dp), intent(inout) :: grad(3, b%natm)
-      type(xc_grad_options_t), intent(in) :: options
-      !! `rho_tol` and `grid_response` are read, and `timing`, which must be
-      !! associated; the grid settings are the caller's business.
-      type(xc_grad_point_io_t), intent(in) :: points
+      type(step_table_t), intent(inout) :: timing
+      !! ADDED into, as `xc_grad_add`'s.
+      type(xc_grad_point_io_t), intent(inout) :: points
+      !! `fxc`, when allocated, is written; everything else is read.
 
       type(xc_grad_work_t) :: work
       integer, allocatable :: ch_lo(:), ch_hi(:)
@@ -562,18 +562,16 @@ contains
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
       logical :: is_gga, gresp
-      type(step_table_t), pointer :: tbl
       type(timer_type) :: tc
 
       nspin = size(density, 3)
       is_gga = func%family == XC_FAMILY_GGA
       kid = func%kid
       coef = func%coef
-      gresp = options%grid_response
-      tbl => options%timing
+      gresp = points%options%grid_response
 
       ! --- screen: which batches carry density at all -------------------
-      call tbl%step_on(lp, ST_SCREEN, tc)
+      call timing%step_on(lp, ST_SCREEN, tc)
       allocate (work%active(xg%nbatch), work%npp(xg%nbatch), work%nlp(xg%nbatch))
       allocate (work%c_off(xg%nbatch + 1), work%pr_off(xg%nbatch + 1))
       do ib = 1, xg%nbatch
@@ -581,9 +579,9 @@ contains
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          work%active(ib) = 0
          if (npb > 0 .and. nloc > 0) then
-            if (associated(points%active)) then
+            if (allocated(points%active)) then
                work%active(ib) = points%active(ib)
-            else if (xc_grad_batch_active(ib, xg, b%nao, nspin, density, options%rho_tol)) then
+            else if (xc_grad_batch_active(ib, xg, b%nao, nspin, density, points%options%rho_tol)) then
                work%active(ib) = 1
             end if
          end if
@@ -626,14 +624,14 @@ contains
          nb_max = max(nb_max, b1 - b0 + 1)
          b0 = b1 + 1
       end do
-      call tbl%step_off(lp, ST_SCREEN, tc)
+      call timing%step_off(lp, ST_SCREEN, tc)
 
       ! --- the workspace, once ------------------------------------------
-      call tbl%step_on(lp, ST_ALLOC, tc)
+      call timing%step_on(lp, ST_ALLOC, tc)
       work%nspin = nspin
       work%is_gga = is_gga
       call xc_grad_work_alloc(work, b, nchi_max, npairs_max, np_max, nb_max, nmu_max)
-      call tbl%step_off(lp, ST_ALLOC, tc)
+      call timing%step_off(lp, ST_ALLOC, tc)
 
       do ic = 1, nch
          call xc_grad_work_layout(work, xg, ch_lo(ic), ch_hi(ic))
@@ -642,26 +640,26 @@ contains
          ! Padding rows and columns of the GEMM inputs must be zero, not
          ! whatever the workspace last held: chi feeds X = chi D, R feeds
          ! RD = R D. D's own padding is written as zero by the gather.
-         call tbl%step_on(lp, ST_COLLOC, tc)
+         call timing%step_on(lp, ST_COLLOC, tc)
          call xc_grad_zero(work%nchi, work%ldr, nspin, is_gga, work%chi, work%rt)
          call xc_grad_colloc_tiles(work%nwork, work%nb, work%ord, work%wk_off, b%maxnp, b%nshell, b%sh_l, &
                                    b%sh_np, b%sh_e, b%sh_c, b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, &
                                    size(xg%b_sh), xg%b_sh, xg%b_shao, work%c_off, work%npp, xg%nbatch, work%ldt, &
                                    is_gga, work%ldh, work%nhs, work%chi, work%gchi, work%hchi)
-         call tbl%step_off(lp, ST_COLLOC, tc)
+         call timing%step_off(lp, ST_COLLOC, tc)
 
-         call tbl%step_on(lp, ST_GATHER, tc)
+         call timing%step_on(lp, ST_GATHER, tc)
          call xc_grad_gather_tiles(work%npairs, work%nb, work%ord, work%pb_off, nspin, b%nao, density, &
                                    xg%b_aooff, size(xg%b_ao), xg%b_ao, work%nlp, xg%nbatch, work%ldd, work%dloc)
-         call tbl%step_off(lp, ST_GATHER, tc)
+         call timing%step_off(lp, ST_GATHER, tc)
 
          ! X = chi D, per spin: one strided-batched GEMM per run of shape.
-         call tbl%step_on(lp, ST_GEMM, tc)
+         call timing%step_on(lp, ST_GEMM, tc)
          call xc_grad_gemm_x(lp, work)
-         call tbl%step_off(lp, ST_GEMM, tc)
+         call timing%step_off(lp, ST_GEMM, tc)
 
-         call tbl%step_on(lp, ST_POINTS, tc)
-         if (associated(points%vrho)) then
+         call timing%step_on(lp, ST_POINTS, tc)
+         if (allocated(points%vrho)) then
             call xc_grad_points_ext(work%np, work%p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, &
                                     work%c_off, work%npp, work%active, xg%nbatch, work%ldt, work%ldr, work%ldp, &
                                     work%npc, work%gchi, points%grho, points%vrho, points%vsigma, work%rt, work%pc)
@@ -671,26 +669,26 @@ contains
                                 work%ldt, work%ldr, work%ldp, work%npc, work%chi, work%gchi, work%xt, work%rt, &
                                 work%pc, points%fxc)
          end if
-         call tbl%step_off(lp, ST_POINTS, tc)
+         call timing%step_off(lp, ST_POINTS, tc)
 
          ! RD = R D and, unrestricted, the cross-spin R_b D_a / R_a D_b.
          if (is_gga) then
-            call tbl%step_on(lp, ST_GEMM, tc)
+            call timing%step_on(lp, ST_GEMM, tc)
             call xc_grad_gemm_rd(lp, work)
-            call tbl%step_off(lp, ST_GEMM, tc)
+            call timing%step_off(lp, ST_GEMM, tc)
          end if
 
          ! The forces: Pulay onto each function's atom, point motion onto
          ! each point's owner.
-         call tbl%step_on(lp, ST_SCATTER, tc)
+         call timing%step_on(lp, ST_SCATTER, tc)
          call xc_grad_forces(work, b, xg, gresp, grad)
-         call tbl%step_off(lp, ST_SCATTER, tc)
+         call timing%step_off(lp, ST_SCATTER, tc)
       end do
 
-      call tbl%step_on(lp, ST_ALLOC, tc)
+      call timing%step_on(lp, ST_ALLOC, tc)
       call xc_grad_work_release(work)
       deallocate (ch_lo, ch_hi)
-      call tbl%step_off(lp, ST_ALLOC, tc)
+      call timing%step_off(lp, ST_ALLOC, tc)
    end subroutine xc_grad_drive
 
    !

@@ -119,7 +119,7 @@ module trc_vv10_grad
    implicit none
    private
 
-   public :: vv10_grad_add
+   public :: vv10_grad_add, vv10_grad_add_on_grid
 
    integer(int64), parameter :: VV10_GRAD_TILE_CAP = 8388608_int64
    !! The chunk-size budget (padded rows x padded columns) handed to
@@ -130,12 +130,12 @@ module trc_vv10_grad
 contains
 
    !
-   ! The one entry point. `density(b%nao,b%nao,nspin)` -- the converged
-   ! density, per spin channel, same convention xc_grad_add uses. VV10's
-   ! own `b`/`C` are `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V);
-   ! nothing else of `func` is read. ADDS into `grad`.
+   ! The entry point that builds its own VV10 grid at `b`'s geometry, then
+   ! runs `vv10_grad_add_on_grid` on it. `density(b%nao,b%nao,nspin)` --
+   ! the converged density, per spin channel, same convention xc_grad_add
+   ! uses. ADDS into `grad`.
    !
-   subroutine vv10_grad_add(b, lp, func, nspin, density, grad, options)
+   recursive subroutine vv10_grad_add(b, lp, func, nspin, density, grad, options, timing)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -143,13 +143,60 @@ contains
       real(dp), intent(in) :: density(b%nao, b%nao, nspin)
       real(dp), intent(inout) :: grad(3, b%natm)
       type(xc_grad_options_t), intent(in), optional :: options
-      !! As xc_grad_add's: grid level and batch size of a grid built here,
-      !! grid response (ON by default; OFF recovers the Pulay-only term --
+      !! Grid level and batch size of the grid built here, and grid
+      !! response, as `vv10_grad_add_on_grid`'s.
+      type(step_table_t), intent(inout), optional :: timing
+      !! As xc_grad_add's; absent, a private table (the recursive call).
+
+      type(xc_grad_options_t) :: opts
+      type(dft_grid_t) :: grid_own
+      type(trc_xc_grid_t) :: xg_own
+      type(timer_type) :: tc
+      type(error_t) :: err
+      integer, allocatable :: at_elem(:)
+
+      if (.not. present(timing)) then
+         block
+            type(step_table_t) :: timing_local
+            call timing_local%init("vv10 grad", xc_grad_step_names())
+            call vv10_grad_add(b, lp, func, nspin, density, grad, options, timing_local)
+         end block
+         return
+      end if
+      if (present(options)) opts = options
+      call timing%step_on(lp, ST_GRID, tc)
+      allocate (at_elem(b%natm), source=b%at_elem)
+      call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
+      if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
+      call xg_own%build_from_grid(grid_own, b, max_pts=opts%grid_max_pts)
+      call xg_own%to_device()
+      opts%partition = grid_own%partition
+      call timing%step_off(lp, ST_GRID, tc)
+      call vv10_grad_add_on_grid(b, lp, func, density, grad, opts, timing, xg_own)
+      call xg_own%release()
+      call grid_own%destroy()
+      deallocate (at_elem)
+   end subroutine vv10_grad_add
+
+   !
+   ! The VV10 gradient term on a grid the caller already has (the SCF's own
+   ! VV10 grid, batched and device-resident, see trc_scf_context.F90's
+   ! `trc_grid_cache_t`; or `vv10_grad_add`'s own). VV10's own `b`/`C` are
+   ! `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V); nothing else of
+   ! `func` is read. ADDS into `grad`.
+   !
+   subroutine vv10_grad_add_on_grid(b, lp, func, density, grad, options, timing, xg)
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: lp
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in), contiguous :: density(:, :, :)
+      !! (b%nao, b%nao, nspin), on host and device, as xc_grad_add_on_grid's.
+      real(dp), intent(inout) :: grad(3, b%natm)
+      type(xc_grad_options_t), intent(in) :: options
+      !! Grid response (ON by default; OFF recovers the Pulay-only term --
       !! the piece check_dft_grad_vs_pyscf.F90 compares against pyscf,
       !! whose own nlc gradient has no grid-response support to match
-      !! against), the timing table, and the SCF's own VV10 (nlc) grid,
-      !! already batched and device-resident, to reuse (see
-      !! trc_scf_context.F90's `trc_grid_cache_t`).
+      !! against) and the partition `xg`'s grid was built with.
       !!
       !! `rho_tol` is NOT read: unlike xc_grad_add's semilocal term, this
       !! module always screens at `VV10_RHO_TOL` (trc_vv10's own
@@ -162,27 +209,23 @@ contains
       !! of the four screens and not the fourth would be strictly worse
       !! than none at all. Matches the energy path exactly:
       !! `trc_vv10_rks`/`trc_vv10_uks` take no `rho_tol` either.
+      type(step_table_t), intent(inout) :: timing
+      !! As xc_grad_add's.
+      type(trc_xc_grid_t), intent(in) :: xg
+      !! The VV10 grid, batched and on the device; stays the caller's.
 
-      type(xc_grad_options_t) :: opts
       type(trc_xc_functional_t) :: potential_only
       type(xc_grad_point_io_t) :: pio
-      type(dft_grid_t), target :: grid_own
-      type(trc_xc_grid_t), target :: xg_own
-      type(dft_grid_t), pointer :: gp
-      type(trc_xc_grid_t), pointer :: xgp
-      logical :: reuse_grid
-      type(step_table_t), target :: tbl_own
-      type(step_table_t), pointer :: tbl
-      integer, allocatable, target :: bact(:)
+      !! The drive's point io: `grho`/`vrho`/`vsigma`/`active` live here
+      !! from allocation on, so the drive reads this call's own arrays.
       type(timer_type) :: tc
       real(dp), allocatable :: pcoef(:)
       type(error_t) :: err
-      integer :: i, j, ib, npb, nloc, g, own
+      integer :: i, j, ib, npb, nloc, g, own, nspin
       real(dp) :: kvv, beta, bcoef, ccoef
       integer, allocatable :: at_elem(:)
       real(dp), allocatable :: dtot(:, :, :)
       real(dp), allocatable :: rho(:), sigma(:), dedw(:), fexp(:, :)
-      real(dp), allocatable, target :: grho(:, :), vrho(:), vsigma(:)
       real(dp), allocatable :: gx(:), gy(:), gz(:), gkp(:), gw0p(:), grpw(:)
       integer, allocatable :: gidx(:)
       integer :: npass, npts
@@ -190,33 +233,9 @@ contains
 
       bcoef = func%nlc_b
       ccoef = func%nlc_c
-      if (present(options)) opts = options
-      if (associated(opts%timing)) then
-         tbl => opts%timing
-      else
-         call tbl_own%init("vv10 grad", xc_grad_step_names())
-         tbl => tbl_own
-         opts%timing => tbl_own
-      end if
-
-      reuse_grid = associated(opts%grid) .and. associated(opts%xg)
-      call tbl%step_on(lp, ST_GRID, tc)
+      nspin = size(density, 3)
       allocate (at_elem(b%natm), source=b%at_elem)
-      if (reuse_grid) then
-         ! The SCF's own nlc grid, already batched and on the device -- no
-         ! rebuild, no re-upload. See this subroutine's own header, GRID.
-         gp => opts%grid
-         xgp => opts%xg
-      else
-         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
-         if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
-         call xg_own%build_from_grid(grid_own, b, max_pts=opts%grid_max_pts)
-         call xg_own%to_device()
-         gp => grid_own
-         xgp => xg_own
-      end if
-      npts = xgp%npts
-      call tbl%step_off(lp, ST_GRID, tc)
+      npts = xg%npts
 
       if (npts > 0) then
          ! VV10 sees the TOTAL density only (this module's own header) --
@@ -241,14 +260,14 @@ contains
          kvv = bcoef*1.5_dp*PI*(9.0_dp*PI)**(-1.0_dp/6.0_dp)
          beta = (3.0_dp/(bcoef*bcoef))**0.75_dp/32.0_dp
 
-         allocate (rho(npts), grho(3, npts), sigma(npts))
-         allocate (vrho(npts), vsigma(npts), dedw(npts), fexp(3, npts))
-         !$acc data copyin(dtot) create(rho, grho, sigma, vrho, vsigma, dedw, fexp)
+         allocate (rho(npts), pio%grho(3, npts), sigma(npts))
+         allocate (pio%vrho(npts), pio%vsigma(npts), dedw(npts), fexp(3, npts))
+         !$acc data copyin(dtot) create(rho, pio%grho, sigma, pio%vrho, pio%vsigma, dedw, fexp)
 
-         call tbl%step_on(lp, ST_POINTS, tc)
+         call timing%step_on(lp, ST_POINTS, tc)
          ! PASS 1: rho/grad-rho/sigma at every outer point -- trc_vv10's own
          ! tiled driver, reused bit-identically (this module's header).
-         call vv10_density_tile(b, xgp, dtot(:, :, 1), VV10_GRAD_TILE_CAP, lp, rho, grho, sigma)
+         call vv10_density_tile(b, xg, dtot(:, :, 1), VV10_GRAD_TILE_CAP, lp, rho, pio%grho, sigma)
 
          ! The inner-grid survivor gather (host-side compaction, then an
          ! O(N) device gather) -- trc_vv10's own `vv10_gather`, see
@@ -265,18 +284,18 @@ contains
          allocate (gx(max(npass, 1)), gy(max(npass, 1)), gz(max(npass, 1)))
          allocate (gkp(max(npass, 1)), gw0p(max(npass, 1)), grpw(max(npass, 1)))
          !$acc data copyin(gidx(1:max(npass, 1))) create(gx, gy, gz, gkp, gw0p, grpw)
-         call vv10_gather(npts, xgp%r, xgp%w, rho, sigma, ccoef, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
+         call vv10_gather(npts, xg%r, xg%w, rho, sigma, ccoef, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
 
          ! PASS 2, gradient variant: vrho/vsigma (fed into the Pulay
          ! contraction below) plus dedw/fexp (the two nonlocal-only grid-
          ! response pieces, this module's own header) -- see
          ! vv10_grad_kernel_body's own comment for why this duplicates
          ! trc_vv10's PASS 2 rather than extending it in place.
-         call vv10_grad_kernel(npts, xgp%r, xgp%w, rho, sigma, ccoef, kvv, beta, npass, &
-                               gx, gy, gz, gkp, gw0p, grpw, vrho, vsigma, dedw, fexp)
+         call vv10_grad_kernel(npts, xg%r, xg%w, rho, sigma, ccoef, kvv, beta, npass, &
+                               gx, gy, gz, gkp, gw0p, grpw, pio%vrho, pio%vsigma, dedw, fexp)
          !$acc end data
          deallocate (gidx, gx, gy, gz, gkp, gw0p, grpw)
-         call tbl%step_off(lp, ST_POINTS, tc)
+         call timing%step_off(lp, ST_POINTS, tc)
 
          ! `dedw`/`fexp` are only ever read host-side (the weight-response
          ! block below); `rho`/`grho`/`sigma`/`vrho`/`vsigma` stay device-
@@ -290,64 +309,56 @@ contains
          ! chunked pipeline (trc_xc_grad's xc_grad_drive), restricted GGA,
          ! with this module's PASS 2 potential in place of a functional and
          ! its own batch screen (any point at or above VV10_RHO_TOL).
-         allocate (bact(xgp%nbatch))
-         do ib = 1, xgp%nbatch
-            npb = xgp%b_off(ib + 1) - xgp%b_off(ib)
-            nloc = xgp%b_aooff(ib + 1) - xgp%b_aooff(ib)
-            bact(ib) = 0
+         allocate (pio%active(xg%nbatch))
+         do ib = 1, xg%nbatch
+            npb = xg%b_off(ib + 1) - xg%b_off(ib)
+            nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+            pio%active(ib) = 0
             if (npb == 0 .or. nloc == 0) cycle
-            if (vv10_grad_batch_active(xgp%b_off(ib), npb, rho, npts)) bact(ib) = 1
+            if (vv10_grad_batch_active(xg%b_off(ib), npb, rho, npts)) pio%active(ib) = 1
          end do
          ! A restricted GGA with no kernels of its own: the drive takes
          ! the potential from `pio` instead.
          potential_only%family = XC_FAMILY_GGA
-         pio%active => bact
-         pio%grho => grho
-         pio%vrho => vrho
-         pio%vsigma => vsigma
-         call xc_grad_drive(b, lp, potential_only, dtot, xgp, grad, opts, pio)
+         pio%options = options
+         call xc_grad_drive(b, lp, potential_only, dtot, xg, grad, timing, pio)
 
          !$acc end data
-         if (opts%grid_response) then
+         if (options%grid_response) then
             ! GRID RESPONSE, the weight-derivative and the point's-own-force
             ! pieces (this module's header, THE NONLOCAL EXTRAS), over the
             ! batches the screen kept: the point's own explicit force at its
             ! FULL weight onto its owner, here; the partition's response to
             ! qw*dedw, both its pieces, on the device.
-            call tbl%step_on(lp, ST_PDERIV, tc)
+            call timing%step_on(lp, ST_PDERIV, tc)
             allocate (pcoef(npts))
             pcoef = 0.0_dp
-            do ib = 1, xgp%nbatch
-               if (bact(ib) == 0) cycle
-               do g = xgp%b_off(ib), xgp%b_off(ib + 1) - 1
-                  own = xgp%atom(g)
-                  grad_extra(:, own) = grad_extra(:, own) + xgp%w(g)*fexp(:, g)
-                  pcoef(g) = xgp%qw(g)*dedw(g)
+            do ib = 1, xg%nbatch
+               if (pio%active(ib) == 0) cycle
+               do g = xg%b_off(ib), xg%b_off(ib + 1) - 1
+                  own = xg%atom(g)
+                  grad_extra(:, own) = grad_extra(:, own) + xg%w(g)*fexp(:, g)
+                  pcoef(g) = xg%qw(g)*dedw(g)
                end do
             end do
-            call dft_partition_becke_grad_contract(xgp%r, b%at_r, at_elem, xgp%atom, pcoef, gp%partition, &
+            call dft_partition_becke_grad_contract(xg%r, b%at_r, at_elem, xg%atom, pcoef, options%partition, &
                                                    grad_extra, err)
             if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
             deallocate (pcoef)
-            call tbl%step_off(lp, ST_PDERIV, tc)
-            call tbl%step_on(lp, ST_RESP, tc)
+            call timing%step_off(lp, ST_PDERIV, tc)
+            call timing%step_on(lp, ST_RESP, tc)
             !$acc update self(grad)
             grad = grad + grad_extra
             !$acc update device(grad)
-            call tbl%step_off(lp, ST_RESP, tc)
+            call timing%step_off(lp, ST_RESP, tc)
          end if
-         deallocate (grad_extra, bact)
+         deallocate (grad_extra, pio%active)
 
          !$acc exit data delete(dtot)
-         deallocate (dtot, rho, grho, sigma, vrho, vsigma, dedw, fexp)
-      end if
-
-      if (.not. reuse_grid) then
-         call xg_own%release()
-         call grid_own%destroy()
+         deallocate (dtot, rho, pio%grho, sigma, pio%vrho, pio%vsigma, dedw, fexp)
       end if
       deallocate (at_elem)
-   end subroutine vv10_grad_add
+   end subroutine vv10_grad_add_on_grid
 
    !
    ! Host-side screen: a batch whose every point's density is below
