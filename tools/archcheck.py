@@ -17,6 +17,8 @@ Rules (thresholds and word lists are the constants below):
                     from SHORT_NAMES (ctx, cfg, dens, ...)
     proc-length     a procedure is longer than MAX_PROC_LINES
     arg-count       a procedure has more than MAX_ARGS dummy arguments
+                    (`routine seq` item routines and thin `do concurrent`
+                    kernel drivers excepted; see KERNEL_HOST_STMTS)
 
 Results are deterministic: same tree, same output, sorted. The check compares
 against tools/arch_baseline.json and fails only on violations that are new,
@@ -44,6 +46,13 @@ LAYERS = ["core", "basis", "grid", "eri", "xc", "solvation", "post_hf",
           "scf", "api", "opt", "app"]
 MAX_PROC_LINES = 300
 MAX_ARGS = 8
+KERNEL_HOST_STMTS = 10
+#: A procedure with a `do concurrent` and at most this many executable
+#: statements outside its `do concurrent` bodies is a kernel driver: a thin
+#: launch around same-module item routines, which must take explicit-shape
+#: arrays (AGENTS.md: no derived-type components read inside `do
+#: concurrent`), so it is exempt from arg-count like the item routines.
+#: trc_-prefixed procedures (the library's entry points) never are.
 
 # Whole `_`-separated words that are not allowed inside a name. The value is
 # what to write instead. Domain vocabulary (scf, eri, dft, diis, xc) is not
@@ -142,6 +151,40 @@ def header_args(statement, name):
             if a.strip() and a.strip() != "*"]
 
 
+RE_DO_CONCURRENT = re.compile(r"^\s*(\w+\s*:\s*)?do\s+concurrent\b", re.I)
+RE_DO = re.compile(r"^\s*(\w+\s*:\s*)?do\b", re.I)
+RE_END_DO = re.compile(r"^\s*end\s*do\b", re.I)
+RE_SPEC = re.compile(r"^\s*(use|implicit|import|integer|real|logical|character|complex|"
+                     r"double|type\s*\(|class\s*\(|dimension|parameter|save|external|"
+                     r"intrinsic|procedure|contains)\b", re.I)
+
+
+def track_kernel_shape(proc, st, is_decl):
+    """Count, per procedure, the executable statements outside every `do
+    concurrent` body, and whether it has one at all (is_kernel_driver)."""
+    if is_decl or RE_SPEC.match(st):
+        return
+    if RE_DO_CONCURRENT.match(st):
+        proc["has_dc"] = True
+        proc["dos"].append("dc")
+        return
+    if RE_END_DO.match(st):
+        if proc["dos"]:
+            proc["dos"].pop()
+        return
+    inside_dc = "dc" in proc["dos"]
+    if RE_DO.match(st):
+        proc["dos"].append("do")
+    if not inside_dc:
+        proc["host_exec"] += 1
+
+
+def is_kernel_driver(proc):
+    # A trc_-prefixed procedure is a library entry point, not a thin launch,
+    # however short it is; the caller excludes those by name.
+    return proc.get("has_dc", False) and proc.get("host_exec", 0) <= KERNEL_HOST_STMTS
+
+
 def scan_procedures(path):
     """Yield dicts: name, kind, start, end, args, names (declared), device."""
     text = path.read_text(errors="replace")
@@ -182,7 +225,8 @@ def scan_procedures(path):
             name = m.group(3).lower()
             stack.append(dict(name=name, kind=m.group(2).lower(), start=ln,
                               end=ln, args=header_args(st, m.group(3)),
-                              names=[], device=pending_acc))
+                              names=[], device=pending_acc, has_dc=False,
+                              host_exec=0, dos=[]))
             pending_acc = False
             continue
         if stack:
@@ -193,7 +237,9 @@ def scan_procedures(path):
                 continue
             if modmap.RE_ACC_SEQ.match(st):
                 stack[-1]["device"] = True
-            stack[-1]["names"].extend((n, ln) for n in declared_names(st))
+            decl = declared_names(st)
+            stack[-1]["names"].extend((n, ln) for n in decl)
+            track_kernel_shape(stack[-1], st, bool(decl))
         elif unit:
             outer.extend((n, ln) for n in declared_names(st))
     return done
@@ -258,7 +304,8 @@ def check():
                 found.append(Violation(
                     "proc-length", rel, scope, "", proc["start"], length,
                     f"{scope} is {length} lines (limit {MAX_PROC_LINES})"))
-            if len(proc["args"]) > MAX_ARGS and not proc["device"]:
+            kernel_driver = is_kernel_driver(proc) and not proc["name"].startswith("trc_")
+            if len(proc["args"]) > MAX_ARGS and not proc["device"] and not kernel_driver:
                 found.append(Violation(
                     "arg-count", rel, scope, "", proc["start"],
                     len(proc["args"]),
