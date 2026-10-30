@@ -101,6 +101,10 @@ contains
 
       call build_and_run("0", bas_saved, z_saved, r_saved, res_saved)
       call trc_scf_save(SCRATCH, bas_saved, z_saved, r_saved, 0, 1, 5, 5, "", "", 0.0_dp, res_saved, msg)
+      ! Off the device before the second build: a still-mapped basis whose
+      ! host arrays are freed leaves present-table entries the next
+      ! allocation can land on (a "partially present" abort on the GPU).
+      call bas_saved%release()
       call check(error, len_trim(msg) == 0, "trc_scf_save itself must not fail: "//trim(msg))
       if (allocated(error)) then
          call cleanup()
@@ -117,6 +121,7 @@ contains
       if (.not. allocated(error)) then
          call check(error, res_loaded%energy, -123.0_dp, "a refused load must not touch the result")
       end if
+      call bas_now%release()
       call cleanup()
    end subroutine test_mismatch_refused
 
@@ -134,6 +139,10 @@ contains
 
       call build_and_run("1", bas_saved, z_saved, r_saved, res_saved)
       call trc_scf_save(SCRATCH, bas_saved, z_saved, r_saved, 0, 1, 5, 5, "", "", 0.0_dp, res_saved, msg)
+      ! Off the device before the second build: a still-mapped basis whose
+      ! host arrays are freed leaves present-table entries the next
+      ! allocation can land on (a "partially present" abort on the GPU).
+      call bas_saved%release()
       call check(error, len_trim(msg) == 0, "trc_scf_save itself must not fail: "//trim(msg))
       if (allocated(error)) then
          call cleanup()
@@ -147,6 +156,7 @@ contains
          call check(error, abs(res_loaded%energy - res_saved%energy) < 1.0e-10_dp, &
                     "a matching load must hand back the saved energy")
       end if
+      call bas_now%release()
       call cleanup()
    end subroutine test_match_accepted
 
