@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["mult"] -> gen_mult
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 321402fa2655b66baae760117ccfffe99db90f6de82a20b809994dc7f6b09371
+# hash: c244d8b889785d015ec3510f3122df81b93794017ed7f6610ad0f4613d92d31e
 # files: test/check_mult.F90
 NAO 30
 NMULT 39

@@ -30,141 +30,35 @@
 ! `with_rinv_at_nucleus` Hellmann-Feynman loop (test/pyscf_refs/generate.py's
 ! gen_1e_grad), summed per atom before the comparison.
 !
-program check_1e_grad_vs_pyscf
+! One ctest case per executable run: the molecule/basis/dump-path/case-name
+! come from the command line (test/CMakeLists.txt's `foreach(case
+! water_631gs water_ccpvdz formamide_ccpvdz ...)`), so this program checks
+! exactly the one case it was invoked with, the way it always has.
+!
+module check_1e_grad_vs_pyscf_suite
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_1e_gradient
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
    implicit none
+   private
+   public :: collect_1e_grad_vs_pyscf_tests
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
-   character(len=256) :: basis_json, xyzfile, dump, case_name
-   type(trc_basis_t) :: bas
-   type(trc_pairlist_t) :: pl
-   type(error_t) :: err
-   integer :: nat, nao, i, j, unit
-   integer, allocatable :: at_z(:)
-   real(dp), allocatable :: r(:, :), zsave(:)
-   real(dp), allocatable :: wmat(:, :), dmat(:, :), zero(:, :)
-   real(dp), allocatable :: gs(:, :), gt(:, :), gv(:, :)
-   real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
-
-   if (command_argument_count() < 3) then
-      print '(a)', 'usage: check_1e_grad_vs_pyscf <xyz> <basis.json> <dump.bin> [case_name]'; stop 1
-   end if
-   call get_command_argument(1, xyzfile)
-   call get_command_argument(2, basis_json)
-   call get_command_argument(3, dump)
-   case_name = 'default'
-   if (command_argument_count() >= 4) call get_command_argument(4, case_name)
-
-   call read_xyz(trim(xyzfile), nat, at_z, r)
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
-   if (err%has_error()) then
-      print '(a)', 'check_1e_grad_vs_pyscf: '//err%get_message(); stop 1
-   end if
-   nao = bas%nao
-   call bas%to_device()
-   call pl%build(bas, THRESH)
-   call pl%to_device()
-
-   allocate (wmat(nao, nao), dmat(nao, nao), zero(nao, nao))
-   call synth_density(nao, 1, wmat)
-   call synth_density(nao, 2, dmat)
-   zero = 0.0_dp
-
-   allocate (gs(3, nat), gt(3, nat), gv(3, nat), zsave(nat))
-   gs = 0.0_dp; gt = 0.0_dp; gv = 0.0_dp
-
-   !$acc enter data copyin(wmat, dmat, zero)
-
-   ! --- dS: W only ---
-   !$acc enter data copyin(gs)
-   call trc_1e_gradient(bas, pl, wmat, zero, gs)
-   !$acc update self(gs)
-   !$acc exit data delete(gs)
-
-   ! --- dT: D only, Z = 0 ---
-   zsave = bas%at_z
-   bas%at_z = 0.0_dp
-   !$acc update device(bas%at_z)
-   !$acc enter data copyin(gt)
-   call trc_1e_gradient(bas, pl, zero, dmat, gt)
-   !$acc update self(gt)
-   !$acc exit data delete(gt)
-   bas%at_z = zsave
-   !$acc update device(bas%at_z)
-
-   ! --- dT + dV: D only, Z real; dV = this - dT ---
-   !$acc enter data copyin(gv)
-   call trc_1e_gradient(bas, pl, zero, dmat, gv)
-   !$acc update self(gv)
-   !$acc exit data delete(gv)
-   gv = gv - gt
-
-   !$acc exit data delete(wmat, dmat, zero)
-
-   ! the overlap, for rys_grad_ref.py-style AO normalisation (see
-   ! check_rys_grad_vs_pyscf.F90's own comment -- unchanged here)
-   allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao))
-   !$acc enter data create(smat, tmat, vmat)
-   call trc_1e(bas, pl, smat, tmat, vmat)
-   !$acc update self(smat)
-   !$acc exit data delete(smat, tmat, vmat)
-   call pl%release()
-   call bas%release()
-
-   open (newunit=unit, file=trim(dump), access='stream', &
-         form='unformatted', status='replace')
-   write (unit) int(nat, int64), int(nao, int64)
-   write (unit) int(at_z, int64)
-   write (unit) r
-   write (unit) wmat
-   write (unit) dmat
-   write (unit) gs
-   write (unit) gt
-   write (unit) gv
-   write (unit) smat
-   close (unit)
-   print '(a)', 'check_1e_grad_vs_pyscf: wrote '//trim(dump)//' for the pyscf-reference comparison'
-
-   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
-   block
-      integer :: u, nat_ref, nao_ref, nfail
-      real(dp), allocatable :: s_ref(:, :), gs_ref(:, :), gt_ref(:, :), gv_ref(:, :)
-      real(dp) :: ds, worst_s, worst_t, worst_v
-      call ref_require('onee_grad_'//trim(case_name)//'.ref', u)
-      call ref_read_int(u, 'NAT', nat_ref)
-      call ref_read_int(u, 'NAO', nao_ref)
-      if (nat_ref /= nat .or. nao_ref /= nao) then
-         print '(a)', 'check_1e_grad_vs_pyscf: pyscf reference shape does not match this build'; stop 1
-      end if
-      allocate (s_ref(nao, nao), gs_ref(3, nat), gt_ref(3, nat), gv_ref(3, nat))
-      call ref_read_matrix(u, 'S', nao, nao, s_ref)
-      call ref_read_matrix(u, 'GRAD_S', 3, nat, gs_ref)
-      call ref_read_matrix(u, 'GRAD_T', 3, nat, gt_ref)
-      call ref_read_matrix(u, 'GRAD_V', 3, nat, gv_ref)
-      call ref_close(u)
-      nfail = 0
-      ds = maxval(abs(smat - s_ref))
-      call ref_report(nfail, ds < 1.0e-9_dp, 'overlap check vs pyscf, max|diff|', ds)
-      worst_s = maxval(abs(gs - gs_ref))
-      worst_t = maxval(abs(gt - gt_ref))
-      worst_v = maxval(abs(gv - gv_ref))
-      call ref_report(nfail, worst_s < 1.0e-9_dp, 'dS gradient vs pyscf, worst|diff|', worst_s)
-      call ref_report(nfail, worst_t < 1.0e-9_dp, 'dT gradient vs pyscf, worst|diff|', worst_t)
-      call ref_report(nfail, worst_v < 1.0e-9_dp, 'dV gradient vs pyscf, worst|diff|', worst_v)
-      if (nfail > 0) then
-         print '(a)', 'check_1e_grad_vs_pyscf: FAILED against the pyscf reference'; stop 1
-      end if
-      print '(a)', 'check_1e_grad_vs_pyscf: RESULT: PASS'
-   end block
-
-   deallocate (at_z, r, wmat, dmat, zero, gs, gt, gv, zsave, smat, tmat, vmat)
+   real(dp), parameter :: TOL = 1.0e-9_dp
 
 contains
+
+   subroutine collect_1e_grad_vs_pyscf_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("overlap and dS/dT/dV terms vs pyscf", test_case) &
+                  ]
+   end subroutine collect_1e_grad_vs_pyscf_tests
 
    !
    ! Same deterministic, dense, symmetric construction as
@@ -183,4 +77,165 @@ contains
       d = 0.5_dp*(d + transpose(d))
    end subroutine synth_density
 
+   subroutine test_case(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=256) :: basis_json, xyzfile, dump, case_name
+      type(trc_basis_t) :: bas
+      type(trc_pairlist_t) :: pl
+      type(error_t) :: err
+      integer :: nat, nao, unit
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :), zsave(:)
+      real(dp), allocatable :: wmat(:, :), dmat(:, :), zero(:, :)
+      real(dp), allocatable :: gs(:, :), gt(:, :), gv(:, :)
+      real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
+
+      call check(error, command_argument_count() >= 3, &
+                 "usage: check_1e_grad_vs_pyscf <xyz> <basis.json> <dump.bin> [case_name]")
+      if (allocated(error)) return
+      call get_command_argument(1, xyzfile)
+      call get_command_argument(2, basis_json)
+      call get_command_argument(3, dump)
+      case_name = 'default'
+      if (command_argument_count() >= 4) call get_command_argument(4, case_name)
+
+      call read_xyz(trim(xyzfile), nat, at_z, r)
+      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+      call check(error,.not. err%has_error(), trim(case_name)//" must build: "//err%get_message())
+      if (allocated(error)) return
+      nao = bas%nao
+      call bas%to_device()
+      call pl%build(bas, THRESH)
+      call pl%to_device()
+
+      allocate (wmat(nao, nao), dmat(nao, nao), zero(nao, nao))
+      call synth_density(nao, 1, wmat)
+      call synth_density(nao, 2, dmat)
+      zero = 0.0_dp
+
+      allocate (gs(3, nat), gt(3, nat), gv(3, nat), zsave(nat))
+      gs = 0.0_dp; gt = 0.0_dp; gv = 0.0_dp
+
+      !$acc enter data copyin(wmat, dmat, zero)
+
+      ! --- dS: W only ---
+      !$acc enter data copyin(gs)
+      call trc_1e_gradient(bas, pl, wmat, zero, gs)
+      !$acc update self(gs)
+      !$acc exit data delete(gs)
+
+      ! --- dT: D only, Z = 0 ---
+      zsave = bas%at_z
+      bas%at_z = 0.0_dp
+      !$acc update device(bas%at_z)
+      !$acc enter data copyin(gt)
+      call trc_1e_gradient(bas, pl, zero, dmat, gt)
+      !$acc update self(gt)
+      !$acc exit data delete(gt)
+      bas%at_z = zsave
+      !$acc update device(bas%at_z)
+
+      ! --- dT + dV: D only, Z real; dV = this - dT ---
+      !$acc enter data copyin(gv)
+      call trc_1e_gradient(bas, pl, zero, dmat, gv)
+      !$acc update self(gv)
+      !$acc exit data delete(gv)
+      gv = gv - gt
+
+      !$acc exit data delete(wmat, dmat, zero)
+
+      ! the overlap, for rys_grad_ref.py-style AO normalisation (see
+      ! check_rys_grad_vs_pyscf.F90's own comment -- unchanged here)
+      allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao))
+      !$acc enter data create(smat, tmat, vmat)
+      call trc_1e(bas, pl, smat, tmat, vmat)
+      !$acc update self(smat)
+      !$acc exit data delete(smat, tmat, vmat)
+      call pl%release()
+      call bas%release()
+
+      open (newunit=unit, file=trim(dump), access='stream', &
+            form='unformatted', status='replace')
+      write (unit) int(nat, int64), int(nao, int64)
+      write (unit) int(at_z, int64)
+      write (unit) r
+      write (unit) wmat
+      write (unit) dmat
+      write (unit) gs
+      write (unit) gt
+      write (unit) gv
+      write (unit) smat
+      close (unit)
+
+      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+      block
+         integer :: u, nat_ref, nao_ref
+         real(dp), allocatable :: s_ref(:, :), gs_ref(:, :), gt_ref(:, :), gv_ref(:, :)
+         real(dp) :: ds, worst_s, worst_t, worst_v
+         call ref_require('onee_grad_'//trim(case_name)//'.ref', u)
+         call ref_read_int(u, 'NAT', nat_ref)
+         call ref_read_int(u, 'NAO', nao_ref)
+         call check(error, nat_ref == nat .and. nao_ref == nao, &
+                    trim(case_name)//": pyscf reference shape does not match this build")
+         if (allocated(error)) then
+            call ref_close(u)
+            return
+         end if
+         allocate (s_ref(nao, nao), gs_ref(3, nat), gt_ref(3, nat), gv_ref(3, nat))
+         call ref_read_matrix(u, 'S', nao, nao, s_ref)
+         call ref_read_matrix(u, 'GRAD_S', 3, nat, gs_ref)
+         call ref_read_matrix(u, 'GRAD_T', 3, nat, gt_ref)
+         call ref_read_matrix(u, 'GRAD_V', 3, nat, gv_ref)
+         call ref_close(u)
+
+         ds = maxval(abs(smat - s_ref))
+         call check(error, ds, 0.0_dp, thr=TOL, message=trim(case_name)// &
+                    ": overlap check vs pyscf, max|diff| = "//to_string(ds, "es12.4"))
+         if (allocated(error)) then
+            deallocate (s_ref, gs_ref, gt_ref, gv_ref)
+            return
+         end if
+
+         worst_s = maxval(abs(gs - gs_ref))
+         call check(error, worst_s, 0.0_dp, thr=TOL, message=trim(case_name)// &
+                    ": dS gradient vs pyscf, worst|diff| = "//to_string(worst_s, "es12.4"))
+         if (allocated(error)) then
+            deallocate (s_ref, gs_ref, gt_ref, gv_ref)
+            return
+         end if
+
+         worst_t = maxval(abs(gt - gt_ref))
+         call check(error, worst_t, 0.0_dp, thr=TOL, message=trim(case_name)// &
+                    ": dT gradient vs pyscf, worst|diff| = "//to_string(worst_t, "es12.4"))
+         if (allocated(error)) then
+            deallocate (s_ref, gs_ref, gt_ref, gv_ref)
+            return
+         end if
+
+         worst_v = maxval(abs(gv - gv_ref))
+         call check(error, worst_v, 0.0_dp, thr=TOL, message=trim(case_name)// &
+                    ": dV gradient vs pyscf, worst|diff| = "//to_string(worst_v, "es12.4"))
+         deallocate (s_ref, gs_ref, gt_ref, gv_ref)
+      end block
+
+      deallocate (at_z, r, wmat, dmat, zero, gs, gt, gv, zsave, smat, tmat, vmat)
+   end subroutine test_case
+
+end module check_1e_grad_vs_pyscf_suite
+
+program check_1e_grad_vs_pyscf
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_1e_grad_vs_pyscf_suite, only: collect_1e_grad_vs_pyscf_tests
+   implicit none
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   stat = 0
+   testsuites = [new_testsuite("check_1e_grad_vs_pyscf", collect_1e_grad_vs_pyscf_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_1e_grad_vs_pyscf

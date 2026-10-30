@@ -36,197 +36,248 @@
 ! only test of the batching, and it is a sharp one, because a shell
 ! wrongly dropped from a batch changes S by the size of that shell.
 !
-program check_ao
+! NOTE ON test/pyscf_refs/ao.ref'S OWN HASH: this file is itself named on
+! that .ref's "# files:" line (the probe below is what generate.py's gen_ao
+! must stay in step with), so porting it to test-drive stales ao.ref's case
+! hash purely from this restructuring, with no change to the probe it
+! writes or the numbers it compares. See the accompanying report; this was
+! not re-stamped here.
+!
+module check_ao_suite
    use pic_types, only: dp, int64
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
    use trc_dft_grid, only: dft_grid_t, dft_grid_options_t, dft_grid_build
    use trc_dft_prune, only: PRUNE_NONE
    use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_xc_batch, only: trc_xc_grid_t
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3
    implicit none
+   private
+   public :: collect_ao_tests
 
    integer, parameter :: NSH = 9, NATM = 3, MAXNP = 1, NPROBE = 200
-   integer :: sh_l(NSH), sh_np(NSH), i, k, ish, m, nc, u, v, nao, ib, g, iao, au, av
-   real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
-   real(dp) :: at_z(NATM), at_r(3, NATM)
-   real(dp) :: pt(3), d(3), cs(NCART_MAX), gs(3, NCART_MAX), seed
-   integer(int64) :: lcg
-   real(dp), allocatable :: probe(:, :), chi(:, :), gchi(:, :, :)
-   real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), s_num(:, :), s_bat(:, :), col(:)
-   type(trc_basis_t) :: b
-   type(trc_pairlist_t) :: pl
-   type(dft_grid_t) :: grid
-   type(dft_grid_options_t) :: unpruned
-   type(trc_xc_grid_t) :: xg
-   type(error_t) :: err
-   real(dp) :: err_grid, err_batch, err_trace
-   integer :: unit, nfail
-
-   ! --- the probe system, exactly check_mult's ------------------------------
-   at_r(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp]
-   at_r(:, 2) = [1.3_dp, 0.0_dp, 0.7_dp]
-   at_r(:, 3) = [-0.4_dp, 1.1_dp, 1.9_dp]
-   at_z = [4.0_dp, 3.0_dp, 2.0_dp]
-   do i = 1, NATM
-      sh_l(3*i - 2) = 0; sh_e(1, 3*i - 2) = 0.9_dp + 0.17_dp*real(i, dp)
-      sh_l(3*i - 1) = 1; sh_e(1, 3*i - 1) = 1.4_dp + 0.11_dp*real(i, dp)
-      sh_l(3*i) = 2; sh_e(1, 3*i) = 1.9_dp + 0.13_dp*real(i, dp)
-      sh_r(:, 3*i - 2) = at_r(:, i)
-      sh_r(:, 3*i - 1) = at_r(:, i)
-      sh_r(:, 3*i) = at_r(:, i)
-   end do
-   sh_np = 1
-   do i = 1, NSH
-      sh_c(1, i) = gto_norm(sh_l(i), sh_e(1, i))
-   end do
-   call b%build(NSH, sh_l, sh_np, sh_e, sh_c, sh_r, NATM, at_z, at_r, MAXNP)
-   nao = b%nao
-   nfail = 0
-
-   ! --- 1. values and gradients at a cloud of points, for pyscf ------------
-   allocate (probe(3, NPROBE), chi(NPROBE, nao), gchi(3, NPROBE, nao))
-   lcg = 37_int64
-   do k = 1, NPROBE
-      do i = 1, 3
-         lcg = mod(48271_int64*lcg, 2147483647_int64)
-         seed = real(lcg, dp)/2147483647.0_dp
-         probe(i, k) = -3.0_dp + 7.0_dp*seed
-      end do
-   end do
-   do k = 1, NPROBE
-      do ish = 1, NSH
-         d = probe(:, k) - b%sh_r(:, ish)
-         call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
-         nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
-         do m = 1, nc
-            chi(k, b%sh_ao(ish) + m - 1) = cs(m)
-            gchi(:, k, b%sh_ao(ish) + m - 1) = gs(:, m)
-         end do
-      end do
-   end do
-   open (newunit=unit, file='ao_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(NPROBE, int64), int(nao, int64)
-   write (unit) probe
-   write (unit) chi
-   write (unit) gchi
-   close (unit)
-   print '(a,i0,a,i0,a)', "check_ao: wrote ao_probe.bin (", NPROBE, " points, ", nao, " AOs) for ao_ref.py"
-
-   ! --- 2. the numerical overlap on a real grid -----------------------------
-   call pl%build(b, 1.0e-30_dp)
-   allocate (s(nao, nao), t(nao, nao), vn(nao, nao))
-   call b%to_device(); call pl%to_device()
-   call trc_1e(b, pl, s, t, vn)
-
-   unpruned%prune = PRUNE_NONE
-   call dft_grid_build(at_r, nint(at_z), grid, err, level=5, options=unpruned)
-   if (err%has_error()) then
-      print '(a)', "check_ao: grid failed: "//err%get_message()
-      stop 1
-   end if
-
-   ! Unscreened: every AO at every point.
-   allocate (s_num(nao, nao), s_bat(nao, nao), col(nao))
-   s_num = 0.0_dp
-   do g = 1, grid%n_points
-      do ish = 1, NSH
-         d = grid%coords(:, g) - b%sh_r(:, ish)
-         call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
-         nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
-         col(b%sh_ao(ish):b%sh_ao(ish) + nc - 1) = cs(1:nc)
-      end do
-      do v = 1, nao
-         do u = 1, nao
-            s_num(u, v) = s_num(u, v) + grid%weights(g)*col(u)*col(v)
-         end do
-      end do
-   end do
-
-   ! Through the batched, screened container: only each batch's local basis.
-   call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=256, tol=1.0e-10_dp)
-   s_bat = 0.0_dp
-   do ib = 1, xg%nbatch
-      do g = xg%b_off(ib), xg%b_off(ib + 1) - 1
-         iao = 0
-         do k = xg%b_shoff(ib), xg%b_shoff(ib + 1) - 1
-            ish = xg%b_sh(k)
-            d = xg%r(:, g) - b%sh_r(:, ish)
-            call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
-            nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
-            col(iao + 1:iao + nc) = cs(1:nc)
-            iao = iao + nc
-         end do
-         do v = 1, iao
-            av = xg%b_ao(xg%b_aooff(ib) + v - 1)
-            do u = 1, iao
-               au = xg%b_ao(xg%b_aooff(ib) + u - 1)
-               s_bat(au, av) = s_bat(au, av) + xg%w(g)*col(u)*col(v)
-            end do
-         end do
-      end do
-   end do
-
-   err_grid = maxval(abs(s_num - s))
-   err_trace = 0.0_dp
-   do u = 1, nao
-      err_trace = err_trace + s_num(u, u) - s(u, u)
-   end do
-   err_batch = maxval(abs(s_bat - s_num))
-
-   print '(a,i0,a,i0,a,i0)', "check_ao: grid ", grid%n_points, " points in ", xg%nbatch, &
-      " batches, largest local basis ", xg%max_nloc
-   ! pyscf's level-5 unpruned grid on this system: 9.2e-8 and 1.8e-7.
-   call report(err_grid < 1.0e-6_dp, "numerical overlap vs analytic, max|dS|", err_grid)
-   call report(abs(err_trace) < 1.0e-6_dp, "numerical overlap vs analytic, trace", err_trace)
-   call report(err_batch < 1.0e-9_dp, "batched/screened vs unscreened, max|dS|", err_batch)
-
-   call xg%release(); call grid%destroy(); call pl%release(); call b%release()
-
-   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
-   block
-      integer :: u, npts_ref, nao_ref
-      real(dp), allocatable :: chi_ref(:, :), gchi_ref(:, :, :)
-      real(dp) :: d0, dmax, scale, s
-      character(len=1) :: axis(3)
-      integer :: k
-      call ref_require('ao.ref', u)
-      call ref_read_int(u, 'NPTS', npts_ref)
-      call ref_read_int(u, 'NAO', nao_ref)
-      if (npts_ref /= NPROBE .or. nao_ref /= nao) then
-         print '(a)', "check_ao: pyscf reference shape does not match this build"; stop 1
-      end if
-      allocate (chi_ref(NPROBE, nao), gchi_ref(NPROBE, nao, 3))
-      call ref_read_matrix(u, 'CHI', NPROBE, nao, chi_ref)
-      call ref_read_matrix3(u, 'GCHI', NPROBE, nao, 3, gchi_ref)
-      call ref_close(u)
-      scale = maxval(abs(chi_ref))
-      d0 = maxval(abs(chi - chi_ref))/scale
-      call ref_report(nfail, d0 < 1.0e-12_dp, "AO values vs pyscf, max|diff|/max", d0)
-      axis = ['x', 'y', 'z']
-      do k = 1, 3
-         s = max(maxval(abs(gchi_ref(:, :, k))), 1.0_dp)
-         dmax = maxval(abs(gchi(k, :, :) - gchi_ref(:, :, k)))/s
-         call ref_report(nfail, dmax < 1.0e-12_dp, "AO d/d"//axis(k)//" vs pyscf, max|diff|/max", dmax)
-      end do
-   end block
-
-   if (nfail > 0) then
-      print '(a,i0,a)', "check_ao: ", nfail, " check(s) FAILED"
-      stop 1
-   end if
-   print '(a)', "check_ao: internal checks (including the pyscf reference) passed; RESULT: PASS"
 
 contains
 
-   subroutine report(ok, what, value)
-      logical, intent(in) :: ok
-      character(len=*), intent(in) :: what
-      real(dp), intent(in) :: value
-      if (.not. ok) nfail = nfail + 1
-      print '(a,1x,a,t56,es10.2)', merge("ok  ", "FAIL", ok), what, value
-   end subroutine report
+   subroutine collect_ao_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("AO values/gradients match pyscf's eval_ao", test_ao_vs_pyscf), &
+                  new_unittest("numerical grid overlap matches the analytic one", test_ao_grid_overlap) &
+                  ]
+   end subroutine collect_ao_tests
+
+   subroutine build_probe_system(b)
+      ! The probe system, exactly check_mult's: three off-axis centres,
+      ! s/p/d on each, one primitive each.
+      type(trc_basis_t), intent(out) :: b
+      integer :: sh_l(NSH), sh_np(NSH), i
+      real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
+      real(dp) :: at_z(NATM), at_r(3, NATM)
+
+      at_r(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp]
+      at_r(:, 2) = [1.3_dp, 0.0_dp, 0.7_dp]
+      at_r(:, 3) = [-0.4_dp, 1.1_dp, 1.9_dp]
+      at_z = [4.0_dp, 3.0_dp, 2.0_dp]
+      do i = 1, NATM
+         sh_l(3*i - 2) = 0; sh_e(1, 3*i - 2) = 0.9_dp + 0.17_dp*real(i, dp)
+         sh_l(3*i - 1) = 1; sh_e(1, 3*i - 1) = 1.4_dp + 0.11_dp*real(i, dp)
+         sh_l(3*i) = 2; sh_e(1, 3*i) = 1.9_dp + 0.13_dp*real(i, dp)
+         sh_r(:, 3*i - 2) = at_r(:, i)
+         sh_r(:, 3*i - 1) = at_r(:, i)
+         sh_r(:, 3*i) = at_r(:, i)
+      end do
+      sh_np = 1
+      do i = 1, NSH
+         sh_c(1, i) = gto_norm(sh_l(i), sh_e(1, i))
+      end do
+      call b%build(NSH, sh_l, sh_np, sh_e, sh_c, sh_r, NATM, at_z, at_r, MAXNP)
+   end subroutine build_probe_system
+
+   subroutine test_ao_vs_pyscf(error)
+      !! 1. Values and gradients at a cloud of points, elementwise against
+      !! test/pyscf_refs/ao.ref (generate.py's gen_ao, pyscf's eval_ao,
+      !! cart=True, deriv=1). ao_probe.bin is written UNCONDITIONALLY,
+      !! before the reference is even opened -- gen_ao's own convention.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: b
+      real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX), seed
+      integer(int64) :: lcg
+      real(dp), allocatable :: probe(:, :), chi(:, :), gchi(:, :, :)
+      integer :: i, k, ish, m, nc, nao, unit
+      integer :: ur, npts_ref, nao_ref
+      real(dp), allocatable :: chi_ref(:, :), gchi_ref(:, :, :)
+      real(dp) :: d0, dmax, scale_k
+      character(len=1), parameter :: AXIS(3) = ['x', 'y', 'z']
+
+      call build_probe_system(b)
+      nao = b%nao
+
+      allocate (probe(3, NPROBE), chi(NPROBE, nao), gchi(3, NPROBE, nao))
+      lcg = 37_int64
+      do k = 1, NPROBE
+         do i = 1, 3
+            lcg = mod(48271_int64*lcg, 2147483647_int64)
+            seed = real(lcg, dp)/2147483647.0_dp
+            probe(i, k) = -3.0_dp + 7.0_dp*seed
+         end do
+      end do
+      do k = 1, NPROBE
+         do ish = 1, NSH
+            d = probe(:, k) - b%sh_r(:, ish)
+            call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
+            nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
+            do m = 1, nc
+               chi(k, b%sh_ao(ish) + m - 1) = cs(m)
+               gchi(:, k, b%sh_ao(ish) + m - 1) = gs(:, m)
+            end do
+         end do
+      end do
+      open (newunit=unit, file='ao_probe.bin', access='stream', form='unformatted', status='replace')
+      write (unit) int(NPROBE, int64), int(nao, int64)
+      write (unit) probe
+      write (unit) chi
+      write (unit) gchi
+      close (unit)
+      print '(a,i0,a,i0,a)', "check_ao: wrote ao_probe.bin (", NPROBE, " points, ", nao, " AOs) for ao_ref.py"
+
+      call ref_require('ao.ref', ur)
+      call ref_read_int(ur, 'NPTS', npts_ref)
+      call ref_read_int(ur, 'NAO', nao_ref)
+      call check(error, npts_ref == NPROBE .and. nao_ref == nao, &
+                 "check_ao: pyscf reference shape does not match this build")
+      if (allocated(error)) then
+         call ref_close(ur)
+         call b%release()
+         return
+      end if
+      allocate (chi_ref(NPROBE, nao), gchi_ref(NPROBE, nao, 3))
+      call ref_read_matrix(ur, 'CHI', NPROBE, nao, chi_ref)
+      call ref_read_matrix3(ur, 'GCHI', NPROBE, nao, 3, gchi_ref)
+      call ref_close(ur)
+
+      scale_k = maxval(abs(chi_ref))
+      d0 = maxval(abs(chi - chi_ref))/scale_k
+      call check(error, d0 < 1.0e-12_dp, "AO values vs pyscf, max|diff|/max = "//to_text(d0))
+      if (allocated(error)) then
+         call b%release()
+         return
+      end if
+      do k = 1, 3
+         scale_k = max(maxval(abs(gchi_ref(:, :, k))), 1.0_dp)
+         dmax = maxval(abs(gchi(k, :, :) - gchi_ref(:, :, k)))/scale_k
+         call check(error, dmax < 1.0e-12_dp, &
+                    "AO d/d"//AXIS(k)//" vs pyscf, max|diff|/max = "//to_text(dmax))
+         if (allocated(error)) then
+            call b%release()
+            return
+         end if
+      end do
+      call b%release()
+   end subroutine test_ao_vs_pyscf
+
+   subroutine test_ao_grid_overlap(error)
+      !! 2. The numerical overlap (unscreened and through the batched,
+      !! screened container) against the analytic one from trc_1e, on a
+      !! real molecular grid (level 5, unpruned) -- see this file's own
+      !! header for the measured tolerance and the batching control.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: b
+      type(trc_pairlist_t) :: pl
+      type(dft_grid_t) :: grid
+      type(dft_grid_options_t) :: unpruned
+      type(trc_xc_grid_t) :: xg
+      type(error_t) :: err
+      real(dp) :: d(3), cs(NCART_MAX), gs(3, NCART_MAX)
+      integer :: ish, nc, u, v, nao, ib, g, iao, au, av, k
+      real(dp), allocatable :: s(:, :), t(:, :), vn(:, :), s_num(:, :), s_bat(:, :), col(:)
+      real(dp) :: err_grid, err_batch, err_trace
+
+      call build_probe_system(b)
+      nao = b%nao
+
+      call pl%build(b, 1.0e-30_dp)
+      allocate (s(nao, nao), t(nao, nao), vn(nao, nao))
+      call b%to_device(); call pl%to_device()
+      call trc_1e(b, pl, s, t, vn)
+
+      unpruned%prune = PRUNE_NONE
+      call dft_grid_build(b%at_r, nint(b%at_z), grid, err, level=5, options=unpruned)
+      call check(error,.not. err%has_error(), "check_ao: grid failed: "//err%get_message())
+      if (allocated(error)) then
+         call pl%release(); call b%release()
+         return
+      end if
+
+      ! Unscreened: every AO at every point.
+      allocate (s_num(nao, nao), s_bat(nao, nao), col(nao))
+      s_num = 0.0_dp
+      do g = 1, grid%n_points
+         do ish = 1, NSH
+            d = grid%coords(:, g) - b%sh_r(:, ish)
+            call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
+            nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
+            col(b%sh_ao(ish):b%sh_ao(ish) + nc - 1) = cs(1:nc)
+         end do
+         do v = 1, nao
+            do u = 1, nao
+               s_num(u, v) = s_num(u, v) + grid%weights(g)*col(u)*col(v)
+            end do
+         end do
+      end do
+
+      ! Through the batched, screened container: only each batch's local basis.
+      call xg%build(grid%n_points, grid%coords, grid%weights, b, max_pts=256, tol=1.0e-10_dp)
+      s_bat = 0.0_dp
+      do ib = 1, xg%nbatch
+         do g = xg%b_off(ib), xg%b_off(ib + 1) - 1
+            iao = 0
+            do k = xg%b_shoff(ib), xg%b_shoff(ib + 1) - 1
+               ish = xg%b_sh(k)
+               d = xg%r(:, g) - b%sh_r(:, ish)
+               call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
+               nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
+               col(iao + 1:iao + nc) = cs(1:nc)
+               iao = iao + nc
+            end do
+            do v = 1, iao
+               av = xg%b_ao(xg%b_aooff(ib) + v - 1)
+               do u = 1, iao
+                  au = xg%b_ao(xg%b_aooff(ib) + u - 1)
+                  s_bat(au, av) = s_bat(au, av) + xg%w(g)*col(u)*col(v)
+               end do
+            end do
+         end do
+      end do
+
+      err_grid = maxval(abs(s_num - s))
+      err_trace = 0.0_dp
+      do u = 1, nao
+         err_trace = err_trace + s_num(u, u) - s(u, u)
+      end do
+      err_batch = maxval(abs(s_bat - s_num))
+
+      print '(a,i0,a,i0,a,i0)', "check_ao: grid ", grid%n_points, " points in ", xg%nbatch, &
+         " batches, largest local basis ", xg%max_nloc
+      ! pyscf's level-5 unpruned grid on this system: 9.2e-8 and 1.8e-7.
+      call check(error, err_grid < 1.0e-6_dp .and. abs(err_trace) < 1.0e-6_dp, &
+                 "numerical overlap vs analytic: max|dS| = "//to_text(err_grid)// &
+                 ", trace diff = "//to_text(err_trace))
+      if (.not. allocated(error)) then
+         call check(error, err_batch < 1.0e-9_dp, &
+                    "batched/screened vs unscreened overlap, max|dS| = "//to_text(err_batch))
+      end if
+
+      call xg%release(); call grid%destroy(); call pl%release(); call b%release()
+   end subroutine test_ao_grid_overlap
+
+   function to_text(x) result(s)
+      real(dp), intent(in) :: x
+      character(len=32) :: s
+      write (s, "(es10.2)") x
+   end function to_text
 
    pure real(dp) function gto_norm(l, a)
       integer, intent(in) :: l
@@ -246,4 +297,20 @@ contains
       end do
    end function fact
 
+end module check_ao_suite
+
+program check_ao
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_ao_suite, only: collect_ao_tests
+   implicit none
+   type(testsuite_type), allocatable :: testsuites(:)
+   integer :: stat
+   stat = 0
+   testsuites = [new_testsuite("check_ao", collect_ao_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_ao
