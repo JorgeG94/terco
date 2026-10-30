@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["cpks"] -> gen_cpks
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: f79f960b50de5d1fc28f6ab57443e2b6e1a9403e7af8a0d43ba6ee83906ea58e
+# hash: 6a004df294ec34d2d8ff74b1427a68a1dbe5353740e69753796e212b6ab6e932
 # files: test/scf_cpks.F90 test/basis_sets/6-31gs.json test/water.xyz
 E_SCF -7.63218452480228677e+01
 ALPHA 3 3

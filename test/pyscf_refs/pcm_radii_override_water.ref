@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["pcm_radii_override"] -> gen_pcm_radii_override
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 867d9e0ede900dcf271b3048730d40f23da2a8a11f142c284e659dffda8cb5ed
+# hash: a30d38736583a0a661ccfec333a0ce43d7871317cd1b00b4f7262a68f1e81a47
 # files: test/check_capi_pcm_radii.F90 test/water.xyz test/basis_sets/6-31gs.json
 # GRAD_NORM 4.715e-10
 E_SCF -7.63350143571157389e+01
