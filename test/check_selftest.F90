@@ -134,6 +134,20 @@ contains
       write (msg, '(a,a,es10.2,a,es8.1,a)') what, ": worst diff ", diff, " (tol ", tol, ")"
    end function report_msg
 
+   ! Prints every comparison, as the old program did, and appends the
+   ! failing ones to `fails` for a single check.
+   subroutine accumulate(fails, ok, what, diff, tol)
+      character(len=:), allocatable, intent(inout) :: fails
+      logical, intent(in) :: ok
+      character(len=*), intent(in) :: what
+      real(dp), intent(in) :: diff, tol
+      print '(a,a)', '  ', trim(report_msg(what, diff, tol))
+      if (.not. ok) then
+         if (len(fails) > 0) fails = fails//"; "
+         fails = fails//trim(report_msg(what, diff, tol))
+      end if
+   end subroutine accumulate
+
    ! =======================================================================
    ! 1. the closed form
    ! =======================================================================
@@ -191,7 +205,7 @@ contains
       real(dp), allocatable :: d(:, :), g1(:, :), g2(:, :)
       real(dp), parameter :: SHIFT(3) = [3.7_dp, -2.1_dp, 5.4_dp]
       integer :: n, i, j
-      real(dp) :: worst
+      character(len=:), allocatable :: fails
 
       call build_system(b1, p1, [0.0_dp, 0.0_dp, 0.0_dp], .false.)
       call build_system(b2, p2, SHIFT, .false.)
@@ -203,33 +217,18 @@ contains
       !$acc update self(s1, t1, v1, s2, t2, v2)
       !$acc exit data delete(s1, t1, v1, s2, t2, v2)
 
-      worst = maxval(abs(s1 - s2))
-      call check(error, worst <= 1.0e-13_dp, report_msg("overlap under translation", worst, 1.0e-13_dp))
-      if (allocated(error)) then
-         call p1%release(); call p2%release(); call b1%release(); call b2%release()
-         deallocate (s1, t1, v1, s2, t2, v2)
-         return
-      end if
-
-      worst = maxval(abs(t1 - t2))
-      call check(error, worst <= 1.0e-13_dp, report_msg("kinetic under translation", worst, 1.0e-13_dp))
-      if (allocated(error)) then
-         call p1%release(); call p2%release(); call b1%release(); call b2%release()
-         deallocate (s1, t1, v1, s2, t2, v2)
-         return
-      end if
-
+      ! Every comparison runs and every failing one is reported, in one
+      ! check at the end (a check per comparison would stop at the first).
+      fails = ""
+      call accumulate(fails, all(abs(s1 - s2) <= 1.0e-13_dp), "overlap under translation", &
+                      maxval(abs(s1 - s2)), 1.0e-13_dp)
+      call accumulate(fails, all(abs(t1 - t2) <= 1.0e-13_dp), "kinetic under translation", &
+                      maxval(abs(t1 - t2)), 1.0e-13_dp)
       ! Nuclear attraction moves with the nuclei, so it is invariant too --
       ! and it is the one that would break if an absolute coordinate leaked in
       ! where a difference was meant.
-      worst = maxval(abs(v1 - v2))
-      call check(error, worst <= 1.0e-12_dp, &
-                 report_msg("nuclear attraction under translation", worst, 1.0e-12_dp))
-      if (allocated(error)) then
-         call p1%release(); call p2%release(); call b1%release(); call b2%release()
-         deallocate (s1, t1, v1, s2, t2, v2)
-         return
-      end if
+      call accumulate(fails, all(abs(v1 - v2) <= 1.0e-12_dp), "nuclear attraction under translation", &
+                      maxval(abs(v1 - v2)), 1.0e-12_dp)
 
       call e1%build(b1, 1.0e-14_dp)
       call e2%build(b2, 1.0e-14_dp)
@@ -242,8 +241,9 @@ contains
       d = 0.5_dp*(d + transpose(d))
       call e1%fock(b1, d, g1)
       call e2%fock(b2, d, g2)
-      worst = maxval(abs(g1 - g2))
-      call check(error, worst <= 1.0e-12_dp, report_msg("Fock matrix under translation", worst, 1.0e-12_dp))
+      call accumulate(fails, all(abs(g1 - g2) <= 1.0e-12_dp), "Fock matrix under translation", &
+                      maxval(abs(g1 - g2)), 1.0e-12_dp)
+      call check(error, len(fails) == 0, fails)
 
       call e1%release(); call e2%release()
       call p1%release(); call p2%release(); call b1%release(); call b2%release()

@@ -16,8 +16,9 @@ module sapcmp_suite
    public :: collect_sapcmp, xyz_arg, bjs_arg
 
    character(len=256) :: xyz_arg = 'water.xyz'
+   !! The molecule; optionally overridden by the program from argv(1).
    character(len=256) :: bjs_arg = 'basis_sets/6-31g.json'
-   !! Optionally overridden by the program from argv before run_testsuite.
+   !! The basis JSON; optionally overridden by the program from argv(2).
 
 contains
 

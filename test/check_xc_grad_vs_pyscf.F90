@@ -41,11 +41,21 @@ module check_xc_grad_vs_pyscf_suite
 
    real(dp), parameter :: THRESH = 1.0e-12_dp
 
-   character(len=256) :: xyzfile_arg = '', basis_json_arg = '', functional_arg = ''
-   character(len=256) :: dump_arg = '', case_name_arg = ''
+   ! All set by the program from argv before run_testsuite.
+   character(len=256) :: xyzfile_arg = ''
+   !! The molecule, .xyz.
+   character(len=256) :: basis_json_arg = ''
+   !! The orbital basis, MolSSI BSE JSON.
+   character(len=256) :: functional_arg = ''
+   !! The functional, by registry name.
+   character(len=256) :: dump_arg = ''
+   !! The probe file this run writes for generate.py.
+   character(len=256) :: case_name_arg = ''
+   !! Which case of the reference this run is.
    integer :: grid_level_arg = 3
+   !! DFT grid level.
    logical :: gresp_arg = .false.
-   !! Set by the program from argv before run_testsuite.
+   !! Whether the grid-response term is included.
 
 contains
 

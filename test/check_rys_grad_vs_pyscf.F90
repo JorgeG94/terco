@@ -27,11 +27,15 @@ module check_rys_grad_vs_pyscf_suite
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
 
+   ! The three below are set by the program from argv before run_testsuite:
+   ! ONE basis per process, same reasoning as check_rys_vs_hgp's own
+   ! module-level args.
    character(len=256) :: basis_json_arg = ''
+   !! argv(1): the orbital basis, MolSSI BSE JSON.
    character(len=256) :: dump_arg = ''
+   !! argv(2): the probe file this run writes for generate.py.
    character(len=256) :: case_name_arg = 'ccpvdz'
-   !! Set by the program from argv before run_testsuite: ONE basis per
-   !! process, same reasoning as check_rys_vs_hgp's own module-level args.
+   !! argv(3), optional: which case of the reference this basis is.
 
 contains
 

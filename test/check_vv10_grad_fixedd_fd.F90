@@ -50,6 +50,12 @@
 ! Four independent cases (RKS/UKS x two VV10 grid levels), each its own
 ! test-drive unittest so a failure in one does not hide the others.
 !
+! NO INTERNAL PROCEDURES, here or in the program, for check_xc_grad_fd.F90's
+! reason: the SCFs below make collective MPI calls, and on NVHPC 26.5 +
+! HPC-X a `contains`-ed procedure in such a unit corrupted a later
+! collective Fock build (AGENTS.md's MPI rule). Every helper is a module
+! procedure; keep it that way.
+!
 module check_vv10_grad_fixedd_fd_suite
    use pic_types, only: dp
    use pic_strings, only: to_string

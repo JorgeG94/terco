@@ -62,8 +62,13 @@ contains
 
    subroutine collect_rys_vs_hgp(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      integer :: i0, i1
+      ! The basis as the test name: the file's base name, without .json.
+      i0 = index(basis_json_arg, '/', back=.true.) + 1
+      i1 = index(basis_json_arg, '.json', back=.true.) - 1
+      if (i1 < i0) i1 = len_trim(basis_json_arg)
       testsuite = [ &
-                  new_unittest("Rys vs HGP on water/<basis>", test_vs_hgp) &
+                  new_unittest("Rys vs HGP on water/"//basis_json_arg(i0:i1), test_vs_hgp) &
                   ]
    end subroutine collect_rys_vs_hgp
 
@@ -81,7 +86,7 @@ contains
       type(error_t) :: err
       real(dp), allocatable :: dmat(:, :), g_hgp(:, :), g_rys(:, :), g_def(:, :)
       real(dp) :: thresh, worst_rys, worst_def
-      integer :: nat, nao, i, j
+      integer :: nat, nao, i, j, nbad_rys, nbad_def
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: at_r(:, :)
 
@@ -115,19 +120,23 @@ contains
 
       worst_rys = maxval(abs(g_hgp - g_rys))
       worst_def = maxval(abs(g_hgp - g_def))
-      print '(a,i0,a,es10.2,a,es10.2)', '  nao ', nao, &
-         '  worst |G_rys - G_hgp| ', worst_rys, '  worst |G_def - G_hgp| ', worst_def
+      ! Counted as NOT within ATOL, so a NaN element counts as outside.
+      nbad_rys = count(.not. (abs(g_hgp - g_rys) <= ATOL))
+      nbad_def = count(.not. (abs(g_hgp - g_def) <= ATOL))
+      print '(a,i0,a,es10.2,a,es10.2,a,i0)', '  nao ', nao, &
+         '  worst |G_rys - G_hgp| ', worst_rys, '  worst |G_def - G_hgp| ', worst_def, &
+         '  outside tol ', nbad_rys + nbad_def
 
       call eri%release(); call bas%release()
       deallocate (dmat, g_hgp, g_rys, g_def, at_z, at_r)
 
-      call check(error, worst_rys <= ATOL, &
-                 "TRC_RYS_CLASSES=all: worst |G_rys - G_hgp| = "//to_string(worst_rys, "es10.2")// &
-                 " exceeds "//to_string(ATOL, "es10.2"))
-      if (allocated(error)) return
-      call check(error, worst_def <= ATOL, &
-                 "TRC_RYS_CLASSES=default: worst |G_def - G_hgp| = "//to_string(worst_def, "es10.2")// &
-                 " exceeds "//to_string(ATOL, "es10.2"))
+      ! One check over both builds, so a failure reports both, as the old
+      ! program's single `outside tol` count did.
+      call check(error, nbad_rys == 0 .and. nbad_def == 0, &
+                 "elements outside "//to_string(ATOL, "es10.2")//": TRC_RYS_CLASSES=all "// &
+                 to_string(nbad_rys)//" (worst |G_rys - G_hgp| = "//to_string(worst_rys, "es10.2")// &
+                 "), TRC_RYS_CLASSES=default "//to_string(nbad_def)//" (worst |G_def - G_hgp| = "// &
+                 to_string(worst_def, "es10.2")//")")
    end subroutine test_vs_hgp
 
 end module check_rys_vs_hgp_suite

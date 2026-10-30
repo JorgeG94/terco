@@ -29,6 +29,12 @@
 !
 ! Nine independent cases below, each its own test-drive unittest.
 !
+! NO INTERNAL PROCEDURES, here or in the program: the SCFs below make
+! collective MPI calls, and on NVHPC 26.5 + HPC-X a `contains`-ed procedure
+! in a unit that does so corrupted a later collective Fock build (measured
+! in check_full_grad_fd.F90; AGENTS.md's MPI rule). Every helper is a
+! module procedure; keep it that way.
+!
 module check_xc_grad_fd_suite
    use pic_types, only: dp
    use pic_strings, only: to_string
