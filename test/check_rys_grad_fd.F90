@@ -229,7 +229,9 @@ contains
             worst_abs = max(worst_abs, abs(fd - ref))
             denom = max(abs(ref), abs(fd), 1.0e-10_dp)
             worst_rel = max(worst_rel, abs(fd - ref)/denom)
-            if (abs(fd - ref)/denom > RELTOL) nbad = nbad + 1
+            ! Fails only above RELTOL, as before; written .not. (<=) so a
+            ! NaN counts as bad too.
+            if (.not. (abs(fd - ref)/denom <= RELTOL)) nbad = nbad + 1
          end do
       end do
 
@@ -237,6 +239,9 @@ contains
       do ia = 1, nat
          inv = inv + grad(:, ia)
       end do
+      print '(a,a,a,i0,a,es10.2,a,es10.2,a,i0)', '  ', tag, ': nat ', nat, &
+         '  worst abs ', worst_abs, '  worst rel ', worst_rel, '  outside tol ', nbad
+      print '(a,3es10.2)', '    translational-invariance residual: ', inv
 
       call check(error, nbad == 0, tag//": worst abs "//to_string(worst_abs, "es10.2")// &
                  " worst rel "//to_string(worst_rel, "es10.2")//" outside tol "//to_string(nbad))
@@ -244,7 +249,7 @@ contains
          deallocate (at_z, r, rp, rm, inv, dmat, grad)
          return
       end if
-      call check(error, maxval(abs(inv)) <= INVTOL, tag// &
+      call check(error, all(abs(inv) <= INVTOL), tag// &
                  ": translational-invariance residual "//to_string(maxval(abs(inv)), "es10.2")// &
                  " exceeds INVTOL")
 

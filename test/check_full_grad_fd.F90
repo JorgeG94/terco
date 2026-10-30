@@ -33,6 +33,7 @@
 ! here.
 !
 module check_full_grad_fd_suite
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -109,6 +110,7 @@ contains
       type(trc_linalg_t) :: lp
       type(error_t) :: err
       real(dp) :: eplus, eminus, fd, worst_abs, worst_rel, denom
+      integer :: nnan
       real(dp) :: inv(3)
 
       dev = trc_bind_device(0)
@@ -137,12 +139,14 @@ contains
       call bas%release()
 
       inv = sum(grad, dim=2)
-      call check(error, maxval(abs(inv)) < INVTOL, label// &
+      ! Fails only above INVTOL, as the plain program did; all() so a NaN
+      ! component fails too.
+      call check(error, all(abs(inv) <= INVTOL), label// &
                  ': translational invariance residual = '//to_string(maxval(abs(inv)), "es10.2"))
       if (allocated(error)) return
 
       allocate (rtmp(3, nat))
-      worst_abs = 0.0_dp; worst_rel = 0.0_dp
+      worst_abs = 0.0_dp; worst_rel = 0.0_dp; nnan = 0
       do a = 1, nat
          do d = 1, 3
             rtmp = r0; rtmp(d, a) = r0(d, a) + H
@@ -153,14 +157,16 @@ contains
             denom = max(abs(grad(d, a)), abs(fd), 1.0e-10_dp)
             worst_abs = max(worst_abs, abs(grad(d, a) - fd))
             worst_rel = max(worst_rel, abs(grad(d, a) - fd)/denom)
+            ! max() above drops a NaN, so count those on their own.
+            if (ieee_is_nan(grad(d, a) - fd)) nnan = nnan + 1
          end do
       end do
 
       print '(a,a,a,es10.2,a,es10.2,a,3es10.2)', '  ', label, ': worst abs ', worst_abs, &
          '  worst rel ', worst_rel, '  translational-invariance residual: ', inv
-      call check(error,.not. (worst_abs > ABSTOL .and. worst_rel > RELTOL), label// &
+      call check(error, nnan == 0 .and. .not. (worst_abs > ABSTOL .and. worst_rel > RELTOL), label// &
                  ': analytic vs FD gradient, worst abs = '//to_string(worst_abs, "es10.2")// &
-                 ', worst rel = '//to_string(worst_rel, "es10.2"))
+                 ', worst rel = '//to_string(worst_rel, "es10.2")//', NaN components '//to_string(nnan))
 
       deallocate (at_z, r0, rtmp, grad)
    end subroutine run_case

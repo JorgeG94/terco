@@ -154,6 +154,7 @@ contains
       call bas%release()
 
       worst = maxval(abs(g_default - g_omega0))
+      print '(a,es10.2)', '  omega-absent vs omega=0 explicit: max|diff| ', worst
       call check(error, worst, 0.0_dp, thr=GPU_TOL, message= &
                  "omega-absent vs omega=0 explicit: max|diff| = "//to_string(worst, "es10.2")// &
                  " exceeds GPU_TOL (not bit-identical)")
@@ -246,9 +247,14 @@ contains
             worst_abs = max(worst_abs, abs(fd - ref))
             denom = max(abs(ref), abs(fd), 1.0e-10_dp)
             worst_rel = max(worst_rel, abs(fd - ref)/denom)
-            if (abs(fd - ref)/denom > RELTOL) nbad = nbad + 1
+            ! Fails only above RELTOL, as before; written .not. (<=) so a
+            ! NaN counts as bad too.
+            if (.not. (abs(fd - ref)/denom <= RELTOL)) nbad = nbad + 1
          end do
       end do
+
+      print '(a,f4.2,a,i0,a,es10.2,a,es10.2,a,i0)', '  omega ', omega, ': nat ', nat, &
+         '  worst abs ', worst_abs, '  worst rel ', worst_rel, '  outside tol ', nbad
 
       call check(error, nbad == 0, "omega "//to_string(omega, "f4.2")//": worst abs "// &
                  to_string(worst_abs, "es10.2")//" worst rel "//to_string(worst_rel, "es10.2")// &

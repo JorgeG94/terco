@@ -38,10 +38,7 @@
 !
 ! NOTE ON test/pyscf_refs/ao.ref'S OWN HASH: this file is itself named on
 ! that .ref's "# files:" line (the probe below is what generate.py's gen_ao
-! must stay in step with), so porting it to test-drive stales ao.ref's case
-! hash purely from this restructuring, with no change to the probe it
-! writes or the numbers it compares. See the accompanying report; this was
-! not re-stamped here.
+! must stay in step with).
 !
 module check_ao_suite
    use pic_types, only: dp, int64

@@ -43,7 +43,7 @@ module check_1e_grad_vs_pyscf_suite
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
    implicit none
    private
    public :: collect_1e_grad_vs_pyscf_tests
@@ -172,7 +172,7 @@ contains
 
       ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
       block
-         integer :: u, nat_ref, nao_ref
+         integer :: u, nat_ref, nao_ref, nfail
          real(dp), allocatable :: s_ref(:, :), gs_ref(:, :), gt_ref(:, :), gv_ref(:, :)
          real(dp) :: ds, worst_s, worst_t, worst_v
          call ref_require('onee_grad_'//trim(case_name)//'.ref', u)
@@ -191,8 +191,10 @@ contains
          call ref_read_matrix(u, 'GRAD_V', 3, nat, gv_ref)
          call ref_close(u)
 
+         nfail = 0
          ds = maxval(abs(smat - s_ref))
-         call check(error, ds, 0.0_dp, thr=TOL, message=trim(case_name)// &
+         call ref_report(nfail, ds < TOL, 'overlap check vs pyscf, max|diff|', ds)
+         call check(error, ds < TOL, trim(case_name)// &
                     ": overlap check vs pyscf, max|diff| = "//to_string(ds, "es12.4"))
          if (allocated(error)) then
             deallocate (s_ref, gs_ref, gt_ref, gv_ref)
@@ -200,7 +202,8 @@ contains
          end if
 
          worst_s = maxval(abs(gs - gs_ref))
-         call check(error, worst_s, 0.0_dp, thr=TOL, message=trim(case_name)// &
+         call ref_report(nfail, worst_s < TOL, 'dS gradient vs pyscf, worst|diff|', worst_s)
+         call check(error, worst_s < TOL, trim(case_name)// &
                     ": dS gradient vs pyscf, worst|diff| = "//to_string(worst_s, "es12.4"))
          if (allocated(error)) then
             deallocate (s_ref, gs_ref, gt_ref, gv_ref)
@@ -208,7 +211,8 @@ contains
          end if
 
          worst_t = maxval(abs(gt - gt_ref))
-         call check(error, worst_t, 0.0_dp, thr=TOL, message=trim(case_name)// &
+         call ref_report(nfail, worst_t < TOL, 'dT gradient vs pyscf, worst|diff|', worst_t)
+         call check(error, worst_t < TOL, trim(case_name)// &
                     ": dT gradient vs pyscf, worst|diff| = "//to_string(worst_t, "es12.4"))
          if (allocated(error)) then
             deallocate (s_ref, gs_ref, gt_ref, gv_ref)
@@ -216,7 +220,8 @@ contains
          end if
 
          worst_v = maxval(abs(gv - gv_ref))
-         call check(error, worst_v, 0.0_dp, thr=TOL, message=trim(case_name)// &
+         call ref_report(nfail, worst_v < TOL, 'dV gradient vs pyscf, worst|diff|', worst_v)
+         call check(error, worst_v < TOL, trim(case_name)// &
                     ": dV gradient vs pyscf, worst|diff| = "//to_string(worst_v, "es12.4"))
          deallocate (s_ref, gs_ref, gt_ref, gv_ref)
       end block

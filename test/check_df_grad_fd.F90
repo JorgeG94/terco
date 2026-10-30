@@ -166,6 +166,7 @@ contains
 
       real(dp) :: e(-2:2), d1, d2, fd, worst_abs, inv(3), hh
       logical :: ok
+      integer :: nbad
 
       dev = trc_bind_device(0)
       call read_xyz(xyzfile, nat, at_z, r0)
@@ -203,7 +204,7 @@ contains
       call teardown(bas, aux, pl, lp, dfjk)
 
       inv = sum(grad, dim=2)
-      call check(error, maxval(abs(inv)) <= invtol, trim(label)// &
+      call check(error, all(abs(inv) <= invtol), trim(label)// &
                  ": translational-invariance residual "//to_string(maxval(abs(inv)), "es10.2")// &
                  " exceeds gate "//to_string(invtol, "es10.2"))
       if (allocated(error)) then
@@ -213,6 +214,7 @@ contains
 
       allocate (rtmp(3, nat))
       worst_abs = 0.0_dp
+      nbad = 0
       do a = 1, nat
          do d = 1, 3
             do k = -2, 2
@@ -225,6 +227,8 @@ contains
             d2 = (e(1) - e(-1))/H
             fd = (4.0_dp*d2 - d1)/3.0_dp
             worst_abs = max(worst_abs, abs(grad(d, a) - fd))
+            ! max() above drops a NaN; this count does not.
+            if (.not. (abs(grad(d, a) - fd) <= abstol)) nbad = nbad + 1
             print '(a,i0,a,i0,a,f18.12,a,f18.12,a,es9.2)', '    atom ', a, ' xyz ', d, ' analytic ', grad(d, a), &
                '  FD ', fd, '  diff ', grad(d, a) - fd
          end do
@@ -232,9 +236,9 @@ contains
 
       print '(a,a,a,es10.2,a,es10.2,a,3es10.2)', '  ', label, ': worst |analytic - Richardson FD| ', worst_abs, &
          ' (gate ', abstol, ')  translational-invariance residual: ', inv
-      call check(error, worst_abs <= abstol, trim(label)// &
+      call check(error, nbad == 0, trim(label)// &
                  ": worst |analytic - Richardson FD| "//to_string(worst_abs, "es10.2")// &
-                 " exceeds gate "//to_string(abstol, "es10.2"))
+                 ", "//to_string(nbad)//" component(s) outside gate "//to_string(abstol, "es10.2"))
       deallocate (at_z, r0, rtmp, grad)
    end subroutine run_case
 

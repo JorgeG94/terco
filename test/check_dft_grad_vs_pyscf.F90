@@ -58,7 +58,7 @@ module check_dft_grad_vs_pyscf_suite
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    use trc_sph, only: sph_cart_to_sph
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
    implicit none
    private
    public :: collect_dft_grad_vs_pyscf_tests, check_dft_grad_vs_pyscf_set_args
@@ -97,7 +97,7 @@ contains
       type(error_t) :: err
       real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :), s_sp(:, :)
       logical :: ok
-      integer :: u, nat_ref, nao_ref
+      integer :: u, nat_ref, nao_ref, nfail
       real(dp), allocatable :: grad_ref(:, :)
       real(dp) :: worst
       logical :: shape_ok
@@ -118,10 +118,10 @@ contains
       end if
       nao = bas%nao
       nao_sp = merge(bas%nao_sph, bas%nao, bas%spherical)
+      ! Captured BEFORE bas%release() below, which resets bas%spherical
+      ! (and bas%nao/bas%nao_sph) to its type default -- the dump's own
+      ! "is_spherical" flag has to be read while `bas` is still alive.
       is_sph = bas%spherical
-      !! Captured BEFORE bas%release() below, which resets bas%spherical
-      !! (and bas%nao/bas%nao_sph) to its type default -- the dump's own
-      !! "is_spherical" flag has to be read while `bas` is still alive.
       call bas%to_device()
 
       ! The electron count and spin are implied by the molecule, the same
@@ -131,8 +131,8 @@ contains
       opts%guess = "gwh"
       if (index(trim(g_case_name), 'nh2') == 1) then
          nalpha = 5; nbeta = 4
-         opts%guess = "core"   !! the FIXED initial density -- see this
-                               !! program's own header.
+         ! the FIXED initial density -- see this program's own header.
+         opts%guess = "core"
       else if (index(trim(g_case_name), 'formamide') == 1) then
          nalpha = 12; nbeta = 12
       else
@@ -255,6 +255,8 @@ contains
       ! that a genuine ~1e-7 gradient bug (this check's whole job) is
       ! not hidden in the margin the old 3e-6 gate left, but not so
       ! tight it chases hardware-dependent summation-order noise.
+      nfail = 0
+      call ref_report(nfail, worst < 1.0e-9_dp, 'KS-DFT gradient vs pyscf, worst|diff|', worst)
       call check(error, worst < 1.0e-9_dp, "KS-DFT gradient vs pyscf, worst|diff| = "// &
                  to_string(worst, "es10.2")//" exceeds gate 1.0e-9")
       deallocate (at_z, r, grad, smat, tmat, vmat, s_sp, grad_ref)

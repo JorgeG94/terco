@@ -36,7 +36,7 @@ module check_lr_exchange_grad_vs_pyscf_suite
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
    implicit none
    private
    public :: collect_lr_exchange_grad_vs_pyscf_tests
@@ -138,7 +138,7 @@ contains
 
       ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
       block
-         integer :: u, nat_ref, nao_ref
+         integer :: u, nat_ref, nao_ref, nfail
          real(dp), allocatable :: s_ref(:, :), grad_ref(:, :, :)
          real(dp) :: ds, worst
          call ref_require('lr_exchange_grad_'//trim(case_name)//'.ref', u)
@@ -156,8 +156,10 @@ contains
          call ref_read_matrix(u, 'GRAD_LR_OM2', 3, nat, grad_ref(:, :, 2))
          call ref_close(u)
 
+         nfail = 0
          ds = maxval(abs(smat - s_ref))
-         call check(error, ds, 0.0_dp, thr=TOL, message= &
+         call ref_report(nfail, ds < TOL, 'overlap check vs pyscf, max|diff|', ds)
+         call check(error, ds < TOL, &
                     "overlap check vs pyscf, max|diff| = "//to_string(ds, "es12.4"))
          if (allocated(error)) then
             deallocate (s_ref, grad_ref)
@@ -166,7 +168,8 @@ contains
 
          do io = 1, NOMEGA
             worst = maxval(abs(grad_lr(:, :, io) - grad_ref(:, :, io)))
-            call check(error, worst, 0.0_dp, thr=TOL, message= &
+            call ref_report(nfail, worst < TOL, 'LR exchange gradient vs pyscf, worst|diff|', worst)
+            call check(error, worst < TOL, &
                        "omega "//to_string(OMEGA_LIST(io), "f4.2")// &
                        " LR exchange gradient vs pyscf, worst|diff| = "//to_string(worst, "es12.4"))
             if (allocated(error)) then

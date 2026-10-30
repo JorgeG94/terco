@@ -22,10 +22,7 @@
 !
 ! NOTE ON test/pyscf_refs/mult.ref'S OWN HASH: this file is itself named on
 ! that .ref's "# files:" line (the probe below is what generate.py's gen_mult
-! must stay in step with), so porting it to test-drive stales
-! mult.ref's case hash purely from this restructuring, with no change to the
-! probe it writes or the numbers it compares. See the accompanying report;
-! this was not re-stamped here.
+! must stay in step with).
 !
 module check_mult_suite
    use pic_types, only: dp, int64
@@ -33,7 +30,7 @@ module check_mult_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
    private
    public :: collect_mult_tests
@@ -107,7 +104,7 @@ contains
 
       ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
       block
-         integer :: ur, nao_ref, nmult_ref, k
+         integer :: ur, nao_ref, nmult_ref, k, nfail
          real(dp), allocatable :: s_ref(:, :), mm_ref(:, :, :)
          real(dp) :: ds, worst
          call ref_require('mult.ref', ur)
@@ -124,7 +121,9 @@ contains
          call ref_read_matrix3(ur, 'MM', nao, nao, TRC_NMULT, mm_ref)
          call ref_close(ur)
 
+         nfail = 0
          ds = maxval(abs(s - s_ref))
+         call ref_report(nfail, ds < 1.0e-12_dp, 'CONTROL overlap vs pyscf, max|diff|', ds)
          ! If this fails, the systems differ and nothing below means anything.
          call check(error, ds < 1.0e-12_dp, "CONTROL overlap vs pyscf, max|diff| = "// &
                     to_string(ds, "es10.2"))
@@ -134,6 +133,7 @@ contains
          do k = 1, TRC_NMULT
             worst = max(worst, maxval(abs(mm(:, :, k) - mm_ref(:, :, k))))
          end do
+         call ref_report(nfail, worst < 1.0e-10_dp, 'multipoles vs pyscf, max|diff| over all 39 components', worst)
          call check(error, worst < 1.0e-10_dp, &
                     "multipoles vs pyscf, max|diff| over all "//to_string(TRC_NMULT)// &
                     " components = "//to_string(worst, "es10.2"))

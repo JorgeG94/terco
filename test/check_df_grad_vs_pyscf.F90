@@ -35,14 +35,18 @@ module check_df_grad_vs_pyscf_suite
    use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_report
    implicit none
    private
    public :: collect_df_grad_vs_pyscf_tests, check_df_grad_vs_pyscf_prepare
 
    real(dp), parameter :: THRESH = 1.0e-12_dp
-   !! Per-case tolerance (`tol`, below) comes from test/CMakeLists.txt (the
-   !! 8th argument): 1e-10 on water, 5e-9 on formamide. The formamide gap
+
+   character(len=256) :: g_xyzfile, g_basis_json, g_aux_json, g_functional, g_dump, g_case_name
+   integer :: g_grid_level
+   real(dp) :: g_tol
+   !! Per-case tolerance, from test/CMakeLists.txt (the 8th argument):
+   !! 1e-10 on water, 5e-9 on formamide. The formamide gap
    !! (9.4e-10 RHF, 6.2e-10 B3LYP) is the (P|Q) VALUES through an
    !! ill-conditioned fit, PROVEN, not assumed. With terco's converged
    !! orbitals fixed, the fitted gradient was re-evaluated in numpy from
@@ -66,10 +70,6 @@ module check_df_grad_vs_pyscf_suite
    !! Cartesian auxiliary set's non-spherical contaminants likely drive
    !! cond(M), and with them gone the formamide gate should tighten to
    !! water's.
-
-   character(len=256) :: g_xyzfile, g_basis_json, g_aux_json, g_functional, g_dump, g_case_name
-   integer :: g_grid_level
-   real(dp) :: g_tol
    logical :: g_is_dft
 
 contains
@@ -82,10 +82,13 @@ contains
       logical, intent(out) :: skip
       type(trc_basis_t) :: aux
       type(error_t) :: err
-      integer :: nat
+      integer :: nat, dev
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :)
 
+      ! Bind first, as the plain program did: nothing touches a basis
+      ! before the device is chosen.
+      dev = trc_bind_device(0)
       g_xyzfile = xyzfile; g_basis_json = basis_json; g_aux_json = aux_json
       g_functional = functional; g_grid_level = grid_level; g_dump = dump
       g_case_name = case_name; g_tol = tol
@@ -111,7 +114,7 @@ contains
 
    subroutine test_df_grad_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
-      integer :: nat, nao, nalpha, nbeta, unit, dev, npts
+      integer :: nat, nao, nalpha, nbeta, unit, npts
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :), grad(:, :)
       type(trc_basis_t) :: bas, aux
@@ -123,7 +126,7 @@ contains
       type(df_jk_t) :: dfjk
       type(error_t) :: err
       real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
-      integer :: u, nat_ref, nao_ref
+      integer :: u, nat_ref, nao_ref, nfail
       real(dp), allocatable :: grad_ref(:, :)
       real(dp) :: worst
       logical :: shape_ok
@@ -134,7 +137,6 @@ contains
          end if
       end if
 
-      dev = trc_bind_device(0)
       call read_xyz(trim(g_xyzfile), nat, at_z, r)
       nalpha = sum(at_z)/2
       nbeta = nalpha
@@ -222,6 +224,8 @@ contains
       call ref_read_matrix(u, 'GRAD', 3, nat, grad_ref)
       call ref_close(u)
       worst = maxval(abs(grad - grad_ref))
+      nfail = 0
+      call ref_report(nfail, worst < g_tol, '--df gradient vs pyscf df.grad, worst|diff|', worst)
       print '(a,es10.2)', '  translational-invariance residual: ', maxval(abs(sum(grad, dim=2)))
       call check(error, worst < g_tol, "--df gradient vs pyscf df.grad, worst|diff| = "// &
                  to_string(worst, "es10.2")//" exceeds gate "//to_string(g_tol, "es10.2"))

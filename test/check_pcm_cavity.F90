@@ -322,6 +322,14 @@ contains
 
       n = g_ref%npts
       call pcm_build_surface(g_zat, g_rat, 302, 1.2_dp, surf, err)
+      ! Guard the count before indexing: match and pcm_sd_matrices take
+      ! surf%coords as (3, n) with pyscf's n.
+      call check(error, .not. err%has_error(), 'check_pcm_cavity: '//err%get_message())
+      if (allocated(error)) return
+      call check(error, n == surf%n_points, &
+                 'water, 302/sphere: point count vs pyscf, terco='//to_string(surf%n_points)// &
+                 ' pyscf='//to_string(n))
+      if (allocated(error)) return
       allocate (perm(n))
       call match(n, surf%coords, g_ref%coords, perm, worst)
       call check(error, worst < TOL, "point matching (bohr), worst = "//to_string(worst, "es10.2"))
@@ -356,6 +364,14 @@ contains
 
       n = g_ref%npts
       call pcm_build_surface(g_zat, g_rat, 302, 1.2_dp, surf, err)
+      ! Guard the count before indexing: match and pcm_sd_matrices take
+      ! surf%coords as (3, n) with pyscf's n.
+      call check(error, .not. err%has_error(), 'check_pcm_cavity: '//err%get_message())
+      if (allocated(error)) return
+      call check(error, n == surf%n_points, &
+                 'water, 302/sphere: point count vs pyscf, terco='//to_string(surf%n_points)// &
+                 ' pyscf='//to_string(n))
+      if (allocated(error)) return
       allocate (perm(n))
       call match(n, surf%coords, g_ref%coords, perm, worst)
       call check(error, worst < TOL, "point matching (bohr), worst = "//to_string(worst, "es10.2"))
