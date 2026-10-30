@@ -45,49 +45,50 @@
 ! room for the one real failure mode (a REAL mistake threading omega
 ! through only one of the two calls) without flagging atomic reordering.
 !
-program check_lr_exchange_grad_fd
+! Basis (6-31G* or cc-pVDZ) comes from the command line (test/CMakeLists.txt
+! registers this source as TWO executables, ARGS basis_sets/6-31gs.json and
+! basis_sets/cc-pvdz.json), so each run checks exactly the one basis it was
+! invoked with. The omega sweep (0.3, 0.4) is internal to the program, not
+! CMake-driven, and stays that way.
+!
+module check_lr_exchange_grad_fd_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
+   private
+   public :: collect_lr_exchange_grad_fd_tests
 
-   integer, parameter :: NOMEGA = 2
-   real(dp), parameter :: OMEGA_LIST(NOMEGA) = [0.3_dp, 0.4_dp]
    real(dp), parameter :: H = 1.0e-4_dp
    real(dp), parameter :: THRESH = 1.0e-14_dp
    real(dp), parameter :: RELTOL = 1.0e-7_dp
    real(dp), parameter :: GPU_TOL = 1.0e-11_dp
    !! The omega-absent vs omega=0.0_dp-explicit gap: exactly 0.0_dp on the
    !! CPU build, atomic-reordering noise up to ~1e-13 measured on the GPU
-   !! build -- see this program's own header for the three-run measurement
+   !! build -- see this module's own header for the three-run measurement
    !! GPU_TOL sits two decades above.
 
-   character(len=256) :: basis_json
-   logical :: any_fail
-   integer :: io
-
-   any_fail = .false.
-   if (command_argument_count() < 1) then
-      print '(a)', 'usage: check_lr_exchange_grad_fd <basis.json>'; stop 1
-   end if
-   call get_command_argument(1, basis_json)
-
-   call check_omega_zero_bit_identical(trim(basis_json))
-
-   do io = 1, NOMEGA
-      call run_one(trim(basis_json), OMEGA_LIST(io))
-   end do
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'
-      stop 1
-   end if
-   print '(a)', '  RESULT: PASS'
-
 contains
+
+   subroutine collect_lr_exchange_grad_fd_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("omega=0 is bit-identical to the omega-absent call", test_omega_zero), &
+                  new_unittest("omega=0.3 matches a central difference of E_K^lr", test_omega_03), &
+                  new_unittest("omega=0.4 matches a central difference of E_K^lr", test_omega_04) &
+                  ]
+   end subroutine collect_lr_exchange_grad_fd_tests
+
+   subroutine basis_arg(basis_json)
+      character(len=*), intent(out) :: basis_json
+      basis_json = ''
+      if (command_argument_count() >= 1) call get_command_argument(1, basis_json)
+   end subroutine basis_arg
 
    !
    ! Same deterministic dense symmetric matrix as check_rys_grad_fd.F90's
@@ -119,11 +120,12 @@ contains
 
    !
    ! omega absent vs omega=0.0_dp explicit, same basis/density/geometry:
-   ! must be bit-for-bit, not just numerically close -- see this program's
+   ! must be bit-for-bit, not just numerically close -- see this module's
    ! own header.
    !
-   subroutine check_omega_zero_bit_identical(basis_json)
-      character(*), intent(in) :: basis_json
+   subroutine test_omega_zero(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=256) :: basis_json
       type(trc_basis_t) :: bas
       type(trc_eri_t)   :: eri
       type(error_t) :: err
@@ -132,11 +134,14 @@ contains
       real(dp), allocatable :: r(:, :), d(:, :, :), g_default(:, :), g_omega0(:, :)
       real(dp) :: worst
 
+      call basis_arg(basis_json)
+      call check(error, len_trim(basis_json) > 0, "usage: check_lr_exchange_grad_fd <basis.json>")
+      if (allocated(error)) return
+
       call read_xyz('water.xyz', nat, at_z, r)
-      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'check_lr_exchange_grad_fd: '//err%get_message(); stop 1
-      end if
+      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+      call check(error,.not. err%has_error(), "check_lr_exchange_grad_fd: "//err%get_message())
+      if (allocated(error)) return
       nao = bas%nao
       allocate (d(nao, nao, 1), g_default(3, nat), g_omega0(3, nat))
       call synth_density(nao, d(:, :, 1))
@@ -149,33 +154,34 @@ contains
       call bas%release()
 
       worst = maxval(abs(g_default - g_omega0))
-      print '(a,es10.2)', '  omega-absent vs omega=0 explicit: max|diff| ', worst
-      if (worst > GPU_TOL) then
-         print '(a)', '  FAILED: omega=0 is not bit-identical (within GPU_TOL) to the omega-absent call'
-         any_fail = .true.
-      end if
+      call check(error, worst, 0.0_dp, thr=GPU_TOL, message= &
+                 "omega-absent vs omega=0 explicit: max|diff| = "//to_string(worst, "es10.2")// &
+                 " exceeds GPU_TOL (not bit-identical)")
       deallocate (at_z, r, d, g_default, g_omega0)
-   end subroutine check_omega_zero_bit_identical
+   end subroutine test_omega_zero
 
    !
    ! E_K^lr(D) at the geometry in `r`, basis `basis_json`, FIXED D, RHF
-   ! (ndens=1) only -- see this program's own header for the factor.
+   ! (ndens=1) only -- see this module's own header for the factor.
    !
-   real(dp) function e2_lr_at(basis_json, nat, at_z, r, nao, d, omega)
+   real(dp) function e2_lr_at(basis_json, nat, at_z, r, nao, d, omega, error)
       character(*), intent(in) :: basis_json
       integer, intent(in) :: nat, at_z(nat), nao
       real(dp), intent(in) :: r(3, nat), d(nao, nao), omega
+      type(error_type), allocatable, intent(inout) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t)   :: eri
       type(error_t) :: err
       real(dp) :: vhf(nao, nao)
 
+      e2_lr_at = 0.0_dp
       call trc_basis_from_json(basis_json, nat, at_z, r, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'check_lr_exchange_grad_fd: '//err%get_message(); stop 1
-      end if
-      if (bas%nao /= nao) then
-         print '(a)', 'check_lr_exchange_grad_fd: nao changed under displacement'; stop 1
+      call check(error,.not. err%has_error(), "check_lr_exchange_grad_fd: "//err%get_message())
+      if (allocated(error)) return
+      call check(error, bas%nao == nao, "check_lr_exchange_grad_fd: nao changed under displacement")
+      if (allocated(error)) then
+         call bas%release()
+         return
       end if
       call bas%to_device()
       call eri%build(bas, THRESH)
@@ -185,9 +191,10 @@ contains
       call bas%release()
    end function e2_lr_at
 
-   subroutine run_one(basis_json, omega)
-      character(*), intent(in) :: basis_json
+   subroutine run_one(omega, error)
       real(dp), intent(in) :: omega
+      type(error_type), allocatable, intent(out) :: error
+      character(len=256) :: basis_json
       type(trc_basis_t) :: bas
       type(trc_eri_t)   :: eri
       type(error_t) :: err
@@ -198,11 +205,14 @@ contains
       real(dp) :: ep, em, fd, worst_abs, worst_rel, ref, denom
       integer :: nbad
 
+      call basis_arg(basis_json)
+      call check(error, len_trim(basis_json) > 0, "usage: check_lr_exchange_grad_fd <basis.json>")
+      if (allocated(error)) return
+
       call read_xyz('water.xyz', nat, at_z, r)
-      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'check_lr_exchange_grad_fd: '//err%get_message(); stop 1
-      end if
+      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+      call check(error,.not. err%has_error(), "check_lr_exchange_grad_fd: "//err%get_message())
+      if (allocated(error)) return
       nao = bas%nao
 
       allocate (dmat(nao, nao, 1), grad(3, nat))
@@ -221,8 +231,16 @@ contains
             rp = r; rm = r
             rp(dd, ia) = rp(dd, ia) + H
             rm(dd, ia) = rm(dd, ia) - H
-            ep = e2_lr_at(basis_json, nat, at_z, rp, nao, dmat(:, :, 1), omega)
-            em = e2_lr_at(basis_json, nat, at_z, rm, nao, dmat(:, :, 1), omega)
+            ep = e2_lr_at(trim(basis_json), nat, at_z, rp, nao, dmat(:, :, 1), omega, error)
+            if (allocated(error)) then
+               deallocate (at_z, r, rp, rm, dmat, grad)
+               return
+            end if
+            em = e2_lr_at(trim(basis_json), nat, at_z, rm, nao, dmat(:, :, 1), omega, error)
+            if (allocated(error)) then
+               deallocate (at_z, r, rp, rm, dmat, grad)
+               return
+            end if
             fd = (ep - em)/(2.0_dp*H)
             ref = grad(dd, ia)
             worst_abs = max(worst_abs, abs(fd - ref))
@@ -232,12 +250,38 @@ contains
          end do
       end do
 
-      print '(a,f4.2,a,i0,a,es10.2,a,es10.2,a,i0)', '  omega ', omega, ': nat ', nat, &
-         '  worst abs ', worst_abs, '  worst rel ', worst_rel, '  outside tol ', nbad
-
-      if (nbad > 0) any_fail = .true.
+      call check(error, nbad == 0, "omega "//to_string(omega, "f4.2")//": worst abs "// &
+                 to_string(worst_abs, "es10.2")//" worst rel "//to_string(worst_rel, "es10.2")// &
+                 " outside tol "//to_string(nbad))
 
       deallocate (at_z, r, rp, rm, dmat, grad)
    end subroutine run_one
 
+   subroutine test_omega_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_one(0.3_dp, error)
+   end subroutine test_omega_03
+
+   subroutine test_omega_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_one(0.4_dp, error)
+   end subroutine test_omega_04
+
+end module check_lr_exchange_grad_fd_suite
+
+program check_lr_exchange_grad_fd
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_lr_exchange_grad_fd_suite, only: collect_lr_exchange_grad_fd_tests
+   implicit none
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   stat = 0
+   testsuites = [new_testsuite("check_lr_exchange_grad_fd", collect_lr_exchange_grad_fd_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_lr_exchange_grad_fd

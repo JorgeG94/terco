@@ -99,6 +99,7 @@ terco_add_check(check_selftest check_selftest.F90)
 # algebra, not integrals.
 #
 terco_add_check(check_linalg_mat check_linalg_mat.F90)
+target_link_libraries(check_linalg_mat PRIVATE test-drive::test-drive)
 
 # A signalling-NaN SCF guess density -- what a density read past the end
 # of an undersized buffer (src/opt/trc_dlfind_bridge.F90's own --opt-neb
@@ -168,12 +169,14 @@ terco_add_check(check_xc check_xc.F90)
 # unity, an exact radial Gaussian, and sums of Gaussians and Slaters over
 # water integrating to the atom count.
 terco_add_check(check_grid check_grid.F90 NEEDS_BASIS)
+target_link_libraries(check_grid PRIVATE test-drive::test-drive)
 
 # becke_partition_derivatives' O(n_atoms^2) production routine against a
 # hand-kept copy of the O(n_atoms^3) implementation it replaced, over
 # every point of a real water and formamide grid, both partition/adjust
 # combinations trc_dft_partition.F90 offers.
 terco_add_check(check_dft_partition_deriv check_dft_partition_deriv.F90 NEEDS_BASIS)
+target_link_libraries(check_dft_partition_deriv PRIVATE test-drive::test-drive)
 
 #
 # Basis functions on grid points: the numerical overlap against trc_1e's
@@ -185,6 +188,7 @@ terco_add_check(check_dft_partition_deriv check_dft_partition_deriv.F90 NEEDS_BA
 # Four-centre integrals and the Fock digestion, against libfint's own numbers
 # recorded in reference.dat.
 terco_add_check(check_binfock check_binfock.F90)
+target_link_libraries(check_binfock PRIVATE test-drive::test-drive)
 # The same check with every bin split into chunks of at most 3 pairs
 # (TRC_BIN_CAP; trc_bins.F90's split_large_bins). A real system only splits
 # past 32768 pairs in a bin, around 14,000 basis functions; this is that
@@ -204,6 +208,7 @@ target_link_libraries(check_schwarz_rys_vs_hgp PRIVATE test-drive::test-drive)
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
 terco_add_check(check_decontract check_decontract.F90 NEEDS_BASIS ARGS water.xyz basis_sets/cc-pvdz.json)
+target_link_libraries(check_decontract PRIVATE test-drive::test-drive)
 # Second row: twelve silicon s primitives under four contraction columns, the
 # case the whole exercise exists for.
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
@@ -217,6 +222,7 @@ set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CM
 # geometry, which is what let the common_fac_sp regression this check
 # guards against go unnoticed before.
 terco_add_check(check_basis_631g_ref check_basis_631g_ref.F90 NEEDS_BASIS)
+target_link_libraries(check_basis_631g_ref PRIVATE test-drive::test-drive)
 # The spherical (pure) AO space against pyscf's cart=False: water in
 # def2-SVP and cc-pVDZ, a three-water cluster in def2-SVP, SiH4 in
 # cc-pVDZ, and the OH radical open-shell in cc-pVDZ. See check_spherical.F90's
@@ -238,6 +244,7 @@ terco_add_check(sapcmp sapcmp.F90 NEEDS_BASIS)
 # The public API end to end: overlap, kinetic, nuclear attraction, the two- and
 # three-centre Coulomb integrals, and the multipoles, all against libfint.
 terco_add_check(check_api check_api.F90)
+target_link_libraries(check_api PRIVATE test-drive::test-drive)
 
 # The one-electron kernels on their own, block by block, against libfint.
 #
@@ -247,6 +254,7 @@ terco_add_check(check_api check_api.F90)
 # `check_api` compares the same integrals against the same oracle through the
 # public API, which is the only way a consumer can reach them anyway.
 terco_add_check(check_1e check_1e.F90)
+target_link_libraries(check_1e PRIVATE test-drive::test-drive)
 
 #
 # The folded and enumerated digestions, on a symmetric density.
@@ -258,6 +266,12 @@ terco_add_check(check_1e check_1e.F90)
 # check passes without executing a line of it.
 #
 terco_add_check(check_nosym check_nosym.F90 NEEDS_BASIS ARGS water.xyz)
+target_link_libraries(check_nosym PRIVATE test-drive::test-drive)
+# Its own module directory: check_nosym_f below compiles the same source,
+# whose module would otherwise race into one shared directory (same fix as
+# check_df_grad_ints_${case}'s own comment).
+set_target_properties(check_nosym PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_nosym)
 # 6-31G needs only l <= 1, so this only self-skips (SKIP + stop 0, same
 # check_nosym.F90 branch check_nosym_f's comment below describes) at
 # TERCO_LMAX=0 -- a build that drops even p functions. Covered for the
@@ -275,6 +289,9 @@ set_tests_properties(terco/check_nosym PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP"
 # run it always does.
 #
 terco_add_check(check_nosym_f check_nosym.F90 NEEDS_BASIS ARGS water.xyz 3)
+target_link_libraries(check_nosym_f PRIVATE test-drive::test-drive)
+set_target_properties(check_nosym_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_nosym_f)
 # At TERCO_LMAX < 3 this prints "SKIP: ..." and `stop 0` instead of running
 # anything (see check_nosym.F90's own header) -- a pass by exit code, with
 # nothing checked. SKIP_REGULAR_EXPRESSION makes ctest report that as
@@ -306,8 +323,16 @@ set_tests_properties(
 #
 terco_add_check(check_rys_grad_fd_631gs check_rys_grad_fd.F90 NEEDS_BASIS
                 ARGS basis_sets/6-31gs.json)
+target_link_libraries(check_rys_grad_fd_631gs PRIVATE test-drive::test-drive)
+# Its own module directory: both targets compile the same source, whose
+# module would otherwise race into one shared directory.
+set_target_properties(check_rys_grad_fd_631gs PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_rys_grad_fd_631gs)
 terco_add_check(check_rys_grad_fd_ccpvdz check_rys_grad_fd.F90 NEEDS_BASIS
                 ARGS basis_sets/cc-pvdz.json)
+target_link_libraries(check_rys_grad_fd_ccpvdz PRIVATE test-drive::test-drive)
+set_target_properties(check_rys_grad_fd_ccpvdz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_rys_grad_fd_ccpvdz)
 set_tests_properties(
   terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
@@ -322,8 +347,14 @@ set_tests_properties(
 #
 terco_add_check(check_lr_exchange_grad_fd_631gs check_lr_exchange_grad_fd.F90 NEEDS_BASIS
                 ARGS basis_sets/6-31gs.json)
+target_link_libraries(check_lr_exchange_grad_fd_631gs PRIVATE test-drive::test-drive)
+set_target_properties(check_lr_exchange_grad_fd_631gs PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_lr_exchange_grad_fd_631gs)
 terco_add_check(check_lr_exchange_grad_fd_ccpvdz check_lr_exchange_grad_fd.F90 NEEDS_BASIS
                 ARGS basis_sets/cc-pvdz.json)
+target_link_libraries(check_lr_exchange_grad_fd_ccpvdz PRIVATE test-drive::test-drive)
+set_target_properties(check_lr_exchange_grad_fd_ccpvdz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_lr_exchange_grad_fd_ccpvdz)
 set_tests_properties(
   terco/check_lr_exchange_grad_fd_631gs terco/check_lr_exchange_grad_fd_ccpvdz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
@@ -332,6 +363,7 @@ set_tests_properties(
 # repulsion) against finite differences of terco's own fully reconverged
 # SCF energy -- RHF water, UHF OH -- see check_full_grad_fd.F90's header.
 terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
+target_link_libraries(check_full_grad_fd PRIVATE test-drive::test-drive)
 
 #
 # The SCF/gradient reuse added for a sequence of nearby geometries (the FD
@@ -347,6 +379,7 @@ target_link_libraries(check_scf_reuse PRIVATE test-drive::test-drive terco_c_int
 # converged density -- the one check that exercises trc_scf_gradient's own
 # spherical fold (see check_full_grad_vs_pyscf.F90's own header).
 terco_add_check(check_full_grad_vs_pyscf check_full_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_full_grad_vs_pyscf PRIVATE test-drive::test-drive)
 
 # The FULL KS-DFT gradient, SAME recipe as check_xc_grad_vs_pyscf.F90
 # (terco's own converged orbitals and grid, no pyscf SCF) but with NO
@@ -433,6 +466,11 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/dft_grad_probe_${case}.bin)
   terco_add_check(check_dft_grad_vs_pyscf_${case} check_dft_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${func} ${glev} ${dump} ${case})
+  target_link_libraries(check_dft_grad_vs_pyscf_${case} PRIVATE test-drive::test-drive)
+  # Its own module directory: every case compiles the same source, whose
+  # module would otherwise race into one shared directory.
+  set_target_properties(check_dft_grad_vs_pyscf_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_dft_grad_vs_pyscf_${case})
 endforeach()
 
 # The CLI's --grad against a direct trc_run_gradient/trc_gradient call on
@@ -447,6 +485,7 @@ if(TERCO_BUILD_APP)
   set(_cli_grad_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_probe.json)
   terco_add_check(check_cli_grad check_cli_grad.F90 NEEDS_BASIS
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_probe})
+  target_link_libraries(check_cli_grad PRIVATE test-drive::test-drive)
   # `add_dependencies(check_cli_grad terco_cli)` belongs in
   # app/CMakeLists.txt, not here: that target does not exist yet in THIS
   # directory's own configure pass (app/ is added after test/ by the root
@@ -462,6 +501,7 @@ if(TERCO_BUILD_APP)
   set(_cli_grad_dft_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_dft_probe.json)
   terco_add_check(check_cli_grad_dft check_cli_grad_dft.F90 NEEDS_BASIS
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_dft_probe})
+  target_link_libraries(check_cli_grad_dft PRIVATE test-drive::test-drive)
   unset(_cli_grad_dft_probe)
 
   # The same comparison for --df --grad (B3LYP: fitted J, fitted K, XC) --
@@ -469,6 +509,7 @@ if(TERCO_BUILD_APP)
   set(_cli_grad_df_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_df_probe.json)
   terco_add_check(check_cli_grad_df check_cli_grad_df.F90 NEEDS_BASIS
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
+  target_link_libraries(check_cli_grad_df PRIVATE test-drive::test-drive)
   unset(_cli_grad_df_probe)
 
   # trc_main's own CLI-string lowercasing (--func, --guess, ...) --
@@ -750,12 +791,14 @@ terco_add_check(check_xc_grad_fixedgrid_fd check_xc_grad_fixedgrid_fd.F90 NEEDS_
 # test/pyscf_refs/mult.ref back and does the comparison itself.
 #
 terco_add_check(check_mult check_mult.F90 NEEDS_PYSCF_REF)
+target_link_libraries(check_mult PRIVATE test-drive::test-drive)
 
 #
 # Basis function values and gradients, elementwise against a committed
 # pyscf eval_ao reference (test/pyscf_refs/ao.ref).
 #
 terco_add_check(check_ao check_ao.F90 NEEDS_PYSCF_REF)
+target_link_libraries(check_ao PRIVATE test-drive::test-drive)
 
 # E_xc and V_xc on the same grid and density, twenty functionals, RKS and
 # UKS, against test/pyscf_refs/xc_energy.ref.
@@ -913,6 +956,9 @@ foreach(b 631gs ccpvdz)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/lr_exchange_grad_probe_${b}.bin)
   terco_add_check(check_lr_exchange_grad_vs_pyscf_${b} check_lr_exchange_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${json} ${dump} ${b})
+  target_link_libraries(check_lr_exchange_grad_vs_pyscf_${b} PRIVATE test-drive::test-drive)
+  set_target_properties(check_lr_exchange_grad_vs_pyscf_${b} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_lr_exchange_grad_vs_pyscf_${b})
 endforeach()
 
 # trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
@@ -933,6 +979,9 @@ foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/onee_grad_probe_${case}.bin)
   terco_add_check(check_1e_grad_vs_pyscf_${case} check_1e_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${case})
+  target_link_libraries(check_1e_grad_vs_pyscf_${case} PRIVATE test-drive::test-drive)
+  set_target_properties(check_1e_grad_vs_pyscf_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_1e_grad_vs_pyscf_${case})
 endforeach()
 
 #
@@ -977,6 +1026,9 @@ foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_fock_probe_${case}.bin)
   terco_add_check(check_rys_fock_vs_pyscf_${case} check_rys_fock_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${tol})
+  target_link_libraries(check_rys_fock_vs_pyscf_${case} PRIVATE test-drive::test-drive)
+  set_target_properties(check_rys_fock_vs_pyscf_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_rys_fock_vs_pyscf_${case})
   # The build-side LMAX self-skip still prints "SKIP" and exits 0 at
   # TERCO_LMAX < 3 -- ctest calls that "Skipped", not "Passed". At
   # TERCO_LMAX>=3 a MISSING reference is a hard FAIL instead (see
@@ -1019,6 +1071,9 @@ foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
     terco_add_check(check_erf_fock_vs_pyscf_${case}_${path}
                     check_erf_fock_vs_pyscf.F90
                     NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} ${nosym_flag} ${case})
+    target_link_libraries(check_erf_fock_vs_pyscf_${case}_${path} PRIVATE test-drive::test-drive)
+    set_target_properties(check_erf_fock_vs_pyscf_${case}_${path} PROPERTIES Fortran_MODULE_DIRECTORY
+                          ${CMAKE_CURRENT_BINARY_DIR}/mod_check_erf_fock_vs_pyscf_${case}_${path})
   endforeach()
   # "hgp" is HGP for every class: the default sends some d classes to Rys.
   set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_hgp
@@ -1029,6 +1084,9 @@ foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
   terco_add_check(check_erf_fock_vs_pyscf_${case}_rys
                   check_erf_fock_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${xyz} ${json} ${dump} 0 ${case})
+  target_link_libraries(check_erf_fock_vs_pyscf_${case}_rys PRIVATE test-drive::test-drive)
+  set_target_properties(check_erf_fock_vs_pyscf_${case}_rys PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_erf_fock_vs_pyscf_${case}_rys)
   set_tests_properties(terco/check_erf_fock_vs_pyscf_${case}_rys
     PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=all")
 endforeach()
@@ -1047,6 +1105,9 @@ set(dump ${CMAKE_CURRENT_BINARY_DIR}/erf_fock_probe_water_ccpvqz_md.bin)
 terco_add_check(check_erf_fock_vs_pyscf_water_ccpvqz_md check_erf_fock_vs_pyscf.F90
                 NEEDS_BASIS NEEDS_PYSCF_REF
                 ARGS water.xyz basis_sets/cc-pvqz-pyscf17.json ${dump} 0 water_ccpvqz)
+target_link_libraries(check_erf_fock_vs_pyscf_water_ccpvqz_md PRIVATE test-drive::test-drive)
+set_target_properties(check_erf_fock_vs_pyscf_water_ccpvqz_md PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_erf_fock_vs_pyscf_water_ccpvqz_md)
 set_tests_properties(terco/check_erf_fock_vs_pyscf_water_ccpvqz_md PROPERTIES
   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_MDG_CART=1"
   SKIP_REGULAR_EXPRESSION "SKIP")
@@ -1085,6 +1146,7 @@ set(dump ${CMAKE_CURRENT_BINARY_DIR}/df_vs_pyscf_probe.bin)
 terco_add_check(check_df_vs_pyscf check_df_vs_pyscf.F90
                 NEEDS_BASIS NEEDS_PYSCF_REF ARGS water.xyz basis_sets/cc-pvtz.json
                 basis_sets/cc-pvtz-rifit.json ${dump})
+target_link_libraries(check_df_vs_pyscf PRIVATE test-drive::test-drive)
 # Same self-skip convention as check_rys_fock_vs_pyscf above, one level up.
 set_tests_properties(terco/check_df_vs_pyscf
   PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
@@ -1108,6 +1170,7 @@ foreach(case IN ITEMS water_631gs water_ccpvdz formamide_ccpvdz)
   terco_add_check(check_df_grad_ints_${case} check_df_grad_ints.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${_mol}.xyz ${_bas}
                   basis_sets/def2-universal-jkfit.json ${dump} ${case})
+  target_link_libraries(check_df_grad_ints_${case} PRIVATE test-drive::test-drive)
   set_tests_properties(terco/check_df_grad_ints_${case}
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
   # Its own module directory: both cases compile the same source, whose
@@ -1120,6 +1183,7 @@ endforeach()
 # Richardson central finite difference of terco's own reconverged --df energy
 # -- RHF, RKS PBE, RKS B3LYP on water/6-31G*, see check_df_grad_fd.F90.
 terco_add_check(check_df_grad_fd check_df_grad_fd.F90 NEEDS_BASIS)
+target_link_libraries(check_df_grad_fd PRIVATE test-drive::test-drive)
 # LONG: ~80 s on a gcc-15 CI runner; the nightly run keeps it (see
 # check_xc_grad_fd above), check_df_grad_fd_formamide runs on every PR.
 set_tests_properties(terco/check_df_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
@@ -1156,6 +1220,9 @@ foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b
   terco_add_check(check_df_grad_vs_pyscf_${case} check_df_grad_vs_pyscf.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${_mol}.xyz ${_bas}
                   basis_sets/def2-universal-jkfit.json ${_fn} 3 ${dump} ${case} ${_tol})
+  target_link_libraries(check_df_grad_vs_pyscf_${case} PRIVATE test-drive::test-drive)
+  set_target_properties(check_df_grad_vs_pyscf_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_df_grad_vs_pyscf_${case})
   set_tests_properties(terco/check_df_grad_vs_pyscf_${case}
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
@@ -1164,6 +1231,7 @@ endforeach()
 # check_grad_df_refusals.F90.
 terco_add_check(check_grad_df_refusals check_grad_df_refusals.F90 NEEDS_BASIS
                 ARGS ${CMAKE_CURRENT_BINARY_DIR}/grad_df_refusals.scf)
+target_link_libraries(check_grad_df_refusals PRIVATE test-drive::test-drive)
 
 # The occupied-chunked path (trc_scf_grad_df.F90's MEMORY note), forced on
 # with TERCO_DFG_OCC_CHUNK=5: formamide's 12 occupied orbitals in chunks of
@@ -1183,6 +1251,7 @@ set_tests_properties(
 # surface arrays from test/pyscf_refs/pcm_cavity_water.ref.
 #
 terco_add_check(check_pcm_cavity check_pcm_cavity.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_pcm_cavity PRIVATE test-drive::test-drive)
 
 #
 # Harmonic vibrational analysis and RRHO thermochemistry (trc_vib.F90,
@@ -1208,6 +1277,9 @@ foreach(case water_631gs water_ccpvtz)
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/pcm_ints_probe_${case}.bin)
   terco_add_check(check_pcm_ints_${case} check_pcm_ints.F90
                   NEEDS_BASIS NEEDS_PYSCF_REF ARGS water.xyz ${json} ${dump} ${case})
+  target_link_libraries(check_pcm_ints_${case} PRIVATE test-drive::test-drive)
+  set_target_properties(check_pcm_ints_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_pcm_ints_${case})
   set_tests_properties(terco/check_pcm_ints_${case} PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
 
@@ -1381,7 +1453,8 @@ set_tests_properties(terco/context_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURR
 # cartesian = 0 (spherical), against the equivalent trc_set_*_json path.
 add_executable(check_capi_libcint_sph check_capi_libcint_sph.F90)
 target_compile_definitions(check_capi_libcint_sph PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(check_capi_libcint_sph PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK)
+target_link_libraries(check_capi_libcint_sph PRIVATE ${main_lib} terco_test_basis terco_c_interfaces LAPACK::LAPACK
+                                                       test-drive::test-drive)
 add_test(NAME terco/check_capi_libcint_sph COMMAND check_capi_libcint_sph)
 set_tests_properties(terco/check_capi_libcint_sph PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
@@ -1406,7 +1479,7 @@ set_tests_properties(terco/check_capi_shells PROPERTIES WORKING_DIRECTORY ${CMAK
 add_executable(check_capi_polarizability check_capi_polarizability.F90)
 target_compile_definitions(check_capi_polarizability PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(check_capi_polarizability PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
-                                                        terco_pyscf_ref_io)
+                                                        terco_pyscf_ref_io test-drive::test-drive)
 add_test(NAME terco/check_capi_polarizability COMMAND check_capi_polarizability)
 set_tests_properties(terco/check_capi_polarizability PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
@@ -1419,7 +1492,8 @@ set_tests_properties(terco/check_capi_polarizability PROPERTIES WORKING_DIRECTOR
 # reusing the fit.
 add_executable(check_capi_charge_unrestricted check_capi_charge_unrestricted.F90)
 target_compile_definitions(check_capi_charge_unrestricted PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(check_capi_charge_unrestricted PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_link_libraries(check_capi_charge_unrestricted PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                               test-drive::test-drive)
 add_test(NAME terco/check_capi_charge_unrestricted COMMAND check_capi_charge_unrestricted)
 set_tests_properties(terco/check_capi_charge_unrestricted PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
@@ -1432,7 +1506,7 @@ set_tests_properties(terco/check_capi_charge_unrestricted PROPERTIES WORKING_DIR
 add_executable(check_capi_pcm_radii check_capi_pcm_radii.F90)
 target_compile_definitions(check_capi_pcm_radii PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(check_capi_pcm_radii PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
-                                                    terco_pyscf_ref_io)
+                                                    terco_pyscf_ref_io test-drive::test-drive)
 add_test(NAME terco/check_capi_pcm_radii COMMAND check_capi_pcm_radii)
 set_tests_properties(terco/check_capi_pcm_radii PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
@@ -1523,7 +1597,7 @@ set_tests_properties(terco/link_c PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_S
 # there and reference_ao_norm.dat's header for how it was generated.
 add_executable(check_ao_norm check_ao_norm.F90)
 target_compile_definitions(check_ao_norm PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(check_ao_norm PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_link_libraries(check_ao_norm PRIVATE ${main_lib} terco_test_basis terco_c_interfaces test-drive::test-drive)
 target_include_directories(check_ao_norm PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/check_ao_norm COMMAND check_ao_norm)
 set_tests_properties(terco/check_ao_norm PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

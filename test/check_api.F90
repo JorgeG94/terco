@@ -11,66 +11,87 @@
 ! check_batch: if the container mislabelled a shell, kernel-level tests would
 ! still pass, because they never use the container.
 !
-program check_api
+module check_api_suite
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_df_3c, &
                       trc_multipoles, TRC_NMULT
    use trc_cart_perm, only: cart_perm_l2b
    implicit none
+   private
+   public :: collect_api_tests
 
    integer, parameter :: ATM_SLOTS = 6, BAS_SLOTS = 8
    integer, parameter :: ANG_OF = 1
 
-   integer, allocatable :: atm(:), bas(:)
-   real(dp), allocatable :: env(:)
-   integer :: natm, nbas, nenv, u, isys, nbad
-   real(dp) :: w1(3), w3
-   character(len=80) :: t
-
-   nbad = 0; w1 = 0.0_dp; w3 = 0.0_dp
-
-   ! --- one-electron matrices ---
-   open (newunit=u, file='reference1e.dat', status='old', action='read')
-   do
-      read (u, '(a)', end=91) t
-      if (t(1:3) == 'END') exit
-      if (t(1:6) /= 'SYSTEM') cycle
-      read (t(8:), *) isys
-      call read_system(u, atm, bas, env, natm, nbas, nenv)
-      call check_1e_system(u, isys, atm, bas, env, natm, nbas)
-      deallocate (atm, bas, env)
-   end do
-91 continue
-   close (u)
-
-   ! --- three-index tensor ---
-   open (newunit=u, file='reference_df.dat', status='old', action='read')
-   do
-      read (u, '(a)', end=92) t
-      if (t(1:3) == 'END') exit
-      if (t(1:6) /= 'SYSTEM') cycle
-      read (t(8:), *) isys
-      call read_system(u, atm, bas, env, natm, nbas, nenv)
-      call check_3c_system(u, isys, atm, bas, env, natm, nbas)
-      deallocate (atm, bas, env)
-   end do
-92 continue
-   close (u)
-
-   print '(a)', ''
-   print '(a,es10.2)', '  worst overlap  : ', w1(1)
-   print '(a,es10.2)', '  worst kinetic  : ', w1(2)
-   print '(a,es10.2)', '  worst nuclear  : ', w1(3)
-   print '(a,es10.2)', '  worst 3-centre : ', w3
-   print '(a,i0)', '  outside tol    : ', nbad
-   if (nbad == 0) then
-      print '(a)', '  RESULT: PASS'
-   else
-      print '(a)', '  RESULT: FAIL'
-      stop 1
-   end if
-
 contains
+
+   subroutine collect_api_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("one-electron matrices (OVLP/KIN/NUC) match libfint, every system", &
+                               test_1e_vs_libfint), &
+                  new_unittest("three-centre DF tensor matches libfint, every system", test_3c_vs_libfint) &
+                  ]
+   end subroutine collect_api_tests
+
+   subroutine test_1e_vs_libfint(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer, allocatable :: atm(:), bas(:)
+      real(dp), allocatable :: env(:)
+      integer :: natm, nbas, nenv, u, isys, nbad
+      real(dp) :: w1(3)
+      character(len=80) :: t
+
+      nbad = 0; w1 = 0.0_dp
+
+      open (newunit=u, file='reference1e.dat', status='old', action='read')
+      do
+         read (u, '(a)', end=91) t
+         if (t(1:3) == 'END') exit
+         if (t(1:6) /= 'SYSTEM') cycle
+         read (t(8:), *) isys
+         call read_system(u, atm, bas, env, natm, nbas, nenv)
+         call check_1e_system(u, isys, atm, bas, env, natm, nbas, w1, nbad)
+         deallocate (atm, bas, env)
+      end do
+91    continue
+      close (u)
+
+      call check(error, nbad == 0, &
+                 "1e API vs libfint: worst overlap "//to_string(w1(1), "es10.2")// &
+                 ", kinetic "//to_string(w1(2), "es10.2")//", nuclear "//to_string(w1(3), "es10.2")// &
+                 "; "//to_string(nbad)//" block entries outside tol")
+   end subroutine test_1e_vs_libfint
+
+   subroutine test_3c_vs_libfint(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer, allocatable :: atm(:), bas(:)
+      real(dp), allocatable :: env(:)
+      integer :: natm, nbas, nenv, u, isys, nbad
+      real(dp) :: w3
+      character(len=80) :: t
+
+      nbad = 0; w3 = 0.0_dp
+
+      open (newunit=u, file='reference_df.dat', status='old', action='read')
+      do
+         read (u, '(a)', end=92) t
+         if (t(1:3) == 'END') exit
+         if (t(1:6) /= 'SYSTEM') cycle
+         read (t(8:), *) isys
+         call read_system(u, atm, bas, env, natm, nbas, nenv)
+         call check_3c_system(u, isys, atm, bas, env, natm, nbas, w3, nbad)
+         deallocate (atm, bas, env)
+      end do
+92    continue
+      close (u)
+
+      call check(error, nbad == 0, &
+                 "3-centre API vs libfint: worst diff "//to_string(w3, "es10.2")// &
+                 "; "//to_string(nbad)//" tensor entries outside tol")
+   end subroutine test_3c_vs_libfint
 
    subroutine read_system(u, atm, bas, env, natm, nbas, nenv)
       integer, intent(in) :: u
@@ -101,10 +122,12 @@ contains
       end do
    end subroutine ao_offsets
 
-   subroutine check_1e_system(u, isys, atm, bas, env, natm, nbas)
+   subroutine check_1e_system(u, isys, atm, bas, env, natm, nbas, w1, nbad)
       integer, intent(in) :: u, isys, natm, nbas
       integer, intent(in) :: atm(0:), bas(0:)
       real(dp), intent(in) :: env(0:)
+      real(dp), intent(inout) :: w1(3)
+      integer, intent(inout) :: nbad
 
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: pl
@@ -204,10 +227,12 @@ contains
    ! not normally the orbital one -- but it exercises every (la,lb|lc) the
    ! generator emits, which is what a correctness check is for.
    !
-   subroutine check_3c_system(u, isys, atm, bas, env, natm, nbas)
+   subroutine check_3c_system(u, isys, atm, bas, env, natm, nbas, w3, nbad)
       integer, intent(in) :: u, isys, natm, nbas
       integer, intent(in) :: atm(0:), bas(0:)
       real(dp), intent(in) :: env(0:)
+      real(dp), intent(inout) :: w3
+      integer, intent(inout) :: nbad
 
       type(trc_basis_t) :: b, aux
       type(trc_pairlist_t) :: pl
@@ -275,4 +300,22 @@ contains
       deallocate (off, tens)
    end subroutine check_3c_system
 
+end module check_api_suite
+
+program check_api
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_api_suite, only: collect_api_tests
+   implicit none
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   stat = 0
+   testsuites = [new_testsuite("check_api", collect_api_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_api

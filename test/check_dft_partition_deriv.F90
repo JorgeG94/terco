@@ -163,40 +163,66 @@ contains
 
 end module check_dft_partition_deriv_ref
 
-program check_dft_partition_deriv
-   use pic_types, only: dp
+module check_dft_partition_deriv_suite
+   use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use trc_dft_grid, only: dft_grid_t, dft_grid_options_t, dft_grid_build
-   use pic_types, only: int64
    use trc_dft_partition, only: dft_partition_becke_derivatives, dft_partition_becke_grad_contract, &
                                 dft_partition_options_t, PARTITION_BECKE, PARTITION_STRATMANN, &
                                 ADJUST_TREUTLER, ADJUST_NONE
    use check_dft_partition_deriv_ref, only: reference_derivatives
    implicit none
-
-   logical :: any_fail
-   any_fail = .false.
-
-   call one_case('water.xyz', PARTITION_BECKE, ADJUST_TREUTLER, 'water, Becke/Treutler', any_fail)
-   call one_case('water.xyz', PARTITION_STRATMANN, ADJUST_NONE, 'water, Stratmann/none', any_fail)
-   call one_case('formamide.xyz', PARTITION_BECKE, ADJUST_TREUTLER, 'formamide, Becke/Treutler', any_fail)
-   call one_case('formamide.xyz', PARTITION_STRATMANN, ADJUST_NONE, 'formamide, Stratmann/none', any_fail)
-   ! A water cluster, where most of a point's active atoms have negligible
-   ! cells: the case dft_partition_becke_grad_contract's cell screening is for.
-   call large_case('w5.xyz', 'w5, Becke/Treutler, level 1', any_fail)
-
-   if (any_fail) then
-      print '(a)', 'check_dft_partition_deriv: RESULT: FAIL'; stop 1
-   end if
-   print '(a)', 'check_dft_partition_deriv: RESULT: PASS'
+   private
+   public :: collect_dft_partition_deriv_tests
 
 contains
 
-   subroutine one_case(xyzfile, scheme, adjust, label, any_fail)
+   subroutine collect_dft_partition_deriv_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("water, Becke/Treutler", test_water_becke), &
+                  new_unittest("water, Stratmann/none", test_water_stratmann), &
+                  new_unittest("formamide, Becke/Treutler", test_formamide_becke), &
+                  new_unittest("formamide, Stratmann/none", test_formamide_stratmann), &
+                  new_unittest("w5, Becke/Treutler, level 1 (cell screening)", test_w5_large) &
+                  ]
+   end subroutine collect_dft_partition_deriv_tests
+
+   subroutine test_water_becke(error)
+      type(error_type), allocatable, intent(out) :: error
+      call one_case('water.xyz', PARTITION_BECKE, ADJUST_TREUTLER, 'water, Becke/Treutler', error)
+   end subroutine test_water_becke
+
+   subroutine test_water_stratmann(error)
+      type(error_type), allocatable, intent(out) :: error
+      call one_case('water.xyz', PARTITION_STRATMANN, ADJUST_NONE, 'water, Stratmann/none', error)
+   end subroutine test_water_stratmann
+
+   subroutine test_formamide_becke(error)
+      type(error_type), allocatable, intent(out) :: error
+      call one_case('formamide.xyz', PARTITION_BECKE, ADJUST_TREUTLER, 'formamide, Becke/Treutler', error)
+   end subroutine test_formamide_becke
+
+   subroutine test_formamide_stratmann(error)
+      type(error_type), allocatable, intent(out) :: error
+      call one_case('formamide.xyz', PARTITION_STRATMANN, ADJUST_NONE, 'formamide, Stratmann/none', error)
+   end subroutine test_formamide_stratmann
+
+   subroutine test_w5_large(error)
+      !! A water cluster, where most of a point's active atoms have
+      !! negligible cells: the case dft_partition_becke_grad_contract's
+      !! cell screening is for.
+      type(error_type), allocatable, intent(out) :: error
+      call large_case('w5.xyz', 'w5, Becke/Treutler, level 1', error)
+   end subroutine test_w5_large
+
+   subroutine one_case(xyzfile, scheme, adjust, label, error)
       character(*), intent(in) :: xyzfile, label
       integer, intent(in) :: scheme, adjust
-      logical, intent(inout) :: any_fail
+      type(error_type), allocatable, intent(out) :: error
 
       integer :: nat
       integer, allocatable :: at_z(:)
@@ -206,7 +232,6 @@ contains
       real(dp), allocatable :: shift(:, :), inv_distance(:, :)
       real(dp), allocatable :: dw_new(:, :, :), dw_ref(:, :, :)
       real(dp) :: worst
-      integer :: i, j
       type(dft_grid_options_t) :: gopts
       type(dft_partition_options_t) :: unscreened
 
@@ -214,9 +239,8 @@ contains
       gopts%partition%scheme = scheme
       gopts%partition%adjust = adjust
       call dft_grid_build(r, at_z, grid, err, level=3, options=gopts)
-      if (err%has_error()) then
-         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
-      end if
+      call check(error, .not. err%has_error(), label//": "//err%get_message())
+      if (allocated(error)) return
 
       allocate (dw_new(3, nat, grid%n_points), dw_ref(3, nat, grid%n_points))
       ! nu_max=2 disables the production routine's own active-set
@@ -229,8 +253,9 @@ contains
       unscreened = grid%partition
       unscreened%nu_max = 2.0_dp
       call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, unscreened, dw_new, err)
-      if (err%has_error()) then
-         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
+      call check(error, .not. err%has_error(), label//": "//err%get_message())
+      if (allocated(error)) then
+         call grid%destroy(); return
       end if
 
       ! The reference needs `shift`/`inv_distance` exactly as the
@@ -247,23 +272,28 @@ contains
 
       worst = maxval(abs(dw_new - dw_ref))
       print '(a,a,a,es10.2,a,i0)', '  ', label, ': worst|new-old| ', worst, '  over ', grid%n_points
-      if (worst > 1.0e-13_dp) any_fail = .true.
+      call check(error, worst <= 1.0e-13_dp, label//": worst|new-old| = "//to_string(worst, "es10.2"))
+      if (allocated(error)) then
+         call grid%destroy(); return
+      end if
 
       ! dft_partition_becke_grad_contract against the dense derivatives
       ! contracted the way the XC gradient used to: with the production
       ! screening and with none, a per-point factor that is zero on every
       ! seventh point (the skip path), and a budget small enough to force
       ! many chunks.
-      call contract_case(grid, nat, r, at_z, scheme, adjust, label//', screened', -1.0_dp, any_fail)
-      call contract_case(grid, nat, r, at_z, scheme, adjust, label//', unscreened', 2.0_dp, any_fail)
+      call contract_case(grid, nat, r, at_z, scheme, adjust, label//', screened', -1.0_dp, error)
+      if (.not. allocated(error)) then
+         call contract_case(grid, nat, r, at_z, scheme, adjust, label//', unscreened', 2.0_dp, error)
+      end if
 
       call grid%destroy()
       deallocate (at_z, r, dw_new, dw_ref, shift, inv_distance)
    end subroutine one_case
 
-   subroutine large_case(xyzfile, label, any_fail)
+   subroutine large_case(xyzfile, label, error)
       character(*), intent(in) :: xyzfile, label
-      logical, intent(inout) :: any_fail
+      type(error_type), allocatable, intent(out) :: error
       integer :: nat
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :)
@@ -275,20 +305,19 @@ contains
       gopts%partition%scheme = PARTITION_BECKE
       gopts%partition%adjust = ADJUST_TREUTLER
       call dft_grid_build(r, at_z, grid, err, level=1, options=gopts)
-      if (err%has_error()) then
-         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
-      end if
-      call contract_case(grid, nat, r, at_z, PARTITION_BECKE, ADJUST_TREUTLER, label, -1.0_dp, any_fail)
+      call check(error, .not. err%has_error(), label//": "//err%get_message())
+      if (allocated(error)) return
+      call contract_case(grid, nat, r, at_z, PARTITION_BECKE, ADJUST_TREUTLER, label, -1.0_dp, error)
       call grid%destroy()
    end subroutine large_case
 
-   subroutine contract_case(grid, nat, r, at_z, scheme, adjust, label, numax, any_fail)
+   subroutine contract_case(grid, nat, r, at_z, scheme, adjust, label, numax, error)
       type(dft_grid_t), intent(in) :: grid
       integer, intent(in) :: nat, scheme, adjust
       real(dp), intent(in) :: r(3, nat), numax
       integer, intent(in) :: at_z(nat)
       character(*), intent(in) :: label
-      logical, intent(inout) :: any_fail
+      type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: dw(:, :, :), coef(:), g_ref(:, :), g_new(:, :)
       type(error_t) :: err
       real(dp) :: worst, scale
@@ -304,9 +333,11 @@ contains
       popts%adjust = adjust
       if (numax > 0.0_dp) popts%nu_max = numax
       call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, popts, dw, err)
-      if (err%has_error()) then
-         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
+      call check(error, .not. err%has_error(), label//": "//err%get_message())
+      if (allocated(error)) then
+         deallocate (dw, coef, g_ref, g_new); return
       end if
+
       g_ref = 0.0_dp
       do k = 1, grid%n_points
          own = grid%atom(k)
@@ -318,15 +349,19 @@ contains
       g_new = 1.0_dp   ! ADDED into: start from a non-zero gradient
       popts%budget = int(4*nat*37, int64)
       call dft_partition_becke_grad_contract(grid%coords, r, at_z, grid%atom, coef, popts, g_new, err)
-      if (err%has_error()) then
-         print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
+      call check(error, .not. err%has_error(), label//": "//err%get_message())
+      if (allocated(error)) then
+         deallocate (dw, coef, g_ref, g_new); return
       end if
+
       g_new = g_new - 1.0_dp
       scale = max(1.0_dp, maxval(abs(g_ref)))
       worst = maxval(abs(g_new - g_ref))
       print '(a,a,a,es10.2,a,es10.2)', '  ', label, ': contracted worst|new-dense| ', worst, &
          '  of max ', maxval(abs(g_ref))
-      if (worst > 1.0e-13_dp*scale .or. maxval(abs(g_ref)) == 0.0_dp) any_fail = .true.
+      call check(error, worst <= 1.0e-13_dp*scale .and. maxval(abs(g_ref)) /= 0.0_dp, &
+                 label//": contracted worst|new-dense| = "//to_string(worst, "es10.2")// &
+                 ", max|g_ref| = "//to_string(maxval(abs(g_ref)), "es10.2"))
       deallocate (dw, coef, g_ref, g_new)
    end subroutine contract_case
 
@@ -366,4 +401,21 @@ contains
       end do
    end subroutine shift_and_distance
 
+end module check_dft_partition_deriv_suite
+
+program check_dft_partition_deriv
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_dft_partition_deriv_suite, only: collect_dft_partition_deriv_tests
+   implicit none
+   type(testsuite_type), allocatable :: testsuites(:)
+   integer :: stat
+
+   stat = 0
+   testsuites = [new_testsuite("check_dft_partition_deriv", collect_dft_partition_deriv_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_dft_partition_deriv

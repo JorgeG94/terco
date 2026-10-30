@@ -29,39 +29,47 @@
 ! against zero -- a property of the ANALYTIC gradient alone, not of the
 ! finite difference.
 !
-program check_rys_grad_fd
+! The basis (6-31G* or cc-pVDZ) comes from the command line (test/CMakeLists.txt
+! registers this source as TWO executables, ARGS basis_sets/6-31gs.json and
+! basis_sets/cc-pvdz.json, each also setting TRC_RYS_CLASSES=none so the
+! HGP path is what gets checked), so each run checks exactly the one basis
+! it was invoked with.
+!
+module check_rys_grad_fd_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
+   private
+   public :: collect_rys_grad_fd_tests
 
    real(dp), parameter :: H = 1.0e-4_dp
    real(dp), parameter :: THRESH = 1.0e-14_dp
    real(dp), parameter :: RELTOL = 1.0e-7_dp
    real(dp), parameter :: INVTOL = 1.0e-10_dp
 
-   character(len=256) :: basis_json
-   logical :: any_fail
-
-   any_fail = .false.
-   if (command_argument_count() < 1) then
-      print '(a)', 'usage: check_rys_grad_fd <basis.json>'; stop 1
-   end if
-   call get_command_argument(1, basis_json)
-
-   call run_rhf(trim(basis_json))
-   call run_uhf(trim(basis_json))
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'
-      stop 1
-   end if
-   print '(a)', '  RESULT: PASS'
-
 contains
+
+   subroutine collect_rys_grad_fd_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("RHF gradient matches FD and is translation-invariant", test_rhf), &
+                  new_unittest("UHF gradient matches FD and is translation-invariant", test_uhf) &
+                  ]
+   end subroutine collect_rys_grad_fd_tests
+
+   subroutine basis_arg(basis_json, error)
+      character(len=*), intent(out) :: basis_json
+      type(error_type), allocatable, intent(out) :: error
+      basis_json = ''
+      if (command_argument_count() >= 1) call get_command_argument(1, basis_json)
+      call check(error, len_trim(basis_json) > 0, "usage: check_rys_grad_fd <basis.json>")
+   end subroutine basis_arg
 
    !
    ! A deterministic dense symmetric matrix, same closed form as
@@ -100,21 +108,24 @@ contains
    ! densities. ndens = size(dmat, 3): 1 is RHF (dmat(:,:,1) = Dtot), 2 is
    ! UHF (dmat(:,:,1:2) = Da, Db).
    !
-   real(dp) function e2_at(basis_json, nat, at_z, r, nao, ndens, dmat)
+   real(dp) function e2_at(basis_json, nat, at_z, r, nao, ndens, dmat, error)
       character(*), intent(in) :: basis_json
       integer, intent(in) :: nat, at_z(nat), nao, ndens
       real(dp), intent(in) :: r(3, nat), dmat(nao, nao, ndens)
+      type(error_type), allocatable, intent(inout) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t)   :: eri
       type(error_t) :: err
       real(dp) :: vhf(nao, nao), dtot(nao, nao)
 
+      e2_at = 0.0_dp
       call trc_basis_from_json(basis_json, nat, at_z, r, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'check_rys_grad_fd: '//err%get_message(); stop 1
-      end if
-      if (bas%nao /= nao) then
-         print '(a)', 'check_rys_grad_fd: nao changed under displacement'; stop 1
+      call check(error,.not. err%has_error(), "check_rys_grad_fd: "//err%get_message())
+      if (allocated(error)) return
+      call check(error, bas%nao == nao, "check_rys_grad_fd: nao changed under displacement")
+      if (allocated(error)) then
+         call bas%release()
+         return
       end if
       call bas%to_device()
       call eri%build(bas, THRESH)
@@ -144,9 +155,16 @@ contains
       call bas%release()
    end function e2_at
 
-   subroutine run_one(basis_json, tag, ndens)
-      character(*), intent(in) :: basis_json, tag
+   !
+   ! Runs the FD sweep once for `tag`/`ndens` and checks BOTH properties
+   ! this program has always checked: the FD/analytic agreement, then (if
+   ! that passed) the translational-invariance residual.
+   !
+   subroutine run_one(tag, ndens, error)
+      character(*), intent(in) :: tag
       integer, intent(in) :: ndens
+      type(error_type), allocatable, intent(out) :: error
+      character(len=256) :: basis_json
       type(trc_basis_t) :: bas
       type(trc_eri_t)   :: eri
       type(error_t) :: err
@@ -157,11 +175,13 @@ contains
       real(dp) :: ep, em, fd, worst_abs, worst_rel, ref, denom
       integer :: nbad
 
+      call basis_arg(basis_json, error)
+      if (allocated(error)) return
+
       call read_xyz('water.xyz', nat, at_z, r)
-      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'check_rys_grad_fd: '//err%get_message(); stop 1
-      end if
+      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+      call check(error,.not. err%has_error(), "check_rys_grad_fd: "//err%get_message())
+      if (allocated(error)) return
       nao = bas%nao
 
       allocate (dmat(nao, nao, ndens), grad(3, nat))
@@ -183,8 +203,16 @@ contains
             rp = r; rm = r
             rp(d, ia) = rp(d, ia) + H
             rm(d, ia) = rm(d, ia) - H
-            ep = e2_at(basis_json, nat, at_z, rp, nao, ndens, dmat)
-            em = e2_at(basis_json, nat, at_z, rm, nao, ndens, dmat)
+            ep = e2_at(trim(basis_json), nat, at_z, rp, nao, ndens, dmat, error)
+            if (allocated(error)) then
+               deallocate (at_z, r, rp, rm, inv, dmat, grad)
+               return
+            end if
+            em = e2_at(trim(basis_json), nat, at_z, rm, nao, ndens, dmat, error)
+            if (allocated(error)) then
+               deallocate (at_z, r, rp, rm, inv, dmat, grad)
+               return
+            end if
             fd = (ep - em)/(2.0_dp*H)
             ref = grad(d, ia)
             worst_abs = max(worst_abs, abs(fd - ref))
@@ -199,24 +227,44 @@ contains
          inv = inv + grad(:, ia)
       end do
 
-      print '(a,a,a,i0,a,es10.2,a,es10.2,a,i0)', '  ', tag, ': nat ', nat, &
-         '  worst abs ', worst_abs, '  worst rel ', worst_rel, '  outside tol ', nbad
-      print '(a,3es10.2)', '    translational-invariance residual: ', inv
-
-      if (nbad > 0) any_fail = .true.
-      if (maxval(abs(inv)) > INVTOL) any_fail = .true.
+      call check(error, nbad == 0, tag//": worst abs "//to_string(worst_abs, "es10.2")// &
+                 " worst rel "//to_string(worst_rel, "es10.2")//" outside tol "//to_string(nbad))
+      if (allocated(error)) then
+         deallocate (at_z, r, rp, rm, inv, dmat, grad)
+         return
+      end if
+      call check(error, maxval(abs(inv)) <= INVTOL, tag// &
+                 ": translational-invariance residual "//to_string(maxval(abs(inv)), "es10.2")// &
+                 " exceeds INVTOL")
 
       deallocate (at_z, r, rp, rm, inv, dmat, grad)
    end subroutine run_one
 
-   subroutine run_rhf(basis_json)
-      character(*), intent(in) :: basis_json
-      call run_one(basis_json, 'RHF', 1)
-   end subroutine run_rhf
+   subroutine test_rhf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_one('RHF', 1, error)
+   end subroutine test_rhf
 
-   subroutine run_uhf(basis_json)
-      character(*), intent(in) :: basis_json
-      call run_one(basis_json, 'UHF', 2)
-   end subroutine run_uhf
+   subroutine test_uhf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_one('UHF', 2, error)
+   end subroutine test_uhf
 
+end module check_rys_grad_fd_suite
+
+program check_rys_grad_fd
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_rys_grad_fd_suite, only: collect_rys_grad_fd_tests
+   implicit none
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   stat = 0
+   testsuites = [new_testsuite("check_rys_grad_fd", collect_rys_grad_fd_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_rys_grad_fd
