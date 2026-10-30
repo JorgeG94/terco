@@ -399,7 +399,7 @@ contains
          call gst%step_on(lp, 4, tc)
          xopts = xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
                                  rho_tol=rho_tol)
-         if (present(xg)) then
+         if (present(grid) .and. present(xg)) then
             xopts%partition = grid%partition
             call xc_grad_add_on_grid(b, lp, func, density, grad, xopts, xst, xg)
          else
@@ -419,7 +419,7 @@ contains
             ! see that module's own header.
             call gst%step_on(lp, 5, tc)
             xopts = xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, grid_response=grid_response)
-            if (present(xg_nlc)) then
+            if (present(grid_nlc) .and. present(xg_nlc)) then
                xopts%partition = grid_nlc%partition
                call vv10_grad_add_on_grid(b, lp, func, density, grad, xopts, vst, xg_nlc)
             else
