@@ -254,6 +254,7 @@ module trc_scf_settings
       real(dp) :: incr_start_run = 0.0_dp
       real(dp) :: incr_scale_run = 0.0_dp
       integer :: incr_reset_run = 0
+      real(dp) :: rho_tol = 0.0_dp   !! the XC batch screen, `opts%rho_tol`
    contains
       procedure :: resolve => scf_settings_resolve
    end type scf_settings_t
@@ -298,6 +299,7 @@ contains
       ok = .true.
       msg = ""
       this%talk = opts%verbose
+      this%rho_tol = opts%rho_tol
       this%root = .true.
       if (present(comm)) this%root = comm%rank() == 0
       this%talk = this%talk .and. this%root

@@ -26,6 +26,7 @@
 program check_pcm_cavity
    use pic_types, only: dp
    use trc_error, only: error_t
+   use trc_linalg, only: trc_linalg_t
    use trc_pcm, only: trc_pcm_t, pcm_surface_t, pcm_build_surface, pcm_sd_matrices, &
                       pcm_switch_h, pcm_model_from_name, PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
    use trc_pcm_radii, only: pcm_radii_cavity_radius
@@ -103,12 +104,14 @@ contains
       integer, intent(in) :: model
       real(dp), intent(out) :: e, qt
       type(trc_pcm_t) :: ctx
+      type(trc_linalg_t) :: la
       type(error_t) :: err
       real(dp), allocatable :: v(:), q(:)
       integer :: k
+      call la%init(1)
       call ctx%init(model, EPS_WATER, err)
       call pcm_build_surface([8], ORIGIN, 302, 1.2_dp, ctx%surface, err)
-      call ctx%build_operators(err)
+      call ctx%build_operators(la, err)
       if (err%has_error()) then
          print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
       end if
@@ -118,12 +121,13 @@ contains
       end do
       ! solve's vectors live where K does: on the device under the GPU build
       !$acc enter data copyin(v) create(q)
-      call ctx%solve(v, q)
+      call ctx%solve(la, v, q)
       !$acc update self(q)
       !$acc exit data delete(v, q)
       e = 0.5_dp*dot_product(q, v)
       qt = sum(q)
       call ctx%release()
+      call la%release()
    end subroutine born
 
    subroutine refusals()
@@ -185,6 +189,7 @@ contains
    subroutine against_pyscf()
       type(pcm_surface_t) :: surf
       type(trc_pcm_t) :: ctx
+      type(trc_linalg_t) :: la
       type(error_t) :: err
       integer :: u, n, n110, k, j, model
       integer, allocatable :: perm(:)
@@ -242,10 +247,11 @@ contains
 
       ! --- the charge solve of both models for a fixed potential ---
       allocate (v(n), q(n))
+      call la%init(1)
       do model = PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
          call ctx%init(model, EPS_WATER, err)
          call pcm_build_surface(zat, rat, 302, 1.2_dp, ctx%surface, err)
-         call ctx%build_operators(err)
+         call ctx%build_operators(la, err)
          if (err%has_error()) then
             print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
          end if
@@ -253,7 +259,7 @@ contains
             v(k) = vfix(ctx%surface%coords(:, k))
          end do
          !$acc enter data copyin(v) create(q)
-         call ctx%solve(v, q)
+         call ctx%solve(la, v, q)
          !$acc update self(q)
          !$acc exit data delete(v, q)
          e = 0.5_dp*dot_product(q, v)
@@ -272,6 +278,7 @@ contains
          end if
          call ctx%release()
       end do
+      call la%release()
       deallocate (rc, rv, perm)
 
       ! --- 110 points per sphere: S and D element by element ---

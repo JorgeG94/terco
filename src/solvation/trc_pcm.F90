@@ -120,10 +120,6 @@ module trc_pcm
       real(dp), allocatable :: wq(:)            !! -q: what the Fock kernel is handed
       real(dp) :: e_diel = 0.0_dp               !! q . v / 2 at the last density
       real(dp) :: q_total = 0.0_dp              !! total apparent surface charge
-      type(trc_linalg_t), pointer :: la => null()
-      !! the LU, solves and products: the caller's handles (the SCF's, made
-      !! once per calculation) when init is given them, else PCM's own
-      logical :: own_la = .false.               !! `la` was allocated here
       logical :: on_device = .false.            !! `this` is mapped; every array
                                                 !! above follows it as it is made
    contains
@@ -400,15 +396,17 @@ contains
       !$acc exit data delete(coords, normals, zeta, switch_f, r_parent)
    end subroutine pcm_sd_matrices
 
-   subroutine pcm_init(this, model, eps, error, la)
+   subroutine pcm_init(this, model, eps, error)
       !! Settle the model and its dielectric scale factor
+      !!
+      !! PCM keeps no linear-algebra handles of its own: `build`,
+      !! `build_operators`, `solve` and `operator` take the caller's
+      !! `trc_linalg_t` (the SCF's, made once per calculation), already
+      !! initialised.
       class(trc_pcm_t), intent(inout) :: this
       integer, intent(in) :: model           !! PCM_MODEL_CPCM or PCM_MODEL_IEFPCM
       real(dp), intent(in) :: eps            !! solvent dielectric constant
       type(error_t), intent(inout) :: error
-      type(trc_linalg_t), intent(inout), target, optional :: la
-      !! cuBLAS/cuSOLVER handles to borrow (trc_linalg's init is create-once,
-      !! so PCM adds none of its own); absent, PCM makes and releases its own
 
       if (error%has_error()) return
       call this%release()
@@ -433,24 +431,16 @@ contains
       this%model = model
       ! Parent first, as the basis does (trc_api's basis_to_device); each
       ! array is then mapped as it is made, and released in reverse. The
-      ! handles live outside `this` (a pointer, to the caller's object or to
-      ! one allocated here), so their device scalars are never part of
-      ! `this`'s mapping.
+      ! handles are the caller's, passed to each call that needs them, so
+      ! their device scalars are never part of `this`'s mapping.
       !$acc enter data copyin(this)
-      if (present(la)) then
-         this%la => la
-         this%own_la = .false.
-      else
-         allocate (this%la)
-         this%own_la = .true.
-      end if
-      call this%la%init(1)
       this%on_device = .true.
    end subroutine pcm_init
 
-   subroutine pcm_build(this, b, angular_points, radii_scale, error, radii_override)
+   subroutine pcm_build(this, la, b, angular_points, radii_scale, error, radii_override)
       !! Cavity, operators and nuclear potential, once per geometry
       class(trc_pcm_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: la   !! the caller's handles, initialised
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: angular_points
       real(dp), intent(in) :: radii_scale
@@ -477,7 +467,7 @@ contains
       call pcm_build_surface(b%at_elem, b%at_r, angular_points, radii_scale, this%surface, error, &
                              radii_override=radii_override, is_ghost=(b%at_z == 0.0_dp))
       if (error%has_error()) return
-      call this%build_operators(error)
+      call this%build_operators(la, error)
       if (error%has_error()) return
 
       ! The nuclear potential each smeared point feels. A normalised
@@ -495,12 +485,13 @@ contains
       !$acc enter data copyin(this%v_nuc)
    end subroutine pcm_build
 
-   subroutine pcm_build_operators(this, error)
+   subroutine pcm_build_operators(this, la, error)
       !! Form K from the surface, factor it, and keep R where the model has one
       !!
       !! On the device under the GPU build, from the S and D builds through
       !! the D A S product to the LU; only the pivot status comes back.
       class(trc_pcm_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: la   !! the caller's handles, initialised
       type(error_t), intent(inout) :: error
 
       real(dp), allocatable :: smat(:, :)
@@ -529,7 +520,7 @@ contains
             call s_fill(n, sf%coords, sf%zeta, sf%switch_f, smat)
             call da_fill(n, sf%coords, sf%normals, sf%zeta, sf%r_parent, sf%area, this%rmat)
             call copy_square(n, smat, this%kmat)
-            call this%la%gemm_mat(this%rmat, smat, this%kmat, alpha=-f2pi, beta=1.0_dp)
+            call la%gemm_mat(this%rmat, smat, this%kmat, alpha=-f2pi, beta=1.0_dp)
             !$acc exit data delete(smat)
             deallocate (smat)
             call scale_shift(n, this%rmat, f2pi, -f)
@@ -537,7 +528,7 @@ contains
             call s_fill(n, sf%coords, sf%zeta, sf%switch_f, this%kmat)
          end if
       end associate
-      call this%la%getrf(n, this%kmat, n, this%ipiv, info)
+      call la%getrf(n, this%kmat, n, this%ipiv, info)
       if (info /= 0) then
          write (num, "(i0)") info
          call error%set(ERROR_VALIDATION, "PCM: K is singular (getrf info = "//trim(num)// &
@@ -590,7 +581,7 @@ contains
       end do
    end subroutine scale_shift
 
-   subroutine pcm_solve(this, v, q)
+   subroutine pcm_solve(this, la, v, q)
       !! Symmetrised apparent surface charges for one solute potential
       !!
       !! `K q = R v`, and for IEF-PCM's nonsymmetric K also `q_t = R^T K^-T v`,
@@ -599,6 +590,7 @@ contains
       !! device under the GPU build). The one place K is used per iteration:
       !! a matrix-free solve replaces this and build_operators, nothing else.
       class(trc_pcm_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: la   !! the caller's handles, initialised
       real(dp), intent(in) :: v(this%surface%n_points)
       real(dp), intent(inout) :: q(this%surface%n_points)
 
@@ -609,18 +601,18 @@ contains
       n = this%surface%n_points
       f = this%f_eps
       if (this%model == PCM_MODEL_IEFPCM) then
-         call this%la%gemv("N", n, n, 1.0_dp, this%rmat, n, v, 0.0_dp, q)
-         call this%la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
+         call la%gemv("N", n, n, 1.0_dp, this%rmat, n, v, 0.0_dp, q)
+         call la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
          allocate (adj(n))
          !$acc enter data create(adj)
          call axpby(n, 1.0_dp, v, 0.0_dp, adj)
-         call this%la%getrs("T", n, 1, this%kmat, n, this%ipiv, adj, n)
+         call la%getrs("T", n, 1, this%kmat, n, this%ipiv, adj, n)
          ! q := (q + R^T adj)/2
-         call this%la%gemv("T", n, n, 0.5_dp, this%rmat, n, adj, 0.5_dp, q)
+         call la%gemv("T", n, n, 0.5_dp, this%rmat, n, adj, 0.5_dp, q)
          !$acc exit data delete(adj)
       else
          call axpby(n, -f, v, 0.0_dp, q)
-         call this%la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
+         call la%getrs("N", n, 1, this%kmat, n, this%ipiv, q, n)
       end if
    end subroutine pcm_solve
 
@@ -659,7 +651,7 @@ contains
       call bcast(comm, g, n, 0)
    end subroutine pcm_sum_ranks
 
-   subroutine pcm_operator(this, b, pl, dtot, vmat, e_diel, comm)
+   subroutine pcm_operator(this, la, b, pl, dtot, vmat, e_diel, comm)
       !! One SCF iteration's continuum: charges from this density, then their operator
       !!
       !! `dtot` (the total density, alpha plus beta) and `vmat` are Cartesian
@@ -679,6 +671,7 @@ contains
       !! agrees, they are identical, replicated work on every rank.
       !! Absent `comm`, or a single rank, this is exactly the unsplit path.
       class(trc_pcm_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: la   !! the caller's handles, initialised
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       real(dp), intent(in) :: dtot(b%nao, b%nao)
@@ -706,8 +699,8 @@ contains
       end if
       ! Nuclei push the potential up, electrons pull it down.
       call axpby(n, 1.0_dp, this%v_nuc, -1.0_dp, this%v)
-      call this%solve(this%v, this%q)
-      this%e_diel = 0.5_dp*this%la%dot(n, this%q, this%v)
+      call this%solve(la, this%v, this%q)
+      this%e_diel = 0.5_dp*la%dot(n, this%q, this%v)
       e_diel = this%e_diel
       ! The electron's charge against the apparent charges' potential.
       call axpby(n, -1.0_dp, this%q, 0.0_dp, this%wq)
@@ -744,12 +737,6 @@ contains
          if (allocated(this%v_nuc)) then
             !$acc exit data delete(this%v_nuc)
          end if
-         if (this%own_la) then
-            call this%la%release()
-            deallocate (this%la)
-         end if
-         nullify (this%la)
-         this%own_la = .false.
          !$acc exit data delete(this)
          this%on_device = .false.
       end if
