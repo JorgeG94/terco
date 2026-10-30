@@ -823,7 +823,7 @@ def main():
     classes = [c for c in classes if max(c) <= a.lmax]
     for c in classes:
         if c[0] < c[1] or c[2] < c[3] or (c[0], c[1]) < (c[2], c[3]):
-            raise SystemExit(f"class {c}: la >= lb, lc >= ld and (la, lb) >= (lc, ld), as fock_bins forms them")
+            raise SystemExit(f"class {c}: la >= lb, lc >= ld and (la, lb) >= (lc, ld), as binkernel_fock_bins forms them")
     cmd = f"scripts/gen_md_k.py --lmax {a.lmax} --classes {a.classes}"
     if a.order not in ("lexicographic", "libcint"):
         cmd += f" --order {a.order}"

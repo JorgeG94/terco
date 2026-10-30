@@ -20,7 +20,7 @@ program check_decontract
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
-   use trc_decontract, only: decon_t, decontract_basis, decon_fold_host
+   use trc_decontract, only: decon_t, decontract_basis, decontract_fold_host
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
@@ -60,14 +60,14 @@ program check_decontract
    call trc_1e(b, p, s, t, v)
    call trc_1e(pb, pp, sp, tp, vp)
 
-   call decon_fold_host(m, sp, f)
+   call decontract_fold_host(m, sp, f)
    ws = 0.0_dp; scl = 0.0_dp
    do j = 1, b%nao
       do i = 1, b%nao
          ws = max(ws, abs(f(i, j) - s(i, j))); scl = max(scl, abs(s(i, j)))
       end do
    end do
-   call decon_fold_host(m, tp, f)
+   call decontract_fold_host(m, tp, f)
    wt = 0.0_dp
    do j = 1, b%nao
       do i = 1, b%nao

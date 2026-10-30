@@ -31,7 +31,7 @@ module trc_collocation
    implicit none
    private
 
-   public :: shell_collocate, shell_collocate2, NCART_MAX, XC_LMAX, NHESS
+   public :: collocation_shell, collocation_shell_hessian, NCART_MAX, XC_LMAX, NHESS
 
    ! The ceiling is generous on purpose: the loop is generic in l and a d
    ! shell costs no more than it would with a generated kernel, since the
@@ -42,14 +42,14 @@ module trc_collocation
    real(dp), parameter :: COLLOCATE_EXP_MAX = 34.5_dp   !! exp(-34.5) = 1e-15: a primitive past this is skipped
 
    ! CC_NX/CC_NY/CC_NZ/CC_OFF/CC_NCART: the flat (ix,iy,iz) table
-   ! shell_collocate reads below, in the build's Cartesian order
+   ! collocation_shell reads below, in the build's Cartesian order
    ! (TRC_CART_ORDER). OUTPUT layout -- see scripts/gen_cartcomp.py, whose
    ! header explains why this is a table and not a `select case`.
 #include "trc_collocation_table.inc"
 
 contains
 
-   pure subroutine shell_collocate(l, np, e, c, d, chi, gchi)
+   pure subroutine collocation_shell(l, np, e, c, d, chi, gchi)
       !$acc routine seq
       integer, intent(in) :: l, np
       real(dp), intent(in) :: e(np), c(np)
@@ -102,12 +102,12 @@ contains
          if (iy > 0) gchi(2, m) = gchi(2, m) + real(iy, dp)*xp(ix)*yp(iy - 1)*zp(iz)*rad
          if (iz > 0) gchi(3, m) = gchi(3, m) + real(iz, dp)*xp(ix)*yp(iy)*zp(iz - 1)*rad
       end do
-   end subroutine shell_collocate
+   end subroutine collocation_shell
 
    !
-   ! As `shell_collocate`, plus the Hessian: the GGA exchange-correlation
+   ! As `collocation_shell`, plus the Hessian: the GGA exchange-correlation
    ! GRADIENT's second-derivative term (trc_xc_grad.F90's `hchi`) is the only
-   ! reader. `shell_collocate` itself is untouched -- every energy-path
+   ! reader. `collocation_shell` itself is untouched -- every energy-path
    ! caller keeps paying for the value and gradient only -- so this is a
    ! second entry point rather than an optional argument on the first; an
    ! optional dummy on a `!$acc routine seq` procedure is the kind of thing
@@ -117,11 +117,11 @@ contains
    !                                   + f delta_ab drad + f x_a x_b ddrad
    !
    ! with f the monomial x^i y^j z^k, R the radial part, drad = dR/dx / x
-   ! (shell_collocate's own convention) and ddrad = d(drad)/dx / x, i.e. the
+   ! (collocation_shell's own convention) and ddrad = d(drad)/dx / x, i.e. the
    ! second radial derivative in the same "divide by the coordinate" form
    ! that keeps every piece a plain multiply, no division anywhere.
    !
-   pure subroutine shell_collocate2(l, np, e, c, d, chi, gchi, hchi)
+   pure subroutine collocation_shell_hessian(l, np, e, c, d, chi, gchi, hchi)
       !$acc routine seq
       integer, intent(in) :: l, np
       real(dp), intent(in) :: e(np), c(np)
@@ -192,6 +192,6 @@ contains
          hchi(5, m) = fyz*rad + drad*(fy*d(3) + fz*d(2)) + ang*d(2)*d(3)*ddrad
          hchi(6, m) = fzz*rad + 2.0_dp*fz*d(3)*drad + ang*drad + ang*d(3)*d(3)*ddrad
       end do
-   end subroutine shell_collocate2
+   end subroutine collocation_shell_hessian
 
 end module trc_collocation

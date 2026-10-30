@@ -44,7 +44,7 @@ module check_fukui_suite
    real(dp), parameter :: F_MINUS(3) = [0.669189280600_dp, 0.165405359742_dp, &
                                         0.165405359742_dp]
       !! mqc's own test_mqc_hirshfeld.f90's test_fukui, verbatim: RHF/
-      !! cc-pVDZ, 10 electrons, closed-shell neutral, max_iter=100,
+      !! cc-pVDZ, 10 electrons, closed-shell neutral, max_iteration=100,
       !! energy_tol=1e-11, density_tol=1e-9, unseeded ions.
 
    real(dp), parameter :: CHARGE_TOL = 1.0e-7_dp

@@ -2,7 +2,7 @@
 ! Iteration counts: the plain density warm start (a finite-difference
 ! Hessian's own, `dguess` at the PREVIOUS geometry's converged density)
 ! against the orbital-projection warm start (`cmo_project`, trc_scf_context's
-! `project_density`), at the SAME displaced geometry -- water/def2-SVP,
+! `scf_context_project_density`), at the SAME displaced geometry -- water/def2-SVP,
 ! HF and B3LYP, at a finite-difference Hessian's own h=0.005 Bohr and a
 ! larger, geometry-optimiser-sized step. Informational only: prints a
 ! table, asserts nothing, and is not registered as a ctest. Measured
@@ -52,7 +52,7 @@ contains
          print '(a)', 'bench_warmstart: '//err%get_message(); stop 1
       end if
       call b0%to_device()
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 100
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 100
       if (func /= 'hf') opts%functional = func
       call trc_scf_run(b0, nalpha, nbeta, opts, ref)
       if (.not. ref%converged) then

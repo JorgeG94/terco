@@ -81,7 +81,7 @@ program scf_cpks
    opts%conv_energy = 1.0e-12_dp
    opts%conv_density = 1.0e-10_dp
    opts%conv_diis = 1.0e-10_dp
-   opts%max_iter = 200
+   opts%max_iteration = 200
    opts%functional = trim(funcname)
    opts%grid_level = 3
    block
@@ -111,7 +111,7 @@ program scf_cpks
    call eri%build(bas, ERI_THRESH)
    call la%init(bas%nao)
    cphf_opts%conv_residual = 1.0e-8_dp
-   cphf_opts%max_iter = 100
+   cphf_opts%max_iteration = 100
 
    block
       type(timer_type) :: tm

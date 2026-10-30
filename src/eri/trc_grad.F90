@@ -68,7 +68,7 @@ module trc_grad
 contains
 
    !
-   ! Walk admitted bin pairs on the host (same plan fock_bins builds), sort
+   ! Walk admitted bin pairs on the host (same plan binkernel_fock_bins builds), sort
    ! by class, run `grad_class_compact` once per contiguous class run. No
    ! density-weighted bin screen: Gamma is not guaranteed to admit the same
    ! bin-level bound a symmetric Fock density does (same reasoning as
@@ -238,7 +238,7 @@ contains
    end subroutine grad_bins
 
    subroutine permute_segments(n, ord, sA, sNB, sOA, sOB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
-      !! Same permutation fock_bins applies to its own segment descriptors.
+      !! Same permutation binkernel_fock_bins applies to its own segment descriptors.
       integer, intent(in) :: n
       integer, intent(in) :: ord(n)
       integer, intent(inout) :: sA(n), sNB(n), sOA(n), sOB(n), sPA(n), sPB(n)

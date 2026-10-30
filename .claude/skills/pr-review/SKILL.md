@@ -109,7 +109,7 @@ standard Fortran.
   collective MPI call must have no internal (`contains`) procedures at all:
   under NVHPC 26.5 with HPC-X, even an unused sibling internal procedure
   zeroed the two-electron part of the Fock build at more than one rank (see
-  app/main.F90's `terco_run` header). New MPI-path helpers go in modules.
+  app/main.F90's `trc_run` header). New MPI-path helpers go in modules.
 - **The host build must stay correct.** CI has no GPU. It builds for the host,
   where `do concurrent` is a serial loop and OpenACC directives are inert, and
   runs the whole suite. Code that is correct only on the device is a bug.

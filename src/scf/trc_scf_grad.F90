@@ -7,10 +7,10 @@
 ! converged trc_scf_result_t. With `func` present (optional, see
 ! trc_scf_gradient's own header) this is the KS-DFT gradient instead:
 ! eri%gradient's exact-exchange piece scaled by `func%exx`, plus
-! trc_xc_grad%xc_gradient_add's LDA/GGA exchange-correlation term.
+! trc_xc_grad%xc_grad_add's LDA/GGA exchange-correlation term.
 !
 ! ORDER MATTERS. eri%gradient starts `grad` from zero (its own header: "the
-! two-electron part ONLY"); trc_1e_gradient and nuclear_repulsion_gradient
+! two-electron part ONLY"); trc_1e_gradient and scf_grad_nuclear_repulsion
 ! both ADD into whatever `grad` already holds. So the assembly below calls
 ! eri%gradient first and the other two after -- reversing that order would
 ! have eri%gradient discard the one-electron and nuclear-repulsion terms.
@@ -18,7 +18,7 @@
 ! THE FACTOR OF 1/2. eri%gradient's own convention (test/check_rys_grad_fd.F90's
 ! E2 = Tr(D, eri%fock(D)), no 1/2 -- that is what it is checked against, both
 ! there and vs pyscf) is the derivative of Tr(D, J(D) - K(D)/2) WITHOUT the
-! 1/2 that turns it into the actual two-electron ENERGY. scf_energy's own
+! 1/2 that turns it into the actual two-electron ENERGY. scf_fock_energy's own
 ! e_two is 0.5*Tr(D, gmat) (trc_scf_fock.F90): half of that same trace. So
 ! eri%gradient's raw output is exactly TWICE d(e_two)/dR, and has to be
 ! halved here before it is added to the one-electron and nuclear-repulsion
@@ -42,22 +42,22 @@ module trc_scf_grad
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_sph_to_cart
    use trc_xc_functional, only: trc_xc_functional_t
-   use trc_xc_grad, only: xc_gradient_add, xc_grad_step_names
+   use trc_xc_grad, only: xc_grad_add, xc_grad_step_names
    use trc_step_table, only: step_table_t
    use trc_scf_context, only: trc_pair_eri_cache_t
    use trc_scf_df, only: df_jk_t
-   use trc_scf_grad_df, only: df_two_electron_gradient
-   use trc_vv10_grad, only: vv10_gradient_add
+   use trc_scf_grad_df, only: scf_grad_df_two_electron
+   use trc_vv10_grad, only: vv10_grad_add
    use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
    use trc_dft_grid, only: dft_grid_t
    use trc_xc_batch, only: trc_xc_grid_t
    implicit none
    private
-   public :: trc_scf_gradient, nuclear_repulsion_gradient, energy_weighted_density
+   public :: trc_scf_gradient, scf_grad_nuclear_repulsion, scf_grad_energy_weighted_density
 
 contains
 
-   subroutine nuclear_repulsion_gradient(b, grad)
+   subroutine scf_grad_nuclear_repulsion(b, grad)
       !! dE_nuc/dR, ADDED into grad(3,natm). E_nuc = sum_{A<C} Z_A Z_C /
       !! |R_A - R_C|, and d/dR_A |R_A - R_C|^-1 = -(R_A - R_C)/|R_A-R_C|^3
       !! (the usual inverse-distance derivative), so
@@ -81,9 +81,9 @@ contains
             grad(:, a) = grad(:, a) - b%at_z(a)*b%at_z(c)*dvec/(rr*rr*rr)
          end do
       end do
-   end subroutine nuclear_repulsion_gradient
+   end subroutine scf_grad_nuclear_repulsion
 
-   subroutine energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
+   subroutine scf_grad_energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
       !! W = sum_s occ_s * sum_{i=1}^{nocc(s)} eps(i,s) c(:,i,s) c(:,i,s)^T,
       !! occ_s = 2 restricted (nspin=1, the one spin channel IS both
       !! electrons) or 1 per channel unrestricted -- the standard
@@ -127,7 +127,7 @@ contains
       end do
       !$acc exit data delete(cw)
       deallocate (cw)
-   end subroutine energy_weighted_density
+   end subroutine scf_grad_energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
                                func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux, &
@@ -135,7 +135,7 @@ contains
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
-      !! nuclear_repulsion_gradient. Takes orbitals and electron counts
+      !! scf_grad_nuclear_repulsion. Takes orbitals and electron counts
       !! rather than a trc_scf_result_t so a C API caller that only kept
       !! `cmo`/`eps` (trc_capi.F90's box handle, after trc_run_scf moved
       !! them out of its own local `res`) can call this directly, with no
@@ -159,29 +159,29 @@ contains
       !! (per-shell) change of basis the SCF's own spherical AOs are
       !! defined by. When the basis is not spherical, `b%nao_sph` still
       !! exists structurally (every shell's would-be spherical count) but
-      !! plays no role here: the fold is skipped and `dens`/`wmat` are
+      !! plays no role here: the fold is skipped and `density`/`wmat` are
       !! filled directly at `b%nao`, unchanged from before this feature.
       !!
       !! `func` ABSENT is the Hartree-Fock gradient, unchanged. PRESENT
-      !! adds the exchange-correlation term (trc_xc_grad%xc_gradient_add,
+      !! adds the exchange-correlation term (trc_xc_grad%xc_grad_add,
       !! LDA/GGA only -- see its own refusals) and scales eri%gradient's
       !! exact-exchange piece by the functional's `exx`, exactly as
       !! trc_scf_fock.F90 scales the Fock build's K by the same field.
       !!
       !! RANGE-SEPARATED HYBRIDS: `func%exx_lr`/`func%omega`, same meaning
-      !! as trc_scf_fock's build_g. When `func%exx_lr` is nonzero, a SECOND
+      !! as trc_scf_fock's scf_fock_build_g. When `func%exx_lr` is nonzero, a SECOND
       !! eri%gradient pass builds the long-range exchange gradient
       !! (j_scale = 0, k_scale = exx_lr, omega) and adds it on top of the
-      !! full-range one, next to it -- exactly how build_g assembles the
+      !! full-range one, next to it -- exactly how scf_fock_build_g assembles the
       !! energy (eri%fock_resident with j_scale=0, k_scale=exx_lr,
       !! omega, added into gmat_c). This routine computes that term for
-      !! ANY func with exx_lr /= 0, and so does xc_gradient_add's
+      !! ANY func with exx_lr /= 0, and so does xc_grad_add's
       !! semilocal GGA term below (func%omega/exx_lr do not reach it --
       !! see that module's own header) -- an RSH functional like wB97X is
       !! NOT refused anywhere in this path any more.
       !!
       !! VV10 (func%nlc_b/nlc_c nonzero, e.g. wB97X-V) is NOT refused
-      !! either any more: trc_vv10_grad%vv10_gradient_add adds the
+      !! either any more: trc_vv10_grad%vv10_grad_add adds the
       !! nonlocal correlation term on top, on its own grid (`nlc_grid_level`,
       !! below) -- single rank only, see that module's own header.
       type(trc_basis_t),  intent(inout) :: b
@@ -195,7 +195,7 @@ contains
       type(trc_xc_functional_t), intent(in), optional :: func
       integer, intent(in), optional :: grid_level, grid_max_pts
       logical, intent(in), optional :: grid_response
-      !! Forwarded to xc_gradient_add verbatim (its own default: ON). See
+      !! Forwarded to xc_grad_add verbatim (its own default: ON). See
       !! that module's header, GRID RESPONSE.
       real(dp), intent(in), optional :: rho_tol
       !! The SAME grid level/max-points-per-batch/rho screen the SCF itself
@@ -203,7 +203,7 @@ contains
       !! own grid_level/grid_max_pts/rho_tol) -- the gradient's quadrature
       !! has to match the energy's, not merely be "a reasonable DFT grid",
       !! or the two are not derivatives of the same number. Absent (a
-      !! Fortran-side caller with no opinion) falls back to xc_gradient_add's
+      !! Fortran-side caller with no opinion) falls back to xc_grad_add's
       !! own defaults.
       type(trc_pair_eri_cache_t), intent(inout), optional, target :: pair_eri_cache
       !! The SCF's own pair list and (outside `--df`) four-centre engine,
@@ -211,7 +211,7 @@ contains
       !! `trc_pair_eri_cache_t` own header) -- reused here INSTEAD of a
       !! fresh `pl%build`/`eri%build` when `pair_eri_cache%matches(b, thresh)`
       !! (that function's own header: the build threshold EXACTLY, both
-      !! sides read it from the same deterministic `eri_thresh_env`, so a
+      !! sides read it from the same deterministic `scf_settings_eri_thresh_env`, so a
       !! real match is bit-identical, never a near-miss, AND the cache's
       !! own geometry/basis fingerprint still matches `b` -- the backstop a
       !! Fortran caller needs, since the C API's own staleness check
@@ -241,7 +241,7 @@ contains
       !! SCF's.
       type(df_jk_t), intent(in), optional, target :: dfjk
       !! DENSITY FITTING (`--df`): present (with `aux`), the two-electron
-      !! term is the FITTED one, trc_scf_grad_df's df_two_electron_gradient
+      !! term is the FITTED one, trc_scf_grad_df's scf_grad_df_two_electron
       !! over the SAME fit (`dfjk`'s retained B and metric Cholesky factor)
       !! the SCF converged with, instead of eri%gradient's four-centre one --
       !! no ERI engine is built at all. Restricted and Cartesian only, the
@@ -257,7 +257,7 @@ contains
       type(trc_xc_grid_t), intent(in), optional, target :: xg, xg_nlc
       !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its own
       !! nlc grid (`grid_nlc`/`xg_nlc`) -- present, forwarded verbatim into
-      !! `xc_gradient_add`/`vv10_gradient_add`, which then skip their own
+      !! `xc_grad_add`/`vv10_grad_add`, which then skip their own
       !! rebuild entirely (see either module's own header, REUSE/GRID).
       !! Each pair is present together or not at all. Absent (every
       !! Fortran-side caller, and a C API gradient at settings the SCF's
@@ -274,7 +274,7 @@ contains
       integer :: nao, nsp, s
       integer :: nocc(2)
       real(dp) :: occ_s, exx_use, exx_lr_use, omega_use
-      real(dp), allocatable :: wmat(:, :), dtot(:, :), dens(:, :, :)
+      real(dp), allocatable :: wmat(:, :), dtot(:, :), density(:, :, :)
 
       talk = .false.
       if (present(verbose)) talk = verbose
@@ -300,52 +300,52 @@ contains
       ! plain host arrays (trc_scf_run's own `release_device` -- see
       ! trc_scf_driver.F90 -- takes them OFF the device before returning,
       ! so neither a Fortran-side caller's `res%cmo`/`res%eps` nor the C
-      ! API's box handle's copy of them is resident); `dens`/`wmat` are
+      ! API's box handle's copy of them is resident); `density`/`wmat` are
       ! this routine's own, at the Cartesian `nao` the kernels below need
       ! -- filled directly there when the basis is Cartesian, or via the
       ! spherical fold (its own block, right below) otherwise.
-      allocate (dens(nao, nao, nspin), wmat(nao, nao), dtot(nao, nao))
-      !$acc enter data copyin(cmo, eps) create(dens, wmat)
+      allocate (density(nao, nao, nspin), wmat(nao, nao), dtot(nao, nao))
+      !$acc enter data copyin(cmo, eps) create(density, wmat)
 
       if (.not. b%spherical) then
          do s = 1, nspin
-            call lp%density(cmo(:, :, s), nocc(s), occ_s, dens(:, :, s))
+            call lp%density(cmo(:, :, s), nocc(s), occ_s, density(:, :, s))
          end do
-         call energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
+         call scf_grad_energy_weighted_density(lp, nao, nspin, cmo, eps, nocc, wmat)
       else
          ! Build D and W in the SCF's own (spherical) space, nsp = nao_sph,
          ! then fold each one to Cartesian -- see this subroutine's own
-         ! header. `dens_s`/`wmat_s` are local to this block, entered and
-         ! exited here; `dens`/`wmat` (already created on the device above)
+         ! header. `density_s`/`wmat_s` are local to this block, entered and
+         ! exited here; `density`/`wmat` (already created on the device above)
          ! receive the fold's output and are what every line after this
          ! block reads, exactly as if the basis had been Cartesian all
          ! along.
          block
-            real(dp), allocatable :: dens_s(:, :, :), wmat_s(:, :)
-            allocate (dens_s(nsp, nsp, nspin), wmat_s(nsp, nsp))
-            !$acc enter data create(dens_s, wmat_s)
+            real(dp), allocatable :: density_s(:, :, :), wmat_s(:, :)
+            allocate (density_s(nsp, nsp, nspin), wmat_s(nsp, nsp))
+            !$acc enter data create(density_s, wmat_s)
             do s = 1, nspin
-               call lp%density(cmo(:, :, s), nocc(s), occ_s, dens_s(:, :, s))
+               call lp%density(cmo(:, :, s), nocc(s), occ_s, density_s(:, :, s))
             end do
-            call energy_weighted_density(lp, nsp, nspin, cmo, eps, nocc, wmat_s)
+            call scf_grad_energy_weighted_density(lp, nsp, nspin, cmo, eps, nocc, wmat_s)
             do s = 1, nspin
-               call sph_sph_to_cart(b, dens_s(:, :, s), dens(:, :, s))
+               call sph_sph_to_cart(b, density_s(:, :, s), density(:, :, s))
             end do
             call sph_sph_to_cart(b, wmat_s, wmat)
-            !$acc exit data delete(dens_s, wmat_s)
-            deallocate (dens_s, wmat_s)
+            !$acc exit data delete(density_s, wmat_s)
+            deallocate (density_s, wmat_s)
          end block
       end if
 
-      ! `dens` only has valid numbers on the device at this point; bring
+      ! `density` only has valid numbers on the device at this point; bring
       ! it back before any HOST arithmetic reads it (dtot below) or hands
       ! it to eri%gradient, which re-copies it up itself as a plain host
-      ! array (trc_eri.F90's eri_gradient, "dens(:, :, :), intent(in)").
-      !$acc update self(dens)
+      ! array (trc_eri.F90's eri_gradient, "density(:, :, :), intent(in)").
+      !$acc update self(density)
       if (nspin == 1) then
-         dtot = dens(:, :, 1)
+         dtot = density(:, :, 1)
       else
-         dtot = dens(:, :, 1) + dens(:, :, 2)
+         dtot = density(:, :, 1) + density(:, :, 2)
       end if
 
       call gst%step_off(lp, 1, tc)
@@ -375,20 +375,20 @@ contains
             error stop "trc_scf_gradient: the --df gradient is restricted, Cartesian and not range-separated"
          end if
          ! --- density-fitted two-electron term, in the actual-energy
-         ! convention (no halving: df_two_electron_gradient differentiates
+         ! convention (no halving: scf_grad_df_two_electron differentiates
          ! E_2 itself, not eri%gradient's doubled trace) ---
          call aux%to_device()
          grad = 0.0_dp
          !$acc enter data copyin(dtot, grad)
-         call df_two_electron_gradient(b, aux, plp, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, exx_use, grad)
+         call scf_grad_df_two_electron(b, aux, plp, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, exx_use, grad)
       else
          if (reuse_eri) then
-            call two_electron_4c(b, thresh, dens, exx_use, exx_lr_use, omega_use, grad, eri_cache=pair_eri_cache%eri)
+            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache=pair_eri_cache%eri)
          else
-            call two_electron_4c(b, thresh, dens, exx_use, exx_lr_use, omega_use, grad)
+            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad)
          end if
          ! --- one-electron, added on top. `wmat` is already present (and
-         ! already holds the right numbers, from energy_weighted_density
+         ! already holds the right numbers, from scf_grad_energy_weighted_density
          ! above) -- only `dtot` and `grad` are freshly copied up. ---
          !$acc enter data copyin(dtot, grad)
       end if
@@ -397,41 +397,41 @@ contains
       call trc_1e_gradient(b, plp, wmat, dtot, grad)
       call gst%step_off(lp, 3, tc)
 
-      ! --- exchange-correlation, added on top, LDA/GGA only. `dens` is
+      ! --- exchange-correlation, added on top, LDA/GGA only. `density` is
       ! still present and correct on the device at this point (see this
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) then
          call gst%step_on(lp, 4, tc)
          if (present(grid) .and. present(xg)) then
-            call xc_gradient_add(b, lp, func, nspin, dens, grad, &
+            call xc_grad_add(b, lp, func, nspin, density, grad, &
                                  grid_level=grid_level, grid_max_pts=grid_max_pts, &
                                  grid_response=grid_response, rho_tol=rho_tol, timing=xst, &
                                  grid=grid, xg=xg)
          else
-            call xc_gradient_add(b, lp, func, nspin, dens, grad, &
+            call xc_grad_add(b, lp, func, nspin, density, grad, &
                                  grid_level=grid_level, grid_max_pts=grid_max_pts, &
                                  grid_response=grid_response, rho_tol=rho_tol, timing=xst)
          end if
          call gst%step_off(lp, 4, tc)
          ! --- VV10 nonlocal correlation, added on top. Its own grid, its
-         ! own screen -- see trc_vv10_grad's own header. `dens` is still
-         ! present and correct on the device (same note as xc_gradient_add
+         ! own screen -- see trc_vv10_grad's own header. `density` is still
+         ! present and correct on the device (same note as xc_grad_add
          ! above); `grad` likewise. ---
          if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
             nlc_level = DEFAULT_NLC_GRID_LEVEL
             if (present(nlc_grid_level)) nlc_level = nlc_grid_level
-            ! vv10_gradient_add has no `rho_tol` of its own: it always
+            ! vv10_grad_add has no `rho_tol` of its own: it always
             ! screens at trc_vv10's own VV10_RHO_TOL, the same constant
             ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
             ! see that module's own header.
             call gst%step_on(lp, 5, tc)
             if (present(grid_nlc) .and. present(xg_nlc)) then
-               call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
+               call vv10_grad_add(b, lp, nspin, density, func%nlc_b, func%nlc_c, grad, &
                                       grid_level=nlc_level, grid_max_pts=grid_max_pts, &
                                       grid_response=grid_response, timing=vst, &
                                       grid=grid_nlc, xg=xg_nlc)
             else
-               call vv10_gradient_add(b, lp, nspin, dens, func%nlc_b, func%nlc_c, grad, &
+               call vv10_grad_add(b, lp, nspin, density, func%nlc_b, func%nlc_c, grad, &
                                       grid_level=nlc_level, grid_max_pts=grid_max_pts, &
                                       grid_response=grid_response, timing=vst)
             end if
@@ -440,16 +440,16 @@ contains
       end if
 
       !$acc update self(grad)
-      !$acc exit data delete(wmat, dtot, grad, cmo, eps, dens)
+      !$acc exit data delete(wmat, dtot, grad, cmo, eps, density)
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
-      call nuclear_repulsion_gradient(b, grad)
+      call scf_grad_nuclear_repulsion(b, grad)
 
       ! A reused `pair_eri_cache%pl` is the caller's, not this routine's --
       ! only this routine's OWN build (`pl_own`, the common case absent a
       ! cache or on a thresh mismatch) is released here.
       if (.not. reuse_pl) call plp%release()
-      deallocate (wmat, dtot, dens)
+      deallocate (wmat, dtot, density)
 
       if (talk) then
          call lp%sync()
@@ -459,13 +459,13 @@ contains
       end if
    end subroutine trc_scf_gradient
 
-   subroutine two_electron_4c(b, thresh, dens, exx_use, exx_lr_use, omega_use, grad, eri_cache)
+   subroutine two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache)
       !! The four-centre two-electron gradient (eri%gradient), halved into
       !! the actual-energy convention -- trc_scf_gradient's non-`--df`
       !! branch. `grad` is OVERWRITTEN (host).
       type(trc_basis_t), intent(inout) :: b
       real(dp), intent(in) :: thresh, exx_use, exx_lr_use, omega_use
-      real(dp), intent(in) :: dens(:, :, :)
+      real(dp), intent(in) :: density(:, :, :)
       real(dp), intent(out) :: grad(3, b%natm)
       type(trc_eri_t), intent(inout), optional, target :: eri_cache
       !! The SCF's own four-centre engine at this SAME geometry and
@@ -488,12 +488,12 @@ contains
          call eri%build(b, thresh)
       end if
       ! --- two-electron, first: this call starts `grad` from zero ---
-      call eri%gradient(b, dens, grad, k_scale=exx_use)
+      call eri%gradient(b, density, grad, k_scale=exx_use)
 
       ! --- the long-range exchange gradient, for a range-separated
       ! hybrid: a SECOND eri%gradient pass (j_scale=0, k_scale=exx_lr,
       ! omega), added into `grad` next to the full-range term above --
-      ! exactly how build_g assembles the energy (trc_scf_fock.F90's own
+      ! exactly how scf_fock_build_g assembles the energy (trc_scf_fock.F90's own
       ! j_scale=0.0_dp, k_scale=exx_lr, omega=omega fock_resident call,
       ! added into gmat_c). eri%gradient always starts ITS OWN `grad_lr`
       ! from zero (this module's own header), so the two passes are added
@@ -502,7 +502,7 @@ contains
       ! second allocation, same cost as before this argument existed. ---
       if (exx_lr_use /= 0.0_dp) then
          allocate (grad_lr(3, b%natm))
-         call eri%gradient(b, dens, grad_lr, j_scale=0.0_dp, k_scale=exx_lr_use, omega=omega_use)
+         call eri%gradient(b, density, grad_lr, j_scale=0.0_dp, k_scale=exx_lr_use, omega=omega_use)
          grad = grad + grad_lr
          deallocate (grad_lr)
       end if

@@ -344,7 +344,7 @@ module trc_c_interfaces
 
       integer(c_int) function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) bind(c) result(res)
          !! CONTRAVARIANT in, COVARIANT out, exactly as capi_fock -- the
-         !! diagonal congruence ao_scale_cov/fock_scale_in apply does not
+         !! diagonal congruence ao_norm_scale_cov/fock_scale_in apply does not
          !! care whether `dmat` is symmetric, so nothing here differs from
          !! the symmetric entry beyond which shared routines it reuses.
          import :: c_double, c_int, c_ptr
@@ -954,7 +954,7 @@ module trc_c_interfaces
          !! sized for.
          !!
          !! NOT refused any more: a functional with VV10 nonlocal correlation
-         !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
+         !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_grad_add's
          !! term on top of the semilocal one, on VV10's own grid
          !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
          !! it on). wB97M-V is in terco's table too now (a meta-GGA with VV10
@@ -994,7 +994,7 @@ module trc_c_interfaces
          !! or the two are not derivatives of the same energy.
          !! `trc_scf_gradient` itself builds the erf(omega r)/r long-range
          !! exchange term (a second eri%gradient pass, its own header) and
-         !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
+         !! trc_xc_grad%xc_grad_add computes the functional's semilocal
          !! GGA part exactly as for any other GGA -- see that module's own
          !! header on why `omega`/`exx_lr` do not affect it.
          !!
@@ -1177,7 +1177,7 @@ module trc_c_interfaces
          !! clean generalisation here). The orbital basis may be spherical:
          !! `cx%res%cmo`/`eps` (at whatever space the SCF ran in) are folded
          !! into the Cartesian, zero-padded space `trc_rimp2_run`/
-         !! `trc_urimp2_run` themselves run in by `rimp2_mo_to_cart`
+         !! `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
          !! (trc_rimp2_driver.F90's own header says why the pad is exact).
          import :: c_int, c_ptr
          implicit none

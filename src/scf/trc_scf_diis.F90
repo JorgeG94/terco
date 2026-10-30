@@ -47,7 +47,8 @@ module trc_scf_diis
    implicit none
    private
 
-   public :: cdiis_t, adiis_t, solve_diis, level_shift, damp
+   public :: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
+   ! solve_diis stays private: nothing outside this module uses it.
 
    type :: cdiis_t
       real(dp), allocatable :: fstore(:, :, :, :), estore(:, :, :, :)
@@ -269,9 +270,9 @@ contains
       end do
    end subroutine diis_combine
 
-   subroutine level_shift(lp, nao, nspin, mu, occ, smat, dmat, w1, w2, fock)
+   subroutine scf_diis_level_shift(lp, nao, nspin, mu, occ, smat, dmat, w1, w2, fock)
       !! F += mu (S - S D S / occ) on the virtual space while DIIS is off,
-      !! per spin: see trc_scf_options_t%level_shift's own comment.
+      !! per spin: see trc_scf_options_t%scf_diis_level_shift's own comment.
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
       real(dp), intent(in) :: mu, occ
@@ -286,9 +287,9 @@ contains
             fock(i, j, s) = fock(i, j, s) + mu*(smat(i, j) - w2(i, j)/occ)
          end do
       end do
-   end subroutine level_shift
+   end subroutine scf_diis_level_shift
 
-   subroutine damp(nao, nspin, alpha, dold, dmat)
+   subroutine scf_diis_damp(nao, nspin, alpha, dold, dmat)
       !! The damped step while DIIS/A-DIIS are off: dmat := alpha*dmat +
       !! (1 - alpha)*dold, the weight `alpha` given to the new density.
       integer, intent(in) :: nao, nspin
@@ -299,7 +300,7 @@ contains
       do concurrent(i=1:nao, j=1:nao, s=1:nspin)
          dmat(i, j, s) = alpha*dmat(i, j, s) + (1.0_dp - alpha)*dold(i, j, s)
       end do
-   end subroutine damp
+   end subroutine scf_diis_damp
 
    pure function ring_phys(head, n_used, ndiis, l) result(p)
       !! The physical slot holding logical position `l` (1 = oldest, n_used

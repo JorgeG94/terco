@@ -12,7 +12,7 @@
 ! nspin before trc_scf_run is even reachable -- to size the guess density and
 ! to validate a density handed in from outside -- so they used to carry their
 ! own copy of the nalpha/nbeta -> nspin rule, missing the `frac_occ` case
-! this module's rule already resolves. `scf_spin_rule` is that rule, pulled
+! this module's rule already resolves. `scf_settings_spin_rule` is that rule, pulled
 ! out so there is exactly one place it can drift from this module's own use
 ! of it.
 !
@@ -26,8 +26,10 @@ module trc_scf_settings
    implicit none
    private
 
-   public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_spin_rule, scf_energies_t
-   public :: incr_env, incr_reset_env, incr_thresh_scale_env, incr_start_env, eri_thresh_env
+   public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
+   public :: scf_settings_eri_thresh_env
+   ! incr_env/incr_reset_env/incr_thresh_scale_env/incr_start_env stay
+   ! private: nothing outside this module uses them.
    public :: DEFAULT_NLC_GRID_LEVEL
 
    integer, parameter :: DEFAULT_NLC_GRID_LEVEL = 1
@@ -67,7 +69,7 @@ module trc_scf_settings
       !! each p, no beta p). `nalpha`/`nbeta` are ignored for the count only in the
       !! restricted case.
       real(dp) :: nelec_frac = 0.0_dp
-      integer :: max_iter = 100
+      integer :: max_iteration = 100
       integer :: batch_res = 1
       !! Shell-pair batch resolution: buckets per decade of Schwarz bound
       !! when the pairs are binned. 1 is decades, which is what this always
@@ -328,7 +330,7 @@ contains
          this%exx_lr = this%func%exx_lr
          this%omega = this%func%omega
       end if
-      call scf_spin_rule(nalpha, nbeta, opts%unrestricted, opts%frac_occ, opts%nelec_frac, &
+      call scf_settings_spin_rule(nalpha, nbeta, opts%unrestricted, opts%frac_occ, opts%nelec_frac, &
                          this%nspin, this%nocc)
       this%occ = merge(2.0_dp, 1.0_dp, this%nspin == 1)
       this%ndamp = opts%ndamp
@@ -356,7 +358,7 @@ contains
          ok = .false.
          return
       end if
-      this%eri_thresh_run = eri_thresh_env(opts%eri_thresh)
+      this%eri_thresh_run = scf_settings_eri_thresh_env(opts%eri_thresh)
       this%incr_start_run = incr_start_env(opts%incr_start)
       this%incr_reset_run = incr_reset_env(opts%incr_reset)
       this%incr_scale_run = incr_thresh_scale_env(opts%incr_thresh_scale)
@@ -369,7 +371,7 @@ contains
    ! `trc_scf_run` and `trc_capi.F90`'s `trc_run_scf`/`trc_load_scf` all need
    ! this before a density exists to look at; one rule, called from both.
    !
-   pure subroutine scf_spin_rule(nalpha, nbeta, unrestricted, frac_occ, nelec_frac, nspin, nocc)
+   pure subroutine scf_settings_spin_rule(nalpha, nbeta, unrestricted, frac_occ, nelec_frac, nspin, nocc)
       integer, intent(in) :: nalpha, nbeta
       logical, intent(in) :: unrestricted, frac_occ
       real(dp), intent(in) :: nelec_frac
@@ -381,7 +383,7 @@ contains
       ! The guess fills whole orbitals at `nocc`; the loop refills by aufbau
       ! from `nelec_frac` every iteration (`trc_scf_fock`'s orbital step).
       if (frac_occ .and. nspin == 1) nocc = int(nelec_frac/2.0_dp)
-   end subroutine scf_spin_rule
+   end subroutine scf_settings_spin_rule
 
    logical function incr_env() result(res)
       !! Experiment hook for the incremental build, so its effect can be
@@ -440,7 +442,7 @@ contains
       end if
    end function incr_start_env
 
-   real(dp) function eri_thresh_env(dflt) result(res)
+   real(dp) function scf_settings_eri_thresh_env(dflt) result(res)
       real(dp), intent(in) :: dflt
       character(len=16) :: v
       integer :: ios
@@ -451,6 +453,6 @@ contains
          read (v, *, iostat=ios) t
          if (ios == 0 .and. t > 0.0_dp) res = t
       end if
-   end function eri_thresh_env
+   end function scf_settings_eri_thresh_env
 
 end module trc_scf_settings

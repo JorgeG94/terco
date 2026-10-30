@@ -75,7 +75,7 @@ module trc_scf_grad_df
 #endif
    implicit none
    private
-   public :: df_two_electron_gradient
+   public :: scf_grad_df_two_electron
 
    ! The timed steps, reported (global_logger, PERFORMANCE) after every
    ! gradient in the same table shape DF-JK and RI-MP2 use: device-synced
@@ -97,11 +97,11 @@ module trc_scf_grad_df
 
 contains
 
-   subroutine df_two_electron_gradient(b, aux, pl, dfjk, lp, nocc, cmo, dens, j_scale, k_scale, grad)
+   subroutine scf_grad_df_two_electron(b, aux, pl, dfjk, lp, nocc, cmo, density, j_scale, k_scale, grad)
       !! grad += dE_2/dR for the density-fitted J (scaled by j_scale) and K
       !! (scaled by k_scale), restricted, Cartesian -- see this module's
       !! header. `cmo` the converged orbitals (their first `nocc` columns are
-      !! the occupied ones), `dens` the total density 2 C_occ C_occ^T,
+      !! the occupied ones), `density` the total density 2 C_occ C_occ^T,
       !! `pl` the pair list the fit's (mu nu|P) was built over.
       type(trc_basis_t),    intent(in)    :: b
       type(trc_basis_t),    intent(in)    :: aux
@@ -110,14 +110,14 @@ contains
       type(trc_linalg_t),   intent(inout) :: lp
       integer,              intent(in)    :: nocc
       real(dp),             intent(in)    :: cmo(b%nao, b%nao)
-      real(dp),             intent(in)    :: dens(b%nao, b%nao)
+      real(dp),             intent(in)    :: density(b%nao, b%nao)
       real(dp),             intent(in)    :: j_scale, k_scale
       real(dp),             intent(inout) :: grad(3, b%natm)
 
       real(dp), pointer :: bpk(:, :), chol(:, :)
       real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xp(:), hb(:, :, :)
       real(dp), allocatable :: tens(:, :, :), half(:, :, :), ydum(:, :, :)
-      type(trc_basis_t) :: blk
+      type(trc_basis_t) :: aux_subset
       integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, s0, s1, p0, np, mu, nu, q, i, p
       integer(int64) :: n8, o8, c8, t
       integer :: q0, w, nrp, rbase, il, j, kmode
@@ -156,7 +156,7 @@ contains
       do concurrent(t=0:n8*n8 - 1) local(mu, nu)
          mu = int(mod(t, n8)) + 1
          nu = int(t/n8) + 1
-         if (nu <= mu) dpk(pack_idx(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*dens(mu, nu)
+         if (nu <= mu) dpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*density(mu, nu)
       end do
       call tbl%step_on(lp, ST_JGAM, tc)
       call lp%gemv("T", npack, naux, 1.0_dp, bpk, npack, dpk, 0.0_dp, cq)
@@ -206,7 +206,7 @@ contains
          call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                                 size(pd, 2), pd, aux%nshell, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, &
                                 aux%sh_at, aux%sh_e, aux%sh_c, aux%sh_r, b%natm, 0, 1, 1, ydum, j_scale, &
-                                naux, 0, cq, dens, grad)
+                                naux, 0, cq, density, grad)
          call tbl%step_off(lp, ST_D3C, tc)
          !$acc exit data delete(ydum)
          deallocate (ydum)
@@ -250,7 +250,7 @@ contains
                mu = int(mod(t, n8)) + 1
                nu = int(mod(t/n8, n8)) + 1
                q = int(t/(n8*n8)) + 1
-               tens(mu, nu, q) = bpk(pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
+               tens(mu, nu, q) = bpk(pack_index(max(mu, nu), min(mu, nu)), p0 - 1 + q)
             end do
             call tbl%step_off(lp, ST_UNPK, tc)
             call tbl%add_bytes(ST_UNPK, 8_int64*n8*n8*int(np, int64))
@@ -306,8 +306,8 @@ contains
          s0 = 1
          do while (s0 <= aux%nshell)
             call next_block(aux, s0, ablk, s1, p0, np)
-            call aux%subset(s0, s1, blk)
-            call blk%to_device()
+            call aux%subset(s0, s1, aux_subset)
+            call aux_subset%to_device()
             allocate (tens(n, n, np), half(nc, n, np), hb(nc, nocc, np))
             !$acc enter data create(tens, half, hb)
             call tbl%step_on(lp, ST_XPACK, tc)
@@ -344,13 +344,15 @@ contains
             deallocate (half, hb)
             call tbl%step_on(lp, ST_D3C, tc)
             call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
-                                   size(pd, 2), pd, blk%nshell, blk%maxnp, blk%sh_l, blk%sh_np, blk%sh_ao, &
-                                   blk%sh_at, blk%sh_e, blk%sh_c, blk%sh_r, b%natm, kmode, n, np, tens, jc, &
-                                   naux, p0 - 1, cq, dens, grad)
+                                   size(pd, 2), pd, aux_subset%nshell, aux_subset%maxnp, aux_subset%sh_l, &
+                                   aux_subset%sh_np, aux_subset%sh_ao, &
+                                   aux_subset%sh_at, aux_subset%sh_e, aux_subset%sh_c, aux_subset%sh_r, b%natm, &
+                                   kmode, n, np, tens, jc, &
+                                   naux, p0 - 1, cq, density, grad)
             call tbl%step_off(lp, ST_D3C, tc)
             !$acc exit data delete(tens)
             deallocate (tens)
-            call blk%release()
+            call aux_subset%release()
             s0 = s1 + 1
          end do
          !$acc exit data delete(xp)
@@ -385,7 +387,7 @@ contains
       dense([ST_CSOL, ST_HGEMM, ST_XTRSM, ST_ZGEMM, ST_YK]) = .true.
       call lp%sync()
       call tbl%report(tall%get_elapsed_time(), 0, 1, subtotal_mask=dense, subtotal_label="all dense algebra")
-   end subroutine df_two_electron_gradient
+   end subroutine scf_grad_df_two_electron
 
    subroutine next_block(aux, s0, ablk, s1, p0, np)
       !! The run of whole auxiliary shells starting at s0 whose functions fit
@@ -476,11 +478,11 @@ contains
       res = (l + 1)*(l + 2)/2
    end function ncart
 
-   pure integer function pack_idx(mu, nu) result(p)
+   pure integer function pack_index(mu, nu) result(p)
       !! trc_scf_df's packed index, mu >= nu: mu(mu-1)/2 + nu.
       !$acc routine seq
       integer, intent(in) :: mu, nu
       p = mu*(mu - 1)/2 + nu
-   end function pack_idx
+   end function pack_index
 
 end module trc_scf_grad_df

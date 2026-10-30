@@ -31,7 +31,7 @@ Fortran API, a `bind(c)` ABI and a `terco` CLI. See `README.md`.
 | `src/generated/` | **generator output: never edit by hand** |
 | `scripts/` | the kernel generators (`gen_*.py`), see `docs/GENERATORS.md` |
 | `tools/` | OpenMP converters, `pic_api.py`, XC registry and translators, lint helpers |
-| `app/` | the `terco` CLI (`main.F90`, `terco_app.F90`) and its MPI checks |
+| `app/` | the `terco` CLI (`main.F90`, `trc_app.F90`) and its MPI checks |
 | `test/` | every check program, `pyscf_refs/` (frozen anchors), `goldens/` (terco's own numbers) |
 
 ## Build and test

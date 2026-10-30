@@ -136,7 +136,7 @@ contains
       opts%conv_energy = 1.0e-12_dp
       opts%conv_density = 1.0e-10_dp
       opts%conv_diis = 1.0e-10_dp
-      opts%max_iter = 200
+      opts%max_iteration = 200
       call trc_scf_run(bas, nocc, nocc, opts, res)
       if (.not. res%converged) error stop 'check_prune_primitives: RHF did not converge'
       energy = res%energy

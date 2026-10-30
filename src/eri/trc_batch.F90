@@ -36,14 +36,14 @@ module trc_batch
    use pic_logger, only: global_logger
    use pic_timer, only: timer_type
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
-   use trc_tables, only: LMAX, LTOT, NHERM_MAX, NHERM_PAIR, nherm, tables_init, &
+   use trc_tables, only: LMAX, LTOT, NHERM_MAX, NHERM_PAIR, tables_nherm, tables_init, &
                            hidx, hdir, hm1, hm2, hcf, nherm_of, &
                            ht, hu, hv, hsgn, hshift
    implicit none
    private
 
-   public :: e_off, build_pairs, eri_batch, fock_batch, fock_batch_sym, common_fac_sp, ncart
-   public :: cart_pow, one_quartet
+   public :: batch_e_off, batch_build_pairs, batch_eri, batch_fock, batch_fock_sym, common_fac_sp, batch_ncart
+   public :: batch_cart_pow, batch_one_quartet
 
    ! E coefficients for one primitive pair: (i, j, t, direction),
    ! i,j <= LMAX and t <= 2*LMAX.
@@ -55,11 +55,11 @@ contains
 
 #include "inc/trc_boys_eval.inc"
 
-   pure integer function ncart(l) result(res)
+   pure integer function batch_ncart(l) result(res)
       !$acc routine seq
       integer, intent(in) :: l
       res = (l + 1)*(l + 2)/2
-   end function ncart
+   end function batch_ncart
 
    !
    ! libcint's per-shell angular constant.  See NOTES.md -- sqrt(1/4pi) for s,
@@ -81,12 +81,12 @@ contains
    !
    ! Offset of E(i,j,t,d) within one primitive pair's block.  1-based.
    !
-   pure integer function e_off(i, j, t, d) result(res)
+   pure integer function batch_e_off(i, j, t, d) result(res)
       !$acc routine seq
       integer, intent(in) :: i, j, t, d
       res = (d - 1)*(2*LMAX + 1)*(LMAX + 1)*(LMAX + 1) &
               + t*(LMAX + 1)*(LMAX + 1) + j*(LMAX + 1) + i + 1
-   end function e_off
+   end function batch_e_off
 
    !
    ! Host-side setup: expand every shell pair into its primitive pairs and
@@ -95,7 +95,7 @@ contains
    ! pp_off/pp_n are indexed by the rectangular pair key (ish-1)*nbas + jsh,
    ! so the kernel finds a pair's primitives with two integer loads.
    !
-   subroutine build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, thresh, &
+   subroutine batch_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, thresh, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(:), sh_np(:)
@@ -132,7 +132,7 @@ contains
       ! A pair's whole magnitude is bounded by its Gaussian product prefactor,
       ! |ci cj| exp(-mu |AB|^2), which costs one exponential to evaluate
       ! against the Hermite expansion's hundreds of operations. Below the
-      ! cutoff the pair's Schwarz bound is smaller still, so `build_binned_pairs`
+      ! cutoff the pair's Schwarz bound is smaller still, so `bins_build_binned_pairs`
       ! would drop it anyway; deciding here just stops the work being done
       ! first.
       !
@@ -185,7 +185,7 @@ contains
       ! gigabytes on the 123-atom silica slice in cc-pVDZ -- and zeroing it
       ! cost 3.6 s of a 5.9 s call. Nothing reads an entry the fill below
       ! does not write: the fill covers ii <= li, jj <= lj, t <= ii+jj, and
-      ! every read in `one_quartet` is guarded by `if (ht(h) > ax + bx) cycle`
+      ! every read in `batch_one_quartet` is guarded by `if (ht(h) > ax + bx) cycle`
       ! on the same three component powers. If that guard is ever removed the
       ! zeroing has to come back.
       if (bp_t) then
@@ -230,7 +230,7 @@ contains
                         do ii = 0, li
                            do jj = 0, lj
                               do t = 0, ii + jj
-                                 pp_e(k, e_off(ii, jj, t, d)) = e1(ii, jj, t)
+                                 pp_e(k, batch_e_off(ii, jj, t, d)) = e1(ii, jj, t)
                               end do
                            end do
                         end do
@@ -247,7 +247,7 @@ contains
             call global_logger%performance(trim(logline))
          end block
       end if
-   end subroutine build_pairs
+   end subroutine batch_build_pairs
 
    !
    ! One Cartesian direction's Hermite expansion coefficients E_t^{ij}.
@@ -291,7 +291,7 @@ contains
    ! Explicit-shape dummies with the extents declared first: an assumed-shape
    ! dummy makes nvfortran walk the descriptor with a per-launch memcpy.
    !
-   subroutine eri_batch(lo, hi, nchunk, nq, nbas, npp, nout, &
+   subroutine batch_eri(lo, hi, nchunk, nq, nbas, npp, nout, &
                         q_i, q_j, q_k, q_l, q_off, &
                         sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, &
                         rscr, out)
@@ -306,17 +306,17 @@ contains
       integer :: iq
 
       do concurrent(iq=lo:hi)
-         call one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
+         call batch_one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
       end do
-   end subroutine eri_batch
+   end subroutine batch_eri
 
    !
    ! One work item.  Marked `acc routine seq`: stdpar only auto-inlines within a
    ! translation unit, and this is called from the parallel loop above.
    !
-   pure subroutine one_quartet(iq, ir, nchunk, nq, nbas, npp, nout, &
+   pure subroutine batch_one_quartet(iq, ir, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
       !! McMurchie-Davidson on (ab|ab) with the full Coulomb operator, same as
@@ -337,7 +337,7 @@ contains
       integer  :: na, nb, nc, nd
       integer  :: keyab, keycd, offab, offcd, nab, ncd
       integer  :: kp, kq, n, h, deg, base, basen, base1, cur, nxt, rbase
-      integer  :: ia, ib, ic, id, idx
+      integer  :: ia, ib, ic, id, index
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: h1, h2, nh_ab, nh_cd, iab, icd
       real(dp) :: p, q, alpha, tval, pref, acc, ecd, fac
@@ -358,10 +358,10 @@ contains
       lab = la + lb
       lcd = lc + ld
       lt = lab + lcd
-      na = ncart(la)
-      nb = ncart(lb)
-      nc = ncart(lc)
-      nd = ncart(ld)
+      na = batch_ncart(la)
+      nb = batch_ncart(lb)
+      nc = batch_ncart(lc)
+      nd = batch_ncart(ld)
 
       keyab = (q_i(iq) - 1)*nbas + q_j(iq)
       keycd = (q_k(iq) - 1)*nbas + q_l(iq)
@@ -448,8 +448,8 @@ contains
             do icd = 0, nc*nd - 1
                id = icd/nc
                ic = icd - id*nc
-               call cart_pow(lc, ic, cx, cy, cz)
-               call cart_pow(ld, id, dx, dy, dz)
+               call batch_cart_pow(lc, ic, cx, cy, cz)
+               call batch_cart_pow(ld, id, dx, dy, dz)
 
                ! E^cd over the flat Hermite index, sign folded in
                do h2 = 1, nh_cd
@@ -460,9 +460,9 @@ contains
                   if (hu(h2) > cy + dy) cycle
                   if (hv(h2) > cz + dz) cycle
                   ecdv(h2) = hsgn(h2) &
-                             *pp_e(kq, e_off(cx, dx, ht(h2), 1)) &
-                             *pp_e(kq, e_off(cy, dy, hu(h2), 2)) &
-                             *pp_e(kq, e_off(cz, dz, hv(h2), 3))
+                             *pp_e(kq, batch_e_off(cx, dx, ht(h2), 1)) &
+                             *pp_e(kq, batch_e_off(cy, dy, hu(h2), 2)) &
+                             *pp_e(kq, batch_e_off(cz, dz, hv(h2), 3))
                end do
 
                ! pass 1: T = R . E^cd
@@ -481,16 +481,16 @@ contains
                do iab = 0, na*nb - 1
                   ib = iab/na
                   ia = iab - ib*na
-                  call cart_pow(la, ia, ax, ay, az)
-                  call cart_pow(lb, ib, bx, by, bz)
+                  call batch_cart_pow(la, ia, ax, ay, az)
+                  call batch_cart_pow(lb, ib, bx, by, bz)
                   acc = 0.0_dp
                   do h1 = 1, nh_ab
                      if (ht(h1) > ax + bx) cycle
                      if (hu(h1) > ay + by) cycle
                      if (hv(h1) > az + bz) cycle
-                     acc = acc + pp_e(kp, e_off(ax, bx, ht(h1), 1)) &
-                                 *pp_e(kp, e_off(ay, by, hu(h1), 2)) &
-                                 *pp_e(kp, e_off(az, bz, hv(h1), 3))*tvec(h1)
+                     acc = acc + pp_e(kp, batch_e_off(ax, bx, ht(h1), 1)) &
+                                 *pp_e(kp, batch_e_off(ay, by, hu(h1), 2)) &
+                                 *pp_e(kp, batch_e_off(az, bz, hv(h1), 3))*tvec(h1)
                   end do
                   out(base + 1 + iab + na*nb*icd) = &
                      out(base + 1 + iab + na*nb*icd) + pref*acc
@@ -498,7 +498,7 @@ contains
             end do
          end do
       end do
-   end subroutine one_quartet
+   end subroutine batch_one_quartet
 
 
    !
@@ -522,7 +522,7 @@ contains
    ! precisely the cost PLAN.md section 4.1 argues for designing away, and the
    ! structure that would avoid it for J is noted in NOTES.md.
    !
-   subroutine fock_batch(lo, hi, nchunk, nq, nbas, npp, nout, nao, &
+   subroutine batch_fock(lo, hi, nchunk, nq, nbas, npp, nout, nao, &
                          q_i, q_j, q_k, q_l, q_off, &
                          sh_l, ao_off, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, &
                          rscr, out, dmat, jmat, kmat)
@@ -539,14 +539,14 @@ contains
       integer :: iq
 
       do concurrent(iq=lo:hi)
-         call one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
+         call batch_one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
          call digest_quartet(iq, nq, nbas, nout, nao, &
                              q_i, q_j, q_k, q_l, q_off, sh_l, ao_off, &
                              out, dmat, jmat, kmat)
       end do
-   end subroutine fock_batch
+   end subroutine batch_fock
 
    pure subroutine digest_quartet(iq, nq, nbas, nout, nao, &
                                   q_i, q_j, q_k, q_l, q_off, sh_l, ao_off, &
@@ -559,17 +559,17 @@ contains
       real(dp), intent(in)    :: dmat(nao, nao)
       real(dp), intent(inout) :: jmat(nao, nao), kmat(nao, nao)
 
-      integer  :: na, nb, nc, nd, ia, ib, ic, id, idx, base
+      integer  :: na, nb, nc, nd, ia, ib, ic, id, index, base
       integer  :: mu, nu, lam, sig
       real(dp) :: v
 
-      na = ncart(sh_l(q_i(iq)))
-      nb = ncart(sh_l(q_j(iq)))
-      nc = ncart(sh_l(q_k(iq)))
-      nd = ncart(sh_l(q_l(iq)))
+      na = batch_ncart(sh_l(q_i(iq)))
+      nb = batch_ncart(sh_l(q_j(iq)))
+      nc = batch_ncart(sh_l(q_k(iq)))
+      nd = batch_ncart(sh_l(q_l(iq)))
       base = q_off(iq)
 
-      idx = 0
+      index = 0
       do id = 0, nd - 1
          sig = ao_off(q_l(iq)) + id
       do ic = 0, nc - 1
@@ -578,8 +578,8 @@ contains
          nu = ao_off(q_j(iq)) + ib
       do ia = 0, na - 1
          mu = ao_off(q_i(iq)) + ia
-         idx = idx + 1
-         v = out(base + idx)
+         index = index + 1
+         v = out(base + index)
          !$acc atomic update
          jmat(mu, nu) = jmat(mu, nu) + v*dmat(lam, sig)
          !$acc atomic update
@@ -612,7 +612,7 @@ contains
    !     J(a,b) += V * D(c,d)
    !     K(a,c) += V * D(b,d)
    !
-   subroutine fock_batch_sym(lo, hi, nchunk, nq, nbas, npp, nout, nao, &
+   subroutine batch_fock_sym(lo, hi, nchunk, nq, nbas, npp, nout, nao, &
                              q_i, q_j, q_k, q_l, q_off, &
                              sh_l, ao_off, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, &
                              rscr, out, dmat, jmat, kmat)
@@ -629,14 +629,14 @@ contains
       integer :: iq
 
       do concurrent(iq=lo:hi)
-         call one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
+         call batch_one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
          call digest_sym(iq, nq, nbas, nout, nao, &
                          q_i, q_j, q_k, q_l, q_off, sh_l, ao_off, &
                          out, dmat, jmat, kmat)
       end do
-   end subroutine fock_batch_sym
+   end subroutine batch_fock_sym
 
    pure subroutine digest_sym(iq, nq, nbas, nout, nao, &
                               q_i, q_j, q_k, q_l, q_off, sh_l, ao_off, &
@@ -649,7 +649,7 @@ contains
       real(dp), intent(in)    :: dmat(nao, nao)
       real(dp), intent(inout) :: jmat(nao, nao), kmat(nao, nao)
 
-      integer  :: na, nb, nc, nd, ia, ib, ic, id, idx, base
+      integer  :: na, nb, nc, nd, ia, ib, ic, id, index, base
       integer  :: si, sj, sk, sl, mu, nu, lam, sig
       integer  :: pij, pkl
       logical  :: dij, dkl, dpq
@@ -659,10 +659,10 @@ contains
       sj = q_j(iq)
       sk = q_k(iq)
       sl = q_l(iq)
-      na = ncart(sh_l(si))
-      nb = ncart(sh_l(sj))
-      nc = ncart(sh_l(sk))
-      nd = ncart(sh_l(sl))
+      na = batch_ncart(sh_l(si))
+      nb = batch_ncart(sh_l(sj))
+      nc = batch_ncart(sh_l(sk))
+      nd = batch_ncart(sh_l(sl))
       base = q_off(iq)
 
       pij = si*(si - 1)/2 + sj
@@ -671,7 +671,7 @@ contains
       dkl = (sk /= sl)
       dpq = (pij /= pkl)
 
-      idx = 0
+      index = 0
       do id = 0, nd - 1
          sig = ao_off(sl) + id
       do ic = 0, nc - 1
@@ -680,8 +680,8 @@ contains
          nu = ao_off(sj) + ib
       do ia = 0, na - 1
          mu = ao_off(si) + ia
-         idx = idx + 1
-         v = out(base + idx)
+         index = index + 1
+         v = out(base + index)
 
          ! P1 (i,j,k,l)
          !$acc atomic update
@@ -754,11 +754,11 @@ contains
    ! shape trc_hgp.F90's and trc_binkernel.F90's `comp` use, from the same
    ! source -- see scripts/gen_cartcomp.py.
    !
-   pure subroutine cart_pow(l, ic, px, py, pz)
+   pure subroutine batch_cart_pow(l, ic, px, py, pz)
       !$acc routine seq
       integer, intent(in)  :: l, ic
       integer, intent(out) :: px, py, pz
 #include "trc_cart_comp.inc"
-   end subroutine cart_pow
+   end subroutine batch_cart_pow
 
 end module trc_batch

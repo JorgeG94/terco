@@ -66,7 +66,7 @@ program bench_vv10_grad
 
    opts%functional = 'wb97x-v'
    opts%grid_level = 3
-   opts%conv_energy = 1.0e-10_dp; opts%conv_diis = 1.0e-8_dp; opts%max_iter = 100
+   opts%conv_energy = 1.0e-10_dp; opts%conv_diis = 1.0e-8_dp; opts%max_iteration = 100
    call tm%start()
    call trc_scf_run(bas, nalpha, nbeta, opts, res)
    t1 = tm%get_elapsed_time()
@@ -78,7 +78,7 @@ program bench_vv10_grad
    ! "The rest": the same functional with VV10's two coefficients zeroed,
    ! so trc_xc_grad's semilocal GGA term and trc_scf_grad.F90's own
    ! long-range exchange pass run exactly as they did for the real
-   ! functional, and only vv10_gradient_add's own call is skipped.
+   ! functional, and only vv10_grad_add's own call is skipped.
    func_novv10 = func
    func_novv10%nlc_b = 0.0_dp
    func_novv10%nlc_c = 0.0_dp

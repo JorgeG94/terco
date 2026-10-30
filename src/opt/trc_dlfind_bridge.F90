@@ -104,7 +104,7 @@
 !       1-based, one call per image per cycle plus DL-FIND's own scratch
 !       slot n_images_dlf once climbing starts): the shared trc context is
 !       reused across every image in turn, so by the time an image comes
-!       round again `ctx` holds a DIFFERENT image's converged state --
+!       round again `context` holds a DIFFERENT image's converged state --
 !       reading "the context's last density" (the single-state warm start)
 !       would warm-start from the wrong image. test/bench_opt_neb_warmstart.F90
 !       measures this on the HCN<->HNC NEB check below: per-image warm
@@ -153,7 +153,7 @@
 !       energy evaluation on every attempt, independent of molecule,
 !       basis or population settings. The pin's own terco-patches branch
 !       fixes it (86ca316). The same commit also lets DLF_PO_SEED, an
-!       integer environment variable this module sets (terco_app%set_env,
+!       integer environment variable this module sets (trc_app%app_set_env,
 !       trc_dlfind_optimize below) right before api_dl_find runs, replace
 !       dlf_parallel_opt.f90's own wall-clock reseed on every call -- with
 !       no such variable in the environment DL-FIND's behaviour is
@@ -208,15 +208,16 @@ module trc_dlfind_bridge
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
-   ! trc_opt_io, not terco_app (app/terco_app.F90): this module is built into
+   ! trc_opt_io, not trc_app (app/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
    ! "entry points are leaves" rule, and the only way a caller outside
    ! terco's own build (cyclone) could ever link this at all. trc_opt_io
    ! carries its OWN small copies of these (see that file's own header for
    ! why duplicating three file-writers was preferred over moving them and
-   ! leaving app/main.F90's non-opt CLI code without f_string/set_env in a
+   ! leaving app/main.F90's non-opt CLI code without opt_io_f_string/opt_io_set_env in a
    ! TERCO_ENABLE_DLFIND=OFF build).
-   use trc_opt_io, only: f_string, set_env, write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
+   use trc_opt_io, only: opt_io_f_string, opt_io_set_env, opt_io_write_opt_xyz_frame, &
+                         opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json
    implicit none
    private
 
@@ -420,15 +421,15 @@ module trc_dlfind_bridge
                   po_mutation_rate = -1.0_dp, po_death_rate = -1.0_dp, po_scalefac = -1.0_dp
       integer :: seed = huge(0)
          !! --opt-seed: DLF_PO_SEED, set in THIS process's own environment
-         !! (terco_app%set_env) right before api_dl_find runs below --
+         !! (trc_app%app_set_env) right before api_dl_find runs below --
          !! dlf_parallel_opt.f90's own only path to a reproducible seed
          !! (see this module's own header). Sentinel huge(0): no call to
-         !! set_env at all, so a run that did not ask for a seed leaves
+         !! opt_io_set_env at all, so a run that did not ask for a seed leaves
          !! DLF_PO_SEED alone -- an unrelated value already in the
          !! environment (another terco_cli invocation's leftover, in the
          !! same shell) IS then read by dlf_parallel_opt.f90, which reads it
          !! unconditionally once it is set; only this bridge's choice to
-         !! call set_env or not controls whether that happens.
+         !! call opt_io_set_env or not controls whether that happens.
       character(len=:), allocatable :: opt_xyz_path   !! unallocated/"" = do not write
       character(len=:), allocatable :: traj_xyz_path  !! unallocated/"" = do not write
       character(len=:), allocatable :: json_path      !! unallocated/"" = no --json requested
@@ -517,7 +518,7 @@ module trc_dlfind_bridge
 
    ! --- module `save` state the seven callbacks share -----------------------
    logical, save :: active = .false.
-   type(c_ptr), save :: ctx = c_null_ptr
+   type(c_ptr), save :: context = c_null_ptr
    integer, save :: natm = 0
    integer, allocatable, save :: residues(:), znuc(:)
    real(dp), allocatable, save :: start_coords(:, :)
@@ -706,7 +707,7 @@ contains
       end if
       active = .true.
 
-      ctx = handle
+      context = handle
       natm = n
       if (allocated(znuc)) deallocate (znuc)
       if (allocated(residues)) deallocate (residues)
@@ -876,7 +877,7 @@ contains
          ! header). Harmless for every method that never calls
          ! random_number.
          if (opts%seed /= huge(0)) then
-            call set_env("DLF_PO_SEED", to_string(opts%seed))
+            call opt_io_set_env("DLF_PO_SEED", to_string(opts%seed))
             block
                integer :: nseed, i
                integer, allocatable :: seed_values(:)
@@ -1124,7 +1125,7 @@ contains
       end if
 
       active = .false.
-      ctx = c_null_ptr
+      context = c_null_ptr
       if (allocated(znuc)) deallocate (znuc)
       if (allocated(residues)) deallocate (residues)
       if (allocated(start_coords)) deallocate (start_coords)
@@ -1636,7 +1637,7 @@ contains
    !
    ! Converge the SCF at `xyz`, warm-started from the previous accepted
    ! point if there is one, same contract for every caller that needs a
-   ! converged SCF on `ctx` at a given geometry (cb_get_gradient AND
+   ! converged SCF on `context` at a given geometry (cb_get_gradient AND
    ! cb_get_hessian -- factored out so the warm-start logic exists once).
    ! Does NOT touch module `save` step/trajectory bookkeeping (last_niter,
    ! n_steps, ...): that stays the gradient callback's own job, since only
@@ -1650,7 +1651,7 @@ contains
       !! bookkeeping below is kept ONE SLOT PER IMAGE
       !! (have_prev_scf_img/cached_nspin_img/image_densities), because the
       !! shared trc context is reused across every image in turn: by the
-      !! time this image comes round again, `ctx` holds whatever image ran
+      !! time this image comes round again, `context` holds whatever image ran
       !! most recently, not this one's own last converged state. The
       !! scalar have_prev_scf/cached_nspin pair below is what every other
       !! caller (the single-state path, and --opt-neb with
@@ -1662,7 +1663,7 @@ contains
       logical, intent(out) :: ok
       character(len=*), intent(out) :: why
 
-      real(c_double), allocatable, target :: dens_buf(:)
+      real(c_double), allocatable, target :: density_buffer(:)
       integer(c_int) :: st, conv, niter_c, nao_c, nspin_c, guess_nspin
       logical :: converged_now, per_image, has_prev
 
@@ -1689,14 +1690,14 @@ contains
          if (per_image) then
             ! THIS image's OWN previously converged density (stored at the
             ! bottom of this routine, the last time it converged) -- not
-            ! whatever `ctx` currently holds, which belongs to whichever
+            ! whatever `context` currently holds, which belongs to whichever
             ! image was evaluated last.
-            allocate (dens_buf(size(image_densities, 1)))
-            dens_buf = image_densities(:, image)
+            allocate (density_buffer(size(image_densities, 1)))
+            density_buffer = image_densities(:, image)
          else
-            st = trc_nao(ctx, nao_c)
-            allocate (dens_buf(int(nao_c)*int(nao_c)*cached_nspin))
-            st = trc_density(ctx, dens_buf)
+            st = trc_nao(context, nao_c)
+            allocate (density_buffer(int(nao_c)*int(nao_c)*cached_nspin))
+            st = trc_density(context, density_buffer)
             if (st /= TRC_OK) then
                why = "could not read the previous step's density for the warm start"
                return
@@ -1704,7 +1705,7 @@ contains
          end if
       end if
 
-      st = trc_set_geometry(ctx, reshape(real(xyz, c_double), [3*natm]))
+      st = trc_set_geometry(context, reshape(real(xyz, c_double), [3*natm]))
       if (st /= TRC_OK) then
          why = "trc_set_geometry failed mid-optimisation"
          return
@@ -1712,9 +1713,9 @@ contains
 
       if (has_prev .and. cur_opts%guess_kind /= TRC_OPT_GUESS_NONE) then
          if (cur_opts%guess_kind == TRC_OPT_GUESS_DENSITY) then
-            st = trc_set_guess(ctx, TRC_GUESS_GIVEN, c_loc(dens_buf), guess_nspin)
+            st = trc_set_guess(context, TRC_GUESS_GIVEN, c_loc(density_buffer), guess_nspin)
          else
-            st = trc_set_guess(ctx, TRC_GUESS_PROJECTED, c_null_ptr, guess_nspin)
+            st = trc_set_guess(context, TRC_GUESS_PROJECTED, c_null_ptr, guess_nspin)
          end if
          if (st /= TRC_OK) then
             why = "trc_set_guess (warm start) failed mid-optimisation"
@@ -1725,17 +1726,17 @@ contains
          ! with no density, orbitals or DIIS history carried over -- the
          ! baseline the warm-start measurement (--opt-guess density vs
          ! projected) compares against.
-         st = trc_set_guess(ctx, cur_opts%fallback_guess_kind, c_null_ptr, 1_c_int)
+         st = trc_set_guess(context, cur_opts%fallback_guess_kind, c_null_ptr, 1_c_int)
          if (st /= TRC_OK) then
             why = "trc_set_guess (baseline) failed mid-optimisation"
             return
          end if
       end if
 
-      st = trc_run_scf(ctx)
+      st = trc_run_scf(context)
       converged_now = .false.
       if (st == TRC_OK .or. st == TRC_ERR_NOCONV) then
-         st = trc_converged(ctx, conv)
+         st = trc_converged(context, conv)
          converged_now = (conv /= 0)
       end if
 
@@ -1744,11 +1745,11 @@ contains
          ! before giving up -- the warm start is a speed optimisation, not
          ! something this evaluation's success should depend on.
          call global_logger%warning("--opt: a warm-started SCF did not converge; retrying from the standard guess")
-         st = trc_set_guess(ctx, cur_opts%fallback_guess_kind, c_null_ptr, 1_c_int)
+         st = trc_set_guess(context, cur_opts%fallback_guess_kind, c_null_ptr, 1_c_int)
          if (st == TRC_OK) then
-            st = trc_run_scf(ctx)
+            st = trc_run_scf(context)
             if (st == TRC_OK .or. st == TRC_ERR_NOCONV) then
-               st = trc_converged(ctx, conv)
+               st = trc_converged(context, conv)
                converged_now = (conv /= 0)
             end if
          end if
@@ -1758,11 +1759,11 @@ contains
          why = "the SCF did not converge at this geometry"
          return
       end if
-      ! From here on there IS a converged SCF on `ctx` to warm-start a
+      ! From here on there IS a converged SCF on `context` to warm-start a
       ! LATER evaluation's guess from (density or projected orbitals, per
       ! cur_opts%guess_kind).
-      st = trc_nspin(ctx, nspin_c)
-      st = trc_iterations(ctx, niter_c)
+      st = trc_nspin(context, nspin_c)
+      st = trc_iterations(context, niter_c)
       niter = int(niter_c)
       ok = .true.
       ! --opt-neb has no single "accepted step" the way consider_step counts
@@ -1777,13 +1778,13 @@ contains
          cached_nspin_img(image) = nspin_c
          neb_scf_iters(image) = neb_scf_iters(image) + niter
          ! Persist THIS image's own converged density for the NEXT time it
-         ! is evaluated -- fetched fresh now, since `dens_buf` above (if
+         ! is evaluated -- fetched fresh now, since `density_buffer` above (if
          ! allocated at all) still held the OLD one. nao/nspin are only
          ! KNOWN now (a successful SCF just ran), so image_densities is grown
          ! to the real size the first time this fires -- see
          ! trc_dlfind_optimize's own comment on why it cannot be sized
          ! any earlier.
-         st = trc_nao(ctx, nao_c)
+         st = trc_nao(context, nao_c)
          block
             integer :: real_size
             real_size = int(nao_c)*int(nao_c)*int(nspin_c)
@@ -1797,14 +1798,14 @@ contains
                   call move_alloc(grown, image_densities)
                end block
             end if
-            if (real_size == size(image_densities, 1)) st = trc_density(ctx, image_densities(:, image))
+            if (real_size == size(image_densities, 1)) st = trc_density(context, image_densities(:, image))
          end block
       else
          have_prev_scf = .true.
          cached_nspin = nspin_c
       end if
       last_scf_xyz = xyz   ! cb_get_hessian's own redundant-SCF check, below
-      if (allocated(dens_buf)) deallocate (dens_buf)
+      if (allocated(density_buffer)) deallocate (density_buffer)
    end subroutine scf_at_geometry
 
    subroutine cb_get_gradient(nvar, coords, energy, gradient, iimage, kiter, status) bind(c)
@@ -1834,7 +1835,7 @@ contains
       real(c_double), allocatable :: gbuf(:)
       logical :: ok
       character(len=512) :: why
-      character(kind=c_char) :: msg_buf(MSG_LEN)
+      character(kind=c_char) :: message_buffer(MSG_LEN)
       integer :: img, niter_here
       real(dp) :: gmax_here, grms_here
 
@@ -1863,22 +1864,22 @@ contains
          return
       end if
 
-      st = trc_run_gradient(ctx)
+      st = trc_run_gradient(context)
       if (st /= TRC_OK) then
-         st = trc_message(ctx, msg_buf, int(size(msg_buf), c_int))
-         call fail_eval(nvar, energy, gradient, status, "trc_run_gradient: "//f_string(msg_buf))
+         st = trc_message(context, message_buffer, int(size(message_buffer), c_int))
+         call fail_eval(nvar, energy, gradient, status, "trc_run_gradient: "//opt_io_f_string(message_buffer))
          return
       end if
 
       allocate (gbuf(nvar))
-      st = trc_gradient(ctx, gbuf)
+      st = trc_gradient(context, gbuf)
       if (st /= TRC_OK) then
          call fail_eval(nvar, energy, gradient, status, "trc_gradient failed after a successful trc_run_gradient")
          deallocate (gbuf)
          return
       end if
-      st = trc_energy(ctx, e)
-      st = trc_nspin(ctx, nspin_c)
+      st = trc_energy(context, e)
+      st = trc_nspin(context, nspin_c)
       cached_nspin = nspin_c
       ! The max CARTESIAN COMPONENT, matching DL-FIND's own test
       ! (dlf_convergence.f90's convergence_set_info: valg=maxval(abs(
@@ -1945,15 +1946,15 @@ contains
       !! is about to discard anyway.
       character(len=*), intent(in) :: reason
       if (opt_str_set(cur_opts%opt_xyz_path)) then
-         call write_opt_xyz_frame(cur_opts%opt_xyz_path, natm, znuc, latest_energy, latest_coords, &
+         call opt_io_write_opt_xyz_frame(cur_opts%opt_xyz_path, natm, znuc, latest_energy, latest_coords, &
                                   "NOT CONVERGED / FAILED: "//trim(reason))
       end if
       if (opt_str_set(cur_opts%traj_xyz_path) .and. traj_n > 0) then
-         call write_traj_xyz_frames(cur_opts%traj_xyz_path, natm, znuc, traj_n, traj_xyz(:, :, 1:traj_n), &
+         call opt_io_write_traj_xyz_frames(cur_opts%traj_xyz_path, natm, znuc, traj_n, traj_xyz(:, :, 1:traj_n), &
                                     traj_e(1:traj_n))
       end if
       if (opt_str_set(cur_opts%json_path)) then
-         call write_opt_failure_json(cur_opts%json_path, opt_str_or_blank(cur_opts%geometry_path), reason, &
+         call opt_io_write_opt_failure_json(cur_opts%json_path, opt_str_or_blank(cur_opts%geometry_path), reason, &
                                      n_steps, n_evals, latest_energy, accepted_gmax, accepted_grms, &
                                      opt_str_or_blank(cur_opts%coords_name), opt_str_or_blank(cur_opts%guess_name), &
                                      traj_e(1:traj_n))
@@ -2287,7 +2288,7 @@ contains
          return
       end if
 
-      st = trc_run_hessian(ctx)
+      st = trc_run_hessian(context)
       if (st /= TRC_OK) then
          call global_logger%warning("--opt: trc_run_hessian failed at this geometry; falling back to "// &
                                     "DL-FIND's own finite-difference Hessian")
@@ -2297,7 +2298,7 @@ contains
 
       ndof = 3*natm
       allocate (hbuf(ndof*ndof))
-      st = trc_hessian(ctx, hbuf)
+      st = trc_hessian(context, hbuf)
       if (st /= TRC_OK) then
          call global_logger%warning("--opt: trc_hessian failed after a successful trc_run_hessian; "// &
                                     "falling back to DL-FIND's own finite-difference Hessian")
@@ -2353,13 +2354,13 @@ contains
       !! is for.
       integer :: n
       integer, save :: cached = -2   !! -2: not read yet; -1: read, disabled
-      character(len=32) :: buf
+      character(len=32) :: buffer
       integer :: ios, slen, stat
       if (cached == -2) then
-         call get_environment_variable("TRC_OPT_TEST_FAIL_AFTER_EVALS", buf, slen, stat)
+         call get_environment_variable("TRC_OPT_TEST_FAIL_AFTER_EVALS", buffer, slen, stat)
          cached = -1
          if (stat == 0 .and. slen > 0) then
-            read (buf, *, iostat=ios) cached
+            read (buffer, *, iostat=ios) cached
             if (ios /= 0) cached = -1
          end if
       end if

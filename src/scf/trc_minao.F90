@@ -1,7 +1,7 @@
 !
 ! The minimal-ANO starting density, PySCF's `minao` guess.
 !
-! Ported from metalquicha's mqc_czt_minao (and its own project_density,
+! Ported from metalquicha's mqc_czt_minao (and its own scf_context_project_density,
 ! mqc_czt_projection), with mqc_ -> trc_ renames.
 !
 module trc_minao
@@ -12,7 +12,7 @@ module trc_minao
    !! shells, occupied with the spherically averaged ground-state configuration:
    !! for each l, floor(n_l / 2(2l+1)) doubly occupied columns and then one open
    !! column holding the remainder spread evenly over its 2l+1 components. That
-   !! diagonal density is carried into the target basis by `project_density`:
+   !! diagonal density is carried into the target basis by `scf_context_project_density`:
    !!
    !!     D_B = S_BB^+ S_BA D_A S_AB S_BB^+
    !!

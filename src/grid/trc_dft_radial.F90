@@ -18,7 +18,7 @@ module trc_dft_radial
    !!
    !! with the angular weight from `trc_lebedev`, whose weights sum to 1. This is
    !! the same convention PySCF uses, which is what makes the two directly
-   !! comparable. `radial_volume_weights` does the r^2 and 4*pi for callers that
+   !! comparable. `dft_radial_volume_weights` does the r^2 and 4*pi for callers that
    !! want a ready-made spherical quadrature.
    use pic_types, only: dp
    use trc_constants, only: PI
@@ -28,10 +28,10 @@ module trc_dft_radial
    implicit none
    private
 
-   public :: treutler_xi              !! Element radius parameter of the M4 mapping
-   public :: bragg_radius             !! Bragg-Slater radius, Bohr
-   public :: treutler_ahlrichs_radial  !! M4 radial nodes and mapping weights
-   public :: radial_volume_weights    !! 4*pi*r^2*dr, for a full spherical quadrature
+   public :: dft_radial_treutler_xi              !! Element radius parameter of the M4 mapping
+   public :: dft_radial_bragg_radius             !! Bragg-Slater radius, Bohr
+   public :: dft_radial_treutler_ahlrichs  !! M4 radial nodes and mapping weights
+   public :: dft_radial_volume_weights    !! 4*pi*r^2*dr, for a full spherical quadrature
 
    real(dp), parameter, public :: M4_ALPHA = 0.6_dp
    !! Exponent of the M4 mapping
@@ -43,7 +43,7 @@ module trc_dft_radial
 
 contains
 
-   pure function treutler_xi(atomic_number) result(xi)
+   pure function dft_radial_treutler_xi(atomic_number) result(xi)
       !! Element radius parameter of the Treutler-Ahlrichs mapping
       !!
       !! H to Kr are the values optimised in the original paper; heavier
@@ -56,9 +56,9 @@ contains
       else
          xi = DEFAULT_XI
       end if
-   end function treutler_xi
+   end function dft_radial_treutler_xi
 
-   pure function bragg_radius(atomic_number) result(radius)
+   pure function dft_radial_bragg_radius(atomic_number) result(radius)
       !! Bragg-Slater atomic radius in Bohr
       integer, intent(in) :: atomic_number
       real(dp) :: radius
@@ -68,14 +68,14 @@ contains
       else
          radius = DEFAULT_BRAGG
       end if
-   end function bragg_radius
+   end function dft_radial_bragg_radius
 
-   subroutine treutler_ahlrichs_radial(n_points, atomic_number, r, dr, error)
+   subroutine dft_radial_treutler_ahlrichs(n_points, atomic_number, r, dr, error)
       !! Treutler-Ahlrichs M4 radial mesh for one element
       !!
       !! Nodes come out ascending. `dr` is the mapping weight alone: multiply by
       !! 4*pi*r^2 for a spherical volume element, or use
-      !! `radial_volume_weights`.
+      !! `dft_radial_volume_weights`.
       integer, intent(in) :: n_points               !! Radial shells
       integer, intent(in) :: atomic_number          !! Z, for the xi parameter
       real(dp), allocatable, intent(out) :: r(:)    !! Nodes, Bohr, ascending
@@ -92,7 +92,7 @@ contains
 
       allocate (r(n_points), dr(n_points))
 
-      xi = treutler_xi(atomic_number)
+      xi = dft_radial_treutler_xi(atomic_number)
       step = PI/real(n_points + 1, dp)
       scale = xi/log(2.0_dp)
 
@@ -109,9 +109,9 @@ contains
          dr(j) = step*sin_x*scale*map_term &
                  *(-M4_ALPHA/(1.0_dp + x)*log_term + 1.0_dp/(1.0_dp - x))
       end do
-   end subroutine treutler_ahlrichs_radial
+   end subroutine dft_radial_treutler_ahlrichs
 
-   pure subroutine radial_volume_weights(r, dr, weights)
+   pure subroutine dft_radial_volume_weights(r, dr, weights)
       !! Turn mapping weights into spherical volume weights, 4*pi*r^2*dr
       !!
       !! Use this only when integrating a spherically symmetric function. For a
@@ -122,6 +122,6 @@ contains
       real(dp), intent(out) :: weights(:)  !! 4*pi*r^2*dr
 
       weights = 4.0_dp*PI*r*r*dr
-   end subroutine radial_volume_weights
+   end subroutine dft_radial_volume_weights
 
 end module trc_dft_radial

@@ -14,7 +14,8 @@ Rules (thresholds and word lists are the constants below):
     module-prefix   a module name lacks the trc_ prefix
     proc-prefix     a public procedure does not start with its module's name
     short-name      a procedure or variable name contains an abbreviation
-                    from SHORT_NAMES (ctx, cfg, dens, ...)
+                    from SHORT_NAMES (ctx, cfg, dens, ...); a bind(c)
+                    procedure's dummy arguments are C ABI names, exempt
     proc-length     a procedure is longer than MAX_PROC_LINES
     arg-count       a procedure has more than MAX_ARGS dummy arguments
                     (`routine seq` item routines and thin `do concurrent`
@@ -226,7 +227,8 @@ def scan_procedures(path):
             stack.append(dict(name=name, kind=m.group(2).lower(), start=ln,
                               end=ln, args=header_args(st, m.group(3)),
                               names=[], device=pending_acc, has_dc=False,
-                              host_exec=0, dos=[]))
+                              host_exec=0, dos=[],
+                              bind_c=bool(re.search(r"\bbind\s*\(\s*c\b", st, re.I))))
             pending_acc = False
             continue
         if stack:
@@ -313,8 +315,12 @@ def check():
                     f"(limit {MAX_ARGS})"))
             seen = set()
             named = proc["names"] + ([] if container else [(proc["name"], proc["start"])])
+            # A bind(c) procedure's dummy names are part of the C ABI (they
+            # are the parameter names in include/terco.h), so they keep the
+            # names C callers know.
+            abi_names = set(proc["args"]) if proc.get("bind_c") else set()
             for name, line in named:
-                if name in seen:
+                if name in seen or name in abi_names:
                     continue
                 seen.add(name)
                 for word in bad_words(name):

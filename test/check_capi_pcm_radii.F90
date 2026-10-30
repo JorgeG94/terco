@@ -6,7 +6,7 @@ program check_capi_pcm_radii
    !! what terco's own table (trc_pcm_radii.F90) already produces for
    !! this molecule must give the same energy and E_diel as the table
    !! path -- the override and the table are two routes to the same
-   !! per-atom radii array, so build_pcm_surface cannot tell them apart.
+   !! per-atom radii array, so pcm_build_surface cannot tell them apart.
    !! The same to round-off (SAME_TOL), not bit for bit: each side is its
    !! own SCF, and with OpenMP threads the reductions sum in a different
    !! order every run (2.4e-13 apart at 4 threads in CI). A wrong radius

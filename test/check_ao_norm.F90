@@ -28,7 +28,7 @@
 !       one file checks whichever TRC_CART_ORDER this build was made with --
 !       order and normalisation are independent on purpose (both headers
 !       above say why), and this test would rather prove that than assume
-!       it. Through trc_ao_norm's `gamess_norm` directly -- the pure ratio,
+!       it. Through trc_ao_norm's `ao_norm_gamess` directly -- the pure ratio,
 !       not `ao_norm_vector`'s full boundary conversion, which ALSO folds
 !       in terco's own libcint-inherited `common_fac_sp` scale for s and p
 !       (see trc_ao_norm.F90's header; that is a real but SEPARATE effect
@@ -47,7 +47,7 @@
 !       TRC_AO_NORM_SHELL (terco shares one normalisation constant across
 !       a shell's components), 1 under TRC_AO_NORM_UNIT (GAMESS normalises
 !       every component individually) -- found by looking up each AO's own
-!       (px,py,pz) via cart_pow, the same way (e) does, so this check does
+!       (px,py,pz) via batch_cart_pow, the same way (e) does, so this check does
 !       not depend on knowing TRC_CART_ORDER's slot assignment by hand
 !       either.
 !
@@ -72,7 +72,7 @@
 !   (c) Tr(D S) = N_electron, in EACH mode's own D and S -- the physical
 !       invariant a contravariant-covariant pair is built to preserve
 !       (Tr(N^-1 D N^-1 . N S N) = Tr(D S) exactly, for any diagonal N), so
-!       this is a self-consistency check on ao_scale_cov/ao_scale_contra
+!       this is a self-consistency check on ao_norm_scale_cov/ao_norm_scale_contra
 !       agreeing about which direction is which.
 !
 !   (d) ROUND TRIP: the density trc_density hands back in a mode is fed
@@ -101,8 +101,8 @@ program check_ao_norm
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
-   use trc_batch, only: cart_pow
-   use trc_ao_norm, only: gamess_norm, ao_norm_vector, ao_scale_cov, ao_scale_contra
+   use trc_batch, only: batch_cart_pow
+   use trc_ao_norm, only: ao_norm_gamess, ao_norm_vector, ao_norm_scale_cov, ao_norm_scale_contra
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
@@ -167,7 +167,7 @@ contains
       !! (e) The closed form, l = 0..4, every component, against
       !! test/reference_ao_norm.dat -- indexed by (lx,ly,lz), not by
       !! within-shell offset, so this build's own TRC_CART_ORDER (via
-      !! `cart_pow`) decides which offset is checked against which line, and
+      !! `batch_cart_pow`) decides which offset is checked against which line, and
       !! the one file serves every build.
       logical, intent(inout) :: ok
       integer, parameter :: NREF = 35
@@ -188,7 +188,7 @@ contains
       do l = 0, 4
          ncart = (l + 1)*(l + 2)/2
          do ic = 0, ncart - 1
-            call cart_pow(l, ic, px, py, pz)
+            call batch_cart_pow(l, ic, px, py, pz)
             found = .false.
             do j = 1, NREF
                if (ref_p(1, j) == px .and. ref_p(2, j) == py .and. ref_p(3, j) == pz) then
@@ -197,7 +197,7 @@ contains
             end do
             call expect(ok, found, "(e) reference has l="//itoa(l)//" component")
             if (.not. found) cycle
-            got = gamess_norm(px, py, pz)
+            got = ao_norm_gamess(px, py, pz)
             call expect(ok, abs(got - ref_n(j)) < 1.0e-12_dp, &
                         "(e) l="//itoa(l)//" ic="//itoa(ic)//" ("//itoa(px)//itoa(py)//itoa(pz)// &
                         ") factor matches scripts/cartorder.py")
@@ -250,7 +250,7 @@ contains
          base = b%sh_ao(ish) - 1
          ncart = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
          do ic = 0, ncart - 1
-            call cart_pow(b%sh_l(ish), ic, px, py, pz)
+            call batch_cart_pow(b%sh_l(ish), ic, px, py, pz)
             i = base + ic + 1
             associate (diag => smat((i - 1)*nao + i))
                if (mode == TRC_AO_NORM_UNIT) then
@@ -363,11 +363,11 @@ contains
       ! D_unit = N^-1 D_shell N^-1: CONTRAVARIANT, the direction trc_density
       ! itself uses (see that entry's own comment) -- a density is built by
       ! CONTRACTING two AO indices, not by pairing two AO functions the way
-      ! an integral does, so this is `ao_scale_contra`, not `ao_scale_cov`.
+      ! an integral does, so this is `ao_norm_scale_contra`, not `ao_norm_scale_cov`.
       allocate (nrm(nao), tmp(nao, nao))
       call ao_norm_vector(b%nshell, b%sh_l, b%sh_ao, nao, TRC_AO_NORM_UNIT, nrm)
       tmp = reshape(real(d_shell, dp), [nao, nao])
-      call ao_scale_contra(nrm, tmp)
+      call ao_norm_scale_contra(nrm, tmp)
       allocate (d_unit(nao*nao), f_unit(nao*nao))
 
       rc = trc_create(h_unit); call expect(ok, rc == TRC_OK, "fock: unit create")
@@ -385,7 +385,7 @@ contains
 
       ! F_unit must equal N F_shell N.
       tmp = reshape(real(f_shell, dp), [nao, nao])
-      call ao_scale_cov(nrm, tmp)
+      call ao_norm_scale_cov(nrm, tmp)
       maxf = maxval(abs(tmp))
       maxdiff = maxval(abs(tmp - reshape(real(f_unit, dp), [nao, nao])))
       print '(a,es9.2,a,es9.2)', "check_ao_norm: (f) Fock  max|F_unit - N F_shell N| ", maxdiff, &

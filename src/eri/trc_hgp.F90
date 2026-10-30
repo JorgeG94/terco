@@ -41,11 +41,14 @@ module trc_hgp
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: LCMAX, NCUM, cidx, cnx, cny, cnz, cll, &
-                         cdir, cdn1, cdn2, cf2, ncum_of, ncart_of
+                         cdir, cdn1, cdn2, cf2, ncum_of, cart_ncart_of
    implicit none
    private
 
-   public :: hgp_batch, hgp_scratch_size, build_pairs_hgp, comp, binom, powi
+   public :: hgp_batch, hgp_scratch_size, hgp_build_pairs
+   ! comp/binom/powi stay private: nothing outside this module uses them
+   ! (trc_binkernel.F90 keeps its own local copies, deliberately -- see
+   ! that module's own header).
 
    integer, parameter :: NPRIM_MAX = 1
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
@@ -81,7 +84,7 @@ contains
    ! over the columns on the primitive-shell path, where sh_c is unity and
    ! the coefficients are applied in the kernel.
    !
-   subroutine build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, &
+   subroutine hgp_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, &
                               pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_ki, pp_kj, npp, pp_a)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(:), sh_np(:)
@@ -256,13 +259,13 @@ contains
          pp_kj(x) = pp_kj(y)
          pp_kj(y) = it
       end subroutine swap_pair
-   end subroutine build_pairs_hgp
+   end subroutine hgp_build_pairs
 
    !
    ! Not class-specialised -- unlike pc_dispatch's generated kernels, which
    ! only exist up to d (trc_rys_select.F90's HGP_LMAX), this runs hgp_quartet
    ! at whatever (la,lb,lc,ld) its arguments carry, up to the build's own
-   ! LMAX. trc_screen.F90's schwarz_bounds_hgp is a second caller for exactly
+   ! LMAX. trc_screen.F90's screen_schwarz_bounds_hgp is a second caller for exactly
    ! that reason: the Schwarz bound needs (ab|ab) at every class the build
    ! supports, f included, even for a class the production Fock path routes
    ! to Rys instead of HGP.
@@ -485,18 +488,18 @@ contains
       real(dp), intent(in)    :: g(*)
       real(dp), intent(inout) :: out(nout)
 
-      integer  :: na, nb, nc, nd, ia, ib, ic, id, idx, base
+      integer  :: na, nb, nc, nd, ia, ib, ic, id, index, base
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
       real(dp) :: acc, cb, cdc
 
-      na = ncart_of(la)
-      nb = ncart_of(lb)
-      nc = ncart_of(lc)
-      nd = ncart_of(ld)
+      na = cart_ncart_of(la)
+      nb = cart_ncart_of(lb)
+      nc = cart_ncart_of(lc)
+      nd = cart_ncart_of(ld)
       base = q_off(iq)
 
-      idx = 0
+      index = 0
       do id = 0, nd - 1
          call comp(ld, id, dx, dy, dz)
       do ic = 0, nc - 1
@@ -505,7 +508,7 @@ contains
          call comp(lb, ib, bx, by, bz)
       do ia = 0, na - 1
          call comp(la, ia, ax, ay, az)
-         idx = idx + 1
+         index = index + 1
          acc = 0.0_dp
          do pz = 0, bz
          do py = 0, by
@@ -528,7 +531,7 @@ contains
          end do
          end do
          end do
-         out(base + idx) = out(base + idx) + acc
+         out(base + index) = out(base + index) + acc
       end do
       end do
       end do

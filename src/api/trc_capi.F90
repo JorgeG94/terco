@@ -97,10 +97,10 @@
 ! RI-MP2 (trc_run_rimp2) and `--df` (trc_scf_df.F90) both support a
 ! spherical orbital basis now: their three-centre tensor stays Cartesian
 ! (every kernel does), but `trc_run_rimp2` folds `cx%res%cmo`/`eps` into
-! that space first (`rimp2_mo_to_cart`, zero-padded past the SCF's own
+! that space first (`rimp2_driver_mo_to_cart`, zero-padded past the SCF's own
 ! spherical MO count -- trc_rimp2_driver.F90's own header), and `--df`'s
 ! `d_c`/`gmat_c` arrive already Cartesian through `trc_scf_fock.F90`'s
-! `to_cart`/`to_sph`, which is every AO index `trc_scf_df.F90` ever reads.
+! `scf_fock_to_cart`/`scf_fock_to_sph`, which is every AO index `trc_scf_df.F90` ever reads.
 ! The AUXILIARY basis (rifit for RI-MP2, jkfit for `--df`) follows the
 ! ORBITAL basis's own convention (pyscf's `auxmol.cart = mol.cart`), not
 ! necessarily its own JSON tag -- see `basis_json`'s and
@@ -189,7 +189,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
-   use trc_scf_settings, only: scf_spin_rule, eri_thresh_env
+   use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_sad, only: trc_sad_build, trc_sadq_build
@@ -205,11 +205,11 @@ module trc_capi
    use pic_strings, only: to_string
    use pic_timer, only: timer_type
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
-                          ao_norm_vector, ao_scale_cov, ao_scale_contra, ao_scale_contra_row
+                          ao_norm_vector, ao_norm_scale_cov, ao_norm_scale_contra, ao_norm_scale_contra_row
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_hirshfeld, only: trc_hirshfeld_populations
    use trc_fukui, only: trc_fukui_indices
@@ -294,13 +294,13 @@ module trc_capi
    !! **TRC_GUESS_PROJECTED**: the density from THIS context's own last
    !! orbitals (cx%bb%cmo, stored by any run with at least one iteration,
    !! not only a converged one), re-orthonormalised in the CURRENT
-   !! geometry's overlap (trc_scf_context's `project_density`) -- a warm
+   !! geometry's overlap (trc_scf_context's `scf_context_project_density`) -- a warm
    !! start for a SEQUENCE of nearby geometries at the SAME molecule and
    !! basis (a geometry optimiser's steps, or a finite-difference Hessian's
    !! displacements) that is exact when the geometry has not moved at all
    !! and degrades gracefully as it does, unlike reusing the raw density
    !! unprojected. Refused (TRC_ERR_STATE) if no previous SCF at this nao
-   !! has run yet, if it was run with fractional occupation (`project_density`
+   !! has run yet, if it was run with fractional occupation (`scf_context_project_density`
    !! only builds integer occupations), or at a size/spin mismatch. See
    !! trc_run_scf's own dispatch; test/bench_warmstart.F90 measured it
    !! against the plain density warm start at water/def2-SVP, steps
@@ -648,9 +648,9 @@ contains
       if (bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
          call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
-         call ao_scale_cov(nrm, s)
-         call ao_scale_cov(nrm, t)
-         call ao_scale_cov(nrm, v)
+         call ao_norm_scale_cov(nrm, s)
+         call ao_norm_scale_cov(nrm, t)
+         call ao_norm_scale_cov(nrm, v)
          deallocate (nrm)
       end if
       smat(1:n*n) = reshape(s, [n*n])
@@ -1004,7 +1004,7 @@ contains
          allocate (nrm(n))
          call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
          do k = 1, TRC_NMULT
-            call ao_scale_cov(nrm, m(:, :, k))
+            call ao_norm_scale_cov(nrm, m(:, :, k))
          end do
          deallocate (nrm)
       end if
@@ -1138,7 +1138,7 @@ contains
       allocate (nrm(n), dscratch(n, n))
       call ao_norm_vector(bb%b%nshell, bb%b%sh_l, bb%b%sh_ao, n, bb%ao_norm_kind, nrm)
       dscratch = reshape(real(dmat(1:n*n), dp), [n, n])
-      call ao_scale_cov(nrm, dscratch)
+      call ao_norm_scale_cov(nrm, dscratch)
    end subroutine fock_scale_in
 
    subroutine fock_scale_out(nrm, n, gmat)
@@ -1151,7 +1151,7 @@ contains
       real(c_double), intent(inout) :: gmat(*)
       real(dp) :: g(n, n)
       g = reshape(real(gmat(1:n*n), dp), [n, n])
-      call ao_scale_cov(nrm, g)
+      call ao_norm_scale_cov(nrm, g)
       gmat(1:n*n) = real(reshape(g, [n*n]), c_double)
    end subroutine fock_scale_out
 
@@ -1305,7 +1305,7 @@ contains
    function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) result(status) &
       bind(c, name="trc_fock_nosym")
       !! CONTRAVARIANT in, COVARIANT out, exactly as capi_fock -- the
-      !! diagonal congruence ao_scale_cov/fock_scale_in apply does not
+      !! diagonal congruence ao_norm_scale_cov/fock_scale_in apply does not
       !! care whether `dmat` is symmetric, so nothing here differs from
       !! the symmetric entry beyond which shared routines it reuses.
       type(c_ptr), value :: eri, basis
@@ -1489,7 +1489,7 @@ contains
    end function capi_rimp2
 
    function scf_entry(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
-                      conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
+                      conv_density, max_iteration, dguess, verbose, energy, e_xc, dmat, eps, &
                       niter, comm) result(status)
       !! `dguess` CONTRAVARIANT in, `dmat` CONTRAVARIANT out, `eps`
       !! invariant, under `basis`'s own ao_norm_kind -- wired for the same
@@ -1497,7 +1497,7 @@ contains
       !! funnel through, and a UNIT-mode caller can reach it with a
       !! context-borrowed `basis` exactly as it can reach the Fock family.
       type(c_ptr), value :: basis
-      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
+      integer(c_int), value :: nalpha, nbeta, grid_level, max_iteration, verbose
       character(kind=c_char), intent(in) :: functional(*)
       real(c_double), value :: conv_energy, conv_density
       type(c_ptr), value :: dguess
@@ -1523,7 +1523,7 @@ contains
       n = bb%b%nao
       status = TRC_ERR_BADARG
       if (nalpha < 0 .or. nbeta < 0 .or. nalpha + nbeta > 2*n) return
-      if (grid_level < 0 .or. max_iter < 1) return
+      if (grid_level < 0 .or. max_iteration < 1) return
       nspin = merge(2, 1, nalpha /= nbeta)
       unit_mode = bb%ao_norm_kind == TRC_AO_NORM_UNIT
       if (unit_mode) then
@@ -1539,7 +1539,7 @@ contains
       opts%grid_level = int(grid_level)
       opts%conv_energy = real(conv_energy, dp)
       opts%conv_density = real(conv_density, dp)
-      opts%max_iter = int(max_iter)
+      opts%max_iteration = int(max_iteration)
       opts%verbose = verbose /= 0
 
       if (c_associated(dguess)) then
@@ -1550,7 +1550,7 @@ contains
             allocate (dgscratch(n, n, nspin))
             dgscratch = real(dg, dp)
             do s = 1, nspin
-               call ao_scale_cov(nrm, dgscratch(:, :, s))
+               call ao_norm_scale_cov(nrm, dgscratch(:, :, s))
             end do
             call trc_scf_run(bb%b, int(nalpha), int(nbeta), opts, res, dguess=dgscratch, comm=comm)
             deallocate (dgscratch)
@@ -1579,7 +1579,7 @@ contains
             allocate (dscratch(n, n, nspin))
             dscratch = res%dmat
             do s = 1, nspin
-               call ao_scale_contra(nrm, dscratch(:, :, s))
+               call ao_norm_scale_contra(nrm, dscratch(:, :, s))
             end do
             k = 0
             do s = 1, nspin
@@ -2501,7 +2501,7 @@ contains
       end if
       cx%opts%conv_energy = real(conv_energy, dp)
       cx%opts%conv_diis = real(conv_diis, dp)
-      cx%opts%max_iter = int(max_iter)
+      cx%opts%max_iteration = int(max_iter)
       cx%opts%ndiis = int(ndiis)
       status = TRC_OK
    end function trc_set_convergence
@@ -2894,7 +2894,7 @@ contains
             allocate (nrm(n))
             call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
             do s = 1, int(nspin)
-               call ao_scale_cov(nrm, cx%dguess(:, :, s))
+               call ao_norm_scale_cov(nrm, cx%dguess(:, :, s))
             end do
             deallocate (nrm)
          end if
@@ -3149,7 +3149,7 @@ contains
             end if
          end block
       end if
-      call scf_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
+      call scf_settings_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
       ! The communicator first, so the guess below binds the same device
       ! the SCF will and says what it did once, on rank 0, not once per
       ! rank. Every `return` from here on frees it.
@@ -3321,7 +3321,7 @@ contains
          end if
          if (cx%opts%frac_occ) then
             cx%message = "trc_run_scf: guess projected does not support fractional occupation "// &
-                         "(project_density's occupations are integer)"
+                         "(scf_context_project_density's occupations are integer)"
             status = TRC_ERR_STATE
             if (collective) call comm%finalize()
             return
@@ -3342,7 +3342,7 @@ contains
       ! The guess just paid (or re-confirmed already-paid) the SAD atomic
       ! sub-SCF's own one-time CUDA local-memory reservation -- see
       ! trc_release_local_mem_reservation's own header. Nothing left in a
-      ! --df run ever launches that four-centre class again (build_g skips
+      ! --df run ever launches that four-centre class again (scf_fock_build_g skips
       ! eri%fock_resident entirely under --df), so give it back before `the
       ! fit` below sizes its own scratch against free memory that cost is
       ! about to vacate: that ordering is this branch's own fix for the w40
@@ -3554,15 +3554,15 @@ contains
    ! not read a device copy that still holds the OLD centre under -acc's
    ! separate memory.
    !
-   subroutine move_basis_centre(b, atom_idx, r)
+   subroutine move_basis_centre(b, atom_index, r)
       type(trc_basis_t), intent(inout) :: b
-      integer, intent(in) :: atom_idx
+      integer, intent(in) :: atom_index
       real(dp), intent(in) :: r(3)
       integer :: i
-      if (atom_idx < 1 .or. atom_idx > b%natm) return
-      b%at_r(:, atom_idx) = r
+      if (atom_index < 1 .or. atom_index > b%natm) return
+      b%at_r(:, atom_index) = r
       do i = 1, b%nshell
-         if (b%sh_at(i) == atom_idx) b%sh_r(:, i) = r
+         if (b%sh_at(i) == atom_index) b%sh_r(:, i) = r
       end do
       if (b%on_device) then
          !$acc update device(b%sh_r, b%at_r)
@@ -3667,7 +3667,7 @@ contains
       !! sized for.
       !!
       !! NOT refused any more: a functional with VV10 nonlocal correlation
-      !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
+      !! (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_grad_add's
       !! term on top of the semilocal one, on VV10's own grid
       !! (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
       !! it on). wB97M-V is in terco's table too now (a meta-GGA with VV10
@@ -3707,7 +3707,7 @@ contains
       !! or the two are not derivatives of the same energy.
       !! `trc_scf_gradient` itself builds the erf(omega r)/r long-range
       !! exchange term (a second eri%gradient pass, its own header) and
-      !! trc_xc_grad%xc_gradient_add computes the functional's semilocal
+      !! trc_xc_grad%xc_grad_add computes the functional's semilocal
       !! GGA part exactly as for any other GGA -- see that module's own
       !! header on why `omega`/`exx_lr` do not affect it.
       !!
@@ -3813,7 +3813,7 @@ contains
          else if (have_func) then
             if (reuse_nlc) then
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                     cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                     cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
@@ -3821,14 +3821,14 @@ contains
                                      grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri)
             else if (reuse_grid) then
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                     cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                     cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
                                      grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri)
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                     cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                     cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
@@ -3836,7 +3836,7 @@ contains
             end if
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
-                                  cx%bb%cmo, cx%bb%eps, eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
+                                  cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                   verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
          end if
       end if
@@ -4269,7 +4269,7 @@ contains
       call pl%to_device()
       call eri%build(cx%bb%b, cx%opts%eri_thresh)
       copts%conv_residual = 1.0e-8_dp
-      copts%max_iter = 100
+      copts%max_iteration = 100
       copts%verbose = cx%opts%verbose
       if (have_func) then
          if (.not. xc_functional_by_name(cx%opts%functional, func)) then
@@ -4342,7 +4342,7 @@ contains
       !! clean generalisation here). The orbital basis may be spherical:
       !! `cx%res%cmo`/`eps` (at whatever space the SCF ran in) are folded
       !! into the Cartesian, zero-padded space `trc_rimp2_run`/
-      !! `trc_urimp2_run` themselves run in by `rimp2_mo_to_cart`
+      !! `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
       !! (trc_rimp2_driver.F90's own header says why the pad is exact).
       type(c_ptr), value :: handle
       integer(c_int) :: status
@@ -4422,15 +4422,15 @@ contains
       ! `nao_sph` when `cx%bb%b%spherical`, the Cartesian `nao` otherwise)
       ! -- `trc_rimp2_run`/`trc_urimp2_run` themselves stay Cartesian-
       ! interface, so a spherical orbital basis is folded here, once, the
-      ! same fold-and-pad `rimp2_mo_to_cart` is for (see its own header).
+      ! same fold-and-pad `rimp2_driver_mo_to_cart` is for (see its own header).
       ! A Cartesian basis copies straight through (nc == the SCF's own
       ! space already).
       nc = cx%bb%b%nao
       allocate (cmo_a(nc, nc), eps_a(nc))
       if (cx%res%nspin == 2) allocate (cmo_b(nc, nc), eps_b(nc))
       if (cx%bb%b%spherical) then
-         call rimp2_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
-         if (cx%res%nspin == 2) call rimp2_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_b, eps_b)
+         call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
+         if (cx%res%nspin == 2) call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_b, eps_b)
       else
          cmo_a = cx%res%cmo(:, :, 1)
          eps_a = cx%res%eps(:, 1)
@@ -4542,7 +4542,7 @@ contains
       nunp = cx%multiplicity - 1
       nalpha = (nelec + nunp)/2
       nbeta = nelec - nalpha
-      call scf_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
+      call scf_settings_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
       status = TRC_ERR_BADARG
       call trc_scf_load(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, nspin, &
                         cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, cx%res, msg)
@@ -5010,7 +5010,7 @@ contains
          allocate (nrm(n))
          call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
          do s = 1, ns
-            call ao_scale_contra(nrm, d(:, :, s))
+            call ao_norm_scale_contra(nrm, d(:, :, s))
          end do
          deallocate (nrm)
       end if
@@ -5328,7 +5328,7 @@ contains
          allocate (nrm(n))
          call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
          do s = 1, ns
-            call ao_scale_contra_row(nrm, c(:, :, s))
+            call ao_norm_scale_contra_row(nrm, c(:, :, s))
          end do
          deallocate (nrm)
       end if

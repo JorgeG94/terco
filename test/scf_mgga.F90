@@ -198,13 +198,13 @@ program scf_mgga
          call ref_read_matrix3(refu, "DM_"//trim(tag), bas%nao, bas%nao, res%nspin, dm_ref)
          de = abs(res%energy - e_ref)
          ! The at-density control: terco's OWN energy at pyscf's committed,
-         ! converged density -- max_iter=1 with dguess runs exactly one
+         ! converged density -- max_iteration=1 with dguess runs exactly one
          ! Roothaan iteration, whose etot (src/scf/trc_scf_driver.F90's own "energy at
          ! this density" comment) is computed from dguess BEFORE the
          ! diagonalisation updates it, i.e. exactly energy_tot(dm0)'s
          ! equivalent -- never an iterated answer.
          opts2 = opts
-         opts2%max_iter = 1
+         opts2%max_iteration = 1
          call trc_scf_run(bas, nalpha(ic), nbeta(ic), opts2, res2, dguess=dm_ref)
          dat = abs(res2%energy - e_ref)
          call golden_put("E_AT_PYSCF_D_"//trim(gkey), res2%energy)

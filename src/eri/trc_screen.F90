@@ -31,26 +31,26 @@
 module trc_screen
    use pic_types, only: dp
    use trc_tables, only: LTOT, NHERM_MAX
-   use trc_batch, only: eri_batch, ncart
+   use trc_batch, only: batch_eri, batch_ncart
    use pic_types, only: int64
    use trc_hgp, only: hgp_batch, hgp_scratch_size
    use trc_schwarz_rys, only: schwarz_rys_batch
    implicit none
    private
 
-   public :: schwarz_bounds, schwarz_bounds_hgp, schwarz_bounds_rys, &
-             pair_index, build_worklist, density_blockmax
+   public :: screen_schwarz_bounds, screen_schwarz_bounds_hgp, screen_schwarz_bounds_rys, &
+             screen_pair_index, screen_build_worklist, screen_density_blockmax
 
 contains
 
    !
    ! Canonical compound index of a shell pair, i >= j, 1-based.
    !
-   pure integer function pair_index(i, j) result(res)
+   pure integer function screen_pair_index(i, j) result(res)
       !$acc routine seq
       integer, intent(in) :: i, j
       res = i*(i - 1)/2 + j
-   end function pair_index
+   end function screen_pair_index
 
    !
    ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j.
@@ -58,7 +58,7 @@ contains
    ! Runs the ordinary engine over the diagonal quartets.  N(N+1)/2 of them, so
    ! this is negligible against the N^4 it then removes.
    !
-   subroutine schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, q)
+   subroutine screen_schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, q)
       integer,  intent(in)  :: nbas, npp
       integer,  intent(in)  :: sh_l(nbas)
       integer,  intent(in)  :: pp_off(nbas*nbas), pp_n(nbas*nbas)
@@ -103,7 +103,7 @@ contains
             d_j(nlive) = j
             d_k(nlive) = i
             d_l(nlive) = j
-            d_q(nlive) = pair_index(i, j)
+            d_q(nlive) = screen_pair_index(i, j)
          end do
       end do
       ! Longest first. The cost of a pair is the square of its primitive-pair
@@ -128,7 +128,7 @@ contains
          c1 = min(c0 + CHUNK - 1, nlive)
          m = 0
          do n = c0, c1
-            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            nb = batch_ncart(sh_l(d_i(n)))*batch_ncart(sh_l(d_j(n)))
             m = m + nb*nb
          end do
          nout = max(nout, m)
@@ -146,7 +146,7 @@ contains
          m = 0
          do n = c0, c1
             d_off(n) = m
-            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            nb = batch_ncart(sh_l(d_i(n)))*batch_ncart(sh_l(d_j(n)))
             m = m + nb*nb
          end do
          !$acc update device(d_off(c0:c1))
@@ -155,14 +155,14 @@ contains
          do concurrent(na = 1:m)
             out(na) = 0.0_dp
          end do
-         call eri_batch(c0, c1, nc, nlive, nbas, npp, m, &
+         call batch_eri(c0, c1, nc, nlive, nbas, npp, m, &
                         d_i, d_j, d_k, d_l, d_off, sh_l, &
                         pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
          ! The diagonal elements (ab|ab) are what Cauchy-Schwarz needs; the
          ! max over the block is a valid, looser bound and avoids the
          ! strided walk. Reduced here so `out` never leaves the device.
          do concurrent(n = 1:nc) local(na, nb, vmax)
-            na = ncart(sh_l(d_i(c0 + n - 1)))*ncart(sh_l(d_j(c0 + n - 1)))
+            na = batch_ncart(sh_l(d_i(c0 + n - 1)))*batch_ncart(sh_l(d_j(c0 + n - 1)))
             vmax = 0.0_dp
             do nb = 1, na*na
                vmax = max(vmax, abs(out(d_off(c0 + n - 1) + nb)))
@@ -177,15 +177,15 @@ contains
       !$acc exit data delete(d_i, d_j, d_k, d_l, d_off, sh_l, rscr, out, qc)
 
       deallocate (d_i, d_j, d_k, d_l, d_off, d_q, out, rscr, qc)
-   end subroutine schwarz_bounds
+   end subroutine screen_schwarz_bounds
 
    !
    ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, computed from
    ! the same contracted HGP primitive pairs (hp_*) the Fock kernels read, so no
-   ! second primitive-pair set is built (unlike `schwarz_bounds` above, which is
+   ! second primitive-pair set is built (unlike `screen_schwarz_bounds` above, which is
    ! no longer called in production).
    !
-   ! Scale: `build_pairs` (MMD) multiplied `common_fac_sp` into every primitive
+   ! Scale: `batch_build_pairs` (MMD) multiplied `common_fac_sp` into every primitive
    ! coefficient, but `basis_build` already folds it into `sh_c`, so the old
    ! route folded it twice and s/p bounds came out too small. That is not
    ! conservative: a too-small Cauchy-Schwarz bound can screen away a quartet
@@ -199,7 +199,7 @@ contains
    ! `hp_*` must already be device-resident (they stay resident for the Fock
    ! kernels); staging a copy here would be an implicit per-launch transfer.
    !
-   subroutine schwarz_bounds_hgp(nbas, nhpp, sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
+   subroutine screen_schwarz_bounds_hgp(nbas, nhpp, sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
       integer,  intent(in)  :: nbas, nhpp
       integer,  intent(in)  :: sh_l(nbas)
       integer,  intent(in)  :: hp_off(nbas*nbas), hp_n(nbas*nbas)
@@ -212,7 +212,7 @@ contains
       integer :: npair, i, j, n, nout, nb, m, na, nlive, c0, c1, nc, key, lab, nchunk, ic
       integer(int64) :: nw, nwmax, need
       real(dp) :: vmax
-      ! Same launch-width reasoning as schwarz_bounds above: one thread per
+      ! Same launch-width reasoning as screen_schwarz_bounds above: one thread per
       ! shell pair, chunked. A chunk also ends before its VRR scratch (which
       ! hgp_batch takes from `work`, sized per quartet, rather than from each
       ! thread's stack) would pass WBUDGET doubles: 64 M, 512 MB. An (ss|ss)
@@ -234,10 +234,10 @@ contains
             d_j(nlive) = j
             d_k(nlive) = i
             d_l(nlive) = j
-            d_q(nlive) = pair_index(i, j)
+            d_q(nlive) = screen_pair_index(i, j)
          end do
       end do
-      ! Longest first, same reason as schwarz_bounds: a general contraction's
+      ! Longest first, same reason as screen_schwarz_bounds: a general contraction's
       ! primitive-pair count spans orders of magnitude across shell pairs.
       call order_by_work(nlive, nbas, hp_n, d_i, d_j, d_k, d_l, d_q)
       if (nlive == 0) then
@@ -261,7 +261,7 @@ contains
             lab = sh_l(d_i(n)) + sh_l(d_j(n))
             need = hgp_scratch_size(lab, lab)
             if (n > c0 .and. nw + need > WBUDGET) exit
-            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            nb = batch_ncart(sh_l(d_i(n)))*batch_ncart(sh_l(d_j(n)))
             m = m + nb*nb
             nw = nw + need
             c1 = n
@@ -274,7 +274,7 @@ contains
       allocate (out(nout), qc(min(nlive, CHUNK)), work(nwmax))
 
       ! d_i/d_j/d_k/d_l/d_off/w_off/sh_l/out/qc/work are this routine's own
-      ! scratch -- entered and exited here, same as schwarz_bounds. hp_* are
+      ! scratch -- entered and exited here, same as screen_schwarz_bounds. hp_* are
       ! NOT entered here: see the header comment above.
       !$acc enter data copyin(d_i, d_j, d_k, d_l, sh_l) create(d_off, w_off, out, qc, work)
       do ic = 1, nchunk
@@ -286,7 +286,7 @@ contains
          do n = c0, c1
             d_off(n) = m
             w_off(n) = nw
-            nb = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+            nb = batch_ncart(sh_l(d_i(n)))*batch_ncart(sh_l(d_j(n)))
             m = m + nb*nb
             lab = sh_l(d_i(n)) + sh_l(d_j(n))
             nw = nw + hgp_scratch_size(lab, lab)
@@ -301,10 +301,10 @@ contains
                         nwmax, w_off, work)
          ! The diagonal elements (ab|ab) are what Cauchy-Schwarz needs; the
          ! max over the block is a valid, looser bound (same choice
-         ! schwarz_bounds makes) and avoids the strided walk to the diagonal
+         ! screen_schwarz_bounds makes) and avoids the strided walk to the diagonal
          ! proper. Reduced here so `out` never leaves the device.
          do concurrent(n = 1:nc) local(na, nb, vmax)
-            na = ncart(sh_l(d_i(c0 + n - 1)))*ncart(sh_l(d_j(c0 + n - 1)))
+            na = batch_ncart(sh_l(d_i(c0 + n - 1)))*batch_ncart(sh_l(d_j(c0 + n - 1)))
             vmax = 0.0_dp
             do nb = 1, na*na
                vmax = max(vmax, abs(out(d_off(c0 + n - 1) + nb)))
@@ -319,16 +319,16 @@ contains
       !$acc exit data delete(d_i, d_j, d_k, d_l, d_off, w_off, sh_l, out, qc, work)
 
       deallocate (d_i, d_j, d_k, d_l, d_off, d_q, cst, w_off, out, qc, work)
-   end subroutine schwarz_bounds_hgp
+   end subroutine screen_schwarz_bounds_hgp
 
    !
    ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, exactly as
-   ! schwarz_bounds_hgp above computes it, but from `trc_schwarz_rys.F90`'s
+   ! screen_schwarz_bounds_hgp above computes it, but from `trc_schwarz_rys.F90`'s
    ! Rys-quadrature DIAGONAL kernel instead of `hgp_quartet`'s whole (ab|ab)
    ! Cartesian block.
    !
    ! WHY. `hgp_quartet` is one thread per shell pair, computing every one of
-   ! the pair's na*na = (ncart(li)*ncart(lj))^2 Cartesian elements to keep
+   ! the pair's na*na = (batch_ncart(li)*batch_ncart(lj))^2 Cartesian elements to keep
    ! the largest; for a (gg) pair na = 15, so na*na = 225 and the thread
    ! also carries a VRR scratch sized per quartet. Cauchy-Schwarz only ever
    ! needs the DIAGONAL of that block (see this module's header: M is a
@@ -354,7 +354,7 @@ contains
    ! needs bounding is how many threads' worth of `t_i`/`t_j`/`t_c`/`outc`
    ! this routine allocates at once.
    !
-   subroutine schwarz_bounds_rys(nbas, nhpp, sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
+   subroutine screen_schwarz_bounds_rys(nbas, nhpp, sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q)
       integer,  intent(in)  :: nbas, nhpp
       integer,  intent(in)  :: sh_l(nbas)
       integer,  intent(in)  :: hp_off(nbas*nbas), hp_n(nbas*nbas)
@@ -384,10 +384,10 @@ contains
             d_j(nlive) = j
             d_k(nlive) = i
             d_l(nlive) = j
-            d_q(nlive) = pair_index(i, j)
+            d_q(nlive) = screen_pair_index(i, j)
          end do
       end do
-      ! Longest first, same reason as schwarz_bounds_hgp.
+      ! Longest first, same reason as screen_schwarz_bounds_hgp.
       call order_by_work(nlive, nbas, hp_n, d_i, d_j, d_k, d_l, d_q)
       if (nlive == 0) then
          deallocate (d_i, d_j, d_k, d_l, d_q)
@@ -396,11 +396,11 @@ contains
 
       allocate (p_na(nlive), p_base(nlive))
       do n = 1, nlive
-         p_na(n) = ncart(sh_l(d_i(n)))*ncart(sh_l(d_j(n)))
+         p_na(n) = batch_ncart(sh_l(d_i(n)))*batch_ncart(sh_l(d_j(n)))
       end do
 
       ! Chunk starts in cst(1:nchunk), cst(nchunk + 1) = nlive + 1 -- same
-      ! shape as schwarz_bounds_hgp's, bounding THREAD_BUDGET threads
+      ! shape as screen_schwarz_bounds_hgp's, bounding THREAD_BUDGET threads
       ! (sum of p_na) per chunk instead of VRR scratch doubles.
       allocate (cst(nlive + 1))
       nchunk = 0
@@ -427,7 +427,7 @@ contains
 
       ! sh_l is NOT resident yet at this point in trc_eri.F90's
       ! build_structures (its own enter data runs after the Schwarz bound),
-      ! same reason schwarz_bounds_hgp copies it in locally; p_na/p_base/qc
+      ! same reason screen_schwarz_bounds_hgp copies it in locally; p_na/p_base/qc
       ! are this routine's own scratch, read and written by the reduction
       ! do-concurrent below.
       !$acc enter data copyin(sh_l, p_na) create(p_base, t_i, t_j, t_c, outc, qc)
@@ -457,7 +457,7 @@ contains
                                 hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, outc)
 
          ! Reduce each pair's slice of outc to its Q, exactly as
-         ! schwarz_bounds_hgp does over its na*na block -- here over na
+         ! screen_schwarz_bounds_hgp does over its na*na block -- here over na
          ! diagonal elements instead.
          do concurrent(n = 1:nc) local(na, ii, vmax)
             na = p_na(c0 + n - 1)
@@ -475,7 +475,7 @@ contains
       !$acc exit data delete(sh_l, p_na, p_base, t_i, t_j, t_c, outc, qc)
 
       deallocate (d_i, d_j, d_k, d_l, d_q, p_na, p_base, cst, t_i, t_j, t_c, outc, qc)
-   end subroutine schwarz_bounds_rys
+   end subroutine screen_schwarz_bounds_rys
 
    !
    ! Reorder the live diagonal pairs so the expensive ones come first.
@@ -531,7 +531,7 @@ contains
    !
    ! Largest |D| over each shell pair's block.  Recomputed whenever D changes.
    !
-   subroutine density_blockmax(nbas, nao, sh_l, ao_off, dmat, dmax)
+   subroutine screen_density_blockmax(nbas, nao, sh_l, ao_off, dmat, dmax)
       integer,  intent(in)  :: nbas, nao
       integer,  intent(in)  :: sh_l(nbas), ao_off(nbas)
       real(dp), intent(in)  :: dmat(nao, nao)
@@ -541,15 +541,15 @@ contains
       do i = 1, nbas
          do j = 1, nbas
             m = 0.0_dp
-            do a = 0, ncart(sh_l(i)) - 1
-               do b = 0, ncart(sh_l(j)) - 1
+            do a = 0, batch_ncart(sh_l(i)) - 1
+               do b = 0, batch_ncart(sh_l(j)) - 1
                   m = max(m, abs(dmat(ao_off(i) + a, ao_off(j) + b)))
                end do
             end do
             dmax(i, j) = m
          end do
       end do
-   end subroutine density_blockmax
+   end subroutine screen_density_blockmax
 
    !
    ! The compacted work list.
@@ -564,7 +564,7 @@ contains
    ! answer depend on D, so it is validated separately by tightening thresh to
    ! zero and checking the list is complete.
    !
-   subroutine build_worklist(nbas, sh_l, q, thresh, use_density, dmax, &
+   subroutine screen_build_worklist(nbas, sh_l, q, thresh, use_density, dmax, &
                              q_i, q_j, q_k, q_l, nq)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(nbas)
@@ -586,17 +586,17 @@ contains
       qmax = 0.0_dp
       do i = 1, nbas
          do j = 1, i
-            qmax = max(qmax, q(pair_index(i, j)))
+            qmax = max(qmax, q(screen_pair_index(i, j)))
          end do
       end do
       np = 0
       do i = 1, nbas
          do j = 1, i
-            if (q(pair_index(i, j))*qmax > thresh) then
+            if (q(screen_pair_index(i, j))*qmax > thresh) then
                np = np + 1
                pi(np) = i
                pj(np) = j
-               pq(np) = q(pair_index(i, j))
+               pq(np) = q(screen_pair_index(i, j))
             end if
          end do
       end do
@@ -646,7 +646,7 @@ contains
       call sort_by_class(nbas, sh_l, nq, q_i, q_j, q_k, q_l)
 
       deallocate (pi, pj, pq)
-   end subroutine build_worklist
+   end subroutine screen_build_worklist
 
    !
    ! Sort the work list by angular-momentum class.

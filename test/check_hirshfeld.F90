@@ -309,7 +309,7 @@ contains
       opts%unrestricted = n_unpaired /= 0
       opts%conv_energy = 1.0e-12_dp
       opts%conv_diis = 1.0e-9_dp
-      opts%max_iter = 200
+      opts%max_iteration = 200
       call trc_scf_run(b, nalpha, nbeta, opts, res)
       call check(error, res%converged, "reference SCF did not converge")
       if (allocated(error)) return

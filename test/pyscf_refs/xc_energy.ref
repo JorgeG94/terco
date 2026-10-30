@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["xc_energy"] -> gen_xc_energy
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: faa9b973ac8e213894ed12cfb7c0e14116cab3385878afff8781b40d81362aad
+# hash: c2d8a8b26f4812c587b1ac0923efe9ef08841e10a5335d163d86c20869841415
 # files: test/check_xc_energy.F90
 NAO 30
 NPTS 132240

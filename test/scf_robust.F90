@@ -140,7 +140,7 @@ program scf_robust
       call bas%to_device()
 
       opts = trc_scf_options_t()
-      opts%max_iter = 150
+      opts%max_iteration = 150
       opts%unrestricted = uhf(ic)
       opts%adiis = .true.
       opts%lindep_thresh = lindep(ic)

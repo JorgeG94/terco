@@ -1,7 +1,7 @@
 !
 ! VV10 (Vydrov & Van Voorhis 2010) nonlocal correlation's contribution to the
 ! nuclear gradient, RKS and UKS, with grid response. Added into an existing
-! `grad(3,natm)`, the same convention trc_xc_grad%xc_gradient_add's semilocal
+! `grad(3,natm)`, the same convention trc_xc_grad%xc_grad_add's semilocal
 ! term uses.
 !
 ! THE FORMULA. The non-locality is already inside vrho/vsigma: E_nl is a
@@ -45,10 +45,10 @@
 !     weight `xg%w`, not the bare quadrature weight `xg%qw` the partition
 !     term below uses.
 !
-! Both grid-response pieces close the SAME header gap xc_gradient_add's own
+! Both grid-response pieces close the SAME header gap xc_grad_add's own
 ! "GRID RESPONSE" section documents for the semilocal term (point motion of
 ! both grids, partition-weight motion, and their cross-cancellation via
-! `becke_partition_grad_contract`) -- this module's own weight/point-motion
+! `dft_partition_becke_grad_contract`) -- this module's own weight/point-motion
 ! block is that section's VV10 analogue, with `dedw`/`fexp` in place of
 ! `fxc = rho eps`/nothing.
 !
@@ -67,19 +67,19 @@
 !
 ! RESTRICTED AND UNRESTRICTED. VV10 is a functional of the TOTAL density
 ! alone (trc_vv10.F90's own header), so this module's single entry point
-! takes `dens(nao,nao,nspin)` exactly as xc_gradient_add does, forms
+! takes `dens(nao,nao,nspin)` exactly as xc_grad_add does, forms
 ! `dtot = dens(:,:,1) [+ dens(:,:,2)]` once, and runs the entire gradient
 ! against that one density -- there is no separate alpha/beta contraction to
 ! carry, unlike the semilocal GGA gradient's cross-spin Q2/rmatx terms.
 !
 ! GRID. This module builds its OWN quadrature at `b`'s geometry, the same
-! reason xc_gradient_add does (trc_scf_context keeps neither grid nor
+! reason xc_grad_add does (trc_scf_context keeps neither grid nor
 ! functional alive past convergence) -- at the CALLER's chosen level
 ! (`grid_level`, expected to be the SCF's own `nlc_grid_level`, not the
 ! semilocal grid's `grid_level`: VV10 runs on its own, coarser grid
 ! end-to-end, energy and gradient alike), with `atom`/`qw` attached so the
 ! weight-response block below can read them -- the same two optional
-! arguments xc_gradient_add passes its own grid build.
+! arguments xc_grad_add passes its own grid build.
 !
 ! SINGLE RANK. No communicator: PASS 2 here is a second, small O(N_grid^2)
 ! sum next to the energy path's (coarser grid, no potential-matrix pass 3 to
@@ -112,13 +112,13 @@ module trc_vv10_grad
    use trc_step_table, only: step_table_t
    use trc_vv10, only: vv10_density_tile, vv10_gather, VV10_RHO_TOL, PI43
    use trc_linalg, only: trc_linalg_t
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid, DEFAULT_GRID_LEVEL
-   use trc_dft_partition, only: becke_partition_grad_contract
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, DEFAULT_GRID_LEVEL
+   use trc_dft_partition, only: dft_partition_becke_grad_contract
    use trc_error, only: error_t
    implicit none
    private
 
-   public :: vv10_gradient_add
+   public :: vv10_grad_add
 
    integer(int64), parameter :: VV10_GRAD_TILE_CAP = 8388608_int64
    !! The chunk-size budget (padded rows x padded columns) handed to
@@ -128,27 +128,27 @@ module trc_vv10_grad
    integer, parameter :: VV10_GRAD_DEFAULT_MAX_PTS = 512
    !! Default points-per-batch cap for this module's OWN grid build
    !! (`xg%build`'s `max_pts`), when the caller's `grid_max_pts` is
-   !! absent -- the same default xc_gradient_add and trc_scf_context use
+   !! absent -- the same default xc_grad_add and trc_scf_context use
    !! for the semilocal grid.
 
 contains
 
    !
    ! The one entry point. `dens(b%nao,b%nao,nspin)` -- the converged density,
-   ! per spin channel, same convention xc_gradient_add uses. `bcoef`/`ccoef`
+   ! per spin channel, same convention xc_grad_add uses. `bcoef`/`ccoef`
    ! are VV10's own `b`/`C` (6.0, 0.01 for wB97X-V). ADDS into `grad`.
    !
-   subroutine vv10_gradient_add(b, lp, nspin, dens, bcoef, ccoef, grad, grid_level, grid_max_pts, &
+   subroutine vv10_grad_add(b, lp, nspin, density, bcoef, ccoef, grad, grid_level, grid_max_pts, &
                                 grid_response, &
                                 timing, grid, xg)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nspin
-      real(dp), intent(in) :: dens(b%nao, b%nao, nspin)
+      real(dp), intent(in) :: density(b%nao, b%nao, nspin)
       real(dp), intent(in) :: bcoef, ccoef
       real(dp), intent(inout) :: grad(3, b%natm)
       integer, intent(in), optional :: grid_level, grid_max_pts
-      !! NO `rho_tol`: unlike xc_gradient_add's semilocal term, this
+      !! NO `rho_tol`: unlike xc_grad_add's semilocal term, this
       !! module always screens at `VV10_RHO_TOL` (trc_vv10's own
       !! constant), everywhere -- the gather, the batch screen below, AND
       !! `vv10_grad_kernel_body`'s own `ri < VV10_RHO_TOL` cutoff, which
@@ -160,20 +160,20 @@ contains
       !! worse than none at all. Matches the energy path exactly:
       !! `trc_vv10_rks`/`trc_vv10_uks` take no `rho_tol` either.
       logical, intent(in), optional :: grid_response
-      !! ON by default, same meaning and default as xc_gradient_add's own
+      !! ON by default, same meaning and default as xc_grad_add's own
       !! argument (that module's header, GRID RESPONSE). OFF recovers the
       !! Pulay-only term -- the piece check_dft_grad_vs_pyscf.F90 compares
       !! against pyscf, whose own nlc gradient has no grid-response support
       !! to match against (this module's own header, GRID RESPONSE caveat
       !! in trc_scf_grad.F90's docs).
       type(step_table_t), intent(inout), optional, target :: timing
-      !! As xc_gradient_add's: device-synced time per step, added into,
+      !! As xc_grad_add's: device-synced time per step, added into,
       !! initialised by the caller with `xc_grad_step_names()`.
       type(dft_grid_t), intent(in), optional, target :: grid
       type(trc_xc_grid_t), intent(in), optional, target :: xg
       !! The SCF's own VV10 (nlc) grid, already batched and device-
       !! resident -- present TOGETHER, same convention and same reuse
-      !! this module's header (GRID) and xc_gradient_add's own `grid`/`xg`
+      !! this module's header (GRID) and xc_grad_add's own `grid`/`xg`
       !! document; see trc_scf_context.F90's `trc_grid_cache_t`.
 
       type(dft_grid_t), target :: grid_own
@@ -224,7 +224,7 @@ contains
          gp => grid
          xgp => xg
       else
-         call build_dft_grid(b%at_r, at_elem, grid_own, err, level=glevel)
+         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=glevel)
          if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
          call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=gmaxpts, &
                            atom=grid_own%atom, qw=grid_own%quad_weights)
@@ -247,18 +247,18 @@ contains
          ! VV10 sees the TOTAL density only (this module's own header) --
          ! built once, at nspin = 1, so the semilocal gradient's pipeline it
          ! reuses (xc_grad_drive, written for a spin-indexed
-         ! `dens(nao,nao,nspin)`) can be handed this array directly with
+         ! `density(nao,nao,nspin)`) can be handed this array directly with
          ! nspin = 1 rather than reshaped.
          allocate (dtot(b%nao, b%nao, 1))
          !$acc enter data create(dtot)
-         !$acc data copyin(dens)
+         !$acc data copyin(density)
          if (nspin == 1) then
             do concurrent(i=1:b%nao, j=1:b%nao)
-               dtot(i, j, 1) = dens(i, j, 1)
+               dtot(i, j, 1) = density(i, j, 1)
             end do
          else
             do concurrent(i=1:b%nao, j=1:b%nao)
-               dtot(i, j, 1) = dens(i, j, 1) + dens(i, j, 2)
+               dtot(i, j, 1) = density(i, j, 1) + density(i, j, 2)
             end do
          end if
          !$acc end data
@@ -350,7 +350,7 @@ contains
                   pcoef(g) = xgp%qw(g)*dedw(g)
                end do
             end do
-            call becke_partition_grad_contract(npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
+            call dft_partition_becke_grad_contract(npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
                                                gp%scheme, gp%adjust, grad_extra, err)
             if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
             deallocate (pcoef)
@@ -372,7 +372,7 @@ contains
          call grid_own%destroy()
       end if
       deallocate (at_elem)
-   end subroutine vv10_gradient_add
+   end subroutine vv10_grad_add
 
    !
    ! Host-side screen: a batch whose every point's density is below
@@ -395,7 +395,7 @@ contains
 
    !
    ! PASS 2, gradient variant: `vrho(i)`/`vsigma(i)` (the ordinary VV10
-   ! potential, fed into the SAME GGA Pulay contraction xc_gradient_add's
+   ! potential, fed into the SAME GGA Pulay contraction xc_grad_add's
    ! semilocal term uses) plus `dedw(i)`/`fexp(:,i)`, the two pieces with no
    ! semilocal counterpart -- see this module's header, THE NONLOCAL EXTRAS.
    ! A duplicate of trc_vv10's own `vv10_kernel_body`, not a call to it:

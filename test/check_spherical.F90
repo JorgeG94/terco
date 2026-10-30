@@ -130,7 +130,7 @@ contains
       opts%functional = ""
       opts%conv_energy = 1.0e-11_dp
       opts%conv_diis = 1.0e-7_dp
-      opts%max_iter = 100
+      opts%max_iteration = 100
       call trc_scf_run(b, nalpha, nbeta, opts, res)
       de = abs(res%energy - c%e_rhf)
       print '(a,a10,a,a9,a,i0,a,f20.12,a,f20.12,a,es10.2,a,l1)', "check_spherical: ", trim(c%xyz), "/", &

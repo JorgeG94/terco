@@ -26,7 +26,7 @@
 ! reconvergence at any displaced geometry, there is no DIIS error, no
 ! orbital-rotation (energy-weighted-density/orthonormality) term, and no
 ! iteration-count sensitivity -- the only things left in dE_nlc[D]/dR are
-! EXACTLY the two terms trc_vv10_grad%vv10_gradient_add computes (Pulay +
+! EXACTLY the two terms trc_vv10_grad%vv10_grad_add computes (Pulay +
 ! grid response), because E_nlc[D] = sum_g w_g(R) rho_D(g; R) [...] is a
 ! plain functional of the FIXED matrix D and the geometry R, evaluated
 ! the same way at every displaced point. If this comparison is NOT tight
@@ -43,7 +43,7 @@
 !     factor of 3 (not 1.5 -- the pair-sum symmetry that lets one pass
 !     over the outer index capture both the point's own-point AND
 !     every-other-point's-inner-point role at once);
-!   - becke_partition_derivatives's own dP/dR for the INNER grid (used
+!   - dft_partition_becke_derivatives's own dP/dR for the INNER grid (used
 !     identically to the semilocal term's, but through a different
 !     point set -- VV10's own, coarser grid).
 !
@@ -58,8 +58,8 @@ module check_vv10_grad_fixedd_fd_cases
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
-   use trc_vv10_grad, only: vv10_gradient_add
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_vv10_grad, only: vv10_grad_add
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
@@ -87,7 +87,7 @@ contains
       integer, intent(in) :: nalpha, nbeta, nspin, grid_level
       !! `nspin` = 1 (RKS, `dens(:,:,1)` the total density) or 2 (UKS,
       !! `dens(:,:,1)`/`dens(:,:,2)` the FIXED alpha/beta densities
-      !! separately -- the nspin = 2 branch of `vv10_gradient_add`'s own
+      !! separately -- the nspin = 2 branch of `vv10_grad_add`'s own
       !! `dtot` sum, and `e_nlc_at`'s own `trc_vv10_uks` path, are
       !! otherwise never exercised by this program's RKS-only cases).
       logical, intent(inout) :: any_fail
@@ -142,7 +142,7 @@ contains
       opts%functional = 'wb97x-v'
       opts%grid_level = 3
       opts%nlc_grid_level = grid_level
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-10_dp; opts%max_iter = 200
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-10_dp; opts%max_iteration = 200
       call trc_scf_run(bas, nalpha, nbeta, opts, res)
       if (.not. res%converged) then
          print '(a)', 'check_vv10_grad_fixedd_fd: '//label//': reference SCF did not converge'
@@ -156,7 +156,7 @@ contains
       allocate (grad_an(3, nat))
       grad_an = 0.0_dp
       !$acc enter data copyin(dens, grad_an)
-      call vv10_gradient_add(bas, lp, nspin, dens, VV10_B, VV10_C, grad_an, grid_level=grid_level, &
+      call vv10_grad_add(bas, lp, nspin, dens, VV10_B, VV10_C, grad_an, grid_level=grid_level, &
                              grid_response=.true.)
       !$acc update self(grad_an)
       !$acc exit data delete(dens, grad_an)
@@ -230,7 +230,7 @@ contains
       end if
       call b2%to_device()
 
-      call build_dft_grid(r, at_z, grid, err, level=grid_level)
+      call dft_grid_build(r, at_z, grid, err, level=grid_level)
       if (err%has_error()) then
          print '(a)', 'check_vv10_grad_fixedd_fd: '//err%get_message(); stop 1
       end if
@@ -270,7 +270,7 @@ program check_vv10_grad_fixedd_fd
 
    ! UKS: NH2, alpha and beta densities held fixed SEPARATELY (not their
    ! sum) -- the only case in this program that exercises
-   ! vv10_gradient_add's nspin=2 `dtot` branch and e_nlc_at's
+   ! vv10_grad_add's nspin=2 `dtot` branch and e_nlc_at's
    ! `trc_vv10_uks` path, neither reached by the RKS cases above.
    call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 2, 1, &
                  'UKS wB97X-V NH2/6-31G*, VV10 only, fixed D, L1', any_fail)

@@ -16,7 +16,7 @@
 !
 ! READ ONCE PER FOCK BUILD, ON THE HOST. `rys_select_init` is an ordinary
 ! subroutine called from trc_eri.F90 before any kernel launches; the result
-! is a plain logical table that `rys_route` turns into one branch at each
+! is a plain logical table that `rys_select_route` turns into one branch at each
 ! launch site in trc_binkernel.F90, before a `do concurrent` starts. Nothing
 ! here runs on the device, and no kernel's own do-concurrent-only rule is
 ! touched by it.
@@ -35,7 +35,7 @@ module trc_rys_select
    use trc_rys_table9, only: rys_table_init9
    implicit none
    private
-   public :: rys_select_init, rys_route, rys_select_tables_init
+   public :: rys_select_init, rys_select_route, rys_select_tables_init
 
    integer, parameter :: RYS_CLASS_RADIX = 11
    !! gen_perclass.py's CLASS_RADIX, fixed at 11 so a dispatch key means the
@@ -86,37 +86,37 @@ contains
       !! selects exactly those that also have a kernel, and HGP for the rest.
       !! A tag that is not exactly four ASCII digits is ignored rather than
       !! failing the whole value over one typo.
-      character(len=256) :: val
+      character(len=256) :: value
       integer :: stat, length, p, q, key
       rys_all = .false.
       rys_default = .true.
       rys_table = .false.
-      call get_environment_variable("TRC_RYS_CLASSES", val, length, stat)
+      call get_environment_variable("TRC_RYS_CLASSES", value, length, stat)
       if (stat /= 0 .or. length == 0) return
-      if (trim(val) == "default") return
+      if (trim(value) == "default") return
       rys_default = .false.
-      if (trim(val) == "all") then
+      if (trim(value) == "all") then
          rys_all = .true.
          return
       end if
-      if (trim(val) == "none") return
+      if (trim(value) == "none") return
       p = 1
       do while (p <= length)
-         q = index(val(p:length), ",")
+         q = index(value(p:length), ",")
          if (q == 0) then
             q = length
          else
             q = p + q - 2
          end if
          if (q >= p) then
-            key = class_key(val(p:q))
+            key = class_key(value(p:q))
             if (key >= 0) rys_table(key) = .true.
          end if
          p = q + 2
       end do
    end subroutine rys_select_init
 
-   pure logical function rys_route(key) result(res)
+   pure logical function rys_select_route(key) result(res)
       !! Should THIS launch -- class key `key`, the same fixed-radix key
       !! trc_binkernel.F90 forms from (sLA,sLB,sLC,sLD) -- go to Rys? Folds in
       !! `rys_has_class`, so a class TRC_RYS_CLASSES asks for but that has no
@@ -143,7 +143,7 @@ contains
          wanted = .false.
       end if
       res = wanted .and. rys_has_class(key)
-   end function rys_route
+   end function rys_select_route
 
    pure integer function key_lmax(key) result(res)
       !! The highest of the four shell angular momenta packed into `key`.

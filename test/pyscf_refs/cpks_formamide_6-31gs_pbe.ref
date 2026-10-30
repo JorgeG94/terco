@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["cpks"] -> gen_cpks
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 21eee94fb319bb66b052528270f1768d64cee175e57193abc48ebb57d5e50b08
+# hash: d98d1a2a3575cbf31d1f98860bd41ed01a449534b32419062d662604170c2c74
 # files: test/scf_cpks.F90 test/basis_sets/6-31gs.json test/formamide.xyz
 E_SCF -1.69693995459119378e+02
 ALPHA 3 3

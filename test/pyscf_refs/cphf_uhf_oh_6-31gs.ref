@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["cphf_uhf"] -> gen_cphf_uhf
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 03b03fb5e256ab98a3877dd3fac70826cf2a04482562b763d071e489d895afef
+# hash: a4dfee1f4a7d07b93e3c791799f655a3cddd5a6fa7f4dfc9191bb8b1083bb642
 # files: test/scf_cphf_uhf.F90 test/basis_sets/6-31gs.json test/oh.xyz
 E_SCF -7.53821493837656078e+01
 ALPHA 3 3

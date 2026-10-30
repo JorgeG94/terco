@@ -103,7 +103,7 @@ program check_xc_grad_vs_pyscf
 
    opts%functional = trim(functional)
    opts%grid_level = grid_level
-   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 200
+   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 200
    call trc_scf_run(bas, nalpha, nbeta, opts, res)
    if (.not. res%converged) then
       print '(a)', 'check_xc_grad_vs_pyscf: reference SCF did not converge'; stop 1
@@ -171,7 +171,7 @@ program check_xc_grad_vs_pyscf
          ! Pulay-term-only comparison muddied by a quadrature truncation
          ! -- measured worst|terco-pyscf| at generation time was 1.501e-10
          ! (water/svwn), 1.615e-10 (water/pbe), 1.563e-10 (nh2/pbe, UKS,
-         ! the cross-spin Q2/rmatx terms) -- with becke_partition_derivatives'
+         ! the cross-spin Q2/rmatx terms) -- with dft_partition_becke_derivatives'
          ! active-set screening ON (its own default, matching the energy's);
          ! an EARLIER, unscreened measurement here was 5.151e-13/6.470e-13/
          ! 2.481e-11 on the same three cases, so screening costs about two

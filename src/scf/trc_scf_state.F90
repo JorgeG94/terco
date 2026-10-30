@@ -38,15 +38,15 @@ module trc_scf_state
       real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp, tr_it = 0.0_dp
       real(dp) :: tx_pts = 0.0_dp, tx_prs = 0.0_dp
       real(dp) :: t_vv10 = 0.0_dp
-      !! Running total of the VV10 calls `build_vxc` wraps in their own
+      !! Running total of the VV10 calls `scf_fock_build_vxc` wraps in their own
       !! NVTX range -- see `xcst` below, and `trc_scf_fock`'s own header.
-      !! It is part of `t_xc` (which times all of `build_vxc`) but not of
+      !! It is part of `t_xc` (which times all of `scf_fock_build_vxc`) but not of
       !! the semilocal functional's `tx_pts`/`tx_prs` split.
       type(step_table_t) :: xcst
       !! The DFT pipeline's steps (grid build, semilocal XC, VV10) in the
       !! same shared table RI-MP2/DF-JK report through -- NVTX ranges on
       !! the two steps whose own call sites can bracket them
-      !! (`build_vxc`'s xc_rks/uks and vv10_rks/uks calls); grid build's
+      !! (`scf_fock_build_vxc`'s xc_rks/uks and vv10_rks/uks calls); grid build's
       !! total is added in after the fact (`add_time`, no range) since
       !! its own timer lives inside `trc_scf_context` and threading a
       !! second timing mechanism through that file was not worth it here.
@@ -78,24 +78,24 @@ module trc_scf_state
 
 contains
 
-   subroutine scf_state_alloc(this, ctx, cfg)
-      !! Sizes follow `ctx`/`cfg` alone (never `opts` directly): every array
+   subroutine scf_state_alloc(this, context, config)
+      !! Sizes follow `context`/`config` alone (never `opts` directly): every array
       !! here is nao/nao_c square, or 1 x 1 when this run has no use for it
       !! (unrestricted-only, range-separated-only, incremental-only, PCM-only).
       class(scf_state_t), intent(inout) :: this
-      type(scf_ctx_t), intent(in) :: ctx
-      type(scf_settings_t), intent(in) :: cfg
+      type(scf_ctx_t), intent(in) :: context
+      type(scf_settings_t), intent(in) :: config
       integer :: nao, nao_c, nspin, nxc, nxc_c, nu_c, nlr_c, nin_c, npcm, npcm_c
-      nao = ctx%nao
-      nao_c = ctx%nao_c
-      nspin = cfg%nspin
-      nxc = merge(nao, 1, cfg%dft)
-      nxc_c = merge(nao_c, 1, cfg%dft)
+      nao = context%nao
+      nao_c = context%nao_c
+      nspin = config%nspin
+      nxc = merge(nao, 1, config%dft)
+      nxc_c = merge(nao_c, 1, config%dft)
       nu_c = merge(nao_c, 1, nspin == 2)
-      nlr_c = merge(nao_c, 1, cfg%exx_lr /= 0.0_dp)
-      nin_c = merge(nao_c, 1, cfg%incr_on)
-      npcm = merge(nao, 1, cfg%pcm_on)
-      npcm_c = merge(nao_c, 1, cfg%pcm_on)
+      nlr_c = merge(nao_c, 1, config%exx_lr /= 0.0_dp)
+      nin_c = merge(nao_c, 1, config%incr_on)
+      npcm = merge(nao, 1, config%pcm_on)
+      npcm_c = merge(nao_c, 1, config%pcm_on)
       allocate (this%fock(nao, nao, nspin), this%gmat(nao, nao, nspin), this%vxc(nxc, nxc, nspin))
       allocate (this%d_c(nao_c, nao_c, nspin), this%gmat_c(nao_c, nao_c, nspin), this%vxc_c(nxc_c, nxc_c, nspin))
       allocate (this%dtot_c(nu_c, nu_c), this%jmat_c(nu_c, nu_c), this%w1_c(nao_c, nao_c), this%klr_c(nlr_c, nlr_c))
@@ -123,23 +123,23 @@ contains
       this%ofrac = 0.0_dp
    end subroutine scf_state_alloc
 
-   subroutine scf_state_to_device(this, ctx, res)
+   subroutine scf_state_to_device(this, context, res)
       class(scf_state_t), intent(inout) :: this
-      type(scf_ctx_t), intent(in) :: ctx
+      type(scf_ctx_t), intent(in) :: context
       type(trc_scf_result_t), intent(in) :: res
       !$acc enter data copyin(this%ofrac)
-      !$acc enter data copyin(ctx%hcore, ctx%smat, ctx%x, res%dmat, res%cmo, res%eps) &
+      !$acc enter data copyin(context%hcore, context%smat, context%x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(this%fock, this%gmat, this%vxc, this%dold, this%errv, this%w1, this%w2) &
       !$acc            copyin(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%jmat_c, this%w1_c, this%klr_c) &
       !$acc            create(this%dref_c, this%gacc_c, this%ddif_c) copyin(this%vpcm_c, this%vpcm)
    end subroutine scf_state_to_device
 
-   subroutine scf_state_release_device(this, ctx, res)
+   subroutine scf_state_release_device(this, context, res)
       class(scf_state_t), intent(inout) :: this
-      type(scf_ctx_t), intent(in) :: ctx
+      type(scf_ctx_t), intent(in) :: context
       type(trc_scf_result_t), intent(in) :: res
       !$acc exit data delete(this%ofrac)
-      !$acc exit data delete(ctx%hcore, ctx%smat, ctx%x, res%dmat, res%cmo, res%eps) &
+      !$acc exit data delete(context%hcore, context%smat, context%x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(this%fock, this%gmat, this%vxc, this%dold, this%errv, this%w1, this%w2) &
       !$acc           delete(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%jmat_c, this%w1_c, this%klr_c) &
       !$acc           delete(this%dref_c, this%gacc_c, this%ddif_c, this%vpcm_c, this%vpcm)

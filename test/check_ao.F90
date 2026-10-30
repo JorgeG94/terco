@@ -40,9 +40,9 @@ program check_ao
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_dft_prune, only: PRUNE_NONE
-   use trc_collocation, only: shell_collocate, NCART_MAX
+   use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_xc_batch, only: trc_xc_grid_t
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
@@ -97,7 +97,7 @@ program check_ao
    do k = 1, NPROBE
       do ish = 1, NSH
          d = probe(:, k) - b%sh_r(:, ish)
-         call shell_collocate(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
+         call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
          nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
          do m = 1, nc
             chi(k, b%sh_ao(ish) + m - 1) = cs(m)
@@ -119,7 +119,7 @@ program check_ao
    call b%to_device(); call pl%to_device()
    call trc_1e(b, pl, s, t, vn)
 
-   call build_dft_grid(at_r, nint(at_z), grid, err, level=5, prune=PRUNE_NONE)
+   call dft_grid_build(at_r, nint(at_z), grid, err, level=5, prune=PRUNE_NONE)
    if (err%has_error()) then
       print '(a)', "check_ao: grid failed: "//err%get_message()
       stop 1
@@ -131,7 +131,7 @@ program check_ao
    do g = 1, grid%n_points
       do ish = 1, NSH
          d = grid%coords(:, g) - b%sh_r(:, ish)
-         call shell_collocate(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
+         call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
          nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
          col(b%sh_ao(ish):b%sh_ao(ish) + nc - 1) = cs(1:nc)
       end do
@@ -151,7 +151,7 @@ program check_ao
          do k = xg%b_shoff(ib), xg%b_shoff(ib + 1) - 1
             ish = xg%b_sh(k)
             d = xg%r(:, g) - b%sh_r(:, ish)
-            call shell_collocate(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
+            call collocation_shell(b%sh_l(ish), b%sh_np(ish), b%sh_e(1:1, ish), b%sh_c(1:1, ish), d, cs, gs)
             nc = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
             col(iao + 1:iao + nc) = cs(1:nc)
             iao = iao + nc

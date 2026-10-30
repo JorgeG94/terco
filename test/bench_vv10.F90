@@ -18,7 +18,7 @@
 ! arrays every point's contribution was always going to add up to.
 !
 ! Timed with `pic_timer`'s `type(timer_type)` (start/get_elapsed_time),
-! the same mechanism src/scf/trc_scf_fock.F90's build_vxc already uses
+! the same mechanism src/scf/trc_scf_fock.F90's scf_fock_build_vxc already uses
 ! around its own VV10 call on the MPI path: a derived-type variable with
 ! type-bound procedures, no locally `contains`-ed helper for this program
 ! to declare -- confirmed under `mpiexec -np 2` with NVHPC + HPC-X (the
@@ -30,7 +30,7 @@ program bench_vv10
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_vv10, only: trc_vv10_rks
    use trc_test_basis, only: read_xyz
@@ -80,7 +80,7 @@ program bench_vv10
    nao = bas%nao
 
    call tm%start()
-   call build_dft_grid(at_r, z, grid, err, level=level)
+   call dft_grid_build(at_r, z, grid, err, level=level)
    if (err%has_error()) then
       print '(a)', 'bench_vv10: grid failed: '//err%get_message(); stop 1
    end if

@@ -23,10 +23,10 @@ module trc_binkernel
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
-                         ncum_of, ncart_of
-   use trc_bins, only: pair_bins_t, SMAX, sort_bins_by_weight, build_pair_quartets
+                         ncum_of, cart_ncart_of
+   use trc_bins, only: pair_bins_t, SMAX, bins_sort_by_weight, bins_build_pair_quartets
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
-   use trc_rys_select, only: rys_select_init, rys_route
+   use trc_rys_select, only: rys_select_init, rys_select_route
    use trc_rys_kernels, only: rys_dispatch
    use trc_mdg, only: mdg_routes
    implicit none
@@ -48,7 +48,7 @@ module trc_binkernel
    !! tightening it costs. This makes that measurable.
 
    public :: trc_set_prim_margin
-   public :: fock_bins
+   public :: binkernel_fock_bins
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -57,7 +57,7 @@ module trc_binkernel
    ! The launch plan: which bin pairs survive, how their quartets are numbered,
    ! and in what order the class-specialised kernels cover them.
    !
-   ! This used to be rebuilt inside every `fock_bins` call -- a double loop
+   ! This used to be rebuilt inside every `binkernel_fock_bins` call -- a double loop
    ! over live bin pairs, ten allocations, a sort by class, a host-to-device
    ! copy, and the matching frees -- once per SCF ITERATION, although it
    ! depends only on the bins and the threshold. The density never enters it
@@ -175,7 +175,7 @@ contains
    ! each.  The host loop is over BINS -- tens of thousands of iterations at
    ! most -- not over quartets.
    !
-   subroutine fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_dens, &
+   subroutine binkernel_fock_bins(b, nbas, npp, nao, sh_l, ao_off, thresh, use_density, &
                         jfac, kfac, omega, nosym, dsh, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                         qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
@@ -197,12 +197,12 @@ contains
       real(dp), intent(in)    :: dsh(nbas, nbas)
       !! max |D| over each shell-pair block; the per-quartet density screen.
       !! Pass it filled with huge() to disable density screening entirely.
-      logical,  intent(in)    :: use_dens
+      logical,  intent(in)    :: use_density
       integer,  intent(in)    :: pp_off(nbas*nbas), pp_n(nbas*nbas)
       real(dp), intent(in)    :: pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp)
       integer,  allocatable, intent(inout) :: qp_bin_pbase(:), qp_bin_k(:)
       !! Bin-interleaved second copy of the above (trc_eri_t's own flat
-      !! fields -- see build_pair_quartets for why they are not part of `b`).
+      !! fields -- see bins_build_pair_quartets for why they are not part of `b`).
       !! `intent(inout)`, not `in`: a resort rebuilds them in place.
       integer,  intent(inout) :: nqp
       real(dp), allocatable, intent(inout) :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
@@ -244,12 +244,12 @@ contains
       ! bound alone.
       !
       if (.not. b%sorted .and. bin_sort_on()) then
-         call sort_bins_by_weight(b, nbas, dsh)
+         call bins_sort_by_weight(b, nbas, dsh)
          !$acc update device(b%sp_i, b%sp_j, b%sp_q)
          ! The slot order inside a bin just changed, and the bin-interleaved
          ! tables are keyed on it -- rebuild them from the same pp_* data
-         ! build_pairs_hgp filled, and refresh the device copy.
-         call build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+         ! hgp_build_pairs filled, and refresh the device copy.
+         call bins_build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                                   qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
          !$acc update device(qp_z, qp_c, qp_px, qp_py, qp_pz, &
@@ -269,8 +269,8 @@ contains
             kb = b%live(ib)
             if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
             if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
-            if (use_dens) then
-               if (dens_reject(b, ka, kb, thresh)) cycle
+            if (use_density) then
+               if (density_reject(b, ka, kb, thresh)) cycle
             end if
             nseg = nseg + 1
          end do
@@ -298,8 +298,8 @@ contains
             if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
             nB = b%bin_cnt(kb)
             if (nA == 0 .or. nB == 0) cycle
-            if (use_dens) then
-               if (dens_reject(b, ka, kb, thresh)) cycle
+            if (use_density) then
+               if (density_reject(b, ka, kb, thresh)) cycle
             end if
             is = is + 1
             sA(is) = nA; sNB(is) = nB
@@ -317,7 +317,7 @@ contains
             ! The kernels take their within-segment index as a default integer,
             ! so a segment must fit in one. Widening it would cost registers
             ! in the hot kernel, which are the binding constraint; instead
-            ! build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+            ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
             ! (split_large_bins, trc_bins.F90), so no segment exceeds 2**30.
             ! This guard is the backstop if that cap is ever raised.
             !
@@ -379,7 +379,7 @@ contains
       ! exactly its (la,lb,lc,ld) -- no select case, and ptxas budgets registers
       ! per class instead of for the worst class across all of them.
       !
-      ! TRC_RYS_CLASSES, read once per Fock build -- `fock_bins` IS one Fock
+      ! TRC_RYS_CLASSES, read once per Fock build -- `binkernel_fock_bins` IS one Fock
       ! build, called once per SCF iteration (or once, standalone, by a
       ! correctness check) -- not once per launch below. See trc_rys_select.
       call rys_select_init()
@@ -439,13 +439,13 @@ contains
                     + sLC(c0))*CLASS_RADIX + sLD(c0)
             ! TRC_RYS_CLASSES routes this launch's whole class run to the
             ! Rys kernel instead of HGP's, for classes that have one --
-            ! `rys_route` already checked that. Out of scope otherwise: Rys
+            ! `rys_select_route` already checked that. Out of scope otherwise: Rys
             ! never changes HGP's own dispatch, decode or launch geometry.
             if (mdg_routes(key2)) then
                ! A g class above TERCO_RYS_G_LTOT: done after the bins by the
                ! MD exchange pass (trc_mdg), which orders the work its own way.
                continue
-            else if (rys_route(key2)) then
+            else if (rys_select_route(key2)) then
                call rys_dispatch(key2, c0, c1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
                                  b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, jfac, kfac, &
                                  omega, dsh, nbas, nao, sh_l, ao_off, &
@@ -467,7 +467,7 @@ contains
          deallocate (ord, ckey)
       end block
       deallocate (sA, sB, sOA, sOB, sNB, sPA, sPB, sD, sOff, sLA, sLB, sLC, sLD)
-   end subroutine fock_bins
+   end subroutine binkernel_fock_bins
 
 
    !
@@ -490,7 +490,7 @@ contains
    ! block between the two bins' shell sets, which is not a per-bin
    ! quantity. The per-quartet test in the kernel, which reads dsh for all
    ! six blocks, is the one that screens on the density.
-   pure logical function dens_reject(b, ka, kb, thresh) result(res)
+   pure logical function density_reject(b, ka, kb, thresh) result(res)
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in) :: ka, kb
       real(dp), intent(in) :: thresh
@@ -503,7 +503,7 @@ contains
            *10.0_dp**(-real(max(0, b%bin_s(kb) - 1), dp))
       dd = 4.0_dp*max(b%bin_dm(ka), b%bin_dm(kb))
       res = (qq*dd <= thresh)
-   end function dens_reject
+   end function density_reject
 
    !
    ! Count the quartets that survive screening, using the same index
@@ -732,7 +732,7 @@ contains
       real(dp) :: oo2z, oo2e, oo2ze, rz, re
       real(dp) :: f(0:BOYS_MMAX)
       real(dp) :: v(NCUM_NOSYM*NCUM_NOSYM, 0:1), g(NCUM_NOSYM*NCUM_NOSYM)
-      integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, idx
+      integer  :: na_, nb_, nc_, nd_, ib_, id_, mu, nu, lam, sig, index
       integer  :: ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz
       integer  :: px, py, pz, qx, qy, qz, ja, jc
       real(dp) :: cb, cdc, vv
@@ -901,8 +901,8 @@ contains
       end do
 
       ! --- HRR and fused digestion, straight from g ---
-      na_ = ncart_of(la); nb_ = ncart_of(lb)
-      nc_ = ncart_of(lc); nd_ = ncart_of(ld)
+      na_ = cart_ncart_of(la); nb_ = cart_ncart_of(lb)
+      nc_ = cart_ncart_of(lc); nd_ = cart_ncart_of(ld)
       dij = (si /= sj); dkl = (sk /= sl)
       ! distinct bins are always distinct pairs; the diagonal bin's
       ! triangle makes them equal only on iab == icd
@@ -929,7 +929,7 @@ contains
       ! so replicating them is instruction-cache cost with no work removed.
       ! Unroll the arithmetic; loop the scatter.
       !
-      idx = 0
+      index = 0
       do id_ = 0, nd_ - 1
          sig = sigl + id_
       do ic = 0, nc_ - 1
@@ -938,8 +938,8 @@ contains
          nu = nuj + ib_
       do ia = 0, na_ - 1
          mu = mui + ia
-         idx = idx + 1
-         vv = vbuf(idx)
+         index = index + 1
+         vv = vbuf(index)
 
          !$acc atomic update
          jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
@@ -1089,11 +1089,11 @@ contains
 
 
 
-   subroutine plan_build(this, b, thresh, use_dens)
+   subroutine plan_build(this, b, thresh, use_density)
       class(trc_plan_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       real(dp), intent(in) :: thresh
-      logical, intent(in)  :: use_dens
+      logical, intent(in)  :: use_density
 
       integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
       integer(int64) :: nt
@@ -1116,8 +1116,8 @@ contains
             kb = b%live(ib)
             if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
             if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
-            if (use_dens) then
-               if (dens_reject(b, ka, kb, thresh)) cycle
+            if (use_density) then
+               if (density_reject(b, ka, kb, thresh)) cycle
             end if
             nseg = nseg + 1
          end do
@@ -1144,8 +1144,8 @@ contains
             if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
             nB = b%bin_cnt(kb)
             if (nA == 0 .or. nB == 0) cycle
-            if (use_dens) then
-               if (dens_reject(b, ka, kb, thresh)) cycle
+            if (use_density) then
+               if (density_reject(b, ka, kb, thresh)) cycle
             end if
             is = is + 1
             sA(is) = nA; sNB(is) = nB
@@ -1162,7 +1162,7 @@ contains
             ! The kernels take their within-segment index as a default integer,
             ! so a segment must fit in one. Widening it would cost registers
             ! in the hot kernel, which are the binding constraint; instead
-            ! build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+            ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
             ! (split_large_bins, trc_bins.F90), so no segment exceeds 2**30.
             ! This guard is the backstop if that cap is ever raised.
             !

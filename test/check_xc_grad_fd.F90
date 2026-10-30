@@ -1,7 +1,7 @@
 !
 ! The KS-DFT nuclear gradient (trc_scf_grad%trc_scf_gradient with `func`
 ! present: eri%gradient scaled by `func%exx` + trc_1e_gradient +
-! trc_xc_grad%xc_gradient_add + nuclear repulsion) against a central
+! trc_xc_grad%xc_grad_add + nuclear repulsion) against a central
 ! finite difference of terco's own fully reconverged KS-DFT energy --
 ! extends check_full_grad_fd.F90's technique (same file layout and the
 ! same reason for NO INTERNAL PROCEDURES: an internal procedure here, even
@@ -133,7 +133,7 @@ contains
 
       opts%functional = functional
       opts%grid_level = grid_level
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 200
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 200
       call trc_scf_run(bas, nalpha, nbeta, opts, res)
       if (.not. res%converged) then
          print '(a)', 'check_xc_grad_fd: '//label//': reference SCF did not converge'
@@ -147,7 +147,7 @@ contains
       ! SCF with VV10 on `opts%nlc_grid_level` (trc_scf_context's own
       ! `grid_nlc`), and trc_scf_gradient's own `nlc_grid_level` argument
       ! is NOT forwarded from `grid_level` -- omitting it left
-      ! vv10_gradient_add on its OWN default grid level (3), while the
+      ! vv10_grad_add on its OWN default grid level (3), while the
       ! energy this FD differences used `opts%nlc_grid_level`'s default
       ! (1): two different VV10 grids on the two sides of one comparison.
       ! Harmless for every functional here with nlc_b = nlc_c = 0 (the
@@ -247,7 +247,7 @@ program check_xc_grad_fd
    call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'pbe', 5, 'UKS PBE NH2/6-31G* L5', any_fail)
 
    ! SCREENING CONSISTENCY, A CASE LARGE ENOUGH TO EXERCISE IT. Every case
-   ! above is 2-3 atoms, where `becke_partition_derivatives`'s active-set
+   ! above is 2-3 atoms, where `dft_partition_becke_derivatives`'s active-set
    ! screening (trc_dft_partition.F90's own header) never drops anything --
    ! its nu_max=0.95 cutoff only excludes an atom once the point's owner is
    ! confidently closer than it, which three atoms sharing one molecule
@@ -268,7 +268,7 @@ program check_xc_grad_fd
    ! central difference's O(H^2) truncation term depends on. PLAIN step-H
    ! worst abs ON was 9.30e-7 (OFF: 2.51e-6) against the six equilibrium-
    ! ish 2-3-atom cases' ~1.4e-7 -- NOT a screening artifact (a direct
-   ! probe with becke_partition_derivatives' active-set screening
+   ! probe with dft_partition_becke_derivatives' active-set screening
    ! disabled entirely, nu_max=2, reproduces the identical 9.30e-7,
    ! unchanged to 3 significant figures) and NOT a grid-response bug
    ! (translational invariance stays ~1e-11/1e-12 either way, INVTOL's
@@ -304,7 +304,7 @@ program check_xc_grad_fd
    ! so the ON/OFF comparison above was differencing an energy built on
    ! `opts%nlc_grid_level`'s default VV10 grid (level 1) against an
    ! ANALYTIC gradient whose VV10 term silently fell back to
-   ! vv10_gradient_add's own default (level 3) -- two different grids on
+   ! vv10_grad_add's own default (level 3) -- two different grids on
    ! the two sides of one derivative. Caught by check_vv10_grad_fixedd_fd.F90
    ! (a fixed-density FD of E_nlc alone, no SCF, so no grid-level
    ! inconsistency to hide behind): that test's own gradient-formula

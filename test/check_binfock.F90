@@ -23,13 +23,13 @@ program check_binfock
    use pic_types, only: dp, int64
    use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
-   use trc_batch, only: build_pairs, ncart, common_fac_sp
+   use trc_batch, only: batch_build_pairs, batch_ncart, common_fac_sp
    use trc_cart, only: cart_init
-   use trc_hgp, only: build_pairs_hgp
+   use trc_hgp, only: hgp_build_pairs
    use trc_tables, only: LMAX
-   use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
-   use trc_binkernel, only: fock_bins
-   use trc_screen, only: schwarz_bounds, build_worklist, density_blockmax, pair_index
+   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
+   use trc_binkernel, only: binkernel_fock_bins
+   use trc_screen, only: screen_schwarz_bounds, screen_build_worklist, screen_density_blockmax, screen_pair_index
    use trc_cart_perm, only: cart_perm_l2b
    implicit none
 
@@ -118,7 +118,7 @@ contains
       real(dp), allocatable :: hp_p(:), hp_r(:,:), hp_ra(:,:), hp_rb(:,:), hp_c(:)
       integer, allocatable :: hp_off(:), hp_n(:)
       integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
-      !! Bin-interleaved second copy of the hp_* data (build_pair_quartets);
+      !! Bin-interleaved second copy of the hp_* data (bins_build_pair_quartets);
       !! flat here for the same reason trc_eri_t keeps them flat rather than
       !! as components of `bins` -- see that type's own comment.
       integer :: nqp
@@ -145,7 +145,7 @@ contains
          iat = bas(BAS_SLOTS*(i - 1) + ATOM_OF)
          sh_r(:, i) = env(atm(ATM_SLOTS*iat + PTR_COORD):atm(ATM_SLOTS*iat + PTR_COORD) + 2)
          ao_off(i) = nao + 1
-         nao = nao + ncart(sh_l(i))
+         nao = nao + batch_ncart(sh_l(i))
       end do
       do i = 1, nbas
          cfac(i) = common_fac_sp(sh_l(i))
@@ -182,16 +182,16 @@ contains
          return
       end if
 
-      call build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, 1.0e-30_dp, &
+      call batch_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, 1.0e-30_dp, &
                        pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
 
       ! Schwarz bounds, then the binned pair container.  No quartet list.
       allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
-      call schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
-      call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, 1.0e-33_dp, &
+      call screen_schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
+      call hgp_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, 1.0e-33_dp, &
                            hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
-      call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins, pp_n=hp_n)
-      call build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+      call bins_build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins, pp_n=hp_n)
+      call bins_build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                                qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
       print '(a,i0,a,i0,a,i0)', '  system ', isys, ': shell pairs ', bins%npair, &
@@ -207,7 +207,7 @@ contains
       !$acc                   qp_z, qp_c, qp_px, qp_py, qp_pz, &
       !$acc                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n) &
       !$acc            copyin(jmat, kmat)
-      call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, 1.0e-30_dp, .false., &
+      call binkernel_fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, 1.0e-30_dp, .false., &
                      1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                      qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &

@@ -45,7 +45,7 @@
 ! J[D_U^tot] is one fock_resident call (j_scale=1, k_scale=0) shared by
 ! both spins; K[D_U^s] is fock_resident(j_scale=0, k_scale=2) per spin --
 ! the same "k_scale=2 on the undoubled density" trick trc_scf_fock.F90's
-! `build_g` uses for the ground-state UKS exchange term. No extra factor
+! `scf_fock_build_g` uses for the ground-state UKS exchange term. No extra factor
 ! of 2 here: RHF's 2 comes from folding two identical spin channels into
 ! one solve, which UHF does not do.
 !
@@ -87,13 +87,14 @@ module trc_cphf
    ! loop, the same elementwise `do concurrent` helpers -- see this
    ! module's header on why they are split out as explicit-shape-dummy
    ! subroutines rather than inlined.
-   public :: zero_mat, copy_mat, neg_mat, add_mat, axpy_mat, precond_mat, combine_p, add_diag
+   public :: cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, cphf_axpy_matrix, &
+             cphf_precond_matrix, cphf_combine_p, cphf_add_diag
 
    type :: trc_cphf_options_t
       real(dp) :: conv_residual = 1.0e-8_dp
       !! Converged when the Frobenius norm of the residual (e_a-e_i) U +
       !! [A U] + B drops below this, for every right-hand side.
-      integer :: max_iter = 100
+      integer :: max_iteration = 100
       logical :: verbose = .false.
    end type trc_cphf_options_t
 
@@ -127,14 +128,14 @@ contains
       type(trc_cphf_result_t), intent(out) :: res
 
       real(dp), allocatable :: d_u(:, :), d_ut(:, :), g_u(:, :)
-      real(dp), allocatable :: tmp_no(:, :), tmp_no2(:, :)
+      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
       real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
       integer :: it, comp, i, a
       logical :: broke
 
       allocate (d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao))
-      allocate (tmp_no(nao, nocc), tmp_no2(nao, nocc))
+      allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
       allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
       do i = 1, nocc
          do a = 1, nvirt
@@ -142,7 +143,7 @@ contains
          end do
       end do
 
-      !$acc enter data create(d_u, d_ut, g_u, tmp_no, tmp_no2, r, z, p, ap)
+      !$acc enter data create(d_u, d_ut, g_u, temporary_no, temporary_no2, r, z, p, ap)
       !$acc enter data copyin(diagv)
 
       allocate (res%iterations(ncomp))
@@ -150,10 +151,10 @@ contains
       res%message = ""
 
       do comp = 1, ncomp
-         call neg_mat(nvirt, nocc, bvec(:, :, comp), r)
-         call zero_mat(nvirt, nocc, u(:, :, comp))
-         call precond_mat(nvirt, nocc, diagv, r, z)
-         call copy_mat(nvirt, nocc, z, p)
+         call cphf_neg_matrix(nvirt, nocc, bvec(:, :, comp), r)
+         call cphf_zero_matrix(nvirt, nocc, u(:, :, comp))
+         call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
+         call cphf_copy_matrix(nvirt, nocc, z, p)
          rz = lp%dot_2d(r, z)
          resid = sqrt(lp%dot_2d(r, r))
          it = 0
@@ -167,7 +168,7 @@ contains
          ! zero iterations -- silently wrong. `.not. (resid < conv)` reads
          ! a NaN resid as "not yet converged" instead, so the loop runs,
          ! matvec produces a NaN ap, and the pap guard above catches it.
-         do while (it < opts%max_iter .and. .not. (resid < opts%conv_residual))
+         do while (it < opts%max_iteration .and. .not. (resid < opts%conv_residual))
             call matvec(p, ap)
             pap = lp%dot_2d(p, ap)
             ! A breakdown (p^T A p <= 0, including NaN -- NaN > 0 is
@@ -180,16 +181,16 @@ contains
                exit
             end if
             alpha_cg = rz/pap
-            call axpy_mat(nvirt, nocc, alpha_cg, p, u(:, :, comp))
-            call axpy_mat(nvirt, nocc, -alpha_cg, ap, r)
+            call cphf_axpy_matrix(nvirt, nocc, alpha_cg, p, u(:, :, comp))
+            call cphf_axpy_matrix(nvirt, nocc, -alpha_cg, ap, r)
             resid = sqrt(lp%dot_2d(r, r))
             it = it + 1
             if (resid < opts%conv_residual) exit
-            call precond_mat(nvirt, nocc, diagv, r, z)
+            call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
             rz_old = rz
             rz = lp%dot_2d(r, z)
             beta_cg = rz/rz_old
-            call combine_p(nvirt, nocc, z, beta_cg, p)
+            call cphf_combine_p(nvirt, nocc, z, beta_cg, p)
          end do
          res%iterations(comp) = it
          if (broke) then
@@ -210,7 +211,7 @@ contains
       end do
 
       !$acc exit data delete(diagv)
-      !$acc exit data delete(d_u, d_ut, g_u, tmp_no, tmp_no2, r, z, p, ap)
+      !$acc exit data delete(d_u, d_ut, g_u, temporary_no, temporary_no2, r, z, p, ap)
 
    contains
 
@@ -219,14 +220,14 @@ contains
       subroutine matvec(pin, apout)
          real(dp), intent(in) :: pin(nvirt, nocc)
          real(dp), intent(inout) :: apout(nvirt, nocc)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, tmp_no)
-         call lp%gemm_mat(tmp_no, cmo(:, 1:nocc), d_u, transb="T")
+         call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, temporary_no)
+         call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u, transb="T")
          call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
-         call add_mat(nao, nao, d_u, d_ut, d_u)
+         call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
          call eri%fock_resident(b, d_u, g_u, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
-         call lp%gemm_mat(g_u, cmo(:, 1:nocc), tmp_no2)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), tmp_no2, apout, transa="T", alpha=2.0_dp)
-         call add_diag(nvirt, nocc, diagv, pin, apout)
+         call lp%gemm_mat(g_u, cmo(:, 1:nocc), temporary_no2)
+         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, apout, transa="T", alpha=2.0_dp)
+         call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
       end subroutine matvec
 
    end subroutine trc_cphf_solve_rhf
@@ -251,18 +252,18 @@ contains
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
 
-      real(dp), allocatable :: d_ua(:, :), d_ub(:, :), d_t(:, :), d_tmp(:, :)
+      real(dp), allocatable :: d_ua(:, :), d_ub(:, :), d_t(:, :), d_temporary(:, :)
       real(dp), allocatable :: g_j(:, :), g_ka(:, :), g_kb(:, :), g_eff_a(:, :), g_eff_b(:, :)
-      real(dp), allocatable :: tmp_a(:, :), tmp_a2(:, :), tmp_b(:, :), tmp_b2(:, :)
+      real(dp), allocatable :: temporary_a(:, :), temporary_a2(:, :), temporary_b(:, :), temporary_b2(:, :)
       real(dp), allocatable :: ra(:, :), za(:, :), pa(:, :), apa(:, :), diag_a(:, :)
       real(dp), allocatable :: rb(:, :), zb(:, :), pb(:, :), apb(:, :), diag_b(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
       integer :: it, comp, i, a
       logical :: broke
 
-      allocate (d_ua(nao, nao), d_ub(nao, nao), d_t(nao, nao), d_tmp(nao, nao))
+      allocate (d_ua(nao, nao), d_ub(nao, nao), d_t(nao, nao), d_temporary(nao, nao))
       allocate (g_j(nao, nao), g_ka(nao, nao), g_kb(nao, nao), g_eff_a(nao, nao), g_eff_b(nao, nao))
-      allocate (tmp_a(nao, noa), tmp_a2(nao, noa), tmp_b(nao, nob), tmp_b2(nao, nob))
+      allocate (temporary_a(nao, noa), temporary_a2(nao, noa), temporary_b(nao, nob), temporary_b2(nao, nob))
       allocate (ra(nva, noa), za(nva, noa), pa(nva, noa), apa(nva, noa), diag_a(nva, noa))
       allocate (rb(nvb, nob), zb(nvb, nob), pb(nvb, nob), apb(nvb, nob), diag_b(nvb, nob))
       do i = 1, noa
@@ -276,8 +277,8 @@ contains
          end do
       end do
 
-      !$acc enter data create(d_ua, d_ub, d_t, d_tmp, g_j, g_ka, g_kb, g_eff_a, g_eff_b, &
-      !$acc                   tmp_a, tmp_a2, tmp_b, tmp_b2, ra, za, pa, apa, rb, zb, pb, apb)
+      !$acc enter data create(d_ua, d_ub, d_t, d_temporary, g_j, g_ka, g_kb, g_eff_a, g_eff_b, &
+      !$acc                   temporary_a, temporary_a2, temporary_b, temporary_b2, ra, za, pa, apa, rb, zb, pb, apb)
       !$acc enter data copyin(diag_a, diag_b)
 
       allocate (res%iterations(ncomp))
@@ -285,14 +286,14 @@ contains
       res%message = ""
 
       do comp = 1, ncomp
-         call neg_mat(nva, noa, bvec_a(:, :, comp), ra)
-         call neg_mat(nvb, nob, bvec_b(:, :, comp), rb)
-         call zero_mat(nva, noa, u_a(:, :, comp))
-         call zero_mat(nvb, nob, u_b(:, :, comp))
-         call precond_mat(nva, noa, diag_a, ra, za)
-         call precond_mat(nvb, nob, diag_b, rb, zb)
-         call copy_mat(nva, noa, za, pa)
-         call copy_mat(nvb, nob, zb, pb)
+         call cphf_neg_matrix(nva, noa, bvec_a(:, :, comp), ra)
+         call cphf_neg_matrix(nvb, nob, bvec_b(:, :, comp), rb)
+         call cphf_zero_matrix(nva, noa, u_a(:, :, comp))
+         call cphf_zero_matrix(nvb, nob, u_b(:, :, comp))
+         call cphf_precond_matrix(nva, noa, diag_a, ra, za)
+         call cphf_precond_matrix(nvb, nob, diag_b, rb, zb)
+         call cphf_copy_matrix(nva, noa, za, pa)
+         call cphf_copy_matrix(nvb, nob, zb, pb)
          rz = lp%dot_2d(ra, za) + lp%dot_2d(rb, zb)
          resid = sqrt(lp%dot_2d(ra, ra) + lp%dot_2d(rb, rb))
          it = 0
@@ -300,7 +301,7 @@ contains
          ! See trc_cphf_solve_rhf's own comment on `.not. (resid < conv)`
          ! vs `resid >= conv`: a NaN resid must read as "not converged",
          ! not fall through both comparisons as false.
-         do while (it < opts%max_iter .and. .not. (resid < opts%conv_residual))
+         do while (it < opts%max_iteration .and. .not. (resid < opts%conv_residual))
             call matvec(pa, pb, apa, apb)
             pap = lp%dot_2d(pa, apa) + lp%dot_2d(pb, apb)
             ! See trc_cphf_solve_rhf's own comment on this guard: a
@@ -312,20 +313,20 @@ contains
                exit
             end if
             alpha_cg = rz/pap
-            call axpy_mat(nva, noa, alpha_cg, pa, u_a(:, :, comp))
-            call axpy_mat(nvb, nob, alpha_cg, pb, u_b(:, :, comp))
-            call axpy_mat(nva, noa, -alpha_cg, apa, ra)
-            call axpy_mat(nvb, nob, -alpha_cg, apb, rb)
+            call cphf_axpy_matrix(nva, noa, alpha_cg, pa, u_a(:, :, comp))
+            call cphf_axpy_matrix(nvb, nob, alpha_cg, pb, u_b(:, :, comp))
+            call cphf_axpy_matrix(nva, noa, -alpha_cg, apa, ra)
+            call cphf_axpy_matrix(nvb, nob, -alpha_cg, apb, rb)
             resid = sqrt(lp%dot_2d(ra, ra) + lp%dot_2d(rb, rb))
             it = it + 1
             if (resid < opts%conv_residual) exit
-            call precond_mat(nva, noa, diag_a, ra, za)
-            call precond_mat(nvb, nob, diag_b, rb, zb)
+            call cphf_precond_matrix(nva, noa, diag_a, ra, za)
+            call cphf_precond_matrix(nvb, nob, diag_b, rb, zb)
             rz_old = rz
             rz = lp%dot_2d(ra, za) + lp%dot_2d(rb, zb)
             beta_cg = rz/rz_old
-            call combine_p(nva, noa, za, beta_cg, pa)
-            call combine_p(nvb, nob, zb, beta_cg, pb)
+            call cphf_combine_p(nva, noa, za, beta_cg, pa)
+            call cphf_combine_p(nvb, nob, zb, beta_cg, pb)
          end do
          res%iterations(comp) = it
          if (broke) then
@@ -346,8 +347,8 @@ contains
       end do
 
       !$acc exit data delete(diag_a, diag_b)
-      !$acc exit data delete(d_ua, d_ub, d_t, d_tmp, g_j, g_ka, g_kb, g_eff_a, g_eff_b, &
-      !$acc                  tmp_a, tmp_a2, tmp_b, tmp_b2, ra, za, pa, apa, rb, zb, pb, apb)
+      !$acc exit data delete(d_ua, d_ub, d_t, d_temporary, g_j, g_ka, g_kb, g_eff_a, g_eff_b, &
+      !$acc                  temporary_a, temporary_a2, temporary_b, temporary_b2, ra, za, pa, apa, rb, zb, pb, apb)
 
    contains
 
@@ -355,27 +356,27 @@ contains
          real(dp), intent(in) :: pina(nva, noa), pinb(nvb, nob)
          real(dp), intent(inout) :: apouta(nva, noa), apoutb(nvb, nob)
          ! D_U^alpha
-         call lp%gemm_mat(cmo_a(:, noa + 1:nao), pina, tmp_a)
-         call lp%gemm_mat(tmp_a, cmo_a(:, 1:noa), d_ua, transb="T")
-         call lp%transpose(nao, nao, d_ua, nao, d_tmp, nao)
-         call add_mat(nao, nao, d_ua, d_tmp, d_ua)
+         call lp%gemm_mat(cmo_a(:, noa + 1:nao), pina, temporary_a)
+         call lp%gemm_mat(temporary_a, cmo_a(:, 1:noa), d_ua, transb="T")
+         call lp%transpose(nao, nao, d_ua, nao, d_temporary, nao)
+         call cphf_add_matrix(nao, nao, d_ua, d_temporary, d_ua)
          ! D_U^beta
-         call lp%gemm_mat(cmo_b(:, nob + 1:nao), pinb, tmp_b)
-         call lp%gemm_mat(tmp_b, cmo_b(:, 1:nob), d_ub, transb="T")
-         call lp%transpose(nao, nao, d_ub, nao, d_tmp, nao)
-         call add_mat(nao, nao, d_ub, d_tmp, d_ub)
-         call add_mat(nao, nao, d_ua, d_ub, d_t)
+         call lp%gemm_mat(cmo_b(:, nob + 1:nao), pinb, temporary_b)
+         call lp%gemm_mat(temporary_b, cmo_b(:, 1:nob), d_ub, transb="T")
+         call lp%transpose(nao, nao, d_ub, nao, d_temporary, nao)
+         call cphf_add_matrix(nao, nao, d_ub, d_temporary, d_ub)
+         call cphf_add_matrix(nao, nao, d_ua, d_ub, d_t)
          call eri%fock_resident(b, d_t, g_j, j_scale=1.0_dp, k_scale=0.0_dp, density_screen=.false.)
          call eri%fock_resident(b, d_ua, g_ka, j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.)
          call eri%fock_resident(b, d_ub, g_kb, j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.)
-         call add_mat(nao, nao, g_j, g_ka, g_eff_a)
-         call add_mat(nao, nao, g_j, g_kb, g_eff_b)
-         call lp%gemm_mat(g_eff_a, cmo_a(:, 1:noa), tmp_a2)
-         call lp%gemm_mat(cmo_a(:, noa + 1:nao), tmp_a2, apouta, transa="T")
-         call lp%gemm_mat(g_eff_b, cmo_b(:, 1:nob), tmp_b2)
-         call lp%gemm_mat(cmo_b(:, nob + 1:nao), tmp_b2, apoutb, transa="T")
-         call add_diag(nva, noa, diag_a, pina, apouta)
-         call add_diag(nvb, nob, diag_b, pinb, apoutb)
+         call cphf_add_matrix(nao, nao, g_j, g_ka, g_eff_a)
+         call cphf_add_matrix(nao, nao, g_j, g_kb, g_eff_b)
+         call lp%gemm_mat(g_eff_a, cmo_a(:, 1:noa), temporary_a2)
+         call lp%gemm_mat(cmo_a(:, noa + 1:nao), temporary_a2, apouta, transa="T")
+         call lp%gemm_mat(g_eff_b, cmo_b(:, 1:nob), temporary_b2)
+         call lp%gemm_mat(cmo_b(:, nob + 1:nao), temporary_b2, apoutb, transa="T")
+         call cphf_add_diag(nva, noa, diag_a, pina, apouta)
+         call cphf_add_diag(nvb, nob, diag_b, pinb, apoutb)
       end subroutine matvec
 
    end subroutine trc_cphf_solve_uhf
@@ -405,7 +406,7 @@ contains
 
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
-      real(dp), allocatable :: mmat(:, :, :), tmp(:, :), bvec(:, :, :), u(:, :, :)
+      real(dp), allocatable :: mmat(:, :, :), temporary(:, :), bvec(:, :, :), u(:, :, :)
       integer :: nao, nvirt, x, y
       logical :: owns_la
 
@@ -422,11 +423,11 @@ contains
       allocate (mmat(nao, nao, TRC_NMULT))
       call trc_multipoles(b, pl, [0.0_dp, 0.0_dp, 0.0_dp], mmat)
 
-      allocate (tmp(nao, nocc), bvec(nvirt, nocc, 3), u(nvirt, nocc, 3))
-      !$acc enter data copyin(cmo, mmat) create(tmp, bvec, u)
+      allocate (temporary(nao, nocc), bvec(nvirt, nocc, 3), u(nvirt, nocc, 3))
+      !$acc enter data copyin(cmo, mmat) create(temporary, bvec, u)
       do x = 1, 3
-         call lp%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), tmp)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), tmp, bvec(:, :, x), transa="T")
+         call lp%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), temporary)
+         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary, bvec(:, :, x), transa="T")
       end do
 
       call trc_cphf_solve_rhf(b, eri, lp, nao, nocc, nvirt, cmo, eps, 3, bvec, u, opts, res)
@@ -442,8 +443,8 @@ contains
          end do
       end do
 
-      !$acc exit data delete(cmo, mmat, tmp, bvec, u)
-      deallocate (mmat, tmp, bvec, u)
+      !$acc exit data delete(cmo, mmat, temporary, bvec, u)
+      deallocate (mmat, temporary, bvec, u)
       if (owns_la) call lp%release()
    end subroutine trc_scf_polarizability_rhf
 
@@ -466,7 +467,7 @@ contains
 
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
-      real(dp), allocatable :: mmat(:, :, :), tmp_a(:, :), tmp_b(:, :)
+      real(dp), allocatable :: mmat(:, :, :), temporary_a(:, :), temporary_b(:, :)
       real(dp), allocatable :: bvec_a(:, :, :), bvec_b(:, :, :), u_a(:, :, :), u_b(:, :, :)
       integer :: nao, nva, nvb, x, y
       logical :: owns_la
@@ -485,14 +486,14 @@ contains
       allocate (mmat(nao, nao, TRC_NMULT))
       call trc_multipoles(b, pl, [0.0_dp, 0.0_dp, 0.0_dp], mmat)
 
-      allocate (tmp_a(nao, noa), tmp_b(nao, nob))
+      allocate (temporary_a(nao, noa), temporary_b(nao, nob))
       allocate (bvec_a(nva, noa, 3), bvec_b(nvb, nob, 3), u_a(nva, noa, 3), u_b(nvb, nob, 3))
-      !$acc enter data copyin(cmo_a, cmo_b, mmat) create(tmp_a, tmp_b, bvec_a, bvec_b, u_a, u_b)
+      !$acc enter data copyin(cmo_a, cmo_b, mmat) create(temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
       do x = 1, 3
-         call lp%gemm_mat(mmat(:, :, x), cmo_a(:, 1:noa), tmp_a)
-         call lp%gemm_mat(cmo_a(:, noa + 1:nao), tmp_a, bvec_a(:, :, x), transa="T")
-         call lp%gemm_mat(mmat(:, :, x), cmo_b(:, 1:nob), tmp_b)
-         call lp%gemm_mat(cmo_b(:, nob + 1:nao), tmp_b, bvec_b(:, :, x), transa="T")
+         call lp%gemm_mat(mmat(:, :, x), cmo_a(:, 1:noa), temporary_a)
+         call lp%gemm_mat(cmo_a(:, noa + 1:nao), temporary_a, bvec_a(:, :, x), transa="T")
+         call lp%gemm_mat(mmat(:, :, x), cmo_b(:, 1:nob), temporary_b)
+         call lp%gemm_mat(cmo_b(:, nob + 1:nao), temporary_b, bvec_b(:, :, x), transa="T")
       end do
 
       call trc_cphf_solve_uhf(b, eri, lp, nao, noa, nva, nob, nvb, cmo_a, cmo_b, eps_a, eps_b, &
@@ -508,8 +509,8 @@ contains
          end do
       end do
 
-      !$acc exit data delete(cmo_a, cmo_b, mmat, tmp_a, tmp_b, bvec_a, bvec_b, u_a, u_b)
-      deallocate (mmat, tmp_a, tmp_b, bvec_a, bvec_b, u_a, u_b)
+      !$acc exit data delete(cmo_a, cmo_b, mmat, temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
+      deallocate (mmat, temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
       if (owns_la) call lp%release()
    end subroutine trc_scf_polarizability_uhf
 
@@ -548,16 +549,16 @@ contains
    ! header for why that split matters on the GPU build.
    ! ----------------------------------------------------------------------
 
-   subroutine zero_mat(m, n, a)
+   subroutine cphf_zero_matrix(m, n, a)
       integer, intent(in) :: m, n
       real(dp), intent(inout) :: a(m, n)
       integer :: i, j
       do concurrent(j=1:n, i=1:m)
          a(i, j) = 0.0_dp
       end do
-   end subroutine zero_mat
+   end subroutine cphf_zero_matrix
 
-   subroutine copy_mat(m, n, a, c)
+   subroutine cphf_copy_matrix(m, n, a, c)
       integer, intent(in) :: m, n
       real(dp), intent(in) :: a(m, n)
       real(dp), intent(inout) :: c(m, n)
@@ -565,9 +566,9 @@ contains
       do concurrent(j=1:n, i=1:m)
          c(i, j) = a(i, j)
       end do
-   end subroutine copy_mat
+   end subroutine cphf_copy_matrix
 
-   subroutine neg_mat(m, n, a, c)
+   subroutine cphf_neg_matrix(m, n, a, c)
       integer, intent(in) :: m, n
       real(dp), intent(in) :: a(m, n)
       real(dp), intent(inout) :: c(m, n)
@@ -575,9 +576,9 @@ contains
       do concurrent(j=1:n, i=1:m)
          c(i, j) = -a(i, j)
       end do
-   end subroutine neg_mat
+   end subroutine cphf_neg_matrix
 
-   subroutine add_mat(m, n, a, bb, c)
+   subroutine cphf_add_matrix(m, n, a, bb, c)
       integer, intent(in) :: m, n
       real(dp), intent(in) :: a(m, n), bb(m, n)
       real(dp), intent(inout) :: c(m, n)
@@ -585,9 +586,9 @@ contains
       do concurrent(j=1:n, i=1:m)
          c(i, j) = a(i, j) + bb(i, j)
       end do
-   end subroutine add_mat
+   end subroutine cphf_add_matrix
 
-   subroutine axpy_mat(m, n, alpha, x, y)
+   subroutine cphf_axpy_matrix(m, n, alpha, x, y)
       !! y := y + alpha*x
       integer, intent(in) :: m, n
       real(dp), intent(in) :: alpha
@@ -597,9 +598,9 @@ contains
       do concurrent(j=1:n, i=1:m)
          y(i, j) = y(i, j) + alpha*x(i, j)
       end do
-   end subroutine axpy_mat
+   end subroutine cphf_axpy_matrix
 
-   subroutine precond_mat(m, n, diagv, r, z)
+   subroutine cphf_precond_matrix(m, n, diagv, r, z)
       !! z := r / diagv, the diagonal (e_a-e_i) preconditioner.
       integer, intent(in) :: m, n
       real(dp), intent(in) :: diagv(m, n), r(m, n)
@@ -608,9 +609,9 @@ contains
       do concurrent(j=1:n, i=1:m)
          z(i, j) = r(i, j)/diagv(i, j)
       end do
-   end subroutine precond_mat
+   end subroutine cphf_precond_matrix
 
-   subroutine combine_p(m, n, z, beta, p)
+   subroutine cphf_combine_p(m, n, z, beta, p)
       !! p := z + beta*p
       integer, intent(in) :: m, n
       real(dp), intent(in) :: beta
@@ -620,9 +621,9 @@ contains
       do concurrent(j=1:n, i=1:m)
          p(i, j) = z(i, j) + beta*p(i, j)
       end do
-   end subroutine combine_p
+   end subroutine cphf_combine_p
 
-   subroutine add_diag(m, n, diagv, pin, apout)
+   subroutine cphf_add_diag(m, n, diagv, pin, apout)
       !! apout := apout + diagv * pin (elementwise)
       integer, intent(in) :: m, n
       real(dp), intent(in) :: diagv(m, n), pin(m, n)
@@ -631,6 +632,6 @@ contains
       do concurrent(j=1:n, i=1:m)
          apout(i, j) = apout(i, j) + diagv(i, j)*pin(i, j)
       end do
-   end subroutine add_diag
+   end subroutine cphf_add_diag
 
 end module trc_cphf

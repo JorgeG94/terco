@@ -1,14 +1,14 @@
 !
 ! The Rys-quadrature diagonal Schwarz bound (trc_schwarz_rys.F90,
-! trc_screen.F90's schwarz_bounds_rys) against the HGP whole-block one it
-! replaces (schwarz_bounds_hgp): both read the SAME hp_* primitive-pair
+! trc_screen.F90's screen_schwarz_bounds_rys) against the HGP whole-block one it
+! replaces (screen_schwarz_bounds_hgp): both read the SAME hp_* primitive-pair
 ! data and must agree to round-off, because they are two ways of computing
 ! the SAME number -- Q(i,j) = sqrt(max_{ab} |(ij|ij)_{ab,ab}|) -- not two
 ! different approximations to it (trc_screen.F90's own module header).
 !
 ! Cases: water and formamide in cc-pVDZ (s/p/d, every build), and water in
 ! cc-pVQZ (g on O) when the build's LMAX reaches 4 -- the class
-! schwarz_bounds_hgp's header says it still has to bound even though the
+! screen_schwarz_bounds_hgp's header says it still has to bound even though the
 ! four-centre Fock path routes it to Rys instead of HGP.
 !
 module check_schwarz_rys_vs_hgp_suite
@@ -19,8 +19,8 @@ module check_schwarz_rys_vs_hgp_suite
    use trc_boys, only: boys_init
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
-   use trc_hgp, only: build_pairs_hgp
-   use trc_screen, only: schwarz_bounds_hgp, schwarz_bounds_rys
+   use trc_hgp, only: hgp_build_pairs
+   use trc_screen, only: screen_schwarz_bounds_hgp, screen_schwarz_bounds_rys
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
@@ -107,15 +107,15 @@ contains
       end if
 
       allocate (one(b%nshell)); one = 1.0_dp
-      call build_pairs_hgp(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+      call hgp_build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
                            one, b%sh_c, 1.0e-30_dp, &
                            hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
       deallocate (hp_ki, hp_kj)
 
       npair = b%nshell*(b%nshell + 1)/2
       allocate (q_hgp(npair), q_rys(npair))
-      call schwarz_bounds_hgp(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q_hgp)
-      call schwarz_bounds_rys(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q_rys)
+      call screen_schwarz_bounds_hgp(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q_hgp)
+      call screen_schwarz_bounds_rys(b%nshell, nhpp, b%sh_l, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, q_rys)
 
       qmax = maxval(q_hgp)
       worst_abs = 0.0_dp; worst_rel = 0.0_dp
@@ -136,7 +136,7 @@ contains
       print '(a)', trim(msg)
 
       call check(error, within, &
-                 message="schwarz_bounds_rys disagrees with schwarz_bounds_hgp past round-off "// &
+                 message="screen_schwarz_bounds_rys disagrees with screen_schwarz_bounds_hgp past round-off "// &
                  "for "//xyzfile//" / "//basfile)
    end subroutine compare_q
 

@@ -2,7 +2,7 @@
 ! McMurchie-Davidson exchange (and Coulomb), per class, in do concurrent.
 !
 ! For the g classes above TERCO_RYS_G_LTOT (the only ones scripts/gen_md_k.py
-! generates), fock_bins skips the class and this pass adds it into the same
+! generates), binkernel_fock_bins skips the class and this pass adds it into the same
 ! folded matrix. The per-window algebra is the generator's: E matrices, R per
 ! primitive quartet, S = PQ Hk^T without storing PQ, the integral rows and
 ! their digestion. What lives here is the ORDER OF THE WORK.
@@ -19,7 +19,7 @@
 ! a window the HGP kernels' per-quartet screen still zeroes what the coarse
 ! cut lets through.
 !
-! The fock_bins segments this replaces are split by Schwarz decade and by
+! The binkernel_fock_bins segments this replaces are split by Schwarz decade and by
 ! primitive count, and the first prototype ran one window per segment: 1462
 ! windows per Fock build on w20 cc-pVTZ, each far too small to fill the GPU
 ! (nsys, V100).
@@ -277,7 +277,7 @@ contains
    end function nherm
 
    subroutine mdg_fock(this, md, dsh, dmat, jmat, sc)
-      !! Every routed class's contribution into jmat (fock_bins' folded
+      !! Every routed class's contribution into jmat (binkernel_fock_bins' folded
       !! layout, ndens densities). dsh, dmat and jmat are on the device.
       class(trc_mdg_t), intent(inout) :: this
       type(trc_mdj_t), intent(in) :: md

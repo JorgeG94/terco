@@ -27,11 +27,11 @@ program check_grid
    use pic_timer, only: timer_type
    use trc_error, only: error_t
    use trc_lebedev, only: lebedev_grid, lebedev_available_orders, lebedev_has_negative_weights
-   use trc_dft_radial, only: treutler_ahlrichs_radial, radial_volume_weights
-   use trc_dft_partition, only: becke_partition_weights, PARTITION_BECKE, PARTITION_STRATMANN, &
+   use trc_dft_radial, only: dft_radial_treutler_ahlrichs, dft_radial_volume_weights
+   use trc_dft_partition, only: dft_partition_becke_weights, PARTITION_BECKE, PARTITION_STRATMANN, &
                                 ADJUST_TREUTLER, ADJUST_NONE
    use trc_dft_prune, only: PRUNE_NONE
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid, grid_level_radial, grid_level_angular
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_level_radial, dft_grid_level_angular
    use trc_test_basis, only: read_xyz
    implicit none
 
@@ -136,23 +136,23 @@ contains
       integer :: n
 
       ! exp(-r^2) over all space is pi^(3/2); at 75 points the mesh contains it.
-      call treutler_ahlrichs_radial(75, 8, r, dr, err)
+      call dft_radial_treutler_ahlrichs(75, 8, r, dr, err)
       call report(.not. err%has_error(), "radial: mesh builds")
       call report(all(r > 0.0_dp) .and. all(r(2:) > r(:size(r) - 1)), "radial: nodes ascend and are positive")
       call report(all(dr > 0.0_dp), "radial: weights are positive")
       allocate (w(size(r)))
-      call radial_volume_weights(r, dr, w)
+      call dft_radial_volume_weights(r, dr, w)
       total = sum(w*exp(-r*r))
       call report(abs(total - PI**1.5_dp)/PI**1.5_dp < 1.0e-10_dp, &
                   "radial: integrates exp(-r^2) to pi^(3/2)", abs(total - PI**1.5_dp)/PI**1.5_dp)
       ! 4*pi*r^2*dr and nothing else.
       call report(all(abs(w - 4.0_dp*PI*r*r*dr) <= 1.0e-15_dp*w), "radial: volume weight is 4 pi r^2 dr")
       reach_small = maxval(r)
-      call treutler_ahlrichs_radial(200, 8, r, dr, err)
+      call dft_radial_treutler_ahlrichs(200, 8, r, dr, err)
       reach_big = maxval(r)
       call report(reach_big > reach_small, "radial: more points reach further out")
       n = 0
-      call treutler_ahlrichs_radial(n, 8, r, dr, err)
+      call dft_radial_treutler_ahlrichs(n, 8, r, dr, err)
       call report(err%has_error(), "radial: an empty mesh is refused")
    end subroutine radial_checks
 
@@ -180,7 +180,7 @@ contains
          total = 0.0_dp
          do ia = 1, 3
             owner = ia
-            call becke_partition_weights(pts, coords, z, owner, PARTITION_BECKE, ADJUST_TREUTLER, w, err)
+            call dft_partition_becke_weights(pts, coords, z, owner, PARTITION_BECKE, ADJUST_TREUTLER, w, err)
             if (err%has_error()) exit
             total = total + w
          end do
@@ -190,21 +190,21 @@ contains
 
       ! Size adjustment: at the O-H midpoint oxygen takes more than half; without it, exactly half.
       mid = 0.5_dp*(coords(:, 1) + coords(:, 2))
-      call becke_partition_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], PARTITION_BECKE, ADJUST_NONE, w1, err)
+      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], PARTITION_BECKE, ADJUST_NONE, w1, err)
       w_o = w1(1)
       call report(abs(w_o - 0.5_dp) < 1.0e-13_dp, "partition: unadjusted midpoint splits evenly", abs(w_o - 0.5_dp))
-      call becke_partition_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], PARTITION_BECKE, ADJUST_TREUTLER, w1, err)
+      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [1], PARTITION_BECKE, ADJUST_TREUTLER, w1, err)
       w_o = w1(1)
-      call becke_partition_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [2], PARTITION_BECKE, ADJUST_TREUTLER, w1, err)
+      call dft_partition_becke_weights(reshape(mid, [3, 1]), coords(:, 1:2), z(1:2), [2], PARTITION_BECKE, ADJUST_TREUTLER, w1, err)
       w_h = w1(1)
       call report(w_o > 0.5_dp .and. abs(w_o + w_h - 1.0_dp) < 1.0e-13_dp, "partition: size adjustment favours oxygen", w_o)
 
       ! Stratmann reaches exactly one beside a nucleus.
-      call becke_partition_weights(reshape(coords(:, 1) + [0.05_dp, 0.0_dp, 0.0_dp], [3, 1]), coords, z, [1], &
+      call dft_partition_becke_weights(reshape(coords(:, 1) + [0.05_dp, 0.0_dp, 0.0_dp], [3, 1]), coords, z, [1], &
                                    PARTITION_STRATMANN, ADJUST_NONE, w1, err)
       call report(w1(1) == 1.0_dp, "partition: stratmann saturates at exactly one")
 
-      call becke_partition_weights(pts, coords, z(1:2), owner, PARTITION_BECKE, ADJUST_TREUTLER, w, err)
+      call dft_partition_becke_weights(pts, coords, z(1:2), owner, PARTITION_BECKE, ADJUST_TREUTLER, w, err)
       call report(err%has_error(), "partition: mismatched atom arrays are refused")
    end subroutine partition_checks
 
@@ -222,17 +222,17 @@ contains
       call water(coords, z)
 
       ! Unpruned, the count is exactly sum over atoms of n_radial * n_angular.
-      call build_dft_grid(coords, z, grid, err, level=1, prune=PRUNE_NONE)
+      call dft_grid_build(coords, z, grid, err, level=1, prune=PRUNE_NONE)
       expected = 0
       do ia = 1, size(z)
-         expected = expected + grid_level_radial(z(ia), 1)*grid_level_angular(z(ia), 1)
+         expected = expected + dft_grid_level_radial(z(ia), 1)*dft_grid_level_angular(z(ia), 1)
       end do
       call report(.not. err%has_error() .and. grid%n_points == expected .and. &
                   all(grid%atom >= 1 .and. grid%atom <= 3), "grid: unpruned count matches the tables")
       call grid%destroy()
 
       ! Level 3, the production default, on smooth and on cusped sums.
-      call build_dft_grid(coords, z, grid, err, level=3)
+      call dft_grid_build(coords, z, grid, err, level=3)
       g = abs(integrate_gaussians(grid, coords, 1.3_dp) - 3.0_dp)/3.0_dp
       s = abs(integrate_slaters(grid, coords, 1.7_dp) - 3.0_dp)/3.0_dp
       call report(g < 1.0e-8_dp, "grid: level 3 integrates a Gaussian sum to the atom count", g)
@@ -243,7 +243,7 @@ contains
       prev = huge(1.0_dp)
       monotone = .true.
       do level = 1, 4
-         call build_dft_grid(coords, z, grid, err, level=level, prune=PRUNE_NONE)
+         call dft_grid_build(coords, z, grid, err, level=level, prune=PRUNE_NONE)
          now = abs(integrate_gaussians(grid, coords, 1.3_dp) - 3.0_dp)
          monotone = monotone .and. now < prev
          prev = now
@@ -252,12 +252,12 @@ contains
       call report(monotone, "grid: refining the level reduces the error", prev)
 
       ! An explicit size applies to every atom; half of one is refused.
-      call build_dft_grid(coords, z, grid, err, n_radial=20, n_angular=50, prune=PRUNE_NONE)
+      call dft_grid_build(coords, z, grid, err, n_radial=20, n_angular=50, prune=PRUNE_NONE)
       call report(.not. err%has_error() .and. grid%n_points == 3*20*50, "grid: an override applies to every atom")
       call grid%destroy()
-      call build_dft_grid(coords, z, grid, err, n_radial=20)
+      call dft_grid_build(coords, z, grid, err, n_radial=20)
       call report(err%has_error(), "grid: a half-given override is refused")
-      call build_dft_grid(coords(:, 1:2), [8], grid, err)
+      call dft_grid_build(coords(:, 1:2), [8], grid, err)
       call report(err%has_error(), "grid: mismatched atom arrays are refused")
    end subroutine grid_checks
 
@@ -279,7 +279,7 @@ contains
 
       call read_xyz('gly10.xyz', nat, z, coords)
       call tm%start()
-      call build_dft_grid(coords, z, grid, err, level=3)
+      call dft_grid_build(coords, z, grid, err, level=3)
       t1 = tm%get_elapsed_time()
       call tm%start()
       if (err%has_error()) then
@@ -288,7 +288,7 @@ contains
       end if
       n = grid%n_points
       allocate (w_full(n), p_full(n))
-      call becke_partition_weights(grid%coords, coords, z, grid%atom, grid%scheme, grid%adjust, &
+      call dft_partition_becke_weights(grid%coords, coords, z, grid%atom, grid%scheme, grid%adjust, &
                                    p_full, err, nu_max=2.0_dp)
       t2 = tm%get_elapsed_time()
       w_full = grid%quad_weights*p_full

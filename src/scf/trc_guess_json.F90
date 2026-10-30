@@ -39,7 +39,7 @@ module trc_guess_json
    use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
-   use trc_cart_perm, only: build_ao_perm
+   use trc_cart_perm, only: cart_perm_build_ao
    use json_module, only: json_file
    implicit none
    private
@@ -61,12 +61,12 @@ contains
 
       type(json_file) :: json
       character(len=:), allocatable :: key
-      real(dp), allocatable :: blk(:), fac(:)
+      real(dp), allocatable :: block(:), fac(:)
       integer, allocatable :: nfun(:), first(:)
       integer, allocatable :: perm_l2b(:), perm_b2l(:)
       integer :: ia, ish, n, k, i, j, gi, gj
       logical :: found
-      character(len=16) :: buf
+      character(len=16) :: buffer
 
       ! Functions per atom, where each atom's block starts, and each function's scale.
       allocate (nfun(b%natm), first(b%natm), fac(b%nao))
@@ -99,27 +99,27 @@ contains
       ! module header). `first(ia) + i - 1` is the global lexicographic index for any
       ! TRC_CART_ORDER, since only within-shell order changes.
       allocate (perm_l2b(b%nao), perm_b2l(b%nao))
-      call build_ao_perm(b%nshell, b%sh_l, b%sh_ao, b%nao, perm_l2b, perm_b2l)
+      call cart_perm_build_ao(b%nshell, b%sh_l, b%sh_ao, b%nao, perm_l2b, perm_b2l)
 
       allocate (dguess(b%nao, b%nao))
       dguess = 0.0_dp
       do ia = 1, b%natm
-         write (buf, "(i0)") at_z(ia)
-         key = "elements."//trim(buf)
+         write (buffer, "(i0)") at_z(ia)
+         key = "elements."//trim(buffer)
          call json%get(key//".nao", n, found)
          if (.not. found) then
-            call error%set(ERROR_VALIDATION, "trc_guess_json: no block for element "//trim(buf)//" in "//trim(path))
+            call error%set(ERROR_VALIDATION, "trc_guess_json: no block for element "//trim(buffer)//" in "//trim(path))
             exit
          end if
          if (n /= nfun(ia)) then
-            call error%set(ERROR_VALIDATION, "trc_guess_json: element "//trim(buf)//" has "// &
+            call error%set(ERROR_VALIDATION, "trc_guess_json: element "//trim(buffer)//" has "// &
                            itoa(n)//" functions in "//trim(path)//" and "//itoa(nfun(ia))// &
                            " in this basis: a different basis set")
             exit
          end if
-         call json%get(key//".density", blk, found)
-         if (.not. found .or. size(blk) /= n*n) then
-            call error%set(ERROR_VALIDATION, "trc_guess_json: malformed density block for element "//trim(buf))
+         call json%get(key//".density", block, found)
+         if (.not. found .or. size(block) /= n*n) then
+            call error%set(ERROR_VALIDATION, "trc_guess_json: malformed density block for element "//trim(buffer))
             exit
          end if
          k = 0
@@ -129,7 +129,7 @@ contains
                ! (i, j) are local, lexicographic; map to global build-order AO indices.
                gi = perm_l2b(first(ia) + i - 1)
                gj = perm_l2b(first(ia) + j - 1)
-               dguess(gi, gj) = blk(k)/(fac(gi)*fac(gj))
+               dguess(gi, gj) = block(k)/(fac(gi)*fac(gj))
             end do
          end do
       end do
@@ -153,9 +153,9 @@ contains
    pure function itoa(i) result(t)
       integer, intent(in) :: i
       character(len=:), allocatable :: t
-      character(len=16) :: buf
-      write (buf, "(i0)") i
-      t = trim(buf)
+      character(len=16) :: buffer
+      write (buffer, "(i0)") i
+      t = trim(buffer)
    end function itoa
 
    pure real(dp) function common_fac_sp(l) result(res)

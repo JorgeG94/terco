@@ -596,7 +596,7 @@ if(_regen)
               --unroll-roots-max-comp 0 --split ${_gen_out})
 
     # The (l,ic)->(px,py,pz) table shared by trc_hgp.F90's/trc_binkernel.F90's
-    # `comp` and trc_batch.F90's `cart_pow`, the flat table
+    # `comp` and trc_batch.F90's `batch_cart_pow`, the flat table
     # trc_collocation.F90's `shell_collocate` reads, and the lexicographic<->
     # this-build permutation trc_cart_perm.F90 wraps for every reader of
     # externally-authored AO data. Needed at every TERCO_LMAX, unlike the

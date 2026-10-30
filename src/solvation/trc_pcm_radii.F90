@@ -32,7 +32,7 @@ module trc_pcm_radii
    implicit none
    private
 
-   public :: pcm_cavity_radius
+   public :: pcm_radii_cavity_radius
    public :: PCM_MAX_ELEMENT, PCM_DEFAULT_RADII_SCALE
 
    integer, parameter :: PCM_MAX_ELEMENT = 20
@@ -48,7 +48,7 @@ module trc_pcm_radii
 
 contains
 
-   subroutine pcm_cavity_radius(atomic_number, scale, radius, error)
+   subroutine pcm_radii_cavity_radius(atomic_number, scale, radius, error)
       !! The scaled cavity radius of one element, in bohr
       integer, intent(in) :: atomic_number
       real(dp), intent(in) :: scale         !! usually PCM_DEFAULT_RADII_SCALE
@@ -70,6 +70,6 @@ contains
          return
       end if
       radius = scale*VDW_ANGSTROM(atomic_number)/BOHR_TO_ANGSTROM_CODATA2010
-   end subroutine pcm_cavity_radius
+   end subroutine pcm_radii_cavity_radius
 
 end module trc_pcm_radii

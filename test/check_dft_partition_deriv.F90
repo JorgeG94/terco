@@ -1,5 +1,5 @@
 !
-! becke_partition_derivatives (trc_dft_partition.F90): the O(n_atoms^2)-
+! dft_partition_becke_derivatives (trc_dft_partition.F90): the O(n_atoms^2)-
 ! per-point production routine against a hand-kept COPY of the
 ! O(n_atoms^3)-per-point implementation it replaced -- the one
 ! trc_xc_grad.F90's grid-response term was validated against (FD at two
@@ -167,9 +167,9 @@ program check_dft_partition_deriv
    use pic_types, only: dp
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use pic_types, only: int64
-   use trc_dft_partition, only: becke_partition_derivatives, becke_partition_grad_contract, &
+   use trc_dft_partition, only: dft_partition_becke_derivatives, dft_partition_becke_grad_contract, &
                                 PARTITION_BECKE, PARTITION_STRATMANN, ADJUST_TREUTLER, ADJUST_NONE
    use check_dft_partition_deriv_ref, only: reference_derivatives
    implicit none
@@ -182,7 +182,7 @@ program check_dft_partition_deriv
    call one_case('formamide.xyz', PARTITION_BECKE, ADJUST_TREUTLER, 'formamide, Becke/Treutler', any_fail)
    call one_case('formamide.xyz', PARTITION_STRATMANN, ADJUST_NONE, 'formamide, Stratmann/none', any_fail)
    ! A water cluster, where most of a point's active atoms have negligible
-   ! cells: the case becke_partition_grad_contract's cell screening is for.
+   ! cells: the case dft_partition_becke_grad_contract's cell screening is for.
    call large_case('w5.xyz', 'w5, Becke/Treutler, level 1', any_fail)
 
    if (any_fail) then
@@ -208,7 +208,7 @@ contains
       integer :: i, j
 
       call read_xyz(xyzfile, nat, at_z, r)
-      call build_dft_grid(r, at_z, grid, err, level=3, scheme=scheme, adjust=adjust)
+      call dft_grid_build(r, at_z, grid, err, level=3, scheme=scheme, adjust=adjust)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
       end if
@@ -221,7 +221,7 @@ contains
       ! that approximation, not re-measuring it). `reference_derivatives`
       ! below has no screening of its own at all, so this is the
       ! apples-to-apples comparison.
-      call becke_partition_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw_new, err, &
+      call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw_new, err, &
                                        nu_max=2.0_dp)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
@@ -243,7 +243,7 @@ contains
       print '(a,a,a,es10.2,a,i0)', '  ', label, ': worst|new-old| ', worst, '  over ', grid%n_points
       if (worst > 1.0e-13_dp) any_fail = .true.
 
-      ! becke_partition_grad_contract against the dense derivatives
+      ! dft_partition_becke_grad_contract against the dense derivatives
       ! contracted the way the XC gradient used to: with the production
       ! screening and with none, a per-point factor that is zero on every
       ! seventh point (the skip path), and a budget small enough to force
@@ -265,7 +265,7 @@ contains
       type(error_t) :: err
 
       call read_xyz(xyzfile, nat, at_z, r)
-      call build_dft_grid(r, at_z, grid, err, level=1, scheme=PARTITION_BECKE, adjust=ADJUST_TREUTLER)
+      call dft_grid_build(r, at_z, grid, err, level=1, scheme=PARTITION_BECKE, adjust=ADJUST_TREUTLER)
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
       end if
@@ -291,9 +291,9 @@ contains
          if (mod(k, 7) == 0) coef(k) = 0.0_dp
       end do
       if (numax > 0.0_dp) then
-         call becke_partition_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err, nu_max=numax)
+         call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err, nu_max=numax)
       else
-         call becke_partition_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err)
+         call dft_partition_becke_derivatives(grid%coords, r, at_z, grid%atom, scheme, adjust, dw, err)
       end if
       if (err%has_error()) then
          print '(a)', 'check_dft_partition_deriv: '//err%get_message(); stop 1
@@ -308,10 +308,10 @@ contains
       end do
       g_new = 1.0_dp   ! ADDED into: start from a non-zero gradient
       if (numax > 0.0_dp) then
-         call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
+         call dft_partition_becke_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
                                             adjust, g_new, err, nu_max=numax, budget=int(4*nat*37, int64))
       else
-         call becke_partition_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
+         call dft_partition_becke_grad_contract(grid%n_points, grid%coords, r, at_z, grid%atom, coef, scheme, &
                                             adjust, g_new, err, budget=int(4*nat*37, int64))
       end if
       if (err%has_error()) then
@@ -330,7 +330,7 @@ contains
    ! trc_dft_partition.F90%size_adjustment (private there) -- see
    ! one_case's own comment on why a mismatch cannot hide.
    subroutine shift_and_distance(n_atoms, atom_coords, atomic_numbers, adjust, shift, inv_distance)
-      use trc_dft_radial, only: bragg_radius
+      use trc_dft_radial, only: dft_radial_bragg_radius
       integer, intent(in) :: n_atoms, atomic_numbers(n_atoms), adjust
       real(dp), intent(in) :: atom_coords(3, n_atoms)
       real(dp), intent(out) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms)
@@ -341,7 +341,7 @@ contains
       select case (adjust)
       case (ADJUST_TREUTLER)
          do i = 1, n_atoms
-            radius(i) = sqrt(bragg_radius(atomic_numbers(i))) + TINY_R
+            radius(i) = sqrt(dft_radial_bragg_radius(atomic_numbers(i))) + TINY_R
          end do
       case default
          radius = 1.0_dp

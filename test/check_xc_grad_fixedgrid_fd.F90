@@ -1,7 +1,7 @@
 !
 ! trc_xc_grad's PULAY TERM ALONE, isolated from everything else a full
 ! SCF-based finite difference mixes in: the grid points and weights are
-! built ONCE (`xg0`, from `build_dft_grid`/`trc_xc_grid_t%build` at R0) and
+! built ONCE (`xg0`, from `dft_grid_build`/`trc_xc_grid_t%build` at R0) and
 ! reused unchanged at every displaced geometry, so only the basis
 ! functions move -- exactly what trc_xc_grad.F90 differentiates and
 ! nothing else (no grid response to omit because there is none to omit
@@ -37,8 +37,8 @@ program check_xc_grad_fixedgrid_fd
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc, only: trc_xc_rks, trc_xc_uks
-   use trc_xc_grad, only: xc_gradient_add
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_xc_grad, only: xc_grad_add
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t
    implicit none
@@ -69,7 +69,7 @@ program check_xc_grad_fixedgrid_fd
    call trc_basis_from_json('basis_sets/6-31gs.json', nat, at_z, r0, bas, err)
    call bas%to_device()
 
-   call build_dft_grid(bas%at_r, nint(bas%at_z), grid0, err, level=3)
+   call dft_grid_build(bas%at_r, nint(bas%at_z), grid0, err, level=3)
    call xg0%build(grid0%n_points, grid0%coords, grid0%weights, bas, max_pts=512)
    call xg0%to_device()
 
@@ -149,7 +149,7 @@ contains
       allocate (vv(bas0%nao, bas0%nao))
       grad0 = 0.0_dp
       !$acc enter data copyin(d, grad0)
-      call xc_gradient_add(bas0, lp0, func0, nspin, d, grad0, grid_level=3, rho_tol=0.0_dp, &
+      call xc_grad_add(bas0, lp0, func0, nspin, d, grad0, grid_level=3, rho_tol=0.0_dp, &
                            grid_response=.false.)
       !$acc update self(grad0)
       !$acc exit data delete(d, grad0)
@@ -195,7 +195,7 @@ contains
       allocate (vv(bas0%nao, bas0%nao, 2))
       grad0 = 0.0_dp
       !$acc enter data copyin(d, grad0)
-      call xc_gradient_add(bas0, lp0, func0, 2, d, grad0, grid_level=3, rho_tol=0.0_dp, &
+      call xc_grad_add(bas0, lp0, func0, 2, d, grad0, grid_level=3, rho_tol=0.0_dp, &
                            grid_response=.false.)
       !$acc update self(grad0)
       !$acc exit data delete(d, grad0)

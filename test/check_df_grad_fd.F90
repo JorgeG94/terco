@@ -81,7 +81,7 @@ contains
       opts%df = .true.
       opts%functional = functional
       opts%grid_level = 3
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-10_dp; opts%max_iter = 200
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-10_dp; opts%max_iteration = 200
       if (len_trim(functional) > 0) then
          ok = xc_functional_by_name(functional, func)
          if (.not. ok) then

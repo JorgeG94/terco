@@ -9,7 +9,7 @@ it expands exactly in Hermite Gaussians Lambda_tuv on P:
 
 The one-dimensional coefficients come from (Helgaker, Jorgensen and Olsen,
 eqs 9.5.6-9.5.7, with K_AB taken out: terco's primitive-pair coefficient
-already carries it, see build_pairs_hgp)
+already carries it, see hgp_build_pairs)
 
     E^{00}_0      = 1
     E^{i+1,j}_t   = 1/(2p) E^{ij}_{t-1} + X_PA E^{ij}_t + (t+1) E^{ij}_{t+1}

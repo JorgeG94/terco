@@ -483,7 +483,7 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_df_probe})
   unset(_cli_grad_df_probe)
 
-  # terco_main's own CLI-string lowercasing (--func, --guess, ...) --
+  # trc_main's own CLI-string lowercasing (--func, --guess, ...) --
   # see check_cli_lowercase.F90's own header for the nvfortran miscompile
   # this guards against.
   set(_cli_lowercase_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_lowercase_probe.json)

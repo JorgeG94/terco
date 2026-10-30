@@ -44,14 +44,14 @@ module trc_pcm
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid, lebedev_is_available
-   use trc_pcm_radii, only: pcm_cavity_radius
+   use trc_pcm_radii, only: pcm_radii_cavity_radius
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_pcm_potential, trc_pcm_fock, PCM_LMAX
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
 
    public :: trc_pcm_t, pcm_surface_t
-   public :: build_pcm_surface, pcm_sd_matrices, pcm_switch_h, pcm_model_from_name
+   public :: pcm_build_surface, pcm_sd_matrices, pcm_switch_h, pcm_model_from_name
    public :: PCM_MODEL_NONE, PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
    public :: PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
 
@@ -169,7 +169,7 @@ contains
       end select
    end function pcm_model_from_name
 
-   subroutine build_pcm_surface(atomic_numbers, coords, angular_points, radii_scale, surface, error, &
+   subroutine pcm_build_surface(atomic_numbers, coords, angular_points, radii_scale, surface, error, &
                                 radii_override, is_ghost)
       !! Tessellate the cavity: Lebedev points per atom, switched and pruned
       integer, intent(in) :: atomic_numbers(:)
@@ -180,7 +180,7 @@ contains
       type(error_t), intent(inout) :: error
       real(dp), intent(in), optional :: radii_override(:)
       !! Final, already-scaled per-atom radii, bohr -- read straight in,
-      !! bypassing pcm_cavity_radius/radii_scale entirely, when present.
+      !! bypassing pcm_radii_cavity_radius/radii_scale entirely, when present.
       !! trc_capi.F90's trc_set_pcm_radii is the route in. A `radii_override`
       !! entry for a GHOST atom is ignored, same as everything else about it.
       logical, intent(in), optional :: is_ghost(:)
@@ -242,7 +242,7 @@ contains
          if (present(radii_override)) then
             radii(iatom) = radii_override(iatom)
          else
-            call pcm_cavity_radius(atomic_numbers(iatom), radii_scale, radii(iatom), error)
+            call pcm_radii_cavity_radius(atomic_numbers(iatom), radii_scale, radii(iatom), error)
             if (error%has_error()) return
          end if
          r_switch(iatom) = radii(iatom)*sqrt(14.0_dp/real(angular_points, dp))
@@ -308,7 +308,7 @@ contains
          surface%r_parent(ipt) = radii(own(ipt))
          surface%area(ipt) = wgt(ipt)*radii(own(ipt))**2*swf(ipt)
       end do
-   end subroutine build_pcm_surface
+   end subroutine pcm_build_surface
 
    pure real(dp) function s_elem(i, j, n, coords, zeta, switch_f) result(res)
       !! One element of S: erf(zeta_ij r)/r off the diagonal, zeta sqrt(2/pi)/F on it
@@ -455,7 +455,7 @@ contains
       real(dp), intent(in) :: radii_scale
       type(error_t), intent(inout) :: error
       real(dp), intent(in), optional :: radii_override(:)
-      !! See build_pcm_surface's own comment; trc_set_pcm_radii's route in.
+      !! See pcm_build_surface's own comment; trc_set_pcm_radii's route in.
 
       integer :: k, ia, n
       real(dp) :: d
@@ -473,7 +473,7 @@ contains
       ! atom); whether a sphere is built at all goes by CHARGE -- a ghost
       ! (at_z == 0) gets no sphere and no v_nuc (below), only its basis
       ! functions remain in the operators `build_operators` makes.
-      call build_pcm_surface(b%at_elem, b%at_r, angular_points, radii_scale, this%surface, error, &
+      call pcm_build_surface(b%at_elem, b%at_r, angular_points, radii_scale, this%surface, error, &
                              radii_override=radii_override, is_ghost=(b%at_z == 0.0_dp))
       if (error%has_error()) return
       call this%build_operators(error)
