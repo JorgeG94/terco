@@ -773,11 +773,8 @@ contains
    ! with a message that says so.
    !
    subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo, eps, res, opts, la, comm)
-      !! `cmo(:, :, 1)`/`eps(:, 1)` are the alpha orbitals/energies,
-      !! `cmo(:, :, 2)`/`eps(:, 2)` beta -- the same (nao, nao, nspin)/
-      !! (nao, nspin) layout `trc_scf_result_t` (src/scf/trc_scf_settings.F90)
-      !! already uses, so an unrestricted caller's own `res%cmo`/`res%eps`
-      !! pass straight through with no slicing.
+      !! `cmo`/`eps` are alpha in column/row 1, beta in 2 -- trc_scf_result_t's
+      !! own (nao, nao, nspin)/(nao, nspin) layout, so `res%cmo`/`res%eps` pass straight through.
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       integer, intent(in) :: nalpha, nbeta
@@ -813,13 +810,10 @@ contains
 
       if (present(opts)) op = opts
       nao = b%nao
-      ! `cmo(:,:,1)`/`cmo(:,:,2)`/`eps(:,1)`/`eps(:,2)` are the Cartesian-
-      ! space, fold-and-pad result of `rimp2_driver_mo_to_cart` when `b` is
-      ! spherical -- see `trc_rimp2_run`'s own header on that routine,
-      ! which this one reads exactly as it does. `naux_c`/`naux` split the
-      ! auxiliary basis the same way too (CARTESIAN count for the
-      ! kernel/block-walk below, folded when `aux%spherical` for every
-      ! other dimension).
+      ! `cmo`/`eps` are the Cartesian-space, fold-and-pad result of
+      ! `rimp2_driver_mo_to_cart` when `b` is spherical -- see `trc_rimp2_run`'s
+      ! own header. `naux_c`/`naux` split the auxiliary basis the same way
+      ! (CARTESIAN count for the kernel/block-walk below, folded when `aux%spherical`).
       naux_c = aux%nao
       naux = merge(aux%nao_sph, aux%nao, aux%spherical)
       rank = 0
