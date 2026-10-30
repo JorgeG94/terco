@@ -211,7 +211,7 @@ contains
       launch%nao = nao
       !$acc enter data copyin(pairs%sh_l, pairs%ao_off, dmat, dsh, bins, bins%sp_i, bins%sp_j, bins%sp_q, &
       !$acc                   pairs%off, pairs%n, pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, &
-      !$acc                   quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+      !$acc                   quartets%z, quartets%c, quartets%a, quartets%px, quartets%py, quartets%pz, &
       !$acc                   quartets%ax, quartets%ay, quartets%az, &
       !$acc                   quartets%abx, quartets%aby, quartets%abz, quartets%n) &
       !$acc            copyin(jmat, kmat)
@@ -219,7 +219,7 @@ contains
       !$acc update self(jmat, kmat)
       !$acc exit data delete(pairs%sh_l, pairs%ao_off, dmat, dsh, bins%sp_i, bins%sp_j, bins%sp_q, bins, &
       !$acc                  pairs%off, pairs%n, pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, &
-      !$acc                  quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+      !$acc                  quartets%z, quartets%c, quartets%a, quartets%px, quartets%py, quartets%pz, &
       !$acc                  quartets%ax, quartets%ay, quartets%az, &
       !$acc                  quartets%abx, quartets%aby, quartets%abz, quartets%n, jmat, kmat)
       print '(a,i0,a,i0)', '           launches ', launch%nlaunch, '   work items ', launch%nwork

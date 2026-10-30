@@ -361,7 +361,7 @@ contains
    ! reduction`). Instead each thread counts one chunk of KEPT_CHUNK work
    ! items into its own slot and the host adds the slots up: the same count,
    ! exactly, since it is an integer. 4096 items a thread keeps the partial
-   ! array to 2 MB at 2e9 work items and the launch at half a million
+   ! array to 3.9 MB (488k int64 slots) at 2e9 work items and the launch at half a million
    ! threads, plenty to fill the GPU.
    !
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &

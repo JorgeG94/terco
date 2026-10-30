@@ -175,10 +175,11 @@ module trc_xc
       real(dp) :: exc = 0.0_dp      !! E_xc
       real(dp) :: nelec = 0.0_dp    !! the electron count integrated on the grid
       real(dp) :: t_points = 0.0_dp
+      !! Wall time in the point kernel, for the benchmark. A `do
+      !! concurrent` under -stdpar returns when the device is done, so the
+      !! clock around it is the kernel's.
       real(dp) :: t_pairs = 0.0_dp
-      !! Wall time spent in the point and pair kernels, for the benchmark.
-      !! A `do concurrent` under -stdpar returns when the device is done, so
-      !! the clock around it is the kernel's.
+      !! Wall time in the pair kernel, measured the same way.
       integer :: n_skipped = 0      !! batches the density screening removed
    end type trc_xc_result_t
 

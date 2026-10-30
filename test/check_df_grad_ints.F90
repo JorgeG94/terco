@@ -160,7 +160,7 @@ module check_df_grad_ints_suite
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c
    use trc_df_grad_kernels, only: df_grad_3c_plan, df_grad_3c_driver, df_grad_2c_driver, DFG_LMAX, DFG_LMAX_AUX, &
                                   DFG_NPCLS
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
@@ -203,11 +203,17 @@ contains
       g_dump = dump; g_case_name = case_name
 
       call read_xyz(trim(g_xyzfile), g_nat, g_at_z, g_r)
-      call trc_basis_from_json(trim(g_basis_json), g_nat, g_at_z, g_r, g_bas, err, force_cart=.true.)
+      ! prune=.false.: the pyscf reference is built from this file's literal
+      ! (unpruned) columns, so the AO-level comparison stays on them.
+      call trc_basis_from_json(trim(g_basis_json), g_nat, g_at_z, g_r, g_bas, err, force_cart=.true., &
+                               overrides=trc_basis_json_overrides(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_df_grad_ints: '//err%get_message(); stop 1
       end if
-      call trc_basis_from_json(trim(g_aux_json), g_nat, g_at_z, g_r, g_aux, err, force_cart=.true.)
+      ! prune=.false.: the pyscf reference is built from this file's literal
+      ! (unpruned) columns, so the AO-level comparison stays on them.
+      call trc_basis_from_json(trim(g_aux_json), g_nat, g_at_z, g_r, g_aux, err, force_cart=.true., &
+                               overrides=trc_basis_json_overrides(prune=.false.))
       if (err%has_error()) then
          print '(a)', 'check_df_grad_ints: '//err%get_message(); stop 1
       end if

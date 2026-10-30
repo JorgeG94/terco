@@ -40,7 +40,7 @@ module check_1e_grad_vs_pyscf_suite
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_1e_gradient
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_matrix
@@ -100,7 +100,10 @@ contains
       if (command_argument_count() >= 4) call get_command_argument(4, case_name)
 
       call read_xyz(trim(xyzfile), nat, at_z, r)
-      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err)
+      ! prune=.false.: the pyscf reference is built from this file's literal
+      ! (unpruned) columns, so the AO-level comparison stays on them.
+      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, &
+                               overrides=trc_basis_json_overrides(prune=.false.))
       call check(error,.not. err%has_error(), trim(case_name)//" must build: "//err%get_message())
       if (allocated(error)) return
       nao = bas%nao
