@@ -18,10 +18,11 @@
 !
 module check_prune_primitives_suite
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
@@ -47,7 +48,9 @@ contains
          new_unittest("pruned per-shell primitive counts match pyscf's cc-pVDZ", test_counts_match_pyscf), &
          new_unittest("the off switch reproduces the BSE-literal (padded) counts", test_off_switch_is_literal), &
          new_unittest("pruning leaves the RHF energy unchanged", test_energy_invariant), &
-         new_unittest("the pruned energy matches the pyscf anchor", test_matches_anchor) &
+         new_unittest("the pruned energy matches the pyscf anchor", test_matches_anchor), &
+         new_unittest("a column pruned to all zero is restored, not left NaN", &
+                      test_allzero_column_restored) &
          ]
    end subroutine collect_prune_primitives
 
@@ -179,6 +182,74 @@ contains
       call ref_close(u)
       call check(error, abs(e_on - e_ref) < 1.0e-9_dp, "E_RHF(pruned) matches the pyscf anchor")
    end subroutine test_matches_anchor
+
+   !
+   ! prune_block's NaN guard: a column that shares EVERY one of its
+   ! primitives with the block's pivots comes out all zero after the
+   ! elimination loop, not merely smaller. A hand-written one-block s
+   ! shell (element 2 -- arbitrary, this basis is never used for anything
+   ! but this test) with exponents 1, 2, 3 and three columns: two
+   ! single-primitive pivots (at exponents 1 and 2) and a third column
+   ! that is a contraction over EXACTLY those same two primitives and
+   ! nothing else (coefficients 0.5, 0.5, 0 over exponents 1, 2, 3).
+   ! prune_block zeroes the third column at both pivot positions, which
+   ! is its every nonzero primitive -- without the guard, the column
+   ! would reach `normalise` all zero, which divides by sqrt(overlap) and
+   ! hands back NaN coefficients with no error status at all.
+   !
+   subroutine build_allzero_column_bas(bas, error)
+      type(trc_basis_t), intent(out) :: bas
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), parameter :: SCRATCH = "check_prune_primitives_allzero_tmp.json"
+      type(error_t) :: err
+      integer, parameter :: ELEMENTS(1) = [2]
+      real(dp), parameter :: AT_R(3, 1) = reshape([0.0_dp, 0.0_dp, 0.0_dp], [3, 1])
+      integer :: u, ios
+
+      open (newunit=u, file=SCRATCH, status="replace", action="write")
+      write (u, "(a)") '{'
+      write (u, "(a)") ' "elements": {'
+      write (u, "(a)") '  "2": {'
+      write (u, "(a)") '   "electron_shells": ['
+      write (u, "(a)") '    {'
+      write (u, "(a)") '     "angular_momentum": [0],'
+      write (u, "(a)") '     "exponents": ["1.0", "2.0", "3.0"],'
+      write (u, "(a)") '     "coefficients": ['
+      write (u, "(a)") '      ["1.0", "0.0", "0.0"],'
+      write (u, "(a)") '      ["0.0", "1.0", "0.0"],'
+      write (u, "(a)") '      ["0.5", "0.5", "0.0"]'
+      write (u, "(a)") '     ]'
+      write (u, "(a)") '    }'
+      write (u, "(a)") '   ]'
+      write (u, "(a)") '  }'
+      write (u, "(a)") ' }'
+      write (u, "(a)") '}'
+      close (u)
+
+      call trc_basis_from_json(SCRATCH, 1, ELEMENTS, AT_R, bas, err, force_cart=.true., &
+                               overrides=trc_basis_json_overrides(prune=.true.))
+      open (newunit=u, file=SCRATCH, status="old", iostat=ios)
+      if (ios == 0) close (u, status="delete")
+      call check(error, .not. err%has_error(), "trc_basis_from_json failed on the contrived block")
+   end subroutine build_allzero_column_bas
+
+   subroutine test_allzero_column_restored(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+
+      call build_allzero_column_bas(bas, error)
+      if (allocated(error)) return
+      call check(error, bas%nshell, 3, "the contrived block keeps all 3 columns")
+      if (allocated(error)) return
+      call check(error, .not. any(ieee_is_nan(bas%sh_c)), &
+                "a column pruned to all zero must not come back NaN")
+      if (.not. allocated(error)) then
+         ! Restored to its two real primitives (exponents 1 and 2), not
+         ! compacted to the 0 the elimination would otherwise leave it at.
+         call check(error, bas%sh_np(3), 2, &
+                   "the restored column keeps its 2 real primitives, not 0")
+      end if
+   end subroutine test_allzero_column_restored
 
 end module check_prune_primitives_suite
 

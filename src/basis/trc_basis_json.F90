@@ -31,6 +31,15 @@ module trc_basis_json
    ! Plain assignment inside the builder is correct under both compilers.
    !
    type :: trc_basis_overrides_t
+      private
+      !! Private so the structure constructor is unreachable from outside
+      !! this module -- the only thing that actually fixes the nvfortran
+      !! defect above: a caller cannot write
+      !! `trc_basis_overrides_t(charges=cx%at_z)` (or any other field-by-
+      !! field construction) at all now, only `trc_basis_json_overrides`,
+      !! which this module's own `trc_basis_from_json`/`read_element` read
+      !! back through ordinary component access (same module, so `private`
+      !! does not block it).
       real(dp), allocatable :: charges(:)
       !! Nuclear charge per atom; trc_basis_from_json's own `charges`.
       logical :: prune_set = .false.
@@ -385,6 +394,22 @@ contains
    subroutine prune_block(sh)
       type(shell_t), intent(inout) :: sh(:)
       integer :: i, j, piv, nnz, keep
+      real(dp), allocatable :: c0(:, :)
+      ! A column whose nonzero primitives are EXACTLY a subset of the
+      ! block's pivots (no primitive outside that set) comes out all zero
+      ! below: A = sum_piv c_A(piv)*B_piv with nothing left over, so it was
+      ! already linearly dependent on those pivots before this routine
+      ! touched it -- the elimination is still exact. But the caller's
+      ! next step, `normalise`, divides by sqrt(overlap), and an all-zero
+      ! column has zero overlap, so it would come back with NaN
+      ! coefficients rather than the harmless literal zero column
+      ! `trc_api`'s `basis_build` already knows to leave inert. Snapshot
+      ! every column here so a column that goes all zero can be restored
+      ! to what BSE actually wrote instead of reaching `normalise` zeroed.
+      allocate (c0(sh(1)%np, size(sh)))
+      do i = 1, size(sh)
+         c0(:, i) = sh(i)%c
+      end do
       do i = 1, size(sh)
          ! A pivot: exactly one nonzero coefficient over the block's shared
          ! exponent list.
@@ -401,6 +426,16 @@ contains
             sh(j)%c(piv) = 0.0_dp
          end do
       end do
+      ! Restore any column the loop above reduced to all zeros: it is
+      ! linearly dependent on the pivots it duplicated (same as it always
+      ! was), not a new, empty basis function, so the conservative choice
+      ! is to leave it exactly as read rather than let `normalise` turn it
+      ! into NaN or silently drop a function from the span. A lindep
+      ! screen downstream is what already exists to handle the resulting
+      ! redundancy.
+      do i = 1, size(sh)
+         if (all(sh(i)%c == 0.0_dp)) sh(i)%c = c0(:, i)
+      end do
       ! Compact every column of the block to its surviving primitives. A
       ! pivot column itself shrinks from the block's full exponent count
       ! down to the 1 it always was; a pruned contracted column shrinks by
@@ -408,9 +443,10 @@ contains
       do i = 1, size(sh)
          keep = count(sh(i)%c /= 0.0_dp)
          if (keep == sh(i)%np) cycle   ! nothing padded away
-         if (keep == 0) cycle   ! pathological: a column of all zeros is not
-         ! a basis function; leave it exactly as read rather than hand
-         ! `build` an empty shell.
+         if (keep == 0) cycle   ! defensive only: BSE itself wrote an
+         ! all-zero column (the restore above only fires on one THIS
+         ! routine produced) -- leave it exactly as read; `basis_build`
+         ! already treats a literal all-zero shell as inert.
          block
             real(dp), allocatable :: e2(:), c2(:)
             integer :: ip, kk
