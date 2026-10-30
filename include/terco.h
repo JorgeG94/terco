@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 11
+#define TRC_ABI_MINOR 12
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -425,6 +425,27 @@ int trc_set_incremental(trc_handle_t handle, int on);
  * changes that behaviour, only exposes the existing knob.
  */
 int trc_set_level_shift(trc_handle_t handle, double shift);
+
+/**
+ * The SCF's convergence aids beyond trc_set_convergence's DIIS size
+ * and trc_set_level_shift (trc_scf_options_t's own comments have the
+ * measurements behind each default):
+ *
+ *   adiis       1 turns on ADIIS (Hu & Yang) between the damped start
+ *               and CDIIS; 0 off (the default). It earns its keep on
+ *               hard cases -- small gaps, charged open shells -- where
+ *               CDIIS alone stalls with |FDS - SDF| stuck near 1e-2.
+ *   ndamp       damped steps before DIIS; -1 by spin (0 closed shell,
+ *               4 open shell), the default.
+ *   damp        weight of the new density while damping, (0, 1];
+ *               default 0.3.
+ *   diis_start  commutator norm below which DIIS may start; -1 by spin,
+ *               the default.
+ *
+ * Takes effect at the next trc_run_scf, for every SCF the handle runs
+ * after it (trc_fukui_hirshfeld's three included).
+ */
+int trc_set_scf_accel(trc_handle_t handle, int adiis, int ndamp, double damp, double diis_start);
 
 int trc_set_df(trc_handle_t handle, int on);
 

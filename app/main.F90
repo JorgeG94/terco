@@ -72,6 +72,13 @@ module terco_run
       integer(c_int) :: nao, conv, niter, sph, npcm
       real(dp) :: econv, gconv, thresh, eps
       real(dp) :: lindep = -1.0_dp  !! --lindep, negative = the library's default
+      integer :: ndiis = 10              !! --diis
+      real(dp) :: level_shift = 1.0_dp   !! --level-shift (only passed when given)
+      logical :: adiis = .false.         !! --adiis
+      logical :: accel_set = .false.     !! any of --adiis/--damp/--damp-steps/--diis-start given
+      integer :: ndamp = -1              !! --damp-steps; -1 = by spin
+      real(dp) :: damp = 0.3_dp          !! --damp
+      real(dp) :: diis_start = -1.0_dp   !! --diis-start; -1 = by spin
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
@@ -1878,7 +1885,8 @@ program terco_main
    use pic_profiler, only: profiler_init
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
-                       trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_lindep, trc_set_screening, &
+                       trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_scf_accel, &
+                       trc_set_level_shift, trc_set_lindep, trc_set_screening, &
                        trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
                        trc_run_scf, trc_run_rimp2, trc_nao, trc_is_spherical, trc_nspin, trc_energy, &
@@ -1996,6 +2004,14 @@ program terco_main
    call r%cli%add_option("iterations", "maximum SCF iterations (100)", default="100")
    call r%cli%add_option("econv", "energy convergence, Eh (1e-10)", default="1e-10")
    call r%cli%add_option("gconv", "convergence on the DIIS error norm |FDS - SDF| (1e-5)", default="1e-5")
+   call r%cli%add_option("diis", "DIIS subspace size, Fock/error pairs kept (10); more helps a stalled SCF", &
+                         default="10")
+   call r%cli%add_flag("adiis", "ADIIS before CDIIS: for SCFs that stall with |FDS - SDF| stuck near 1e-2 "// &
+                       "(small gaps, charged open shells)")
+   call r%cli%add_option("level-shift", "virtual level shift (Eh) during the damped start, before DIIS (1.0)")
+   call r%cli%add_option("damp", "weight of the new density while damping, (0, 1] (0.3)")
+   call r%cli%add_option("damp-steps", "damped steps before DIIS (by spin: 0 closed shell, 4 open shell)")
+   call r%cli%add_option("diis-start", "commutator norm below which DIIS may start (by spin)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: S eigenvalues below it are dropped "// &
                          "(canonical orthogonalisation; 1e-8; 0 drops none, though the minao guess keeps its own 1e-8). "// &
@@ -2285,6 +2301,31 @@ program terco_main
    call check(r, "--econv")
    call r%cli%get("gconv", r%gconv, r%err)
    call check(r, "--gconv")
+   call r%cli%get("diis", r%ndiis, r%err)
+   call check(r, "--diis")
+   if (r%ndiis < 1) call die(r, "--diis must be at least 1")
+   if (r%cli%is_set("level-shift")) then
+      call r%cli%get("level-shift", r%level_shift, r%err)
+      call check(r, "--level-shift")
+      if (.not. (r%level_shift >= 0.0_dp)) call die(r, "--level-shift must be >= 0 (0 turns it off)")
+   end if
+   r%adiis = r%cli%is_set("adiis")
+   r%accel_set = r%adiis .or. r%cli%is_set("damp") .or. r%cli%is_set("damp-steps") .or. r%cli%is_set("diis-start")
+   if (r%cli%is_set("damp")) then
+      call r%cli%get("damp", r%damp, r%err)
+      call check(r, "--damp")
+      if (.not. (r%damp > 0.0_dp .and. r%damp <= 1.0_dp)) call die(r, "--damp must be in (0, 1]")
+   end if
+   if (r%cli%is_set("damp-steps")) then
+      call r%cli%get("damp-steps", r%ndamp, r%err)
+      call check(r, "--damp-steps")
+      if (r%ndamp < 0) call die(r, "--damp-steps must be >= 0")
+   end if
+   if (r%cli%is_set("diis-start")) then
+      call r%cli%get("diis-start", r%diis_start, r%err)
+      call check(r, "--diis-start")
+      if (.not. (r%diis_start > 0.0_dp)) call die(r, "--diis-start must be > 0")
+   end if
    call r%cli%get("thresh", r%thresh, r%err)
    call check(r, "--thresh")
    if (r%cli%is_set("lindep")) then
@@ -2849,7 +2890,13 @@ program terco_main
    call api(r, trc_set_nlc_grid(r%h, int(r%nlc_grid, c_int)))
    if (len(r%pcm) > 0) call api(r, trc_set_pcm(r%h, c_string(r%pcm), real(r%eps, c_double), 0_c_int, 0.0_c_double))
    call api(r, trc_set_convergence(r%h, real(r%econv, c_double), real(r%gconv, c_double), int(maxiter, c_int), &
-                                   10_c_int))
+                                   int(r%ndiis, c_int)))
+   ! The convergence aids, only when asked for: otherwise the library's own
+   ! defaults (by-spin damping, no ADIIS, a 1 Eh shift before DIIS) stand.
+   if (r%cli%is_set("level-shift")) call api(r, trc_set_level_shift(r%h, real(r%level_shift, c_double)))
+   if (r%accel_set) call api(r, trc_set_scf_accel(r%h, merge(1_c_int, 0_c_int, r%adiis), &
+                                                  int(r%ndamp, c_int), real(r%damp, c_double), &
+                                                  real(r%diis_start, c_double)))
    call api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
    if (r%lindep >= 0.0_dp) call api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
    ! On unless asked otherwise: the library's default is off, so a host
