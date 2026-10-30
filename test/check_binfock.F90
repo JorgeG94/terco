@@ -19,8 +19,10 @@
 ! run to run and the result is not bit-reproducible.  That is the documented
 ! cost of atomics, not a defect.
 !
-program check_binfock
+module check_binfock_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_batch, only: batch_build_pairs, batch_ncart, common_fac_sp, trc_batch_pairs_t
@@ -33,47 +35,58 @@ program check_binfock
    use trc_screen, only: screen_schwarz_bounds, screen_density_blockmax, screen_pair_index
    use trc_cart_perm, only: cart_perm_l2b
    implicit none
+   private
+   public :: collect_binfock_tests
 
    integer, parameter :: ATM_SLOTS = 6, BAS_SLOTS = 8
    integer, parameter :: ATOM_OF = 0, ANG_OF = 1, NPRIM_OF = 2
    integer, parameter :: PTR_EXP = 5, PTR_COEFF = 6, PTR_COORD = 1
-
-   integer, allocatable :: atm(:), bas(:)
-   real(dp), allocatable :: env(:)
-   integer :: natm, nbas, nenv, u, isys
-   character(len=64) :: tag
-   real(dp) :: worstj, worstk
-   integer  :: nbad
    real(dp), parameter :: ATOL = 1.0e-11_dp, RTOL = 1.0e-11_dp
 
-   worstj = 0.0_dp; worstk = 0.0_dp; nbad = 0
-
-   call tables_init()
-   call cart_init()
-   call boys_init()
-
-   open (newunit=u, file='reference.dat', status='old', action='read')
-   do
-      read (u, '(a)') tag
-      if (trim(tag) == 'END') exit
-      if (tag(1:6) /= 'SYSTEM') cycle
-      read (tag(8:), *) isys
-      call read_system(u, atm, bas, env, natm, nbas, nenv)
-      call run_system(u, isys, atm, bas, env, nbas)
-      deallocate (atm, bas, env)
-   end do
-   close (u)
-
-   print '(a,es10.2)', '  worst J diff    : ', worstj
-   print '(a,es10.2)', '  worst K diff    : ', worstk
-   print '(a,i0)',     '  outside tol     : ', nbad
-   if (nbad > 0) then
-      print '(a)', '  RESULT: FAIL'
-      stop 1
-   end if
-   print '(a)', '  RESULT: PASS'
-
 contains
+
+   subroutine collect_binfock_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("fused Fock build matches libfint's own contraction", test_binfock) &
+                  ]
+   end subroutine collect_binfock_tests
+
+   subroutine test_binfock(error)
+      type(error_type), allocatable, intent(out) :: error
+      integer, allocatable :: atm(:), bas(:)
+      real(dp), allocatable :: env(:)
+      integer :: natm, nbas, nenv, u, isys
+      character(len=64) :: tag
+      real(dp) :: worstj, worstk
+      integer :: nbad
+
+      worstj = 0.0_dp; worstk = 0.0_dp; nbad = 0
+
+      call tables_init()
+      call cart_init()
+      call boys_init()
+
+      open (newunit=u, file='reference.dat', status='old', action='read')
+      do
+         read (u, '(a)') tag
+         if (trim(tag) == 'END') exit
+         if (tag(1:6) /= 'SYSTEM') cycle
+         read (tag(8:), *) isys
+         call read_system(u, atm, bas, env, natm, nbas, nenv)
+         call run_system(u, isys, atm, bas, env, nbas, worstj, worstk, nbad)
+         deallocate (atm, bas, env)
+      end do
+      close (u)
+
+      print '(a,es10.2)', '  worst J diff    : ', worstj
+      print '(a,es10.2)', '  worst K diff    : ', worstk
+      print '(a,i0)', '  outside tol     : ', nbad
+
+      call check(error, nbad == 0, "fused Fock vs libfint contraction: "//to_string(nbad)// &
+                 " element(s) outside tolerance, worst |dJ| = "//to_string(worstj, "es12.4")// &
+                 ", worst |dK| = "//to_string(worstk, "es12.4"))
+   end subroutine test_binfock
 
    subroutine read_system(u, atm, bas, env, natm, nbas, nenv)
       integer, intent(in) :: u
@@ -102,10 +115,12 @@ contains
       end do
    end subroutine skip_to_next
 
-   subroutine run_system(u, isys, atm, bas, env, nbas)
+   subroutine run_system(u, isys, atm, bas, env, nbas, worstj, worstk, nbad)
       integer, intent(in) :: u, isys, nbas
       integer, intent(in) :: atm(0:), bas(0:)
       real(dp), intent(in) :: env(0:)
+      real(dp), intent(inout) :: worstj, worstk
+      integer, intent(inout) :: nbad
 
       integer, allocatable :: sh_l(:), sh_np(:), ao_off(:)
       real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
@@ -264,22 +279,23 @@ contains
          ! half the value there, and the transpose supplies the other half.
          gs = jmat + transpose(jmat)
          jref = 2.0_dp*jref - kref
-         call cmp(gs, jref, nao, worstj)
+         call cmp(gs, jref, nao, worstj, nbad)
          deallocate (gs)
       end block
 #else
-      call cmp(jmat, jref, nao, worstj)
-      call cmp(kmat, kref, nao, worstk)
+      call cmp(jmat, jref, nao, worstj, nbad)
+      call cmp(kmat, kref, nao, worstk, nbad)
 #endif
 
       deallocate (sh_l, sh_np, sh_e, sh_c, sh_r, ao_off)
       deallocate (dmat, jmat, kmat, jref, kref, qs, dmax, cfac)
    end subroutine run_system
 
-   subroutine cmp(got, ref, nao, worst)
+   subroutine cmp(got, ref, nao, worst, nbad)
       real(dp), intent(in) :: got(:, :), ref(:, :)
       integer, intent(in) :: nao
       real(dp), intent(inout) :: worst
+      integer, intent(inout) :: nbad
       integer :: i, j
       real(dp) :: ad
       do j = 1, nao
@@ -295,4 +311,20 @@ contains
       end do
    end subroutine cmp
 
+end module check_binfock_suite
+
+program check_binfock
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_binfock_suite, only: collect_binfock_tests
+   implicit none
+   type(testsuite_type), allocatable :: testsuites(:)
+   integer :: stat
+   stat = 0
+   testsuites = [new_testsuite("check_binfock", collect_binfock_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0,a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_binfock

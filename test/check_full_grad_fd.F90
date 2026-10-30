@@ -18,19 +18,25 @@
 ! step size or SCF tolerance.
 !
 ! NO INTERNAL PROCEDURES. `run_case`/`scf_energy_at` are genuine module
-! procedures, not a `contains` block under the program, for the same
-! reason app/main.F90's `trc_run` module gives for its own equivalent
-! refactor: an internal procedure anywhere in the executable -- even one
-! with no state in common with the GPU call at all -- corrupted a later
-! collective Fock build on this exact NVHPC/OpenMPI toolchain,
-! deterministically, regardless of optimisation level. Measured here too:
-! as a `contains` block, this program's SECOND trc_scf_run (the UHF OH
-! case, after water's reference + gradient + 18-point FD loop) silently
-! failed to converge on GPU 0 -- not a crash, just wrong behaviour -- and
-! the identical sequence, as plain module procedures, does not.
+! procedures, not a `contains` block under the program (or nested under a
+! test-drive case), for the same reason app/main.F90's `trc_run` module
+! gives for its own equivalent refactor: an internal procedure anywhere in
+! the executable -- even one with no state in common with the GPU call at
+! all -- corrupted a later collective Fock build on this exact
+! NVHPC/OpenMPI toolchain, deterministically, regardless of optimisation
+! level. Measured here too: as a `contains` block, this program's SECOND
+! trc_scf_run (the UHF OH case, after water's reference + gradient +
+! 18-point FD loop) silently failed to converge on GPU 0 -- not a crash,
+! just wrong behaviour -- and the identical sequence, as plain module
+! procedures, does not. test-drive's own new_unittest callbacks are module
+! procedures too (see collect_full_grad_fd_tests below), so this stays true
+! here.
 !
-module check_full_grad_fd_cases
+module check_full_grad_fd_suite
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -40,24 +46,60 @@ module check_full_grad_fd_cases
    use trc_error, only: error_t
    implicit none
    private
-   public :: run_case
+   public :: collect_full_grad_fd_tests
 
    real(dp), parameter :: H = 1.0e-3_dp
-   real(dp), parameter, public :: RELTOL = 1.0e-5_dp
+   real(dp), parameter :: RELTOL = 1.0e-5_dp
    !! Central difference at H = 1e-3 on a reconverged SCF energy: the
    !! truncation floor measured here is ~1e-7 absolute on components of
    !! order 1e-2 to 1e-1 -- a tight ABSOLUTE floor, not RELTOL's own
    !! bottleneck, which is why ABSTOL (below) is the gate that matters for
    !! the near-zero components translational invariance already covers.
-   real(dp), parameter, public :: ABSTOL = 5.0e-7_dp
-   real(dp), parameter, public :: INVTOL = 1.0e-10_dp
+   real(dp), parameter :: ABSTOL = 5.0e-7_dp
+   real(dp), parameter :: INVTOL = 1.0e-10_dp
 
 contains
 
-   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, label, any_fail)
+   subroutine collect_full_grad_fd_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("RHF water/6-31G*", test_water_631gs), &
+                  new_unittest("UHF OH/6-31G*", test_oh_631gs), &
+                  new_unittest("RHF water/cc-pVDZ (spherical)", test_water_ccpvdz), &
+                  new_unittest("UHF OH/cc-pVDZ (spherical)", test_oh_ccpvdz) &
+                  ]
+   end subroutine collect_full_grad_fd_tests
+
+   subroutine test_water_631gs(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'RHF water/6-31G*')
+   end subroutine test_water_631gs
+
+   subroutine test_oh_631gs(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'oh.xyz', 'basis_sets/6-31gs.json', 5, 4, 'UHF OH/6-31G*')
+   end subroutine test_oh_631gs
+
+   subroutine test_water_ccpvdz(error)
+      !! SPHERICAL case: cc-pVDZ is tagged gto_spherical in BSE, so
+      !! trc_basis_from_json comes back with `bas%spherical` true here, and
+      !! `run_case`'s own trc_scf_gradient call takes the spherical fold in
+      !! trc_scf_grad.F90 (D and W folded nao_sph -> nao, T D T^T) -- this
+      !! is this program's own validation of that fold against a finite
+      !! difference of terco's own reconverged energy, independent of pyscf.
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/cc-pvdz.json', 5, 5, 'RHF water/cc-pVDZ (spherical)')
+   end subroutine test_water_ccpvdz
+
+   subroutine test_oh_ccpvdz(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'oh.xyz', 'basis_sets/cc-pvdz.json', 5, 4, 'UHF OH/cc-pVDZ (spherical)')
+   end subroutine test_oh_ccpvdz
+
+   subroutine run_case(error, xyzfile, basis_json, nalpha, nbeta, label)
+      type(error_type), allocatable, intent(out) :: error
       character(*), intent(in) :: xyzfile, basis_json, label
       integer, intent(in) :: nalpha, nbeta
-      logical, intent(inout) :: any_fail
 
       integer :: nat, dev, a, d
       integer, allocatable :: at_z(:)
@@ -68,21 +110,22 @@ contains
       type(trc_linalg_t) :: lp
       type(error_t) :: err
       real(dp) :: eplus, eminus, fd, worst_abs, worst_rel, denom
+      integer :: nnan
       real(dp) :: inv(3)
 
       dev = trc_bind_device(0)
       call read_xyz(xyzfile, nat, at_z, r0)
       call trc_basis_from_json(basis_json, nat, at_z, r0, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'check_full_grad_fd: '//err%get_message(); stop 1
-      end if
+      call check(error,.not. err%has_error(), label//': basis build failed: '//err%get_message())
+      if (allocated(error)) return
       call bas%to_device()
 
       opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 200
       call trc_scf_run(bas, nalpha, nbeta, opts, res)
-      if (.not. res%converged) then
-         print '(a)', 'check_full_grad_fd: '//label//': reference SCF did not converge'
-         any_fail = .true.; return
+      call check(error, res%converged, label//': reference SCF did not converge')
+      if (allocated(error)) then
+         call bas%release()
+         return
       end if
 
       allocate (grad(3, nat))
@@ -96,10 +139,14 @@ contains
       call bas%release()
 
       inv = sum(grad, dim=2)
-      if (maxval(abs(inv)) > INVTOL) any_fail = .true.
+      ! Fails only above INVTOL, as the plain program did; all() so a NaN
+      ! component fails too.
+      call check(error, all(abs(inv) <= INVTOL), label// &
+                 ': translational invariance residual = '//to_string(maxval(abs(inv)), "es10.2"))
+      if (allocated(error)) return
 
       allocate (rtmp(3, nat))
-      worst_abs = 0.0_dp; worst_rel = 0.0_dp
+      worst_abs = 0.0_dp; worst_rel = 0.0_dp; nnan = 0
       do a = 1, nat
          do d = 1, 3
             rtmp = r0; rtmp(d, a) = r0(d, a) + H
@@ -110,12 +157,16 @@ contains
             denom = max(abs(grad(d, a)), abs(fd), 1.0e-10_dp)
             worst_abs = max(worst_abs, abs(grad(d, a) - fd))
             worst_rel = max(worst_rel, abs(grad(d, a) - fd)/denom)
+            ! max() above drops a NaN, so count those on their own.
+            if (ieee_is_nan(grad(d, a) - fd)) nnan = nnan + 1
          end do
       end do
 
       print '(a,a,a,es10.2,a,es10.2,a,3es10.2)', '  ', label, ': worst abs ', worst_abs, &
          '  worst rel ', worst_rel, '  translational-invariance residual: ', inv
-      if (worst_abs > ABSTOL .and. worst_rel > RELTOL) any_fail = .true.
+      call check(error, nnan == 0 .and. .not. (worst_abs > ABSTOL .and. worst_rel > RELTOL), label// &
+                 ': analytic vs FD gradient, worst abs = '//to_string(worst_abs, "es10.2")// &
+                 ', worst rel = '//to_string(worst_rel, "es10.2")//', NaN components '//to_string(nnan))
 
       deallocate (at_z, r0, rtmp, grad)
    end subroutine run_case
@@ -138,27 +189,21 @@ contains
       call b2%release()
    end function scf_energy_at
 
-end module check_full_grad_fd_cases
+end module check_full_grad_fd_suite
 
 program check_full_grad_fd
-   use check_full_grad_fd_cases, only: run_case
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_full_grad_fd_suite, only: collect_full_grad_fd_tests
    implicit none
-   logical :: any_fail
-   any_fail = .false.
+   type(testsuite_type), allocatable :: testsuites(:)
+   integer :: stat
 
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'RHF water/6-31G*', any_fail)
-   call run_case('oh.xyz', 'basis_sets/6-31gs.json', 5, 4, 'UHF OH/6-31G*', any_fail)
-   ! SPHERICAL cases: cc-pVDZ is tagged gto_spherical in BSE, so
-   ! trc_basis_from_json comes back with `bas%spherical` true here, and
-   ! `run_case`'s own trc_scf_gradient call takes the spherical fold in
-   ! trc_scf_grad.F90 (D and W folded nao_sph -> nao, T D T^T) -- these two
-   ! are this program's own validation of that fold against a finite
-   ! difference of terco's own reconverged energy, independent of pyscf.
-   call run_case('water.xyz', 'basis_sets/cc-pvdz.json', 5, 5, 'RHF water/cc-pVDZ (spherical)', any_fail)
-   call run_case('oh.xyz', 'basis_sets/cc-pvdz.json', 5, 4, 'UHF OH/cc-pVDZ (spherical)', any_fail)
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'; stop 1
+   stat = 0
+   testsuites = [new_testsuite("check_full_grad_fd", collect_full_grad_fd_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
    end if
-   print '(a)', '  RESULT: PASS'
 end program check_full_grad_fd

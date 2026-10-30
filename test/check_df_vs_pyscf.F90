@@ -9,7 +9,12 @@
 ! angular momentum than this build's DF_LMAX/DF_LMAX_AUX reach, same
 ! convention as check_rys_fock_vs_pyscf.F90's TRC_LMAX skip -- a build at
 ! the shipped ceiling (DF_LMAX=2, DF_LMAX_AUX=3) has nothing with a g
-! shell to run this against, and that is not a failure.
+! shell to run this against, and that is not a failure. Also skips cleanly
+! when df_vs_pyscf.ref (~18 MB, not committed -- see this file's own
+! comment below) is absent locally. Both self-skips happen in run_case,
+! BEFORE run_testsuite is ever called, so that ctest's own
+! SKIP_REGULAR_EXPRESSION "SKIP" keeps seeing the same stop-0 text it
+! always has, with nothing claimed to have been checked.
 !
 ! PER-AO NORMALISATION WITHOUT trc_1e. check_rys_fock_vs_pyscf.F90 derives
 ! its normalisation factors from the overlap matrix (trc_1e), but trc_1e's
@@ -29,8 +34,10 @@
 ! Writes the dump df_vs_pyscf_ref.py reads: geometry, the orbital (i|j)
 ! metric, trc_df_2c's (P|Q), and trc_df_3c's (mu nu|P).
 !
-program check_df_vs_pyscf
+module check_df_vs_pyscf_suite
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_basis_json, only: trc_basis_from_json
@@ -38,102 +45,132 @@ program check_df_vs_pyscf
    use trc_error, only: error_t
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_matrix, ref_read_matrix3, ref_report
    implicit none
+   private
+   public :: collect_df_vs_pyscf_tests, run_case
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
-   character(len=256) :: xyzfile, basis_json, aux_json, dump
-   type(trc_basis_t) :: bas, aux
-   type(trc_pairlist_t) :: pl
-   type(error_t) :: err
-   integer :: nat, unit, nao, naux
-   integer, allocatable :: at_z(:)
-   real(dp), allocatable :: r(:, :)
-   real(dp), allocatable :: omat(:, :), jmat(:, :), tens(:, :, :)
+   real(dp), parameter :: TOL = 1.0e-10_dp
 
-   if (command_argument_count() < 4) then
-      print '(a)', 'usage: check_df_vs_pyscf <xyz> <basis.json> <aux.json> <dump.bin>'
-      stop 1
-   end if
-   call get_command_argument(1, xyzfile)
-   call get_command_argument(2, basis_json)
-   call get_command_argument(3, aux_json)
-   call get_command_argument(4, dump)
+   real(dp) :: g_do, g_dj, g_dtens
+      !! max|diff| against pyscf for the orbital (i|j) metric, the 2c
+      !! (P|Q), and the 3c (mu nu|P), filled in by run_case.
 
-   call read_xyz(trim(xyzfile), nat, at_z, r)
-   call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, force_cart=.true.)
-   if (err%has_error()) then
-      print '(a)', 'check_df_vs_pyscf: '//err%get_message(); stop 1
-   end if
-   call trc_basis_from_json(trim(aux_json), nat, at_z, r, aux, err, force_cart=.true.)
-   if (err%has_error()) then
-      print '(a)', 'check_df_vs_pyscf: '//err%get_message(); stop 1
-   end if
+contains
 
-   ! See this program's own header: a basis above this build's ceiling is
-   ! nothing to test yet, not an error.
-   if (maxval(bas%sh_l) > DF_LMAX) then
-      print '(a,i0,a,i0,a)', '  SKIP: orbital basis needs l = ', maxval(bas%sh_l), &
-         ' and this build has DF_LMAX = ', DF_LMAX, '.'
-      stop 0
-   end if
-   if (maxval(aux%sh_l) > DF_LMAX_AUX) then
-      print '(a,i0,a,i0,a)', '  SKIP: auxiliary basis needs l = ', maxval(aux%sh_l), &
-         ' and this build has DF_LMAX_AUX = ', DF_LMAX_AUX, '.'
-      stop 0
-   end if
+   subroutine collect_df_vs_pyscf_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("orbital (i|j), 2c (P|Q) and 3c (mu nu|P) match pyscf", test_vs_pyscf) &
+                  ]
+   end subroutine collect_df_vs_pyscf_tests
 
-   call bas%to_device()
-   call aux%to_device()
-   call pl%build(bas, THRESH)
-   call pl%to_device()
-
-   nao = bas%nao; naux = aux%nao
-   allocate (omat(nao, nao), jmat(naux, naux), tens(nao, nao, naux))
-   !$acc enter data create(omat, jmat, tens)
-   call trc_df_2c(bas, omat)
-   call trc_df_2c(aux, jmat)
-   call trc_df_3c(bas, pl, aux, tens)
-   !$acc update self(omat, jmat, tens)
-   !$acc exit data delete(omat, jmat, tens)
-
-   call pl%release()
-   call bas%release()
-   call aux%release()
-
-   open (newunit=unit, file=trim(dump), access='stream', &
-         form='unformatted', status='replace')
-   write (unit) int(nat, int64), int(nao, int64), int(naux, int64)
-   write (unit) int(at_z, int64)
-   write (unit) r
-   write (unit) omat
-   write (unit) jmat
-   write (unit) tens
-   close (unit)
-   print '(a,i0,a,i0,a,i0,a)', 'check_df_vs_pyscf: wrote '//trim(dump)//' (', &
-      nat, ' atoms, ', nao, ' orbital AOs, ', naux, ' auxiliary AOs)'
-
-   ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
    !
-   ! THE ONE DELIBERATE EXCEPTION to "a missing reference fails loudly past
-   ! the LMAX/DF_LMAX self-skip": df_vs_pyscf.ref is ~18 MB (the (ff|g)
-   ! 3-centre tensor, water/cc-pVTZ x cc-pVTZ-RI) and is not committed --
-   ! .gitignore excludes it, and test/pyscf_refs/README.md's "Local-only
-   ! references" section has the exact command to regenerate it. Its
-   ! absence is a local-setup fact, not a regression, so it prints SKIP and
-   ! stops 0, same convention (and the same SKIP_REGULAR_EXPRESSION
-   ! ctest property) as the LMAX/DF_LMAX self-skip above -- including in
-   ! the DF_LMAX=3 CI job, which never has this file either.
+   ! Everything the old program did through writing the dump and reading
+   ! the pyscf reference back: argument parsing, basis construction, the
+   ! two ceiling self-skips, the computation, and the "reference not
+   ! committed" self-skip. On a genuine setup failure (bad usage, a basis
+   ! JSON that will not build) this still prints and `stop`s exactly as it
+   ! always has -- those are preconditions for having a case to run at
+   ! all, not part of what this check validates.
    !
-   block
-      real(dp), parameter :: TOL = 1.0e-10_dp
+   subroutine run_case(skip, message)
+      logical, intent(out) :: skip
+      character(len=*), intent(out) :: message
+
+      character(len=256) :: xyzfile, basis_json, aux_json, dump
+      type(trc_basis_t) :: bas, aux
+      type(trc_pairlist_t) :: pl
+      type(error_t) :: err
+      integer :: nat, unit, nao, naux
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :)
+      real(dp), allocatable :: omat(:, :), jmat(:, :), tens(:, :, :)
       integer :: u, nat_ref, nao_ref, naux_ref, nfail
       real(dp), allocatable :: o_ref(:, :), j_ref(:, :), tens_ref(:, :, :)
-      real(dp) :: do_, dj, dtens
       logical :: has_ref
+
+      skip = .false.
+      message = ''
+
+      if (command_argument_count() < 4) then
+         print '(a)', 'usage: check_df_vs_pyscf <xyz> <basis.json> <aux.json> <dump.bin>'
+         stop 1
+      end if
+      call get_command_argument(1, xyzfile)
+      call get_command_argument(2, basis_json)
+      call get_command_argument(3, aux_json)
+      call get_command_argument(4, dump)
+
+      call read_xyz(trim(xyzfile), nat, at_z, r)
+      call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, force_cart=.true.)
+      if (err%has_error()) then
+         print '(a)', 'check_df_vs_pyscf: '//err%get_message(); stop 1
+      end if
+      call trc_basis_from_json(trim(aux_json), nat, at_z, r, aux, err, force_cart=.true.)
+      if (err%has_error()) then
+         print '(a)', 'check_df_vs_pyscf: '//err%get_message(); stop 1
+      end if
+
+      ! See this program's own header: a basis above this build's ceiling is
+      ! nothing to test yet, not an error.
+      if (maxval(bas%sh_l) > DF_LMAX) then
+         write (message, '(a,i0,a,i0,a)') '  SKIP: orbital basis needs l = ', maxval(bas%sh_l), &
+            ' and this build has DF_LMAX = ', DF_LMAX, '.'
+         skip = .true.; return
+      end if
+      if (maxval(aux%sh_l) > DF_LMAX_AUX) then
+         write (message, '(a,i0,a,i0,a)') '  SKIP: auxiliary basis needs l = ', maxval(aux%sh_l), &
+            ' and this build has DF_LMAX_AUX = ', DF_LMAX_AUX, '.'
+         skip = .true.; return
+      end if
+
+      call bas%to_device()
+      call aux%to_device()
+      call pl%build(bas, THRESH)
+      call pl%to_device()
+
+      nao = bas%nao; naux = aux%nao
+      allocate (omat(nao, nao), jmat(naux, naux), tens(nao, nao, naux))
+      !$acc enter data create(omat, jmat, tens)
+      call trc_df_2c(bas, omat)
+      call trc_df_2c(aux, jmat)
+      call trc_df_3c(bas, pl, aux, tens)
+      !$acc update self(omat, jmat, tens)
+      !$acc exit data delete(omat, jmat, tens)
+
+      call pl%release()
+      call bas%release()
+      call aux%release()
+
+      open (newunit=unit, file=trim(dump), access='stream', &
+            form='unformatted', status='replace')
+      write (unit) int(nat, int64), int(nao, int64), int(naux, int64)
+      write (unit) int(at_z, int64)
+      write (unit) r
+      write (unit) omat
+      write (unit) jmat
+      write (unit) tens
+      close (unit)
+      print '(a,i0,a,i0,a,i0,a)', 'check_df_vs_pyscf: wrote '//trim(dump)//' (', &
+         nat, ' atoms, ', nao, ' orbital AOs, ', naux, ' auxiliary AOs)'
+
+      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+      !
+      ! THE ONE DELIBERATE EXCEPTION to "a missing reference fails loudly past
+      ! the LMAX/DF_LMAX self-skip": df_vs_pyscf.ref is ~18 MB (the (ff|g)
+      ! 3-centre tensor, water/cc-pVTZ x cc-pVTZ-RI) and is not committed --
+      ! .gitignore excludes it, and test/pyscf_refs/README.md's "Local-only
+      ! references" section has the exact command to regenerate it. Its
+      ! absence is a local-setup fact, not a regression, so it prints SKIP and
+      ! stops 0, same convention (and the same SKIP_REGULAR_EXPRESSION
+      ! ctest property) as the LMAX/DF_LMAX self-skip above -- including in
+      ! the DF_LMAX=3 CI job, which never has this file either.
+      !
       call ref_open('df_vs_pyscf.ref', u, has_ref)
       if (.not. has_ref) then
-         print '(a)', '  SKIP: pyscf_refs/df_vs_pyscf.ref is not committed (it is ~18 MB) -- '// &
-            'see test/pyscf_refs/README.md, "Local-only references", to regenerate it locally.'
-         stop 0
+         message = '  SKIP: pyscf_refs/df_vs_pyscf.ref is not committed (it is ~18 MB) -- '// &
+                    'see test/pyscf_refs/README.md, "Local-only references", to regenerate it locally.'
+         skip = .true.; return
       end if
       call ref_read_int(u, 'NAT', nat_ref)
       call ref_read_int(u, 'NAO', nao_ref)
@@ -146,19 +183,53 @@ program check_df_vs_pyscf
       call ref_read_matrix(u, 'J', naux, naux, j_ref)
       call ref_read_matrix3(u, 'TENS', nao, nao, naux, tens_ref)
       call ref_close(u)
+
       nfail = 0
-      do_ = maxval(abs(omat - o_ref))
-      call ref_report(nfail, do_ < TOL, 'orbital (i|j) metric vs pyscf, max|diff|', do_)
-      dj = maxval(abs(jmat - j_ref))
-      call ref_report(nfail, dj < TOL, '2c (P|Q) vs pyscf, max|diff|', dj)
-      dtens = maxval(abs(tens - tens_ref))
-      call ref_report(nfail, dtens < TOL, '3c (mu nu|P) vs pyscf, max|diff|', dtens)
-      if (nfail > 0) then
-         print '(a)', 'check_df_vs_pyscf: FAILED against the pyscf reference'; stop 1
-      end if
-      print '(a)', 'check_df_vs_pyscf: RESULT: PASS'
-   end block
+      g_do = maxval(abs(omat - o_ref))
+      call ref_report(nfail, g_do < TOL, 'orbital (i|j) metric vs pyscf, max|diff|', g_do)
+      g_dj = maxval(abs(jmat - j_ref))
+      call ref_report(nfail, g_dj < TOL, '2c (P|Q) vs pyscf, max|diff|', g_dj)
+      g_dtens = maxval(abs(tens - tens_ref))
+      call ref_report(nfail, g_dtens < TOL, '3c (mu nu|P) vs pyscf, max|diff|', g_dtens)
 
-   deallocate (at_z, r, omat, jmat, tens)
+      deallocate (at_z, r, omat, jmat, tens, o_ref, j_ref, tens_ref)
+   end subroutine run_case
 
+   subroutine test_vs_pyscf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call check(error, g_do < TOL, "orbital (i|j) metric vs pyscf, max|diff| = "// &
+                 to_string(g_do, "es12.4")//" exceeds "//to_string(TOL, "es12.4"))
+      if (allocated(error)) return
+      call check(error, g_dj < TOL, "2c (P|Q) vs pyscf, max|diff| = "// &
+                 to_string(g_dj, "es12.4")//" exceeds "//to_string(TOL, "es12.4"))
+      if (allocated(error)) return
+      call check(error, g_dtens < TOL, "3c (mu nu|P) vs pyscf, max|diff| = "// &
+                 to_string(g_dtens, "es12.4")//" exceeds "//to_string(TOL, "es12.4"))
+   end subroutine test_vs_pyscf
+
+end module check_df_vs_pyscf_suite
+
+program check_df_vs_pyscf
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_df_vs_pyscf_suite, only: collect_df_vs_pyscf_tests, run_case
+   implicit none
+   integer :: stat
+   logical :: skip
+   character(len=256) :: message
+   type(testsuite_type), allocatable :: testsuites(:)
+
+   call run_case(skip, message)
+   if (skip) then
+      print '(a)', trim(message)
+      stop 0
+   end if
+
+   stat = 0
+   testsuites = [new_testsuite("check_df_vs_pyscf", collect_df_vs_pyscf_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, 1x, a)") stat, "test(s) failed!"
+      error stop 1
+   end if
 end program check_df_vs_pyscf

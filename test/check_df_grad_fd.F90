@@ -34,8 +34,17 @@
 ! NO INTERNAL PROCEDURES (see check_full_grad_fd.F90's header): the cases
 ! are module procedures.
 !
-module check_df_grad_fd_cases
+! SELF-SKIP: def2-universal-jkfit carries g auxiliary shells. A build whose
+! DF_LMAX_AUX ceiling is below g cannot fit anything, so run_case prints
+! "SKIP: ..." and `stop 0` the moment the first case discovers this --
+! before run_testsuite is even entered, exactly like check_nosym.F90's own
+! self-skip. ctest's SKIP_REGULAR_EXPRESSION (test/CMakeLists.txt) turns
+! that exit-0-with-nothing-checked into "Skipped", not "Passed".
+!
+module check_df_grad_fd_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -48,19 +57,101 @@ module check_df_grad_fd_cases
    use trc_error, only: error_t
    implicit none
    private
-   public :: run_case
+   public :: collect_df_grad_fd_tests, set_df_grad_fd_case, df_grad_fd_check_skip
 
    real(dp), parameter :: H = 2.0e-3_dp
    real(dp), parameter :: THRESH = 1.0e-12_dp
    character(len=*), parameter :: AUX_JSON = 'basis_sets/def2-universal-jkfit.json'
 
+   character(len=32) :: selected_case = 'water'
+      !! set from the command line by the program, before run_testsuite;
+      !! test-drive's collect_* has a fixed signature and cannot take an
+      !! argument of its own.
+
 contains
 
-   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, functional, label, abstol, invtol, any_fail)
+   subroutine set_df_grad_fd_case(which)
+      character(*), intent(in) :: which
+      selected_case = which
+   end subroutine set_df_grad_fd_case
+
+   subroutine df_grad_fd_check_skip(which)
+      !! Builds only the auxiliary basis for the molecule `which` selects and,
+      !! if def2-universal-jkfit's g shells are above this build's
+      !! DF_LMAX_AUX, prints "SKIP: ..." and `stop 0` right here -- BEFORE
+      !! run_testsuite is ever entered, exactly like check_nosym.F90's own
+      !! self-skip. ctest's SKIP_REGULAR_EXPRESSION (test/CMakeLists.txt)
+      !! turns that exit-0-with-nothing-checked into "Skipped", not "Passed".
+      !! `run_case`'s own setup() repeats this same check for every displaced
+      !! geometry it builds; this is only the one-time, up-front gate that
+      !! keeps the decision out of test-drive's own machinery.
+      character(*), intent(in) :: which
+      type(trc_basis_t) :: aux
+      type(error_t) :: err
+      integer :: nat
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :)
+      character(len=32) :: xyzfile
+
+      if (trim(which) == 'formamide') then
+         xyzfile = 'formamide.xyz'
+      else
+         xyzfile = 'water.xyz'
+      end if
+      call read_xyz(trim(xyzfile), nat, at_z, r)
+      call trc_basis_from_json(AUX_JSON, nat, at_z, r, aux, err, force_cart=.true.)
+      if (err%has_error()) then
+         print '(a)', 'check_df_grad_fd: '//err%get_message(); stop 1
+      end if
+      if (maxval(aux%sh_l) > DF_LMAX_AUX) then
+         print '(a)', '  SKIP: def2-universal-jkfit needs g auxiliary shells, above this build''s DF_LMAX_AUX.'
+         stop 0
+      end if
+      call aux%release()
+   end subroutine df_grad_fd_check_skip
+
+   subroutine collect_df_grad_fd_tests(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      if (trim(selected_case) == 'formamide') then
+         testsuite = [new_unittest("RHF --df formamide/cc-pVDZ vs Richardson FD", test_formamide_rhf)]
+      else
+         testsuite = [ &
+                     new_unittest("RHF --df water/6-31G* vs Richardson FD", test_water_rhf), &
+                     new_unittest("RKS PBE --df water/6-31G* vs Richardson FD", test_water_pbe), &
+                     new_unittest("RKS B3LYP --df water/6-31G* vs Richardson FD", test_water_b3lyp) &
+                     ]
+      end if
+   end subroutine collect_df_grad_fd_tests
+
+   subroutine test_water_rhf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, '', 'RHF --df water/6-31G*', &
+                    1.0e-8_dp, 1.0e-10_dp, error)
+   end subroutine test_water_rhf
+
+   subroutine test_water_pbe(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'pbe', 'RKS PBE --df water/6-31G*', &
+                    1.0e-8_dp, 1.0e-10_dp, error)
+   end subroutine test_water_pbe
+
+   subroutine test_water_b3lyp(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'b3lyp', 'RKS B3LYP --df water/6-31G*', &
+                    1.0e-8_dp, 1.0e-10_dp, error)
+   end subroutine test_water_b3lyp
+
+   subroutine test_formamide_rhf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case('formamide.xyz', 'basis_sets/cc-pvdz.json', 12, 12, '', 'RHF --df formamide/cc-pVDZ', &
+                    1.0e-8_dp, 1.0e-10_dp, error)
+   end subroutine test_formamide_rhf
+
+   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, functional, label, abstol, invtol, error)
       character(*), intent(in) :: xyzfile, basis_json, functional, label
       integer, intent(in) :: nalpha, nbeta
       real(dp), intent(in) :: abstol, invtol
-      logical, intent(inout) :: any_fail
+      type(error_type), allocatable, intent(out) :: error
 
       integer :: nat, dev, a, d, k
       integer, allocatable :: at_z(:)
@@ -75,6 +166,7 @@ contains
 
       real(dp) :: e(-2:2), d1, d2, fd, worst_abs, inv(3), hh
       logical :: ok
+      integer :: nbad
 
       dev = trc_bind_device(0)
       call read_xyz(xyzfile, nat, at_z, r0)
@@ -95,9 +187,10 @@ contains
          stop 0
       end if
       call trc_scf_run(bas, nalpha, nbeta, opts, res, la=lp, scf_dfjk=dfjk)
-      if (.not. res%converged) then
-         print '(a)', 'check_df_grad_fd: '//label//': reference SCF did not converge'
-         any_fail = .true.; return
+      call check(error, res%converged, "check_df_grad_fd: "//trim(label)//": reference SCF did not converge")
+      if (allocated(error)) then
+         call teardown(bas, aux, pl, lp, dfjk)
+         return
       end if
       allocate (grad(3, nat))
       if (len_trim(functional) > 0) then
@@ -111,10 +204,17 @@ contains
       call teardown(bas, aux, pl, lp, dfjk)
 
       inv = sum(grad, dim=2)
-      if (maxval(abs(inv)) > invtol) any_fail = .true.
+      call check(error, all(abs(inv) <= invtol), trim(label)// &
+                 ": translational-invariance residual "//to_string(maxval(abs(inv)), "es10.2")// &
+                 " exceeds gate "//to_string(invtol, "es10.2"))
+      if (allocated(error)) then
+         deallocate (grad)
+         return
+      end if
 
       allocate (rtmp(3, nat))
       worst_abs = 0.0_dp
+      nbad = 0
       do a = 1, nat
          do d = 1, 3
             do k = -2, 2
@@ -127,6 +227,8 @@ contains
             d2 = (e(1) - e(-1))/H
             fd = (4.0_dp*d2 - d1)/3.0_dp
             worst_abs = max(worst_abs, abs(grad(d, a) - fd))
+            ! max() above drops a NaN; this count does not.
+            if (.not. (abs(grad(d, a) - fd) <= abstol)) nbad = nbad + 1
             print '(a,i0,a,i0,a,f18.12,a,f18.12,a,es9.2)', '    atom ', a, ' xyz ', d, ' analytic ', grad(d, a), &
                '  FD ', fd, '  diff ', grad(d, a) - fd
          end do
@@ -134,7 +236,9 @@ contains
 
       print '(a,a,a,es10.2,a,es10.2,a,3es10.2)', '  ', label, ': worst |analytic - Richardson FD| ', worst_abs, &
          ' (gate ', abstol, ')  translational-invariance residual: ', inv
-      if (worst_abs > abstol) any_fail = .true.
+      call check(error, nbad == 0, trim(label)// &
+                 ": worst |analytic - Richardson FD| "//to_string(worst_abs, "es10.2")// &
+                 ", "//to_string(nbad)//" component(s) outside gate "//to_string(abstol, "es10.2"))
       deallocate (at_z, r0, rtmp, grad)
    end subroutine run_case
 
@@ -201,37 +305,27 @@ contains
       call teardown(b2, a2, p2, l2, f2)
    end function energy_at
 
-end module check_df_grad_fd_cases
+end module check_df_grad_fd_suite
 
 program check_df_grad_fd
-   use pic_types, only: dp
-   use check_df_grad_fd_cases, only: run_case
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite, new_testsuite, testsuite_type
+   use check_df_grad_fd_suite, only: collect_df_grad_fd_tests, set_df_grad_fd_case, df_grad_fd_check_skip
    implicit none
-   logical :: any_fail
+   integer :: stat
+   type(testsuite_type), allocatable :: testsuites(:)
    character(len=32) :: which
-   any_fail = .false.
+
+   stat = 0
    which = 'water'
    if (command_argument_count() >= 1) call get_command_argument(1, which)
+   call df_grad_fd_check_skip(trim(which))
+   call set_df_grad_fd_case(trim(which))
 
-   if (trim(which) == 'formamide') then
-      call run_case('formamide.xyz', 'basis_sets/cc-pvdz.json', 12, 12, '', 'RHF --df formamide/cc-pVDZ', &
-                    1.0e-8_dp, 1.0e-10_dp, any_fail)
-      if (any_fail) then
-         print '(a)', '  RESULT: FAIL'; stop 1
-      end if
-      print '(a)', '  RESULT: PASS'
-      stop
+   testsuites = [new_testsuite("check_df_grad_fd", collect_df_grad_fd_tests)]
+   call run_testsuite(testsuites(1)%collect, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, 1x, a)") stat, "test(s) failed!"
+      error stop 1
    end if
-
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, '', 'RHF --df water/6-31G*', &
-                 1.0e-8_dp, 1.0e-10_dp, any_fail)
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'pbe', 'RKS PBE --df water/6-31G*', &
-                 1.0e-8_dp, 1.0e-10_dp, any_fail)
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'b3lyp', 'RKS B3LYP --df water/6-31G*', &
-                 1.0e-8_dp, 1.0e-10_dp, any_fail)
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'; stop 1
-   end if
-   print '(a)', '  RESULT: PASS'
 end program check_df_grad_fd
