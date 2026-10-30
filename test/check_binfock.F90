@@ -20,16 +20,17 @@
 ! cost of atomics, not a defect.
 !
 program check_binfock
-   use pic_types, only: dp, int64
+   use pic_types, only: dp
    use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
-   use trc_batch, only: batch_build_pairs, batch_ncart, common_fac_sp
+   use trc_batch, only: batch_build_pairs, batch_ncart, common_fac_sp, trc_batch_pairs_t
    use trc_cart, only: cart_init
    use trc_hgp, only: hgp_build_pairs
    use trc_tables, only: LMAX
    use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
    use trc_binkernel, only: binkernel_fock_bins
-   use trc_screen, only: screen_schwarz_bounds, screen_build_worklist, screen_density_blockmax, screen_pair_index
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
+   use trc_screen, only: screen_schwarz_bounds, screen_density_blockmax, screen_pair_index
    use trc_cart_perm, only: cart_perm_l2b
    implicit none
 
@@ -108,28 +109,19 @@ contains
 
       integer, allocatable :: sh_l(:), sh_np(:), ao_off(:)
       real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
-      integer, allocatable :: pp_off(:), pp_n(:), hp_ki(:), hp_kj(:)
-      real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
+      type(trc_batch_pairs_t) :: mmd
       integer, allocatable :: q_i(:), q_j(:), q_k(:), q_l(:), q_off(:)
       real(dp), allocatable :: out(:), rscr(:, :)
       real(dp), allocatable :: dmat(:, :), jmat(:, :), kmat(:, :), dsh(:, :)
       real(dp), allocatable :: jref(:, :), kref(:, :), ref(:)
       real(dp), allocatable :: qs(:), dmax(:, :), cfac(:)
-      real(dp), allocatable :: hp_p(:), hp_r(:,:), hp_ra(:,:), hp_rb(:,:), hp_c(:)
-      integer, allocatable :: hp_off(:), hp_n(:)
-      integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
-      !! Bin-interleaved second copy of the hp_* data (bins_build_pair_quartets);
-      !! flat here for the same reason trc_eri_t keeps them flat rather than
-      !! as components of `bins` -- see that type's own comment.
-      integer :: nqp
-      real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
-      real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
-      real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
-      integer, allocatable :: sq_n(:)
+      type(trc_shell_pairs_t) :: pairs
+      type(trc_pair_quartets_t) :: quartets
+      !! The HGP primitive pairs and their bin-interleaved copy
+      !! (bins_build_pair_quartets), as trc_eri_t holds them.
+      type(trc_bin_launch_t) :: launch
       type(pair_bins_t) :: bins
-      integer :: nhpp, nlaunch
-      integer(int64) :: nwork
-      integer :: npp, maxnp, nq, nout, nao, i, j, k, l, iat, iq, m
+      integer :: maxnp, nq, nout, nao, i, j, k, l, iat, iq, m
       integer :: sh(4), d(4), nc4, nqrt
       integer :: na, nb, nc, nd, ia, ib, ic, id, idx
       integer :: mu, nu, lam, sig
@@ -182,18 +174,16 @@ contains
          return
       end if
 
-      call batch_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, 1.0e-30_dp, &
-                       pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
+      call batch_build_pairs(sh_l, sh_np, sh_e, sh_c, sh_r, 1.0e-30_dp, mmd)
 
       ! Schwarz bounds, then the binned pair container.  No quartet list.
       allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
-      call screen_schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
-      call hgp_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, 1.0e-33_dp, &
-                           hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
-      call bins_build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins, pp_n=hp_n)
-      call bins_build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                               qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                               sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
+      call screen_schwarz_bounds(sh_l, mmd, qs)
+      pairs%sh_l = sh_l
+      pairs%ao_off = ao_off
+      call hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, sh_c, 1.0e-33_dp, pairs)
+      call bins_build_binned_pairs(sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins, pp_n=pairs%n)
+      call bins_build_pair_quartets(bins, pairs, quartets)
       print '(a,i0,a,i0,a,i0)', '  system ', isys, ': shell pairs ', bins%npair, &
          '   live bins ', bins%nlive
 
@@ -202,23 +192,22 @@ contains
       allocate (dsh(nbas, nbas))
       dsh = huge(1.0_dp)*1.0e-30_dp
 
-      !$acc enter data copyin(sh_l, ao_off, dmat, dsh, bins, bins%sp_i, bins%sp_j, bins%sp_q, &
-      !$acc                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-      !$acc                   qp_z, qp_c, qp_px, qp_py, qp_pz, &
-      !$acc                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n) &
+      launch%thresh = 1.0e-30_dp
+      launch%nao = nao
+      !$acc enter data copyin(pairs%sh_l, pairs%ao_off, dmat, dsh, bins, bins%sp_i, bins%sp_j, bins%sp_q, &
+      !$acc                   pairs%off, pairs%n, pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, &
+      !$acc                   quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+      !$acc                   quartets%ax, quartets%ay, quartets%az, &
+      !$acc                   quartets%abx, quartets%aby, quartets%abz, quartets%n) &
       !$acc            copyin(jmat, kmat)
-      call binkernel_fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, 1.0e-30_dp, .false., &
-                     1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
-                     hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                     qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                     sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                     1, dmat, jmat, kmat, 0, 1, nlaunch, nwork)
+      call binkernel_fock_bins(bins, pairs, quartets, launch, dsh, dmat, jmat, kmat)
       !$acc update self(jmat, kmat)
-      !$acc exit data delete(sh_l, ao_off, dmat, dsh, bins%sp_i, bins%sp_j, bins%sp_q, bins, &
-      !$acc                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-      !$acc                  qp_z, qp_c, qp_px, qp_py, qp_pz, &
-      !$acc                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, jmat, kmat)
-      print '(a,i0,a,i0)', '           launches ', nlaunch, '   work items ', nwork
+      !$acc exit data delete(pairs%sh_l, pairs%ao_off, dmat, dsh, bins%sp_i, bins%sp_j, bins%sp_q, bins, &
+      !$acc                  pairs%off, pairs%n, pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, &
+      !$acc                  quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+      !$acc                  quartets%ax, quartets%ay, quartets%az, &
+      !$acc                  quartets%abx, quartets%aby, quartets%abz, quartets%n, jmat, kmat)
+      print '(a,i0,a,i0)', '           launches ', launch%nlaunch, '   work items ', launch%nwork
 
       ! --- reference: contract libfint's own integrals on the host ---
       do
@@ -284,7 +273,6 @@ contains
 #endif
 
       deallocate (sh_l, sh_np, sh_e, sh_c, sh_r, ao_off)
-      deallocate (pp_off, pp_n, pp_p, pp_r, pp_c, pp_e)
       deallocate (dmat, jmat, kmat, jref, kref, qs, dmax, cfac)
    end subroutine run_system
 

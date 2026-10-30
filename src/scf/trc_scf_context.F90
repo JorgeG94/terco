@@ -357,12 +357,12 @@ contains
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
             call dft_grid_build_block(b%at_r, b%at_elem, this%gc%grid, err, comm%rank(), comm%size(), &
-                                      level=opts%grid_level, &
-                                      t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
+                                      level=opts%grid_level)
          else
-            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level, &
-                                t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
+            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level)
          end if
+         this%t_grid_sub(1) = this%gc%grid%t_points
+         this%t_grid_sub(2) = this%gc%grid%t_partition
          if (err%has_error()) then
             call profiler_stop("scf: grid")
             call this%release()

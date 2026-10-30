@@ -22,12 +22,13 @@ program bench_binwater
    use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_cart, only: cart_init
-   use trc_batch, only: batch_build_pairs, batch_eri, batch_ncart, common_fac_sp
+   use trc_batch, only: batch_build_pairs, batch_eri, batch_ncart, common_fac_sp, trc_batch_pairs_t
    use trc_hgp, only: hgp_build_pairs, hgp_batch
 
    use trc_screen, only: screen_schwarz_bounds
-   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
-   use trc_binkernel, only: binkernel_fock_bins, trc_plan_t
+   use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_build_binned_pairs, bins_build_pair_quartets
+   use trc_binkernel, only: binkernel_fock_bins
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    implicit none
 
    integer, parameter :: NREP = 3
@@ -47,26 +48,20 @@ program bench_binwater
    !! environment rather than a positional argument so existing command lines
    !! keep working. Needs an LMAX=2 build.
 
-   integer :: nat, nbas, nao, npp, nhpp, nq, i, j, k, l, iq, maxnp
+   integer :: nat, nbas, nao, nq, i, j, k, l, iq, maxnp
    integer, allocatable :: sh_l(:), sh_np(:), ao_off(:), sh_at(:)
    real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
-   integer, allocatable :: pp_off(:), pp_n(:), hp_off(:), hp_n(:), hp_ki(:), hp_kj(:)
-   real(dp), allocatable :: pp_p(:), pp_r(:, :), pp_c(:), pp_e(:, :)
-   real(dp), allocatable :: hp_p(:), hp_r(:, :), hp_ra(:, :), hp_rb(:, :), hp_c(:)
+   type(trc_batch_pairs_t) :: mmd
    integer, allocatable :: q_i(:), q_j(:), q_k(:), q_l(:), q_off(:)
    real(dp), allocatable :: out(:), rscr(:, :), qs(:), dmax(:, :)
    integer(int64) :: nrect
-   integer :: nout, r, nchunk, ic, c, l0, h0, nlaunch
-   integer(int64) :: nwork, nkept
+   integer :: nout, r, nchunk, ic, c, l0, h0
    type(pair_bins_t) :: bins
-   integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
-   !! Bin-interleaved second copy of the hp_* data (bins_build_pair_quartets);
-   !! flat here, as trc_eri_t keeps them -- see that type's own comment.
-   integer :: nqp
-   real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
-   real(dp), allocatable :: sq_ax(:), sq_ay(:), sq_az(:)
-   real(dp), allocatable :: sq_abx(:), sq_aby(:), sq_abz(:)
-   integer, allocatable :: sq_n(:)
+   type(trc_shell_pairs_t) :: pairs
+   type(trc_pair_quartets_t) :: quartets
+   !! The HGP primitive pairs and their bin-interleaved copy
+   !! (bins_build_pair_quartets), as trc_eri_t holds them.
+   type(trc_bin_launch_t) :: launch
    real(dp), allocatable :: dmat(:,:), jmat(:,:), kmat(:,:), dsh(:,:)
    logical :: DSCREEN = .true.
    integer, parameter :: CHUNK = 400000
@@ -78,23 +73,21 @@ program bench_binwater
 
    call tables_init(); call cart_init(); call boys_init()
 
-   call batch_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, THRESH, &
-                    pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
-   call hgp_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, THRESH*1.0e-3_dp, &
-                        hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
+   call batch_build_pairs(sh_l, sh_np, sh_e, sh_c, sh_r, THRESH, mmd)
+   pairs%sh_l = sh_l
+   pairs%ao_off = ao_off
+   call hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, sh_c, THRESH*1.0e-3_dp, pairs)
 
    allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
    dmax = 1.0_dp
    call tm%start()
-   call screen_schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
+   call screen_schwarz_bounds(sh_l, mmd, qs)
    t1 = tm%get_elapsed_time()
    print '(a,f8.3,a)', '  schwarz bounds  : ', t1, ' s'
 
    call tm%start()
-   call bins_build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=hp_n)
-   call bins_build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                            qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                            sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
+   call bins_build_binned_pairs(sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=pairs%n)
+   call bins_build_pair_quartets(bins, pairs, quartets)
    t1 = tm%get_elapsed_time()
    print '(a,f8.3,a)', '  bin the pairs   : ', t1, ' s'
 
@@ -133,7 +126,7 @@ program bench_binwater
    print '(a)', ''
    print '(a,i0,a,i0,a,i0,a,i0)', '  waters ', NW, '   atoms ', nat, &
       '   shells ', nbas, '   nao ', nao
-   print '(a,i0,a,i0,a,i0)', '  primitive pairs ', nhpp, '   shell pairs ', bins%npair, &
+   print '(a,i0,a,i0,a,i0)', '  primitive pairs ', pairs%npp, '   shell pairs ', bins%npair, &
       '   live bins ', bins%nlive
    block
       integer :: kk, mx
@@ -150,18 +143,18 @@ program bench_binwater
    print '(a)', ''
 
 
-   !$acc enter data copyin(sh_l, ao_off, dmat, dsh, bins, bins%sp_i, bins%sp_j, bins%sp_q, &
-   !$acc                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-   !$acc                   qp_z, qp_c, qp_px, qp_py, qp_pz, &
-   !$acc                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n) &
+   !$acc enter data copyin(pairs%sh_l, pairs%ao_off, dmat, dsh, bins, bins%sp_i, bins%sp_j, bins%sp_q, &
+   !$acc                   pairs%off, pairs%n, pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, &
+   !$acc                   quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+   !$acc                   quartets%ax, quartets%ay, quartets%az, &
+   !$acc                   quartets%abx, quartets%aby, quartets%abz, quartets%n) &
    !$acc            copyin(jmat, kmat)
 
-   call binkernel_fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
-                     1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
-                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                  qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                  1, dmat, jmat, kmat, 0, 1, nlaunch, nwork, nkept)
+   launch%thresh = THRESH
+   launch%nao = nao
+   launch%count_kept = .true.
+   call binkernel_fock_bins(bins, pairs, quartets, launch, dsh, dmat, jmat, kmat)
+   launch%count_kept = .false.
    !$acc wait
    jmat = 0.0_dp; kmat = 0.0_dp
    !$acc update device(jmat, kmat)
@@ -171,11 +164,11 @@ program bench_binwater
    ! every SCF iteration; if it is noise, the object is worth having for the
    ! API's sake and not for speed. Measure rather than assume.
    block
-      type(trc_plan_t) :: pln
+      type(trc_bin_plan_t) :: pln
       real(dp) :: tp1
       type(timer_type) :: tmp
       call tmp%start()
-      call pln%build(bins, THRESH, .false.)
+      call pln%build(bins, THRESH, quartets%bin_pbase, .false.)
       tp1 = tmp%get_elapsed_time()
       print '(a,f9.5,a,i0,a,i0)', '  plan build      ', tp1, &
          ' s   segments ', pln%nseg, '   work ', pln%nwork
@@ -189,12 +182,7 @@ program bench_binwater
       jmat = 0.0_dp; kmat = 0.0_dp
       !$acc update device(jmat, kmat)
       call tm%start()
-      call binkernel_fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
-                     1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
-                     hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-                     qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                     sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                     1, dmat, jmat, kmat, 0, 1, nlaunch, nwork)
+      call binkernel_fock_bins(bins, pairs, quartets, launch, dsh, dmat, jmat, kmat)
       !$acc wait
       t1 = tm%get_elapsed_time()
       t = t1
@@ -204,17 +192,18 @@ program bench_binwater
    end do
 
    !$acc update self(jmat, kmat)
-   !$acc exit data delete(sh_l, ao_off, dmat, bins%sp_i, bins%sp_j, bins, &
-   !$acc                  hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
-   !$acc                  qp_z, qp_c, qp_px, qp_py, qp_pz, &
-   !$acc                  sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, jmat, kmat)
+   !$acc exit data delete(pairs%sh_l, pairs%ao_off, dmat, bins%sp_i, bins%sp_j, bins, &
+   !$acc                  pairs%off, pairs%n, pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, &
+   !$acc                  quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
+   !$acc                  quartets%ax, quartets%ay, quartets%az, &
+   !$acc                  quartets%abx, quartets%aby, quartets%abz, quartets%n, jmat, kmat)
 
-   print '(a,i0,a,i0)', '  kernel launches ', nlaunch, '   work items ', nwork
-   print '(a,i0,a,f6.2,a)', '  survive screen  ', nkept, '  (', &
-      100.0_dp*real(nkept, dp)/real(max(nwork, 1_int64), dp), '% of work items)'
+   print '(a,i0,a,i0)', '  kernel launches ', launch%nlaunch, '   work items ', launch%nwork
+   print '(a,i0,a,f6.2,a)', '  survive screen  ', launch%nkept, '  (', &
+      100.0_dp*real(launch%nkept, dp)/real(max(launch%nwork, 1_int64), dp), '% of work items)'
    print '(a,f9.4,a,f5.1,a)', '  FOCK BUILD      ', best, ' s   [+', &
       100.0_dp*(worst/best - 1.0_dp), '%]'
-   print '(a,es10.3)', '  quartets/s      ', real(nwork, dp)/best
+   print '(a,es10.3)', '  quartets/s      ', real(launch%nwork, dp)/best
    !
    ! Checksums of the accumulated matrix.  The correctness tests run on 21
    ! shell pairs; this is 44,846, and the only way to check the fast path at

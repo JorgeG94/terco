@@ -40,7 +40,7 @@ program check_ao
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build
+   use trc_dft_grid, only: dft_grid_t, dft_grid_options_t, dft_grid_build
    use trc_dft_prune, only: PRUNE_NONE
    use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_xc_batch, only: trc_xc_grid_t
@@ -58,6 +58,7 @@ program check_ao
    type(trc_basis_t) :: b
    type(trc_pairlist_t) :: pl
    type(dft_grid_t) :: grid
+   type(dft_grid_options_t) :: unpruned
    type(trc_xc_grid_t) :: xg
    type(error_t) :: err
    real(dp) :: err_grid, err_batch, err_trace
@@ -119,7 +120,8 @@ program check_ao
    call b%to_device(); call pl%to_device()
    call trc_1e(b, pl, s, t, vn)
 
-   call dft_grid_build(at_r, nint(at_z), grid, err, level=5, prune=PRUNE_NONE)
+   unpruned%prune = PRUNE_NONE
+   call dft_grid_build(at_r, nint(at_z), grid, err, level=5, options=unpruned)
    if (err%has_error()) then
       print '(a)', "check_ao: grid failed: "//err%get_message()
       stop 1

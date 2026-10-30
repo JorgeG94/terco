@@ -350,8 +350,8 @@ contains
                   pcoef(g) = xgp%qw(g)*dedw(g)
                end do
             end do
-            call dft_partition_becke_grad_contract(npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
-                                               gp%scheme, gp%adjust, grad_extra, err)
+            call dft_partition_becke_grad_contract(xgp%r, b%at_r, at_elem, xgp%atom, pcoef, gp%partition, &
+                                                   grad_extra, err)
             if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
             deallocate (pcoef)
             call tbl%step_off(lp, ST_PDERIV, tc)

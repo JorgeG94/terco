@@ -38,6 +38,7 @@
 !
 module trc_hgp
    use pic_types, only: dp, int64
+   use trc_eri_data, only: trc_shell_pairs_t
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    use trc_tables, only: LMAX
    use trc_cart, only: LCMAX, NCUM, cidx, cnx, cny, cnz, cll, &
@@ -84,30 +85,30 @@ contains
    ! over the columns on the primitive-shell path, where sh_c is unity and
    ! the coefficients are applied in the kernel.
    !
-   subroutine hgp_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, &
-                              pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, pp_ki, pp_kj, npp, pp_a)
-      integer,  intent(in)  :: nbas
-      integer,  intent(in)  :: sh_l(:), sh_np(:)
+   subroutine hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, pairs)
+      integer,  intent(in)  :: sh_np(:)
+      !! (nbas) primitives per shell; its size is the shell count.
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
       real(dp), intent(in)  :: camp(:, :)   !! (maxnp, nbas) amplitude of each primitive, for the prune
       real(dp), intent(in)  :: cut          !! drop a primitive pair whose Schwarz factor is at or below this
-      integer,  allocatable, intent(out) :: pp_off(:), pp_n(:)
-      real(dp), allocatable, intent(out) :: pp_p(:), pp_r(:, :), pp_ra(:, :), pp_rb(:, :), pp_c(:)
-      integer,  allocatable, intent(out) :: pp_ki(:), pp_kj(:)  !! primitive of each shell a kept pair came from
-      integer,  intent(out) :: npp
-      real(dp), allocatable, optional, intent(out) :: pp_a(:)
-      !! The i-side primitive's OWN exponent (not the pair sum `pp_p`).
-      !! Optional: only the gradient path needs it, so an HGP-only caller
-      !! pays nothing extra. beta (the j-side exponent) is pp_p - pp_a,
-      !! never stored separately.
+      type(trc_shell_pairs_t), intent(inout) :: pairs
+      !! Out: nbas, npp and the pair arrays. The shell part (sh_l, ao_off,
+      !! sh_at, natm) is the caller's and is left as it is.
 
-      integer  :: i, j, ki, kj, key, k, d, k1, k2, kb
+      integer  :: nbas, npp, i, j, ki, kj, key, k, d, k1, k2, kb
       real(dp) :: a, b, p, mu, ab2, ukey, ubest
       real(dp), allocatable :: emin(:), amax(:)
       real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp  ! sqrt(2) pi^(5/4)
       logical, allocatable :: keep(:, :, :)
+      integer, allocatable :: pp_ki(:), pp_kj(:)
+      !! The primitive of each shell a kept pair came from: the sort below
+      !! keys on their amplitudes. Nothing downstream asks.
 
-      allocate (pp_off(nbas*nbas), pp_n(nbas*nbas))
+      nbas = size(sh_np)
+      pairs%nbas = nbas
+      if (allocated(pairs%off)) deallocate (pairs%off, pairs%n)
+      if (allocated(pairs%p)) deallocate (pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, pairs%a)
+      allocate (pairs%off(nbas*nbas), pairs%n(nbas*nbas))
       allocate (keep(size(sh_e, 1), size(sh_e, 1), nbas*nbas))
       keep = .false.
       !
@@ -132,12 +133,12 @@ contains
       do i = 1, nbas
          do j = 1, nbas
             key = (i - 1)*nbas + j
-            pp_off(key) = npp
+            pairs%off(key) = npp
             ab2 = 0.0_dp
             do d = 1, 3
                ab2 = ab2 + (sh_r(d, i) - sh_r(d, j))**2
             end do
-            pp_n(key) = 0
+            pairs%n(key) = 0
             a = emin(i)
             b = emin(j)
             p = a + b
@@ -152,22 +153,23 @@ contains
                   mu = a*b/p
                   keep(ki, kj, key) = abs(camp(ki, i)*camp(kj, j))*exp(-mu*ab2) &
                                       *SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) > cut
-                  if (keep(ki, kj, key)) pp_n(key) = pp_n(key) + 1
+                  if (keep(ki, kj, key)) pairs%n(key) = pairs%n(key) + 1
                end do
             end do
-            npp = npp + pp_n(key)
+            npp = npp + pairs%n(key)
          end do
       end do
 
-      allocate (pp_p(npp), pp_r(npp, 3), pp_ra(npp, 3), pp_rb(npp, 3), pp_c(npp))
+      pairs%npp = npp
+      allocate (pairs%p(npp), pairs%r(npp, 3), pairs%ra(npp, 3), pairs%rb(npp, 3), pairs%c(npp))
       allocate (pp_ki(npp), pp_kj(npp))
-      if (present(pp_a)) allocate (pp_a(npp))
+      allocate (pairs%a(npp))
 
       do i = 1, nbas
          do j = 1, nbas
             key = (i - 1)*nbas + j
-            if (pp_n(key) == 0) cycle
-            k = pp_off(key)
+            if (pairs%n(key) == 0) cycle
+            k = pairs%off(key)
             ab2 = 0.0_dp
             do d = 1, 3
                ab2 = ab2 + (sh_r(d, i) - sh_r(d, j))**2
@@ -180,16 +182,16 @@ contains
                   k = k + 1
                   p = a + b
                   mu = a*b/p
-                  pp_p(k) = p
-                  if (present(pp_a)) pp_a(k) = a
+                  pairs%p(k) = p
+                  pairs%a(k) = a
                   pp_ki(k) = ki
                   pp_kj(k) = kj
                   do d = 1, 3
-                     pp_r(k, d) = (a*sh_r(d, i) + b*sh_r(d, j))/p
-                     pp_ra(k, d) = sh_r(d, i)
-                     pp_rb(k, d) = sh_r(d, j)
+                     pairs%r(k, d) = (a*sh_r(d, i) + b*sh_r(d, j))/p
+                     pairs%ra(k, d) = sh_r(d, i)
+                     pairs%rb(k, d) = sh_r(d, j)
                   end do
-                  pp_c(k) = sh_c(ki, i)*cfac(i)*sh_c(kj, j)*cfac(j)*exp(-mu*ab2)
+                  pairs%c(k) = sh_c(ki, i)*cfac(i)*sh_c(kj, j)*cfac(j)*exp(-mu*ab2)
                end do
             end do
          end do
@@ -210,12 +212,12 @@ contains
       do i = 1, nbas
          do j = 1, nbas
             key = (i - 1)*nbas + j
-            if (pp_n(key) < 2) cycle
-            do k1 = pp_off(key) + 1, pp_off(key) + pp_n(key) - 1
+            if (pairs%n(key) < 2) cycle
+            do k1 = pairs%off(key) + 1, pairs%off(key) + pairs%n(key) - 1
                kb = k1
-               ubest = abs(camp(pp_ki(k1), i)*camp(pp_kj(k1), j)*pp_c(k1))/pp_p(k1)
-               do k2 = k1 + 1, pp_off(key) + pp_n(key)
-                  ukey = abs(camp(pp_ki(k2), i)*camp(pp_kj(k2), j)*pp_c(k2))/pp_p(k2)
+               ubest = abs(camp(pp_ki(k1), i)*camp(pp_kj(k1), j)*pairs%c(k1))/pairs%p(k1)
+               do k2 = k1 + 1, pairs%off(key) + pairs%n(key)
+                  ukey = abs(camp(pp_ki(k2), i)*camp(pp_kj(k2), j)*pairs%c(k2))/pairs%p(k2)
                   if (ukey > ubest) then
                      ubest = ukey
                      kb = k2
@@ -230,27 +232,25 @@ contains
          integer, intent(in) :: x, y
          real(dp) :: t
          integer :: it, dd
-         t = pp_p(x)
-         pp_p(x) = pp_p(y)
-         pp_p(y) = t
-         t = pp_c(x)
-         pp_c(x) = pp_c(y)
-         pp_c(y) = t
-         if (present(pp_a)) then
-            t = pp_a(x)
-            pp_a(x) = pp_a(y)
-            pp_a(y) = t
-         end if
+         t = pairs%p(x)
+         pairs%p(x) = pairs%p(y)
+         pairs%p(y) = t
+         t = pairs%c(x)
+         pairs%c(x) = pairs%c(y)
+         pairs%c(y) = t
+         t = pairs%a(x)
+         pairs%a(x) = pairs%a(y)
+         pairs%a(y) = t
          do dd = 1, 3
-            t = pp_r(x, dd)
-            pp_r(x, dd) = pp_r(y, dd)
-            pp_r(y, dd) = t
-            t = pp_ra(x, dd)
-            pp_ra(x, dd) = pp_ra(y, dd)
-            pp_ra(y, dd) = t
-            t = pp_rb(x, dd)
-            pp_rb(x, dd) = pp_rb(y, dd)
-            pp_rb(y, dd) = t
+            t = pairs%r(x, dd)
+            pairs%r(x, dd) = pairs%r(y, dd)
+            pairs%r(y, dd) = t
+            t = pairs%ra(x, dd)
+            pairs%ra(x, dd) = pairs%ra(y, dd)
+            pairs%ra(y, dd) = t
+            t = pairs%rb(x, dd)
+            pairs%rb(x, dd) = pairs%rb(y, dd)
+            pairs%rb(y, dd) = t
          end do
          it = pp_ki(x)
          pp_ki(x) = pp_ki(y)
