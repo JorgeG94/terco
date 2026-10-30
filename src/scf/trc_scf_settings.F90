@@ -28,6 +28,7 @@ module trc_scf_settings
 
    public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
    public :: scf_settings_eri_thresh_env
+   public :: scf_settings_homo_lumo_gap
    ! incr_env/incr_reset_env/incr_thresh_scale_env/incr_start_env stay
    ! private: nothing outside this module uses them.
    public :: DEFAULT_NLC_GRID_LEVEL
@@ -456,5 +457,24 @@ contains
          if (ios == 0 .and. t > 0.0_dp) res = t
       end if
    end function scf_settings_eri_thresh_env
+
+   pure function scf_settings_homo_lumo_gap(nao, nspin, nmo, nocc, eps) result(gap)
+      !! The smallest HOMO-LUMO gap over the spins, each spin's own LUMO
+      !! minus its own HOMO, so a radical's beta LUMO below its alpha HOMO is
+      !! not a negative gap. Only the first `nmo` levels are real: with
+      !! functions dropped by canonical orthogonalisation the trailing
+      !! nao - nmo are the lifted null states. huge() when no spin has both a
+      !! HOMO and a LUMO.
+      integer, intent(in) :: nao, nspin, nmo
+      integer, intent(in) :: nocc(2)
+      real(dp), intent(in) :: eps(nao, nspin)
+      real(dp) :: gap
+      integer :: s
+      gap = huge(1.0_dp)
+      do s = 1, nspin
+         if (nocc(s) < 1 .or. nocc(s) >= nmo) cycle
+         gap = min(gap, eps(nocc(s) + 1, s) - eps(nocc(s), s))
+      end do
+   end function scf_settings_homo_lumo_gap
 
 end module trc_scf_settings

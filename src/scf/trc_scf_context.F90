@@ -116,6 +116,14 @@ module trc_scf_context
       logical :: sph = .false.
       type(trc_pcm_t) :: pcm
       real(dp), allocatable :: smat(:, :), hcore(:, :), x(:, :)
+      real(dp), allocatable :: pnull(:, :)
+      !! I - X S X, the projector onto the directions canonical
+      !! orthogonalisation dropped; allocated only when `n_lindep` > 0. X
+      !! zeroes those directions, so X^T F X has an eigenvalue 0 for each of
+      !! them, a zero orbital. Below a positive HOMO (an anion with diffuse
+      !! functions) aufbau occupied it and the density lost two electrons;
+      !! the SCF adds shift*pnull to X^T F X to push them above every real
+      !! level instead.
       real(dp) :: e_nuc = 0.0_dp
       integer :: n_lindep = 0
       real(dp) :: ts(NSETUP) = 0.0_dp
@@ -269,6 +277,7 @@ contains
          call this%release()
          return
       end if
+      if (this%n_lindep > 0) call scf_context_null_projector(la, this%nao, this%smat, this%x, this%pnull)
       if (config%talk .and. this%n_lindep > 0) then
          block
             character(len=1024) :: logline
@@ -359,6 +368,9 @@ contains
       !! `setup` was given are their owner's to release.
       class(scf_ctx_t), intent(inout) :: this
       if (this%released) return
+      if (allocated(this%pnull)) then
+         !$acc exit data delete(this%pnull)
+      end if
       call this%pcm%release()
       this%released = .true.
    end subroutine scf_context_release
@@ -507,6 +519,29 @@ contains
       end if
       if (present(ndropped)) ndropped = ndrop
    end subroutine scf_context_orthogonalize
+
+   subroutine scf_context_null_projector(la, n, s, x, pnull)
+      !! pnull = I - X^T S X. With X = U_k w_k^-1/2 U_k^T (the kept modes of
+      !! S only), X^T S X = U_k U_k^T, so this is exactly the projector onto
+      !! the dropped modes. Host arrays in, `pnull` left on the device too.
+      type(trc_linalg_t), intent(inout) :: la
+      integer, intent(in) :: n
+      real(dp), intent(in) :: s(n, n), x(n, n)
+      real(dp), allocatable, intent(out) :: pnull(:, :)
+      real(dp), allocatable :: t(:, :)
+      integer :: i, j
+      allocate (pnull(n, n), t(n, n))
+      !$acc data copyin(s, x) create(t) copyout(pnull)
+      call la%gemm_mat(s, x, t)
+      do concurrent(i=1:n, j=1:n)
+         pnull(i, j) = merge(1.0_dp, 0.0_dp, i == j)
+      end do
+      call la%gemm_mat(x, t, pnull, alpha=-1.0_dp, beta=1.0_dp, transa="T")
+      !$acc end data
+      ! Resident for the context's lifetime (every diagonalisation reads it);
+      ! scf_context_release deletes it.
+      !$acc enter data copyin(pnull)
+   end subroutine scf_context_null_projector
 
    ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
    subroutine sum_flat(comm, g, n)
