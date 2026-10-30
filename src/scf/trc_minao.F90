@@ -136,7 +136,7 @@ contains
       open_fraction = 2.0_dp*real(n_elec - n_double*per_shell, dp)/real(per_shell, dp)
    end subroutine minao_occupation
 
-   subroutine trc_minao_build(b, density, error, la, threshold, eri_thresh, path)
+   recursive subroutine trc_minao_build(b, density, error, la, threshold, eri_thresh, path)
       !! The minao starting density in `b`'s basis, both spins together
       !!
       !! Refused for an element above Kr, and for a Cartesian target basis
@@ -146,9 +146,9 @@ contains
       type(trc_basis_t), intent(in) :: b
       real(dp), allocatable, intent(out) :: density(:, :)   !! (n, n), n = scf_space_nao(b)
       type(error_t), intent(inout) :: error
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
          !! The calculation's cuBLAS/cuSOLVER handles. Absent, a local one is
-         !! created and released here.
+         !! created and released here (the recursive call, with one).
       real(dp), intent(in), optional :: threshold
          !! The SCF's linear-dependence threshold -- see `scf_context_orthogonalize`.
          !! Absent or non-positive takes MINAO_LINDEP_DEFAULT.
@@ -167,12 +167,18 @@ contains
       real(dp), allocatable :: x(:, :), y(:, :), p(:, :), pd(:, :)
       character(len=:), allocatable :: bpath
       integer :: ia, nb, na, n_double
-      logical :: owns_la, use_sph
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
+      logical :: use_sph
       real(dp) :: lindep_threshold, pairlist_threshold, open_fraction
 
       if (error%has_error()) return
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call trc_minao_build(b, density, error, la_local, threshold, eri_thresh, path)
+            call la_local%release()
+         end block
+         return
+      end if
 
       do ia = 1, b%natm
          if (b%at_elem(ia) < 1 .or. b%at_elem(ia) > MINAO_Z_MAX) then
@@ -252,13 +258,7 @@ contains
       call merged%release()
       call minimal%release()
 
-      owns_la = .not. present(la)
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
-      end if
-      call lp%init(nb)
+      call la%init(nb)
 
       lindep_threshold = MINAO_LINDEP_DEFAULT
       if (present(threshold)) then
@@ -266,10 +266,9 @@ contains
       end if
 
       allocate (x(nb, nb))
-      call scf_context_orthogonalize(lp, nb, s_target, x, error, lindep_thresh=lindep_threshold)
+      call scf_context_orthogonalize(la, nb, s_target, x, error, lindep_thresh=lindep_threshold)
       if (error%has_error()) then
          call error%set(error%get_code(), "minao guess: "//error%get_message())
-         if (owns_la) call lp%release()
          return
       end if
 
@@ -279,8 +278,6 @@ contains
       p = matmul(x, y)
       pd = matmul(p, d_small)
       density = matmul(pd, transpose(p))
-
-      if (owns_la) call lp%release()
    end subroutine trc_minao_build
 
    subroutine merge_bases(target_b, minimal, merged)
