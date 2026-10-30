@@ -40,7 +40,8 @@ module trc_hirshfeld
    use pic_logger, only: logger => global_logger
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_integrals, only: trc_1e
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc, only: trc_xc_rho

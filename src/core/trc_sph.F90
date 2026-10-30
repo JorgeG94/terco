@@ -62,7 +62,7 @@
 !
 module trc_sph
    use pic_types, only: dp, int64
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_sph_tables, only: SPH_T, SPH_LMAX, SPH_NCART_MAX, SPH_NSPH_MAX
    use trc_linalg, only: trc_linalg_t
    implicit none

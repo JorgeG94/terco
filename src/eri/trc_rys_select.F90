@@ -57,16 +57,28 @@ module trc_rys_select
    logical, save :: rys_default = .true.
    !! TRC_RYS_CLASSES unset, empty or "default": route by rys_default_class.
    logical, save :: rys_table(0:RYS_KEY_MAX) = .false.
+   logical, save :: tables_pushed = .false.
+   !! Whether rys_select_tables_init has pushed the tables yet: once per
+   !! process, onto the device chosen by trc_bind_device, which has to run
+   !! before any basis, pair list or integral (its own header) -- so the
+   !! first launcher's push is the one that counts.
 
 contains
 
    subroutine rys_select_tables_init()
       !! Push the Rys root tables (1..9 roots) to the device, as boys_init does
       !! the Boys table. Their `declare create` allocates device storage; the
-      !! tables' own comment says it does not carry the host initialiser, and
-      !! nothing called these until now. nvfortran evidently initialises the
-      !! device copy anyway (GPU Rys energies have matched the host build to
-      !! 1e-12), but that is undocumented compiler behaviour, not a contract.
+      !! tables' own comment says it does not carry the host initialiser.
+      !! nvfortran evidently initialises the device copy anyway (GPU Rys
+      !! energies matched the host build to 1e-12 before anything called
+      !! this), but that is undocumented compiler behaviour, not a contract.
+      !! Called by every launcher of a kernel that reads the tables, before
+      !! the launch: trc_eri's build (Fock, Schwarz and gradient kernels),
+      !! trc_integrals' trc_df_2c/trc_df_3c and trc_scf_grad_df (the DF
+      !! derivative kernels). Only the first call pushes (`tables_pushed`):
+      !! the later ones, e.g. trc_df_2c/3c on every call, return at once.
+      if (tables_pushed) return
+      tables_pushed = .true.
       call rys_table_init1()
       call rys_table_init2()
       call rys_table_init3()

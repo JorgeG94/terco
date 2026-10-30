@@ -129,7 +129,7 @@
 !
 module trc_xc
    use pic_types, only: dp, int64
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
       xc_eval_point_fxc, xc_eval_point_mgga, xc_eval_point_mgga_polar, XC_MAX_KERNELS, XC_FAMILY_MGGA

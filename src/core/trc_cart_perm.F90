@@ -19,7 +19,7 @@ module trc_cart_perm
    private
 
    public :: trc_cart_order_id, trc_cart_order_name
-   public :: cart_perm_l2b, cart_perm_b2l, cart_perm_build_ao
+   public :: cart_perm_l2b, cart_perm_b2l, cart_perm_build_ao, cart_perm_powers
 
 contains
 
@@ -60,6 +60,16 @@ contains
       integer, intent(in) :: l, ic
 #include "trc_cart_perm_b2l.inc"
    end function cart_perm_b2l
+
+   pure subroutine cart_perm_powers(l, ic, px, py, pz)
+      !! Cartesian powers (px, py, pz) of THIS BUILD's local component `ic`
+      !! (0-based) of a shell of angular momentum `l`. The same generated body
+      !! as trc_batch.F90's `batch_cart_pow`, included here so that core code
+      !! (trc_ao_norm.F90) needs nothing from the eri layer.
+      integer, intent(in)  :: l, ic
+      integer, intent(out) :: px, py, pz
+#include "trc_cart_comp.inc"
+   end subroutine cart_perm_powers
 
    subroutine cart_perm_build_ao(nshell, sh_l, sh_ao, nao, perm_l2b, perm_b2l)
       !! Full-basis AO permutation, host code (a reader of external data is

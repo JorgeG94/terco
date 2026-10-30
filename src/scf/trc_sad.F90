@@ -27,7 +27,7 @@ module trc_sad
    !! reader here guarantees it); an interleaved basis is refused.
    use pic_types, only: dp
    use pic_logger, only: global_logger
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_linalg, only: trc_linalg_t
    use trc_sph_tables, only: SPH_T

@@ -17,6 +17,7 @@ module check_schwarz_rys_vs_hgp_suite
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
    use trc_boys, only: boys_init
+   use trc_rys_select, only: rys_select_tables_init
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_hgp, only: hgp_build_pairs
@@ -97,7 +98,7 @@ contains
       logical :: within
       character(len=256) :: msg
 
-      call tables_init(); call cart_init(); call boys_init()
+      call tables_init(); call cart_init(); call boys_init(); call rys_select_tables_init()
 
       call read_xyz(xyzfile, natm, zint, at_r)
       call trc_basis_from_json(basfile, natm, zint, at_r, b, err)

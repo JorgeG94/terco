@@ -131,9 +131,12 @@ Work outward from something that already exists rather than from the algebra.
    compile-time trap below.
 4. **Write the dispatcher last**, and key it on a formula that cannot drift —
    see the stale-include trap.
-5. **Wire it into `trc_api.F90`**, not into a caller. The API owns the
-   device-resident basis and pair list; a kernel that reaches around it will
-   work on the host and fail on the device.
+5. **Wire it into `src/eri/trc_integrals.F90`** (and re-export it from
+   `trc_api.F90`), not into a caller. The wrappers there own the hand-off
+   from the device-resident basis and pair list, the LMAX ceiling checks and
+   any table pushes the kernel needs (the Rys root tables for the DF
+   kernels); a kernel that reaches around them will work on the host and
+   fail on the device.
 6. **Validate against something outside terco** before believing anything. See
    *Oracle discipline*.
 

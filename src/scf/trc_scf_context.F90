@@ -17,7 +17,8 @@ module trc_scf_context
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
-   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_integrals, only: trc_1e
    use trc_sph, only: sph_cart_to_sph
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_error, only: error_t, ERROR_GENERIC

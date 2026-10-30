@@ -5,7 +5,7 @@
 module trc_decontract
    use pic_types, only: dp
    use pic_logger, only: global_logger
-   use trc_api, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t
    implicit none
    private
 

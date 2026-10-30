@@ -4,7 +4,7 @@
 ! on the converged KS orbitals through trc_rimp2_run -- chained off --df's
 ! own fit when the aux basis given to RI-MP2 is the SAME one --df was
 ! fitted on (cc-pVDZ-RIFIT doing double duty as both --df's jkfit and
-! RI-MP2's aux, the one case trc_rimp2_run's own `dfjk` argument exists
+! RI-MP2's aux, the one case trc_rimp2_run's own `packed_b` argument exists
 ! for) -- against pyscf's KS with the SAME hybrid composition
 ! (`0.53*HF + 0.47*B88, 0.73*LYP` for b2plyp, etc. -- test/pyscf_refs/
 ! generate.py's own gen_dh) plus DF-MP2/DF-UMP2 on the SAME aux basis and
@@ -69,7 +69,7 @@ program scf_dh
    type(trc_basis_t) :: bas, aux
    type(trc_pairlist_t) :: pl
    type(trc_linalg_t) :: la
-   type(df_jk_t) :: dfjk
+   type(df_jk_t), target :: dfjk
    type(trc_scf_options_t) :: opts
    type(trc_scf_result_t) :: res
    type(trc_rimp2_result_t) :: mp
@@ -124,7 +124,7 @@ program scf_dh
       call la%init(bas%nao)
       ! --df's own fit, cc-pVDZ-RIFIT doing double duty as the jkfit too:
       ! set up once per group, reused by both functionals' --df case and
-      ! by RI-MP2's chained path (trc_rimp2_run's `dfjk` argument).
+      ! by RI-MP2's chained path (trc_rimp2_run's `packed_b` argument).
       call dfjk%setup(bas, aux, pl, la, err, nocc_hint=max(nalpha, 1))
       if (err%has_error()) then
          print "(a)", "scf_dh: "//err%get_message()
@@ -150,7 +150,7 @@ program scf_dh
                opts%df = .true.
                call trc_scf_run(bas, nalpha, nbeta, opts, res, la=la, scf_dfjk=dfjk)
                call trc_rimp2_run(bas, aux, pl, nalpha, res%cmo(:, :, 1), res%eps(:, 1), mp, &
-                                  nfrozen=GFROZEN(ig), la=la, dfjk=dfjk)
+                                  nfrozen=GFROZEN(ig), la=la, packed_b=dfjk%packed_b())
             end if
             if (.not. res%converged) then
                print "(a,a)", "  NOT CONVERGED: ", trim(res%message)

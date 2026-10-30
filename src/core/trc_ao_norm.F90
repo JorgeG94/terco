@@ -31,7 +31,7 @@
 !
 module trc_ao_norm
    use pic_types, only: dp
-   use trc_batch, only: batch_cart_pow
+   use trc_cart_perm, only: cart_perm_powers
    implicit none
    private
 
@@ -52,7 +52,7 @@ contains
    pure subroutine ao_norm_vector(nshell, sh_l, sh_ao, nao, kind, nrm)
       !! The per-AO scale n(nao) for a basis of `nshell` shells with angular
       !! momenta `sh_l` and 1-based first-AO offsets `sh_ao` (trc_basis_t's own
-      !! fields, in THIS BUILD's Cartesian order -- `batch_cart_pow` already reads
+      !! fields, in THIS BUILD's Cartesian order -- `cart_perm_powers` already reads
       !! TRC_CART_ORDER, so the (a,b,c) exponents handed to `ao_norm_gamess` land
       !! on the right component without this routine knowing which order is in
       !! effect). `kind = TRC_AO_NORM_SHELL` gives back all ones -- terco's own
@@ -72,7 +72,7 @@ contains
          base = sh_ao(ish) - 1
          ncart = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
          do ic = 0, ncart - 1
-            call batch_cart_pow(sh_l(ish), ic, px, py, pz)
+            call cart_perm_powers(sh_l(ish), ic, px, py, pz)
             ! `ao_norm_gamess` alone, no extra `common_fac_sp` divide -- see the
             ! module header for why an earlier version of this line carried
             ! one, and why it was wrong.

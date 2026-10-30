@@ -4350,6 +4350,7 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
+      real(dp), pointer :: fitted_b(:, :)
       integer :: nfrozen, nblk, i, nc
       logical :: collective
       real(dp), allocatable :: cmo_a(:, :), cmo_b(:, :), eps_a(:), eps_b(:)
@@ -4451,14 +4452,15 @@ contains
       ! trc_rimp2_run checks dimensions, not that the basis is the same
       ! one, and a path match is this handle's own way to be sure of that.
       else if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
+         fitted_b => cx%dfjk%packed_b()
          if (collective) then
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
-                               dfjk=cx%dfjk)
+                               packed_b=fitted_b)
             call comm%finalize()
          else
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                               nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, dfjk=cx%dfjk)
+                               nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, packed_b=fitted_b)
          end if
       else if (collective) then
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
