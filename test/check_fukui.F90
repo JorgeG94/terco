@@ -22,7 +22,7 @@ module check_fukui_suite
    use trc_api, only: trc_bind_device
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                                trc_set_method, trc_set_convergence, trc_run_scf, trc_energy, &
-                               trc_nspin, trc_fukui_hirshfeld, trc_set_lindep, &
+                               trc_nspin, trc_fukui_hirshfeld, trc_set_lindep, trc_set_scf_accel, &
                                TRC_OK, TRC_ERR_BADARG, TRC_ERR_NOCONV
    implicit none
    private
@@ -79,7 +79,8 @@ contains
                   new_unittest("an ion that does not converge is reported and the handle restored", &
                                test_ion_noconv), &
                   new_unittest("a non-singlet neutral is refused", test_radical_refused), &
-                  new_unittest("trc_set_lindep refuses NaN and out-of-range", test_lindep_refused) &
+                  new_unittest("trc_set_lindep refuses NaN and out-of-range", test_lindep_refused), &
+                  new_unittest("trc_set_scf_accel refuses NaN and out-of-range", test_scf_accel_refused) &
                   ]
    end subroutine collect_fukui_tests
 
@@ -295,6 +296,76 @@ contains
       end if
       rc = trc_destroy(h)
    end subroutine test_lindep_refused
+
+   subroutine test_scf_accel_refused(error)
+      !! trc_set_scf_accel's four refusals (trc_capi.F90): adiis outside
+      !! {0,1}, ndamp < -1, damp outside (0,1] and diis_start outside
+      !! {-1} union (0, infinity) -- each written as a positive test
+      !! ("is it in range") rather than a `<`/`>` exclusion, so a NaN
+      !! comparison, always false, falls into the refusal instead of
+      !! being let through. Default (adiis=0, ndamp=-1, damp=0.3,
+      !! diis_start=-1) and one in-range non-default combination are both
+      !! accepted.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc
+      real(c_double) :: nan
+
+      nan = ieee_value(nan, ieee_quiet_nan)
+      rc = trc_create(h)
+
+      ! adiis must be 0 or 1.
+      rc = trc_set_scf_accel(h, 2_c_int, -1_c_int, 0.3_c_double, -1.0_c_double)
+      call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted adiis = 2")
+
+      ! ndamp must be >= 0, or -1 for the by-spin default.
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -2_c_int, 0.3_c_double, -1.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted ndamp = -2")
+      end if
+
+      ! damp must be in (0, 1]: 0, above 1, and NaN are all refused.
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -1_c_int, 0.0_c_double, -1.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted damp = 0")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -1_c_int, 1.5_c_double, -1.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted damp = 1.5")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -1_c_int, nan, -1.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted damp = NaN")
+      end if
+
+      ! diis_start must be > 0, or exactly -1 for the by-spin default: 0, a
+      ! negative value other than -1, and NaN are all refused.
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -1_c_int, 0.3_c_double, 0.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted diis_start = 0")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -1_c_int, 0.3_c_double, -2.0_c_double)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted diis_start = -2")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -1_c_int, 0.3_c_double, nan)
+         call check(error, rc == TRC_ERR_BADARG, "trc_set_scf_accel accepted diis_start = NaN")
+      end if
+
+      ! The defaults are accepted.
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 0_c_int, -1_c_int, 0.3_c_double, -1.0_c_double)
+         call check(error, rc == TRC_OK, "trc_set_scf_accel refused the defaults")
+      end if
+      ! And a valid non-default combination is accepted.
+      if (.not. allocated(error)) then
+         rc = trc_set_scf_accel(h, 1_c_int, 2_c_int, 0.5_c_double, 0.1_c_double)
+         call check(error, rc == TRC_OK, "trc_set_scf_accel refused a valid non-default combination")
+      end if
+
+      rc = trc_destroy(h)
+   end subroutine test_scf_accel_refused
 
 end module check_fukui_suite
 
