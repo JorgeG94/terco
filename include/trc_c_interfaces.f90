@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 11
+   integer(c_int), parameter :: TRC_ABI_MINOR = 12
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -727,6 +727,33 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          real(c_double), value :: shift
       end function trc_set_level_shift
+
+      integer(c_int) function trc_set_scf_accel(handle, adiis, ndamp, damp, diis_start) bind(c) result(res)
+         !! The SCF's convergence aids beyond trc_set_convergence's DIIS size
+         !! and trc_set_level_shift (trc_scf_options_t's own comments have the
+         !! measurements behind each default):
+         !!
+         !!   adiis       1 turns on ADIIS (Hu & Yang) between the damped start
+         !!               and CDIIS; 0 off (the default). It earns its keep on
+         !!               hard cases -- small gaps, charged open shells -- where
+         !!               CDIIS alone stalls with |FDS - SDF| stuck near 1e-2.
+         !!   ndamp       damped steps before DIIS; -1 by spin (0 closed shell,
+         !!               4 open shell), the default.
+         !!   damp        weight of the new density while damping, (0, 1];
+         !!               default 0.3.
+         !!   diis_start  commutator norm below which DIIS may start; -1 by spin,
+         !!               the default.
+         !!
+         !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+         !! after it (trc_fukui_hirshfeld's three included).
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: adiis
+         integer(c_int), value :: ndamp
+         real(c_double), value :: damp
+         real(c_double), value :: diis_start
+      end function trc_set_scf_accel
 
       integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
          import :: c_int, c_ptr

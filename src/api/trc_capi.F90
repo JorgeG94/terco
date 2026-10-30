@@ -244,7 +244,8 @@ module trc_capi
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_charge, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
              trc_set_unrestricted, trc_set_level_shift, &
-             trc_set_convergence, trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
+             trc_set_convergence, trc_set_scf_accel, &
+             trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
@@ -323,7 +324,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 11
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 12
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -2605,6 +2606,59 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_level_shift
+
+   function trc_set_scf_accel(handle, adiis, ndamp, damp, diis_start) result(status) &
+      bind(c, name="trc_set_scf_accel")
+      !! The SCF's convergence aids beyond trc_set_convergence's DIIS size
+      !! and trc_set_level_shift (trc_scf_options_t's own comments have the
+      !! measurements behind each default):
+      !!
+      !!   adiis       1 turns on ADIIS (Hu & Yang) between the damped start
+      !!               and CDIIS; 0 off (the default). It earns its keep on
+      !!               hard cases -- small gaps, charged open shells -- where
+      !!               CDIIS alone stalls with |FDS - SDF| stuck near 1e-2.
+      !!   ndamp       damped steps before DIIS; -1 by spin (0 closed shell,
+      !!               4 open shell), the default.
+      !!   damp        weight of the new density while damping, (0, 1];
+      !!               default 0.3.
+      !!   diis_start  commutator norm below which DIIS may start; -1 by spin,
+      !!               the default.
+      !!
+      !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+      !! after it (trc_fukui_hirshfeld's three included).
+      type(c_ptr), value :: handle
+      integer(c_int), value :: adiis, ndamp
+      real(c_double), value :: damp, diis_start
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (adiis /= 0 .and. adiis /= 1) then
+         call refuse(cx, "trc_set_scf_accel: adiis must be 0 or 1")
+         return
+      end if
+      if (ndamp < -1) then
+         call refuse(cx, "trc_set_scf_accel: ndamp must be >= 0, or -1 for the by-spin default")
+         return
+      end if
+      ! Written so a NaN fails it too.
+      if (.not. (damp > 0.0_c_double .and. damp <= 1.0_c_double)) then
+         call refuse(cx, "trc_set_scf_accel: damp must be in (0, 1]")
+         return
+      end if
+      if (.not. (diis_start > 0.0_c_double .or. diis_start == -1.0_c_double)) then
+         call refuse(cx, "trc_set_scf_accel: diis_start must be > 0, or -1 for the by-spin default")
+         return
+      end if
+      cx%opts%adiis = adiis == 1
+      cx%opts%ndamp = int(ndamp)
+      cx%opts%damp = real(damp, dp)
+      cx%opts%diis_start = real(diis_start, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_scf_accel
 
    !
    ! Density-fitted J and K (`--df`). Needs a jkfit basis too

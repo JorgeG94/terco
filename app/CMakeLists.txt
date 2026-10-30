@@ -172,6 +172,20 @@ if(TERCO_ENABLE_TESTING)
                ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
                "guess +: minao.*sum +1\\.000000 +1\\.000000 +1\\.000000")
 
+  # Every convergence aid reaches the SCF and converges to the same state.
+  add_test(NAME terco/cli_scf_accel
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --diis 20 --adiis --damp 0.5
+                   --damp-steps 2 --diis-start 0.1 --level-shift 0.5)
+  set_tests_properties(
+    terco/cli_scf_accel PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+                                   "TOTAL ENERGY +-75\\.98397446")
+  # And a value outside its range is refused, not passed on.
+  add_test(NAME terco/cli_scf_accel_refused
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --damp 0)
+  set_tests_properties(
+    terco/cli_scf_accel_refused PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+                                           "--damp must be in")
+
   # A missing geometry is an error with a message, not a crash.
   # A double hybrid whose SCF stops unconverged never runs RI-MP2, so its
   # TOTAL ENERGY is the SCF energy, never the unset double-hybrid total (0).
