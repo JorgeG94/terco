@@ -410,7 +410,9 @@ contains
       !$acc exit data delete(a, b, c)
 
       do it = 0, CNT - 1
-         off_a = it*g%sa; off_b = it*g%sb; off_c = it*g%sc
+         off_a = it*g%sa
+         off_b = it*g%sb
+         off_c = it*g%sc
          do j = 1, NN
             do i = 1, MM
                acc = 0.0_dp
