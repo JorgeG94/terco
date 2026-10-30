@@ -3,10 +3,7 @@
 ! present: eri%gradient scaled by `func%exx` + trc_1e_gradient +
 ! trc_xc_grad%xc_grad_add + nuclear repulsion) against a central
 ! finite difference of terco's own fully reconverged KS-DFT energy --
-! extends check_full_grad_fd.F90's technique (same file layout and the
-! same reason for NO INTERNAL PROCEDURES: an internal procedure here, even
-! with no state shared with the GPU call, corrupted a later collective
-! Fock build on this exact NVHPC/OpenMPI toolchain, measured there).
+! extends check_full_grad_fd.F90's technique.
 !
 ! SVWN (LDA) and PBE (GGA) on water, restricted; PBE on the NH2 radical,
 ! unrestricted -- a genuinely open-shell case (non-degenerate SOMO, unlike
@@ -30,8 +27,18 @@
 ! AND grid level 5, so the omission's level-dependence (OFF) and its
 ! absence (ON) are both visible in this test's own output.
 !
-module check_xc_grad_fd_cases
+! Nine independent cases below, each its own test-drive unittest.
+!
+! NO INTERNAL PROCEDURES, here or in the program: the SCFs below make
+! collective MPI calls, and on NVHPC 26.5 + HPC-X a `contains`-ed procedure
+! in a unit that does so corrupted a later collective Fock build (measured
+! in check_full_grad_fd.F90; AGENTS.md's MPI rule). Every helper is a
+! module procedure; keep it that way.
+!
+module check_xc_grad_fd_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -42,12 +49,12 @@ module check_xc_grad_fd_cases
    use trc_error, only: error_t
    implicit none
    private
-   public :: run_case
+   public :: collect_xc_grad_fd
 
    real(dp), parameter :: H = 1.0e-3_dp
-   real(dp), parameter, public :: RELTOL = 1.0e-6_dp
+   real(dp), parameter :: RELTOL = 1.0e-6_dp
    !! The ON gate's relative counterpart -- see ABSTOL_ON.
-   real(dp), parameter, public :: ABSTOL_ON = 2.0e-7_dp
+   real(dp), parameter :: ABSTOL_ON = 2.0e-7_dp
    !! ON (grid_response=.true., the physical gradient): the FD floor, NOT
    !! grid-level-dependent -- this is the whole point of the grid-response
    !! term. MEASURED on all six cases (water/SVWN, water/PBE, NH2/PBE
@@ -59,23 +66,155 @@ module check_xc_grad_fd_cases
    !! confirmed to ~1e-9 against a FIXED-grid finite difference
    !! (check_xc_grad_fixedgrid_fd.F90) where no SCF reconverges and no
    !! grid moves at all.
-   real(dp), parameter, public :: INVTOL = 1.0e-8_dp
+   real(dp), parameter :: INVTOL = 1.0e-8_dp
    !! ON's translational-invariance gate: sum over atoms ~ 0 is a property
    !! of the PHYSICAL gradient, which is what ON now is.
 
 contains
 
-   subroutine run_case(xyzfile, basis_json, nalpha, nbeta, functional, grid_level, label, any_fail, &
+   subroutine collect_xc_grad_fd(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("RKS SVWN water/6-31G* L3", test_water_svwn_l3), &
+                  new_unittest("RKS SVWN water/6-31G* L5", test_water_svwn_l5), &
+                  new_unittest("RKS PBE water/6-31G* L3", test_water_pbe_l3), &
+                  new_unittest("RKS PBE water/6-31G* L5", test_water_pbe_l5), &
+                  new_unittest("UKS PBE NH2/6-31G* L3", test_nh2_pbe_l3), &
+                  new_unittest("UKS PBE NH2/6-31G* L5", test_nh2_pbe_l5), &
+                  new_unittest("RKS SVWN w3/6-31G* L3 (screened, Richardson)", test_w3_svwn_l3), &
+                  new_unittest("RKS wB97X-V water/6-31G* L3", test_water_wb97xv_l3), &
+                  new_unittest("RKS wB97X-V water/6-31G* L5", test_water_wb97xv_l5) &
+                  ]
+   end subroutine collect_xc_grad_fd
+
+   subroutine test_water_svwn_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'svwn', 3)
+   end subroutine test_water_svwn_l3
+
+   subroutine test_water_svwn_l5(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'svwn', 5)
+   end subroutine test_water_svwn_l5
+
+   subroutine test_water_pbe_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'pbe', 3)
+   end subroutine test_water_pbe_l3
+
+   subroutine test_water_pbe_l5(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'pbe', 5)
+   end subroutine test_water_pbe_l5
+
+   subroutine test_nh2_pbe_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'pbe', 3)
+   end subroutine test_nh2_pbe_l3
+
+   subroutine test_nh2_pbe_l5(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'pbe', 5)
+   end subroutine test_nh2_pbe_l5
+
+   subroutine test_w3_svwn_l3(error)
+      !! SCREENING CONSISTENCY, A CASE LARGE ENOUGH TO EXERCISE IT. Every
+      !! other case here is 2-3 atoms, where
+      !! `dft_partition_becke_derivatives`'s active-set screening
+      !! (trc_dft_partition.F90's own header) never drops anything -- its
+      !! nu_max=0.95 cutoff only excludes an atom once the point's owner
+      !! is confidently closer than it, which three atoms sharing one
+      !! molecule essentially never trigger. w3.xyz is three SEPARATE,
+      !! well-spread water molecules (9 atoms; the same geometry the MPI
+      !! fragment tests use) -- points deep in one molecule are
+      !! confidently closer to their own atoms than to either other
+      !! molecule's, so this case genuinely exercises the screened branch
+      !! rather than merely compiling it: a direct probe (comparing this
+      !! routine's own screened vs `nu_max=2` unscreened `dweights` on
+      !! this exact grid) measures worst|screened-unscreened| = 5.15e-8
+      !! over 101094 points -- screening is live here, not a no-op.
+      !!
+      !! ITS OWN tolerance, not ABSTOL_ON: w3.xyz is a compressed,
+      !! non-equilibrium geometry (deliberately so, for the fragment tests
+      !! it was built for -- O-H ~0.82 angstrom against water's own
+      !! equilibrium ~0.96), not a minimum, so its own energy surface is
+      !! sharper and its third-derivative larger, which is exactly the
+      !! coefficient the plain central difference's O(H^2) truncation term
+      !! depends on. PLAIN step-H worst abs ON was 9.30e-7 (OFF: 2.51e-6)
+      !! against the six equilibrium-ish 2-3-atom cases' ~1.4e-7 -- NOT a
+      !! screening artifact (a direct probe with
+      !! dft_partition_becke_derivatives' active-set screening disabled
+      !! entirely, nu_max=2, reproduces the identical 9.30e-7, unchanged to
+      !! 3 significant figures) and NOT a grid-response bug (translational
+      !! invariance stays ~1e-11/1e-12 either way, INVTOL's default 1e-8
+      !! cleared with 1e3-1e4x margin -- a real inconsistency between the
+      !! energy's screening and this gradient's would show up there
+      !! first, and does not). richardson=.true. below confirms it IS h^2
+      !! finite-difference truncation directly: Richardson-extrapolating
+      !! the same central difference (steps H and H/2, run_case's own
+      !! header) collapses worst abs ON from 9.30e-7 to 2.13e-9 (measured,
+      !! CPU, gfortran) -- a ~440x reduction, consistent with trading an
+      !! O(H^2) floor for an O(H^4) one. 1e-8 below is that measured value
+      !! with ~5x margin, not the old 2e-6 loosened.
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'w3.xyz', 'basis_sets/6-31gs.json', 15, 15, 'svwn', 3, &
+                    abstol_on_override=1.0e-8_dp, richardson=.true.)
+   end subroutine test_w3_svwn_l3
+
+   subroutine test_water_wb97xv_l3(error)
+      !! VV10 (wB97X-V, RKS): the nonlocal correlation term's own grid
+      !! response (point motion of BOTH grids plus the Becke weight
+      !! derivative, trc_vv10_grad.F90's own header) on top of the
+      !! semilocal GGA term and the erf long-range exchange gradient --
+      !! the full wB97X-V gradient, differenced against the SAME recipe
+      !! as every case above (grid rebuilt at every displaced geometry,
+      !! VV10's own double sum recomputed from scratch each time).
+      !!
+      !! NO override: ON worst abs measures 1.38e-7 at BOTH L3 and L5
+      !! (identical to 3 significant figures -- the same grid-level-
+      !! independence signature ABSTOL_ON's own six cases were set from),
+      !! essentially the SAME floor as the plain-GGA cases above (1.37e-7
+      !! SVWN, 1.38e-7 PBE) -- clears the shared ABSTOL_ON (2.0e-7)
+      !! comfortably, same as them, no case-specific tolerance needed.
+      !!
+      !! THIS NUMBER WAS 4.27e-7 before a real bug was found and fixed
+      !! here: run_case never passed `nlc_grid_level` to
+      !! `trc_scf_gradient`, so the ON/OFF comparison above was
+      !! differencing an energy built on `opts%nlc_grid_level`'s default
+      !! VV10 grid (level 1) against an ANALYTIC gradient whose VV10 term
+      !! silently fell back to vv10_grad_add's own default (level 3) --
+      !! two different grids on the two sides of one derivative. Caught
+      !! by check_vv10_grad_fixedd_fd.F90 (a fixed-density FD of E_nlc
+      !! alone, no SCF, so no grid-level inconsistency to hide behind):
+      !! that test's own gradient-formula check was already clean
+      !! (~1e-11) at EVERY individual grid level, so the 4.27e-7 here was
+      !! a test-harness mismatch, not a missing/wrong term in
+      !! trc_vv10_grad.F90 itself. Fixed by passing
+      !! `nlc_grid_level=opts%nlc_grid_level` below, matching what the SCF
+      !! itself actually used; richardson=.true. was tried on the
+      !! ORIGINAL (buggy) 4.27e-7 and only reached 2.90e-7 -- NOT w3.xyz's
+      !! ~440x collapse -- which is consistent with a non-truncation
+      !! (grid-mismatch) floor, not evidence it was SCF noise, the
+      !! reading originally recorded here before this fix.
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 3)
+   end subroutine test_water_wb97xv_l3
+
+   subroutine test_water_wb97xv_l5(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 5)
+   end subroutine test_water_wb97xv_l5
+
+   subroutine run_case(error, xyzfile, basis_json, nalpha, nbeta, functional, grid_level, &
                        abstol_on_override, invtol_override, richardson)
-      character(*), intent(in) :: xyzfile, basis_json, functional, label
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: xyzfile, basis_json, functional
       integer, intent(in) :: nalpha, nbeta, grid_level
-      logical, intent(inout) :: any_fail
       real(dp), intent(in), optional :: abstol_on_override, invtol_override
       !! Per-case overrides of the module ABSTOL_ON/INVTOL, for a case
       !! whose OWN measured FD/invariance floor is genuinely looser than
       !! the six 2-3-atom cases ABSTOL_ON/INVTOL were set from -- see the
-      !! w3.xyz case this module's program unit calls with one, and ITS
-      !! OWN comment for why.
+      !! w3.xyz case's own comment for why.
       logical, intent(in), optional :: richardson
       !! Default .false. (the plain central difference at step H, as
       !! before). When .true., the ON gradient is compared against a
@@ -114,30 +253,29 @@ contains
       if (present(invtol_override)) my_invtol = invtol_override
 
       ok = xc_functional_by_name(functional, func)
-      if (.not. ok .or. len_trim(func%missing) > 0) then
-         print '(a)', 'check_xc_grad_fd: '//label//': functional not available'; stop 1
-      end if
+      call check(error, ok .and. len_trim(func%missing) == 0, "functional not available")
+      if (allocated(error)) return
 
       dev = trc_bind_device(0)
       call read_xyz(xyzfile, nat, at_z, r0)
       ! force_cart: trc_scf_gradient DOES have a spherical fold now
       ! (check_dft_grad_vs_pyscf.F90 exercises it); kept Cartesian here
-      ! only to keep this program's own finite-difference recipe (a full
+      ! only to keep this suite's own finite-difference recipe (a full
       ! SCF reconverge at every displaced geometry, scf_energy_at below)
       ! simple -- not a missing capability.
       call trc_basis_from_json(basis_json, nat, at_z, r0, bas, err, force_cart=.true.)
-      if (err%has_error()) then
-         print '(a)', 'check_xc_grad_fd: '//err%get_message(); stop 1
-      end if
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
       call bas%to_device()
 
       opts%functional = functional
       opts%grid_level = grid_level
       opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 200
       call trc_scf_run(bas, nalpha, nbeta, opts, res)
-      if (.not. res%converged) then
-         print '(a)', 'check_xc_grad_fd: '//label//': reference SCF did not converge'
-         any_fail = .true.; return
+      call check(error, res%converged, "reference SCF did not converge")
+      if (allocated(error)) then
+         call bas%release()
+         return
       end if
 
       allocate (grad_on(3, nat), grad_off(3, nat))
@@ -201,15 +339,20 @@ contains
          end do
       end do
 
-      print '(a,a,a,i0)', '  ', label, ': grid level ', grid_level
+      print '(a,i0)', '  grid level ', grid_level
       print '(a,es10.2,a,es10.2,a,3es10.2)', '    OFF (Pulay only): worst abs ', worst_abs_off, &
          '  worst rel ', worst_rel_off, '  translational-invariance residual: ', inv_off
       print '(a,es10.2,a,es10.2,a,3es10.2)', '    ON  (grid response): worst abs ', worst_abs_on, &
          '  worst rel ', worst_rel_on, '  translational-invariance residual: ', inv_on
-      if (worst_abs_on > my_abstol_on .and. worst_rel_on > RELTOL) any_fail = .true.
-      if (any(abs(inv_on) > my_invtol)) any_fail = .true.
 
       deallocate (at_z, r0, rtmp, grad_on, grad_off)
+
+      call check(error, worst_abs_on <= my_abstol_on .or. worst_rel_on <= RELTOL, &
+                 "ON gradient vs FD: worst abs "//to_string(worst_abs_on, "es10.2")// &
+                 ", worst rel "//to_string(worst_rel_on, "es10.2"))
+      if (allocated(error)) return
+      call check(error, all(abs(inv_on) <= my_invtol), &
+                 "ON translational-invariance residual exceeds "//to_string(my_invtol, "es10.2"))
    end subroutine run_case
 
    real(dp) function scf_energy_at(basis_json, nat, at_z, r, nalpha, nbeta, opts) result(e)
@@ -221,109 +364,26 @@ contains
       type(trc_scf_result_t) :: r2
       type(error_t) :: err
       call trc_basis_from_json(basis_json, nat, at_z, r, b2, err, force_cart=.true.)
-      if (err%has_error()) then
-         print '(a)', 'check_xc_grad_fd: '//err%get_message(); stop 1
-      end if
+      if (err%has_error()) error stop 'check_xc_grad_fd: '//err%get_message()
       call b2%to_device()
       call trc_scf_run(b2, nalpha, nbeta, opts, r2)
       e = r2%energy
       call b2%release()
    end function scf_energy_at
 
-end module check_xc_grad_fd_cases
+end module check_xc_grad_fd_suite
 
 program check_xc_grad_fd
-   use pic_types, only: dp
-   use check_xc_grad_fd_cases, only: run_case
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_xc_grad_fd_suite, only: collect_xc_grad_fd
    implicit none
-   logical :: any_fail
-   any_fail = .false.
-
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'svwn', 3, 'RKS SVWN water/6-31G* L3', any_fail)
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'svwn', 5, 'RKS SVWN water/6-31G* L5', any_fail)
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'pbe', 3, 'RKS PBE water/6-31G* L3', any_fail)
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'pbe', 5, 'RKS PBE water/6-31G* L5', any_fail)
-   call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'pbe', 3, 'UKS PBE NH2/6-31G* L3', any_fail)
-   call run_case('nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'pbe', 5, 'UKS PBE NH2/6-31G* L5', any_fail)
-
-   ! SCREENING CONSISTENCY, A CASE LARGE ENOUGH TO EXERCISE IT. Every case
-   ! above is 2-3 atoms, where `dft_partition_becke_derivatives`'s active-set
-   ! screening (trc_dft_partition.F90's own header) never drops anything --
-   ! its nu_max=0.95 cutoff only excludes an atom once the point's owner is
-   ! confidently closer than it, which three atoms sharing one molecule
-   ! essentially never trigger. w3.xyz is three SEPARATE, well-spread water
-   ! molecules (9 atoms; the same geometry the MPI fragment tests use) --
-   ! points deep in one molecule are confidently closer to their own atoms
-   ! than to either other molecule's, so this case genuinely exercises the
-   ! screened branch rather than merely compiling it: a direct probe
-   ! (comparing this routine's own screened vs `nu_max=2` unscreened
-   ! `dweights` on this exact grid) measures worst|screened-unscreened| =
-   ! 5.15e-8 over 101094 points -- screening is live here, not a no-op.
-   !
-   ! ITS OWN tolerance, not ABSTOL_ON: w3.xyz is a compressed,
-   ! non-equilibrium geometry (deliberately so, for the fragment tests it
-   ! was built for -- O-H ~0.82 angstrom against water's own equilibrium
-   ! ~0.96), not a minimum, so its own energy surface is sharper and its
-   ! third-derivative larger, which is exactly the coefficient the plain
-   ! central difference's O(H^2) truncation term depends on. PLAIN step-H
-   ! worst abs ON was 9.30e-7 (OFF: 2.51e-6) against the six equilibrium-
-   ! ish 2-3-atom cases' ~1.4e-7 -- NOT a screening artifact (a direct
-   ! probe with dft_partition_becke_derivatives' active-set screening
-   ! disabled entirely, nu_max=2, reproduces the identical 9.30e-7,
-   ! unchanged to 3 significant figures) and NOT a grid-response bug
-   ! (translational invariance stays ~1e-11/1e-12 either way, INVTOL's
-   ! default 1e-8 cleared with 1e3-1e4x margin -- a real inconsistency
-   ! between the energy's screening and this gradient's would show up
-   ! there first, and does not). richardson=.true. below confirms it IS
-   ! h^2 finite-difference truncation directly: Richardson-extrapolating
-   ! the same central difference (steps H and H/2, this subroutine's own
-   ! header) collapses worst abs ON from 9.30e-7 to 2.13e-9 (measured,
-   ! CPU, gfortran) -- a ~440x reduction, consistent with trading an
-   ! O(H^2) floor for an O(H^4) one. 1e-8 below is that measured value
-   ! with ~5x margin, not the old 2e-6 loosened.
-   call run_case('w3.xyz', 'basis_sets/6-31gs.json', 15, 15, 'svwn', 3, 'RKS SVWN w3/6-31G* L3', any_fail, &
-                 abstol_on_override=1.0e-8_dp, richardson=.true.)
-
-   ! VV10 (wB97X-V, RKS): the nonlocal correlation term's own grid response
-   ! (point motion of BOTH grids plus the Becke weight derivative,
-   ! trc_vv10_grad.F90's own header) on top of the semilocal GGA term and
-   ! the erf long-range exchange gradient -- the full wB97X-V gradient,
-   ! differenced against the SAME recipe as every case above (grid rebuilt
-   ! at every displaced geometry, VV10's own double sum recomputed from
-   ! scratch each time).
-   !
-   ! NO override: ON worst abs measures 1.38e-7 at BOTH L3 and L5
-   ! (identical to 3 significant figures -- the same grid-level-
-   ! independence signature ABSTOL_ON's own six cases were set from),
-   ! essentially the SAME floor as the plain-GGA cases above (1.37e-7
-   ! SVWN, 1.38e-7 PBE) -- clears the shared ABSTOL_ON (2.0e-7)
-   ! comfortably, same as them, no case-specific tolerance needed.
-   !
-   ! THIS NUMBER WAS 4.27e-7 before a real bug was found and fixed here:
-   ! this subroutine never passed `nlc_grid_level` to `trc_scf_gradient`,
-   ! so the ON/OFF comparison above was differencing an energy built on
-   ! `opts%nlc_grid_level`'s default VV10 grid (level 1) against an
-   ! ANALYTIC gradient whose VV10 term silently fell back to
-   ! vv10_grad_add's own default (level 3) -- two different grids on
-   ! the two sides of one derivative. Caught by check_vv10_grad_fixedd_fd.F90
-   ! (a fixed-density FD of E_nlc alone, no SCF, so no grid-level
-   ! inconsistency to hide behind): that test's own gradient-formula
-   ! check was already clean (~1e-11) at EVERY individual grid level, so
-   ! the 4.27e-7 here was a test-harness mismatch, not a missing/wrong
-   ! term in trc_vv10_grad.F90 itself. Fixed by passing
-   ! `nlc_grid_level=opts%nlc_grid_level` below, matching what the SCF
-   ! itself actually used; richardson=.true. was tried on the ORIGINAL
-   ! (buggy) 4.27e-7 and only reached 2.90e-7 -- NOT w3.xyz's ~440x
-   ! collapse -- which is consistent with a non-truncation (grid-
-   ! mismatch) floor, not evidence it was SCF noise, the reading
-   ! originally recorded here before this fix.
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 3, 'RKS wB97X-V water/6-31G* L3', &
-                 any_fail)
-   call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 5, 'RKS wB97X-V water/6-31G* L5', &
-                 any_fail)
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'; stop 1
+   integer :: stat
+   stat = 0
+   ! Serial: every case builds device-resident objects and binds the device.
+   call run_testsuite(collect_xc_grad_fd, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
    end if
-   print '(a)', '  RESULT: PASS'
 end program check_xc_grad_fd

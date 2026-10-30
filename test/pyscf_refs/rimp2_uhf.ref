@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["rimp2_uhf"] -> gen_rimp2_uhf
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 6b3877f8d5a33605a78feb2abe182019451b6152f8a3d9509a81389de4edb19e
+# hash: 9bb6f23d4162dbf9383d1d2437c5fbc67f94d7de5247156f25ca898490e1586d
 # files: test/scf_rimp2_uhf.F90 test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json test/basis_sets/cc-pvdz-rifit.json test/oh.xyz test/o2.xyz test/nh2.xyz
 NCASE 6
 NSPIN_0 2

@@ -23,8 +23,15 @@
 ! trc_tables' LMAX) -- the shipped TERCO_LMAX=2 configuration does not, and
 ! Part 1 above is what covers f there.
 !
-program sad_sphavg
+! Four independent test-drive cases below: the spherical and Cartesian
+! algebra fixtures of PART 1, and the spherical/Cartesian pipeline of
+! PART 2 (each of the latter self-skips, via test-drive's skip_test, when
+! this build's ceiling is below f).
+!
+module sad_sphavg_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device, TRC_MAXL
    use trc_tables, only: TRC_ERI_LMAX => LMAX
    use trc_sph_tables, only: SPH_T
@@ -34,54 +41,85 @@ program sad_sphavg
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
-
-   integer :: natm, dev
-   integer, allocatable :: zint(:)
-   real(dp), allocatable :: at_r(:, :)
-   type(trc_basis_t) :: ab_sph, ab_cart
-   type(error_t) :: err
-   logical :: ok
-
-   dev = trc_bind_device(0)
-   call read_xyz('o_atom.xyz', natm, zint, at_r)
-   ok = .true.
-
-   call trc_basis_from_json('basis_sets/cc-pvtz.json', natm, zint, at_r, ab_sph, err)
-   if (err%has_error()) call die(err)
-   call trc_basis_from_json('basis_sets/cc-pvtz.json', natm, zint, at_r, ab_cart, err, force_cart=.true.)
-   if (err%has_error()) call die(err)
-
-   ! l_cap = 3 (s/p/d/f, this basis' own ceiling) for the spherical case:
-   ! there is no contaminant there at any l, so `sad_average_atom_density`'s
-   ! simple replacement is exact end to end. l_cap = 1 (s/p only) for the
-   ! Cartesian case: see `check_algebra`'s own header for why its
-   ! determinism/block-proportionality fixture is deliberately NOT pushed
-   ! past p there -- SAD's own open-shell atoms (O, C, N, F, ...) all have
-   ! their Hund frontier at p, which is exactly where this holds.
-   call check_algebra(ab_sph, .true., 3, ok)
-   call check_algebra(ab_cart, .false., 1, ok)
-
-   if (TRC_MAXL >= 3 .and. TRC_ERI_LMAX >= 3) then
-      call check_pipeline(ok)
-   else
-      print '(a)', "sad_sphavg: this build's one-/two-electron ceiling is below f "// &
-         "(TRC_MAXL, trc_tables' LMAX) -- skipping the full trc_sad_build(O/cc-pVTZ) check"
-   end if
-
-   call ab_sph%release(); call ab_cart%release()
-   print '(a)', merge("sad_sphavg: PASS", "sad_sphavg: FAIL", ok)
-   if (.not. ok) stop 1
+   private
+   public :: collect_sad_sphavg
 
 contains
 
-   subroutine die(e)
-      type(error_t), intent(inout) :: e
-      print '(a)', "sad_sphavg: "//e%get_message()
-      stop 1
-   end subroutine die
+   subroutine collect_sad_sphavg(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("averaging algebra, spherical (s/p/d/f)", test_algebra_sph), &
+                  new_unittest("averaging algebra, Cartesian (s/p)", test_algebra_cart), &
+                  new_unittest("full pipeline, free O/cc-pVTZ, spherical", test_pipeline_sph), &
+                  new_unittest("full pipeline, free O/cc-pVTZ, Cartesian", test_pipeline_cart) &
+                  ]
+   end subroutine collect_sad_sphavg
+
+   subroutine test_algebra_sph(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: ab
+      type(error_t) :: err
+      integer :: natm, dev
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
+
+      dev = trc_bind_device(0)
+      call read_xyz('o_atom.xyz', natm, zint, at_r)
+      call trc_basis_from_json('basis_sets/cc-pvtz.json', natm, zint, at_r, ab, err)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
+      ! l_cap = 3 (s/p/d/f, this basis' own ceiling): there is no
+      ! contaminant there at any l, so `sad_average_atom_density`'s simple
+      ! replacement is exact end to end.
+      call check_algebra(error, ab, .true., 3)
+      call ab%release()
+   end subroutine test_algebra_sph
+
+   subroutine test_algebra_cart(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: ab
+      type(error_t) :: err
+      integer :: natm, dev
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
+
+      dev = trc_bind_device(0)
+      call read_xyz('o_atom.xyz', natm, zint, at_r)
+      call trc_basis_from_json('basis_sets/cc-pvtz.json', natm, zint, at_r, ab, err, force_cart=.true.)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
+      ! l_cap = 1 (s/p only) for the Cartesian case: see `check_algebra`'s
+      ! own header for why its determinism/block-proportionality fixture
+      ! is deliberately NOT pushed past p there -- SAD's own open-shell
+      ! atoms (O, C, N, F, ...) all have their Hund frontier at p, which
+      ! is exactly where this holds.
+      call check_algebra(error, ab, .false., 1)
+      call ab%release()
+   end subroutine test_algebra_cart
+
+   subroutine test_pipeline_sph(error)
+      type(error_type), allocatable, intent(out) :: error
+      if (.not. (TRC_MAXL >= 3 .and. TRC_ERI_LMAX >= 3)) then
+         call skip_test(error, "this build's one-/two-electron ceiling is below f "// &
+                        "(TRC_MAXL, trc_tables' LMAX)")
+         return
+      end if
+      call check_pipeline(error, .false.)
+   end subroutine test_pipeline_sph
+
+   subroutine test_pipeline_cart(error)
+      type(error_type), allocatable, intent(out) :: error
+      if (.not. (TRC_MAXL >= 3 .and. TRC_ERI_LMAX >= 3)) then
+         call skip_test(error, "this build's one-/two-electron ceiling is below f "// &
+                        "(TRC_MAXL, trc_tables' LMAX)")
+         return
+      end if
+      call check_pipeline(error, .true.)
+   end subroutine test_pipeline_cart
 
    !
-   ! See this program's own header, PART 1. `l_cap` caps which shell pairs
+   ! See this module's own header, PART 1. `l_cap` caps which shell pairs
    ! the synthetic fixture (and the expected-answer check) touches at all:
    ! `sad_average_atom_density`'s simple same-trace replacement
    ! (`cart_to_sph_atom`/average/`sph_to_cart_atom`) is exact in the
@@ -99,11 +137,11 @@ contains
    ! electron count survives there regardless; PART 2's real pipeline
    ! check below covers that block's Tr(D S) end to end instead.
    !
-   subroutine check_algebra(ab, sph, l_cap, ok)
+   subroutine check_algebra(error, ab, sph, l_cap)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t), intent(in) :: ab
       logical, intent(in) :: sph
       integer, intent(in) :: l_cap
-      logical, intent(inout) :: ok
       real(dp), allocatable :: ds1(:, :), ds2(:, :), d1(:, :), d2(:, :), back1(:, :)
       integer :: n, ish, jsh, li, lj, bi, bj, nsi, nsj
       real(dp) :: maxdiff
@@ -153,7 +191,11 @@ contains
 
       maxdiff = maxval(abs(d1 - d2))
       print '(a,l1,a,es10.2)', "sad_sphavg: determinism (sph=", sph, ")  max|D1-D2| = ", maxdiff
-      if (maxdiff > 1.0e-12_dp) ok = .false.
+      call check(error, maxdiff <= 1.0e-12_dp, "determinism: max|D1-D2| = "//to_string(maxdiff, "es10.2"))
+      if (allocated(error)) then
+         deallocate (ds1, ds2, d1, d2)
+         return
+      end if
 
       ! Block proportionality: compare d1 against the KNOWN averaged
       ! answer (every same-l block exactly base_of(ish,jsh) times the
@@ -176,9 +218,9 @@ contains
          end block
       end if
       print '(a,es10.2)', "sad_sphavg: block proportionality  max|D - expected| = ", maxdiff
-      if (maxdiff > 1.0e-12_dp) ok = .false.
-      deallocate (back1)
-      deallocate (ds1, ds2, d1, d2)
+      deallocate (back1, ds1, ds2, d1, d2)
+      call check(error, maxdiff <= 1.0e-12_dp, &
+                 "block proportionality: max|D - expected| = "//to_string(maxdiff, "es10.2"))
    end subroutine check_algebra
 
    !
@@ -280,11 +322,12 @@ contains
    end subroutine local_sph_to_cart
 
    !
-   ! See this program's own header, PART 2.
+   ! See this module's own header, PART 2.
    !
-   subroutine check_pipeline(ok)
-      logical, intent(inout) :: ok
-      integer :: natm2, iv
+   subroutine check_pipeline(error, force_cart)
+      type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: force_cart
+      integer :: natm2
       integer, allocatable :: z2(:)
       real(dp), allocatable :: r2(:, :), dguess(:, :), smat(:, :), tmat(:, :), vmat(:, :), ssph(:, :)
       type(trc_basis_t) :: b
@@ -293,32 +336,50 @@ contains
       real(dp) :: trace
 
       call read_xyz('o_atom.xyz', natm2, z2, r2)
-      do iv = 1, 2
-         if (iv == 1) then
-            call trc_basis_from_json('basis_sets/cc-pvtz.json', natm2, z2, r2, b, e)
-         else
-            call trc_basis_from_json('basis_sets/cc-pvtz.json', natm2, z2, r2, b, e, force_cart=.true.)
-         end if
-         if (e%has_error()) call die(e)
-         call trc_sad_build(b, dguess, e, verbose=.true.)
-         if (e%has_error()) call die(e)
-         call b%to_device()
-         call pl%build(b, 1.0e-12_dp); call pl%to_device()
-         allocate (smat(b%nao, b%nao), tmat(b%nao, b%nao), vmat(b%nao, b%nao))
-         call trc_1e(b, pl, smat, tmat, vmat)
-         if (b%spherical) then
-            allocate (ssph(b%nao_sph, b%nao_sph))
-            call sph_cart_to_sph(b, smat, ssph)
-            trace = sum(dguess*ssph)
-            deallocate (ssph)
-         else
-            trace = sum(dguess*smat)
-         end if
-         print '(a,l1,a,f18.12)', "sad_sphavg: free O/cc-pVTZ  spherical=", b%spherical, "  Tr(D S) = ", trace
-         if (abs(trace - 8.0_dp) > 1.0e-10_dp) ok = .false.
-         deallocate (smat, tmat, vmat, dguess)
-         call pl%release(); call b%release()
-      end do
+      if (force_cart) then
+         call trc_basis_from_json('basis_sets/cc-pvtz.json', natm2, z2, r2, b, e, force_cart=.true.)
+      else
+         call trc_basis_from_json('basis_sets/cc-pvtz.json', natm2, z2, r2, b, e)
+      end if
+      call check(error, .not. e%has_error(), e%get_message())
+      if (allocated(error)) return
+      call trc_sad_build(b, dguess, e, verbose=.true.)
+      call check(error, .not. e%has_error(), e%get_message())
+      if (allocated(error)) then
+         call b%release()
+         return
+      end if
+      call b%to_device()
+      call pl%build(b, 1.0e-12_dp); call pl%to_device()
+      allocate (smat(b%nao, b%nao), tmat(b%nao, b%nao), vmat(b%nao, b%nao))
+      call trc_1e(b, pl, smat, tmat, vmat)
+      if (b%spherical) then
+         allocate (ssph(b%nao_sph, b%nao_sph))
+         call sph_cart_to_sph(b, smat, ssph)
+         trace = sum(dguess*ssph)
+         deallocate (ssph)
+      else
+         trace = sum(dguess*smat)
+      end if
+      print '(a,l1,a,f18.12)', "sad_sphavg: free O/cc-pVTZ  spherical=", b%spherical, "  Tr(D S) = ", trace
+      deallocate (smat, tmat, vmat, dguess)
+      call pl%release(); call b%release()
+      call check(error, abs(trace - 8.0_dp) <= 1.0e-10_dp, &
+                 "Tr(D S) = "//to_string(trace, "f18.12")//", want 8.0")
    end subroutine check_pipeline
 
+end module sad_sphavg_suite
+
+program sad_sphavg
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use sad_sphavg_suite, only: collect_sad_sphavg
+   implicit none
+   integer :: stat
+   stat = 0
+   call run_testsuite(collect_sad_sphavg, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program sad_sphavg

@@ -10,7 +10,8 @@
 ! same way in both schemes would pass a check against itself but not this
 ! one, because HGP and Rys compute it by unrelated recurrences.
 !
-! Two systems:
+! Two systems, each its own ctest invocation (command-line argument, see
+! the module header below for why they cannot share a process):
 !   - water/6-31G*: light, segmented, exercises the d-shell classes without
 !     general contraction.
 !   - water/cc-pVDZ: the oxygen s and p shells are generally contracted, so
@@ -21,19 +22,23 @@
 ! third build, compared against HGP the same way.
 !
 ! TRC_RYS_CLASSES is read ONCE PER FOCK BUILD (trc_rys_select), so toggling
-! it between the two eri%fock calls below -- rather than, say, building two
+! it between the eri%fock calls below -- rather than, say, building two
 ! separate eri_t objects -- is exactly the intended use: same bins, same
 ! density, same screening, only the env var differs.
 !
-program check_rys_vs_hgp
+module check_rys_vs_hgp_suite
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
+   private
+   public :: collect_rys_vs_hgp, basis_json_arg
 
    interface
       function c_setenv(name, value, overwrite) bind(c, name="setenv") result(r)
@@ -45,59 +50,50 @@ program check_rys_vs_hgp
    end interface
 
    real(dp), parameter :: ATOL = 1.0e-12_dp
-   integer :: nat, i, j
-   integer, allocatable :: at_z(:)
-   real(dp), allocatable :: at_r(:, :)
-   real(dp) :: worst
-   integer :: nbad
-   character(len=256) :: basis_json
 
-   worst = 0.0_dp; nbad = 0
-
-   ! One basis per process, not two trc_eri_t builds in one -- the OpenACC
-   ! present-table bookkeeping underneath trc_api's device-resident types
-   ! is not validated for a second build+teardown in the same process (a
-   ! property of that bookkeeping, not of either integral scheme), so two
-   ! ctest invocations cover the two systems (water/6-31G*, water/cc-pVDZ).
-   if (command_argument_count() < 1) then
-      print '(a)', 'usage: check_rys_vs_hgp <basis.json>'; stop 1
-   end if
-   call get_command_argument(1, basis_json)
-   call run_system(trim(basis_json), trim(basis_json))
-
-   print '(a,es10.2)', '  worst |G_rys - G_hgp| : ', worst
-   print '(a,i0)',     '  outside tol          : ', nbad
-   if (nbad > 0) then
-      print '(a)', '  RESULT: FAIL'
-      stop 1
-   end if
-   print '(a)', '  RESULT: PASS'
+   character(len=256) :: basis_json_arg = ''
+   !! Set by the program from argv(1) before run_testsuite: ONE basis per
+   !! process, not two trc_eri_t builds in one -- the OpenACC present-table
+   !! bookkeeping underneath trc_api's device-resident types is not
+   !! validated for a second build+teardown in the same process, so two
+   !! ctest invocations (different ARGS) cover the two systems.
 
 contains
+
+   subroutine collect_rys_vs_hgp(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      integer :: i0, i1
+      ! The basis as the test name: the file's base name, without .json.
+      i0 = index(basis_json_arg, '/', back=.true.) + 1
+      i1 = index(basis_json_arg, '.json', back=.true.) - 1
+      if (i1 < i0) i1 = len_trim(basis_json_arg)
+      testsuite = [ &
+                  new_unittest("Rys vs HGP on water/"//basis_json_arg(i0:i1), test_vs_hgp) &
+                  ]
+   end subroutine collect_rys_vs_hgp
 
    subroutine set_rys(v)
       character(*), intent(in) :: v
       integer(c_int) :: r
       r = c_setenv("TRC_RYS_CLASSES"//c_null_char, trim(v)//c_null_char, 1_c_int)
-      if (r /= 0) then
-         print '(a)', '  setenv(TRC_RYS_CLASSES) failed'; stop 1
-      end if
+      if (r /= 0) error stop 'setenv(TRC_RYS_CLASSES) failed'
    end subroutine set_rys
 
-   subroutine run_system(basis_json, tag)
-      character(*), intent(in) :: basis_json, tag
+   subroutine test_vs_hgp(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t)   :: eri
       type(error_t) :: err
       real(dp), allocatable :: dmat(:, :), g_hgp(:, :), g_rys(:, :), g_def(:, :)
-      real(dp) :: thresh, local_worst
-      integer :: nao, ii, jj, nbad0
+      real(dp) :: thresh, worst_rys, worst_def
+      integer :: nat, nao, i, j, nbad_rys, nbad_def
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: at_r(:, :)
 
       call read_xyz('water.xyz', nat, at_z, at_r)
-      call trc_basis_from_json(basis_json, nat, at_z, at_r, bas, err)
-      if (err%has_error()) then
-         print '(a)', 'check_rys_vs_hgp: '//err%get_message(); stop 1
-      end if
+      call trc_basis_from_json(trim(basis_json_arg), nat, at_z, at_r, bas, err)
+      call check(error, .not. err%has_error(), "basis build: "//err%get_message())
+      if (allocated(error)) return
 
       thresh = 1.0e-13_dp
       nao = bas%nao
@@ -122,21 +118,46 @@ contains
       call eri%fock(bas, dmat, g_def, density_screen=.false.)
       call set_rys('none')
 
-      local_worst = 0.0_dp; nbad0 = 0
-      do jj = 1, nao
-         do ii = 1, nao
-            local_worst = max(local_worst, abs(g_hgp(ii, jj) - g_rys(ii, jj)))
-            if (abs(g_hgp(ii, jj) - g_rys(ii, jj)) > ATOL) nbad0 = nbad0 + 1
-            local_worst = max(local_worst, abs(g_hgp(ii, jj) - g_def(ii, jj)))
-            if (abs(g_hgp(ii, jj) - g_def(ii, jj)) > ATOL) nbad0 = nbad0 + 1
-         end do
-      end do
-      print '(a,a,a,i0,a,es10.2,a,i0)', '  ', tag, ': nao ', nao, &
-         '  worst diff ', local_worst, '  outside tol ', nbad0
-      worst = max(worst, local_worst)
-      nbad = nbad + nbad0
+      worst_rys = maxval(abs(g_hgp - g_rys))
+      worst_def = maxval(abs(g_hgp - g_def))
+      ! Counted as NOT within ATOL, so a NaN element counts as outside.
+      nbad_rys = count(.not. (abs(g_hgp - g_rys) <= ATOL))
+      nbad_def = count(.not. (abs(g_hgp - g_def) <= ATOL))
+      print '(a,i0,a,es10.2,a,es10.2,a,i0)', '  nao ', nao, &
+         '  worst |G_rys - G_hgp| ', worst_rys, '  worst |G_def - G_hgp| ', worst_def, &
+         '  outside tol ', nbad_rys + nbad_def
 
+      call eri%release(); call bas%release()
       deallocate (dmat, g_hgp, g_rys, g_def, at_z, at_r)
-   end subroutine run_system
 
+      ! One check over both builds, so a failure reports both, as the old
+      ! program's single `outside tol` count did.
+      call check(error, nbad_rys == 0 .and. nbad_def == 0, &
+                 "elements outside "//to_string(ATOL, "es10.2")//": TRC_RYS_CLASSES=all "// &
+                 to_string(nbad_rys)//" (worst |G_rys - G_hgp| = "//to_string(worst_rys, "es10.2")// &
+                 "), TRC_RYS_CLASSES=default "//to_string(nbad_def)//" (worst |G_def - G_hgp| = "// &
+                 to_string(worst_def, "es10.2")//")")
+   end subroutine test_vs_hgp
+
+end module check_rys_vs_hgp_suite
+
+program check_rys_vs_hgp
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_rys_vs_hgp_suite, only: collect_rys_vs_hgp, basis_json_arg
+   implicit none
+   integer :: stat
+
+   if (command_argument_count() < 1) then
+      write (error_unit, '(a)') 'usage: check_rys_vs_hgp <basis.json>'
+      error stop 1
+   end if
+   call get_command_argument(1, basis_json_arg)
+
+   stat = 0
+   call run_testsuite(collect_rys_vs_hgp, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_rys_vs_hgp

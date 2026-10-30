@@ -38,12 +38,16 @@
 !   5. THE BATCH AGAINST THE LOOP. N densities in one integral pass must give
 !      what N separate passes give, set for set.
 !
-program check_selftest
+module check_selftest_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
    implicit none
+   private
+   public :: collect_selftest
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
    real(dp), parameter :: FAC_S = 0.282094791773878143_dp
@@ -51,37 +55,18 @@ program check_selftest
    !! coefficients. The analytic comparison has to include it or it is
    !! measuring a different function.
 
-   integer :: nbad
-   nbad = 0
-
-   call test_analytic_overlap()
-   call test_translation()
-   call test_multipole_shift()
-   call test_fock_symmetry()
-   call test_batch_matches_loop()
-
-   print '(a)', ''
-   if (nbad == 0) then
-      print '(a)', '  RESULT: PASS'
-   else
-      print '(a,i0,a)', '  RESULT: FAIL (', nbad, ' checks outside tolerance)'
-      stop 1
-   end if
-
 contains
 
-   subroutine report(what, diff, tol)
-      character(len=*), intent(in) :: what
-      real(dp), intent(in) :: diff, tol
-      character(len=4) :: verdict
-      verdict = 'ok  '
-      if (.not. (diff <= tol)) then
-         verdict = 'FAIL'
-         nbad = nbad + 1
-      end if
-      print '(a,a40,a,es10.2,a,es8.1,a)', '  ', what, '  ', diff, &
-         '   (tol ', tol, ')   '//verdict
-   end subroutine report
+   subroutine collect_selftest(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("overlap vs the closed form (s|s)", test_analytic_overlap), &
+                  new_unittest("translational invariance", test_translation), &
+                  new_unittest("dipole origin shift vs the overlap", test_multipole_shift), &
+                  new_unittest("Fock matrix is symmetric for a symmetric density", test_fock_symmetry), &
+                  new_unittest("batched build vs the same densities singly", test_batch_matches_loop) &
+                  ]
+   end subroutine collect_selftest
 
    pure real(dp) function gto_norm(l, a)
       !! libcint's primitive normalisation, so a coefficient of one means what a
@@ -142,10 +127,32 @@ contains
       call b%to_device(); call p%to_device()
    end subroutine build_system
 
+   function report_msg(what, diff, tol) result(msg)
+      character(len=*), intent(in) :: what
+      real(dp), intent(in) :: diff, tol
+      character(len=128) :: msg
+      write (msg, '(a,a,es10.2,a,es8.1,a)') what, ": worst diff ", diff, " (tol ", tol, ")"
+   end function report_msg
+
+   ! Prints every comparison, as the old program did, and appends the
+   ! failing ones to `fails` for a single check.
+   subroutine accumulate(fails, ok, what, diff, tol)
+      character(len=:), allocatable, intent(inout) :: fails
+      logical, intent(in) :: ok
+      character(len=*), intent(in) :: what
+      real(dp), intent(in) :: diff, tol
+      print '(a,a)', '  ', trim(report_msg(what, diff, tol))
+      if (.not. ok) then
+         if (len(fails) > 0) fails = fails//"; "
+         fails = fails//trim(report_msg(what, diff, tol))
+      end if
+   end subroutine accumulate
+
    ! =======================================================================
    ! 1. the closed form
    ! =======================================================================
-   subroutine test_analytic_overlap()
+   subroutine test_analytic_overlap(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: p
       real(dp), allocatable :: s(:, :), t(:, :), v(:, :)
@@ -179,7 +186,7 @@ contains
             worst = max(worst, abs(s(i, j) - want))
          end do
       end do
-      call report('overlap vs the closed form (s|s)', worst, 1.0e-14_dp)
+      call check(error, worst <= 1.0e-14_dp, report_msg("overlap vs the closed form (s|s)", worst, 1.0e-14_dp))
 
       call p%release(); call b%release()
       deallocate (s, t, v, ex, ce)
@@ -188,7 +195,8 @@ contains
    ! =======================================================================
    ! 2. move everything, change nothing
    ! =======================================================================
-   subroutine test_translation()
+   subroutine test_translation(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b1, b2
       type(trc_pairlist_t) :: p1, p2
       type(trc_eri_t) :: e1, e2
@@ -197,6 +205,7 @@ contains
       real(dp), allocatable :: d(:, :), g1(:, :), g2(:, :)
       real(dp), parameter :: SHIFT(3) = [3.7_dp, -2.1_dp, 5.4_dp]
       integer :: n, i, j
+      character(len=:), allocatable :: fails
 
       call build_system(b1, p1, [0.0_dp, 0.0_dp, 0.0_dp], .false.)
       call build_system(b2, p2, SHIFT, .false.)
@@ -208,13 +217,18 @@ contains
       !$acc update self(s1, t1, v1, s2, t2, v2)
       !$acc exit data delete(s1, t1, v1, s2, t2, v2)
 
-      call report('overlap under translation', maxval(abs(s1 - s2)), 1.0e-13_dp)
-      call report('kinetic under translation', maxval(abs(t1 - t2)), 1.0e-13_dp)
+      ! Every comparison runs and every failing one is reported, in one
+      ! check at the end (a check per comparison would stop at the first).
+      fails = ""
+      call accumulate(fails, all(abs(s1 - s2) <= 1.0e-13_dp), "overlap under translation", &
+                      maxval(abs(s1 - s2)), 1.0e-13_dp)
+      call accumulate(fails, all(abs(t1 - t2) <= 1.0e-13_dp), "kinetic under translation", &
+                      maxval(abs(t1 - t2)), 1.0e-13_dp)
       ! Nuclear attraction moves with the nuclei, so it is invariant too --
       ! and it is the one that would break if an absolute coordinate leaked in
       ! where a difference was meant.
-      call report('nuclear attraction under translation', &
-                  maxval(abs(v1 - v2)), 1.0e-12_dp)
+      call accumulate(fails, all(abs(v1 - v2) <= 1.0e-12_dp), "nuclear attraction under translation", &
+                      maxval(abs(v1 - v2)), 1.0e-12_dp)
 
       call e1%build(b1, 1.0e-14_dp)
       call e2%build(b2, 1.0e-14_dp)
@@ -227,7 +241,9 @@ contains
       d = 0.5_dp*(d + transpose(d))
       call e1%fock(b1, d, g1)
       call e2%fock(b2, d, g2)
-      call report('Fock matrix under translation', maxval(abs(g1 - g2)), 1.0e-12_dp)
+      call accumulate(fails, all(abs(g1 - g2) <= 1.0e-12_dp), "Fock matrix under translation", &
+                      maxval(abs(g1 - g2)), 1.0e-12_dp)
+      call check(error, len(fails) == 0, fails)
 
       call e1%release(); call e2%release()
       call p1%release(); call p2%release(); call b1%release(); call b2%release()
@@ -237,7 +253,8 @@ contains
    ! =======================================================================
    ! 3. the multipole kernel against the overlap kernel
    ! =======================================================================
-   subroutine test_multipole_shift()
+   subroutine test_multipole_shift(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: p
       real(dp), allocatable :: s(:, :), t(:, :), v(:, :)
@@ -266,7 +283,8 @@ contains
             end do
          end do
       end do
-      call report('dipole origin shift vs the overlap', worst, 1.0e-13_dp)
+      call check(error, worst <= 1.0e-13_dp, &
+                 report_msg("dipole origin shift vs the overlap", worst, 1.0e-13_dp))
 
       call p%release(); call b%release()
       deallocate (s, t, v, m0, m1)
@@ -275,12 +293,14 @@ contains
    ! =======================================================================
    ! 4 and 5
    ! =======================================================================
-   subroutine test_fock_symmetry()
+   subroutine test_fock_symmetry(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: p
       type(trc_eri_t) :: e
       real(dp), allocatable :: d(:, :), g(:, :)
       integer :: n, i, j
+      real(dp) :: worst
 
       call build_system(b, p, [0.0_dp, 0.0_dp, 0.0_dp], .false.)
       call e%build(b, 1.0e-14_dp)
@@ -293,14 +313,16 @@ contains
       end do
       d = 0.5_dp*(d + transpose(d))
       call e%fock(b, d, g)
-      call report('G is symmetric for a symmetric density', &
-                  maxval(abs(g - transpose(g))), 1.0e-13_dp)
+      worst = maxval(abs(g - transpose(g)))
+      call check(error, worst <= 1.0e-13_dp, &
+                 report_msg("G is symmetric for a symmetric density", worst, 1.0e-13_dp))
 
       call e%release(); call p%release(); call b%release()
       deallocate (d, g)
    end subroutine test_fock_symmetry
 
-   subroutine test_batch_matches_loop()
+   subroutine test_batch_matches_loop(error)
+      type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: p
       type(trc_eri_t) :: e
@@ -333,10 +355,26 @@ contains
             end do
          end do
       end do
-      call report('batched build vs the same densities singly', worst, 1.0e-12_dp)
+      call check(error, worst <= 1.0e-12_dp, &
+                 report_msg("batched build vs the same densities singly", worst, 1.0e-12_dp))
 
       call e%release(); call p%release(); call b%release()
       deallocate (dm, gm, d1, g1)
    end subroutine test_batch_matches_loop
 
+end module check_selftest_suite
+
+program check_selftest
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_selftest_suite, only: collect_selftest
+   implicit none
+   integer :: stat
+   stat = 0
+   ! Serial: every case builds device-resident objects.
+   call run_testsuite(collect_selftest, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_selftest

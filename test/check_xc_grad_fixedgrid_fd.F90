@@ -30,8 +30,13 @@
 ! is to ~1e-9 absolute on a gradient of order 1: no fitting, no tolerance
 ! chosen to let a residual through.
 !
-program check_xc_grad_fixedgrid_fd
+! Three independent cases below, each its own test-drive unittest, each
+! building its own basis/grid.
+!
+module check_xc_grad_fixedgrid_fd_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
@@ -42,73 +47,23 @@ program check_xc_grad_fixedgrid_fd
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t
    implicit none
+   private
+   public :: collect_xc_grad_fixedgrid_fd
 
-   integer, parameter :: nat = 2
+   integer, parameter :: NAT = 2
    real(dp), parameter :: H = 1.0e-4_dp
    real(dp), parameter :: ABSTOL = 1.0e-7_dp
-   integer :: at_z(nat), dev, a, d, ii, jj
-   real(dp) :: r0(3, nat), rtmp(3, nat)
-   type(trc_basis_t) :: bas, basp
-   type(trc_xc_functional_t) :: func
-   type(dft_grid_t) :: grid0
-   type(trc_xc_grid_t) :: xg0
-   type(trc_linalg_t) :: lp
-   type(error_t) :: err
-   real(dp), allocatable :: dmat(:, :), vxc(:, :), grad(:, :)
-   real(dp), allocatable :: dmat2(:, :, :), vxc2(:, :, :), grad2(:, :)
-   real(dp) :: exc, nelec, eplus, eminus, fd, worst
-   logical :: ok, any_fail
-
-   any_fail = .false.
-   dev = trc_bind_device(0)
-
-   at_z = [1, 1]
-   r0(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp]
-   r0(:, 2) = [0.3_dp, 0.5_dp, 1.4_dp]   ! off every axis: no direction is invariant by symmetry
-
-   call trc_basis_from_json('basis_sets/6-31gs.json', nat, at_z, r0, bas, err)
-   call bas%to_device()
-
-   call dft_grid_build(bas%at_r, nint(bas%at_z), grid0, err, level=3)
-   call xg0%build(grid0%n_points, grid0%coords, grid0%weights, bas, max_pts=512)
-   call xg0%to_device()
-
-   allocate (dmat(bas%nao, bas%nao), vxc(bas%nao, bas%nao), grad(3, nat))
-   call synth_density(bas%nao, 1, dmat)
-   call lp%init(bas%nao)
-
-   ! --- LDA (SVWN), restricted ---
-   ok = xc_functional_by_name('svwn', func)
-   worst = fixedgrid_worst_diff(bas, basp, xg0, lp, func, 1, dmat, r0, at_z, nat, H, grad)
-   print '(a,es10.2)', '  RKS SVWN H2/6-31G*, fixed grid: worst|analytic-FD| ', worst
-   if (worst > ABSTOL) any_fail = .true.
-
-   ! --- GGA (PBE), restricted ---
-   ok = xc_functional_by_name('pbe', func)
-   worst = fixedgrid_worst_diff(bas, basp, xg0, lp, func, 1, dmat, r0, at_z, nat, H, grad)
-   print '(a,es10.2)', '  RKS PBE H2/6-31G*, fixed grid: worst|analytic-FD| ', worst
-   if (worst > ABSTOL) any_fail = .true.
-
-   ! --- GGA (PBE), unrestricted: two independent, asymmetric densities,
-   ! so the cross-spin Q1/Q2 terms (trc_xc_grad.F90's header) are live ---
-   allocate (dmat2(bas%nao, bas%nao, 2), vxc2(bas%nao, bas%nao, 2), grad2(3, nat))
-   call synth_density(bas%nao, 1, dmat2(:, :, 1))
-   call synth_density(bas%nao, 2, dmat2(:, :, 2))
-   worst = fixedgrid_worst_diff2(bas, basp, xg0, lp, func, dmat2, r0, at_z, nat, H, grad2)
-   print '(a,es10.2)', '  UKS PBE H2/6-31G*, fixed grid: worst|analytic-FD| ', worst
-   if (worst > ABSTOL) any_fail = .true.
-
-   call lp%release()
-   call xg0%release()
-   call bas%release()
-   deallocate (dmat, vxc, grad, dmat2, vxc2, grad2)
-
-   if (any_fail) then
-      print '(a)', '  RESULT: FAIL'; stop 1
-   end if
-   print '(a)', '  RESULT: PASS'
 
 contains
+
+   subroutine collect_xc_grad_fixedgrid_fd(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("RKS SVWN H2/6-31G*, fixed grid", test_rks_svwn), &
+                  new_unittest("RKS PBE H2/6-31G*, fixed grid", test_rks_pbe), &
+                  new_unittest("UKS PBE H2/6-31G*, fixed grid", test_uks_pbe) &
+                  ]
+   end subroutine collect_xc_grad_fixedgrid_fd
 
    !
    ! Same deterministic, dense, symmetric construction as
@@ -126,10 +81,111 @@ contains
       d = 0.5_dp*(d + transpose(d))
    end subroutine synth_density
 
+   subroutine setup(bas, grid0, xg0, r0, at_z)
+      type(trc_basis_t), intent(out) :: bas
+      type(dft_grid_t), intent(out) :: grid0
+      type(trc_xc_grid_t), intent(out) :: xg0
+      real(dp), intent(out) :: r0(3, NAT)
+      integer, intent(out) :: at_z(NAT)
+      type(error_t) :: err
+      integer :: dev
+      dev = trc_bind_device(0)
+      at_z = [1, 1]
+      r0(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp]
+      r0(:, 2) = [0.3_dp, 0.5_dp, 1.4_dp]   ! off every axis: no direction is invariant by symmetry
+
+      call trc_basis_from_json('basis_sets/6-31gs.json', NAT, at_z, r0, bas, err)
+      call bas%to_device()
+
+      call dft_grid_build(bas%at_r, nint(bas%at_z), grid0, err, level=3)
+      call xg0%build(grid0%n_points, grid0%coords, grid0%weights, bas, max_pts=512)
+      call xg0%to_device()
+   end subroutine setup
+
+   subroutine test_rks_svwn(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_rks_case(error, 'svwn')
+   end subroutine test_rks_svwn
+
+   subroutine test_rks_pbe(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_rks_case(error, 'pbe')
+   end subroutine test_rks_pbe
+
+   subroutine run_rks_case(error, func_name)
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: func_name
+      type(trc_basis_t) :: bas, basp
+      type(dft_grid_t) :: grid0
+      type(trc_xc_grid_t) :: xg0
+      type(trc_linalg_t) :: lp
+      type(trc_xc_functional_t) :: func
+      real(dp) :: r0(3, NAT)
+      integer :: at_z(NAT)
+      real(dp), allocatable :: dmat(:, :), grad(:, :)
+      real(dp) :: worst
+      logical :: ok
+
+      call setup(bas, grid0, xg0, r0, at_z)
+      allocate (dmat(bas%nao, bas%nao), grad(3, NAT))
+      call synth_density(bas%nao, 1, dmat)
+      call lp%init(bas%nao)
+
+      ok = xc_functional_by_name(func_name, func)
+      worst = fixedgrid_worst_diff(bas, basp, xg0, lp, func, 1, dmat, r0, at_z, NAT, H, grad)
+      print '(a,es10.2)', '  RKS '//trim(func_name)//' H2/6-31G*, fixed grid: worst|analytic-FD| ', worst
+
+      call lp%release()
+      call xg0%release()
+      call bas%release()
+      deallocate (dmat, grad)
+
+      call check(error, ok, "functional not available")
+      if (allocated(error)) return
+      call check(error, worst <= ABSTOL, "worst|analytic-FD| = "//to_string(worst, "es10.2")// &
+                 " exceeds "//to_string(ABSTOL, "es10.2"))
+   end subroutine run_rks_case
+
+   subroutine test_uks_pbe(error)
+      !! GGA (PBE), unrestricted: two independent, asymmetric densities,
+      !! so the cross-spin Q1/Q2 terms (trc_xc_grad.F90's header) are live.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas, basp
+      type(dft_grid_t) :: grid0
+      type(trc_xc_grid_t) :: xg0
+      type(trc_linalg_t) :: lp
+      type(trc_xc_functional_t) :: func
+      real(dp) :: r0(3, NAT)
+      integer :: at_z(NAT)
+      real(dp), allocatable :: dmat2(:, :, :), grad2(:, :)
+      real(dp) :: worst
+      logical :: ok
+
+      call setup(bas, grid0, xg0, r0, at_z)
+      allocate (dmat2(bas%nao, bas%nao, 2), grad2(3, NAT))
+      call synth_density(bas%nao, 1, dmat2(:, :, 1))
+      call synth_density(bas%nao, 2, dmat2(:, :, 2))
+      call lp%init(bas%nao)
+
+      ok = xc_functional_by_name('pbe', func)
+      worst = fixedgrid_worst_diff2(bas, basp, xg0, lp, func, dmat2, r0, at_z, NAT, H, grad2)
+      print '(a,es10.2)', '  UKS PBE H2/6-31G*, fixed grid: worst|analytic-FD| ', worst
+
+      call lp%release()
+      call xg0%release()
+      call bas%release()
+      deallocate (dmat2, grad2)
+
+      call check(error, ok, "functional not available")
+      if (allocated(error)) return
+      call check(error, worst <= ABSTOL, "worst|analytic-FD| = "//to_string(worst, "es10.2")// &
+                 " exceeds "//to_string(ABSTOL, "es10.2"))
+   end subroutine test_uks_pbe
+
    !
    ! RKS: the analytic fixed-grid XC gradient (into `grad`) and the worst
    ! |analytic - central difference| over every atom/direction, the SAME
-   ! `xg0` reused unperturbed at every displacement.
+   ! `xg` reused unperturbed at every displacement.
    !
    function fixedgrid_worst_diff(bas0, basp0, xg, lp0, func0, nspin, d, r00, z, n, hh, grad0) result(w)
       type(trc_basis_t), intent(in) :: bas0
@@ -226,4 +282,18 @@ contains
       deallocate (vv)
    end function fixedgrid_worst_diff2
 
+end module check_xc_grad_fixedgrid_fd_suite
+
+program check_xc_grad_fixedgrid_fd
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use check_xc_grad_fixedgrid_fd_suite, only: collect_xc_grad_fixedgrid_fd
+   implicit none
+   integer :: stat
+   stat = 0
+   call run_testsuite(collect_xc_grad_fixedgrid_fd, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
 end program check_xc_grad_fixedgrid_fd

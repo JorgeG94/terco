@@ -44,16 +44,25 @@
 ! since what is being checked here is "does it converge to the right
 ! energy on a hard case", not a bit-level fold convention.
 !
-program scf_robust
+! Four independent cases below, each its own test-drive unittest; the
+! probe write and the sequential pyscf-reference read run once -- see
+! check_xc_energy_suite's own `computed` comment for why, and why this
+! suite stays `parallel=.false.`.
+!
+module scf_robust_suite
    use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
-   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str, ref_report
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_int, ref_read_real, ref_read_str
    use golden_io, only: golden_begin, golden_put, golden_end
    implicit none
+   private
+   public :: collect_scf_robust
 
    integer, parameter :: NCASE = 4
    character(len=16), parameter :: xyzf(NCASE) = [character(len=16) :: &
@@ -67,130 +76,182 @@ program scf_robust
    !! Agreement with pyscf's own converged energy (test/pyscf_refs/
    !! scf_robust.ref). Looser than the uncontracted comparisons elsewhere in
    !! this tree because the basis here is CONTRACTED and read by both codes
-   !! from a name, not terco's exact exponents -- see this program's header.
+   !! from a name, not terco's exact exponents -- see this module's header.
    !! w5/d-aug-cc-pVDZ gets the loosest gate: canonical orthogonalisation
    !! drops functions below `lindep_thresh` there, and pyscf's default RHF
    !! applies no such cut, so the two are not solving the same, numerically
    !! well-posed problem to begin with.
-   !! Canonical orthogonalisation threshold, per case: the type default
-   !! (1e-8) for everything but the diffuse case, which needs it loosened
-   !! to reach the S eigenvalues a doubly-augmented basis actually has.
-   !! A/EDIIS is a no-op for the two closed-shell cases: `diis_start` is
-   !! already infinite there (see trc_scf_driver.F90), so `diis_on` is true from
-   !! the first post-damping iteration and `adiis_active` can never fire.
-   !! Asking for it anyway on every case, rather than only the two it can
-   !! change, is the point: the option has to be inert where it has
-   !! nothing to do, and that is itself worth checking every run.
 
-   integer :: ic, unit, natm, nelec, nalpha, nbeta, dev
-   integer, allocatable :: zint(:)
-   real(dp), allocatable :: at_r(:, :)
-   type(trc_basis_t) :: bas
-   type(trc_scf_options_t) :: opts
-   type(trc_scf_result_t) :: res
-   type(error_t) :: err
-   logical :: all_ok
-   integer :: refu, ncase_ref, nfail
-   character(len=16) :: tag
-   logical :: has_ref
+   logical :: computed = .false.
+   logical :: ok_case(NCASE)
+   character(len=256) :: msg_case(NCASE)
 
-   dev = trc_bind_device(0)
-   open (newunit=unit, file='scf_robust_probe.bin', access='stream', form='unformatted', status='replace')
-   write (unit) int(NCASE, int64)
-   all_ok = .true.
+contains
 
-   ! Opened (not required) before any case runs -- see scf_rks.F90's own
-   ! comment on why: a missing reference must not stop this program before
-   ! scf_robust_probe.bin exists.
-   call ref_open('scf_robust.ref', refu, has_ref)
-   call golden_begin('scf_robust')
-   nfail = 0
-   if (has_ref) then
-      call ref_read_int(refu, 'NCASE', ncase_ref)
-      if (ncase_ref /= NCASE) then
-         print '(a)', 'scf_robust: pyscf reference case count does not match this build'; stop 1
-      end if
-   end if
-   do ic = 1, NCASE
-      call read_xyz(trim(xyzf(ic))//'.xyz', natm, zint, at_r)
-      nelec = sum(zint) - charge(ic)
-      if (uhf(ic)) then
-         nalpha = (nelec + 1)/2
-         nbeta = nelec - nalpha
-      else
-         nalpha = nelec/2
-         nbeta = nalpha
-      end if
-      ! Cartesian, to match scf_robust_ref.py's cart=True and the lindep
-      ! threshold measured on it: d-aug-cc-pVDZ tags shells gto_spherical.
-      ! overrides%prune = .false.: w5/d-aug-cc-pVDZ's lindep_thresh (1e-5, this
-      ! module's own header) drops near-linearly-dependent diffuse
-      ! combinations off the overlap matrix's eigenvalues, and
-      ! prune_block's basis rotation moves those eigenvalues enough to
-      ! change WHICH combinations get dropped -- a real difference, not
-      ! round-off (measured 9.66e-07 against the golden, four orders of
-      ! magnitude over its 2e-10 gate), because this basis is deliberately
-      ! near-redundant and lindep thresholding is not invariant to a
-      ! rotation the way a well-conditioned SCF energy is.
-      call trc_basis_from_json('basis_sets/'//trim(basf(ic))//'.json', natm, zint, at_r, bas, err, &
-                               force_cart=.true., overrides=trc_basis_json_overrides(prune=.false.))
-      if (err%has_error()) then
-         print '(a,a)', 'scf_robust: '//trim(xyzf(ic))//': ', err%get_message(); stop 1
-      end if
-      call bas%to_device()
+   subroutine collect_scf_robust(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest(case_name(1), case_01), &
+                  new_unittest(case_name(2), case_02), &
+                  new_unittest(case_name(3), case_03), &
+                  new_unittest(case_name(4), case_04) &
+                ]
+   end subroutine collect_scf_robust
 
-      opts = trc_scf_options_t()
-      opts%max_iteration = 150
-      opts%unrestricted = uhf(ic)
-      opts%adiis = .true.
-      opts%lindep_thresh = lindep(ic)
+   function case_name(ic) result(name)
+      integer, intent(in) :: ic
+      character(len=:), allocatable :: name
+      name = trim(xyzf(ic))//"/"//trim(basf(ic))
+   end function case_name
 
-      call trc_scf_run(bas, nalpha, nbeta, opts, res)
-      print '(a,a14,a,a12,a,i4,a,l1,a,f20.10,a,i0)', &
-         '  ', trim(xyzf(ic)), '  ', trim(basf(ic)), '  iter ', res%iterations, &
-         '  conv ', res%converged, '  E = ', res%energy, '  ndrop ', res%n_lindep
-      if (.not. res%converged) then
-         print '(a,a)', '    NOT CONVERGED: ', trim(res%message)
-         all_ok = .false.
-      end if
+   ! One wrapper per case, each passing its own index: a unittest must not
+   ! depend on which unittests ran before it (a name-selected run, or a
+   ! reordered suite, would otherwise check the wrong case).
+   subroutine case_01(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 1)
+   end subroutine case_01
 
-      write (unit) int(bas%nao, int64), int(natm, int64), int(res%nspin, int64), &
-         int(nalpha, int64), int(nbeta, int64), int(charge(ic), int64)
-      write (unit) xyzf(ic), basf(ic)
-      write (unit) res%energy
-      call golden_put('E_'//trim(xyzf(ic))//'_'//trim(basf(ic)), res%energy)
-      call bas%release()
+   subroutine case_02(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 2)
+   end subroutine case_02
 
-      ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+   subroutine case_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 3)
+   end subroutine case_03
+
+   subroutine case_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 4)
+   end subroutine case_04
+
+   subroutine test_case(error, ic)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: ic
+      call ensure_computed()
+      call check(error, ok_case(ic), trim(msg_case(ic)))
+   end subroutine test_case
+
+   subroutine ensure_computed()
+      if (computed) return
+      call run_all()
+      computed = .true.
+   end subroutine ensure_computed
+
+   subroutine run_all()
+      integer :: ic, unit, natm, nelec, nalpha, nbeta, dev
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
+      type(trc_basis_t) :: bas
+      type(trc_scf_options_t) :: opts
+      type(trc_scf_result_t) :: res
+      type(error_t) :: err
+      integer :: refu, ncase_ref
+      character(len=16) :: tag
+      logical :: has_ref
+
+      dev = trc_bind_device(0)
+      open (newunit=unit, file='scf_robust_probe.bin', access='stream', form='unformatted', status='replace')
+      write (unit) int(NCASE, int64)
+
+      ! Opened (not required) before any case runs -- a missing reference
+      ! must not stop this suite before scf_robust_probe.bin exists.
+      call ref_open('scf_robust.ref', refu, has_ref)
+      call golden_begin('scf_robust')
       if (has_ref) then
-      block
-         character(len=16) :: xyz_ref, bas_ref
-         real(dp) :: e_ref, de, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
-         write (tag, '(i0)') ic - 1
-         call ref_read_str(refu, 'XYZ_'//trim(tag), xyz_ref)
-         call ref_read_str(refu, 'BAS_'//trim(tag), bas_ref)
-         call ref_read_real(refu, 'E_'//trim(tag), e_ref)
-         ! Provenance only -- see scf_rks.F90's own comment on the same tags.
-         call ref_read_real(refu, 'CONV_TOL_'//trim(tag), pyscf_conv_tol)
-         call ref_read_real(refu, 'CONV_TOL_GRAD_'//trim(tag), pyscf_conv_tol_grad)
-         call ref_read_real(refu, 'GRAD_NORM_'//trim(tag), pyscf_grad_norm)
-         if (trim(xyz_ref) /= trim(xyzf(ic)) .or. trim(bas_ref) /= trim(basf(ic))) then
-            print '(a)', 'scf_robust: pyscf reference case order does not match this build'; stop 1
-         end if
-         de = abs(res%energy - e_ref)
-         call ref_report(nfail, de < pyscf_tol(ic), trim(xyzf(ic))//'/'//trim(basf(ic))//' vs pyscf', de)
-      end block
+         call ref_read_int(refu, 'NCASE', ncase_ref)
+         if (ncase_ref /= NCASE) error stop 'scf_robust: pyscf reference case count does not match this build'
       end if
-   end do
-   call golden_end()
-   close (unit)
-   if (has_ref) call ref_close(refu)
-   if (.not. has_ref) then
-      print '(a)', 'FAIL: missing reference pyscf_refs/scf_robust.ref -- run test/pyscf_refs/generate.py ' &
-         //'(see test/pyscf_refs/README.md)'
-      stop 1
+      ok_case = .false.
+      msg_case = "pyscf reference missing"
+
+      do ic = 1, NCASE
+         call read_xyz(trim(xyzf(ic))//'.xyz', natm, zint, at_r)
+         nelec = sum(zint) - charge(ic)
+         if (uhf(ic)) then
+            nalpha = (nelec + 1)/2
+            nbeta = nelec - nalpha
+         else
+            nalpha = nelec/2
+            nbeta = nalpha
+         end if
+         ! Cartesian, to match scf_robust_ref.py's cart=True and the lindep
+         ! threshold measured on it: d-aug-cc-pVDZ tags shells gto_spherical.
+         ! overrides%prune = .false.: w5/d-aug-cc-pVDZ's lindep_thresh (1e-5, this
+         ! module's own header) drops near-linearly-dependent diffuse
+         ! combinations off the overlap matrix's eigenvalues, and
+         ! prune_block's basis rotation moves those eigenvalues enough to
+         ! change WHICH combinations get dropped -- a real difference, not
+         ! round-off (measured 9.66e-07 against the golden, four orders of
+         ! magnitude over its 2e-10 gate), because this basis is deliberately
+         ! near-redundant and lindep thresholding is not invariant to a
+         ! rotation the way a well-conditioned SCF energy is.
+         call trc_basis_from_json('basis_sets/'//trim(basf(ic))//'.json', natm, zint, at_r, bas, err, &
+                                  force_cart=.true., overrides=trc_basis_json_overrides(prune=.false.))
+         if (err%has_error()) error stop 'scf_robust: '//trim(xyzf(ic))//': '//err%get_message()
+         call bas%to_device()
+
+         opts = trc_scf_options_t()
+         opts%max_iteration = 150
+         opts%unrestricted = uhf(ic)
+         opts%adiis = .true.
+         opts%lindep_thresh = lindep(ic)
+
+         call trc_scf_run(bas, nalpha, nbeta, opts, res)
+         print '(a,a14,a,a12,a,i4,a,l1,a,f20.10,a,i0)', &
+            '  ', trim(xyzf(ic)), '  ', trim(basf(ic)), '  iter ', res%iterations, &
+            '  conv ', res%converged, '  E = ', res%energy, '  ndrop ', res%n_lindep
+         if (.not. res%converged) print '(a,a)', '    NOT CONVERGED: ', trim(res%message)
+
+         write (unit) int(bas%nao, int64), int(natm, int64), int(res%nspin, int64), &
+            int(nalpha, int64), int(nbeta, int64), int(charge(ic), int64)
+         write (unit) xyzf(ic), basf(ic)
+         write (unit) res%energy
+         call golden_put('E_'//trim(xyzf(ic))//'_'//trim(basf(ic)), res%energy)
+         call bas%release()
+
+         ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
+         if (has_ref) then
+            block
+               character(len=16) :: xyz_ref, bas_ref
+               real(dp) :: e_ref, de, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
+               write (tag, '(i0)') ic - 1
+               call ref_read_str(refu, 'XYZ_'//trim(tag), xyz_ref)
+               call ref_read_str(refu, 'BAS_'//trim(tag), bas_ref)
+               call ref_read_real(refu, 'E_'//trim(tag), e_ref)
+               ! Provenance only -- see scf_rks.F90's own comment on the same tags.
+               call ref_read_real(refu, 'CONV_TOL_'//trim(tag), pyscf_conv_tol)
+               call ref_read_real(refu, 'CONV_TOL_GRAD_'//trim(tag), pyscf_conv_tol_grad)
+               call ref_read_real(refu, 'GRAD_NORM_'//trim(tag), pyscf_grad_norm)
+               if (trim(xyz_ref) /= trim(xyzf(ic)) .or. trim(bas_ref) /= trim(basf(ic))) &
+                  error stop 'scf_robust: pyscf reference case order does not match this build'
+               de = abs(res%energy - e_ref)
+               ok_case(ic) = res%converged .and. de < pyscf_tol(ic)
+               write (msg_case(ic), '(a,es10.2)') trim(xyzf(ic))//'/'//trim(basf(ic))//' vs pyscf, |dE| = ', de
+            end block
+         end if
+      end do
+      call golden_end()
+      close (unit)
+      if (has_ref) call ref_close(refu)
+      if (.not. has_ref) error stop 'FAIL: missing reference pyscf_refs/scf_robust.ref -- run ' &
+         //'test/pyscf_refs/generate.py (see test/pyscf_refs/README.md)'
+   end subroutine run_all
+
+end module scf_robust_suite
+
+program scf_robust
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use testdrive, only: run_testsuite
+   use scf_robust_suite, only: collect_scf_robust
+   implicit none
+   integer :: stat
+   stat = 0
+   call run_testsuite(collect_scf_robust, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
    end if
-   if (.not. all_ok .or. nfail > 0) stop 1
-   print '(a)', ''
-   print '(a)', 'scf_robust: all hard cases converged and agree with the pyscf reference; RESULT: PASS'
 end program scf_robust
