@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["xc_grad_formamide_pbe_ccpvdz"] -> gen_xc_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 4c05ad451a094b9fbb7c831469e7360ff8e4e1346d3b3f9ad657eeadc16f062d
+# hash: f2e565f725bc220b219598125b3ab457106c11ed59a9753d73500b4a5b05f410
 # files: test/check_xc_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
 NAT 6
 NAO 60
