@@ -352,7 +352,7 @@ contains
 
       if (config%dft) then
          call tphase%start()
-         call profiler_start("scf: grid", nvtx_only=.true.)
+         call profiler_start("dft: grid", nvtx_only=.true.)
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
@@ -364,7 +364,7 @@ contains
                                 t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          end if
          if (err%has_error()) then
-            call profiler_stop("scf: grid")
+            call profiler_stop("dft: grid")
             call this%release()
             return
          end if
@@ -382,7 +382,7 @@ contains
          if (config%nlc) then
             call dft_grid_build(b%at_r, b%at_elem, this%gc%grid_nlc, err, level=opts%nlc_grid_level)
             if (err%has_error()) then
-               call profiler_stop("scf: grid")
+               call profiler_stop("dft: grid")
                call this%release()
                return
             end if
@@ -392,7 +392,7 @@ contains
             call this%gc%xg_nlc%to_device()
             this%gc%nlc_built = .true.
          end if
-         call profiler_stop("scf: grid")
+         call profiler_stop("dft: grid")
          this%t_grid = tphase%get_elapsed_time()
       end if
    end subroutine scf_context_setup

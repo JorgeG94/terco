@@ -255,7 +255,7 @@ contains
       type(scf_timers_t), intent(inout) :: scf_timers
       !! `tx_pts`/`tx_prs` and `t_vv10` are added to (not overwritten). The
       !! DFT step table (`xcst`) reports VV10 as its own step, separate from
-      !! the semilocal points/pairs split -- see NVTX_RANGES below for why
+      !! the rest of the XC build -- see NVTX_RANGES below for why
       !! VV10's is a plain wall time rather than a `step_on`/`step_off` pair.
       type(comm_t), intent(in), optional :: comm
       real(dp) :: e_nlc, tp1, tq1
@@ -271,8 +271,8 @@ contains
       !
       ! Both branches call `lp%sync()` before their own `profiler_stop`:
       ! without it, an async device launch left over from `trc_xc_rks`/
-      ! `trc_xc_uks` could still be running when the "scf: xc" NVTX range
-      ! closes, so a profiler would show it finishing inside "scf: vv10"
+      ! `trc_xc_uks` could still be running when the "dft: xc" NVTX range
+      ! closes, so a profiler would show it finishing inside "dft: vv10"
       ! instead -- the xc row undercounting, the vv10 row overcounting. The
       ! sync measured free here: `trc_xc_rks`/`trc_xc_uks` already force a
       ! device-to-host transfer of `exc`/`nelec` (`xc_drive`'s own `!$acc
@@ -282,7 +282,7 @@ contains
       ! `xcst` to accumulate, rather than a `step_table_t` tick) stays for
       ! the same reason.
       !
-      call profiler_start("scf: xc", nvtx_only=.true.)
+      call profiler_start("dft: xc", nvtx_only=.true.)
       if (scf_config%nspin == 1) then
          call trc_xc_rks(scf_basis, scf_context%gc%xg, scf_config%func, scf_state%d_c(:, :, 1), scf_state%vxc_c(:, :, 1), &
                          scf_energies%xc, scf_energies%nelec_grid, rho_tol=rho_tol, &
@@ -293,11 +293,11 @@ contains
                          comm=comm, t_points=tp1, t_pairs=tq1, la=scf_context%lp)
       end if
       call scf_context%lp%sync()
-      call profiler_stop("scf: xc")
+      call profiler_stop("dft: xc")
       ! VV10 adds its energy to the XC energy and its potential into vxc_c, on
       ! its own (coarser) grid, before the spherical transform below.
       if (scf_config%nlc) then
-         call profiler_start("scf: vv10", nvtx_only=.true.)
+         call profiler_start("dft: vv10", nvtx_only=.true.)
          call scf_context%lp%sync()
          call tm_vv10%start()
          if (scf_config%nspin == 1) then
@@ -310,7 +310,7 @@ contains
                               scf_state%vxc_c(:, :, 1), scf_state%vxc_c(:, :, 2), la=scf_context%lp, comm=comm)
          end if
          call scf_context%lp%sync()
-         call profiler_stop("scf: vv10")
+         call profiler_stop("dft: vv10")
          scf_timers%t_vv10 = scf_timers%t_vv10 + tm_vv10%get_elapsed_time()
          scf_energies%xc = scf_energies%xc + e_nlc
       end if
